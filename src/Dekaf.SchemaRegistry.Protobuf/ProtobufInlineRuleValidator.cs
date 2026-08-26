@@ -94,6 +94,7 @@ internal sealed class ProtobufInlineRuleExecutor(
 
 internal sealed class ProtobufInlineRuleValidator : IInlineValidationRuleExecutor
 {
+    private const string SerializedSchemaFormat = "serialized";
     internal const int MaximumValidationDepth = 100;
     private static readonly TimeSpan ReferenceResolutionTimeout = TimeSpan.FromSeconds(30);
     private readonly ProtobufMessageRulePlan _root;
@@ -285,15 +286,19 @@ internal sealed class ProtobufInlineRuleValidator : IInlineValidationRuleExecuto
                 "Registered Protobuf schema references require a Schema Registry client.");
         }
 
+        var formattedRegistry = _schemaRegistry as IFormattedSchemaRegistryClient
+            ?? throw new SchemaRegistryRuleException(
+                "Registered Protobuf schema references require formatted Schema Registry lookup.");
         var files = new Dictionary<string, ByteString>(StringComparer.Ordinal);
         var resolved = new Dictionary<(string Subject, int Version), ResolvedReference>();
         var expanded = new HashSet<(string Subject, int Version)>();
-        ResolveReferences(references, files, resolved, expanded);
+        ResolveReferences(references, formattedRegistry, files, resolved, expanded);
         return files;
     }
 
-    private void ResolveReferences(
+    private static void ResolveReferences(
         IReadOnlyList<SchemaReference> references,
+        IFormattedSchemaRegistryClient schemaRegistry,
         Dictionary<string, ByteString> files,
         Dictionary<(string Subject, int Version), ResolvedReference> resolved,
         HashSet<(string Subject, int Version)> expanded)
@@ -308,9 +313,11 @@ internal sealed class ProtobufInlineRuleValidator : IInlineValidationRuleExecuto
                 using var timeout = new CancellationTokenSource(ReferenceResolutionTimeout);
                 try
                 {
-                    registered = _schemaRegistry!.GetSchemaBySubjectAsync(
+                    registered = schemaRegistry.GetSchemaBySubjectWithFormatAsync(
                             reference.Subject,
                             reference.Version.ToString(CultureInfo.InvariantCulture),
+                            ignoreDeletedSchemas: true,
+                            SerializedSchemaFormat,
                             timeout.Token)
                         .WaitAsync(timeout.Token)
                         .ConfigureAwait(false)
@@ -353,7 +360,7 @@ internal sealed class ProtobufInlineRuleValidator : IInlineValidationRuleExecuto
             }
             files[reference.Name] = resolvedReference.Data;
             if (expanded.Add(key) && resolvedReference.Schema.References is { Count: > 0 } nested)
-                ResolveReferences(nested, files, resolved, expanded);
+                ResolveReferences(nested, schemaRegistry, files, resolved, expanded);
         }
     }
 
@@ -3899,7 +3906,7 @@ internal ref struct ProtobufValidationWireReader
             return false;
         }
 
-        var tag = ReadVarint(span, ref _offset);
+        var tag = unchecked((uint)ReadVarint(span, ref _offset));
         var number = ReadFieldNumber(tag);
         var wireType = (ProtobufWireType)(tag & 7);
         if (number == 0)
@@ -3977,7 +3984,7 @@ internal ref struct ProtobufValidationWireReader
         while (_offset < source.Length)
         {
             var tagStart = _offset;
-            var tag = ReadVarint(source, ref _offset);
+            var tag = unchecked((uint)ReadVarint(source, ref _offset));
             var number = ReadFieldNumber(tag);
             var wireType = (ProtobufWireType)(tag & 7);
             if (wireType == ProtobufWireType.EndGroup)
@@ -4035,13 +4042,7 @@ internal ref struct ProtobufValidationWireReader
     private static SchemaRegistryRuleException InvalidPayload(string reason) =>
         new($"Could not evaluate Protobuf validation rules: {reason}.");
 
-    private static int ReadFieldNumber(ulong tag)
-    {
-        var number = tag >> 3;
-        if (number > int.MaxValue)
-            throw InvalidPayload("field number exceeds Int32.MaxValue");
-        return (int)number;
-    }
+    private static int ReadFieldNumber(uint tag) => (int)(tag >> 3);
 }
 
 internal ref struct ProtobufValidationPath

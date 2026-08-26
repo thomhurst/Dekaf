@@ -9,6 +9,7 @@ using Dekaf.Tests.Unit.SchemaRegistry.ProtobufFixtures.Confluent;
 using Google.Protobuf;
 using Google.Protobuf.Reflection;
 using Google.Protobuf.WellKnownTypes;
+using NSubstitute;
 
 namespace Dekaf.Tests.Unit.SchemaRegistry;
 
@@ -806,7 +807,7 @@ public sealed class ProtobufInlineRuleValidatorTests
     }
 
     [Test]
-    public async Task Validate_OversizedFieldNumberReportsRuleException()
+    public async Task Validate_OverlongZeroTagReportsFieldZero()
     {
         var payload = new ArrayBufferWriter<byte>();
         WriteVarint(payload, ((ulong)int.MaxValue + 1) << 3);
@@ -816,7 +817,24 @@ public sealed class ProtobufInlineRuleValidatorTests
         var exception = Assert.Throws<SchemaRegistryRuleException>(() =>
             validator.Validate(payload.WrittenMemory, schemaId: 17, failFast: false));
 
-        await Assert.That(exception.Message).Contains("field number exceeds Int32.MaxValue");
+        await Assert.That(exception.Message).Contains("field number 0");
+    }
+
+    [Test]
+    public async Task Validate_OverlongTagUsesLowUInt32Bits()
+    {
+        var payload = new ArrayBufferWriter<byte>();
+        WriteVarint(payload, 0x1_0000_0008);
+        WriteVarint(payload, 151);
+        var parsed = ValidationEnvelope.Parser.ParseFrom(payload.WrittenSpan);
+        var validator = new ProtobufInlineRuleValidator(ValidationEnvelope.Descriptor);
+
+        var exception = Assert.Throws<ValidationRulesFailedException>(() =>
+            validator.Validate(payload.WrittenMemory, schemaId: 17, failFast: false));
+
+        await Assert.That(parsed.Age).IsEqualTo(151);
+        await Assert.That(exception.Violations.Select(static violation => violation.Rule.Name))
+            .Contains("age-upper-bound");
     }
 
     [Test]
@@ -898,18 +916,44 @@ public sealed class ProtobufInlineRuleValidatorTests
     [Test]
     public async Task Validate_RegisteredReferenceUsesExactSubjectVersion()
     {
-        using var registry = new MockSchemaRegistryClient();
+        using var backingRegistry = new MockSchemaRegistryClient();
         var child = ValidationChild.Descriptor.File.ToProto();
-        _ = await registry.RegisterSchemaAsync(
+        _ = await backingRegistry.RegisterSchemaAsync(
             "validation-child",
             new Schema { SchemaType = SchemaType.Protobuf, SchemaString = child.ToByteString().ToBase64() });
         var stricterChild = child.Clone();
         var meta = stricterChild.MessageType[0].Options.GetExtension(MetaExtensions.MessageMeta).Clone();
         meta.Rules[0].Expr = "this.value > 10";
         stricterChild.MessageType[0].Options.SetExtension(MetaExtensions.MessageMeta, meta);
-        _ = await registry.RegisterSchemaAsync(
+        _ = await backingRegistry.RegisterSchemaAsync(
             "validation-child",
             new Schema { SchemaType = SchemaType.Protobuf, SchemaString = stricterChild.ToByteString().ToBase64() });
+        var serializedReference = await backingRegistry.GetSchemaBySubjectAsync(
+            "validation-child",
+            "2");
+        var registry = Substitute.For<IFormattedSchemaRegistryClient>();
+        registry.GetSchemaBySubjectAsync(
+                "validation-child",
+                "2",
+                Arg.Any<CancellationToken>())
+            .Returns(new RegisteredSchema
+            {
+                Id = serializedReference.Id,
+                Subject = serializedReference.Subject,
+                Version = serializedReference.Version,
+                Schema = new Schema
+                {
+                    SchemaType = SchemaType.Protobuf,
+                    SchemaString = "syntax = \"proto3\";"
+                }
+            });
+        registry.GetSchemaBySubjectWithFormatAsync(
+                "validation-child",
+                "2",
+                true,
+                "serialized",
+                Arg.Any<CancellationToken>())
+            .Returns(serializedReference);
         var root = new Schema
         {
             SchemaType = SchemaType.Protobuf,
@@ -931,6 +975,12 @@ public sealed class ProtobufInlineRuleValidatorTests
         var exception = Assert.Throws<ValidationRulesFailedException>(() =>
             validator.Validate(message.ToByteArray(), schemaId: 91, root, failFast: false));
 
+        await registry.Received(1).GetSchemaBySubjectWithFormatAsync(
+            "validation-child",
+            "2",
+            true,
+            "serialized",
+            Arg.Any<CancellationToken>());
         await Assert.That(exception.Violations.Select(static violation => violation.Rule.Name))
             .Contains("positive-child-value");
     }
