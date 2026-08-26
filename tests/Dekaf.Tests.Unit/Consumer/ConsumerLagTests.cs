@@ -221,6 +221,31 @@ public sealed class ConsumerLagTests
     }
 
     [Test]
+    public async Task WatermarkCacheEntry_StaleCreatorCannotRemoveNewerUpdate()
+    {
+        var otherPartition = new TopicPartition(Partition.Topic, 1);
+        await using var consumer = CreateConsumer();
+        consumer.IncrementalAssign([new TopicPartitionOffset(Partition.Topic, Partition.Partition, 10)]);
+        var oldAssignmentVersion = GetAssignmentVersion(consumer);
+        consumer.BeforeWatermarkCacheEntryCreationForTest = () =>
+        {
+            consumer.BeforeWatermarkCacheEntryCreationForTest = null;
+            consumer.IncrementalAssign([
+                new TopicPartitionOffset(otherPartition.Topic, otherPartition.Partition, 0)
+            ]);
+            UpdateWatermarksFromFetchResponse(consumer, CreateFetchResponse(30));
+        };
+
+        UpdateWatermarksFromFetchResponse(
+            consumer,
+            CreateFetchResponse(20),
+            oldAssignmentVersion);
+
+        await Assert.That(consumer.GetWatermarkOffsets(Partition)).IsEqualTo(new WatermarkOffsets(0, 30));
+        await Assert.That(consumer.GetCurrentLag(Partition)).IsEqualTo(20);
+    }
+
+    [Test]
     public async Task GetCurrentLag_AssignmentChangeAfterSnapshotReturnsNull()
     {
         var otherPartition = new TopicPartition(Partition.Topic, 1);

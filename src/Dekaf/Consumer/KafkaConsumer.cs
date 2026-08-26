@@ -1491,6 +1491,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private int _lastCoordinatorAssignmentVersion = -1;
     // Deterministic test seam for assignment/revocation snapshot races.
     internal Action? BeforeCoordinatorAssignmentSnapshotForTest { get; set; }
+    // Deterministic test seam for watermark creation/assignment races.
+    internal Action? BeforeWatermarkCacheEntryCreationForTest { get; set; }
     // Foreground-applied pause state. Keep at the cold field tail so the normal consume layout
     // remains stable; only queue admission/reconciliation reads or writes it.
     private TopicPartitionSet _deliveryPausedSnapshot = new HashSet<TopicPartition>();
@@ -8446,9 +8448,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         if (!_assignmentSnapshot.Contains(partition)
             || GetPositionWithoutCaching(partition) is not { } position
             || position < 0
-            || !_watermarkAssignmentVersions.TryGetValue(partition, out var assignmentVersion)
-            || !_watermarkAssignmentVersions.TryGetValue(partition, out var currentVersion)
-            || currentVersion != assignmentVersion)
+            || !_watermarkAssignmentVersions.TryGetValue(partition, out var assignmentVersion))
         {
             return new ValueTask<long?>((long?)null);
         }
@@ -10736,29 +10736,50 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         long lagEndOffset,
         int assignmentVersion)
     {
+        if (!_watermarks.TryGetValue(partition, out var entry))
+        {
+            CreateOrUpdateCachedWatermarksSlow(
+                partition,
+                low,
+                high,
+                lagEndOffset,
+                assignmentVersion);
+            return;
+        }
+
+        UpdateExistingCachedWatermarks(entry, low, high, lagEndOffset, assignmentVersion);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private void CreateOrUpdateCachedWatermarksSlow(
+        TopicPartition partition,
+        long low,
+        long high,
+        long lagEndOffset,
+        int assignmentVersion)
+    {
+        BeforeWatermarkCacheEntryCreationForTest?.Invoke();
+        WatermarkCacheEntry entry;
         while (true)
         {
-            if (!_watermarks.TryGetValue(partition, out var entry))
+            lock (_snapshotStateGate)
             {
                 if (assignmentVersion != Volatile.Read(ref _assignmentEnsureVersion))
                     return;
 
-                var created = new WatermarkCacheEntry(low, high, lagEndOffset);
-                if (_watermarks.TryAdd(partition, created))
+                if (_watermarks.TryGetValue(partition, out entry!))
+                    break;
+
+                if (_watermarks.TryAdd(
+                    partition,
+                    new WatermarkCacheEntry(low, high, lagEndOffset)))
                 {
-                    if (assignmentVersion != Volatile.Read(ref _assignmentEnsureVersion))
-                    {
-                        ((ICollection<KeyValuePair<TopicPartition, WatermarkCacheEntry>>)_watermarks)
-                            .Remove(new KeyValuePair<TopicPartition, WatermarkCacheEntry>(partition, created));
-                    }
                     return;
                 }
-                continue;
             }
-
-            UpdateExistingCachedWatermarks(entry, low, high, lagEndOffset, assignmentVersion);
-            return;
         }
+
+        UpdateExistingCachedWatermarks(entry, low, high, lagEndOffset, assignmentVersion);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
