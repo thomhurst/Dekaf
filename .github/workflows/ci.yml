@@ -735,6 +735,12 @@ jobs:
           PYTHONPATH: .github/scripts
         run: python3 -m unittest discover -s .github/scripts -p 'test_*.py'
 
+      - name: Test PR Merge Gate
+        shell: pwsh
+        run: |
+          ./scripts/Test-AssertPrGreenReviewHeuristics.ps1
+          ./scripts/Test-AssertPrGreenReviewThreads.ps1
+
       - name: Test Integration Category Runner
         run: bash scripts/tests/run-integration-categories-tests.sh
 

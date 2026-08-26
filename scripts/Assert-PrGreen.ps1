@@ -30,6 +30,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'AssertPrGreenReviewHeuristics.ps1')
+. (Join-Path $PSScriptRoot 'AssertPrGreenReviewThreads.ps1')
 
 function Deny([string]$reason) {
     [Console]::Error.WriteLine("DO NOT MERGE #${Pr} -- $reason")
@@ -127,18 +128,39 @@ else {
     $owner, $name = $nwo.Trim() -split '/', 2
 }
 
-$query = 'query($owner:String!,$repo:String!,$pr:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$pr){reviewThreads(first:100){pageInfo{hasNextPage} nodes{isResolved}}}}}'
-$threadsRaw = gh api graphql -f query=$query -F owner=$owner -F repo=$name -F pr=$Pr 2>$null
-if ($LASTEXITCODE -ne 0) { Deny "could not fetch review threads (exit $LASTEXITCODE)" }
+$query = 'query($owner:String!,$repo:String!,$pr:Int!,$cursor:String){repository(owner:$owner,name:$repo){pullRequest(number:$pr){reviewThreads(first:100,after:$cursor){pageInfo{hasNextPage endCursor} nodes{isResolved}}}}}'
 try {
-    $reviewThreads = ($threadsRaw | ConvertFrom-Json).data.repository.pullRequest.reviewThreads
+    $reviewThreads = @(Get-AllReviewThreads -FetchPage {
+        param($cursor)
+
+        $ghArgs = @(
+            'api', 'graphql',
+            '-f', "query=$query",
+            '-F', "owner=$owner",
+            '-F', "repo=$name",
+            '-F', "pr=$Pr"
+        )
+        if ($null -ne $cursor) {
+            $ghArgs += @('-f', "cursor=$cursor")
+        }
+
+        $threadsRaw = & gh @ghArgs 2>$null
+        if ($LASTEXITCODE -ne 0) {
+            throw "gh api graphql failed (exit $LASTEXITCODE)."
+        }
+
+        $page = ($threadsRaw | ConvertFrom-Json).data.repository.pullRequest.reviewThreads
+        if ($null -eq $page) {
+            throw 'GraphQL response did not contain review threads.'
+        }
+
+        return $page
+    })
 }
 catch {
-    Deny "could not parse review threads: $($_.Exception.Message)"
+    Deny "could not fetch or parse review threads: $($_.Exception.Message)"
 }
-# More than one page means we cannot see every thread; deny rather than pass blind.
-if ($reviewThreads.pageInfo.hasNextPage) { Deny "more than 100 review threads -- too many to inspect safely" }
-$unresolved = @($reviewThreads.nodes | Where-Object { -not $_.isResolved }).Count
+$unresolved = @($reviewThreads | Where-Object { -not $_.isResolved }).Count
 if ($unresolved -gt 0) { Deny "$unresolved unresolved review thread(s)" }
 
 Write-Host "OK #${Pr} -- MERGEABLE, CLEAN, $($checks.Count) check(s) green, no unresolved threads. Safe to merge."
