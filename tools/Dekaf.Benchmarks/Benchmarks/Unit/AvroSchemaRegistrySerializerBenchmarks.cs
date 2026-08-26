@@ -141,6 +141,7 @@ public class AvroSchemaRegistrySerializerBenchmarks
         """;
 
     private AvroSchemaRegistrySerializer<GenericRecord> _serializer = null!;
+    private AvroSchemaRegistrySerializer<GenericRecord> _validationEnabledSerializer = null!;
     private AvroSchemaRegistrySerializer<GenericRecord> _missSerializer = null!;
     private AvroSchemaRegistrySerializer<GenericRecord> _equivalentOverflowSerializer = null!;
     private AvroSchemaRegistrySerializer<GenericRecord> _alternatingOverflowSerializer = null!;
@@ -168,6 +169,7 @@ public class AvroSchemaRegistrySerializerBenchmarks
     private GenericRecord[] _variableSizeRecords = null!;
     private SpecificBenchmarkRecord _specificRecord = null!;
     private ArrayBufferWriter<byte> _serializeBuffer = null!;
+    private ArrayBufferWriter<byte> _validationEnabledBuffer = null!;
     private ExactSizeBufferWriter _exactSizeSerializeBuffer = null!;
     private GenericRecord _stableRecord = null!;
     private GenericRecord[] _alternatingGenericRecords = null!;
@@ -182,6 +184,12 @@ public class AvroSchemaRegistrySerializerBenchmarks
         Avro.Util.LogicalTypeFactory.Instance.Register(new BenchmarkStringBytesLogicalType());
         Avro.Util.LogicalTypeFactory.Instance.Register(new BenchmarkIntBytesLogicalType());
         _serializer = new AvroSchemaRegistrySerializer<GenericRecord>(new BenchmarkSchemaRegistryClient());
+        _validationEnabledSerializer = new AvroSchemaRegistrySerializer<GenericRecord>(
+            new BenchmarkSchemaRegistryClient(),
+            new AvroSerializerConfig
+            {
+                ValidationRulesExecution = ValidationRulesExecution.BeforeDomainRules
+            });
         _overflowSerializer = new AvroSchemaRegistrySerializer<GenericRecord>(
             new BenchmarkSchemaRegistryClient(),
             new AvroSerializerConfig { MaxCachedSchemas = 1 });
@@ -250,9 +258,12 @@ public class AvroSchemaRegistrySerializerBenchmarks
         ];
         _specificRecord = new SpecificBenchmarkRecord { Id = 42, Name = "benchmark" };
         _serializeBuffer = new ArrayBufferWriter<byte>();
+        _validationEnabledBuffer = new ArrayBufferWriter<byte>();
         _exactSizeSerializeBuffer = new ExactSizeBufferWriter(8192);
         _serializer.Serialize(_stableRecord, ref _serializeBuffer, _context);
         _serializeBuffer.ResetWrittenCount();
+        _validationEnabledSerializer.Serialize(_stableRecord, ref _validationEnabledBuffer, _context);
+        _validationEnabledBuffer.ResetWrittenCount();
         _serializer.Serialize(_intRecord, ref _serializeBuffer, _context);
         _serializeBuffer.ResetWrittenCount();
         _serializer.Serialize(_nullableIntArrayRecord, ref _serializeBuffer, _context);
@@ -283,6 +294,7 @@ public class AvroSchemaRegistrySerializerBenchmarks
     public void Cleanup()
     {
         _serializer.DisposeAsync().GetAwaiter().GetResult();
+        _validationEnabledSerializer.DisposeAsync().GetAwaiter().GetResult();
         _overflowSerializer.DisposeAsync().GetAwaiter().GetResult();
         _alternatingGenericSerializer.DisposeAsync().GetAwaiter().GetResult();
         _specificSerializer.DisposeAsync().GetAwaiter().GetResult();
@@ -425,6 +437,13 @@ public class AvroSchemaRegistrySerializerBenchmarks
     {
         _serializeBuffer.ResetWrittenCount();
         _serializer.Serialize(_stableRecord, ref _serializeBuffer, _context);
+    }
+
+    [Benchmark(Description = "Serialize rule-free record with inline validation enabled")]
+    public void SerializeRuleFreeRecordWithValidationEnabled()
+    {
+        _validationEnabledBuffer.ResetWrittenCount();
+        _validationEnabledSerializer.Serialize(_stableRecord, ref _validationEnabledBuffer, _context);
     }
 
     [Benchmark(Description = "Serialize nullable-int array generic Avro record")]

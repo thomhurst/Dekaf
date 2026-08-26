@@ -1,6 +1,7 @@
 using System.Buffers;
 using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using Avro.Generic;
 using Avro.IO;
@@ -73,6 +74,7 @@ public sealed class AvroSchemaRegistryDeserializer<
     private readonly SchemaRegistryMigrationRunner? _migrationRunner;
     private readonly AvroTaggedFieldTransformerProvider _taggedFieldTransformers = new();
     private readonly AvroInlineRuleValidatorProvider? _inlineRuleValidators;
+    private long _lastInlineValidationDecision = -1;
 
     /// <summary>
     /// Creates a new Avro Schema Registry deserializer.
@@ -353,29 +355,16 @@ public sealed class AvroSchemaRegistryDeserializer<
         // Extract Avro payload. Array-backed payloads decode in place; other memory falls back to a pooled copy.
         var payloadMemory = data[payloadOffset..];
         AvroSchema? migrationReaderSchema = null;
-        if (_ruleExecutor is null && _inlineRuleValidators is null)
-        {
-            var directCodecState = AvroCodecThreadStateCache.Deserialization ??= new AvroDeserializationThreadState();
-            return ReadAvroPayload(
-                payloadMemory,
-                writerSchema,
-                migrationReaderSchema: null,
-                codecState: directCodecState);
-        }
-
         if (_ruleExecutor is null)
         {
-            _inlineRuleValidators!.Get(writerSchema).Validate(
-                payloadMemory,
-                schemaId,
-                _config.ValidationRulesFailFast);
-            var validatedCodecState = AvroCodecThreadStateCache.Deserialization ??=
-                new AvroDeserializationThreadState();
+            GetInlineValidator(schemaId, writerSchema)?.Validate(
+                payloadMemory, schemaId, _config.ValidationRulesFailFast);
+            var codecState = AvroCodecThreadStateCache.Deserialization ??= new AvroDeserializationThreadState();
             return ReadAvroPayload(
                 payloadMemory,
                 writerSchema,
                 migrationReaderSchema: null,
-                codecState: validatedCodecState);
+                codecState);
         }
 
         var taggedWorkspaceOperation = AvroTaggedFieldTransformerProvider.BeginOperation();
@@ -691,6 +680,24 @@ public sealed class AvroSchemaRegistryDeserializer<
         string? Subject,
         Schema Schema,
         AvroSchema WriterSchema);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private AvroInlineRuleValidator? GetInlineValidator(int schemaId, AvroSchema writerSchema)
+    {
+        if (_inlineRuleValidators is null)
+            return null;
+
+        var cached = Volatile.Read(ref _lastInlineValidationDecision);
+        if (cached >= 0 && (int)(cached >> 1) == schemaId && (cached & 1) == 0)
+            return null;
+
+        var validator = _inlineRuleValidators.Get(writerSchema);
+        var hasRules = validator.HasAnyRules;
+        Volatile.Write(
+            ref _lastInlineValidationDecision,
+            ((long)schemaId << 1) | (hasRules ? 1L : 0L));
+        return hasRules ? validator : null;
+    }
 
     private string GetSubjectName(int schemaId, Schema schema, SerializationContext context)
     {

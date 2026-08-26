@@ -233,6 +233,8 @@ public class AvroPocoSchemaRegistryDeserializationBenchmarks
         Component = SerializationComponent.Value
     };
     private AvroPocoSchemaRegistryDeserializer<PocoBenchmarkRecord, PocoBenchmarkRecord.AvroCodec> _poco = null!;
+    private AvroPocoSchemaRegistryDeserializer<PocoBenchmarkRecord, PocoBenchmarkRecord.AvroCodec>
+        _validationEnabledPoco = null!;
     private AvroPocoSchemaRegistryDeserializer<
         PocoWriterUnionBenchmarkRecord,
         PocoWriterUnionBenchmarkRecord.AvroCodec> _rulesValuePoco = null!;
@@ -242,6 +244,7 @@ public class AvroPocoSchemaRegistryDeserializationBenchmarks
     private IAsyncDeserializerPreparer<PocoBenchmarkRecord> _pocoPreparer = null!;
     private AvroSchemaRegistryDeserializer<PocoBenchmarkSpecificRecord> _specific = null!;
     private AvroSchemaRegistryDeserializer<GenericRecord> _generic = null!;
+    private AvroSchemaRegistryDeserializer<GenericRecord> _validationEnabledGeneric = null!;
     private AvroPocoSchemaRegistryDeserializer<PocoBenchmarkDecimalRecord, PocoBenchmarkDecimalRecord.AvroCodec>
         _decimalPoco = null!;
     private AvroPocoSchemaRegistryDeserializer<PocoWriterUnionBenchmarkRecord, PocoWriterUnionBenchmarkRecord.AvroCodec>
@@ -280,6 +283,12 @@ public class AvroPocoSchemaRegistryDeserializationBenchmarks
             SchemaString = SchemaJson
         };
         _poco = PocoBenchmarkRecord.CreateAvroDeserializer(new BenchmarkSchemaRegistryClient(registrySchema));
+        _validationEnabledPoco = PocoBenchmarkRecord.CreateAvroDeserializer(
+            new BenchmarkSchemaRegistryClient(registrySchema),
+            new AvroDeserializerConfig
+            {
+                ValidationRulesExecution = ValidationRulesExecution.AfterDomainRules
+            });
         _pocoPreparer = _poco;
         _rulesValuePoco = PocoWriterUnionBenchmarkRecord.CreateAvroDeserializer(
             new NonCachingBenchmarkSchemaRegistryClient(new global::Dekaf.SchemaRegistry.Schema
@@ -299,6 +308,12 @@ public class AvroPocoSchemaRegistryDeserializationBenchmarks
             new BenchmarkSchemaRegistryClient(registrySchema));
         _generic = new AvroSchemaRegistryDeserializer<GenericRecord>(
             new BenchmarkSchemaRegistryClient(registrySchema));
+        _validationEnabledGeneric = new AvroSchemaRegistryDeserializer<GenericRecord>(
+            new BenchmarkSchemaRegistryClient(registrySchema),
+            new AvroDeserializerConfig
+            {
+                ValidationRulesExecution = ValidationRulesExecution.AfterDomainRules
+            });
         _decimalPoco = PocoBenchmarkDecimalRecord.CreateAvroDeserializer(
             new BenchmarkSchemaRegistryClient(new global::Dekaf.SchemaRegistry.Schema
             {
@@ -372,6 +387,7 @@ public class AvroPocoSchemaRegistryDeserializationBenchmarks
         _timeSpanWireData = CreateTimeSpanWireData();
 
         await _poco.WarmupAsync(SchemaId).ConfigureAwait(false);
+        await _validationEnabledPoco.WarmupAsync(SchemaId).ConfigureAwait(false);
         await ((IAsyncDeserializerPreparer<PocoWriterUnionBenchmarkRecord>)_rulesValuePoco)
             .PrepareAsync(_writerUnionWireData, _context)
             .ConfigureAwait(false);
@@ -380,6 +396,7 @@ public class AvroPocoSchemaRegistryDeserializationBenchmarks
             .ConfigureAwait(false);
         await _specific.WarmupAsync(SchemaId).ConfigureAwait(false);
         await _generic.WarmupAsync(SchemaId).ConfigureAwait(false);
+        await _validationEnabledGeneric.WarmupAsync(SchemaId).ConfigureAwait(false);
         await _decimalPoco.WarmupAsync(SchemaId).ConfigureAwait(false);
         await _writerUnionPoco.WarmupAsync(SchemaId).ConfigureAwait(false);
         await _collectionPoco.WarmupAsync(SchemaId).ConfigureAwait(false);
@@ -395,10 +412,12 @@ public class AvroPocoSchemaRegistryDeserializationBenchmarks
     public async ValueTask Cleanup()
     {
         await _poco.DisposeAsync().ConfigureAwait(false);
+        await _validationEnabledPoco.DisposeAsync().ConfigureAwait(false);
         await _rulesValuePoco.DisposeAsync().ConfigureAwait(false);
         await _cachedRulesValuePoco.DisposeAsync().ConfigureAwait(false);
         await _specific.DisposeAsync().ConfigureAwait(false);
         await _generic.DisposeAsync().ConfigureAwait(false);
+        await _validationEnabledGeneric.DisposeAsync().ConfigureAwait(false);
         await _decimalPoco.DisposeAsync().ConfigureAwait(false);
         await _writerUnionPoco.DisposeAsync().ConfigureAwait(false);
         await _latestWriterUnionPoco.DisposeAsync().ConfigureAwait(false);
@@ -435,6 +454,14 @@ public class AvroPocoSchemaRegistryDeserializationBenchmarks
 
     [Benchmark(Description = "Deserialize GenericRecord")]
     public GenericRecord DeserializeGenericRecord() => _generic.Deserialize(_wireData, _context);
+
+    [Benchmark(Description = "Deserialize rule-free generic record with inline validation enabled")]
+    public GenericRecord DeserializeRuleFreeGenericWithValidationEnabled() =>
+        _validationEnabledGeneric.Deserialize(_wireData, _context);
+
+    [Benchmark(Description = "Deserialize rule-free generated POCO with inline validation enabled")]
+    public PocoBenchmarkRecord DeserializeRuleFreePocoWithValidationEnabled() =>
+        _validationEnabledPoco.Deserialize(_wireData, _context);
 
     [Benchmark(Description = "Deserialize generated decimal POCO")]
     public PocoBenchmarkDecimalRecord DeserializeDecimalPoco() =>

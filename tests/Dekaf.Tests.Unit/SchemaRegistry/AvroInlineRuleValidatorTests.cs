@@ -275,6 +275,56 @@ public class AvroInlineRuleValidatorTests
     }
 
     [Test]
+    public async Task Validate_EnumRuleUsesSymbolName()
+    {
+        const string schemaText = """
+            {
+              "type": "record",
+              "name": "EnumRuleRecord",
+              "fields": [{
+                "name": "status",
+                "type": { "type": "enum", "name": "Status", "symbols": ["OPEN", "CLOSED"] },
+                "confluent:rules": [{ "name": "open", "expr": "this == 'OPEN'" }]
+              }]
+            }
+            """;
+        var schema = (RecordSchema)AvroSchema.Parse(schemaText);
+        var enumSchema = (EnumSchema)schema.Fields[0].Schema;
+        var record = new GenericRecord(schema);
+        var validator = new AvroInlineRuleValidator(schema);
+        record.Add("status", new GenericEnum(enumSchema, "OPEN"));
+
+        validator.Validate(Serialize(record, schema), 34, failFast: false);
+
+        record.Add("status", new GenericEnum(enumSchema, "CLOSED"));
+        var exception = Assert.Throws<ValidationRulesFailedException>(() =>
+            validator.Validate(Serialize(record, schema), 34, failFast: false));
+        await Assert.That(exception.Message).Contains("$.status: open");
+    }
+
+    [Test]
+    public async Task Validate_InvalidEnumOrdinalIsRejected()
+    {
+        const string schemaText = """
+            {
+              "type": "record",
+              "name": "InvalidEnumRuleRecord",
+              "fields": [{
+                "name": "status",
+                "type": { "type": "enum", "name": "State", "symbols": ["ON", "OFF"] },
+                "confluent:rules": [{ "name": "known", "expr": "true" }]
+              }]
+            }
+            """;
+        var validator = new AvroInlineRuleValidator(AvroSchema.Parse(schemaText));
+
+        var exception = Assert.Throws<SchemaRegistryRuleException>(() =>
+            validator.Validate(new byte[] { 4 }, 35, failFast: false));
+
+        await Assert.That(exception.Message).Contains("invalid enum index 2");
+    }
+
+    [Test]
     public async Task Serializer_EnabledValidationRejectsInvalidGenericRecord()
     {
         var schema = (RecordSchema)AvroSchema.Parse(IntegrationSchema);
@@ -420,6 +470,32 @@ public class AvroInlineRuleValidatorTests
             deserializer.Deserialize(CreateWireBytes(schemaId, payload), CreateContext()));
 
         await Assert.That(destination.WrittenCount).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task PocoPreparedDeserializer_AppliesInlineRules()
+    {
+        using var registry = new MockSchemaRegistryClient();
+        var schemaId = await registry.RegisterSchemaAsync(
+            "validation-topic-value",
+            new Dekaf.SchemaRegistry.Schema
+            {
+                SchemaType = SchemaType.Avro,
+                SchemaString = InlineRulePocoCodec.SchemaJson
+            });
+        await using var deserializer = new AvroPocoSchemaRegistryDeserializer<
+            InlineRulePoco,
+            InlineRulePocoCodec>(
+                registry,
+                new AvroDeserializerConfig
+                {
+                    ValidationRulesExecution = ValidationRulesExecution.AfterDomainRules
+                });
+        await deserializer.WarmupAsync(schemaId);
+        var preparer = (IAsyncDeserializerPreparer<InlineRulePoco>)deserializer;
+
+        Assert.Throws<ValidationRulesFailedException>(() =>
+            preparer.TryDeserialize(CreateWireBytes(schemaId, [1]), CreateContext(), out _));
     }
 
     [Test]

@@ -46,6 +46,7 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
     private readonly SchemaResolutionCache<SubjectSchemaIdCache.SubjectSchemaIdCacheValue> _resolutionCache = new();
     private readonly AvroTaggedFieldTransformerProvider _taggedFieldTransformers = new();
     private readonly AvroInlineRuleValidatorProvider? _inlineRuleValidators;
+    private long _lastInlineValidationDecision = -1;
     private AvroPocoSerializerBufferState? _primaryRuleBuffer;
     private ConditionalWeakTable<Thread, AvroPocoSerializerBufferState>? _additionalRuleBuffers;
     private SubjectSchemaIdCache? _associatedSubjectCache;
@@ -233,7 +234,10 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
         var entry = GetSchemaForContext(
             context.Topic,
             context.Component == SerializationComponent.Key);
-        if (_config.RuleExecutor is null && _inlineRuleValidators is null)
+        AvroInlineRuleValidator? inlineValidator = null;
+        if (_config.RuleExecutor is null &&
+            (_inlineRuleValidators is null ||
+             (inlineValidator = GetInlineValidator(entry.SchemaId, entry.Schema!)) is null))
         {
             if (_schemaIdStrategy == SchemaIdSerializerStrategy.Prefix)
                 SerializeDirect(value, ref destination, entry.SchemaId);
@@ -244,7 +248,7 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
 
         if (_config.RuleExecutor is null || entry.Schema!.RuleSet is null)
         {
-            SerializeWithRules(value, ref destination, context, entry, _config.RuleExecutor);
+            SerializeWithRules(value, ref destination, context, entry, _config.RuleExecutor, inlineValidator);
             return;
         }
 
@@ -285,7 +289,10 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
         , allows ref struct
 #endif
     {
-        if (_config.RuleExecutor is null && _inlineRuleValidators is null)
+        AvroInlineRuleValidator? inlineValidator = null;
+        if (_config.RuleExecutor is null &&
+            (_inlineRuleValidators is null ||
+             (inlineValidator = GetInlineValidator(entry.SchemaId, entry.Schema!)) is null))
         {
             if (_schemaIdStrategy == SchemaIdSerializerStrategy.Prefix)
                 SerializeDirect(value, ref destination, entry.SchemaId);
@@ -296,7 +303,7 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
 
         if (_config.RuleExecutor is null || entry.Schema!.RuleSet is null)
         {
-            SerializeWithRules(value, ref destination, context, entry, _config.RuleExecutor);
+            SerializeWithRules(value, ref destination, context, entry, _config.RuleExecutor, inlineValidator);
             return;
         }
 
@@ -442,7 +449,8 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
         ref TWriter destination,
         SerializationContext context,
         SubjectSchemaIdCache.SubjectSchemaIdCacheEntry entry,
-        ISchemaRegistryRuleExecutor? ruleExecutor)
+        ISchemaRegistryRuleExecutor? ruleExecutor,
+        AvroInlineRuleValidator? inlineValidator)
         where TWriter : IBufferWriter<byte>
 #if NET10_0_OR_GREATER
         , allows ref struct
@@ -480,7 +488,7 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
             var payload = new ReadOnlyMemory<byte>(buffer, 0, length);
             if (ruleExecutor is null)
             {
-                _inlineRuleValidators!.Register(entry.Schema!, GeneratedSchema.Value).Validate(
+                inlineValidator!.Validate(
                     payload,
                     entry.SchemaId,
                     _config.ValidationRulesFailFast);
@@ -521,6 +529,21 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
             if (bufferIsPooled)
                 ArrayPool<byte>.Shared.Return(buffer);
         }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private AvroInlineRuleValidator? GetInlineValidator(int schemaId, RegistrySchema registrySchema)
+    {
+        var cached = Volatile.Read(ref _lastInlineValidationDecision);
+        if (cached >= 0 && (int)(cached >> 1) == schemaId && (cached & 1) == 0)
+            return null;
+
+        var validator = _inlineRuleValidators!.Register(registrySchema, GeneratedSchema.Value);
+        var hasRules = validator.HasAnyRules;
+        Volatile.Write(
+            ref _lastInlineValidationDecision,
+            ((long)schemaId << 1) | (hasRules ? 1L : 0L));
+        return hasRules ? validator : null;
     }
 
     private void SerializeWithTaggedRules<TWriter>(

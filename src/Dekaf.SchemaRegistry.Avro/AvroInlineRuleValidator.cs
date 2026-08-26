@@ -22,6 +22,8 @@ internal sealed class AvroInlineRuleValidator
         AvroValueRulePlan.Complete(plans);
     }
 
+    internal bool HasAnyRules => _root.HasAnyRules;
+
     internal void Validate(ReadOnlyMemory<byte> payload, int schemaId, bool failFast)
     {
         List<ValidationRuleError>? violations = null;
@@ -220,12 +222,16 @@ internal sealed class AvroValueRulePlan
             var field = _fields[index];
             var mark = path.Length;
             path.AppendField(field.Field.Name);
-            var fieldStart = reader.Position;
-            var preview = reader;
-            var value = AvroValidationValueDecoder.Read(field.Field.Schema, ref preview);
-            var payload = preview.Source.Slice(fieldStart, preview.Position - fieldStart);
-            if (!field.Rules.IsEmpty)
+            if (field.Rules.IsEmpty)
             {
+                _ = field.Child.Validate(ref reader, now, failFast, ref violations, ref path);
+            }
+            else
+            {
+                var fieldStart = reader.Position;
+                var preview = reader;
+                var value = AvroValidationValueDecoder.Read(field.Field.Schema, ref preview);
+                var payload = preview.Source.Slice(fieldStart, preview.Position - fieldStart);
                 field.Rules.Evaluate(
                     value,
                     payload,
@@ -236,20 +242,11 @@ internal sealed class AvroValueRulePlan
                     value.SizeIndex == 0
                         ? AvroValidationValueDecoder.Count(field.Field.Schema, payload)
                         : -1);
-            }
 
-            if (!(failFast && violations is not null))
-            {
-                _ = field.Child.Validate(
-                    ref reader,
-                    now,
-                    failFast,
-                    ref violations,
-                    ref path);
-            }
-            else
-            {
-                reader = preview;
+                if ((failFast && violations is not null) || !field.Child.HasAnyRules)
+                    reader = preview;
+                else
+                    _ = field.Child.Validate(ref reader, now, failFast, ref violations, ref path);
             }
             path.Truncate(mark);
             if (failFast && violations is not null)
@@ -874,8 +871,13 @@ internal static class AvroValidationValueDecoder
                 return ValidationCelValue.FromBoolean(reader.Read(1).Span[0] != 0);
             case AvroSchema.Type.Int:
             case AvroSchema.Type.Long:
-            case AvroSchema.Type.Enumeration:
                 return ValidationCelValue.FromNumber(reader.ReadLong());
+            case AvroSchema.Type.Enumeration:
+                var enumeration = (global::Avro.EnumSchema)schema;
+                var symbolIndex = reader.ReadLong();
+                if ((ulong)symbolIndex >= (ulong)enumeration.Symbols.Count)
+                    throw InvalidPayload($"invalid enum index {symbolIndex}");
+                return ValidationCelValue.FromString(enumeration.Symbols[(int)symbolIndex]);
             case AvroSchema.Type.Float:
                 return ValidationCelValue.FromFloating(
                     BinaryPrimitives.ReadSingleLittleEndian(reader.Read(sizeof(float)).Span));

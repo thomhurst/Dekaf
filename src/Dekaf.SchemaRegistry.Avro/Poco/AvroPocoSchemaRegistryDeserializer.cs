@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Runtime.CompilerServices;
 using Dekaf.SchemaRegistry.Avro;
 using Dekaf.Serialization;
 using AvroRecordSchema = global::Avro.RecordSchema;
@@ -41,6 +42,7 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
     private readonly bool _canUseSynchronousRuleCache;
     private readonly AvroInlineRuleValidatorProvider? _inlineRuleValidators;
     private PreparedRuleState? _lastPreparedRuleState;
+    private long _lastInlineValidationDecision = -1;
     private int _cachedPlanCount;
     private int _cachedPreparedRuleStateCount;
     private int _nextGuidPlanId;
@@ -352,7 +354,10 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
             return true;
         }
 
-        var reader = new AvroValueReader(data.Span[payloadOffset..]);
+        var payload = data[payloadOffset..];
+        GetInlineValidator(schemaId, plan)?.Validate(
+            payload, schemaId, _config.ValidationRulesFailFast);
+        var reader = new AvroValueReader(payload.Span);
         value = TCodec.Read(ref reader, plan);
         return true;
     }
@@ -482,19 +487,35 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
 
         if (_ruleExecutor is null)
         {
-            var validatedPlan = GetPlanCached(schemaId);
-            _inlineRuleValidators!.Get(GetValidationSchema(schemaId, validatedPlan)).Validate(
-                payload,
-                schemaId,
-                _config.ValidationRulesFailFast);
-            var validatedReader = new AvroValueReader(payload.Span);
-            return TCodec.Read(ref validatedReader, validatedPlan);
+            var directPlan = GetPlanCached(schemaId);
+            GetInlineValidator(schemaId, directPlan)?.Validate(
+                payload, schemaId, _config.ValidationRulesFailFast);
+            var directReader = new AvroValueReader(payload.Span);
+            return TCodec.Read(ref directReader, directPlan);
         }
 
         if (_canUseSynchronousRuleCache)
             return DeserializeWithRules(payload, schemaId, context);
 
         return DeserializeWithPreparedRulesOrFallback(payload, schemaId, context);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private AvroInlineRuleValidator? GetInlineValidator(int schemaId, AvroPocoReaderPlan plan)
+    {
+        if (_inlineRuleValidators is null)
+            return null;
+
+        var cached = Volatile.Read(ref _lastInlineValidationDecision);
+        if (cached >= 0 && (int)(cached >> 1) == schemaId && (cached & 1) == 0)
+            return null;
+
+        var validator = _inlineRuleValidators.Get(GetValidationSchema(schemaId, plan));
+        var hasRules = validator.HasAnyRules;
+        Volatile.Write(
+            ref _lastInlineValidationDecision,
+            ((long)schemaId << 1) | (hasRules ? 1L : 0L));
+        return hasRules ? validator : null;
     }
 
     private T DeserializeWithPreparedRulesOrFallback(

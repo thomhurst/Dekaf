@@ -52,11 +52,13 @@ internal sealed class AvroAggregateEqualityComparer(AvroSchema schema) : IValida
             case AvroSchema.Type.Enumeration:
                 return left.ReadLong() == right.ReadLong();
             case AvroSchema.Type.Float:
-                return BinaryPrimitives.ReadSingleLittleEndian(left.Read(sizeof(float)).Span) ==
-                    BinaryPrimitives.ReadSingleLittleEndian(right.Read(sizeof(float)).Span);
+                var leftFloat = BinaryPrimitives.ReadSingleLittleEndian(left.Read(sizeof(float)).Span);
+                var rightFloat = BinaryPrimitives.ReadSingleLittleEndian(right.Read(sizeof(float)).Span);
+                return !float.IsNaN(leftFloat) && leftFloat.CompareTo(rightFloat) == 0;
             case AvroSchema.Type.Double:
-                return BinaryPrimitives.ReadDoubleLittleEndian(left.Read(sizeof(double)).Span) ==
-                    BinaryPrimitives.ReadDoubleLittleEndian(right.Read(sizeof(double)).Span);
+                var leftDouble = BinaryPrimitives.ReadDoubleLittleEndian(left.Read(sizeof(double)).Span);
+                var rightDouble = BinaryPrimitives.ReadDoubleLittleEndian(right.Read(sizeof(double)).Span);
+                return !double.IsNaN(leftDouble) && leftDouble.CompareTo(rightDouble) == 0;
             case AvroSchema.Type.String:
             case AvroSchema.Type.Bytes:
                 return left.ReadLengthPrefixed().Span.SequenceEqual(right.ReadLengthPrefixed().Span);
