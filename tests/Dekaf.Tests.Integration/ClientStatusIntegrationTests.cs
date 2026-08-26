@@ -35,7 +35,7 @@ public sealed class ClientStatusIntegrationTests(KafkaTestContainer kafka) : Kaf
             ("producer", (IKafkaClientIdentity)producer, (IKafkaClientInstanceIdentity)producer),
             ("consumer", (IKafkaClientIdentity)consumer, (IKafkaClientInstanceIdentity)consumer),
             ("share consumer", (IKafkaClientIdentity)shareConsumer, (IKafkaClientInstanceIdentity)shareConsumer),
-            ("admin", admin, admin)
+            ("admin", (IKafkaClientIdentity)admin, (IKafkaClientInstanceIdentity)admin)
         };
         var clusterId = identities[0].ClusterIdentity.ClusterId;
 
