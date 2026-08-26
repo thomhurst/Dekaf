@@ -8411,6 +8411,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         if (Volatile.Read(ref _consumerDisposed) != 0)
             throw new ObjectDisposedException(nameof(KafkaConsumer<TKey, TValue>));
 
+        var assignmentVersion = Volatile.Read(ref _assignmentEnsureVersion);
         if (!_assignmentSnapshot.Contains(partition)
             || GetPositionWithoutCaching(partition) is not { } position
             || position < 0
@@ -8419,7 +8420,17 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             return null;
         }
 
-        return CalculateLag(position, watermarks.ReadLagEndOffset());
+        return CalculateLagIfAssignmentUnchanged(assignmentVersion, position, watermarks);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private long? CalculateLagIfAssignmentUnchanged(
+        int assignmentVersion,
+        long position,
+        WatermarkCacheEntry watermarks)
+    {
+        var lag = CalculateLag(position, watermarks.ReadLagEndOffset());
+        return assignmentVersion == Volatile.Read(ref _assignmentEnsureVersion) ? lag : null;
     }
 
     public ValueTask<long?> QueryCurrentLagAsync(
@@ -10708,10 +10719,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         long lagEndOffset,
         int assignmentVersion)
     {
-        while (assignmentVersion == Volatile.Read(ref _assignmentEnsureVersion))
+        while (true)
         {
             if (!_watermarks.TryGetValue(partition, out var entry))
             {
+                if (assignmentVersion != Volatile.Read(ref _assignmentEnsureVersion))
+                    return;
+
                 var created = new WatermarkCacheEntry(low, high, lagEndOffset);
                 if (_watermarks.TryAdd(partition, created))
                 {
@@ -10725,9 +10739,24 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 continue;
             }
 
-            entry.Update(low, high, lagEndOffset);
+            UpdateExistingCachedWatermarks(entry, low, high, lagEndOffset, assignmentVersion);
             return;
         }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void UpdateExistingCachedWatermarks(
+        WatermarkCacheEntry entry,
+        long low,
+        long high,
+        long lagEndOffset,
+        int assignmentVersion)
+    {
+        // Recheck after resolving the entry. If assignment publication starts after
+        // this point, this reference is necessarily the old entry, which publication
+        // removes before exposing a replacement assignment snapshot.
+        if (assignmentVersion == Volatile.Read(ref _assignmentEnsureVersion))
+            entry.Update(low, high, lagEndOffset);
     }
 
     private sealed class WatermarkCacheEntry

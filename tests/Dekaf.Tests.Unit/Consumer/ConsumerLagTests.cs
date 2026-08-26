@@ -195,6 +195,51 @@ public sealed class ConsumerLagTests
         await Assert.That(completeOffsetsOnly).IsTrue();
     }
 
+    [Test]
+    public async Task WatermarkCacheEntry_OlderAssignmentCannotOverwriteNewerValues()
+    {
+        var otherPartition = new TopicPartition(Partition.Topic, 1);
+        await using var consumer = CreateConsumer();
+        consumer.IncrementalAssign([new TopicPartitionOffset(Partition.Topic, Partition.Partition, 10)]);
+        var oldAssignmentVersion = GetAssignmentVersion(consumer);
+        SetCachedWatermarks(consumer, new WatermarkOffsets(0, 25));
+
+        consumer.IncrementalAssign([
+            new TopicPartitionOffset(otherPartition.Topic, otherPartition.Partition, 0)
+        ]);
+        UpdateWatermarksFromFetchResponse(consumer, CreateFetchResponse(30));
+
+        var entry = GetWatermarkCacheEntry(consumer);
+        UpdateWatermarkCacheEntry(
+            consumer,
+            entry,
+            CreateFetchResponse(100),
+            oldAssignmentVersion);
+
+        await Assert.That(consumer.GetWatermarkOffsets(Partition)).IsEqualTo(new WatermarkOffsets(0, 30));
+        await Assert.That(consumer.GetCurrentLag(Partition)).IsEqualTo(20);
+    }
+
+    [Test]
+    public async Task GetCurrentLag_AssignmentChangeAfterSnapshotReturnsNull()
+    {
+        var otherPartition = new TopicPartition(Partition.Topic, 1);
+        await using var consumer = CreateConsumer();
+        consumer.IncrementalAssign([new TopicPartitionOffset(Partition.Topic, Partition.Partition, 10)]);
+        SetCachedWatermarks(consumer, new WatermarkOffsets(0, 25));
+        var oldAssignmentVersion = GetAssignmentVersion(consumer);
+        var entry = GetWatermarkCacheEntry(consumer);
+
+        consumer.IncrementalAssign([
+            new TopicPartitionOffset(otherPartition.Topic, otherPartition.Partition, 0)
+        ]);
+
+        var lag = CalculateLagIfAssignmentUnchanged(consumer, oldAssignmentVersion, 10, entry);
+
+        await Assert.That(lag).IsNull();
+        await Assert.That(consumer.GetCurrentLag(Partition)).IsEqualTo(15);
+    }
+
     private static FetchResponsePartition CreateFetchResponse(long offset) => new()
     {
         PartitionIndex = Partition.Partition,
@@ -322,6 +367,45 @@ public sealed class ConsumerLagTests
             .GetField("_watermarks", BindingFlags.NonPublic | BindingFlags.Instance)
             ?.GetValue(consumer)
             ?? throw new InvalidOperationException("_watermarks field not found"))).Count;
+
+    private static object GetWatermarkCacheEntry(KafkaConsumer<string, string> consumer) =>
+        ((System.Collections.IDictionary)(typeof(KafkaConsumer<string, string>)
+            .GetField("_watermarks", BindingFlags.NonPublic | BindingFlags.Instance)
+            ?.GetValue(consumer)
+            ?? throw new InvalidOperationException("_watermarks field not found")))[Partition]
+        ?? throw new InvalidOperationException("Watermark cache entry not found");
+
+    private static void UpdateWatermarkCacheEntry(
+        KafkaConsumer<string, string> consumer,
+        object entry,
+        FetchResponsePartition response,
+        int assignmentVersion)
+    {
+        var method = typeof(KafkaConsumer<string, string>).GetMethod(
+            "UpdateExistingCachedWatermarks",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("UpdateExistingCachedWatermarks method not found");
+        method.Invoke(consumer, [
+            entry,
+            response.LogStartOffset,
+            response.HighWatermark,
+            response.LastStableOffset,
+            assignmentVersion
+        ]);
+    }
+
+    private static long? CalculateLagIfAssignmentUnchanged(
+        KafkaConsumer<string, string> consumer,
+        int assignmentVersion,
+        long position,
+        object entry)
+    {
+        var method = typeof(KafkaConsumer<string, string>).GetMethod(
+            "CalculateLagIfAssignmentUnchanged",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("CalculateLagIfAssignmentUnchanged method not found");
+        return (long?)method.Invoke(consumer, [assignmentVersion, position, entry]);
+    }
 
     private static void SetInitialized(KafkaConsumer<string, string> consumer)
     {
