@@ -426,6 +426,65 @@ public class AvroInlineRuleValidatorTests
     }
 
     [Test]
+    public async Task Validate_ConditionalAggregateEqualityUsesSelectedComparer()
+    {
+        const string schemaText = """
+            {
+              "type": "record",
+              "name": "ConditionalAggregateEqualityRecord",
+              "confluent:rules": [{
+                "name": "equal",
+                "expr": "(true ? this.left : this.right) == this.right"
+              }],
+              "fields": [
+                { "name": "left", "type": { "type": "array", "items": "int" } },
+                { "name": "right", "type": { "type": "array", "items": "int" } }
+              ]
+            }
+            """;
+        var schema = (RecordSchema)AvroSchema.Parse(schemaText);
+        ReadOnlyMemory<byte> payload = new byte[]
+        {
+            4, 2, 4, 0,
+            2, 2, 2, 4, 0
+        };
+
+        new AvroInlineRuleValidator(schema).Validate(payload, 37, failFast: false);
+
+        await Task.CompletedTask;
+    }
+
+    [Test]
+    public async Task Validate_ConditionalAggregateEqualityPreservesNaNSemantics()
+    {
+        const string schemaText = """
+            {
+              "type": "record",
+              "name": "ConditionalNaNAggregateEqualityRecord",
+              "confluent:rules": [{
+                "name": "not-equal",
+                "expr": "(true ? this.left : this.right) != this.right"
+              }],
+              "fields": [
+                { "name": "left", "type": { "type": "array", "items": "double" } },
+                { "name": "right", "type": { "type": "array", "items": "double" } }
+              ]
+            }
+            """;
+        var schema = (RecordSchema)AvroSchema.Parse(schemaText);
+        var record = new GenericRecord(schema);
+        record.Add("left", new[] { double.NaN });
+        record.Add("right", new[] { double.NaN });
+
+        new AvroInlineRuleValidator(schema).Validate(
+            Serialize(record, schema),
+            38,
+            failFast: false);
+
+        await Task.CompletedTask;
+    }
+
+    [Test]
     public async Task Validate_NaNIsUnequalAndUnordered()
     {
         const string schemaText = """

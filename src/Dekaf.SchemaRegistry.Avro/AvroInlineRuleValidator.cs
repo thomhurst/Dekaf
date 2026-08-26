@@ -61,6 +61,7 @@ internal sealed class AvroValueRulePlan
     private AvroCompiledRuleSet _schemaRules = AvroCompiledRuleSet.Empty;
     private AvroFieldRulePlan[] _fields = [];
     private AvroValueRulePlan[] _children = [];
+    private bool _hasNestedRules;
 
     private AvroValueRulePlan(AvroSchema schema)
     {
@@ -121,7 +122,12 @@ internal sealed class AvroValueRulePlan
 
         HasAnyRules = !_schemaRules.IsEmpty;
         for (var index = 0; index < _fields.Length; index++)
-            HasAnyRules |= !_fields[index].Rules.IsEmpty;
+        {
+            if (_fields[index].Rules.IsEmpty)
+                continue;
+            HasAnyRules = true;
+            _hasNestedRules = true;
+        }
     }
 
     internal static void Complete(Dictionary<AvroSchema, AvroValueRulePlan> plans)
@@ -132,24 +138,22 @@ internal sealed class AvroValueRulePlan
             changed = false;
             foreach (var plan in plans.Values)
             {
-                if (plan.HasAnyRules)
-                    continue;
-                for (var index = 0; index < plan._fields.Length; index++)
+                if (!plan._hasNestedRules)
                 {
-                    if (plan._fields[index].Child.HasAnyRules)
+                    for (var index = 0; index < plan._fields.Length; index++)
                     {
-                        plan.HasAnyRules = true;
-                        changed = true;
+                        if (!plan._fields[index].Child.HasAnyRules)
+                            continue;
+                        plan._hasNestedRules = true;
                         break;
                     }
+                    for (var index = 0; !plan._hasNestedRules && index < plan._children.Length; index++)
+                        plan._hasNestedRules = plan._children[index].HasAnyRules;
                 }
-                for (var index = 0; !plan.HasAnyRules && index < plan._children.Length; index++)
+                if (!plan.HasAnyRules && plan._hasNestedRules)
                 {
-                    if (plan._children[index].HasAnyRules)
-                    {
-                        plan.HasAnyRules = true;
-                        changed = true;
-                    }
+                    plan.HasAnyRules = true;
+                    changed = true;
                 }
             }
         }
@@ -185,6 +189,11 @@ internal sealed class AvroValueRulePlan
                 ref path,
                 rootSize);
             if (failFast && violations is not null)
+            {
+                reader = preview;
+                return value;
+            }
+            if (!_hasNestedRules)
             {
                 reader = preview;
                 return value;

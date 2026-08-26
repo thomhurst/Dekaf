@@ -1628,7 +1628,18 @@ internal readonly ref struct ValidationCelJsonNumber
 
 internal abstract class ValidationCelNode
 {
+    internal virtual bool HasAggregateValueIndex => false;
+    internal virtual bool HasRootAggregateValueIndex => false;
+
     internal abstract ValidationCelValue Evaluate(ValidationCelContext context);
+
+    internal virtual ValidationCelValue EvaluateAggregate(
+        ValidationCelContext context,
+        out int valueIndex)
+    {
+        valueIndex = -1;
+        return Evaluate(context);
+    }
 }
 
 internal sealed class ValidationCelLiteralNode(ValidationCelValue value) : ValidationCelNode
@@ -1641,6 +1652,8 @@ internal sealed class ValidationCelLiteralNode(ValidationCelValue value) : Valid
 internal sealed class ValidationCelThisNode(int memberIndex) : ValidationCelNode
 {
     internal int ValueIndex => memberIndex + 1;
+    internal override bool HasAggregateValueIndex => true;
+    internal override bool HasRootAggregateValueIndex => memberIndex < 0;
 
     internal bool IsPresent(ValidationCelContext context) =>
         memberIndex < 0 || context.MemberValues.IsPresent(memberIndex);
@@ -1653,6 +1666,14 @@ internal sealed class ValidationCelThisNode(int memberIndex) : ValidationCelNode
             : ValidationCelValue.FromJson(
                 memberIndex < 0 ? context.This : context.MemberValues.Get(memberIndex, context.This),
                 memberIndex + 1);
+
+    internal override ValidationCelValue EvaluateAggregate(
+        ValidationCelContext context,
+        out int valueIndex)
+    {
+        valueIndex = ValueIndex;
+        return Evaluate(context);
+    }
 }
 
 internal sealed class ValidationCelNowNode : ValidationCelNode
@@ -1681,38 +1702,41 @@ internal sealed class ValidationCelBinaryNode(
     ValidationCelNode left,
     ValidationCelNode right) : ValidationCelNode
 {
-    private readonly int _leftValueIndex = left is ValidationCelThisNode leftThis
-        ? leftThis.ValueIndex
-        : -1;
-    private readonly int _rightValueIndex = right is ValidationCelThisNode rightThis
-        ? rightThis.ValueIndex
-        : -1;
+    private readonly bool _usesAggregateValueIndexes =
+        operation is ValidationCelTokenKind.Equal or ValidationCelTokenKind.NotEqual &&
+        left.HasAggregateValueIndex &&
+        right.HasAggregateValueIndex;
 
-    internal bool UsesCachedEquality =>
-        (operation is ValidationCelTokenKind.Equal or ValidationCelTokenKind.NotEqual) &&
-        _leftValueIndex >= 0 &&
-        _rightValueIndex >= 0;
+    internal bool UsesCachedEquality => _usesAggregateValueIndexes;
 
     internal bool UsesRootAggregateEquality =>
-        UsesCachedEquality && (_leftValueIndex == 0 || _rightValueIndex == 0);
+        UsesCachedEquality &&
+        (left.HasRootAggregateValueIndex || right.HasRootAggregateValueIndex);
 
     internal override ValidationCelValue Evaluate(ValidationCelContext context)
     {
-        var leftValue = left.Evaluate(context);
+        var isEquality = operation is ValidationCelTokenKind.Equal or ValidationCelTokenKind.NotEqual;
+        var leftValueIndex = -1;
+        var leftValue = isEquality
+            ? left.EvaluateAggregate(context, out leftValueIndex)
+            : left.Evaluate(context);
         if (operation == ValidationCelTokenKind.And && !RequireBoolean(leftValue))
             return ValidationCelValue.False;
         if (operation == ValidationCelTokenKind.Or && RequireBoolean(leftValue))
             return ValidationCelValue.True;
 
-        var rightValue = right.Evaluate(context);
+        var rightValueIndex = -1;
+        var rightValue = isEquality
+            ? right.EvaluateAggregate(context, out rightValueIndex)
+            : right.Evaluate(context);
         return operation switch
         {
             ValidationCelTokenKind.And or ValidationCelTokenKind.Or =>
                 ValidationCelValue.FromBoolean(RequireBoolean(rightValue)),
             ValidationCelTokenKind.Equal => ValidationCelValue.FromBoolean(
-                AreEqual(leftValue, rightValue, context)),
+                AreEqual(leftValue, rightValue, context, leftValueIndex, rightValueIndex)),
             ValidationCelTokenKind.NotEqual => ValidationCelValue.FromBoolean(
-                !AreEqual(leftValue, rightValue, context)),
+                !AreEqual(leftValue, rightValue, context, leftValueIndex, rightValueIndex)),
             ValidationCelTokenKind.Less => ValidationCelValue.FromBoolean(Compare(leftValue, rightValue) is < 0),
             ValidationCelTokenKind.LessOrEqual => ValidationCelValue.FromBoolean(Compare(leftValue, rightValue) is <= 0),
             ValidationCelTokenKind.Greater => ValidationCelValue.FromBoolean(Compare(leftValue, rightValue) is > 0),
@@ -1723,10 +1747,12 @@ internal sealed class ValidationCelBinaryNode(
         };
     }
 
-    private bool AreEqual(
+    private static bool AreEqual(
         ValidationCelValue left,
         ValidationCelValue right,
-        ValidationCelContext context)
+        ValidationCelContext context,
+        int leftValueIndex,
+        int rightValueIndex)
     {
         if (left.Kind == ValidationCelValueKind.Missing || right.Kind == ValidationCelValueKind.Missing)
             throw Unsupported("Cannot compare a missing CEL member; guard optional members with has(...).");
@@ -1740,34 +1766,36 @@ internal sealed class ValidationCelBinaryNode(
             ValidationCelValueKind.String => ValidationCelStrings.Evaluate(left, right, ValidationCelStringOperation.Equal),
             ValidationCelValueKind.Bytes => left.Utf8Literal.Span.SequenceEqual(right.Utf8Literal.Span),
             ValidationCelValueKind.Object or ValidationCelValueKind.Array =>
-                AreAggregateValuesEqual(left, right, context),
+                AreAggregateValuesEqual(left, right, context, leftValueIndex, rightValueIndex),
             _ => false
         };
     }
 
-    private bool AreAggregateValuesEqual(
+    private static bool AreAggregateValuesEqual(
         ValidationCelValue left,
         ValidationCelValue right,
-        ValidationCelContext context)
+        ValidationCelContext context,
+        int leftValueIndex,
+        int rightValueIndex)
     {
-        if (_leftValueIndex < 0 || _rightValueIndex < 0)
+        if (leftValueIndex < 0 || rightValueIndex < 0)
             return CompareAggregateValues(left, right);
         if (CompiledValidationRule.TryGetEquality(
                 context.EqualityGeneration,
-                _leftValueIndex,
-                _rightValueIndex,
+                leftValueIndex,
+                rightValueIndex,
                 out var value))
             return value;
 
         value = CompareAggregateValues(
             left,
             right,
-            GetAggregateComparer(context, _leftValueIndex),
-            GetAggregateComparer(context, _rightValueIndex));
+            GetAggregateComparer(context, leftValueIndex),
+            GetAggregateComparer(context, rightValueIndex));
         CompiledValidationRule.SetEquality(
             context.EqualityGeneration,
-            _leftValueIndex,
-            _rightValueIndex,
+            leftValueIndex,
+            rightValueIndex,
             value);
         return value;
     }
@@ -2467,10 +2495,22 @@ internal sealed class ValidationCelConditionalNode(
     ValidationCelNode whenTrue,
     ValidationCelNode whenFalse) : ValidationCelNode
 {
+    internal override bool HasAggregateValueIndex =>
+        whenTrue.HasAggregateValueIndex || whenFalse.HasAggregateValueIndex;
+
+    internal override bool HasRootAggregateValueIndex =>
+        whenTrue.HasRootAggregateValueIndex || whenFalse.HasRootAggregateValueIndex;
+
     internal override ValidationCelValue Evaluate(ValidationCelContext context) =>
         RequireBoolean(condition.Evaluate(context))
             ? whenTrue.Evaluate(context)
             : whenFalse.Evaluate(context);
+
+    internal override ValidationCelValue EvaluateAggregate(
+        ValidationCelContext context,
+        out int valueIndex) => RequireBoolean(condition.Evaluate(context))
+        ? whenTrue.EvaluateAggregate(context, out valueIndex)
+        : whenFalse.EvaluateAggregate(context, out valueIndex);
 }
 
 internal sealed class ValidationCelFunctionNode(

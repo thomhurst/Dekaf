@@ -15,6 +15,7 @@ public class AvroInlineValidationBenchmarks
     private AvroInlineRuleValidator _validator = null!;
     private ReadOnlyMemory<byte> _payload;
     private AvroInlineRuleValidator _arrayEqualityValidator = null!;
+    private AvroInlineRuleValidator _conditionalArrayEqualityValidator = null!;
     private ReadOnlyMemory<byte> _equalArrayPayload;
     private ReadOnlyMemory<byte> _segmentedArrayPayload;
     private AvroInlineRuleValidator _mapEqualityValidator = null!;
@@ -82,6 +83,24 @@ public class AvroInlineValidationBenchmarks
         _segmentedArrayPayload = new byte[] { 4, 2, 4, 0, 2, 2, 2, 4, 0 };
         _arrayEqualityValidator.Validate(_equalArrayPayload, 2, failFast: false);
         _arrayEqualityValidator.Validate(_segmentedArrayPayload, 2, failFast: false);
+
+        const string conditionalArrayEqualitySchema = """
+            {
+              "type": "record",
+              "name": "ConditionalArrayEqualityBenchmarkRecord",
+              "confluent:rules": [{
+                "name": "equal",
+                "expr": "(true ? this.left : this.right) == this.right"
+              }],
+              "fields": [
+                { "name": "left", "type": { "type": "array", "items": "int" } },
+                { "name": "right", "type": { "type": "array", "items": "int" } }
+              ]
+            }
+            """;
+        _conditionalArrayEqualityValidator = new AvroInlineRuleValidator(
+            AvroSchema.Parse(conditionalArrayEqualitySchema));
+        _conditionalArrayEqualityValidator.Validate(_segmentedArrayPayload, 10, failFast: false);
 
         const string mapEqualitySchema = """
             {
@@ -251,6 +270,10 @@ public class AvroInlineValidationBenchmarks
     [Benchmark]
     public void ValidateEqualArraysWithDifferentBlocks() =>
         _arrayEqualityValidator.Validate(_segmentedArrayPayload, 2, failFast: false);
+
+    [Benchmark]
+    public void ValidateConditionalEqualArraysWithDifferentBlocks() =>
+        _conditionalArrayEqualityValidator.Validate(_segmentedArrayPayload, 10, failFast: false);
 
     [Benchmark]
     public void ValidateEqualMapsWithDifferentOrder() =>
