@@ -823,6 +823,7 @@ public sealed class InMemoryKafkaClusterTests
         consumer.Subscribe("shared");
 
         var activeGroups = await admin.ListShareGroupsAsync();
+        var activeDescriptions = await admin.DescribeShareGroupsAsync(["member-only", "offset-only"]);
 
         await Assert.That(activeGroups.Select(static group => group.GroupId))
             .IsEquivalentTo(["member-only", "offset-only"]);
@@ -831,13 +832,17 @@ public sealed class InMemoryKafkaClusterTests
             .IsEqualTo("Stable");
         await Assert.That(activeGroups.Single(static group => group.GroupId == "offset-only").State)
             .IsEqualTo("Empty");
+        await Assert.That(activeDescriptions["member-only"].GroupState).IsEqualTo("Stable");
+        await Assert.That(activeDescriptions["offset-only"].GroupState).IsEqualTo("Empty");
 
         await consumer.CloseAsync();
         var inactiveGroups = await admin.ListShareGroupsAsync();
+        var inactiveDescriptions = await admin.DescribeShareGroupsAsync(["member-only", "offset-only"]);
 
         await Assert.That(inactiveGroups.Select(static group => group.GroupId))
             .IsEquivalentTo(["member-only", "offset-only"]);
         await Assert.That(inactiveGroups.All(static group => group.State == "Empty")).IsTrue();
+        await Assert.That(inactiveDescriptions.Values.All(static group => group.GroupState == "Empty")).IsTrue();
 
         var deletion = await admin.DeleteShareGroupsAsync(["member-only"]);
         await Assert.That(deletion["member-only"].ErrorCode).IsEqualTo(ErrorCode.None);

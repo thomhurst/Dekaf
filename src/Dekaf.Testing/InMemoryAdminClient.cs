@@ -1095,12 +1095,18 @@ public sealed class InMemoryAdminClient :
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
 
+        var listedGroups = _cluster.ListShareGroups().ToDictionary(
+            static group => group.GroupId,
+            static group => group.HasActiveMembers,
+            StringComparer.Ordinal);
         var result = groupIds.ToDictionary(
             groupId => groupId,
             groupId => new ShareGroupDescription
             {
                 GroupId = groupId,
-                GroupState = "Stable",
+                GroupState = listedGroups.TryGetValue(groupId, out var hasActiveMembers) && !hasActiveMembers
+                    ? "Empty"
+                    : "Stable",
                 Members = []
             },
             StringComparer.Ordinal);
