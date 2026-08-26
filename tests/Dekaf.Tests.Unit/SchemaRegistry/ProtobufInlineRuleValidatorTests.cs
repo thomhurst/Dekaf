@@ -78,6 +78,23 @@ public sealed class ProtobufInlineRuleValidatorTests
     }
 
     [Test]
+    public async Task Validate_UnknownClosedEnumValueUsesDeclaredDefault()
+    {
+        var payload = new ArrayBufferWriter<byte>();
+        WriteVarint(payload, 6u << 3);
+        WriteVarint(payload, 99);
+        var validator = new ProtobufInlineRuleValidator(Proto2PresenceValidationMessage.Descriptor);
+
+        validator.Validate(payload.WrittenMemory, schemaId: 18, failFast: false);
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var index = 0; index < 100; index++)
+            validator.Validate(payload.WrittenMemory, schemaId: 18, failFast: false);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        await Assert.That(allocated).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task Validate_EncodedProto3DefaultUsesImplicitAbsence()
     {
         var payload = new ArrayBufferWriter<byte>();
@@ -382,64 +399,18 @@ public sealed class ProtobufInlineRuleValidatorTests
     [Test]
     public async Task Validate_MessageEqualityUsesUnknownFieldSetSemantics()
     {
-        var left = new ArrayBufferWriter<byte>();
-        WriteVarint(left, 1u << 3);
-        WriteVarint(left, 1);
-        for (var fieldNumber = 90; fieldNumber <= 98; fieldNumber++)
-        {
-            WriteVarint(left, (uint)fieldNumber << 3);
-            WriteVarint(left, (uint)fieldNumber);
-        }
-        WriteVarint(left, 99u << 3);
-        WriteVarint(left, 7);
-        WriteLengthDelimited(left, fieldNumber: 100, "unknown"u8);
-        WriteVarint(left, 99u << 3);
-        WriteVarint(left, 8);
-        WriteUnknownGroup(left, reverseFields: false);
-        var right = new ArrayBufferWriter<byte>();
-        WriteLengthDelimited(right, fieldNumber: 100, "unknown"u8);
-        WriteVarint(right, 99u << 3);
-        WriteVarint(right, 7);
-        WriteVarint(right, 99u << 3);
-        WriteVarint(right, 8);
-        for (var fieldNumber = 98; fieldNumber >= 90; fieldNumber--)
-        {
-            WriteVarint(right, (uint)fieldNumber << 3);
-            WriteVarint(right, (uint)fieldNumber);
-        }
-        WriteUnknownGroup(right, reverseFields: true);
-        WriteVarint(right, 1u << 3);
-        WriteVarint(right, 1);
-        var payload = new ArrayBufferWriter<byte>();
-        WriteLengthDelimited(payload, fieldNumber: 1, left.WrittenSpan);
-        WriteLengthDelimited(payload, fieldNumber: 2, right.WrittenSpan);
+        var payload = CreateUnknownFieldEqualityPayload(reverseRepeatedValues: false);
         var validator = new ProtobufInlineRuleValidator(ValidationMessageEqualityEnvelope.Descriptor);
 
-        validator.Validate(payload.WrittenMemory, schemaId: 17, failFast: false);
+        validator.Validate(payload, schemaId: 17, failFast: false);
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var index = 0; index < 100; index++)
-            validator.Validate(payload.WrittenMemory, schemaId: 17, failFast: false);
+            validator.Validate(payload, schemaId: 17, failFast: false);
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
-        var reorderedValues = new ArrayBufferWriter<byte>();
-        WriteVarint(reorderedValues, 99u << 3);
-        WriteVarint(reorderedValues, 8);
-        WriteVarint(reorderedValues, 99u << 3);
-        WriteVarint(reorderedValues, 7);
-        for (var fieldNumber = 98; fieldNumber >= 90; fieldNumber--)
-        {
-            WriteVarint(reorderedValues, (uint)fieldNumber << 3);
-            WriteVarint(reorderedValues, (uint)fieldNumber);
-        }
-        WriteUnknownGroup(reorderedValues, reverseFields: true);
-        WriteVarint(reorderedValues, 1u << 3);
-        WriteVarint(reorderedValues, 1);
-        WriteLengthDelimited(reorderedValues, fieldNumber: 100, "unknown"u8);
-        var unequalPayload = new ArrayBufferWriter<byte>();
-        WriteLengthDelimited(unequalPayload, fieldNumber: 1, left.WrittenSpan);
-        WriteLengthDelimited(unequalPayload, fieldNumber: 2, reorderedValues.WrittenSpan);
+        var unequalPayload = CreateUnknownFieldEqualityPayload(reverseRepeatedValues: true);
         var exception = Assert.Throws<ValidationRulesFailedException>(() =>
-            validator.Validate(unequalPayload.WrittenMemory, schemaId: 17, failFast: false));
+            validator.Validate(unequalPayload, schemaId: 17, failFast: false));
 
         await Assert.That(allocated).IsEqualTo(0);
         await Assert.That(exception.Violations[0].Rule.Name).IsEqualTo("child-message-equality");
@@ -477,6 +448,37 @@ public sealed class ProtobufInlineRuleValidatorTests
 
         await Assert.That(allocated).IsEqualTo(0);
         await Assert.That(exception.Violations[0].Rule.Name).IsEqualTo("map-message-equality");
+    }
+
+    [Test]
+    public async Task Validate_MapMessageEqualityMergesRepeatedValueFields()
+    {
+        var firstValue = new ArrayBufferWriter<byte>();
+        WriteVarint(firstValue, 1u << 3);
+        WriteVarint(firstValue, 1);
+        var secondValue = new ArrayBufferWriter<byte>();
+        WriteVarint(secondValue, 3u << 3);
+        WriteVarint(secondValue, 2);
+        var mergedValue = new ArrayBufferWriter<byte>();
+        mergedValue.Write(firstValue.WrittenSpan);
+        mergedValue.Write(secondValue.WrittenSpan);
+
+        var left = new ArrayBufferWriter<byte>();
+        WriteLengthDelimited(left, fieldNumber: 2,
+            CreateMessageMapEntry("child", firstValue.WrittenMemory, secondValue.WrittenMemory));
+        var right = new ArrayBufferWriter<byte>();
+        WriteLengthDelimited(right, fieldNumber: 2,
+            CreateMessageMapEntry("child", mergedValue.WrittenMemory));
+        var payload = CreateMessageEqualityPayload(left.WrittenSpan, right.WrittenSpan);
+        var validator = new ProtobufInlineRuleValidator(ValidationMapEqualityEnvelope.Descriptor);
+
+        validator.Validate(payload, schemaId: 17, failFast: false);
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var index = 0; index < 100; index++)
+            validator.Validate(payload, schemaId: 17, failFast: false);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        await Assert.That(allocated).IsEqualTo(0);
     }
 
     [Test]
@@ -697,6 +699,57 @@ public sealed class ProtobufInlineRuleValidatorTests
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
         await Assert.That(allocated).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task Validate_AlternatingRegisteredSchemasAllocatesZeroBytes()
+    {
+        using var registry = new MockSchemaRegistryClient();
+        var executor = new ProtobufInlineRuleExecutor(registry, ValidationEnvelope.Descriptor);
+        var schema = new Schema
+        {
+            SchemaType = SchemaType.Protobuf,
+            SchemaString = ValidationEnvelope.Descriptor.File.SerializedData.ToBase64()
+        };
+        var payload = CreateValidMessage().ToByteArray();
+        executor.Validate(payload, schemaId: 19, schema, failFast: false);
+        executor.Validate(payload, schemaId: 20, schema, failFast: false);
+
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var index = 0; index < 100; index++)
+            executor.Validate(payload, schemaId: index % 2 == 0 ? 19 : 20, schema, failFast: false);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        await Assert.That(allocated).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task Validate_TransientDescriptorLookupFailureIsRetried()
+    {
+        var descriptor = ValidationEnvelope.Descriptor.File.ToProto();
+        var meta = descriptor.MessageType[0].Options.GetExtension(MetaExtensions.MessageMeta).Clone();
+        meta.Rules[0].Expr = "this.age <= 0";
+        descriptor.MessageType[0].Options.SetExtension(MetaExtensions.MessageMeta, meta);
+        var resolved = new Schema
+        {
+            SchemaType = SchemaType.Protobuf,
+            SchemaString = descriptor.ToByteString().ToBase64()
+        };
+        using var registry = new TransientSchemaRegistryClient(resolved);
+        var executor = new ProtobufInlineRuleExecutor(registry, ValidationEnvelope.Descriptor);
+        var unresolved = new Schema
+        {
+            SchemaType = SchemaType.Protobuf,
+            SchemaString = "syntax = \"proto3\";"
+        };
+        var payload = CreateValidMessage().ToByteArray();
+
+        executor.Validate(payload, schemaId: 21, unresolved, failFast: false);
+        var exception = Assert.Throws<ValidationRulesFailedException>(() =>
+            executor.Validate(payload, schemaId: 21, unresolved, failFast: false));
+
+        await Assert.That(registry.GetSchemaCalls).IsEqualTo(2);
+        await Assert.That(exception.Violations[0].Rule.Name).IsEqualTo("age-upper-bound");
     }
 
     [Test]
@@ -1017,6 +1070,60 @@ public sealed class ProtobufInlineRuleValidatorTests
         WriteVarint(writer, 101u << 3 | 4u);
     }
 
+    private static void WriteUnknownVarintFields(
+        IBufferWriter<byte> writer,
+        int start,
+        int end,
+        int step)
+    {
+        for (var fieldNumber = start; fieldNumber != end + step; fieldNumber += step)
+        {
+            WriteVarint(writer, (uint)fieldNumber << 3);
+            WriteVarint(writer, (uint)fieldNumber);
+        }
+    }
+
+    private static byte[] CreateUnknownFieldEqualityPayload(bool reverseRepeatedValues)
+    {
+        var left = new ArrayBufferWriter<byte>();
+        WriteVarint(left, 1u << 3);
+        WriteVarint(left, 1);
+        WriteUnknownVarintFields(left, start: 90, end: 98, step: 1);
+        WriteVarint(left, 99u << 3);
+        WriteVarint(left, 7);
+        WriteLengthDelimited(left, fieldNumber: 100, "unknown"u8);
+        WriteVarint(left, 99u << 3);
+        WriteVarint(left, 8);
+        WriteUnknownGroup(left, reverseFields: false);
+
+        var right = new ArrayBufferWriter<byte>();
+        WriteLengthDelimited(right, fieldNumber: 100, "unknown"u8);
+        WriteVarint(right, 99u << 3);
+        WriteVarint(right, reverseRepeatedValues ? 8u : 7u);
+        WriteVarint(right, 99u << 3);
+        WriteVarint(right, reverseRepeatedValues ? 7u : 8u);
+        WriteUnknownVarintFields(right, start: 98, end: 90, step: -1);
+        WriteUnknownGroup(right, reverseFields: true);
+        WriteVarint(right, 1u << 3);
+        WriteVarint(right, 1);
+
+        var payload = new ArrayBufferWriter<byte>();
+        WriteLengthDelimited(payload, fieldNumber: 1, left.WrittenSpan);
+        WriteLengthDelimited(payload, fieldNumber: 2, right.WrittenSpan);
+        return payload.WrittenSpan.ToArray();
+    }
+
+    private static byte[] CreateMessageMapEntry(
+        string key,
+        params ReadOnlyMemory<byte>[] values)
+    {
+        var entry = new ArrayBufferWriter<byte>();
+        WriteLengthDelimited(entry, fieldNumber: 1, Encoding.UTF8.GetBytes(key));
+        for (var index = 0; index < values.Length; index++)
+            WriteLengthDelimited(entry, fieldNumber: 2, values[index].Span);
+        return entry.WrittenSpan.ToArray();
+    }
+
     private static void WriteFixed32(IBufferWriter<byte> writer, int fieldNumber, uint value)
     {
         WriteVarint(writer, (uint)(fieldNumber << 3 | 5));
@@ -1135,5 +1242,53 @@ public sealed class ProtobufInlineRuleValidatorTests
         public ReadOnlyMemory<byte> TransformDeserializedPayload(
             ReadOnlyMemory<byte> payload,
             SchemaRegistryRuleContext context) => payload;
+    }
+
+    private sealed class TransientSchemaRegistryClient(Schema schema) : ISchemaRegistryClient
+    {
+        internal int GetSchemaCalls { get; private set; }
+
+        public Task<Schema> GetSchemaAsync(int id, CancellationToken cancellationToken = default)
+        {
+            GetSchemaCalls++;
+            return GetSchemaCalls == 1
+                ? Task.FromException<Schema>(new HttpRequestException("transient"))
+                : Task.FromResult(schema);
+        }
+
+        public Task<int> RegisterSchemaAsync(
+            string subject,
+            Schema value,
+            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public Task<int> GetOrRegisterSchemaAsync(
+            string subject,
+            Schema value,
+            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public Task<RegisteredSchema> GetSchemaBySubjectAsync(
+            string subject,
+            string version = "latest",
+            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public Task<IReadOnlyList<string>> GetAllSubjectsAsync(
+            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public Task<IReadOnlyList<int>> GetVersionsAsync(
+            string subject,
+            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public Task<bool> IsCompatibleAsync(
+            string subject,
+            Schema value,
+            string version = "latest",
+            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public Task<IReadOnlyList<int>> DeleteSubjectAsync(
+            string subject,
+            bool permanent = false,
+            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public void Dispose() { }
     }
 }

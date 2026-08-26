@@ -22,6 +22,8 @@ public class ProtobufInlineValidationBenchmarks
     private ProtobufInlineRuleValidator _validator = null!;
     private ProtobufInlineRuleValidator _semanticEqualityValidator = null!;
     private ProtobufInlineRuleValidator _mapEqualityValidator = null!;
+    private ProtobufInlineRuleExecutor _alternatingSchemaExecutor = null!;
+    private Schema _serializedSchema = null!;
     private ProtobufSchemaRegistrySerializer<ValidationEnvelope> _serializer = null!;
     private ProtobufSchemaRegistrySerializer<ValidationEnvelope> _unvalidatedSerializer = null!;
     private CompiledValidationRule _mixedNumericRule = null!;
@@ -32,6 +34,7 @@ public class ProtobufInlineValidationBenchmarks
     private byte[] _floatingSemanticEqualityPayload = null!;
     private byte[] _unknownSemanticEqualityPayload = null!;
     private byte[] _mapEqualityPayload = null!;
+    private int _schemaIndex;
     private SerializationContext _context;
 
     [GlobalSetup]
@@ -49,6 +52,14 @@ public class ProtobufInlineValidationBenchmarks
             ValidationMessageEqualityEnvelope.Descriptor);
         _mapEqualityValidator = new ProtobufInlineRuleValidator(
             ValidationMapEqualityEnvelope.Descriptor);
+        _alternatingSchemaExecutor = new ProtobufInlineRuleExecutor(
+            new BenchmarkSchemaRegistryClient(),
+            ValidationEnvelope.Descriptor);
+        _serializedSchema = new Schema
+        {
+            SchemaType = SchemaType.Protobuf,
+            SchemaString = ValidationEnvelope.Descriptor.File.SerializedData.ToBase64()
+        };
         _serializer = new ProtobufSchemaRegistrySerializer<ValidationEnvelope>(
             new BenchmarkSchemaRegistryClient(),
             new ProtobufSerializerConfig
@@ -76,6 +87,8 @@ public class ProtobufInlineValidationBenchmarks
         _semanticEqualityValidator.Validate(_floatingSemanticEqualityPayload, schemaId: 1, failFast: false);
         _semanticEqualityValidator.Validate(_unknownSemanticEqualityPayload, schemaId: 1, failFast: false);
         _mapEqualityValidator.Validate(_mapEqualityPayload, schemaId: 1, failFast: false);
+        _alternatingSchemaExecutor.Validate(_payload, schemaId: 2, _serializedSchema, failFast: false);
+        _alternatingSchemaExecutor.Validate(_payload, schemaId: 3, _serializedSchema, failFast: false);
         var destination = _destination;
         _serializer.Serialize(_message, ref destination, _context);
         _destination.Clear();
@@ -112,6 +125,17 @@ public class ProtobufInlineValidationBenchmarks
     [Benchmark]
     public void ValidateMapMessageEquality() =>
         _mapEqualityValidator.Validate(_mapEqualityPayload, schemaId: 1, failFast: false);
+
+    [Benchmark]
+    public void ValidateAlternatingRegisteredSchemas()
+    {
+        _schemaIndex ^= 1;
+        _alternatingSchemaExecutor.Validate(
+            _payload,
+            schemaId: _schemaIndex + 2,
+            _serializedSchema,
+            failFast: false);
+    }
 
     [Benchmark]
     public bool ValidateMixedNumericComparison() => _mixedNumericRule.Evaluate(

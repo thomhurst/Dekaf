@@ -183,6 +183,7 @@ message ValidationMapEqualityEnvelope {
 
 message ValidationMapEqualityChild {
   map<string, int32> labels = 1;
+  map<string, ValidationEqualityChild> children = 2;
 }
 
 enum ValidationStatus {
