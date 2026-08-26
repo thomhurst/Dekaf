@@ -35,7 +35,7 @@ public sealed class KafkaConnectionBrokerThrottleTests
 
             await CompleteApiVersionsRequestAsync(firstStream, throttleTimeMs, cancellationToken);
             var secondRequest = await ReadFrameAsync(secondStream, cancellationToken);
-            followUpReceived.TrySetResult(Stopwatch.GetTimestamp());
+            followUpReceived.TrySetResult(MonotonicClock.GetMilliseconds());
             await WriteApiVersionsResponseAsync(secondStream, secondRequest, 0, cancellationToken);
         }, cancellationToken);
 
@@ -50,7 +50,9 @@ public sealed class KafkaConnectionBrokerThrottleTests
             3,
             cancellationToken);
 
-        var followUpStarted = Stopwatch.GetTimestamp();
+        var followUpStartedMs = MonotonicClock.GetMilliseconds();
+        var remainingThrottleMs = throttleState.GetRemainingMilliseconds();
+        await Assert.That(remainingThrottleMs).IsGreaterThan(0);
         var followUpTask = second.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
             CreateApiVersionsRequest(),
             3,
@@ -58,13 +60,15 @@ public sealed class KafkaConnectionBrokerThrottleTests
 
         var earlyProgress = await Task.WhenAny(
             followUpReceived.Task,
-            Task.Delay(100, cancellationToken));
+            Task.Delay(Math.Max(1, remainingThrottleMs / 2), cancellationToken));
         await Assert.That(earlyProgress).IsNotSameReferenceAs(followUpReceived.Task);
 
         _ = await followUpTask;
-        var receivedAt = await followUpReceived.Task;
-        var elapsedMs = (receivedAt - followUpStarted) * 1000d / Stopwatch.Frequency;
-        await Assert.That(elapsedMs).IsGreaterThanOrEqualTo(200);
+        var receivedAtMs = await followUpReceived.Task;
+        var elapsedMs = receivedAtMs - followUpStartedMs;
+        const int clockResolutionToleranceMs = 1;
+        await Assert.That(elapsedMs + clockResolutionToleranceMs)
+            .IsGreaterThanOrEqualTo(remainingThrottleMs);
         await serverTask;
     }
 
