@@ -68,6 +68,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     private readonly Dictionary<TopicPartition, long> _positions = [];
     private readonly Dictionary<TopicPartition, TopicPartitionOffset> _storedOffsets = [];
     private KafkaFaultScope[] _commitFaultScopes = new KafkaFaultScope[4];
+    private TopicPartitionOffset[] _commitOffsets = new TopicPartitionOffset[4];
     private Dictionary<TopicPartition, PendingAutoCommitAdvancement>? _pendingAutoCommitAdvancements;
     private int _storedOffsetsVersion;
     private long _potentialFaultPlanVersion = -1;
@@ -2403,19 +2404,26 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
     private void CommitOffsetsFrom(Dictionary<TopicPartition, TopicPartitionOffset> positions)
     {
-        if (_groupId is null)
+        if (_groupId is null || positions.Count == 0)
             return;
 
-        var assignment = GetCurrentAssignmentUnderLock();
-        var offsets = positions
-            .Where(item => assignment.Contains(item.Key))
-            .Select(static item => item.Value)
-            .ToArray();
+        var assignment = GetPotentialFaultAssignmentUnderLock(out _, out _);
+        var count = 0;
+        foreach (var (partition, offset) in positions)
+        {
+            if (!assignment.Contains(partition))
+                continue;
 
-        if (offsets.Length == 0)
+            if (count == _commitOffsets.Length)
+                Array.Resize(ref _commitOffsets, _commitOffsets.Length * 2);
+
+            _commitOffsets[count++] = offset;
+        }
+
+        if (count == 0)
             return;
 
-        _cluster.CommitOffsets(_groupId, offsets);
+        _cluster.CommitOffsets(_groupId, _commitOffsets, count);
     }
 
     private bool TryPrepareOnDeliveryAutoCommitFault(
@@ -2763,6 +2771,8 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                     pending.Completion.Task,
                     cancellationToken);
             }
+            if (_indexedFaultPlan is { Count: 0 })
+                return default;
 
             var inDoubtOffset = _options.EnableAutoOffsetStore
                 ? new TopicPartitionOffset(

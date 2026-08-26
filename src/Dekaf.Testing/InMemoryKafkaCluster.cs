@@ -626,7 +626,9 @@ public sealed class InMemoryKafkaCluster
                 return false;
             }
 
-            record = CloneRecord(candidate);
+            // Consumers treat the stored record as borrowed immutable data. Public record reads
+            // and share-consumer leases still clone because those APIs expose InMemoryRecord.
+            record = candidate;
             return true;
         }
     }
@@ -1074,6 +1076,22 @@ public sealed class InMemoryKafkaCluster
         {
             var groupOffsets = GetOrCreateConsumerGroupOffsetsUnderLock(groupId);
             for (var index = 0; index < offsets.Count; index++)
+            {
+                var offset = offsets[index];
+                groupOffsets[new TopicPartition(offset.Topic, offset.Partition)] = offset;
+            }
+        }
+    }
+
+    internal void CommitOffsets(
+        string groupId,
+        TopicPartitionOffset[] offsets,
+        int offsetCount)
+    {
+        lock (_gate)
+        {
+            var groupOffsets = GetOrCreateConsumerGroupOffsetsUnderLock(groupId);
+            for (var index = 0; index < offsetCount; index++)
             {
                 var offset = offsets[index];
                 groupOffsets[new TopicPartition(offset.Topic, offset.Partition)] = offset;
