@@ -82,6 +82,7 @@ public sealed class ConsumerExtensionsTests
     }
 
     [Test]
+    [Timeout(120_000)]
     public async Task Where_WithFilteredCallback_AwaitsBeforeRequestingNextItem(
         CancellationToken cancellationToken)
     {

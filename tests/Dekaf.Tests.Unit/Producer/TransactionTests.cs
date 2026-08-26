@@ -1092,6 +1092,7 @@ public sealed class TransactionTests
     }
 
     [Test]
+    [Timeout(120_000)]
     public async Task TransactionPartitionEnrollment_BatchesCoalescedPartitions(
         CancellationToken cancellationToken)
     {
