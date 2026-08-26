@@ -91,6 +91,10 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     // proves it; an unwind (or close) leaves it unstaged so it is redelivered.
     private TopicPartition _inDoubtPartition;
     private long _inDoubtNextOffset = -1;
+    // Wakes a shared ConsumeAsync stream after the commit-proof owner aborts. The next
+    // poll consumes this marker and retries the unchanged in-doubt proof.
+    private TopicPartition _retryInDoubtPartition;
+    private long _retryInDoubtNextOffset = -1;
     private int _consumerStateVersion;
     private bool _snapshotActive;
     private readonly string? _groupId;
@@ -461,34 +465,37 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         while (!cancellationToken.IsCancellationRequested)
         {
             var result = await ConsumeOneAsync(Timeout.InfiniteTimeSpan, cancellationToken).ConfigureAwait(false);
-            if (result.HasValue)
+            if (result is not { } consumed)
             {
-                yield return result.Value;
+                await WaitForCurrentAutoCommitDeliveryAsync(cancellationToken).ConfigureAwait(false);
+                continue;
+            }
 
-                // Resuming after the yield proves that the caller processed this record.
-                // Do this before the loop observes cancellation, matching KafkaConsumer.
-                ThrowIfDisposed();
-                var capturedProof = await ApplyInDoubtAutoCommitFaultAsync(
-                    CancellationToken.None).ConfigureAwait(false);
-                ThrowIfDisposed();
-                if (capturedProof is { SharedWaiter: true })
+            yield return consumed;
+
+            // Resuming after the yield proves that the caller processed this record.
+            // Do this before the loop observes cancellation, matching KafkaConsumer.
+            ThrowIfDisposed();
+            var capturedProof = await ApplyInDoubtAutoCommitFaultAsync(
+                CancellationToken.None).ConfigureAwait(false);
+            ThrowIfDisposed();
+            if (capturedProof is { SharedWaiter: true })
+            {
+                await WaitForSharedAutoCommitDeliveryAsync(
+                    capturedProof.Value,
+                    cancellationToken).ConfigureAwait(false);
+                continue;
+            }
+            try
+            {
+                lock (_gate)
                 {
-                    await WaitForSharedAutoCommitDeliveryAsync(
-                        capturedProof.Value,
-                        cancellationToken).ConfigureAwait(false);
-                    continue;
+                    ProveInDoubtRecordUnderLock(capturedProof);
                 }
-                try
-                {
-                    lock (_gate)
-                    {
-                        ProveInDoubtRecordUnderLock(capturedProof);
-                    }
-                }
-                finally
-                {
-                    CompleteSharedAutoCommitWaiters(capturedProof);
-                }
+            }
+            finally
+            {
+                CompleteSharedAutoCommitWaiters(capturedProof);
             }
         }
     }
@@ -572,20 +579,14 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                             consumerGroupGeneration);
 
                         ProveInDoubtRecordUnderLock(capturedProof);
-                        if (!TrySelectSnapshotRecordUnderLock(
+                        complete = !TrySelectSnapshotRecordUnderLock(
                                 partitions,
                                 ref activePartitionIndex,
                                 out partition,
                                 out record,
                                 out position,
-                                out pendingAutoCommitAdvancement))
-                        {
-                            complete = !pendingAutoCommitAdvancement;
-                        }
-                        else
-                        {
-                            complete = false;
-                        }
+                                out pendingAutoCommitAdvancement) &&
+                            !pendingAutoCommitAdvancement;
                     }
                 }
                 finally
@@ -839,12 +840,10 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
         TopicPartitionOffset? inDoubtRecord;
         CapturedCommitOffsets capturedCommit;
-        int consumerStateVersion;
         bool hasFaultApplication;
         ValueTask faultApplication;
         lock (_gate)
         {
-            consumerStateVersion = _consumerStateVersion;
             inDoubtRecord = _inDoubtNextOffset >= 0
                 ? new TopicPartitionOffset(
                     _inDoubtPartition.Topic,
@@ -871,8 +870,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         lock (_gate)
         {
             ThrowIfDisposed();
-            if (_consumerStateVersion == consumerStateVersion &&
-                IsCapturedCommitCurrentUnderLock(in capturedCommit) &&
+            if (IsCapturedCommitCurrentUnderLock(in capturedCommit) &&
                 inDoubtRecord is { } capturedInDoubt &&
                 _inDoubtNextOffset == capturedInDoubt.Offset &&
                 _inDoubtPartition.Topic == capturedInDoubt.Topic &&
@@ -884,8 +882,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                 ClearInDoubtRecordUnderLock();
             }
 
-            if (_consumerStateVersion == consumerStateVersion)
-                CommitCapturedOffsetsUnderLock(in capturedCommit);
+            CommitCapturedOffsetsUnderLock(in capturedCommit);
         }
     }
 
@@ -2753,6 +2750,11 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
             inDoubtPartition = _inDoubtPartition;
             inDoubtNextOffset = _inDoubtNextOffset;
+            if (_retryInDoubtNextOffset == inDoubtNextOffset &&
+                _retryInDoubtPartition.Equals(inDoubtPartition))
+            {
+                _retryInDoubtNextOffset = -1;
+            }
             if (_pendingAutoCommitAdvancements is not null &&
                 _pendingAutoCommitAdvancements.TryGetValue(inDoubtPartition, out var pending) &&
                 pending.Position == inDoubtNextOffset)
@@ -2811,7 +2813,16 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         }
         catch
         {
-            ClearPendingAutoCommitAdvancement(partition, expectedPosition);
+            lock (_gate)
+            {
+                ClearPendingAutoCommitAdvancementUnderLock(partition, expectedPosition);
+                if (_inDoubtNextOffset == expectedPosition &&
+                    _inDoubtPartition.Equals(partition))
+                {
+                    _retryInDoubtPartition = partition;
+                    _retryInDoubtNextOffset = expectedPosition;
+                }
+            }
             throw;
         }
 
@@ -2860,6 +2871,46 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                 if (_inDoubtNextOffset < 0 ||
                     _inDoubtPartition.Equals(sharedProof.Partition) &&
                     _inDoubtNextOffset == sharedProof.Position)
+                {
+                    return;
+                }
+            }
+
+            await recordsChanged.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private async ValueTask WaitForCurrentAutoCommitDeliveryAsync(
+        CancellationToken cancellationToken)
+    {
+        TopicPartition partition;
+        long position;
+        lock (_gate)
+        {
+            ThrowIfDisposed();
+            if (_inDoubtNextOffset < 0)
+                return;
+
+            partition = _inDoubtPartition;
+            position = _inDoubtNextOffset;
+            if (_retryInDoubtNextOffset == position &&
+                _retryInDoubtPartition.Equals(partition))
+            {
+                return;
+            }
+        }
+
+        while (true)
+        {
+            var recordsChanged = _cluster.ObserveRecordsChanged();
+            lock (_gate)
+            {
+                ThrowIfDisposed();
+                if (_inDoubtNextOffset < 0 ||
+                    !_inDoubtPartition.Equals(partition) ||
+                    _inDoubtNextOffset != position ||
+                    _retryInDoubtNextOffset == position &&
+                    _retryInDoubtPartition.Equals(partition))
                 {
                     return;
                 }
