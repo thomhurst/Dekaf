@@ -153,6 +153,10 @@ message ValidationPresenceEnvelope {
       name: "inactive-oneof-scalars-use-defaults"
       expr: "!has(this.phone) && this.phone == ''"
     }
+    rules: {
+      name: "implicit-default-scalars-are-absent"
+      expr: "!has(this.age) && this.age == 0"
+    }
   };
 
   optional string nickname = 1;
@@ -160,6 +164,7 @@ message ValidationPresenceEnvelope {
     string email = 2;
     string phone = 3;
   }
+  int32 age = 4;
 }
 
 message ValidationMapEqualityEnvelope {

@@ -77,6 +77,31 @@ public sealed class ProtobufInlineRuleValidatorTests
     }
 
     [Test]
+    public async Task Validate_EncodedProto3DefaultUsesImplicitAbsence()
+    {
+        var payload = new ArrayBufferWriter<byte>();
+        WriteVarint(payload, 4u << 3);
+        WriteVarint(payload, 0);
+        var validator = new ProtobufInlineRuleValidator(ValidationPresenceEnvelope.Descriptor);
+
+        validator.Validate(payload.WrittenMemory, schemaId: 17, failFast: false);
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var index = 0; index < 100; index++)
+            validator.Validate(payload.WrittenMemory, schemaId: 17, failFast: false);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        var nonDefault = new ArrayBufferWriter<byte>();
+        WriteVarint(nonDefault, 4u << 3);
+        WriteVarint(nonDefault, 1);
+        var exception = Assert.Throws<ValidationRulesFailedException>(() =>
+            validator.Validate(nonDefault.WrittenMemory, schemaId: 17, failFast: false));
+
+        await Assert.That(allocated).IsEqualTo(0);
+        await Assert.That(exception.Violations[0].Rule.Name)
+            .IsEqualTo("implicit-default-scalars-are-absent");
+    }
+
+    [Test]
     public async Task Validate_InvalidPayload_AggregatesPrecisePaths()
     {
         var message = CreateValidMessage();
@@ -325,6 +350,72 @@ public sealed class ProtobufInlineRuleValidatorTests
 
         await Assert.That(payload.WrittenCount).IsGreaterThan(0);
         await Assert.That(allocated).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task Validate_MessageEqualityUsesUnknownFieldSetSemantics()
+    {
+        var left = new ArrayBufferWriter<byte>();
+        WriteVarint(left, 1u << 3);
+        WriteVarint(left, 1);
+        for (var fieldNumber = 90; fieldNumber <= 98; fieldNumber++)
+        {
+            WriteVarint(left, (uint)fieldNumber << 3);
+            WriteVarint(left, (uint)fieldNumber);
+        }
+        WriteVarint(left, 99u << 3);
+        WriteVarint(left, 7);
+        WriteLengthDelimited(left, fieldNumber: 100, "unknown"u8);
+        WriteVarint(left, 99u << 3);
+        WriteVarint(left, 8);
+        WriteUnknownGroup(left, reverseFields: false);
+        var right = new ArrayBufferWriter<byte>();
+        WriteLengthDelimited(right, fieldNumber: 100, "unknown"u8);
+        WriteVarint(right, 99u << 3);
+        WriteVarint(right, 7);
+        WriteVarint(right, 99u << 3);
+        WriteVarint(right, 8);
+        for (var fieldNumber = 98; fieldNumber >= 90; fieldNumber--)
+        {
+            WriteVarint(right, (uint)fieldNumber << 3);
+            WriteVarint(right, (uint)fieldNumber);
+        }
+        WriteUnknownGroup(right, reverseFields: true);
+        WriteVarint(right, 1u << 3);
+        WriteVarint(right, 1);
+        var payload = new ArrayBufferWriter<byte>();
+        WriteLengthDelimited(payload, fieldNumber: 1, left.WrittenSpan);
+        WriteLengthDelimited(payload, fieldNumber: 2, right.WrittenSpan);
+        var validator = new ProtobufInlineRuleValidator(ValidationMessageEqualityEnvelope.Descriptor);
+
+        validator.Validate(payload.WrittenMemory, schemaId: 17, failFast: false);
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var index = 0; index < 100; index++)
+            validator.Validate(payload.WrittenMemory, schemaId: 17, failFast: false);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        var reorderedValues = new ArrayBufferWriter<byte>();
+        WriteVarint(reorderedValues, 99u << 3);
+        WriteVarint(reorderedValues, 8);
+        WriteVarint(reorderedValues, 99u << 3);
+        WriteVarint(reorderedValues, 7);
+        for (var fieldNumber = 98; fieldNumber >= 90; fieldNumber--)
+        {
+            WriteVarint(reorderedValues, (uint)fieldNumber << 3);
+            WriteVarint(reorderedValues, (uint)fieldNumber);
+        }
+        WriteUnknownGroup(reorderedValues, reverseFields: true);
+        WriteVarint(reorderedValues, 1u << 3);
+        WriteVarint(reorderedValues, 1);
+        WriteLengthDelimited(reorderedValues, fieldNumber: 100, "unknown"u8);
+        var unequalPayload = new ArrayBufferWriter<byte>();
+        WriteLengthDelimited(unequalPayload, fieldNumber: 1, left.WrittenSpan);
+        WriteLengthDelimited(unequalPayload, fieldNumber: 2, reorderedValues.WrittenSpan);
+        var exception = Assert.Throws<ValidationRulesFailedException>(() =>
+            validator.Validate(unequalPayload.WrittenMemory, schemaId: 17, failFast: false));
+
+        await Assert.That(allocated).IsEqualTo(0);
+        await Assert.That(exception.Violations[0].Rule.Name).IsEqualTo("child-message-equality");
     }
 
     [Test]
@@ -875,6 +966,18 @@ public sealed class ProtobufInlineRuleValidatorTests
         WriteVarint(writer, (uint)(fieldNumber << 3 | 2));
         WriteVarint(writer, (uint)value.Length);
         writer.Write(value);
+    }
+
+    private static void WriteUnknownGroup(IBufferWriter<byte> writer, bool reverseFields)
+    {
+        var first = reverseFields ? 2u : 1u;
+        var second = reverseFields ? 1u : 2u;
+        WriteVarint(writer, 101u << 3 | 3u);
+        WriteVarint(writer, first << 3);
+        WriteVarint(writer, first);
+        WriteVarint(writer, second << 3);
+        WriteVarint(writer, second);
+        WriteVarint(writer, 101u << 3 | 4u);
     }
 
     private static void WriteVarint(IBufferWriter<byte> writer, ulong value)

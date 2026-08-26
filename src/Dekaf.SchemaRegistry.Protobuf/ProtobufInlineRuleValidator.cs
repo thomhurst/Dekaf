@@ -850,7 +850,10 @@ internal sealed class ProtobufFieldRulePlan(
                 RuntimeIndex,
                 ref mergedMessages);
         }
-        values.SetValue(RuntimeIndex, decoded);
+        if (ProtobufValidationValueDecoder.IsImplicitDefault(Descriptor, decoded))
+            values.SetDefaultValue(RuntimeIndex, decoded);
+        else
+            values.SetValue(RuntimeIndex, decoded);
     }
 
     internal void ApplyDefault(ValidationCelMemberValues values, ValidationCelSizeValues sizes)
@@ -1665,7 +1668,10 @@ internal sealed class ProtobufMemberNode(FieldDescriptor descriptor)
                         RuntimeIndex,
                         ref nestedPayloads);
                 }
-                values.SetValue(MemberIndex, decoded);
+                if (ProtobufValidationValueDecoder.IsImplicitDefault(descriptor, decoded))
+                    values.SetDefaultValue(MemberIndex, decoded);
+                else
+                    values.SetValue(MemberIndex, decoded);
             }
         }
 
@@ -1902,6 +1908,25 @@ internal static class ProtobufValidationValueDecoder
         FieldType.Bytes => ValidationCelValue.FromBytes(default),
         _ => ValidationCelValue.Missing
     };
+
+    internal static bool IsImplicitDefault(
+        FieldDescriptor descriptor,
+        ValidationCelValue value)
+    {
+        if (descriptor.HasPresence)
+            return false;
+
+        return descriptor.FieldType switch
+        {
+            FieldType.Double or FieldType.Float => value.Floating.Equals(0d),
+            FieldType.Int64 or FieldType.UInt64 or FieldType.Int32 or FieldType.Fixed64 or
+                FieldType.Fixed32 or FieldType.UInt32 or FieldType.SFixed32 or FieldType.SFixed64 or
+                FieldType.SInt32 or FieldType.SInt64 or FieldType.Enum => value.Number == 0,
+            FieldType.Bool => !value.Boolean,
+            FieldType.String or FieldType.Bytes => value.Utf8Literal.IsEmpty,
+            _ => false
+        };
+    }
 
     internal static ValidationCelValue DeclaredDefault(FieldDescriptor descriptor)
     {
@@ -2174,6 +2199,50 @@ internal static class ProtobufSemanticEquality
         ReadOnlyMemory<byte> right) =>
         AreEqual(descriptor, left, right, ProtobufInlineRuleValidator.MaximumValidationDepth);
 
+    internal static bool AreUnknownFieldsEqual(
+        ReadOnlyMemory<byte> left,
+        ReadOnlyMemory<byte> right,
+        int remainingDepth) => AreUnknownFieldsEqual(
+            descriptor: null,
+            left,
+            right,
+            remainingDepth);
+
+    private static bool AreUnknownFieldsEqual(
+        MessageDescriptor? descriptor,
+        ReadOnlyMemory<byte> left,
+        ReadOnlyMemory<byte> right,
+        int remainingDepth)
+    {
+        if (left.Span.SequenceEqual(right.Span))
+            return true;
+        if (remainingDepth <= 0)
+        {
+            throw new SchemaRegistryRuleException(
+                $"Could not evaluate Protobuf validation rules: message recursion exceeds {ProtobufInlineRuleValidator.MaximumValidationDepth} levels.");
+        }
+
+        var leftState = new ProtobufUnknownFieldSetState();
+        try
+        {
+            leftState.Add(descriptor, left);
+            var rightState = new ProtobufUnknownFieldSetState();
+            try
+            {
+                rightState.Add(descriptor, right);
+                return leftState.AreEqual(ref rightState, remainingDepth);
+            }
+            finally
+            {
+                rightState.Dispose();
+            }
+        }
+        finally
+        {
+            leftState.Dispose();
+        }
+    }
+
     private static bool AreEqual(
         MessageDescriptor descriptor,
         ReadOnlyMemory<byte> left,
@@ -2194,7 +2263,8 @@ internal static class ProtobufSemanticEquality
             var rightState = new ProtobufSemanticMessageState(descriptor, right);
             try
             {
-                if (leftState.HasUnknownFields || rightState.HasUnknownFields)
+                if ((leftState.HasUnknownFields || rightState.HasUnknownFields) &&
+                    !AreUnknownFieldsEqual(descriptor, left, right, remainingDepth))
                     return false;
 
                 var fields = descriptor.Fields.InFieldNumberOrder();
@@ -2470,6 +2540,297 @@ internal static class ProtobufSemanticFieldBuffers
         Array.Clear(fields, 0, count);
         if (depth != --t_depth)
             throw new InvalidOperationException("Protobuf semantic equality buffers were returned out of order.");
+    }
+}
+
+internal ref struct ProtobufUnknownFieldSetState
+{
+    private const int InitialEntryCapacity = 8;
+    private const int InitialBucketCapacity = InitialEntryCapacity * 2;
+    private const int InitialValueCapacity = 8;
+
+    private struct Entry
+    {
+        internal int Number;
+        internal ProtobufWireType WireType;
+        internal int FirstValue;
+        internal int LastValue;
+        internal int Count;
+    }
+
+    private struct Value
+    {
+        internal ProtobufValidationWireField Field;
+        internal int Next;
+    }
+
+    [InlineArray(InitialEntryCapacity)]
+    private struct InitialEntries
+    {
+        private Entry _element0;
+    }
+
+    [InlineArray(InitialBucketCapacity)]
+    private struct InitialBuckets
+    {
+        private int _element0;
+    }
+
+    [InlineArray(InitialValueCapacity)]
+    private struct InitialValues
+    {
+        private Value _element0;
+    }
+
+    private InitialEntries _initialEntries;
+    private InitialBuckets _initialBuckets;
+    private InitialValues _initialValues;
+    private Entry[]? _rentedEntries;
+    private int[]? _rentedBuckets;
+    private Value[]? _rentedValues;
+    private int _entryCapacity;
+    private int _bucketCapacity;
+    private int _valueCapacity;
+    private int _entryCount;
+    private int _valueCount;
+
+    public ProtobufUnknownFieldSetState()
+    {
+        _initialEntries = default;
+        _initialBuckets = default;
+        _initialValues = default;
+        _rentedEntries = null;
+        _rentedBuckets = null;
+        _rentedValues = null;
+        _entryCapacity = InitialEntryCapacity;
+        _bucketCapacity = InitialBucketCapacity;
+        _valueCapacity = InitialValueCapacity;
+        _entryCount = 0;
+        _valueCount = 0;
+        Span<int> buckets = _initialBuckets;
+        buckets.Fill(-1);
+    }
+
+    internal void Add(MessageDescriptor? descriptor, ReadOnlyMemory<byte> payload)
+    {
+        var reader = new ProtobufValidationWireReader(payload);
+        while (reader.TryRead(out var field))
+        {
+            var known = descriptor?.FindFieldByNumber(field.Number);
+            if (known is null || !ProtobufValidationValueDecoder.MatchesWireType(known, field.WireType))
+                Add(field);
+        }
+    }
+
+    internal void Add(ProtobufValidationWireField field)
+    {
+        var bucket = FindBucket(field.Number, field.WireType);
+        var entryIndex = GetBucket(bucket);
+        if (entryIndex >= 0)
+        {
+            var valueIndex = AppendValue(field);
+            var entry = GetEntry(entryIndex);
+            var last = GetValue(entry.LastValue);
+            last.Next = valueIndex;
+            SetValue(entry.LastValue, last);
+            entry.LastValue = valueIndex;
+            entry.Count++;
+            SetEntry(entryIndex, entry);
+            return;
+        }
+
+        EnsureEntryCapacity(_entryCount + 1);
+        bucket = FindBucket(field.Number, field.WireType);
+        var firstValue = AppendValue(field);
+        SetEntry(_entryCount, new Entry
+        {
+            Number = field.Number,
+            WireType = field.WireType,
+            FirstValue = firstValue,
+            LastValue = firstValue,
+            Count = 1
+        });
+        SetBucket(bucket, _entryCount++);
+    }
+
+    internal bool AreEqual(
+        ref ProtobufUnknownFieldSetState other,
+        int remainingDepth)
+    {
+        if (_entryCount != other._entryCount || _valueCount != other._valueCount)
+            return false;
+
+        for (var index = 0; index < _entryCount; index++)
+        {
+            var leftEntry = GetEntry(index);
+            if (!other.TryGetEntry(leftEntry.Number, leftEntry.WireType, out var rightEntry) ||
+                leftEntry.Count != rightEntry.Count)
+            {
+                return false;
+            }
+
+            var leftValue = leftEntry.FirstValue;
+            var rightValue = rightEntry.FirstValue;
+            while (leftValue >= 0 && rightValue >= 0)
+            {
+                var left = GetValue(leftValue);
+                var right = other.GetValue(rightValue);
+                if (!ValuesEqual(left.Field, right.Field, remainingDepth))
+                    return false;
+                leftValue = left.Next;
+                rightValue = right.Next;
+            }
+            if (leftValue >= 0 || rightValue >= 0)
+                return false;
+        }
+        return true;
+    }
+
+    private bool TryGetEntry(
+        int number,
+        ProtobufWireType wireType,
+        out Entry entry)
+    {
+        var entryIndex = GetBucket(FindBucket(number, wireType));
+        if (entryIndex >= 0)
+        {
+            entry = GetEntry(entryIndex);
+            return true;
+        }
+        entry = default;
+        return false;
+    }
+
+    private int FindBucket(int number, ProtobufWireType wireType)
+    {
+        var bucket = (int)(Hash(number, wireType) & (uint)(_bucketCapacity - 1));
+        while (GetBucket(bucket) is var entryIndex && entryIndex >= 0)
+        {
+            var entry = GetEntry(entryIndex);
+            if (entry.Number == number && entry.WireType == wireType)
+                return bucket;
+            bucket = (bucket + 1) & (_bucketCapacity - 1);
+        }
+        return bucket;
+    }
+
+    private int AppendValue(ProtobufValidationWireField field)
+    {
+        EnsureValueCapacity(_valueCount + 1);
+        var index = _valueCount++;
+        SetValue(index, new Value { Field = field, Next = -1 });
+        return index;
+    }
+
+    private void EnsureEntryCapacity(int requiredCount)
+    {
+        if (requiredCount <= _entryCapacity)
+            return;
+
+        var entryCapacity = Math.Max(requiredCount, _entryCapacity * 2);
+        var bucketCapacity = entryCapacity * 2;
+        var entries = ArrayPool<Entry>.Shared.Rent(entryCapacity);
+        for (var index = 0; index < _entryCount; index++)
+            entries[index] = GetEntry(index);
+        var buckets = ArrayPool<int>.Shared.Rent(bucketCapacity);
+        buckets.AsSpan(0, bucketCapacity).Fill(-1);
+        for (var index = 0; index < _entryCount; index++)
+        {
+            var entry = entries[index];
+            var bucket = (int)(Hash(entry.Number, entry.WireType) & (uint)(bucketCapacity - 1));
+            while (buckets[bucket] >= 0)
+                bucket = (bucket + 1) & (bucketCapacity - 1);
+            buckets[bucket] = index;
+        }
+
+        if (_rentedEntries is not null)
+            ArrayPool<Entry>.Shared.Return(_rentedEntries);
+        if (_rentedBuckets is not null)
+            ArrayPool<int>.Shared.Return(_rentedBuckets);
+        _rentedEntries = entries;
+        _rentedBuckets = buckets;
+        _entryCapacity = entryCapacity;
+        _bucketCapacity = bucketCapacity;
+    }
+
+    private void EnsureValueCapacity(int requiredCount)
+    {
+        if (requiredCount <= _valueCapacity)
+            return;
+
+        var valueCapacity = Math.Max(requiredCount, _valueCapacity * 2);
+        var values = ArrayPool<Value>.Shared.Rent(valueCapacity);
+        for (var index = 0; index < _valueCount; index++)
+            values[index] = GetValue(index);
+        if (_rentedValues is not null)
+            ArrayPool<Value>.Shared.Return(_rentedValues, clearArray: true);
+        _rentedValues = values;
+        _valueCapacity = valueCapacity;
+    }
+
+    private readonly Entry GetEntry(int index) =>
+        _rentedEntries is null ? _initialEntries[index] : _rentedEntries[index];
+
+    private void SetEntry(int index, Entry entry)
+    {
+        if (_rentedEntries is null)
+            _initialEntries[index] = entry;
+        else
+            _rentedEntries[index] = entry;
+    }
+
+    private readonly int GetBucket(int index) =>
+        _rentedBuckets is null ? _initialBuckets[index] : _rentedBuckets[index];
+
+    private void SetBucket(int index, int value)
+    {
+        if (_rentedBuckets is null)
+            _initialBuckets[index] = value;
+        else
+            _rentedBuckets[index] = value;
+    }
+
+    private readonly Value GetValue(int index) =>
+        _rentedValues is null ? _initialValues[index] : _rentedValues[index];
+
+    private void SetValue(int index, Value value)
+    {
+        if (_rentedValues is null)
+            _initialValues[index] = value;
+        else
+            _rentedValues[index] = value;
+    }
+
+    private static bool ValuesEqual(
+        ProtobufValidationWireField left,
+        ProtobufValidationWireField right,
+        int remainingDepth) => left.WireType switch
+    {
+        ProtobufWireType.Varint => left.Varint == right.Varint,
+        ProtobufWireType.Fixed64 => left.Fixed64 == right.Fixed64,
+        ProtobufWireType.LengthDelimited => left.Payload.Span.SequenceEqual(right.Payload.Span),
+        ProtobufWireType.StartGroup => ProtobufSemanticEquality.AreUnknownFieldsEqual(
+            left.Payload,
+            right.Payload,
+            remainingDepth - 1),
+        ProtobufWireType.Fixed32 => left.Fixed32 == right.Fixed32,
+        _ => false
+    };
+
+    private static uint Hash(int number, ProtobufWireType wireType) =>
+        unchecked((uint)number * 16777619u ^ (uint)wireType);
+
+    public void Dispose()
+    {
+        if (_rentedEntries is not null)
+            ArrayPool<Entry>.Shared.Return(_rentedEntries);
+        if (_rentedBuckets is not null)
+            ArrayPool<int>.Shared.Return(_rentedBuckets);
+        if (_rentedValues is not null)
+            ArrayPool<Value>.Shared.Return(_rentedValues, clearArray: true);
+        _rentedEntries = null;
+        _rentedBuckets = null;
+        _rentedValues = null;
     }
 }
 
