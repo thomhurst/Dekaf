@@ -919,6 +919,33 @@ public sealed class StreamsGroupMemberTests
     }
 
     [Test]
+    public async Task SuspendHeartbeatsForTestingAsync_DropsAlreadyQueuedHeartbeat()
+    {
+        var connection = new ScriptedConnection();
+        connection.EnqueueHeartbeat(Success(epoch: 1));
+        var blockedUpdate = new TaskCompletionSource<StreamsGroupHeartbeatResponse>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        connection.EnqueueHeartbeat(blockedUpdate.Task);
+        connection.EnqueueHeartbeat(Success(epoch: 3));
+        connection.EnqueueHeartbeat(Success(epoch: 4));
+        await using var fixture = CreateFixture(connection);
+        await fixture.Member.JoinAsync(CreateInitialUpdate());
+        var update = fixture.Member.UpdateAsync(new StreamsGroupMemberUpdate
+        {
+            ProcessId = "blocked"
+        }).AsTask();
+        await connection.SecondHeartbeatStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        await Assert.That(fixture.Member.QueueHeartbeatForTesting()).IsTrue();
+        var suspension = fixture.Member.SuspendHeartbeatsForTestingAsync().AsTask();
+        blockedUpdate.SetResult(Success(epoch: 2));
+
+        await update;
+        await suspension;
+        await Assert.That(connection.HeartbeatRequests).Count().IsEqualTo(3);
+    }
+
+    [Test]
     public async Task BackgroundHeartbeat_TransientFailureDoesNotBlockForegroundOperation()
     {
         var connection = new ScriptedConnection();

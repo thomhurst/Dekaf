@@ -143,6 +143,8 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
         return QueueOperationAsync(MemberCommand.ForUpdate(new StreamsGroupMemberUpdate()), cancellationToken);
     }
 
+    internal bool QueueHeartbeatForTesting() => QueueHeartbeat();
+
     public ValueTask<StreamsGroupHeartbeatResult> JoinAsync(
         StreamsGroupMemberUpdate initialState,
         CancellationToken cancellationToken = default)
@@ -540,7 +542,9 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
 
     private async ValueTask ProcessBackgroundHeartbeatAsync()
     {
-        if (_memberEpoch <= 0 || Volatile.Read(ref _closeRequested) != 0)
+        if (_memberEpoch <= 0 ||
+            Volatile.Read(ref _closeRequested) != 0 ||
+            Volatile.Read(ref _heartbeatsSuspendedForTesting) != 0)
             return;
 
         try
