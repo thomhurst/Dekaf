@@ -1450,7 +1450,7 @@ public sealed class JsonSchemaRegistryDeserializer<T> :
                         schema,
                         context,
                         SchemaRegistryPayloadFormat.Json,
-                        _validationRulesFactory!,
+                        new JsonInlineValidationRuleExecutor(_validationRulesFactory!),
                         _validationRulesFailFast)
                     : _migrationRunner.Transform(
                         payload,

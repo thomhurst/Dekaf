@@ -49,4 +49,16 @@ public sealed class ProtobufDeserializerConfig
     /// The Protobuf message-index prefix is not transformed.
     /// </summary>
     public ISchemaRegistryRuleExecutor? RuleExecutor { get; init; }
+
+    /// <summary>
+    /// Selects when inline <c>confluent.Meta.rules</c> CHECK constraints run.
+    /// Default is disabled. When <see cref="RuleExecutor"/> is also configured,
+    /// it must be a <see cref="SchemaRegistryRuleExecutor"/> so rule boundaries are known.
+    /// </summary>
+    public ValidationRulesExecution ValidationRulesExecution { get; init; }
+
+    /// <summary>
+    /// Stops Protobuf inline validation after its first violation when enabled.
+    /// </summary>
+    public bool ValidationRulesFailFast { get; init; }
 }

@@ -9,6 +9,11 @@ using static Dekaf.SchemaRegistry.ValidationCelHelpers;
 
 namespace Dekaf.SchemaRegistry;
 
+internal interface IInlineValidationRuleExecutor
+{
+    void Validate(ReadOnlyMemory<byte> payload, int schemaId, Schema schema, bool failFast);
+}
+
 /// <summary>
 /// Selects when inline schema validation rules run relative to domain rules.
 /// </summary>
@@ -239,6 +244,38 @@ internal sealed class CompiledValidationRule
         ValidationCelMemberValues memberValues,
         ValidationCelSizeValues sizes,
         uint equalityGeneration)
+        => EvaluateCore(
+            value,
+            default,
+            useTypedValues: false,
+            nowUnixMilliseconds,
+            memberValues,
+            sizes,
+            equalityGeneration);
+
+    internal ValidationResult Evaluate(
+        ValidationCelValue value,
+        long nowUnixMilliseconds,
+        ValidationCelMemberValues memberValues,
+        ValidationCelSizeValues sizes,
+        uint equalityGeneration)
+        => EvaluateCore(
+            default,
+            value,
+            useTypedValues: true,
+            nowUnixMilliseconds,
+            memberValues,
+            sizes,
+            equalityGeneration);
+
+    private ValidationResult EvaluateCore(
+        ReadOnlyMemory<byte> value,
+        ValidationCelValue typedValue,
+        bool useTypedValues,
+        long nowUnixMilliseconds,
+        ValidationCelMemberValues memberValues,
+        ValidationCelSizeValues sizes,
+        uint equalityGeneration)
     {
         if (_compilationError is not null)
             throw new SchemaRegistryRuleException(_compilationError);
@@ -247,6 +284,8 @@ internal sealed class CompiledValidationRule
         {
             var result = _expression!.Evaluate(new ValidationCelContext(
                 value,
+                typedValue,
+                useTypedValues,
                 nowUnixMilliseconds,
                 memberValues,
                 sizes,
@@ -397,6 +436,8 @@ internal sealed class CompiledValidationRule
 
 internal readonly record struct ValidationCelContext(
     ReadOnlyMemory<byte> This,
+    ValidationCelValue TypedThis,
+    bool UsesTypedValues,
     long NowUnixMilliseconds,
     ValidationCelMemberValues MemberValues,
     ValidationCelSizeValues Sizes,
@@ -406,6 +447,8 @@ internal struct ValidationCelMemberSlot
 {
     internal int Start;
     internal int Length;
+    internal ValidationCelValue Value;
+    internal bool IsTyped;
     internal uint Generation;
 }
 
@@ -423,11 +466,30 @@ internal readonly struct ValidationCelMemberValues(
             : default;
     }
 
+    internal ValidationCelValue GetValue(int index, ReadOnlyMemory<byte> source)
+    {
+        ref readonly var value = ref values[index];
+        if (value.Generation != generation)
+            return ValidationCelValue.Missing;
+        return value.IsTyped
+            ? value.Value
+            : ValidationCelValue.FromJson(source.Slice(value.Start, value.Length), index + 1);
+    }
+
     internal void Set(int index, int start, int length)
     {
         ref var value = ref values[index];
         value.Start = start;
         value.Length = length;
+        value.IsTyped = false;
+        value.Generation = generation;
+    }
+
+    internal void SetValue(int index, ValidationCelValue typedValue)
+    {
+        ref var value = ref values[index];
+        value.Value = typedValue;
+        value.IsTyped = true;
         value.Generation = generation;
     }
 
@@ -949,6 +1011,7 @@ internal enum ValidationCelValueKind : byte
     Boolean,
     Number,
     String,
+    Bytes,
     Object,
     Array
 }
@@ -961,7 +1024,10 @@ internal readonly record struct ValidationCelValue(
     string? Literal,
     ReadOnlyMemory<byte> Utf8Literal,
     bool NumberNegated = false,
-    int SizeIndex = -1)
+    int SizeIndex = -1,
+    bool IsUtf8Literal = false,
+    double Floating = 0,
+    bool IsFloating = false)
 {
     internal static ValidationCelValue Missing { get; } = new(ValidationCelValueKind.Missing, default, false, 0, null, default);
     internal static ValidationCelValue Null { get; } = new(ValidationCelValueKind.Null, default, false, 0, null, default);
@@ -972,15 +1038,27 @@ internal readonly record struct ValidationCelValue(
     internal static ValidationCelValue FromNumber(decimal value) =>
         new(ValidationCelValueKind.Number, default, true, value, null, default);
 
+    internal static ValidationCelValue FromFloating(double value) =>
+        new(
+            ValidationCelValueKind.Number,
+            default,
+            false,
+            0,
+            null,
+            default,
+            Floating: value,
+            IsFloating: true);
+
     internal static ValidationCelValue NegateNumber(ValidationCelValue value)
     {
         if (value.Kind != ValidationCelValueKind.Number)
             throw Unsupported("CEL arithmetic operators require numeric operands.");
         return value with
         {
-            Number = value.Boolean
+            Number = !value.IsFloating && value.Boolean
                 ? value.Number == decimal.MinValue ? decimal.MaxValue : -value.Number
                 : value.Number,
+            Floating = value.IsFloating ? -value.Floating : value.Floating,
             NumberNegated = (!value.Json.IsEmpty || !value.Utf8Literal.IsEmpty) &&
                 !value.NumberNegated
         };
@@ -1041,6 +1119,31 @@ internal readonly record struct ValidationCelValue(
     internal static ValidationCelValue FromString(string value) =>
         new(ValidationCelValueKind.String, default, false, 0, value, Encoding.UTF8.GetBytes(value));
 
+    internal static ValidationCelValue FromUtf8String(ReadOnlyMemory<byte> value, int sizeIndex = -1) =>
+        new(
+            ValidationCelValueKind.String,
+            default,
+            false,
+            0,
+            null,
+            value,
+            SizeIndex: sizeIndex,
+            IsUtf8Literal: true);
+
+    internal static ValidationCelValue FromBytes(ReadOnlyMemory<byte> value, int sizeIndex = -1) =>
+        new(
+            ValidationCelValueKind.Bytes,
+            default,
+            false,
+            0,
+            null,
+            value,
+            SizeIndex: sizeIndex,
+            IsUtf8Literal: true);
+
+    internal static ValidationCelValue FromCollection(ValidationCelValueKind kind, int sizeIndex) =>
+        new(kind, default, false, 0, null, default, SizeIndex: sizeIndex);
+
     internal static ValidationCelValue FromJson(ReadOnlyMemory<byte> json, int sizeIndex = -1)
     {
         if (json.IsEmpty)
@@ -1082,6 +1185,8 @@ internal readonly record struct ValidationCelValue(
     {
         if (Literal is not null)
             return Literal;
+        if (IsUtf8Literal)
+            return Encoding.UTF8.GetString(Utf8Literal.Span);
         var reader = new Utf8JsonReader(Json.Span, ValidationCelJsonReader.Options);
         _ = reader.Read();
         return reader.GetString() ?? string.Empty;
@@ -1445,9 +1550,13 @@ internal sealed class ValidationCelThisNode(int memberIndex) : ValidationCelNode
     internal int ValueIndex => memberIndex + 1;
 
     internal override ValidationCelValue Evaluate(ValidationCelContext context) =>
-        ValidationCelValue.FromJson(
-            memberIndex < 0 ? context.This : context.MemberValues.Get(memberIndex, context.This),
-            memberIndex + 1);
+        context.UsesTypedValues
+            ? memberIndex < 0
+                ? context.TypedThis
+                : context.MemberValues.GetValue(memberIndex, context.This)
+            : ValidationCelValue.FromJson(
+                memberIndex < 0 ? context.This : context.MemberValues.Get(memberIndex, context.This),
+                memberIndex + 1);
 }
 
 internal sealed class ValidationCelNowNode : ValidationCelNode
@@ -1530,6 +1639,7 @@ internal sealed class ValidationCelBinaryNode(
             ValidationCelValueKind.Boolean => left.Boolean == right.Boolean,
             ValidationCelValueKind.Number => CompareNumbers(left, right) == 0,
             ValidationCelValueKind.String => ValidationCelStrings.Evaluate(left, right, ValidationCelStringOperation.Equal),
+            ValidationCelValueKind.Bytes => left.Utf8Literal.Span.SequenceEqual(right.Utf8Literal.Span),
             ValidationCelValueKind.Object or ValidationCelValueKind.Array =>
                 AreJsonValuesEqual(left, right, equalityGeneration),
             _ => false
@@ -1570,6 +1680,13 @@ internal sealed class ValidationCelBinaryNode(
 
     private static int CompareNumbers(ValidationCelValue left, ValidationCelValue right)
     {
+        if (left.IsFloating || right.IsFloating)
+        {
+            var leftValue = left.IsFloating ? left.Floating : (double)RequireNumber(left);
+            var rightValue = right.IsFloating ? right.Floating : (double)RequireNumber(right);
+            return leftValue.CompareTo(rightValue);
+        }
+
         // Number values reuse the Boolean slot to mark a successful decimal parse.
         if (left.Boolean && right.Boolean)
         {
@@ -2123,6 +2240,8 @@ internal sealed class ValidationCelFunctionNode(
     {
         if (value.Kind == ValidationCelValueKind.String)
             return ValidationCelStrings.GetLength(value);
+        if (value.Kind == ValidationCelValueKind.Bytes)
+            return value.Utf8Literal.Length;
         if (value.Kind is not (ValidationCelValueKind.Array or ValidationCelValueKind.Object))
             throw Unsupported("CEL function 'size' requires a string, list, or map.");
 
@@ -2287,13 +2406,13 @@ internal static class ValidationCelStrings
     }
 
     private static int GetMaximumLength(ValidationCelValue value) =>
-        value.Literal is null ? value.Json.Length : value.Utf8Literal.Length;
+        value.Literal is null && !value.IsUtf8Literal ? value.Json.Length : value.Utf8Literal.Length;
 
     private static ReadOnlySpan<byte> DecodeUncached(
         ValidationCelValue value,
         Span<byte> destination)
     {
-        if (value.Literal is not null)
+        if (value.Literal is not null || value.IsUtf8Literal)
         {
             value.Utf8Literal.Span.CopyTo(destination);
             return destination[..value.Utf8Literal.Length];
@@ -2307,7 +2426,7 @@ internal static class ValidationCelStrings
 
     private static ReadOnlySpan<byte> Decode(ValidationCelValue value)
     {
-        if (value.Literal is not null)
+        if (value.Literal is not null || value.IsUtf8Literal)
             return value.Utf8Literal.Span;
 
         var valueIndex = value.SizeIndex;
@@ -2343,6 +2462,7 @@ internal enum ValidationCelTokenKind : byte
     End,
     Identifier,
     String,
+    Bytes,
     Number,
     True,
     False,
@@ -2477,6 +2597,8 @@ internal sealed class ValidationCelParser
             ValidationCelTokenKind.False => new ValidationCelLiteralNode(ValidationCelValue.False),
             ValidationCelTokenKind.Null => new ValidationCelLiteralNode(ValidationCelValue.Null),
             ValidationCelTokenKind.String => new ValidationCelLiteralNode(ValidationCelValue.FromString(token.Text)),
+            ValidationCelTokenKind.Bytes => new ValidationCelLiteralNode(
+                ValidationCelValue.FromBytes(Encoding.UTF8.GetBytes(token.Text))),
             ValidationCelTokenKind.Number => new ValidationCelLiteralNode(
                 ValidationCelValue.FromNumberLiteral(token.Text)),
             ValidationCelTokenKind.Identifier => ParseIdentifier(token.Text),
@@ -2637,6 +2759,13 @@ internal sealed class ValidationCelParser
             case '"':
                 return ReadString(character);
             default:
+                if (character == 'b' &&
+                    _position + 1 < _expression.Length &&
+                    _expression[_position + 1] is '\'' or '"')
+                {
+                    _position++;
+                    return ReadString(_expression[_position], ValidationCelTokenKind.Bytes);
+                }
                 if (char.IsDigit(character))
                     return ReadNumber();
                 if (char.IsLetter(character) || character == '_')
@@ -2709,7 +2838,9 @@ internal sealed class ValidationCelParser
         return new ValidationCelToken(ValidationCelTokenKind.Number, _expression[start.._position]);
     }
 
-    private ValidationCelToken ReadString(char quote)
+    private ValidationCelToken ReadString(
+        char quote,
+        ValidationCelTokenKind kind = ValidationCelTokenKind.String)
     {
         _position++;
         var builder = new StringBuilder();
@@ -2717,7 +2848,7 @@ internal sealed class ValidationCelParser
         {
             var character = _expression[_position++];
             if (character == quote)
-                return new ValidationCelToken(ValidationCelTokenKind.String, builder.ToString());
+                return new ValidationCelToken(kind, builder.ToString());
             if (character != '\\')
             {
                 builder.Append(character);

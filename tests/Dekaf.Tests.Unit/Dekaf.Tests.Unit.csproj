@@ -44,6 +44,7 @@
 
   <ItemGroup>
     <PackageReference Include="Google.Protobuf" />
+    <PackageReference Include="Grpc.Tools" PrivateAssets="All" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" />
     <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" />
     <PackageReference Include="OpenTelemetry" />
@@ -58,6 +59,8 @@
 
   <ItemGroup>
     <EmbeddedResource Include="Protocol\ResponseFixtures\*.bin" />
+    <Protobuf Include="Protos\*.proto" ProtoRoot="Protos" GrpcServices="None" />
+    <Protobuf Include="Protos\confluent\*.proto" ProtoRoot="Protos" GrpcServices="None" />
   </ItemGroup>
 
 </Project>

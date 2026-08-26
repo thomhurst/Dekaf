@@ -52,7 +52,9 @@
     <PackageReference Include="Grpc.Tools" PrivateAssets="All" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Condition="'$(PublishAot)' != 'true'" />
     <PackageReference Include="Microsoft.Extensions.Hosting" />
-    <PackageReference Include="protobuf-net.Reflection" Condition="'$(PublishAot)' != 'true'" />
+    <PackageReference Include="protobuf-net.Reflection"
+                      Aliases="protobufnet"
+                      Condition="'$(PublishAot)' != 'true'" />
     <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Condition="'$(PublishAot)' != 'true'" />
     <PackageReference Include="SSH.NET" PrivateAssets="All" />
     <PackageReference Include="TUnit" />
@@ -63,7 +65,11 @@
   </ItemGroup>
 
   <ItemGroup>
-    <Protobuf Include="Protos\*.proto" GrpcServices="None" />
+    <Protobuf Include="Protos\*.proto"
+              Exclude="Protos\protobuf_inline_validation.proto"
+              GrpcServices="None" />
+    <Protobuf Include="Protos\protobuf_inline_validation.proto" ProtoRoot="Protos" GrpcServices="None" />
+    <Protobuf Include="Protos\confluent\*.proto" ProtoRoot="Protos" GrpcServices="None" />
   </ItemGroup>
 
 </Project>

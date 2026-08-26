@@ -342,8 +342,20 @@ internal static class AotSmoke
 
     private static async Task RunProtobufSchemaRegistryPackageSmokeAsync(InMemorySchemaRegistry registry)
     {
-        await using var serializer = new ProtobufSchemaRegistrySerializer<AotProtobufMessage>(registry);
-        await using var deserializer = new ProtobufSchemaRegistryDeserializer<AotProtobufMessage>(registry);
+        var serializerConfig = new ProtobufSerializerConfig
+        {
+            ValidationRulesExecution = ValidationRulesExecution.BeforeDomainRules
+        };
+        var deserializerConfig = new ProtobufDeserializerConfig
+        {
+            ValidationRulesExecution = ValidationRulesExecution.AfterDomainRules
+        };
+        await using var serializer = new ProtobufSchemaRegistrySerializer<AotProtobufMessage>(
+            registry,
+            serializerConfig);
+        await using var deserializer = new ProtobufSchemaRegistryDeserializer<AotProtobufMessage>(
+            registry,
+            deserializerConfig);
 
         var payload = new AotProtobufMessage { Id = 10, Name = "protobuf", Value = 11.5 };
         var buffer = new ArrayBufferWriter<byte>();
@@ -354,6 +366,20 @@ internal static class AotSmoke
         Require(roundTrip.Id == payload.Id, "Protobuf Schema Registry ID mismatch.");
         Require(roundTrip.Name == payload.Name, "Protobuf Schema Registry name mismatch.");
         Require(Math.Abs(roundTrip.Value - payload.Value) < 0.0001, "Protobuf Schema Registry value mismatch.");
+
+        var invalidRejected = false;
+        try
+        {
+            serializer.Serialize(
+                new AotProtobufMessage { Id = 0, Name = "invalid" },
+                ref buffer,
+                ValueContext);
+        }
+        catch (ValidationRulesFailedException)
+        {
+            invalidRejected = true;
+        }
+        Require(invalidRejected, "Protobuf inline validation NativeAOT smoke failed.");
     }
 
     private static void RunSchemaRegistryBuilderExtensionSmoke(InMemorySchemaRegistry registry)
@@ -860,6 +886,7 @@ internal sealed class AotProtobufMessage : IMessage<AotProtobufMessage>, IBuffer
         fileDescriptorProto.MessageType.Add(new DescriptorProto
         {
             Name = "AotProtobufMessage",
+            Options = CreateValidationOptions(),
             Field =
             {
                 new FieldDescriptorProto
@@ -889,6 +916,33 @@ internal sealed class AotProtobufMessage : IMessage<AotProtobufMessage>, IBuffer
         DescriptorInstance = FileDescriptor.BuildFromByteStrings([fileDescriptorProto.ToByteString()])
             .Single()
             .MessageTypes[0];
+    }
+
+    private static MessageOptions CreateValidationOptions()
+    {
+        using var ruleStream = new MemoryStream();
+        using (var ruleOutput = new CodedOutputStream(ruleStream, leaveOpen: true))
+        {
+            ruleOutput.WriteTag(1, WireFormat.WireType.LengthDelimited);
+            ruleOutput.WriteString("positive-id");
+            ruleOutput.WriteTag(3, WireFormat.WireType.LengthDelimited);
+            ruleOutput.WriteString("this.id > 0");
+        }
+
+        using var metaStream = new MemoryStream();
+        using (var metaOutput = new CodedOutputStream(metaStream, leaveOpen: true))
+        {
+            metaOutput.WriteTag(4, WireFormat.WireType.LengthDelimited);
+            metaOutput.WriteBytes(ByteString.CopyFrom(ruleStream.ToArray()));
+        }
+
+        using var optionsStream = new MemoryStream();
+        using (var optionsOutput = new CodedOutputStream(optionsStream, leaveOpen: true))
+        {
+            optionsOutput.WriteTag(1088, WireFormat.WireType.LengthDelimited);
+            optionsOutput.WriteBytes(ByteString.CopyFrom(metaStream.ToArray()));
+        }
+        return MessageOptions.Parser.ParseFrom(optionsStream.ToArray());
     }
 
     public int Id { get; set; }

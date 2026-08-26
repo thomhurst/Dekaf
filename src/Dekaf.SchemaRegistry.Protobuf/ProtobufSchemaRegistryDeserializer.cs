@@ -1,6 +1,7 @@
 using System.Buffers.Binary;
 using Dekaf.Serialization;
 using Google.Protobuf;
+using Google.Protobuf.Reflection;
 
 namespace Dekaf.SchemaRegistry.Protobuf;
 
@@ -32,13 +33,15 @@ public sealed class ProtobufSchemaRegistryDeserializer<T> :
 {
     private const byte MagicByte = 0x00;
     private static readonly TimeSpan SchemaRegistryTimeout = TimeSpan.FromSeconds(30);
-    private static readonly string RecordName = new T().Descriptor.FullName;
+    private static readonly MessageDescriptor Descriptor = new T().Descriptor;
+    private static readonly string RecordName = Descriptor.FullName;
 
     private readonly ISchemaRegistryClient _schemaRegistry;
     private readonly ProtobufDeserializerConfig _config;
     private readonly bool _ownsClient;
     private readonly ISchemaRegistryRuleExecutor? _ruleExecutor;
     private readonly MessageParser<T> _parser;
+    private readonly ProtobufInlineRuleExecutor? _inlineRuleExecutor;
     private readonly DeserializerSubjectNameCache? _subjectNames;
     private readonly SchemaRegistryMigrationRunner? _migrationRunner;
 
@@ -56,6 +59,11 @@ public sealed class ProtobufSchemaRegistryDeserializer<T> :
         _schemaRegistry = schemaRegistry ?? throw new ArgumentNullException(nameof(schemaRegistry));
         _config = config ?? new ProtobufDeserializerConfig();
         _ruleExecutor = _config.RuleExecutor;
+        _inlineRuleExecutor = ProtobufValidationConfiguration.Create(
+            _config.ValidationRulesExecution,
+            _config.RuleExecutor,
+            _schemaRegistry,
+            Descriptor);
         _ownsClient = ownsClient;
         _parser = new MessageParser<T>(() => new T());
         _subjectNames = DeserializerSubjectNameCache.Create(
@@ -210,7 +218,36 @@ public sealed class ProtobufSchemaRegistryDeserializer<T> :
                     SchemaRegistryPayloadFormat.Protobuf);
                 try
                 {
-                    protobufData = _ruleExecutor.TransformDeserializedPayload(protobufData, ruleContext);
+                    if (_inlineRuleExecutor is not null &&
+                        _ruleExecutor is SchemaRegistryRuleExecutor builtInRuleExecutor)
+                    {
+                        protobufData = builtInRuleExecutor.TransformDeserializedEncodingPayload(
+                            protobufData,
+                            ruleContext);
+                        if (_config.ValidationRulesExecution == ValidationRulesExecution.BeforeDomainRules)
+                        {
+                            _inlineRuleExecutor.Validate(
+                                protobufData,
+                                schemaId,
+                                schema,
+                                _config.ValidationRulesFailFast);
+                        }
+                        protobufData = builtInRuleExecutor.TransformDeserializedDomainPayload(
+                            protobufData,
+                            ruleContext);
+                        if (_config.ValidationRulesExecution == ValidationRulesExecution.AfterDomainRules)
+                        {
+                            _inlineRuleExecutor.Validate(
+                                protobufData,
+                                schemaId,
+                                schema,
+                                _config.ValidationRulesFailFast);
+                        }
+                    }
+                    else
+                    {
+                        protobufData = _ruleExecutor.TransformDeserializedPayload(protobufData, ruleContext);
+                    }
                 }
                 finally
                 {
@@ -219,15 +256,42 @@ public sealed class ProtobufSchemaRegistryDeserializer<T> :
             }
             else
             {
-                var migration = _migrationRunner.Transform(
-                    protobufData,
-                    schemaId,
-                    subject,
-                    schema!,
-                    context,
-                    SchemaRegistryPayloadFormat.Protobuf);
+                var migration = _config.ValidationRulesExecution == ValidationRulesExecution.BeforeDomainRules
+                    ? _migrationRunner.TransformWithBeforeDomainValidation(
+                        protobufData,
+                        schemaId,
+                        subject,
+                        schema!,
+                        context,
+                        SchemaRegistryPayloadFormat.Protobuf,
+                        _inlineRuleExecutor!,
+                        _config.ValidationRulesFailFast)
+                    : _migrationRunner.Transform(
+                        protobufData,
+                        schemaId,
+                        subject,
+                        schema!,
+                        context,
+                        SchemaRegistryPayloadFormat.Protobuf);
                 protobufData = migration.Payload;
+                schemaId = migration.PayloadSchemaId;
+                if (_config.ValidationRulesExecution == ValidationRulesExecution.AfterDomainRules)
+                {
+                    ((IInlineValidationRuleExecutor)_inlineRuleExecutor!).Validate(
+                        protobufData,
+                        schemaId,
+                        migration.PayloadSchema,
+                        _config.ValidationRulesFailFast);
+                }
             }
+        }
+        else
+        {
+            _inlineRuleExecutor?.Validate(
+                protobufData,
+                schemaId,
+                schema,
+                _config.ValidationRulesFailFast);
         }
 
         // Parse directly from span — zero allocation (Google.Protobuf 3.21+).

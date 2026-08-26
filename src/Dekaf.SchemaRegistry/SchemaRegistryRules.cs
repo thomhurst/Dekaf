@@ -612,6 +612,16 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
         SchemaRegistryRuleContext context)
         => ApplyRules(payload, context, SchemaRegistryRuleDirection.Write);
 
+    internal ReadOnlyMemory<byte> TransformSerializedDomainPayload(
+        ReadOnlyMemory<byte> payload,
+        SchemaRegistryRuleContext context) =>
+        ApplyWriteRuleCollection(payload, context, useEncodingRules: false);
+
+    internal ReadOnlyMemory<byte> TransformSerializedEncodingPayload(
+        ReadOnlyMemory<byte> payload,
+        SchemaRegistryRuleContext context) =>
+        ApplyWriteRuleCollection(payload, context, useEncodingRules: true);
+
     internal ReadOnlyMemory<byte> TransformSerializedPayload(
         ReadOnlyMemory<byte> payload,
         SchemaRegistryRuleContext context,
@@ -833,6 +843,40 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
             context,
             useEncodingRules ? ruleSet.EncodingRules : ruleSet.DomainRules,
             SchemaRegistryRuleDirection.Read);
+    }
+
+    private ReadOnlyMemory<byte> ApplyWriteRuleCollection(
+        ReadOnlyMemory<byte> payload,
+        SchemaRegistryRuleContext context,
+        bool useEncodingRules)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+
+        var ruleSet = context.Schema?.RuleSet;
+        if (ruleSet is null || !ruleSet.HasDomainOrEncodingRules || !ShouldExecute(ruleSet))
+            return payload;
+
+        if (ruleSet.HasFixedRuleCollections)
+        {
+            var plan = _executionPlans.GetValue(ruleSet, _createExecutionPlan);
+            var start = useEncodingRules ? plan.WriteDomainStepCount : 0;
+            var count = useEncodingRules
+                ? plan.WriteSteps.Length - plan.WriteDomainStepCount
+                : plan.WriteDomainStepCount;
+            return ApplyRules(
+                payload,
+                context,
+                plan.WriteSteps,
+                start,
+                count,
+                SchemaRegistryRuleDirection.Write);
+        }
+
+        return ApplyRules(
+            payload,
+            context,
+            useEncodingRules ? ruleSet.EncodingRules : ruleSet.DomainRules,
+            SchemaRegistryRuleDirection.Write);
     }
 
     private ReadOnlyMemory<byte> ApplyReadDomainRuleCollectionWithTransformResult(

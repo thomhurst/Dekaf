@@ -1,0 +1,109 @@
+syntax = "proto3";
+
+package dekaf.validation;
+
+import "confluent/meta.proto";
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/wrappers.proto";
+import "protobuf_validation_child.proto";
+
+option csharp_namespace = "Dekaf.Tests.Unit.SchemaRegistry.ProtobufFixtures";
+
+message ValidationEnvelope {
+  option (confluent.message_meta) = {
+    rules: {
+      name: "age-upper-bound"
+      expr: "this.age <= 150"
+    }
+  };
+
+  int32 age = 1 [(confluent.field_meta) = {
+    rules: {
+      name: "age-lower-bound"
+      expr: "this >= 0"
+    }
+  }];
+
+  string name = 2 [(confluent.field_meta) = {
+    rules: {
+      name: "name-required"
+      expr: "size(this) > 0"
+    }
+  }];
+
+  optional string nickname = 3 [(confluent.field_meta) = {
+    rules: {
+      name: "nickname-not-empty"
+      expr: "size(this) > 0"
+    }
+  }];
+
+  repeated string tags = 4 [(confluent.field_meta) = {
+    rules: {
+      name: "tag-limit"
+      expr: "size(this) <= 2"
+    }
+  }];
+
+  repeated ValidationChild children = 5;
+  map<string, ValidationChild> children_by_name = 6 [(confluent.field_meta) = {
+    rules: {
+      name: "child-map-size"
+      expr: "size(this) <= 1"
+    }
+  }];
+
+  oneof contact {
+    string email = 7 [(confluent.field_meta) = {
+      rules: {
+        name: "email-not-empty"
+        expr: "size(this) > 0"
+      }
+    }];
+    string phone = 8;
+  }
+
+  bytes token = 9 [(confluent.field_meta) = {
+    rules: {
+      name: "token-size"
+      expr: "size(this) == 3"
+    }
+    rules: {
+      name: "token-value"
+      expr: "this == b'abc'"
+    }
+  }];
+
+  ValidationStatus status = 10 [(confluent.field_meta) = {
+    rules: {
+      name: "known-status"
+      expr: "this >= 0"
+    }
+  }];
+
+  google.protobuf.Timestamp created_at = 11 [(confluent.field_meta) = {
+    rules: {
+      name: "modern-date"
+      expr: "this >= timestamp('2020-01-01T00:00:00Z')"
+    }
+  }];
+
+  google.protobuf.Int32Value score = 12 [(confluent.field_meta) = {
+    rules: {
+      name: "score-not-negative"
+      expr: "this >= 0"
+    }
+  }];
+
+  repeated int32 codes = 13 [(confluent.field_meta) = {
+    rules: {
+      name: "packed-code-count"
+      expr: "size(this) == 3"
+    }
+  }];
+}
+
+enum ValidationStatus {
+  VALIDATION_STATUS_UNSPECIFIED = 0;
+  VALIDATION_STATUS_ACTIVE = 1;
+}
