@@ -348,7 +348,6 @@ public sealed class ConsumerRackAwarenessTests
                 brokerId,
                 partitions,
                 GetFetchBufferEpoch(consumer),
-                GetAssignmentVersion(consumer),
                 CancellationToken.None
             ]);
         if (result is not ValueTask<List<PendingFetchData>?> valueTask)
@@ -373,7 +372,6 @@ public sealed class ConsumerRackAwarenessTests
                 brokerId,
                 partitions,
                 GetFetchBufferEpoch(consumer),
-                GetAssignmentVersion(consumer),
                 CancellationToken.None,
                 CancellationToken.None
             ]);
@@ -383,12 +381,6 @@ public sealed class ConsumerRackAwarenessTests
         var pendingItems = await task.ConfigureAwait(false);
         DisposeAndReturn(pendingItems);
     }
-
-    private static int GetAssignmentVersion(KafkaConsumer<string, string> consumer) =>
-        (int)(typeof(KafkaConsumer<string, string>)
-            .GetField("_assignmentEnsureVersion", BindingFlags.NonPublic | BindingFlags.Instance)
-            ?.GetValue(consumer)
-            ?? throw new InvalidOperationException("_assignmentEnsureVersion field not found."));
 
     private static void DisposeAndReturn(List<PendingFetchData>? pendingItems)
     {
