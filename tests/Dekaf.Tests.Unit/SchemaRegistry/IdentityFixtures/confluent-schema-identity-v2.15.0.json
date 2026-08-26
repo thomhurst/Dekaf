@@ -1,0 +1,38 @@
+[
+  {
+    "format": "avro",
+    "producerPackage": "Confluent.SchemaRegistry.Serdes.Avro 2.15.0",
+    "registryImage": "confluentinc/cp-schema-registry:8.2.0",
+    "schemaId": 1,
+    "schemaGuid": "474592cf-579b-9e89-83fc-d0d5263f2b70",
+    "schema": "{\"type\":\"record\",\"name\":\"IdentityFixtureRecord\",\"namespace\":\"dekaf.interop\",\"fields\":[{\"name\":\"id\",\"type\":\"int\"},{\"name\":\"name\",\"type\":\"string\"}]}",
+    "prefixPayloadHex": "0000000001541c636f6e666c75656e742d6176726f",
+    "headerPayloadHex": "541c636f6e666c75656e742d6176726f",
+    "headerName": "__value_schema_id",
+    "headerValueHex": "01474592cf579b9e8983fcd0d5263f2b70"
+  },
+  {
+    "format": "json",
+    "producerPackage": "Confluent.SchemaRegistry.Serdes.Json 2.15.0",
+    "registryImage": "confluentinc/cp-schema-registry:8.2.0",
+    "schemaId": 2,
+    "schemaGuid": "a8219e01-7a65-080d-6da3-31e4d1ebc00c",
+    "schema": "{\"$schema\":\"http://json-schema.org/draft-04/schema#\",\"title\":\"IdentityFixtureJsonRecord\",\"type\":\"object\",\"additionalProperties\":false,\"properties\":{\"Id\":{\"type\":\"integer\",\"format\":\"int32\"},\"Name\":{\"type\":\"string\"}}}",
+    "prefixPayloadHex": "00000000027b224964223a34332c224e616d65223a22636f6e666c75656e742d6a736f6e227d",
+    "headerPayloadHex": "7b224964223a34332c224e616d65223a22636f6e666c75656e742d6a736f6e227d",
+    "headerName": "__value_schema_id",
+    "headerValueHex": "01a8219e017a65080d6da331e4d1ebc00c"
+  },
+  {
+    "format": "protobuf",
+    "producerPackage": "Confluent.SchemaRegistry.Serdes.Protobuf 2.15.0",
+    "registryImage": "confluentinc/cp-schema-registry:8.2.0",
+    "schemaId": 1,
+    "schemaGuid": "3449adb9-8f17-05cd-b0b2-d5e7e0a1c819",
+    "schema": "ChJ0ZXN0X21lc3NhZ2UucHJvdG8SC2Rla2FmLnRlc3RzIjYKC1Rlc3RNZXNzYWdlEgoKAmlkGAEgASgFEgwKBG5hbWUYAiABKAkSDQoFdmFsdWUYAyABKAFiBnByb3RvMw==",
+    "prefixPayloadHex": "000000000100082c1212636f6e666c75656e742d70726f746f627566190000000000002940",
+    "headerPayloadHex": "082c1212636f6e666c75656e742d70726f746f627566190000000000002940",
+    "headerName": "__value_schema_id",
+    "headerValueHex": "013449adb98f1705cdb0b2d5e7e0a1c81900"
+  }
+]

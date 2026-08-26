@@ -58,6 +58,7 @@
 
   <ItemGroup>
     <EmbeddedResource Include="Protocol\ResponseFixtures\*.bin" />
+    <EmbeddedResource Include="SchemaRegistry\IdentityFixtures\*.json" />
   </ItemGroup>
 
 </Project>
