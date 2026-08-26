@@ -239,11 +239,14 @@ public sealed class InMemoryKafkaCluster
 
             members.Remove(memberId);
 
-            _consumerGroupGenerations[groupId] = ++_nextConsumerGroupGeneration;
             if (members.Count == 0)
             {
                 _consumerGroupMembers.Remove(groupId);
-                _consumerGroupGenerations.TryRemove(groupId, out _);
+                _consumerGroupGenerations[groupId] = 0;
+            }
+            else
+            {
+                _consumerGroupGenerations[groupId] = ++_nextConsumerGroupGeneration;
             }
         }
     }
@@ -1069,7 +1072,7 @@ public sealed class InMemoryKafkaCluster
     {
         lock (_gate)
         {
-            var groupOffsets = GetOrCreateGroupOffsetsUnderLock(groupId);
+            var groupOffsets = GetOrCreateConsumerGroupOffsetsUnderLock(groupId);
             for (var index = 0; index < offsets.Count; index++)
             {
                 var offset = offsets[index];
@@ -1642,7 +1645,8 @@ public sealed class InMemoryKafkaCluster
     private bool RemoveConsumerGroupUnderLock(string groupId)
     {
         var existed = _consumerGroupOffsets.Remove(groupId);
-        return _consumerGroupGenerations.Remove(groupId) || existed;
+        var hadGeneration = _consumerGroupGenerations.TryRemove(groupId, out _);
+        return hadGeneration || existed;
     }
 
     private Dictionary<long, ShareGroupMemberRegistration>? GetShareLeasePartition(
