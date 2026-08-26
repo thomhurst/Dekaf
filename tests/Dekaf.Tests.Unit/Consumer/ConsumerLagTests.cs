@@ -58,17 +58,19 @@ public sealed class ConsumerLagTests
     }
 
     [Test]
-    public async Task GetCurrentLag_FullUnassignAndReassignClearsCachedState()
+    public async Task UnassignAndAssign_PublicApisClearPartitionState()
     {
         await using var consumer = CreateConsumer();
         consumer.IncrementalAssign([new TopicPartitionOffset(Partition.Topic, Partition.Partition, 10)]);
         SetCachedWatermarks(consumer, new WatermarkOffsets(0, 25));
+        consumer.Pause(Partition);
 
         consumer.Unassign();
         consumer.Assign(Partition);
-        consumer.Seek(new TopicPartitionOffset(Partition.Topic, Partition.Partition, 10));
 
-        await Assert.That(consumer.GetPosition(Partition)).IsEqualTo(10);
+        await Assert.That(consumer.Assignment).Contains(Partition);
+        await Assert.That(consumer.GetPosition(Partition)).IsNull();
+        await Assert.That(consumer.Paused).DoesNotContain(Partition);
         await Assert.That(consumer.GetWatermarkOffsets(Partition)).IsNull();
         await Assert.That(consumer.GetCurrentLag(Partition)).IsNull();
     }

@@ -230,9 +230,12 @@ long? cachedLag = consumer.GetCurrentLag(partition);
 
 `GetCurrentLag` performs no network I/O and allocates zero bytes. It returns `null` while the
 partition is unassigned, before its position is initialized, or before an isolation-visible end
-offset has been cached. The end offset is the high watermark for `ReadUncommitted` and the last
-stable offset for `ReadCommitted`; it is a snapshot from the latest fetch or explicit query, so
-newly appended or newly committed records can make the result stale.
+offset has been cached. It can also transiently return `null` when any assignment publication races
+the cache read; retrying reads the newly published assignment snapshot. A completed assignment
+change for another partition preserves this partition's cached lag. The end offset is the high
+watermark for `ReadUncommitted` and the last stable offset for `ReadCommitted`; it is a snapshot
+from the latest fetch or explicit query, so newly appended or newly committed records can make the
+result stale.
 
 Refresh the isolation-visible end offset when the caller needs a current broker value:
 

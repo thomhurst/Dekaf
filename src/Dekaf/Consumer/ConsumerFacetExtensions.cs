@@ -97,7 +97,8 @@ public static class ConsumerFacetExtensions
 
     /// <summary>
     /// Gets cached lag for an assigned partition without performing network I/O.
-    /// Returns null when assignment, position, or high-watermark data is unavailable.
+    /// Returns null when assignment, position, or high-watermark data is unavailable, or when an
+    /// assignment publication races the cache read.
     /// </summary>
     /// <exception cref="NotSupportedException">
     /// The consumer implementation does not expose partition lag.

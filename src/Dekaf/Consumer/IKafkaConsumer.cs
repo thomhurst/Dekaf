@@ -351,6 +351,8 @@ public interface IConsumerLag
     /// Returns <see langword="null"/> when the partition is not assigned, its position has not
     /// been initialized, or no isolation-visible end offset has been cached. The cached end offset
     /// can be stale until a fetch response or <see cref="QueryCurrentLagAsync"/> refreshes it.
+    /// A concurrent assignment publication can also make an otherwise available read transiently
+    /// return <see langword="null"/>; retry to read the newly published assignment snapshot.
     /// </remarks>
     long? GetCurrentLag(TopicPartition partition);
 
