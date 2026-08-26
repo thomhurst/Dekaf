@@ -20,6 +20,7 @@ public class InMemoryConsumerBenchmarks
     private InMemoryConsumer<Ignore, Ignore> _asyncAutoCommitConsumer = null!;
     private InMemoryConsumer<Ignore, Ignore> _asyncAutoCommitUnrelatedFaultConsumer = null!;
     private InMemoryConsumer<Ignore, Ignore> _noStoreCommitFaultConsumer = null!;
+    private InMemoryConsumer<Ignore, Ignore> _manualStoreNoFaultConsumer = null!;
     private InMemoryConsumer<Ignore, Ignore> _customPlanStoredOffsetConsumer = null!;
     private InMemoryConsumer<Ignore, Ignore> _snapshotConsumer = null!;
     private ConsumeResult<Ignore, Ignore>? _result;
@@ -141,6 +142,25 @@ public class InMemoryConsumerBenchmarks
             });
         _noStoreCommitFaultConsumer.Subscribe(Topic);
 
+        var manualStoreNoFaultCluster = new InMemoryKafkaCluster();
+        var manualStoreNoFaultProducer = new InMemoryProducer<Ignore, Ignore>(manualStoreNoFaultCluster);
+        manualStoreNoFaultProducer.ProduceAsync(Topic, default, default).GetAwaiter().GetResult();
+        _manualStoreNoFaultConsumer = new InMemoryConsumer<Ignore, Ignore>(
+            manualStoreNoFaultCluster,
+            new InMemoryConsumerOptions
+            {
+                GroupId = GroupId,
+                AutoOffsetReset = AutoOffsetReset.Earliest,
+                EnableAutoOffsetStore = false,
+                OffsetCommitMode = OffsetCommitMode.Auto
+            });
+        _manualStoreNoFaultConsumer.Subscribe(Topic);
+        for (var partition = 1; partition <= 1024; partition++)
+        {
+            _manualStoreNoFaultConsumer.StoreOffset(
+                new TopicPartitionOffset("other-topic", partition, 1));
+        }
+
         var customInnerPlan = new KafkaFaultPlan();
         var customPlanCluster = new InMemoryKafkaCluster(
             new InMemoryKafkaClusterOptions(),
@@ -256,6 +276,19 @@ public class InMemoryConsumerBenchmarks
         var operation = _noStoreCommitFaultConsumer.ConsumeOneAsync(TimeSpan.Zero);
         if (!operation.IsCompletedSuccessfully)
             throw new InvalidOperationException("No-stored-offset consume did not complete synchronously.");
+
+        _result = operation.Result;
+    }
+
+    [Benchmark]
+    [InvocationCount(131072)]
+    public void ConsumeOneAutoCommitManualStoreNoFault()
+    {
+        _manualStoreNoFaultConsumer.StoreOffset(StoredOffset);
+        _manualStoreNoFaultConsumer.Seek(new TopicPartitionOffset(Topic, 0, 0));
+        var operation = _manualStoreNoFaultConsumer.ConsumeOneAsync(TimeSpan.Zero);
+        if (!operation.IsCompletedSuccessfully)
+            throw new InvalidOperationException("Manual-store no-fault consume did not complete synchronously.");
 
         _result = operation.Result;
     }

@@ -545,6 +545,34 @@ public sealed class InMemoryConsumerFaultTests
     }
 
     [Test]
+    public async Task CommitAsync_GroupChangeDuringBarrierDoesNotOverwriteNewOwnerOffset()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic(Topic);
+        await using var consumer = CreateConsumer(
+            cluster,
+            enableAutoOffsetStore: false,
+            memberId: "z-member");
+        consumer.Subscribe(Topic);
+        consumer.StoreOffset(new TopicPartitionOffset(Topic, 0, 1));
+        var barrier = cluster.FaultPlan.PauseNext(
+            new KafkaFaultScope(KafkaFaultOperation.Commit, groupId: GroupId));
+
+        var staleCommit = consumer.CommitAsync().AsTask();
+        await barrier.WaitUntilEnteredAsync();
+        await using var newOwner = CreateConsumer(
+            cluster,
+            enableAutoOffsetStore: false,
+            memberId: "a-member");
+        newOwner.Subscribe(Topic);
+        await newOwner.CommitAsync([new TopicPartitionOffset(Topic, 0, 9)]);
+        await Assert.That(barrier.Release()).IsTrue();
+        await staleCommit;
+
+        await Assert.That(cluster.GetCommittedOffset(GroupId, Partition)).IsEqualTo(9);
+    }
+
+    [Test]
     public async Task CommitAsync_BarrierCommitsExactCallerOffsets()
     {
         var (cluster, consumer) = await CreateConsumerWithRecordAsync();
@@ -597,6 +625,35 @@ public sealed class InMemoryConsumerFaultTests
     }
 
     [Test]
+    public async Task OnDeliveryAutoCommit_GroupChangeDuringBarrierDoesNotOverwriteNewOwnerOffset()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.ProduceAsync(Topic, "key", "value");
+        await using var consumer = CreateConsumer(
+            cluster,
+            enableAutoOffsetStore: true,
+            offsetCommitMode: OffsetCommitMode.Auto,
+            memberId: "z-member");
+        consumer.Subscribe(Topic);
+        var barrier = cluster.FaultPlan.PauseNext(
+            new KafkaFaultScope(KafkaFaultOperation.Commit, groupId: GroupId));
+
+        var staleConsume = consumer.ConsumeOneAsync(TimeSpan.Zero).AsTask();
+        await barrier.WaitUntilEnteredAsync();
+        await using var newOwner = CreateConsumer(
+            cluster,
+            enableAutoOffsetStore: false,
+            memberId: "a-member");
+        newOwner.Subscribe(Topic);
+        await newOwner.CommitAsync([new TopicPartitionOffset(Topic, 0, 9)]);
+        await Assert.That(barrier.Release()).IsTrue();
+
+        await Assert.That(await staleConsume).IsNull();
+        await Assert.That(cluster.GetCommittedOffset(GroupId, Partition)).IsEqualTo(9);
+    }
+
+    [Test]
     public async Task OnDeliveryAutoCommit_BarrierAllowsPausingUnrelatedPartition()
     {
         var cluster = new InMemoryKafkaCluster();
@@ -615,17 +672,21 @@ public sealed class InMemoryConsumerFaultTests
             offsetCommitMode: OffsetCommitMode.Auto);
         var secondPartition = new TopicPartition(Topic, 1);
         consumer.Assign(Partition, secondPartition);
+        consumer.StoreOffset(new TopicPartitionOffset(Topic, 1, 1));
         var barrier = cluster.FaultPlan.PauseNext(
             new KafkaFaultScope(KafkaFaultOperation.Commit, Topic, 0, GroupId));
 
         var consume = consumer.ConsumeOneAsync(TimeSpan.Zero).AsTask();
         await barrier.WaitUntilEnteredAsync();
         consumer.Pause(secondPartition);
+        consumer.StoreOffset(new TopicPartitionOffset(Topic, 1, 9));
         await Assert.That(barrier.Release()).IsTrue();
         _ = await consume;
 
         await Assert.That(consumer.Paused).Contains(secondPartition);
         await Assert.That(consumer.Paused).DoesNotContain(Partition);
+        await Assert.That(cluster.GetCommittedOffset(GroupId, Partition)).IsEqualTo(1);
+        await Assert.That(cluster.GetCommittedOffset(GroupId, secondPartition)).IsEqualTo(1);
     }
 
     [Test]
@@ -1369,7 +1430,7 @@ public sealed class InMemoryConsumerFaultTests
     }
 
     [Test]
-    public async Task ConsumeOneAsync_GroupChangeDuringCommitProbePreventsStaleAdvancement()
+    public async Task ConsumeOneAsync_GroupChangeDuringCommitProbePreservesFault()
     {
         var innerPlan = new KafkaFaultPlan();
         var faultPlan = new DelegatingFaultPlan(innerPlan);
@@ -1379,8 +1440,13 @@ public sealed class InMemoryConsumerFaultTests
         var deserializer = new AsyncStringDeserializer();
         await using var consumer = CreateAsyncConsumer(cluster, deserializer, "z-member");
         consumer.Subscribe(Topic);
+        var commitFailure = new InvalidOperationException("commit failed");
+        var commitScope = new KafkaFaultScope(
+            KafkaFaultOperation.Commit,
+            groupId: GroupId);
+        innerPlan.Fail(commitScope, commitFailure);
         InMemoryConsumer<string, string>? joiningConsumer = null;
-        faultPlan.ObserveNextMatchingProbe(() =>
+        faultPlan.ObserveNextCommitProbe(() =>
         {
             joiningConsumer = CreateConsumer(cluster, memberId: "a-member");
             joiningConsumer.Subscribe(Topic);
@@ -1391,6 +1457,8 @@ public sealed class InMemoryConsumerFaultTests
         await Assert.That(result).IsNull();
         await Assert.That(consumer.GetPosition(Partition)).IsEqualTo(0);
         await Assert.That(joiningConsumer).IsNotNull();
+        await Assert.That(innerPlan.Count).IsEqualTo(1);
+        await Assert.That(innerPlan.Clear(commitScope)).IsEqualTo(1);
         var reassignedConsumer = joiningConsumer!;
         await using (reassignedConsumer)
         {
@@ -1876,6 +1944,38 @@ public sealed class InMemoryConsumerFaultTests
     }
 
     [Test]
+    public async Task AutoCommit_AfterProcessingGroupChangeDoesNotOverwriteNewOwnerOffset()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.ProduceAsync(Topic, "key-0", "value-0");
+        await producer.ProduceAsync(Topic, "key-1", "value-1");
+        await using var consumer = CreateConsumer(
+            cluster,
+            enableAutoOffsetStore: true,
+            offsetCommitMode: OffsetCommitMode.Auto,
+            offsetStoreTiming: OffsetStoreTiming.AfterProcessing,
+            memberId: "z-member");
+        consumer.Subscribe(Topic);
+        _ = await consumer.ConsumeOneAsync(TimeSpan.Zero);
+        var barrier = cluster.FaultPlan.PauseNext(
+            new KafkaFaultScope(KafkaFaultOperation.Commit, groupId: GroupId));
+
+        var staleConsume = consumer.ConsumeOneAsync(TimeSpan.Zero).AsTask();
+        await barrier.WaitUntilEnteredAsync();
+        await using var newOwner = CreateConsumer(
+            cluster,
+            enableAutoOffsetStore: false,
+            memberId: "a-member");
+        newOwner.Subscribe(Topic);
+        await newOwner.CommitAsync([new TopicPartitionOffset(Topic, 0, 9)]);
+        await Assert.That(barrier.Release()).IsTrue();
+
+        await Assert.That(await staleConsume).IsNull();
+        await Assert.That(cluster.GetCommittedOffset(GroupId, Partition)).IsEqualTo(9);
+    }
+
+    [Test]
     public async Task AutoCommit_AfterProcessingFaultObserverClosePreventsLateReservation()
     {
         var cluster = new InMemoryKafkaCluster();
@@ -2035,6 +2135,80 @@ public sealed class InMemoryConsumerFaultTests
 
         await Assert.That(await sharedMove).IsTrue();
         await Assert.That(stream.Current.Key).IsEqualTo("key-2");
+    }
+
+    [Test]
+    public async Task ConsumeAsync_AfterProcessingOwnerCompletesSharedWaiter()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.ProduceAsync(Topic, "key-0", "value-0");
+        await producer.ProduceAsync(Topic, "key-1", "value-1");
+        var deserializer = new AsyncStringDeserializer();
+        await using var consumer = new InMemoryConsumer<string, string>(
+            cluster,
+            deserializer,
+            deserializer,
+            new InMemoryConsumerOptions
+            {
+                GroupId = GroupId,
+                AutoOffsetReset = AutoOffsetReset.Earliest,
+                OffsetCommitMode = OffsetCommitMode.Auto,
+                EnableAutoOffsetStore = true,
+                OffsetStoreTiming = OffsetStoreTiming.AfterProcessing
+            });
+        consumer.Subscribe(Topic);
+        await using var stream = consumer.ConsumeAsync().GetAsyncEnumerator();
+        await Assert.That(await stream.MoveNextAsync()).IsTrue();
+        var barrier = cluster.FaultPlan.PauseNext(
+            new KafkaFaultScope(KafkaFaultOperation.Commit, groupId: GroupId));
+
+        var ownerMove = stream.MoveNextAsync().AsTask();
+        await barrier.WaitUntilEnteredAsync();
+        var sharedConsume = consumer.ConsumeOneAsync(Timeout.InfiniteTimeSpan).AsTask();
+        await Assert.That(sharedConsume.IsCompleted).IsFalse();
+        await Assert.That(barrier.Release()).IsTrue();
+
+        await Assert.That(await ownerMove.WaitAsync(TimeSpan.FromSeconds(5))).IsTrue();
+        await Assert.That(stream.Current.Key).IsEqualTo("key-1");
+        await Assert.That(await sharedConsume.WaitAsync(TimeSpan.FromSeconds(5))).IsNull();
+    }
+
+    [Test]
+    public async Task Snapshot_AfterProcessingOwnerCompletesSharedWaiter()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.ProduceAsync(Topic, "key-0", "value-0");
+        await producer.ProduceAsync(Topic, "key-1", "value-1");
+        var deserializer = new AsyncStringDeserializer();
+        await using var consumer = new InMemoryConsumer<string, string>(
+            cluster,
+            deserializer,
+            deserializer,
+            new InMemoryConsumerOptions
+            {
+                GroupId = GroupId,
+                AutoOffsetReset = AutoOffsetReset.Earliest,
+                OffsetCommitMode = OffsetCommitMode.Auto,
+                EnableAutoOffsetStore = true,
+                OffsetStoreTiming = OffsetStoreTiming.AfterProcessing
+            });
+        consumer.Subscribe(Topic);
+        await using var snapshot = consumer.ConsumeSnapshotAsync().GetAsyncEnumerator();
+        await Assert.That(await snapshot.MoveNextAsync()).IsTrue();
+        var barrier = cluster.FaultPlan.PauseNext(
+            new KafkaFaultScope(KafkaFaultOperation.Commit, groupId: GroupId));
+
+        var ownerMove = snapshot.MoveNextAsync().AsTask();
+        await barrier.WaitUntilEnteredAsync();
+        var sharedConsume = consumer.ConsumeOneAsync(Timeout.InfiniteTimeSpan).AsTask();
+        await Assert.That(sharedConsume.IsCompleted).IsFalse();
+        await Assert.That(barrier.Release()).IsTrue();
+
+        await Assert.That(await ownerMove.WaitAsync(TimeSpan.FromSeconds(5))).IsTrue();
+        await Assert.That(snapshot.Current.Key).IsEqualTo("key-1");
+        await Assert.That(await sharedConsume.WaitAsync(TimeSpan.FromSeconds(5))).IsNull();
     }
 
     [Test]
@@ -2225,6 +2399,35 @@ public sealed class InMemoryConsumerFaultTests
         await close;
 
         await Assert.That(cluster.GetCommittedOffset(GroupId, Partition)).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task CloseAsync_GroupChangeDuringBarrierDoesNotOverwriteNewOwnerOffset()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic(Topic);
+        var consumer = CreateConsumer(
+            cluster,
+            enableAutoOffsetStore: false,
+            offsetCommitMode: OffsetCommitMode.Auto,
+            memberId: "z-member");
+        consumer.Subscribe(Topic);
+        consumer.StoreOffset(new TopicPartitionOffset(Topic, 0, 1));
+        var barrier = cluster.FaultPlan.PauseNext(
+            new KafkaFaultScope(KafkaFaultOperation.Commit, groupId: GroupId));
+
+        var staleClose = consumer.CloseAsync().AsTask();
+        await barrier.WaitUntilEnteredAsync();
+        await using var newOwner = CreateConsumer(
+            cluster,
+            enableAutoOffsetStore: false,
+            memberId: "a-member");
+        newOwner.Subscribe(Topic);
+        await newOwner.CommitAsync([new TopicPartitionOffset(Topic, 0, 9)]);
+        await Assert.That(barrier.Release()).IsTrue();
+        await staleClose;
+
+        await Assert.That(cluster.GetCommittedOffset(GroupId, Partition)).IsEqualTo(9);
     }
 
     [Test]
@@ -2673,6 +2876,7 @@ public sealed class InMemoryConsumerFaultTests
     {
         private Action? _countObserved;
         private Action? _matchingObserved;
+        private Action? _commitProbeObserved;
 
         public int MatchingProbeCount { get; private set; }
 
@@ -2701,6 +2905,9 @@ public sealed class InMemoryConsumerFaultTests
         public void ObserveNextMatchingProbe(Action callback) =>
             _matchingObserved = callback;
 
+        public void ObserveNextCommitProbe(Action callback) =>
+            _commitProbeObserved = callback;
+
         public bool HasMatchingFault(in KafkaFaultScope operationScope)
         {
             Interlocked.Exchange(ref _matchingObserved, null)?.Invoke();
@@ -2721,6 +2928,7 @@ public sealed class InMemoryConsumerFaultTests
             ReadOnlySpan<KafkaFaultScope> operationScopes,
             out KafkaFaultScope operationScope)
         {
+            Interlocked.Exchange(ref _commitProbeObserved, null)?.Invoke();
             Interlocked.Exchange(ref _matchingObserved, null)?.Invoke();
             return inner.TryGetFirstMatchingFaultScope(operationScopes, out operationScope);
         }
