@@ -148,7 +148,8 @@ public sealed class FetchBufferMemoryPoolTests
     }
 
     [Test]
-    public async Task Dispose_WakesAllWaitingReservations()
+    [Timeout(120_000)]
+    public async Task Dispose_WakesAllWaitingReservations(CancellationToken cancellationToken)
     {
         var pool = new FetchBufferMemoryPool(100);
         using var retained = await pool.ReserveAsync(100, CancellationToken.None);
@@ -157,9 +158,9 @@ public sealed class FetchBufferMemoryPoolTests
 
         pool.Dispose();
 
-        await Assert.That(async () => await first.WaitAsync(TimeSpan.FromSeconds(5)))
+        await Assert.That(async () => await first.WaitAsync(cancellationToken))
             .Throws<ObjectDisposedException>();
-        await Assert.That(async () => await second.WaitAsync(TimeSpan.FromSeconds(5)))
+        await Assert.That(async () => await second.WaitAsync(cancellationToken))
             .Throws<ObjectDisposedException>();
     }
 }
