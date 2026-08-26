@@ -3,6 +3,8 @@ using BenchmarkDotNet.Attributes;
 using Dekaf.SchemaRegistry;
 using Dekaf.SchemaRegistry.Protobuf;
 using Dekaf.Serialization;
+using Dekaf.Tests.Unit.SchemaRegistry.ProtobufFixtures;
+using Google.Protobuf;
 using Google.Protobuf.WellKnownTypes;
 
 namespace Dekaf.Benchmarks.Benchmarks.Unit;
@@ -18,9 +20,10 @@ public class ProtobufSchemaRegistrySerializerBenchmarks
     private readonly ArrayBufferWriter<byte> _destination = new(256);
     private ProtobufSchemaRegistrySerializer<StringValue> _serializer = null!;
     private ProtobufSchemaRegistrySerializer<StringValue> _headerSerializer = null!;
-    private ProtobufSchemaRegistrySerializer<StringValue> _validatedSerializer = null!;
+    private ProtobufSchemaRegistrySerializer<ValidationEnvelope> _validatedSerializer = null!;
+    private ProtobufSchemaRegistrySerializer<ValidationEnvelope> _validationBaselineSerializer = null!;
     private StringValue _value = null!;
-    private StringValue _largeValue = null!;
+    private ValidationEnvelope _validatedValue = null!;
     private SerializationContext _context;
     private SerializationContext _headerContext;
 
@@ -31,14 +34,18 @@ public class ProtobufSchemaRegistrySerializerBenchmarks
         _headerSerializer = new ProtobufSchemaRegistrySerializer<StringValue>(
             new BenchmarkSchemaRegistryClient(),
             new ProtobufSerializerConfig { SchemaIdStrategy = SchemaIdSerializerStrategy.Header });
-        _validatedSerializer = new ProtobufSchemaRegistrySerializer<StringValue>(
+        _validatedSerializer = new ProtobufSchemaRegistrySerializer<ValidationEnvelope>(
             new BenchmarkSchemaRegistryClient(),
             new ProtobufSerializerConfig
             {
+                UseSchemaReferences = false,
                 ValidationRulesExecution = ValidationRulesExecution.BeforeDomainRules
             });
+        _validationBaselineSerializer = new ProtobufSchemaRegistrySerializer<ValidationEnvelope>(
+            new BenchmarkSchemaRegistryClient(),
+            new ProtobufSerializerConfig { UseSchemaReferences = false });
         _value = new StringValue { Value = "protobuf-benchmark" };
-        _largeValue = new StringValue { Value = new string('x', 16 * 1024) };
+        _validatedValue = CreateValidatedValue();
         _context = new SerializationContext
         {
             Topic = "protobuf-benchmark",
@@ -57,7 +64,9 @@ public class ProtobufSchemaRegistrySerializerBenchmarks
         _headerSerializer.Serialize(_value, ref destination, _headerContext);
         _headerContext.Headers!.Clear();
         destination.Clear();
-        _validatedSerializer.Serialize(_largeValue, ref destination, _context);
+        _validatedSerializer.Serialize(_validatedValue, ref destination, _context);
+        destination.Clear();
+        _validationBaselineSerializer.Serialize(_validatedValue, ref destination, _context);
         destination.Clear();
     }
 
@@ -67,6 +76,7 @@ public class ProtobufSchemaRegistrySerializerBenchmarks
         await _serializer.DisposeAsync().ConfigureAwait(false);
         await _headerSerializer.DisposeAsync().ConfigureAwait(false);
         await _validatedSerializer.DisposeAsync().ConfigureAwait(false);
+        await _validationBaselineSerializer.DisposeAsync().ConfigureAwait(false);
     }
 
     [Benchmark]
@@ -91,11 +101,41 @@ public class ProtobufSchemaRegistrySerializerBenchmarks
     {
         _destination.Clear();
         var destination = _destination;
-        _validatedSerializer.Serialize(_largeValue, ref destination, _context);
+        _validatedSerializer.Serialize(_validatedValue, ref destination, _context);
+    }
+
+    [Benchmark]
+    public void SerializeCachedWithoutInlineValidation()
+    {
+        _destination.Clear();
+        var destination = _destination;
+        _validationBaselineSerializer.Serialize(_validatedValue, ref destination, _context);
     }
 
     [Benchmark]
     public ValueTask PrepareCached() => _serializer.PrepareAsync(_value, _context);
+
+    private static ValidationEnvelope CreateValidatedValue()
+    {
+        var value = new ValidationEnvelope
+        {
+            Age = 42,
+            Name = new string('x', 16 * 1024),
+            Email = "test@example.com",
+            Token = ByteString.CopyFromUtf8("abc"),
+            Status = ValidationStatus.Active,
+            CreatedAt = Timestamp.FromDateTime(
+                new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)),
+            Score = 7
+        };
+        value.Tags.Add("fast");
+        value.Tags.Add("native");
+        value.Children.Add(new ValidationChild { Value = 1 });
+        value.Codes.Add(1);
+        value.Codes.Add(2);
+        value.Codes.Add(3);
+        return value;
+    }
 
     private sealed class BenchmarkSchemaRegistryClient : ISchemaRegistryClient
     {

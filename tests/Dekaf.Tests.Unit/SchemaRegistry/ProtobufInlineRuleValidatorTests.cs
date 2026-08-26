@@ -1558,6 +1558,7 @@ public sealed class ProtobufInlineRuleValidatorTests
         var reader = new ProtobufValidationWireReader(payload);
         while (reader.TryRead(out _))
         {
+            // Drain all fields; reader validation is the assertion.
         }
     }
 
