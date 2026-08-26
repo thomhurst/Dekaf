@@ -585,14 +585,22 @@ public sealed class InMemoryKafkaCluster
     }
 
     internal bool TryRead(TopicPartition topicPartition, long offset, out InMemoryRecord record) =>
-        TryRead(topicPartition, offset, IsolationLevel.ReadCommitted, out record, out _);
+        TryRead(topicPartition, offset, IsolationLevel.ReadCommitted, borrowStoredRecord: false, out record, out _);
 
     internal bool TryRead(
         TopicPartition topicPartition,
         long offset,
         IsolationLevel isolationLevel,
         out InMemoryRecord record) =>
-        TryRead(topicPartition, offset, isolationLevel, out record, out _);
+        TryRead(topicPartition, offset, isolationLevel, borrowStoredRecord: false, out record, out _);
+
+    internal bool TryRead(
+        TopicPartition topicPartition,
+        long offset,
+        IsolationLevel isolationLevel,
+        bool borrowStoredRecord,
+        out InMemoryRecord record) =>
+        TryRead(topicPartition, offset, isolationLevel, borrowStoredRecord, out record, out _);
 
     internal bool TryRead(
         TopicPartition topicPartition,
@@ -603,6 +611,7 @@ public sealed class InMemoryKafkaCluster
             topicPartition,
             offset,
             IsolationLevel.ReadCommitted,
+            borrowStoredRecord: false,
             out record,
             out blockedByOngoingTransaction);
 
@@ -610,6 +619,7 @@ public sealed class InMemoryKafkaCluster
         TopicPartition topicPartition,
         long offset,
         IsolationLevel isolationLevel,
+        bool borrowStoredRecord,
         out InMemoryRecord record,
         out bool blockedByOngoingTransaction)
     {
@@ -626,9 +636,18 @@ public sealed class InMemoryKafkaCluster
                 return false;
             }
 
-            // Consumers treat the stored record as borrowed immutable data. Public record reads
-            // and share-consumer leases still clone because those APIs expose InMemoryRecord.
-            record = candidate;
+            if (!borrowStoredRecord)
+            {
+                record = CloneRecord(candidate);
+            }
+            else if (candidate.Headers.Count == 0)
+            {
+                record = candidate;
+            }
+            else
+            {
+                record = candidate with { Headers = CopyHeaders(candidate.Headers) };
+            }
             return true;
         }
     }
