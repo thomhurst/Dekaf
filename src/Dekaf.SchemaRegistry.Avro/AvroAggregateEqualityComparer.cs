@@ -10,6 +10,7 @@ internal sealed class AvroAggregateEqualityComparer(AvroSchema schema) : IValida
     private const int StackMapBucketCount = 32;
 
     private readonly AvroSchema _schema = schema;
+    private readonly bool _requiresSemanticEquality = ContainsFloating(schema, []);
 
     internal static AvroAggregateEqualityComparer? Create(AvroSchema schema) => schema.Tag switch
     {
@@ -17,6 +18,8 @@ internal sealed class AvroAggregateEqualityComparer(AvroSchema schema) : IValida
         AvroSchema.Type.Array or AvroSchema.Type.Map => new(schema),
         _ => null
     };
+
+    bool IValidationCelAggregateComparer.RequiresSemanticEquality => _requiresSemanticEquality;
 
     bool IValidationCelAggregateComparer.AreEqual(
         ReadOnlyMemory<byte> left,
@@ -94,6 +97,50 @@ internal sealed class AvroAggregateEqualityComparer(AvroSchema schema) : IValida
             default:
                 throw InvalidPayload($"unsupported schema type {schema.Tag}");
         }
+    }
+
+    private static bool ContainsFloating(
+        AvroSchema schema,
+        HashSet<AvroSchema> visited)
+    {
+        schema = AvroValueRulePlan.Unwrap(schema);
+        if (schema.Tag is AvroSchema.Type.Float or AvroSchema.Type.Double)
+            return true;
+        if (!visited.Add(schema))
+            return false;
+
+        return schema switch
+        {
+            global::Avro.RecordSchema record => ContainsFloating(record, visited),
+            global::Avro.ArraySchema array => ContainsFloating(array.ItemSchema, visited),
+            global::Avro.MapSchema map => ContainsFloating(map.ValueSchema, visited),
+            global::Avro.UnionSchema union => ContainsFloating(union, visited),
+            _ => false
+        };
+    }
+
+    private static bool ContainsFloating(
+        global::Avro.RecordSchema record,
+        HashSet<AvroSchema> visited)
+    {
+        for (var index = 0; index < record.Fields.Count; index++)
+        {
+            if (ContainsFloating(record.Fields[index].Schema, visited))
+                return true;
+        }
+        return false;
+    }
+
+    private static bool ContainsFloating(
+        global::Avro.UnionSchema union,
+        HashSet<AvroSchema> visited)
+    {
+        for (var index = 0; index < union.Count; index++)
+        {
+            if (ContainsFloating(union[index], visited))
+                return true;
+        }
+        return false;
     }
 
     private static bool ArraysAreEqual(

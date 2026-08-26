@@ -1065,6 +1065,8 @@ internal enum ValidationCelValueKind : byte
 
 internal interface IValidationCelAggregateComparer
 {
+    bool RequiresSemanticEquality { get; }
+
     bool AreEqual(
         ReadOnlyMemory<byte> left,
         IValidationCelAggregateComparer rightComparer,
@@ -1773,7 +1775,9 @@ internal sealed class ValidationCelBinaryNode(
         {
             if (!left.Json.IsEmpty || !right.Json.IsEmpty)
                 return false;
-            if (left.Utf8Literal.Span.SequenceEqual(right.Utf8Literal.Span))
+            if ((leftComparer is null || !leftComparer.RequiresSemanticEquality) &&
+                (rightComparer is null || !rightComparer.RequiresSemanticEquality) &&
+                left.Utf8Literal.Span.SequenceEqual(right.Utf8Literal.Span))
                 return true;
             if (leftComparer is not null && rightComparer is not null)
             {

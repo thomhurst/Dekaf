@@ -25,6 +25,8 @@ public class AvroInlineValidationBenchmarks
     private ReadOnlyMemory<byte> _nullableAggregatePayload;
     private AvroInlineRuleValidator _mixedFloatingValidator = null!;
     private ReadOnlyMemory<byte> _mixedFloatingPayload;
+    private AvroInlineRuleValidator _nanAggregateValidator = null!;
+    private ReadOnlyMemory<byte> _nanAggregatePayload;
 
     [GlobalSetup]
     public void Setup()
@@ -170,6 +172,29 @@ public class AvroInlineValidationBenchmarks
         _mixedFloatingPayload = floatingStream.ToArray();
         _mixedFloatingValidator = new AvroInlineRuleValidator(floatingSchema);
         _mixedFloatingValidator.Validate(_mixedFloatingPayload, 6, failFast: false);
+
+        const string nanAggregateSchema = """
+            {
+              "type": "record",
+              "name": "NaNAggregateBenchmarkRecord",
+              "confluent:rules": [{ "name": "not-equal", "expr": "this.left != this.right" }],
+              "fields": [
+                { "name": "left", "type": { "type": "array", "items": "double" } },
+                { "name": "right", "type": { "type": "array", "items": "double" } }
+              ]
+            }
+            """;
+        var nanSchema = (RecordSchema)AvroSchema.Parse(nanAggregateSchema);
+        var nanRecord = new GenericRecord(nanSchema);
+        nanRecord.Add("left", new[] { double.NaN });
+        nanRecord.Add("right", new[] { double.NaN });
+        using var nanStream = new MemoryStream();
+        var nanEncoder = new BinaryEncoder(nanStream);
+        new GenericDatumWriter<GenericRecord>(nanSchema).Write(nanRecord, nanEncoder);
+        nanEncoder.Flush();
+        _nanAggregatePayload = nanStream.ToArray();
+        _nanAggregateValidator = new AvroInlineRuleValidator(nanSchema);
+        _nanAggregateValidator.Validate(_nanAggregatePayload, 7, failFast: false);
     }
 
     [Benchmark]
@@ -199,4 +224,8 @@ public class AvroInlineValidationBenchmarks
     [Benchmark]
     public void ValidateMixedFloatingComparison() =>
         _mixedFloatingValidator.Validate(_mixedFloatingPayload, 6, failFast: false);
+
+    [Benchmark]
+    public void ValidateNaNAggregateInequality() =>
+        _nanAggregateValidator.Validate(_nanAggregatePayload, 7, failFast: false);
 }

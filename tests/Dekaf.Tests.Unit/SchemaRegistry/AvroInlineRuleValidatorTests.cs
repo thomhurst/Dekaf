@@ -151,6 +151,63 @@ public class AvroInlineRuleValidatorTests
     }
 
     [Test]
+    public async Task Validate_RecordUnionFieldRuleResolvesEverySelectedBranch()
+    {
+        const string schemaText = """
+            {
+              "type": "record",
+              "name": "MultiRecordUnionFieldRule",
+              "fields": [{
+                "name": "value",
+                "type": [
+                  { "type": "record", "name": "FirstUnionRuleBranch", "fields": [{ "name": "code", "type": "int" }] },
+                  { "type": "record", "name": "SecondUnionRuleBranch", "fields": [{ "name": "code", "type": "int" }] }
+                ],
+                "confluent:rules": [{ "name": "code", "expr": "this.code > 0" }]
+              }]
+            }
+            """;
+        var schema = (RecordSchema)AvroSchema.Parse(schemaText);
+        var union = (UnionSchema)schema.Fields[0].Schema;
+        var record = new GenericRecord(schema);
+        var validator = new AvroInlineRuleValidator(schema);
+
+        for (var branchIndex = 0; branchIndex < union.Count; branchIndex++)
+        {
+            var branch = (RecordSchema)union[branchIndex];
+            var value = new GenericRecord(branch);
+            value.Add("code", 1);
+            record.Add("value", value);
+            validator.Validate(Serialize(record, schema), 18, failFast: false);
+
+            value.Add("code", -1);
+            Assert.Throws<ValidationRulesFailedException>(() =>
+                validator.Validate(Serialize(record, schema), 18, failFast: false));
+        }
+
+        await Task.CompletedTask;
+    }
+
+    [Test]
+    public async Task Validate_LogicalSchemaRetainsInlineRules()
+    {
+        const string schemaText = """
+            {
+              "type": "long",
+              "logicalType": "timestamp-millis",
+              "confluent:rules": [{ "name": "positive", "expr": "this > 0" }]
+            }
+            """;
+        var validator = new AvroInlineRuleValidator(AvroSchema.Parse(schemaText));
+
+        validator.Validate(new byte[] { 84 }, 18, failFast: false);
+        Assert.Throws<ValidationRulesFailedException>(() =>
+            validator.Validate(new byte[] { 1 }, 18, failFast: false));
+
+        await Task.CompletedTask;
+    }
+
+    [Test]
     public async Task Validate_RecordSizeUsesFieldCount()
     {
         const string schemaText = """
@@ -388,6 +445,33 @@ public class AvroInlineRuleValidatorTests
         var schema = (RecordSchema)AvroSchema.Parse(schemaText);
         var record = new GenericRecord(schema);
         record.Add("value", double.NaN);
+
+        new AvroInlineRuleValidator(schema).Validate(
+            Serialize(record, schema),
+            32,
+            failFast: false);
+
+        await Task.CompletedTask;
+    }
+
+    [Test]
+    public async Task Validate_IdenticallyEncodedNaNAggregatesUseSemanticEquality()
+    {
+        const string schemaText = """
+            {
+              "type": "record",
+              "name": "NaNAggregateEqualityRecord",
+              "confluent:rules": [{ "name": "not-equal", "expr": "this.left != this.right" }],
+              "fields": [
+                { "name": "left", "type": { "type": "array", "items": "double" } },
+                { "name": "right", "type": { "type": "array", "items": "double" } }
+              ]
+            }
+            """;
+        var schema = (RecordSchema)AvroSchema.Parse(schemaText);
+        var record = new GenericRecord(schema);
+        record.Add("left", new[] { double.NaN });
+        record.Add("right", new[] { double.NaN });
 
         new AvroInlineRuleValidator(schema).Validate(
             Serialize(record, schema),

@@ -56,11 +56,16 @@ internal sealed class AvroInlineRuleValidator
 internal sealed class AvroValueRulePlan
 {
     private readonly AvroSchema _schema;
+    private readonly AvroSchema _ruleSchema;
     private AvroCompiledRuleSet _schemaRules = AvroCompiledRuleSet.Empty;
     private AvroFieldRulePlan[] _fields = [];
     private AvroValueRulePlan[] _children = [];
 
-    private AvroValueRulePlan(AvroSchema schema) => _schema = Unwrap(schema);
+    private AvroValueRulePlan(AvroSchema schema)
+    {
+        _schema = Unwrap(schema);
+        _ruleSchema = schema;
+    }
 
     internal bool HasAnyRules { get; private set; }
 
@@ -68,7 +73,6 @@ internal sealed class AvroValueRulePlan
         AvroSchema schema,
         Dictionary<AvroSchema, AvroValueRulePlan> plans)
     {
-        schema = Unwrap(schema);
         if (plans.TryGetValue(schema, out var existing))
             return existing;
 
@@ -81,7 +85,7 @@ internal sealed class AvroValueRulePlan
     private void Initialize(Dictionary<AvroSchema, AvroValueRulePlan> plans)
     {
         _schemaRules = AvroCompiledRuleSet.Compile(
-            AvroInlineRuleParser.ReadRules(_schema),
+            AvroInlineRuleParser.ReadRules(_ruleSchema),
             _schema);
 
         switch (_schema)
@@ -91,8 +95,7 @@ internal sealed class AvroValueRulePlan
                 for (var index = 0; index < record.Fields.Count; index++)
                 {
                     var field = record.Fields[index];
-                    var fieldSchema = Unwrap(field.Schema);
-                    var child = Create(fieldSchema, plans);
+                    var child = Create(field.Schema, plans);
                     _fields[index] = new AvroFieldRulePlan(
                         field,
                         AvroCompiledRuleSet.Compile(
@@ -372,26 +375,6 @@ internal sealed class AvroValueRulePlan
     internal static AvroSchema Unwrap(AvroSchema schema) =>
         schema is global::Avro.LogicalSchema logical ? logical.BaseSchema : schema;
 
-    internal static global::Avro.RecordSchema? FindRecord(AvroSchema schema)
-    {
-        schema = Unwrap(schema);
-        if (schema is global::Avro.RecordSchema record)
-            return record;
-        if (schema is not global::Avro.UnionSchema union)
-            return null;
-        global::Avro.RecordSchema? result = null;
-        for (var index = 0; index < union.Count; index++)
-        {
-            var candidate = FindRecord(union[index]);
-            if (candidate is null)
-                continue;
-            if (result is not null && !ReferenceEquals(result, candidate))
-                return null;
-            result = candidate;
-        }
-        return result;
-    }
-
     private static SchemaRegistryRuleException InvalidPayload(string reason) =>
         new($"Could not evaluate Avro validation rules: {reason}.");
 }
@@ -452,10 +435,9 @@ internal sealed class AvroCompiledRuleSet
             usesCachedEquality |= rule.UsesCachedEquality;
         }
 
-        var recordSchema = AvroValueRulePlan.FindRecord(valueSchema);
-        var members = usedMemberIndexes.Count == 0 || recordSchema is null
+        var members = usedMemberIndexes.Count == 0
             ? null
-            : AvroMemberResolver.Create(valueSchema, recordSchema, memberPaths, usedMemberIndexes);
+            : AvroMemberResolver.Create(valueSchema, memberPaths, usedMemberIndexes);
         return new AvroCompiledRuleSet(
             compiled,
             members,
@@ -524,26 +506,81 @@ internal sealed class AvroCompiledRuleSet
 internal sealed class AvroMemberResolver
 {
     private readonly AvroSchema _valueSchema;
-    private readonly global::Avro.RecordSchema _recordSchema;
+    private readonly AvroMemberResolver?[]? _unionBranches;
     private readonly AvroMemberNode?[] _fields;
 
-    private AvroMemberResolver(AvroSchema valueSchema, global::Avro.RecordSchema recordSchema)
+    private AvroMemberResolver(global::Avro.RecordSchema recordSchema)
     {
-        _valueSchema = AvroValueRulePlan.Unwrap(valueSchema);
-        _recordSchema = recordSchema;
+        _valueSchema = recordSchema;
         _fields = new AvroMemberNode?[recordSchema.Fields.Count];
     }
 
-    internal static AvroMemberResolver Create(
+    private AvroMemberResolver(global::Avro.UnionSchema unionSchema)
+    {
+        _valueSchema = unionSchema;
+        _unionBranches = new AvroMemberResolver?[unionSchema.Count];
+        _fields = [];
+    }
+
+    internal static AvroMemberResolver? Create(
         AvroSchema valueSchema,
-        global::Avro.RecordSchema recordSchema,
         IReadOnlyList<byte[][]> paths,
         IReadOnlyCollection<int> usedIndexes)
     {
-        var resolver = new AvroMemberResolver(valueSchema, recordSchema);
-        resolver.SetSchemas(recordSchema);
+        valueSchema = AvroValueRulePlan.Unwrap(valueSchema);
+        if (valueSchema is global::Avro.RecordSchema record)
+            return CreateRecord(record, paths, usedIndexes);
+        if (valueSchema is not global::Avro.UnionSchema union)
+            return null;
+
+        var resolver = new AvroMemberResolver(union);
+        var resolvedIndexes = new bool[paths.Count];
+        for (var branchIndex = 0; branchIndex < union.Count; branchIndex++)
+        {
+            if (AvroValueRulePlan.Unwrap(union[branchIndex]) is not global::Avro.RecordSchema branch)
+                continue;
+
+            AvroMemberResolver? branchResolver = null;
+            foreach (var memberIndex in usedIndexes)
+            {
+                var path = paths[memberIndex];
+                var name = Encoding.UTF8.GetString(path[0]);
+                if (FindField(branch, name) is null)
+                    continue;
+
+                branchResolver ??= CreateRecord(branch);
+                branchResolver.Add(branch, path, memberIndex, depth: 0);
+                resolvedIndexes[memberIndex] = true;
+            }
+            resolver._unionBranches![branchIndex] = branchResolver;
+        }
+
         foreach (var memberIndex in usedIndexes)
-            resolver.Add(recordSchema, paths[memberIndex], memberIndex, depth: 0);
+        {
+            if (!resolvedIndexes[memberIndex])
+            {
+                throw new SchemaRegistryRuleException(
+                    $"Avro validation rule refers to unknown field '{Encoding.UTF8.GetString(paths[memberIndex][0])}' on every record union branch.");
+            }
+        }
+        return resolver;
+    }
+
+    private static AvroMemberResolver CreateRecord(
+        global::Avro.RecordSchema record,
+        IReadOnlyList<byte[][]> paths,
+        IReadOnlyCollection<int> usedIndexes)
+    {
+        var resolver = CreateRecord(record);
+        foreach (var memberIndex in usedIndexes)
+            resolver.Add(record, paths[memberIndex], memberIndex, depth: 0);
+        return resolver;
+    }
+
+    private static AvroMemberResolver CreateRecord(global::Avro.RecordSchema record)
+    {
+        var resolver = new AvroMemberResolver(record);
+        resolver.SetSchemas(record);
         return resolver;
     }
 
@@ -572,14 +609,18 @@ internal sealed class AvroMemberResolver
         ValidationCelSizeValues sizes)
     {
         var reader = new AvroValidationReader(payload);
-        if (_valueSchema is global::Avro.UnionSchema union)
+        if (_unionBranches is not null)
         {
+            var union = (global::Avro.UnionSchema)_valueSchema;
             var branch = reader.ReadLong();
             if ((ulong)branch >= (ulong)union.Count)
                 throw new SchemaRegistryRuleException(
                     $"Could not evaluate Avro validation rules: invalid union index {branch}.");
-            if (!ReferenceEquals(AvroValueRulePlan.Unwrap(union[(int)branch]), _recordSchema))
-                return;
+            _unionBranches[(int)branch]?.Resolve(
+                reader.Source.Slice(reader.Position),
+                values,
+                sizes);
+            return;
         }
         for (var index = 0; index < _fields.Length; index++)
         {
@@ -698,8 +739,7 @@ internal sealed class AvroMemberResolver
         {
             if (!_children.TryGetValue(record, out var child))
             {
-                child = new AvroMemberResolver(record, record);
-                child.SetSchemas(record);
+                child = CreateRecord(record);
                 _children.Add(record, child);
             }
             child.Add(record, path, memberIndex, depth);
