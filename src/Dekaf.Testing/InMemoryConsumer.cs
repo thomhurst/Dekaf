@@ -91,6 +91,10 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     // proves it; an unwind (or close) leaves it unstaged so it is redelivered.
     private TopicPartition _inDoubtPartition;
     private long _inDoubtNextOffset = -1;
+    // Wakes a shared ConsumeAsync stream after the commit-proof owner aborts. The next
+    // poll consumes this marker and retries the unchanged in-doubt proof.
+    private TopicPartition _retryInDoubtPartition;
+    private long _retryInDoubtNextOffset = -1;
     private int _consumerStateVersion;
     private bool _snapshotActive;
     private readonly string? _groupId;
@@ -2749,6 +2753,11 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
             inDoubtPartition = _inDoubtPartition;
             inDoubtNextOffset = _inDoubtNextOffset;
+            if (_retryInDoubtNextOffset == inDoubtNextOffset &&
+                _retryInDoubtPartition.Equals(inDoubtPartition))
+            {
+                _retryInDoubtNextOffset = -1;
+            }
             if (_pendingAutoCommitAdvancements is not null &&
                 _pendingAutoCommitAdvancements.TryGetValue(inDoubtPartition, out var pending) &&
                 pending.Position == inDoubtNextOffset)
@@ -2807,7 +2816,16 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         }
         catch
         {
-            ClearPendingAutoCommitAdvancement(partition, expectedPosition);
+            lock (_gate)
+            {
+                ClearPendingAutoCommitAdvancementUnderLock(partition, expectedPosition);
+                if (_inDoubtNextOffset == expectedPosition &&
+                    _inDoubtPartition.Equals(partition))
+                {
+                    _retryInDoubtPartition = partition;
+                    _retryInDoubtNextOffset = expectedPosition;
+                }
+            }
             throw;
         }
 
@@ -2878,6 +2896,11 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
             partition = _inDoubtPartition;
             position = _inDoubtNextOffset;
+            if (_retryInDoubtNextOffset == position &&
+                _retryInDoubtPartition.Equals(partition))
+            {
+                return;
+            }
         }
 
         while (true)
@@ -2888,7 +2911,9 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                 ThrowIfDisposed();
                 if (_inDoubtNextOffset < 0 ||
                     !_inDoubtPartition.Equals(partition) ||
-                    _inDoubtNextOffset != position)
+                    _inDoubtNextOffset != position ||
+                    _retryInDoubtNextOffset == position &&
+                    _retryInDoubtPartition.Equals(partition))
                 {
                     return;
                 }
