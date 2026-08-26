@@ -14,11 +14,11 @@ The project is open to broader target-framework support when it does not regress
 | Area | Status |
 | --- | --- |
 | Core package (`Dekaf`) | `net10.0`, `netstandard2.0` |
-| Compression packages | `net10.0` |
-| Serialization packages | `net10.0` |
-| Schema Registry packages | `net10.0` |
-| Dependency Injection, Hosting, Health Checks | `net10.0` |
-| Testing package | `net10.0` |
+| Compression packages | `net8.0`, `net10.0` |
+| Serialization packages | `net8.0`, `net10.0` |
+| Schema Registry packages | `net8.0`, `net10.0` |
+| Dependency Injection, Hosting, Health Checks | `net8.0`, `net10.0` |
+| Testing package | `net8.0`, `net10.0` |
 | Tools, benchmarks, stress tests | `net10.0` |
 
 The `net10.0` target stays the primary optimization target. Protocol serialization, production, and consumption hot paths should continue using modern BCL APIs where they are needed for low allocation and throughput.
