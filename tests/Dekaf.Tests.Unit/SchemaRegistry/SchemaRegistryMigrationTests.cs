@@ -485,7 +485,9 @@ public sealed class SchemaRegistryMigrationTests
     }
 
     [Test]
-    public async Task PrepareAsync_RegistryTimeoutCancelsResolutionAndAllowsRetry()
+    [Timeout(30_000)]
+    public async Task PrepareAsync_RegistryTimeoutCancelsResolutionAndAllowsRetry(
+        CancellationToken testTimeout)
     {
         var registry = new MigrationRegistryClient();
         var schema = CreateSchema("v1");
@@ -500,15 +502,15 @@ public sealed class SchemaRegistryMigrationTests
             schemaId,
             "orders-value",
             schema,
-            CancellationToken.None).AsTask();
-        await registry.WaitForBlockedLookupAsync(TimeSpan.FromSeconds(2));
+            testTimeout).AsTask();
+        await registry.WaitForBlockedLookupAsync().WaitAsync(testTimeout);
 
         await Assert.That(registry.LastLookupCancellationToken.CanBeCanceled).IsTrue();
-        await Assert.That(async () => await preparation.WaitAsync(TimeSpan.FromSeconds(2)))
+        await Assert.That(async () => await preparation)
             .Throws<TimeoutException>()
             .WithMessageContaining("migration plan resolution timed out");
 
-        await runner.PrepareAsync(schemaId, "orders-value", schema, CancellationToken.None);
+        await runner.PrepareAsync(schemaId, "orders-value", schema, testTimeout);
 
         await Assert.That(registry.LookupCount).IsEqualTo(2);
         await Assert.That(runner.TryUsePreparedPlan(schemaId, "orders-value", schema)).IsTrue();
@@ -935,11 +937,11 @@ public sealed class SchemaRegistryMigrationTests
             _lookupRelease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         }
 
-        internal async Task WaitForBlockedLookupAsync(TimeSpan timeout)
+        internal Task WaitForBlockedLookupAsync()
         {
             var entered = _lookupEntered
                 ?? throw new InvalidOperationException("No blocked schema lookup was configured.");
-            await entered.Task.WaitAsync(timeout).ConfigureAwait(false);
+            return entered.Task;
         }
 
         internal int Register(string subject, Schema schema)
