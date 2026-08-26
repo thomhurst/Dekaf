@@ -29,6 +29,11 @@ function Get-AllReviewThreads {
                 throw 'Review-thread response contained a null thread.'
             }
 
+            $isResolvedProperty = $thread.PSObject.Properties['isResolved']
+            if ($null -eq $isResolvedProperty -or $isResolvedProperty.Value -isnot [bool]) {
+                throw 'Review-thread node did not contain a Boolean isResolved.'
+            }
+
             $threads.Add($thread)
         }
 

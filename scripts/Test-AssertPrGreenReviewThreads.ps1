@@ -101,6 +101,25 @@ foreach ($invalidPage in @(
     }
 }
 
+foreach ($invalidThread in @(
+    [pscustomobject]@{},
+    [pscustomobject]@{ isResolved = $null },
+    [pscustomobject]@{ isResolved = 'false' }
+)) {
+    $invalidIsResolvedThrew = $false
+    try {
+        Get-AllReviewThreads -FetchPage {
+            New-ReviewThreadPage -Threads @($invalidThread) -HasNextPage $false
+        }
+    }
+    catch {
+        $invalidIsResolvedThrew = $true
+    }
+    if (-not $invalidIsResolvedThrew) {
+        throw 'Expected a missing, null, or non-Boolean isResolved to fail closed.'
+    }
+}
+
 $fetchFailureThrew = $false
 try {
     Get-AllReviewThreads -FetchPage { throw 'simulated API failure' }
