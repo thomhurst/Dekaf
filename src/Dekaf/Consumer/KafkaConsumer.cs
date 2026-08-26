@@ -5454,6 +5454,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                && coordinator.IsAssignmentSyncCurrent(assignmentVersion);
     }
 
+#if NET
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
+#endif
     private async ValueTask<ConsumeResult<TKey, TValue>?> ConsumeOneCoreAsync(
         bool pollRecorded,
         PreparedDeserializerKey? preparedKey,
@@ -6088,6 +6091,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             ? ConsumeOneFromPendingFetchesCoreAsync<NoRecordFilterMode>(preparedKey, cancellationToken)
             : ConsumeOneFromPendingFetchesCoreAsync<RecordFilterMode>(preparedKey, cancellationToken);
 
+#if NET
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
+#endif
     private async ValueTask<ConsumeResult<TKey, TValue>?> ConsumeOneFromPendingFetchesCoreAsync<TRecordFilterMode>(
         PreparedDeserializerKey? preparedKey,
         CancellationToken cancellationToken)
@@ -6751,6 +6757,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
     }
 
+#if NET
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
+#endif
     private async ValueTask<ConsumeResult<TKey, TValue>> CreateResultWithAsyncDeserializationAsync(
         PendingFetchData pending,
         long offset,
