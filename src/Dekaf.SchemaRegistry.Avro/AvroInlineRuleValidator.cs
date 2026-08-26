@@ -1,6 +1,7 @@
 using System.Buffers;
 using System.Buffers.Binary;
 using System.Globalization;
+using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 using AvroSchema = global::Avro.Schema;
@@ -360,6 +361,7 @@ internal sealed class AvroValueRulePlan
                     ref reader,
                     resolution,
                     now,
+                    failFast,
                     ref nestedViolations,
                     ref path);
                 break;
@@ -412,6 +414,7 @@ internal sealed class AvroValueRulePlan
                     ref reader,
                     resolution,
                     now,
+                    failFast,
                     ref nestedViolations,
                     ref path);
                 break;
@@ -639,9 +642,29 @@ internal sealed class AvroValueRulePlan
         ref AvroValidationReader reader,
         AvroMemberResolution resolution,
         long now,
+        bool failFast,
         ref List<ValidationRuleError>? nestedViolations,
         scoped ref AvroValidationPath path)
     {
+        if (failFast)
+        {
+            return ValidateMapWithFailFastMemberResolution(
+                ref reader,
+                resolution,
+                now,
+                ref nestedViolations,
+                ref path);
+        }
+        if (_schemaRules.HasMapEntrySizeDemand)
+        {
+            return ValidateMapWithSizedMemberResolution(
+                ref reader,
+                resolution,
+                now,
+                ref nestedViolations,
+                ref path);
+        }
+
         var valuePlan = _children[0];
         var itemCount = 0;
         while (true)
@@ -660,7 +683,7 @@ internal sealed class AvroValueRulePlan
                     ref reader,
                     now,
                     failFast: false,
-                    needsSize: true,
+                    needsSize: false,
                     ref nestedViolations,
                     ref path,
                     out var size);
@@ -673,6 +696,124 @@ internal sealed class AvroValueRulePlan
                     resolution);
             }
         }
+    }
+
+    private int ValidateMapWithSizedMemberResolution(
+        ref AvroValidationReader reader,
+        AvroMemberResolution resolution,
+        long now,
+        ref List<ValidationRuleError>? nestedViolations,
+        scoped ref AvroValidationPath path)
+    {
+        var valuePlan = _children[0];
+        var itemCount = 0;
+        while (true)
+        {
+            var count = reader.ReadCollectionCount();
+            if (count == 0)
+                return itemCount;
+            for (long index = 0; index < count; index++)
+            {
+                itemCount = checked(itemCount + 1);
+                var key = reader.ReadLengthPrefixed();
+                _schemaRules.TryGetMapEntryResolver(key, out var memberResolver);
+                var valueStart = reader.Position;
+                var mark = path.Length;
+                path.AppendMapKey(key.Span);
+                var value = valuePlan.ValidateAndCapture(
+                    ref reader,
+                    now,
+                    failFast: false,
+                    memberResolver?.NeedsSize ?? false,
+                    ref nestedViolations,
+                    ref path,
+                    out var size);
+                path.Truncate(mark);
+                memberResolver?.ResolveCaptured(
+                    reader.Source.Slice(valueStart, reader.Position - valueStart),
+                    value,
+                    size,
+                    resolution.Members,
+                    resolution.Sizes);
+            }
+        }
+    }
+
+    private int ValidateMapWithFailFastMemberResolution(
+        ref AvroValidationReader reader,
+        AvroMemberResolution resolution,
+        long now,
+        ref List<ValidationRuleError>? nestedViolations,
+        scoped ref AvroValidationPath path)
+    {
+        var valuePlan = _children[0];
+        var hasSizeDemand = _schemaRules.HasMapEntrySizeDemand;
+        var itemCount = 0;
+        while (true)
+        {
+            var count = reader.ReadCollectionCount();
+            if (count == 0)
+                return itemCount;
+            for (long index = 0; index < count; index++)
+            {
+                itemCount = checked(itemCount + 1);
+                var key = reader.ReadLengthPrefixed();
+                AvroMemberResolver.AvroMemberNode? memberResolver = null;
+                if (hasSizeDemand)
+                    _schemaRules.TryGetMapEntryResolver(key, out memberResolver);
+                var valueStart = reader.Position;
+                if (nestedViolations is not null)
+                {
+                    AvroValidationValueDecoder.Skip(valuePlan._schema, ref reader);
+                    ResolveMapEntry(
+                        hasSizeDemand,
+                        key,
+                        memberResolver,
+                        reader.Source.Slice(valueStart, reader.Position - valueStart),
+                        resolution);
+                    continue;
+                }
+
+                var mark = path.Length;
+                path.AppendMapKey(key.Span);
+                var value = valuePlan.ValidateAndCapture(
+                    ref reader,
+                    now,
+                    failFast: true,
+                    memberResolver?.NeedsSize ?? false,
+                    ref nestedViolations,
+                    ref path,
+                    out var size);
+                path.Truncate(mark);
+                var payload = reader.Source.Slice(valueStart, reader.Position - valueStart);
+                if (hasSizeDemand)
+                {
+                    memberResolver?.ResolveCaptured(
+                        payload,
+                        value,
+                        size,
+                        resolution.Members,
+                        resolution.Sizes);
+                }
+                else
+                {
+                    _schemaRules.ResolveMapEntry(key, payload, value, size, resolution);
+                }
+            }
+        }
+    }
+
+    private void ResolveMapEntry(
+        bool hasSizeDemand,
+        ReadOnlyMemory<byte> key,
+        AvroMemberResolver.AvroMemberNode? memberResolver,
+        ReadOnlyMemory<byte> payload,
+        AvroMemberResolution resolution)
+    {
+        if (hasSizeDemand)
+            memberResolver?.Resolve(payload, resolution.Members, resolution.Sizes);
+        else
+            _schemaRules.ResolveMapEntry(key, payload, resolution);
     }
 
     private static void AppendNestedViolations(
@@ -1432,6 +1573,14 @@ internal sealed class AvroCompiledRuleSet
             resolution.Members,
             resolution.Sizes);
 
+    internal bool HasMapEntrySizeDemand => _members!.HasMapEntrySizeDemand;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal bool TryGetMapEntryResolver(
+        ReadOnlyMemory<byte> key,
+        out AvroMemberResolver.AvroMemberNode? memberResolver) =>
+        _members!.TryGetMapEntryResolver(key, out memberResolver);
+
     internal void ResolveMapEntry(
         ReadOnlyMemory<byte> key,
         ReadOnlyMemory<byte> payload,
@@ -1548,6 +1697,9 @@ internal sealed class AvroMemberResolver
     private readonly AvroMemberResolver?[]? _unionBranches;
     private readonly AvroMemberNode?[] _fields;
     private readonly Dictionary<ReadOnlyMemory<byte>, AvroMemberNode>? _mapValues;
+    private bool _hasMapEntrySizeDemand;
+
+    internal bool HasMapEntrySizeDemand => _hasMapEntrySizeDemand;
 
     internal int LastRecordMemberIndex
     {
@@ -1744,6 +1896,7 @@ internal sealed class AvroMemberResolver
         if (depth == path.Length - 1)
         {
             node.AddMemberIndex(memberIndex, needsSize);
+            _hasMapEntrySizeDemand |= needsSize;
             return;
         }
         node.AddChild(schema.ValueSchema, path, memberIndex, needsSize, depth + 1);
@@ -1830,6 +1983,12 @@ internal sealed class AvroMemberResolver
             }
         }
     }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal bool TryGetMapEntryResolver(
+        ReadOnlyMemory<byte> key,
+        out AvroMemberNode? memberResolver) =>
+        _mapValues!.TryGetValue(key, out memberResolver);
 
     internal void ResolveMapEntry(
         ReadOnlyMemory<byte> key,
@@ -1973,7 +2132,7 @@ internal sealed class AvroMemberResolver
                 schema.Fields[index].Schema;
     }
 
-    private sealed class AvroMemberNode(
+    internal sealed class AvroMemberNode(
         AvroAggregateEqualityComparerFactory aggregateComparerFactory)
     {
         private readonly Dictionary<AvroSchema, AvroMemberResolver> _children =

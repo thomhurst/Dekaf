@@ -17,6 +17,8 @@ namespace Dekaf.Tests.Unit.SchemaRegistry;
 public class AvroInlineRuleValidatorTests
 {
     private static readonly int[] TwoItems = [1, 2];
+    private static readonly int[] OnePositiveItem = [3];
+    private static readonly int[] ThreePositiveItems = [4, 5, 6];
     private static readonly float[] OneFloat = [1f];
     private static readonly float[] TwoFloat = [2f];
     private static readonly string[] OneString = ["a"];
@@ -445,6 +447,88 @@ public class AvroInlineRuleValidatorTests
         await Assert.That(all.Violations[1].Rule.Name).IsEqualTo("positive");
         await Assert.That(first.Violations).HasSingleItem();
         await Assert.That(first.Violations[0].Rule.Name).IsEqualTo("selected");
+    }
+
+    [Test]
+    public async Task Validate_MapMemberFailFastRetainsOnlyFirstNestedViolation()
+    {
+        const string schemaText = """
+            {
+              "type": "map",
+              "confluent:rules": [{ "name": "selected", "expr": "has(this.selected)" }],
+              "values": {
+                "type": "record",
+                "name": "MapFailFastNestedRuleValue",
+                "fields": [{
+                  "name": "code",
+                  "type": "int",
+                  "confluent:rules": [{ "name": "positive", "expr": "this > 0" }]
+                }]
+              }
+            }
+            """;
+        var schema = (MapSchema)AvroSchema.Parse(schemaText);
+        var valueSchema = (RecordSchema)schema.ValueSchema;
+        var invalidValue = new GenericRecord(valueSchema);
+        invalidValue.Add("code", -1);
+        var singlePayload = Serialize(
+            new Dictionary<string, object> { ["selected"] = invalidValue },
+            schema);
+        var manyValues = new Dictionary<string, object>(128) { ["selected"] = invalidValue };
+        for (var index = 1; index < 128; index++)
+            manyValues.Add($"entry-{index}", invalidValue);
+        var manyPayload = Serialize(manyValues, schema);
+        var validator = new AvroInlineRuleValidator(schema);
+
+        var exception = Assert.Throws<ValidationRulesFailedException>(() =>
+            validator.Validate(manyPayload, 18, failFast: true));
+        _ = MeasureFailedValidationAllocation(validator, singlePayload);
+        _ = MeasureFailedValidationAllocation(validator, manyPayload);
+        var singleAllocated = MeasureFailedValidationAllocation(validator, singlePayload);
+        var manyAllocated = MeasureFailedValidationAllocation(validator, manyPayload);
+
+        await Assert.That(exception.Violations).HasSingleItem();
+        await Assert.That(exception.Violations[0].Rule.Name).IsEqualTo("positive");
+        await Assert.That(manyAllocated).IsLessThanOrEqualTo(singleAllocated + 1024);
+    }
+
+    [Test]
+    public async Task Validate_MapMemberSizeDemandUsesMatchedEntrySize()
+    {
+        const string schemaText = """
+            {
+              "type": "map",
+              "confluent:rules": [{
+                "name": "entry-sizes",
+                "expr": "size(this.selected) == 2 && size(this.other) == 1"
+              }],
+              "values": {
+                "type": "array",
+                "items": {
+                  "type": "int",
+                  "confluent:rules": [{ "name": "positive", "expr": "this > 0" }]
+                }
+              }
+            }
+            """;
+        var schema = (MapSchema)AvroSchema.Parse(schemaText);
+        var payload = Serialize(
+            new Dictionary<string, object>
+            {
+                ["selected"] = TwoItems,
+                ["other"] = OnePositiveItem,
+                ["unreferenced"] = ThreePositiveItems
+            },
+            schema);
+        var validator = new AvroInlineRuleValidator(schema);
+
+        validator.Validate(payload, 18, failFast: false);
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var index = 0; index < 100; index++)
+            validator.Validate(payload, 18, failFast: false);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        await Assert.That(allocated).IsEqualTo(0);
     }
 
     [Test]
@@ -1086,7 +1170,10 @@ public class AvroInlineRuleValidatorTests
         await Task.CompletedTask;
     }
 
+    // The warmup seeds ArrayPool<byte>.Shared for the pooled map index. Keep the
+    // allocation window exclusive so another test cannot rent that buffer.
     [Test]
+    [NotInParallel]
     public async Task Validate_EqualMapsUsePooledIndexWithoutAllocating()
     {
         const string schemaText = """
@@ -2193,6 +2280,21 @@ public class AvroInlineRuleValidatorTests
         new GenericDatumWriter<object>(schema).Write(value, encoder);
         encoder.Flush();
         return stream.ToArray();
+    }
+
+    private static long MeasureFailedValidationAllocation(
+        AvroInlineRuleValidator validator,
+        ReadOnlyMemory<byte> payload)
+    {
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        try
+        {
+            validator.Validate(payload, 18, failFast: true);
+        }
+        catch (ValidationRulesFailedException)
+        {
+        }
+        return GC.GetAllocatedBytesForCurrentThread() - before;
     }
 
     private static byte[] CreateWireBytes(int schemaId, ReadOnlySpan<byte> payload)

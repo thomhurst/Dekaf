@@ -1937,7 +1937,10 @@ public sealed class AvroPocoSchemaRegistryTests
         await Assert.That(allocated).IsEqualTo(0);
     }
 
+    // Keep unrelated TUnit work from delaying tier promotion into an exact per-thread
+    // allocation window. The test still creates its own concurrent worker pressure.
     [Test]
+    [NotInParallel]
     public async Task GeneratedCodec_RulesPathSubjectResolutionAllocatesZeroUnderParallelPressure()
     {
         using var registry = new MockSchemaRegistryClient();

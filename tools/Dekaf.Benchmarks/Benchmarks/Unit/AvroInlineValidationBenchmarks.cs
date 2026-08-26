@@ -47,6 +47,7 @@ public class AvroInlineValidationBenchmarks
     private AvroInlineRuleValidator _rootArrayHasValidator = null!;
     private AvroInlineRuleValidator _memberArrayHasValidator = null!;
     private AvroInlineRuleValidator _mapMemberNestedValidator = null!;
+    private AvroInlineRuleValidator _mapMemberAggregateValidator = null!;
     private ReadOnlyMemory<byte> _mapMemberNestedPayload;
     private AvroInlineRuleValidator _unionMemberNestedValidator = null!;
     private ReadOnlyMemory<byte> _unionMemberNestedPayload;
@@ -455,6 +456,22 @@ public class AvroInlineValidationBenchmarks
         _mapMemberNestedValidator = new AvroInlineRuleValidator(mapMemberNestedSchema);
         _mapMemberNestedValidator.Validate(_mapMemberNestedPayload, 13, failFast: false);
 
+        const string mapMemberAggregateSchemaText = """
+            {
+              "type": "map",
+              "confluent:rules": [{ "name": "selected", "expr": "this.selected.code > 0" }],
+              "values": {
+                "type": "record",
+                "name": "MapMemberAggregateBenchmarkValue",
+                "confluent:rules": [{ "name": "present", "expr": "has(this.code)" }],
+                "fields": [{ "name": "code", "type": "int" }]
+              }
+            }
+            """;
+        _mapMemberAggregateValidator = new AvroInlineRuleValidator(
+            AvroSchema.Parse(mapMemberAggregateSchemaText));
+        _mapMemberAggregateValidator.Validate(_mapMemberNestedPayload, 20, failFast: false);
+
         var unionSchemaText = new StringBuilder(
             "{\"type\":[\"null\",{\"type\":\"record\",\"name\":\"UnionMemberNestedBenchmarkValue\",\"fields\":[");
         for (var index = 0; index < 128; index++)
@@ -659,6 +676,10 @@ public class AvroInlineValidationBenchmarks
     [Benchmark]
     public void ValidateMapMemberWithNestedRules() =>
         _mapMemberNestedValidator.Validate(_mapMemberNestedPayload, 13, failFast: false);
+
+    [Benchmark]
+    public void ValidateMapMemberWithoutSizeDemand() =>
+        _mapMemberAggregateValidator.Validate(_mapMemberNestedPayload, 20, failFast: false);
 
     [Benchmark]
     public void ValidateUnionMemberWithNestedRules() =>
