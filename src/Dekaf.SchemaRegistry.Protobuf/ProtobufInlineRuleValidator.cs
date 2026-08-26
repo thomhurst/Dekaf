@@ -413,7 +413,7 @@ internal sealed class ProtobufMessageRulePlan
     private int _oneofCount;
     private bool _usesSizes;
     private bool _hasMaps;
-    private bool _hasRepeatedChildren;
+    private bool _hasCollectionChildren;
     private bool _requiresRuleSnapshots;
 
     internal bool HasAnyRules { get; private set; }
@@ -517,10 +517,10 @@ internal sealed class ProtobufMessageRulePlan
             for (var index = 0; index < plan._allFields.Length; index++)
             {
                 var field = plan._allFields[index];
-                if (field.Descriptor is { IsRepeated: true, IsMap: false } &&
+                if (field.Descriptor.IsRepeated &&
                     field.Child is { HasAnyRules: true })
                 {
-                    plan._hasRepeatedChildren = true;
+                    plan._hasCollectionChildren = true;
                     break;
                 }
             }
@@ -660,7 +660,7 @@ internal sealed class ProtobufMessageRulePlan
                         return;
                 }
 
-                if (_hasRepeatedChildren)
+                if (_hasCollectionChildren)
                 {
                     ValidateRepeatedChildren(
                         payload,

@@ -274,6 +274,35 @@ public sealed class ProtobufInlineRuleValidatorTests
     }
 
     [Test]
+    public async Task Validate_MapOnlyMessageGraphValidatesChildRules()
+    {
+        var valid = new ValidationMapOnlyEnvelope
+        {
+            Children = { ["primary"] = new ValidationChild { Value = 1 } }
+        }.ToByteArray();
+        var invalid = new ValidationMapOnlyEnvelope
+        {
+            Children = { ["primary"] = new ValidationChild { Value = 0 } }
+        }.ToByteArray();
+        var validator = new ProtobufInlineRuleValidator(ValidationMapOnlyEnvelope.Descriptor);
+
+        validator.Validate(valid, schemaId: 17, failFast: false);
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var index = 0; index < 100; index++)
+            validator.Validate(valid, schemaId: 17, failFast: false);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        var exception = (await Assert.That(() =>
+                validator.Validate(invalid, schemaId: 17, failFast: false))
+            .Throws<ValidationRulesFailedException>())!;
+
+        await Assert.That(allocated).IsEqualTo(0);
+        await Assert.That(exception.Violations).HasSingleItem();
+        await Assert.That(exception.Violations[0].Rule.Name).IsEqualTo("positive-child-value");
+        await Assert.That(exception.Violations[0].FieldPath).IsEqualTo("children[\"primary\"]");
+    }
+
+    [Test]
     public async Task Validate_MapMessageValueMergesRepeatedOccurrences()
     {
         var entry = new ArrayBufferWriter<byte>();

@@ -239,6 +239,10 @@ message ValidationCollectionEnvelope {
   map<string, int32> right_labels = 4;
 }
 
+message ValidationMapOnlyEnvelope {
+  map<string, ValidationChild> children = 1;
+}
+
 message ValidationSint32Envelope {
   sint32 value = 1 [(confluent.field_meta) = {
     rules: {
