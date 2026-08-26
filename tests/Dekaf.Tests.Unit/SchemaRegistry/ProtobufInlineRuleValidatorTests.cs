@@ -156,6 +156,27 @@ public sealed class ProtobufInlineRuleValidatorTests
     }
 
     [Test]
+    public async Task Validate_Proto2FieldUsesImportedProto3EnumOpenness()
+    {
+        var packed = new ArrayBufferWriter<byte>();
+        WriteVarint(packed, 1);
+        WriteVarint(packed, 99);
+        var payload = new ArrayBufferWriter<byte>();
+        WriteVarint(payload, 1u << 3);
+        WriteVarint(payload, 99);
+        WriteLengthDelimited(payload, fieldNumber: 2, packed.WrittenSpan);
+        var validator = new ProtobufInlineRuleValidator(Proto2ImportedOpenEnumValidationMessage.Descriptor);
+
+        validator.Validate(payload.WrittenMemory, schemaId: 18, failFast: false);
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var index = 0; index < 100; index++)
+            validator.Validate(payload.WrittenMemory, schemaId: 18, failFast: false);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        await Assert.That(allocated).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task Validate_EncodedProto3DefaultUsesImplicitAbsence()
     {
         var payload = new ArrayBufferWriter<byte>();

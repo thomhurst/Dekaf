@@ -2237,7 +2237,7 @@ internal static class ProtobufValidationValueDecoder
     internal static bool IsClosedEnum(FieldDescriptor descriptor)
     {
 #pragma warning disable CS0618 // Google.Protobuf exposes no public inherited enum-feature API.
-        return descriptor.File.Syntax == Syntax.Proto2;
+        return descriptor.EnumType.File.Syntax == Syntax.Proto2;
 #pragma warning restore CS0618
     }
 

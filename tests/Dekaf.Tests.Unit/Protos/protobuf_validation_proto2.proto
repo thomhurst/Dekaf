@@ -3,6 +3,7 @@ syntax = "proto2";
 package dekaf.validation;
 
 import "confluent/meta.proto";
+import "protobuf_validation_child.proto";
 
 option csharp_namespace = "Dekaf.Tests.Unit.SchemaRegistry.ProtobufFixtures";
 
@@ -59,6 +60,18 @@ message Proto2PackedEnumEqualityEnvelope {
 
   optional Proto2PackedEnumValidationMessage left = 1;
   optional Proto2PackedEnumValidationMessage right = 2;
+}
+
+message Proto2ImportedOpenEnumValidationMessage {
+  option (confluent.message_meta) = {
+    rules: {
+      name: "imported-open-enum-values"
+      expr: "has(this.status) && this.status == 99 && size(this.statuses) == 2"
+    }
+  };
+
+  optional ImportedOpenStatus status = 1;
+  repeated ImportedOpenStatus statuses = 2 [packed = true];
 }
 
 enum Proto2PresenceStatus {

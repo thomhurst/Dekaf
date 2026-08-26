@@ -6,6 +6,11 @@ import "confluent/meta.proto";
 
 option csharp_namespace = "Dekaf.Tests.Unit.SchemaRegistry.ProtobufFixtures";
 
+enum ImportedOpenStatus {
+  IMPORTED_OPEN_STATUS_UNSPECIFIED = 0;
+  IMPORTED_OPEN_STATUS_ACTIVE = 1;
+}
+
 message ValidationChild {
   option (confluent.message_meta) = {
     rules: {
