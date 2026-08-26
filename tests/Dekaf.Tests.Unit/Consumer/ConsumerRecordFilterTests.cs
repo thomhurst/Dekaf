@@ -238,8 +238,8 @@ public sealed class ConsumerRecordFilterTests
             Serializers.String,
             Serializers.String);
         await using var records = consumer
-            .ConsumeAsync(CancellationToken.None)
-            .GetAsyncEnumerator(CancellationToken.None);
+            .ConsumeAsync(testTimeout)
+            .GetAsyncEnumerator(testTimeout);
 
         var actual = (await Assert.That(async () => await records.MoveNextAsync())
             .Throws<InvalidOperationException>())!;
