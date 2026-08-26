@@ -1509,6 +1509,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private SnapshotConsumeState? _activeSnapshot;
     private int _snapshotOperationActive;
     private readonly object _snapshotStateGate = new();
+    // Captured before each fetch/ListOffsets request so delayed responses cannot regress the cache.
+    private long _watermarkUpdateSequence;
 
     private static readonly long s_preferredReadReplicaMaxAgeTimestampDelta =
         (long)(TimeSpan.FromMinutes(5).TotalSeconds * Stopwatch.Frequency);
@@ -4328,6 +4330,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             request.SessionEpoch = fetchSessionBuild?.SessionEpoch ?? -1;
 
             var fetchStarted = Stopwatch.GetTimestamp();
+            var watermarkUpdateSequence = Interlocked.Increment(ref _watermarkUpdateSequence);
 
             FetchResponse response;
             try
@@ -4397,7 +4400,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                             continue;
 
                         // Update watermark cache from fetch response (even on errors, watermarks may be valid)
-                        UpdateWatermarksFromFetchResponse(tp, partitionResponse, assignmentVersion);
+                        UpdateWatermarksFromFetchResponse(
+                            tp,
+                            partitionResponse,
+                            assignmentVersion,
+                            watermarkUpdateSequence);
                         UpdatePreferredReadReplica(topic, partitionResponse);
 
                         if (partitionResponse.RecordParseError is { } parseError)
@@ -8468,6 +8475,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         int assignmentVersion,
         CancellationToken cancellationToken)
     {
+        var watermarkUpdateSequence = Interlocked.Increment(ref _watermarkUpdateSequence);
         var highWatermark = await QueryLatestOffsetCoreAsync(partition, cancellationToken)
             .ConfigureAwait(false);
         lock (_snapshotStateGate)
@@ -8481,7 +8489,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 return null;
             }
 
-            UpdateCachedLagEndOffset(partition, highWatermark);
+            UpdateCachedLagEndOffset(partition, highWatermark, watermarkUpdateSequence);
             return CalculateLag(position, highWatermark);
         }
     }
@@ -8621,6 +8629,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         ThrowIfNotInitialized();
 
         using var apiTimeout = new ApiTimeoutScope(_options.DefaultApiTimeoutMs, cancellationToken);
+        var watermarkUpdateSequence = Interlocked.Increment(ref _watermarkUpdateSequence);
         try
         {
             return await RetryHelper.WithRetryAsync(async () =>
@@ -8699,7 +8708,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         lowWatermark,
                         highWatermark,
                         highWatermark,
-                        assignmentGeneration);
+                        assignmentGeneration,
+                        watermarkUpdateSequence);
                 }
 
                 return watermarks;
@@ -8717,7 +8727,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         long low,
         long high,
         long lagEndOffset,
-        int? assignmentGeneration)
+        int? assignmentGeneration,
+        long watermarkUpdateSequence)
     {
         lock (_snapshotStateGate)
         {
@@ -8738,11 +8749,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
             if (_watermarks.TryGetValue(partition, out var entry))
             {
-                entry.Update(low, high, lagEndOffset);
+                entry.Update(low, high, lagEndOffset, watermarkUpdateSequence);
                 return;
             }
 
-            _watermarks.TryAdd(partition, new WatermarkCacheEntry(low, high, lagEndOffset));
+            _watermarks.TryAdd(
+                partition,
+                new WatermarkCacheEntry(low, high, lagEndOffset, watermarkUpdateSequence));
         }
     }
 
@@ -10437,6 +10450,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         request.SessionEpoch = fetchSessionBuild?.SessionEpoch ?? -1;
 
         var fetchStarted = Stopwatch.GetTimestamp();
+        var watermarkUpdateSequence = Interlocked.Increment(ref _watermarkUpdateSequence);
 
         FetchResponse response;
         try
@@ -10501,7 +10515,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         continue;
 
                     // Update watermark cache from fetch response (even on errors, watermarks may be valid)
-                    UpdateWatermarksFromFetchResponse(tp, partitionResponse, assignmentVersion);
+                    UpdateWatermarksFromFetchResponse(
+                        tp,
+                        partitionResponse,
+                        assignmentVersion,
+                        watermarkUpdateSequence);
                     UpdatePreferredReadReplica(topic, partitionResponse);
 
                     if (partitionResponse.RecordParseError is { } parseError)
@@ -10819,7 +10837,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private void UpdateWatermarksFromFetchResponse(
         TopicPartition partition,
         FetchResponsePartition partitionResponse,
-        int assignmentVersion)
+        int assignmentVersion,
+        long watermarkUpdateSequence)
     {
         // Only update if we have valid watermark data
         // HighWatermark is the next offset to be written (end of log)
@@ -10836,7 +10855,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 low,
                 partitionResponse.HighWatermark,
                 lagEndOffset,
-                assignmentVersion);
+                assignmentVersion,
+                watermarkUpdateSequence);
         }
     }
 
@@ -10845,7 +10865,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         long low,
         long high,
         long lagEndOffset,
-        int assignmentVersion)
+        int assignmentVersion,
+        long watermarkUpdateSequence)
     {
         if (!_watermarks.TryGetValue(partition, out var entry))
         {
@@ -10854,24 +10875,34 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 low,
                 high,
                 lagEndOffset,
-                assignmentVersion);
+                assignmentVersion,
+                watermarkUpdateSequence);
             return;
         }
 
-        UpdateExistingCachedWatermarks(entry, low, high, lagEndOffset, assignmentVersion);
+        UpdateExistingCachedWatermarks(
+            entry,
+            low,
+            high,
+            lagEndOffset,
+            assignmentVersion,
+            watermarkUpdateSequence);
     }
 
     // Called only after QueryCurrentLagCoreAsync revalidates assignment under
     // _snapshotStateGate. A lag-only query must not fabricate public watermarks.
-    private void UpdateCachedLagEndOffset(TopicPartition partition, long lagEndOffset)
+    private void UpdateCachedLagEndOffset(
+        TopicPartition partition,
+        long lagEndOffset,
+        long watermarkUpdateSequence)
     {
         if (_watermarks.TryGetValue(partition, out var entry))
         {
-            entry.UpdateLagEndOffset(lagEndOffset);
+            entry.UpdateLagEndOffset(lagEndOffset, watermarkUpdateSequence);
             return;
         }
 
-        _watermarks.TryAdd(partition, new WatermarkCacheEntry(lagEndOffset));
+        _watermarks.TryAdd(partition, new WatermarkCacheEntry(lagEndOffset, watermarkUpdateSequence));
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
@@ -10880,7 +10911,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         long low,
         long high,
         long lagEndOffset,
-        int assignmentVersion)
+        int assignmentVersion,
+        long watermarkUpdateSequence)
     {
         BeforeWatermarkCacheEntryCreationForTest?.Invoke();
         WatermarkCacheEntry entry;
@@ -10898,14 +10930,20 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
                 if (_watermarks.TryAdd(
                     partition,
-                    new WatermarkCacheEntry(low, high, lagEndOffset)))
+                    new WatermarkCacheEntry(low, high, lagEndOffset, watermarkUpdateSequence)))
                 {
                     return;
                 }
             }
         }
 
-        UpdateExistingCachedWatermarks(entry, low, high, lagEndOffset, assignmentVersion);
+        UpdateExistingCachedWatermarks(
+            entry,
+            low,
+            high,
+            lagEndOffset,
+            assignmentVersion,
+            watermarkUpdateSequence);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -10914,13 +10952,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         long low,
         long high,
         long lagEndOffset,
-        int assignmentVersion)
+        int assignmentVersion,
+        long watermarkUpdateSequence)
     {
         // Recheck after resolving the entry. If assignment publication starts after
         // this point, this reference is necessarily the old entry, which publication
         // removes before exposing a replacement assignment snapshot.
         if (assignmentVersion == Volatile.Read(ref _assignmentEnsureVersion))
-            entry.Update(low, high, lagEndOffset);
+            entry.Update(low, high, lagEndOffset, watermarkUpdateSequence);
     }
 
     private sealed class WatermarkCacheEntry
@@ -10929,26 +10968,39 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         // Allocate once per partition, then update in place. The version is a seqlock:
         // odd while a writer owns the entry, even when readers can take a coherent snapshot.
+        // Writers also reject responses older than the last applied request sequence.
         private int _version;
         private long _low;
         private long _high;
         private long _lagEndOffset;
+        private long _watermarkUpdateSequence;
 
-        public WatermarkCacheEntry(long lagEndOffset)
+        public WatermarkCacheEntry(long lagEndOffset, long watermarkUpdateSequence)
         {
             _low = UnknownWatermarkOffset;
             _high = UnknownWatermarkOffset;
             _lagEndOffset = lagEndOffset;
+            _watermarkUpdateSequence = watermarkUpdateSequence;
         }
 
-        public WatermarkCacheEntry(long low, long high, long lagEndOffset)
+        public WatermarkCacheEntry(
+            long low,
+            long high,
+            long lagEndOffset,
+            long watermarkUpdateSequence)
         {
             _low = low;
             _high = high;
             _lagEndOffset = lagEndOffset;
+            _watermarkUpdateSequence = watermarkUpdateSequence;
         }
 
-        public void Update(long low, long high, long lagEndOffset)
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void Update(
+            long low,
+            long high,
+            long lagEndOffset,
+            long watermarkUpdateSequence)
         {
             var spinner = new SpinWait();
             while (true)
@@ -10961,15 +11013,20 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     continue;
                 }
 
-                Volatile.Write(ref _low, low);
-                Volatile.Write(ref _high, high);
-                Volatile.Write(ref _lagEndOffset, lagEndOffset);
+                if (watermarkUpdateSequence >= _watermarkUpdateSequence)
+                {
+                    Volatile.Write(ref _low, low);
+                    Volatile.Write(ref _high, high);
+                    Volatile.Write(ref _lagEndOffset, lagEndOffset);
+                    _watermarkUpdateSequence = watermarkUpdateSequence;
+                }
                 Volatile.Write(ref _version, version + 2);
                 return;
             }
         }
 
-        public void UpdateLagEndOffset(long lagEndOffset)
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void UpdateLagEndOffset(long lagEndOffset, long watermarkUpdateSequence)
         {
             var spinner = new SpinWait();
             while (true)
@@ -10982,7 +11039,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     continue;
                 }
 
-                Volatile.Write(ref _lagEndOffset, lagEndOffset);
+                if (watermarkUpdateSequence >= _watermarkUpdateSequence)
+                {
+                    Volatile.Write(ref _lagEndOffset, lagEndOffset);
+                    _watermarkUpdateSequence = watermarkUpdateSequence;
+                }
                 Volatile.Write(ref _version, version + 2);
                 return;
             }

@@ -39,12 +39,12 @@ public class ConsumerFetchWatermarkBenchmarks
             .GetField("_assignmentEnsureVersion", BindingFlags.Instance | BindingFlags.NonPublic)!
             .GetValue(_consumer)!;
 
-        _updateWatermarks(_consumer, _partition, _response, _assignmentVersion);
+        _updateWatermarks(_consumer, _partition, _response, _assignmentVersion, 0);
     }
 
     [Benchmark]
     public void UpdateFromFetchResponse() =>
-        _updateWatermarks(_consumer, _partition, _response, _assignmentVersion);
+        _updateWatermarks(_consumer, _partition, _response, _assignmentVersion, 0);
 
     [GlobalCleanup]
     public ValueTask Cleanup() => _consumer.DisposeAsync();
@@ -53,5 +53,6 @@ public class ConsumerFetchWatermarkBenchmarks
         KafkaConsumer<byte[], byte[]> consumer,
         TopicPartition partition,
         FetchResponsePartition response,
-        int assignmentVersion);
+        int assignmentVersion,
+        long watermarkUpdateSequence);
 }
