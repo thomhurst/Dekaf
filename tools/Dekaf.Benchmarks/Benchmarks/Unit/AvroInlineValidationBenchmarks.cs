@@ -22,6 +22,8 @@ public class AvroInlineValidationBenchmarks
     private ReadOnlyMemory<byte> _reorderedMapPayload;
     private AvroInlineRuleValidator _recordSizeValidator = null!;
     private ReadOnlyMemory<byte> _recordSizePayload;
+    private AvroInlineRuleValidator _memberOnlyRecordValidator = null!;
+    private ReadOnlyMemory<byte> _memberOnlyRecordPayload;
     private AvroInlineRuleValidator _nullableAggregateValidator = null!;
     private ReadOnlyMemory<byte> _nullableAggregatePayload;
     private AvroInlineRuleValidator _mixedFloatingValidator = null!;
@@ -143,6 +145,29 @@ public class AvroInlineValidationBenchmarks
         _recordSizePayload = sizedStream.ToArray();
         _recordSizeValidator = new AvroInlineRuleValidator(sizedSchema);
         _recordSizeValidator.Validate(_recordSizePayload, 4, failFast: false);
+
+        const string memberOnlyRecordSchema = """
+            {
+              "type": "record",
+              "name": "MemberOnlyRecordBenchmarkRecord",
+              "confluent:rules": [{ "name": "name", "expr": "this.name == 'dekaf'" }],
+              "fields": [
+                { "name": "name", "type": "string" },
+                { "name": "age", "type": "int" }
+              ]
+            }
+            """;
+        var memberOnlySchema = (RecordSchema)AvroSchema.Parse(memberOnlyRecordSchema);
+        var memberOnlyRecord = new GenericRecord(memberOnlySchema);
+        memberOnlyRecord.Add("name", "dekaf");
+        memberOnlyRecord.Add("age", 42);
+        using var memberOnlyStream = new MemoryStream();
+        var memberOnlyEncoder = new BinaryEncoder(memberOnlyStream);
+        new GenericDatumWriter<GenericRecord>(memberOnlySchema).Write(memberOnlyRecord, memberOnlyEncoder);
+        memberOnlyEncoder.Flush();
+        _memberOnlyRecordPayload = memberOnlyStream.ToArray();
+        _memberOnlyRecordValidator = new AvroInlineRuleValidator(memberOnlySchema);
+        _memberOnlyRecordValidator.Validate(_memberOnlyRecordPayload, 11, failFast: false);
 
         const string nullableAggregateSchema = """
             {
@@ -282,6 +307,10 @@ public class AvroInlineValidationBenchmarks
     [Benchmark]
     public void ValidateRecordSize() =>
         _recordSizeValidator.Validate(_recordSizePayload, 4, failFast: false);
+
+    [Benchmark]
+    public void ValidateMemberOnlyRecordRule() =>
+        _memberOnlyRecordValidator.Validate(_memberOnlyRecordPayload, 11, failFast: false);
 
     [Benchmark]
     public void ValidateNullableAggregateMembers() =>

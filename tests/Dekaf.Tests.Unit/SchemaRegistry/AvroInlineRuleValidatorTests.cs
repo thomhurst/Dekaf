@@ -1087,6 +1087,80 @@ public class AvroInlineRuleValidatorTests
     }
 
     [Test]
+    public async Task Validate_UnionBranchWithoutNestedReferencedMemberTreatsItAsMissing()
+    {
+        const string schemaText = """
+            {
+              "type": "record",
+              "name": "NestedUnionMissingRecord",
+              "confluent:rules": [{ "name": "missing", "expr": "!has(this.value.child.code)" }],
+              "fields": [{
+                "name": "value",
+                "type": [
+                  {
+                    "type": "record",
+                    "name": "WithNestedCode",
+                    "fields": [{
+                      "name": "child",
+                      "type": {
+                        "type": "record",
+                        "name": "WithCodeChild",
+                        "fields": [{ "name": "code", "type": "int" }]
+                      }
+                    }]
+                  },
+                  {
+                    "type": "record",
+                    "name": "WithoutNestedCode",
+                    "fields": [{
+                      "name": "child",
+                      "type": {
+                        "type": "record",
+                        "name": "WithoutCodeChild",
+                        "fields": [{ "name": "name", "type": "string" }]
+                      }
+                    }]
+                  }
+                ]
+              }]
+            }
+            """;
+        var schema = (RecordSchema)AvroSchema.Parse(schemaText);
+        var branch = (RecordSchema)((UnionSchema)schema.Fields[0].Schema)[1];
+        var childSchema = (RecordSchema)branch.Fields[0].Schema;
+        var child = new GenericRecord(childSchema);
+        child.Add("name", "dekaf");
+        var value = new GenericRecord(branch);
+        value.Add("child", child);
+        var record = new GenericRecord(schema);
+        record.Add("value", value);
+
+        new AvroInlineRuleValidator(schema).Validate(Serialize(record, schema), 32, failFast: false);
+
+        await Task.CompletedTask;
+    }
+
+    [Test]
+    public async Task Validate_CanonicalAndAliasReferencesResolveSameField()
+    {
+        const string schemaText = """
+            {
+              "type": "record",
+              "name": "AliasedMemberRecord",
+              "confluent:rules": [{ "name": "alias", "expr": "this.newName == this.oldName" }],
+              "fields": [{ "name": "newName", "aliases": ["oldName"], "type": "string" }]
+            }
+            """;
+        var schema = (RecordSchema)AvroSchema.Parse(schemaText);
+        var record = new GenericRecord(schema);
+        record.Add("newName", "dekaf");
+
+        new AvroInlineRuleValidator(schema).Validate(Serialize(record, schema), 33, failFast: false);
+
+        await Task.CompletedTask;
+    }
+
+    [Test]
     public async Task Validate_ResolvedNamedReferenceUsesReferencedRules()
     {
         var names = new SchemaNames();

@@ -190,6 +190,7 @@ internal sealed class CompiledValidationRule
     private CompiledValidationRule(
         ValidationRule rule,
         ValidationCelNode? expression,
+        bool usesRootValue = false,
         bool usesSize = false,
         ValidationCelEqualityPair[]? equalityPairs = null,
         bool usesCachedEquality = false,
@@ -198,6 +199,7 @@ internal sealed class CompiledValidationRule
     {
         Rule = rule;
         _expression = expression;
+        UsesRootValue = usesRootValue;
         UsesSize = usesSize;
         EqualityPairs = equalityPairs ?? [];
         UsesCachedEquality = usesCachedEquality || EqualityPairs.Length != 0;
@@ -206,6 +208,7 @@ internal sealed class CompiledValidationRule
     }
 
     internal ValidationRule Rule { get; }
+    internal bool UsesRootValue { get; }
     internal bool UsesSize { get; }
     internal ValidationCelEqualityPair[] EqualityPairs { get; }
     internal bool UsesCachedEquality { get; }
@@ -241,6 +244,7 @@ internal sealed class CompiledValidationRule
             return new CompiledValidationRule(
                 rule,
                 expression,
+                parser.UsesRootValue,
                 parser.UsesSize,
                 parser.EqualityPairs,
                 parser.UsesCachedEquality,
@@ -2868,6 +2872,7 @@ internal sealed class ValidationCelParser
     private readonly List<ValidationCelEqualityPair> _equalityPairs = [];
     private readonly int _equalityIndexOffset;
     private readonly Dictionary<ValidationCelEqualityOperands, int>? _equalityIndexes;
+    internal bool UsesRootValue { get; private set; }
     internal bool UsesCachedEquality { get; private set; }
     internal bool UsesRootAggregateEquality { get; private set; }
 
@@ -3088,7 +3093,10 @@ internal sealed class ValidationCelParser
     private ValidationCelThisNode CreateThisNode(string identifier)
     {
         if (identifier.Length == 4)
+        {
+            UsesRootValue = true;
             return new ValidationCelThisNode(-1);
+        }
 
         var memberPath = identifier[5..];
         var segments = memberPath.Split('.');
