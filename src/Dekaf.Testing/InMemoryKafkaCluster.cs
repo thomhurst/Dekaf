@@ -158,6 +158,23 @@ public sealed class InMemoryKafkaCluster
         }
     }
 
+    internal bool TryGetTopicPartitionCount(string topic, out int partitionCount)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(topic);
+
+        lock (_gate)
+        {
+            if (_topics.TryGetValue(topic, out var state))
+            {
+                partitionCount = state.Partitions.Count;
+                return true;
+            }
+
+            partitionCount = 0;
+            return false;
+        }
+    }
+
     internal bool ContainsTopicPartition(TopicPartition topicPartition)
     {
         lock (_gate)

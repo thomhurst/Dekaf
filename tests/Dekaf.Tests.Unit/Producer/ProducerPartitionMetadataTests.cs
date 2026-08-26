@@ -131,6 +131,19 @@ public sealed class ProducerPartitionMetadataTests
             .Throws<NotSupportedException>();
     }
 
+    [Test]
+    public async Task GetPartitionsForAsync_InMemoryProducer_UnknownTopicDoesNotCreateTopic()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        await using IKafkaProducer<string, string> producer = new InMemoryProducer<string, string>(cluster);
+
+        var exception = await Assert.That(async () => await producer.GetPartitionsForAsync(Topic))
+            .Throws<KafkaException>();
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.UnknownTopicOrPartition);
+        await Assert.That(cluster.ListTopics()).IsEmpty();
+    }
+
     private static KafkaProducer<string, string> CreateProducer(bool initialized)
     {
         var producer = (KafkaProducer<string, string>)Kafka.CreateProducer<string, string>()

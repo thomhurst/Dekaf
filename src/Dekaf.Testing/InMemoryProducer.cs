@@ -4,6 +4,7 @@ using System.Runtime.CompilerServices;
 using Dekaf.Consumer;
 using Dekaf.Errors;
 using Dekaf.Producer;
+using Dekaf.Protocol;
 using Dekaf.Serialization;
 using Dekaf.Telemetry;
 
@@ -166,13 +167,19 @@ public sealed class InMemoryProducer<TKey, TValue> :
         ThrowIfDisposed();
         cancellationToken.ThrowIfCancellationRequested();
 
-        var topicPartitions = _cluster.GetTopicPartitions(topic);
-        var result = new ProducerPartitionMetadata[topicPartitions.Count];
-        for (var i = 0; i < topicPartitions.Count; i++)
+        if (!_cluster.TryGetTopicPartitionCount(topic, out var partitionCount))
+        {
+            throw KafkaException.FromErrorCode(
+                ErrorCode.UnknownTopicOrPartition,
+                $"Topic '{topic}' does not exist.");
+        }
+
+        var result = new ProducerPartitionMetadata[partitionCount];
+        for (var i = 0; i < partitionCount; i++)
         {
             result[i] = new ProducerPartitionMetadata
             {
-                TopicPartition = topicPartitions[i],
+                TopicPartition = new TopicPartition(topic, i),
                 LeaderId = 0,
                 LeaderEpoch = 0,
                 ReplicaIds = SingleBrokerIds,
