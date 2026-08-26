@@ -23,6 +23,28 @@ internal sealed class ProtobufInlineRuleExecutor(
         ReadOnlyMemory<byte> payload,
         int schemaId,
         Schema? schema,
+        bool failFast) => Validate(payload, schemaId, subject: null, schema, failFast);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal bool RequiresSubject(int schemaId, Schema? schema)
+    {
+        if (schema is null ||
+            schemaRegistry is not IFormattedSchemaRegistryClient ||
+            ProtobufInlineRuleValidator.IsSerializedDescriptor(schema.SchemaString))
+        {
+            return false;
+        }
+
+        var cached = Volatile.Read(ref _lastSchema);
+        return (cached is not { SchemaId: var cachedSchemaId } || cachedSchemaId != schemaId) &&
+               !_resolvedSchemas.ContainsKey(schemaId);
+    }
+
+    internal void Validate(
+        ReadOnlyMemory<byte> payload,
+        int schemaId,
+        string? subject,
+        Schema? schema,
         bool failFast)
     {
         if (schema is null)
@@ -31,13 +53,14 @@ internal sealed class ProtobufInlineRuleExecutor(
             return;
         }
 
-        var resolved = ResolveSchema(schemaId, schema);
+        var resolved = ResolveSchema(schemaId, subject, schema);
         if (resolved is null)
             _validator.Validate(payload, schemaId, failFast);
         else
             ((IInlineValidationRuleExecutor)_validator).Validate(
                 payload,
                 schemaId,
+                subject,
                 resolved,
                 failFast);
     }
@@ -45,10 +68,11 @@ internal sealed class ProtobufInlineRuleExecutor(
     void IInlineValidationRuleExecutor.Validate(
         ReadOnlyMemory<byte> payload,
         int schemaId,
+        string? subject,
         Schema schema,
-        bool failFast) => Validate(payload, schemaId, schema, failFast);
+        bool failFast) => Validate(payload, schemaId, subject, schema, failFast);
 
-    private Schema? ResolveSchema(int schemaId, Schema schema)
+    private Schema? ResolveSchema(int schemaId, string? subject, Schema schema)
     {
         var cached = Volatile.Read(ref _lastSchema);
         if (cached is { SchemaId: var cachedSchemaId } && cachedSchemaId == schemaId)
@@ -65,7 +89,9 @@ internal sealed class ProtobufInlineRuleExecutor(
         {
             candidate = ProtobufInlineRuleValidator.IsSerializedDescriptor(schema.SchemaString)
                 ? schema
-                : _globalSchemas.GetOrAdd(
+                : subject is not null && schemaRegistry is IFormattedSchemaRegistryClient formattedRegistry
+                    ? GetSerializedSchema(formattedRegistry, schemaId, subject)
+                    : _globalSchemas.GetOrAdd(
                     schemaId,
                     static (id, registry) => registry.GetSchemaSync(id, SchemaRegistryTimeout),
                     schemaRegistry);
@@ -89,12 +115,38 @@ internal sealed class ProtobufInlineRuleExecutor(
         return cached.Schema;
     }
 
+    private static Schema GetSerializedSchema(
+        IFormattedSchemaRegistryClient schemaRegistry,
+        int schemaId,
+        string subject)
+    {
+        using var timeout = new CancellationTokenSource(SchemaRegistryTimeout);
+        try
+        {
+            return schemaRegistry.GetSchemaWithFormatAsync(
+                    schemaId,
+                    subject,
+                    ProtobufInlineRuleValidator.SerializedSchemaFormat,
+                    timeout.Token)
+                .WaitAsync(timeout.Token)
+                .ConfigureAwait(false)
+                .GetAwaiter()
+                .GetResult();
+        }
+        catch (OperationCanceledException exception) when (timeout.IsCancellationRequested)
+        {
+            throw new TimeoutException(
+                $"Protobuf schema {schemaId} resolution timed out.",
+                exception);
+        }
+    }
+
     private sealed record SchemaCacheEntry(int SchemaId, Schema Schema);
 }
 
 internal sealed class ProtobufInlineRuleValidator : IInlineValidationRuleExecutor
 {
-    private const string SerializedSchemaFormat = "serialized";
+    internal const string SerializedSchemaFormat = "serialized";
     internal const int MaximumValidationDepth = 100;
     private static readonly TimeSpan ReferenceResolutionTimeout = TimeSpan.FromSeconds(30);
     private readonly ProtobufMessageRulePlan _root;
@@ -165,6 +217,7 @@ internal sealed class ProtobufInlineRuleValidator : IInlineValidationRuleExecuto
     void IInlineValidationRuleExecutor.Validate(
         ReadOnlyMemory<byte> payload,
         int schemaId,
+        string? subject,
         Schema schema,
         bool failFast)
     {
@@ -2182,7 +2235,9 @@ internal static class ProtobufValidationValueDecoder
         if (descriptor.IsRepeated)
             return Default(descriptor);
         if (descriptor.FieldType is FieldType.Message or FieldType.Group)
-            return DecodeMessage(descriptor.MessageType, default);
+            return IsWrapper(descriptor.MessageType.FullName)
+                ? ValidationCelValue.Null
+                : DecodeMessage(descriptor.MessageType, default);
 
         var proto = descriptor.ToProto();
         if (!proto.HasDefaultValue)

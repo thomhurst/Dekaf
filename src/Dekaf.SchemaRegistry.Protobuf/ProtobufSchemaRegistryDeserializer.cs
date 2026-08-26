@@ -401,9 +401,18 @@ public sealed class ProtobufSchemaRegistryDeserializer<T>
             protobufData = data[(payloadOffset + bytesRead)..];
         }
 
+        var validationSubject = guidSchema?.Subject ?? ruleSubject;
+        if (_inlineRuleExecutor is not null &&
+            validationSubject is null &&
+            schema is not null &&
+            (_ruleExecutor is not null || _inlineRuleExecutor.RequiresSubject(schemaId, schema)))
+        {
+            validationSubject = GetSubjectName(schemaId, schema, context);
+        }
+
         if (_ruleExecutor is not null)
         {
-            var subject = guidSchema?.Subject ?? ruleSubject ?? GetSubjectName(schemaId, schema, context);
+            var subject = validationSubject ?? GetSubjectName(schemaId, schema, context);
             if (guidSchema is null && schema is not null && ruleSubject is null)
                 schema = _schemaRegistry.GetSchemaSync(schemaId, subject, SchemaRegistryTimeout);
             if (_migrationRunner is null)
@@ -428,6 +437,7 @@ public sealed class ProtobufSchemaRegistryDeserializer<T>
                             _inlineRuleExecutor.Validate(
                                 protobufData,
                                 schemaId,
+                                subject,
                                 schema,
                                 _config.ValidationRulesFailFast);
                         }
@@ -439,6 +449,7 @@ public sealed class ProtobufSchemaRegistryDeserializer<T>
                             _inlineRuleExecutor.Validate(
                                 protobufData,
                                 schemaId,
+                                subject,
                                 schema,
                                 _config.ValidationRulesFailFast);
                         }
@@ -479,6 +490,7 @@ public sealed class ProtobufSchemaRegistryDeserializer<T>
                     ((IInlineValidationRuleExecutor)_inlineRuleExecutor!).Validate(
                         protobufData,
                         schemaId,
+                        subject,
                         migration.PayloadSchema,
                         _config.ValidationRulesFailFast);
                 }
@@ -489,6 +501,7 @@ public sealed class ProtobufSchemaRegistryDeserializer<T>
             _inlineRuleExecutor?.Validate(
                 protobufData,
                 schemaId,
+                validationSubject,
                 schema,
                 _config.ValidationRulesFailFast);
         }

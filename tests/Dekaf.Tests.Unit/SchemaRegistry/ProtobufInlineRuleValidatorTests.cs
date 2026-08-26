@@ -62,17 +62,23 @@ public sealed class ProtobufInlineRuleValidatorTests
     {
         var proto3Validator = new ProtobufInlineRuleValidator(ValidationPresenceEnvelope.Descriptor);
         var proto2Validator = new ProtobufInlineRuleValidator(Proto2PresenceValidationMessage.Descriptor);
+        var explicitEmptyWrapper = new byte[] { 42, 0 };
         proto3Validator.Validate(
             ReadOnlyMemory<byte>.Empty,
             schemaId: 17,
             failFast: false);
+        proto3Validator.Validate(explicitEmptyWrapper, schemaId: 17, failFast: false);
         proto2Validator.Validate(
             ReadOnlyMemory<byte>.Empty,
             schemaId: 18,
             failFast: false);
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var index = 0; index < 100; index++)
+        {
+            proto3Validator.Validate(ReadOnlyMemory<byte>.Empty, schemaId: 17, failFast: false);
+            proto3Validator.Validate(explicitEmptyWrapper, schemaId: 17, failFast: false);
             proto2Validator.Validate(ReadOnlyMemory<byte>.Empty, schemaId: 18, failFast: false);
+        }
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
         await Assert.That(allocated).IsEqualTo(0);
@@ -1113,7 +1119,12 @@ public sealed class ProtobufInlineRuleValidatorTests
         var message = CreateValidMessage();
 
         var exception = Assert.Throws<ValidationRulesFailedException>(() =>
-            validator.Validate(message.ToByteArray(), schemaId: 91, root, failFast: false));
+            validator.Validate(
+                message.ToByteArray(),
+                schemaId: 91,
+                subject: null,
+                root,
+                failFast: false));
 
         await registry.Received(1).GetSchemaBySubjectWithFormatAsync(
             "validation-child",
@@ -1154,11 +1165,11 @@ public sealed class ProtobufInlineRuleValidatorTests
         IInlineValidationRuleExecutor validator =
             new ProtobufInlineRuleValidator(ValidationEnvelope.Descriptor);
         var payload = CreateValidMessage().ToByteArray();
-        validator.Validate(payload, schemaId: 19, schema, failFast: false);
+        validator.Validate(payload, schemaId: 19, subject: null, schema, failFast: false);
 
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var index = 0; index < 100; index++)
-            validator.Validate(payload, schemaId: 19, schema, failFast: false);
+            validator.Validate(payload, schemaId: 19, subject: null, schema, failFast: false);
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
         await Assert.That(allocated).IsEqualTo(0);
@@ -1212,6 +1223,42 @@ public sealed class ProtobufInlineRuleValidatorTests
             executor.Validate(payload, schemaId: 21, unresolved, failFast: false));
 
         await Assert.That(registry.GetSchemaCalls).IsEqualTo(2);
+        await Assert.That(exception.Violations[0].Rule.Name).IsEqualTo("age-upper-bound");
+    }
+
+    [Test]
+    public async Task Validate_TextSchemaRequestsSubjectScopedSerializedDescriptor()
+    {
+        var resolved = CreateValidationSchema("this.age <= 0");
+        var registry = Substitute.For<IFormattedSchemaRegistryClient>();
+        registry.GetSchemaWithFormatAsync(
+                22,
+                "validation-topic-value",
+                "serialized",
+                Arg.Any<CancellationToken>())
+            .Returns(resolved);
+        var executor = new ProtobufInlineRuleExecutor(registry, ValidationEnvelope.Descriptor);
+        var textual = new Schema
+        {
+            SchemaType = SchemaType.Protobuf,
+            SchemaString = "syntax = \"proto3\";"
+        };
+        var payload = CreateValidMessage().ToByteArray();
+
+        var exception = Assert.Throws<ValidationRulesFailedException>(() =>
+            executor.Validate(
+                payload,
+                schemaId: 22,
+                "validation-topic-value",
+                textual,
+                failFast: false));
+
+        await registry.Received(1).GetSchemaWithFormatAsync(
+            22,
+            "validation-topic-value",
+            "serialized",
+            Arg.Any<CancellationToken>());
+        await Assert.That(executor.RequiresSubject(22, textual)).IsFalse();
         await Assert.That(exception.Violations[0].Rule.Name).IsEqualTo("age-upper-bound");
     }
 
@@ -1279,6 +1326,40 @@ public sealed class ProtobufInlineRuleValidatorTests
 
         await Assert.That(exception.Violations.Select(static error => error.Rule.Name))
             .Contains("name-required");
+    }
+
+    [Test]
+    public async Task Deserializer_TextSchemaUsesSubjectScopedSerializedRules()
+    {
+        var textual = new Schema
+        {
+            SchemaType = SchemaType.Protobuf,
+            SchemaString = "syntax = \"proto3\";"
+        };
+        var registry = Substitute.For<IFormattedSchemaRegistryClient>();
+        registry.GetSchemaAsync(23, Arg.Any<CancellationToken>()).Returns(textual);
+        registry.GetSchemaWithFormatAsync(
+                23,
+                "validation-topic-value",
+                "serialized",
+                Arg.Any<CancellationToken>())
+            .Returns(CreateValidationSchema("this.age <= 0"));
+        await using var deserializer = new ProtobufSchemaRegistryDeserializer<ValidationEnvelope>(
+            registry,
+            new ProtobufDeserializerConfig
+            {
+                ValidationRulesExecution = ValidationRulesExecution.BeforeDomainRules
+            });
+
+        var exception = Assert.Throws<ValidationRulesFailedException>(() =>
+            deserializer.Deserialize(CreateWireBytes(23, CreateValidMessage()), CreateContext()));
+
+        await registry.Received(1).GetSchemaWithFormatAsync(
+            23,
+            "validation-topic-value",
+            "serialized",
+            Arg.Any<CancellationToken>());
+        await Assert.That(exception.Violations[0].Rule.Name).IsEqualTo("age-upper-bound");
     }
 
     [Test]
@@ -1517,6 +1598,19 @@ public sealed class ProtobufInlineRuleValidatorTests
         Topic = "validation-topic",
         Component = SerializationComponent.Value
     };
+
+    private static Schema CreateValidationSchema(string ageExpression)
+    {
+        var descriptor = ValidationEnvelope.Descriptor.File.ToProto();
+        var meta = descriptor.MessageType[0].Options.GetExtension(MetaExtensions.MessageMeta).Clone();
+        meta.Rules[0].Expr = ageExpression;
+        descriptor.MessageType[0].Options.SetExtension(MetaExtensions.MessageMeta, meta);
+        return new Schema
+        {
+            SchemaType = SchemaType.Protobuf,
+            SchemaString = descriptor.ToByteString().ToBase64()
+        };
+    }
 
     private static ValidationResult EvaluateTypedRule(string expression, ValidationCelValue value)
     {

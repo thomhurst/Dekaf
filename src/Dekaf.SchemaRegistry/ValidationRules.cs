@@ -11,7 +11,12 @@ namespace Dekaf.SchemaRegistry;
 
 internal interface IInlineValidationRuleExecutor
 {
-    void Validate(ReadOnlyMemory<byte> payload, int schemaId, Schema schema, bool failFast);
+    void Validate(
+        ReadOnlyMemory<byte> payload,
+        int schemaId,
+        string? subject,
+        Schema schema,
+        bool failFast);
 }
 
 /// <summary>
@@ -1762,11 +1767,14 @@ internal sealed class ValidationCelBinaryNode(
     {
         if (left.IsFloating || right.IsFloating)
         {
-            if (left.IsFloating && (right.IsFloating || right.IsFloatingLiteral) ||
-                right.IsFloating && left.IsFloatingLiteral)
+            if (left.IsFloating)
             {
-                return left.Floating.CompareTo(right.Floating);
+                if (right.IsFloating || right.IsFloatingLiteral)
+                    return left.Floating.CompareTo(right.Floating);
             }
+            else if (left.IsFloatingLiteral)
+                return left.Floating.CompareTo(right.Floating);
+
             return left.IsFloating
                 ? CompareFloatingToExact(left.Floating, right)
                 : -CompareFloatingToExact(right.Floating, left);

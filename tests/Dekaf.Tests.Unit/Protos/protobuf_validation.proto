@@ -184,6 +184,10 @@ message ValidationPresenceEnvelope {
       name: "implicit-default-scalars-are-absent"
       expr: "!has(this.age) && this.age == 0"
     }
+    rules: {
+      name: "wrapper-presence-preserves-null"
+      expr: "has(this.score) ? this.score == 0 : this.score == null"
+    }
   };
 
   optional string nickname = 1;
@@ -192,6 +196,7 @@ message ValidationPresenceEnvelope {
     string phone = 3;
   }
   int32 age = 4;
+  google.protobuf.Int32Value score = 5;
 }
 
 message ValidationMapEqualityEnvelope {

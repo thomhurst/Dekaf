@@ -187,7 +187,12 @@ internal sealed class JsonSchemaValidationPipelineFactory : IJsonSchemaValidator
 internal readonly struct JsonInlineValidationRuleExecutor(IJsonSchemaValidatorFactory factory)
     : IInlineValidationRuleExecutor
 {
-    public void Validate(ReadOnlyMemory<byte> payload, int schemaId, Schema schema, bool failFast) =>
+    public void Validate(
+        ReadOnlyMemory<byte> payload,
+        int schemaId,
+        string? subject,
+        Schema schema,
+        bool failFast) =>
         factory.GetOrCreate(schema).ValidateRules(payload, schemaId, failFast);
 }
 

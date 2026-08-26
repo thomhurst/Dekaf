@@ -346,6 +346,7 @@ internal sealed class SchemaRegistryMigrationRunner
                 ValidateBeforeDomainRules(
                     payload,
                     schemaId,
+                    subject,
                     writerSchema,
                     validationRules,
                     validationRulesFailFast);
@@ -374,6 +375,7 @@ internal sealed class SchemaRegistryMigrationRunner
             ValidateBeforeDomainRules(
                 payload,
                 legacyReaderDomainTransformed ? plan.ReaderSchema.Id : schemaId,
+                subject,
                 legacyReaderDomainTransformed ? plan.ReaderSchema.Schema : writerSchema,
                 validationRules,
                 validationRulesFailFast);
@@ -394,6 +396,7 @@ internal sealed class SchemaRegistryMigrationRunner
             ValidateBeforeDomainRules(
                 payload,
                 schemaId,
+                subject,
                 writerSchema,
                 validationRules,
                 validationRulesFailFast);
@@ -419,6 +422,7 @@ internal sealed class SchemaRegistryMigrationRunner
         ValidateBeforeDomainRules(
             payload,
             schemaId,
+            subject,
             writerSchema,
             validationRules,
             validationRulesFailFast);
@@ -442,6 +446,7 @@ internal sealed class SchemaRegistryMigrationRunner
                 ValidateBeforeDomainRules(
                     payload,
                     payloadSchemaId,
+                    subject,
                     payloadSchema,
                     validationRules,
                     validationRulesFailFast);
@@ -494,11 +499,12 @@ internal sealed class SchemaRegistryMigrationRunner
     private static void ValidateBeforeDomainRules<TValidationRules>(
         ReadOnlyMemory<byte> payload,
         int schemaId,
+        string subject,
         Schema schema,
         TValidationRules validationRules,
         bool validationRulesFailFast)
         where TValidationRules : IInlineValidationRuleExecutor =>
-        validationRules.Validate(payload, schemaId, schema, validationRulesFailFast);
+        validationRules.Validate(payload, schemaId, subject, schema, validationRulesFailFast);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool IsExpired(MigrationPlan plan) =>

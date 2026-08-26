@@ -23,6 +23,7 @@ public class ProtobufInlineValidationBenchmarks
     private ProtobufInlineRuleValidator _semanticEqualityValidator = null!;
     private ProtobufInlineRuleValidator _mapEqualityValidator = null!;
     private ProtobufInlineRuleValidator _collectionEqualityValidator = null!;
+    private ProtobufInlineRuleValidator _presenceValidator = null!;
     private ProtobufInlineRuleValidator _sint32Validator = null!;
     private ProtobufInlineRuleValidator _editionClosedEnumValidator = null!;
     private ProtobufInlineRuleExecutor _alternatingSchemaExecutor = null!;
@@ -69,6 +70,8 @@ public class ProtobufInlineValidationBenchmarks
             ValidationMapEqualityEnvelope.Descriptor);
         _collectionEqualityValidator = new ProtobufInlineRuleValidator(
             ValidationCollectionEnvelope.Descriptor);
+        _presenceValidator = new ProtobufInlineRuleValidator(
+            ValidationPresenceEnvelope.Descriptor);
         _sint32Validator = new ProtobufInlineRuleValidator(
             ValidationSint32BenchmarkEnvelope.Descriptor);
         _editionClosedEnumValidator = new ProtobufInlineRuleValidator(
@@ -117,6 +120,7 @@ public class ProtobufInlineValidationBenchmarks
             _collectionEqualityPayload,
             schemaId: 1,
             failFast: false);
+        _presenceValidator.Validate(ReadOnlyMemory<byte>.Empty, schemaId: 1, failFast: false);
         _sint32Validator.Validate(_sint32Payload, schemaId: 1, failFast: false);
         _sint32Validator.Validate(_simpleLargePayload, schemaId: 1, failFast: false);
         _editionClosedEnumValidator.Validate(
@@ -168,6 +172,10 @@ public class ProtobufInlineValidationBenchmarks
             _collectionEqualityPayload,
             schemaId: 1,
             failFast: false);
+
+    [Benchmark]
+    public void ValidateAbsentWrapper() =>
+        _presenceValidator.Validate(ReadOnlyMemory<byte>.Empty, schemaId: 1, failFast: false);
 
     [Benchmark]
     public void ValidateSInt32() =>
