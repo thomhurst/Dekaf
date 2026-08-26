@@ -690,7 +690,11 @@ public sealed partial class AdminClient
                 if (retryFailure is not null)
                 {
                     foreach (var topicPartition in pending)
-                        retryErrors.TryAdd(topicPartition, Protocol.ErrorCode.UnknownServerError);
+                    {
+                        retryErrors.TryAdd(
+                            topicPartition,
+                            responseMismatchError ?? Protocol.ErrorCode.UnknownServerError);
+                    }
                     throw retryFailure;
                 }
 

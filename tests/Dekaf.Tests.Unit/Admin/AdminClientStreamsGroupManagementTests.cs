@@ -836,6 +836,45 @@ public sealed class AdminClientStreamsGroupManagementTests
     }
 
     [Test]
+    public async Task AlterStreamsGroupOffsetsAsync_RetryExhaustionPreservesResponseMismatch()
+    {
+        var (admin, connection) = CreateAdmin();
+        SetupFindCoordinator(connection);
+        var mismatchTopicId = Guid.Parse("ffeeddcc-bbaa-9988-7766-554433221100");
+        connection.SendAsync<OffsetCommitRequest, OffsetCommitResponse>(
+                Arg.Any<OffsetCommitRequest>(),
+                10,
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(new OffsetCommitResponse
+            {
+                Topics =
+                [
+                    new OffsetCommitResponseTopic
+                    {
+                        TopicId = mismatchTopicId,
+                        Partitions = [Commit(0, ErrorCode.None)]
+                    }
+                ]
+            }));
+        var mismatched = new TopicPartition(Topic, 0);
+        var missing = new TopicPartition("missing", 0);
+
+        var results = await admin.AlterStreamsGroupOffsetsAsync(
+            FirstGroup,
+            [
+                new TopicPartitionOffset(mismatched.Topic, mismatched.Partition, 42),
+                new TopicPartitionOffset(missing.Topic, missing.Partition, 84)
+            ]);
+
+        await Assert.That(results[mismatched].ErrorCode).IsEqualTo(ErrorCode.UnknownTopicId);
+        await Assert.That(results[missing].ErrorCode).IsEqualTo(ErrorCode.UnknownTopicId);
+        await connection.Received(4).SendAsync<OffsetCommitRequest, OffsetCommitResponse>(
+            Arg.Any<OffsetCommitRequest>(),
+            10,
+            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
     public async Task AlterStreamsGroupOffsetsAsync_RetriesMissingTopicIdAfterMetadataRefresh()
     {
         const string refreshedTopic = "created-after-cache";

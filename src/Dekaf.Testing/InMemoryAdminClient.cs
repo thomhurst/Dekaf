@@ -369,14 +369,15 @@ public sealed partial class InMemoryAdminClient :
         ValidateNames(groups, nameof(groupIds), requireDistinct: false);
         if (groups.Length == 0)
             await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
+        GroupException? firstError = null;
         for (var index = 0; index < groups.Length; index++)
         {
             var groupId = groups[index];
             await ApplyAdminFaultAsync(cancellationToken, groupId: groupId).ConfigureAwait(false);
             var errorCode = _cluster.DeleteGroup(groupId);
-            if (errorCode != ErrorCode.None)
+            if (errorCode != ErrorCode.None && firstError is null)
             {
-                throw new GroupException(
+                firstError = new GroupException(
                     errorCode,
                     $"DeleteConsumerGroups failed for group '{groupId}': {errorCode}")
                 {
@@ -384,6 +385,9 @@ public sealed partial class InMemoryAdminClient :
                 };
             }
         }
+
+        if (firstError is not null)
+            throw firstError;
     }
 
     public async ValueTask<RemoveMembersFromConsumerGroupResult> RemoveMembersFromConsumerGroupAsync(
