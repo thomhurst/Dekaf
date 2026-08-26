@@ -58,16 +58,22 @@ public sealed class ProtobufInlineRuleValidatorTests
     [Test]
     public async Task Validate_AbsentPresenceAwareScalarsUseDefaults()
     {
-        new ProtobufInlineRuleValidator(ValidationPresenceEnvelope.Descriptor).Validate(
+        var proto3Validator = new ProtobufInlineRuleValidator(ValidationPresenceEnvelope.Descriptor);
+        var proto2Validator = new ProtobufInlineRuleValidator(Proto2PresenceValidationMessage.Descriptor);
+        proto3Validator.Validate(
             ReadOnlyMemory<byte>.Empty,
             schemaId: 17,
             failFast: false);
-        new ProtobufInlineRuleValidator(Proto2PresenceValidationMessage.Descriptor).Validate(
+        proto2Validator.Validate(
             ReadOnlyMemory<byte>.Empty,
             schemaId: 18,
             failFast: false);
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var index = 0; index < 100; index++)
+            proto2Validator.Validate(ReadOnlyMemory<byte>.Empty, schemaId: 18, failFast: false);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
-        await Task.CompletedTask;
+        await Assert.That(allocated).IsEqualTo(0);
     }
 
     [Test]
@@ -202,6 +208,16 @@ public sealed class ProtobufInlineRuleValidatorTests
                 0,
                 null,
                 payload));
+
+        await Assert.That(result.Boolean).IsTrue();
+    }
+
+    [Test]
+    public async Task Validate_JsonEqualityWithoutGenerationBypassesCache()
+    {
+        var result = EvaluateTypedRule(
+            "this == this",
+            ValidationCelValue.FromJson("{\"value\":1}"u8.ToArray()));
 
         await Assert.That(result.Boolean).IsTrue();
     }
@@ -375,6 +391,29 @@ public sealed class ProtobufInlineRuleValidatorTests
 
         await Assert.That(exception.Violations.Select(static violation => violation.Rule.Name))
             .Contains("score-not-negative");
+    }
+
+    [Test]
+    public async Task Validate_WrapperUsesLastOuterOccurrence()
+    {
+        var first = new ArrayBufferWriter<byte>();
+        WriteLengthDelimited(first, fieldNumber: 1, "a"u8);
+        var second = new ArrayBufferWriter<byte>();
+        WriteLengthDelimited(second, fieldNumber: 1, "b"u8);
+        var payload = new ArrayBufferWriter<byte>();
+        CreateValidMessage().WriteTo(payload);
+        WriteLengthDelimited(payload, fieldNumber: 15, first.WrittenSpan);
+        WriteLengthDelimited(payload, fieldNumber: 15, second.WrittenSpan);
+        var validator = new ProtobufInlineRuleValidator(ValidationEnvelope.Descriptor);
+
+        validator.Validate(payload.WrittenMemory, schemaId: 17, failFast: false);
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var index = 0; index < 100; index++)
+            validator.Validate(payload.WrittenMemory, schemaId: 17, failFast: false);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        await Assert.That(payload.WrittenCount).IsGreaterThan(0);
+        await Assert.That(allocated).IsEqualTo(0);
     }
 
     [Test]

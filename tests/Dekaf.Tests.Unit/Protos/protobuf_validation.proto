@@ -19,6 +19,10 @@ message ValidationEnvelope {
       name: "oneof-last-wins"
       expr: "!has(this.email) || size(this.email) > 0"
     }
+    rules: {
+      name: "outer-wrapper-last-wins"
+      expr: "!has(this.label) || this.label == 'b'"
+    }
   };
 
   int32 age = 1 [(confluent.field_meta) = {
@@ -110,6 +114,13 @@ message ValidationEnvelope {
     rules: {
       name: "message-self-equality"
       expr: "this == this && this.value > 0"
+    }
+  }];
+
+  google.protobuf.StringValue label = 15 [(confluent.field_meta) = {
+    rules: {
+      name: "label-last-wins"
+      expr: "this == 'b'"
     }
   }];
 }

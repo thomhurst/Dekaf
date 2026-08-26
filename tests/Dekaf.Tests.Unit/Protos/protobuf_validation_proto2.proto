@@ -28,9 +28,19 @@ message Proto2PresenceValidationMessage {
   option (confluent.message_meta) = {
     rules: {
       name: "absent-proto2-scalar-uses-default"
-      expr: "!has(this.value) && this.value == 0"
+      expr: "!has(this.value) && this.value == 0 && !has(this.limit) && this.limit == 5 && !has(this.label) && this.label == 'legacy' && !has(this.token) && this.token == b'\\x01\\xff' && !has(this.enabled) && this.enabled && !has(this.status) && this.status == 1"
     }
   };
 
   optional int32 value = 1;
+  optional int32 limit = 2 [default = 5];
+  optional string label = 3 [default = "legacy"];
+  optional bytes token = 4 [default = "\001\377"];
+  optional bool enabled = 5 [default = true];
+  optional Proto2PresenceStatus status = 6 [default = PROTO2_PRESENCE_STATUS_ACTIVE];
+}
+
+enum Proto2PresenceStatus {
+  PROTO2_PRESENCE_STATUS_UNSPECIFIED = 0;
+  PROTO2_PRESENCE_STATUS_ACTIVE = 1;
 }

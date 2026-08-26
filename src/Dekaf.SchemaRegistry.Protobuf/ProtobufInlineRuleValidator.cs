@@ -730,6 +730,9 @@ internal sealed class ProtobufFieldRulePlan(
     int runtimeIndex,
     int oneofIndex)
 {
+    private readonly ValidationCelValue _defaultValue =
+        ProtobufValidationValueDecoder.DeclaredDefault(descriptor);
+
     internal FieldDescriptor Descriptor { get; } = descriptor;
     internal ProtobufCompiledRuleSet Rules { get; } = rules;
     internal ProtobufMessageRulePlan? Child { get; } = child;
@@ -794,13 +797,13 @@ internal sealed class ProtobufFieldRulePlan(
         if (Descriptor.FieldType is FieldType.Message or FieldType.Group &&
             values.IsSet(RuntimeIndex))
         {
-            decoded = decoded with
-            {
-                Utf8Literal = mergedMessages.Merge(
-                    RuntimeIndex,
-                    values.GetValue(RuntimeIndex, default).Utf8Literal,
-                    decoded.Utf8Literal)
-            };
+            decoded = ProtobufValidationValueDecoder.MergeMessage(
+                Descriptor,
+                field,
+                values.GetValue(RuntimeIndex, default),
+                decoded,
+                RuntimeIndex,
+                ref mergedMessages);
         }
         values.SetValue(RuntimeIndex, decoded);
     }
@@ -818,7 +821,7 @@ internal sealed class ProtobufFieldRulePlan(
         }
         else if (Descriptor.FieldType is not (FieldType.Message or FieldType.Group))
         {
-            values.SetDefaultValue(RuntimeIndex, ProtobufValidationValueDecoder.Default(Descriptor));
+            values.SetDefaultValue(RuntimeIndex, _defaultValue);
         }
     }
 
@@ -1541,6 +1544,9 @@ internal sealed class ProtobufMemberResolver
 
 internal sealed class ProtobufMemberNode(FieldDescriptor descriptor)
 {
+    private readonly ValidationCelValue _defaultValue =
+        ProtobufValidationValueDecoder.DeclaredDefault(descriptor);
+
     internal FieldDescriptor Descriptor => descriptor;
     internal int MemberIndex { get; set; } = -1;
     internal int RuntimeIndex { get; set; }
@@ -1574,13 +1580,13 @@ internal sealed class ProtobufMemberNode(FieldDescriptor descriptor)
                 if (descriptor.FieldType is FieldType.Message or FieldType.Group &&
                     values.IsSet(MemberIndex))
                 {
-                    decoded = decoded with
-                    {
-                        Utf8Literal = nestedPayloads.Merge(
-                            RuntimeIndex,
-                            values.GetValue(MemberIndex, default).Utf8Literal,
-                            decoded.Utf8Literal)
-                    };
+                    decoded = ProtobufValidationValueDecoder.MergeMessage(
+                        descriptor,
+                        field,
+                        values.GetValue(MemberIndex, default),
+                        decoded,
+                        RuntimeIndex,
+                        ref nestedPayloads);
                 }
                 values.SetValue(MemberIndex, decoded);
             }
@@ -1606,7 +1612,7 @@ internal sealed class ProtobufMemberNode(FieldDescriptor descriptor)
         }
         else if (descriptor.FieldType is not (FieldType.Message or FieldType.Group))
         {
-            values.SetDefaultValue(MemberIndex, ProtobufValidationValueDecoder.Default(descriptor));
+            values.SetDefaultValue(MemberIndex, _defaultValue);
         }
     }
 
@@ -1738,6 +1744,46 @@ internal ref struct ProtobufNestedMemberPayloads
 
 internal static class ProtobufValidationValueDecoder
 {
+    internal static ValidationCelValue MergeMessage(
+        FieldDescriptor descriptor,
+        ProtobufValidationWireField field,
+        ValidationCelValue previous,
+        ValidationCelValue current,
+        int runtimeIndex,
+        ref ProtobufMergedMessageBuffers mergedMessages)
+    {
+        if (IsWrapper(descriptor.MessageType.FullName))
+            return HasWrapperValue(descriptor.MessageType, field.Payload) ? current : previous;
+
+        return current with
+        {
+            Utf8Literal = mergedMessages.Merge(
+                runtimeIndex,
+                previous.Utf8Literal,
+                current.Utf8Literal)
+        };
+    }
+
+    internal static ValidationCelValue MergeMessage(
+        FieldDescriptor descriptor,
+        ProtobufValidationWireField field,
+        ValidationCelValue previous,
+        ValidationCelValue current,
+        int runtimeIndex,
+        ref ProtobufNestedMemberPayloads mergedMessages)
+    {
+        if (IsWrapper(descriptor.MessageType.FullName))
+            return HasWrapperValue(descriptor.MessageType, field.Payload) ? current : previous;
+
+        return current with
+        {
+            Utf8Literal = mergedMessages.Merge(
+                runtimeIndex,
+                previous.Utf8Literal,
+                current.Utf8Literal)
+        };
+    }
+
     internal static ValidationCelValue Decode(
         FieldDescriptor descriptor,
         ProtobufValidationWireField field)
@@ -1779,6 +1825,35 @@ internal static class ProtobufValidationValueDecoder
         FieldType.Bytes => ValidationCelValue.FromBytes(default),
         _ => ValidationCelValue.Missing
     };
+
+    internal static ValidationCelValue DeclaredDefault(FieldDescriptor descriptor)
+    {
+        if (descriptor.IsRepeated || descriptor.FieldType is FieldType.Message or FieldType.Group)
+        {
+            return Default(descriptor);
+        }
+
+        var proto = descriptor.ToProto();
+        if (!proto.HasDefaultValue)
+            return Default(descriptor);
+
+        var value = proto.DefaultValue;
+        return descriptor.FieldType switch
+        {
+            FieldType.Double or FieldType.Float => ValidationCelValue.FromFloating(ParseFloating(value)),
+            FieldType.Int64 or FieldType.Int32 or FieldType.SFixed32 or FieldType.SFixed64 or
+                FieldType.SInt32 or FieldType.SInt64 => ValidationCelValue.FromNumber(ParseSignedInteger(value)),
+            FieldType.UInt64 or FieldType.Fixed64 or FieldType.Fixed32 or FieldType.UInt32 =>
+                ValidationCelValue.FromNumber(ParseUnsignedInteger(value)),
+            FieldType.Enum => ValidationCelValue.FromNumber(
+                (descriptor.EnumType.FindValueByName(value) ?? throw new SchemaRegistryRuleException(
+                    $"Unknown Protobuf enum default '{value}' for '{descriptor.FullName}'.")).Number),
+            FieldType.Bool => ValidationCelValue.FromBoolean(bool.Parse(value)),
+            FieldType.String => ValidationCelValue.FromString(value),
+            FieldType.Bytes => ValidationCelValue.FromBytes(ParseBytesDefault(value)),
+            _ => ValidationCelValue.Missing
+        };
+    }
 
     internal static int CountPacked(FieldDescriptor descriptor, ReadOnlyMemory<byte> payload)
     {
@@ -1857,6 +1932,128 @@ internal static class ProtobufValidationValueDecoder
             0,
             null,
             payload);
+    }
+
+    private static bool HasWrapperValue(
+        MessageDescriptor descriptor,
+        ReadOnlyMemory<byte> payload)
+    {
+        var valueField = descriptor.FindFieldByNumber(1)!;
+        var reader = new ProtobufValidationWireReader(payload);
+        while (reader.TryRead(out var field))
+        {
+            if (field.Number == 1 && MatchesWireType(valueField, field.WireType))
+                return true;
+        }
+        return false;
+    }
+
+    private static double ParseFloating(string value) => value switch
+    {
+        "inf" => double.PositiveInfinity,
+        "-inf" => double.NegativeInfinity,
+        "nan" => double.NaN,
+        _ => double.Parse(value, NumberStyles.Float, CultureInfo.InvariantCulture)
+    };
+
+    private static decimal ParseSignedInteger(string value)
+    {
+        var negative = value.Length != 0 && value[0] == '-';
+        var magnitude = ParseUnsignedIntegerMagnitude(
+            value.AsSpan(negative || value.Length != 0 && value[0] == '+' ? 1 : 0));
+        return negative ? -(decimal)magnitude : magnitude;
+    }
+
+    private static decimal ParseUnsignedInteger(string value) =>
+        ParseUnsignedIntegerMagnitude(value.AsSpan(value.Length != 0 && value[0] == '+' ? 1 : 0));
+
+    private static ulong ParseUnsignedIntegerMagnitude(ReadOnlySpan<char> value)
+    {
+        if (value.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+            return ulong.Parse(value[2..], NumberStyles.HexNumber, CultureInfo.InvariantCulture);
+        if (value.Length > 1 && value[0] == '0')
+        {
+            ulong result = 0;
+            for (var index = 1; index < value.Length; index++)
+            {
+                if (value[index] is not (>= '0' and <= '7'))
+                    throw new SchemaRegistryRuleException($"Invalid octal Protobuf default '{value.ToString()}'.");
+                result = checked(result * 8 + (uint)(value[index] - '0'));
+            }
+            return result;
+        }
+        return ulong.Parse(value, NumberStyles.None, CultureInfo.InvariantCulture);
+    }
+
+    private static byte[] ParseBytesDefault(string value)
+    {
+        var bytes = new List<byte>(value.Length);
+        for (var index = 0; index < value.Length; index++)
+        {
+            var current = value[index];
+            if (current != '\\')
+            {
+                bytes.Add(checked((byte)current));
+                continue;
+            }
+
+            if (++index == value.Length)
+                throw new SchemaRegistryRuleException("Protobuf bytes default ends with an escape prefix.");
+            current = value[index];
+            if (current is >= '0' and <= '7')
+            {
+                var octal = current - '0';
+                for (var digit = 1; digit < 3 && index + 1 < value.Length &&
+                     value[index + 1] is >= '0' and <= '7'; digit++)
+                {
+                    octal = octal * 8 + value[++index] - '0';
+                }
+                bytes.Add(checked((byte)octal));
+                continue;
+            }
+
+            if (current is 'x' or 'X')
+            {
+                if (++index == value.Length || !TryParseHex(value[index], out var parsed))
+                    throw new SchemaRegistryRuleException("Protobuf bytes default has an invalid hexadecimal escape.");
+                if (index + 1 < value.Length && TryParseHex(value[index + 1], out var low))
+                {
+                    parsed = parsed * 16 + low;
+                    index++;
+                }
+                bytes.Add(checked((byte)parsed));
+                continue;
+            }
+
+            bytes.Add(current switch
+            {
+                'a' => (byte)'\a',
+                'b' => (byte)'\b',
+                'f' => (byte)'\f',
+                'n' => (byte)'\n',
+                'r' => (byte)'\r',
+                't' => (byte)'\t',
+                'v' => (byte)'\v',
+                '\\' => (byte)'\\',
+                '\'' => (byte)'\'',
+                '"' => (byte)'"',
+                _ => throw new SchemaRegistryRuleException(
+                    $"Invalid Protobuf bytes default escape '\\{current}'.")
+            });
+        }
+        return [.. bytes];
+    }
+
+    private static bool TryParseHex(char value, out int result)
+    {
+        result = value switch
+        {
+            >= '0' and <= '9' => value - '0',
+            >= 'a' and <= 'f' => value - 'a' + 10,
+            >= 'A' and <= 'F' => value - 'A' + 10,
+            _ => -1
+        };
+        return result >= 0;
     }
 
     private static decimal ReadSecondsAndNanos(ReadOnlyMemory<byte> payload)

@@ -363,6 +363,11 @@ internal sealed class CompiledValidationRule
         int equalityIndex,
         out bool value)
     {
+        if (equalityGeneration == 0)
+        {
+            value = false;
+            return false;
+        }
         EnsureEqualityCapacity(equalityIndex);
         ref readonly var slot = ref t_equalities![equalityIndex];
         value = slot.Value;
@@ -374,6 +379,8 @@ internal sealed class CompiledValidationRule
         int equalityIndex,
         bool value)
     {
+        if (equalityGeneration == 0)
+            return;
         EnsureEqualityCapacity(equalityIndex);
         ref var slot = ref t_equalities![equalityIndex];
         slot.Value = value;
