@@ -664,18 +664,20 @@ public sealed class ConsumerPauseResumeCacheTests
     }
 
     [Test]
-    public async Task ConsumeAsync_ResumeBeforePrefetchWaitRegistration_WakesRetainedRecord()
+    [Timeout(120_000)]
+    public async Task ConsumeAsync_ResumeBeforePrefetchWaitRegistration_WakesRetainedRecord(
+        CancellationToken cancellationToken)
     {
         var partition = new TopicPartition(PrefetchedTopic, 0);
-        using var waitEntered = new ManualResetEventSlim();
+        var waitEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         using var releaseWait = new ManualResetEventSlim();
         var prefetchBuffer = new MpscFetchBuffer(
             4,
             afterProducerWaiterCountIncrementedForTesting: null,
             beforeConsumerWaitSpinForTesting: () =>
             {
-                waitEntered.Set();
-                releaseWait.Wait();
+                waitEntered.TrySetResult();
+                releaseWait.Wait(cancellationToken);
             });
         var retained = CreatePendingFetch(partition, 10, 1);
         var consumer = new KafkaConsumer<string, string>(
@@ -709,13 +711,14 @@ public sealed class ConsumerPauseResumeCacheTests
 
         try
         {
-            records = consumer.ConsumeAsync(consumeCancellation.Token).GetAsyncEnumerator();
+            records = consumer.ConsumeAsync(consumeCancellation.Token)
+                .GetAsyncEnumerator(CancellationToken.None);
             moveNext = StartDedicatedMoveNext(records);
-            await Assert.That(waitEntered.Wait(TimeSpan.FromSeconds(5))).IsTrue();
+            await waitEntered.Task.WaitAsync(cancellationToken);
             consumer.Resume(partition);
             releaseWait.Set();
 
-            await Assert.That(await moveNext.WaitAsync(TimeSpan.FromSeconds(5))).IsTrue();
+            await Assert.That(await moveNext.WaitAsync(cancellationToken)).IsTrue();
             await Assert.That(records.Current.Topic).IsEqualTo(partition.Topic);
             await Assert.That(records.Current.Partition).IsEqualTo(partition.Partition);
             await Assert.That(records.Current.Offset).IsEqualTo(10);

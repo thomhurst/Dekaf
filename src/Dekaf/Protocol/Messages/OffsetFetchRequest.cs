@@ -6,6 +6,7 @@ namespace Dekaf.Protocol.Messages;
 /// </summary>
 public sealed class OffsetFetchRequest : IKafkaRequest<OffsetFetchResponse>
 {
+    internal const short RequireStableVersion = 7;
     internal const short TopicIdVersion = 10;
 
     public static ApiKey ApiKey => ApiKey.OffsetFetch;
@@ -50,7 +51,7 @@ public sealed class OffsetFetchRequest : IKafkaRequest<OffsetFetchResponse>
                     version);
             }
 
-            if (version >= 7)
+            if (version >= RequireStableVersion)
             {
                 writer.WriteBoolean(RequireStable);
             }

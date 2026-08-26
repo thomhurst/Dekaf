@@ -1092,9 +1092,15 @@ public sealed class TransactionTests
     }
 
     [Test]
-    public async Task TransactionPartitionEnrollment_BatchesCoalescedPartitions()
+    [Timeout(120_000)]
+    public async Task TransactionPartitionEnrollment_BatchesCoalescedPartitions(
+        CancellationToken cancellationToken)
     {
-        var requestStarted = new TaskCompletionSource<IReadOnlyList<TopicPartition>>(
+        var firstRequestStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var failFirstRequest = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var retryRequestStarted = new TaskCompletionSource<IReadOnlyList<TopicPartition>>(
             TaskCreationOptions.RunContinuationsAsynchronously);
         var completeRequest = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var requestCount = 0;
@@ -1105,11 +1111,15 @@ public sealed class TransactionTests
             CancellationToken cancellationToken)
         {
             if (Interlocked.Increment(ref requestCount) == 1)
+            {
+                firstRequestStarted.TrySetResult();
+                await failFirstRequest.Task.WaitAsync(cancellationToken);
                 throw new IOException("Transient connection failure");
+            }
             if (Interlocked.Exchange(ref failNextEnrollment, 0) == 1)
                 throw new TransactionException("Partition enrollment failed.");
 
-            requestStarted.TrySetResult([.. partitions]);
+            retryRequestStarted.TrySetResult([.. partitions]);
             await completeRequest.Task.WaitAsync(cancellationToken);
         }
 
@@ -1117,7 +1127,9 @@ public sealed class TransactionTests
         {
             BootstrapServers = ["localhost:9092"],
             TransactionalId = "test-txn-id",
-            CloseTimeoutMs = 100
+            CloseTimeoutMs = 100,
+            RetryBackoffMs = 0,
+            RetryBackoffMaxMs = 0
         };
         await using var connectionPool = new ConnectionPool(
             options.ClientId,
@@ -1168,7 +1180,9 @@ public sealed class TransactionTests
         await Assert.That(enrolled.IsEnrolled).IsFalse();
         await Assert.That(enrolled.Error).IsNull();
         await Assert.That(pendingPartitions).IsEquivalentTo(batches.Select(batch => batch.TopicPartition));
-        var requestedPartitions = await requestStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        await firstRequestStarted.Task.WaitAsync(cancellationToken);
+        failFirstRequest.SetResult();
+        var requestedPartitions = await retryRequestStarted.Task.WaitAsync(cancellationToken);
         await Assert.That(requestCount).IsEqualTo(2);
         await Assert.That(requestedPartitions).IsEquivalentTo(new[]
         {
@@ -1178,7 +1192,7 @@ public sealed class TransactionTests
         });
 
         completeRequest.SetResult();
-        await Assert.That(await enrollmentCompleted.Task.WaitAsync(TimeSpan.FromSeconds(1))).IsNull();
+        await Assert.That(await enrollmentCompleted.Task.WaitAsync(cancellationToken)).IsNull();
         await Assert.That(producer.TryEnsurePartitionsInTransaction(
             batches,
             batches.Length,
@@ -1200,7 +1214,7 @@ public sealed class TransactionTests
         await Assert.That(mixedResult.IsEnrolled).IsFalse();
         await Assert.That(mixedPendingPartitions).IsEquivalentTo(
             [new TopicPartition("topic-c", 2)]);
-        await Assert.That(await mixedEnrollmentCompleted.Task.WaitAsync(TimeSpan.FromSeconds(1))).IsNull();
+        await Assert.That(await mixedEnrollmentCompleted.Task.WaitAsync(cancellationToken)).IsNull();
 
         Interlocked.Exchange(ref failNextEnrollment, 1);
         var failedBatch = CreateEnrollmentBatch("failed-topic", 0);
@@ -1214,7 +1228,7 @@ public sealed class TransactionTests
             failedPendingPartitions,
             []);
         await Assert.That(pendingFailure.IsEnrolled).IsFalse();
-        await Assert.That(await failedEnrollmentCompleted.Task.WaitAsync(TimeSpan.FromSeconds(1))).IsNull();
+        await Assert.That(await failedEnrollmentCompleted.Task.WaitAsync(cancellationToken)).IsNull();
 
         failedPendingPartitions.Clear();
         var failedResult = producer.TryEnsurePartitionsInTransaction(
@@ -1236,7 +1250,7 @@ public sealed class TransactionTests
             [],
             []);
         await Assert.That(unrelatedResult.Error).IsNull();
-        await Assert.That(await unrelatedEnrollmentCompleted.Task.WaitAsync(TimeSpan.FromSeconds(1))).IsNull();
+        await Assert.That(await unrelatedEnrollmentCompleted.Task.WaitAsync(cancellationToken)).IsNull();
         await Assert.That(producer.TryEnsurePartitionsInTransaction(
             [unrelatedBatch],
             1,
