@@ -2,9 +2,11 @@ using System.Buffers;
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
 using System.Runtime.CompilerServices;
 using Avro.Generic;
 using Avro.Specific;
+using Dekaf.SchemaRegistry.Avro.Poco;
 using Dekaf.Serialization;
 using AvroSchema = Avro.Schema;
 using RegistrySchema = Dekaf.SchemaRegistry.Schema;
@@ -40,7 +42,8 @@ public sealed class AvroSchemaRegistrySerializer<
     [DynamicallyAccessedMembers(
         DynamicallyAccessedMemberTypes.PublicFields |
         DynamicallyAccessedMemberTypes.PublicProperties)] T>
-    : ISerializer<T>, IAsyncSerializerPreparer<T>, IAsyncSerializerPreparationAdmission<T>, IAsyncDisposable
+    : ISerializer<T>, IAsyncSerializerPreparer<T>, IAsyncSerializerPreparationAdmission<T>,
+      IRecordHeaderSerializer, IAsyncDisposable
 {
     private const byte MagicByte = 0x00;
     private const int WireHeaderSize = 5;
@@ -50,6 +53,8 @@ public sealed class AvroSchemaRegistrySerializer<
     private static readonly TimeSpan SchemaRegistryTimeout = TimeSpan.FromSeconds(30);
     private readonly ISchemaRegistryClient _schemaRegistry;
     private readonly AvroSerializerConfig _config;
+    private readonly SchemaIdSerializerStrategy _schemaIdStrategy;
+    private readonly SchemaSelectionMode _schemaSelectionMode;
     private readonly IAsyncSubjectNameStrategy? _asyncSubjectNameStrategy;
     private readonly bool _ownsClient;
     private readonly SchemaResolutionCache<SubjectSchemaIdCache.SubjectSchemaIdCacheValue> _schemaResolutionCache;
@@ -75,6 +80,9 @@ public sealed class AvroSchemaRegistrySerializer<
     private DynamicSchemaCache? _previousDynamicSchemaCache;
     private SubjectSchemaIdCache? _associatedSubjectSchemaIdCache;
 
+    bool IRecordHeaderSerializer.ProducesRecordHeaders =>
+        _schemaIdStrategy == SchemaIdSerializerStrategy.Header;
+
     /// <summary>
     /// Creates a new Avro Schema Registry serializer.
     /// </summary>
@@ -88,6 +96,13 @@ public sealed class AvroSchemaRegistrySerializer<
     {
         _schemaRegistry = schemaRegistry ?? throw new ArgumentNullException(nameof(schemaRegistry));
         _config = config ?? new AvroSerializerConfig();
+        _schemaIdStrategy = _config.SchemaIdStrategy;
+        _schemaSelectionMode = SchemaRegistrySerializerConfigValidator.ValidateAndResolve(
+            _config.UseSchemaId,
+            _config.UseLatestVersion,
+            _config.AutoRegisterSchemas);
+        if (_schemaIdStrategy is not (SchemaIdSerializerStrategy.Prefix or SchemaIdSerializerStrategy.Header))
+            throw new ArgumentOutOfRangeException(nameof(config), _schemaIdStrategy, "Unknown schema identity strategy.");
         if (_config.CustomSubjectNameStrategy is null)
         {
             _asyncSubjectNameStrategy = _config.AsyncSubjectNameStrategy
@@ -199,12 +214,14 @@ public sealed class AvroSchemaRegistrySerializer<
             context.Component == SerializationComponent.Key,
             cancellationToken);
         return preparation.IsCompletedSuccessfully
-            ? new ValueTask<SerializerPreparationAdmission>(ToAdmission(preparation.Result))
-            : AwaitAdmissionAsync(preparation);
+            ? new ValueTask<SerializerPreparationAdmission>(
+                ToAdmission(preparation.Result))
+            : AwaitAdmissionAsync(this, preparation);
 
         static async ValueTask<SerializerPreparationAdmission> AwaitAdmissionAsync(
+            AvroSchemaRegistrySerializer<T> serializer,
             ValueTask<ResolvedSchemaContext> pending) =>
-            ToAdmission(await pending.ConfigureAwait(false));
+            serializer.ToAdmission(await pending.ConfigureAwait(false));
     }
 
     /// <summary>
@@ -235,7 +252,10 @@ public sealed class AvroSchemaRegistrySerializer<
         var codecState = AvroCodecThreadStateCache.Serialization ??= new AvroSerializationThreadState();
         if (_config.RuleExecutor is null)
         {
-            SerializeDirect(value, ref destination, schemaId, codecState);
+            if (_schemaIdStrategy == SchemaIdSerializerStrategy.Prefix)
+                SerializeDirect(value, ref destination, schemaId, codecState);
+            else
+                SerializeDirectWithHeader(value, ref destination, context, schemaEntry, codecState);
             return;
         }
 
@@ -275,16 +295,23 @@ public sealed class AvroSchemaRegistrySerializer<
         var codecState = AvroCodecThreadStateCache.Serialization ??= new AvroSerializationThreadState();
         if (_config.RuleExecutor is null)
         {
-            SerializeDirect(value, ref destination, schemaId, codecState);
+            if (_schemaIdStrategy == SchemaIdSerializerStrategy.Prefix)
+                SerializeDirect(value, ref destination, schemaId, codecState);
+            else
+                SerializeDirectWithHeader(value, ref destination, context, schemaEntry, codecState);
             return;
         }
 
         SerializeWithRuleExecutor(value, ref destination, context, schemaEntry, schemaId, avroSchema, codecState);
     }
 
-    private static SerializerPreparationAdmission ToAdmission(
-        in ResolvedSchemaContext context) =>
-        new(context.Subject, context.SchemaId, context.Schema);
+    private SerializerPreparationAdmission ToAdmission(in ResolvedSchemaContext context)
+    {
+        var schemaGuidFrame = _schemaIdStrategy == SchemaIdSerializerStrategy.Header
+            ? context.SchemaGuidFrame
+            : null;
+        return new(context.Subject, context.SchemaId, context.Schema, schemaGuidFrame);
+    }
 
     private void SerializeDirect<TWriter>(
         T value,
@@ -315,6 +342,57 @@ public sealed class AvroSchemaRegistrySerializer<
                 BinaryPrimitives.WriteInt32BigEndian(span.Slice(1, 4), schemaId);
 
                 destination.Advance(WireHeaderSize + payloadLength);
+                codecState.PayloadSizeHint = payloadLength > MaxRetainedAvroPayloadBufferSize
+                    ? InitialAvroPayloadBufferSize
+                    : Math.Max(codecState.PayloadSizeHint, payloadLength);
+                stream.Reset(default);
+                return;
+            }
+            catch (FixedMemoryStreamOverflowException ex)
+            {
+                stream.Reset(default);
+                payloadSizeHint = GrowPayloadSizeHint(payloadSizeHint, ex.RequiredCapacity);
+            }
+            catch
+            {
+                stream.Reset(default);
+                throw;
+            }
+        }
+    }
+
+    private void SerializeDirectWithHeader<TWriter>(
+        T value,
+        ref TWriter destination,
+        SerializationContext context,
+        SubjectSchemaIdCache.SubjectSchemaIdCacheEntry schemaEntry,
+        AvroSerializationThreadState codecState)
+        where TWriter : IBufferWriter<byte>
+#if NET10_0_OR_GREATER
+        , allows ref struct
+#endif
+    {
+        var payloadSizeHint = codecState.PayloadSizeHint;
+
+        while (true)
+        {
+            var memory = destination.GetMemory(payloadSizeHint);
+            var stream = codecState.DirectStream;
+            stream.Reset(memory);
+
+            try
+            {
+                WriteAvroValue(value, codecState.DirectEncoder);
+                codecState.DirectEncoder.Flush();
+
+                var payloadLength = stream.WrittenCount;
+                SchemaIdentitySerialization.WriteIdentity(
+                    memory.Span,
+                    context,
+                    in schemaEntry,
+                    SchemaIdSerializerStrategy.Header);
+
+                destination.Advance(payloadLength);
                 codecState.PayloadSizeHint = payloadLength > MaxRetainedAvroPayloadBufferSize
                     ? InitialAvroPayloadBufferSize
                     : Math.Max(codecState.PayloadSizeHint, payloadLength);
@@ -378,13 +456,16 @@ public sealed class AvroSchemaRegistrySerializer<
                 ruleContext.Return();
             }
 
-            // Write wire format: [0x00] [schema ID] [Avro payload]
-            var totalSize = WireHeaderSize + payload.Length;
+            var payloadOffset = SchemaIdentitySerialization.GetPayloadOffset(_schemaIdStrategy);
+            var totalSize = payloadOffset + payload.Length;
             var span = destination.GetSpan(totalSize);
 
-            span[0] = MagicByte;
-            BinaryPrimitives.WriteInt32BigEndian(span.Slice(1, 4), schemaId);
-            payload.Span.CopyTo(span.Slice(5));
+            SchemaIdentitySerialization.WriteIdentity(
+                span,
+                context,
+                in schemaEntry,
+                _schemaIdStrategy);
+            payload.Span.CopyTo(span[payloadOffset..]);
 
             destination.Advance(totalSize);
         }
@@ -473,7 +554,11 @@ public sealed class AvroSchemaRegistrySerializer<
         {
             var value = resolved.Result;
             return new ValueTask<ResolvedSchemaContext>(ToResolvedContext(
-                cache.CacheEntry(topic, isKey, subject, value.SchemaId, value.Schema!)));
+                cache.CacheEntry(
+                    topic,
+                    isKey,
+                    subject,
+                    in value)));
         }
 
         return AwaitSchemaAsync(topic, isKey, subject, cache, resolved);
@@ -487,7 +572,11 @@ public sealed class AvroSchemaRegistrySerializer<
         {
             var value = await resolved.ConfigureAwait(false);
             return ToResolvedContext(
-                cache.CacheEntry(topic, isKey, subject, value.SchemaId, value.Schema!));
+                cache.CacheEntry(
+                    topic,
+                    isKey,
+                    subject,
+                    in value));
         }
     }
 
@@ -513,8 +602,7 @@ public sealed class AvroSchemaRegistrySerializer<
                     topic,
                     isKey,
                     subject,
-                    value.SchemaId,
-                    value.Schema!);
+                    in value);
                 if (ReferenceEquals(cache, GetAssociatedSubjectSchemaIdCache(avroSchema)))
                     return ToResolvedContext(cached);
             }
@@ -530,7 +618,10 @@ public sealed class AvroSchemaRegistrySerializer<
 
     private static ResolvedSchemaContext ToResolvedContext(
         SubjectSchemaIdCache.SubjectSchemaIdCacheEntry entry) =>
-        new(entry.Subject!, entry.SchemaId, entry.Schema!);
+        new(entry.Subject!, entry.SchemaId, entry.Schema!)
+        {
+            SchemaGuidFrame = entry.SchemaGuidFrame
+        };
 
     private readonly record struct SubjectSchemaIdState(
         AvroSchemaRegistrySerializer<T> Serializer,
@@ -597,19 +688,59 @@ public sealed class AvroSchemaRegistrySerializer<
         RegistrySchema registrySchema,
         CancellationToken cancellationToken)
     {
-        if (_config.UseLatestVersion)
+        if (_schemaSelectionMode == SchemaSelectionMode.ExplicitId)
+        {
+            var schemaId = _config.UseSchemaId!.Value;
+            var explicitSchema = await _schemaRegistry.GetSchemaAsync(
+                    schemaId,
+                    subject,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            if (explicitSchema.SchemaType != SchemaType.Avro)
+            {
+                throw new InvalidOperationException(
+                    $"Schema ID {schemaId} has format {explicitSchema.SchemaType}; expected {SchemaType.Avro}.");
+            }
+
+            await ValidateSelectedSchemaAsync(
+                    explicitSchema,
+                    registrySchema,
+                    schemaId,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            return await CreateResolvedValueAsync(
+                    subject,
+                    schemaId,
+                    explicitSchema,
+                    registeredSchema: null,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        if (_schemaSelectionMode == SchemaSelectionMode.Latest)
         {
             var registered = await _schemaRegistry.GetSchemaBySubjectAsync(
                     subject,
                     "latest",
                     cancellationToken)
                 .ConfigureAwait(false);
-            return new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(
-                registered.Id,
-                registered.Schema);
+            await ValidateSelectedSchemaAsync(
+                    registered.Schema,
+                    registrySchema,
+                    registered.Id,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            return await CreateResolvedValueAsync(
+                    subject,
+                    registered.Id,
+                    registered.Schema,
+                    registered,
+                    cancellationToken)
+                .ConfigureAwait(false);
         }
 
-        if (_config.AutoRegisterSchemas)
+        if (_schemaSelectionMode == SchemaSelectionMode.AutoRegister)
         {
             var schemaId = _config.NormalizeSchemas
                 ? await _schemaRegistry.GetOrRegisterSchemaAsync(
@@ -624,16 +755,82 @@ public sealed class AvroSchemaRegistrySerializer<
             var registeredSchema = _config.RuleExecutor is SchemaRegistryRuleExecutor
                 ? await _schemaRegistry.GetSchemaAsync(schemaId, subject, cancellationToken).ConfigureAwait(false)
                 : registrySchema;
-            return new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(schemaId, registeredSchema);
+            return await CreateResolvedValueAsync(
+                    subject,
+                    schemaId,
+                    registeredSchema,
+                    registeredSchema: null,
+                    cancellationToken)
+                .ConfigureAwait(false);
         }
 
-        var existing = await _schemaRegistry.GetSchemaBySubjectAsync(
+        var existing = await LookupWriterSchemaAsync(subject, registrySchema, cancellationToken)
+            .ConfigureAwait(false);
+        return await CreateResolvedValueAsync(
                 subject,
-                "latest",
+                existing.Id,
+                existing.Schema,
+                existing,
                 cancellationToken)
             .ConfigureAwait(false);
-        return new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(existing.Id, existing.Schema);
     }
+
+    private async Task<RegisteredSchema> LookupWriterSchemaAsync(
+        string subject,
+        RegistrySchema writerSchema,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await _schemaRegistry.LookupSchemaAsync(
+                    subject,
+                    writerSchema,
+                    ignoreDeletedSchemas: true,
+                    normalize: _config.NormalizeSchemas,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (SchemaRegistryException exception) when (exception.ErrorCode is 404 or 40403)
+        {
+            // Schema Registry includes metadata and rules in lookup equality. Runtime Avro
+            // schemas do not carry those fields, so recover the exact semantic schema and
+            // retain its registered rule metadata on this cached cold path.
+            var parsedWriterSchema = AvroSchema.Parse(writerSchema.SchemaString);
+            var versions = await _schemaRegistry.GetVersionsAsync(subject, cancellationToken)
+                .ConfigureAwait(false);
+            for (var index = versions.Count - 1; index >= 0; index--)
+            {
+                var candidate = await _schemaRegistry.GetSchemaBySubjectAsync(
+                        subject,
+                        versions[index].ToString(CultureInfo.InvariantCulture),
+                        cancellationToken)
+                    .ConfigureAwait(false);
+                if (await MatchesWriterSchemaAsync(candidate.Schema, parsedWriterSchema, cancellationToken)
+                        .ConfigureAwait(false))
+                {
+                    return candidate;
+                }
+            }
+
+            throw;
+        }
+    }
+
+    private Task<SubjectSchemaIdCache.SubjectSchemaIdCacheValue> CreateResolvedValueAsync(
+        string subject,
+        int schemaId,
+        RegistrySchema schema,
+        RegisteredSchema? registeredSchema,
+        CancellationToken cancellationToken) =>
+        SchemaIdentityResolution.CreateSerializerValueAsync(
+            _schemaRegistry,
+            subject,
+            schemaId,
+            schema,
+            _schemaIdStrategy,
+            _config.NormalizeSchemas,
+            registeredSchema,
+            cancellationToken);
 
     private static RegistrySchema CreateRegistrySchema(AvroSchema avroSchema)
     {
@@ -642,6 +839,44 @@ public sealed class AvroSchemaRegistrySerializer<
             SchemaType = SchemaType.Avro,
             SchemaString = avroSchema.ToString()
         };
+    }
+
+    private async Task ValidateSelectedSchemaAsync(
+        RegistrySchema selectedSchema,
+        RegistrySchema writerSchema,
+        int schemaId,
+        CancellationToken cancellationToken)
+    {
+        var writer = AvroSchema.Parse(writerSchema.SchemaString);
+        if (!await MatchesWriterSchemaAsync(selectedSchema, writer, cancellationToken).ConfigureAwait(false))
+        {
+            throw new InvalidOperationException(
+                $"Schema ID {schemaId} does not match the Avro writer schema.");
+        }
+    }
+
+    private async Task<bool> MatchesWriterSchemaAsync(
+        RegistrySchema selectedSchema,
+        AvroSchema writerSchema,
+        CancellationToken cancellationToken)
+    {
+        if (selectedSchema.SchemaType != SchemaType.Avro)
+            return false;
+
+        var names = selectedSchema.References is { Count: > 0 }
+            ? await AvroSchemaReferenceResolver.ResolveAsync(
+                    _schemaRegistry,
+                    selectedSchema,
+                    cancellationToken)
+                .ConfigureAwait(false)
+            : null;
+        var selected = names is null
+            ? AvroSchema.Parse(selectedSchema.SchemaString)
+            : AvroSchema.Parse(selectedSchema.SchemaString, names);
+        return string.Equals(
+            global::Avro.SchemaNormalization.ToParsingForm(writerSchema),
+            global::Avro.SchemaNormalization.ToParsingForm(selected),
+            StringComparison.Ordinal);
     }
 
     private static AvroSchema GetSchemaFromValue(T value) =>

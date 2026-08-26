@@ -101,6 +101,7 @@ internal sealed class DeserializerSubjectNameCache : IAssociatedNameCacheInvalid
     }
 
     internal bool RequiresPreparation => _asyncStrategy is not null;
+    internal int Generation => Volatile.Read(ref _state).Generation;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static bool TryReadSchemaId(ReadOnlyMemory<byte> data, out int schemaId)
@@ -194,6 +195,39 @@ internal sealed class DeserializerSubjectNameCache : IAssociatedNameCacheInvalid
 
         topicSubjects = _subjectsByTopicIdentity.GetValue(topic, static _ => new PerTopicSubjectNames());
         return topicSubjects.GetSubjectName(this, schemaId, schema, topic, isKey, fallbackRecordName);
+    }
+
+    internal string ResolveSubjectName(
+        Schema? schema,
+        string topic,
+        bool isKey,
+        string fallbackRecordName)
+    {
+        var recordName = schema is null
+            ? fallbackRecordName
+            : SubjectNameResolver.GetRecordName(schema, fallbackRecordName);
+        return _customStrategy is not null
+            ? _customStrategy.GetSubjectName(topic, recordName, isKey)
+            : SubjectNameResolver.GetSubjectName(
+                _strategy,
+                topic,
+                recordName,
+                isKey,
+                _useLegacySubjectNames);
+    }
+
+    internal ValueTask<string> ResolveSubjectNameAsync(
+        Schema schema,
+        string topic,
+        bool isKey,
+        string fallbackRecordName,
+        CancellationToken cancellationToken)
+    {
+        if (_asyncStrategy is null)
+            return new ValueTask<string>(ResolveSubjectName(schema, topic, isKey, fallbackRecordName));
+
+        var recordName = SubjectNameResolver.GetRecordName(schema, fallbackRecordName);
+        return _asyncStrategy.GetSubjectNameAsync(topic, recordName, isKey, cancellationToken);
     }
 
     private async ValueTask PrepareSlowAsync(
@@ -298,17 +332,7 @@ internal sealed class DeserializerSubjectNameCache : IAssociatedNameCacheInvalid
                 subjects.TryRemove(evictedKey, out _);
             }
 
-            var recordName = schema is null
-                ? fallbackRecordName
-                : SubjectNameResolver.GetRecordName(schema, fallbackRecordName);
-            subject = _customStrategy is not null
-                ? _customStrategy.GetSubjectName(key.Topic, recordName, key.IsKey)
-                : SubjectNameResolver.GetSubjectName(
-                    _strategy,
-                    key.Topic,
-                    recordName,
-                    key.IsKey,
-                    _useLegacySubjectNames);
+            subject = ResolveSubjectName(schema, key.Topic, key.IsKey, fallbackRecordName);
 
             subjects[key] = subject;
             _subjectOrder.Enqueue(key);

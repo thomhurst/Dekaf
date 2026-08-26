@@ -75,8 +75,11 @@ public class KafkaContainerDefault : KafkaTestContainer
         "exec /etc/kafka/docker/launch\n");
 
     protected override KafkaBuilder ConfigureBuilder(KafkaBuilder builder)
+        => ConfigureBuilderForVersion(builder, Tag);
+
+    internal static KafkaBuilder ConfigureBuilderForVersion(KafkaBuilder builder, string tag)
     {
-        if (!SupportsVersion(Tag, 420))
+        if (!SupportsVersion(tag, 420))
         {
             return builder;
         }

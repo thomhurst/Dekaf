@@ -33,7 +33,14 @@ public class AvroPocoSchemaRegistryBenchmarks
         Topic = "avro-poco-benchmark",
         Component = SerializationComponent.Value
     };
+    private readonly SerializationContext _headerContext = new()
+    {
+        Topic = "avro-poco-header-benchmark",
+        Component = SerializationComponent.Value,
+        Headers = new Headers(1)
+    };
     private AvroPocoSchemaRegistrySerializer<PocoBenchmarkRecord, PocoBenchmarkRecord.AvroCodec> _poco = null!;
+    private AvroPocoSchemaRegistrySerializer<PocoBenchmarkRecord, PocoBenchmarkRecord.AvroCodec> _headerPoco = null!;
     private AvroSchemaRegistrySerializer<SpecificPocoBenchmarkRecord> _specific = null!;
     private AvroSchemaRegistrySerializer<GenericRecord> _generic = null!;
     private PocoBenchmarkRecord _pocoValue = null!;
@@ -46,6 +53,9 @@ public class AvroPocoSchemaRegistryBenchmarks
     {
         _poco = PocoBenchmarkRecord.CreateAvroSerializer(
             new AvroSchemaRegistrySerializerBenchmarks.BenchmarkSchemaRegistryClient());
+        _headerPoco = PocoBenchmarkRecord.CreateAvroSerializer(
+            new AvroSchemaRegistrySerializerBenchmarks.BenchmarkSchemaRegistryClient(),
+            new AvroSerializerConfig { SchemaIdStrategy = SchemaIdSerializerStrategy.Header });
         _specific = new AvroSchemaRegistrySerializer<SpecificPocoBenchmarkRecord>(
             new AvroSchemaRegistrySerializerBenchmarks.BenchmarkSchemaRegistryClient());
         _generic = new AvroSchemaRegistrySerializer<GenericRecord>(
@@ -60,6 +70,9 @@ public class AvroPocoSchemaRegistryBenchmarks
 
         _poco.Serialize(_pocoValue, ref _buffer, _context);
         _buffer.Clear();
+        _headerPoco.Serialize(_pocoValue, ref _buffer, _headerContext);
+        _buffer.Clear();
+        _headerContext.Headers!.Clear();
         _specific.Serialize(_specificValue, ref _buffer, _context);
         _buffer.Clear();
         _generic.Serialize(_genericValue, ref _buffer, _context);
@@ -70,6 +83,7 @@ public class AvroPocoSchemaRegistryBenchmarks
     public async ValueTask Cleanup()
     {
         await _poco.DisposeAsync().ConfigureAwait(false);
+        await _headerPoco.DisposeAsync().ConfigureAwait(false);
         await _specific.DisposeAsync().ConfigureAwait(false);
         await _generic.DisposeAsync().ConfigureAwait(false);
     }
@@ -79,6 +93,14 @@ public class AvroPocoSchemaRegistryBenchmarks
     {
         _buffer.Clear();
         _poco.Serialize(_pocoValue, ref _buffer, _context);
+    }
+
+    [Benchmark(Description = "Serialize generated POCO with GUID header")]
+    public void SerializePocoWithGuidHeader()
+    {
+        _buffer.Clear();
+        _headerContext.Headers!.Clear();
+        _headerPoco.Serialize(_pocoValue, ref _buffer, _headerContext);
     }
 
     [Benchmark(Description = "Serialize SpecificRecord")]

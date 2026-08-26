@@ -467,6 +467,10 @@ public interface IConsumerOffsets
 /// <typeparam name="TValue">Value type.</typeparam>
 public readonly struct ConsumeResult<TKey, TValue>
 {
+    // Reuse the pooled-count slot when _headers owns the source so deferred snapshots do not
+    // enlarge this hot-path struct.
+    private const int DeferredHeaderSnapshot = -1;
+
     // Thread-local reusable SerializationContext to avoid per-deserialization allocations
     // Since SerializationContext contains reference types (Topic, Headers), copying it
     // involves copying those references. Using ThreadStatic avoids repeated struct creation.
@@ -618,7 +622,8 @@ public readonly struct ConsumeResult<TKey, TValue>
         IReadOnlyList<Header>? headers,
         long timestampMs,
         TimestampType timestampType,
-        int? leaderEpoch)
+        int? leaderEpoch,
+        bool deferHeaderSnapshot = false)
     {
         Topic = topic;
         Partition = partition;
@@ -627,7 +632,7 @@ public readonly struct ConsumeResult<TKey, TValue>
         Value = value;
         _headers = headers;
         _pooledHeaders = null;
-        _pooledHeaderCount = 0;
+        _pooledHeaderCount = deferHeaderSnapshot ? DeferredHeaderSnapshot : 0;
         _headerOwner = null;
         _headerGeneration = 0;
         _timestampMs = timestampMs;
@@ -672,8 +677,10 @@ public readonly struct ConsumeResult<TKey, TValue>
         // Resolve the thread-static address once; each direct field access otherwise
         // emits another TLS lookup before setting or copying the context.
         ref var serializationContext = ref t_serializationContext;
-        var keyUsesCallerOwnedHeaders = keyDeserializer is ICallerOwnedHeaderDeserializer<TKey>;
-        var valueUsesCallerOwnedHeaders = valueDeserializer is ICallerOwnedHeaderDeserializer<TValue>;
+        var keyUsesCallerOwnedHeaders = keyDeserializer is not null
+                                        && RecordHeaderDeserializer.UsesCallerOwnedHeaders(keyDeserializer);
+        var valueUsesCallerOwnedHeaders = valueDeserializer is not null
+                                          && RecordHeaderDeserializer.UsesCallerOwnedHeaders(valueDeserializer);
         var serializationHeaders = headers is not null
                                    && (keyUsesCallerOwnedHeaders || valueUsesCallerOwnedHeaders)
             ? GetCallerOwnedSerializationHeaders(headers)
@@ -739,16 +746,22 @@ public readonly struct ConsumeResult<TKey, TValue>
         long timestampMs,
         TimestampType timestampType,
         int? leaderEpoch,
+        Headers? headerWorkspace,
         IDeserializer<TKey>? keyDeserializer,
         IDeserializer<TValue>? valueDeserializer)
     {
         ref var serializationContext = ref t_serializationContext;
+        if (headerWorkspace is not null)
+            headerRouting.CopyTo(headerWorkspace);
+        var materializedHeaders = headerWorkspace;
         TKey? key = default;
         if (!isKeyNull && keyDeserializer is not null)
         {
             serializationContext.Topic = topic;
             serializationContext.Component = SerializationComponent.Key;
-            serializationContext.Headers = null;
+            serializationContext.Headers = headerRouting.KeyRequiresMaterializedHeaders
+                ? materializedHeaders
+                : null;
             serializationContext.KeyData = ReadOnlyMemory<byte>.Empty;
             serializationContext.IsNull = false;
             key = RecordHeaderDeserializer.Deserialize(
@@ -763,7 +776,9 @@ public readonly struct ConsumeResult<TKey, TValue>
         {
             serializationContext.Topic = topic;
             serializationContext.Component = SerializationComponent.Value;
-            serializationContext.Headers = null;
+            serializationContext.Headers = headerRouting.ValueRequiresMaterializedHeaders
+                ? materializedHeaders
+                : null;
             serializationContext.KeyData = SerializationContext.NormalizeKeyData(keyData, isKeyNull);
             serializationContext.IsNull = isValueNull;
             value = RecordHeaderDeserializer.Deserialize(
@@ -786,6 +801,43 @@ public readonly struct ConsumeResult<TKey, TValue>
             timestampType,
             leaderEpoch);
     }
+
+    internal static ConsumeResult<TKey, TValue> CreateWithCallerOwnedHeaders(
+        string topic,
+        int partition,
+        long offset,
+        ReadOnlyMemory<byte> keyData,
+        bool isKeyNull,
+        ReadOnlyMemory<byte> valueData,
+        bool isValueNull,
+        IReadOnlyList<Header> headers,
+        long timestampMs,
+        TimestampType timestampType,
+        int? leaderEpoch,
+        IDeserializer<TKey> keyDeserializer,
+        IDeserializer<TValue> valueDeserializer,
+        bool deferHeaderSnapshot) =>
+        new(
+            topic,
+            partition,
+            offset,
+            keyData,
+            isKeyNull,
+            valueData,
+            isValueNull,
+            headers,
+            pooledHeaders: null,
+            pooledHeaderCount: deferHeaderSnapshot && headers.Count != 0
+                ? DeferredHeaderSnapshot
+                : 0,
+            headerOwner: null,
+            headerGeneration: 0,
+            timestampMs,
+            timestampType,
+            leaderEpoch,
+            keyDeserializer,
+            valueDeserializer,
+            isPartitionEof: false);
 
     internal static DeserializationExceptionOrigin LastDeserializationOrigin
         => t_serializationContext.Component == SerializationComponent.Key
@@ -904,15 +956,28 @@ public readonly struct ConsumeResult<TKey, TValue>
 
     /// <summary>
     /// The message headers. Empty if the record has no headers; never null.
-    /// Header arrays from consumed record batches are copied lazily on first access; if a
+    /// Borrowed header storage is copied lazily on first access; if a
     /// result is retained beyond the consume loop, access this property before the owning
     /// fetch batch is disposed to keep a safe snapshot.
     /// </summary>
-    public IReadOnlyList<Header> Headers => _headers ?? LazyConsumeHeaders.Create(
-        _pooledHeaders,
-        _pooledHeaderCount,
-        _headerOwner,
-        _headerGeneration);
+    public IReadOnlyList<Header> Headers
+    {
+        get
+        {
+            if (_headers is { } headers)
+            {
+                return _pooledHeaderCount == DeferredHeaderSnapshot
+                    ? LazyConsumeHeaders.CreateSnapshot(headers)
+                    : headers;
+            }
+
+            return LazyConsumeHeaders.Create(
+                _pooledHeaders,
+                _pooledHeaderCount,
+                _headerOwner,
+                _headerGeneration);
+        }
+    }
 
     /// <summary>
     /// The message timestamp as a DateTimeOffset.

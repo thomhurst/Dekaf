@@ -55,11 +55,113 @@ public sealed class KafkaFaultPlanTests
         var plan = new KafkaFaultPlan();
         var failure = new InvalidOperationException("wildcard");
         plan.Fail(new KafkaFaultScope(KafkaFaultOperation.Fetch), failure);
+        var concreteScope = new KafkaFaultScope(
+            KafkaFaultOperation.Fetch,
+            "orders",
+            4,
+            "billing");
 
-        await AssertFaultAsync(
-            plan,
-            new KafkaFaultScope(KafkaFaultOperation.Fetch, "orders", 4, "billing"),
-            failure);
+        await Assert.That(plan.HasMatchingFault(concreteScope)).IsTrue();
+        await AssertFaultAsync(plan, concreteScope, failure);
+        await Assert.That(plan.HasMatchingFault(concreteScope)).IsFalse();
+    }
+
+    [Test]
+    [Arguments(KafkaFaultOperation.JoinGroup)]
+    [Arguments(KafkaFaultOperation.SyncGroup)]
+    [Arguments(KafkaFaultOperation.Rebalance)]
+    public async Task GroupTransitionScope_RejectsResourceSelectors(
+        KafkaFaultOperation operation)
+    {
+        var topicError = Assert.Throws<ArgumentException>(() =>
+            _ = new KafkaFaultScope(operation, topic: "orders", groupId: "workers"));
+        var partitionError = Assert.Throws<ArgumentException>(() =>
+            _ = new KafkaFaultScope(operation, partition: 0, groupId: "workers"));
+
+        await Assert.That(topicError!.ParamName).IsEqualTo("topic");
+        await Assert.That(partitionError!.ParamName).IsEqualTo("partition");
+    }
+
+    [Test]
+    public async Task ScopeIndex_FiltersUnrelatedOperationsAndGroups()
+    {
+        var plan = new KafkaFaultPlan();
+        plan.FailPersistently(
+            new KafkaFaultScope(KafkaFaultOperation.Fetch, topic: "orders", groupId: "billing"),
+            new InvalidOperationException("fetch"));
+
+        await Assert.That(plan.HasPotentialMatch(KafkaFaultOperation.Admin, "billing")).IsFalse();
+        await Assert.That(plan.HasPotentialMatch(KafkaFaultOperation.Fetch, "other")).IsFalse();
+        await Assert.That(plan.HasPotentialMatch(KafkaFaultOperation.Fetch, "billing")).IsTrue();
+        await Assert.That(plan.HasMatchingFault(
+            new KafkaFaultScope(KafkaFaultOperation.Fetch, "payments", 0, "billing"))).IsFalse();
+        await Assert.That(plan.HasMatchingFault(
+            new KafkaFaultScope(KafkaFaultOperation.Fetch, "orders", 0, "billing"))).IsTrue();
+    }
+
+    [Test]
+    public async Task ScopeIndex_FiltersUnassignedResourcesAndPublishesVersion()
+    {
+        var plan = new KafkaFaultPlan();
+        var assignment = new HashSet<TopicPartition> { new("orders", 0) };
+        plan.FailPersistently(
+            new KafkaFaultScope(KafkaFaultOperation.Fetch, "payments", 0, "billing"),
+            new InvalidOperationException("fetch"));
+
+        var matched = plan.HasPotentialConsumerMatch(
+            "billing",
+            assignment,
+            assignment,
+            includeCommit: true,
+            out var version);
+
+        await Assert.That(matched).IsFalse();
+        await Assert.That(version).IsEqualTo(plan.Version);
+
+        plan.FailPersistently(
+            new KafkaFaultScope(KafkaFaultOperation.Consume, "orders", 0, "billing"),
+            new InvalidOperationException("consume"));
+
+        await Assert.That(plan.Version).IsGreaterThan(version);
+        await Assert.That(plan.HasPotentialConsumerMatch(
+            "billing",
+            assignment,
+            assignment,
+            includeCommit: true,
+            out _)).IsTrue();
+    }
+
+    [Test]
+    [Arguments(KafkaFaultOperation.JoinGroup)]
+    [Arguments(KafkaFaultOperation.SyncGroup)]
+    [Arguments(KafkaFaultOperation.Rebalance)]
+    public async Task HasPotentialFault_EmptyResourcesMatchesResourceFreeRule(
+        KafkaFaultOperation operation)
+    {
+        var plan = new KafkaFaultPlan();
+        var resources = new HashSet<TopicPartition>();
+        plan.FailPersistently(
+            new KafkaFaultScope(operation, groupId: "billing"),
+            new InvalidOperationException("group transition"));
+
+        await Assert.That(plan.HasPotentialFault(operation, "billing", resources)).IsTrue();
+        await Assert.That(plan.HasPotentialFault(operation, "other", resources)).IsFalse();
+    }
+
+    [Test]
+    public async Task ScopeIndex_RemovesConsumedAndClearedRules()
+    {
+        var plan = new KafkaFaultPlan();
+        var scope = new KafkaFaultScope(KafkaFaultOperation.Fetch, groupId: "billing");
+        plan.Fail(scope, new InvalidOperationException("fetch"));
+
+        await Assert.That(plan.HasPotentialMatch(KafkaFaultOperation.Fetch, "billing")).IsTrue();
+        _ = await Assert.ThrowsAsync<InvalidOperationException>(() => plan.ApplyAsync(scope).AsTask());
+        await Assert.That(plan.HasPotentialMatch(KafkaFaultOperation.Fetch, "billing")).IsFalse();
+
+        plan.FailPersistently(scope, new InvalidOperationException("fetch"));
+        plan.Clear(scope);
+        await Assert.That(plan.HasMatchingFault(scope)).IsFalse();
     }
 
     [Test]

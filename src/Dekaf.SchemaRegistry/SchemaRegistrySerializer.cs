@@ -456,7 +456,8 @@ public sealed class SchemaRegistrySerializer<T> :
             new SubjectSchemaIdCache.SubjectSchemaIdCacheKey(topic, isKey),
             resolved.Subject,
             value.SchemaId,
-            value.Schema);
+            value.Schema,
+            value.SchemaGuidFrame);
     }
 
     private ValueTask<ResolvedSchemaContext> PrepareCoreAsync(
@@ -481,8 +482,7 @@ public sealed class SchemaRegistrySerializer<T> :
                     topic,
                     isKey,
                     resolved.Subject,
-                    value.SchemaId,
-                    value.Schema!)));
+                    in value)));
         }
 
         return AwaitSchemaAsync(topic, isKey, resolved.Subject, cache, resolution);
@@ -499,8 +499,7 @@ public sealed class SchemaRegistrySerializer<T> :
                 topic,
                 isKey,
                 subject,
-                value.SchemaId,
-                value.Schema!));
+                in value));
         }
     }
 
@@ -522,8 +521,7 @@ public sealed class SchemaRegistrySerializer<T> :
                     topic,
                     isKey,
                     resolved.Subject,
-                    value.SchemaId,
-                    value.Schema!);
+                    in value);
                 if (ReferenceEquals(cache, Volatile.Read(ref _subjectSchemaIdCache)))
                     return ToResolvedContext(preparedEntry);
             }
@@ -1068,6 +1066,16 @@ public sealed class SchemaRegistryDeserializer<T> :
     {
         _schemaRegistry = schemaRegistry ?? throw new ArgumentNullException(nameof(schemaRegistry));
         _deserialize = deserialize ?? throw new ArgumentNullException(nameof(deserialize));
+        if (config is
+            {
+                IsSchemaIdStrategyConfigured: true,
+                SchemaIdStrategy: not SchemaIdDeserializerStrategy.Prefix
+            })
+        {
+            throw new ArgumentException(
+                $"{nameof(SchemaRegistryDeserializerConfig.SchemaIdStrategy)} must be Prefix for the generic deserializer.",
+                nameof(config));
+        }
         _ownsClient = ownsClient;
         _ruleExecutor = ruleExecutor;
         _subjectNames = DeserializerSubjectNameCache.Create(schemaRegistry, config);
@@ -1295,6 +1303,10 @@ public static class SchemaRegistryDeserializer
     /// <summary>
     /// Creates a zero-copy Schema Registry deserializer with subject-name configuration for read rules.
     /// </summary>
+    /// <exception cref="ArgumentException">
+    /// <paramref name="config" /> explicitly selects an identity strategy other than
+    /// <see cref="SchemaIdDeserializerStrategy.Prefix" />.
+    /// </exception>
     public static SchemaRegistryDeserializer<T> Create<T>(
         ISchemaRegistryClient schemaRegistry,
         Func<ReadOnlyMemory<byte>, Schema, T> deserialize,

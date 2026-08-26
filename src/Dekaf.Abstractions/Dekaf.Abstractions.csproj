@@ -21,6 +21,10 @@
     <InternalsVisibleTo Include="Dekaf.StressTests" />
     <InternalsVisibleTo Include="Dekaf.Fuzzing" />
     <InternalsVisibleTo Include="Dekaf.Testing" />
+    <InternalsVisibleTo Include="Dekaf.Outbox" />
+    <InternalsVisibleTo Include="Dekaf.SchemaRegistry" />
+    <InternalsVisibleTo Include="Dekaf.SchemaRegistry.Avro" />
+    <InternalsVisibleTo Include="Dekaf.SchemaRegistry.Protobuf" />
     <InternalsVisibleTo Include="Dekaf.Serialization.Routing" />
   </ItemGroup>
 

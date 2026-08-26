@@ -28,6 +28,21 @@ public class HeadersTests
         await Assert.That(headers.Count).IsEqualTo(2);
     }
 
+    [Test]
+    public async Task Constructor_FromCollection_IndexesLastSchemaIdentity()
+    {
+        var headers = new Headers([
+            new Header("__value_schema_id", "first"u8.ToArray()),
+            new Header("noise", ReadOnlyMemory<byte>.Empty),
+            new Header("__value_schema_id", "last"u8.ToArray())
+        ]);
+
+        var found = headers.TryGetLastSchemaIdentity(SerializationComponent.Value, out var header);
+
+        await Assert.That(found).IsTrue();
+        await Assert.That(header.GetValueAsString()).IsEqualTo("last");
+    }
+
     #endregion
 
     #region Factory Tests
@@ -77,6 +92,229 @@ public class HeadersTests
         headers.Add("key2", "value2");
         headers.Add("key3", "value3");
         await Assert.That(headers.Count).IsEqualTo(3);
+    }
+
+    [Arguments(null)]
+    [Arguments("vendor=value")]
+    [Test]
+    public async Task CountWithoutDeferredTraceContext_ExcludesTracingHeaders(string? traceState)
+    {
+        var headers = Headers.Create("caller", "value");
+        headers.AddDeferredTraceContext(new object(), traceState);
+
+        await Assert.That(headers.Count).IsEqualTo(traceState is null ? 2 : 3);
+        await Assert.That(headers.CountWithoutDeferredTraceContext).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task TryGetLastSchemaIdentity_DuplicateHeaders_ReturnsLastPerComponent()
+    {
+        var headers = new Headers()
+            .Add("__key_schema_id", "old-key")
+            .Add("__value_schema_id", "value")
+            .Add("__key_schema_id", "new-key");
+
+        var foundKey = headers.TryGetLastSchemaIdentity(SerializationComponent.Key, out var keyHeader);
+        var foundValue = headers.TryGetLastSchemaIdentity(SerializationComponent.Value, out var valueHeader);
+
+        await Assert.That(foundKey).IsTrue();
+        await Assert.That(keyHeader.GetValueAsString()).IsEqualTo("new-key");
+        await Assert.That(foundValue).IsTrue();
+        await Assert.That(valueHeader.GetValueAsString()).IsEqualTo("value");
+    }
+
+    [Test]
+    public async Task TryGetLastSchemaIdentity_AfterOrdinaryRemoval_PreservesShiftedIndex()
+    {
+        var headers = new Headers()
+            .Add("noise", "value")
+            .Add("__value_schema_id", "identity");
+
+        headers.Remove("noise");
+
+        var found = headers.TryGetLastSchemaIdentity(SerializationComponent.Value, out var header);
+        await Assert.That(found).IsTrue();
+        await Assert.That(header.GetValueAsString()).IsEqualTo("identity");
+    }
+
+    [Test]
+    public async Task TryGetLastSchemaIdentity_AfterTruncate_FallsBackToPreviousIdentity()
+    {
+        var headers = new Headers()
+            .Add("__value_schema_id", "first")
+            .Add("noise", "value")
+            .Add("__value_schema_id", "last");
+
+        headers.Truncate(2);
+
+        var found = headers.TryGetLastSchemaIdentity(SerializationComponent.Value, out var header);
+        await Assert.That(found).IsTrue();
+        await Assert.That(header.GetValueAsString()).IsEqualTo("first");
+    }
+
+    [Arguments(null)]
+    [Arguments("vendor=value")]
+    [Test]
+    public async Task TryGetLastSchemaIdentity_AddedAfterDeferredTraceContext_UsesInsertedIndex(string? traceState)
+    {
+        var headers = new Headers();
+        headers.AddDeferredTraceContext(new object(), traceState);
+        headers.Add("__value_schema_id", "identity");
+
+        var foundBeforeRemoval = headers.TryGetLastSchemaIdentity(SerializationComponent.Value, out var beforeRemoval);
+        headers.RemoveDeferredTraceContext();
+        var foundAfterRemoval = headers.TryGetLastSchemaIdentity(SerializationComponent.Value, out var afterRemoval);
+
+        await Assert.That(foundBeforeRemoval).IsTrue();
+        await Assert.That(beforeRemoval.GetValueAsString()).IsEqualTo("identity");
+        await Assert.That(foundAfterRemoval).IsTrue();
+        await Assert.That(afterRemoval.GetValueAsString()).IsEqualTo("identity");
+    }
+
+    [Arguments(null)]
+    [Arguments("vendor=value")]
+    [Test]
+    public async Task Restore_CheckpointRestoresIdentityIndexesWithoutDeferredTraceContext(string? traceState)
+    {
+        var headers = new Headers()
+            .Add("__key_schema_id", "original-key")
+            .Add("__value_schema_id", "original-value");
+        headers.AddDeferredTraceContext(new object(), traceState);
+        var checkpoint = headers.CaptureCheckpoint();
+        headers.Add("__key_schema_id", "temporary-key");
+        headers.Add("__value_schema_id", "temporary-value");
+
+        headers.Restore(in checkpoint);
+
+        var foundKey = headers.TryGetLastSchemaIdentity(SerializationComponent.Key, out var keyHeader);
+        var foundValue = headers.TryGetLastSchemaIdentity(SerializationComponent.Value, out var valueHeader);
+        await Assert.That(headers.Count).IsEqualTo(2);
+        await Assert.That(foundKey).IsTrue();
+        await Assert.That(keyHeader.GetValueAsString()).IsEqualTo("original-key");
+        await Assert.That(foundValue).IsTrue();
+        await Assert.That(valueHeader.GetValueAsString()).IsEqualTo("original-value");
+    }
+
+    [Test]
+    public async Task Restore_NestedCheckpointRestoresOuterDeferredTraceContext()
+    {
+        var headers = new Headers().Add("caller", "value");
+        headers.AddDeferredTraceContext(new object(), "outer=state");
+        var outerTraceparent = headers[1];
+        var outerTracestate = headers[2];
+        headers.BeginRecordHeaderStaging();
+        headers.Add(new Header("identity", "outer"u8.ToArray()));
+
+        headers.AddDeferredTraceContext(new object(), "inner=state");
+        var checkpoint = headers.CaptureCheckpoint();
+        headers.BeginRecordHeaderStaging();
+        headers.Add(new Header("identity", "inner"u8.ToArray()));
+        headers.Remove("traceparent");
+        headers.Restore(in checkpoint);
+
+        await Assert.That(headers.Count).IsEqualTo(4);
+        await Assert.That(headers[1].Key).IsEqualTo("identity");
+        await Assert.That(headers[1].GetValueAsString()).IsEqualTo("outer");
+        await Assert.That(headers[2]).IsEqualTo(outerTraceparent);
+        await Assert.That(headers[3]).IsEqualTo(outerTracestate);
+    }
+
+    [Test]
+    public async Task NestedStateStacks_ResizeAndRestoreFiveLevels()
+    {
+        var stagedHeaders = new Headers();
+        var checkpoints = new Headers.Checkpoint[4];
+        stagedHeaders.BeginRecordHeaderStaging();
+        stagedHeaders.Add("__value_schema_id", "stage-0");
+        for (var level = 1; level <= checkpoints.Length; level++)
+        {
+            checkpoints[level - 1] = stagedHeaders.CaptureCheckpoint();
+            stagedHeaders.BeginRecordHeaderStaging();
+            stagedHeaders.Add("__value_schema_id", $"stage-{level}");
+        }
+
+        for (var level = checkpoints.Length; level >= 1; level--)
+        {
+            var checkpoint = checkpoints[level - 1];
+            stagedHeaders.Restore(in checkpoint);
+            await Assert.That(stagedHeaders.TryGetLastSchemaIdentity(
+                SerializationComponent.Value,
+                out var restored)).IsTrue();
+            await Assert.That(restored.GetValueAsString()).IsEqualTo($"stage-{level - 1}");
+        }
+
+        var traceHeaders = new Headers().Add("caller", "value");
+        var traceTokens = new object[5];
+        for (var level = 0; level < traceTokens.Length; level++)
+        {
+            traceTokens[level] = new object();
+            traceHeaders.AddDeferredTraceContext(traceTokens[level], $"level={level}");
+        }
+
+        for (var level = traceTokens.Length - 1; level >= 0; level--)
+        {
+            await Assert.That(traceHeaders[1].DeferredTraceparentToken)
+                .IsSameReferenceAs(traceTokens[level]);
+            traceHeaders.RemoveDeferredTraceContext();
+        }
+
+        await Assert.That(traceHeaders.Count).IsEqualTo(1);
+        await Assert.That(traceHeaders[0].Key).IsEqualTo("caller");
+    }
+
+    [Test]
+    public async Task RecordHeaderStaging_MoreThanTwoHeadersAppearInPublicViews()
+    {
+        var source = new Headers().Add("caller", "source");
+        var headers = new Headers();
+        headers.BeginRecordHeaderStaging(source);
+        for (var index = 0; index < 20; index++)
+            headers.Add(new Header($"staged-{index}", new byte[] { (byte)index }));
+
+        await Assert.That(headers.Count).IsEqualTo(21);
+        await Assert.That(headers[0].Key).IsEqualTo("caller");
+        await Assert.That(headers[1].Key).IsEqualTo("staged-0");
+        await Assert.That(headers[20].Key).IsEqualTo("staged-19");
+        var stagedHeader = headers.GetFirst("staged-10");
+        await Assert.That(stagedHeader).IsNotNull();
+        await Assert.That(stagedHeader!.Value.Value.Span[0]).IsEqualTo((byte)10);
+        await Assert.That(headers.GetAll("staged-10").Count()).IsEqualTo(1);
+        await Assert.That(headers.ToList().Count).IsEqualTo(21);
+        await Assert.That(headers.Select(static header => header.Key).ToArray())
+            .IsEquivalentTo(
+            [
+                "caller",
+                .. Enumerable.Range(0, 20).Select(static index => $"staged-{index}")
+            ]);
+
+        var serializationHeaders = new Header[headers.SerializationCount];
+        headers.CopySerializationHeadersTo(serializationHeaders);
+        await Assert.That(serializationHeaders.Select(static header => header.Key).ToArray())
+            .IsEquivalentTo(headers.Select(static header => header.Key).ToArray());
+    }
+
+    [Test]
+    public async Task RecordHeaderStaging_NestedOverflowRestoresOuterHeaders()
+    {
+        var headers = new Headers();
+        var outerCheckpoint = headers.CaptureCheckpoint();
+        headers.BeginRecordHeaderStaging();
+        for (var index = 0; index < 4; index++)
+            headers.Add(new Header($"outer-{index}", new byte[] { (byte)index }));
+
+        var innerCheckpoint = headers.CaptureCheckpoint();
+        headers.BeginRecordHeaderStaging();
+        for (var index = 0; index < 5; index++)
+            headers.Add(new Header($"inner-{index}", new byte[] { (byte)index }));
+
+        headers.Restore(in innerCheckpoint);
+
+        await Assert.That(headers.Count).IsEqualTo(4);
+        await Assert.That(headers.Select(static header => header.Key).ToArray())
+            .IsEquivalentTo(["outer-0", "outer-1", "outer-2", "outer-3"]);
+
+        headers.Restore(in outerCheckpoint);
+        await Assert.That(headers.Count).IsEqualTo(0);
     }
 
     [Test]
@@ -261,6 +499,18 @@ public class HeadersTests
     }
 
     [Test]
+    public async Task Remove_SchemaIdentity_RemovesTrackedHeader()
+    {
+        var headers = new Headers()
+            .Add("__value_schema_id", "first")
+            .Add("__value_schema_id", "last");
+
+        headers.Remove("__value_schema_id");
+
+        await Assert.That(headers.TryGetLastSchemaIdentity(SerializationComponent.Value, out _)).IsFalse();
+    }
+
+    [Test]
     public async Task Remove_NonExistentKey_DoesNothing()
     {
         var headers = new Headers();
@@ -277,6 +527,26 @@ public class HeadersTests
         await Assert.That(result).IsSameReferenceAs(headers);
     }
 
+    [Test]
+    public async Task Remove_StagedViewRemovesSourceAndExistingStagedHeadersWithoutMutatingSource()
+    {
+        var source = new Headers()
+            .Add("remove", "source")
+            .Add("source-keep", "value");
+        var headers = new Headers();
+        headers.BeginRecordHeaderStaging(source);
+        headers.Add("remove", "staged");
+        headers.Add("staged-keep", "value");
+
+        headers.Remove("remove");
+        headers.Add("remove", "added-after-removal");
+
+        await Assert.That(headers.Select(static header => header.Key).ToArray())
+            .IsEquivalentTo(["source-keep", "staged-keep", "remove"]);
+        await Assert.That(source.Select(static header => header.Key).ToArray())
+            .IsEquivalentTo(["remove", "source-keep"]);
+    }
+
     #endregion
 
     #region Clear Tests
@@ -289,6 +559,27 @@ public class HeadersTests
         headers.Add("key2", "value2");
         headers.Clear();
         await Assert.That(headers.Count).IsEqualTo(0);
+        await Assert.That(headers.TryGetLastSchemaIdentity(SerializationComponent.Value, out _)).IsFalse();
+    }
+
+    [Test]
+    public async Task Clear_SerializationWorkspaceRemovesDeferredTraceContextFromReusedSource()
+    {
+        var source = new Headers(3).Add("caller", "owned");
+        var workspace = new Headers();
+
+        for (var index = 0; index < 2; index++)
+        {
+            source.AddDeferredTraceContext(new object(), "vendor=value");
+            workspace.BeginRecordHeaderStaging(source);
+
+            workspace.Clear();
+
+            await Assert.That(workspace.Count).IsEqualTo(0);
+            await Assert.That(source.Count).IsEqualTo(1);
+            await Assert.That(source[0].Key).IsEqualTo("caller");
+            workspace.ResetSerializationWorkspace();
+        }
     }
 
     #endregion

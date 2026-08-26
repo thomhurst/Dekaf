@@ -49,6 +49,16 @@ public sealed class ProtobufSerializerConfig
     public bool UseLatestVersion { get; init; }
 
     /// <summary>
+    /// Global Schema Registry ID to use instead of registering, looking up, or selecting the latest schema.
+    /// </summary>
+    public int? UseSchemaId { get; init; }
+
+    /// <summary>
+    /// Strategy used to carry the selected schema identity. The default writes the Confluent payload prefix.
+    /// </summary>
+    public SchemaIdSerializerStrategy SchemaIdStrategy { get; init; } = SchemaIdSerializerStrategy.Prefix;
+
+    /// <summary>
     /// Whether schema registration and lookup requests should include normalize=true.
     /// Default is false.
     /// </summary>

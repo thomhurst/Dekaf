@@ -36,6 +36,9 @@ public class KafkaWithSchemaRegistryContainer : IAsyncInitializer, IAsyncDisposa
     public string RegistryUrl => _registryUrl;
 
     protected virtual string SchemaRegistryImage => "confluentinc/cp-schema-registry:7.9.0";
+    protected virtual string KafkaImage => "apache/kafka:4.0.2";
+
+    protected virtual KafkaBuilder ConfigureKafkaBuilder(KafkaBuilder builder) => builder;
 
     public async Task InitializeAsync()
     {
@@ -76,14 +79,14 @@ public class KafkaWithSchemaRegistryContainer : IAsyncInitializer, IAsyncDisposa
         Console.WriteLine("[KafkaWithSchemaRegistry] Starting Kafka container...");
 
         // Start Kafka with network alias
-        _kafkaContainer = new KafkaBuilder("apache/kafka:4.0.2")
+        _kafkaContainer = ConfigureKafkaBuilder(new KafkaBuilder(KafkaImage)
             .WithNetwork(_network)
             .WithNetworkAliases("kafka")
             .WithEnvironment("KAFKA_HEAP_OPTS", "-Xmx512m -Xms512m")
             .WithEnvironment("KAFKA_LOG_RETENTION_MS", "30000")
             .WithEnvironment("KAFKA_LOG_RETENTION_CHECK_INTERVAL_MS", "10000")
             .WithEnvironment("KAFKA_LOG_SEGMENT_BYTES", "1048576")
-            .WithEnvironment("KAFKA_LOG_CLEANUP_POLICY", "delete")
+            .WithEnvironment("KAFKA_LOG_CLEANUP_POLICY", "delete"))
             .Build();
 
         await _kafkaContainer.StartAsync().ConfigureAwait(false);
@@ -261,4 +264,10 @@ public class KafkaWithSchemaRegistryContainer : IAsyncInitializer, IAsyncDisposa
 public sealed class KafkaWithAssociationSchemaRegistryContainer : KafkaWithSchemaRegistryContainer
 {
     protected override string SchemaRegistryImage => "confluentinc/cp-schema-registry:8.2.0";
+    protected override string KafkaImage => $"apache/kafka:{KafkaContainerDefault.DefaultTag}";
+
+    protected override KafkaBuilder ConfigureKafkaBuilder(KafkaBuilder builder) =>
+        KafkaContainerDefault.ConfigureBuilderForVersion(
+            builder,
+            KafkaContainerDefault.DefaultTag);
 }

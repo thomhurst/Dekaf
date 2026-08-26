@@ -3,6 +3,7 @@ using System.Buffers.Binary;
 using Avro.Generic;
 using Dekaf.SchemaRegistry;
 using Dekaf.SchemaRegistry.Avro;
+using Dekaf.SchemaRegistry.Avro.Poco;
 using Dekaf.SchemaRegistry.Protobuf;
 using Dekaf.Serialization;
 
@@ -11,6 +12,90 @@ namespace Dekaf.Tests.Unit.SchemaRegistry;
 public sealed class AssociatedNameStrategyTests
 {
     private const string ClusterId = "lkc-test";
+
+    [Test]
+    public async Task PrefixOnlyDeserializers_DoNotRequestHeaderRouting()
+    {
+        using var client = new MockSchemaRegistryClient();
+        await using var json = new JsonSchemaRegistryDeserializer<int>(
+            client,
+            jsonOptions: null,
+            new SchemaRegistryDeserializerConfig
+            {
+                SchemaIdStrategy = SchemaIdDeserializerStrategy.Prefix
+            });
+        await using var avro = new AvroSchemaRegistryDeserializer<GenericRecord>(
+            client,
+            new AvroDeserializerConfig
+            {
+                SchemaIdStrategy = SchemaIdDeserializerStrategy.Prefix
+            });
+        await using var protobuf = new ProtobufSchemaRegistryDeserializer<TestMessage>(
+            client,
+            new ProtobufDeserializerConfig
+            {
+                SchemaIdStrategy = SchemaIdDeserializerStrategy.Prefix
+            });
+        await using var poco = PocoWireRecord.CreateAvroDeserializer(
+            client,
+            new AvroDeserializerConfig
+            {
+                SchemaIdStrategy = SchemaIdDeserializerStrategy.Prefix
+            });
+
+        await Assert.That(RecordHeaderRoutingPlan.Create<string, int>(null, json)).IsNull();
+        await Assert.That(RecordHeaderRoutingPlan.Create<string, GenericRecord>(null, avro)).IsNull();
+        await Assert.That(RecordHeaderRoutingPlan.Create<string, TestMessage>(null, protobuf)).IsNull();
+        await Assert.That(RecordHeaderRoutingPlan.Create<string, PocoWireRecord>(null, poco)).IsNull();
+    }
+
+    [Test]
+    [Arguments(SchemaIdDeserializerStrategy.Dual)]
+    [Arguments(SchemaIdDeserializerStrategy.Header)]
+    public async Task GenericDeserializer_RejectsUnsupportedIdentityStrategy(
+        SchemaIdDeserializerStrategy strategy)
+    {
+        using var client = new MockSchemaRegistryClient();
+
+        var exception = Assert.Throws<ArgumentException>(() =>
+            SchemaRegistryDeserializer.Create(
+                client,
+                static (ReadOnlyMemory<byte> _, Schema _) => 42,
+                new SchemaRegistryDeserializerConfig { SchemaIdStrategy = strategy }));
+
+        await Assert.That(exception.Message).Contains(nameof(SchemaRegistryDeserializerConfig.SchemaIdStrategy));
+    }
+
+    [Test]
+    public async Task GenericDeserializer_DefaultConfigRetainsImplicitPrefixFraming()
+    {
+        using var client = new MockSchemaRegistryClient();
+
+        await using var deserializer = SchemaRegistryDeserializer.Create(
+            client,
+            static (ReadOnlyMemory<byte> _, Schema _) => 42,
+            new SchemaRegistryDeserializerConfig());
+
+        await Assert.That(deserializer).IsNotNull();
+    }
+
+    [Test]
+    public async Task ClearCache_AdvancesDeserializerSubjectGeneration()
+    {
+        using var client = new MockSchemaRegistryClient();
+        var strategy = CreateResolver(client);
+        var cache = DeserializerSubjectNameCache.Create(
+            client,
+            SubjectNameStrategy.AssociatedName,
+            customStrategy: null,
+            strategy,
+            useLegacySubjectNames: false)!;
+        var generation = cache.Generation;
+
+        strategy.ClearCache();
+
+        await Assert.That(cache.Generation).IsGreaterThan(generation);
+    }
 
     [Test]
     public async Task GetSubjectNameAsync_AssociationCachesSynchronousWarmResult()
@@ -419,6 +504,236 @@ public sealed class AssociatedNameStrategyTests
         await Assert.That(second.Subject).IsEqualTo("json-v2");
     }
 
+    [Arguments(false)]
+    [Arguments(true)]
+    [Test]
+    public async Task JsonSerializer_ConfigAssociatedName_PreparesSubject(bool useTypeInfo)
+    {
+        using var client = new MockSchemaRegistryClient();
+        await AssociateAsync(client, "orders", "json-associated");
+        var config = new JsonSchemaSerializerConfig
+        {
+            SubjectNameStrategy = SubjectNameStrategy.AssociatedName
+        };
+        var serializer = useTypeInfo
+            ? new JsonSchemaRegistrySerializer<int>(
+                client,
+                """{"type":"integer"}""",
+                (System.Text.Json.Serialization.Metadata.JsonTypeInfo<int>)
+                    System.Text.Json.JsonSerializerOptions.Default.GetTypeInfo(typeof(int)),
+                config)
+            : new JsonSchemaRegistrySerializer<int>(
+                client,
+                """{"type":"integer"}""",
+                jsonOptions: null,
+                config);
+        await using (serializer)
+        {
+            var resolved = await serializer.PrepareAsync("orders", 42);
+
+            await Assert.That(resolved.Subject).IsEqualTo("json-associated");
+        }
+    }
+
+    [Arguments(false, false)]
+    [Arguments(false, true)]
+    [Arguments(true, false)]
+    [Arguments(true, true)]
+    [Test]
+    public async Task JsonDeserializer_GuidHeader_PreparesColdSchema(
+        bool configureAsyncSubject,
+        bool useRoutedHeaders)
+    {
+        var subject = configureAsyncSubject ? "configured-associated" : "orders-value";
+        using var client = new MockSchemaRegistryClient();
+        var schemaId = await client.RegisterSchemaAsync(subject, new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = """{"type":"integer"}"""
+        });
+        var strategy = configureAsyncSubject ? new FixedAsyncSubjectNameStrategy(subject) : null;
+        await using var deserializer = new JsonSchemaRegistryDeserializer<int>(
+            client,
+            jsonOptions: null,
+            new SchemaRegistryDeserializerConfig
+            {
+                SchemaIdStrategy = SchemaIdDeserializerStrategy.Header,
+                AsyncSubjectNameStrategy = strategy
+            },
+            ruleExecutor: configureAsyncSubject ? new CapturingRuleExecutor() : null);
+        var identityHeader = new Header(
+            SchemaIdentityHeaderNames.Value,
+            SchemaIdentityFraming.CreateSchemaGuidFrame(
+                new Guid(schemaId, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)));
+        var context = new SerializationContext
+        {
+            Topic = "orders",
+            Component = SerializationComponent.Value,
+            Headers = useRoutedHeaders ? null : new Headers(1).Add(identityHeader)
+        };
+        var data = "42"u8.ToArray();
+        var preparer = (IAsyncDeserializerPreparer<int>)deserializer;
+
+        await Assert.That(((IAsyncDeserializerPreparationRequirement)deserializer).RequiresPreparation).IsTrue();
+        int value;
+        if (useRoutedHeaders)
+        {
+            var headerPreparer = (IRecordHeaderAsyncDeserializerPreparer<int>)deserializer;
+            var headers = new[] { identityHeader };
+            var plan = RecordHeaderRoutingPlan.Create<string, int>(null, deserializer)!;
+            var lookup = new RecordHeaderRoutingLookup(
+                plan,
+                headers,
+                headers.Length,
+                firstIndex: 0,
+                secondIndex: 1,
+                routedHeaderTailOffset: RecordHeaderRoutingPlan.FullyIndexedWithoutTail);
+            await Assert.That(headerPreparer.TryDeserialize(data, context, in lookup, out _)).IsFalse();
+            await headerPreparer.PrepareAsync(data, context, lookup, CancellationToken.None);
+            await Assert.That(headerPreparer.TryDeserialize(data, context, in lookup, out value)).IsTrue();
+        }
+        else
+        {
+            await Assert.That(preparer.TryDeserialize(data, context, out _)).IsFalse();
+            await preparer.PrepareAsync(data, context);
+            await Assert.That(preparer.TryDeserialize(data, context, out value)).IsTrue();
+        }
+
+        await Assert.That(value).IsEqualTo(42);
+        await Assert.That(strategy?.CallCount ?? 0).IsEqualTo(configureAsyncSubject ? 1 : 0);
+    }
+
+    [Arguments(false)]
+    [Arguments(true)]
+    [Test]
+    public async Task AvroDeserializer_GuidHeader_PreparesFromRoutedHeaders(bool configureAsyncSubject)
+    {
+        var subject = configureAsyncSubject ? "configured-associated" : "orders-value";
+        const string schemaString =
+            """{"type":"record","name":"Order","fields":[{"name":"id","type":"int"}]}""";
+        using var client = new MockSchemaRegistryClient();
+        var schemaId = await client.RegisterSchemaAsync(subject, new Schema
+        {
+            SchemaType = SchemaType.Avro,
+            SchemaString = schemaString
+        });
+        var strategy = configureAsyncSubject ? new FixedAsyncSubjectNameStrategy(subject) : null;
+        await using var deserializer = new AvroSchemaRegistryDeserializer<GenericRecord>(
+            client,
+            new AvroDeserializerConfig
+            {
+                SchemaIdStrategy = SchemaIdDeserializerStrategy.Header,
+                AsyncSubjectNameStrategy = strategy,
+                RuleExecutor = configureAsyncSubject ? new CapturingRuleExecutor() : null
+            });
+        var identityHeader = new Header(
+            SchemaIdentityHeaderNames.Value,
+            SchemaIdentityFraming.CreateSchemaGuidFrame(
+                new Guid(schemaId, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)));
+        var context = new SerializationContext
+        {
+            Topic = "orders",
+            Component = SerializationComponent.Value,
+            Headers = null
+        };
+        var headers = new[] { identityHeader };
+        var plan = RecordHeaderRoutingPlan.Create<string, GenericRecord>(null, deserializer)!;
+        var lookup = new RecordHeaderRoutingLookup(
+            plan,
+            headers,
+            headers.Length,
+            firstIndex: 0,
+            secondIndex: 1,
+            routedHeaderTailOffset: RecordHeaderRoutingPlan.FullyIndexedWithoutTail);
+        var preparer = (IRecordHeaderAsyncDeserializerPreparer<GenericRecord>)deserializer;
+        var data = new byte[] { 84 };
+
+        await Assert.That(((IAsyncDeserializerPreparationRequirement)deserializer).RequiresPreparation).IsTrue();
+        await Assert.That(preparer.TryDeserialize(data, context, in lookup, out _)).IsFalse();
+        await preparer.PrepareAsync(data, context, lookup, CancellationToken.None);
+        await Assert.That(preparer.TryDeserialize(data, context, in lookup, out var value)).IsTrue();
+
+        await Assert.That(value["id"]).IsEqualTo(42);
+        await Assert.That(strategy?.CallCount ?? 0).IsEqualTo(configureAsyncSubject ? 1 : 0);
+    }
+
+    [Arguments(false)]
+    [Arguments(true)]
+    [Test]
+    public async Task ProtobufDeserializer_GuidHeader_PreparesFromRoutedHeaders(bool configureAsyncSubject)
+    {
+        var subject = configureAsyncSubject ? "configured-associated" : "orders-value";
+        using var client = new MockSchemaRegistryClient();
+        var schemaId = await client.RegisterSchemaAsync(subject, new Schema
+        {
+            SchemaType = SchemaType.Protobuf,
+            SchemaString = TestMessage.Descriptor.File.SerializedData.ToBase64()
+        });
+        var strategy = configureAsyncSubject ? new FixedAsyncSubjectNameStrategy(subject) : null;
+        await using var deserializer = new ProtobufSchemaRegistryDeserializer<TestMessage>(
+            client,
+            new ProtobufDeserializerConfig
+            {
+                SchemaIdStrategy = SchemaIdDeserializerStrategy.Header,
+                AsyncSubjectNameStrategy = strategy,
+                RuleExecutor = configureAsyncSubject ? new CapturingRuleExecutor() : null
+            });
+        var identityFrame = SchemaIdentityFraming.CreateSchemaGuidFrame(
+            new Guid(schemaId, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0));
+        var identityAndIndexes = new byte[identityFrame.Length + 1];
+        identityFrame.CopyTo(identityAndIndexes, 0);
+        var context = new SerializationContext
+        {
+            Topic = "orders",
+            Component = SerializationComponent.Value,
+            Headers = null
+        };
+        var identityHeader = new Header(SchemaIdentityHeaderNames.Value, identityAndIndexes);
+        var headers = new[] { identityHeader };
+        var plan = RecordHeaderRoutingPlan.Create<string, TestMessage>(null, deserializer)!;
+        var lookup = new RecordHeaderRoutingLookup(
+            plan,
+            headers,
+            headers.Length,
+            firstIndex: 0,
+            secondIndex: 1,
+            routedHeaderTailOffset: RecordHeaderRoutingPlan.FullyIndexedWithoutTail);
+        var preparer = (IRecordHeaderAsyncDeserializerPreparer<TestMessage>)deserializer;
+        var data = new byte[] { 8, 42 };
+
+        await Assert.That(((IAsyncDeserializerPreparationRequirement)deserializer).RequiresPreparation).IsTrue();
+        await Assert.That(preparer.TryDeserialize(data, context, in lookup, out _)).IsFalse();
+        await preparer.PrepareAsync(data, context, lookup, CancellationToken.None);
+        await Assert.That(preparer.TryDeserialize(data, context, in lookup, out var value)).IsTrue();
+
+        await Assert.That(value.Id).IsEqualTo(42);
+        await Assert.That(strategy?.CallCount ?? 0).IsEqualTo(configureAsyncSubject ? 1 : 0);
+    }
+
+    [Test]
+    public async Task JsonDeserializer_AsyncSubject_TombstoneDoesNotRequireIdentity()
+    {
+        using var client = new MockSchemaRegistryClient();
+        await using var deserializer = new JsonSchemaRegistryDeserializer<string>(
+            client,
+            jsonOptions: null,
+            new SchemaRegistryDeserializerConfig
+            {
+                SchemaIdStrategy = SchemaIdDeserializerStrategy.Header,
+                AsyncSubjectNameStrategy = new FixedAsyncSubjectNameStrategy("unused")
+            });
+        var preparer = (IAsyncDeserializerPreparer<string>)deserializer;
+        var context = new SerializationContext
+        {
+            Topic = "orders",
+            Component = SerializationComponent.Value,
+            IsNull = true
+        };
+
+        await Assert.That(preparer.TryDeserialize(ReadOnlyMemory<byte>.Empty, context, out var value)).IsTrue();
+        await Assert.That(value).IsNull();
+    }
+
     [Test]
     public async Task JsonSerializer_InvalidationRejectsStaleSynchronousSerialization()
     {
@@ -696,6 +1011,7 @@ public sealed class AssociatedNameStrategyTests
             executor,
             new SchemaRegistryDeserializerConfig
             {
+                SchemaIdStrategy = SchemaIdDeserializerStrategy.Prefix,
                 SubjectNameStrategy = SubjectNameStrategy.AssociatedName
             });
         var preparer = (IAsyncDeserializerPreparer<int>)deserializer;
@@ -736,7 +1052,11 @@ public sealed class AssociatedNameStrategyTests
             static (_, _) => 42,
             ownsClient: false,
             new CapturingRuleExecutor(),
-            new SchemaRegistryDeserializerConfig { AsyncSubjectNameStrategy = resolver });
+            new SchemaRegistryDeserializerConfig
+            {
+                SchemaIdStrategy = SchemaIdDeserializerStrategy.Prefix,
+                AsyncSubjectNameStrategy = resolver
+            });
         var preparer = (IAsyncDeserializerPreparer<int>)deserializer;
         var context = new SerializationContext
         {
@@ -894,7 +1214,10 @@ public sealed class AssociatedNameStrategyTests
             static (_, _) => 42,
             ownsClient: false,
             ruleExecutor: new CapturingRuleExecutor(),
-            config: new SchemaRegistryDeserializerConfig());
+            config: new SchemaRegistryDeserializerConfig
+            {
+                SchemaIdStrategy = SchemaIdDeserializerStrategy.Prefix
+            });
 
         var preparer = (IAsyncDeserializerPreparer<int>)deserializer;
 

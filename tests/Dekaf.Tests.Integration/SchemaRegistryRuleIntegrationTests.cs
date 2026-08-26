@@ -398,8 +398,11 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
             registryClient,
             jsonSchemaText,
             SchemaRegistryRuleJsonContext.Default.String,
-            autoRegisterSchemas: false,
-            ruleExecutor: ruleExecutor);
+            new JsonSchemaSerializerConfig
+            {
+                AutoRegisterSchemas = false,
+                RuleExecutor = ruleExecutor
+            });
 
         var jsonOutput = new ArrayBufferWriter<byte>();
         jsonSerializer.Serialize("json-payload", ref jsonOutput, CreateContext(jsonTopic));

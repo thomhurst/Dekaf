@@ -13,6 +13,7 @@ const sidebars = {
         'admin/topic-identifiers',
         'admin/transaction-remediation',
         'admin/replica-log-directories',
+        'admin/streams-group-management',
       ],
     },
     {
@@ -79,7 +80,14 @@ const sidebars = {
     'compression',
     'dependency-injection',
     'observability',
-    'testing',
+    {
+      type: 'category',
+      label: 'Testing',
+      items: [
+        'testing',
+        'testing/fault-injection',
+      ],
+    },
     'performance',
     'benchmarks',
     'stress-tests',

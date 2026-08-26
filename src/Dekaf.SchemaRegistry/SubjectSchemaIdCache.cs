@@ -45,7 +45,7 @@ internal sealed class SubjectSchemaIdCache
 
         var subject = getSubjectName(state, topic, isKey);
         var schema = getSchema(state, subject);
-        return Cache(key, subject, schema.SchemaId, schema.Schema);
+        return Cache(key, subject, schema.SchemaId, schema.Schema, schema.SchemaGuidFrame);
     }
 
     internal SubjectSchemaIdCacheEntry GetOrAdd<TState>(
@@ -59,7 +59,12 @@ internal sealed class SubjectSchemaIdCache
             return cached;
 
         var resolved = resolve(state, topic, isKey);
-        return Cache(key, resolved.Subject, resolved.SchemaId, resolved.Schema);
+        return Cache(
+            key,
+            resolved.Subject,
+            resolved.SchemaId,
+            resolved.Schema,
+            resolved.SchemaGuidFrame);
     }
 
     internal bool TryGet(
@@ -204,9 +209,22 @@ internal sealed class SubjectSchemaIdCache
         string topic,
         bool isKey,
         string subject,
+        in SubjectSchemaIdCacheValue value) =>
+        Cache(
+            new SubjectSchemaIdCacheKey(topic, isKey),
+            subject,
+            value.SchemaId,
+            value.Schema,
+            value.SchemaGuidFrame);
+
+    internal SubjectSchemaIdCacheEntry CacheEntry(
+        string topic,
+        bool isKey,
+        string subject,
         int schemaId,
-        Schema schema) =>
-        Cache(new SubjectSchemaIdCacheKey(topic, isKey), subject, schemaId, schema);
+        Schema schema,
+        byte[]? schemaGuidFrame = null) =>
+        Cache(new SubjectSchemaIdCacheKey(topic, isKey), subject, schemaId, schema, schemaGuidFrame);
 
     internal static SubjectSchemaIdCacheEntry FromAdmission(
         string topic,
@@ -216,18 +234,20 @@ internal sealed class SubjectSchemaIdCache
             new SubjectSchemaIdCacheKey(topic, isKey),
             admission.Subject!,
             admission.SchemaId,
-            (Schema)admission.Schema!);
+            (Schema)admission.Schema!,
+            admission.SchemaGuidFrame);
 
     private SubjectSchemaIdCacheEntry Cache(
         SubjectSchemaIdCacheKey key,
         string? subject,
         int schemaId,
-        Schema? schema)
+        Schema? schema,
+        byte[]? schemaGuidFrame)
     {
         if (TryGetCached(key, out var existing))
             return existing;
 
-        var entry = new SubjectSchemaIdCacheEntry(key, subject, schemaId, schema);
+        var entry = new SubjectSchemaIdCacheEntry(key, subject, schemaId, schema, schemaGuidFrame);
         if (TryReserveCacheSlot())
         {
             var cached = new CachedEntry(entry);
@@ -364,13 +384,17 @@ internal sealed class SubjectSchemaIdCache
 
     internal readonly record struct SubjectSchemaIdCacheKey(string Topic, bool IsKey);
 
-    internal readonly record struct SubjectSchemaIdCacheValue(int SchemaId, Schema? Schema);
+    internal readonly record struct SubjectSchemaIdCacheValue(
+        int SchemaId,
+        Schema? Schema,
+        byte[]? SchemaGuidFrame = null);
 
     internal readonly record struct SubjectSchemaIdCacheEntry(
         SubjectSchemaIdCacheKey Key,
         string? Subject,
         int SchemaId,
-        Schema? Schema);
+        Schema? Schema,
+        byte[]? SchemaGuidFrame = null);
 
     private sealed class CachedEntry(SubjectSchemaIdCacheEntry value)
     {

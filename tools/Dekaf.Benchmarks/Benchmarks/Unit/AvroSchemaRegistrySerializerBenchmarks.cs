@@ -784,6 +784,21 @@ public class AvroSchemaRegistrySerializerBenchmarks
             CancellationToken cancellationToken = default) =>
             Task.FromResult(Interlocked.Increment(ref _registrationCount));
 
+        public Task<RegisteredSchema> LookupSchemaAsync(
+            string subject,
+            RegistrySchema schema,
+            bool ignoreDeletedSchemas = true,
+            bool normalize = false,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(new RegisteredSchema
+            {
+                Id = Math.Max(1, Volatile.Read(ref _registrationCount)),
+                Guid = "89791762-2336-4186-9674-299b90a802e2",
+                Subject = subject,
+                Version = 1,
+                Schema = schema
+            });
+
         public Task<IReadOnlyList<string>> GetAllSubjectsAsync(CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 

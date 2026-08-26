@@ -3078,11 +3078,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
     /// <summary>
     /// Queues an already-serialized record for the slow-path append worker with the caller's
-    /// completion source (the ProduceAsync backpressure handoff, issue #2444). Copies the
-    /// spans to pooled memory, or adopts <paramref name="keyOwned"/>/<paramref name="valueOwned"/>
-    /// when the caller already holds pooled copies (custom-partitioner path). Owns cleanup of
-    /// every passed resource from this call on, including when it throws synchronously, so
-    /// callers never risk a double return.
+    /// completion source (the ProduceAsync backpressure handoff, issue #2444). Copies the spans
+    /// to pooled memory before enqueueing. Owns cleanup of every passed resource from this call
+    /// on, including when it throws synchronously, so callers never risk a double return.
     /// </summary>
     internal void EnqueueAppendFromSpans(
         string topic,
@@ -3090,18 +3088,16 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         long timestamp,
         ReadOnlySpan<byte> keyData,
         bool keyIsNull,
-        PooledMemory keyOwned,
         ReadOnlySpan<byte> valueData,
         bool valueIsNull,
-        PooledMemory valueOwned,
         Header[]? headers,
         int headerCount,
         PooledValueTaskSource<RecordMetadata> completion,
         CancellationToken cancellationToken,
         int partitionCount = 0)
     {
-        var key = keyOwned;
-        var value = valueOwned;
+        var key = PooledMemory.Null;
+        var value = PooledMemory.Null;
 
         try
         {

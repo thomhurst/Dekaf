@@ -18,6 +18,8 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
     // loudly instead of silently decoding nothing.
     private readonly IAsyncDeserializer<TKey>? _asyncKeyDeserializer;
     private readonly IAsyncDeserializer<TValue>? _asyncValueDeserializer;
+    private readonly bool _keyUsesRecordHeaders;
+    private readonly bool _valueUsesRecordHeaders;
     private readonly bool _hasAsyncDeserializers;
     private readonly InMemoryShareConsumerOptions _options;
     private readonly HashSet<string> _subscription = new(StringComparer.Ordinal);
@@ -184,6 +186,12 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
         _valueDeserializer = asyncValueDeserializer is null
             ? valueDeserializer!
             : AsyncOnlyDeserializerPlaceholder<TValue>.Instance;
+        _keyUsesRecordHeaders = asyncKeyDeserializer is not null
+            ? asyncKeyDeserializer is IRecordHeaderDeserializer { ConsumesRecordHeaders: true }
+            : RecordHeaderDeserializer.UsesCallerOwnedHeaders(_keyDeserializer);
+        _valueUsesRecordHeaders = asyncValueDeserializer is not null
+            ? asyncValueDeserializer is IRecordHeaderDeserializer { ConsumesRecordHeaders: true }
+            : RecordHeaderDeserializer.UsesCallerOwnedHeaders(_valueDeserializer);
         _hasAsyncDeserializers = asyncKeyDeserializer is not null || asyncValueDeserializer is not null;
         _options = options;
         _memberId = _options.MemberId ?? Guid.NewGuid().ToString("N");
@@ -846,13 +854,20 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
         int deliveryCount,
         CancellationToken cancellationToken)
     {
+        var serializationHeaders = _keyUsesRecordHeaders || _valueUsesRecordHeaders
+            ? new Headers(record.Headers)
+            : null;
         var key = record.IsKeyNull
             ? default
             : await DeserializeAsync(
                 _asyncKeyDeserializer,
                 _keyDeserializer,
                 record.Key,
-                Context(record.Topic, SerializationComponent.Key, record.Headers, isNull: false),
+                Context(
+                    record.Topic,
+                    SerializationComponent.Key,
+                    _keyUsesRecordHeaders ? serializationHeaders : null,
+                    isNull: false),
                 cancellationToken).ConfigureAwait(false);
 
         var value = await DeserializeAsync(
@@ -862,7 +877,7 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
             Context(
                 record.Topic,
                 SerializationComponent.Value,
-                record.Headers,
+                _valueUsesRecordHeaders ? serializationHeaders : null,
                 isNull: record.IsValueNull,
                 keyData: record.Key,
                 isKeyNull: record.IsKeyNull),
@@ -893,11 +908,18 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
 
     private ShareConsumeResult<TKey, TValue> ToShareResult(InMemoryRecord record, int deliveryCount)
     {
+        var serializationHeaders = _keyUsesRecordHeaders || _valueUsesRecordHeaders
+            ? new Headers(record.Headers)
+            : null;
         var key = record.IsKeyNull
             ? default
             : _keyDeserializer.Deserialize(
                 record.Key,
-                Context(record.Topic, SerializationComponent.Key, record.Headers, isNull: false));
+                Context(
+                    record.Topic,
+                    SerializationComponent.Key,
+                    _keyUsesRecordHeaders ? serializationHeaders : null,
+                    isNull: false));
 
         var value = record.IsValueNull
             ? _valueDeserializer.Deserialize(
@@ -905,7 +927,7 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
                 Context(
                     record.Topic,
                     SerializationComponent.Value,
-                    record.Headers,
+                    _valueUsesRecordHeaders ? serializationHeaders : null,
                     isNull: true,
                     keyData: record.Key,
                     isKeyNull: record.IsKeyNull))
@@ -914,7 +936,7 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
                 Context(
                     record.Topic,
                     SerializationComponent.Value,
-                    record.Headers,
+                    _valueUsesRecordHeaders ? serializationHeaders : null,
                     isNull: false,
                     keyData: record.Key,
                     isKeyNull: record.IsKeyNull));
@@ -1060,7 +1082,7 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
     private static SerializationContext Context(
         string topic,
         SerializationComponent component,
-        IReadOnlyList<Header>? headers,
+        Headers? headers,
         bool isNull,
         ReadOnlyMemory<byte> keyData = default,
         bool isKeyNull = false) =>
@@ -1068,7 +1090,7 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
         {
             Topic = topic,
             Component = component,
-            Headers = headers is null ? null : new Headers(headers),
+            Headers = headers,
             KeyData = SerializationContext.NormalizeKeyData(keyData, isKeyNull),
             IsNull = isNull
         };

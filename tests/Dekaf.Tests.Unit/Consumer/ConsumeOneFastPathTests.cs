@@ -98,6 +98,161 @@ public sealed class ConsumeOneFastPathTests
     }
 
     [Test]
+    public async Task ConsumeOneAsync_RecordHeaderDecoratorsShareOneMaterialization()
+    {
+        var fetch = PendingFetchData.Create(Topic, Partition,
+        [
+            CreateBatch(20, CreateRecord(
+                0,
+                "a",
+                "one",
+                [new Header("trace-id", "abc"u8.ToArray())]))
+        ]);
+        var keyDeserializer = new HeaderMutatingStringDeserializer(addMarker: true);
+        var valueDeserializer = new HeaderMutatingStringDeserializer(addMarker: false);
+        await using var consumer = CreateInitializedConsumerWithDeserializers(
+            fetch,
+            keyDeserializer,
+            valueDeserializer);
+        MarkManualAssignmentCurrent(consumer);
+
+        var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1), CancellationToken.None);
+
+        await Assert.That(result).IsNotNull();
+        await Assert.That(keyDeserializer.HeaderCount).IsEqualTo(1);
+        await Assert.That(valueDeserializer.HeaderCount).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task ConsumeOneAsync_ReentrantConsumerPreservesOuterRecordHeaders()
+    {
+        var nestedFetch = PendingFetchData.Create(Topic, Partition,
+        [
+            CreateBatch(20, CreateRecord(
+                0,
+                "nested-key",
+                "nested-value",
+                [new Header("record-id", "nested"u8.ToArray())]))
+        ]);
+        var nestedValueDeserializer = new HeaderValueCapturingStringDeserializer();
+        await using var nestedConsumer = CreateInitializedConsumerWithDeserializers(
+            nestedFetch,
+            valueDeserializer: nestedValueDeserializer);
+        MarkManualAssignmentCurrent(nestedConsumer);
+
+        var outerFetch = PendingFetchData.Create(Topic, Partition,
+        [
+            CreateBatch(20, CreateRecord(
+                0,
+                "outer-key",
+                "outer-value",
+                [new Header("record-id", "outer"u8.ToArray())]))
+        ]);
+        var outerValueDeserializer = new HeaderValueCapturingStringDeserializer();
+        var outerKeyDeserializer = new CallbackStringDeserializer(() =>
+        {
+            var nestedConsume = nestedConsumer.ConsumeOneAsync(
+                TimeSpan.FromSeconds(1),
+                CancellationToken.None);
+            if (!nestedConsume.IsCompletedSuccessfully)
+                throw new InvalidOperationException("The nested consume unexpectedly suspended.");
+            _ = nestedConsume.Result;
+        });
+        await using var outerConsumer = CreateInitializedConsumerWithDeserializers(
+            outerFetch,
+            outerKeyDeserializer,
+            outerValueDeserializer);
+        MarkManualAssignmentCurrent(outerConsumer);
+
+        var result = await outerConsumer.ConsumeOneAsync(
+            TimeSpan.FromSeconds(1),
+            CancellationToken.None);
+
+        await Assert.That(result).IsNotNull();
+        await Assert.That(nestedValueDeserializer.HeaderValue).IsEqualTo("nested");
+        await Assert.That(outerValueDeserializer.HeaderValue).IsEqualTo("outer");
+    }
+
+    [Test]
+    public async Task ConsumeOneAsync_AsyncRecordHeaderDeserializerReceivesHeaders()
+    {
+        var fetch = PendingFetchData.Create(Topic, Partition,
+        [
+            CreateBatch(20, CreateRecord(
+                0,
+                "a",
+                "one",
+                [new Header("trace-id", "abc"u8.ToArray())]))
+        ]);
+        var valueDeserializer = new AsyncHeaderCapturingStringDeserializer();
+        await using var consumer = CreateInitializedConsumerWithDeserializers(
+            fetch,
+            asyncValueDeserializer: valueDeserializer);
+        MarkManualAssignmentCurrent(consumer);
+
+        var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1), CancellationToken.None);
+
+        await Assert.That(result).IsNotNull();
+        await Assert.That(valueDeserializer.Headers).IsNotNull();
+        await Assert.That(valueDeserializer.Headers!).Count().IsEqualTo(1);
+        await Assert.That(valueDeserializer.Headers![0].Key).IsEqualTo("trace-id");
+    }
+
+    [Test]
+    public async Task ConsumeOneAsync_AsyncKeySuspensionPreservesSyncValueHeadersAcrossConsumers()
+    {
+        var firstFetch = PendingFetchData.Create(Topic, Partition,
+        [
+            CreateBatch(20, CreateRecord(
+                0,
+                "first-key",
+                "first-value",
+                [new Header("record-id", "first"u8.ToArray())]))
+        ]);
+        var secondFetch = PendingFetchData.Create(Topic, Partition,
+        [
+            CreateBatch(20, CreateRecord(
+                0,
+                "second-key",
+                "second-value",
+                [new Header("record-id", "second"u8.ToArray())]))
+        ]);
+        var firstKeyDeserializer = new GatedAsyncStringDeserializer();
+        var firstValueDeserializer = new HeaderValueCapturingStringDeserializer();
+        var secondValueDeserializer = new HeaderValueCapturingStringDeserializer();
+        await using var firstConsumer = CreateInitializedConsumerWithDeserializers(
+            firstFetch,
+            valueDeserializer: firstValueDeserializer,
+            asyncKeyDeserializer: firstKeyDeserializer);
+        await using var secondConsumer = CreateInitializedConsumerWithDeserializers(
+            secondFetch,
+            valueDeserializer: secondValueDeserializer,
+            asyncKeyDeserializer: new CompletedAsyncStringDeserializer());
+        MarkManualAssignmentCurrent(firstConsumer);
+        MarkManualAssignmentCurrent(secondConsumer);
+
+        var firstConsume = firstConsumer.ConsumeOneAsync(TimeSpan.FromSeconds(10), CancellationToken.None);
+        if (firstConsume.IsCompleted)
+            throw new InvalidOperationException("The first key deserializer did not suspend.");
+
+        try
+        {
+            var secondConsume = secondConsumer.ConsumeOneAsync(TimeSpan.FromSeconds(1), CancellationToken.None);
+            if (!secondConsume.IsCompletedSuccessfully)
+                throw new InvalidOperationException("The second consume unexpectedly suspended.");
+            _ = secondConsume.Result;
+        }
+        finally
+        {
+            firstKeyDeserializer.Release();
+        }
+        _ = await firstConsume;
+
+        await Assert.That(firstValueDeserializer.HeaderValue).IsEqualTo("first");
+        await Assert.That(secondValueDeserializer.HeaderValue).IsEqualTo("second");
+    }
+
+    [Test]
     [NotInParallel("ActivityListener")]
     public async Task ConsumeOneAsync_ColdDeserializerPreparation_CreatesOneConsumeActivity()
     {
@@ -1210,7 +1365,8 @@ public sealed class ConsumeOneFastPathTests
         PendingFetchData fetch,
         IDeserializer<string>? keyDeserializer = null,
         IDeserializer<string>? valueDeserializer = null,
-        IAsyncDeserializer<string>? asyncValueDeserializer = null)
+        IAsyncDeserializer<string>? asyncValueDeserializer = null,
+        IAsyncDeserializer<string>? asyncKeyDeserializer = null)
     {
         var consumer = new KafkaConsumer<string, string>(
             new ConsumerOptions
@@ -1222,6 +1378,7 @@ public sealed class ConsumeOneFastPathTests
             },
             keyDeserializer ?? Serializers.String,
             valueDeserializer ?? Serializers.String,
+            asyncKeyDeserializer: asyncKeyDeserializer,
             asyncValueDeserializer: asyncValueDeserializer);
 
         SetInitialized(consumer);
@@ -1292,6 +1449,82 @@ public sealed class ConsumeOneFastPathTests
             SerializationContext context,
             CancellationToken cancellationToken = default)
             => ValueTask.FromException<string>(new OperationCanceledException(cancellationToken));
+    }
+
+    private sealed class HeaderMutatingStringDeserializer(bool addMarker) :
+        IDeserializer<string>,
+        IRecordHeaderDeserializer
+    {
+        public bool ConsumesRecordHeaders => true;
+
+        public int HeaderCount { get; private set; }
+
+        public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
+        {
+            HeaderCount = context.Headers?.Count ?? 0;
+            if (addMarker)
+                context.Headers!.Add("key-visited", Array.Empty<byte>());
+            return Encoding.UTF8.GetString(data.Span);
+        }
+    }
+
+    private sealed class AsyncHeaderCapturingStringDeserializer :
+        IAsyncDeserializer<string>,
+        IRecordHeaderDeserializer
+    {
+        public bool ConsumesRecordHeaders => true;
+
+        public Headers? Headers { get; private set; }
+
+        public ValueTask<string> DeserializeAsync(
+            ReadOnlyMemory<byte> data,
+            SerializationContext context,
+            CancellationToken cancellationToken = default)
+        {
+            Headers = context.Headers;
+            return ValueTask.FromResult(Encoding.UTF8.GetString(data.Span));
+        }
+    }
+
+    private sealed class GatedAsyncStringDeserializer : IAsyncDeserializer<string>
+    {
+        private readonly TaskCompletionSource _release = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public async ValueTask<string> DeserializeAsync(
+            ReadOnlyMemory<byte> data,
+            SerializationContext context,
+            CancellationToken cancellationToken = default)
+        {
+            await _release.Task.WaitAsync(cancellationToken);
+            return Encoding.UTF8.GetString(data.Span);
+        }
+
+        public void Release() => _release.TrySetResult();
+    }
+
+    private sealed class CompletedAsyncStringDeserializer : IAsyncDeserializer<string>
+    {
+        public ValueTask<string> DeserializeAsync(
+            ReadOnlyMemory<byte> data,
+            SerializationContext context,
+            CancellationToken cancellationToken = default) =>
+            ValueTask.FromResult(Encoding.UTF8.GetString(data.Span));
+    }
+
+    private sealed class HeaderValueCapturingStringDeserializer :
+        IDeserializer<string>,
+        IRecordHeaderDeserializer
+    {
+        public bool ConsumesRecordHeaders => true;
+
+        public string? HeaderValue { get; private set; }
+
+        public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
+        {
+            HeaderValue = context.Headers?[0].GetValueAsString();
+            return Encoding.UTF8.GetString(data.Span);
+        }
     }
 
     private sealed class CallbackStringDeserializer(Action callback) : IDeserializer<string>

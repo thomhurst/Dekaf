@@ -6,6 +6,11 @@ namespace Dekaf.SchemaRegistry.Protobuf;
 public sealed class ProtobufDeserializerConfig
 {
     /// <summary>
+    /// Strategy used to read the schema identity. The default accepts a GUID header and falls back to the payload prefix.
+    /// </summary>
+    public SchemaIdDeserializerStrategy SchemaIdStrategy { get; init; } = SchemaIdDeserializerStrategy.Dual;
+
+    /// <summary>
     /// Whether to use the latest registered subject version as the reader schema and execute
     /// any migration rules between the writer and reader versions.
     /// </summary>

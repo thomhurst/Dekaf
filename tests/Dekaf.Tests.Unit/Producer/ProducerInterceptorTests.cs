@@ -88,7 +88,7 @@ public sealed class ProducerInterceptorTests
         await Assert.That(result.Headers).IsNotNull();
         await Assert.That(result.Headers!.Count).IsEqualTo(1);
 
-        var header = result.Headers.First();
+        var header = result.Headers[0];
         await Assert.That(header.Key).IsEqualTo("correlation-id");
         await Assert.That(header.GetValueAsString()).IsEqualTo("request-42");
     }
