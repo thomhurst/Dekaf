@@ -1548,7 +1548,8 @@ public sealed class AvroPocoSchemaRegistryTests
     [Arguments(false)]
     [Arguments(true)]
     [Test]
-    public async Task GeneratedCodec_GuidHeader_SkipsConfiguredAsyncSubjectWithoutRules(bool useWarmup)
+    public async Task GeneratedCodec_GuidHeader_InlineValidationSkipsConfiguredAsyncSubjectWithoutRules(
+        bool useWarmup)
     {
         const string topic = "poco-guid-async-subject";
         var subject = $"{topic}-value";
@@ -1562,7 +1563,9 @@ public sealed class AvroPocoSchemaRegistryTests
             new AvroDeserializerConfig
             {
                 SchemaIdStrategy = SchemaIdDeserializerStrategy.Header,
-                AsyncSubjectNameStrategy = strategy
+                AsyncSubjectNameStrategy = strategy,
+                ValidationRulesExecution =
+                    Dekaf.SchemaRegistry.ValidationRulesExecution.BeforeDomainRules
             });
         var headers = new Headers();
         var context = new SerializationContext

@@ -138,8 +138,7 @@ internal sealed class AvroAggregateEqualityComparer(
                 var rightUnion = (global::Avro.UnionSchema)rightSchema;
                 var leftBranch = left.ReadLong();
                 var rightBranch = right.ReadLong();
-                if (leftBranch != rightBranch ||
-                    (ulong)leftBranch >= (ulong)leftUnion.Count ||
+                if ((ulong)leftBranch >= (ulong)leftUnion.Count ||
                     (ulong)rightBranch >= (ulong)rightUnion.Count)
                 {
                     return false;

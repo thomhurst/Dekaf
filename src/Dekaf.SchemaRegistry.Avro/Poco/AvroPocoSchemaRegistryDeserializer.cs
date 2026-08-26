@@ -1262,7 +1262,21 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
                     .ConfigureAwait(false)
                 : null;
             var schemaId = Interlocked.Decrement(ref _nextGuidPlanId);
-            var plan = BuildPlan(schemaId, unscopedSchema, names);
+            AvroPocoReaderPlan plan;
+            if (_inlineRuleValidators is null)
+            {
+                plan = BuildPlan(schemaId, unscopedSchema, names);
+            }
+            else
+            {
+                ValidateAvroSchema(schemaId, unscopedSchema);
+                var parsed = (names is null
+                        ? AvroSchema.Parse(unscopedSchema.SchemaString)
+                        : AvroSchema.Parse(unscopedSchema.SchemaString, names)) as AvroRecordSchema
+                    ?? throw new InvalidOperationException("POCO Avro writer schema must be a record.");
+                plan = AvroPocoReaderPlanBuilder.Build<T, TCodec>(parsed);
+                plan.ResolvedWriterSchema = parsed;
+            }
             CacheSuccessfulPlan(schemaId, plan);
             return new GuidResolvedSchema(schemaId, plan);
         }

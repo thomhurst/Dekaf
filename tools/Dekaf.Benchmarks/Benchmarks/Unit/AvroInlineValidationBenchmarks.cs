@@ -19,6 +19,9 @@ public class AvroInlineValidationBenchmarks
     private AvroInlineRuleValidator _conditionalArrayEqualityValidator = null!;
     private ReadOnlyMemory<byte> _equalArrayPayload;
     private ReadOnlyMemory<byte> _segmentedArrayPayload;
+    private AvroInlineRuleValidator _unionArrayEqualityValidator = null!;
+    private ReadOnlyMemory<byte> _equalUnionArrayControlPayload;
+    private ReadOnlyMemory<byte> _equalUnionArrayReorderedPayload;
     private AvroInlineRuleValidator _mapEqualityValidator = null!;
     private ReadOnlyMemory<byte> _reorderedMapPayload;
     private AvroInlineRuleValidator _recordSizeValidator = null!;
@@ -115,6 +118,26 @@ public class AvroInlineValidationBenchmarks
         _conditionalArrayEqualityValidator = new AvroInlineRuleValidator(
             AvroSchema.Parse(conditionalArrayEqualitySchema));
         _conditionalArrayEqualityValidator.Validate(_segmentedArrayPayload, 10, failFast: false);
+
+        const string unionArrayEqualitySchema = """
+            {
+              "type": "record",
+              "name": "UnionArrayEqualityBenchmarkRecord",
+              "confluent:rules": [{ "name": "equal", "expr": "this.left == this.right" }],
+              "fields": [
+                { "name": "left", "type": { "type": "array", "items": ["int", "long"] } },
+                { "name": "right", "type": { "type": "array", "items": ["long", "int"] } }
+              ]
+            }
+            """;
+        _unionArrayEqualityValidator = new AvroInlineRuleValidator(
+            AvroSchema.Parse(unionArrayEqualitySchema));
+        _equalUnionArrayControlPayload = new byte[] { 2, 0, 2, 0, 2, 0, 2, 0 };
+        _equalUnionArrayReorderedPayload = new byte[] { 2, 0, 2, 0, 2, 2, 2, 0 };
+        _unionArrayEqualityValidator.Validate(
+            _equalUnionArrayControlPayload,
+            17,
+            failFast: false);
 
         const string mapEqualitySchema = """
             {
@@ -483,6 +506,20 @@ public class AvroInlineValidationBenchmarks
     [Benchmark]
     public void ValidateConditionalEqualArraysWithDifferentBlocks() =>
         _conditionalArrayEqualityValidator.Validate(_segmentedArrayPayload, 10, failFast: false);
+
+    [Benchmark]
+    public void ValidateEqualUnionArraysControl() =>
+        _unionArrayEqualityValidator.Validate(
+            _equalUnionArrayControlPayload,
+            17,
+            failFast: false);
+
+    [Benchmark]
+    public void ValidateEqualUnionArraysWithDifferentOrdering() =>
+        _unionArrayEqualityValidator.Validate(
+            _equalUnionArrayReorderedPayload,
+            17,
+            failFast: false);
 
     [Benchmark]
     public void ValidateEqualMapsWithDifferentOrder() =>
