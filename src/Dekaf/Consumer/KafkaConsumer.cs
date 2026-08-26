@@ -1310,6 +1310,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private readonly ConcurrentDictionary<TopicPartition, CommittedOffsetCacheEntry> _committed = new();
     private long _committedOffsetGeneration;
     private readonly ConcurrentDictionary<TopicPartition, WatermarkCacheEntry> _watermarks = new(); // Cached watermark offsets from fetch responses
+    private readonly ConcurrentDictionary<TopicPartition, int> _watermarkAssignmentVersions = new();
 
 
     // Partition EOF tracking
@@ -2260,9 +2261,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             var previousAssignment = _assignmentSnapshot;
             lock (_snapshotStateGate)
             {
-                hadPaused = RemovePartitionState(previousAssignment);
                 _assignment.Clear();
                 PublishAssignmentSnapshot();
+                hadPaused = RemovePartitionState(previousAssignment);
             }
         }
         finally
@@ -2314,9 +2315,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         (removedPartitions ??= []).Add(partition);
                 }
 
+                PublishAssignmentSnapshot();
                 if (removedPartitions is not null)
                     hadPaused = RemovePartitionState(removedPartitions);
-                PublishAssignmentSnapshot();
             }
         }
         finally
@@ -2347,9 +2348,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             var previousAssignment = _assignmentSnapshot;
             lock (_snapshotStateGate)
             {
-                hadPaused = RemovePartitionState(previousAssignment);
                 _assignment.Clear();
                 PublishAssignmentSnapshot();
+                hadPaused = RemovePartitionState(previousAssignment);
             }
         }
         finally
@@ -2384,8 +2385,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 foreach (var tpo in partitions)
                 {
                     var tp = new TopicPartition(tpo.Topic, tpo.Partition);
-                    if (_assignment.Add(tp))
-                        _watermarks.TryRemove(tp, out _);
+                    _assignment.Add(tp);
 
                     // If an offset is specified (>= 0), set the position
                     if (tpo.Offset >= 0)
@@ -2457,8 +2457,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
             lock (_snapshotStateGate)
             {
-                hadPaused = RemovePartitionState(partitions);
                 PublishAssignmentSnapshot();
+                hadPaused = RemovePartitionState(partitions);
             }
         }
         finally
@@ -8400,15 +8400,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     public WatermarkOffsets? GetWatermarkOffsets(TopicPartition topicPartition)
     {
-        var assignmentVersion = Volatile.Read(ref _assignmentEnsureVersion);
-        if (_watermarks.TryGetValue(topicPartition, out var entry)
-            && entry.AssignmentVersion == assignmentVersion
-            && assignmentVersion == Volatile.Read(ref _assignmentEnsureVersion))
-        {
-            return entry.ReadWatermarks();
-        }
-
-        return null;
+        return _watermarks.TryGetValue(topicPartition, out var entry)
+            ? entry.ReadWatermarks()
+            : null;
     }
 
     public long? GetCurrentLag(TopicPartition partition)
@@ -8416,13 +8410,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         if (Volatile.Read(ref _consumerDisposed) != 0)
             throw new ObjectDisposedException(nameof(KafkaConsumer<TKey, TValue>));
 
-        var assignmentVersion = Volatile.Read(ref _assignmentEnsureVersion);
         if (!_assignmentSnapshot.Contains(partition)
             || GetPositionWithoutCaching(partition) is not { } position
             || position < 0
-            || !_watermarks.TryGetValue(partition, out var watermarks)
-            || watermarks.AssignmentVersion != assignmentVersion
-            || assignmentVersion != Volatile.Read(ref _assignmentEnsureVersion))
+            || !_watermarks.TryGetValue(partition, out var watermarks))
         {
             return null;
         }
@@ -8440,11 +8431,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         ThrowIfNotInitialized();
         cancellationToken.ThrowIfCancellationRequested();
 
-        var assignmentVersion = Volatile.Read(ref _assignmentEnsureVersion);
         if (!_assignmentSnapshot.Contains(partition)
             || GetPositionWithoutCaching(partition) is not { } position
             || position < 0
-            || assignmentVersion != Volatile.Read(ref _assignmentEnsureVersion))
+            || !_watermarkAssignmentVersions.TryGetValue(partition, out var assignmentVersion)
+            || !_watermarkAssignmentVersions.TryGetValue(partition, out var currentVersion)
+            || currentVersion != assignmentVersion)
         {
             return new ValueTask<long?>((long?)null);
         }
@@ -8460,7 +8452,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         var watermarks = await QueryWatermarkOffsetsCoreAsync(
                 partition,
                 cacheResult: false,
-                assignmentVersion,
+                Volatile.Read(ref _assignmentEnsureVersion),
                 cancellationToken)
             .ConfigureAwait(false);
         lock (_snapshotStateGate)
@@ -8468,7 +8460,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             if (!_assignmentSnapshot.Contains(partition)
                 || GetPositionWithoutCaching(partition) is not { } position
                 || position < 0
-                || assignmentVersion != Volatile.Read(ref _assignmentEnsureVersion))
+                || !_watermarkAssignmentVersions.TryGetValue(partition, out var currentVersion)
+                || currentVersion != assignmentVersion)
             {
                 return null;
             }
@@ -8478,7 +8471,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 watermarks.Low,
                 watermarks.High,
                 watermarks.High,
-                assignmentVersion);
+                Volatile.Read(ref _assignmentEnsureVersion));
             return CalculateLag(position, watermarks.High);
         }
     }
@@ -8946,7 +8939,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     }
                     lock (_snapshotStateGate)
                     {
-                        PublishAssignmentSnapshot();
+                        PublishAssignmentSnapshotCore(newPartitions);
 
                         // Clean up state for removed partitions while lag-query cache publication
                         // is excluded from the assignment transition.
@@ -9544,14 +9537,50 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     /// <summary>
     /// Publishes an immutable snapshot of <see cref="_assignment"/> for lock-free reads.
     /// Must be called after every mutation to <see cref="_assignment"/>.
+    /// Rotates watermark cache generations only for partitions whose ownership changed.
     /// Also marks manual assignment state dirty and invalidates the coordinator assignment
     /// fast path, so all assignment mutation paths must use this method.
     /// </summary>
-    private void PublishAssignmentSnapshot()
+    private void PublishAssignmentSnapshot() => PublishAssignmentSnapshotCore(reassignedPartitions: null);
+
+    private void PublishAssignmentSnapshotCore(IReadOnlyCollection<TopicPartition>? reassignedPartitions)
     {
         var assignmentSnapshot = new HashSet<TopicPartition>(_assignment);
         lock (_snapshotStateGate)
         {
+            var previousAssignment = _assignmentSnapshot;
+            var assignmentVersion = Interlocked.Increment(ref _assignmentEnsureVersion);
+
+            foreach (var partition in previousAssignment)
+            {
+                if (assignmentSnapshot.Contains(partition))
+                    continue;
+
+                _watermarkAssignmentVersions.TryRemove(partition, out _);
+                _watermarks.TryRemove(partition, out _);
+            }
+
+            foreach (var partition in assignmentSnapshot)
+            {
+                if (previousAssignment.Contains(partition))
+                    continue;
+
+                _watermarkAssignmentVersions[partition] = assignmentVersion;
+                _watermarks.TryRemove(partition, out _);
+            }
+
+            if (reassignedPartitions is not null)
+            {
+                foreach (var partition in reassignedPartitions)
+                {
+                    if (!assignmentSnapshot.Contains(partition))
+                        continue;
+
+                    _watermarkAssignmentVersions[partition] = assignmentVersion;
+                    _watermarks.TryRemove(partition, out _);
+                }
+            }
+
             _batchIterationEpoch.BeginPublication();
             try
             {
@@ -9562,7 +9591,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 _batchIterationEpoch.EndPublication();
             }
 
-            Interlocked.Increment(ref _assignmentEnsureVersion);
         }
         Volatile.Write(ref _lastCoordinatorAssignmentVersion, -1);
         Volatile.Write(ref _observedTopicIdentityMarker, assignmentSnapshot);
@@ -10684,17 +10712,16 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             if (!_watermarks.TryGetValue(partition, out var entry))
             {
-                var created = new WatermarkCacheEntry(low, high, lagEndOffset, assignmentVersion);
+                var created = new WatermarkCacheEntry(low, high, lagEndOffset);
                 if (_watermarks.TryAdd(partition, created))
+                {
+                    if (assignmentVersion != Volatile.Read(ref _assignmentEnsureVersion))
+                    {
+                        ((ICollection<KeyValuePair<TopicPartition, WatermarkCacheEntry>>)_watermarks)
+                            .Remove(new KeyValuePair<TopicPartition, WatermarkCacheEntry>(partition, created));
+                    }
                     return;
-                continue;
-            }
-
-            if (entry.AssignmentVersion != assignmentVersion)
-            {
-                var replacement = new WatermarkCacheEntry(low, high, lagEndOffset, assignmentVersion);
-                if (_watermarks.TryUpdate(partition, replacement, entry))
-                    return;
+                }
                 continue;
             }
 
@@ -10712,15 +10739,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         private long _high;
         private long _lagEndOffset;
 
-        public WatermarkCacheEntry(long low, long high, long lagEndOffset, int assignmentVersion)
+        public WatermarkCacheEntry(long low, long high, long lagEndOffset)
         {
             _low = low;
             _high = high;
             _lagEndOffset = lagEndOffset;
-            AssignmentVersion = assignmentVersion;
         }
-
-        public int AssignmentVersion { get; }
 
         public void Update(long low, long high, long lagEndOffset)
         {

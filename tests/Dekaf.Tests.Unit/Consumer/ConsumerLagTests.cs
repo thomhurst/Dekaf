@@ -95,6 +95,46 @@ public sealed class ConsumerLagTests
     }
 
     [Test]
+    public async Task GetCurrentLag_UnrelatedIncrementalChangesPreserveCachedWatermark()
+    {
+        var otherPartition = new TopicPartition(Partition.Topic, 1);
+        await using var consumer = CreateConsumer();
+        consumer.IncrementalAssign([new TopicPartitionOffset(Partition.Topic, Partition.Partition, 10)]);
+        SetCachedWatermarks(consumer, new WatermarkOffsets(0, 25));
+
+        consumer.IncrementalAssign([
+            new TopicPartitionOffset(otherPartition.Topic, otherPartition.Partition, 20)
+        ]);
+
+        await Assert.That(consumer.GetWatermarkOffsets(Partition)).IsEqualTo(new WatermarkOffsets(0, 25));
+        await Assert.That(consumer.GetCurrentLag(Partition)).IsEqualTo(15);
+
+        consumer.IncrementalUnassign([otherPartition]);
+
+        await Assert.That(consumer.GetWatermarkOffsets(Partition)).IsEqualTo(new WatermarkOffsets(0, 25));
+        await Assert.That(consumer.GetCurrentLag(Partition)).IsEqualTo(15);
+    }
+
+    [Test]
+    public async Task UpdateWatermarks_RemovalPublishedBeforeCleanupRejectsStaleWriter()
+    {
+        await using var consumer = CreateConsumer();
+        consumer.IncrementalAssign([new TopicPartitionOffset(Partition.Topic, Partition.Partition, 10)]);
+        var previousAssignmentVersion = GetAssignmentVersion(consumer);
+        SetCachedWatermarks(consumer, new WatermarkOffsets(0, 25));
+
+        GetAssignment(consumer).Remove(Partition);
+        PublishAssignmentSnapshot(consumer);
+        UpdateWatermarksFromFetchResponse(
+            consumer,
+            CreateFetchResponse(100),
+            previousAssignmentVersion);
+
+        await Assert.That(consumer.GetWatermarkOffsets(Partition)).IsNull();
+        await Assert.That(GetWatermarkCacheCount(consumer)).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task GetCurrentLag_ReadCommittedUsesLastStableOffset()
     {
         await using var consumer = CreateConsumer(IsolationLevel.ReadCommitted);
@@ -260,6 +300,27 @@ public sealed class ConsumerLagTests
             .GetField("_assignmentEnsureVersion", BindingFlags.NonPublic | BindingFlags.Instance)
             ?.GetValue(consumer)
             ?? throw new InvalidOperationException("_assignmentEnsureVersion field not found"));
+
+    private static HashSet<TopicPartition> GetAssignment(KafkaConsumer<string, string> consumer) =>
+        (HashSet<TopicPartition>)(typeof(KafkaConsumer<string, string>)
+            .GetField("_assignment", BindingFlags.NonPublic | BindingFlags.Instance)
+            ?.GetValue(consumer)
+            ?? throw new InvalidOperationException("_assignment field not found"));
+
+    private static void PublishAssignmentSnapshot(KafkaConsumer<string, string> consumer)
+    {
+        var method = typeof(KafkaConsumer<string, string>).GetMethod(
+            "PublishAssignmentSnapshot",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("PublishAssignmentSnapshot method not found");
+        method.Invoke(consumer, null);
+    }
+
+    private static int GetWatermarkCacheCount(KafkaConsumer<string, string> consumer) =>
+        ((System.Collections.IDictionary)(typeof(KafkaConsumer<string, string>)
+            .GetField("_watermarks", BindingFlags.NonPublic | BindingFlags.Instance)
+            ?.GetValue(consumer)
+            ?? throw new InvalidOperationException("_watermarks field not found"))).Count;
 
     private static void SetInitialized(KafkaConsumer<string, string> consumer)
     {
