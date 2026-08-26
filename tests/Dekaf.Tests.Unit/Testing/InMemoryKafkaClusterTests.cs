@@ -235,6 +235,37 @@ public sealed class InMemoryKafkaClusterTests
     }
 
     [Test]
+    public async Task DeleteConsumerGroupOffsetsAsync_MissingGroupThrowsGroupIdNotFound()
+    {
+        IAdminClient admin = new InMemoryAdminClient(new InMemoryKafkaCluster());
+
+        var exception = await Assert.ThrowsAsync<GroupException>(async () =>
+            await admin.DeleteConsumerGroupOffsetsAsync(
+                "missing-classic",
+                [new TopicPartition("input", 0)]));
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.GroupIdNotFound);
+        await Assert.That(exception.GroupId).IsEqualTo("missing-classic");
+    }
+
+    [Test]
+    public async Task DeleteConsumerGroupOffsetsAsync_KnownEmptyGroupSucceeds()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("input");
+        IAdminClient admin = new InMemoryAdminClient(cluster);
+        await using var consumer = new InMemoryConsumer<string, string>(
+            cluster,
+            new InMemoryConsumerOptions { GroupId = "empty-classic" });
+        consumer.Subscribe("input");
+        consumer.Unsubscribe();
+
+        await admin.DeleteConsumerGroupOffsetsAsync(
+            "empty-classic",
+            [new TopicPartition("input", 0)]);
+    }
+
+    [Test]
     public async Task DeleteConsumerGroupsAsync_ContinuesAfterMissingGroup()
     {
         var cluster = new InMemoryKafkaCluster();

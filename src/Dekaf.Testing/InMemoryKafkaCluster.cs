@@ -1188,7 +1188,7 @@ public sealed class InMemoryKafkaCluster
         lock (_gate)
         {
             if (!_consumerGroupOffsets.TryGetValue(groupId, out var offsets))
-                return false;
+                return _consumerGroupGenerations.ContainsKey(groupId);
 
             foreach (var partition in partitions)
                 offsets.Remove(partition);

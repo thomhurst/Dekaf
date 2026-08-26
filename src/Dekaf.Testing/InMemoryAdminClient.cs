@@ -830,7 +830,15 @@ public sealed partial class InMemoryAdminClient :
                 partition.Topic,
                 partition.Partition,
                 groupId).ConfigureAwait(false);
-            _cluster.DeleteGroupOffsets(groupId, [partition]);
+            if (!_cluster.DeleteGroupOffsets(groupId, [partition]))
+            {
+                throw new GroupException(
+                    ErrorCode.GroupIdNotFound,
+                    $"DeleteConsumerGroupOffsets failed for group '{groupId}': {ErrorCode.GroupIdNotFound}")
+                {
+                    GroupId = groupId
+                };
+            }
         }
     }
 
