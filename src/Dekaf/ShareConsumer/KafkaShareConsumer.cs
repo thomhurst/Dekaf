@@ -474,47 +474,53 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                         else
                         {
                             parsed = [];
-                            long? resumeOffset = null;
+                            var parserState = new DeserializerPreparationParserState();
                             var hasRetainedKey = false;
                             TKey? retainedKey = default;
                             long? previousPreparationOffset = null;
                             var previousPreparationComponent = default(SerializationComponent);
                             var preparationAttempts = 0;
-                            while (true)
+                            try
                             {
-                                var pendingPreparation = ParsePartitionRecordsWithPreparation(
-                                    topicInfo,
-                                    partition,
-                                    remainingRecordCount,
-                                    parsed,
-                                    resumeOffset,
-                                    hasRetainedKey,
-                                    retainedKey);
-                                if (pendingPreparation is null)
-                                    break;
-
-                                if (previousPreparationOffset == pendingPreparation.Offset &&
-                                    previousPreparationComponent == pendingPreparation.Component)
+                                while (true)
                                 {
-                                    if (preparationAttempts >= MaxDeserializerPreparationAttempts)
+                                    var pendingPreparation = ParsePartitionRecordsWithPreparation(
+                                        topicInfo,
+                                        partition,
+                                        remainingRecordCount,
+                                        parsed,
+                                        ref parserState,
+                                        hasRetainedKey,
+                                        retainedKey);
+                                    if (pendingPreparation is null)
+                                        break;
+
+                                    if (previousPreparationOffset == pendingPreparation.Offset &&
+                                        previousPreparationComponent == pendingPreparation.Component)
                                     {
-                                        throw new InvalidOperationException(
-                                            "Deserializer remained unprepared after PrepareAsync completed.");
+                                        if (preparationAttempts >= MaxDeserializerPreparationAttempts)
+                                        {
+                                            throw new InvalidOperationException(
+                                                "Deserializer remained unprepared after PrepareAsync completed.");
+                                        }
                                     }
-                                }
-                                else
-                                {
-                                    previousPreparationOffset = pendingPreparation.Offset;
-                                    previousPreparationComponent = pendingPreparation.Component;
-                                    preparationAttempts = 0;
-                                }
+                                    else
+                                    {
+                                        previousPreparationOffset = pendingPreparation.Offset;
+                                        previousPreparationComponent = pendingPreparation.Component;
+                                        preparationAttempts = 0;
+                                    }
 
-                                preparationAttempts++;
-                                await PrepareDeserializerAsync(pendingPreparation, cancellationToken)
-                                    .ConfigureAwait(false);
-                                resumeOffset = pendingPreparation.Offset;
-                                hasRetainedKey = pendingPreparation.HasRetainedKey;
-                                retainedKey = pendingPreparation.RetainedKey;
+                                    preparationAttempts++;
+                                    await PrepareDeserializerAsync(pendingPreparation, cancellationToken)
+                                        .ConfigureAwait(false);
+                                    hasRetainedKey = pendingPreparation.HasRetainedKey;
+                                    retainedKey = pendingPreparation.RetainedKey;
+                                }
+                            }
+                            finally
+                            {
+                                parserState.DisposeCurrentBatch();
                             }
                         }
 
@@ -1365,165 +1371,170 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         return results;
     }
 
-    private PendingDeserializerPreparation? ParsePartitionRecordsWithPreparation(
+    // The caller preserves parserState across preparation awaits so each record batch is
+    // parsed and decompressed once even when several records require cold preparation.
+    internal PendingDeserializerPreparation? ParsePartitionRecordsWithPreparation(
         TopicInfo topicInfo,
         ShareFetchResponsePartition partition,
         int maxRecords,
         List<ShareConsumeResult<TKey, TValue>> results,
-        long? resumeOffset,
+        ref DeserializerPreparationParserState parserState,
         bool hasRetainedKey,
         TKey? retainedKey)
     {
-        var reader = new KafkaProtocolReader(partition.RecordBytes);
-        var acquiredRecordIndex = 0;
-        while (!reader.End && results.Count < maxRecords)
+        while (results.Count < maxRecords)
         {
-            RecordBatch batch;
-            try
+            if (parserState.CurrentBatch is null)
             {
-                batch = RecordBatch.Read(ref reader, _compressionCodecs);
-            }
-            catch (InsufficientDataException)
-            {
-                break; // Partial batch
-            }
+                if (parserState.NextBatchByteOffset >= partition.RecordBytes.Length)
+                    break;
 
-            try
-            {
-                batch.ConfigureHeaderRouting(_recordHeaderRoutingPlan);
-                foreach (var record in batch.Records)
+                var reader = new KafkaProtocolReader(
+                    partition.RecordBytes[parserState.NextBatchByteOffset..]);
+                try
                 {
-                    if (results.Count >= maxRecords)
-                        break;
+                    parserState.CurrentBatch = RecordBatch.Read(ref reader, _compressionCodecs);
+                }
+                catch (InsufficientDataException)
+                {
+                    break; // Partial batch
+                }
 
-                    var offset = batch.BaseOffset + record.OffsetDelta;
+                parserState.NextBatchByteOffset += checked((int)reader.Consumed);
+                parserState.CurrentBatch.ConfigureHeaderRouting(_recordHeaderRoutingPlan);
+                parserState.RecordIndex = 0;
+            }
 
-                    var deliveryCount = FindDeliveryCount(
-                        partition.AcquiredRecords,
-                        offset,
-                        ref acquiredRecordIndex);
-                    if (deliveryCount < 0)
-                        continue;
+            var batch = parserState.CurrentBatch;
+            var records = batch.Records;
+            while (parserState.RecordIndex < records.Count && results.Count < maxRecords)
+            {
+                var record = records[parserState.RecordIndex];
+                var offset = batch.BaseOffset + record.OffsetDelta;
 
-                    var isResumeRecord = resumeOffset == offset;
-                    if (resumeOffset.HasValue && !isResumeRecord)
-                        continue;
+                var deliveryCount = FindDeliveryCount(
+                    partition.AcquiredRecords,
+                    offset,
+                    ref parserState.AcquiredRecordIndex);
+                if (deliveryCount < 0)
+                {
+                    parserState.RecordIndex++;
+                    continue;
+                }
 
-                    t_serializationContext.Topic = topicInfo.Name;
-                    t_serializationContext.Component = SerializationComponent.Key;
-                    t_serializationContext.KeyData = ReadOnlyMemory<byte>.Empty;
-                    t_serializationContext.IsNull = record.IsKeyNull;
-                    var headerRouting = record.CreateHeaderRoutingLookup(
-                        _recordHeaderRoutingPlan);
-                    var materializedHeaders = headerRouting.KeyRequiresMaterializedHeaders
-                                              || headerRouting.ValueRequiresMaterializedHeaders
-                        ? RecordHeaderMaterializer.GetCallerOwnedHeaders(in headerRouting)
-                        : null;
-                    t_serializationContext.Headers = headerRouting.KeyRequiresMaterializedHeaders
-                        ? materializedHeaders
-                        : null;
-                    TKey? key = default;
-                    if (!record.IsKeyNull)
+                t_serializationContext.Topic = topicInfo.Name;
+                t_serializationContext.Component = SerializationComponent.Key;
+                t_serializationContext.KeyData = ReadOnlyMemory<byte>.Empty;
+                t_serializationContext.IsNull = record.IsKeyNull;
+                var headerRouting = record.CreateHeaderRoutingLookup(
+                    _recordHeaderRoutingPlan);
+                var materializedHeaders = headerRouting.KeyRequiresMaterializedHeaders
+                                          || headerRouting.ValueRequiresMaterializedHeaders
+                    ? RecordHeaderMaterializer.GetCallerOwnedHeaders(in headerRouting)
+                    : null;
+                t_serializationContext.Headers = headerRouting.KeyRequiresMaterializedHeaders
+                    ? materializedHeaders
+                    : null;
+                TKey? key = default;
+                if (!record.IsKeyNull)
+                {
+                    if (hasRetainedKey)
                     {
-                        if (isResumeRecord && hasRetainedKey)
-                        {
-                            key = retainedKey;
-                        }
-                        else if (_keyDeserializerPreparer is { } keyPreparer)
-                        {
-                            if (!TryDeserializePrepared(
-                                    keyPreparer,
-                                    record.Key,
-                                    t_serializationContext,
-                                    in headerRouting,
-                                    out key))
-                            {
-                                return CreatePendingPreparation(
-                                    SerializationComponent.Key,
-                                    topicInfo.Name,
-                                    offset,
-                                    record,
-                                    retainedKey: default,
-                                    hasRetainedKey: false);
-                            }
-                        }
-                        else
-                        {
-                            key = RecordHeaderDeserializer.Deserialize(
-                                _keyDeserializer,
-                                record.Key,
-                                t_serializationContext,
-                                in headerRouting);
-                        }
+                        key = retainedKey;
                     }
-
-                    t_serializationContext.Component = SerializationComponent.Value;
-                    t_serializationContext.KeyData = SerializationContext.NormalizeKeyData(
-                        record.Key,
-                        record.IsKeyNull);
-                    t_serializationContext.IsNull = record.IsValueNull;
-                    t_serializationContext.Headers = headerRouting.ValueRequiresMaterializedHeaders
-                        ? materializedHeaders
-                        : null;
-                    TValue value;
-                    if (record.IsValueNull)
-                    {
-                        value = default!;
-                    }
-                    else if (_valueDeserializerPreparer is { } valuePreparer)
+                    else if (_keyDeserializerPreparer is { } keyPreparer)
                     {
                         if (!TryDeserializePrepared(
-                                valuePreparer,
-                                record.Value,
+                                keyPreparer,
+                                record.Key,
                                 t_serializationContext,
                                 in headerRouting,
-                                out value))
+                                out key))
                         {
                             return CreatePendingPreparation(
-                                SerializationComponent.Value,
+                                SerializationComponent.Key,
                                 topicInfo.Name,
                                 offset,
                                 record,
-                                key,
-                                hasRetainedKey: !record.IsKeyNull);
+                                retainedKey: default,
+                                hasRetainedKey: false);
                         }
                     }
                     else
                     {
-                        value = RecordHeaderDeserializer.Deserialize(
-                            _valueDeserializer,
-                            record.Value,
+                        key = RecordHeaderDeserializer.Deserialize(
+                            _keyDeserializer,
+                            record.Key,
                             t_serializationContext,
                             in headerRouting);
                     }
-
-                    var headers = Array.Empty<Header>();
-                    if (record.Headers is not null && record.HeaderCount > 0)
-                    {
-                        headers = new Header[record.HeaderCount];
-                        Array.Copy(record.Headers, headers, record.HeaderCount);
-                    }
-
-                    results.Add(new ShareConsumeResult<TKey, TValue>
-                    {
-                        Topic = topicInfo.Name,
-                        Partition = partition.PartitionIndex,
-                        Offset = offset,
-                        Key = key,
-                        Value = value,
-                        Headers = headers,
-                        TimestampMs = batch.BaseTimestamp + record.TimestampDelta,
-                        DeliveryCount = deliveryCount
-                    });
-                    resumeOffset = null;
-                    hasRetainedKey = false;
-                    retainedKey = default;
                 }
+
+                t_serializationContext.Component = SerializationComponent.Value;
+                t_serializationContext.KeyData = SerializationContext.NormalizeKeyData(
+                    record.Key,
+                    record.IsKeyNull);
+                t_serializationContext.IsNull = record.IsValueNull;
+                t_serializationContext.Headers = headerRouting.ValueRequiresMaterializedHeaders
+                    ? materializedHeaders
+                    : null;
+                TValue value;
+                if (record.IsValueNull)
+                {
+                    value = default!;
+                }
+                else if (_valueDeserializerPreparer is { } valuePreparer)
+                {
+                    if (!TryDeserializePrepared(
+                            valuePreparer,
+                            record.Value,
+                            t_serializationContext,
+                            in headerRouting,
+                            out value))
+                    {
+                        return CreatePendingPreparation(
+                            SerializationComponent.Value,
+                            topicInfo.Name,
+                            offset,
+                            record,
+                            key,
+                            hasRetainedKey: !record.IsKeyNull);
+                    }
+                }
+                else
+                {
+                    value = RecordHeaderDeserializer.Deserialize(
+                        _valueDeserializer,
+                        record.Value,
+                        t_serializationContext,
+                        in headerRouting);
+                }
+
+                var headers = Array.Empty<Header>();
+                if (record.Headers is not null && record.HeaderCount > 0)
+                {
+                    headers = new Header[record.HeaderCount];
+                    Array.Copy(record.Headers, headers, record.HeaderCount);
+                }
+
+                results.Add(new ShareConsumeResult<TKey, TValue>
+                {
+                    Topic = topicInfo.Name,
+                    Partition = partition.PartitionIndex,
+                    Offset = offset,
+                    Key = key,
+                    Value = value,
+                    Headers = headers,
+                    TimestampMs = batch.BaseTimestamp + record.TimestampDelta,
+                    DeliveryCount = deliveryCount
+                });
+                parserState.RecordIndex++;
+                hasRetainedKey = false;
+                retainedKey = default;
             }
-            finally
-            {
-                batch.DisposeAndReturnUnownedConsumerBatch();
-            }
+
+            if (parserState.RecordIndex >= records.Count)
+                parserState.DisposeCurrentBatch();
         }
 
         return null;
@@ -1589,7 +1600,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
             hasRetainedKey);
     }
 
-    private ValueTask PrepareDeserializerAsync(
+    internal ValueTask PrepareDeserializerAsync(
         PendingDeserializerPreparation pending,
         CancellationToken cancellationToken) =>
         pending.Component == SerializationComponent.Key
@@ -1618,7 +1629,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
             ? headerPreparer.PrepareAsync(data, context, headers, cancellationToken)
             : preparer.PrepareAsync(data, context, cancellationToken);
 
-    private sealed class PendingDeserializerPreparation(
+    internal sealed class PendingDeserializerPreparation(
         SerializationComponent component,
         long offset,
         ReadOnlyMemory<byte> data,
@@ -1634,6 +1645,21 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         internal RecordHeaderRoutingLookup HeaderRouting { get; } = headerRouting;
         internal TKey? RetainedKey { get; } = retainedKey;
         internal bool HasRetainedKey { get; } = hasRetainedKey;
+    }
+
+    internal struct DeserializerPreparationParserState
+    {
+        internal RecordBatch? CurrentBatch;
+        internal int NextBatchByteOffset;
+        internal int RecordIndex;
+        internal int AcquiredRecordIndex;
+
+        internal void DisposeCurrentBatch()
+        {
+            CurrentBatch?.DisposeAndReturnUnownedConsumerBatch();
+            CurrentBatch = null;
+            RecordIndex = 0;
+        }
     }
 
     /// <summary>

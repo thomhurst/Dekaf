@@ -152,10 +152,10 @@ public sealed class ShareConsumerRecordPoolingTests
 
     [Test]
     [NotInParallel]
-    public async Task ParsePartitionRecords_ColdHeaderPreparer_RetainsResultsAndCopiesHeader()
+    public async Task ParsePartitionRecords_ColdHeaderPreparers_ParseEachBatchOnce()
     {
         var buffer = new ArrayBufferWriter<byte>();
-        using var source = new RecordBatch
+        using var warmBatch = new RecordBatch
         {
             BaseOffset = 17,
             Records =
@@ -164,18 +164,34 @@ public sealed class ShareConsumerRecordPoolingTests
                 {
                     IsKeyNull = true,
                     Value = "warm"u8.ToArray()
+                }
+            ]
+        };
+        warmBatch.Write(buffer);
+
+        using var coldBatch = new RecordBatch
+        {
+            BaseOffset = 18,
+            Records =
+            [
+                new Record
+                {
+                    IsKeyNull = true,
+                    Value = "first"u8.ToArray(),
+                    Headers = [new Header("schema-guid", "identity-a"u8.ToArray())],
+                    HeaderCount = 1
                 },
                 new Record
                 {
                     OffsetDelta = 1,
                     IsKeyNull = true,
-                    Value = "payload"u8.ToArray(),
-                    Headers = [new Header("schema-guid", "identity"u8.ToArray())],
+                    Value = "second"u8.ToArray(),
+                    Headers = [new Header("schema-guid", "identity-b"u8.ToArray())],
                     HeaderCount = 1
                 }
             ]
         };
-        source.Write(buffer);
+        coldBatch.Write(buffer);
 
         var options = new ShareConsumerOptions
         {
@@ -201,64 +217,45 @@ public sealed class ShareConsumerRecordPoolingTests
                 new ShareFetchAcquiredRecords
                 {
                     FirstOffset = 17,
-                    LastOffset = 18,
+                    LastOffset = 19,
                     DeliveryCount = 1
                 }
             ]
         };
-        var consumerType = typeof(KafkaShareConsumer<string, string>);
-        var parseMethod = consumerType.GetMethod(
-            "ParsePartitionRecordsWithPreparation",
-            BindingFlags.Instance | BindingFlags.NonPublic)!;
         var results = new List<ShareConsumeResult<string, string>>();
+        var topicInfo = new TopicInfo { Name = "topic", Partitions = [] };
+        var parserState = new KafkaShareConsumer<string, string>
+            .DeserializerPreparationParserState();
 
         RecordBatch.BeginTrackingPoolReturnsForCurrentThread();
-        object firstParse;
         int returnedBatchCount;
         try
         {
-            firstParse = parseMethod.Invoke(consumer,
-            [
-                new TopicInfo { Name = "topic", Partitions = [] },
-                partition,
-                2,
-                results,
-                null,
-                false,
-                null
-            ])!;
+            var firstPreparation = consumer.ParsePartitionRecordsWithPreparation(
+                topicInfo, partition, 3, results, ref parserState, false, null);
+            await consumer.PrepareDeserializerAsync(firstPreparation!, CancellationToken.None);
+
+            var secondPreparation = consumer.ParsePartitionRecordsWithPreparation(
+                topicInfo, partition, 3, results, ref parserState, false, null);
+            await consumer.PrepareDeserializerAsync(secondPreparation!, CancellationToken.None);
+
+            var finalPreparation = consumer.ParsePartitionRecordsWithPreparation(
+                topicInfo, partition, 3, results, ref parserState, false, null);
+            await Assert.That(finalPreparation).IsNull();
         }
         finally
         {
+            parserState.DisposeCurrentBatch();
             returnedBatchCount = RecordBatch.EndTrackingPoolReturnsForCurrentThread();
         }
 
-        var prepareMethod = consumerType.GetMethods(BindingFlags.Instance | BindingFlags.NonPublic)
-            .Single(method =>
-                method.Name == "PrepareDeserializerAsync" &&
-                method.GetParameters() is [{ ParameterType.Name: "PendingDeserializerPreparation" }, _]);
-        var preparation = (ValueTask)prepareMethod.Invoke(
-            consumer,
-            [firstParse, CancellationToken.None])!;
-        await preparation;
-
-        parseMethod.Invoke(consumer,
-        [
-            new TopicInfo { Name = "topic", Partitions = [] },
-            partition,
-            2,
-            results,
-            18L,
-            false,
-            null
-        ]);
-
-        await Assert.That(returnedBatchCount).IsEqualTo(1);
-        await Assert.That(valueDeserializer.PrepareCalls).IsEqualTo(1);
+        await Assert.That(returnedBatchCount).IsEqualTo(2);
+        await Assert.That(valueDeserializer.PrepareCalls).IsEqualTo(2);
         await Assert.That(valueDeserializer.WarmDeserializeCalls).IsEqualTo(1);
-        await Assert.That(results.Count).IsEqualTo(2);
+        await Assert.That(results.Count).IsEqualTo(3);
         await Assert.That(results[0].Value).IsEqualTo("warm");
-        await Assert.That(results[1].Value).IsEqualTo("payload");
+        await Assert.That(results[1].Value).IsEqualTo("first");
+        await Assert.That(results[2].Value).IsEqualTo("second");
     }
 
     private sealed class ColdHeaderPreparer :
@@ -267,7 +264,8 @@ public sealed class ShareConsumerRecordPoolingTests
         IRecordHeaderAsyncDeserializerPreparer<string>,
         IRecordHeaderRoutingProvider
     {
-        private bool _prepared;
+        private bool _firstPrepared;
+        private bool _secondPrepared;
 
         internal int PrepareCalls { get; private set; }
         internal int WarmDeserializeCalls { get; private set; }
@@ -300,7 +298,10 @@ public sealed class ShareConsumerRecordPoolingTests
                 return true;
             }
 
-            if (!_prepared)
+            var prepared = data.Span.SequenceEqual("first"u8)
+                ? _firstPrepared
+                : _secondPrepared;
+            if (!prepared)
             {
                 value = string.Empty;
                 return false;
@@ -316,14 +317,19 @@ public sealed class ShareConsumerRecordPoolingTests
             RecordHeaderRoutingLookup headers,
             CancellationToken cancellationToken)
         {
-            if (!headers.TryGetLast("schema-guid", out var header) ||
-                !header.Value.Span.SequenceEqual("identity"u8))
+            if (!headers.TryGetLast("schema-guid", out var header))
             {
                 throw new InvalidOperationException("Durable identity header was not available.");
             }
 
+            if (header.Value.Span.SequenceEqual("identity-a"u8))
+                _firstPrepared = true;
+            else if (header.Value.Span.SequenceEqual("identity-b"u8))
+                _secondPrepared = true;
+            else
+                throw new InvalidOperationException("Unexpected identity header.");
+
             PrepareCalls++;
-            _prepared = true;
             return ValueTask.CompletedTask;
         }
 
