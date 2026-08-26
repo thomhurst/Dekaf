@@ -844,7 +844,7 @@ public sealed class QueryWatermarkOffsetsTests
             "UpdateCachedLagEndOffset",
             BindingFlags.NonPublic | BindingFlags.Instance)
             ?? throw new InvalidOperationException("UpdateCachedLagEndOffset method not found.");
-        method.Invoke(consumer, [partition, lagEndOffset, watermarkUpdateSequence]);
+        method.Invoke(consumer, [partition, lagEndOffset, -1, watermarkUpdateSequence]);
     }
 
     private static void UpdateQueriedCachedWatermarks(
@@ -858,7 +858,7 @@ public sealed class QueryWatermarkOffsetsTests
             "UpdateQueriedCachedWatermarks",
             BindingFlags.NonPublic | BindingFlags.Instance)
             ?? throw new InvalidOperationException("UpdateQueriedCachedWatermarks method not found.");
-        method.Invoke(consumer, [partition, low, high, high, null, watermarkUpdateSequence]);
+        method.Invoke(consumer, [partition, low, high, high, null, -1, watermarkUpdateSequence]);
     }
 
     private static async ValueTask InvokeHandleTopicIdentityChangesAsync(

@@ -3953,7 +3953,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     private async ValueTask<(int Started, int TargetCount)> DispatchReadyBrokerPrefetchesAsync(CancellationToken cancellationToken)
     {
-        var assignmentVersion = Volatile.Read(ref _assignmentEnsureVersion);
         var partitionsByBroker = await GroupPartitionsByBrokerAsync(cancellationToken).ConfigureAwait(false);
         partitionsByBroker = ExcludePartitionsPendingFetchClear(partitionsByBroker);
         var fetchSessionSnapshot = ShouldUseFetchSessions && !_fetchSessions.IsEmpty
@@ -3998,7 +3997,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     startIndex,
                     count,
                     connectionIndex,
-                    assignmentVersion,
                     cancellationToken))
                 {
                     started++;
@@ -4041,7 +4039,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 0,
                 0,
                 key.ConnectionIndex,
-                assignmentVersion,
                 cancellationToken))
             {
                 started++;
@@ -4081,7 +4078,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         int partitionStartIndex,
         int partitionCount,
         int connectionIndex,
-        int assignmentVersion,
         CancellationToken cancellationToken)
     {
         var fetchBufferEpoch = Volatile.Read(ref _fetchBufferEpoch);
@@ -4094,7 +4090,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 partitionCount,
                 connectionIndex,
                 fetchBufferEpoch,
-                assignmentVersion,
                 cancellationToken));
     }
 
@@ -4105,7 +4100,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         int partitionCount,
         int connectionIndex,
         int fetchBufferEpoch,
-        int assignmentVersion,
         CancellationToken cancellationToken)
     {
         // Rent a CTS from the pool for the combined consume cancellation source
@@ -4129,7 +4123,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 partitionCount,
                 connectionIndex,
                 fetchBufferEpoch,
-                assignmentVersion,
                 consumeCts.Token,
                 consumeCts.Token).ConfigureAwait(false);
         }
@@ -4158,7 +4151,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         int partitionCount,
         int connectionIndex,
         int fetchBufferEpoch,
-        int assignmentVersion,
         CancellationToken linkedToken,
         CancellationToken consumeCancellationToken)
     {
@@ -4173,7 +4165,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 partitionCount,
                 connectionIndex,
                 fetchBufferEpoch,
-                assignmentVersion,
                 linkedToken).ConfigureAwait(false);
             _prefetchFailureTracker.Reset(failureKey);
         }
@@ -4280,7 +4271,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         int partitionCount,
         int connectionIndex,
         int fetchBufferEpoch,
-        int assignmentVersion,
         CancellationToken cancellationToken)
     {
         using var connectionLease = await _connectionPool.LeaseConnectionByIndexAsync(
@@ -4409,7 +4399,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         UpdateWatermarksFromFetchResponse(
                             tp,
                             partitionResponse,
-                            assignmentVersion,
+                            fetchBufferEpoch,
+                            GetLeaderEpoch(requestMetadataSnapshot, tp),
                             watermarkUpdateSequence);
                         UpdatePreferredReadReplica(topic, partitionResponse);
 
@@ -8277,6 +8268,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         || (_minimumFetchBufferEpochsByPartition.TryGetValue(partition, out var minimumEpoch)
             && fetchBufferEpoch < minimumEpoch);
 
+    private int GetMinimumFetchBufferEpoch(TopicPartition partition)
+    {
+        var minimumEpoch = Volatile.Read(ref _minimumFetchBufferEpoch);
+        return _minimumFetchBufferEpochsByPartition.TryGetValue(partition, out var partitionMinimumEpoch)
+            && partitionMinimumEpoch > minimumEpoch
+                ? partitionMinimumEpoch
+                : minimumEpoch;
+    }
+
     private bool ShouldDropStaleFetchPartition(TopicPartition partition, int fetchBufferEpoch) =>
         IsFetchBufferEpochStale(partition, fetchBufferEpoch)
         || _coordinatorRevokedPartitionsPendingFetchClear.ContainsKey(partition)
@@ -8503,7 +8503,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 return null;
             }
 
-            UpdateCachedLagEndOffset(partition, latestOffset.Offset, latestOffset.UpdateSequence);
+            UpdateCachedLagEndOffset(
+                partition,
+                latestOffset.Offset,
+                latestOffset.LeaderEpoch,
+                latestOffset.UpdateSequence);
             return CalculateLag(position, latestOffset.Offset);
         }
     }
@@ -8583,7 +8587,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     long IRequestWriteSequenceSource.NextRequestWriteSequence() =>
         Interlocked.Increment(ref _watermarkUpdateSequence);
 
-    private async ValueTask<(long Offset, long UpdateSequence)> QueryLatestOffsetCoreAsync(
+    private async ValueTask<(long Offset, int LeaderEpoch, long UpdateSequence)> QueryLatestOffsetCoreAsync(
         TopicPartition topicPartition,
         CancellationToken cancellationToken)
     {
@@ -8634,7 +8638,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         $"Failed to query latest offset for {topicPartition}: {partitionResponse.ErrorCode}");
                 }
 
-                return (partitionResponse.Offset, watermarkUpdateSequence);
+                return (partitionResponse.Offset, partitionResponse.LeaderEpoch, watermarkUpdateSequence);
             }, _metadataManager, apiTimeout.Token, _options.RetryBackoffMs, _options.RetryBackoffMaxMs)
                 .ConfigureAwait(false);
         }
@@ -8751,6 +8755,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         highWatermark,
                         highWatermark,
                         assignmentGeneration,
+                        latestPartitionResponse.LeaderEpoch,
                         watermarkUpdateSequence);
                 }
 
@@ -8770,6 +8775,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         long high,
         long lagEndOffset,
         int? assignmentGeneration,
+        int leaderEpoch,
         long watermarkUpdateSequence)
     {
         lock (_snapshotStateGate)
@@ -8795,6 +8801,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     low,
                     high,
                     lagEndOffset,
+                    GetMinimumFetchBufferEpoch(partition),
+                    leaderEpoch,
                     watermarkUpdateSequence);
                 if (_watermarks.TryGetValue(partition, out var existingEntry))
                 {
@@ -8817,13 +8825,25 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
             if (_watermarks.TryGetValue(partition, out var entry))
             {
-                entry.Update(low, high, lagEndOffset, watermarkUpdateSequence);
+                entry.Update(
+                    low,
+                    high,
+                    lagEndOffset,
+                    GetMinimumFetchBufferEpoch(partition),
+                    leaderEpoch,
+                    watermarkUpdateSequence);
                 return;
             }
 
             _watermarks.TryAdd(
                 partition,
-                new WatermarkCacheEntry(low, high, lagEndOffset, watermarkUpdateSequence));
+                new WatermarkCacheEntry(
+                    low,
+                    high,
+                    lagEndOffset,
+                    GetMinimumFetchBufferEpoch(partition),
+                    leaderEpoch,
+                    watermarkUpdateSequence));
         }
     }
 
@@ -8834,6 +8854,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         WatermarkCacheEntry entry,
         TopicPartitionSet assignmentSnapshot)
     {
+        entry.AdvanceMinimumFetchBufferEpoch(GetMinimumFetchBufferEpoch(partition));
         var retained = _retainedWatermarkSnapshots ??=
             new Queue<RetainedWatermarkSnapshot>(MaxRetainedUnassignedWatermarkSnapshots + 1);
         retained.Enqueue(new RetainedWatermarkSnapshot(partition, entry));
@@ -9529,7 +9550,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 consumeCts.Cancel();
 
             var pausedSnapshotVersion = Volatile.Read(ref _pausedSnapshotVersion);
-            var assignmentVersion = Volatile.Read(ref _assignmentEnsureVersion);
             var partitionsByBroker = await GroupPartitionsByBrokerAsync(cancellationToken).ConfigureAwait(false);
             var fetchBufferEpoch = Volatile.Read(ref _fetchBufferEpoch);
             var fetchSessionSnapshot = ShouldUseFetchSessions && !_fetchSessions.IsEmpty
@@ -9562,7 +9582,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         brokerId,
                         partitions,
                         fetchBufferEpoch,
-                        assignmentVersion,
                         consumeCts.Token,
                         consumeCts.Token);
                 }
@@ -9588,7 +9607,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         key.BrokerId,
                         [],
                         fetchBufferEpoch,
-                        assignmentVersion,
                         consumeCts.Token,
                         consumeCts.Token);
                 }
@@ -9716,7 +9734,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         int brokerId,
         List<TopicPartition> partitions,
         int fetchBufferEpoch,
-        int assignmentVersion,
         CancellationToken linkedToken,
         CancellationToken consumeCancellationToken)
     {
@@ -9726,7 +9743,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     brokerId,
                     partitions,
                     fetchBufferEpoch,
-                    assignmentVersion,
                     linkedToken)
                 .ConfigureAwait(false);
         }
@@ -10501,7 +10517,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         int brokerId,
         List<TopicPartition> partitions,
         int fetchBufferEpoch,
-        int assignmentVersion,
         CancellationToken cancellationToken)
     {
         var fetchMaxBytes = CurrentFetchMaxBytes;
@@ -10619,7 +10634,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     UpdateWatermarksFromFetchResponse(
                         tp,
                         partitionResponse,
-                        assignmentVersion,
+                        fetchBufferEpoch,
+                        GetLeaderEpoch(requestMetadataSnapshot, tp),
                         watermarkUpdateSequence);
                     UpdatePreferredReadReplica(topic, partitionResponse);
 
@@ -10938,7 +10954,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private void UpdateWatermarksFromFetchResponse(
         TopicPartition partition,
         FetchResponsePartition partitionResponse,
-        int assignmentVersion,
+        int fetchBufferEpoch,
+        int leaderEpoch,
         long watermarkUpdateSequence)
     {
         // Only update if we have valid watermark data
@@ -10956,7 +10973,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 low,
                 partitionResponse.HighWatermark,
                 lagEndOffset,
-                assignmentVersion,
+                fetchBufferEpoch,
+                leaderEpoch,
                 watermarkUpdateSequence);
         }
     }
@@ -10966,7 +10984,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         long low,
         long high,
         long lagEndOffset,
-        int assignmentVersion,
+        int fetchBufferEpoch,
+        int leaderEpoch,
         long watermarkUpdateSequence)
     {
         if (!_watermarks.TryGetValue(partition, out var entry))
@@ -10976,17 +10995,18 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 low,
                 high,
                 lagEndOffset,
-                assignmentVersion,
+                fetchBufferEpoch,
+                leaderEpoch,
                 watermarkUpdateSequence);
             return;
         }
 
-        UpdateExistingCachedWatermarks(
-            entry,
+        entry.Update(
             low,
             high,
             lagEndOffset,
-            assignmentVersion,
+            fetchBufferEpoch,
+            leaderEpoch,
             watermarkUpdateSequence);
     }
 
@@ -10995,15 +11015,22 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private void UpdateCachedLagEndOffset(
         TopicPartition partition,
         long lagEndOffset,
+        int leaderEpoch,
         long watermarkUpdateSequence)
     {
         if (_watermarks.TryGetValue(partition, out var entry))
         {
-            entry.UpdateLagEndOffset(lagEndOffset, watermarkUpdateSequence);
+            entry.UpdateLagEndOffset(lagEndOffset, leaderEpoch, watermarkUpdateSequence);
             return;
         }
 
-        _watermarks.TryAdd(partition, new WatermarkCacheEntry(lagEndOffset, watermarkUpdateSequence));
+        _watermarks.TryAdd(
+            partition,
+            new WatermarkCacheEntry(
+                lagEndOffset,
+                GetMinimumFetchBufferEpoch(partition),
+                leaderEpoch,
+                watermarkUpdateSequence));
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
@@ -11012,7 +11039,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         long low,
         long high,
         long lagEndOffset,
-        int assignmentVersion,
+        int fetchBufferEpoch,
+        int leaderEpoch,
         long watermarkUpdateSequence)
     {
         BeforeWatermarkCacheEntryCreationForTest?.Invoke();
@@ -11021,7 +11049,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             lock (_snapshotStateGate)
             {
-                if (assignmentVersion != Volatile.Read(ref _assignmentEnsureVersion)
+                if (IsFetchBufferEpochStale(partition, fetchBufferEpoch)
                     || (_assignmentSnapshot.Contains(partition)
                         && !_watermarkAssignmentVersions.ContainsKey(partition)))
                     return;
@@ -11031,41 +11059,32 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
                 if (_watermarks.TryAdd(
                     partition,
-                    new WatermarkCacheEntry(low, high, lagEndOffset, watermarkUpdateSequence)))
+                    new WatermarkCacheEntry(
+                        low,
+                        high,
+                        lagEndOffset,
+                        fetchBufferEpoch,
+                        leaderEpoch,
+                        watermarkUpdateSequence)))
                 {
                     return;
                 }
             }
         }
 
-        UpdateExistingCachedWatermarks(
-            entry,
+        entry.Update(
             low,
             high,
             lagEndOffset,
-            assignmentVersion,
+            fetchBufferEpoch,
+            leaderEpoch,
             watermarkUpdateSequence);
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private void UpdateExistingCachedWatermarks(
-        WatermarkCacheEntry entry,
-        long low,
-        long high,
-        long lagEndOffset,
-        int assignmentVersion,
-        long watermarkUpdateSequence)
-    {
-        // Recheck after resolving the entry. If assignment publication starts after
-        // this point, this reference is necessarily the old entry, which publication
-        // removes before exposing a replacement assignment snapshot.
-        if (assignmentVersion == Volatile.Read(ref _assignmentEnsureVersion))
-            entry.Update(low, high, lagEndOffset, watermarkUpdateSequence);
     }
 
     private sealed class WatermarkCacheEntry
     {
         private const long UnknownWatermarkOffset = -1;
+        private const int UnknownLeaderEpoch = -1;
 
         // Allocate once per partition, then update in place. The version is a seqlock:
         // odd while a writer owns the entry, even when readers can take a coherent snapshot.
@@ -11073,20 +11092,28 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         private int _version;
         // Uses the padding beside _version and is read only while state is divergent.
         private int _watermarkOffsetsUpdateSequenceLow;
+        private int _leaderEpoch;
+        private int _minimumFetchBufferEpoch;
         private long _low;
         private long _high;
         private long _lagEndOffset;
         // The low 63 bits hold lag freshness; the sign bit marks divergence.
         // During divergence, the public-watermark sequence's low 32 bits live in
-        // the padding field above. Normal fetch updates retain the original
-        // one-compare, one-state-store fast path.
+        // the padding field above. Known leader epochs use monotonic offsets;
+        // unknown epochs retain sequence ordering as a compatibility fallback.
         private long _watermarkUpdateState;
 
-        public WatermarkCacheEntry(long lagEndOffset, long watermarkUpdateSequence)
+        public WatermarkCacheEntry(
+            long lagEndOffset,
+            int minimumFetchBufferEpoch,
+            int leaderEpoch,
+            long watermarkUpdateSequence)
         {
             _low = UnknownWatermarkOffset;
             _high = UnknownWatermarkOffset;
             _lagEndOffset = lagEndOffset;
+            _leaderEpoch = leaderEpoch;
+            _minimumFetchBufferEpoch = minimumFetchBufferEpoch;
             _watermarkUpdateState = long.MinValue | watermarkUpdateSequence;
         }
 
@@ -11094,11 +11121,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             long low,
             long high,
             long lagEndOffset,
+            int minimumFetchBufferEpoch,
+            int leaderEpoch,
             long watermarkUpdateSequence)
         {
             _low = low;
             _high = high;
             _lagEndOffset = lagEndOffset;
+            _leaderEpoch = leaderEpoch;
+            _minimumFetchBufferEpoch = minimumFetchBufferEpoch;
             _watermarkUpdateState = watermarkUpdateSequence;
         }
 
@@ -11107,6 +11138,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             long low,
             long high,
             long lagEndOffset,
+            int fetchBufferEpoch,
+            int leaderEpoch,
             long watermarkUpdateSequence)
         {
             var spinner = new SpinWait();
@@ -11120,7 +11153,39 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     continue;
                 }
 
-                if ((ulong)watermarkUpdateSequence < (ulong)_watermarkUpdateState)
+                if (fetchBufferEpoch < _minimumFetchBufferEpoch)
+                {
+                    Volatile.Write(ref _version, version + 2);
+                    return;
+                }
+
+                var currentLeaderEpoch = _leaderEpoch;
+                if (leaderEpoch == currentLeaderEpoch)
+                {
+                    if (leaderEpoch != UnknownLeaderEpoch)
+                    {
+                        if (low < _low || high < _high || lagEndOffset < _lagEndOffset)
+                            UpdateSameLeaderEpoch(low, high, lagEndOffset);
+                        else
+                        {
+                            Volatile.Write(ref _low, low);
+                            Volatile.Write(ref _high, high);
+                            Volatile.Write(ref _lagEndOffset, lagEndOffset);
+                        }
+
+                        Volatile.Write(ref _version, version + 2);
+                        return;
+                    }
+                }
+                else if (currentLeaderEpoch != UnknownLeaderEpoch
+                         && (leaderEpoch == UnknownLeaderEpoch || leaderEpoch < currentLeaderEpoch))
+                {
+                    Volatile.Write(ref _version, version + 2);
+                    return;
+                }
+
+                if ((ulong)watermarkUpdateSequence < (ulong)_watermarkUpdateState
+                    && leaderEpoch <= currentLeaderEpoch)
                 {
                     UpdateStale(low, high, lagEndOffset, watermarkUpdateSequence);
 
@@ -11131,14 +11196,29 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 Volatile.Write(ref _low, low);
                 Volatile.Write(ref _high, high);
                 Volatile.Write(ref _lagEndOffset, lagEndOffset);
+                _leaderEpoch = leaderEpoch;
                 _watermarkUpdateState = watermarkUpdateSequence;
                 Volatile.Write(ref _version, version + 2);
                 return;
             }
         }
 
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private void UpdateSameLeaderEpoch(long low, long high, long lagEndOffset)
+        {
+            if (low > _low)
+                Volatile.Write(ref _low, low);
+            if (high > _high)
+                Volatile.Write(ref _high, high);
+            if (lagEndOffset > _lagEndOffset)
+                Volatile.Write(ref _lagEndOffset, lagEndOffset);
+        }
+
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public void UpdateLagEndOffset(long lagEndOffset, long watermarkUpdateSequence)
+        public void UpdateLagEndOffset(
+            long lagEndOffset,
+            int leaderEpoch,
+            long watermarkUpdateSequence)
         {
             var spinner = new SpinWait();
             while (true)
@@ -11151,6 +11231,39 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     continue;
                 }
 
+                var currentLeaderEpoch = _leaderEpoch;
+                if (currentLeaderEpoch != UnknownLeaderEpoch
+                    && leaderEpoch == UnknownLeaderEpoch)
+                {
+                    Volatile.Write(ref _version, version + 2);
+                    return;
+                }
+
+                if (leaderEpoch != UnknownLeaderEpoch
+                    && currentLeaderEpoch != UnknownLeaderEpoch)
+                {
+                    if (leaderEpoch < currentLeaderEpoch
+                        || (leaderEpoch == currentLeaderEpoch && lagEndOffset < _lagEndOffset))
+                    {
+                        Volatile.Write(ref _version, version + 2);
+                        return;
+                    }
+
+                    if (leaderEpoch > currentLeaderEpoch)
+                    {
+                        Volatile.Write(ref _low, UnknownWatermarkOffset);
+                        Volatile.Write(ref _high, UnknownWatermarkOffset);
+                    }
+
+                    Volatile.Write(ref _lagEndOffset, lagEndOffset);
+                    _leaderEpoch = leaderEpoch;
+                    _watermarkUpdateState = long.MinValue | Math.Max(
+                        _watermarkUpdateState & long.MaxValue,
+                        watermarkUpdateSequence);
+                    Volatile.Write(ref _version, version + 2);
+                    return;
+                }
+
                 var updateState = _watermarkUpdateState;
                 var lagEndOffsetUpdateSequence = updateState & long.MaxValue;
                 if (watermarkUpdateSequence >= lagEndOffsetUpdateSequence)
@@ -11159,8 +11272,29 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         _watermarkOffsetsUpdateSequenceLow = (int)lagEndOffsetUpdateSequence;
 
                     Volatile.Write(ref _lagEndOffset, lagEndOffset);
+                    _leaderEpoch = leaderEpoch;
                     _watermarkUpdateState = long.MinValue | watermarkUpdateSequence;
                 }
+                Volatile.Write(ref _version, version + 2);
+                return;
+            }
+        }
+
+        public void AdvanceMinimumFetchBufferEpoch(int minimumFetchBufferEpoch)
+        {
+            var spinner = new SpinWait();
+            while (true)
+            {
+                var version = Volatile.Read(ref _version);
+                if ((version & 1) != 0
+                    || Interlocked.CompareExchange(ref _version, version + 1, version) != version)
+                {
+                    spinner.SpinOnce();
+                    continue;
+                }
+
+                if (minimumFetchBufferEpoch > _minimumFetchBufferEpoch)
+                    _minimumFetchBufferEpoch = minimumFetchBufferEpoch;
                 Volatile.Write(ref _version, version + 2);
                 return;
             }
@@ -11219,21 +11353,30 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     continue;
                 }
 
-                var updateState = _watermarkUpdateState;
-                var latestUpdateSequence = updateState;
-                if (updateState < 0)
-                {
-                    var lagEndOffsetUpdateSequence = updateState & long.MaxValue;
-                    latestUpdateSequence = (lagEndOffsetUpdateSequence & ~uint.MaxValue)
-                        | (uint)_watermarkOffsetsUpdateSequenceLow;
-                    if (latestUpdateSequence > lagEndOffsetUpdateSequence)
-                        latestUpdateSequence -= 1L << 32;
-                }
-                var replaced = replacement._watermarkUpdateState >= latestUpdateSequence
+                var replaced = CanReplaceWith(replacement)
                     && watermarks.TryUpdate(partition, replacement, this);
                 Volatile.Write(ref _version, version + 2);
                 return replaced;
             }
+        }
+
+        private bool CanReplaceWith(WatermarkCacheEntry replacement)
+        {
+            var currentLeaderEpoch = _leaderEpoch;
+            var replacementLeaderEpoch = replacement._leaderEpoch;
+            if (currentLeaderEpoch != UnknownLeaderEpoch)
+            {
+                if (replacementLeaderEpoch == UnknownLeaderEpoch)
+                    return false;
+
+                return replacementLeaderEpoch > currentLeaderEpoch
+                       || (replacementLeaderEpoch == currentLeaderEpoch
+                           && replacement._low >= _low
+                           && replacement._high >= _high
+                           && replacement._lagEndOffset >= _lagEndOffset);
+            }
+
+            return replacement._watermarkUpdateState >= (_watermarkUpdateState & long.MaxValue);
         }
 
         public WatermarkOffsets? ReadWatermarks()

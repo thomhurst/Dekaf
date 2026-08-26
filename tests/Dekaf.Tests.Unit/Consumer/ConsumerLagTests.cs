@@ -127,7 +127,7 @@ public sealed class ConsumerLagTests
     }
 
     [Test]
-    public async Task UnassignedWatermarks_NewerQueryReplacesDivergentSnapshot()
+    public async Task UnassignedWatermarks_OlderQueryCannotReplaceDivergentSnapshot()
     {
         await using var consumer = CreateConsumer();
         consumer.IncrementalAssign([new TopicPartitionOffset(Partition.Topic, Partition.Partition, 10)]);
@@ -141,7 +141,8 @@ public sealed class ConsumerLagTests
         SetQueriedCachedWatermarks(consumer, Partition, new WatermarkOffsets(10, 50), updateSequence: 7);
 
         await Assert.That(consumer.GetWatermarkOffsets(Partition))
-            .IsEqualTo(new WatermarkOffsets(10, 50));
+            .IsEqualTo(new WatermarkOffsets(0, 25));
+        await Assert.That(ReadCachedLagEndOffset(consumer)).IsEqualTo(30);
     }
 
     [Test]
@@ -167,7 +168,7 @@ public sealed class ConsumerLagTests
     {
         await using var consumer = CreateConsumer();
         consumer.IncrementalAssign([new TopicPartitionOffset(Partition.Topic, Partition.Partition, 10)]);
-        var previousAssignmentVersion = GetAssignmentVersion(consumer);
+        var previousFetchBufferEpoch = GetFetchBufferEpoch(consumer);
         SetCachedWatermarks(consumer, new WatermarkOffsets(0, 25));
 
         consumer.IncrementalUnassign([Partition]);
@@ -175,7 +176,7 @@ public sealed class ConsumerLagTests
         UpdateWatermarksFromFetchResponse(
             consumer,
             CreateFetchResponse(100),
-            previousAssignmentVersion);
+            previousFetchBufferEpoch);
 
         await Assert.That(consumer.GetWatermarkOffsets(Partition)).IsNull();
         await Assert.That(consumer.GetCurrentLag(Partition)).IsNull();
@@ -210,15 +211,16 @@ public sealed class ConsumerLagTests
     {
         await using var consumer = CreateConsumer();
         consumer.IncrementalAssign([new TopicPartitionOffset(Partition.Topic, Partition.Partition, 10)]);
-        var previousAssignmentVersion = GetAssignmentVersion(consumer);
+        var previousFetchBufferEpoch = GetFetchBufferEpoch(consumer);
         SetCachedWatermarks(consumer, new WatermarkOffsets(0, 25));
 
+        InvalidateFetchesForPartitions(consumer, [Partition]);
         GetAssignment(consumer).Remove(Partition);
         PublishAssignmentSnapshot(consumer);
         UpdateWatermarksFromFetchResponse(
             consumer,
             CreateFetchResponse(100),
-            previousAssignmentVersion);
+            previousFetchBufferEpoch);
 
         await Assert.That(consumer.GetWatermarkOffsets(Partition)).IsEqualTo(new WatermarkOffsets(0, 25));
         await Assert.That(GetWatermarkCacheCount(consumer)).IsEqualTo(1);
@@ -255,8 +257,8 @@ public sealed class ConsumerLagTests
             .CreateDelegate<UpdateWatermarks>();
         var first = CreateFetchResponse(firstOffset);
         var second = CreateFetchResponse(secondOffset);
-        var assignmentVersion = GetAssignmentVersion(consumer);
-        updateWatermarks(consumer, Partition, first, assignmentVersion, 0);
+        var fetchBufferEpoch = GetFetchBufferEpoch(consumer);
+        updateWatermarks(consumer, Partition, first, fetchBufferEpoch, -1, 0);
         using var start = new ManualResetEventSlim();
         var writer = Task.Run(() =>
         {
@@ -264,7 +266,7 @@ public sealed class ConsumerLagTests
             for (var iteration = 0; iteration < 100_000; iteration++)
             {
                 var response = (iteration & 1) == 0 ? second : first;
-                updateWatermarks(consumer, Partition, response, assignmentVersion, 0);
+                updateWatermarks(consumer, Partition, response, fetchBufferEpoch, -1, 0);
             }
         });
 
@@ -285,12 +287,12 @@ public sealed class ConsumerLagTests
     }
 
     [Test]
-    public async Task WatermarkCacheEntry_OlderAssignmentCannotOverwriteNewerValues()
+    public async Task WatermarkCacheEntry_UnrelatedAssignmentAcceptsInFlightPartitionUpdate()
     {
         var otherPartition = new TopicPartition(Partition.Topic, 1);
         await using var consumer = CreateConsumer();
         consumer.IncrementalAssign([new TopicPartitionOffset(Partition.Topic, Partition.Partition, 10)]);
-        var oldAssignmentVersion = GetAssignmentVersion(consumer);
+        var oldFetchBufferEpoch = GetFetchBufferEpoch(consumer);
         SetCachedWatermarks(consumer, new WatermarkOffsets(0, 25));
 
         consumer.IncrementalAssign([
@@ -298,15 +300,13 @@ public sealed class ConsumerLagTests
         ]);
         UpdateWatermarksFromFetchResponse(consumer, CreateFetchResponse(30));
 
-        var entry = GetWatermarkCacheEntry(consumer);
-        UpdateWatermarkCacheEntry(
+        UpdateWatermarksFromFetchResponse(
             consumer,
-            entry,
             CreateFetchResponse(100),
-            oldAssignmentVersion);
+            oldFetchBufferEpoch);
 
-        await Assert.That(consumer.GetWatermarkOffsets(Partition)).IsEqualTo(new WatermarkOffsets(0, 30));
-        await Assert.That(consumer.GetCurrentLag(Partition)).IsEqualTo(20);
+        await Assert.That(consumer.GetWatermarkOffsets(Partition)).IsEqualTo(new WatermarkOffsets(0, 100));
+        await Assert.That(consumer.GetCurrentLag(Partition)).IsEqualTo(90);
     }
 
     [Test]
@@ -337,6 +337,51 @@ public sealed class ConsumerLagTests
     }
 
     [Test]
+    public async Task WatermarkCacheEntry_CrossConnectionUpdatesUseLeaderEpochAndOffsets()
+    {
+        await using var consumer = CreateConsumer();
+        consumer.IncrementalAssign([new TopicPartitionOffset(Partition.Topic, Partition.Partition, 10)]);
+
+        // A request stamped first can reach the broker after a request on another connection.
+        UpdateWatermarksFromFetchResponse(
+            consumer,
+            CreateFetchResponse(100),
+            leaderEpoch: 5,
+            watermarkUpdateSequence: 2);
+        UpdateWatermarksFromFetchResponse(
+            consumer,
+            CreateFetchResponse(110),
+            leaderEpoch: 5,
+            watermarkUpdateSequence: 1);
+
+        await Assert.That(consumer.GetWatermarkOffsets(Partition)).IsEqualTo(new WatermarkOffsets(0, 110));
+        await Assert.That(consumer.GetCurrentLag(Partition)).IsEqualTo(100);
+
+        // A later response from the same leader cannot regress offsets, regardless of stamp order.
+        UpdateWatermarksFromFetchResponse(
+            consumer,
+            CreateFetchResponse(90),
+            leaderEpoch: 5,
+            watermarkUpdateSequence: 3);
+        await Assert.That(consumer.GetWatermarkOffsets(Partition)).IsEqualTo(new WatermarkOffsets(0, 110));
+
+        // A new leader epoch may legitimately truncate the log.
+        UpdateWatermarksFromFetchResponse(
+            consumer,
+            CreateFetchResponse(50),
+            leaderEpoch: 6,
+            watermarkUpdateSequence: 1);
+        UpdateWatermarksFromFetchResponse(
+            consumer,
+            CreateFetchResponse(120),
+            leaderEpoch: 5,
+            watermarkUpdateSequence: 4);
+
+        await Assert.That(consumer.GetWatermarkOffsets(Partition)).IsEqualTo(new WatermarkOffsets(0, 50));
+        await Assert.That(consumer.GetCurrentLag(Partition)).IsEqualTo(40);
+    }
+
+    [Test]
     public async Task WatermarkCacheEntry_SequenceWrapPreservesIndependentFreshness()
     {
         await using var consumer = CreateConsumer();
@@ -361,19 +406,42 @@ public sealed class ConsumerLagTests
     }
 
     [Test]
+    public async Task WatermarkCacheEntry_SequenceWrapRejectsPreWrapWatermark()
+    {
+        await using var consumer = CreateConsumer();
+        consumer.IncrementalAssign([new TopicPartitionOffset(Partition.Topic, Partition.Partition, 10)]);
+
+        UpdateWatermarksFromFetchResponse(
+            consumer,
+            CreateFetchResponse(100),
+            watermarkUpdateSequence: uint.MaxValue);
+        UpdateCachedLagEndOffset(consumer, 110, watermarkUpdateSequence: 1L << 32);
+        UpdateWatermarksFromFetchResponse(
+            consumer,
+            CreateFetchResponse(90),
+            watermarkUpdateSequence: uint.MaxValue - 1L);
+
+        await Assert.That(consumer.GetWatermarkOffsets(Partition)).IsEqualTo(new WatermarkOffsets(0, 100));
+        await Assert.That(consumer.GetCurrentLag(Partition)).IsEqualTo(100);
+    }
+
+    [Test]
     public async Task WatermarkCacheEntry_StaleCreatorCannotRemoveNewerUpdate()
     {
         var otherPartition = new TopicPartition(Partition.Topic, 1);
         await using var consumer = CreateConsumer();
         consumer.IncrementalAssign([new TopicPartitionOffset(Partition.Topic, Partition.Partition, 10)]);
-        var oldAssignmentVersion = GetAssignmentVersion(consumer);
+        var oldFetchBufferEpoch = GetFetchBufferEpoch(consumer);
         KafkaConsumer<string, string>.BeforeWatermarkCacheEntryCreationForTest = () =>
         {
             KafkaConsumer<string, string>.BeforeWatermarkCacheEntryCreationForTest = null;
             consumer.IncrementalAssign([
                 new TopicPartitionOffset(otherPartition.Topic, otherPartition.Partition, 0)
             ]);
-            UpdateWatermarksFromFetchResponse(consumer, CreateFetchResponse(30));
+            UpdateWatermarksFromFetchResponse(
+                consumer,
+                CreateFetchResponse(30),
+                watermarkUpdateSequence: 2);
         };
 
         try
@@ -381,7 +449,8 @@ public sealed class ConsumerLagTests
             UpdateWatermarksFromFetchResponse(
                 consumer,
                 CreateFetchResponse(20),
-                oldAssignmentVersion);
+                oldFetchBufferEpoch,
+                watermarkUpdateSequence: 1);
 
             await Assert.That(consumer.GetWatermarkOffsets(Partition)).IsEqualTo(new WatermarkOffsets(0, 30));
             await Assert.That(consumer.GetCurrentLag(Partition)).IsEqualTo(20);
@@ -528,19 +597,22 @@ public sealed class ConsumerLagTests
     private static void UpdateWatermarksFromFetchResponse(
         KafkaConsumer<string, string> consumer,
         FetchResponsePartition response,
-        int? assignmentVersion = null,
+        int? fetchBufferEpoch = null,
+        int leaderEpoch = -1,
         long watermarkUpdateSequence = 0) => UpdateWatermarksFromFetchResponse(
             consumer,
             Partition,
             response,
-            assignmentVersion,
+            fetchBufferEpoch,
+            leaderEpoch,
             watermarkUpdateSequence);
 
     private static void UpdateWatermarksFromFetchResponse(
         KafkaConsumer<string, string> consumer,
         TopicPartition partition,
         FetchResponsePartition response,
-        int? assignmentVersion = null,
+        int? fetchBufferEpoch = null,
+        int leaderEpoch = -1,
         long watermarkUpdateSequence = 0)
     {
         var method = typeof(KafkaConsumer<string, string>).GetMethod(
@@ -550,7 +622,8 @@ public sealed class ConsumerLagTests
         method.Invoke(consumer, [
             partition,
             response,
-            assignmentVersion ?? GetAssignmentVersion(consumer),
+            fetchBufferEpoch ?? GetFetchBufferEpoch(consumer),
+            leaderEpoch,
             watermarkUpdateSequence
         ]);
     }
@@ -571,6 +644,7 @@ public sealed class ConsumerLagTests
             watermarks.High,
             watermarks.High,
             null,
+            -1,
             updateSequence
         ]);
     }
@@ -584,7 +658,7 @@ public sealed class ConsumerLagTests
             "UpdateCachedLagEndOffset",
             BindingFlags.NonPublic | BindingFlags.Instance)
             ?? throw new InvalidOperationException("UpdateCachedLagEndOffset method not found");
-        method.Invoke(consumer, [Partition, lagEndOffset, watermarkUpdateSequence]);
+        method.Invoke(consumer, [Partition, lagEndOffset, -1, watermarkUpdateSequence]);
     }
 
     private static int GetAssignmentVersion(KafkaConsumer<string, string> consumer) =>
@@ -592,6 +666,12 @@ public sealed class ConsumerLagTests
             .GetField("_assignmentEnsureVersion", BindingFlags.NonPublic | BindingFlags.Instance)
             ?.GetValue(consumer)
             ?? throw new InvalidOperationException("_assignmentEnsureVersion field not found"));
+
+    private static int GetFetchBufferEpoch(KafkaConsumer<string, string> consumer) =>
+        (int)(typeof(KafkaConsumer<string, string>)
+            .GetField("_fetchBufferEpoch", BindingFlags.NonPublic | BindingFlags.Instance)
+            ?.GetValue(consumer)
+            ?? throw new InvalidOperationException("_fetchBufferEpoch field not found"));
 
     private static HashSet<TopicPartition> GetAssignment(KafkaConsumer<string, string> consumer) =>
         (HashSet<TopicPartition>)(typeof(KafkaConsumer<string, string>)
@@ -608,6 +688,17 @@ public sealed class ConsumerLagTests
         method.Invoke(consumer, null);
     }
 
+    private static void InvalidateFetchesForPartitions(
+        KafkaConsumer<string, string> consumer,
+        IEnumerable<TopicPartition> partitions)
+    {
+        var method = typeof(KafkaConsumer<string, string>).GetMethod(
+            "InvalidateFetchesForPartitionsLocked",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("InvalidateFetchesForPartitionsLocked method not found");
+        method.Invoke(consumer, [partitions]);
+    }
+
     private static int GetWatermarkCacheCount(KafkaConsumer<string, string> consumer) =>
         ((System.Collections.IDictionary)(typeof(KafkaConsumer<string, string>)
             .GetField("_watermarks", BindingFlags.NonPublic | BindingFlags.Instance)
@@ -621,24 +712,13 @@ public sealed class ConsumerLagTests
             ?? throw new InvalidOperationException("_watermarks field not found")))[Partition]
         ?? throw new InvalidOperationException("Watermark cache entry not found");
 
-    private static void UpdateWatermarkCacheEntry(
-        KafkaConsumer<string, string> consumer,
-        object entry,
-        FetchResponsePartition response,
-        int assignmentVersion)
+    private static long ReadCachedLagEndOffset(KafkaConsumer<string, string> consumer)
     {
-        var method = typeof(KafkaConsumer<string, string>).GetMethod(
-            "UpdateExistingCachedWatermarks",
-            BindingFlags.NonPublic | BindingFlags.Instance)
-            ?? throw new InvalidOperationException("UpdateExistingCachedWatermarks method not found");
-        method.Invoke(consumer, [
-            entry,
-            response.LogStartOffset,
-            response.HighWatermark,
-            response.LastStableOffset,
-            assignmentVersion,
-            0L
-        ]);
+        var entry = GetWatermarkCacheEntry(consumer);
+        var method = entry.GetType().GetMethod("ReadLagEndOffset", BindingFlags.Public | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("ReadLagEndOffset method not found");
+        return (long)(method.Invoke(entry, null)
+            ?? throw new InvalidOperationException("ReadLagEndOffset returned null"));
     }
 
     private static long? CalculateLagIfAssignmentUnchanged(
@@ -666,6 +746,7 @@ public sealed class ConsumerLagTests
         KafkaConsumer<string, string> consumer,
         TopicPartition partition,
         FetchResponsePartition response,
-        int assignmentVersion,
+        int fetchBufferEpoch,
+        int leaderEpoch,
         long watermarkUpdateSequence);
 }

@@ -15,7 +15,7 @@ public class ConsumerFetchWatermarkBenchmarks
     private FetchResponsePartition _response = null!;
     private UpdateLagEndOffset _updateLagEndOffset = null!;
     private UpdateWatermarks _updateWatermarks = null!;
-    private int _assignmentVersion;
+    private int _fetchBufferEpoch;
 
     [GlobalSetup]
     public void Setup()
@@ -39,22 +39,22 @@ public class ConsumerFetchWatermarkBenchmarks
         _updateLagEndOffset = typeof(KafkaConsumer<byte[], byte[]>)
             .GetMethod("UpdateCachedLagEndOffset", BindingFlags.Instance | BindingFlags.NonPublic)!
             .CreateDelegate<UpdateLagEndOffset>();
-        _assignmentVersion = (int)typeof(KafkaConsumer<byte[], byte[]>)
-            .GetField("_assignmentEnsureVersion", BindingFlags.Instance | BindingFlags.NonPublic)!
+        _fetchBufferEpoch = (int)typeof(KafkaConsumer<byte[], byte[]>)
+            .GetField("_fetchBufferEpoch", BindingFlags.Instance | BindingFlags.NonPublic)!
             .GetValue(_consumer)!;
 
-        _updateWatermarks(_consumer, _partition, _response, _assignmentVersion, 0);
+        _updateWatermarks(_consumer, _partition, _response, _fetchBufferEpoch, 5, 0);
     }
 
     [Benchmark]
     public void UpdateFromFetchResponse() =>
-        _updateWatermarks(_consumer, _partition, _response, _assignmentVersion, 0);
+        _updateWatermarks(_consumer, _partition, _response, _fetchBufferEpoch, 5, 0);
 
     [Benchmark]
     public void UpdateDivergentFromFetchResponse()
     {
-        _updateLagEndOffset(_consumer, _partition, 1_100, 2);
-        _updateWatermarks(_consumer, _partition, _response, _assignmentVersion, 1);
+        _updateLagEndOffset(_consumer, _partition, 1_100, -1, 2);
+        _updateWatermarks(_consumer, _partition, _response, _fetchBufferEpoch, -1, 1);
     }
 
     [GlobalCleanup]
@@ -64,12 +64,14 @@ public class ConsumerFetchWatermarkBenchmarks
         KafkaConsumer<byte[], byte[]> consumer,
         TopicPartition partition,
         FetchResponsePartition response,
-        int assignmentVersion,
+        int fetchBufferEpoch,
+        int leaderEpoch,
         long watermarkUpdateSequence);
 
     private delegate void UpdateLagEndOffset(
         KafkaConsumer<byte[], byte[]> consumer,
         TopicPartition partition,
         long lagEndOffset,
+        int leaderEpoch,
         long watermarkUpdateSequence);
 }
