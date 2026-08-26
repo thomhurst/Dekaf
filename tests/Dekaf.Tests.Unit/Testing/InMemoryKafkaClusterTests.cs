@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Text;
 using Dekaf.Admin;
 using Dekaf.Consumer;
@@ -682,6 +683,93 @@ public sealed class InMemoryKafkaClusterTests
 
         await Assert.That(result).IsNotNull();
         await Assert.That(result!.Value.Value).IsEqualTo("created:payload");
+    }
+
+    [Test]
+    public async Task Consumer_RawBytesCannotMutateStoredRecord()
+    {
+        const string topic = "raw-memory-isolation";
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>>(cluster);
+        var key = new byte[] { 1, 2 };
+        var value = new byte[] { 3, 4 };
+        var header = new byte[] { 5, 6 };
+        await producer.ProduceAsync(new ProducerMessage<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>>
+        {
+            Topic = topic,
+            Key = key,
+            Value = value,
+            Headers = Headers.Create("marker", header)
+        });
+
+        var firstConsumer = new InMemoryConsumer<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>>(
+            cluster,
+            new InMemoryConsumerOptions
+            {
+                GroupId = "raw-first",
+                AutoOffsetReset = AutoOffsetReset.Earliest
+            });
+        firstConsumer.Subscribe(topic);
+        var first = await firstConsumer.ConsumeOneAsync(TimeSpan.FromSeconds(1))
+            ?? throw new InvalidOperationException("First raw record was not available.");
+        MemoryMarshal.AsMemory(first.Key).Span[0] = 9;
+        MemoryMarshal.AsMemory(first.Value).Span[0] = 8;
+        MemoryMarshal.AsMemory(first.Headers[0].Value).Span[0] = 7;
+
+        var secondConsumer = new InMemoryConsumer<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>>(
+            cluster,
+            new InMemoryConsumerOptions
+            {
+                GroupId = "raw-second",
+                AutoOffsetReset = AutoOffsetReset.Earliest
+            });
+        secondConsumer.Subscribe(topic);
+        var replay = await secondConsumer.ConsumeOneAsync(TimeSpan.FromSeconds(1))
+            ?? throw new InvalidOperationException("Replayed raw record was not available.");
+
+        await Assert.That(replay.Key.Span.SequenceEqual(key)).IsTrue();
+        await Assert.That(replay.Value.Span.SequenceEqual(value)).IsTrue();
+        await Assert.That(replay.Headers[0].Value.Span.SequenceEqual(header)).IsTrue();
+    }
+
+    [Test]
+    public async Task Consumer_HeadersCannotMutateStoredRecord()
+    {
+        const string topic = "header-memory-isolation";
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        var header = new byte[] { 1, 2 };
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = topic,
+            Value = "payload",
+            Headers = Headers.Create("marker", header)
+        });
+
+        var firstConsumer = new InMemoryConsumer<string, string>(
+            cluster,
+            new InMemoryConsumerOptions
+            {
+                GroupId = "header-first",
+                AutoOffsetReset = AutoOffsetReset.Earliest
+            });
+        firstConsumer.Subscribe(topic);
+        var first = await firstConsumer.ConsumeOneAsync(TimeSpan.FromSeconds(1))
+            ?? throw new InvalidOperationException("First header record was not available.");
+        MemoryMarshal.AsMemory(first.Headers[0].Value).Span[0] = 9;
+
+        var secondConsumer = new InMemoryConsumer<string, string>(
+            cluster,
+            new InMemoryConsumerOptions
+            {
+                GroupId = "header-second",
+                AutoOffsetReset = AutoOffsetReset.Earliest
+            });
+        secondConsumer.Subscribe(topic);
+        var replay = await secondConsumer.ConsumeOneAsync(TimeSpan.FromSeconds(1))
+            ?? throw new InvalidOperationException("Replayed header record was not available.");
+
+        await Assert.That(replay.Headers[0].Value.Span.SequenceEqual(header)).IsTrue();
     }
 
     [Test]

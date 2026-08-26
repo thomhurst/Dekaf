@@ -256,6 +256,8 @@ public interface IDeserializer<out T>
     T Deserialize(ReadOnlyMemory<byte> data, SerializationContext context);
 }
 
+internal interface IInputIsolatedDeserializer;
+
 internal interface IRecordHeaderDeserializer<out T>
 {
     T Deserialize(
