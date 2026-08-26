@@ -265,6 +265,41 @@ public sealed class SchemaIdentityFramingTests
             .WithMessageContaining("Schema not found");
     }
 
+    [Arguments(false)]
+    [Arguments(true)]
+    [Test]
+    public async Task JsonSerializer_AsyncSubjectLookup_DoesNotRegister(bool useTypeInfo)
+    {
+        const string subject = "json-async-lookup-value";
+        const string schemaText = "{\"type\":\"string\"}";
+        using var registry = new MockSchemaRegistryClient();
+        var schemaId = await registry.RegisterSchemaAsync(
+            subject,
+            new Schema { SchemaType = SchemaType.Json, SchemaString = schemaText });
+        var strategy = new FixedAsyncSubjectNameStrategy(subject);
+        var serializer = useTypeInfo
+            ? new JsonSchemaRegistrySerializer<string>(
+                registry,
+                strategy,
+                schemaText,
+                (System.Text.Json.Serialization.Metadata.JsonTypeInfo<string>)
+                    System.Text.Json.JsonSerializerOptions.Default.GetTypeInfo(typeof(string)),
+                autoRegisterSchemas: false)
+            : new JsonSchemaRegistrySerializer<string>(
+                registry,
+                strategy,
+                schemaText,
+                jsonOptions: null,
+                autoRegisterSchemas: false);
+        await using (serializer)
+        {
+            var resolved = await serializer.PrepareAsync("ignored", "value");
+
+            await Assert.That(resolved.SchemaId).IsEqualTo(schemaId);
+            await Assert.That(registry.GetOrRegisterSchemaCallCount).IsEqualTo(0);
+        }
+    }
+
     [Test]
     public async Task JsonDeserializer_GuidSubjectsUseEachSchemaRecordName()
     {
@@ -668,5 +703,15 @@ public sealed class SchemaIdentityFramingTests
         public ReadOnlyMemory<byte> TransformDeserializedPayload(
             ReadOnlyMemory<byte> payload,
             SchemaRegistryRuleContext context) => payload;
+    }
+
+    private sealed class FixedAsyncSubjectNameStrategy(string subject) : IAsyncSubjectNameStrategy
+    {
+        public ValueTask<string> GetSubjectNameAsync(
+            string topic,
+            string? recordType,
+            bool isKey,
+            CancellationToken cancellationToken = default) =>
+            new(subject);
     }
 }

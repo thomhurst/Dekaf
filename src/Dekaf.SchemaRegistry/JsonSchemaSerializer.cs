@@ -567,6 +567,10 @@ public sealed class JsonSchemaRegistrySerializer<T> :
         _jsonOptions = CreateJsonOptions(jsonOptions);
         _serializePayload = SerializeWithOptions;
         _autoRegisterSchemas = autoRegisterSchemas;
+        _schemaSelectionMode = SchemaRegistrySerializerConfigValidator.ValidateAndResolve(
+            useSchemaId: null,
+            useLatestVersion: false,
+            autoRegisterSchemas);
         _normalizeSchemas = normalizeSchemas;
         _ownsClient = ownsClient;
         _ruleExecutor = ruleExecutor;
@@ -632,6 +636,10 @@ public sealed class JsonSchemaRegistrySerializer<T> :
         _jsonTypeInfo = jsonTypeInfo ?? throw new ArgumentNullException(nameof(jsonTypeInfo));
         _serializePayload = SerializeWithTypeInfo;
         _autoRegisterSchemas = autoRegisterSchemas;
+        _schemaSelectionMode = SchemaRegistrySerializerConfigValidator.ValidateAndResolve(
+            useSchemaId: null,
+            useLatestVersion: false,
+            autoRegisterSchemas);
         _normalizeSchemas = normalizeSchemas;
         _ownsClient = ownsClient;
         _ruleExecutor = ruleExecutor;
