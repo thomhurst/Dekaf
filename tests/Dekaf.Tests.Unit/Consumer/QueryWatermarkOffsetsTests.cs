@@ -199,6 +199,84 @@ public sealed class QueryWatermarkOffsetsTests
     }
 
     [Test]
+    public async Task QueryCurrentLagAsync_DelayedConnectionLeasePublishesLaterRequest()
+    {
+        var connection = new LeaseTrackingConnection();
+        var firstLeaseRequested = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFirstLease = new TaskCompletionSource<IKafkaConnection>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var connectionPool = CreateDelayedFirstLeasePool(
+            connection,
+            firstLeaseRequested,
+            releaseFirstLease);
+        await using var consumer = CreateConsumer(connectionPool);
+        var partition = new TopicPartition(Topic, Partition);
+        consumer.IncrementalAssign([new TopicPartitionOffset(Topic, Partition, 32)]);
+
+        var requestCount = 0;
+        connection.SendHandler = request => ValueTask.FromResult(CreateListOffsetsResponse(
+            request,
+            offset: Interlocked.Increment(ref requestCount) == 1 ? 100 : 110));
+
+        var delayedQuery = consumer.QueryCurrentLagAsync(partition).AsTask();
+        await firstLeaseRequested.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        try
+        {
+            await Assert.That(await consumer.QueryCurrentLagAsync(partition)).IsEqualTo(68);
+        }
+        finally
+        {
+            releaseFirstLease.TrySetResult(connection);
+        }
+
+        await Assert.That(await delayedQuery.WaitAsync(TimeSpan.FromSeconds(1))).IsEqualTo(78);
+        await Assert.That(consumer.GetCurrentLag(partition)).IsEqualTo(78);
+    }
+
+    [Test]
+    public async Task QueryWatermarkOffsetsAsync_DelayedConnectionLeasePublishesLaterRequest()
+    {
+        var connection = new LeaseTrackingConnection();
+        var firstLeaseRequested = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFirstLease = new TaskCompletionSource<IKafkaConnection>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var connectionPool = CreateDelayedFirstLeasePool(
+            connection,
+            firstLeaseRequested,
+            releaseFirstLease);
+        await using var consumer = CreateConsumer(connectionPool);
+        var partition = new TopicPartition(Topic, Partition);
+
+        var requestCount = 0;
+        connection.SendHandler = request =>
+        {
+            var requestNumber = Interlocked.Increment(ref requestCount);
+            var timestamp = request.Topics[0].Partitions[0].Timestamp;
+            var offset = requestNumber <= 2
+                ? timestamp == EarliestOffsetTimestamp ? 10 : 100
+                : timestamp == EarliestOffsetTimestamp ? 20 : 110;
+            return ValueTask.FromResult(CreateListOffsetsResponse(request, offset));
+        };
+
+        var delayedQuery = consumer.QueryWatermarkOffsetsAsync(partition).AsTask();
+        await firstLeaseRequested.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        try
+        {
+            await Assert.That(await consumer.QueryWatermarkOffsetsAsync(partition))
+                .IsEqualTo(new WatermarkOffsets(10, 100));
+        }
+        finally
+        {
+            releaseFirstLease.TrySetResult(connection);
+        }
+
+        await Assert.That(await delayedQuery.WaitAsync(TimeSpan.FromSeconds(1)))
+            .IsEqualTo(new WatermarkOffsets(20, 110));
+        await Assert.That(consumer.GetWatermarkOffsets(partition))
+            .IsEqualTo(new WatermarkOffsets(20, 110));
+    }
+
+    [Test]
     public async Task QueryCurrentLagAsync_AssignmentChangeDuringRefreshReturnsNull()
     {
         var connectionPool = Substitute.For<IConnectionPool>();
@@ -579,6 +657,47 @@ public sealed class QueryWatermarkOffsetsTests
             ?? throw new InvalidOperationException("_initialized field not found - was it renamed?");
 
         initializedField.SetValue(consumer, true);
+    }
+
+    private static IConnectionPool CreateDelayedFirstLeasePool(
+        IKafkaConnection connection,
+        TaskCompletionSource firstLeaseRequested,
+        TaskCompletionSource<IKafkaConnection> releaseFirstLease)
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var leaseRequestCount = 0;
+        connectionPool.GetConnectionByIndexAsync(0, 1, Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                if (Interlocked.Increment(ref leaseRequestCount) != 1)
+                    return ValueTask.FromResult(connection);
+
+                firstLeaseRequested.SetResult();
+                return new ValueTask<IKafkaConnection>(releaseFirstLease.Task);
+            });
+        return connectionPool;
+    }
+
+    private static KafkaConsumer<string, string> CreateConsumer(IConnectionPool connectionPool)
+    {
+        var metadataManager = new MetadataManager(connectionPool, ["localhost:9092"]);
+        metadataManager.SetApiVersion(
+            ApiKey.ListOffsets,
+            ListOffsetsRequest.LowestSupportedVersion,
+            ListOffsetsRequest.HighestSupportedVersion);
+        metadataManager.Metadata.Update(CreateMetadataResponse());
+        var consumer = new KafkaConsumer<string, string>(
+            new ConsumerOptions
+            {
+                BootstrapServers = ["localhost:9092"],
+                GroupId = "test-group"
+            },
+            Serializers.String,
+            Serializers.String,
+            connectionPool,
+            metadataManager);
+        SetInitialized(consumer);
+        return consumer;
     }
 
     private static long AdvanceWatermarkUpdateSequence(KafkaConsumer<string, string> consumer)

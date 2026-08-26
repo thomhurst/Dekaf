@@ -1600,6 +1600,43 @@ public sealed class ConsumerAssignmentFastPathTests
     }
 
     [Test]
+    public async Task TopicIdentityChange_FailedResetRestoresWatermarkGeneration()
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+        SetupConnectionPool(connectionPool, connection);
+        await using var metadataManager = CreateMetadataManager(connectionPool);
+        metadataManager.SetApiVersion(
+            ApiKey.ListOffsets,
+            ListOffsetsRequest.LowestSupportedVersion,
+            ListOffsetsRequest.HighestSupportedVersion);
+        await using var consumer = CreateGroupConsumer(
+            connectionPool,
+            metadataManager,
+            autoOffsetReset: AutoOffsetReset.ByDuration,
+            autoOffsetResetDuration: TimeSpan.FromMinutes(1));
+        var partition = new TopicPartition("test-topic", 0);
+        consumer.IncrementalAssign([
+            new TopicPartitionOffset(partition.Topic, partition.Partition, 10)
+        ]);
+        await InvokeHandleTopicIdentityChangesAsync(consumer);
+
+        connection.SendAsync<ListOffsetsRequest, ListOffsetsResponse>(
+                Arg.Any<ListOffsetsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns<ValueTask<ListOffsetsResponse>>(_ => throw new KafkaException(
+                ErrorCode.InvalidRequest,
+                "Injected topic-identity reset failure"));
+
+        metadataManager.Metadata.Update(CreateMetadataResponse(Guid.NewGuid(), partitionCount: 1));
+        _ = await Assert.That(async () => await InvokeHandleTopicIdentityChangesAsync(consumer))
+            .Throws<KafkaException>();
+
+        await Assert.That(GetWatermarkAssignmentVersions(consumer)).ContainsKey(partition);
+    }
+
+    [Test]
     public async Task TopicIdentityChange_ResetsBeforeRequestingRejoin()
     {
         var connectionPool = Substitute.For<IConnectionPool>();
@@ -2873,6 +2910,17 @@ public sealed class ConsumerAssignmentFastPathTests
             ?? throw new InvalidOperationException("_observedTopicIds field not found.");
 
         return (Dictionary<string, Guid>)field.GetValue(consumer)!;
+    }
+
+    private static ConcurrentDictionary<TopicPartition, int> GetWatermarkAssignmentVersions(
+        KafkaConsumer<string, string> consumer)
+    {
+        var field = typeof(KafkaConsumer<string, string>).GetField(
+            "_watermarkAssignmentVersions",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("_watermarkAssignmentVersions field not found.");
+
+        return (ConcurrentDictionary<TopicPartition, int>)field.GetValue(consumer)!;
     }
 
     private static async ValueTask InvokeHandleTopicIdentityChangesAsync(

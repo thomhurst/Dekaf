@@ -8552,7 +8552,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             return await RetryHelper.WithRetryAsync(async () =>
             {
-                var watermarkUpdateSequence = Interlocked.Increment(ref _watermarkUpdateSequence);
                 var connectionLease = await GetPartitionLeaderControlConnectionAsync(
                         topicPartition,
                         apiTimeout.Token)
@@ -8572,6 +8571,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     _options.IsolationLevel,
                     LatestOffsetTimestamp,
                     GetCurrentLeaderEpoch(topicPartition));
+                var watermarkUpdateSequence = Interlocked.Increment(ref _watermarkUpdateSequence);
                 var response = await connection.SendAsync<ListOffsetsRequest, ListOffsetsResponse>(
                         request,
                         listOffsetsVersion,
@@ -8633,7 +8633,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             return await RetryHelper.WithRetryAsync(async () =>
             {
-                var watermarkUpdateSequence = Interlocked.Increment(ref _watermarkUpdateSequence);
                 var connectionLease = await GetPartitionLeaderControlConnectionAsync(topicPartition, apiTimeout.Token)
                     .ConfigureAwait(false);
                 if (connectionLease is null)
@@ -8659,6 +8658,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     LatestOffsetTimestamp,
                     currentLeaderEpoch);
 
+                var watermarkUpdateSequence = Interlocked.Increment(ref _watermarkUpdateSequence);
                 var earliestResponseTask = connection.SendAsync<ListOffsetsRequest, ListOffsetsResponse>(
                     earliestRequest,
                     listOffsetsVersion,
@@ -10139,10 +10139,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     }
 #endif
 
-                    RotateWatermarkCacheGenerations(recreatedPartitions);
                 }
                 finally
                 {
+                    RotateWatermarkCacheGenerations(recreatedPartitions);
+
                     if (resetTasks is not null)
                         ArrayPool<Task>.Shared.Return(resetTasks, clearArray: true);
 
