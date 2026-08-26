@@ -696,6 +696,84 @@ public sealed class InMemoryKafkaCluster
         }
     }
 
+    internal bool TryAcquireShareRecordForFault(
+        string groupId,
+        string memberId,
+        ShareGroupMemberRegistration registration,
+        TopicPartition topicPartition,
+        long offset,
+        out InMemoryRecord record)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(groupId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(memberId);
+
+        lock (_gate)
+        {
+            if (!registration.IsActive)
+            {
+                record = null!;
+                return false;
+            }
+
+            if (!TryReadRecordUnderLock(
+                    topicPartition,
+                    offset,
+                    IsolationLevel.ReadCommitted,
+                    out var candidate,
+                    out _))
+            {
+                record = null!;
+                return false;
+            }
+
+            var partitionLeases = GetShareLeasePartition(groupId, topicPartition, create: true)!;
+            var hasLease = partitionLeases.TryGetValue(candidate.Offset, out var leaseRegistration);
+            if (hasLease)
+            {
+                var existingRegistration = leaseRegistration!;
+                if (!StringComparer.Ordinal.Equals(existingRegistration.MemberId, memberId) ||
+                    (!ReferenceEquals(existingRegistration, registration) &&
+                     existingRegistration.IsActive))
+                {
+                    record = null!;
+                    return false;
+                }
+            }
+
+            if (!hasLease || !ReferenceEquals(leaseRegistration, registration))
+                partitionLeases[candidate.Offset] = registration;
+
+            record = CloneRecord(candidate);
+            return true;
+        }
+    }
+
+    internal bool TryCompleteShareRecordAcquisition(
+        string groupId,
+        string memberId,
+        ShareGroupMemberRegistration registration,
+        TopicPartition topicPartition,
+        long offset,
+        out int deliveryCount)
+    {
+        lock (_gate)
+        {
+            if (!registration.IsActive ||
+                !_shareLeases.TryGetValue(groupId, out var groupLeases) ||
+                !groupLeases.TryGetValue(topicPartition, out var partitionLeases) ||
+                !partitionLeases.TryGetValue(offset, out var lease) ||
+                !StringComparer.Ordinal.Equals(lease.MemberId, memberId) ||
+                !ReferenceEquals(lease, registration))
+            {
+                deliveryCount = 0;
+                return false;
+            }
+
+            deliveryCount = RecordShareRedeliveryUnderLock(groupId, topicPartition, offset);
+            return true;
+        }
+    }
+
     [MethodImpl(MethodImplOptions.NoInlining)]
     private int RecordShareRedeliveryUnderLock(
         string groupId,
@@ -827,25 +905,6 @@ public sealed class InMemoryKafkaCluster
                 groupLeases.Remove(topicPartition);
                 if (groupLeases.Count == 0)
                     _shareLeases.Remove(groupId);
-            }
-
-            var partitionCounts = GetShareDeliveryCountPartition(groupId, topicPartition, create: false);
-            if (partitionCounts is null || !partitionCounts.TryGetValue(offset, out var deliveryCount))
-                return;
-
-            if (deliveryCount > 1)
-            {
-                partitionCounts[offset] = deliveryCount - 1;
-                return;
-            }
-
-            partitionCounts.Remove(offset);
-            if (partitionCounts.Count == 0 &&
-                _shareDeliveryCounts.TryGetValue(groupId, out var groupCounts))
-            {
-                groupCounts.Remove(topicPartition);
-                if (groupCounts.Count == 0)
-                    _shareDeliveryCounts.Remove(groupId);
             }
         }
     }

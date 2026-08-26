@@ -180,6 +180,31 @@ public sealed class KafkaFaultPlanTests
             KafkaFaultOperation.ShareConsume,
             "workers",
             assignment)).IsFalse();
+        await Assert.That(plan.RetainedShareFaultSelectorCount).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task ShareIndex_RemovesConsumedSelectorsWhilePersistentRuleRemains()
+    {
+        var plan = new KafkaFaultPlan();
+        var persistentScope = new KafkaFaultScope(
+            KafkaFaultOperation.ShareConsume,
+            groupId: "persistent-workers");
+        plan.FailPersistently(persistentScope, new InvalidOperationException("persistent"));
+
+        for (var index = 0; index < 1_024; index++)
+        {
+            var scope = new KafkaFaultScope(
+                KafkaFaultOperation.ShareConsume,
+                $"shared-{index}",
+                partition: index,
+                groupId: $"workers-{index}");
+            var barrier = plan.PauseNext(scope);
+            barrier.Release();
+
+            await plan.ApplyAsync(scope);
+            await Assert.That(plan.RetainedShareFaultSelectorCount).IsEqualTo(1);
+        }
     }
 
     [Test]

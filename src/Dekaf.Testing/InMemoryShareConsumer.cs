@@ -569,11 +569,15 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
     {
         foreach (var partition in OrderedAssignment())
         {
-            if (!TryAcquireRecord(partition, out var record, out var deliveryCount, out var registration))
-                continue;
-
-            if (HasPotentialFault(KafkaFaultOperation.ShareConsume, partition))
+            var hasPotentialFault = HasPotentialFault(KafkaFaultOperation.ShareConsume, partition);
+            InMemoryRecord record;
+            int deliveryCount;
+            ShareGroupMemberRegistration registration;
+            if (hasPotentialFault)
             {
+                if (!TryAcquireRecordForFault(partition, out record, out registration))
+                    continue;
+
                 try
                 {
                     await _cluster.FaultPlan.ApplyAsync(
@@ -594,6 +598,27 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
                         record.Offset);
                     throw;
                 }
+
+                if (!_cluster.TryCompleteShareRecordAcquisition(
+                        _options.GroupId,
+                        _memberId,
+                        registration,
+                        partition,
+                        record.Offset,
+                        out deliveryCount))
+                {
+                    _cluster.RollbackShareRecordAcquisition(
+                        _options.GroupId,
+                        _memberId,
+                        registration,
+                        partition,
+                        record.Offset);
+                    continue;
+                }
+            }
+            else if (!TryAcquireRecord(partition, out record, out deliveryCount, out registration))
+            {
+                continue;
             }
 
             ShareConsumeResult<TKey, TValue> result;
@@ -714,6 +739,36 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
             offset,
             out record,
             out deliveryCount);
+    }
+
+    private bool TryAcquireRecordForFault(
+        TopicPartition partition,
+        out InMemoryRecord record,
+        out ShareGroupMemberRegistration registration)
+    {
+        long offset;
+        ShareGroupMemberRegistration? currentRegistration;
+        lock (_gate)
+        {
+            offset = GetNextOffsetUnderLock(partition);
+            currentRegistration = _registration;
+        }
+
+        if (currentRegistration is null)
+        {
+            record = null!;
+            registration = null!;
+            return false;
+        }
+
+        registration = currentRegistration;
+        return _cluster.TryAcquireShareRecordForFault(
+            _options.GroupId,
+            _memberId,
+            registration,
+            partition,
+            offset,
+            out record);
     }
 
     /// <summary>

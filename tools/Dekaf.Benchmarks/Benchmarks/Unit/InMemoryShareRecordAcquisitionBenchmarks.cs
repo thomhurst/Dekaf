@@ -8,7 +8,7 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 [SimpleJob(RunStrategy.Throughput, launchCount: 5, warmupCount: 8, iterationCount: 20)]
 public class InMemoryShareRecordAcquisitionBenchmarks
 {
-    private const int OperationsPerInvoke = 8192;
+    private const int OperationsPerInvoke = 32768;
     private const string GroupId = "benchmark-group";
     private const string MemberId = "benchmark-member";
     private readonly InMemoryKafkaCluster _cluster = new();

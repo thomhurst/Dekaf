@@ -732,6 +732,7 @@ public sealed class InMemoryAdminShareFaultTests
         await using var duplicatePoll = otherConsumer.PollAsync().GetAsyncEnumerator();
 
         await Assert.That(current.Offset).IsEqualTo(0);
+        await Assert.That(current.DeliveryCount).IsEqualTo(1);
         await Assert.That(await duplicatePoll.MoveNextAsync()).IsFalse();
     }
 

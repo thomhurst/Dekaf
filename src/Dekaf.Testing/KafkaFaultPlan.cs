@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 
 namespace Dekaf.Testing;
@@ -278,6 +279,9 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
         Volatile.Read(ref _produceFaultIndex).Matches(operation, topic);
 
     internal int ShareFaultIndexVersion => Volatile.Read(ref _shareFaultIndexVersion);
+
+    internal int RetainedShareFaultSelectorCount =>
+        Volatile.Read(ref _shareFaultIndex).RetainedSelectorCount;
 
     internal bool HasPotentialShareMatch(
         KafkaFaultOperation operation,
@@ -629,6 +633,9 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
 
         public bool IsEmpty => _consumeScopes.IsEmpty && _acknowledgeScopes.IsEmpty;
 
+        public int RetainedSelectorCount =>
+            _consumeScopes.RetainedSelectorCount + _acknowledgeScopes.RetainedSelectorCount;
+
         public ShareFaultIndex Add(KafkaFaultScope scope, out bool eligibilityChanged)
         {
             var scopes = GetScopes(scope.Operation);
@@ -670,13 +677,13 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
 
     private sealed class ShareScopeIndex
     {
-        private Dictionary<string, ScopeCounter>? _topics;
-        private Dictionary<int, ScopeCounter>? _partitions;
-        private Dictionary<string, ScopeCounter>? _groups;
-        private Dictionary<TopicPartition, ScopeCounter>? _topicPartitions;
-        private Dictionary<TopicGroupKey, ScopeCounter>? _topicGroups;
-        private Dictionary<PartitionGroupKey, ScopeCounter>? _partitionGroups;
-        private Dictionary<ExactShareKey, ScopeCounter>? _exactScopes;
+        private ConcurrentDictionary<string, ScopeCounter>? _topics;
+        private ConcurrentDictionary<int, ScopeCounter>? _partitions;
+        private ConcurrentDictionary<string, ScopeCounter>? _groups;
+        private ConcurrentDictionary<TopicPartition, ScopeCounter>? _topicPartitions;
+        private ConcurrentDictionary<TopicGroupKey, ScopeCounter>? _topicGroups;
+        private ConcurrentDictionary<PartitionGroupKey, ScopeCounter>? _partitionGroups;
+        private ConcurrentDictionary<ExactShareKey, ScopeCounter>? _exactScopes;
         private int _activeScopeCount;
         private int _allCount;
 
@@ -700,6 +707,16 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
         }
 
         public bool IsEmpty => Volatile.Read(ref _activeScopeCount) == 0;
+
+        public int RetainedSelectorCount =>
+            (Volatile.Read(ref _allCount) == 0 ? 0 : 1) +
+            (_topics?.Count ?? 0) +
+            (_partitions?.Count ?? 0) +
+            (_groups?.Count ?? 0) +
+            (_topicPartitions?.Count ?? 0) +
+            (_topicGroups?.Count ?? 0) +
+            (_partitionGroups?.Count ?? 0) +
+            (_exactScopes?.Count ?? 0);
 
         public ShareScopeIndex Add(KafkaFaultScope scope, out bool eligibilityChanged)
         {
@@ -748,6 +765,7 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
             if (count != 0)
                 return false;
 
+            RemoveCounter(scope);
             _activeScopeCount--;
             return true;
         }
@@ -786,25 +804,25 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
                     _allCount = 1;
                     break;
                 case { Topic: { } topic, Partition: null, GroupId: null }:
-                    (_topics ??= new(StringComparer.Ordinal)).Add(topic, counter);
+                    (_topics ??= new(StringComparer.Ordinal)).TryAdd(topic, counter);
                     break;
                 case { Topic: null, Partition: { } partition, GroupId: null }:
-                    (_partitions ??= []).Add(partition, counter);
+                    (_partitions ??= []).TryAdd(partition, counter);
                     break;
                 case { Topic: null, Partition: null, GroupId: { } groupId }:
-                    (_groups ??= new(StringComparer.Ordinal)).Add(groupId, counter);
+                    (_groups ??= new(StringComparer.Ordinal)).TryAdd(groupId, counter);
                     break;
                 case { Topic: { } topic, Partition: { } partition, GroupId: null }:
-                    (_topicPartitions ??= []).Add(new TopicPartition(topic, partition), counter);
+                    (_topicPartitions ??= []).TryAdd(new TopicPartition(topic, partition), counter);
                     break;
                 case { Topic: { } topic, Partition: null, GroupId: { } groupId }:
-                    (_topicGroups ??= []).Add(new TopicGroupKey(topic, groupId), counter);
+                    (_topicGroups ??= []).TryAdd(new TopicGroupKey(topic, groupId), counter);
                     break;
                 case { Topic: null, Partition: { } partition, GroupId: { } groupId }:
-                    (_partitionGroups ??= []).Add(new PartitionGroupKey(partition, groupId), counter);
+                    (_partitionGroups ??= []).TryAdd(new PartitionGroupKey(partition, groupId), counter);
                     break;
                 case { Topic: { } topic, Partition: { } partition, GroupId: { } groupId }:
-                    (_exactScopes ??= []).Add(new ExactShareKey(topic, partition, groupId), counter);
+                    (_exactScopes ??= []).TryAdd(new ExactShareKey(topic, partition, groupId), counter);
                     break;
             }
 
@@ -835,14 +853,42 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
             }
         }
 
-        private static bool IsActive<TKey>(Dictionary<TKey, ScopeCounter>? counts, TKey key)
+        private void RemoveCounter(KafkaFaultScope scope)
+        {
+            switch (scope)
+            {
+                case { Topic: { } topic, Partition: null, GroupId: null }:
+                    _topics!.TryRemove(topic, out _);
+                    break;
+                case { Topic: null, Partition: { } partition, GroupId: null }:
+                    _partitions!.TryRemove(partition, out _);
+                    break;
+                case { Topic: null, Partition: null, GroupId: { } groupId }:
+                    _groups!.TryRemove(groupId, out _);
+                    break;
+                case { Topic: { } topic, Partition: { } partition, GroupId: null }:
+                    _topicPartitions!.TryRemove(new TopicPartition(topic, partition), out _);
+                    break;
+                case { Topic: { } topic, Partition: null, GroupId: { } groupId }:
+                    _topicGroups!.TryRemove(new TopicGroupKey(topic, groupId), out _);
+                    break;
+                case { Topic: null, Partition: { } partition, GroupId: { } groupId }:
+                    _partitionGroups!.TryRemove(new PartitionGroupKey(partition, groupId), out _);
+                    break;
+                case { Topic: { } topic, Partition: { } partition, GroupId: { } groupId }:
+                    _exactScopes!.TryRemove(new ExactShareKey(topic, partition, groupId), out _);
+                    break;
+            }
+        }
+
+        private static bool IsActive<TKey>(ConcurrentDictionary<TKey, ScopeCounter>? counts, TKey key)
             where TKey : notnull
             => counts is not null &&
                counts.TryGetValue(key, out var counter) &&
                Volatile.Read(ref counter.Count) != 0;
 
         private static bool TryGetCounter<TKey>(
-            Dictionary<TKey, ScopeCounter>? counts,
+            ConcurrentDictionary<TKey, ScopeCounter>? counts,
             TKey key,
             out ScopeCounter counter)
             where TKey : notnull
@@ -857,11 +903,11 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
             return false;
         }
 
-        private static Dictionary<TKey, ScopeCounter>? Clone<TKey>(
-            Dictionary<TKey, ScopeCounter>? source,
+        private static ConcurrentDictionary<TKey, ScopeCounter>? Clone<TKey>(
+            ConcurrentDictionary<TKey, ScopeCounter>? source,
             IEqualityComparer<TKey>? comparer = null)
             where TKey : notnull =>
-            source is null ? null : new Dictionary<TKey, ScopeCounter>(source, comparer);
+            source is null ? null : new ConcurrentDictionary<TKey, ScopeCounter>(source, comparer);
 
         private sealed class ScopeCounter
         {
