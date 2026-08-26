@@ -148,6 +148,29 @@ public sealed class ProtobufInlineRuleValidatorTests
     }
 
     [Test]
+    public async Task Validate_MapMessageValueMergesRepeatedOccurrences()
+    {
+        var entry = new ArrayBufferWriter<byte>();
+        WriteLengthDelimited(entry, fieldNumber: 1, "merged"u8);
+        WriteLengthDelimited(entry, fieldNumber: 2, [8, 1]);
+        WriteLengthDelimited(entry, fieldNumber: 2, []);
+        var message = CreateValidMessage();
+        message.ChildrenByName.Clear();
+        var payload = new ArrayBufferWriter<byte>();
+        message.WriteTo(payload);
+        WriteLengthDelimited(payload, fieldNumber: 6, entry.WrittenSpan);
+        var validator = new ProtobufInlineRuleValidator(ValidationEnvelope.Descriptor);
+
+        validator.Validate(payload.WrittenMemory, schemaId: 17, failFast: false);
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var index = 0; index < 100; index++)
+            validator.Validate(payload.WrittenMemory, schemaId: 17, failFast: false);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        await Assert.That(allocated).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task Validate_FloatingArithmeticPreservesFloatingOperands()
     {
         var result = EvaluateTypedRule(
@@ -175,6 +198,35 @@ public sealed class ProtobufInlineRuleValidatorTests
             ValidationCelValue.FromBytes(new byte[] { 0xff, 0x00 }));
 
         await Assert.That(result.Boolean).IsTrue();
+    }
+
+    [Test]
+    public async Task Validate_BytesLiteralDecodesEightDigitUnicodeEscapes()
+    {
+        var result = EvaluateTypedRule(
+            "this == b'\\U0001F600'",
+            ValidationCelValue.FromBytes("😀"u8.ToArray()));
+
+        await Assert.That(result.Boolean).IsTrue();
+    }
+
+    [Test]
+    public async Task Validate_TimestampIgnoresComponentsWithWrongWireType()
+    {
+        var timestamp = new ArrayBufferWriter<byte>();
+        WriteVarint(timestamp, 1u << 3);
+        WriteVarint(timestamp, 1_700_000_000);
+        WriteLengthDelimited(timestamp, fieldNumber: 1, []);
+        var message = CreateValidMessage();
+        message.CreatedAt = null;
+        var payload = new ArrayBufferWriter<byte>();
+        message.WriteTo(payload);
+        WriteLengthDelimited(payload, fieldNumber: 11, timestamp.WrittenSpan);
+        var validator = new ProtobufInlineRuleValidator(ValidationEnvelope.Descriptor);
+
+        validator.Validate(payload.WrittenMemory, schemaId: 17, failFast: false);
+
+        await Assert.That(payload.WrittenCount).IsGreaterThan(0);
     }
 
     [Test]

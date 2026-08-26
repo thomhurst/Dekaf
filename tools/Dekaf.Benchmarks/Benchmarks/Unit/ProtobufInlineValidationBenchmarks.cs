@@ -26,6 +26,7 @@ public class ProtobufInlineValidationBenchmarks
     private CompiledValidationRule _mixedNumericRule = null!;
     private ValidationEnvelope _message = null!;
     private byte[] _payload = null!;
+    private byte[] _mergedMapValuePayload = null!;
     private byte[] _semanticEqualityPayload = null!;
     private byte[] _mapEqualityPayload = null!;
     private SerializationContext _context;
@@ -35,6 +36,7 @@ public class ProtobufInlineValidationBenchmarks
     {
         _message = CreateMessage();
         _payload = _message.ToByteArray();
+        _mergedMapValuePayload = CreateMergedMapValuePayload();
         _semanticEqualityPayload = CreateSemanticEqualityPayload();
         _mapEqualityPayload = CreateMapEqualityPayload();
         _validator = new ProtobufInlineRuleValidator(ValidationEnvelope.Descriptor);
@@ -64,6 +66,7 @@ public class ProtobufInlineValidationBenchmarks
         };
 
         _validator.Validate(_payload, schemaId: 1, failFast: false);
+        _validator.Validate(_mergedMapValuePayload, schemaId: 1, failFast: false);
         _semanticEqualityValidator.Validate(_semanticEqualityPayload, schemaId: 1, failFast: false);
         _mapEqualityValidator.Validate(_mapEqualityPayload, schemaId: 1, failFast: false);
         var destination = _destination;
@@ -82,6 +85,10 @@ public class ProtobufInlineValidationBenchmarks
 
     [Benchmark]
     public void ValidateRules() => _validator.Validate(_payload, schemaId: 1, failFast: false);
+
+    [Benchmark]
+    public void ValidateMergedMapMessageValue() =>
+        _validator.Validate(_mergedMapValuePayload, schemaId: 1, failFast: false);
 
     [Benchmark]
     public void ValidateSemanticMessageEquality() =>
@@ -156,6 +163,18 @@ public class ProtobufInlineValidationBenchmarks
         var payload = new ArrayBufferWriter<byte>();
         WriteLengthDelimited(payload, 1, left.WrittenSpan);
         WriteLengthDelimited(payload, 2, right.WrittenSpan);
+        return payload.WrittenSpan.ToArray();
+    }
+
+    private static byte[] CreateMergedMapValuePayload()
+    {
+        var entry = new ArrayBufferWriter<byte>();
+        WriteLengthDelimited(entry, 1, "merged"u8);
+        WriteLengthDelimited(entry, 2, [8, 1]);
+        WriteLengthDelimited(entry, 2, []);
+        var payload = new ArrayBufferWriter<byte>();
+        CreateMessage().WriteTo(payload);
+        WriteLengthDelimited(payload, 6, entry.WrittenSpan);
         return payload.WrittenSpan.ToArray();
     }
 

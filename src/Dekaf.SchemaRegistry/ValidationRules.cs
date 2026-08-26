@@ -3139,12 +3139,21 @@ internal sealed class ValidationCelParser
                 bytes.Add(ReadOctalEscape(escaped));
                 continue;
             }
-            if (escaped == 'u')
+            if (escaped is 'u' or 'U')
             {
-                var codePoint = ReadHexEscape(4);
-                if (char.IsSurrogate((char)codePoint))
-                    throw Unsupported("CEL Unicode escape cannot contain a surrogate code point.");
-                text.Append((char)codePoint);
+                var codePoint = ReadHexEscape(escaped == 'u' ? 4 : 8);
+                if ((uint)codePoint > 0x10ffff || codePoint is >= 0xd800 and <= 0xdfff)
+                    throw Unsupported("CEL Unicode escape must contain a valid scalar value.");
+                if (codePoint <= char.MaxValue)
+                {
+                    text.Append((char)codePoint);
+                }
+                else
+                {
+                    codePoint -= 0x10000;
+                    text.Append((char)(0xd800 + (codePoint >> 10)));
+                    text.Append((char)(0xdc00 + (codePoint & 0x3ff)));
+                }
                 continue;
             }
 

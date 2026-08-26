@@ -550,12 +550,16 @@ internal sealed class ProtobufMessageRulePlan
                 {
                     if (!_fields.TryGetValue(wireField.Number, out var field) ||
                         !field.Descriptor.IsMap ||
-                        wireField.WireType != ProtobufWireType.LengthDelimited ||
-                        !field.TryGetMapValue(wireField.Payload, out var mapKey, out var mapPayload))
+                        wireField.WireType != ProtobufWireType.LengthDelimited)
                     {
                         continue;
                     }
-                    mapEntries.Add(field, mapKey, mapPayload);
+                    field.GetMapValue(
+                        wireField.Payload,
+                        out var mapKey,
+                        out var mapPayload,
+                        out var rentedMapPayload);
+                    mapEntries.Add(field, mapKey, mapPayload, rentedMapPayload);
                 }
                 if (_hasMaps)
                     mapEntries.ApplyUniqueSizes(_allFields, sizes);
@@ -738,26 +742,67 @@ internal sealed class ProtobufFieldRulePlan(
     internal ProtobufMessageRulePlan? Child { get; } = child;
     internal int RuntimeIndex { get; } = runtimeIndex;
 
-    internal bool TryGetMapValue(
+    internal void GetMapValue(
         ReadOnlyMemory<byte> entryPayload,
         out ValidationCelValue key,
-        out ReadOnlyMemory<byte> valuePayload)
+        out ReadOnlyMemory<byte> valuePayload,
+        out byte[]? rentedValuePayload)
     {
         key = ProtobufValidationValueDecoder.Default(mapKey!);
         valuePayload = default;
-        var reader = new ProtobufValidationWireReader(entryPayload);
-        while (reader.TryRead(out var field))
+        rentedValuePayload = null;
+        var valueObserved = false;
+        var mergedLength = 0;
+        try
         {
-            if (field.Number == mapKey!.FieldNumber &&
-                ProtobufValidationValueDecoder.MatchesWireType(mapKey, field.WireType))
-                key = ProtobufValidationValueDecoder.Decode(mapKey, field);
-            else if (field.Number == mapValue!.FieldNumber &&
-                     ProtobufValidationValueDecoder.MatchesWireType(mapValue, field.WireType))
+            var reader = new ProtobufValidationWireReader(entryPayload);
+            while (reader.TryRead(out var field))
             {
-                valuePayload = field.Payload;
+                if (field.Number == mapKey!.FieldNumber &&
+                    ProtobufValidationValueDecoder.MatchesWireType(mapKey, field.WireType))
+                {
+                    key = ProtobufValidationValueDecoder.Decode(mapKey, field);
+                }
+                else if (field.Number == mapValue!.FieldNumber &&
+                         ProtobufValidationValueDecoder.MatchesWireType(mapValue, field.WireType))
+                {
+                    if (!valueObserved ||
+                        mapValue.FieldType is not (FieldType.Message or FieldType.Group))
+                    {
+                        valuePayload = field.Payload;
+                    }
+                    else
+                    {
+                        var requiredLength = checked(valuePayload.Length + field.Payload.Length);
+                        if (rentedValuePayload is null)
+                        {
+                            rentedValuePayload = ArrayPool<byte>.Shared.Rent(requiredLength);
+                            valuePayload.Span.CopyTo(rentedValuePayload);
+                            mergedLength = valuePayload.Length;
+                        }
+                        else if (rentedValuePayload.Length < requiredLength)
+                        {
+                            var replacement = ArrayPool<byte>.Shared.Rent(requiredLength);
+                            rentedValuePayload.AsSpan(0, mergedLength).CopyTo(replacement);
+                            ArrayPool<byte>.Shared.Return(rentedValuePayload);
+                            rentedValuePayload = replacement;
+                        }
+
+                        field.Payload.Span.CopyTo(rentedValuePayload.AsSpan(mergedLength));
+                        mergedLength = requiredLength;
+                        valuePayload = rentedValuePayload.AsMemory(0, mergedLength);
+                    }
+                    valueObserved = true;
+                }
             }
         }
-        return true;
+        catch
+        {
+            if (rentedValuePayload is not null)
+                ArrayPool<byte>.Shared.Return(rentedValuePayload);
+            rentedValuePayload = null;
+            throw;
+        }
     }
 
     internal void Observe(
@@ -1093,11 +1138,15 @@ internal ref struct ProtobufMapEntries
 {
     private ProtobufMapEntry[]? _entries;
     private int[]? _buckets;
+    private byte[][]? _rentedPayloads;
+    private int _rentedPayloadCount;
     private int _bucketCount;
 
     internal ProtobufMapEntries(int capacity)
     {
         Count = 0;
+        _rentedPayloads = null;
+        _rentedPayloadCount = 0;
         if (capacity == 0)
         {
             _entries = null;
@@ -1122,8 +1171,11 @@ internal ref struct ProtobufMapEntries
     internal void Add(
         ProtobufFieldRulePlan field,
         ValidationCelValue key,
-        ReadOnlyMemory<byte> payload)
+        ReadOnlyMemory<byte> payload,
+        byte[]? rentedPayload)
     {
+        if (rentedPayload is not null)
+            TrackRentedPayload(rentedPayload);
         EnsureCapacity(Count + 1);
         var buckets = _buckets!;
         var bucket = (int)(Hash(field.RuntimeIndex, key) & (uint)(_bucketCount - 1));
@@ -1144,6 +1196,23 @@ internal ref struct ProtobufMapEntries
         entry.Key = key;
         entry.Payload = payload;
         buckets[bucket] = ++Count;
+    }
+
+    private void TrackRentedPayload(byte[] payload)
+    {
+        if (_rentedPayloads is null)
+        {
+            _rentedPayloads = ArrayPool<byte[]>.Shared.Rent(1);
+        }
+        else if (_rentedPayloadCount == _rentedPayloads.Length)
+        {
+            var replacement = ArrayPool<byte[]>.Shared.Rent(_rentedPayloads.Length * 2);
+            _rentedPayloads.AsSpan(0, _rentedPayloadCount).CopyTo(replacement);
+            ArrayPool<byte[]>.Shared.Return(_rentedPayloads, clearArray: true);
+            _rentedPayloads = replacement;
+        }
+
+        _rentedPayloads[_rentedPayloadCount++] = payload;
     }
 
     private void EnsureCapacity(int requiredCount)
@@ -1228,12 +1297,20 @@ internal ref struct ProtobufMapEntries
 
     public void Dispose()
     {
+        if (_rentedPayloads is not null)
+        {
+            for (var index = 0; index < _rentedPayloadCount; index++)
+                ArrayPool<byte>.Shared.Return(_rentedPayloads[index]);
+            ArrayPool<byte[]>.Shared.Return(_rentedPayloads, clearArray: true);
+        }
         if (_entries is not null)
             ArrayPool<ProtobufMapEntry>.Shared.Return(_entries, clearArray: true);
         if (_buckets is not null)
             ArrayPool<int>.Shared.Return(_buckets);
         _entries = null;
         _buckets = null;
+        _rentedPayloads = null;
+        _rentedPayloadCount = 0;
         _bucketCount = 0;
         Count = 0;
     }
@@ -2063,9 +2140,9 @@ internal static class ProtobufValidationValueDecoder
         var reader = new ProtobufValidationWireReader(payload);
         while (reader.TryRead(out var field))
         {
-            if (field.Number == 1)
+            if (field is { Number: 1, WireType: ProtobufWireType.Varint })
                 seconds = unchecked((long)field.Varint);
-            else if (field.Number == 2)
+            else if (field is { Number: 2, WireType: ProtobufWireType.Varint })
                 nanos = unchecked((int)field.Varint);
         }
         return seconds * 1_000m + nanos / 1_000_000m;
