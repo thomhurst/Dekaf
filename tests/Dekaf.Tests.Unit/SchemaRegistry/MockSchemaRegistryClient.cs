@@ -448,21 +448,35 @@ internal sealed class MockSchemaRegistryClient : IFormattedSchemaRegistryClient,
             throw new SchemaRegistryException(40401, $"Subject '{subject}' not found");
 
         var versions = list.Select(e => e.Version).ToList();
+        _schemasBySubject.Remove(subject);
 
         foreach (var entry in list)
         {
+            if (IsSchemaIdReferenced(entry.Id))
+                continue;
+
             _schemasById.Remove(entry.Id);
-            var guid = _schemaGuidsById[entry.Id];
-            _schemaGuidsById.Remove(entry.Id);
+            if (!_schemaGuidsById.Remove(entry.Id, out var guid))
+                continue;
             foreach (var key in _schemasByGuid.Keys.Where(key => key.Guid == guid).ToArray())
-            {
                 _schemasByGuid.Remove(key);
+        }
+
+        return Task.FromResult<IReadOnlyList<int>>(versions);
+    }
+
+    private bool IsSchemaIdReferenced(int id)
+    {
+        foreach (var schemas in _schemasBySubject.Values)
+        {
+            for (var index = 0; index < schemas.Count; index++)
+            {
+                if (schemas[index].Id == id)
+                    return true;
             }
         }
 
-        _schemasBySubject.Remove(subject);
-
-        return Task.FromResult<IReadOnlyList<int>>(versions);
+        return false;
     }
 
     public async Task<IReadOnlyList<Association>> GetAssociationsByResourceNameAsync(

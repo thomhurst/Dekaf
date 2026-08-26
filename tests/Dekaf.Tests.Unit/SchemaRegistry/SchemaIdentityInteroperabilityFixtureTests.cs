@@ -83,6 +83,34 @@ public sealed class SchemaIdentityInteroperabilityFixtureTests
     }
 
     [Test]
+    public async Task MockRegistry_DeleteSharedSubject_PreservesIdentityUntilLastAlias()
+    {
+        const int schemaId = 41;
+        var schemaGuid = Guid.Parse("bc703644-6486-4f78-98d3-c531c5c5a147");
+        var schema = new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = "{}"
+        };
+        using var registry = new MockSchemaRegistryClient();
+        registry.AddRegisteredSchema(schemaId, schemaGuid, "first-value", schema);
+        registry.AddSchemaSubject(schemaId, "second-value");
+
+        _ = await registry.DeleteSubjectAsync("first-value");
+
+        await Assert.That(await registry.GetSchemaAsync(schemaId)).IsSameReferenceAs(schema);
+        await Assert.That(await registry.GetSchemaByGuidAsync(schemaGuid.ToString())).IsSameReferenceAs(schema);
+        await Assert.That((await registry.GetSchemaBySubjectAsync("second-value")).Guid)
+            .IsEqualTo(schemaGuid.ToString());
+        await Assert.That((await registry.LookupSchemaAsync("second-value", schema)).Guid)
+            .IsEqualTo(schemaGuid.ToString());
+
+        var deletedVersions = await registry.DeleteSubjectAsync("second-value");
+
+        await Assert.That(deletedVersions).IsEquivalentTo([1]);
+    }
+
+    [Test]
     public async Task DualFixture_MalformedHeader_DoesNotFallBackToValidPrefix()
     {
         var fixture = GetFixture("json");
