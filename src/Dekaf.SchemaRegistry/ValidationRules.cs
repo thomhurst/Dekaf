@@ -1614,12 +1614,16 @@ internal sealed class ValidationCelBinaryNode(
                 AreEqual(leftValue, rightValue, context.EqualityGeneration)),
             ValidationCelTokenKind.NotEqual => ValidationCelValue.FromBoolean(
                 !AreEqual(leftValue, rightValue, context.EqualityGeneration)),
-            ValidationCelTokenKind.Less => ValidationCelValue.FromBoolean(Compare(leftValue, rightValue) < 0),
-            ValidationCelTokenKind.LessOrEqual => ValidationCelValue.FromBoolean(Compare(leftValue, rightValue) <= 0),
-            ValidationCelTokenKind.Greater => ValidationCelValue.FromBoolean(Compare(leftValue, rightValue) > 0),
-            ValidationCelTokenKind.GreaterOrEqual => ValidationCelValue.FromBoolean(Compare(leftValue, rightValue) >= 0),
-            ValidationCelTokenKind.Plus => ValidationCelValue.FromNumber(RequireNumber(leftValue) + RequireNumber(rightValue)),
-            ValidationCelTokenKind.Minus => ValidationCelValue.FromNumber(RequireNumber(leftValue) - RequireNumber(rightValue)),
+            ValidationCelTokenKind.Less => ValidationCelValue.FromBoolean(
+                !HasNaN(leftValue, rightValue) && Compare(leftValue, rightValue) < 0),
+            ValidationCelTokenKind.LessOrEqual => ValidationCelValue.FromBoolean(
+                !HasNaN(leftValue, rightValue) && Compare(leftValue, rightValue) <= 0),
+            ValidationCelTokenKind.Greater => ValidationCelValue.FromBoolean(
+                !HasNaN(leftValue, rightValue) && Compare(leftValue, rightValue) > 0),
+            ValidationCelTokenKind.GreaterOrEqual => ValidationCelValue.FromBoolean(
+                !HasNaN(leftValue, rightValue) && Compare(leftValue, rightValue) >= 0),
+            ValidationCelTokenKind.Plus => Add(leftValue, rightValue),
+            ValidationCelTokenKind.Minus => Subtract(leftValue, rightValue),
             _ => throw Unsupported("Unsupported binary operator.")
         };
     }
@@ -1637,7 +1641,7 @@ internal sealed class ValidationCelBinaryNode(
         {
             ValidationCelValueKind.Null => true,
             ValidationCelValueKind.Boolean => left.Boolean == right.Boolean,
-            ValidationCelValueKind.Number => CompareNumbers(left, right) == 0,
+            ValidationCelValueKind.Number => AreNumbersEqual(left, right),
             ValidationCelValueKind.String => ValidationCelStrings.Evaluate(left, right, ValidationCelStringOperation.Equal),
             ValidationCelValueKind.Bytes => left.Utf8Literal.Span.SequenceEqual(right.Utf8Literal.Span),
             ValidationCelValueKind.Object or ValidationCelValueKind.Array =>
@@ -1669,6 +1673,9 @@ internal sealed class ValidationCelBinaryNode(
         return value;
     }
 
+    private static bool AreNumbersEqual(ValidationCelValue left, ValidationCelValue right) =>
+        !HasNaN(left, right) && CompareNumbers(left, right) == 0;
+
     private static int Compare(ValidationCelValue left, ValidationCelValue right)
     {
         if (left.Kind == ValidationCelValueKind.Number && right.Kind == ValidationCelValueKind.Number)
@@ -1677,6 +1684,23 @@ internal sealed class ValidationCelBinaryNode(
             return ValidationCelStrings.Compare(left, right);
         throw Unsupported("Comparison operands must have matching numeric or string types.");
     }
+
+    private static ValidationCelValue Add(ValidationCelValue left, ValidationCelValue right) =>
+        left.IsFloating || right.IsFloating
+            ? ValidationCelValue.FromFloating(GetFloatingNumber(left) + GetFloatingNumber(right))
+            : ValidationCelValue.FromNumber(RequireNumber(left) + RequireNumber(right));
+
+    private static ValidationCelValue Subtract(ValidationCelValue left, ValidationCelValue right) =>
+        left.IsFloating || right.IsFloating
+            ? ValidationCelValue.FromFloating(GetFloatingNumber(left) - GetFloatingNumber(right))
+            : ValidationCelValue.FromNumber(RequireNumber(left) - RequireNumber(right));
+
+    private static double GetFloatingNumber(ValidationCelValue value) =>
+        value.IsFloating ? value.Floating : (double)RequireNumber(value);
+
+    private static bool HasNaN(ValidationCelValue left, ValidationCelValue right) =>
+        left.IsFloating && double.IsNaN(left.Floating) ||
+        right.IsFloating && double.IsNaN(right.Floating);
 
     private static int CompareNumbers(ValidationCelValue left, ValidationCelValue right)
     {
@@ -2485,7 +2509,10 @@ internal enum ValidationCelTokenKind : byte
     GreaterOrEqual
 }
 
-internal readonly record struct ValidationCelToken(ValidationCelTokenKind Kind, string Text);
+internal readonly record struct ValidationCelToken(
+    ValidationCelTokenKind Kind,
+    string Text,
+    ReadOnlyMemory<byte> Bytes = default);
 
 internal sealed class ValidationCelParser
 {
@@ -2598,7 +2625,7 @@ internal sealed class ValidationCelParser
             ValidationCelTokenKind.Null => new ValidationCelLiteralNode(ValidationCelValue.Null),
             ValidationCelTokenKind.String => new ValidationCelLiteralNode(ValidationCelValue.FromString(token.Text)),
             ValidationCelTokenKind.Bytes => new ValidationCelLiteralNode(
-                ValidationCelValue.FromBytes(Encoding.UTF8.GetBytes(token.Text))),
+                ValidationCelValue.FromBytes(token.Bytes)),
             ValidationCelTokenKind.Number => new ValidationCelLiteralNode(
                 ValidationCelValue.FromNumberLiteral(token.Text)),
             ValidationCelTokenKind.Identifier => ParseIdentifier(token.Text),
@@ -2759,12 +2786,12 @@ internal sealed class ValidationCelParser
             case '"':
                 return ReadString(character);
             default:
-                if (character == 'b' &&
+                if (character is 'b' or 'B' &&
                     _position + 1 < _expression.Length &&
                     _expression[_position + 1] is '\'' or '"')
                 {
                     _position++;
-                    return ReadString(_expression[_position], ValidationCelTokenKind.Bytes);
+                    return ReadBytes(_expression[_position]);
                 }
                 if (char.IsDigit(character))
                     return ReadNumber();
@@ -2838,9 +2865,7 @@ internal sealed class ValidationCelParser
         return new ValidationCelToken(ValidationCelTokenKind.Number, _expression[start.._position]);
     }
 
-    private ValidationCelToken ReadString(
-        char quote,
-        ValidationCelTokenKind kind = ValidationCelTokenKind.String)
+    private ValidationCelToken ReadString(char quote)
     {
         _position++;
         var builder = new StringBuilder();
@@ -2848,7 +2873,7 @@ internal sealed class ValidationCelParser
         {
             var character = _expression[_position++];
             if (character == quote)
-                return new ValidationCelToken(kind, builder.ToString());
+                return new ValidationCelToken(ValidationCelTokenKind.String, builder.ToString());
             if (character != '\\')
             {
                 builder.Append(character);
@@ -2868,6 +2893,112 @@ internal sealed class ValidationCelParser
             });
         }
         throw Unsupported("Unterminated CEL string literal.");
+    }
+
+    private ValidationCelToken ReadBytes(char quote)
+    {
+        _position++;
+        var bytes = new List<byte>();
+        var text = new StringBuilder();
+        while (_position < _expression.Length)
+        {
+            var character = _expression[_position++];
+            if (character == quote)
+            {
+                AppendUtf8(text, bytes);
+                return new ValidationCelToken(
+                    ValidationCelTokenKind.Bytes,
+                    string.Empty,
+                    bytes.ToArray());
+            }
+            if (character != '\\')
+            {
+                text.Append(character);
+                continue;
+            }
+            if (_position == _expression.Length)
+                throw Unsupported("Unterminated CEL bytes escape.");
+
+            var escaped = _expression[_position++];
+            if (escaped is 'x' or 'X')
+            {
+                AppendUtf8(text, bytes);
+                bytes.Add((byte)ReadHexEscape(2));
+                continue;
+            }
+            if (escaped is >= '0' and <= '3')
+            {
+                AppendUtf8(text, bytes);
+                bytes.Add(ReadOctalEscape(escaped));
+                continue;
+            }
+            if (escaped == 'u')
+            {
+                var codePoint = ReadHexEscape(4);
+                if (char.IsSurrogate((char)codePoint))
+                    throw Unsupported("CEL Unicode escape cannot contain a surrogate code point.");
+                text.Append((char)codePoint);
+                continue;
+            }
+
+            text.Append(escaped switch
+            {
+                'a' => '\a',
+                'b' => '\b',
+                'f' => '\f',
+                'n' => '\n',
+                'r' => '\r',
+                't' => '\t',
+                'v' => '\v',
+                '\\' => '\\',
+                '?' => '?',
+                '\'' => '\'',
+                '"' => '"',
+                '`' => '`',
+                var invalid => throw Unsupported($"Unsupported CEL bytes escape '\\{invalid}'.")
+            });
+        }
+        throw Unsupported("Unterminated CEL bytes literal.");
+    }
+
+    private int ReadHexEscape(int digits)
+    {
+        if (_position + digits > _expression.Length)
+            throw Unsupported("Incomplete CEL hexadecimal escape.");
+
+        var value = 0;
+        for (var index = 0; index < digits; index++)
+        {
+            var digit = _expression[_position++];
+            var nibble = digit switch
+            {
+                >= '0' and <= '9' => digit - '0',
+                >= 'a' and <= 'f' => digit - 'a' + 10,
+                >= 'A' and <= 'F' => digit - 'A' + 10,
+                _ => throw Unsupported($"Invalid CEL hexadecimal digit '{digit}'.")
+            };
+            value = (value << 4) | nibble;
+        }
+        return value;
+    }
+
+    private byte ReadOctalEscape(char first)
+    {
+        if (_position + 2 > _expression.Length)
+            throw Unsupported("Incomplete CEL octal escape.");
+        var second = _expression[_position++];
+        var third = _expression[_position++];
+        if (second is not (>= '0' and <= '7') || third is not (>= '0' and <= '7'))
+            throw Unsupported("Invalid CEL octal escape.");
+        return (byte)(((first - '0') << 6) | ((second - '0') << 3) | third - '0');
+    }
+
+    private static void AppendUtf8(StringBuilder text, List<byte> bytes)
+    {
+        if (text.Length == 0)
+            return;
+        bytes.AddRange(Encoding.UTF8.GetBytes(text.ToString()));
+        text.Clear();
     }
 
     private bool TryTake(ValidationCelTokenKind kind)

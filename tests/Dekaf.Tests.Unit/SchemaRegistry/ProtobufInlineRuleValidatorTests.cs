@@ -114,6 +114,36 @@ public sealed class ProtobufInlineRuleValidatorTests
     }
 
     [Test]
+    public async Task Validate_FloatingArithmeticPreservesFloatingOperands()
+    {
+        var result = EvaluateTypedRule(
+            "this + 1.0 > 0 && this - 1.0 < 0",
+            ValidationCelValue.FromFloating(0.5d));
+
+        await Assert.That(result.Boolean).IsTrue();
+    }
+
+    [Test]
+    public async Task Validate_NaNComparisonsAreAlwaysFalse()
+    {
+        var result = EvaluateTypedRule(
+            "this != this && !(this < 0) && !(this <= 0) && !(this > 0) && !(this >= 0)",
+            ValidationCelValue.FromFloating(double.NaN));
+
+        await Assert.That(result.Boolean).IsTrue();
+    }
+
+    [Test]
+    public async Task Validate_BytesLiteralDecodesHexEscapes()
+    {
+        var result = EvaluateTypedRule(
+            "this == b'\\xff\\x00'",
+            ValidationCelValue.FromBytes(new byte[] { 0xff, 0x00 }));
+
+        await Assert.That(result.Boolean).IsTrue();
+    }
+
+    [Test]
     public async Task Validate_WarmedValidPayload_AllocatesZeroBytes()
     {
         var payload = CreateValidMessage().ToByteArray();
@@ -393,6 +423,21 @@ public sealed class ProtobufInlineRuleValidatorTests
         Topic = "validation-topic",
         Component = SerializationComponent.Value
     };
+
+    private static ValidationResult EvaluateTypedRule(string expression, ValidationCelValue value)
+    {
+        var rule = CompiledValidationRule.Compile(
+            new ValidationRule { Name = "protobuf-edge-case", Expr = expression },
+            new Dictionary<string, int>(StringComparer.Ordinal),
+            [],
+            []);
+        return rule.Evaluate(
+            value,
+            nowUnixMilliseconds: 0,
+            default,
+            default,
+            equalityGeneration: 0);
+    }
 
     private static byte[] CreateWireBytes(int schemaId, ValidationEnvelope message)
         => CreateWireBytes(schemaId, message.ToByteArray());

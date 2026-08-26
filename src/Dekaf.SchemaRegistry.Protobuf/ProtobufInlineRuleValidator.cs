@@ -277,7 +277,7 @@ internal sealed class ProtobufMessageRulePlan
 {
     private readonly MessageDescriptor _descriptor;
     private ProtobufCompiledRuleSet _messageRules = ProtobufCompiledRuleSet.Empty;
-    private Dictionary<int, ProtobufFieldRulePlan> _fields = [];
+    private readonly Dictionary<int, ProtobufFieldRulePlan> _fields = [];
     private ProtobufFieldRulePlan[] _allFields = [];
     private ProtobufFieldRulePlan[] _ruleFields = [];
     private int _fieldSlotCount;
