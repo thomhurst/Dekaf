@@ -255,11 +255,11 @@ public sealed class ConsumerLagTests
         await using var consumer = CreateConsumer();
         consumer.IncrementalAssign([new TopicPartitionOffset(Partition.Topic, Partition.Partition, 10)]);
 
-        UpdateCachedLagEndOffset(consumer, 110, watermarkUpdateSequence: int.MinValue);
+        UpdateCachedLagEndOffset(consumer, 110, watermarkUpdateSequence: 1L << 32);
         UpdateWatermarksFromFetchResponse(
             consumer,
             CreateFetchResponse(100),
-            watermarkUpdateSequence: int.MaxValue);
+            watermarkUpdateSequence: uint.MaxValue);
 
         await Assert.That(consumer.GetWatermarkOffsets(Partition)).IsEqualTo(new WatermarkOffsets(0, 100));
         await Assert.That(consumer.GetCurrentLag(Partition)).IsEqualTo(100);
@@ -267,7 +267,7 @@ public sealed class ConsumerLagTests
         UpdateWatermarksFromFetchResponse(
             consumer,
             CreateFetchResponse(120),
-            watermarkUpdateSequence: int.MinValue);
+            watermarkUpdateSequence: 1L << 32);
 
         await Assert.That(consumer.GetWatermarkOffsets(Partition)).IsEqualTo(new WatermarkOffsets(0, 120));
         await Assert.That(consumer.GetCurrentLag(Partition)).IsEqualTo(110);
@@ -418,7 +418,7 @@ public sealed class ConsumerLagTests
         KafkaConsumer<string, string> consumer,
         FetchResponsePartition response,
         int? assignmentVersion = null,
-        int watermarkUpdateSequence = 0)
+        long watermarkUpdateSequence = 0)
     {
         var method = typeof(KafkaConsumer<string, string>).GetMethod(
             "UpdateWatermarksFromFetchResponse",
@@ -435,7 +435,7 @@ public sealed class ConsumerLagTests
     private static void UpdateCachedLagEndOffset(
         KafkaConsumer<string, string> consumer,
         long lagEndOffset,
-        int watermarkUpdateSequence)
+        long watermarkUpdateSequence)
     {
         var method = typeof(KafkaConsumer<string, string>).GetMethod(
             "UpdateCachedLagEndOffset",
@@ -494,7 +494,7 @@ public sealed class ConsumerLagTests
             response.HighWatermark,
             response.LastStableOffset,
             assignmentVersion,
-            0
+            0L
         ]);
     }
 
@@ -524,5 +524,5 @@ public sealed class ConsumerLagTests
         TopicPartition partition,
         FetchResponsePartition response,
         int assignmentVersion,
-        int watermarkUpdateSequence);
+        long watermarkUpdateSequence);
 }

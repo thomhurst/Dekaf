@@ -1510,7 +1510,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private int _snapshotOperationActive;
     private readonly object _snapshotStateGate = new();
     // Captured before each fetch/ListOffsets request so delayed responses cannot regress the cache.
-    private int _watermarkUpdateSequence;
+    private long _watermarkUpdateSequence;
 
     private static readonly long s_preferredReadReplicaMaxAgeTimestampDelta =
         (long)(TimeSpan.FromMinutes(5).TotalSeconds * Stopwatch.Frequency);
@@ -8475,8 +8475,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         int assignmentVersion,
         CancellationToken cancellationToken)
     {
-        var watermarkUpdateSequence = Interlocked.Increment(ref _watermarkUpdateSequence);
-        var highWatermark = await QueryLatestOffsetCoreAsync(partition, cancellationToken)
+        var latestOffset = await QueryLatestOffsetCoreAsync(partition, cancellationToken)
             .ConfigureAwait(false);
         lock (_snapshotStateGate)
         {
@@ -8489,8 +8488,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 return null;
             }
 
-            UpdateCachedLagEndOffset(partition, highWatermark, watermarkUpdateSequence);
-            return CalculateLag(position, highWatermark);
+            UpdateCachedLagEndOffset(partition, latestOffset.Offset, latestOffset.UpdateSequence);
+            return CalculateLag(position, latestOffset.Offset);
         }
     }
 
@@ -8544,7 +8543,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         return null;
     }
 
-    private async ValueTask<long> QueryLatestOffsetCoreAsync(
+    private async ValueTask<(long Offset, long UpdateSequence)> QueryLatestOffsetCoreAsync(
         TopicPartition topicPartition,
         CancellationToken cancellationToken)
     {
@@ -8553,6 +8552,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             return await RetryHelper.WithRetryAsync(async () =>
             {
+                var watermarkUpdateSequence = Interlocked.Increment(ref _watermarkUpdateSequence);
                 var connectionLease = await GetPartitionLeaderControlConnectionAsync(
                         topicPartition,
                         apiTimeout.Token)
@@ -8593,7 +8593,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         $"Failed to query latest offset for {topicPartition}: {partitionResponse.ErrorCode}");
                 }
 
-                return partitionResponse.Offset;
+                return (partitionResponse.Offset, watermarkUpdateSequence);
             }, _metadataManager, apiTimeout.Token, _options.RetryBackoffMs, _options.RetryBackoffMaxMs)
                 .ConfigureAwait(false);
         }
@@ -8629,11 +8629,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         ThrowIfNotInitialized();
 
         using var apiTimeout = new ApiTimeoutScope(_options.DefaultApiTimeoutMs, cancellationToken);
-        var watermarkUpdateSequence = Interlocked.Increment(ref _watermarkUpdateSequence);
         try
         {
             return await RetryHelper.WithRetryAsync(async () =>
             {
+                var watermarkUpdateSequence = Interlocked.Increment(ref _watermarkUpdateSequence);
                 var connectionLease = await GetPartitionLeaderControlConnectionAsync(topicPartition, apiTimeout.Token)
                     .ConfigureAwait(false);
                 if (connectionLease is null)
@@ -8728,7 +8728,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         long high,
         long lagEndOffset,
         int? assignmentGeneration,
-        int watermarkUpdateSequence)
+        long watermarkUpdateSequence)
     {
         lock (_snapshotStateGate)
         {
@@ -10838,7 +10838,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         TopicPartition partition,
         FetchResponsePartition partitionResponse,
         int assignmentVersion,
-        int watermarkUpdateSequence)
+        long watermarkUpdateSequence)
     {
         // Only update if we have valid watermark data
         // HighWatermark is the next offset to be written (end of log)
@@ -10866,7 +10866,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         long high,
         long lagEndOffset,
         int assignmentVersion,
-        int watermarkUpdateSequence)
+        long watermarkUpdateSequence)
     {
         if (!_watermarks.TryGetValue(partition, out var entry))
         {
@@ -10894,7 +10894,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private void UpdateCachedLagEndOffset(
         TopicPartition partition,
         long lagEndOffset,
-        int watermarkUpdateSequence)
+        long watermarkUpdateSequence)
     {
         if (_watermarks.TryGetValue(partition, out var entry))
         {
@@ -10912,7 +10912,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         long high,
         long lagEndOffset,
         int assignmentVersion,
-        int watermarkUpdateSequence)
+        long watermarkUpdateSequence)
     {
         BeforeWatermarkCacheEntryCreationForTest?.Invoke();
         WatermarkCacheEntry entry;
@@ -10953,7 +10953,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         long high,
         long lagEndOffset,
         int assignmentVersion,
-        int watermarkUpdateSequence)
+        long watermarkUpdateSequence)
     {
         // Recheck after resolving the entry. If assignment publication starts after
         // this point, this reference is necessarily the old entry, which publication
@@ -10970,31 +10970,35 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // odd while a writer owns the entry, even when readers can take a coherent snapshot.
         // Writers also reject each field set when its response predates the last applied request.
         private int _version;
+        // Uses the padding beside _version and is read only while state is divergent.
+        private int _watermarkOffsetsUpdateSequenceLow;
         private long _low;
         private long _high;
         private long _lagEndOffset;
-        private int _watermarkOffsetsUpdateSequence;
-        private int _lagEndOffsetUpdateSequence;
+        // The low 63 bits hold lag freshness; the sign bit marks divergence.
+        // During divergence, the public-watermark sequence's low 32 bits live in
+        // the padding field above. Normal fetch updates retain the original
+        // one-compare, one-state-store fast path.
+        private long _watermarkUpdateState;
 
-        public WatermarkCacheEntry(long lagEndOffset, int watermarkUpdateSequence)
+        public WatermarkCacheEntry(long lagEndOffset, long watermarkUpdateSequence)
         {
             _low = UnknownWatermarkOffset;
             _high = UnknownWatermarkOffset;
             _lagEndOffset = lagEndOffset;
-            _lagEndOffsetUpdateSequence = watermarkUpdateSequence;
+            _watermarkUpdateState = long.MinValue | watermarkUpdateSequence;
         }
 
         public WatermarkCacheEntry(
             long low,
             long high,
             long lagEndOffset,
-            int watermarkUpdateSequence)
+            long watermarkUpdateSequence)
         {
             _low = low;
             _high = high;
             _lagEndOffset = lagEndOffset;
-            _watermarkOffsetsUpdateSequence = watermarkUpdateSequence;
-            _lagEndOffsetUpdateSequence = watermarkUpdateSequence;
+            _watermarkUpdateState = watermarkUpdateSequence;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -11002,7 +11006,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             long low,
             long high,
             long lagEndOffset,
-            int watermarkUpdateSequence)
+            long watermarkUpdateSequence)
         {
             var spinner = new SpinWait();
             while (true)
@@ -11015,26 +11019,25 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     continue;
                 }
 
-                if (_low == UnknownWatermarkOffset
-                    || IsCurrentOrNewerSequence(watermarkUpdateSequence, _watermarkOffsetsUpdateSequence))
+                if ((ulong)watermarkUpdateSequence < (ulong)_watermarkUpdateState)
                 {
-                    Volatile.Write(ref _low, low);
-                    Volatile.Write(ref _high, high);
-                    _watermarkOffsetsUpdateSequence = watermarkUpdateSequence;
+                    UpdateStale(low, high, lagEndOffset, watermarkUpdateSequence);
+
+                    Volatile.Write(ref _version, version + 2);
+                    return;
                 }
 
-                if (IsCurrentOrNewerSequence(watermarkUpdateSequence, _lagEndOffsetUpdateSequence))
-                {
-                    Volatile.Write(ref _lagEndOffset, lagEndOffset);
-                    _lagEndOffsetUpdateSequence = watermarkUpdateSequence;
-                }
+                Volatile.Write(ref _low, low);
+                Volatile.Write(ref _high, high);
+                Volatile.Write(ref _lagEndOffset, lagEndOffset);
+                _watermarkUpdateState = watermarkUpdateSequence;
                 Volatile.Write(ref _version, version + 2);
                 return;
             }
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public void UpdateLagEndOffset(long lagEndOffset, int watermarkUpdateSequence)
+        public void UpdateLagEndOffset(long lagEndOffset, long watermarkUpdateSequence)
         {
             var spinner = new SpinWait();
             while (true)
@@ -11047,19 +11050,57 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     continue;
                 }
 
-                if (IsCurrentOrNewerSequence(watermarkUpdateSequence, _lagEndOffsetUpdateSequence))
+                var updateState = _watermarkUpdateState;
+                var lagEndOffsetUpdateSequence = updateState & long.MaxValue;
+                if (watermarkUpdateSequence >= lagEndOffsetUpdateSequence)
                 {
+                    if (updateState >= 0)
+                        _watermarkOffsetsUpdateSequenceLow = (int)lagEndOffsetUpdateSequence;
+
                     Volatile.Write(ref _lagEndOffset, lagEndOffset);
-                    _lagEndOffsetUpdateSequence = watermarkUpdateSequence;
+                    _watermarkUpdateState = long.MinValue | watermarkUpdateSequence;
                 }
                 Volatile.Write(ref _version, version + 2);
                 return;
             }
         }
 
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static bool IsCurrentOrNewerSequence(int candidate, int current) =>
-            unchecked(candidate - current) >= 0;
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private void UpdateStale(
+            long low,
+            long high,
+            long lagEndOffset,
+            long watermarkUpdateSequence)
+        {
+            var updateState = _watermarkUpdateState;
+            if (updateState >= 0)
+                return;
+
+            var lagEndOffsetUpdateSequence = updateState & long.MaxValue;
+            if (watermarkUpdateSequence >= lagEndOffsetUpdateSequence)
+            {
+                Volatile.Write(ref _low, low);
+                Volatile.Write(ref _high, high);
+                Volatile.Write(ref _lagEndOffset, lagEndOffset);
+                _watermarkUpdateState = watermarkUpdateSequence;
+                return;
+            }
+
+            var watermarkOffsetsUpdateSequence = (lagEndOffsetUpdateSequence & ~uint.MaxValue)
+                | (uint)_watermarkOffsetsUpdateSequenceLow;
+            if (watermarkOffsetsUpdateSequence > lagEndOffsetUpdateSequence)
+                watermarkOffsetsUpdateSequence -= 1L << 32;
+
+            if (_low != UnknownWatermarkOffset
+                && watermarkUpdateSequence < watermarkOffsetsUpdateSequence)
+            {
+                return;
+            }
+
+            Volatile.Write(ref _low, low);
+            Volatile.Write(ref _high, high);
+            _watermarkOffsetsUpdateSequenceLow = (int)watermarkUpdateSequence;
+        }
 
         public WatermarkOffsets? ReadWatermarks()
         {

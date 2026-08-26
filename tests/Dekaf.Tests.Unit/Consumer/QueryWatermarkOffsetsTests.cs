@@ -150,6 +150,55 @@ public sealed class QueryWatermarkOffsetsTests
     }
 
     [Test]
+    public async Task QueryCurrentLagAsync_RetryPublishesNewerOffset()
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var connection = new LeaseTrackingConnection();
+        connectionPool.GetConnectionByIndexAsync(0, 1, Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult<IKafkaConnection>(connection));
+        var metadataManager = new MetadataManager(connectionPool, ["localhost:9092"]);
+        metadataManager.SetApiVersion(
+            ApiKey.ListOffsets,
+            ListOffsetsRequest.LowestSupportedVersion,
+            ListOffsetsRequest.HighestSupportedVersion);
+        metadataManager.Metadata.Update(CreateMetadataResponse());
+        await using var consumer = new KafkaConsumer<string, string>(
+            new ConsumerOptions
+            {
+                BootstrapServers = ["localhost:9092"],
+                GroupId = "test-group",
+                RetryBackoffMs = 1,
+                RetryBackoffMaxMs = 1
+            },
+            Serializers.String,
+            Serializers.String,
+            connectionPool,
+            metadataManager);
+        SetInitialized(consumer);
+        var partition = new TopicPartition(Topic, Partition);
+        consumer.IncrementalAssign([new TopicPartitionOffset(Topic, Partition, 32)]);
+
+        var requestCount = 0;
+        connection.SendHandler = request =>
+        {
+            if (Interlocked.Increment(ref requestCount) == 1)
+            {
+                var interveningSequence = AdvanceWatermarkUpdateSequence(consumer);
+                UpdateCachedLagEndOffset(consumer, partition, 100, interveningSequence);
+                return ValueTask.FromResult(CreateListOffsetsResponse(
+                    request,
+                    errorCode: ErrorCode.LeaderNotAvailable));
+            }
+
+            return ValueTask.FromResult(CreateListOffsetsResponse(request, offset: 110));
+        };
+
+        await Assert.That(await consumer.QueryCurrentLagAsync(partition)).IsEqualTo(78);
+        await Assert.That(consumer.GetCurrentLag(partition)).IsEqualTo(78);
+        await Assert.That(connection.SendCount).IsEqualTo(2);
+    }
+
+    [Test]
     public async Task QueryCurrentLagAsync_AssignmentChangeDuringRefreshReturnsNull()
     {
         var connectionPool = Substitute.For<IConnectionPool>();
@@ -463,7 +512,8 @@ public sealed class QueryWatermarkOffsetsTests
 
     private static ListOffsetsResponse CreateListOffsetsResponse(
         ListOffsetsRequest request,
-        long? offset = null)
+        long? offset = null,
+        ErrorCode errorCode = ErrorCode.None)
     {
         var timestamp = request.Topics[0].Partitions[0].Timestamp;
         var responseOffset = offset ?? (timestamp == EarliestOffsetTimestamp ? 10 : 42);
@@ -479,7 +529,7 @@ public sealed class QueryWatermarkOffsetsTests
                         new ListOffsetsResponsePartition
                         {
                             PartitionIndex = Partition,
-                            ErrorCode = ErrorCode.None,
+                            ErrorCode = errorCode,
                             Offset = responseOffset
                         }
                     ]
@@ -529,6 +579,29 @@ public sealed class QueryWatermarkOffsetsTests
             ?? throw new InvalidOperationException("_initialized field not found - was it renamed?");
 
         initializedField.SetValue(consumer, true);
+    }
+
+    private static long AdvanceWatermarkUpdateSequence(KafkaConsumer<string, string> consumer)
+    {
+        var sequenceField = typeof(KafkaConsumer<string, string>)
+            .GetField("_watermarkUpdateSequence", BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("_watermarkUpdateSequence field not found.");
+        var sequence = (long)sequenceField.GetValue(consumer)! + 1;
+        sequenceField.SetValue(consumer, sequence);
+        return sequence;
+    }
+
+    private static void UpdateCachedLagEndOffset(
+        KafkaConsumer<string, string> consumer,
+        TopicPartition partition,
+        long lagEndOffset,
+        long watermarkUpdateSequence)
+    {
+        var method = typeof(KafkaConsumer<string, string>).GetMethod(
+            "UpdateCachedLagEndOffset",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("UpdateCachedLagEndOffset method not found.");
+        method.Invoke(consumer, [partition, lagEndOffset, watermarkUpdateSequence]);
     }
 
     private static async ValueTask InvokeHandleTopicIdentityChangesAsync(

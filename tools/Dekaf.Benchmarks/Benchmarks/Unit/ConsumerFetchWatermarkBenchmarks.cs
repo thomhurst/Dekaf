@@ -54,5 +54,5 @@ public class ConsumerFetchWatermarkBenchmarks
         TopicPartition partition,
         FetchResponsePartition response,
         int assignmentVersion,
-        int watermarkUpdateSequence);
+        long watermarkUpdateSequence);
 }
