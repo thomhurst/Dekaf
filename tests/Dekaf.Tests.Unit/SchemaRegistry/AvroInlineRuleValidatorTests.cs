@@ -132,6 +132,50 @@ public class AvroInlineRuleValidatorTests
     }
 
     [Test]
+    public async Task Validate_MixedRootAndMemberRulesShareNestedTraversal()
+    {
+        const string schemaText = """
+            {
+              "type": "record",
+              "name": "MixedRootMemberNestedRuleRecord",
+              "confluent:rules": [{
+                "name": "root-and-member",
+                "expr": "size(this) == 1 && size(this.items) == 2"
+              }],
+              "fields": [{
+                "name": "items",
+                "confluent:rules": [{ "name": "field-size", "expr": "size(this) == 2" }],
+                "type": {
+                  "type": "array",
+                  "items": {
+                    "type": "int",
+                    "confluent:rules": [{ "name": "positive", "expr": "this > 0" }]
+                  }
+                }
+              }]
+            }
+            """;
+        var schema = (RecordSchema)AvroSchema.Parse(schemaText);
+        var record = new GenericRecord(schema);
+        record.Add("items", TwoItems);
+        var payload = Serialize(record, schema);
+        var validator = new AvroInlineRuleValidator(schema);
+
+        validator.Validate(payload, 17, failFast: false);
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var index = 0; index < 100; index++)
+            validator.Validate(payload, 17, failFast: false);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        record.Add("items", new[] { 1, -1 });
+        var exception = Assert.Throws<ValidationRulesFailedException>(() =>
+            validator.Validate(Serialize(record, schema), 17, failFast: false));
+
+        await Assert.That(allocated).IsEqualTo(0);
+        await Assert.That(exception.Violations[0].Rule.Name).IsEqualTo("positive");
+    }
+
+    [Test]
     public async Task Validate_RootArrayAndMapValuesShareNestedTraversal()
     {
         const string arraySchemaText = """
@@ -606,6 +650,112 @@ public class AvroInlineRuleValidatorTests
             validator.Validate(payload, 27, failFast: false);
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
+        await Assert.That(allocated).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task Validate_EqualNumericArraysUseCelValueTypes()
+    {
+        const string schemaText = """
+            {
+              "type": "record",
+              "name": "NumericAggregateSchemaEqualityRecord",
+              "confluent:rules": [{ "name": "equal", "expr": "this.ints == this.longs" }],
+              "fields": [
+                { "name": "ints", "type": { "type": "array", "items": "int" } },
+                { "name": "longs", "type": { "type": "array", "items": "long" } }
+              ]
+            }
+            """;
+        var schema = (RecordSchema)AvroSchema.Parse(schemaText);
+        var record = new GenericRecord(schema);
+        record.Add("ints", TwoItems);
+        record.Add("longs", new long[] { 1, 2 });
+        var payload = Serialize(record, schema);
+        var validator = new AvroInlineRuleValidator(schema);
+
+        validator.Validate(payload, 27, failFast: false);
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var index = 0; index < 100; index++)
+            validator.Validate(payload, 27, failFast: false);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        record.Add("longs", new long[] { 1, 3 });
+        Assert.Throws<ValidationRulesFailedException>(() =>
+            validator.Validate(Serialize(record, schema), 27, failFast: false));
+
+        await Assert.That(allocated).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task Validate_BytesLiteralDecodesHexEscapes()
+    {
+        const string schemaText = """
+            {
+              "type": "record",
+              "name": "BytesLiteralRecord",
+              "confluent:rules": [{ "name": "bytes", "expr": "this.payload == b'\\x00\\xFF'" }],
+              "fields": [{ "name": "payload", "type": "bytes" }]
+            }
+            """;
+        var schema = (RecordSchema)AvroSchema.Parse(schemaText);
+        var record = new GenericRecord(schema);
+        record.Add("payload", new byte[] { 0, 255 });
+        var validator = new AvroInlineRuleValidator(schema);
+        var payload = Serialize(record, schema);
+
+        validator.Validate(payload, 27, failFast: false);
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var index = 0; index < 100; index++)
+            validator.Validate(payload, 27, failFast: false);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        record.Add("payload", new byte[] { 0, 254 });
+        Assert.Throws<ValidationRulesFailedException>(() =>
+            validator.Validate(Serialize(record, schema), 27, failFast: false));
+        await Assert.That(allocated).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task Validate_EqualStringLikeArraysUseCelValueTypes()
+    {
+        const string schemaText = """
+            {
+              "type": "record",
+              "name": "StringAggregateSchemaEqualityRecord",
+              "confluent:rules": [{ "name": "equal", "expr": "this.enums == this.strings" }],
+              "fields": [
+                {
+                  "name": "enums",
+                  "type": {
+                    "type": "array",
+                    "items": { "type": "enum", "name": "StringAggregateEnum", "symbols": ["a", "b"] }
+                  }
+                },
+                { "name": "strings", "type": { "type": "array", "items": "string" } }
+              ]
+            }
+            """;
+        var validator = new AvroInlineRuleValidator(AvroSchema.Parse(schemaText));
+        ReadOnlyMemory<byte> equalPayload = new byte[]
+        {
+            4, 0, 2, 0,
+            4, 2, (byte)'a', 2, (byte)'b', 0
+        };
+        ReadOnlyMemory<byte> unequalPayload = new byte[]
+        {
+            4, 0, 2, 0,
+            4, 2, (byte)'a', 2, (byte)'c', 0
+        };
+
+        validator.Validate(equalPayload, 27, failFast: false);
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var index = 0; index < 100; index++)
+            validator.Validate(equalPayload, 27, failFast: false);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        Assert.Throws<ValidationRulesFailedException>(() =>
+            validator.Validate(unequalPayload, 27, failFast: false));
         await Assert.That(allocated).IsEqualTo(0);
     }
 

@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Buffers.Binary;
+using System.Text;
 using AvroSchema = global::Avro.Schema;
 
 namespace Dekaf.SchemaRegistry.Avro;
@@ -20,15 +21,18 @@ internal sealed class AvroAggregateEqualityComparerFactory
         {
             var group = _groups[index];
             if (AvroSchemaLogicalComparer.Instance.Equals(schema, group.Schema) ||
-                AvroValueSchemaComparer.AreEqual(schema, group.Schema))
+                AvroValueSchemaComparer.AreCelCompatible(schema, group.Schema))
             {
-                return new AvroAggregateEqualityComparer(schema, group);
+                return new AvroAggregateEqualityComparer(
+                    schema,
+                    group,
+                    AvroValueSchemaComparer.HaveSameEncoding(schema, group.Schema));
             }
         }
 
         var newGroup = new SchemaGroup(schema);
         _groups.Add(newGroup);
-        return new AvroAggregateEqualityComparer(schema, newGroup);
+        return new AvroAggregateEqualityComparer(schema, newGroup, rawEqualityCompatible: true);
     }
 
     private sealed class SchemaGroup(AvroSchema schema)
@@ -39,7 +43,8 @@ internal sealed class AvroAggregateEqualityComparerFactory
 
 internal sealed class AvroAggregateEqualityComparer(
     AvroSchema schema,
-    object schemaToken) : IValidationCelAggregateComparer
+    object schemaToken,
+    bool rawEqualityCompatible) : IValidationCelAggregateComparer
 {
     private const int StackMapEntryCount = 16;
     private const int StackMapBucketCount = 32;
@@ -49,7 +54,7 @@ internal sealed class AvroAggregateEqualityComparer(
     private readonly object _schemaToken = schemaToken;
 
     object? IValidationCelAggregateComparer.RawEqualityToken =>
-        _requiresSemanticEquality ? null : _schemaToken;
+        _requiresSemanticEquality || !rawEqualityCompatible ? null : _schemaToken;
 
     bool IValidationCelAggregateComparer.AreEqual(
         ReadOnlyMemory<byte> left,
@@ -62,68 +67,174 @@ internal sealed class AvroAggregateEqualityComparer(
 
         var leftReader = new AvroValidationReader(left);
         var rightReader = new AvroValidationReader(right);
-        return AreEqual(_schema, ref leftReader, ref rightReader) &&
+        return AreEqual(_schema, avroRight._schema, ref leftReader, ref rightReader) &&
             leftReader.End && rightReader.End;
     }
 
     private static bool AreEqual(
-        AvroSchema schema,
+        AvroSchema leftSchema,
+        AvroSchema rightSchema,
         ref AvroValidationReader left,
         ref AvroValidationReader right)
     {
-        schema = AvroValueRulePlan.Unwrap(schema);
-        switch (schema.Tag)
+        leftSchema = AvroValueRulePlan.Unwrap(leftSchema);
+        rightSchema = AvroValueRulePlan.Unwrap(rightSchema);
+        if (IsNumber(leftSchema.Tag) && IsNumber(rightSchema.Tag))
+        {
+            return ValidationCelBinaryNode.NumbersAreEqual(
+                ReadNumber(leftSchema.Tag, ref left),
+                ReadNumber(rightSchema.Tag, ref right));
+        }
+        if (IsBytes(leftSchema.Tag) && IsBytes(rightSchema.Tag))
+        {
+            return ReadBytes(leftSchema, ref left).Span.SequenceEqual(
+                ReadBytes(rightSchema, ref right).Span);
+        }
+        if (IsString(leftSchema.Tag) && IsString(rightSchema.Tag))
+            return StringValuesAreEqual(leftSchema, rightSchema, ref left, ref right);
+        if (leftSchema.Tag != rightSchema.Tag &&
+            !(leftSchema.Tag is AvroSchema.Type.Record or AvroSchema.Type.Error &&
+              rightSchema.Tag is AvroSchema.Type.Record or AvroSchema.Type.Error))
+        {
+            return false;
+        }
+
+        switch (leftSchema.Tag)
         {
             case AvroSchema.Type.Null:
                 return true;
             case AvroSchema.Type.Boolean:
                 return (left.Read(1).Span[0] != 0) == (right.Read(1).Span[0] != 0);
-            case AvroSchema.Type.Int:
-            case AvroSchema.Type.Long:
-            case AvroSchema.Type.Enumeration:
-                return left.ReadLong() == right.ReadLong();
-            case AvroSchema.Type.Float:
-                var leftFloat = BinaryPrimitives.ReadSingleLittleEndian(left.Read(sizeof(float)).Span);
-                var rightFloat = BinaryPrimitives.ReadSingleLittleEndian(right.Read(sizeof(float)).Span);
-                return !float.IsNaN(leftFloat) && leftFloat.CompareTo(rightFloat) == 0;
-            case AvroSchema.Type.Double:
-                var leftDouble = BinaryPrimitives.ReadDoubleLittleEndian(left.Read(sizeof(double)).Span);
-                var rightDouble = BinaryPrimitives.ReadDoubleLittleEndian(right.Read(sizeof(double)).Span);
-                return !double.IsNaN(leftDouble) && leftDouble.CompareTo(rightDouble) == 0;
-            case AvroSchema.Type.String:
-            case AvroSchema.Type.Bytes:
-                return left.ReadLengthPrefixed().Span.SequenceEqual(right.ReadLengthPrefixed().Span);
-            case AvroSchema.Type.Fixed:
-                var size = ((global::Avro.FixedSchema)schema).Size;
-                return left.Read(size).Span.SequenceEqual(right.Read(size).Span);
             case AvroSchema.Type.Record:
             case AvroSchema.Type.Error:
-                var record = (global::Avro.RecordSchema)schema;
-                for (var index = 0; index < record.Fields.Count; index++)
+                var leftRecord = (global::Avro.RecordSchema)leftSchema;
+                var rightRecord = (global::Avro.RecordSchema)rightSchema;
+                for (var index = 0; index < leftRecord.Fields.Count; index++)
                 {
-                    if (!AreEqual(record.Fields[index].Schema, ref left, ref right))
+                    if (!AreEqual(
+                            leftRecord.Fields[index].Schema,
+                            rightRecord.Fields[index].Schema,
+                            ref left,
+                            ref right))
+                    {
                         return false;
+                    }
                 }
                 return true;
             case AvroSchema.Type.Array:
                 return ArraysAreEqual(
-                    ((global::Avro.ArraySchema)schema).ItemSchema,
+                    ((global::Avro.ArraySchema)leftSchema).ItemSchema,
+                    ((global::Avro.ArraySchema)rightSchema).ItemSchema,
                     ref left,
                     ref right);
             case AvroSchema.Type.Map:
                 return MapsAreEqual(
-                    ((global::Avro.MapSchema)schema).ValueSchema,
+                    ((global::Avro.MapSchema)leftSchema).ValueSchema,
+                    ((global::Avro.MapSchema)rightSchema).ValueSchema,
                     ref left,
                     ref right);
             case AvroSchema.Type.Union:
-                var union = (global::Avro.UnionSchema)schema;
+                var leftUnion = (global::Avro.UnionSchema)leftSchema;
+                var rightUnion = (global::Avro.UnionSchema)rightSchema;
                 var leftBranch = left.ReadLong();
                 var rightBranch = right.ReadLong();
-                if (leftBranch != rightBranch || (ulong)leftBranch >= (ulong)union.Count)
+                if (leftBranch != rightBranch ||
+                    (ulong)leftBranch >= (ulong)leftUnion.Count ||
+                    (ulong)rightBranch >= (ulong)rightUnion.Count)
+                {
                     return false;
-                return AreEqual(union[(int)leftBranch], ref left, ref right);
+                }
+                return AreEqual(
+                    leftUnion[(int)leftBranch],
+                    rightUnion[(int)rightBranch],
+                    ref left,
+                    ref right);
             default:
-                throw InvalidPayload($"unsupported schema type {schema.Tag}");
+                throw InvalidPayload($"unsupported schema type {leftSchema.Tag}");
+        }
+    }
+
+    private static bool IsNumber(AvroSchema.Type type) =>
+        type is AvroSchema.Type.Int or AvroSchema.Type.Long or
+            AvroSchema.Type.Float or AvroSchema.Type.Double;
+
+    private static ValidationCelValue ReadNumber(
+        AvroSchema.Type type,
+        ref AvroValidationReader reader) => type switch
+    {
+        AvroSchema.Type.Int or AvroSchema.Type.Long =>
+            ValidationCelValue.FromNumber(reader.ReadLong()),
+        AvroSchema.Type.Float => ValidationCelValue.FromFloating(
+            BinaryPrimitives.ReadSingleLittleEndian(reader.Read(sizeof(float)).Span)),
+        AvroSchema.Type.Double => ValidationCelValue.FromFloating(
+            BinaryPrimitives.ReadDoubleLittleEndian(reader.Read(sizeof(double)).Span)),
+        _ => throw new InvalidOperationException("Numeric Avro schema expected.")
+    };
+
+    private static bool IsBytes(AvroSchema.Type type) =>
+        type is AvroSchema.Type.Bytes or AvroSchema.Type.Fixed;
+
+    private static ReadOnlyMemory<byte> ReadBytes(
+        AvroSchema schema,
+        ref AvroValidationReader reader) => schema.Tag == AvroSchema.Type.Bytes
+        ? reader.ReadLengthPrefixed()
+        : reader.Read(((global::Avro.FixedSchema)schema).Size);
+
+    private static bool IsString(AvroSchema.Type type) =>
+        type is AvroSchema.Type.String or AvroSchema.Type.Enumeration;
+
+    private static bool StringValuesAreEqual(
+        AvroSchema leftSchema,
+        AvroSchema rightSchema,
+        ref AvroValidationReader left,
+        ref AvroValidationReader right)
+    {
+        if (leftSchema is global::Avro.EnumSchema leftEnumeration)
+        {
+            var leftSymbol = left.ReadLong();
+            if ((ulong)leftSymbol >= (ulong)leftEnumeration.Symbols.Count)
+                return false;
+            if (rightSchema is global::Avro.EnumSchema rightEnumeration)
+            {
+                var rightSymbol = right.ReadLong();
+                return (ulong)rightSymbol < (ulong)rightEnumeration.Symbols.Count &&
+                    string.Equals(
+                        leftEnumeration.Symbols[(int)leftSymbol],
+                        rightEnumeration.Symbols[(int)rightSymbol],
+                        StringComparison.Ordinal);
+            }
+            return Utf8Equals(
+                leftEnumeration.Symbols[(int)leftSymbol],
+                right.ReadLengthPrefixed().Span);
+        }
+
+        var leftValue = left.ReadLengthPrefixed();
+        if (rightSchema is not global::Avro.EnumSchema enumeration)
+            return leftValue.Span.SequenceEqual(right.ReadLengthPrefixed().Span);
+        var symbol = right.ReadLong();
+        return (ulong)symbol < (ulong)enumeration.Symbols.Count &&
+            Utf8Equals(enumeration.Symbols[(int)symbol], leftValue.Span);
+    }
+
+    private static bool Utf8Equals(string text, ReadOnlySpan<byte> value)
+    {
+        var byteCount = Encoding.UTF8.GetByteCount(text);
+        if (byteCount != value.Length)
+            return false;
+
+        byte[]? rented = null;
+        Span<byte> encoded = byteCount <= 256
+            ? stackalloc byte[byteCount]
+            : (rented = ArrayPool<byte>.Shared.Rent(byteCount));
+        try
+        {
+            Encoding.UTF8.GetBytes(text.AsSpan(), encoded);
+            return encoded[..byteCount].SequenceEqual(value);
+        }
+        finally
+        {
+            if (rented is not null)
+                ArrayPool<byte>.Shared.Return(rented);
         }
     }
 
@@ -172,7 +283,8 @@ internal sealed class AvroAggregateEqualityComparer(
     }
 
     private static bool ArraysAreEqual(
-        AvroSchema itemSchema,
+        AvroSchema leftItemSchema,
+        AvroSchema rightItemSchema,
         ref AvroValidationReader left,
         ref AvroValidationReader right)
     {
@@ -186,7 +298,7 @@ internal sealed class AvroAggregateEqualityComparer(
                 rightRemaining = right.ReadCollectionCount();
             if (leftRemaining == 0 || rightRemaining == 0)
                 return leftRemaining == rightRemaining;
-            if (!AreEqual(itemSchema, ref left, ref right))
+            if (!AreEqual(leftItemSchema, rightItemSchema, ref left, ref right))
                 return false;
             leftRemaining--;
             rightRemaining--;
@@ -194,14 +306,15 @@ internal sealed class AvroAggregateEqualityComparer(
     }
 
     private static bool MapsAreEqual(
-        AvroSchema valueSchema,
+        AvroSchema leftValueSchema,
+        AvroSchema rightValueSchema,
         ref AvroValidationReader left,
         ref AvroValidationReader right)
     {
         var leftPayload = left.Source.Slice(left.Position);
         var rightPayload = right.Source.Slice(right.Position);
-        var leftCount = CountMapEntries(valueSchema, leftPayload);
-        var rightCount = CountMapEntries(valueSchema, rightPayload);
+        var leftCount = CountMapEntries(leftValueSchema, leftPayload);
+        var rightCount = CountMapEntries(rightValueSchema, rightPayload);
         if (leftCount != rightCount)
             return false;
 
@@ -217,9 +330,10 @@ internal sealed class AvroAggregateEqualityComparer(
         try
         {
             var leftSource = left.Source;
-            ReadMapEntries(valueSchema, ref left, entries, buckets);
+            ReadMapEntries(leftValueSchema, ref left, entries, buckets);
             return MatchMapEntries(
-                valueSchema,
+                leftValueSchema,
+                rightValueSchema,
                 leftSource,
                 ref right,
                 leftCount,
@@ -285,7 +399,8 @@ internal sealed class AvroAggregateEqualityComparer(
     }
 
     private static bool MatchMapEntries(
-        AvroSchema valueSchema,
+        AvroSchema leftValueSchema,
+        AvroSchema rightValueSchema,
         ReadOnlyMemory<byte> leftSource,
         ref AvroValidationReader reader,
         int entryCount,
@@ -302,7 +417,7 @@ internal sealed class AvroAggregateEqualityComparer(
             {
                 var key = reader.ReadLengthPrefixed();
                 var valueStart = reader.Position;
-                AvroValidationValueDecoder.Skip(valueSchema, ref reader);
+                AvroValidationValueDecoder.Skip(rightValueSchema, ref reader);
                 var valueLength = reader.Position - valueStart;
                 var bucket = (int)(Hash(key.Span) % (uint)buckets.Length);
                 var entryIndex = buckets[bucket];
@@ -316,7 +431,11 @@ internal sealed class AvroAggregateEqualityComparer(
                             leftSource.Slice(entry.ValueStart, entry.ValueLength));
                         var rightValue = new AvroValidationReader(
                             reader.Source.Slice(valueStart, valueLength));
-                        if (AreEqual(valueSchema, ref leftValue, ref rightValue) &&
+                        if (AreEqual(
+                                leftValueSchema,
+                                rightValueSchema,
+                                ref leftValue,
+                                ref rightValue) &&
                             leftValue.End && rightValue.End)
                         {
                             entry.Matched = true;
@@ -364,7 +483,7 @@ internal static class AvroValueSchemaComparer
     [ThreadStatic]
     private static HashSet<AvroSchemaPair>? t_pairs;
 
-    internal static bool AreEqual(AvroSchema left, AvroSchema right)
+    internal static bool AreCelCompatible(AvroSchema left, AvroSchema right)
     {
         if (ReferenceEquals(left, right))
             return true;
@@ -372,7 +491,7 @@ internal static class AvroValueSchemaComparer
         pairs.Clear();
         try
         {
-            return AreEqual(left, right, pairs);
+            return AreCelCompatible(left, right, pairs);
         }
         finally
         {
@@ -380,31 +499,136 @@ internal static class AvroValueSchemaComparer
         }
     }
 
-    private static bool AreEqual(
+    internal static bool HaveSameEncoding(AvroSchema left, AvroSchema right)
+    {
+        if (ReferenceEquals(left, right))
+            return true;
+        var pairs = t_pairs ??= new HashSet<AvroSchemaPair>(AvroSchemaPairReferenceComparer.Instance);
+        pairs.Clear();
+        try
+        {
+            return HaveSameEncoding(left, right, pairs);
+        }
+        finally
+        {
+            pairs.Clear();
+        }
+    }
+
+    private static bool HaveSameEncoding(
         AvroSchema left,
         AvroSchema right,
         HashSet<AvroSchemaPair> pairs)
     {
+        left = AvroValueRulePlan.Unwrap(left);
+        right = AvroValueRulePlan.Unwrap(right);
         if (ReferenceEquals(left, right))
             return true;
-        if (left.Tag != right.Tag)
-            return false;
-
-        var pair = default(AvroSchemaPair);
-        var pairAdded = false;
-        if (left is global::Avro.NamedSchema leftNamed)
+        if (left.Tag is AvroSchema.Type.Int or AvroSchema.Type.Long &&
+            right.Tag is AvroSchema.Type.Int or AvroSchema.Type.Long)
         {
-            if (right is not global::Avro.NamedSchema rightNamed ||
-                !string.Equals(leftNamed.Fullname, rightNamed.Fullname, StringComparison.Ordinal))
-            {
-                return false;
-            }
-
-            pair = new AvroSchemaPair(left, right);
-            if (!pairs.Add(pair))
-                return true;
-            pairAdded = true;
+            return true;
         }
+        if (left.Tag != right.Tag &&
+            !(left.Tag is AvroSchema.Type.Record or AvroSchema.Type.Error &&
+              right.Tag is AvroSchema.Type.Record or AvroSchema.Type.Error))
+        {
+            return false;
+        }
+
+        var pair = new AvroSchemaPair(left, right);
+        if (!pairs.Add(pair))
+            return true;
+
+        try
+        {
+            return left.Tag switch
+            {
+                AvroSchema.Type.Record or AvroSchema.Type.Error => RecordsHaveSameEncoding(
+                    (global::Avro.RecordSchema)left,
+                    (global::Avro.RecordSchema)right,
+                    pairs),
+                AvroSchema.Type.Array => HaveSameEncoding(
+                    ((global::Avro.ArraySchema)left).ItemSchema,
+                    ((global::Avro.ArraySchema)right).ItemSchema,
+                    pairs),
+                AvroSchema.Type.Map => HaveSameEncoding(
+                    ((global::Avro.MapSchema)left).ValueSchema,
+                    ((global::Avro.MapSchema)right).ValueSchema,
+                    pairs),
+                AvroSchema.Type.Union => UnionsHaveSameEncoding(
+                    (global::Avro.UnionSchema)left,
+                    (global::Avro.UnionSchema)right,
+                    pairs),
+                AvroSchema.Type.Fixed =>
+                    ((global::Avro.FixedSchema)left).Size == ((global::Avro.FixedSchema)right).Size,
+                AvroSchema.Type.Enumeration => EnumsAreEqual(
+                    (global::Avro.EnumSchema)left,
+                    (global::Avro.EnumSchema)right),
+                _ => true
+            };
+        }
+        finally
+        {
+            pairs.Remove(pair);
+        }
+    }
+
+    private static bool RecordsHaveSameEncoding(
+        global::Avro.RecordSchema left,
+        global::Avro.RecordSchema right,
+        HashSet<AvroSchemaPair> pairs)
+    {
+        if (left.Fields.Count != right.Fields.Count)
+            return false;
+        for (var index = 0; index < left.Fields.Count; index++)
+        {
+            if (!HaveSameEncoding(left.Fields[index].Schema, right.Fields[index].Schema, pairs))
+                return false;
+        }
+        return true;
+    }
+
+    private static bool UnionsHaveSameEncoding(
+        global::Avro.UnionSchema left,
+        global::Avro.UnionSchema right,
+        HashSet<AvroSchemaPair> pairs)
+    {
+        if (left.Count != right.Count)
+            return false;
+        for (var index = 0; index < left.Count; index++)
+        {
+            if (!HaveSameEncoding(left[index], right[index], pairs))
+                return false;
+        }
+        return true;
+    }
+
+    private static bool AreCelCompatible(
+        AvroSchema left,
+        AvroSchema right,
+        HashSet<AvroSchemaPair> pairs)
+    {
+        left = AvroValueRulePlan.Unwrap(left);
+        right = AvroValueRulePlan.Unwrap(right);
+        if (ReferenceEquals(left, right))
+            return true;
+        if (IsNumber(left.Tag) && IsNumber(right.Tag) ||
+            IsBytes(left.Tag) && IsBytes(right.Tag) ||
+            IsString(left.Tag) && IsString(right.Tag))
+        {
+            return true;
+        }
+        if (left.Tag != right.Tag &&
+            !(left.Tag is AvroSchema.Type.Record or AvroSchema.Type.Error &&
+              right.Tag is AvroSchema.Type.Record or AvroSchema.Type.Error))
+        {
+            return false;
+        }
+
+        var pair = new AvroSchemaPair(left, right);
+        if (!pairs.Add(pair))
+            return true;
 
         try
         {
@@ -414,14 +638,11 @@ internal static class AvroValueSchemaComparer
                     (global::Avro.RecordSchema)left,
                     (global::Avro.RecordSchema)right,
                     pairs),
-                AvroSchema.Type.Enumeration => EnumsAreEqual(
-                    (global::Avro.EnumSchema)left,
-                    (global::Avro.EnumSchema)right),
-                AvroSchema.Type.Array => AreEqual(
+                AvroSchema.Type.Array => AreCelCompatible(
                     ((global::Avro.ArraySchema)left).ItemSchema,
                     ((global::Avro.ArraySchema)right).ItemSchema,
                     pairs),
-                AvroSchema.Type.Map => AreEqual(
+                AvroSchema.Type.Map => AreCelCompatible(
                     ((global::Avro.MapSchema)left).ValueSchema,
                     ((global::Avro.MapSchema)right).ValueSchema,
                     pairs),
@@ -431,24 +652,24 @@ internal static class AvroValueSchemaComparer
                     pairs),
                 AvroSchema.Type.Fixed =>
                     ((global::Avro.FixedSchema)left).Size == ((global::Avro.FixedSchema)right).Size,
-                AvroSchema.Type.Logical =>
-                    string.Equals(
-                        ((global::Avro.LogicalSchema)left).LogicalTypeName,
-                        ((global::Avro.LogicalSchema)right).LogicalTypeName,
-                        StringComparison.Ordinal) &&
-                    AreEqual(
-                        ((global::Avro.LogicalSchema)left).BaseSchema,
-                        ((global::Avro.LogicalSchema)right).BaseSchema,
-                        pairs),
                 _ => true
             };
         }
         finally
         {
-            if (pairAdded)
-                pairs.Remove(pair);
+            pairs.Remove(pair);
         }
     }
+
+    private static bool IsNumber(AvroSchema.Type type) =>
+        type is AvroSchema.Type.Int or AvroSchema.Type.Long or
+            AvroSchema.Type.Float or AvroSchema.Type.Double;
+
+    private static bool IsBytes(AvroSchema.Type type) =>
+        type is AvroSchema.Type.Bytes or AvroSchema.Type.Fixed;
+
+    private static bool IsString(AvroSchema.Type type) =>
+        type is AvroSchema.Type.String or AvroSchema.Type.Enumeration;
 
     private static bool RecordsAreEqual(
         global::Avro.RecordSchema left,
@@ -462,7 +683,7 @@ internal static class AvroValueSchemaComparer
             var leftField = left.Fields[index];
             var rightField = right.Fields[index];
             if (!string.Equals(leftField.Name, rightField.Name, StringComparison.Ordinal) ||
-                !AreEqual(leftField.Schema, rightField.Schema, pairs))
+                !AreCelCompatible(leftField.Schema, rightField.Schema, pairs))
             {
                 return false;
             }
@@ -493,7 +714,7 @@ internal static class AvroValueSchemaComparer
             return false;
         for (var index = 0; index < left.Count; index++)
         {
-            if (!AreEqual(left[index], right[index], pairs))
+            if (!AreCelCompatible(left[index], right[index], pairs))
                 return false;
         }
         return true;

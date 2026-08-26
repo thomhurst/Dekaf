@@ -41,6 +41,8 @@ public class AvroInlineValidationBenchmarks
     private ReadOnlyMemory<byte> _mapMemberNestedPayload;
     private AvroInlineRuleValidator _unionMemberNestedValidator = null!;
     private ReadOnlyMemory<byte> _unionMemberNestedPayload;
+    private AvroInlineRuleValidator _mixedRootMemberNestedValidator = null!;
+    private ReadOnlyMemory<byte> _mixedRootMemberNestedPayload;
 
     [GlobalSetup]
     public void Setup()
@@ -381,6 +383,44 @@ public class AvroInlineValidationBenchmarks
         _unionMemberNestedPayload = unionMemberNestedStream.ToArray();
         _unionMemberNestedValidator = new AvroInlineRuleValidator(unionMemberNestedSchema);
         _unionMemberNestedValidator.Validate(_unionMemberNestedPayload, 14, failFast: false);
+
+        const string mixedRootMemberNestedSchemaText = """
+            {
+              "type": "record",
+              "name": "MixedRootMemberNestedBenchmarkRecord",
+              "confluent:rules": [{
+                "name": "root-and-member",
+                "expr": "size(this) == 1 && size(this.items) == 128"
+              }],
+              "fields": [{
+                "name": "items",
+                "confluent:rules": [{ "name": "field-size", "expr": "size(this) == 128" }],
+                "type": {
+                  "type": "array",
+                  "items": {
+                    "type": "int",
+                    "confluent:rules": [{ "name": "positive", "expr": "this > 0" }]
+                  }
+                }
+              }]
+            }
+            """;
+        var mixedRootMemberNestedSchema = (RecordSchema)AvroSchema.Parse(
+            mixedRootMemberNestedSchemaText);
+        var mixedRootMemberNestedRecord = new GenericRecord(mixedRootMemberNestedSchema);
+        mixedRootMemberNestedRecord.Add("items", Enumerable.Range(1, 128).ToArray());
+        using var mixedRootMemberNestedStream = new MemoryStream();
+        var mixedRootMemberNestedEncoder = new BinaryEncoder(mixedRootMemberNestedStream);
+        new GenericDatumWriter<GenericRecord>(mixedRootMemberNestedSchema).Write(
+            mixedRootMemberNestedRecord,
+            mixedRootMemberNestedEncoder);
+        mixedRootMemberNestedEncoder.Flush();
+        _mixedRootMemberNestedPayload = mixedRootMemberNestedStream.ToArray();
+        _mixedRootMemberNestedValidator = new AvroInlineRuleValidator(mixedRootMemberNestedSchema);
+        _mixedRootMemberNestedValidator.Validate(
+            _mixedRootMemberNestedPayload,
+            15,
+            failFast: false);
     }
 
     [Benchmark]
@@ -442,4 +482,11 @@ public class AvroInlineValidationBenchmarks
     [Benchmark]
     public void ValidateUnionMemberWithNestedRules() =>
         _unionMemberNestedValidator.Validate(_unionMemberNestedPayload, 14, failFast: false);
+
+    [Benchmark]
+    public void ValidateMixedRootMemberWithNestedRules() =>
+        _mixedRootMemberNestedValidator.Validate(
+            _mixedRootMemberNestedPayload,
+            15,
+            failFast: false);
 }

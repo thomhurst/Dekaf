@@ -1766,7 +1766,7 @@ internal sealed class ValidationCelBinaryNode(
         {
             ValidationCelValueKind.Null => true,
             ValidationCelValueKind.Boolean => left.Boolean == right.Boolean,
-            ValidationCelValueKind.Number => CompareNumbers(left, right) is 0,
+            ValidationCelValueKind.Number => NumbersAreEqual(left, right),
             ValidationCelValueKind.String => ValidationCelStrings.Evaluate(left, right, ValidationCelStringOperation.Equal),
             ValidationCelValueKind.Bytes => left.Utf8Literal.Span.SequenceEqual(right.Utf8Literal.Span),
             ValidationCelValueKind.Object or ValidationCelValueKind.Array =>
@@ -1803,6 +1803,9 @@ internal sealed class ValidationCelBinaryNode(
             value);
         return value;
     }
+
+    internal static bool NumbersAreEqual(ValidationCelValue left, ValidationCelValue right) =>
+        CompareNumbers(left, right) is 0;
 
     private static IValidationCelAggregateComparer? GetAggregateComparer(
         ValidationCelContext context,
@@ -3267,9 +3270,7 @@ internal sealed class ValidationCelParser
         return new ValidationCelToken(ValidationCelTokenKind.Number, _expression[start.._position]);
     }
 
-    private ValidationCelToken ReadString(
-        char quote,
-        ValidationCelTokenKind kind = ValidationCelTokenKind.String)
+    private ValidationCelToken ReadString(char quote)
     {
         _position++;
         var builder = new StringBuilder();
@@ -3277,7 +3278,7 @@ internal sealed class ValidationCelParser
         {
             var character = _expression[_position++];
             if (character == quote)
-                return new ValidationCelToken(kind, builder.ToString());
+                return new ValidationCelToken(ValidationCelTokenKind.String, builder.ToString());
             if (character != '\\')
             {
                 builder.Append(character);
