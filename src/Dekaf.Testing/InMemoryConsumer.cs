@@ -1854,8 +1854,18 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                         position,
                         _options.IsolationLevel,
                         _borrowStoredRecords,
-                        out var record))
+                        out var record,
+                        out _,
+                        out var nextReadableOffset))
+                {
+                    if (nextReadableOffset > position)
+                    {
+                        _positions[partition] = nextReadableOffset;
+                        if (_options.EnableAutoOffsetStore)
+                        StoreOffsetUnderLock(partition, nextReadableOffset);
+                    }
                     continue;
+                }
 
                 selectedPartition = partition;
                 selectedRecord = record;

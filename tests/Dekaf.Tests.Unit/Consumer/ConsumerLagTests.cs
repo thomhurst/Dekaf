@@ -76,6 +76,54 @@ public sealed class ConsumerLagTests
     }
 
     [Test]
+    public async Task WatermarkCacheEntry_ConcurrentLagReadsReturnCompleteOffsets()
+    {
+        const long firstOffset = 0x1111111122222222;
+        const long secondOffset = 0x3333333344444444;
+        await using var consumer = CreateConsumer();
+        consumer.IncrementalAssign([new TopicPartitionOffset(Partition.Topic, Partition.Partition, 0)]);
+        var updateWatermarks = typeof(KafkaConsumer<string, string>)
+            .GetMethod("UpdateWatermarksFromFetchResponse", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .CreateDelegate<UpdateWatermarks>();
+        var first = CreateFetchResponse(firstOffset);
+        var second = CreateFetchResponse(secondOffset);
+        updateWatermarks(consumer, Partition.Topic, first);
+        using var start = new ManualResetEventSlim();
+        var writer = Task.Run(() =>
+        {
+            start.Wait();
+            for (var iteration = 0; iteration < 100_000; iteration++)
+            {
+                var response = (iteration & 1) == 0 ? second : first;
+                updateWatermarks(consumer, Partition.Topic, response);
+            }
+        });
+
+        start.Set();
+        var completeOffsetsOnly = true;
+        for (var iteration = 0; iteration < 100_000; iteration++)
+        {
+            var offset = consumer.GetCurrentLag(Partition);
+            if (offset != firstOffset && offset != secondOffset)
+            {
+                completeOffsetsOnly = false;
+                break;
+            }
+        }
+
+        await writer;
+        await Assert.That(completeOffsetsOnly).IsTrue();
+    }
+
+    private static FetchResponsePartition CreateFetchResponse(long offset) => new()
+    {
+        PartitionIndex = Partition.Partition,
+        HighWatermark = offset,
+        LastStableOffset = offset,
+        LogStartOffset = 0
+    };
+
+    [Test]
     public async Task QueryCurrentLagAsync_UnassignedPartitionCompletesSynchronouslyWithoutNetwork()
     {
         await using var consumer = CreateConsumer();
@@ -174,4 +222,9 @@ public sealed class ConsumerLagTests
             ?? throw new InvalidOperationException("_initialized field not found");
         initialized.SetValue(consumer, true);
     }
+
+    private delegate void UpdateWatermarks(
+        KafkaConsumer<string, string> consumer,
+        string topic,
+        FetchResponsePartition response);
 }

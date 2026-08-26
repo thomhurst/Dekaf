@@ -8397,10 +8397,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         CancellationToken cancellationToken)
     {
         var watermarks = await QueryWatermarkOffsetsAsync(partition, cancellationToken).ConfigureAwait(false);
-        if (assignmentVersion != Volatile.Read(ref _assignmentEnsureVersion)
-            || !_assignmentSnapshot.Contains(partition)
+        if (!_assignmentSnapshot.Contains(partition)
             || GetPositionWithoutCaching(partition) is not { } position
-            || position < 0)
+            || position < 0
+            || assignmentVersion != Volatile.Read(ref _assignmentEnsureVersion))
         {
             return null;
         }
@@ -10620,7 +10620,31 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             }
         }
 
-        public long ReadLagEndOffset() => Volatile.Read(ref _lagEndOffset);
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public long ReadLagEndOffset() => IntPtr.Size == sizeof(long)
+            ? Volatile.Read(ref _lagEndOffset)
+            : ReadLagEndOffset32Bit();
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private long ReadLagEndOffset32Bit()
+        {
+            var spinner = new SpinWait();
+            while (true)
+            {
+                var version = Volatile.Read(ref _version);
+                if ((version & 1) != 0)
+                {
+                    spinner.SpinOnce();
+                    continue;
+                }
+
+                var lagEndOffset = Volatile.Read(ref _lagEndOffset);
+                if (version == Volatile.Read(ref _version))
+                    return lagEndOffset;
+
+                spinner.SpinOnce();
+            }
+        }
     }
 
     private int GetCurrentLeaderEpoch(TopicPartition partition) =>

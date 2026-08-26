@@ -621,7 +621,24 @@ public sealed class InMemoryKafkaCluster
         IsolationLevel isolationLevel,
         bool borrowStoredRecord,
         out InMemoryRecord record,
-        out bool blockedByOngoingTransaction)
+        out bool blockedByOngoingTransaction) =>
+        TryRead(
+            topicPartition,
+            offset,
+            isolationLevel,
+            borrowStoredRecord,
+            out record,
+            out blockedByOngoingTransaction,
+            out _);
+
+    internal bool TryRead(
+        TopicPartition topicPartition,
+        long offset,
+        IsolationLevel isolationLevel,
+        bool borrowStoredRecord,
+        out InMemoryRecord record,
+        out bool blockedByOngoingTransaction,
+        out long nextReadableOffset)
     {
         lock (_gate)
         {
@@ -633,12 +650,32 @@ public sealed class InMemoryKafkaCluster
                     out blockedByOngoingTransaction))
             {
                 record = null!;
+                nextReadableOffset = GetReadEndOffsetUnderLock(topicPartition, isolationLevel, offset);
                 return false;
             }
 
             record = borrowStoredRecord ? candidate : CloneRecord(candidate);
+            nextReadableOffset = candidate.Offset;
             return true;
         }
+    }
+
+    private long GetReadEndOffsetUnderLock(
+        TopicPartition topicPartition,
+        IsolationLevel isolationLevel,
+        long fallbackOffset)
+    {
+        if (!_topics.TryGetValue(topicPartition.Topic, out var topic)
+            || (uint)topicPartition.Partition >= (uint)topic.Partitions.Count)
+        {
+            return fallbackOffset;
+        }
+
+        var partition = topic.Partitions[topicPartition.Partition];
+        return isolationLevel == IsolationLevel.ReadCommitted
+            && partition.FirstUnstableOffset != long.MaxValue
+                ? Math.Min(partition.HighWatermark, partition.FirstUnstableOffset)
+                : partition.HighWatermark;
     }
 
     internal bool TryAcquireShareRecord(

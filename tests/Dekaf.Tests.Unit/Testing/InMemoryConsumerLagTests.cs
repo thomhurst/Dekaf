@@ -106,4 +106,31 @@ public sealed class InMemoryConsumerLagTests
 
         await Assert.That(readCommitted.GetCurrentLag(Partition)).IsEqualTo(2);
     }
+
+    [Test]
+    public async Task CurrentLag_ReadCommittedAdvancesPastAbortedTransactionTail()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic(Partition.Topic);
+        await using var producer = new InMemoryProducer<string, string>(cluster);
+        await using (var transaction = producer.BeginTransaction())
+        {
+            _ = await transaction.ProduceAsync(Partition.Topic, "key", "aborted");
+            await transaction.AbortAsync();
+        }
+        await using var consumer = new InMemoryConsumer<string, string>(
+            cluster,
+            new InMemoryConsumerOptions { IsolationLevel = IsolationLevel.ReadCommitted });
+        consumer.IncrementalAssign([
+            new TopicPartitionOffset(Partition.Topic, Partition.Partition, 0)
+        ]);
+
+        await Assert.That(consumer.GetCurrentLag(Partition)).IsEqualTo(1);
+
+        using var cancellation = new CancellationTokenSource();
+        var pendingConsume = consumer.ConsumeOneAsync(Timeout.InfiniteTimeSpan, cancellation.Token).AsTask();
+        await Assert.That(consumer.GetCurrentLag(Partition)).IsEqualTo(0);
+        cancellation.Cancel();
+        await Assert.That(async () => await pendingConsume).Throws<OperationCanceledException>();
+    }
 }
