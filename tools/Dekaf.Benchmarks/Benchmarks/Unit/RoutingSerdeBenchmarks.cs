@@ -26,6 +26,7 @@ public class RoutingSerdeBenchmarks
     private readonly EventSerializer _serializer = new();
     private ArrayBufferWriter<byte> _buffer = new(16);
     private TopicRoutingDeserializer<Event> _topicDeserializer = null!;
+    private IAsyncDeserializerPreparer<Event> _preparedTopicDeserializer = null!;
     private SchemaIdRoutingDeserializer<Event> _schemaIdDeserializer = null!;
     private HeaderRoutingDeserializer<Event> _headerDeserializer = null!;
     private IDeserializer<Event> _topicHeaderDeserializer = null!;
@@ -58,6 +59,9 @@ public class RoutingSerdeBenchmarks
         _callerOwnedContext.Headers = Headers.Create("event-type", new byte[] { 1 });
         _topicDeserializer = new TopicRoutingDeserializer<Event>()
             .Register("events", _deserializer)
+            .Freeze();
+        _preparedTopicDeserializer = new TopicRoutingDeserializer<Event>()
+            .Register("events", new PreparedEventDeserializer())
             .Freeze();
         _schemaIdDeserializer = new SchemaIdRoutingDeserializer<Event>()
             .Register(42, _deserializer)
@@ -96,6 +100,15 @@ public class RoutingSerdeBenchmarks
 
     [Benchmark]
     public Event DeserializeByTopic() => _topicDeserializer.Deserialize(Data, _context);
+
+    [Benchmark]
+    public Event DeserializePreparedByTopic()
+    {
+        if (!_preparedTopicDeserializer.TryDeserialize(Data, _context, out var value))
+            throw new InvalidOperationException("Prepared route did not deserialize synchronously.");
+
+        return value;
+    }
 
     [Benchmark]
     public Event DeserializeBySchemaId() => _schemaIdDeserializer.Deserialize(FramedData, _context);
@@ -163,6 +176,31 @@ public class RoutingSerdeBenchmarks
     internal sealed class EventDeserializer : IDeserializer<Event>
     {
         public Event Deserialize(ReadOnlyMemory<byte> data, SerializationContext context) => Payload;
+    }
+
+    private sealed class PreparedEventDeserializer :
+        IDeserializer<Event>,
+        IAsyncDeserializerPreparer<Event>,
+        IAsyncDeserializerPreparationRequirement
+    {
+        public bool RequiresPreparation => true;
+
+        public Event Deserialize(ReadOnlyMemory<byte> data, SerializationContext context) => Payload;
+
+        public bool TryDeserialize(
+            ReadOnlyMemory<byte> data,
+            SerializationContext context,
+            out Event value)
+        {
+            value = Payload;
+            return true;
+        }
+
+        public ValueTask PrepareAsync(
+            ReadOnlyMemory<byte> data,
+            SerializationContext context,
+            CancellationToken cancellationToken = default) =>
+            ValueTask.CompletedTask;
     }
 
     private sealed class EventSerializer : ISerializer<Event>

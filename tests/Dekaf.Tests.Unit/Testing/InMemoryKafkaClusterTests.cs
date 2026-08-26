@@ -110,14 +110,14 @@ public sealed class InMemoryKafkaClusterTests
     }
 
     [Test]
-    public async Task Producer_RecordHeaderSerializerWithoutCallerHeaders_PersistsGeneratedHeader()
+    public async Task Producer_PublicRecordHeaderSerializerDecorator_PersistsGeneratedHeader()
     {
         var cluster = new InMemoryKafkaCluster();
         cluster.CreateTopic("orders");
         await using var producer = new InMemoryProducer<string, string>(
             cluster,
             Serializers.String,
-            new RecordHeaderStringSerializer());
+            new RecordHeaderSerializerDecorator<string>(new RecordHeaderStringSerializer()));
         await using var consumer = new InMemoryConsumer<string, string>(
             cluster,
             new InMemoryConsumerOptions
@@ -1644,6 +1644,24 @@ public sealed class InMemoryKafkaClusterTests
             context.Headers!.Add("identity", value);
             Serializers.String.Serialize(value, ref destination, context);
         }
+    }
+
+    private sealed class RecordHeaderSerializerDecorator<T>(ISerializer<T> inner) :
+        ISerializer<T>,
+        IRecordHeaderSerializer
+    {
+        public bool ProducesRecordHeaders =>
+            inner is IRecordHeaderSerializer { ProducesRecordHeaders: true };
+
+        public void Serialize<TWriter>(
+            T value,
+            ref TWriter destination,
+            SerializationContext context)
+            where TWriter : IBufferWriter<byte>
+#if NET10_0_OR_GREATER
+            , allows ref struct
+#endif
+            => inner.Serialize(value, ref destination, context);
     }
 
     private sealed class AsyncStringDeserializer : IAsyncDeserializer<string>

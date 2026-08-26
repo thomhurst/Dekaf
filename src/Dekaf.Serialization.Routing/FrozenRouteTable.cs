@@ -11,9 +11,12 @@ internal sealed class FrozenRouteTable<TKey, TRoute>(IEqualityComparer<TKey>? co
     private FrozenDictionary<TKey, TRoute>? _routes;
     private TRoute? _fallback;
     private bool _producesRecordHeaders;
+    private bool _requiresDeserializerPreparation;
 
     internal bool IsFrozen => Volatile.Read(ref _routes) is not null;
     internal bool ProducesRecordHeaders => Volatile.Read(ref _producesRecordHeaders);
+    internal bool RequiresDeserializerPreparation =>
+        Volatile.Read(ref _requiresDeserializerPreparation);
 
     internal void Register(TKey key, TRoute route)
     {
@@ -25,6 +28,8 @@ internal sealed class FrozenRouteTable<TKey, TRoute>(IEqualityComparer<TKey>? co
                 throw new InvalidOperationException("A route is already registered for the supplied key.");
             if (route is IRecordHeaderSerializer { ProducesRecordHeaders: true })
                 Volatile.Write(ref _producesRecordHeaders, true);
+            if (route is IAsyncDeserializerPreparationRequirement { RequiresPreparation: true })
+                Volatile.Write(ref _requiresDeserializerPreparation, true);
         }
     }
 
@@ -37,6 +42,8 @@ internal sealed class FrozenRouteTable<TKey, TRoute>(IEqualityComparer<TKey>? co
             _fallback = route;
             if (route is IRecordHeaderSerializer { ProducesRecordHeaders: true })
                 Volatile.Write(ref _producesRecordHeaders, true);
+            if (route is IAsyncDeserializerPreparationRequirement { RequiresPreparation: true })
+                Volatile.Write(ref _requiresDeserializerPreparation, true);
         }
     }
 
@@ -61,6 +68,23 @@ internal sealed class FrozenRouteTable<TKey, TRoute>(IEqualityComparer<TKey>? co
                 }
 
                 Volatile.Write(ref _producesRecordHeaders, producesRecordHeaders);
+                var requiresDeserializerPreparation =
+                    _fallback is IAsyncDeserializerPreparationRequirement { RequiresPreparation: true };
+                if (!requiresDeserializerPreparation)
+                {
+                    foreach (var route in _registrations.Values)
+                    {
+                        if (route is IAsyncDeserializerPreparationRequirement { RequiresPreparation: true })
+                        {
+                            requiresDeserializerPreparation = true;
+                            break;
+                        }
+                    }
+                }
+
+                Volatile.Write(
+                    ref _requiresDeserializerPreparation,
+                    requiresDeserializerPreparation);
                 Volatile.Write(
                     ref _routes,
                     _registrations.ToFrozenDictionary(comparer: _registrations.Comparer));

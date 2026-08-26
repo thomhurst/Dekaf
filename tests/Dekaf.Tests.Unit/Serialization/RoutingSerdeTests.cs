@@ -58,6 +58,144 @@ public sealed class RoutingSerdeTests
     }
 
     [Test]
+    public async Task TopicDeserializer_PropagatesAsyncPreparationForDerivedRoute()
+    {
+        var child = new PreparingDeserializer<AlphaEvent>(Alpha);
+        var router = new TopicRoutingDeserializer<EventBase>()
+            .Register("alpha", child)
+            .Freeze();
+        var preparer = (IAsyncDeserializerPreparer<EventBase>)router;
+        var context = Context("alpha");
+
+        var preparedBefore = preparer.TryDeserialize(
+            ReadOnlyMemory<byte>.Empty,
+            context,
+            out _);
+        await preparer.PrepareAsync(ReadOnlyMemory<byte>.Empty, context);
+        var preparedAfter = preparer.TryDeserialize(
+            ReadOnlyMemory<byte>.Empty,
+            context,
+            out var result);
+
+        await Assert.That(((IAsyncDeserializerPreparationRequirement)router).RequiresPreparation)
+            .IsTrue();
+        await Assert.That(preparedBefore).IsFalse();
+        await Assert.That(preparedAfter).IsTrue();
+        await Assert.That(result).IsSameReferenceAs(Alpha);
+        await Assert.That(child.PrepareCount).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task SchemaIdDeserializer_PropagatesAsyncPreparationForDerivedRoute()
+    {
+        var child = new PreparingDeserializer<AlphaEvent>(Alpha);
+        var router = new SchemaIdRoutingDeserializer<EventBase>()
+            .Register(42, child)
+            .Freeze();
+        var preparer = (IAsyncDeserializerPreparer<EventBase>)router;
+        var context = Context();
+        var frame = Frame(42);
+
+        var preparedBefore = preparer.TryDeserialize(frame, context, out _);
+        await preparer.PrepareAsync(frame, context);
+        var preparedAfter = preparer.TryDeserialize(frame, context, out var result);
+
+        await Assert.That(preparedBefore).IsFalse();
+        await Assert.That(preparedAfter).IsTrue();
+        await Assert.That(result).IsSameReferenceAs(Alpha);
+    }
+
+    [Test]
+    public async Task NestedHeaderDeserializer_PropagatesIndexedPreparation()
+    {
+        var child = new PreparingDeserializer<EventBase>(Alpha);
+        var headerRouter = new HeaderRoutingDeserializer<EventBase>(
+            "event-type",
+            new EventDeserializer<EventBase>(Beta),
+            new HeaderDeserializerRoute<EventBase>("alpha"u8.ToArray(), child));
+        var router = new TopicRoutingDeserializer<EventBase>()
+            .Register("events", headerRouter)
+            .Freeze();
+        var plan = RecordHeaderRoutingPlan.Create<EventBase, EventBase>(null, router)!;
+        var headers = new[] { new Header("event-type", "alpha"u8.ToArray()) };
+        var lookup = new RecordHeaderRoutingLookup(
+            plan,
+            headers,
+            headerCount: 1,
+            firstIndex: 1,
+            secondIndex: 0,
+            routedHeaderTailOffset: RecordHeaderRoutingPlan.FullyIndexedWithoutTail);
+        var preparer = (IRecordHeaderAsyncDeserializerPreparer<EventBase>)router;
+        var context = Context();
+
+        var preparedBefore = preparer.TryDeserialize(
+            ReadOnlyMemory<byte>.Empty,
+            context,
+            in lookup,
+            out _);
+        await preparer.PrepareAsync(
+            ReadOnlyMemory<byte>.Empty,
+            context,
+            lookup,
+            CancellationToken.None);
+        var preparedAfter = preparer.TryDeserialize(
+            ReadOnlyMemory<byte>.Empty,
+            context,
+            in lookup,
+            out var result);
+
+        await Assert.That(preparedBefore).IsFalse();
+        await Assert.That(preparedAfter).IsTrue();
+        await Assert.That(result).IsSameReferenceAs(Alpha);
+        await Assert.That(child.HeaderPathUsed).IsTrue();
+    }
+
+    [Test]
+    public async Task NestedTopicDeserializer_RefreshesPreparationRequirementAtFreeze()
+    {
+        var child = new PreparingDeserializer<AlphaEvent>(Alpha);
+        var inner = new TopicRoutingDeserializer<AlphaEvent>();
+        var outer = new TopicRoutingDeserializer<EventBase>()
+            .Register("alpha", inner);
+        inner.Register("alpha", child).Freeze();
+        outer.Freeze();
+        var preparer = (IAsyncDeserializerPreparer<EventBase>)outer;
+        var context = Context("alpha");
+
+        var preparedBefore = preparer.TryDeserialize(
+            ReadOnlyMemory<byte>.Empty,
+            context,
+            out _);
+        await preparer.PrepareAsync(ReadOnlyMemory<byte>.Empty, context);
+        var preparedAfter = preparer.TryDeserialize(
+            ReadOnlyMemory<byte>.Empty,
+            context,
+            out var result);
+
+        await Assert.That(((IAsyncDeserializerPreparationRequirement)outer).RequiresPreparation)
+            .IsTrue();
+        await Assert.That(preparedBefore).IsFalse();
+        await Assert.That(preparedAfter).IsTrue();
+        await Assert.That(result).IsSameReferenceAs(Alpha);
+    }
+
+    [Test]
+    public async Task HeaderDeserializer_RefreshesNestedPreparationRequirement()
+    {
+        var child = new PreparingDeserializer<EventBase>(Alpha);
+        var topicRouter = new TopicRoutingDeserializer<EventBase>();
+        var headerRouter = new HeaderRoutingDeserializer<EventBase>(
+            "event-type",
+            new EventDeserializer<EventBase>(Beta),
+            new HeaderDeserializerRoute<EventBase>("alpha"u8.ToArray(), topicRouter));
+        topicRouter.Register("alpha", child).Freeze();
+
+        await Assert.That(
+                ((IAsyncDeserializerPreparationRequirement)headerRouter).RequiresPreparation)
+            .IsTrue();
+    }
+
+    [Test]
     public async Task Routers_RejectUnknownAndMalformedRoutes()
     {
         var topicRouter = new TopicRoutingDeserializer<EventBase>().Freeze();
@@ -278,6 +416,62 @@ public sealed class RoutingSerdeTests
         {
             Context = context;
             return value;
+        }
+    }
+
+    private sealed class PreparingDeserializer<T>(T value) :
+        IDeserializer<T>,
+        IAsyncDeserializerPreparer<T>,
+        IRecordHeaderAsyncDeserializerPreparer<T>
+    {
+        private bool _prepared;
+
+        public int PrepareCount { get; private set; }
+        public bool HeaderPathUsed { get; private set; }
+
+        public T Deserialize(ReadOnlyMemory<byte> data, SerializationContext context) =>
+            _prepared
+                ? value
+                : throw new InvalidOperationException("Deserializer was not prepared.");
+
+        public bool TryDeserialize(
+            ReadOnlyMemory<byte> data,
+            SerializationContext context,
+            out T result)
+        {
+            result = _prepared ? value : default!;
+            return _prepared;
+        }
+
+        public ValueTask PrepareAsync(
+            ReadOnlyMemory<byte> data,
+            SerializationContext context,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            PrepareCount++;
+            _prepared = true;
+            return ValueTask.CompletedTask;
+        }
+
+        bool IRecordHeaderAsyncDeserializerPreparer<T>.TryDeserialize(
+            ReadOnlyMemory<byte> data,
+            SerializationContext context,
+            in RecordHeaderRoutingLookup headers,
+            out T result)
+        {
+            HeaderPathUsed = true;
+            return TryDeserialize(data, context, out result);
+        }
+
+        ValueTask IRecordHeaderAsyncDeserializerPreparer<T>.PrepareAsync(
+            ReadOnlyMemory<byte> data,
+            SerializationContext context,
+            RecordHeaderRoutingLookup headers,
+            CancellationToken cancellationToken)
+        {
+            HeaderPathUsed = true;
+            return PrepareAsync(data, context, cancellationToken);
         }
     }
 

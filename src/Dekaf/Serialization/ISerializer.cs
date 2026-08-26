@@ -169,8 +169,17 @@ public interface ISerializer<in T>
         ;
 }
 
-internal interface IRecordHeaderSerializer
+/// <summary>
+/// Optional capability for serializers that may add record headers through
+/// <see cref="SerializationContext.Headers"/>.
+/// </summary>
+/// <remarks>
+/// Serializer decorators must propagate this capability when their inner serializer produces
+/// headers so producers can provide header storage before serialization begins.
+/// </remarks>
+public interface IRecordHeaderSerializer
 {
+    /// <summary>Gets whether this serializer may add record headers.</summary>
     bool ProducesRecordHeaders { get; }
 }
 

@@ -22,7 +22,10 @@ public readonly struct HeaderDeserializerRoute<T>
 /// </remarks>
 public sealed class HeaderRoutingDeserializer<T> :
     IDeserializer<T>,
+    IAsyncDeserializerPreparer<T>,
+    IAsyncDeserializerPreparationRequirement,
     IRecordHeaderDeserializer<T>,
+    IRecordHeaderAsyncDeserializerPreparer<T>,
     ICallerOwnedHeaderDeserializer<T>,
     IRecordHeaderRoutingProvider
 {
@@ -86,11 +89,57 @@ public sealed class HeaderRoutingDeserializer<T> :
         return DeserializeChild(_fallbackDeserializer, data, context);
     }
 
+    bool IAsyncDeserializerPreparationRequirement.RequiresPreparation => RequiresPreparation();
+
+    bool IAsyncDeserializerPreparer<T>.TryDeserialize(
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        out T value) =>
+        DeserializerPreparation.TryDeserialize(
+            SelectDeserializer(context),
+            data,
+            context,
+            out value);
+
+    ValueTask IAsyncDeserializerPreparer<T>.PrepareAsync(
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        CancellationToken cancellationToken) =>
+        DeserializerPreparation.PrepareAsync(
+            SelectDeserializer(context),
+            data,
+            context,
+            cancellationToken);
+
     T IRecordHeaderDeserializer<T>.Deserialize(
         ReadOnlyMemory<byte> data,
         SerializationContext context,
         in RecordHeaderRoutingLookup headers) =>
         DeserializeWithHeaders(data, context, in headers);
+
+    bool IRecordHeaderAsyncDeserializerPreparer<T>.TryDeserialize(
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        in RecordHeaderRoutingLookup headers,
+        out T value) =>
+        DeserializerPreparation.TryDeserialize(
+            SelectDeserializer(in headers),
+            data,
+            context,
+            in headers,
+            out value);
+
+    ValueTask IRecordHeaderAsyncDeserializerPreparer<T>.PrepareAsync(
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        RecordHeaderRoutingLookup headers,
+        CancellationToken cancellationToken) =>
+        DeserializerPreparation.PrepareAsync(
+            SelectDeserializer(in headers),
+            data,
+            context,
+            headers,
+            cancellationToken);
 
     T ICallerOwnedHeaderDeserializer<T>.DeserializeCallerOwned(
         ReadOnlyMemory<byte> data,
@@ -118,6 +167,50 @@ public sealed class HeaderRoutingDeserializer<T> :
         }
 
         return DeserializeChild(_fallbackDeserializer, data, context, in headers);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private IDeserializer<T> SelectDeserializer(SerializationContext context)
+    {
+        var headers = context.Headers;
+        if (headers is not null)
+        {
+            for (var index = headers.Count - 1; index >= 0; index--)
+            {
+                var header = headers[index];
+                if (!string.Equals(header.Key, _headerName, StringComparison.Ordinal))
+                    continue;
+
+                if (!header.IsValueNull && TryGetDeserializer(header.Value.Span, out var deserializer))
+                    return deserializer;
+
+                break;
+            }
+        }
+
+        return _fallbackDeserializer;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private IDeserializer<T> SelectDeserializer(in RecordHeaderRoutingLookup headers) =>
+        headers.TryGetLast(_headerName, out var header)
+        && !header.IsValueNull
+        && TryGetDeserializer(header.Value.Span, out var deserializer)
+            ? deserializer
+            : _fallbackDeserializer;
+
+    private bool RequiresPreparation()
+    {
+        if (DeserializerPreparation.RequiresPreparation(_fallbackDeserializer))
+            return true;
+
+        for (var i = 0; i < _routes.Length; i++)
+        {
+            if (DeserializerPreparation.RequiresPreparation(_routes[i].Deserializer))
+                return true;
+        }
+
+        return false;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
