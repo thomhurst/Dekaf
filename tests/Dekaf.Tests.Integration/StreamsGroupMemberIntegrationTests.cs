@@ -213,6 +213,8 @@ public sealed class StreamsGroupMemberIntegrationTests(KafkaTestContainer kafka)
         var staleEpoch = member.Snapshot.MemberEpoch;
         var memberId = member.Snapshot.MemberId!;
 
+        await ((StreamsGroupMember)member).SuspendHeartbeatsForTestingAsync();
+
         await RemoveRejoinAndFenceRawMemberAsync(groupId, memberId, staleEpoch, topic);
 
         var recovered = await member.UpdateAsync(new StreamsGroupMemberUpdate

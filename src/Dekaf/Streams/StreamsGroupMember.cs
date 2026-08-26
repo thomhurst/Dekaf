@@ -53,6 +53,7 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
     private volatile bool _initialized;
     private int _closeRequested;
     private int _disposed;
+    private int _heartbeatsSuspendedForTesting;
     private int _coordinatorId = -1;
     private int _memberEpoch;
     private int _heartbeatIntervalMs = 5_000;
@@ -133,6 +134,14 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
     }
 
     internal void MarkInitializedForTesting() => _initialized = true;
+
+    internal ValueTask<StreamsGroupHeartbeatResult> SuspendHeartbeatsForTestingAsync(
+        CancellationToken cancellationToken = default)
+    {
+        Volatile.Write(ref _heartbeatsSuspendedForTesting, 1);
+        _heartbeatTimer.Change(Timeout.Infinite, Timeout.Infinite);
+        return QueueOperationAsync(MemberCommand.ForUpdate(new StreamsGroupMemberUpdate()), cancellationToken);
+    }
 
     public ValueTask<StreamsGroupHeartbeatResult> JoinAsync(
         StreamsGroupMemberUpdate initialState,
@@ -1246,7 +1255,8 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
 
     private bool QueueHeartbeat()
     {
-        if (Volatile.Read(ref _closeRequested) != 0)
+        if (Volatile.Read(ref _closeRequested) != 0 ||
+            Volatile.Read(ref _heartbeatsSuspendedForTesting) != 0)
             return false;
         if (_commands.Writer.TryWrite(MemberCommand.Heartbeat))
             return true;
@@ -1264,8 +1274,11 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
         return false;
     }
 
-    private void ScheduleHeartbeat() =>
-        _heartbeatTimer.Change(Math.Max(_heartbeatIntervalMs, 1), Timeout.Infinite);
+    private void ScheduleHeartbeat()
+    {
+        if (Volatile.Read(ref _heartbeatsSuspendedForTesting) == 0)
+            _heartbeatTimer.Change(Math.Max(_heartbeatIntervalMs, 1), Timeout.Infinite);
+    }
 
     private void ThrowIfClosed()
     {
