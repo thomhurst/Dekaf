@@ -72,7 +72,7 @@ public sealed class AvroSchemaRegistrySerializer<
     private readonly int _maxOverflowLogicalSchemas;
     private readonly AllocationFreeSpecificRecordWriter<T>? _specificWriter;
     private readonly AvroSchema? _writerSchema;
-    private readonly AvroTaggedFieldTransformerProvider _taggedFieldTransformers = new();
+    private readonly AvroTaggedFieldTransformerProvider _taggedFieldTransformers;
     private readonly AvroInlineRuleValidatorProvider? _inlineRuleValidators;
     private int _dynamicSchemaCacheCount;
     private int _overflowDynamicSchemaCacheCount;
@@ -97,6 +97,7 @@ public sealed class AvroSchemaRegistrySerializer<
         bool ownsClient = false)
     {
         _schemaRegistry = schemaRegistry ?? throw new ArgumentNullException(nameof(schemaRegistry));
+        _taggedFieldTransformers = new AvroTaggedFieldTransformerProvider(schemaRegistry);
         _config = config ?? new AvroSerializerConfig();
         _schemaIdStrategy = _config.SchemaIdStrategy;
         _schemaSelectionMode = SchemaRegistrySerializerConfigValidator.ValidateAndResolve(
@@ -106,6 +107,7 @@ public sealed class AvroSchemaRegistrySerializer<
         if (_schemaIdStrategy is not (SchemaIdSerializerStrategy.Prefix or SchemaIdSerializerStrategy.Header))
             throw new ArgumentOutOfRangeException(nameof(config), _schemaIdStrategy, "Unknown schema identity strategy.");
         _inlineRuleValidators = AvroValidationConfiguration.Create(
+            schemaRegistry,
             _config.ValidationRulesExecution,
             _config.RuleExecutor);
         if (_config.CustomSubjectNameStrategy is null)

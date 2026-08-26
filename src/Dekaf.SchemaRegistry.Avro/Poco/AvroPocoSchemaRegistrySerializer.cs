@@ -44,7 +44,7 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
     private readonly RegistrySchema _schema;
     private readonly SubjectSchemaIdCache _subjectCache = new();
     private readonly SchemaResolutionCache<SubjectSchemaIdCache.SubjectSchemaIdCacheValue> _resolutionCache = new();
-    private readonly AvroTaggedFieldTransformerProvider _taggedFieldTransformers = new();
+    private readonly AvroTaggedFieldTransformerProvider _taggedFieldTransformers;
     private readonly AvroInlineRuleValidatorProvider? _inlineRuleValidators;
     private long _lastInlineValidationDecision = -1;
     private AvroPocoSerializerBufferState? _primaryRuleBuffer;
@@ -61,6 +61,7 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
         bool ownsClient = false)
     {
         _schemaRegistry = schemaRegistry ?? throw new ArgumentNullException(nameof(schemaRegistry));
+        _taggedFieldTransformers = new AvroTaggedFieldTransformerProvider(schemaRegistry);
         _config = config ?? new AvroSerializerConfig();
         _schemaIdStrategy = _config.SchemaIdStrategy;
         _schemaSelectionMode = SchemaRegistrySerializerConfigValidator.ValidateAndResolve(
@@ -70,6 +71,7 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
         if (_schemaIdStrategy is not (SchemaIdSerializerStrategy.Prefix or SchemaIdSerializerStrategy.Header))
             throw new ArgumentOutOfRangeException(nameof(config), _schemaIdStrategy, "Unknown schema identity strategy.");
         _inlineRuleValidators = AvroValidationConfiguration.Create(
+            schemaRegistry,
             _config.ValidationRulesExecution,
             _config.RuleExecutor);
         if (_config.CustomSubjectNameStrategy is null)

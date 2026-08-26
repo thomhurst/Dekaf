@@ -896,13 +896,10 @@ internal static class AvroValidationValueDecoder
                 var record = (global::Avro.RecordSchema)schema;
                 for (var index = 0; index < record.Fields.Count; index++)
                     Skip(record.Fields[index].Schema, ref reader);
-                return new ValidationCelValue(
+                return ValidationCelValue.FromCollection(
                     ValidationCelValueKind.Object,
-                    default,
-                    false,
-                    0,
-                    null,
-                    reader.Source.Slice(recordStart, reader.Position - recordStart));
+                    reader.Source.Slice(recordStart, reader.Position - recordStart),
+                    0);
             case AvroSchema.Type.Array:
             {
                 var collectionStart = reader.Position;
@@ -938,6 +935,8 @@ internal static class AvroValidationValueDecoder
     internal static int Count(AvroSchema schema, ReadOnlyMemory<byte> payload)
     {
         schema = AvroValueRulePlan.Unwrap(schema);
+        if (schema is global::Avro.RecordSchema record)
+            return record.Fields.Count;
         if (schema is not (global::Avro.ArraySchema or global::Avro.MapSchema))
             return -1;
         var reader = new AvroValidationReader(payload);

@@ -72,7 +72,7 @@ public sealed class AvroSchemaRegistryDeserializer<
     private readonly AvroSchema? _readerSchema;
     private readonly DeserializerSubjectNameCache? _subjectNames;
     private readonly SchemaRegistryMigrationRunner? _migrationRunner;
-    private readonly AvroTaggedFieldTransformerProvider _taggedFieldTransformers = new();
+    private readonly AvroTaggedFieldTransformerProvider _taggedFieldTransformers;
     private readonly AvroInlineRuleValidatorProvider? _inlineRuleValidators;
     private long _lastInlineValidationDecision = -1;
 
@@ -88,11 +88,13 @@ public sealed class AvroSchemaRegistryDeserializer<
         bool ownsClient = false)
     {
         _schemaRegistry = schemaRegistry ?? throw new ArgumentNullException(nameof(schemaRegistry));
+        _taggedFieldTransformers = new AvroTaggedFieldTransformerProvider(schemaRegistry);
         _config = config ?? new AvroDeserializerConfig();
         if (_config.SchemaIdStrategy is not (SchemaIdDeserializerStrategy.Dual or SchemaIdDeserializerStrategy.Prefix or SchemaIdDeserializerStrategy.Header))
             throw new ArgumentOutOfRangeException(nameof(config), _config.SchemaIdStrategy, "Unknown schema identity strategy.");
         _ruleExecutor = _config.RuleExecutor;
         _inlineRuleValidators = AvroValidationConfiguration.Create(
+            schemaRegistry,
             _config.ValidationRulesExecution,
             _config.RuleExecutor);
         _ownsClient = ownsClient;
@@ -466,7 +468,8 @@ public sealed class AvroSchemaRegistryDeserializer<
                         SchemaRegistryPayloadFormat.Avro,
                         _taggedFieldTransformers);
                 payloadMemory = migration.Payload;
-                writerSchema = GetWriterSchemaCached(migration.PayloadSchemaId);
+                writerSchema = _inlineRuleValidators?.GetResolvedSchema(migration.PayloadSchema)
+                    ?? GetWriterSchemaCached(migration.PayloadSchemaId);
                 _inlineRuleValidators?.Register(migration.PayloadSchema, writerSchema);
                 if (_config.ValidationRulesExecution == ValidationRulesExecution.AfterDomainRules)
                 {
@@ -476,7 +479,8 @@ public sealed class AvroSchemaRegistryDeserializer<
                         migration.PayloadSchema,
                         _config.ValidationRulesFailFast);
                 }
-                migrationReaderSchema = GetWriterSchemaCached(migration.ReaderSchema.Id);
+                migrationReaderSchema = _inlineRuleValidators?.GetResolvedSchema(migration.ReaderSchema.Schema)
+                    ?? GetWriterSchemaCached(migration.ReaderSchema.Id);
             }
             var codecState = AvroCodecThreadStateCache.Deserialization ??= new AvroDeserializationThreadState();
             return ReadAvroPayload(payloadMemory, writerSchema, migrationReaderSchema, codecState);
@@ -844,7 +848,11 @@ public sealed class AvroSchemaRegistryDeserializer<
                 throw new InvalidOperationException(
                     $"Schema with ID {schemaId} is not an Avro schema. Type: {registrySchema.SchemaType}");
 
-            return AvroSchema.Parse(registrySchema.SchemaString);
+            return await Poco.AvroSchemaReferenceResolver.ParseAsync(
+                    _schemaRegistry,
+                    registrySchema,
+                    CancellationToken.None)
+                .ConfigureAwait(false);
         }
         catch
         {

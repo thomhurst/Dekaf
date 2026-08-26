@@ -115,6 +115,44 @@ public class AvroInlineRuleValidatorTests
     }
 
     [Test]
+    public async Task Validate_RecordSizeUsesFieldCount()
+    {
+        const string schemaText = """
+            {
+              "type": "record",
+              "name": "SizedRecord",
+              "confluent:rules": [{ "name": "record-size", "expr": "size(this) == 2" }],
+              "fields": [
+                { "name": "id", "type": "int" },
+                {
+                  "name": "child",
+                  "type": {
+                    "type": "record",
+                    "name": "SizedChild",
+                    "fields": [{ "name": "name", "type": "string" }]
+                  },
+                  "confluent:rules": [{ "name": "child-size", "expr": "size(this) == 1" }]
+                }
+              ]
+            }
+            """;
+        var schema = (RecordSchema)AvroSchema.Parse(schemaText);
+        var childSchema = (RecordSchema)schema.Fields[1].Schema;
+        var child = new GenericRecord(childSchema);
+        child.Add("name", "value");
+        var record = new GenericRecord(schema);
+        record.Add("id", 1);
+        record.Add("child", child);
+
+        new AvroInlineRuleValidator(schema).Validate(
+            Serialize(record, schema),
+            18,
+            failFast: false);
+
+        await Task.CompletedTask;
+    }
+
+    [Test]
     public async Task Validate_FloatingArithmeticPreservesFloatingOperands()
     {
         const string schemaText = """
@@ -636,6 +674,89 @@ public class AvroInlineRuleValidatorTests
             });
         Assert.Throws<ValidationRulesFailedException>(() => before.Deserialize(wire, CreateContext()));
         await Assert.That(calls).IsEmpty();
+    }
+
+    [Test]
+    public async Task Deserializer_BeforeDomainMigrationResolvesTargetReferences()
+    {
+        const string childSchemaText = """
+            {"type":"record","name":"ReferencedChild","namespace":"Dekaf.Tests","fields":[{"name":"code","type":"int","confluent:rules":[{"name":"code-positive","expr":"this > 0"}]}]}
+            """;
+        const string writerSchemaText = """
+            {"type":"record","name":"MigrationReferenceRoot","namespace":"Dekaf.Tests","fields":[{"name":"age","type":"int"}]}
+            """;
+        const string targetSchemaText = """
+            {"type":"record","name":"MigrationReferenceRoot","namespace":"Dekaf.Tests","fields":[{"name":"child","type":"Dekaf.Tests.ReferencedChild"}]}
+            """;
+        using var registry = new MockSchemaRegistryClient();
+        _ = await registry.RegisterSchemaAsync(
+            "referenced-child",
+            new Dekaf.SchemaRegistry.Schema
+            {
+                SchemaType = SchemaType.Avro,
+                SchemaString = childSchemaText
+            });
+        var writerSchemaId = await registry.RegisterSchemaAsync(
+            "validation-topic-value",
+            new Dekaf.SchemaRegistry.Schema
+            {
+                SchemaType = SchemaType.Avro,
+                SchemaString = writerSchemaText
+            });
+        _ = await registry.RegisterSchemaAsync(
+            "validation-topic-value",
+            new Dekaf.SchemaRegistry.Schema
+            {
+                SchemaType = SchemaType.Avro,
+                SchemaString = targetSchemaText,
+                References =
+                [
+                    new SchemaReference
+                    {
+                        Name = "Dekaf.Tests.ReferencedChild",
+                        Subject = "referenced-child",
+                        Version = 1
+                    }
+                ],
+                RuleSet = new SchemaRuleSet
+                {
+                    MigrationRules = [CreateRule("upgrade", "MIGRATION", SchemaRuleMode.Upgrade)]
+                }
+            });
+        var names = new SchemaNames();
+        _ = AvroSchema.Parse(childSchemaText, names);
+        var targetSchema = (RecordSchema)AvroSchema.Parse(targetSchemaText, names);
+        var childSchema = (RecordSchema)targetSchema.Fields[0].Schema;
+        var child = new GenericRecord(childSchema);
+        child.Add("code", 1);
+        var target = new GenericRecord(targetSchema);
+        target.Add("child", child);
+        var writerSchema = (RecordSchema)AvroSchema.Parse(writerSchemaText);
+        var writer = new GenericRecord(writerSchema);
+        writer.Add("age", 1);
+        var calls = new List<string>();
+        var executor = new SchemaRegistryRuleExecutor([
+            new ReplacingRuleHandler(
+                "MIGRATION",
+                Serialize(target, targetSchema),
+                Serialize(target, targetSchema),
+                calls)
+        ]);
+        await using var deserializer = new AvroSchemaRegistryDeserializer<GenericRecord>(
+            registry,
+            new AvroDeserializerConfig
+            {
+                UseLatestVersion = true,
+                RuleExecutor = executor,
+                ValidationRulesExecution = ValidationRulesExecution.BeforeDomainRules
+            });
+
+        var result = deserializer.Deserialize(
+            CreateWireBytes(writerSchemaId, Serialize(writer, writerSchema)),
+            CreateContext());
+
+        await Assert.That(((GenericRecord)result["child"])["code"]).IsEqualTo(1);
+        await Assert.That(calls).IsEquivalentTo(["upgrade"]);
     }
 
     [Test]

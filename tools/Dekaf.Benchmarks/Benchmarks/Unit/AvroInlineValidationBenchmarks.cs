@@ -17,6 +17,8 @@ public class AvroInlineValidationBenchmarks
     private ReadOnlyMemory<byte> _segmentedArrayPayload;
     private AvroInlineRuleValidator _mapEqualityValidator = null!;
     private ReadOnlyMemory<byte> _reorderedMapPayload;
+    private AvroInlineRuleValidator _recordSizeValidator = null!;
+    private ReadOnlyMemory<byte> _recordSizePayload;
 
     [GlobalSetup]
     public void Setup()
@@ -87,6 +89,29 @@ public class AvroInlineValidationBenchmarks
             4, 2, (byte)'b', 4, 2, (byte)'a', 2, 0
         };
         _mapEqualityValidator.Validate(_reorderedMapPayload, 3, failFast: false);
+
+        const string recordSizeSchema = """
+            {
+              "type": "record",
+              "name": "RecordSizeBenchmarkRecord",
+              "confluent:rules": [{ "name": "size", "expr": "size(this) == 2" }],
+              "fields": [
+                { "name": "name", "type": "string" },
+                { "name": "age", "type": "int" }
+              ]
+            }
+            """;
+        var sizedSchema = (RecordSchema)AvroSchema.Parse(recordSizeSchema);
+        var sizedRecord = new GenericRecord(sizedSchema);
+        sizedRecord.Add("name", "dekaf");
+        sizedRecord.Add("age", 42);
+        using var sizedStream = new MemoryStream();
+        var sizedEncoder = new BinaryEncoder(sizedStream);
+        new GenericDatumWriter<GenericRecord>(sizedSchema).Write(sizedRecord, sizedEncoder);
+        sizedEncoder.Flush();
+        _recordSizePayload = sizedStream.ToArray();
+        _recordSizeValidator = new AvroInlineRuleValidator(sizedSchema);
+        _recordSizeValidator.Validate(_recordSizePayload, 4, failFast: false);
     }
 
     [Benchmark]
@@ -104,4 +129,8 @@ public class AvroInlineValidationBenchmarks
     [Benchmark]
     public void ValidateEqualMapsWithDifferentOrder() =>
         _mapEqualityValidator.Validate(_reorderedMapPayload, 3, failFast: false);
+
+    [Benchmark]
+    public void ValidateRecordSize() =>
+        _recordSizeValidator.Validate(_recordSizePayload, 4, failFast: false);
 }
