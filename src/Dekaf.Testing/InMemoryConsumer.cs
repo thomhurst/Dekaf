@@ -109,6 +109,15 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     private Task? _closeTask;
     private bool _disposed;
 
+    [ThreadStatic]
+    private static Action? _afterLagWatermarkReadForTest;
+
+    internal static Action? AfterLagWatermarkReadForTest
+    {
+        get => _afterLagWatermarkReadForTest;
+        set => _afterLagWatermarkReadForTest = value;
+    }
+
     public InMemoryConsumer(InMemoryKafkaCluster cluster)
         : this(
             cluster,
@@ -1478,7 +1487,8 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
         lock (_gate)
         {
-            if (!GetCurrentAssignmentUnderLock().Contains(partition)
+            var assignment = GetCurrentAssignmentUnderLock(out var consumerGroupGeneration);
+            if (!assignment.Contains(partition)
                 || !_positions.TryGetValue(partition, out var position)
                 || position < 0)
             {
@@ -1486,6 +1496,14 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             }
 
             var watermarks = _cluster.GetWatermarks(partition, _options.IsolationLevel);
+            AfterLagWatermarkReadForTest?.Invoke();
+            if (consumerGroupGeneration >= 0
+                && _groupId is not null
+                && _cluster.GetConsumerGroupGeneration(_groupId) != consumerGroupGeneration)
+            {
+                return null;
+            }
+
             return position >= watermarks.High ? 0 : watermarks.High - position;
         }
     }

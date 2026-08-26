@@ -63,6 +63,48 @@ public sealed class InMemoryConsumerLagTests
     }
 
     [Test]
+    public async Task CurrentLag_GroupRebalanceDuringWatermarkRead_ReturnsNull()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic(Partition.Topic, partitionCount: 2);
+        var firstOptions = new InMemoryConsumerOptions
+        {
+            GroupId = "lag-race-group",
+            MemberId = "first",
+            AutoOffsetReset = AutoOffsetReset.Earliest
+        };
+        var secondOptions = new InMemoryConsumerOptions
+        {
+            GroupId = firstOptions.GroupId,
+            MemberId = "second",
+            AutoOffsetReset = AutoOffsetReset.Earliest
+        };
+        await using var first = new InMemoryConsumer<string, string>(cluster, firstOptions);
+        await using var second = new InMemoryConsumer<string, string>(cluster, secondOptions);
+        first.Subscribe(Partition.Topic);
+        var transferredPartition = new TopicPartition(Partition.Topic, 1);
+        first.Seek(new TopicPartitionOffset(
+            transferredPartition.Topic,
+            transferredPartition.Partition,
+            0));
+        InMemoryConsumer<string, string>.AfterLagWatermarkReadForTest = () =>
+        {
+            InMemoryConsumer<string, string>.AfterLagWatermarkReadForTest = null;
+            second.Subscribe(Partition.Topic);
+        };
+
+        try
+        {
+            await Assert.That(first.GetCurrentLag(transferredPartition)).IsNull();
+            await Assert.That(first.Assignment).DoesNotContain(transferredPartition);
+        }
+        finally
+        {
+            InMemoryConsumer<string, string>.AfterLagWatermarkReadForTest = null;
+        }
+    }
+
+    [Test]
     public async Task QueryCurrentLagAsync_HonorsCancellation()
     {
         var cluster = new InMemoryKafkaCluster();
