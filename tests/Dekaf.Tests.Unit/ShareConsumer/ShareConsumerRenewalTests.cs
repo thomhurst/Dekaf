@@ -504,6 +504,211 @@ public sealed class ShareConsumerRenewalTests
     }
 
     [Test]
+    public async Task Commit_Success_ReportsOrderedPartitionOutcomes()
+    {
+        ShareAcknowledgementCommitResult[]? outcomes = null;
+        var connection = new CapturingConnection(ApiKey.ShareAcknowledge, 2);
+        await using var fixture = CreateFixture(
+            connection,
+            acknowledgementCommitCallback: results => outcomes = results.ToArray());
+        PrepareForPoll(fixture.Consumer);
+        fixture.Consumer.Acknowledge(CreateRecord(partition: 1, offset: 41));
+        fixture.Consumer.Acknowledge(CreateRecord(partition: 0, offset: 42));
+        fixture.Consumer.Acknowledge(CreateRecord(partition: 0, offset: 40));
+
+        await fixture.Consumer.CommitAsync();
+
+        await Assert.That(outcomes).IsNotNull();
+        await Assert.That(outcomes!).Count().IsEqualTo(2);
+        await Assert.That(outcomes[0].TopicPartition).IsEqualTo(new TopicPartition("topic", 0));
+        await Assert.That(CopyOffsets(outcomes[0].Offsets)).IsEquivalentTo([40L, 42L]);
+        await Assert.That(outcomes[0].Succeeded).IsTrue();
+        await Assert.That(outcomes[1].TopicPartition).IsEqualTo(new TopicPartition("topic", 1));
+        await Assert.That(CopyOffsets(outcomes[1].Offsets)).IsEquivalentTo([41L]);
+        await Assert.That(outcomes[1].Succeeded).IsTrue();
+    }
+
+    [Test]
+    public async Task Commit_RetriableFailure_ReportsOnlyFinalSuccess()
+    {
+        var callbackCount = 0;
+        ShareAcknowledgementCommitResult[]? outcomes = null;
+        var connection = new CapturingConnection(ApiKey.ShareAcknowledge, 2)
+        {
+            ShareAcknowledgeResponses = new Queue<ShareAcknowledgeResponse>(
+            [
+                CreateAcknowledgeResponse((0, ErrorCode.NotLeaderOrFollower)),
+                CreateAcknowledgeResponse((0, ErrorCode.None))
+            ])
+        };
+        await using var fixture = CreateFixture(
+            connection,
+            acknowledgementCommitCallback: results =>
+            {
+                callbackCount++;
+                outcomes = results.ToArray();
+            });
+        PrepareForPoll(fixture.Consumer);
+        fixture.Consumer.Acknowledge(CreateRecord());
+
+        await fixture.Consumer.CommitAsync();
+
+        await Assert.That(connection.ShareAcknowledgeRequests).Count().IsEqualTo(2);
+        await Assert.That(callbackCount).IsEqualTo(1);
+        await Assert.That(outcomes).HasSingleItem();
+        await Assert.That(outcomes![0].Succeeded).IsTrue();
+    }
+
+    [Test]
+    public async Task Commit_TerminalFailure_ReportsPerPartitionAfterRequeue()
+    {
+        ShareAcknowledgementCommitResult[]? outcomes = null;
+        var pendingDuringCallback = false;
+        KafkaShareConsumer<string, string>? consumer = null;
+        var connection = new CapturingConnection(ApiKey.ShareAcknowledge, 2)
+        {
+            ShareAcknowledgeResponse = CreateAcknowledgeResponse(
+                (0, ErrorCode.None),
+                (1, ErrorCode.InvalidRecordState))
+        };
+        await using var fixture = CreateFixture(
+            connection,
+            acknowledgementCommitCallback: results =>
+            {
+                outcomes = results.ToArray();
+                pendingDuringCallback = HasPendingAcknowledgements(consumer!);
+            });
+        consumer = fixture.Consumer;
+        PrepareForPoll(fixture.Consumer);
+        fixture.Consumer.Acknowledge(CreateRecord(partition: 0, offset: 40));
+        fixture.Consumer.Acknowledge(CreateRecord(partition: 1, offset: 41));
+
+        await Assert.That(async () => await fixture.Consumer.CommitAsync())
+            .Throws<KafkaException>();
+
+        await Assert.That(outcomes).IsNotNull();
+        await Assert.That(outcomes![0].Succeeded).IsTrue();
+        await Assert.That(outcomes[1].Exception).IsTypeOf<KafkaException>();
+        await Assert.That(((KafkaException)outcomes[1].Exception!).ErrorCode)
+            .IsEqualTo(ErrorCode.InvalidRecordState);
+        await Assert.That(pendingDuringCallback).IsTrue();
+    }
+
+    [Test]
+    public async Task Commit_UnresolvedLeader_RequeuesAndReportsPartitionFailure()
+    {
+        ShareAcknowledgementCommitResult[]? outcomes = null;
+        var connection = new CapturingConnection(ApiKey.ShareAcknowledge, 2);
+        await using var fixture = CreateFixture(
+            connection,
+            acknowledgementCommitCallback: results => outcomes = results.ToArray());
+        PrepareForPoll(fixture.Consumer);
+        fixture.Consumer.Acknowledge(CreateRecord(topic: "missing-topic"));
+
+        await Assert.That(async () => await fixture.Consumer.CommitAsync())
+            .Throws<KafkaException>();
+
+        var pending = FlushPendingAcknowledgements(fixture.Consumer);
+        await Assert.That(pending.Keys)
+            .IsEquivalentTo([new TopicPartition("missing-topic", 0)]);
+        await Assert.That(outcomes).HasSingleItem();
+        await Assert.That(((KafkaException)outcomes![0].Exception!).ErrorCode)
+            .IsEqualTo(ErrorCode.UnknownTopicOrPartition);
+        await Assert.That(connection.ShareAcknowledgeRequests).IsEmpty();
+    }
+
+    [Test]
+    public async Task Commit_CallbackException_DoesNotChangeSuccess()
+    {
+        var connection = new CapturingConnection(ApiKey.ShareAcknowledge, 2);
+        await using var fixture = CreateFixture(
+            connection,
+            acknowledgementCommitCallback: static _ => throw new InvalidOperationException("callback"));
+        PrepareForPoll(fixture.Consumer);
+        fixture.Consumer.Acknowledge(CreateRecord());
+
+        await fixture.Consumer.CommitAsync();
+
+        await Assert.That(HasPendingAcknowledgements(fixture.Consumer)).IsFalse();
+    }
+
+    [Test]
+    public async Task Commit_Cancellation_RequeuesAndReportsFailure()
+    {
+        using var cancellation = new CancellationTokenSource();
+        ShareAcknowledgementCommitResult[]? outcomes = null;
+        var connection = new CapturingConnection(ApiKey.ShareAcknowledge, 2)
+        {
+            ShareAcknowledgeResponse = CreateAcknowledgeResponse(
+                (0, ErrorCode.None),
+                (1, ErrorCode.NotLeaderOrFollower)),
+            OnSend = cancellation.Cancel
+        };
+        await using var fixture = CreateFixture(
+            connection,
+            acknowledgementCommitCallback: results => outcomes = results.ToArray());
+        PrepareForPoll(fixture.Consumer);
+        fixture.Consumer.Acknowledge(CreateRecord(partition: 0, offset: 40));
+        fixture.Consumer.Acknowledge(CreateRecord(partition: 1, offset: 41));
+
+        await Assert.That(async () => await fixture.Consumer.CommitAsync(cancellation.Token))
+            .Throws<OperationCanceledException>();
+
+        var pending = FlushPendingAcknowledgements(fixture.Consumer);
+        await Assert.That(pending.Keys).IsEquivalentTo([new TopicPartition("topic", 1)]);
+        await Assert.That(outcomes).IsNotNull();
+        await Assert.That(outcomes![0].Succeeded).IsTrue();
+        await Assert.That(outcomes[1].Exception).IsTypeOf<OperationCanceledException>();
+    }
+
+    [Test]
+    [Arguments(ShareAcknowledgementMode.Implicit)]
+    [Arguments(ShareAcknowledgementMode.Explicit)]
+    public async Task Poll_InlineAcknowledgement_ReportsOutcomeInBothModes(
+        ShareAcknowledgementMode acknowledgementMode)
+    {
+        using var cancellation = new CancellationTokenSource();
+        ShareAcknowledgementCommitResult[]? outcomes = null;
+        var connection = new CapturingConnection(ApiKey.ShareFetch, 2)
+        {
+            OnSend = cancellation.Cancel
+        };
+        await using var fixture = CreateFixture(
+            connection,
+            acknowledgementMode,
+            acknowledgementCommitCallback: results => outcomes = results.ToArray());
+        PrepareForPoll(fixture.Consumer);
+        fixture.Consumer.Subscribe("topic");
+        if (acknowledgementMode == ShareAcknowledgementMode.Implicit)
+            TrackDeliveredRecord(fixture.Consumer, new TopicPartition("topic", 0), 42);
+        else
+            fixture.Consumer.Acknowledge(CreateRecord());
+
+        await using var poll = fixture.Consumer.PollAsync(cancellation.Token).GetAsyncEnumerator();
+        await poll.MoveNextAsync();
+
+        await Assert.That(outcomes).HasSingleItem();
+        await Assert.That(outcomes![0].Succeeded).IsTrue();
+        await Assert.That(CopyOffsets(outcomes[0].Offsets)).IsEquivalentTo([42L]);
+    }
+
+    [Test]
+    public async Task Dispose_Flush_ReportsAcknowledgementOutcome()
+    {
+        var callbackCount = 0;
+        var connection = new CapturingConnection(ApiKey.ShareAcknowledge, 2);
+        var fixture = CreateFixture(
+            connection,
+            acknowledgementCommitCallback: _ => callbackCount++);
+        PrepareForPoll(fixture.Consumer);
+        fixture.Consumer.Acknowledge(CreateRecord());
+
+        await fixture.DisposeAsync();
+
+        await Assert.That(callbackCount).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task Poll_SessionLoss_PreservesRenewalForRetry()
     {
         using var cancellation = new CancellationTokenSource();
@@ -650,14 +855,16 @@ public sealed class ShareConsumerRenewalTests
         CapturingConnection connection,
         ShareAcknowledgementMode acknowledgementMode = ShareAcknowledgementMode.Explicit,
         int maxPollRecords = 500,
-        CapturingConnection? secondConnection = null)
+        CapturingConnection? secondConnection = null,
+        ShareAcknowledgementCommitCallback? acknowledgementCommitCallback = null)
     {
         var options = new ShareConsumerOptions
         {
             BootstrapServers = ["localhost:9092"],
             GroupId = "share-group",
             AcknowledgementMode = acknowledgementMode,
-            MaxPollRecords = maxPollRecords
+            MaxPollRecords = maxPollRecords,
+            AcknowledgementCommitCallback = acknowledgementCommitCallback
         };
         var pool = Substitute.For<IConnectionPool>();
         pool.GetConnectionAsync(1, Arg.Any<CancellationToken>()).Returns(connection);
@@ -840,9 +1047,10 @@ public sealed class ShareConsumerRenewalTests
 
     private static ShareConsumeResult<string, string> CreateRecord(
         int partition = 0,
-        long offset = 42) => new()
+        long offset = 42,
+        string topic = "topic") => new()
     {
-        Topic = "topic",
+        Topic = topic,
         Partition = partition,
         Offset = offset,
         Value = "value",
@@ -897,6 +1105,13 @@ public sealed class ShareConsumerRenewalTests
             .GetValue(tracker)!;
     }
 
+    private static long[] CopyOffsets(ShareAcknowledgedOffsets offsets)
+    {
+        var copy = new long[offsets.Length];
+        offsets.CopyTo(copy);
+        return copy;
+    }
+
     private static Dictionary<TopicPartition, List<AcknowledgementBatchData>> FlushPendingAcknowledgements(
         KafkaShareConsumer<string, string> consumer)
     {
@@ -904,6 +1119,17 @@ public sealed class ShareConsumerRenewalTests
             .GetField("_ackTracker", BindingFlags.Instance | BindingFlags.NonPublic)!
             .GetValue(consumer)!;
         return tracker.Flush();
+    }
+
+    private static void TrackDeliveredRecord(
+        KafkaShareConsumer<string, string> consumer,
+        TopicPartition topicPartition,
+        long offset)
+    {
+        var tracker = (AcknowledgementTracker)typeof(KafkaShareConsumer<string, string>)
+            .GetField("_ackTracker", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .GetValue(consumer)!;
+        tracker.TrackDeliveredRecords(topicPartition, offset, offset);
     }
 
     private static int GetSessionEpoch(

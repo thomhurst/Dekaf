@@ -66,6 +66,15 @@ public sealed class ShareConsumerOptions
     public ShareAcknowledgementMode AcknowledgementMode { get; init; } = ShareAcknowledgementMode.Implicit;
 
     /// <summary>
+    /// Callback invoked synchronously after an inline or standalone acknowledgement commit
+    /// completes and internal retry/requeue bookkeeping is finished. Results are ordered by
+    /// topic using ordinal comparison, then by partition. Callback exceptions are logged and
+    /// ignored. The result span is valid only for the callback invocation. The callback must
+    /// remain non-blocking and must not re-enter the consumer.
+    /// </summary>
+    public ShareAcknowledgementCommitCallback? AcknowledgementCommitCallback { get; init; }
+
+    /// <summary>
     /// Controls ShareFetch record acquisition behavior.
     /// Equivalent to Kafka's share.acquire.mode.
     /// </summary>

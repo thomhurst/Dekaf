@@ -91,7 +91,9 @@ public sealed class ConsumerExtensionsTests
         var sourceAdvanced = false;
         var source = CreateObservedResults(() => sourceAdvanced = true);
 
-        var enumeration = Task.Run(async () =>
+        var enumeration = EnumerateAsync();
+
+        async Task EnumerateAsync()
         {
             await foreach (var _ in source.Where(
                 _ => false,
@@ -103,7 +105,7 @@ public sealed class ConsumerExtensionsTests
                 cancellationToken))
             {
             }
-        }, cancellationToken);
+        }
 
         await callbackStarted.Task.WaitAsync(cancellationToken);
         await Assert.That(sourceAdvanced).IsFalse();

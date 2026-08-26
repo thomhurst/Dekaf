@@ -162,6 +162,42 @@ public class ShareConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
     }
 
     [Test]
+    public async Task ShareConsumer_CommitAsync_ReportsBrokerAcknowledgementOutcome()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync();
+        var groupId = $"share-group-{Guid.NewGuid():N}";
+        ShareAcknowledgementCommitResult[]? outcomes = null;
+
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+        await using var consumer = await Kafka.CreateShareConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithGroupId(groupId)
+            .WithAcknowledgementMode(ShareAcknowledgementMode.Explicit)
+            .WithAcknowledgementCommitCallback(results => outcomes = results.ToArray())
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        consumer.Subscribe(topic);
+        await ShareConsumerTestHelper.PrimeShareConsumerAsync(consumer);
+        await ShareConsumerTestHelper.ProduceAsync(producer, topic, count: 1);
+        var message = await ConsumeOneAsync(consumer);
+        consumer.Acknowledge(message, AcknowledgeType.Accept);
+
+        await consumer.CommitAsync(CancellationToken.None);
+
+        await Assert.That(outcomes).HasSingleItem();
+        await Assert.That(outcomes![0].TopicPartition)
+            .IsEqualTo(new TopicPartition(topic, message.Partition));
+        var acknowledgedOffsets = new long[outcomes[0].Offsets.Length];
+        outcomes[0].Offsets.CopyTo(acknowledgedOffsets);
+        await Assert.That(acknowledgedOffsets).IsEquivalentTo([message.Offset]);
+        await Assert.That(outcomes[0].Succeeded).IsTrue();
+    }
+
+    [Test]
     public async Task ShareConsumer_ExplicitAcknowledgement_DoesNotAutoAcceptPolledRecord()
     {
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 1);

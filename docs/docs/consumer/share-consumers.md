@@ -111,7 +111,11 @@ if (record.DeliveryCount >= 5)
 The mode controls what happens to records you do *not* explicitly acknowledge. It maps to Kafka's `share.acknowledgement.mode`:
 
 ```csharp
-.WithAcknowledgementMode(ShareAcknowledgementMode.Explicit)
+await using var consumer = await Kafka.CreateShareConsumer<string, string>()
+    .WithBootstrapServers("localhost:9092")
+    .WithGroupId("order-workers")
+    .WithAcknowledgementMode(ShareAcknowledgementMode.Explicit)
+    .BuildAsync(cancellationToken);
 ```
 
 **Implicit (default):** records from the previous poll that were not passed to `Acknowledge` are automatically accepted when the next `PollAsync` iteration or `CommitAsync` sends acknowledgements. Call `Acknowledge(record, Release)` or `Reject` *before* the next poll if a record must not be auto-accepted.
@@ -123,6 +127,46 @@ Acknowledgements are batched and piggy-backed onto the next ShareFetch. To flush
 ```csharp
 await consumer.CommitAsync(cancellationToken);
 ```
+
+## Observing Acknowledgement Outcomes
+
+Register an acknowledgement commit callback when application bookkeeping must observe the broker's final result:
+
+```csharp
+await using var consumer = await Kafka.CreateShareConsumer<string, string>()
+    .WithBootstrapServers("localhost:9092")
+    .WithGroupId("order-workers")
+    .WithAcknowledgementCommitCallback(results =>
+    {
+        foreach (var result in results)
+        {
+            if (result.Exception is null)
+            {
+                Console.WriteLine($"Acknowledged {result.TopicPartition}: " +
+                    $"{result.Offsets.Length} record(s)");
+            }
+            else
+            {
+                Console.Error.WriteLine(
+                    $"Acknowledgement failed for {result.TopicPartition}: {result.Exception.Message}");
+            }
+        }
+    })
+    .BuildAsync();
+```
+
+One `ShareAcknowledgementCommitResult` is reported per topic-partition. `Offsets` are ascending, `Succeeded` is true when `Exception` is null, and results are ordered by topic (ordinal) then partition.
+
+The result span is valid only while the callback runs. Copy individual result values when they must be retained. Each result's `Offsets` is an allocation-free view that supports indexed access, `foreach`, and `CopyTo`.
+
+The callback covers both acknowledgement transports:
+
+- inline acknowledgements piggy-backed by `PollAsync`;
+- standalone acknowledgements sent by `CommitAsync` or the close/dispose flush.
+
+Dekaf invokes it once after broker retries finish and after successful acknowledgements are applied and failed acknowledgements are requeued. If cancellation ends a commit, failed partitions are requeued and reported before `OperationCanceledException` reaches the caller. A callback exception is logged and ignored; it never replaces the broker outcome or changes retry state.
+
+The callback runs synchronously on the thread continuing the poll, commit, or close operation. Keep it short and non-blocking. Re-entering the same consumer from the callback is unsupported; record work for later processing instead.
 
 ## Acquisition Locks and Renewal
 
@@ -146,6 +190,7 @@ Common builder options beyond the connection/TLS/SASL settings shared with other
 |--------|---------|-------------|
 | `WithGroupId` | — (required) | Share group ID |
 | `WithAcknowledgementMode` | `Implicit` | Implicit vs explicit acknowledgement (`share.acknowledgement.mode`) |
+| `WithAcknowledgementCommitCallback` | — | Reports ordered per-partition broker outcomes after retries and internal bookkeeping |
 | `WithShareAcquireMode` | `BatchOptimized` | `BatchOptimized` acquires along producer batch boundaries; `RecordLimit` strictly caps at `MaxPollRecords` (`share.acquire.mode`) |
 | `WithMaxPollRecords` | 500 | Maximum records per poll |
 | `WithFetchMinBytes` / `WithFetchMaxBytes` | 1 / 50 MiB | Broker fetch accumulation bounds |
