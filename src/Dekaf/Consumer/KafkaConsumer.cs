@@ -8468,11 +8468,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         int assignmentVersion,
         CancellationToken cancellationToken)
     {
-        var watermarks = await QueryWatermarkOffsetsCoreAsync(
-                partition,
-                cacheResult: false,
-                Volatile.Read(ref _assignmentEnsureVersion),
-                cancellationToken)
+        var highWatermark = await QueryLatestOffsetCoreAsync(partition, cancellationToken)
             .ConfigureAwait(false);
         lock (_snapshotStateGate)
         {
@@ -8485,13 +8481,16 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 return null;
             }
 
+            var lowWatermark = _watermarks.TryGetValue(partition, out var watermarks)
+                ? watermarks.ReadWatermarks().Low
+                : 0;
             UpdateCachedWatermarks(
                 partition,
-                watermarks.Low,
-                watermarks.High,
-                watermarks.High,
+                lowWatermark,
+                highWatermark,
+                highWatermark,
                 Volatile.Read(ref _assignmentEnsureVersion));
-            return CalculateLag(position, watermarks.High);
+            return CalculateLag(position, highWatermark);
         }
     }
 
@@ -8543,6 +8542,65 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
 
         return null;
+    }
+
+    private async ValueTask<long> QueryLatestOffsetCoreAsync(
+        TopicPartition topicPartition,
+        CancellationToken cancellationToken)
+    {
+        using var apiTimeout = new ApiTimeoutScope(_options.DefaultApiTimeoutMs, cancellationToken);
+        try
+        {
+            return await RetryHelper.WithRetryAsync(async () =>
+            {
+                var connectionLease = await GetPartitionLeaderControlConnectionAsync(
+                        topicPartition,
+                        apiTimeout.Token)
+                    .ConfigureAwait(false);
+                if (connectionLease is null)
+                    throw new KafkaException(ErrorCode.LeaderNotAvailable, $"No leader found for partition {topicPartition}");
+                using var lease = connectionLease.Value;
+                var connection = lease.Connection;
+
+                var listOffsetsVersion = _metadataManager.GetNegotiatedApiVersion(
+                    connection,
+                    ApiKey.ListOffsets,
+                    ListOffsetsRequest.LowestSupportedVersion,
+                    ListOffsetsRequest.HighestSupportedVersion);
+                var request = CreateWatermarkListOffsetsRequest(
+                    topicPartition,
+                    _options.IsolationLevel,
+                    LatestOffsetTimestamp,
+                    GetCurrentLeaderEpoch(topicPartition));
+                var response = await connection.SendAsync<ListOffsetsRequest, ListOffsetsResponse>(
+                        request,
+                        listOffsetsVersion,
+                        apiTimeout.Token)
+                    .ConfigureAwait(false);
+                var partitionResponse = FindListOffsetsPartition(response, topicPartition);
+
+                if (partitionResponse is null)
+                {
+                    throw new KafkaException(
+                        ErrorCode.UnknownServerError,
+                        $"Failed to query latest offset for {topicPartition}: missing partition response");
+                }
+
+                if (partitionResponse.ErrorCode != ErrorCode.None)
+                {
+                    throw KafkaException.FromErrorCode(
+                        partitionResponse.ErrorCode,
+                        $"Failed to query latest offset for {topicPartition}: {partitionResponse.ErrorCode}");
+                }
+
+                return partitionResponse.Offset;
+            }, _metadataManager, apiTimeout.Token, _options.RetryBackoffMs, _options.RetryBackoffMaxMs)
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException ex) when (apiTimeout.DefaultTimeoutExpired)
+        {
+            throw apiTimeout.CreateTimeoutException(nameof(QueryCurrentLagAsync), ex);
+        }
     }
 
     public ValueTask<WatermarkOffsets> QueryWatermarkOffsetsAsync(
@@ -9973,7 +10031,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         recreatedPartitions.Add(partition);
                 }
 
-                RotateWatermarkCacheGenerations(recreatedPartitions);
+                InvalidateWatermarkCacheGenerations(recreatedPartitions);
 
                 Dictionary<TopicPartition, long>? preexistingPendingFetchClearVersions = null;
                 Task[]? resetTasks = null;
@@ -10039,6 +10097,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                             new ReadOnlySpan<Task>(resetTasks!, 0, resetTaskCount)).ConfigureAwait(false);
                     }
 #endif
+
+                    RotateWatermarkCacheGenerations(recreatedPartitions);
                 }
                 finally
                 {
@@ -10080,6 +10140,22 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     continue;
 
                 _watermarkAssignmentVersions[partition] = assignmentVersion;
+                _watermarks.TryRemove(partition, out _);
+            }
+        }
+    }
+
+    private void InvalidateWatermarkCacheGenerations(HashSet<TopicPartition> recreatedPartitions)
+    {
+        lock (_snapshotStateGate)
+        {
+            Interlocked.Increment(ref _assignmentEnsureVersion);
+            foreach (var partition in recreatedPartitions)
+            {
+                if (!_assignmentSnapshot.Contains(partition))
+                    continue;
+
+                _watermarkAssignmentVersions.TryRemove(partition, out _);
                 _watermarks.TryRemove(partition, out _);
             }
         }
@@ -10771,7 +10847,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             lock (_snapshotStateGate)
             {
-                if (assignmentVersion != Volatile.Read(ref _assignmentEnsureVersion))
+                if (assignmentVersion != Volatile.Read(ref _assignmentEnsureVersion)
+                    || (_assignmentSnapshot.Contains(partition)
+                        && !_watermarkAssignmentVersions.ContainsKey(partition)))
                     return;
 
                 if (_watermarks.TryGetValue(partition, out entry!))

@@ -128,6 +128,7 @@ public sealed class QueryWatermarkOffsetsTests
         await Assert.That(lag).IsEqualTo(10);
         await Assert.That(consumer.GetCurrentLag(new TopicPartition(Topic, Partition))).IsEqualTo(10);
         await Assert.That(connection.LeaseAcquisitionCount).IsEqualTo(1);
+        await Assert.That(connection.SendCount).IsEqualTo(1);
     }
 
     [Test]
@@ -161,7 +162,7 @@ public sealed class QueryWatermarkOffsetsTests
         var releaseResponses = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         connection.SendHandler = async request =>
         {
-            if (Interlocked.Increment(ref requestCount) == 2)
+            if (Interlocked.Increment(ref requestCount) == 1)
                 requestsStarted.TrySetResult();
             await releaseResponses.Task.ConfigureAwait(false);
             return CreateListOffsetsResponse(request);
@@ -217,10 +218,9 @@ public sealed class QueryWatermarkOffsetsTests
         connection.SendHandler = async request =>
         {
             var requestNumber = Interlocked.Increment(ref requestCount);
-            if (requestNumber <= 2)
+            if (requestNumber == 1)
             {
-                if (requestNumber == 2)
-                    requestsStarted.TrySetResult();
+                requestsStarted.TrySetResult();
                 await releaseOldTopicResponses.Task.ConfigureAwait(false);
             }
 
@@ -241,6 +241,71 @@ public sealed class QueryWatermarkOffsetsTests
 
         await Assert.That(await pending.WaitAsync(TimeSpan.FromSeconds(1))).IsNull();
         await Assert.That(consumer.GetCurrentLag(partition)).IsNull();
+    }
+
+    [Test]
+    public async Task QueryCurrentLagAsync_TopicIdentityResetInProgressReturnsNull()
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var connection = new LeaseTrackingConnection();
+        connectionPool.GetConnectionByIndexAsync(0, 1, Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult<IKafkaConnection>(connection));
+        var metadataManager = new MetadataManager(connectionPool, ["localhost:9092"]);
+        metadataManager.SetApiVersion(
+            ApiKey.ListOffsets,
+            ListOffsetsRequest.LowestSupportedVersion,
+            ListOffsetsRequest.HighestSupportedVersion);
+        metadataManager.Metadata.Update(CreateMetadataResponse(InitialTopicId));
+        await using var consumer = new KafkaConsumer<string, string>(
+            new ConsumerOptions
+            {
+                BootstrapServers = ["localhost:9092"],
+                GroupId = "test-group",
+                AutoOffsetReset = AutoOffsetReset.ByDuration,
+                AutoOffsetResetDuration = TimeSpan.FromHours(1)
+            },
+            Serializers.String,
+            Serializers.String,
+            connectionPool,
+            metadataManager);
+        SetInitialized(consumer);
+        var partition = new TopicPartition(Topic, Partition);
+        consumer.IncrementalAssign([new TopicPartitionOffset(Topic, Partition, 32)]);
+        await InvokeHandleTopicIdentityChangesAsync(consumer);
+
+        var resetStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseReset = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        connection.SendHandler = async request =>
+        {
+            var timestamp = request.Topics[0].Partitions[0].Timestamp;
+            if (timestamp is EarliestOffsetTimestamp or LatestOffsetTimestamp)
+                return CreateListOffsetsResponse(request);
+
+            resetStarted.TrySetResult();
+            await releaseReset.Task.ConfigureAwait(false);
+            return CreateListOffsetsResponse(request, offset: 5);
+        };
+
+        metadataManager.Metadata.Update(CreateMetadataResponse(Guid.NewGuid()));
+        var resetTask = InvokeHandleTopicIdentityChangesAsync(consumer).AsTask();
+        try
+        {
+            await resetStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+
+            var lagDuringReset = consumer.QueryCurrentLagAsync(partition);
+            await Assert.That(lagDuringReset.IsCompletedSuccessfully).IsTrue();
+            await Assert.That(lagDuringReset.Result).IsNull();
+            await Assert.That(consumer.GetCurrentLag(partition)).IsNull();
+            await Assert.That(connection.SendCount).IsEqualTo(1);
+        }
+        finally
+        {
+            releaseReset.TrySetResult();
+        }
+        await resetTask.WaitAsync(TimeSpan.FromSeconds(1));
+
+        await Assert.That(await consumer.QueryCurrentLagAsync(partition)).IsEqualTo(37);
+        await Assert.That(connection.SendCount).IsEqualTo(2);
     }
 
     [Test]
@@ -324,10 +389,12 @@ public sealed class QueryWatermarkOffsetsTests
         };
     }
 
-    private static ListOffsetsResponse CreateListOffsetsResponse(ListOffsetsRequest request)
+    private static ListOffsetsResponse CreateListOffsetsResponse(
+        ListOffsetsRequest request,
+        long? offset = null)
     {
         var timestamp = request.Topics[0].Partitions[0].Timestamp;
-        var offset = timestamp == EarliestOffsetTimestamp ? 10 : 42;
+        var responseOffset = offset ?? (timestamp == EarliestOffsetTimestamp ? 10 : 42);
         return new ListOffsetsResponse
         {
             Topics =
@@ -341,7 +408,7 @@ public sealed class QueryWatermarkOffsetsTests
                         {
                             PartitionIndex = Partition,
                             ErrorCode = ErrorCode.None,
-                            Offset = offset
+                            Offset = responseOffset
                         }
                     ]
                 }
@@ -410,6 +477,7 @@ public sealed class QueryWatermarkOffsetsTests
     {
         private int _leaseCount;
         private int _leaseAcquisitionCount;
+        private int _sendCount;
 
         public Func<ListOffsetsRequest, ValueTask<ListOffsetsResponse>>? SendHandler { get; set; }
         public int BrokerId => 0;
@@ -418,6 +486,7 @@ public sealed class QueryWatermarkOffsetsTests
         public bool IsConnected => true;
         public int LeaseCount => Volatile.Read(ref _leaseCount);
         public int LeaseAcquisitionCount => Volatile.Read(ref _leaseAcquisitionCount);
+        public int SendCount => Volatile.Read(ref _sendCount);
         public int ActiveOperationCount => 0;
 
         public bool TryAcquireLease()
@@ -447,6 +516,7 @@ public sealed class QueryWatermarkOffsetsTests
                 throw new NotSupportedException();
             }
 
+            Interlocked.Increment(ref _sendCount);
             var response = await SendHandler(listOffsetsRequest);
             return (TResponse)(object)response;
         }
