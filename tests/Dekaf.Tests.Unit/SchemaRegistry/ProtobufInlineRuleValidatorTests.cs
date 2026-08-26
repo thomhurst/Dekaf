@@ -12,6 +12,7 @@ using Google.Protobuf.WellKnownTypes;
 
 namespace Dekaf.Tests.Unit.SchemaRegistry;
 
+[NotInParallel]
 public sealed class ProtobufInlineRuleValidatorTests
 {
     [Test]
