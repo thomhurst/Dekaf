@@ -1639,6 +1639,12 @@ internal sealed class ProtobufMemberResolver
 
     private void Add(MessageDescriptor descriptor, byte[][] path, int memberIndex, int depth)
     {
+        if (depth >= ProtobufInlineRuleValidator.MaximumValidationDepth)
+        {
+            throw new SchemaRegistryRuleException(
+                $"Protobuf validation member path exceeds {ProtobufInlineRuleValidator.MaximumValidationDepth} levels.");
+        }
+
         var name = Encoding.UTF8.GetString(path[depth]);
         var field = descriptor.FindFieldByName(name)
             ?? throw new SchemaRegistryRuleException(

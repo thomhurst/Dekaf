@@ -223,6 +223,29 @@ public sealed class ProtobufSchemaRegistrySerializer<
             ? SchemaIdentityFraming.SchemaIdFrameSize + _encodedMessageIndexes.Length
             : 0;
         var totalSize = payloadOffset + protobufPayloadLength;
+        if (_payloadTransformMode == ProtobufPayloadTransformMode.InlineValidation)
+        {
+            var memory = destination.GetMemory(totalSize);
+            var validatedSpan = memory.Span;
+            if (_schemaIdStrategy == SchemaIdSerializerStrategy.Prefix)
+            {
+                SchemaIdentityFraming.WriteSchemaId(validatedSpan, schemaId);
+                _encodedMessageIndexes.CopyTo(
+                    validatedSpan[SchemaIdentityFraming.SchemaIdFrameSize..]);
+            }
+
+            value.WriteTo(validatedSpan.Slice(payloadOffset, protoSize));
+            _inlineRuleExecutor!.Validate(
+                memory.Slice(payloadOffset, protoSize),
+                schemaId,
+                schemaEntry.Schema,
+                _config.ValidationRulesFailFast);
+            if (_schemaIdStrategy == SchemaIdSerializerStrategy.Header)
+                WriteIdentityHeader(context, in schemaEntry);
+            destination.Advance(totalSize);
+            return;
+        }
+
         var span = destination.GetSpan(totalSize);
 
         if (_schemaIdStrategy == SchemaIdSerializerStrategy.Prefix)
@@ -233,13 +256,6 @@ public sealed class ProtobufSchemaRegistrySerializer<
 
         if (_payloadTransformMode == ProtobufPayloadTransformMode.None)
             value.WriteTo(span.Slice(payloadOffset, protoSize));
-        else if (_payloadTransformMode == ProtobufPayloadTransformMode.InlineValidation)
-            WriteValidatedPayload(
-                value,
-                span.Slice(payloadOffset, protoSize),
-                protoSize,
-                schemaId,
-                schemaEntry.Schema);
         else
             transformedPayload.Span.CopyTo(span.Slice(payloadOffset, transformedPayload.Length));
 
@@ -304,6 +320,29 @@ public sealed class ProtobufSchemaRegistrySerializer<
             ? SchemaIdentityFraming.SchemaIdFrameSize + _encodedMessageIndexes.Length
             : 0;
         var totalSize = payloadOffset + protobufPayloadLength;
+        if (_payloadTransformMode == ProtobufPayloadTransformMode.InlineValidation)
+        {
+            var memory = destination.GetMemory(totalSize);
+            var validatedSpan = memory.Span;
+            if (_schemaIdStrategy == SchemaIdSerializerStrategy.Prefix)
+            {
+                SchemaIdentityFraming.WriteSchemaId(validatedSpan, schemaId);
+                _encodedMessageIndexes.CopyTo(
+                    validatedSpan[SchemaIdentityFraming.SchemaIdFrameSize..]);
+            }
+
+            value.WriteTo(validatedSpan.Slice(payloadOffset, protoSize));
+            _inlineRuleExecutor!.Validate(
+                memory.Slice(payloadOffset, protoSize),
+                schemaId,
+                schemaEntry.Schema,
+                _config.ValidationRulesFailFast);
+            if (_schemaIdStrategy == SchemaIdSerializerStrategy.Header)
+                WriteIdentityHeader(context, in schemaEntry);
+            destination.Advance(totalSize);
+            return;
+        }
+
         var span = destination.GetSpan(totalSize);
 
         if (_schemaIdStrategy == SchemaIdSerializerStrategy.Prefix)
@@ -315,13 +354,6 @@ public sealed class ProtobufSchemaRegistrySerializer<
         // Write the protobuf message
         if (_payloadTransformMode == ProtobufPayloadTransformMode.None)
             value.WriteTo(span.Slice(payloadOffset, protoSize));
-        else if (_payloadTransformMode == ProtobufPayloadTransformMode.InlineValidation)
-            WriteValidatedPayload(
-                value,
-                span.Slice(payloadOffset, protoSize),
-                protoSize,
-                schemaId,
-                schemaEntry.Schema);
         else
             transformedPayload.Span.CopyTo(span.Slice(payloadOffset, transformedPayload.Length));
 
@@ -329,31 +361,6 @@ public sealed class ProtobufSchemaRegistrySerializer<
             WriteIdentityHeader(context, in schemaEntry);
 
         destination.Advance(totalSize);
-    }
-
-    private void WriteValidatedPayload(
-        T value,
-        Span<byte> destination,
-        int payloadLength,
-        int schemaId,
-        Schema? schema)
-    {
-        var rented = ArrayPool<byte>.Shared.Rent(payloadLength);
-        try
-        {
-            var payload = rented.AsMemory(0, payloadLength);
-            value.WriteTo(payload.Span);
-            _inlineRuleExecutor!.Validate(
-                payload,
-                schemaId,
-                schema,
-                _config.ValidationRulesFailFast);
-            payload.Span.CopyTo(destination);
-        }
-        finally
-        {
-            ArrayPool<byte>.Shared.Return(rented);
-        }
     }
 
     private ReadOnlyMemory<byte> TransformSerializedPayload(

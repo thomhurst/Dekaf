@@ -18,7 +18,9 @@ public class ProtobufSchemaRegistrySerializerBenchmarks
     private readonly ArrayBufferWriter<byte> _destination = new(256);
     private ProtobufSchemaRegistrySerializer<StringValue> _serializer = null!;
     private ProtobufSchemaRegistrySerializer<StringValue> _headerSerializer = null!;
+    private ProtobufSchemaRegistrySerializer<StringValue> _validatedSerializer = null!;
     private StringValue _value = null!;
+    private StringValue _largeValue = null!;
     private SerializationContext _context;
     private SerializationContext _headerContext;
 
@@ -29,7 +31,14 @@ public class ProtobufSchemaRegistrySerializerBenchmarks
         _headerSerializer = new ProtobufSchemaRegistrySerializer<StringValue>(
             new BenchmarkSchemaRegistryClient(),
             new ProtobufSerializerConfig { SchemaIdStrategy = SchemaIdSerializerStrategy.Header });
+        _validatedSerializer = new ProtobufSchemaRegistrySerializer<StringValue>(
+            new BenchmarkSchemaRegistryClient(),
+            new ProtobufSerializerConfig
+            {
+                ValidationRulesExecution = ValidationRulesExecution.BeforeDomainRules
+            });
         _value = new StringValue { Value = "protobuf-benchmark" };
+        _largeValue = new StringValue { Value = new string('x', 16 * 1024) };
         _context = new SerializationContext
         {
             Topic = "protobuf-benchmark",
@@ -47,6 +56,9 @@ public class ProtobufSchemaRegistrySerializerBenchmarks
         destination.Clear();
         _headerSerializer.Serialize(_value, ref destination, _headerContext);
         _headerContext.Headers!.Clear();
+        destination.Clear();
+        _validatedSerializer.Serialize(_largeValue, ref destination, _context);
+        destination.Clear();
     }
 
     [GlobalCleanup]
@@ -54,6 +66,7 @@ public class ProtobufSchemaRegistrySerializerBenchmarks
     {
         await _serializer.DisposeAsync().ConfigureAwait(false);
         await _headerSerializer.DisposeAsync().ConfigureAwait(false);
+        await _validatedSerializer.DisposeAsync().ConfigureAwait(false);
     }
 
     [Benchmark]
@@ -71,6 +84,14 @@ public class ProtobufSchemaRegistrySerializerBenchmarks
         _headerContext.Headers!.Clear();
         var destination = _destination;
         _headerSerializer.Serialize(_value, ref destination, _headerContext);
+    }
+
+    [Benchmark]
+    public void SerializeCachedWithInlineValidation()
+    {
+        _destination.Clear();
+        var destination = _destination;
+        _validatedSerializer.Serialize(_largeValue, ref destination, _context);
     }
 
     [Benchmark]

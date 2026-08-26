@@ -820,6 +820,35 @@ public sealed class ProtobufInlineRuleValidatorTests
     }
 
     [Test]
+    public async Task ValidationWireReader_MalformedPayloads_ReportPreciseErrors()
+    {
+        (byte[] Payload, string Reason)[] cases =
+        [
+            ([0x80], "truncated varint"),
+            (
+                [0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80],
+                "varint exceeds 10 bytes"),
+            ([0x09, 1, 2, 3, 4, 5, 6, 7], "truncated field"),
+            ([0x0d, 1, 2, 3], "truncated field"),
+            ([0x0a, 2, 1], "truncated field"),
+            ([0x0a, 0x80, 0x80, 0x80, 0x80, 0x08], "length exceeds Int32.MaxValue"),
+            ([0x0e], "unknown wire type"),
+            ([0x00], "field number 0"),
+            ([0x0c], "unexpected end-group tag"),
+            ([0x0b], "unterminated group"),
+            ([0x0b, 0x14], "mismatched end-group tag")
+        ];
+
+        foreach (var (payload, reason) in cases)
+        {
+            var exception = Assert.Throws<SchemaRegistryRuleException>(() =>
+                ReadAllWireFields(payload));
+
+            await Assert.That(exception.Message).Contains(reason);
+        }
+    }
+
+    [Test]
     public async Task Validate_RecursiveMessagesRejectExcessiveDepth()
     {
         byte[] child = [8, 1];
@@ -837,6 +866,33 @@ public sealed class ProtobufInlineRuleValidatorTests
             validator.Validate(envelope.WrittenMemory, schemaId: 17, failFast: false));
 
         await Assert.That(exception.Message).Contains("recursion exceeds");
+    }
+
+    [Test]
+    public async Task Compile_RecursiveMemberPathRejectsExcessiveDepth()
+    {
+        var descriptorProto = FileDescriptorProto.Parser.ParseFrom(
+            ValidationChild.Descriptor.File.SerializedData);
+        var message = descriptorProto.MessageType[0];
+        var meta = ValidationChild.Descriptor.GetOptions()!
+            .GetExtension(MetaExtensions.MessageMeta)
+            .Clone();
+        meta.Rules[0].Expr = $"this.{string.Join('.', Enumerable.Repeat(
+            "child",
+            ProtobufInlineRuleValidator.MaximumValidationDepth))}.value > 0";
+        message.Options.SetExtension(MetaExtensions.MessageMeta, meta);
+        var descriptors = FileDescriptor.BuildFromByteStrings([
+            DescriptorReflection.Descriptor.SerializedData,
+            MetaReflection.Descriptor.SerializedData,
+            descriptorProto.ToByteString()
+        ]);
+        var descriptor = descriptors.Single(static file =>
+            file.Name == "protobuf_validation_child.proto").MessageTypes[0];
+
+        var exception = Assert.Throws<SchemaRegistryRuleException>(() =>
+            _ = new ProtobufInlineRuleValidator(descriptor));
+
+        await Assert.That(exception.Message).Contains("member path exceeds");
     }
 
     [Test]
@@ -991,6 +1047,25 @@ public sealed class ProtobufInlineRuleValidatorTests
 
         await Assert.That(exception.Violations[0].Rule.Name).IsEqualTo("age-upper-bound");
         await Assert.That(destination.WrittenCount).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task Serializer_EnabledValidation_WritesIntoDestinationMemory()
+    {
+        var registry = new MockSchemaRegistryClient();
+        var config = new ProtobufSerializerConfig
+        {
+            UseSchemaReferences = false,
+            ValidationRulesExecution = ValidationRulesExecution.BeforeDomainRules
+        };
+        await using var serializer = new ProtobufSchemaRegistrySerializer<ValidationEnvelope>(registry, config);
+        var destination = new TrackingMemoryBufferWriter(256);
+
+        serializer.Serialize(CreateValidMessage(), ref destination, CreateContext());
+
+        await Assert.That(destination.GetMemoryCallCount).IsEqualTo(1);
+        await Assert.That(destination.GetSpanCallCount).IsEqualTo(0);
+        await Assert.That(destination.WrittenCount).IsGreaterThan(0);
     }
 
     [Test]
@@ -1428,6 +1503,14 @@ public sealed class ProtobufInlineRuleValidatorTests
         } while (value != 0);
     }
 
+    private static void ReadAllWireFields(ReadOnlyMemory<byte> payload)
+    {
+        var reader = new ProtobufValidationWireReader(payload);
+        while (reader.TryRead(out _))
+        {
+        }
+    }
+
     private static async Task<int> RegisterValidationSchema(
         MockSchemaRegistryClient registry,
         SchemaRuleMode mode) =>
@@ -1518,6 +1601,29 @@ public sealed class ProtobufInlineRuleValidatorTests
         public ReadOnlyMemory<byte> TransformDeserializedPayload(
             ReadOnlyMemory<byte> payload,
             SchemaRegistryRuleContext context) => payload;
+    }
+
+    private sealed class TrackingMemoryBufferWriter(int capacity) : IBufferWriter<byte>
+    {
+        private readonly byte[] _buffer = new byte[capacity];
+
+        internal int GetMemoryCallCount { get; private set; }
+        internal int GetSpanCallCount { get; private set; }
+        internal int WrittenCount { get; private set; }
+
+        public void Advance(int count) => WrittenCount += count;
+
+        public Memory<byte> GetMemory(int sizeHint = 0)
+        {
+            GetMemoryCallCount++;
+            return _buffer.AsMemory(WrittenCount);
+        }
+
+        public Span<byte> GetSpan(int sizeHint = 0)
+        {
+            GetSpanCallCount++;
+            return _buffer.AsSpan(WrittenCount);
+        }
     }
 
     private sealed class TransientSchemaRegistryClient(Schema schema) : ISchemaRegistryClient
