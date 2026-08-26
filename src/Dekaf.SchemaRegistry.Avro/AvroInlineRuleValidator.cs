@@ -55,6 +55,13 @@ internal sealed class AvroInlineRuleValidator
 
 internal sealed class AvroValueRulePlan
 {
+    private enum ValidationStrategy : byte
+    {
+        Standard,
+        AggregateRoot,
+        DeferredRecord
+    }
+
     private readonly AvroSchema _schema;
     private readonly AvroSchema _ruleSchema;
     private readonly ReadOnlyMemory<byte>[]? _enumSymbols;
@@ -63,6 +70,7 @@ internal sealed class AvroValueRulePlan
     private AvroValueRulePlan[] _children = [];
     private int[] _deferredSchemaRuleFieldIndexes = [];
     private bool _hasNestedRules;
+    private ValidationStrategy _validationStrategy;
 
     private AvroValueRulePlan(AvroSchema schema)
     {
@@ -160,7 +168,25 @@ internal sealed class AvroValueRulePlan
         }
 
         foreach (var plan in plans.Values)
+        {
             plan.InitializeDeferredSchemaRuleFields();
+            plan._validationStrategy = plan.GetValidationStrategy();
+        }
+    }
+
+    private ValidationStrategy GetValidationStrategy()
+    {
+        if (!_hasNestedRules || _schemaRules.IsEmpty)
+            return ValidationStrategy.Standard;
+        if (_schemaRules.UsesRootValue
+            && !_schemaRules.HasMembers
+            && _schema is global::Avro.RecordSchema or global::Avro.ArraySchema or global::Avro.MapSchema)
+        {
+            return ValidationStrategy.AggregateRoot;
+        }
+        return !_schemaRules.UsesRootValue && _schema is global::Avro.RecordSchema
+            ? ValidationStrategy.DeferredRecord
+            : ValidationStrategy.Standard;
     }
 
     private void InitializeDeferredSchemaRuleFields()
@@ -191,11 +217,18 @@ internal sealed class AvroValueRulePlan
         if (!HasAnyRules)
             return ReadValue(ref reader);
 
-        if (!_schemaRules.IsEmpty
-            && !_schemaRules.UsesRootValue
-            && _hasNestedRules
-            && _schema is global::Avro.RecordSchema)
+        if (_validationStrategy != ValidationStrategy.Standard)
         {
+            if (_validationStrategy == ValidationStrategy.AggregateRoot)
+            {
+                return ValidateAggregateWithRootRules(
+                    ref reader,
+                    now,
+                    failFast,
+                    ref violations,
+                    ref path);
+            }
+
             return ValidateRecordWithDeferredNestedRules(
                 ref reader,
                 now,
@@ -254,10 +287,10 @@ internal sealed class AvroValueRulePlan
                 ValidateRecord(ref reader, now, failFast, ref violations, ref path);
                 break;
             case global::Avro.ArraySchema:
-                ValidateArray(ref reader, now, failFast, ref violations, ref path);
+                _ = ValidateArray(ref reader, now, failFast, ref violations, ref path);
                 break;
             case global::Avro.MapSchema:
-                ValidateMap(ref reader, now, failFast, ref violations, ref path);
+                _ = ValidateMap(ref reader, now, failFast, ref violations, ref path);
                 break;
             case global::Avro.UnionSchema:
                 ValidateUnion(ref reader, now, failFast, ref violations, ref path);
@@ -269,6 +302,60 @@ internal sealed class AvroValueRulePlan
                     reader = preview;
                 break;
         }
+        return value;
+    }
+
+    private ValidationCelValue ValidateAggregateWithRootRules(
+        ref AvroValidationReader reader,
+        long now,
+        bool failFast,
+        ref List<ValidationRuleError>? violations,
+        scoped ref AvroValidationPath path)
+    {
+        var start = reader.Position;
+        List<ValidationRuleError>? nestedViolations = null;
+        int rootSize;
+        ValidationCelValueKind valueKind;
+        switch (_schema)
+        {
+            case global::Avro.RecordSchema:
+                ValidateRecord(ref reader, now, failFast: false, ref nestedViolations, ref path);
+                rootSize = _fields.Length;
+                valueKind = ValidationCelValueKind.Object;
+                break;
+            case global::Avro.ArraySchema:
+                rootSize = ValidateArray(ref reader, now, failFast: false, ref nestedViolations, ref path);
+                valueKind = ValidationCelValueKind.Array;
+                break;
+            case global::Avro.MapSchema:
+                rootSize = ValidateMap(ref reader, now, failFast: false, ref nestedViolations, ref path);
+                valueKind = ValidationCelValueKind.Object;
+                break;
+            default:
+                throw new InvalidOperationException("Root aggregate validation requires a record, array, or map schema.");
+        }
+
+        var payload = reader.Source.Slice(start, reader.Position - start);
+        var value = ValidationCelValue.FromCollection(valueKind, payload, sizeIndex: 0);
+        _schemaRules.Evaluate(
+            value,
+            payload,
+            now,
+            failFast,
+            ref violations,
+            ref path,
+            rootSize);
+        if (nestedViolations is null || (failFast && violations is not null))
+            return value;
+
+        violations ??= new List<ValidationRuleError>(failFast ? 1 : nestedViolations.Count);
+        if (failFast)
+        {
+            violations.Add(nestedViolations[0]);
+            return value;
+        }
+        for (var index = 0; index < nestedViolations.Count; index++)
+            violations.Add(nestedViolations[index]);
         return value;
     }
 
@@ -339,7 +426,7 @@ internal sealed class AvroValueRulePlan
             ref path);
     }
 
-    private void ValidateArray(
+    private int ValidateArray(
         ref AvroValidationReader reader,
         long now,
         bool failFast,
@@ -352,7 +439,7 @@ internal sealed class AvroValueRulePlan
         {
             var count = reader.ReadCollectionCount();
             if (count == 0)
-                return;
+                return itemIndex;
             for (long index = 0; index < count; index++)
             {
                 var mark = path.Length;
@@ -364,13 +451,13 @@ internal sealed class AvroValueRulePlan
                     for (var remaining = index + 1; remaining < count; remaining++)
                         AvroValidationValueDecoder.Skip(item._schema, ref reader);
                     SkipRemainingCollection(item._schema, ref reader);
-                    return;
+                    return itemIndex;
                 }
             }
         }
     }
 
-    private void ValidateMap(
+    private int ValidateMap(
         ref AvroValidationReader reader,
         long now,
         bool failFast,
@@ -378,13 +465,15 @@ internal sealed class AvroValueRulePlan
         scoped ref AvroValidationPath path)
     {
         var valuePlan = _children[0];
+        var itemCount = 0;
         while (true)
         {
             var count = reader.ReadCollectionCount();
             if (count == 0)
-                return;
+                return itemCount;
             for (long index = 0; index < count; index++)
             {
+                itemCount = checked(itemCount + 1);
                 var key = reader.ReadLengthPrefixed();
                 var mark = path.Length;
                 path.AppendMapKey(key.Span);
@@ -398,7 +487,7 @@ internal sealed class AvroValueRulePlan
                         AvroValidationValueDecoder.Skip(valuePlan._schema, ref reader);
                     }
                     SkipRemainingMap(valuePlan._schema, ref reader);
-                    return;
+                    return itemCount;
                 }
             }
         }
@@ -674,6 +763,7 @@ internal sealed class AvroCompiledRuleSet
     internal bool IsEmpty => _rules.Length == 0;
     internal bool UsesRootValue { get; }
     internal bool UsesSize { get; }
+    internal bool HasMembers => _members is not null;
     internal int LastRecordMemberIndex => _lastRecordMemberIndex;
 
     internal static AvroCompiledRuleSet Compile(
@@ -900,6 +990,7 @@ internal sealed class AvroMemberResolver
     private readonly AvroSchema _valueSchema;
     private readonly AvroMemberResolver?[]? _unionBranches;
     private readonly AvroMemberNode?[] _fields;
+    private readonly Dictionary<ReadOnlyMemory<byte>, AvroMemberNode>? _mapValues;
 
     internal int LastRecordMemberIndex
     {
@@ -927,6 +1018,13 @@ internal sealed class AvroMemberResolver
         _fields = [];
     }
 
+    private AvroMemberResolver(global::Avro.MapSchema mapSchema)
+    {
+        _valueSchema = mapSchema;
+        _fields = [];
+        _mapValues = new Dictionary<ReadOnlyMemory<byte>, AvroMemberNode>(AvroUtf8MemoryComparer.Instance);
+    }
+
     internal static AvroMemberResolver? Create(
         AvroSchema valueSchema,
         IReadOnlyList<byte[][]> paths,
@@ -935,6 +1033,8 @@ internal sealed class AvroMemberResolver
         valueSchema = AvroValueRulePlan.Unwrap(valueSchema);
         if (valueSchema is global::Avro.RecordSchema record)
             return CreateRecord(record, paths, usedIndexes);
+        if (valueSchema is global::Avro.MapSchema map)
+            return CreateMap(map, paths, usedIndexes);
         if (valueSchema is not global::Avro.UnionSchema union)
             return null;
 
@@ -942,7 +1042,8 @@ internal sealed class AvroMemberResolver
         var resolvedIndexes = new bool[paths.Count];
         for (var branchIndex = 0; branchIndex < union.Count; branchIndex++)
         {
-            if (AvroValueRulePlan.Unwrap(union[branchIndex]) is not global::Avro.RecordSchema branch)
+            var branch = AvroValueRulePlan.Unwrap(union[branchIndex]);
+            if (branch is not (global::Avro.RecordSchema or global::Avro.MapSchema))
                 continue;
 
             AvroMemberResolver? branchResolver = null;
@@ -952,8 +1053,17 @@ internal sealed class AvroMemberResolver
                 if (!CanResolve(branch, path, depth: 0))
                     continue;
 
-                branchResolver ??= CreateRecord(branch);
-                branchResolver.Add(branch, path, memberIndex, depth: 0);
+                if (branch is global::Avro.RecordSchema branchRecord)
+                {
+                    branchResolver ??= CreateRecord(branchRecord);
+                    branchResolver.Add(branchRecord, path, memberIndex, depth: 0);
+                }
+                else
+                {
+                    var branchMap = (global::Avro.MapSchema)branch;
+                    branchResolver ??= CreateMap(branchMap);
+                    branchResolver.Add(branchMap, path, memberIndex, depth: 0);
+                }
                 resolvedIndexes[memberIndex] = true;
             }
             resolver._unionBranches![branchIndex] = branchResolver;
@@ -988,6 +1098,19 @@ internal sealed class AvroMemberResolver
         return resolver;
     }
 
+    private static AvroMemberResolver CreateMap(
+        global::Avro.MapSchema map,
+        IReadOnlyList<byte[][]> paths,
+        IReadOnlyCollection<int> usedIndexes)
+    {
+        var resolver = CreateMap(map);
+        foreach (var memberIndex in usedIndexes)
+            resolver.Add(map, paths[memberIndex], memberIndex, depth: 0);
+        return resolver;
+    }
+
+    private static AvroMemberResolver CreateMap(global::Avro.MapSchema map) => new(map);
+
     private void Add(
         global::Avro.RecordSchema schema,
         byte[][] path,
@@ -1007,6 +1130,26 @@ internal sealed class AvroMemberResolver
         node.AddChild(field.Schema, path, memberIndex, depth + 1);
     }
 
+    private void Add(
+        global::Avro.MapSchema schema,
+        byte[][] path,
+        int memberIndex,
+        int depth)
+    {
+        var key = (ReadOnlyMemory<byte>)path[depth];
+        if (!_mapValues!.TryGetValue(key, out var node))
+        {
+            node = new AvroMemberNode { Schema = schema.ValueSchema };
+            _mapValues.Add(key, node);
+        }
+        if (depth == path.Length - 1)
+        {
+            node.AddMemberIndex(memberIndex);
+            return;
+        }
+        node.AddChild(schema.ValueSchema, path, memberIndex, depth + 1);
+    }
+
     internal void Resolve(
         ReadOnlyMemory<byte> payload,
         ValidationCelMemberValues values,
@@ -1021,6 +1164,11 @@ internal sealed class AvroMemberResolver
         ValidationCelMemberValues values,
         ValidationCelSizeValues sizes)
     {
+        if (_mapValues is not null)
+        {
+            ResolveMap((global::Avro.MapSchema)_valueSchema, ref reader, values, sizes);
+            return;
+        }
         if (_unionBranches is not null)
         {
             var union = (global::Avro.UnionSchema)_valueSchema;
@@ -1053,6 +1201,33 @@ internal sealed class AvroMemberResolver
             else
             {
                 AvroValidationValueDecoder.Skip(schema, ref reader);
+            }
+        }
+    }
+
+    private void ResolveMap(
+        global::Avro.MapSchema map,
+        ref AvroValidationReader reader,
+        ValidationCelMemberValues values,
+        ValidationCelSizeValues sizes)
+    {
+        while (true)
+        {
+            var count = reader.ReadCollectionCount();
+            if (count == 0)
+                return;
+            for (long index = 0; index < count; index++)
+            {
+                var key = reader.ReadLengthPrefixed();
+                var valueStart = reader.Position;
+                AvroValidationValueDecoder.Skip(map.ValueSchema, ref reader);
+                if (_mapValues!.TryGetValue(key, out var node))
+                {
+                    node.Resolve(
+                        reader.Source.Slice(valueStart, reader.Position - valueStart),
+                        values,
+                        sizes);
+                }
             }
         }
     }
@@ -1119,25 +1294,24 @@ internal sealed class AvroMemberResolver
     }
 
     private static bool CanResolve(
-        global::Avro.RecordSchema schema,
+        AvroSchema schema,
         byte[][] path,
         int depth)
     {
-        var field = FindField(schema, Encoding.UTF8.GetString(path[depth]));
-        if (field is null)
-            return false;
-        if (depth == path.Length - 1)
-            return true;
-
-        var childSchema = AvroValueRulePlan.Unwrap(field.Schema);
-        if (childSchema is global::Avro.RecordSchema record)
-            return CanResolve(record, path, depth + 1);
-        if (childSchema is not global::Avro.UnionSchema union)
+        schema = AvroValueRulePlan.Unwrap(schema);
+        if (schema is global::Avro.RecordSchema record)
+        {
+            var field = FindField(record, Encoding.UTF8.GetString(path[depth]));
+            return field is not null &&
+                (depth == path.Length - 1 || CanResolve(field.Schema, path, depth + 1));
+        }
+        if (schema is global::Avro.MapSchema map)
+            return depth == path.Length - 1 || CanResolve(map.ValueSchema, path, depth + 1);
+        if (schema is not global::Avro.UnionSchema union)
             return false;
         for (var index = 0; index < union.Count; index++)
         {
-            if (AvroValueRulePlan.Unwrap(union[index]) is global::Avro.RecordSchema branch &&
-                CanResolve(branch, path, depth + 1))
+            if (CanResolve(union[index], path, depth))
                 return true;
         }
         return false;
@@ -1221,38 +1395,47 @@ internal sealed class AvroMemberResolver
                 var found = false;
                 for (var index = 0; index < union.Count; index++)
                 {
-                    if (AvroValueRulePlan.Unwrap(union[index]) is not global::Avro.RecordSchema branch)
+                    var branch = AvroValueRulePlan.Unwrap(union[index]);
+                    if (branch is not (global::Avro.RecordSchema or global::Avro.MapSchema))
                         continue;
                     if (!CanResolve(branch, path, depth))
                         continue;
-                    AddRecordChild(branch, path, memberIndex, depth);
+                    AddResolverChild(branch, path, memberIndex, depth);
                     found = true;
                 }
                 if (found)
                     return;
             }
-            else if (schema is global::Avro.RecordSchema record)
+            else if (schema is global::Avro.RecordSchema or global::Avro.MapSchema)
             {
-                AddRecordChild(record, path, memberIndex, depth);
+                AddResolverChild(schema, path, memberIndex, depth);
                 return;
             }
 
             throw new SchemaRegistryRuleException(
-                "Avro validation member path can only descend through records or record unions.");
+                "Avro validation member path can only descend through records, maps, or their unions.");
         }
 
-        private void AddRecordChild(
-            global::Avro.RecordSchema record,
+        private void AddResolverChild(
+            AvroSchema schema,
             byte[][] path,
             int memberIndex,
             int depth)
         {
-            if (!_children.TryGetValue(record, out var child))
+            if (!_children.TryGetValue(schema, out var child))
             {
-                child = CreateRecord(record);
-                _children.Add(record, child);
+                child = schema switch
+                {
+                    global::Avro.RecordSchema record => CreateRecord(record),
+                    global::Avro.MapSchema map => CreateMap(map),
+                    _ => throw new InvalidOperationException("Avro validation member resolver child is unsupported.")
+                };
+                _children.Add(schema, child);
             }
-            child.Add(record, path, memberIndex, depth);
+            if (schema is global::Avro.RecordSchema recordSchema)
+                child.Add(recordSchema, path, memberIndex, depth);
+            else
+                child.Add((global::Avro.MapSchema)schema, path, memberIndex, depth);
         }
 
         internal void Resolve(
@@ -1307,7 +1490,7 @@ internal sealed class AvroMemberResolver
                         $"Could not evaluate Avro validation rules: invalid union index {branch}.");
                 schema = AvroValueRulePlan.Unwrap(union[(int)branch]);
             }
-            if (schema is global::Avro.RecordSchema record && _children.TryGetValue(record, out var child))
+            if (_children.TryGetValue(schema, out var child))
             {
                 child.Resolve(
                     childReader.Source.Slice(childReader.Position),
@@ -1355,6 +1538,25 @@ internal sealed class AvroMemberResolver
                 _unionEnumSymbols![(int)branch],
                 ref reader);
         }
+    }
+}
+
+internal sealed class AvroUtf8MemoryComparer : IEqualityComparer<ReadOnlyMemory<byte>>
+{
+    internal static readonly AvroUtf8MemoryComparer Instance = new();
+
+    private AvroUtf8MemoryComparer() { }
+
+    public bool Equals(ReadOnlyMemory<byte> left, ReadOnlyMemory<byte> right) =>
+        left.Span.SequenceEqual(right.Span);
+
+    public int GetHashCode(ReadOnlyMemory<byte> value)
+    {
+        var hash = 2166136261u;
+        var span = value.Span;
+        for (var index = 0; index < span.Length; index++)
+            hash = (hash ^ span[index]) * 16777619u;
+        return unchecked((int)hash);
     }
 }
 

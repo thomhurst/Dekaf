@@ -34,6 +34,8 @@ public class AvroInlineValidationBenchmarks
     private ReadOnlyMemory<byte> _rootNanAggregatePayload;
     private AvroInlineRuleValidator _enumValidator = null!;
     private ReadOnlyMemory<byte> _enumPayload;
+    private AvroInlineRuleValidator _rootArrayNestedValidator = null!;
+    private ReadOnlyMemory<byte> _rootArrayNestedPayload;
 
     [GlobalSetup]
     public void Setup()
@@ -42,6 +44,7 @@ public class AvroInlineValidationBenchmarks
             {
               "type": "record",
               "name": "ValidationBenchmarkRecord",
+              "confluent:rules": [{ "name": "root-size", "expr": "size(this) == 2" }],
               "fields": [
                 {
                   "name": "name",
@@ -282,6 +285,29 @@ public class AvroInlineValidationBenchmarks
         _enumPayload = enumStream.ToArray();
         _enumValidator = new AvroInlineRuleValidator(enumSchema);
         _enumValidator.Validate(_enumPayload, 9, failFast: false);
+
+        const string rootArrayNestedSchemaText = """
+            {
+              "type": "array",
+              "confluent:rules": [{ "name": "size", "expr": "size(this) == 128" }],
+              "items": {
+                "type": "int",
+                "confluent:rules": [{ "name": "positive", "expr": "this > 0" }]
+              }
+            }
+            """;
+        var rootArrayNestedSchema = (ArraySchema)AvroSchema.Parse(rootArrayNestedSchemaText);
+        var rootArrayNestedItems = new int[128];
+        Array.Fill(rootArrayNestedItems, 1);
+        using var rootArrayNestedStream = new MemoryStream();
+        var rootArrayNestedEncoder = new BinaryEncoder(rootArrayNestedStream);
+        new GenericDatumWriter<object>(rootArrayNestedSchema).Write(
+            rootArrayNestedItems,
+            rootArrayNestedEncoder);
+        rootArrayNestedEncoder.Flush();
+        _rootArrayNestedPayload = rootArrayNestedStream.ToArray();
+        _rootArrayNestedValidator = new AvroInlineRuleValidator(rootArrayNestedSchema);
+        _rootArrayNestedValidator.Validate(_rootArrayNestedPayload, 12, failFast: false);
     }
 
     [Benchmark]
@@ -331,4 +357,8 @@ public class AvroInlineValidationBenchmarks
     [Benchmark]
     public void ValidateEnumRule() =>
         _enumValidator.Validate(_enumPayload, 9, failFast: false);
+
+    [Benchmark]
+    public void ValidateRootArrayWithNestedRules() =>
+        _rootArrayNestedValidator.Validate(_rootArrayNestedPayload, 12, failFast: false);
 }

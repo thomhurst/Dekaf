@@ -27,7 +27,8 @@ internal sealed class AvroAggregateEqualityComparer(AvroSchema schema) : IValida
         ReadOnlyMemory<byte> right)
     {
         if (rightComparer is not AvroAggregateEqualityComparer avroRight ||
-            !AvroSchemaLogicalComparer.Instance.Equals(_schema, avroRight._schema))
+            (!AvroSchemaLogicalComparer.Instance.Equals(_schema, avroRight._schema) &&
+             !AvroValueSchemaComparer.AreEqual(_schema, avroRight._schema)))
         {
             return false;
         }
@@ -328,5 +329,146 @@ internal sealed class AvroAggregateEqualityComparer(AvroSchema schema) : IValida
         internal int ValueLength { get; } = valueLength;
         internal int Next { get; } = next;
         internal bool Matched { get; set; }
+    }
+}
+
+internal static class AvroValueSchemaComparer
+{
+    [ThreadStatic]
+    private static HashSet<AvroSchemaPair>? t_pairs;
+
+    internal static bool AreEqual(AvroSchema left, AvroSchema right)
+    {
+        if (ReferenceEquals(left, right))
+            return true;
+        var pairs = t_pairs ??= new HashSet<AvroSchemaPair>(AvroSchemaPairReferenceComparer.Instance);
+        pairs.Clear();
+        try
+        {
+            return AreEqual(left, right, pairs);
+        }
+        finally
+        {
+            pairs.Clear();
+        }
+    }
+
+    private static bool AreEqual(
+        AvroSchema left,
+        AvroSchema right,
+        HashSet<AvroSchemaPair> pairs)
+    {
+        if (ReferenceEquals(left, right))
+            return true;
+        if (left.Tag != right.Tag)
+            return false;
+
+        var pair = default(AvroSchemaPair);
+        var pairAdded = false;
+        if (left is global::Avro.NamedSchema leftNamed)
+        {
+            if (right is not global::Avro.NamedSchema rightNamed ||
+                !string.Equals(leftNamed.Fullname, rightNamed.Fullname, StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            pair = new AvroSchemaPair(left, right);
+            if (!pairs.Add(pair))
+                return true;
+            pairAdded = true;
+        }
+
+        try
+        {
+            return left.Tag switch
+            {
+                AvroSchema.Type.Record or AvroSchema.Type.Error => RecordsAreEqual(
+                    (global::Avro.RecordSchema)left,
+                    (global::Avro.RecordSchema)right,
+                    pairs),
+                AvroSchema.Type.Enumeration => EnumsAreEqual(
+                    (global::Avro.EnumSchema)left,
+                    (global::Avro.EnumSchema)right),
+                AvroSchema.Type.Array => AreEqual(
+                    ((global::Avro.ArraySchema)left).ItemSchema,
+                    ((global::Avro.ArraySchema)right).ItemSchema,
+                    pairs),
+                AvroSchema.Type.Map => AreEqual(
+                    ((global::Avro.MapSchema)left).ValueSchema,
+                    ((global::Avro.MapSchema)right).ValueSchema,
+                    pairs),
+                AvroSchema.Type.Union => UnionsAreEqual(
+                    (global::Avro.UnionSchema)left,
+                    (global::Avro.UnionSchema)right,
+                    pairs),
+                AvroSchema.Type.Fixed =>
+                    ((global::Avro.FixedSchema)left).Size == ((global::Avro.FixedSchema)right).Size,
+                AvroSchema.Type.Logical =>
+                    string.Equals(
+                        ((global::Avro.LogicalSchema)left).LogicalTypeName,
+                        ((global::Avro.LogicalSchema)right).LogicalTypeName,
+                        StringComparison.Ordinal) &&
+                    AreEqual(
+                        ((global::Avro.LogicalSchema)left).BaseSchema,
+                        ((global::Avro.LogicalSchema)right).BaseSchema,
+                        pairs),
+                _ => true
+            };
+        }
+        finally
+        {
+            if (pairAdded)
+                pairs.Remove(pair);
+        }
+    }
+
+    private static bool RecordsAreEqual(
+        global::Avro.RecordSchema left,
+        global::Avro.RecordSchema right,
+        HashSet<AvroSchemaPair> pairs)
+    {
+        if (left.Fields.Count != right.Fields.Count)
+            return false;
+        for (var index = 0; index < left.Fields.Count; index++)
+        {
+            var leftField = left.Fields[index];
+            var rightField = right.Fields[index];
+            if (!string.Equals(leftField.Name, rightField.Name, StringComparison.Ordinal) ||
+                !AreEqual(leftField.Schema, rightField.Schema, pairs))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static bool EnumsAreEqual(
+        global::Avro.EnumSchema left,
+        global::Avro.EnumSchema right)
+    {
+        if (left.Symbols.Count != right.Symbols.Count)
+            return false;
+        for (var index = 0; index < left.Symbols.Count; index++)
+        {
+            if (!string.Equals(left.Symbols[index], right.Symbols[index], StringComparison.Ordinal))
+                return false;
+        }
+        return true;
+    }
+
+    private static bool UnionsAreEqual(
+        global::Avro.UnionSchema left,
+        global::Avro.UnionSchema right,
+        HashSet<AvroSchemaPair> pairs)
+    {
+        if (left.Count != right.Count)
+            return false;
+        for (var index = 0; index < left.Count; index++)
+        {
+            if (!AreEqual(left[index], right[index], pairs))
+                return false;
+        }
+        return true;
     }
 }

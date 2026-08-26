@@ -15,6 +15,8 @@ namespace Dekaf.Tests.Unit.SchemaRegistry;
 public class AvroInlineRuleValidatorTests
 {
     private static readonly int[] TwoItems = [1, 2];
+    private static readonly float[] OneFloat = [1f];
+    private static readonly float[] TwoFloat = [2f];
 
     private const string IntegrationSchema = """
         {
@@ -84,6 +86,124 @@ public class AvroInlineRuleValidatorTests
         await Assert.That(exception.Message).Contains("$.labels[\"region\"]: label");
         await Assert.That(failFastException.Violations.Count).IsEqualTo(1);
         await Assert.That(failFastException.Violations[0].Rule.Name).IsEqualTo("root");
+    }
+
+    [Test]
+    public async Task Validate_RootAggregateValueAndNestedRulesShareTraversal()
+    {
+        const string schemaText = """
+            {
+              "type": "record",
+              "name": "RootValueNestedRuleRecord",
+              "confluent:rules": [{ "name": "root-size", "expr": "size(this) == 1" }],
+              "fields": [{
+                "name": "items",
+                "type": {
+                  "type": "array",
+                  "items": {
+                    "type": "int",
+                    "confluent:rules": [{ "name": "positive", "expr": "this > 0" }]
+                  }
+                }
+              }]
+            }
+            """;
+        var schema = (RecordSchema)AvroSchema.Parse(schemaText);
+        var record = new GenericRecord(schema);
+        record.Add("items", TwoItems);
+        var payload = Serialize(record, schema);
+        var validator = new AvroInlineRuleValidator(schema);
+
+        validator.Validate(payload, 17, failFast: false);
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var index = 0; index < 100; index++)
+            validator.Validate(payload, 17, failFast: false);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        record.Add("items", new[] { 1, -1 });
+        var exception = Assert.Throws<ValidationRulesFailedException>(() =>
+            validator.Validate(Serialize(record, schema), 17, failFast: false));
+
+        await Assert.That(allocated).IsEqualTo(0);
+        await Assert.That(exception.Violations[0].Rule.Name).IsEqualTo("positive");
+    }
+
+    [Test]
+    public async Task Validate_RootArrayAndMapValuesShareNestedTraversal()
+    {
+        const string arraySchemaText = """
+            {
+              "type": "array",
+              "confluent:rules": [{ "name": "array-size", "expr": "size(this) == 2" }],
+              "items": {
+                "type": "int",
+                "confluent:rules": [{ "name": "positive-item", "expr": "this > 0" }]
+              }
+            }
+            """;
+        const string mapSchemaText = """
+            {
+              "type": "map",
+              "confluent:rules": [{ "name": "map-size", "expr": "size(this) == 1" }],
+              "values": {
+                "type": "int",
+                "confluent:rules": [{ "name": "positive-value", "expr": "this > 0" }]
+              }
+            }
+            """;
+        ReadOnlyMemory<byte> arrayPayload = new byte[] { 4, 2, 4, 0 };
+        ReadOnlyMemory<byte> mapPayload = new byte[]
+        {
+            2, 12, (byte)'r', (byte)'e', (byte)'g', (byte)'i', (byte)'o', (byte)'n', 2, 0
+        };
+        var arrayValidator = new AvroInlineRuleValidator(AvroSchema.Parse(arraySchemaText));
+        var mapValidator = new AvroInlineRuleValidator(AvroSchema.Parse(mapSchemaText));
+
+        arrayValidator.Validate(arrayPayload, 17, failFast: false);
+        mapValidator.Validate(mapPayload, 17, failFast: false);
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var index = 0; index < 100; index++)
+        {
+            arrayValidator.Validate(arrayPayload, 17, failFast: false);
+            mapValidator.Validate(mapPayload, 17, failFast: false);
+        }
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        await Assert.That(allocated).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task Validate_RecordRulesResolveStringMapKeys()
+    {
+        const string schemaText = """
+            {
+              "type": "record",
+              "name": "MapMemberRuleRecord",
+              "confluent:rules": [{
+                "name": "region",
+                "expr": "this.labels.region == 'us' && !has(this.labels.missing)"
+              }],
+              "fields": [{ "name": "labels", "type": { "type": "map", "values": "string" } }]
+            }
+            """;
+        var schema = (RecordSchema)AvroSchema.Parse(schemaText);
+        var record = new GenericRecord(schema);
+        record.Add("labels", new Dictionary<string, string> { ["region"] = "us" });
+        var payload = Serialize(record, schema);
+        var validator = new AvroInlineRuleValidator(schema);
+
+        validator.Validate(payload, 17, failFast: false);
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var index = 0; index < 100; index++)
+            validator.Validate(payload, 17, failFast: false);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        record.Add("labels", new Dictionary<string, string> { ["region"] = "eu" });
+        var exception = Assert.Throws<ValidationRulesFailedException>(() =>
+            validator.Validate(Serialize(record, schema), 17, failFast: false));
+
+        await Assert.That(allocated).IsEqualTo(0);
+        await Assert.That(exception.Violations[0].Rule.Name).IsEqualTo("region");
     }
 
     [Test]
@@ -376,6 +496,48 @@ public class AvroInlineRuleValidatorTests
         Assert.Throws<ValidationRulesFailedException>(() =>
             validator.Validate(Serialize(record, schema), 27, failFast: false));
         await Task.CompletedTask;
+    }
+
+    [Test]
+    public async Task Validate_EqualAggregateMembersIgnoreSchemaAnnotations()
+    {
+        const string schemaText = """
+            {
+              "type": "record",
+              "name": "AnnotatedAggregateEqualityRecord",
+              "confluent:rules": [{ "name": "equal", "expr": "this.left == this.right" }],
+              "fields": [
+                {
+                  "name": "left",
+                  "type": {
+                    "type": "array",
+                    "items": "float",
+                    "confluent:rules": [{ "name": "annotation", "expr": "true" }]
+                  }
+                },
+                { "name": "right", "type": { "type": "array", "items": "float" } }
+              ]
+            }
+            """;
+        var schema = (RecordSchema)AvroSchema.Parse(schemaText);
+        var record = new GenericRecord(schema);
+        record.Add("left", OneFloat);
+        record.Add("right", OneFloat);
+        var payload = Serialize(record, schema);
+        var validator = new AvroInlineRuleValidator(schema);
+
+        validator.Validate(payload, 27, failFast: false);
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var index = 0; index < 100; index++)
+            validator.Validate(payload, 27, failFast: false);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        record.Add("right", TwoFloat);
+        var exception = Assert.Throws<ValidationRulesFailedException>(() =>
+            validator.Validate(Serialize(record, schema), 27, failFast: false));
+
+        await Assert.That(allocated).IsEqualTo(0);
+        await Assert.That(exception.Violations[0].Rule.Name).IsEqualTo("equal");
     }
 
     [Test]
