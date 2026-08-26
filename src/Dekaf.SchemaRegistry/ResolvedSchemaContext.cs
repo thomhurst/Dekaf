@@ -9,4 +9,7 @@ namespace Dekaf.SchemaRegistry;
 public readonly record struct ResolvedSchemaContext(
     string Subject,
     int SchemaId,
-    Schema Schema);
+    Schema Schema)
+{
+    internal byte[]? SchemaGuidFrame { get; init; }
+}

@@ -205,18 +205,15 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
             context.Topic,
             context.Component == SerializationComponent.Key,
             cancellationToken);
-        var isKey = context.Component == SerializationComponent.Key;
         return preparation.IsCompletedSuccessfully
             ? new ValueTask<SerializerPreparationAdmission>(
-                ToAdmission(preparation.Result, context.Topic, isKey))
-            : AwaitAdmissionAsync(this, preparation, context.Topic, isKey);
+                ToAdmission(preparation.Result))
+            : AwaitAdmissionAsync(this, preparation);
 
         static async ValueTask<SerializerPreparationAdmission> AwaitAdmissionAsync(
             AvroPocoSchemaRegistrySerializer<T, TCodec> serializer,
-            ValueTask<ResolvedSchemaContext> pending,
-            string topic,
-            bool isKey) =>
-            serializer.ToAdmission(await pending.ConfigureAwait(false), topic, isKey);
+            ValueTask<ResolvedSchemaContext> pending) =>
+            serializer.ToAdmission(await pending.ConfigureAwait(false));
     }
 
     /// <inheritdoc />
@@ -308,13 +305,10 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
             _taggedFieldTransformers);
     }
 
-    private SerializerPreparationAdmission ToAdmission(
-        in ResolvedSchemaContext context,
-        string topic,
-        bool isKey)
+    private SerializerPreparationAdmission ToAdmission(in ResolvedSchemaContext context)
     {
         var schemaGuidFrame = _schemaIdStrategy == SchemaIdSerializerStrategy.Header
-            ? GetSchemaForContext(topic, isKey).SchemaGuidFrame
+            ? context.SchemaGuidFrame
             : null;
         return new(context.Subject, context.SchemaId, context.Schema, schemaGuidFrame);
     }
@@ -339,7 +333,10 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
     }
 
     private static ResolvedSchemaContext ToResolvedContext(SubjectSchemaIdCache.SubjectSchemaIdCacheEntry entry) =>
-        new(entry.Subject!, entry.SchemaId, entry.Schema!);
+        new(entry.Subject!, entry.SchemaId, entry.Schema!)
+        {
+            SchemaGuidFrame = entry.SchemaGuidFrame
+        };
 
     private static void SerializeDirect<TWriter>(T value, ref TWriter destination, int schemaId)
         where TWriter : IBufferWriter<byte>

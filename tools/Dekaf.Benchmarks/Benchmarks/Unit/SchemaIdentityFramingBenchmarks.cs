@@ -23,6 +23,7 @@ public class SchemaIdentityFramingBenchmarks
     private RecordHeaderRoutingLookup _routingLookup;
     private readonly Headers _ordinaryHeaders = new(1);
     private Headers _callerOwnedHeaders = null!;
+    private Headers _callerOwnedAvroHeaders = null!;
     private Headers _restoredHeaders = null!;
     private Headers _truncatedHeaders = null!;
 
@@ -44,6 +45,10 @@ public class SchemaIdentityFramingBenchmarks
             SchemaIdentityHeaderNames.Value,
             [.. _guidFrame, 0]);
         _callerOwnedHeaders = new Headers(multiHeaders);
+        var avroHeaders = new Header[33];
+        avroHeaders[0] = _identityHeader;
+        noiseHeaders.CopyTo(avroHeaders, 1);
+        _callerOwnedAvroHeaders = new Headers(avroHeaders);
         _restoredHeaders = new Headers(noiseHeaders);
         _truncatedHeaders = new Headers(noiseHeaders);
 
@@ -111,6 +116,33 @@ public class SchemaIdentityFramingBenchmarks
             throw new InvalidDataException("The Protobuf message-index vector is invalid.");
 
         return identity;
+    }
+
+    [Benchmark]
+    public SchemaIdentity CallerOwnedAvroLinearScanWith32TrailingHeaders()
+    {
+        var headerName = SchemaIdentityHeaderNames.Value;
+        for (var index = _callerOwnedAvroHeaders.Count - 1; index >= 0; index--)
+        {
+            var header = _callerOwnedAvroHeaders[index];
+            if (string.Equals(header.Key, headerName, StringComparison.Ordinal))
+                return SchemaIdentityFraming.ReadHeader(in header, out _);
+        }
+
+        throw new InvalidOperationException("The caller-owned schema identity header was not found.");
+    }
+
+    [Benchmark]
+    public SchemaIdentity CallerOwnedAvroIndexedReadWith32TrailingHeaders()
+    {
+        if (!_callerOwnedAvroHeaders.TryGetLastSchemaIdentity(
+                SerializationComponent.Value,
+                out var identityHeader))
+        {
+            throw new InvalidOperationException("The caller-owned schema identity header was not found.");
+        }
+
+        return SchemaIdentityFraming.ReadHeader(in identityHeader, out _);
     }
 
     [Benchmark]

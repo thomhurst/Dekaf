@@ -303,7 +303,7 @@ public sealed class ProtobufSchemaRegistrySerializer<
 
     private static SerializerPreparationAdmission ToAdmission(
         in ResolvedSchemaContext context) =>
-        new(context.Subject, context.SchemaId, context.Schema);
+        new(context.Subject, context.SchemaId, context.Schema, context.SchemaGuidFrame);
 
     private SubjectSchemaIdCache.SubjectSchemaIdCacheEntry GetSchemaForContext(string topic, bool isKey)
     {
@@ -1013,7 +1013,10 @@ public sealed class ProtobufSchemaRegistrySerializer<
 
     private static ResolvedSchemaContext ToResolvedContext(
         SubjectSchemaIdCache.SubjectSchemaIdCacheEntry entry) =>
-        new(entry.Subject!, entry.SchemaId, entry.Schema!);
+        new(entry.Subject!, entry.SchemaId, entry.Schema!)
+        {
+            SchemaGuidFrame = entry.SchemaGuidFrame
+        };
 
     private readonly record struct SchemaResolutionState(
         ProtobufSchemaRegistrySerializer<T> Serializer,

@@ -306,7 +306,7 @@ public sealed class SchemaPreparationTests
         var registeredSchema = new Schema
         {
             SchemaType = SchemaType.Avro,
-            SchemaString = "{\"type\":\"record\",\"name\":\"RemoteRecord\",\"fields\":[]}"
+            SchemaString = AvroSchemaText
         };
         var schemaId = await registry.RegisterSchemaAsync("orders-value", registeredSchema);
         await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(

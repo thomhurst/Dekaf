@@ -610,6 +610,44 @@ public class KafkaProducerFastPathTests
     }
 
     [Test]
+    public async Task FireAsync_ConcurrentPreparedRecordHeaderSerialization_RentsOverflowWorkspace()
+    {
+        var serializer = new OverlappingPreparedRecordHeaderSerializer();
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            ClientId = "test-concurrent-prepared-header-producer",
+            BufferMemory = ulong.MaxValue,
+            BatchSize = 4096,
+            LingerMs = 10,
+            RequestTimeoutMs = 500,
+            DeliveryTimeoutMs = 1000,
+            CloseTimeoutMs = 1000
+        };
+
+        await using var producer = new KafkaProducer<string, string>(
+            options,
+            Serializers.String,
+            serializer);
+        await StopProducerBackgroundLoopsAsync(producer);
+        SeedProducerMetadata(producer);
+        SetInstanceField(producer, "_initialized", true);
+        AccumulatorTestHelpers.KeepBatchesOpenDespiteAppLimitedBypass(producer.RecordAccumulator);
+
+        var first = producer.FireAsync(Topic, "first-key", "first").AsTask();
+        var second = producer.FireAsync(Topic, "second-key", "second").AsTask();
+        serializer.ReleasePreparation();
+        await Task.WhenAll(first, second);
+
+        var readyBatch = CompleteCurrentBatch(producer.RecordAccumulator, new TopicPartition(Topic, 0));
+        await Assert.That(readyBatch.RecordBatch.Records.Count).IsEqualTo(2);
+        var identityValues = readyBatch.RecordBatch.Records
+            .Select(static record => GetNamedHeaderValueString(record, "identity"))
+            .ToArray();
+        await Assert.That(identityValues).IsEquivalentTo(["first", "second"]);
+    }
+
+    [Test]
     public async Task ProduceAsync_PreparedRecordHeaderSerializerWithoutCallerHeaders_AppendsHeader()
     {
         var options = new ProducerOptions
@@ -1460,6 +1498,56 @@ public class KafkaProducerFastPathTests
 #endif
         {
             SerializePreparedCount++;
+            context.Headers!.Add("identity", Encoding.UTF8.GetBytes(value));
+            Serializers.String.Serialize(value, ref destination, context);
+        }
+    }
+
+    private sealed class OverlappingPreparedRecordHeaderSerializer :
+        ISerializer<string>,
+        IAsyncSerializerPreparationAdmission<string>,
+        IRecordHeaderSerializer
+    {
+        private static readonly object PreparedSchema = new();
+        private readonly TaskCompletionSource _preparation =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public bool ProducesRecordHeaders => true;
+
+        internal void ReleasePreparation() => _preparation.TrySetResult();
+
+        public async ValueTask PrepareAsync(
+            string value,
+            SerializationContext context,
+            CancellationToken cancellationToken = default) =>
+            await _preparation.Task.WaitAsync(cancellationToken);
+
+        public async ValueTask<SerializerPreparationAdmission> PrepareForSerializationAsync(
+            string value,
+            SerializationContext context,
+            CancellationToken cancellationToken = default)
+        {
+            await _preparation.Task.WaitAsync(cancellationToken);
+            return new SerializerPreparationAdmission("subject", 1, PreparedSchema);
+        }
+
+        public void Serialize<TWriter>(string value, ref TWriter destination, SerializationContext context)
+            where TWriter : IBufferWriter<byte>
+#if NET10_0_OR_GREATER
+            , allows ref struct
+#endif
+            => throw new InvalidOperationException("Prepared serialization admission was not used.");
+
+        public void SerializePrepared<TWriter>(
+            string value,
+            ref TWriter destination,
+            SerializationContext context,
+            in SerializerPreparationAdmission admission)
+            where TWriter : IBufferWriter<byte>
+#if NET10_0_OR_GREATER
+            , allows ref struct
+#endif
+        {
             context.Headers!.Add("identity", Encoding.UTF8.GetBytes(value));
             Serializers.String.Serialize(value, ref destination, context);
         }

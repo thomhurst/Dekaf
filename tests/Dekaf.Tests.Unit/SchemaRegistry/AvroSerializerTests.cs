@@ -390,6 +390,8 @@ public sealed class AvroSerializerTests
         await Assert.That(headers.Count).IsEqualTo(1);
         await Assert.That(headers[0].Key).IsEqualTo(SchemaIdentityHeaderNames.Value);
         await Assert.That(headers[0].Value.ToArray()).IsEquivalentTo(expectedGuidFrame);
+        for (var index = 0; index < 32; index++)
+            headers.Add(new Header($"application-{index}", ReadOnlyMemory<byte>.Empty));
 
         await using var deserializer = new AvroSchemaRegistryDeserializer<GenericRecord>(
             schemaRegistry,
@@ -2062,6 +2064,29 @@ public sealed class AvroSerializerTests
         var record = new GenericRecord(schema);
         record.Add("id", 1);
         record.Add("name", "wrong-schema");
+
+        await Assert.That(async () => await serializer.WarmupAsync(topic, record))
+            .Throws<InvalidOperationException>()
+            .WithMessageContaining("does not match");
+    }
+
+    [Test]
+    public async Task Serializer_UseLatestVersionWithDifferentAvroSchema_Throws()
+    {
+        const string topic = "avro-latest-wrong-writer-schema";
+        const string differentSchema =
+            "{\"type\":\"record\",\"name\":\"DifferentRecord\",\"fields\":[{\"name\":\"id\",\"type\":\"int\"}]}";
+        using var schemaRegistry = new MockSchemaRegistryClient();
+        _ = await schemaRegistry.RegisterSchemaAsync(
+            $"{topic}-value",
+            new RegistrySchema { SchemaType = SchemaType.Avro, SchemaString = differentSchema });
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(
+            schemaRegistry,
+            new AvroSerializerConfig { UseLatestVersion = true });
+        var schema = (Avro.RecordSchema)AvroSchema.Parse(SimpleRecordSchema);
+        var record = new GenericRecord(schema);
+        record.Add("id", 1);
+        record.Add("name", "wrong-latest-schema");
 
         await Assert.That(async () => await serializer.WarmupAsync(topic, record))
             .Throws<InvalidOperationException>()

@@ -1141,14 +1141,9 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
             return null;
         }
 
-        var headerName = GetIdentityHeaderName(context.Component);
-        for (var index = headers.Count - 1; index >= 0; index--)
-        {
-            if (string.Equals(headers[index].Key, headerName, StringComparison.Ordinal))
-                return headers[index];
-        }
-
-        return null;
+        return headers.TryGetLastSchemaIdentity(context.Component, out var header)
+            ? header
+            : null;
     }
 
     private Header? FindRoutedIdentityHeader(

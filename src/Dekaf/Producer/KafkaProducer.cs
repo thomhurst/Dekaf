@@ -642,7 +642,8 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             ? options.ValueTaskSourcePoolSize
             : producerPoolSizes.ValueTaskSources;
         _valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>(poolSize);
-        _asyncSerializationHeadersPool = _hasAsyncSerializers && _producesRecordHeaders
+        _asyncSerializationHeadersPool = _producesRecordHeaders
+            && (_hasAsyncSerializers || _keyPreparer is not null || _valuePreparer is not null)
             ? new SerializationHeadersPool(poolSize)
             : null;
 

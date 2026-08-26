@@ -724,18 +724,15 @@ public sealed class JsonSchemaRegistrySerializer<T> :
             value,
             context.Component == SerializationComponent.Key,
             cancellationToken);
-        var isKey = context.Component == SerializationComponent.Key;
         return preparation.IsCompletedSuccessfully
             ? new ValueTask<SerializerPreparationAdmission>(
-                ToAdmission(preparation.Result, context.Topic, isKey))
-            : AwaitAdmissionAsync(this, preparation, context.Topic, isKey);
+                ToAdmission(preparation.Result))
+            : AwaitAdmissionAsync(this, preparation);
 
         static async ValueTask<SerializerPreparationAdmission> AwaitAdmissionAsync(
             JsonSchemaRegistrySerializer<T> serializer,
-            ValueTask<ResolvedSchemaContext> pending,
-            string topic,
-            bool isKey) =>
-            serializer.ToAdmission(await pending.ConfigureAwait(false), topic, isKey);
+            ValueTask<ResolvedSchemaContext> pending) =>
+            serializer.ToAdmission(await pending.ConfigureAwait(false));
     }
 
     public void Serialize<TWriter>(T value, ref TWriter destination, SerializationContext context)
@@ -1002,13 +999,10 @@ public sealed class JsonSchemaRegistrySerializer<T> :
         }
     }
 
-    private SerializerPreparationAdmission ToAdmission(
-        in ResolvedSchemaContext context,
-        string topic,
-        bool isKey)
+    private SerializerPreparationAdmission ToAdmission(in ResolvedSchemaContext context)
     {
         var schemaGuidFrame = _schemaIdStrategy == SchemaIdSerializerStrategy.Header
-            ? GetSchemaForContext(topic, isKey).SchemaGuidFrame
+            ? context.SchemaGuidFrame
             : null;
         return new(context.Subject, context.SchemaId, context.Schema, schemaGuidFrame);
     }
@@ -1321,7 +1315,10 @@ public sealed class JsonSchemaRegistrySerializer<T> :
 
     private static ResolvedSchemaContext ToResolvedContext(
         SubjectSchemaIdCache.SubjectSchemaIdCacheEntry entry) =>
-        new(entry.Subject!, entry.SchemaId, entry.Schema!);
+        new(entry.Subject!, entry.SchemaId, entry.Schema!)
+        {
+            SchemaGuidFrame = entry.SchemaGuidFrame
+        };
 
     private string GetSubjectName(string topic, bool isKey)
     {

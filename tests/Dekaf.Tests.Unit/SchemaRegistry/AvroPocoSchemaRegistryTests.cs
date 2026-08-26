@@ -1496,6 +1496,8 @@ public sealed class AvroPocoSchemaRegistryTests
         };
 
         serializer.Serialize(expected, ref destination, context);
+        for (var index = 0; index < 32; index++)
+            headers.Add(new Header($"application-{index}", ReadOnlyMemory<byte>.Empty));
         await Assert.That(() => deserializer.Deserialize(destination.WrittenMemory, context))
             .Throws<InvalidOperationException>()
             .WithMessageContaining("not cached");
@@ -1504,7 +1506,7 @@ public sealed class AvroPocoSchemaRegistryTests
         var actual = deserializer.Deserialize(destination.WrittenMemory, context);
 
         await Assert.That(destination.WrittenCount).IsLessThan(5);
-        await Assert.That(headers.Count).IsEqualTo(1);
+        await Assert.That(headers.Count).IsEqualTo(33);
         await Assert.That(headers[0].Value.Length).IsEqualTo(17);
         await Assert.That(actual.Value).IsEqualTo(expected.Value);
         await Assert.That(registry.LastGetSchemaByGuidCancellationToken.CanBeCanceled).IsTrue();

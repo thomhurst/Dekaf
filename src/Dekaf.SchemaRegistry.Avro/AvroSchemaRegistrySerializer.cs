@@ -213,23 +213,15 @@ public sealed class AvroSchemaRegistrySerializer<
             value,
             context.Component == SerializationComponent.Key,
             cancellationToken);
-        var isKey = context.Component == SerializationComponent.Key;
         return preparation.IsCompletedSuccessfully
             ? new ValueTask<SerializerPreparationAdmission>(
-                ToAdmission(preparation.Result, context.Topic, isKey, value))
-            : AwaitAdmissionAsync(this, value, preparation, context.Topic, isKey);
+                ToAdmission(preparation.Result))
+            : AwaitAdmissionAsync(this, preparation);
 
         static async ValueTask<SerializerPreparationAdmission> AwaitAdmissionAsync(
             AvroSchemaRegistrySerializer<T> serializer,
-            T value,
-            ValueTask<ResolvedSchemaContext> pending,
-            string topic,
-            bool isKey) =>
-            serializer.ToAdmission(
-                await pending.ConfigureAwait(false),
-                topic,
-                isKey,
-                value);
+            ValueTask<ResolvedSchemaContext> pending) =>
+            serializer.ToAdmission(await pending.ConfigureAwait(false));
     }
 
     /// <summary>
@@ -313,14 +305,10 @@ public sealed class AvroSchemaRegistrySerializer<
         SerializeWithRuleExecutor(value, ref destination, context, schemaEntry, schemaId, avroSchema, codecState);
     }
 
-    private SerializerPreparationAdmission ToAdmission(
-        in ResolvedSchemaContext context,
-        string topic,
-        bool isKey,
-        T value)
+    private SerializerPreparationAdmission ToAdmission(in ResolvedSchemaContext context)
     {
         var schemaGuidFrame = _schemaIdStrategy == SchemaIdSerializerStrategy.Header
-            ? GetSchemaForContext(topic, isKey, GetSchemaForValue(value)).SchemaGuidFrame
+            ? context.SchemaGuidFrame
             : null;
         return new(context.Subject, context.SchemaId, context.Schema, schemaGuidFrame);
     }
@@ -630,7 +618,10 @@ public sealed class AvroSchemaRegistrySerializer<
 
     private static ResolvedSchemaContext ToResolvedContext(
         SubjectSchemaIdCache.SubjectSchemaIdCacheEntry entry) =>
-        new(entry.Subject!, entry.SchemaId, entry.Schema!);
+        new(entry.Subject!, entry.SchemaId, entry.Schema!)
+        {
+            SchemaGuidFrame = entry.SchemaGuidFrame
+        };
 
     private readonly record struct SubjectSchemaIdState(
         AvroSchemaRegistrySerializer<T> Serializer,
@@ -732,6 +723,12 @@ public sealed class AvroSchemaRegistrySerializer<
             var registered = await _schemaRegistry.GetSchemaBySubjectAsync(
                     subject,
                     "latest",
+                    cancellationToken)
+                .ConfigureAwait(false);
+            await ValidateSelectedSchemaAsync(
+                    registered.Schema,
+                    registrySchema,
+                    registered.Id,
                     cancellationToken)
                 .ConfigureAwait(false);
             return await CreateResolvedValueAsync(
@@ -876,7 +873,10 @@ public sealed class AvroSchemaRegistrySerializer<
         var selected = names is null
             ? AvroSchema.Parse(selectedSchema.SchemaString)
             : AvroSchema.Parse(selectedSchema.SchemaString, names);
-        return writerSchema.Equals(selected);
+        return string.Equals(
+            global::Avro.SchemaNormalization.ToParsingForm(writerSchema),
+            global::Avro.SchemaNormalization.ToParsingForm(selected),
+            StringComparison.Ordinal);
     }
 
     private static AvroSchema GetSchemaFromValue(T value) =>
