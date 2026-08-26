@@ -382,14 +382,11 @@ public sealed partial class AdminClient
                 {
                     mappingRetryResults[groupId] = retryResult;
                 }
-                if ((response.ErrorCode.IsRetriable() || response.ErrorCode.RequiresMetadataRefresh()) &&
-                    mappingRetryResults.TryGetValue(groupId, out var mappingRetryResult))
-                {
-                    mappingRetryResults[groupId] = GroupOffsetsError(
-                        groupId,
-                        response.ErrorCode,
-                        mappingRetryResult.Offsets);
-                }
+                OverlayRetriableGroupError(
+                    groupId,
+                    response.ErrorCode,
+                    retryResults,
+                    mappingRetryResults);
             }
             retryFailure ??= failure;
             return retryFailure;
@@ -421,14 +418,11 @@ public sealed partial class AdminClient
                 {
                     mappingRetryResults[group.GroupId] = retryResult;
                 }
-                if ((group.ErrorCode.IsRetriable() || group.ErrorCode.RequiresMetadataRefresh()) &&
-                    mappingRetryResults.TryGetValue(group.GroupId, out var mappingRetryResult))
-                {
-                    mappingRetryResults[group.GroupId] = GroupOffsetsError(
-                        group.GroupId,
-                        group.ErrorCode,
-                        mappingRetryResult.Offsets);
-                }
+                OverlayRetriableGroupError(
+                    group.GroupId,
+                    group.ErrorCode,
+                    retryResults,
+                    mappingRetryResults);
             }
             retryFailure ??= failure;
         }
@@ -447,6 +441,22 @@ public sealed partial class AdminClient
         }
 
         return retryFailure;
+    }
+
+    private static void OverlayRetriableGroupError(
+        string groupId,
+        Protocol.ErrorCode errorCode,
+        Dictionary<string, StreamsGroupOffsetsResult> retryResults,
+        Dictionary<string, StreamsGroupOffsetsResult> mappingRetryResults)
+    {
+        if (!errorCode.IsRetriable() && !errorCode.RequiresMetadataRefresh())
+            return;
+
+        if (retryResults.TryGetValue(groupId, out var retryResult))
+            retryResults[groupId] = GroupOffsetsError(groupId, errorCode, retryResult.Offsets);
+
+        if (mappingRetryResults.TryGetValue(groupId, out var mappingRetryResult))
+            mappingRetryResults[groupId] = GroupOffsetsError(groupId, errorCode, mappingRetryResult.Offsets);
     }
 
     private Exception? CaptureListStreamsGroupResult(

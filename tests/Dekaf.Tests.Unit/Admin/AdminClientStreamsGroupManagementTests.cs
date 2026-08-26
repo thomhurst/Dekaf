@@ -429,6 +429,60 @@ public sealed class AdminClientStreamsGroupManagementTests
     }
 
     [Test]
+    public async Task ListStreamsGroupOffsetsAsync_FinalGroupErrorOverlaysResponseSnapshot()
+    {
+        var (admin, connection) = CreateAdmin();
+        SetupFindCoordinator(connection);
+        var groupTimeout = new OffsetFetchResponse
+        {
+            Groups =
+            [
+                new OffsetFetchResponseGroup
+                {
+                    GroupId = FirstGroup,
+                    ErrorCode = ErrorCode.RequestTimedOut,
+                    Topics = []
+                }
+            ]
+        };
+        connection.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
+                Arg.Any<OffsetFetchRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(
+                ValueTask.FromResult(ListResponse(
+                    Offset(0, 42, ErrorCode.None),
+                    Offset(1, -1, ErrorCode.RequestTimedOut))),
+                ValueTask.FromResult(groupTimeout),
+                ValueTask.FromResult(groupTimeout),
+                ValueTask.FromResult(groupTimeout));
+
+        var results = await admin.ListStreamsGroupOffsetsAsync(
+            new Dictionary<string, ListStreamsGroupOffsetsSpec>
+            {
+                [FirstGroup] = new()
+                {
+                    TopicPartitions =
+                    [
+                        new TopicPartition(Topic, 0),
+                        new TopicPartition(Topic, 1)
+                    ]
+                }
+            });
+
+        var result = results[FirstGroup];
+        await Assert.That(result.ErrorCode).IsEqualTo(ErrorCode.RequestTimedOut);
+        await Assert.That(result.Offsets[new TopicPartition(Topic, 0)].Offset).IsEqualTo(42);
+        await Assert.That(result.Offsets[new TopicPartition(Topic, 0)].ErrorCode).IsEqualTo(ErrorCode.None);
+        await Assert.That(result.Offsets[new TopicPartition(Topic, 1)].ErrorCode)
+            .IsEqualTo(ErrorCode.RequestTimedOut);
+        await connection.Received(4).SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
+            Arg.Any<OffsetFetchRequest>(),
+            10,
+            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
     public async Task ListStreamsGroupOffsetsAsync_TopicIdMismatchPreservesSiblingGroupResult()
     {
         var (admin, connection) = CreateAdmin();
