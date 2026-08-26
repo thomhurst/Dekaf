@@ -971,6 +971,11 @@ public sealed class InMemoryKafkaCluster
     }
 
     internal WatermarkOffsets GetWatermarks(TopicPartition topicPartition)
+        => GetWatermarks(topicPartition, IsolationLevel.ReadUncommitted);
+
+    internal WatermarkOffsets GetWatermarks(
+        TopicPartition topicPartition,
+        IsolationLevel isolationLevel)
     {
         lock (_gate)
         {
@@ -981,7 +986,11 @@ public sealed class InMemoryKafkaCluster
             }
 
             var partition = topic.Partitions[topicPartition.Partition];
-            return new WatermarkOffsets(partition.LogStartOffset, partition.HighWatermark);
+            var highWatermark = isolationLevel == IsolationLevel.ReadCommitted
+                && partition.FirstUnstableOffset != long.MaxValue
+                    ? Math.Min(partition.HighWatermark, partition.FirstUnstableOffset)
+                    : partition.HighWatermark;
+            return new WatermarkOffsets(partition.LogStartOffset, highWatermark);
         }
     }
 

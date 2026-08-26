@@ -1485,7 +1485,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                 return null;
             }
 
-            var watermarks = _cluster.GetWatermarks(partition);
+            var watermarks = _cluster.GetWatermarks(partition, _options.IsolationLevel);
             return position >= watermarks.High ? 0 : watermarks.High - position;
         }
     }

@@ -92,7 +92,7 @@ public sealed class QueryWatermarkOffsetsTests
     }
 
     [Test]
-    public async Task QueryCurrentLagAsync_RefreshesHighWatermarkAndUsesLatestPosition()
+    public async Task QueryCurrentLagAsync_RefreshesEndOffsetAndUsesLatestPosition()
     {
         var connectionPool = Substitute.For<IConnectionPool>();
         var connection = new LeaseTrackingConnection
@@ -127,6 +127,58 @@ public sealed class QueryWatermarkOffsetsTests
         await Assert.That(lag).IsEqualTo(10);
         await Assert.That(consumer.GetCurrentLag(new TopicPartition(Topic, Partition))).IsEqualTo(10);
         await Assert.That(connection.LeaseAcquisitionCount).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task QueryCurrentLagAsync_AssignmentChangeDuringRefreshReturnsNull()
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var connection = new LeaseTrackingConnection();
+        connectionPool.GetConnectionByIndexAsync(0, 1, Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult<IKafkaConnection>(connection));
+        var metadataManager = new MetadataManager(connectionPool, ["localhost:9092"]);
+        metadataManager.SetApiVersion(
+            ApiKey.ListOffsets,
+            ListOffsetsRequest.LowestSupportedVersion,
+            ListOffsetsRequest.HighestSupportedVersion);
+        metadataManager.Metadata.Update(CreateMetadataResponse());
+        await using var consumer = new KafkaConsumer<string, string>(
+            new ConsumerOptions
+            {
+                BootstrapServers = ["localhost:9092"],
+                GroupId = "test-group"
+            },
+            Serializers.String,
+            Serializers.String,
+            connectionPool,
+            metadataManager);
+        SetInitialized(consumer);
+        var partition = new TopicPartition(Topic, Partition);
+        consumer.IncrementalAssign([new TopicPartitionOffset(Topic, Partition, 32)]);
+        var requestCount = 0;
+        var requestsStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseResponses = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        connection.SendHandler = async request =>
+        {
+            if (Interlocked.Increment(ref requestCount) == 2)
+                requestsStarted.TrySetResult();
+            await releaseResponses.Task.ConfigureAwait(false);
+            return CreateListOffsetsResponse(request);
+        };
+
+        var pending = consumer.QueryCurrentLagAsync(partition).AsTask();
+        try
+        {
+            await requestsStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+            consumer.IncrementalUnassign([partition]);
+            consumer.IncrementalAssign([new TopicPartitionOffset(Topic, Partition, 32)]);
+        }
+        finally
+        {
+            releaseResponses.TrySetResult();
+        }
+
+        await Assert.That(await pending.WaitAsync(TimeSpan.FromSeconds(1))).IsNull();
     }
 
     private static async Task<ListOffsetsResponse> CreateListOffsetsResponseAsync(long timestamp, Task release)

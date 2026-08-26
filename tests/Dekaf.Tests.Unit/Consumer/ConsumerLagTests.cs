@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Reflection;
 using Dekaf.Consumer;
+using Dekaf.Protocol.Messages;
 using Dekaf.Serialization;
 using NSubstitute;
 
@@ -22,7 +23,7 @@ public sealed class ConsumerLagTests
 
         await Assert.That(consumer.GetCurrentLag(Partition)).IsNull();
 
-        GetWatermarks(consumer)[Partition] = new WatermarkOffsets(0, 25);
+        SetCachedWatermarks(consumer, new WatermarkOffsets(0, 25));
 
         await Assert.That(consumer.GetCurrentLag(Partition)).IsEqualTo(15);
     }
@@ -32,7 +33,7 @@ public sealed class ConsumerLagTests
     {
         await using var consumer = CreateConsumer();
         consumer.IncrementalAssign([new TopicPartitionOffset(Partition.Topic, Partition.Partition, 10)]);
-        GetWatermarks(consumer)[Partition] = new WatermarkOffsets(0, 25);
+        SetCachedWatermarks(consumer, new WatermarkOffsets(0, 25));
 
         consumer.Seek(new TopicPartitionOffset(Partition.Topic, Partition.Partition, 20));
         await Assert.That(consumer.GetCurrentLag(Partition)).IsEqualTo(5);
@@ -49,11 +50,30 @@ public sealed class ConsumerLagTests
     {
         await using var consumer = CreateConsumer();
         consumer.IncrementalAssign([new TopicPartitionOffset(Partition.Topic, Partition.Partition, 10)]);
-        GetWatermarks(consumer)[Partition] = new WatermarkOffsets(0, 25);
+        SetCachedWatermarks(consumer, new WatermarkOffsets(0, 25));
 
         consumer.IncrementalUnassign([Partition]);
 
         await Assert.That(consumer.GetCurrentLag(Partition)).IsNull();
+    }
+
+    [Test]
+    public async Task GetCurrentLag_ReadCommittedUsesLastStableOffset()
+    {
+        await using var consumer = CreateConsumer(IsolationLevel.ReadCommitted);
+        consumer.IncrementalAssign([new TopicPartitionOffset(Partition.Topic, Partition.Partition, 10)]);
+        var response = new FetchResponsePartition
+        {
+            PartitionIndex = Partition.Partition,
+            HighWatermark = 25,
+            LastStableOffset = 17,
+            LogStartOffset = 0
+        };
+
+        UpdateWatermarksFromFetchResponse(consumer, response);
+
+        await Assert.That(consumer.GetCurrentLag(Partition)).IsEqualTo(7);
+        await Assert.That(consumer.GetWatermarkOffsets(Partition)!.Value.High).IsEqualTo(25);
     }
 
     [Test]
@@ -113,14 +133,24 @@ public sealed class ConsumerLagTests
             .Throws<NotSupportedException>();
     }
 
-    private static KafkaConsumer<string, string> CreateConsumer() => new(
+    private static KafkaConsumer<string, string> CreateConsumer(
+        IsolationLevel isolationLevel = IsolationLevel.ReadUncommitted) => new(
         new ConsumerOptions
         {
             BootstrapServers = ["localhost:9092"],
-            GroupId = "lag-tests"
+            GroupId = "lag-tests",
+            IsolationLevel = isolationLevel
         },
         Serializers.String,
         Serializers.String);
+
+    private static void SetCachedWatermarks(
+        KafkaConsumer<string, string> consumer,
+        WatermarkOffsets watermarks)
+    {
+        GetWatermarks(consumer)[Partition] = watermarks;
+        GetLagEndOffsets(consumer)[Partition] = watermarks.High;
+    }
 
     private static ConcurrentDictionary<TopicPartition, WatermarkOffsets> GetWatermarks(
         KafkaConsumer<string, string> consumer) =>
@@ -128,6 +158,24 @@ public sealed class ConsumerLagTests
             .GetField("_watermarks", BindingFlags.NonPublic | BindingFlags.Instance)
             ?.GetValue(consumer)
             ?? throw new InvalidOperationException("_watermarks field not found"));
+
+    private static ConcurrentDictionary<TopicPartition, long> GetLagEndOffsets(
+        KafkaConsumer<string, string> consumer) =>
+        (ConcurrentDictionary<TopicPartition, long>)(typeof(KafkaConsumer<string, string>)
+            .GetField("_lagEndOffsets", BindingFlags.NonPublic | BindingFlags.Instance)
+            ?.GetValue(consumer)
+            ?? throw new InvalidOperationException("_lagEndOffsets field not found"));
+
+    private static void UpdateWatermarksFromFetchResponse(
+        KafkaConsumer<string, string> consumer,
+        FetchResponsePartition response)
+    {
+        var method = typeof(KafkaConsumer<string, string>).GetMethod(
+            "UpdateWatermarksFromFetchResponse",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("UpdateWatermarksFromFetchResponse method not found");
+        method.Invoke(consumer, [Partition.Topic, response]);
+    }
 
     private static void SetInitialized(KafkaConsumer<string, string> consumer)
     {

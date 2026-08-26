@@ -1310,6 +1310,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private readonly ConcurrentDictionary<TopicPartition, CommittedOffsetCacheEntry> _committed = new();
     private long _committedOffsetGeneration;
     private readonly ConcurrentDictionary<TopicPartition, WatermarkOffsets> _watermarks = new(); // Cached watermark offsets from fetch responses
+    private readonly ConcurrentDictionary<TopicPartition, long> _lagEndOffsets = new(); // Isolation-visible end offsets for cached lag
 
 
     // Partition EOF tracking
@@ -7370,6 +7371,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             _committed.TryRemove(partition, out _);
             _highWatermarks.TryRemove(partition, out _);
             _watermarks.TryRemove(partition, out _);
+            _lagEndOffsets.TryRemove(partition, out _);
             _eofEmitted.TryRemove(partition, out _);
             hadPaused |= _paused.TryRemove(partition, out _);
         }
@@ -8355,13 +8357,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         if (!_assignmentSnapshot.Contains(partition)
             || GetPosition(partition) is not { } position
             || position < 0
-            || !_watermarks.TryGetValue(partition, out var watermarks)
+            || !_lagEndOffsets.TryGetValue(partition, out var endOffset)
             || assignmentVersion != Volatile.Read(ref _assignmentEnsureVersion))
         {
             return null;
         }
 
-        return position >= watermarks.High ? 0 : watermarks.High - position;
+        return CalculateLag(position, endOffset);
     }
 
     public ValueTask<long?> QueryCurrentLagAsync(
@@ -8374,23 +8376,37 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         ThrowIfNotInitialized();
         cancellationToken.ThrowIfCancellationRequested();
 
+        var assignmentVersion = Volatile.Read(ref _assignmentEnsureVersion);
         if (!_assignmentSnapshot.Contains(partition)
             || GetPosition(partition) is not { } position
-            || position < 0)
+            || position < 0
+            || assignmentVersion != Volatile.Read(ref _assignmentEnsureVersion))
         {
             return new ValueTask<long?>((long?)null);
         }
 
-        return QueryCurrentLagCoreAsync(partition, cancellationToken);
+        return QueryCurrentLagCoreAsync(partition, assignmentVersion, cancellationToken);
     }
 
     private async ValueTask<long?> QueryCurrentLagCoreAsync(
         TopicPartition partition,
+        int assignmentVersion,
         CancellationToken cancellationToken)
     {
-        await QueryWatermarkOffsetsAsync(partition, cancellationToken).ConfigureAwait(false);
-        return GetCurrentLag(partition);
+        var watermarks = await QueryWatermarkOffsetsAsync(partition, cancellationToken).ConfigureAwait(false);
+        if (assignmentVersion != Volatile.Read(ref _assignmentEnsureVersion)
+            || !_assignmentSnapshot.Contains(partition)
+            || GetPosition(partition) is not { } position
+            || position < 0)
+        {
+            return null;
+        }
+
+        return CalculateLag(position, watermarks.High);
     }
+
+    private static long CalculateLag(long position, long endOffset) =>
+        position >= endOffset ? 0 : endOffset - position;
 
     private static ListOffsetsRequest CreateWatermarkListOffsetsRequest(
         TopicPartition topicPartition,
@@ -8522,6 +8538,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
                 // Cache the result
                 _watermarks[topicPartition] = watermarks;
+                _lagEndOffsets[topicPartition] = highWatermark;
 
                 return watermarks;
             }, _metadataManager, apiTimeout.Token, _options.RetryBackoffMs, _options.RetryBackoffMaxMs)
@@ -9811,6 +9828,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         _committed.TryRemove(partition, out _);
                         _highWatermarks.TryRemove(partition, out _);
                         _watermarks.TryRemove(partition, out _);
+                        _lagEndOffsets.TryRemove(partition, out _);
                         _eofEmitted.TryRemove(partition, out _);
 
                         var topicInfo = metadataSnapshot.Topics[partition.Topic];
@@ -10523,6 +10541,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             var tp = new TopicPartition(topic, partitionResponse.PartitionIndex);
             var low = partitionResponse.LogStartOffset >= 0 ? partitionResponse.LogStartOffset : 0;
             _watermarks[tp] = new WatermarkOffsets(low, partitionResponse.HighWatermark);
+            _lagEndOffsets[tp] = _options.IsolationLevel == IsolationLevel.ReadCommitted
+                && partitionResponse.LastStableOffset >= 0
+                    ? partitionResponse.LastStableOffset
+                    : partitionResponse.HighWatermark;
         }
     }
 

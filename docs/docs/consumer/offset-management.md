@@ -229,11 +229,12 @@ long? cachedLag = consumer.GetCurrentLag(partition);
 ```
 
 `GetCurrentLag` performs no network I/O and allocates zero bytes. It returns `null` while the
-partition is unassigned, before its position is initialized, or before a high watermark has been
-cached. Its high watermark is a snapshot from the latest fetch or explicit query, so newly appended
-records can make the result stale.
+partition is unassigned, before its position is initialized, or before an isolation-visible end
+offset has been cached. The end offset is the high watermark for `ReadUncommitted` and the last
+stable offset for `ReadCommitted`; it is a snapshot from the latest fetch or explicit query, so
+newly appended or newly committed records can make the result stale.
 
-Refresh the high watermark when the caller needs a current broker value:
+Refresh the isolation-visible end offset when the caller needs a current broker value:
 
 ```csharp
 long? currentLag = await consumer.QueryCurrentLagAsync(partition, ct);
@@ -242,7 +243,7 @@ long? currentLag = await consumer.QueryCurrentLagAsync(partition, ct);
 The async query uses the consumer's isolation-aware `ListOffsets` path, supports cancellation, and
 uses `DefaultApiTimeoutMs`. It returns `null` without network I/O when assignment or position data is
 unavailable. Lag is clamped to zero when a seek or log truncation temporarily places the position
-beyond the broker high watermark. Dekaf's broker-backed and in-memory consumers expose this through
+beyond the broker end offset. Dekaf's broker-backed and in-memory consumers expose this through
 the optional `IConsumerLag` capability; custom wrappers can implement the capability without a
 binary-breaking change to `IKafkaConsumer<TKey, TValue>`.
 

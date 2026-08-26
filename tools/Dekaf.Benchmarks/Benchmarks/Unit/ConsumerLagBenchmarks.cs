@@ -31,6 +31,12 @@ public class ConsumerLagBenchmarks
                 ?.GetValue(concrete)
             ?? throw new InvalidOperationException("_watermarks field not found"));
         watermarks[_partition] = new WatermarkOffsets(0, 1_000);
+        var lagEndOffsets = (ConcurrentDictionary<TopicPartition, long>)(
+            typeof(KafkaConsumer<byte[], byte[]>)
+                .GetField("_lagEndOffsets", BindingFlags.Instance | BindingFlags.NonPublic)
+                ?.GetValue(concrete)
+            ?? throw new InvalidOperationException("_lagEndOffsets field not found"));
+        lagEndOffsets[_partition] = 1_000;
     }
 
     [Benchmark]

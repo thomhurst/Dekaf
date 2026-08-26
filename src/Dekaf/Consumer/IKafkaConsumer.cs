@@ -349,18 +349,19 @@ public interface IConsumerLag
     /// </summary>
     /// <remarks>
     /// Returns <see langword="null"/> when the partition is not assigned, its position has not
-    /// been initialized, or no high watermark has been cached. The cached high watermark can be
-    /// stale until a fetch response or <see cref="QueryCurrentLagAsync"/> refreshes it.
+    /// been initialized, or no isolation-visible end offset has been cached. The cached end offset
+    /// can be stale until a fetch response or <see cref="QueryCurrentLagAsync"/> refreshes it.
     /// </remarks>
     long? GetCurrentLag(TopicPartition partition);
 
     /// <summary>
-    /// Queries the broker for the current high watermark and returns lag for an assigned partition.
+    /// Queries the broker for the current isolation-visible end offset and returns lag for an
+    /// assigned partition.
     /// </summary>
     /// <remarks>
     /// Returns <see langword="null"/> without network I/O when the partition is not assigned or its
     /// position has not been initialized. Lag is never negative when the position is beyond the
-    /// current high watermark.
+    /// current end offset.
     /// </remarks>
     /// <exception cref="KafkaTimeoutException">
     /// The operation exceeds <see cref="ConsumerOptions.DefaultApiTimeoutMs"/>.
