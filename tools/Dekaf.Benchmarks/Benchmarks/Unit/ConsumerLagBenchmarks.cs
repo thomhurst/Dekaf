@@ -35,7 +35,7 @@ public class ConsumerLagBenchmarks
                 PartitionIndex = _partition.Partition,
                 HighWatermark = 1_000,
                 LogStartOffset = 0
-            }, assignmentVersion, 0L]);
+            }, assignmentVersion, 0]);
     }
 
     [Benchmark]
