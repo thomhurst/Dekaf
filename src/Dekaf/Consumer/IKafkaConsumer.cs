@@ -335,6 +335,45 @@ public interface IConsumerCommittedOffsets
 }
 
 /// <summary>
+/// Optional capability for reading the current lag of assigned consumer partitions.
+/// </summary>
+/// <remarks>
+/// Dekaf's built-in consumers implement this interface. The separate capability keeps existing
+/// <see cref="IKafkaConsumer{TKey,TValue}"/> implementations binary compatible while
+/// <c>ConsumerFacetExtensions</c> provides the API on every consumer.
+/// </remarks>
+public interface IConsumerLag
+{
+    /// <summary>
+    /// Gets cached lag for an assigned partition without performing network I/O.
+    /// </summary>
+    /// <remarks>
+    /// Returns <see langword="null"/> when the partition is not assigned, its position has not
+    /// been initialized, or no isolation-visible end offset has been cached. The cached end offset
+    /// can be stale until a fetch response or <see cref="QueryCurrentLagAsync"/> refreshes it.
+    /// A concurrent assignment publication can also make an otherwise available read transiently
+    /// return <see langword="null"/>; retry to read the newly published assignment snapshot.
+    /// </remarks>
+    long? GetCurrentLag(TopicPartition partition);
+
+    /// <summary>
+    /// Queries the broker for the current isolation-visible end offset and returns lag for an
+    /// assigned partition.
+    /// </summary>
+    /// <remarks>
+    /// Returns <see langword="null"/> without network I/O when the partition is not assigned or its
+    /// position has not been initialized. Lag is never negative when the position is beyond the
+    /// current end offset.
+    /// </remarks>
+    /// <exception cref="KafkaTimeoutException">
+    /// The operation exceeds <see cref="ConsumerOptions.DefaultApiTimeoutMs"/>.
+    /// </exception>
+    ValueTask<long?> QueryCurrentLagAsync(
+        TopicPartition partition,
+        CancellationToken cancellationToken = default);
+}
+
+/// <summary>
 /// Assignment and pause/resume operations for a Kafka consumer.
 /// </summary>
 public interface IConsumerPartitions
@@ -436,6 +475,11 @@ public interface IConsumerOffsets
     /// The watermarks are updated from fetch responses as records are consumed.
     /// Returns null if no watermark data is cached for the partition.
     /// </summary>
+    /// <remarks>
+    /// After unassignment, the last snapshot remains available until 256 newer
+    /// unassigned snapshots are retained. Assigning the partition again invalidates
+    /// its retained snapshot immediately.
+    /// </remarks>
     /// <param name="topicPartition">The topic partition to get watermarks for.</param>
     /// <returns>The cached watermark offsets, or null if not available.</returns>
     WatermarkOffsets? GetWatermarkOffsets(TopicPartition topicPartition);

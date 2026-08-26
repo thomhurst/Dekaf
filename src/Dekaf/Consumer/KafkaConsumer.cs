@@ -1144,6 +1144,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     IConsumerGroupLiveness,
     IConsumerPositions,
     IConsumerCommittedOffsets,
+    IConsumerLag,
+    IRequestWriteSequenceSource,
     IConsumerPartitions,
     IConsumerOffsets,
     IConsumerRebalanceEventSource,
@@ -1312,7 +1314,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     // OffsetFetch snapshots must not replace commits that complete after the request starts.
     private readonly ConcurrentDictionary<TopicPartition, CommittedOffsetCacheEntry> _committed = new();
     private long _committedOffsetGeneration;
-    private readonly ConcurrentDictionary<TopicPartition, WatermarkOffsets> _watermarks = new(); // Cached watermark offsets from fetch responses
+    private readonly ConcurrentDictionary<TopicPartition, WatermarkCacheEntry> _watermarks = new(); // Cached watermark offsets from fetch responses
+    private readonly ConcurrentDictionary<TopicPartition, int> _watermarkAssignmentVersions = new();
 
 
     // Partition EOF tracking
@@ -1407,9 +1410,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     // Lock ordering (always acquire in this order to prevent deadlocks):
     //   1. _initLock          — guards one-time initialization; never held while acquiring other locks
     //   2. _assignmentLock    — serializes assignment changes between the consume loop and prefetch loop
-    //   3. _autoCommitStartLock / _prefetchStartLock — guard background loop start/stop snapshots;
+    //   3. _snapshotStateGate — publishes assignment/snapshot state; may also be acquired independently,
+    //      but never acquire _assignmentLock while holding it
+    //   4. _autoCommitStartLock / _prefetchStartLock — guard background loop start/stop snapshots;
     //      never held while awaiting. When both are needed, acquire auto-commit before prefetch.
-    //   4. _partitionCacheLock / _fetchCacheLock — guard per-broker partition cache and fetch request
+    //   5. _partitionCacheLock / _fetchCacheLock — guard per-broker partition cache and fetch request
     //      cache respectively; acquired under _assignmentLock (via InvalidatePartitionCache /
     //      InvalidateFetchRequestCache) and independently; never nested with each other
     private readonly SemaphoreSlim _initLock = new(1, 1);
@@ -1491,6 +1496,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private int _lastCoordinatorAssignmentVersion = -1;
     // Deterministic test seam for assignment/revocation snapshot races.
     internal Action? BeforeCoordinatorAssignmentSnapshotForTest { get; set; }
+    // Deterministic test seam for watermark creation/assignment races. Thread-local static
+    // storage avoids changing the production consumer's instance layout.
+    [ThreadStatic]
+    private static Action? _beforeWatermarkCacheEntryCreationForTest;
+    internal static Action? BeforeWatermarkCacheEntryCreationForTest
+    {
+        get => _beforeWatermarkCacheEntryCreationForTest;
+        set => _beforeWatermarkCacheEntryCreationForTest = value;
+    }
     // Foreground-applied pause state. Keep at the cold field tail so the normal consume layout
     // remains stable; only queue admission/reconciliation reads or writes it.
     private TopicPartitionSet _deliveryPausedSnapshot = new HashSet<TopicPartition>();
@@ -1500,10 +1514,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private SnapshotConsumeState? _activeSnapshot;
     private int _snapshotOperationActive;
     private readonly object _snapshotStateGate = new();
+    // Captured before each fetch/ListOffsets request so delayed responses cannot regress the cache.
+    private long _watermarkUpdateSequence;
+    // Cold-path FIFO for bounding snapshots retained after unassignment or direct queries.
+    private Queue<RetainedWatermarkSnapshot>? _retainedWatermarkSnapshots;
 
     private static readonly long s_preferredReadReplicaMaxAgeTimestampDelta =
         (long)(TimeSpan.FromMinutes(5).TotalSeconds * Stopwatch.Frequency);
     private const long NoPreferredReplicaExpiry = long.MaxValue;
+    private const int MaxRetainedUnassignedWatermarkSnapshots = 256;
 
     private readonly record struct PartitionBrokerCacheEntry(
         Dictionary<int, List<TopicPartition>> PartitionsByBroker,
@@ -2270,11 +2289,17 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private void PublishSubscriptionAndClearAssignment(bool invalidatePartitionCache)
     {
         PublishSubscriptionSnapshot();
+        var hadPaused = false;
         SemaphoreHelper.AcquireOrThrowDisposed(_assignmentLock, nameof(KafkaConsumer<TKey, TValue>));
         try
         {
-            _assignment.Clear();
-            PublishAssignmentSnapshot();
+            var previousAssignment = _assignmentSnapshot;
+            lock (_snapshotStateGate)
+            {
+                _assignment.Clear();
+                PublishAssignmentSnapshot();
+                hadPaused = RemovePartitionState(previousAssignment);
+            }
         }
         finally
         {
@@ -2289,6 +2314,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // one-time latency cost for the discarded prefetch.
         ClearFetchBuffer();
 
+        if (hadPaused)
+            PublishPausedSnapshot();
+
         if (invalidatePartitionCache)
             InvalidatePartitionCache();
 
@@ -2302,15 +2330,30 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         _topicPattern = null;
         _subscription.Clear();
         PublishSubscriptionSnapshot();
+        var hadPaused = false;
         SemaphoreHelper.AcquireOrThrowDisposed(_assignmentLock, nameof(KafkaConsumer<TKey, TValue>));
         try
         {
-            _assignment.Clear();
-            foreach (var partition in partitions)
+            var previousAssignment = _assignmentSnapshot;
+            lock (_snapshotStateGate)
             {
-                _assignment.Add(partition);
+                _assignment.Clear();
+                foreach (var partition in partitions)
+                {
+                    _assignment.Add(partition);
+                }
+
+                List<TopicPartition>? removedPartitions = null;
+                foreach (var partition in previousAssignment)
+                {
+                    if (!_assignment.Contains(partition))
+                        (removedPartitions ??= []).Add(partition);
+                }
+
+                PublishAssignmentSnapshot();
+                if (removedPartitions is not null)
+                    hadPaused = RemovePartitionState(removedPartitions);
             }
-            PublishAssignmentSnapshot();
         }
         finally
         {
@@ -2324,17 +2367,26 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // re-assigns and iterates (e.g., consume-per-partition patterns).
         ClearFetchBuffer();
 
+        if (hadPaused)
+            PublishPausedSnapshot();
+
         InvalidatePartitionCache();
         InvalidateFetchRequestCache();
     }
 
     public void Unassign()
     {
+        var hadPaused = false;
         SemaphoreHelper.AcquireOrThrowDisposed(_assignmentLock, nameof(KafkaConsumer<TKey, TValue>));
         try
         {
-            _assignment.Clear();
-            PublishAssignmentSnapshot();
+            var previousAssignment = _assignmentSnapshot;
+            lock (_snapshotStateGate)
+            {
+                _assignment.Clear();
+                PublishAssignmentSnapshot();
+                hadPaused = RemovePartitionState(previousAssignment);
+            }
         }
         finally
         {
@@ -2343,6 +2395,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         // Clear stale fetched data (same rationale as Assign).
         ClearFetchBuffer();
+
+        if (hadPaused)
+            PublishPausedSnapshot();
 
         InvalidatePartitionCache();
         InvalidateFetchRequestCache();
@@ -2360,25 +2415,28 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         SemaphoreHelper.AcquireOrThrowDisposed(_assignmentLock, nameof(KafkaConsumer<TKey, TValue>));
         try
         {
-            foreach (var tpo in partitions)
+            lock (_snapshotStateGate)
             {
-                var tp = new TopicPartition(tpo.Topic, tpo.Partition);
-                _assignment.Add(tp);
-
-                // If an offset is specified (>= 0), set the position
-                if (tpo.Offset >= 0)
+                foreach (var tpo in partitions)
                 {
-                    SetPosition(tp, tpo.Offset, dirty: false);
-                    if (tpo.LeaderEpoch >= 0)
-                        SetLastConsumedLeaderEpoch(tp, tpo.LeaderEpoch);
-                    else
-                        ClearLastConsumedLeaderEpoch(tp);
-                    _fetchPositions[tp] = tpo.Offset;
-                }
-                // Otherwise, positions will be initialized lazily based on auto.offset.reset
-            }
+                    var tp = new TopicPartition(tpo.Topic, tpo.Partition);
+                    _assignment.Add(tp);
 
-            PublishAssignmentSnapshot();
+                    // If an offset is specified (>= 0), set the position
+                    if (tpo.Offset >= 0)
+                    {
+                        SetPosition(tp, tpo.Offset, dirty: false);
+                        if (tpo.LeaderEpoch >= 0)
+                            SetLastConsumedLeaderEpoch(tp, tpo.LeaderEpoch);
+                        else
+                            ClearLastConsumedLeaderEpoch(tp);
+                        _fetchPositions[tp] = tpo.Offset;
+                    }
+                    // Otherwise, positions will be initialized lazily based on auto.offset.reset
+                }
+
+                PublishAssignmentSnapshot();
+            }
         }
         finally
         {
@@ -2432,9 +2490,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 }
             }
 
-            hadPaused = RemovePartitionState(partitions);
-
-            PublishAssignmentSnapshot();
+            lock (_snapshotStateGate)
+            {
+                PublishAssignmentSnapshot();
+                hadPaused = RemovePartitionState(partitions);
+            }
         }
         finally
         {
@@ -4286,14 +4346,17 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             request.SessionEpoch = fetchSessionBuild?.SessionEpoch ?? -1;
 
             var fetchStarted = Stopwatch.GetTimestamp();
+            long watermarkUpdateSequence;
 
             FetchResponse response;
             try
             {
-                response = await connection.SendAsync<FetchRequest, FetchResponse>(
+                response = await SendWithWatermarkWriteSequenceAsync<FetchRequest, FetchResponse>(
+                    connection,
                     request,
                     (short)apiVersion,
                     cancellationToken).ConfigureAwait(false);
+                watermarkUpdateSequence = ((IRequestWriteSequenceTarget)request).WriteSequence;
             }
             catch
             {
@@ -4355,7 +4418,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                             continue;
 
                         // Update watermark cache from fetch response (even on errors, watermarks may be valid)
-                        UpdateWatermarksFromFetchResponse(topic, partitionResponse);
+                        UpdateWatermarksFromFetchResponse(
+                            tp,
+                            partitionResponse,
+                            fetchBufferEpoch,
+                            GetLeaderEpoch(requestMetadataSnapshot, tp),
+                            watermarkUpdateSequence);
                         UpdatePreferredReadReplica(topic, partitionResponse);
 
                         if (partitionResponse.RecordParseError is { } parseError)
@@ -7340,6 +7408,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         return _positions.TryGetValue(partition, out var position) ? position : null;
     }
 
+    private long? GetPositionWithoutCaching(TopicPartition partition) =>
+        TryGetActiveConsumedPosition(partition, out var activePosition, out _)
+            ? activePosition
+            : _positions.TryGetValue(partition, out var position) ? position : null;
+
     internal long? GetRebalancePosition(TopicPartition partition) =>
         _pendingRebalanceSeeks.TryGetValue(partition, out var pending)
             ? pending.Offset
@@ -7483,7 +7556,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             _lastConsumedLeaderEpochs.TryRemove(partition, out _);
             _committed.TryRemove(partition, out _);
             _highWatermarks.TryRemove(partition, out _);
-            _watermarks.TryRemove(partition, out _);
+            // IConsumerOffsets exposes the last cached broker watermarks even while
+            // unassigned. A later assignment removes them before position reuse.
             _eofEmitted.TryRemove(partition, out _);
             hadPaused |= _paused.TryRemove(partition, out _);
         }
@@ -8300,6 +8374,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         || (_minimumFetchBufferEpochsByPartition.TryGetValue(partition, out var minimumEpoch)
             && fetchBufferEpoch < minimumEpoch);
 
+    private int GetMinimumFetchBufferEpoch(TopicPartition partition)
+    {
+        var minimumEpoch = Volatile.Read(ref _minimumFetchBufferEpoch);
+        return _minimumFetchBufferEpochsByPartition.TryGetValue(partition, out var partitionMinimumEpoch)
+            && partitionMinimumEpoch > minimumEpoch
+                ? partitionMinimumEpoch
+                : minimumEpoch;
+    }
+
     private bool ShouldDropStaleFetchPartition(TopicPartition partition, int fetchBufferEpoch) =>
         IsFetchBufferEpochStale(partition, fetchBufferEpoch)
         || _coordinatorRevokedPartitionsPendingFetchClear.ContainsKey(partition)
@@ -8455,10 +8538,88 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     public WatermarkOffsets? GetWatermarkOffsets(TopicPartition topicPartition)
     {
-        if (_watermarks.TryGetValue(topicPartition, out var watermarks))
-            return watermarks;
-        return null;
+        return _watermarks.TryGetValue(topicPartition, out var entry)
+            ? entry.ReadWatermarks()
+            : null;
     }
+
+    public long? GetCurrentLag(TopicPartition partition)
+    {
+        if (Volatile.Read(ref _consumerDisposed) != 0)
+            throw new ObjectDisposedException(nameof(KafkaConsumer<TKey, TValue>));
+
+        var assignmentVersion = Volatile.Read(ref _assignmentEnsureVersion);
+        if (!_assignmentSnapshot.Contains(partition)
+            || GetPositionWithoutCaching(partition) is not { } position
+            || position < 0
+            || !_watermarks.TryGetValue(partition, out var watermarks))
+        {
+            return null;
+        }
+
+        return CalculateLagIfAssignmentUnchanged(assignmentVersion, position, watermarks);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private long? CalculateLagIfAssignmentUnchanged(
+        int assignmentVersion,
+        long position,
+        WatermarkCacheEntry watermarks)
+    {
+        var lag = CalculateLag(position, watermarks.ReadLagEndOffset());
+        return assignmentVersion == Volatile.Read(ref _assignmentEnsureVersion) ? lag : null;
+    }
+
+    public ValueTask<long?> QueryCurrentLagAsync(
+        TopicPartition partition,
+        CancellationToken cancellationToken = default)
+    {
+        if (Volatile.Read(ref _consumerDisposed) != 0)
+            throw new ObjectDisposedException(nameof(KafkaConsumer<TKey, TValue>));
+
+        ThrowIfNotInitialized();
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (!_assignmentSnapshot.Contains(partition)
+            || GetPositionWithoutCaching(partition) is not { } position
+            || position < 0
+            || !_watermarkAssignmentVersions.TryGetValue(partition, out var assignmentVersion))
+        {
+            return new ValueTask<long?>((long?)null);
+        }
+
+        return QueryCurrentLagCoreAsync(partition, assignmentVersion, cancellationToken);
+    }
+
+    private async ValueTask<long?> QueryCurrentLagCoreAsync(
+        TopicPartition partition,
+        int assignmentVersion,
+        CancellationToken cancellationToken)
+    {
+        var latestOffset = await QueryLatestOffsetCoreAsync(partition, cancellationToken)
+            .ConfigureAwait(false);
+        lock (_snapshotStateGate)
+        {
+            if (!_assignmentSnapshot.Contains(partition)
+                || GetPositionWithoutCaching(partition) is not { } position
+                || position < 0
+                || !_watermarkAssignmentVersions.TryGetValue(partition, out var currentVersion)
+                || currentVersion != assignmentVersion)
+            {
+                return null;
+            }
+
+            UpdateCachedLagEndOffset(
+                partition,
+                latestOffset.Offset,
+                latestOffset.LeaderEpoch,
+                latestOffset.UpdateSequence);
+            return CalculateLag(position, latestOffset.Offset);
+        }
+    }
+
+    private static long CalculateLag(long position, long endOffset) =>
+        position >= endOffset ? 0 : endOffset - position;
 
     private static ListOffsetsRequest CreateWatermarkListOffsetsRequest(
         TopicPartition topicPartition,
@@ -8507,9 +8668,111 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         return null;
     }
 
-    public async ValueTask<WatermarkOffsets> QueryWatermarkOffsetsAsync(
+    private ValueTask<TResponse> SendWithWatermarkWriteSequenceAsync<TRequest, TResponse>(
+        IKafkaConnection connection,
+        TRequest request,
+        short apiVersion,
+        CancellationToken cancellationToken)
+        where TRequest : IKafkaRequest<TResponse>, IRequestWriteSequenceTarget
+        where TResponse : IKafkaResponse
+    {
+        request.WriteSequenceSource = this;
+        if (connection is IKafkaRequestWriteObserverConnection writeObserverConnection)
+        {
+            return writeObserverConnection.SendWithWriteObservationAsync<TRequest, TResponse>(
+                request,
+                apiVersion,
+                request.RequestWriteStarted,
+                cancellationToken);
+        }
+
+        request.RequestWriteStarted();
+        return connection.SendAsync<TRequest, TResponse>(request, apiVersion, cancellationToken);
+    }
+
+    long IRequestWriteSequenceSource.NextRequestWriteSequence() =>
+        Interlocked.Increment(ref _watermarkUpdateSequence);
+
+    private async ValueTask<(long Offset, int LeaderEpoch, long UpdateSequence)> QueryLatestOffsetCoreAsync(
+        TopicPartition topicPartition,
+        CancellationToken cancellationToken)
+    {
+        using var apiTimeout = new ApiTimeoutScope(_options.DefaultApiTimeoutMs, cancellationToken);
+        try
+        {
+            return await RetryHelper.WithRetryAsync(async () =>
+            {
+                var connectionLease = await GetPartitionLeaderControlConnectionAsync(
+                        topicPartition,
+                        apiTimeout.Token)
+                    .ConfigureAwait(false);
+                if (connectionLease is null)
+                    throw new KafkaException(ErrorCode.LeaderNotAvailable, $"No leader found for partition {topicPartition}");
+                using var lease = connectionLease.Value;
+                var connection = lease.Connection;
+
+                var listOffsetsVersion = _metadataManager.GetNegotiatedApiVersion(
+                    connection,
+                    ApiKey.ListOffsets,
+                    ListOffsetsRequest.LowestSupportedVersion,
+                    ListOffsetsRequest.HighestSupportedVersion);
+                var request = CreateWatermarkListOffsetsRequest(
+                    topicPartition,
+                    _options.IsolationLevel,
+                    LatestOffsetTimestamp,
+                    GetCurrentLeaderEpoch(topicPartition));
+                var response = await SendWithWatermarkWriteSequenceAsync<ListOffsetsRequest, ListOffsetsResponse>(
+                        connection,
+                        request,
+                        listOffsetsVersion,
+                        apiTimeout.Token)
+                    .ConfigureAwait(false);
+                var watermarkUpdateSequence = ((IRequestWriteSequenceTarget)request).WriteSequence;
+                var partitionResponse = FindListOffsetsPartition(response, topicPartition);
+
+                if (partitionResponse is null)
+                {
+                    throw new KafkaException(
+                        ErrorCode.UnknownServerError,
+                        $"Failed to query latest offset for {topicPartition}: missing partition response");
+                }
+
+                if (partitionResponse.ErrorCode != ErrorCode.None)
+                {
+                    throw KafkaException.FromErrorCode(
+                        partitionResponse.ErrorCode,
+                        $"Failed to query latest offset for {topicPartition}: {partitionResponse.ErrorCode}");
+                }
+
+                return (partitionResponse.Offset, partitionResponse.LeaderEpoch, watermarkUpdateSequence);
+            }, _metadataManager, apiTimeout.Token, _options.RetryBackoffMs, _options.RetryBackoffMaxMs)
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException ex) when (apiTimeout.DefaultTimeoutExpired)
+        {
+            throw apiTimeout.CreateTimeoutException(nameof(QueryCurrentLagAsync), ex);
+        }
+    }
+
+    public ValueTask<WatermarkOffsets> QueryWatermarkOffsetsAsync(
         TopicPartition topicPartition,
         CancellationToken cancellationToken = default)
+    {
+        int? assignmentGeneration = _watermarkAssignmentVersions.TryGetValue(topicPartition, out var generation)
+            ? generation
+            : null;
+        return QueryWatermarkOffsetsCoreAsync(
+            topicPartition,
+            cacheResult: true,
+            assignmentGeneration,
+            cancellationToken);
+    }
+
+    private async ValueTask<WatermarkOffsets> QueryWatermarkOffsetsCoreAsync(
+        TopicPartition topicPartition,
+        bool cacheResult,
+        int? assignmentGeneration,
+        CancellationToken cancellationToken)
     {
         if (Volatile.Read(ref _consumerDisposed) != 0)
             throw new ObjectDisposedException(nameof(KafkaConsumer<TKey, TValue>));
@@ -8527,6 +8790,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     throw new KafkaException(ErrorCode.LeaderNotAvailable, $"No leader found for partition {topicPartition}");
                 using var lease = connectionLease.Value;
                 var connection = lease.Connection;
+                var topicId = GetTopicId(
+                    _metadataManager.Metadata.CaptureSnapshot(),
+                    topicPartition.Topic);
 
                 var listOffsetsVersion = _metadataManager.GetNegotiatedApiVersion(
                     connection,
@@ -8551,12 +8817,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     listOffsetsVersion,
                     apiTimeout.Token).AsTask();
 
-                var latestResponseTask = connection.SendAsync<ListOffsetsRequest, ListOffsetsResponse>(
+                var latestResponseTask = SendWithWatermarkWriteSequenceAsync<ListOffsetsRequest, ListOffsetsResponse>(
+                    connection,
                     latestRequest,
                     listOffsetsVersion,
                     apiTimeout.Token).AsTask();
 
                 await Task.WhenAll(earliestResponseTask, latestResponseTask).ConfigureAwait(false);
+                var watermarkUpdateSequence = ((IRequestWriteSequenceTarget)latestRequest).WriteSequence;
 
                 var earliestPartitionResponse = FindListOffsetsPartition(earliestResponseTask.Result, topicPartition);
 
@@ -8588,8 +8856,50 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
                 var watermarks = new WatermarkOffsets(lowWatermark, highWatermark);
 
-                // Cache the result
-                _watermarks[topicPartition] = watermarks;
+                if (cacheResult)
+                {
+                    var cacheUpdated = UpdateQueriedCachedWatermarks(
+                        topicPartition,
+                        lowWatermark,
+                        highWatermark,
+                        highWatermark,
+                        assignmentGeneration,
+                        latestPartitionResponse.LeaderEpoch,
+                        watermarkUpdateSequence,
+                        topicId);
+                    if (!cacheUpdated && assignmentGeneration is null)
+                    {
+                        // ListOffsets responses do not carry topic IDs. Refresh identity only
+                        // when a regressive unassigned snapshot was rejected as stale.
+                        var refreshedTopicId = GetTopicId(
+                            _metadataManager.Metadata.CaptureSnapshot(),
+                            topicPartition.Topic);
+                        if (refreshedTopicId == topicId)
+                        {
+                            await _metadataManager.RefreshMetadataAsync(
+                                    [topicPartition.Topic],
+                                    forceRefresh: true,
+                                    cancellationToken: apiTimeout.Token)
+                                .ConfigureAwait(false);
+                            refreshedTopicId = GetTopicId(
+                                _metadataManager.Metadata.CaptureSnapshot(),
+                                topicPartition.Topic);
+                        }
+
+                        if (refreshedTopicId != topicId)
+                        {
+                            _ = UpdateQueriedCachedWatermarks(
+                                topicPartition,
+                                lowWatermark,
+                                highWatermark,
+                                highWatermark,
+                                assignmentGeneration,
+                                latestPartitionResponse.LeaderEpoch,
+                                watermarkUpdateSequence,
+                                refreshedTopicId);
+                        }
+                    }
+                }
 
                 return watermarks;
             }, _metadataManager, apiTimeout.Token, _options.RetryBackoffMs, _options.RetryBackoffMaxMs)
@@ -8600,6 +8910,117 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             throw apiTimeout.CreateTimeoutException(nameof(QueryWatermarkOffsetsAsync), ex);
         }
     }
+
+    private bool UpdateQueriedCachedWatermarks(
+        TopicPartition partition,
+        long low,
+        long high,
+        long lagEndOffset,
+        int? assignmentGeneration,
+        int leaderEpoch,
+        long watermarkUpdateSequence,
+        Guid topicId)
+    {
+        lock (_snapshotStateGate)
+        {
+            if (assignmentGeneration is { } expectedGeneration)
+            {
+                if (!_assignmentSnapshot.Contains(partition)
+                    || !_watermarkAssignmentVersions.TryGetValue(partition, out var currentGeneration)
+                    || currentGeneration != expectedGeneration)
+                {
+                    return false;
+                }
+            }
+            else if (_assignmentSnapshot.Contains(partition)
+                     || _watermarkAssignmentVersions.ContainsKey(partition))
+            {
+                return false;
+            }
+
+            if (assignmentGeneration is null)
+            {
+                var retainedEntry = new WatermarkCacheEntry(
+                    low,
+                    high,
+                    lagEndOffset,
+                    GetMinimumFetchBufferEpoch(partition),
+                    leaderEpoch,
+                    watermarkUpdateSequence,
+                    topicId);
+                if (_watermarks.TryGetValue(partition, out var existingEntry))
+                {
+                    if (!existingEntry.TryReplaceWithNewerSnapshot(
+                            _watermarks,
+                            partition,
+                            retainedEntry))
+                    {
+                        return false;
+                    }
+                }
+                else
+                {
+                    _watermarks[partition] = retainedEntry;
+                }
+
+                RetainUnassignedWatermarkSnapshot(partition, retainedEntry, _assignmentSnapshot);
+                return true;
+            }
+
+            if (_watermarks.TryGetValue(partition, out var entry))
+            {
+                entry.Update(
+                    low,
+                    high,
+                    lagEndOffset,
+                    GetMinimumFetchBufferEpoch(partition),
+                    leaderEpoch,
+                    watermarkUpdateSequence);
+                return true;
+            }
+
+            _watermarks.TryAdd(
+                partition,
+                new WatermarkCacheEntry(
+                    low,
+                    high,
+                    lagEndOffset,
+                    GetMinimumFetchBufferEpoch(partition),
+                    leaderEpoch,
+                    watermarkUpdateSequence,
+                    topicId));
+            return true;
+        }
+    }
+
+    // Must run under _snapshotStateGate. Every unassigned cache entry owns a current
+    // ticket. Refreshes replace the entry, so stale tickets cannot remove newer values.
+    private void RetainUnassignedWatermarkSnapshot(
+        TopicPartition partition,
+        WatermarkCacheEntry entry,
+        TopicPartitionSet assignmentSnapshot)
+    {
+        entry.AdvanceMinimumFetchBufferEpoch(GetMinimumFetchBufferEpoch(partition));
+        var retained = _retainedWatermarkSnapshots ??=
+            new Queue<RetainedWatermarkSnapshot>(MaxRetainedUnassignedWatermarkSnapshots + 1);
+        retained.Enqueue(new RetainedWatermarkSnapshot(partition, entry));
+
+        while (retained.Count > MaxRetainedUnassignedWatermarkSnapshots)
+        {
+            var expired = retained.Dequeue();
+            if (!assignmentSnapshot.Contains(expired.Partition))
+            {
+                _watermarks.TryRemove(
+                    new KeyValuePair<TopicPartition, WatermarkCacheEntry>(
+                        expired.Partition,
+                        expired.Entry));
+            }
+        }
+    }
+
+    private readonly record struct RetainedWatermarkSnapshot(
+        TopicPartition Partition,
+        WatermarkCacheEntry Entry);
 
     /// <inheritdoc />
     public async ValueTask InitializeAsync(CancellationToken cancellationToken = default)
@@ -8897,19 +9318,20 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     {
                         _assignment.Add(partition);
                     }
-                    PublishAssignmentSnapshot();
+                    lock (_snapshotStateGate)
+                    {
+                        PublishAssignmentSnapshotCore(newPartitions);
+
+                        // Clean up state for removed partitions while lag-query cache publication
+                        // is excluded from the assignment transition.
+                        if (removedPartitions is not null && RemovePartitionState(removedPartitions))
+                            PublishPausedSnapshot();
+                    }
                     InvalidatePartitionCache();
                     InvalidateFetchRequestCache();
 
                     // Ratchet pool sizes based on actual partition count
                     RatchetConsumerPoolSizes(_assignment.Count);
-
-                    // Clean up state for removed partitions
-                    if (removedPartitions is not null)
-                    {
-                        if (RemovePartitionState(removedPartitions))
-                            PublishPausedSnapshot();
-                    }
 
                     // Initialize positions for new partitions
                     if (newPartitions is { Count: > 0 })
@@ -9303,7 +9725,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 {
                     scheduledFetchSessionBrokers?.Add(brokerId);
                     fetchTasks[taskCount++] = FetchFromBrokerWithErrorHandlingAsync(
-                        brokerId, partitions, fetchBufferEpoch, consumeCts.Token, consumeCts.Token);
+                        brokerId,
+                        partitions,
+                        fetchBufferEpoch,
+                        consumeCts.Token,
+                        consumeCts.Token);
                 }
 
                 foreach (var (key, handler) in fetchSessionSnapshot)
@@ -9324,7 +9750,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         continue;
 
                     fetchTasks[taskCount++] = FetchFromBrokerWithErrorHandlingAsync(
-                        key.BrokerId, [], fetchBufferEpoch, consumeCts.Token, consumeCts.Token);
+                        key.BrokerId,
+                        [],
+                        fetchBufferEpoch,
+                        consumeCts.Token,
+                        consumeCts.Token);
                 }
 
                 if (taskCount == 0)
@@ -9455,7 +9885,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     {
         try
         {
-            return await FetchFromBrokerAsync(brokerId, partitions, fetchBufferEpoch, linkedToken).ConfigureAwait(false);
+            return await FetchFromBrokerAsync(
+                    brokerId,
+                    partitions,
+                    fetchBufferEpoch,
+                    linkedToken)
+                .ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (consumeCancellationToken.IsCancellationRequested)
         {
@@ -9478,14 +9913,51 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     /// <summary>
     /// Publishes an immutable snapshot of <see cref="_assignment"/> for lock-free reads.
     /// Must be called after every mutation to <see cref="_assignment"/>.
+    /// Rotates watermark cache generations only for partitions whose ownership changed.
     /// Also marks manual assignment state dirty and invalidates the coordinator assignment
     /// fast path, so all assignment mutation paths must use this method.
     /// </summary>
-    private void PublishAssignmentSnapshot()
+    private void PublishAssignmentSnapshot() => PublishAssignmentSnapshotCore(reassignedPartitions: null);
+
+    private void PublishAssignmentSnapshotCore(IReadOnlyCollection<TopicPartition>? reassignedPartitions)
     {
         var assignmentSnapshot = new HashSet<TopicPartition>(_assignment);
         lock (_snapshotStateGate)
         {
+            var previousAssignment = _assignmentSnapshot;
+            var assignmentVersion = Interlocked.Increment(ref _assignmentEnsureVersion);
+
+            foreach (var partition in previousAssignment)
+            {
+                if (assignmentSnapshot.Contains(partition))
+                    continue;
+
+                _watermarkAssignmentVersions.TryRemove(partition, out _);
+                if (_watermarks.TryGetValue(partition, out var entry))
+                    RetainUnassignedWatermarkSnapshot(partition, entry, assignmentSnapshot);
+            }
+
+            foreach (var partition in assignmentSnapshot)
+            {
+                if (previousAssignment.Contains(partition))
+                    continue;
+
+                _watermarkAssignmentVersions[partition] = assignmentVersion;
+                _watermarks.TryRemove(partition, out _);
+            }
+
+            if (reassignedPartitions is not null)
+            {
+                foreach (var partition in reassignedPartitions)
+                {
+                    if (!assignmentSnapshot.Contains(partition))
+                        continue;
+
+                    _watermarkAssignmentVersions[partition] = assignmentVersion;
+                    _watermarks.TryRemove(partition, out _);
+                }
+            }
+
             _batchIterationEpoch.BeginPublication();
             try
             {
@@ -9495,8 +9967,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             {
                 _batchIterationEpoch.EndPublication();
             }
+
         }
-        Interlocked.Increment(ref _assignmentEnsureVersion);
         Volatile.Write(ref _lastCoordinatorAssignmentVersion, -1);
         Volatile.Write(ref _observedTopicIdentityMarker, assignmentSnapshot);
     }
@@ -9860,6 +10332,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         recreatedPartitions.Add(partition);
                 }
 
+                InvalidateWatermarkCacheGenerations(recreatedPartitions);
+
                 Dictionary<TopicPartition, long>? preexistingPendingFetchClearVersions = null;
                 Task[]? resetTasks = null;
                 var resetTaskCount = 0;
@@ -9878,7 +10352,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         _pendingRebalanceSeeks.TryRemove(partition, out _);
                         _committed.TryRemove(partition, out _);
                         _highWatermarks.TryRemove(partition, out _);
-                        _watermarks.TryRemove(partition, out _);
                         _eofEmitted.TryRemove(partition, out _);
 
                         var topicInfo = metadataSnapshot.Topics[partition.Topic];
@@ -9925,6 +10398,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                             new ReadOnlySpan<Task>(resetTasks!, 0, resetTaskCount)).ConfigureAwait(false);
                     }
 #endif
+
+                    RotateWatermarkCacheGenerations(recreatedPartitions);
                 }
                 finally
                 {
@@ -9952,6 +10427,38 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         finally
         {
             SemaphoreHelper.ReleaseSafely(_topicIdentityLock);
+        }
+    }
+
+    private void RotateWatermarkCacheGenerations(HashSet<TopicPartition> recreatedPartitions)
+    {
+        lock (_snapshotStateGate)
+        {
+            var assignmentVersion = Interlocked.Increment(ref _assignmentEnsureVersion);
+            foreach (var partition in recreatedPartitions)
+            {
+                if (!_assignmentSnapshot.Contains(partition))
+                    continue;
+
+                _watermarkAssignmentVersions[partition] = assignmentVersion;
+                _watermarks.TryRemove(partition, out _);
+            }
+        }
+    }
+
+    private void InvalidateWatermarkCacheGenerations(HashSet<TopicPartition> recreatedPartitions)
+    {
+        lock (_snapshotStateGate)
+        {
+            Interlocked.Increment(ref _assignmentEnsureVersion);
+            foreach (var partition in recreatedPartitions)
+            {
+                if (!_assignmentSnapshot.Contains(partition))
+                    continue;
+
+                _watermarkAssignmentVersions.TryRemove(partition, out _);
+                _watermarks.TryRemove(partition, out _);
+            }
         }
     }
 
@@ -10202,14 +10709,17 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         request.SessionEpoch = fetchSessionBuild?.SessionEpoch ?? -1;
 
         var fetchStarted = Stopwatch.GetTimestamp();
+        long watermarkUpdateSequence;
 
         FetchResponse response;
         try
         {
-            response = await connection.SendAsync<FetchRequest, FetchResponse>(
+            response = await SendWithWatermarkWriteSequenceAsync<FetchRequest, FetchResponse>(
+                connection,
                 request,
                 (short)apiVersion,
                 cancellationToken).ConfigureAwait(false);
+            watermarkUpdateSequence = ((IRequestWriteSequenceTarget)request).WriteSequence;
         }
         catch
         {
@@ -10266,7 +10776,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         continue;
 
                     // Update watermark cache from fetch response (even on errors, watermarks may be valid)
-                    UpdateWatermarksFromFetchResponse(topic, partitionResponse);
+                    UpdateWatermarksFromFetchResponse(
+                        tp,
+                        partitionResponse,
+                        fetchBufferEpoch,
+                        GetLeaderEpoch(requestMetadataSnapshot, tp),
+                        watermarkUpdateSequence);
                     UpdatePreferredReadReplica(topic, partitionResponse);
 
                     if (partitionResponse.RecordParseError is { } parseError)
@@ -10581,16 +11096,501 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     /// The fetch response contains HighWatermark and LogStartOffset which correspond to
     /// the high and low watermarks respectively.
     /// </summary>
-    private void UpdateWatermarksFromFetchResponse(string topic, FetchResponsePartition partitionResponse)
+    private void UpdateWatermarksFromFetchResponse(
+        TopicPartition partition,
+        FetchResponsePartition partitionResponse,
+        int fetchBufferEpoch,
+        int leaderEpoch,
+        long watermarkUpdateSequence)
     {
         // Only update if we have valid watermark data
         // HighWatermark is the next offset to be written (end of log)
         // LogStartOffset is the earliest available offset (start of log, may be > 0 due to retention)
         if (partitionResponse.HighWatermark >= 0)
         {
-            var tp = new TopicPartition(topic, partitionResponse.PartitionIndex);
             var low = partitionResponse.LogStartOffset >= 0 ? partitionResponse.LogStartOffset : 0;
-            _watermarks[tp] = new WatermarkOffsets(low, partitionResponse.HighWatermark);
+            var lagEndOffset = _options.IsolationLevel == IsolationLevel.ReadCommitted
+                && partitionResponse.LastStableOffset >= 0
+                    ? partitionResponse.LastStableOffset
+                    : partitionResponse.HighWatermark;
+            UpdateCachedWatermarks(
+                partition,
+                low,
+                partitionResponse.HighWatermark,
+                lagEndOffset,
+                fetchBufferEpoch,
+                leaderEpoch,
+                watermarkUpdateSequence);
+        }
+    }
+
+    private void UpdateCachedWatermarks(
+        TopicPartition partition,
+        long low,
+        long high,
+        long lagEndOffset,
+        int fetchBufferEpoch,
+        int leaderEpoch,
+        long watermarkUpdateSequence)
+    {
+        if (!_watermarks.TryGetValue(partition, out var entry))
+        {
+            CreateOrUpdateCachedWatermarksSlow(
+                partition,
+                low,
+                high,
+                lagEndOffset,
+                fetchBufferEpoch,
+                leaderEpoch,
+                watermarkUpdateSequence);
+            return;
+        }
+
+        entry.Update(
+            low,
+            high,
+            lagEndOffset,
+            fetchBufferEpoch,
+            leaderEpoch,
+            watermarkUpdateSequence);
+    }
+
+    // Called only after QueryCurrentLagCoreAsync revalidates assignment under
+    // _snapshotStateGate. A lag-only query must not fabricate public watermarks.
+    private void UpdateCachedLagEndOffset(
+        TopicPartition partition,
+        long lagEndOffset,
+        int leaderEpoch,
+        long watermarkUpdateSequence)
+    {
+        if (_watermarks.TryGetValue(partition, out var entry))
+        {
+            entry.UpdateLagEndOffset(lagEndOffset, leaderEpoch, watermarkUpdateSequence);
+            return;
+        }
+
+        _watermarks.TryAdd(
+            partition,
+            new WatermarkCacheEntry(
+                lagEndOffset,
+                GetMinimumFetchBufferEpoch(partition),
+                leaderEpoch,
+                watermarkUpdateSequence,
+                GetTopicId(
+                    _metadataManager.Metadata.CaptureSnapshot(),
+                    partition.Topic)));
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private void CreateOrUpdateCachedWatermarksSlow(
+        TopicPartition partition,
+        long low,
+        long high,
+        long lagEndOffset,
+        int fetchBufferEpoch,
+        int leaderEpoch,
+        long watermarkUpdateSequence)
+    {
+        BeforeWatermarkCacheEntryCreationForTest?.Invoke();
+        WatermarkCacheEntry entry;
+        while (true)
+        {
+            lock (_snapshotStateGate)
+            {
+                if (IsFetchBufferEpochStale(partition, fetchBufferEpoch)
+                    || (_assignmentSnapshot.Contains(partition)
+                        && !_watermarkAssignmentVersions.ContainsKey(partition)))
+                    return;
+
+                if (_watermarks.TryGetValue(partition, out entry!))
+                    break;
+
+                if (_watermarks.TryAdd(
+                    partition,
+                    new WatermarkCacheEntry(
+                        low,
+                        high,
+                        lagEndOffset,
+                        fetchBufferEpoch,
+                        leaderEpoch,
+                        watermarkUpdateSequence,
+                        GetTopicId(
+                            _metadataManager.Metadata.CaptureSnapshot(),
+                            partition.Topic))))
+                {
+                    return;
+                }
+            }
+        }
+
+        entry.Update(
+            low,
+            high,
+            lagEndOffset,
+            fetchBufferEpoch,
+            leaderEpoch,
+            watermarkUpdateSequence);
+    }
+
+    private sealed class WatermarkCacheEntry
+    {
+        private const long UnknownWatermarkOffset = -1;
+        private const int UnknownLeaderEpoch = -1;
+
+        // Allocate once per partition, then update in place. The version is a seqlock:
+        // odd while a writer owns the entry, even when readers can take a coherent snapshot.
+        // Writers also reject each field set when its response predates the last applied request.
+        private int _version;
+        // Uses the padding beside _version and is read only while state is divergent.
+        private int _watermarkOffsetsUpdateSequenceLow;
+        private int _leaderEpoch;
+        private int _minimumFetchBufferEpoch;
+        private readonly Guid _topicId;
+        private long _low;
+        private long _high;
+        private long _lagEndOffset;
+        // The low 63 bits hold lag freshness; the sign bit marks divergence.
+        // During divergence, the public-watermark sequence's low 32 bits live in
+        // the padding field above. Known leader epochs use monotonic offsets;
+        // unknown epochs retain sequence ordering as a compatibility fallback.
+        private long _watermarkUpdateState;
+
+        public WatermarkCacheEntry(
+            long lagEndOffset,
+            int minimumFetchBufferEpoch,
+            int leaderEpoch,
+            long watermarkUpdateSequence,
+            Guid topicId)
+        {
+            _low = UnknownWatermarkOffset;
+            _high = UnknownWatermarkOffset;
+            _lagEndOffset = lagEndOffset;
+            _leaderEpoch = leaderEpoch;
+            _minimumFetchBufferEpoch = minimumFetchBufferEpoch;
+            _topicId = topicId;
+            _watermarkUpdateState = long.MinValue | watermarkUpdateSequence;
+        }
+
+        public WatermarkCacheEntry(
+            long low,
+            long high,
+            long lagEndOffset,
+            int minimumFetchBufferEpoch,
+            int leaderEpoch,
+            long watermarkUpdateSequence,
+            Guid topicId)
+        {
+            _low = low;
+            _high = high;
+            _lagEndOffset = lagEndOffset;
+            _leaderEpoch = leaderEpoch;
+            _minimumFetchBufferEpoch = minimumFetchBufferEpoch;
+            _topicId = topicId;
+            _watermarkUpdateState = watermarkUpdateSequence;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void Update(
+            long low,
+            long high,
+            long lagEndOffset,
+            int fetchBufferEpoch,
+            int leaderEpoch,
+            long watermarkUpdateSequence)
+        {
+            var spinner = new SpinWait();
+            while (true)
+            {
+                var version = Volatile.Read(ref _version);
+                if ((version & 1) != 0
+                    || Interlocked.CompareExchange(ref _version, version + 1, version) != version)
+                {
+                    spinner.SpinOnce();
+                    continue;
+                }
+
+                if (fetchBufferEpoch < _minimumFetchBufferEpoch)
+                {
+                    Volatile.Write(ref _version, version + 2);
+                    return;
+                }
+
+                var currentLeaderEpoch = _leaderEpoch;
+                if (leaderEpoch == currentLeaderEpoch)
+                {
+                    if (leaderEpoch != UnknownLeaderEpoch)
+                    {
+                        if (low < _low || high < _high || lagEndOffset < _lagEndOffset)
+                            UpdateSameLeaderEpoch(low, high, lagEndOffset);
+                        else
+                        {
+                            Volatile.Write(ref _low, low);
+                            Volatile.Write(ref _high, high);
+                            Volatile.Write(ref _lagEndOffset, lagEndOffset);
+                        }
+
+                        Volatile.Write(ref _version, version + 2);
+                        return;
+                    }
+                }
+                else if (currentLeaderEpoch != UnknownLeaderEpoch
+                         && (leaderEpoch == UnknownLeaderEpoch || leaderEpoch < currentLeaderEpoch))
+                {
+                    Volatile.Write(ref _version, version + 2);
+                    return;
+                }
+
+                if ((ulong)watermarkUpdateSequence < (ulong)_watermarkUpdateState
+                    && leaderEpoch <= currentLeaderEpoch)
+                {
+                    UpdateStale(low, high, lagEndOffset, watermarkUpdateSequence);
+
+                    Volatile.Write(ref _version, version + 2);
+                    return;
+                }
+
+                Volatile.Write(ref _low, low);
+                Volatile.Write(ref _high, high);
+                Volatile.Write(ref _lagEndOffset, lagEndOffset);
+                _leaderEpoch = leaderEpoch;
+                _watermarkUpdateState = watermarkUpdateSequence;
+                Volatile.Write(ref _version, version + 2);
+                return;
+            }
+        }
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private void UpdateSameLeaderEpoch(long low, long high, long lagEndOffset)
+        {
+            if (low > _low)
+                Volatile.Write(ref _low, low);
+            if (high > _high)
+                Volatile.Write(ref _high, high);
+            if (lagEndOffset > _lagEndOffset)
+                Volatile.Write(ref _lagEndOffset, lagEndOffset);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void UpdateLagEndOffset(
+            long lagEndOffset,
+            int leaderEpoch,
+            long watermarkUpdateSequence)
+        {
+            var spinner = new SpinWait();
+            while (true)
+            {
+                var version = Volatile.Read(ref _version);
+                if ((version & 1) != 0
+                    || Interlocked.CompareExchange(ref _version, version + 1, version) != version)
+                {
+                    spinner.SpinOnce();
+                    continue;
+                }
+
+                var currentLeaderEpoch = _leaderEpoch;
+                if (currentLeaderEpoch != UnknownLeaderEpoch
+                    && leaderEpoch == UnknownLeaderEpoch)
+                {
+                    Volatile.Write(ref _version, version + 2);
+                    return;
+                }
+
+                if (leaderEpoch != UnknownLeaderEpoch
+                    && currentLeaderEpoch != UnknownLeaderEpoch)
+                {
+                    if (leaderEpoch < currentLeaderEpoch
+                        || (leaderEpoch == currentLeaderEpoch && lagEndOffset < _lagEndOffset))
+                    {
+                        Volatile.Write(ref _version, version + 2);
+                        return;
+                    }
+
+                    if (leaderEpoch > currentLeaderEpoch)
+                    {
+                        Volatile.Write(ref _low, UnknownWatermarkOffset);
+                        Volatile.Write(ref _high, UnknownWatermarkOffset);
+                    }
+
+                    Volatile.Write(ref _lagEndOffset, lagEndOffset);
+                    _leaderEpoch = leaderEpoch;
+                    _watermarkUpdateState = long.MinValue | Math.Max(
+                        _watermarkUpdateState & long.MaxValue,
+                        watermarkUpdateSequence);
+                    Volatile.Write(ref _version, version + 2);
+                    return;
+                }
+
+                var updateState = _watermarkUpdateState;
+                var lagEndOffsetUpdateSequence = updateState & long.MaxValue;
+                if (watermarkUpdateSequence >= lagEndOffsetUpdateSequence)
+                {
+                    if (updateState >= 0)
+                        _watermarkOffsetsUpdateSequenceLow = (int)lagEndOffsetUpdateSequence;
+
+                    Volatile.Write(ref _lagEndOffset, lagEndOffset);
+                    _leaderEpoch = leaderEpoch;
+                    _watermarkUpdateState = long.MinValue | watermarkUpdateSequence;
+                }
+                Volatile.Write(ref _version, version + 2);
+                return;
+            }
+        }
+
+        public void AdvanceMinimumFetchBufferEpoch(int minimumFetchBufferEpoch)
+        {
+            var spinner = new SpinWait();
+            while (true)
+            {
+                var version = Volatile.Read(ref _version);
+                if ((version & 1) != 0
+                    || Interlocked.CompareExchange(ref _version, version + 1, version) != version)
+                {
+                    spinner.SpinOnce();
+                    continue;
+                }
+
+                if (minimumFetchBufferEpoch > _minimumFetchBufferEpoch)
+                    _minimumFetchBufferEpoch = minimumFetchBufferEpoch;
+                Volatile.Write(ref _version, version + 2);
+                return;
+            }
+        }
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private void UpdateStale(
+            long low,
+            long high,
+            long lagEndOffset,
+            long watermarkUpdateSequence)
+        {
+            var updateState = _watermarkUpdateState;
+            if (updateState >= 0)
+                return;
+
+            var lagEndOffsetUpdateSequence = updateState & long.MaxValue;
+            if (watermarkUpdateSequence >= lagEndOffsetUpdateSequence)
+            {
+                Volatile.Write(ref _low, low);
+                Volatile.Write(ref _high, high);
+                Volatile.Write(ref _lagEndOffset, lagEndOffset);
+                _watermarkUpdateState = watermarkUpdateSequence;
+                return;
+            }
+
+            var watermarkOffsetsUpdateSequence = (lagEndOffsetUpdateSequence & ~uint.MaxValue)
+                | (uint)_watermarkOffsetsUpdateSequenceLow;
+            if (watermarkOffsetsUpdateSequence > lagEndOffsetUpdateSequence)
+                watermarkOffsetsUpdateSequence -= 1L << 32;
+
+            if (_low != UnknownWatermarkOffset
+                && watermarkUpdateSequence < watermarkOffsetsUpdateSequence)
+            {
+                return;
+            }
+
+            Volatile.Write(ref _low, low);
+            Volatile.Write(ref _high, high);
+            _watermarkOffsetsUpdateSequenceLow = (int)watermarkUpdateSequence;
+        }
+
+        public bool TryReplaceWithNewerSnapshot(
+            ConcurrentDictionary<TopicPartition, WatermarkCacheEntry> watermarks,
+            TopicPartition partition,
+            WatermarkCacheEntry replacement)
+        {
+            var spinner = new SpinWait();
+            while (true)
+            {
+                var version = Volatile.Read(ref _version);
+                if ((version & 1) != 0
+                    || Interlocked.CompareExchange(ref _version, version + 1, version) != version)
+                {
+                    spinner.SpinOnce();
+                    continue;
+                }
+
+                var replaced = CanReplaceWith(replacement)
+                    && watermarks.TryUpdate(partition, replacement, this);
+                Volatile.Write(ref _version, version + 2);
+                return replaced;
+            }
+        }
+
+        private bool CanReplaceWith(WatermarkCacheEntry replacement)
+        {
+            if (replacement._topicId != Guid.Empty
+                && replacement._topicId != _topicId)
+            {
+                return (ulong)replacement._watermarkUpdateState
+                       >= (ulong)(_watermarkUpdateState & long.MaxValue);
+            }
+
+            var currentLeaderEpoch = _leaderEpoch;
+            var replacementLeaderEpoch = replacement._leaderEpoch;
+            if (currentLeaderEpoch != UnknownLeaderEpoch)
+            {
+                if (replacementLeaderEpoch == UnknownLeaderEpoch)
+                    return false;
+
+                return replacementLeaderEpoch > currentLeaderEpoch
+                       || (replacementLeaderEpoch == currentLeaderEpoch
+                           && replacement._low >= _low
+                           && replacement._high >= _high
+                           && replacement._lagEndOffset >= _lagEndOffset);
+            }
+
+            return replacement._watermarkUpdateState >= (_watermarkUpdateState & long.MaxValue);
+        }
+
+        public WatermarkOffsets? ReadWatermarks()
+        {
+            var spinner = new SpinWait();
+            while (true)
+            {
+                var version = Volatile.Read(ref _version);
+                if ((version & 1) != 0)
+                {
+                    spinner.SpinOnce();
+                    continue;
+                }
+
+                var low = Volatile.Read(ref _low);
+                var high = Volatile.Read(ref _high);
+                if (version == Volatile.Read(ref _version))
+                {
+                    return low >= 0 && high >= 0
+                        ? new WatermarkOffsets(low, high)
+                        : null;
+                }
+
+                spinner.SpinOnce();
+            }
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public long ReadLagEndOffset() => IntPtr.Size == sizeof(long)
+            ? Volatile.Read(ref _lagEndOffset)
+            : ReadLagEndOffset32Bit();
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private long ReadLagEndOffset32Bit()
+        {
+            var spinner = new SpinWait();
+            while (true)
+            {
+                var version = Volatile.Read(ref _version);
+                if ((version & 1) != 0)
+                {
+                    spinner.SpinOnce();
+                    continue;
+                }
+
+                var lagEndOffset = Volatile.Read(ref _lagEndOffset);
+                if (version == Volatile.Read(ref _version))
+                    return lagEndOffset;
+
+                spinner.SpinOnce();
+            }
         }
     }
 

@@ -342,7 +342,14 @@ public sealed class ConsumerRackAwarenessTests
             .GetMethod("FetchFromBrokerAsync", BindingFlags.NonPublic | BindingFlags.Instance)
             ?? throw new InvalidOperationException("FetchFromBrokerAsync method not found");
 
-        var result = method.Invoke(consumer, [brokerId, partitions, GetFetchBufferEpoch(consumer), CancellationToken.None]);
+        var result = method.Invoke(
+            consumer,
+            [
+                brokerId,
+                partitions,
+                GetFetchBufferEpoch(consumer),
+                CancellationToken.None
+            ]);
         if (result is not ValueTask<List<PendingFetchData>?> valueTask)
             throw new InvalidOperationException("FetchFromBrokerAsync returned unexpected type");
 
@@ -361,7 +368,13 @@ public sealed class ConsumerRackAwarenessTests
 
         var result = method.Invoke(
             consumer,
-            [brokerId, partitions, GetFetchBufferEpoch(consumer), CancellationToken.None, CancellationToken.None]);
+            [
+                brokerId,
+                partitions,
+                GetFetchBufferEpoch(consumer),
+                CancellationToken.None,
+                CancellationToken.None
+            ]);
         if (result is not Task<List<PendingFetchData>?> task)
             throw new InvalidOperationException("FetchFromBrokerWithErrorHandlingAsync returned unexpected type");
 

@@ -4,8 +4,22 @@ namespace Dekaf.Protocol.Messages;
 /// ListOffsets request (API key 2).
 /// Gets the earliest or latest offset for partitions.
 /// </summary>
-public sealed class ListOffsetsRequest : IKafkaRequest<ListOffsetsResponse>
+public sealed class ListOffsetsRequest : IKafkaRequest<ListOffsetsResponse>, IRequestWriteSequenceTarget
 {
+    private readonly Action _requestWriteStarted;
+    private IRequestWriteSequenceSource? _writeSequenceSource;
+    private long _writeSequence;
+
+    public ListOffsetsRequest() => _requestWriteStarted = OnRequestWriteStarted;
+
+    IRequestWriteSequenceSource? IRequestWriteSequenceTarget.WriteSequenceSource
+    {
+        set => _writeSequenceSource = value;
+    }
+
+    Action IRequestWriteSequenceTarget.RequestWriteStarted => _requestWriteStarted;
+    long IRequestWriteSequenceTarget.WriteSequence => _writeSequence;
+
     public static ApiKey ApiKey => ApiKey.ListOffsets;
     public static short LowestSupportedVersion => 6;
     public static short HighestSupportedVersion => 11;
@@ -29,6 +43,10 @@ public sealed class ListOffsetsRequest : IKafkaRequest<ListOffsetsResponse>
     /// Maximum time the broker may wait for remote-storage reads (v10+).
     /// </summary>
     public int TimeoutMs { get; init; }
+
+    private void OnRequestWriteStarted() =>
+        _writeSequence = _writeSequenceSource?.NextRequestWriteSequence()
+            ?? throw new InvalidOperationException("Request write sequence source is not configured.");
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {

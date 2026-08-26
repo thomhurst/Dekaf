@@ -44,6 +44,42 @@ public sealed class TopicRecreationIntegrationTests(KafkaTestContainer kafka) : 
 
     [Test]
     [Timeout(120_000)]
+    public async Task UnassignedWatermarkQuery_TopicRecreated_ReplacesRetainedOffsets(
+        CancellationToken cancellationToken)
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
+        var partition = new TopicPartition(topic, 0);
+        await using var admin = KafkaContainer.CreateAdminClient();
+        await using var initialProducer = await CreateProducerAsync(cancellationToken).ConfigureAwait(false);
+        await ProduceAsync(initialProducer, topic, partition: 0, "old-0", cancellationToken)
+            .ConfigureAwait(false);
+        await ProduceAsync(initialProducer, topic, partition: 0, "old-1", cancellationToken)
+            .ConfigureAwait(false);
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithMetadataMaxAge(TimeSpan.FromMilliseconds(1))
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        await Assert.That(await consumer.QueryWatermarkOffsetsAsync(partition, cancellationToken))
+            .IsEqualTo(new WatermarkOffsets(0, 2));
+
+        var oldTopicId = await GetTopicIdAsync(admin, topic, cancellationToken).ConfigureAwait(false);
+        _ = await RecreateTopicAsync(admin, topic, oldTopicId, partitions: 1, cancellationToken)
+            .ConfigureAwait(false);
+        await using var newProducer = await CreateProducerAsync(cancellationToken).ConfigureAwait(false);
+        await ProduceAsync(newProducer, topic, partition: 0, "new-0", cancellationToken)
+            .ConfigureAwait(false);
+
+        await Assert.That(await consumer.QueryWatermarkOffsetsAsync(partition, cancellationToken))
+            .IsEqualTo(new WatermarkOffsets(0, 1));
+        await Assert.That(consumer.GetWatermarkOffsets(partition))
+            .IsEqualTo(new WatermarkOffsets(0, 1));
+    }
+
+    [Test]
+    [Timeout(120_000)]
     public async Task Consumer_TopicRecreated_AppliesEarliestOffsetReset(
         CancellationToken cancellationToken)
     {
