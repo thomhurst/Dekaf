@@ -366,7 +366,8 @@ public sealed class AvroSerializerTests
             schemaRegistry,
             new AvroSerializerConfig
             {
-                SchemaIdStrategy = SchemaIdSerializerStrategy.Header
+                SchemaIdStrategy = SchemaIdSerializerStrategy.Header,
+                SubjectNameStrategy = SubjectNameStrategy.RecordName
             });
         var schema = (Avro.RecordSchema)AvroSchema.Parse(SimpleRecordSchema);
         var record = new GenericRecord(schema);
@@ -392,6 +393,7 @@ public sealed class AvroSerializerTests
         await Assert.That(headers[0].Value.ToArray()).IsEquivalentTo(expectedGuidFrame);
         for (var index = 0; index < 32; index++)
             headers.Add(new Header($"application-{index}", ReadOnlyMemory<byte>.Empty));
+        var lookupCountBeforeDeserialize = schemaRegistry.LookupSchemaCallCount;
 
         await using var deserializer = new AvroSchemaRegistryDeserializer<GenericRecord>(
             schemaRegistry,
@@ -403,6 +405,7 @@ public sealed class AvroSerializerTests
         await Assert.That(result["id"]).IsEqualTo(42);
         await Assert.That(result["name"].ToString()).IsEqualTo("test");
         await Assert.That(schemaRegistry.LastGetSchemaByGuidCancellationToken.CanBeCanceled).IsTrue();
+        await Assert.That(schemaRegistry.LookupSchemaCallCount).IsEqualTo(lookupCountBeforeDeserialize);
     }
 
     [Test]

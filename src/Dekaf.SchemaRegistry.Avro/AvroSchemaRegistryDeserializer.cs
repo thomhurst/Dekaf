@@ -367,7 +367,7 @@ public sealed class AvroSchemaRegistryDeserializer<
             if (guidSchema is not null)
             {
                 schemaId = guidSchema.SchemaId;
-                subject = guidSchema.Subject;
+                subject = guidSchema.Subject!;
                 schema = guidSchema.Schema;
             }
             else if (preparedSubject is not null)
@@ -508,6 +508,21 @@ public sealed class AvroSchemaRegistryDeserializer<
                 $"Schema with GUID {key.SchemaGuid:D} is not an Avro schema. Type: {unscopedSchema.SchemaType}");
         }
 
+        if (_ruleExecutor is null && _migrationRunner is null)
+        {
+            var unscopedNames = unscopedSchema.References is { Count: > 0 }
+                ? await AvroSchemaReferenceResolver.ResolveAsync(
+                        _schemaRegistry,
+                        unscopedSchema,
+                        cancellationToken)
+                    .ConfigureAwait(false)
+                : null;
+            var unscopedWriterSchema = unscopedNames is null
+                ? AvroSchema.Parse(unscopedSchema.SchemaString)
+                : AvroSchema.Parse(unscopedSchema.SchemaString, unscopedNames);
+            return new GuidResolvedSchema(-1, null, unscopedSchema, unscopedWriterSchema);
+        }
+
         var subject = _subjectNames is null
             ? SubjectNameResolver.GetTopicSubjectName(key.Topic, key.IsKey)
             : await _subjectNames.ResolveSubjectNameAsync(
@@ -605,7 +620,7 @@ public sealed class AvroSchemaRegistryDeserializer<
 
     private sealed record GuidResolvedSchema(
         int SchemaId,
-        string Subject,
+        string? Subject,
         Schema Schema,
         AvroSchema WriterSchema);
 

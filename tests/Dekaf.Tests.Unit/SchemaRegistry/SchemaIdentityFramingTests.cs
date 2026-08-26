@@ -356,6 +356,30 @@ public sealed class SchemaIdentityFramingTests
     }
 
     [Test]
+    public async Task JsonDeserializer_GuidWithoutRulesDoesNotRequireProducerSubject()
+    {
+        const string schemaText = "{\"type\":\"string\",\"title\":\"ProducerRecord\"}";
+        using var registry = new MockSchemaRegistryClient();
+        var schemaId = await registry.RegisterSchemaAsync(
+            "ProducerRecord",
+            new Schema { SchemaType = SchemaType.Json, SchemaString = schemaText });
+        await using var deserializer = new JsonSchemaRegistryDeserializer<string>(
+            registry,
+            jsonOptions: null,
+            new SchemaRegistryDeserializerConfig
+            {
+                SchemaIdStrategy = SchemaIdDeserializerStrategy.Header
+            });
+
+        var result = deserializer.Deserialize(
+            Encoding.UTF8.GetBytes("\"value\""),
+            CreateGuidHeaderContext("consumer-topic", schemaId));
+
+        await Assert.That(result).IsEqualTo("value");
+        await Assert.That(registry.LookupSchemaCallCount).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task BoundedIdentityCache_EvictsOldestExactEntry()
     {
         var cache = new ConcurrentDictionary<int, object>();

@@ -1479,8 +1479,7 @@ public sealed class AvroPocoSchemaRegistryTests
             registry,
             new AvroDeserializerConfig
             {
-                SchemaIdStrategy = SchemaIdDeserializerStrategy.Header,
-                SubjectNameStrategy = SubjectNameStrategy.RecordName
+                SchemaIdStrategy = SchemaIdDeserializerStrategy.Header
             });
         var headers = new Headers();
         var context = new SerializationContext
@@ -1496,6 +1495,7 @@ public sealed class AvroPocoSchemaRegistryTests
         };
 
         serializer.Serialize(expected, ref destination, context);
+        var lookupCountBeforeDeserialize = registry.LookupSchemaCallCount;
         for (var index = 0; index < 32; index++)
             headers.Add(new Header($"application-{index}", ReadOnlyMemory<byte>.Empty));
         await Assert.That(() => deserializer.Deserialize(destination.WrittenMemory, context))
@@ -1510,6 +1510,7 @@ public sealed class AvroPocoSchemaRegistryTests
         await Assert.That(headers[0].Value.Length).IsEqualTo(17);
         await Assert.That(actual.Value).IsEqualTo(expected.Value);
         await Assert.That(registry.LastGetSchemaByGuidCancellationToken.CanBeCanceled).IsTrue();
+        await Assert.That(registry.LookupSchemaCallCount).IsEqualTo(lookupCountBeforeDeserialize);
     }
 
     [Test]
@@ -1547,7 +1548,7 @@ public sealed class AvroPocoSchemaRegistryTests
     [Arguments(false)]
     [Arguments(true)]
     [Test]
-    public async Task GeneratedCodec_GuidHeader_PreparesConfiguredAsyncSubject(bool useWarmup)
+    public async Task GeneratedCodec_GuidHeader_SkipsConfiguredAsyncSubjectWithoutRules(bool useWarmup)
     {
         const string topic = "poco-guid-async-subject";
         var subject = $"{topic}-value";
@@ -1593,7 +1594,7 @@ public sealed class AvroPocoSchemaRegistryTests
         var actual = deserializer.Deserialize(destination.WrittenMemory, context);
 
         await Assert.That(actual.Value).IsEqualTo(expected.Value);
-        await Assert.That(strategy.CallCount).IsEqualTo(1);
+        await Assert.That(strategy.CallCount).IsEqualTo(0);
     }
 
     [Test]

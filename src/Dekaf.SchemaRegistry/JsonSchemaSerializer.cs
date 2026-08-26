@@ -1851,7 +1851,7 @@ public sealed class JsonSchemaRegistryDeserializer<T> :
             if (guidSchema is not null)
             {
                 schemaId = guidSchema.SchemaId;
-                subject = guidSchema.Subject;
+                subject = guidSchema.Subject!;
                 schema = guidSchema.Schema;
             }
             else if (preparedSubject is not null)
@@ -2050,6 +2050,9 @@ public sealed class JsonSchemaRegistryDeserializer<T> :
             throw new InvalidOperationException(
                 $"Schema with GUID {key.SchemaGuid:D} is not a JSON schema. Type: {unscopedSchema.SchemaType}");
         }
+        if (_ruleExecutor is null && _migrationRunner is null)
+            return new GuidResolvedSchema(-1, null, unscopedSchema);
+
         var subject = _subjectNames is null
             ? SubjectNameResolver.GetTopicSubjectName(key.Topic, key.IsKey)
             : await _subjectNames.ResolveSubjectNameAsync(
@@ -2144,7 +2147,7 @@ public sealed class JsonSchemaRegistryDeserializer<T> :
         bool IsKey,
         int SubjectGeneration);
 
-    private sealed record GuidResolvedSchema(int SchemaId, string Subject, Schema Schema);
+    private sealed record GuidResolvedSchema(int SchemaId, string? Subject, Schema Schema);
 
     private string GetSubjectName(int schemaId, Schema schema, SerializationContext context)
     {

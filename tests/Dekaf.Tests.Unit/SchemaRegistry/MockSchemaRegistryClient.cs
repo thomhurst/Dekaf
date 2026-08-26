@@ -27,6 +27,7 @@ internal sealed class MockSchemaRegistryClient : IFormattedSchemaRegistryClient,
     public CancellationToken LastGetSchemaCancellationToken { get; private set; }
     public CancellationToken LastGetSchemaByGuidCancellationToken { get; private set; }
     public int GetOrRegisterSchemaCallCount { get; private set; }
+    public int LookupSchemaCallCount { get; private set; }
     public CancellationToken LastGetOrRegisterSchemaCancellationToken { get; private set; }
     public int TryGetCachedSchemaCallCount { get; private set; }
     internal Action? BeforeTryGetCachedSchema { get; set; }
@@ -321,6 +322,7 @@ internal sealed class MockSchemaRegistryClient : IFormattedSchemaRegistryClient,
         CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
+        LookupSchemaCallCount++;
 
         if (!_schemasBySubject.TryGetValue(subject, out var list))
             throw new SchemaRegistryException(40401, $"Subject '{subject}' not found");

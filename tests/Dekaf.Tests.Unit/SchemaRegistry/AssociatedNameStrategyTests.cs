@@ -559,7 +559,8 @@ public sealed class AssociatedNameStrategyTests
             {
                 SchemaIdStrategy = SchemaIdDeserializerStrategy.Header,
                 AsyncSubjectNameStrategy = strategy
-            });
+            },
+            ruleExecutor: configureAsyncSubject ? new CapturingRuleExecutor() : null);
         var identityHeader = new Header(
             SchemaIdentityHeaderNames.Value,
             SchemaIdentityFraming.CreateSchemaGuidFrame(

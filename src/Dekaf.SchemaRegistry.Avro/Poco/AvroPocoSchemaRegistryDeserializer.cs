@@ -42,6 +42,7 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
     private PreparedRuleState? _lastPreparedRuleState;
     private int _cachedPlanCount;
     private int _cachedPreparedRuleStateCount;
+    private int _nextGuidPlanId;
 
     internal int CachedPlanCount => Volatile.Read(ref _cachedPlanCount);
 
@@ -1022,6 +1023,12 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
         CancellationToken cancellationToken)
     {
         var resolved = await GetGuidSchemaAsync(key, cancellationToken).ConfigureAwait(false);
+        if (resolved.DirectPlan is { } directPlan)
+        {
+            CacheSuccessfulPlan(resolved.SchemaId, directPlan);
+            return;
+        }
+
         await PrepareSchemaIdAsync(resolved.SchemaId, context, cancellationToken).ConfigureAwait(false);
     }
 
@@ -1092,6 +1099,21 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
             throw new InvalidOperationException(
                 $"Schema GUID {key.SchemaGuid:D} is {unscopedSchema.SchemaType}, not Avro.");
         }
+        if (_ruleExecutor is null && _migrationRunner is null)
+        {
+            var names = unscopedSchema.References is { Count: > 0 }
+                ? await AvroSchemaReferenceResolver.ResolveAsync(
+                        _schemaRegistry,
+                        unscopedSchema,
+                        cancellationToken)
+                    .ConfigureAwait(false)
+                : null;
+            var schemaId = Interlocked.Decrement(ref _nextGuidPlanId);
+            var plan = BuildPlan(schemaId, unscopedSchema, names);
+            CacheSuccessfulPlan(schemaId, plan);
+            return new GuidResolvedSchema(schemaId, plan);
+        }
+
         var subject = _subjectNames is null
             ? SubjectNameResolver.GetTopicSubjectName(key.Topic, key.IsKey)
             : await _subjectNames.ResolveSubjectNameAsync(
@@ -1113,7 +1135,7 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
                 $"Schema Registry returned a conflicting GUID for subject '{subject}'.");
         }
 
-        var resolved = new GuidResolvedSchema(registered.Id);
+        var resolved = new GuidResolvedSchema(registered.Id, null);
         return resolved;
     }
 
@@ -1173,7 +1195,7 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
         bool IsKey,
         int SubjectGeneration);
 
-    private sealed record GuidResolvedSchema(int SchemaId);
+    private sealed record GuidResolvedSchema(int SchemaId, AvroPocoReaderPlan? DirectPlan);
 
     /// <inheritdoc />
     public ValueTask DisposeAsync()
