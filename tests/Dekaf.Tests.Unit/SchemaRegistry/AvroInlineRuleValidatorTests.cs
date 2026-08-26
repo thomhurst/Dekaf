@@ -765,6 +765,36 @@ public class AvroInlineRuleValidatorTests
     }
 
     [Test]
+    public async Task Validate_EqualUnionAndConcreteArraysUseSelectedBranch()
+    {
+        const string schemaText = """
+            {
+              "type": "record",
+              "name": "UnionConcreteAggregateEqualityRecord",
+              "confluent:rules": [{ "name": "equal", "expr": "this.left == this.right" }],
+              "fields": [
+                { "name": "left", "type": { "type": "array", "items": ["null", "int"] } },
+                { "name": "right", "type": { "type": "array", "items": "int" } }
+              ]
+            }
+            """;
+        var validator = new AvroInlineRuleValidator(AvroSchema.Parse(schemaText));
+        ReadOnlyMemory<byte> payload = new byte[]
+        {
+            2, 2, 2, 0,
+            2, 2, 0
+        };
+
+        validator.Validate(payload, 27, failFast: false);
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var index = 0; index < 100; index++)
+            validator.Validate(payload, 27, failFast: false);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        await Assert.That(allocated).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task Validate_BytesLiteralDecodesHexEscapes()
     {
         const string schemaText = """

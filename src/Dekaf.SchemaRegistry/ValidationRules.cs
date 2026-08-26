@@ -200,6 +200,7 @@ internal sealed class CompiledValidationRule
         ValidationRule rule,
         ValidationCelNode? expression,
         bool usesRootValue = false,
+        bool usesRootSize = false,
         bool usesSize = false,
         ValidationCelEqualityPair[]? equalityPairs = null,
         bool usesCachedEquality = false,
@@ -209,6 +210,7 @@ internal sealed class CompiledValidationRule
         Rule = rule;
         _expression = expression;
         UsesRootValue = usesRootValue;
+        UsesRootSize = usesRootSize;
         UsesSize = usesSize;
         EqualityPairs = equalityPairs ?? [];
         UsesCachedEquality = usesCachedEquality || EqualityPairs.Length != 0;
@@ -218,6 +220,7 @@ internal sealed class CompiledValidationRule
 
     internal ValidationRule Rule { get; }
     internal bool UsesRootValue { get; }
+    internal bool UsesRootSize { get; }
     internal bool UsesSize { get; }
     internal ValidationCelEqualityPair[] EqualityPairs { get; }
     internal bool UsesCachedEquality { get; }
@@ -229,7 +232,8 @@ internal sealed class CompiledValidationRule
         List<byte[][]> memberPaths,
         HashSet<int> usedMemberIndexes,
         int equalityIndexOffset = 0,
-        Dictionary<ValidationCelEqualityOperands, int>? equalityIndexes = null)
+        Dictionary<ValidationCelEqualityOperands, int>? equalityIndexes = null,
+        HashSet<int>? sizedMemberIndexes = null)
     {
         ArgumentNullException.ThrowIfNull(rule);
         if (string.IsNullOrWhiteSpace(rule.Expr))
@@ -248,12 +252,14 @@ internal sealed class CompiledValidationRule
                 memberPaths,
                 usedMemberIndexes,
                 equalityIndexOffset,
-                equalityIndexes);
+                equalityIndexes,
+                sizedMemberIndexes);
             var expression = parser.Parse();
             return new CompiledValidationRule(
                 rule,
                 expression,
                 parser.UsesRootValue,
+                parser.UsesRootSize,
                 parser.UsesSize,
                 parser.EqualityPairs,
                 parser.UsesCachedEquality,
@@ -2992,6 +2998,8 @@ internal sealed class ValidationCelParser
     private readonly Dictionary<string, int> _memberIndexes;
     private readonly List<byte[][]> _memberPaths;
     private readonly HashSet<int> _usedMemberIndexes;
+    private readonly HashSet<int>? _sizedMemberIndexes;
+    private int _sizeArgumentDepth;
     private int _position;
     private ValidationCelToken _current;
 
@@ -3001,7 +3009,8 @@ internal sealed class ValidationCelParser
         List<byte[][]> memberPaths,
         HashSet<int> usedMemberIndexes,
         int equalityIndexOffset,
-        Dictionary<ValidationCelEqualityOperands, int>? equalityIndexes)
+        Dictionary<ValidationCelEqualityOperands, int>? equalityIndexes,
+        HashSet<int>? sizedMemberIndexes)
     {
         _expression = expression;
         _memberIndexes = memberIndexes;
@@ -3009,6 +3018,7 @@ internal sealed class ValidationCelParser
         _usedMemberIndexes = usedMemberIndexes;
         _equalityIndexOffset = equalityIndexOffset;
         _equalityIndexes = equalityIndexes;
+        _sizedMemberIndexes = sizedMemberIndexes;
         _current = ReadNextToken();
     }
 
@@ -3026,6 +3036,7 @@ internal sealed class ValidationCelParser
     private readonly int _equalityIndexOffset;
     private readonly Dictionary<ValidationCelEqualityOperands, int>? _equalityIndexes;
     internal bool UsesRootValue { get; private set; }
+    internal bool UsesRootSize { get; private set; }
     internal bool UsesCachedEquality { get; private set; }
     internal bool UsesRootAggregateEquality { get; private set; }
 
@@ -3170,8 +3181,20 @@ internal sealed class ValidationCelParser
         }
         else if (TryTake(ValidationCelTokenKind.LeftParen))
         {
-            var arguments = ParseArguments();
-            UsesSize |= identifier == "size";
+            var isSize = identifier == "size";
+            if (isSize)
+                _sizeArgumentDepth++;
+            ValidationCelNode[] arguments;
+            try
+            {
+                arguments = ParseArguments();
+            }
+            finally
+            {
+                if (isSize)
+                    _sizeArgumentDepth--;
+            }
+            UsesSize |= isSize;
             return identifier == "timestamp"
                 ? ParseTimestamp(arguments)
                 : new ValidationCelFunctionNode(identifier, arguments);
@@ -3248,6 +3271,7 @@ internal sealed class ValidationCelParser
         if (identifier.Length == 4)
         {
             UsesRootValue = true;
+            UsesRootSize |= _sizeArgumentDepth != 0;
             return new ValidationCelThisNode(-1);
         }
 
@@ -3267,6 +3291,8 @@ internal sealed class ValidationCelParser
             _memberPaths.Add(path);
         }
         _usedMemberIndexes.Add(memberIndex);
+        if (_sizeArgumentDepth != 0)
+            _sizedMemberIndexes?.Add(memberIndex);
         return new ValidationCelThisNode(memberIndex);
     }
 

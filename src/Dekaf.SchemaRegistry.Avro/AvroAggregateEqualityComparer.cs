@@ -79,6 +79,20 @@ internal sealed class AvroAggregateEqualityComparer(
     {
         leftSchema = AvroValueRulePlan.Unwrap(leftSchema);
         rightSchema = AvroValueRulePlan.Unwrap(rightSchema);
+        if (leftSchema is global::Avro.UnionSchema leftUnion)
+        {
+            var branch = left.ReadLong();
+            if ((ulong)branch >= (ulong)leftUnion.Count)
+                return false;
+            leftSchema = AvroValueRulePlan.Unwrap(leftUnion[(int)branch]);
+        }
+        if (rightSchema is global::Avro.UnionSchema rightUnion)
+        {
+            var branch = right.ReadLong();
+            if ((ulong)branch >= (ulong)rightUnion.Count)
+                return false;
+            rightSchema = AvroValueRulePlan.Unwrap(rightUnion[(int)branch]);
+        }
         if (IsNumber(leftSchema.Tag) && IsNumber(rightSchema.Tag))
         {
             return ValidationCelBinaryNode.NumbersAreEqual(
@@ -131,21 +145,6 @@ internal sealed class AvroAggregateEqualityComparer(
                 return MapsAreEqual(
                     ((global::Avro.MapSchema)leftSchema).ValueSchema,
                     ((global::Avro.MapSchema)rightSchema).ValueSchema,
-                    ref left,
-                    ref right);
-            case AvroSchema.Type.Union:
-                var leftUnion = (global::Avro.UnionSchema)leftSchema;
-                var rightUnion = (global::Avro.UnionSchema)rightSchema;
-                var leftBranch = left.ReadLong();
-                var rightBranch = right.ReadLong();
-                if ((ulong)leftBranch >= (ulong)leftUnion.Count ||
-                    (ulong)rightBranch >= (ulong)rightUnion.Count)
-                {
-                    return false;
-                }
-                return AreEqual(
-                    leftUnion[(int)leftBranch],
-                    rightUnion[(int)rightBranch],
                     ref left,
                     ref right);
             default:
@@ -612,6 +611,10 @@ internal static class AvroValueSchemaComparer
         right = AvroValueRulePlan.Unwrap(right);
         if (ReferenceEquals(left, right))
             return true;
+        if (left is global::Avro.UnionSchema leftUnion)
+            return AnyBranchIsCompatible(leftUnion, right, pairs);
+        if (right is global::Avro.UnionSchema rightUnion)
+            return AnyBranchIsCompatible(rightUnion, left, pairs);
         if (IsNumber(left.Tag) && IsNumber(right.Tag) ||
             IsBytes(left.Tag) && IsBytes(right.Tag) ||
             IsString(left.Tag) && IsString(right.Tag))
@@ -658,6 +661,19 @@ internal static class AvroValueSchemaComparer
         {
             pairs.Remove(pair);
         }
+    }
+
+    private static bool AnyBranchIsCompatible(
+        global::Avro.UnionSchema union,
+        AvroSchema other,
+        HashSet<AvroSchemaPair> pairs)
+    {
+        for (var index = 0; index < union.Count; index++)
+        {
+            if (AreCelCompatible(union[index], other, pairs))
+                return true;
+        }
+        return false;
     }
 
     private static bool IsNumber(AvroSchema.Type type) =>

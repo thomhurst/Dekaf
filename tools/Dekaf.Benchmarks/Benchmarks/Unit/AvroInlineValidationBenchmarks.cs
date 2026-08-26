@@ -22,6 +22,8 @@ public class AvroInlineValidationBenchmarks
     private AvroInlineRuleValidator _unionArrayEqualityValidator = null!;
     private ReadOnlyMemory<byte> _equalUnionArrayControlPayload;
     private ReadOnlyMemory<byte> _equalUnionArrayReorderedPayload;
+    private AvroInlineRuleValidator _unionConcreteArrayEqualityValidator = null!;
+    private ReadOnlyMemory<byte> _equalUnionConcreteArrayPayload;
     private AvroInlineRuleValidator _mapEqualityValidator = null!;
     private ReadOnlyMemory<byte> _reorderedMapPayload;
     private AvroInlineRuleValidator _recordSizeValidator = null!;
@@ -40,6 +42,8 @@ public class AvroInlineValidationBenchmarks
     private ReadOnlyMemory<byte> _enumPayload;
     private AvroInlineRuleValidator _rootArrayNestedValidator = null!;
     private ReadOnlyMemory<byte> _rootArrayNestedPayload;
+    private AvroInlineRuleValidator _rootArrayHasValidator = null!;
+    private AvroInlineRuleValidator _memberArrayHasValidator = null!;
     private AvroInlineRuleValidator _mapMemberNestedValidator = null!;
     private ReadOnlyMemory<byte> _mapMemberNestedPayload;
     private AvroInlineRuleValidator _unionMemberNestedValidator = null!;
@@ -137,6 +141,25 @@ public class AvroInlineValidationBenchmarks
         _unionArrayEqualityValidator.Validate(
             _equalUnionArrayControlPayload,
             17,
+            failFast: false);
+
+        const string unionConcreteArrayEqualitySchema = """
+            {
+              "type": "record",
+              "name": "UnionConcreteArrayEqualityBenchmarkRecord",
+              "confluent:rules": [{ "name": "equal", "expr": "this.left == this.right" }],
+              "fields": [
+                { "name": "left", "type": { "type": "array", "items": ["null", "int"] } },
+                { "name": "right", "type": { "type": "array", "items": "int" } }
+              ]
+            }
+            """;
+        _unionConcreteArrayEqualityValidator = new AvroInlineRuleValidator(
+            AvroSchema.Parse(unionConcreteArrayEqualitySchema));
+        _equalUnionConcreteArrayPayload = new byte[] { 2, 2, 2, 0, 2, 2, 0 };
+        _unionConcreteArrayEqualityValidator.Validate(
+            _equalUnionConcreteArrayPayload,
+            20,
             failFast: false);
 
         const string mapEqualitySchema = """
@@ -341,6 +364,29 @@ public class AvroInlineValidationBenchmarks
         _rootArrayNestedValidator = new AvroInlineRuleValidator(rootArrayNestedSchema);
         _rootArrayNestedValidator.Validate(_rootArrayNestedPayload, 12, failFast: false);
 
+        const string rootArrayHasSchemaText = """
+            {
+              "type": "array",
+              "confluent:rules": [{ "name": "present", "expr": "has(this)" }],
+              "items": "int"
+            }
+            """;
+        _rootArrayHasValidator = new AvroInlineRuleValidator(
+            AvroSchema.Parse(rootArrayHasSchemaText));
+        _rootArrayHasValidator.Validate(_rootArrayNestedPayload, 18, failFast: false);
+
+        const string memberArrayHasSchemaText = """
+            {
+              "type": "record",
+              "name": "MemberArrayHasBenchmarkRecord",
+              "confluent:rules": [{ "name": "present", "expr": "has(this.items)" }],
+              "fields": [{ "name": "items", "type": { "type": "array", "items": "int" } }]
+            }
+            """;
+        _memberArrayHasValidator = new AvroInlineRuleValidator(
+            AvroSchema.Parse(memberArrayHasSchemaText));
+        _memberArrayHasValidator.Validate(_rootArrayNestedPayload, 19, failFast: false);
+
         const string mapMemberNestedSchemaText = """
             {
               "type": "map",
@@ -522,6 +568,13 @@ public class AvroInlineValidationBenchmarks
             failFast: false);
 
     [Benchmark]
+    public void ValidateEqualUnionAndConcreteArrays() =>
+        _unionConcreteArrayEqualityValidator.Validate(
+            _equalUnionConcreteArrayPayload,
+            20,
+            failFast: false);
+
+    [Benchmark]
     public void ValidateEqualMapsWithDifferentOrder() =>
         _mapEqualityValidator.Validate(_reorderedMapPayload, 3, failFast: false);
 
@@ -556,6 +609,14 @@ public class AvroInlineValidationBenchmarks
     [Benchmark]
     public void ValidateRootArrayWithNestedRules() =>
         _rootArrayNestedValidator.Validate(_rootArrayNestedPayload, 12, failFast: false);
+
+    [Benchmark]
+    public void ValidateRootArrayWithoutSizeDemand() =>
+        _rootArrayHasValidator.Validate(_rootArrayNestedPayload, 18, failFast: false);
+
+    [Benchmark]
+    public void ValidateMemberArrayWithoutSizeDemand() =>
+        _memberArrayHasValidator.Validate(_rootArrayNestedPayload, 19, failFast: false);
 
     [Benchmark]
     public void ValidateMapMemberWithNestedRules() =>
