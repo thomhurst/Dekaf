@@ -48,6 +48,8 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
     private readonly IClientTelemetryPayloadProvider _payloadProvider;
     private readonly ILogger<ClientTelemetryManager> _logger;
     private readonly SemaphoreSlim _startLock = new(1, 1);
+    private readonly TaskCompletionSource<bool> _stopCompletion =
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     private CancellationTokenSource? _loopCts;
     private Task? _loopTask;
@@ -139,12 +141,15 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
 
         Volatile.Write(ref _stopRequested, 1);
         await _startLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        var completesStop = false;
         try
         {
             if (Interlocked.Exchange(ref _stopped, 1) != 0)
             {
                 return;
             }
+
+            completesStop = true;
 
             using var timeoutCts = new CancellationTokenSource(timeout);
             using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(timeoutCts.Token, cancellationToken);
@@ -194,6 +199,8 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
         finally
         {
             _startLock.Release();
+            if (completesStop)
+                _stopCompletion.TrySetResult(true);
         }
     }
 
@@ -205,7 +212,11 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
         }
 
         await StopAsync(DefaultStopTimeout).ConfigureAwait(false);
-        _startLock.Dispose();
+        await _stopCompletion.Task.ConfigureAwait(false);
+
+        // A caller can pass the lifecycle pre-check immediately before disposal marks the manager
+        // disposed, then queue on this semaphore. Keep it alive until the manager becomes
+        // unreachable so those callers can drain without ObjectDisposedException.
     }
 
     private async Task RunLoopAsync(CancellationToken cancellationToken)

@@ -173,6 +173,34 @@ public sealed class ClientTelemetryManagerTests
     }
 
     [Test]
+    public async Task DisposeAsync_DuringStop_WaitsForStopCompletion()
+    {
+        await using var context = new TelemetryTestContext();
+        context.Connection.Enqueue(Subscription(
+            Guid.Parse("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"),
+            subscriptionId: 19,
+            pushIntervalMs: 60000));
+        context.Connection.BlockNextRequest<PushTelemetryRequest>();
+        await context.Manager.StartAsync();
+
+        var stopTask = context.Manager.StopAsync(TimeSpan.FromSeconds(2)).AsTask();
+        await context.Connection.WaitForBlockedRequestAsync(TimeSpan.FromSeconds(2));
+
+        var disposeTask = context.Manager.DisposeAsync().AsTask();
+        try
+        {
+            await Assert.That(disposeTask.IsCompleted).IsFalse();
+        }
+        finally
+        {
+            context.Connection.ReleaseBlockedRequest();
+        }
+
+        await stopTask.WaitAsync(TimeSpan.FromSeconds(2));
+        await disposeTask.WaitAsync(TimeSpan.FromSeconds(2));
+    }
+
+    [Test]
     public async Task StopAsync_TerminatingPushIncludesApplicationMetrics()
     {
         var collector = new ClientTelemetryMetricCollector(ClientTelemetryClientRole.Producer);
