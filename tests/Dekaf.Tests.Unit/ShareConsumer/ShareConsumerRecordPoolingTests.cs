@@ -87,6 +87,71 @@ public sealed class ShareConsumerRecordPoolingTests
 
     [Test]
     [NotInParallel]
+    public async Task ParsePartitionRecords_RecordHeaderDecoratorsShareOneMaterialization()
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        using var source = new RecordBatch
+        {
+            BaseOffset = 17,
+            Records =
+            [
+                new Record
+                {
+                    Key = "key"u8.ToArray(),
+                    Value = "value"u8.ToArray(),
+                    Headers = [new Header("trace-id", "abc"u8.ToArray())],
+                    HeaderCount = 1
+                }
+            ]
+        };
+        source.Write(buffer);
+
+        var options = new ShareConsumerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            GroupId = "share-header-materialization-test"
+        };
+        var pool = Substitute.For<IConnectionPool>();
+        await using var metadataManager = new MetadataManager(pool, options.BootstrapServers);
+        var keyDeserializer = new HeaderMutatingStringDeserializer(addMarker: true);
+        var valueDeserializer = new HeaderMutatingStringDeserializer(addMarker: false);
+        await using var consumer = new KafkaShareConsumer<string, string>(
+            options,
+            keyDeserializer,
+            valueDeserializer,
+            pool,
+            metadataManager);
+        var method = typeof(KafkaShareConsumer<string, string>).GetMethod(
+            "ParsePartitionRecords",
+            BindingFlags.Instance | BindingFlags.NonPublic)!;
+
+        _ = method.Invoke(consumer,
+        [
+            new TopicInfo { Name = "topic", Partitions = [] },
+            new ShareFetchResponsePartition
+            {
+                PartitionIndex = 0,
+                CurrentLeader = new ShareFetchLeaderIdAndEpoch(),
+                RecordBytes = buffer.WrittenMemory,
+                AcquiredRecords =
+                [
+                    new ShareFetchAcquiredRecords
+                    {
+                        FirstOffset = 17,
+                        LastOffset = 17,
+                        DeliveryCount = 1
+                    }
+                ]
+            },
+            1
+        ]);
+
+        await Assert.That(keyDeserializer.HeaderCount).IsEqualTo(1);
+        await Assert.That(valueDeserializer.HeaderCount).IsEqualTo(2);
+    }
+
+    [Test]
+    [NotInParallel]
     public async Task ParsePartitionRecords_ColdHeaderPreparer_RetainsResultsAndCopiesHeader()
     {
         var buffer = new ArrayBufferWriter<byte>();
@@ -264,5 +329,22 @@ public sealed class ShareConsumerRecordPoolingTests
 
         void IRecordHeaderRoutingProvider.CollectHeaderNames(List<string> names) =>
             names.Add("schema-guid");
+    }
+
+    private sealed class HeaderMutatingStringDeserializer(bool addMarker) :
+        IDeserializer<string>,
+        IRecordHeaderDeserializer
+    {
+        public bool ConsumesRecordHeaders => true;
+
+        internal int HeaderCount { get; private set; }
+
+        public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
+        {
+            HeaderCount = context.Headers?.Count ?? 0;
+            if (addMarker)
+                context.Headers!.Add("key-visited", Array.Empty<byte>());
+            return System.Text.Encoding.UTF8.GetString(data.Span);
+        }
     }
 }

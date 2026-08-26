@@ -745,12 +745,18 @@ public readonly struct ConsumeResult<TKey, TValue>
         IDeserializer<TValue>? valueDeserializer)
     {
         ref var serializationContext = ref t_serializationContext;
+        var materializedHeaders = headerRouting.KeyRequiresMaterializedHeaders
+                                  || headerRouting.ValueRequiresMaterializedHeaders
+            ? RecordHeaderMaterializer.GetCallerOwnedHeaders(in headerRouting)
+            : null;
         TKey? key = default;
         if (!isKeyNull && keyDeserializer is not null)
         {
             serializationContext.Topic = topic;
             serializationContext.Component = SerializationComponent.Key;
-            serializationContext.Headers = null;
+            serializationContext.Headers = headerRouting.KeyRequiresMaterializedHeaders
+                ? materializedHeaders
+                : null;
             serializationContext.KeyData = ReadOnlyMemory<byte>.Empty;
             serializationContext.IsNull = false;
             key = RecordHeaderDeserializer.Deserialize(
@@ -765,7 +771,9 @@ public readonly struct ConsumeResult<TKey, TValue>
         {
             serializationContext.Topic = topic;
             serializationContext.Component = SerializationComponent.Value;
-            serializationContext.Headers = null;
+            serializationContext.Headers = headerRouting.ValueRequiresMaterializedHeaders
+                ? materializedHeaders
+                : null;
             serializationContext.KeyData = SerializationContext.NormalizeKeyData(keyData, isKeyNull);
             serializationContext.IsNull = isValueNull;
             value = RecordHeaderDeserializer.Deserialize(

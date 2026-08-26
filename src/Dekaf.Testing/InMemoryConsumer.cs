@@ -34,6 +34,8 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     // means a consume path missed the asynchronous divert and must fail loudly.
     private readonly IAsyncDeserializer<TKey>? _asyncKeyDeserializer;
     private readonly IAsyncDeserializer<TValue>? _asyncValueDeserializer;
+    private readonly bool _keyUsesRecordHeaders;
+    private readonly bool _valueUsesRecordHeaders;
     private readonly bool _hasAsyncDeserializers;
     private readonly InMemoryConsumerOptions _options;
     private readonly HashSet<string> _subscription = new(StringComparer.Ordinal);
@@ -202,6 +204,12 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         _valueDeserializer = asyncValueDeserializer is null
             ? valueDeserializer!
             : AsyncOnlyDeserializerPlaceholder<TValue>.Instance;
+        _keyUsesRecordHeaders = asyncKeyDeserializer is not null
+            ? asyncKeyDeserializer is IRecordHeaderDeserializer { ConsumesRecordHeaders: true }
+            : RecordHeaderDeserializer.UsesCallerOwnedHeaders(_keyDeserializer);
+        _valueUsesRecordHeaders = asyncValueDeserializer is not null
+            ? asyncValueDeserializer is IRecordHeaderDeserializer { ConsumesRecordHeaders: true }
+            : RecordHeaderDeserializer.UsesCallerOwnedHeaders(_valueDeserializer);
         _hasAsyncDeserializers = asyncKeyDeserializer is not null || asyncValueDeserializer is not null;
         _options = options ?? throw new ArgumentNullException(nameof(options));
         // Match KafkaConsumer, which treats an empty GroupId as "no consumer group"
@@ -1273,6 +1281,14 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         InMemoryRecord record,
         CancellationToken cancellationToken)
     {
+        var asyncDeserializerUsesRecordHeaders =
+            (_asyncKeyDeserializer is not null && _keyUsesRecordHeaders)
+            || (_asyncValueDeserializer is not null && _valueUsesRecordHeaders);
+        var serializationHeaders = _keyUsesRecordHeaders || _valueUsesRecordHeaders
+            ? asyncDeserializerUsesRecordHeaders
+                ? new Headers(record.Headers)
+                : ConsumeResult<TKey, TValue>.GetCallerOwnedSerializationHeaders(record.Headers)
+            : null;
         TKey? key = default;
         if (!record.IsKeyNull)
         {
@@ -1280,10 +1296,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             {
                 Topic = topicPartition.Topic,
                 Component = SerializationComponent.Key,
-                Headers = _asyncKeyDeserializer is null
-                          && RecordHeaderDeserializer.UsesCallerOwnedHeaders(_keyDeserializer)
-                    ? ConsumeResult<TKey, TValue>.GetCallerOwnedSerializationHeaders(record.Headers)
-                    : null,
+                Headers = _keyUsesRecordHeaders ? serializationHeaders : null,
                 KeyData = ReadOnlyMemory<byte>.Empty,
                 IsNull = false
             };
@@ -1306,10 +1319,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         {
             Topic = topicPartition.Topic,
             Component = SerializationComponent.Value,
-            Headers = _asyncValueDeserializer is null
-                      && RecordHeaderDeserializer.UsesCallerOwnedHeaders(_valueDeserializer)
-                ? ConsumeResult<TKey, TValue>.GetCallerOwnedSerializationHeaders(record.Headers)
-                : null,
+            Headers = _valueUsesRecordHeaders ? serializationHeaders : null,
             KeyData = SerializationContext.NormalizeKeyData(record.Key, record.IsKeyNull),
             IsNull = record.IsValueNull
         };

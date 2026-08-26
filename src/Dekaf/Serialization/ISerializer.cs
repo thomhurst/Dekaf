@@ -12,17 +12,30 @@ internal sealed class RecordHeaderRoutingPlan
 {
     internal const int FullyIndexedWithoutTail = -1;
     internal const int InlineSlotsOnly = -2;
+    internal const string MaterializedHeadersSentinel = "\0dekaf-materialized-record-headers";
 
     private readonly Dictionary<string, int> _slots;
 
-    private RecordHeaderRoutingPlan(List<string> names)
+    private RecordHeaderRoutingPlan(
+        List<string> names,
+        bool keyRequiresMaterializedHeaders,
+        bool valueRequiresMaterializedHeaders)
     {
         _slots = new Dictionary<string, int>(names.Count, StringComparer.Ordinal);
         for (var index = 0; index < names.Count; index++)
-            _slots.Add(names[index], index);
+        {
+            var name = names[index];
+            if (!string.Equals(name, MaterializedHeadersSentinel, StringComparison.Ordinal))
+                _slots.Add(name, _slots.Count);
+        }
+
+        KeyRequiresMaterializedHeaders = keyRequiresMaterializedHeaders;
+        ValueRequiresMaterializedHeaders = valueRequiresMaterializedHeaders;
     }
 
     internal int Count => _slots.Count;
+    internal bool KeyRequiresMaterializedHeaders { get; }
+    internal bool ValueRequiresMaterializedHeaders { get; }
 
     internal bool TryGetSlot(string headerName, out int slot) =>
         _slots.TryGetValue(headerName, out slot);
@@ -54,7 +67,12 @@ internal sealed class RecordHeaderRoutingPlan
         List<string>? names = null;
         Collect(keyDeserializer, ref names);
         Collect(valueDeserializer, ref names);
-        return names is { Count: > 0 } ? new RecordHeaderRoutingPlan(names) : null;
+        return names is { Count: > 0 }
+            ? new RecordHeaderRoutingPlan(
+                names,
+                RequiresMaterializedHeaders(keyDeserializer),
+                RequiresMaterializedHeaders(valueDeserializer))
+            : null;
     }
 
     private static void Collect<T>(IDeserializer<T>? deserializer, ref List<string>? names)
@@ -64,6 +82,22 @@ internal sealed class RecordHeaderRoutingPlan
 
         names ??= [];
         provider.CollectHeaderNames(names);
+    }
+
+    private static bool RequiresMaterializedHeaders<T>(IDeserializer<T>? deserializer)
+    {
+        if (deserializer is not IRecordHeaderRoutingProvider provider)
+            return false;
+
+        List<string> names = [];
+        provider.CollectHeaderNames(names);
+        for (var index = 0; index < names.Count; index++)
+        {
+            if (string.Equals(names[index], MaterializedHeadersSentinel, StringComparison.Ordinal))
+                return true;
+        }
+
+        return false;
     }
 }
 
@@ -75,6 +109,9 @@ internal readonly struct RecordHeaderRoutingLookup(
     int secondIndex,
     int routedHeaderTailOffset)
 {
+    internal bool KeyRequiresMaterializedHeaders => plan?.KeyRequiresMaterializedHeaders is true;
+    internal bool ValueRequiresMaterializedHeaders => plan?.ValueRequiresMaterializedHeaders is true;
+
     internal void CopyTo(Headers destination)
     {
         destination.Clear();
@@ -271,7 +308,7 @@ internal static class RecordHeaderDeserializer
                 data,
                 context,
                 in headers)
-            : deserializer.Deserialize(data, context);
+            : DeserializeCallerOwned(deserializer, data, context);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static T DeserializeChild<T>(
@@ -299,20 +336,31 @@ internal static class RecordHeaderMaterializer
         SerializationContext context,
         in RecordHeaderRoutingLookup headers)
     {
+        context.Headers ??= GetCallerOwnedHeaders(in headers);
+        return context;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static Headers GetCallerOwnedHeaders(in RecordHeaderRoutingLookup headers)
+    {
         var callerOwnedHeaders = t_callerOwnedHeaders ??= new Headers();
         headers.CopyTo(callerOwnedHeaders);
-        context.Headers = callerOwnedHeaders;
-        return context;
+        return callerOwnedHeaders;
     }
 
     internal static SerializationContext WithOwnedHeaders(
         SerializationContext context,
         in RecordHeaderRoutingLookup headers)
     {
+        context.Headers = GetOwnedHeaders(in headers);
+        return context;
+    }
+
+    internal static Headers GetOwnedHeaders(in RecordHeaderRoutingLookup headers)
+    {
         var ownedHeaders = new Headers();
         headers.CopyTo(ownedHeaders);
-        context.Headers = ownedHeaders;
-        return context;
+        return ownedHeaders;
     }
 }
 
@@ -325,8 +373,6 @@ internal sealed class RecordHeaderDeserializerAdapter<T>(IDeserializer<T> inner)
     ICallerOwnedHeaderDeserializer<T>,
     IRecordHeaderRoutingProvider
 {
-    private const string MaterializedHeadersSentinel = "\0dekaf-materialized-record-headers";
-
     public T Deserialize(ReadOnlyMemory<byte> data, SerializationContext context) =>
         inner.Deserialize(data, context);
 
@@ -396,11 +442,14 @@ internal sealed class RecordHeaderDeserializerAdapter<T>(IDeserializer<T> inner)
 
         for (var index = 0; index < names.Count; index++)
         {
-            if (string.Equals(names[index], MaterializedHeadersSentinel, StringComparison.Ordinal))
+            if (string.Equals(
+                    names[index],
+                    RecordHeaderRoutingPlan.MaterializedHeadersSentinel,
+                    StringComparison.Ordinal))
                 return;
         }
 
-        names.Add(MaterializedHeadersSentinel);
+        names.Add(RecordHeaderRoutingPlan.MaterializedHeadersSentinel);
     }
 }
 

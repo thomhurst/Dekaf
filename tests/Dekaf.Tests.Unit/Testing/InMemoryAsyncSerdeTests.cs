@@ -279,6 +279,38 @@ public sealed class InMemoryAsyncSerdeTests
     }
 
     [Test]
+    public async Task Consumer_AsyncRecordHeaderDeserializerReceivesHeaders()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        var deserializer = new AsyncHeaderCapturingDeserializer();
+        var consumer = new InMemoryConsumer<string, string>(
+            cluster,
+            Serializers.String,
+            deserializer,
+            new InMemoryConsumerOptions
+            {
+                GroupId = "async-header-consumer",
+                AutoOffsetReset = AutoOffsetReset.Earliest
+            });
+
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = "orders",
+            Key = "key",
+            Value = "value",
+            Headers = Headers.Create("trace-id", "abc")
+        });
+        consumer.Subscribe("orders");
+
+        _ = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1));
+
+        await Assert.That(deserializer.Headers).IsNotNull();
+        await Assert.That(deserializer.Headers!).Count().IsEqualTo(1);
+        await Assert.That(deserializer.Headers![0].Key).IsEqualTo("trace-id");
+    }
+
+    [Test]
     public async Task ShareConsumer_AsyncDeserializers_RoundTripAndAcknowledge()
     {
         var cluster = new InMemoryKafkaCluster();
@@ -305,6 +337,34 @@ public sealed class InMemoryAsyncSerdeTests
         await Assert.That(Encoding.UTF8.GetString(serde.LastDeserializeContext.KeyData.Span)).IsEqualTo("v:k");
         await Assert.That(serde.LastDeserializeContext.IsKeyNull).IsFalse();
         await Assert.That(offsets.Single().StartOffset).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task ShareConsumer_AsyncRecordHeaderDeserializerReceivesHeaders()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        var deserializer = new AsyncHeaderCapturingDeserializer();
+        var consumer = new InMemoryShareConsumer<string, string>(
+            cluster,
+            Serializers.String,
+            deserializer,
+            new InMemoryShareConsumerOptions { GroupId = "async-header-share" });
+
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = "shared",
+            Key = "key",
+            Value = "value",
+            Headers = Headers.Create("trace-id", "abc")
+        });
+        consumer.Subscribe("shared");
+
+        _ = await consumer.PollAsync().FirstAsync();
+
+        await Assert.That(deserializer.Headers).IsNotNull();
+        await Assert.That(deserializer.Headers!).Count().IsEqualTo(1);
+        await Assert.That(deserializer.Headers![0].Key).IsEqualTo("trace-id");
     }
 
     [Test]
@@ -546,6 +606,24 @@ public sealed class InMemoryAsyncSerdeTests
         }
 
         public void Release() => _release.TrySetResult();
+    }
+
+    private sealed class AsyncHeaderCapturingDeserializer :
+        IAsyncDeserializer<string>,
+        IRecordHeaderDeserializer
+    {
+        public bool ConsumesRecordHeaders => true;
+
+        public Headers? Headers { get; private set; }
+
+        public ValueTask<string> DeserializeAsync(
+            ReadOnlyMemory<byte> data,
+            SerializationContext context,
+            CancellationToken cancellationToken = default)
+        {
+            Headers = context.Headers;
+            return ValueTask.FromResult(Encoding.UTF8.GetString(data.Span));
+        }
     }
 
     /// <summary>
