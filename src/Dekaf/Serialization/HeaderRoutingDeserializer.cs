@@ -43,7 +43,7 @@ public sealed class HeaderRoutingDeserializer<T> :
         ArgumentNullException.ThrowIfNull(routes);
 
         _headerName = headerName;
-        _fallbackDeserializer = fallbackDeserializer;
+        _fallbackDeserializer = RecordHeaderDeserializer.WrapIfNeeded(fallbackDeserializer);
         _routes = new RouteEntry[routes.Length];
         for (var i = 0; i < routes.Length; i++)
         {
@@ -52,7 +52,10 @@ public sealed class HeaderRoutingDeserializer<T> :
                 throw new ArgumentException("Header routes must specify a deserializer.", nameof(routes));
 
             var value = route.HeaderValue.ToArray();
-            _routes[i] = new RouteEntry(Hash(value), value, route.Deserializer);
+            _routes[i] = new RouteEntry(
+                Hash(value),
+                value,
+                RecordHeaderDeserializer.WrapIfNeeded(route.Deserializer));
         }
 
         SortRoutes(_routes);

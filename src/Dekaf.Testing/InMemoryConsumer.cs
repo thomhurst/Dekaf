@@ -1281,7 +1281,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                 Topic = topicPartition.Topic,
                 Component = SerializationComponent.Key,
                 Headers = _asyncKeyDeserializer is null
-                          && _keyDeserializer is ICallerOwnedHeaderDeserializer<TKey>
+                          && RecordHeaderDeserializer.UsesCallerOwnedHeaders(_keyDeserializer)
                     ? ConsumeResult<TKey, TValue>.GetCallerOwnedSerializationHeaders(record.Headers)
                     : null,
                 KeyData = ReadOnlyMemory<byte>.Empty,
@@ -1307,7 +1307,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             Topic = topicPartition.Topic,
             Component = SerializationComponent.Value,
             Headers = _asyncValueDeserializer is null
-                      && _valueDeserializer is ICallerOwnedHeaderDeserializer<TValue>
+                      && RecordHeaderDeserializer.UsesCallerOwnedHeaders(_valueDeserializer)
                 ? ConsumeResult<TKey, TValue>.GetCallerOwnedSerializationHeaders(record.Headers)
                 : null,
             KeyData = SerializationContext.NormalizeKeyData(record.Key, record.IsKeyNull),

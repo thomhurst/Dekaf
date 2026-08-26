@@ -31,6 +31,7 @@ public class RoutingSerdeBenchmarks
     private HeaderRoutingDeserializer<Event> _headerDeserializer = null!;
     private IDeserializer<Event> _topicHeaderDeserializer = null!;
     private IDeserializer<Event> _schemaIdHeaderDeserializer = null!;
+    private IDeserializer<Event> _decoratedHeaderDeserializer = null!;
     private TopicRoutingSerializer<Event> _topicSerializer = null!;
     private TypeRoutingSerializer<Event> _typeSerializer = null!;
     private SerializationContext _context;
@@ -77,6 +78,8 @@ public class RoutingSerdeBenchmarks
         _schemaIdHeaderDeserializer = new SchemaIdRoutingDeserializer<Event>()
             .Register(42, _headerDeserializer)
             .Freeze();
+        _decoratedHeaderDeserializer = RecordHeaderDeserializer.WrapIfNeeded(
+            new RecordHeaderDeserializerDecorator(_headerDeserializer));
         var headerPlan = RecordHeaderRoutingPlan.Create(_deserializer, _topicHeaderDeserializer)!;
         _headerLookup = new RecordHeaderRoutingLookup(
             headerPlan,
@@ -134,6 +137,14 @@ public class RoutingSerdeBenchmarks
             in _headerLookup);
 
     [Benchmark]
+    public Event DeserializeByPublicHeaderDecorator() =>
+        RecordHeaderDeserializer.Deserialize(
+            _decoratedHeaderDeserializer,
+            Data,
+            _context,
+            in _headerLookup);
+
+    [Benchmark]
     public Event DeserializeCallerOwnedByTopicThenHeader() =>
         RecordHeaderDeserializer.DeserializeCallerOwned(
             _topicHeaderDeserializer,
@@ -176,6 +187,16 @@ public class RoutingSerdeBenchmarks
     internal sealed class EventDeserializer : IDeserializer<Event>
     {
         public Event Deserialize(ReadOnlyMemory<byte> data, SerializationContext context) => Payload;
+    }
+
+    private sealed class RecordHeaderDeserializerDecorator(IDeserializer<Event> inner) :
+        IDeserializer<Event>,
+        IRecordHeaderDeserializer
+    {
+        public bool ConsumesRecordHeaders => true;
+
+        public Event Deserialize(ReadOnlyMemory<byte> data, SerializationContext context) =>
+            inner.Deserialize(data, context);
     }
 
     private sealed class PreparedEventDeserializer :

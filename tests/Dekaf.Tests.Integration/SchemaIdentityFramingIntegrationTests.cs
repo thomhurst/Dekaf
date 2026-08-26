@@ -84,7 +84,7 @@ public sealed class SchemaIdentityFramingIntegrationTests(
             .WithBootstrapServers(testInfra.BootstrapServers)
             .WithGroupId($"avro-header-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .WithValueDeserializer(deserializer)
+            .WithValueDeserializer(new RecordHeaderDeserializerDecorator<GenericRecord>(deserializer))
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
         consumer.Subscribe(topic);
@@ -244,7 +244,7 @@ public sealed class SchemaIdentityFramingIntegrationTests(
         await using var consumer = await Kafka.CreateShareConsumer<string, BatchIdentityRecord>()
             .WithBootstrapServers(testInfra.BootstrapServers)
             .WithGroupId($"avro-poco-share-guid-{strategy}-{Guid.NewGuid():N}")
-            .WithValueDeserializer(deserializer)
+            .WithValueDeserializer(new RecordHeaderDeserializerDecorator<BatchIdentityRecord>(deserializer))
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
         consumer.Subscribe(topic);
@@ -271,6 +271,42 @@ public sealed class SchemaIdentityFramingIntegrationTests(
     {
         Url = testInfra.RegistryUrl
     });
+
+    private sealed class RecordHeaderDeserializerDecorator<T>(IDeserializer<T> inner) :
+        IDeserializer<T>,
+        IAsyncDeserializerPreparer<T>,
+        IAsyncDeserializerPreparationRequirement,
+        IRecordHeaderDeserializer
+    {
+        bool IRecordHeaderDeserializer.ConsumesRecordHeaders => true;
+
+        bool IAsyncDeserializerPreparationRequirement.RequiresPreparation =>
+            inner is IAsyncDeserializerPreparer<T>
+            && inner is not IAsyncDeserializerPreparationRequirement { RequiresPreparation: false };
+
+        public T Deserialize(ReadOnlyMemory<byte> data, SerializationContext context) =>
+            inner.Deserialize(data, context);
+
+        bool IAsyncDeserializerPreparer<T>.TryDeserialize(
+            ReadOnlyMemory<byte> data,
+            SerializationContext context,
+            out T value)
+        {
+            if (inner is IAsyncDeserializerPreparer<T> preparer)
+                return preparer.TryDeserialize(data, context, out value);
+
+            value = inner.Deserialize(data, context);
+            return true;
+        }
+
+        ValueTask IAsyncDeserializerPreparer<T>.PrepareAsync(
+            ReadOnlyMemory<byte> data,
+            SerializationContext context,
+            CancellationToken cancellationToken) =>
+            inner is IAsyncDeserializerPreparer<T> preparer
+                ? preparer.PrepareAsync(data, context, cancellationToken)
+                : default;
+    }
 
     private static async Task PrimeShareConsumerAsync<TKey, TValue>(
         IKafkaShareConsumer<TKey, TValue> consumer)

@@ -217,6 +217,8 @@ Dekaf.Serialization.IAsyncDeserializerPreparer<T>.TryDeserialize(System.ReadOnly
 Dekaf.Serialization.IAsyncDeserializerPreparer<T>.PrepareAsync(System.ReadOnlyMemory<byte> data, Dekaf.Serialization.SerializationContext context, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask (forwarded, contained in Dekaf.Abstractions)
 Dekaf.Serialization.IRecordHeaderSerializer (forwarded, contained in Dekaf.Abstractions)
 Dekaf.Serialization.IRecordHeaderSerializer.ProducesRecordHeaders.get -> bool (forwarded, contained in Dekaf.Abstractions)
+Dekaf.Serialization.IRecordHeaderDeserializer (forwarded, contained in Dekaf.Abstractions)
+Dekaf.Serialization.IRecordHeaderDeserializer.ConsumesRecordHeaders.get -> bool (forwarded, contained in Dekaf.Abstractions)
 Dekaf.Serialization.IAsyncDeserializerPreparationRequirement (forwarded, contained in Dekaf.Abstractions)
 Dekaf.Serialization.IAsyncDeserializerPreparationRequirement.RequiresPreparation.get -> bool (forwarded, contained in Dekaf.Abstractions)
 Dekaf.Consumer.ConsumerOptions.PartitionStopTimeout.get -> System.TimeSpan

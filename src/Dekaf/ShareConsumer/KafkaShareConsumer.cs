@@ -156,17 +156,17 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         ExponentialRetryBackoff.Validate(options.RetryBackoffMs, options.RetryBackoffMaxMs);
         _options = options;
         _acknowledgementCommitCallback = options.AcknowledgementCommitCallback;
-        _keyDeserializer = keyDeserializer;
-        _valueDeserializer = valueDeserializer;
+        _keyDeserializer = RecordHeaderDeserializer.WrapIfNeeded(keyDeserializer);
+        _valueDeserializer = RecordHeaderDeserializer.WrapIfNeeded(valueDeserializer);
         _recordHeaderRoutingPlan = RecordHeaderRoutingPlan.Create(
-            keyDeserializer,
-            valueDeserializer);
-        _keyDeserializerPreparer = keyDeserializer is IAsyncDeserializerPreparer<TKey> keyDeserializerPreparer &&
-            keyDeserializer is not IAsyncDeserializerPreparationRequirement { RequiresPreparation: false }
+            _keyDeserializer,
+            _valueDeserializer);
+        _keyDeserializerPreparer = _keyDeserializer is IAsyncDeserializerPreparer<TKey> keyDeserializerPreparer &&
+            _keyDeserializer is not IAsyncDeserializerPreparationRequirement { RequiresPreparation: false }
                 ? keyDeserializerPreparer
                 : null;
-        _valueDeserializerPreparer = valueDeserializer is IAsyncDeserializerPreparer<TValue> valueDeserializerPreparer &&
-            valueDeserializer is not IAsyncDeserializerPreparationRequirement { RequiresPreparation: false }
+        _valueDeserializerPreparer = _valueDeserializer is IAsyncDeserializerPreparer<TValue> valueDeserializerPreparer &&
+            _valueDeserializer is not IAsyncDeserializerPreparationRequirement { RequiresPreparation: false }
                 ? valueDeserializerPreparer
                 : null;
         _hasDeserializerPreparers = _keyDeserializerPreparer is not null ||

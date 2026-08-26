@@ -30,6 +30,7 @@ public sealed class TopicRoutingDeserializer<TBase> :
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(topic);
         ArgumentNullException.ThrowIfNull(deserializer);
+        deserializer = RecordHeaderDeserializer.WrapIfNeeded(deserializer);
         var requiresPreparation = DeserializerPreparation.RequiresPreparation(deserializer);
         IDeserializer<TBase> route = requiresPreparation ||
                                      deserializer is IAsyncDeserializerPreparationRequirement
@@ -43,6 +44,7 @@ public sealed class TopicRoutingDeserializer<TBase> :
     public TopicRoutingDeserializer<TBase> SetFallback(IDeserializer<TBase> deserializer)
     {
         ArgumentNullException.ThrowIfNull(deserializer);
+        deserializer = RecordHeaderDeserializer.WrapIfNeeded(deserializer);
         var route = DeserializerPreparation.RequiresPreparation(deserializer)
             ? new AsyncDeserializerRoute<TBase, TBase>(deserializer)
             : deserializer;
@@ -196,6 +198,7 @@ public sealed class SchemaIdRoutingDeserializer<TBase> :
     {
         ArgumentOutOfRangeException.ThrowIfNegative(schemaId);
         ArgumentNullException.ThrowIfNull(deserializer);
+        deserializer = RecordHeaderDeserializer.WrapIfNeeded(deserializer);
         var requiresPreparation = DeserializerPreparation.RequiresPreparation(deserializer);
         IDeserializer<TBase> route = requiresPreparation ||
                                      deserializer is IAsyncDeserializerPreparationRequirement
@@ -209,6 +212,7 @@ public sealed class SchemaIdRoutingDeserializer<TBase> :
     public SchemaIdRoutingDeserializer<TBase> SetFallback(IDeserializer<TBase> deserializer)
     {
         ArgumentNullException.ThrowIfNull(deserializer);
+        deserializer = RecordHeaderDeserializer.WrapIfNeeded(deserializer);
         var route = DeserializerPreparation.RequiresPreparation(deserializer)
             ? new AsyncDeserializerRoute<TBase, TBase>(deserializer)
             : deserializer;

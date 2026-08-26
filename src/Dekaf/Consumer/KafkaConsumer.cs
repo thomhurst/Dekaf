@@ -1766,8 +1766,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // When an async deserializer is configured for a component, its sync slot is forced to
         // the throwing placeholder here — by construction, not by builder convention — so a
         // direct constructor caller can never pair an async deserializer with a live sync one.
-        _keyDeserializer = asyncKeyDeserializer is null ? keyDeserializer : AsyncOnlyDeserializerPlaceholder<TKey>.Instance;
-        _valueDeserializer = asyncValueDeserializer is null ? valueDeserializer : AsyncOnlyDeserializerPlaceholder<TValue>.Instance;
+        _keyDeserializer = asyncKeyDeserializer is null
+            ? RecordHeaderDeserializer.WrapIfNeeded(keyDeserializer)
+            : AsyncOnlyDeserializerPlaceholder<TKey>.Instance;
+        _valueDeserializer = asyncValueDeserializer is null
+            ? RecordHeaderDeserializer.WrapIfNeeded(valueDeserializer)
+            : AsyncOnlyDeserializerPlaceholder<TValue>.Instance;
         _recordHeaderRoutingPlan = RecordHeaderRoutingPlan.Create(
             _keyDeserializer,
             _valueDeserializer);

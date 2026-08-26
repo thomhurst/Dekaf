@@ -672,8 +672,10 @@ public readonly struct ConsumeResult<TKey, TValue>
         // Resolve the thread-static address once; each direct field access otherwise
         // emits another TLS lookup before setting or copying the context.
         ref var serializationContext = ref t_serializationContext;
-        var keyUsesCallerOwnedHeaders = keyDeserializer is ICallerOwnedHeaderDeserializer<TKey>;
-        var valueUsesCallerOwnedHeaders = valueDeserializer is ICallerOwnedHeaderDeserializer<TValue>;
+        var keyUsesCallerOwnedHeaders = keyDeserializer is not null
+                                        && RecordHeaderDeserializer.UsesCallerOwnedHeaders(keyDeserializer);
+        var valueUsesCallerOwnedHeaders = valueDeserializer is not null
+                                          && RecordHeaderDeserializer.UsesCallerOwnedHeaders(valueDeserializer);
         var serializationHeaders = headers is not null
                                    && (keyUsesCallerOwnedHeaders || valueUsesCallerOwnedHeaders)
             ? GetCallerOwnedSerializationHeaders(headers)

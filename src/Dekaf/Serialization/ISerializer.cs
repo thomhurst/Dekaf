@@ -75,6 +75,16 @@ internal readonly struct RecordHeaderRoutingLookup(
     int secondIndex,
     int routedHeaderTailOffset)
 {
+    internal void CopyTo(Headers destination)
+    {
+        destination.Clear();
+        if (headers is null)
+            return;
+
+        for (var index = 0; index < headerCount; index++)
+            destination.Add(headers[index]);
+    }
+
     internal bool TryGetLast(string headerName, out Header header)
     {
         if (plan is not null && plan.TryGetSlot(headerName, out var slot))
@@ -184,6 +194,20 @@ public interface IRecordHeaderSerializer
 }
 
 /// <summary>
+/// Optional capability for deserializers that read record headers through
+/// <see cref="SerializationContext.Headers"/>.
+/// </summary>
+/// <remarks>
+/// Deserializer decorators must propagate this capability when their inner deserializer consumes
+/// headers so consumers can provide header storage before deserialization begins.
+/// </remarks>
+public interface IRecordHeaderDeserializer
+{
+    /// <summary>Gets whether this deserializer may read record headers.</summary>
+    bool ConsumesRecordHeaders { get; }
+}
+
+/// <summary>
 /// Interface for deserializing values from bytes.
 /// </summary>
 /// <typeparam name="T">The type to deserialize.</typeparam>
@@ -211,6 +235,17 @@ internal interface ICallerOwnedHeaderDeserializer<out T>
 internal static class RecordHeaderDeserializer
 {
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static bool UsesCallerOwnedHeaders<T>(IDeserializer<T> deserializer) =>
+        deserializer is ICallerOwnedHeaderDeserializer<T>
+        || deserializer is IRecordHeaderDeserializer { ConsumesRecordHeaders: true };
+
+    internal static IDeserializer<T> WrapIfNeeded<T>(IDeserializer<T> deserializer) =>
+        deserializer is IRecordHeaderDeserializer<T>
+        || deserializer is not IRecordHeaderDeserializer { ConsumesRecordHeaders: true }
+            ? deserializer
+            : new RecordHeaderDeserializerAdapter<T>(deserializer);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static T DeserializeCallerOwned<T>(
         IDeserializer<T> deserializer,
         ReadOnlyMemory<byte> data,
@@ -219,7 +254,8 @@ internal static class RecordHeaderDeserializer
         if (deserializer is ICallerOwnedHeaderDeserializer<T> callerOwned)
             return callerOwned.DeserializeCallerOwned(data, context);
 
-        if (context.Headers is not null)
+        if (deserializer is not IRecordHeaderDeserializer { ConsumesRecordHeaders: true }
+            && context.Headers is not null)
             context.Headers = null;
         return deserializer.Deserialize(data, context);
     }
@@ -250,6 +286,121 @@ internal static class RecordHeaderDeserializer
         if (context.Headers is not null)
             context.Headers = null;
         return deserializer.Deserialize(data, context);
+    }
+}
+
+internal static class RecordHeaderMaterializer
+{
+    [ThreadStatic]
+    private static Headers? t_callerOwnedHeaders;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static SerializationContext WithCallerOwnedHeaders(
+        SerializationContext context,
+        in RecordHeaderRoutingLookup headers)
+    {
+        var callerOwnedHeaders = t_callerOwnedHeaders ??= new Headers();
+        headers.CopyTo(callerOwnedHeaders);
+        context.Headers = callerOwnedHeaders;
+        return context;
+    }
+
+    internal static SerializationContext WithOwnedHeaders(
+        SerializationContext context,
+        in RecordHeaderRoutingLookup headers)
+    {
+        var ownedHeaders = new Headers();
+        headers.CopyTo(ownedHeaders);
+        context.Headers = ownedHeaders;
+        return context;
+    }
+}
+
+internal sealed class RecordHeaderDeserializerAdapter<T>(IDeserializer<T> inner) :
+    IDeserializer<T>,
+    IAsyncDeserializerPreparer<T>,
+    IAsyncDeserializerPreparationRequirement,
+    IRecordHeaderDeserializer<T>,
+    IRecordHeaderAsyncDeserializerPreparer<T>,
+    ICallerOwnedHeaderDeserializer<T>,
+    IRecordHeaderRoutingProvider
+{
+    private const string MaterializedHeadersSentinel = "\0dekaf-materialized-record-headers";
+
+    public T Deserialize(ReadOnlyMemory<byte> data, SerializationContext context) =>
+        inner.Deserialize(data, context);
+
+    bool IAsyncDeserializerPreparationRequirement.RequiresPreparation =>
+        inner is IAsyncDeserializerPreparer<T>
+        && inner is not IAsyncDeserializerPreparationRequirement { RequiresPreparation: false };
+
+    bool IAsyncDeserializerPreparer<T>.TryDeserialize(
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        out T value)
+    {
+        if (inner is IAsyncDeserializerPreparer<T> preparer)
+            return preparer.TryDeserialize(data, context, out value);
+
+        value = inner.Deserialize(data, context);
+        return true;
+    }
+
+    ValueTask IAsyncDeserializerPreparer<T>.PrepareAsync(
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        CancellationToken cancellationToken) =>
+        inner is IAsyncDeserializerPreparer<T> preparer
+            ? preparer.PrepareAsync(data, context, cancellationToken)
+            : default;
+
+    T IRecordHeaderDeserializer<T>.Deserialize(
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        in RecordHeaderRoutingLookup headers) =>
+        inner.Deserialize(
+            data,
+            RecordHeaderMaterializer.WithCallerOwnedHeaders(context, in headers));
+
+    bool IRecordHeaderAsyncDeserializerPreparer<T>.TryDeserialize(
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        in RecordHeaderRoutingLookup headers,
+        out T value)
+    {
+        context = RecordHeaderMaterializer.WithCallerOwnedHeaders(context, in headers);
+        return ((IAsyncDeserializerPreparer<T>)this).TryDeserialize(data, context, out value);
+    }
+
+    ValueTask IRecordHeaderAsyncDeserializerPreparer<T>.PrepareAsync(
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        RecordHeaderRoutingLookup headers,
+        CancellationToken cancellationToken)
+    {
+        context = RecordHeaderMaterializer.WithOwnedHeaders(context, in headers);
+        return ((IAsyncDeserializerPreparer<T>)this).PrepareAsync(
+            data,
+            context,
+            cancellationToken);
+    }
+
+    T ICallerOwnedHeaderDeserializer<T>.DeserializeCallerOwned(
+        ReadOnlyMemory<byte> data,
+        SerializationContext context) => inner.Deserialize(data, context);
+
+    void IRecordHeaderRoutingProvider.CollectHeaderNames(List<string> names)
+    {
+        if (inner is IRecordHeaderRoutingProvider provider)
+            provider.CollectHeaderNames(names);
+
+        for (var index = 0; index < names.Count; index++)
+        {
+            if (string.Equals(names[index], MaterializedHeadersSentinel, StringComparison.Ordinal))
+                return;
+        }
+
+        names.Add(MaterializedHeadersSentinel);
     }
 }
 

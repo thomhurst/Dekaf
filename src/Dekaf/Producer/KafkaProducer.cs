@@ -6074,6 +6074,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         Action<RecordMetadata, Exception?>? deliveryHandler,
         ValueTask<SerializerPreparationLease> preparation)
     {
+        using var activityScope = activity;
         var cache = GetOrCreateCache();
         var serializationHeaders = PrepareAsyncSerializationHeaders(
             headers, cache, out var headerCheckpoint, out var rentedHeaderWorkspace);
@@ -6193,7 +6194,6 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             RestoreAsyncSerializationHeaders(
                 serializationHeaders, in headerCheckpoint, cache, rentedHeaderWorkspace);
             headers?.RemoveDeferredTraceContext(activity);
-            activity?.Dispose();
         }
     }
 
