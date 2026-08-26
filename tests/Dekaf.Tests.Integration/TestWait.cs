@@ -48,7 +48,8 @@ internal static class TestWait
         Func<T, bool> condition,
         int maxRetries = 10,
         int initialDelayMs = 500,
-        string? description = null)
+        string? description = null,
+        Func<T, string>? formatObserved = null)
     {
         T result = default!;
         for (var i = 0; i < maxRetries; i++)
@@ -59,8 +60,9 @@ internal static class TestWait
                 return result;
         }
 
+        var observed = formatObserved is null ? result?.ToString() : formatObserved(result);
         throw new TimeoutException(
             $"Condition not met after {maxRetries} checks" +
-            $"{(description is null ? "" : $": {description}")}; last observed: {result}");
+            $"{(description is null ? "" : $": {description}")}; last observed: {observed ?? "<null>"}");
     }
 }

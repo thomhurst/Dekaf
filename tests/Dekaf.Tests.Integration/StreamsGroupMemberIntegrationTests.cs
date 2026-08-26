@@ -283,7 +283,8 @@ public sealed class StreamsGroupMemberIntegrationTests(KafkaTestContainer kafka)
                     .ToArray() ?? [];
             },
             expected.SetEquals,
-            description: $"Streams target assignment for member {memberId}");
+            description: $"Streams target assignment for member {memberId}",
+            formatObserved: static partitions => $"[{string.Join(", ", partitions)}]");
         await Assert.That(targeted).IsEquivalentTo(expectedPartitions);
 
         var heartbeat = await member.UpdateAsync(new StreamsGroupMemberUpdate());
