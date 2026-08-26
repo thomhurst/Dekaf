@@ -458,3 +458,11 @@ Dekaf.Producer.ProducerPartitionMetadata.ReplicaIds.init -> void (forwarded, con
 Dekaf.Producer.ProducerPartitionMetadata.TopicPartition.get -> Dekaf.TopicPartition (forwarded, contained in Dekaf.Abstractions)
 Dekaf.Producer.ProducerPartitionMetadata.TopicPartition.init -> void (forwarded, contained in Dekaf.Abstractions)
 static Dekaf.Producer.ProducerExtensions.GetPartitionsForAsync<TKey, TValue>(this Dekaf.Producer.IKafkaProducer<TKey, TValue>! producer, string! topic, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyList<Dekaf.Producer.ProducerPartitionMetadata!>!>
+Dekaf.ShareConsumer.ShareAcknowledgementCommitResult
+Dekaf.ShareConsumer.ShareAcknowledgementCommitResult.Exception.get -> System.Exception?
+Dekaf.ShareConsumer.ShareAcknowledgementCommitResult.Offsets.get -> System.ReadOnlyMemory<long>
+Dekaf.ShareConsumer.ShareAcknowledgementCommitResult.Succeeded.get -> bool
+Dekaf.ShareConsumer.ShareAcknowledgementCommitResult.TopicPartition.get -> Dekaf.TopicPartition
+Dekaf.ShareConsumer.ShareConsumerOptions.AcknowledgementCommitCallback.get -> System.Action<System.ReadOnlyMemory<Dekaf.ShareConsumer.ShareAcknowledgementCommitResult!>>?
+Dekaf.ShareConsumer.ShareConsumerOptions.AcknowledgementCommitCallback.init -> void
+Dekaf.ShareConsumerBuilder<TKey, TValue>.WithAcknowledgementCommitCallback(System.Action<System.ReadOnlyMemory<Dekaf.ShareConsumer.ShareAcknowledgementCommitResult!>>! callback) -> Dekaf.ShareConsumerBuilder<TKey, TValue>!

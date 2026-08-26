@@ -124,6 +124,44 @@ Acknowledgements are batched and piggy-backed onto the next ShareFetch. To flush
 await consumer.CommitAsync(cancellationToken);
 ```
 
+## Observing Acknowledgement Outcomes
+
+Register an acknowledgement commit callback when application bookkeeping must observe the broker's final result:
+
+```csharp
+await using var consumer = await Kafka.CreateShareConsumer<string, string>()
+    .WithBootstrapServers("localhost:9092")
+    .WithGroupId("order-workers")
+    .WithAcknowledgementCommitCallback(results =>
+    {
+        foreach (var result in results.Span)
+        {
+            if (result.Exception is null)
+            {
+                Console.WriteLine($"Acknowledged {result.TopicPartition}: " +
+                    $"{result.Offsets.Length} record(s)");
+            }
+            else
+            {
+                Console.Error.WriteLine(
+                    $"Acknowledgement failed for {result.TopicPartition}: {result.Exception.Message}");
+            }
+        }
+    })
+    .BuildAsync();
+```
+
+One `ShareAcknowledgementCommitResult` is reported per topic-partition. `Offsets` are ascending, `Succeeded` is true when `Exception` is null, and results are ordered by topic (ordinal) then partition.
+
+The callback covers both acknowledgement transports:
+
+- inline acknowledgements piggy-backed by `PollAsync`;
+- standalone acknowledgements sent by `CommitAsync` or the close/dispose flush.
+
+Dekaf invokes it once after broker retries finish and after successful acknowledgements are applied and failed acknowledgements are requeued. If cancellation ends a commit, failed partitions are requeued and reported before `OperationCanceledException` reaches the caller. A callback exception is logged and ignored; it never replaces the broker outcome or changes retry state.
+
+The callback runs synchronously on the thread continuing the poll, commit, or close operation. Keep it short and non-blocking. Re-entering the same consumer from the callback is unsupported; record work for later processing instead.
+
 ## Acquisition Locks and Renewal
 
 Records are delivered under a broker-side acquisition lock (default 30 seconds, broker config `group.share.record.lock.duration.ms`). If the lock expires before the record is acknowledged, the broker redelivers it to another member. The active timeout is exposed via `consumer.AcquisitionLockTimeoutMs`.
@@ -146,6 +184,7 @@ Common builder options beyond the connection/TLS/SASL settings shared with other
 |--------|---------|-------------|
 | `WithGroupId` | — (required) | Share group ID |
 | `WithAcknowledgementMode` | `Implicit` | Implicit vs explicit acknowledgement (`share.acknowledgement.mode`) |
+| `WithAcknowledgementCommitCallback` | — | Reports ordered per-partition broker outcomes after retries and internal bookkeeping |
 | `WithShareAcquireMode` | `BatchOptimized` | `BatchOptimized` acquires along producer batch boundaries; `RecordLimit` strictly caps at `MaxPollRecords` (`share.acquire.mode`) |
 | `WithMaxPollRecords` | 500 | Maximum records per poll |
 | `WithFetchMinBytes` / `WithFetchMaxBytes` | 1 / 50 MiB | Broker fetch accumulation bounds |

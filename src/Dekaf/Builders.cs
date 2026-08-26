@@ -3414,6 +3414,7 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
     private int _fetchMaxWaitMs = 200;
     private int _maxPollRecords = 500;
     private ShareAcknowledgementMode _acknowledgementMode = ShareAcknowledgementMode.Implicit;
+    private Action<ReadOnlyMemory<ShareAcknowledgementCommitResult>>? _acknowledgementCommitCallback;
     private ShareAcquireMode _shareAcquireMode = ShareAcquireMode.BatchOptimized;
     private int _sessionTimeoutMs = 45000;
     private int _heartbeatIntervalMs = 3000;
@@ -3540,6 +3541,22 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
     public ShareConsumerBuilder<TKey, TValue> WithAcknowledgementMode(ShareAcknowledgementMode mode)
     {
         _acknowledgementMode = mode;
+        return this;
+    }
+
+    /// <summary>
+    /// Registers a callback for completed inline and standalone acknowledgement commits.
+    /// The callback runs synchronously after retries and internal acknowledgement bookkeeping,
+    /// on the thread continuing <see cref="IKafkaShareConsumer{TKey,TValue}.PollAsync"/>,
+    /// <see cref="IKafkaShareConsumer{TKey,TValue}.CommitAsync"/>, or close. Results are ordered
+    /// by topic using ordinal comparison, then by partition. Callback exceptions are logged and
+    /// ignored. Keep the callback non-blocking and do not re-enter the consumer.
+    /// </summary>
+    /// <param name="callback">Callback that receives one result per acknowledged topic-partition.</param>
+    public ShareConsumerBuilder<TKey, TValue> WithAcknowledgementCommitCallback(
+        Action<ReadOnlyMemory<ShareAcknowledgementCommitResult>> callback)
+    {
+        _acknowledgementCommitCallback = callback ?? throw new ArgumentNullException(nameof(callback));
         return this;
     }
 
@@ -4066,6 +4083,7 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
             FetchMaxWaitMs = _fetchMaxWaitMs,
             MaxPollRecords = _maxPollRecords,
             AcknowledgementMode = _acknowledgementMode,
+            AcknowledgementCommitCallback = _acknowledgementCommitCallback,
             ShareAcquireMode = _shareAcquireMode,
             SessionTimeoutMs = _sessionTimeoutMs,
             HeartbeatIntervalMs = _heartbeatIntervalMs,
