@@ -322,7 +322,7 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
         {
             _entries.Add(FaultEntry.Failure(scope, exception, occurrenceCount, isPersistent: false));
             Volatile.Write(ref _hasEntries, 1);
-            PublishFaultIndexesUnderLock();
+            AddFaultIndexUnderLock(scope);
         }
     }
 
@@ -338,7 +338,7 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
         {
             _entries.Add(FaultEntry.Failure(scope, exception, remainingOccurrences: 0, isPersistent: true));
             Volatile.Write(ref _hasEntries, 1);
-            PublishFaultIndexesUnderLock();
+            AddFaultIndexUnderLock(scope);
         }
     }
 
@@ -353,7 +353,7 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
         {
             _entries.Add(FaultEntry.Pause(scope, barrier));
             Volatile.Write(ref _hasEntries, 1);
-            PublishFaultIndexesUnderLock();
+            AddFaultIndexUnderLock(scope);
         }
 
         return barrier;
@@ -391,7 +391,7 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
                         _entries.RemoveAt(i);
                         if (_entries.Count == 0)
                             Volatile.Write(ref _hasEntries, 0);
-                        PublishFaultIndexesUnderLock();
+                        RemoveFaultIndexUnderLock(candidate.Scope);
                     }
                 }
 
@@ -433,14 +433,13 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
                     continue;
 
                 _entries.RemoveAt(i);
+                RemoveFaultIndexUnderLock(entry.Scope);
                 entry.Barrier?.ClearBeforeEntry();
                 removed++;
             }
 
             if (_entries.Count == 0)
                 Volatile.Write(ref _hasEntries, 0);
-            if (removed != 0)
-                PublishFaultIndexesUnderLock();
         }
 
         return removed;
@@ -460,18 +459,65 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
             _entries.Clear();
             Volatile.Write(ref _hasEntries, 0);
             Volatile.Write(ref _produceFaultIndex, ProduceFaultIndex.Empty);
-            Volatile.Write(ref _shareFaultIndex, ShareFaultIndex.Empty);
-            Interlocked.Increment(ref _shareFaultIndexVersion);
+            if (!ReferenceEquals(Volatile.Read(ref _shareFaultIndex), ShareFaultIndex.Empty))
+            {
+                Volatile.Write(ref _shareFaultIndex, ShareFaultIndex.Empty);
+                Interlocked.Increment(ref _shareFaultIndexVersion);
+            }
             return removed;
         }
     }
 
-    private void PublishFaultIndexesUnderLock()
+    private void AddFaultIndexUnderLock(KafkaFaultScope scope)
+    {
+        switch (scope.Operation)
+        {
+            case KafkaFaultOperation.Produce:
+            case KafkaFaultOperation.TransactionProduce:
+                PublishProduceFaultIndexUnderLock();
+                break;
+            case KafkaFaultOperation.ShareConsume:
+            case KafkaFaultOperation.ShareAcknowledge:
+                var index = Volatile.Read(ref _shareFaultIndex);
+                if (ReferenceEquals(index, ShareFaultIndex.Empty))
+                    index = new ShareFaultIndex();
+
+                index = index.Add(scope, out var addedEligibility);
+                if (addedEligibility)
+                {
+                    Volatile.Write(ref _shareFaultIndex, index);
+                    Interlocked.Increment(ref _shareFaultIndexVersion);
+                }
+                break;
+        }
+    }
+
+    private void RemoveFaultIndexUnderLock(KafkaFaultScope scope)
+    {
+        switch (scope.Operation)
+        {
+            case KafkaFaultOperation.Produce:
+            case KafkaFaultOperation.TransactionProduce:
+                PublishProduceFaultIndexUnderLock();
+                break;
+            case KafkaFaultOperation.ShareConsume:
+            case KafkaFaultOperation.ShareAcknowledge:
+                var index = Volatile.Read(ref _shareFaultIndex);
+                if (ReferenceEquals(index, ShareFaultIndex.Empty) || !index.Remove(scope))
+                    break;
+
+                if (index.IsEmpty)
+                    index = ShareFaultIndex.Empty;
+                Volatile.Write(ref _shareFaultIndex, index);
+                Interlocked.Increment(ref _shareFaultIndexVersion);
+                break;
+        }
+    }
+
+    private void PublishProduceFaultIndexUnderLock()
     {
         var produceScopes = new ProduceScopeBuilder();
         var transactionProduceScopes = new ProduceScopeBuilder();
-        var shareConsumeScopes = new ShareScopeBuilder();
-        var shareAcknowledgeScopes = new ShareScopeBuilder();
         for (var entryIndex = 0; entryIndex < _entries.Count; entryIndex++)
         {
             var scope = _entries[entryIndex].Scope;
@@ -486,12 +532,6 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
                     if (scope.GroupId is null)
                         transactionProduceScopes.Add(scope.Topic);
                     break;
-                case KafkaFaultOperation.ShareConsume:
-                    shareConsumeScopes.Add(scope);
-                    break;
-                case KafkaFaultOperation.ShareAcknowledge:
-                    shareAcknowledgeScopes.Add(scope);
-                    break;
             }
         }
 
@@ -505,13 +545,6 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
                 transactionProduceScopes.Topics)
             : ProduceFaultIndex.Empty;
         Volatile.Write(ref _produceFaultIndex, produceFaultIndex);
-        var shareFaultIndex = shareConsumeScopes.HasScopes || shareAcknowledgeScopes.HasScopes
-            ? new ShareFaultIndex(
-                shareConsumeScopes.Build(),
-                shareAcknowledgeScopes.Build())
-            : ShareFaultIndex.Empty;
-        Volatile.Write(ref _shareFaultIndex, shareFaultIndex);
-        Interlocked.Increment(ref _shareFaultIndexVersion);
     }
 
     private struct ProduceScopeBuilder
@@ -550,69 +583,6 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
         }
     }
 
-    private struct ShareScopeBuilder
-    {
-        private bool _all;
-        private HashSet<string>? _topics;
-        private HashSet<int>? _partitions;
-        private HashSet<string>? _groups;
-        private HashSet<TopicPartition>? _topicPartitions;
-        private HashSet<TopicGroupKey>? _topicGroups;
-        private HashSet<PartitionGroupKey>? _partitionGroups;
-        private HashSet<ExactShareKey>? _exactScopes;
-
-        internal readonly bool HasScopes =>
-            _all ||
-            _topics is not null ||
-            _partitions is not null ||
-            _groups is not null ||
-            _topicPartitions is not null ||
-            _topicGroups is not null ||
-            _partitionGroups is not null ||
-            _exactScopes is not null;
-
-        internal void Add(KafkaFaultScope scope)
-        {
-            switch (scope)
-            {
-                case { Topic: null, Partition: null, GroupId: null }:
-                    _all = true;
-                    break;
-                case { Topic: { } topic, Partition: null, GroupId: null }:
-                    (_topics ??= new(StringComparer.Ordinal)).Add(topic);
-                    break;
-                case { Topic: null, Partition: { } partition, GroupId: null }:
-                    (_partitions ??= []).Add(partition);
-                    break;
-                case { Topic: null, Partition: null, GroupId: { } groupId }:
-                    (_groups ??= new(StringComparer.Ordinal)).Add(groupId);
-                    break;
-                case { Topic: { } topic, Partition: { } partition, GroupId: null }:
-                    (_topicPartitions ??= []).Add(new TopicPartition(topic, partition));
-                    break;
-                case { Topic: { } topic, Partition: null, GroupId: { } groupId }:
-                    (_topicGroups ??= []).Add(new TopicGroupKey(topic, groupId));
-                    break;
-                case { Topic: null, Partition: { } partition, GroupId: { } groupId }:
-                    (_partitionGroups ??= []).Add(new PartitionGroupKey(partition, groupId));
-                    break;
-                case { Topic: { } topic, Partition: { } partition, GroupId: { } groupId }:
-                    (_exactScopes ??= []).Add(new ExactShareKey(topic, partition, groupId));
-                    break;
-            }
-        }
-
-        internal readonly ShareScopeIndex Build() => new(
-            _all,
-            _topics,
-            _partitions,
-            _groups,
-            _topicPartitions,
-            _topicGroups,
-            _partitionGroups,
-            _exactScopes);
-    }
-
     private sealed class ProduceFaultIndex(
         bool allProduceTopics,
         string? produceTopic,
@@ -637,24 +607,48 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
         };
     }
 
-    private sealed class ShareFaultIndex(
-        ShareScopeIndex consumeScopes,
-        ShareScopeIndex acknowledgeScopes)
+    private sealed class ShareFaultIndex
     {
+        private readonly ShareScopeIndex _consumeScopes;
+        private readonly ShareScopeIndex _acknowledgeScopes;
+
+        public ShareFaultIndex()
+            : this(new ShareScopeIndex(), new ShareScopeIndex())
+        {
+        }
+
+        private ShareFaultIndex(
+            ShareScopeIndex consumeScopes,
+            ShareScopeIndex acknowledgeScopes)
+        {
+            _consumeScopes = consumeScopes;
+            _acknowledgeScopes = acknowledgeScopes;
+        }
+
         public static ShareFaultIndex Empty { get; } = new(ShareScopeIndex.Empty, ShareScopeIndex.Empty);
+
+        public bool IsEmpty => _consumeScopes.IsEmpty && _acknowledgeScopes.IsEmpty;
+
+        public ShareFaultIndex Add(KafkaFaultScope scope, out bool eligibilityChanged)
+        {
+            var scopes = GetScopes(scope.Operation);
+            var updatedScopes = scopes.Add(scope, out eligibilityChanged);
+            if (ReferenceEquals(scopes, updatedScopes))
+                return this;
+
+            return scope.Operation == KafkaFaultOperation.ShareConsume
+                ? new ShareFaultIndex(updatedScopes, _acknowledgeScopes)
+                : new ShareFaultIndex(_consumeScopes, updatedScopes);
+        }
+
+        public bool Remove(KafkaFaultScope scope) => GetScopes(scope.Operation).Remove(scope);
 
         public bool Matches(
             KafkaFaultOperation operation,
             string groupId,
             HashSet<TopicPartition> assignment)
         {
-            var scopes = operation switch
-            {
-                KafkaFaultOperation.ShareConsume => consumeScopes,
-                KafkaFaultOperation.ShareAcknowledge => acknowledgeScopes,
-                _ => ShareScopeIndex.Empty
-            };
-            return scopes.Matches(groupId, assignment);
+            return GetScopes(operation).Matches(groupId, assignment);
         }
 
         public bool Matches(
@@ -663,35 +657,100 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
             int partition,
             string groupId)
         {
-            var scopes = operation switch
-            {
-                KafkaFaultOperation.ShareConsume => consumeScopes,
-                KafkaFaultOperation.ShareAcknowledge => acknowledgeScopes,
-                _ => ShareScopeIndex.Empty
-            };
-            return scopes.Matches(topic, partition, groupId);
+            return GetScopes(operation).Matches(topic, partition, groupId);
         }
+
+        private ShareScopeIndex GetScopes(KafkaFaultOperation operation) => operation switch
+        {
+            KafkaFaultOperation.ShareConsume => _consumeScopes,
+            KafkaFaultOperation.ShareAcknowledge => _acknowledgeScopes,
+            _ => ShareScopeIndex.Empty
+        };
     }
 
-    private sealed class ShareScopeIndex(
-        bool all,
-        HashSet<string>? topics,
-        HashSet<int>? partitions,
-        HashSet<string>? groups,
-        HashSet<TopicPartition>? topicPartitions,
-        HashSet<TopicGroupKey>? topicGroups,
-        HashSet<PartitionGroupKey>? partitionGroups,
-        HashSet<ExactShareKey>? exactScopes)
+    private sealed class ShareScopeIndex
     {
-        public static ShareScopeIndex Empty { get; } = new(
-            false,
-            null,
-            null,
-            null,
-            null,
-            null,
-            null,
-            null);
+        private Dictionary<string, ScopeCounter>? _topics;
+        private Dictionary<int, ScopeCounter>? _partitions;
+        private Dictionary<string, ScopeCounter>? _groups;
+        private Dictionary<TopicPartition, ScopeCounter>? _topicPartitions;
+        private Dictionary<TopicGroupKey, ScopeCounter>? _topicGroups;
+        private Dictionary<PartitionGroupKey, ScopeCounter>? _partitionGroups;
+        private Dictionary<ExactShareKey, ScopeCounter>? _exactScopes;
+        private int _activeScopeCount;
+        private int _allCount;
+
+        public ShareScopeIndex()
+        {
+        }
+
+        public static ShareScopeIndex Empty { get; } = new();
+
+        private ShareScopeIndex(ShareScopeIndex source)
+        {
+            _allCount = Volatile.Read(ref source._allCount);
+            _activeScopeCount = Volatile.Read(ref source._activeScopeCount);
+            _topics = Clone(source._topics, StringComparer.Ordinal);
+            _partitions = Clone(source._partitions);
+            _groups = Clone(source._groups, StringComparer.Ordinal);
+            _topicPartitions = Clone(source._topicPartitions);
+            _topicGroups = Clone(source._topicGroups);
+            _partitionGroups = Clone(source._partitionGroups);
+            _exactScopes = Clone(source._exactScopes);
+        }
+
+        public bool IsEmpty => Volatile.Read(ref _activeScopeCount) == 0;
+
+        public ShareScopeIndex Add(KafkaFaultScope scope, out bool eligibilityChanged)
+        {
+            if (scope is { Topic: null, Partition: null, GroupId: null })
+            {
+                eligibilityChanged = _allCount == 0;
+                _allCount++;
+                if (eligibilityChanged)
+                    _activeScopeCount++;
+                return this;
+            }
+
+            if (TryGetCounter(scope, out var counter))
+            {
+                var count = Volatile.Read(ref counter.Count);
+                eligibilityChanged = count == 0;
+                Volatile.Write(ref counter.Count, count + 1);
+                if (eligibilityChanged)
+                    _activeScopeCount++;
+                return this;
+            }
+
+            var updated = new ShareScopeIndex(this);
+            updated.AddNew(scope);
+            eligibilityChanged = true;
+            return updated;
+        }
+
+        public bool Remove(KafkaFaultScope scope)
+        {
+            if (scope is { Topic: null, Partition: null, GroupId: null })
+            {
+                _allCount--;
+                if (_allCount != 0)
+                    return false;
+
+                _activeScopeCount--;
+                return true;
+            }
+
+            if (!TryGetCounter(scope, out var counter))
+                return false;
+
+            var count = Volatile.Read(ref counter.Count) - 1;
+            Volatile.Write(ref counter.Count, count);
+            if (count != 0)
+                return false;
+
+            _activeScopeCount--;
+            return true;
+        }
 
         public bool Matches(string groupId, HashSet<TopicPartition> assignment)
         {
@@ -709,14 +768,105 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public bool Matches(string topic, int partition, string groupId) =>
-            all ||
-            topics is not null && topics.Contains(topic) ||
-            partitions is not null && partitions.Contains(partition) ||
-            groups is not null && groups.Contains(groupId) ||
-            topicPartitions is not null && topicPartitions.Contains(new TopicPartition(topic, partition)) ||
-            topicGroups is not null && topicGroups.Contains(new TopicGroupKey(topic, groupId)) ||
-            partitionGroups is not null && partitionGroups.Contains(new PartitionGroupKey(partition, groupId)) ||
-            exactScopes is not null && exactScopes.Contains(new ExactShareKey(topic, partition, groupId));
+            Volatile.Read(ref _allCount) != 0 ||
+            IsActive(_topics, topic) ||
+            IsActive(_partitions, partition) ||
+            IsActive(_groups, groupId) ||
+            IsActive(_topicPartitions, new TopicPartition(topic, partition)) ||
+            IsActive(_topicGroups, new TopicGroupKey(topic, groupId)) ||
+            IsActive(_partitionGroups, new PartitionGroupKey(partition, groupId)) ||
+            IsActive(_exactScopes, new ExactShareKey(topic, partition, groupId));
+
+        private void AddNew(KafkaFaultScope scope)
+        {
+            var counter = new ScopeCounter();
+            switch (scope)
+            {
+                case { Topic: null, Partition: null, GroupId: null }:
+                    _allCount = 1;
+                    break;
+                case { Topic: { } topic, Partition: null, GroupId: null }:
+                    (_topics ??= new(StringComparer.Ordinal)).Add(topic, counter);
+                    break;
+                case { Topic: null, Partition: { } partition, GroupId: null }:
+                    (_partitions ??= []).Add(partition, counter);
+                    break;
+                case { Topic: null, Partition: null, GroupId: { } groupId }:
+                    (_groups ??= new(StringComparer.Ordinal)).Add(groupId, counter);
+                    break;
+                case { Topic: { } topic, Partition: { } partition, GroupId: null }:
+                    (_topicPartitions ??= []).Add(new TopicPartition(topic, partition), counter);
+                    break;
+                case { Topic: { } topic, Partition: null, GroupId: { } groupId }:
+                    (_topicGroups ??= []).Add(new TopicGroupKey(topic, groupId), counter);
+                    break;
+                case { Topic: null, Partition: { } partition, GroupId: { } groupId }:
+                    (_partitionGroups ??= []).Add(new PartitionGroupKey(partition, groupId), counter);
+                    break;
+                case { Topic: { } topic, Partition: { } partition, GroupId: { } groupId }:
+                    (_exactScopes ??= []).Add(new ExactShareKey(topic, partition, groupId), counter);
+                    break;
+            }
+
+            _activeScopeCount++;
+        }
+
+        private bool TryGetCounter(KafkaFaultScope scope, out ScopeCounter counter)
+        {
+            switch (scope)
+            {
+                case { Topic: { } topic, Partition: null, GroupId: null }:
+                    return TryGetCounter(_topics, topic, out counter);
+                case { Topic: null, Partition: { } partition, GroupId: null }:
+                    return TryGetCounter(_partitions, partition, out counter);
+                case { Topic: null, Partition: null, GroupId: { } groupId }:
+                    return TryGetCounter(_groups, groupId, out counter);
+                case { Topic: { } topic, Partition: { } partition, GroupId: null }:
+                    return TryGetCounter(_topicPartitions, new TopicPartition(topic, partition), out counter);
+                case { Topic: { } topic, Partition: null, GroupId: { } groupId }:
+                    return TryGetCounter(_topicGroups, new TopicGroupKey(topic, groupId), out counter);
+                case { Topic: null, Partition: { } partition, GroupId: { } groupId }:
+                    return TryGetCounter(_partitionGroups, new PartitionGroupKey(partition, groupId), out counter);
+                case { Topic: { } topic, Partition: { } partition, GroupId: { } groupId }:
+                    return TryGetCounter(_exactScopes, new ExactShareKey(topic, partition, groupId), out counter);
+                default:
+                    counter = null!;
+                    return false;
+            }
+        }
+
+        private static bool IsActive<TKey>(Dictionary<TKey, ScopeCounter>? counts, TKey key)
+            where TKey : notnull
+            => counts is not null &&
+               counts.TryGetValue(key, out var counter) &&
+               Volatile.Read(ref counter.Count) != 0;
+
+        private static bool TryGetCounter<TKey>(
+            Dictionary<TKey, ScopeCounter>? counts,
+            TKey key,
+            out ScopeCounter counter)
+            where TKey : notnull
+        {
+            if (counts is not null && counts.TryGetValue(key, out var existing))
+            {
+                counter = existing;
+                return true;
+            }
+
+            counter = null!;
+            return false;
+        }
+
+        private static Dictionary<TKey, ScopeCounter>? Clone<TKey>(
+            Dictionary<TKey, ScopeCounter>? source,
+            IEqualityComparer<TKey>? comparer = null)
+            where TKey : notnull =>
+            source is null ? null : new Dictionary<TKey, ScopeCounter>(source, comparer);
+
+        private sealed class ScopeCounter
+        {
+            public int Count = 1;
+        }
     }
 
     private readonly record struct TopicGroupKey(string Topic, string GroupId);

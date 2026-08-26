@@ -303,6 +303,40 @@ public sealed class InMemoryAdminShareFaultTests
     }
 
     [Test]
+    public async Task AdminFault_InvalidConfigResourceDoesNotConsumeScriptedFailure()
+    {
+        var valid = ConfigResource.Topic("orders");
+        var invalidTopic = ConfigResource.Topic(string.Empty);
+        var invalidGroup = new ConfigResource
+        {
+            Type = ConfigResourceType.Group,
+            Name = " "
+        };
+
+        await AssertInvalidAdminRequestDoesNotConsumeFaultAsync<ArgumentException>(
+            admin => admin.DescribeConfigsAsync([valid, invalidTopic]).AsTask(),
+            admin => admin.DescribeConfigsAsync([valid]).AsTask());
+        await AssertInvalidAdminRequestDoesNotConsumeFaultAsync<ArgumentException>(
+            admin => admin.AlterConfigsAsync(
+                new Dictionary<ConfigResource, IReadOnlyList<ConfigEntry>>
+                {
+                    [valid] = [],
+                    [invalidGroup] = []
+                }).AsTask(),
+            admin => admin.AlterConfigsAsync(
+                new Dictionary<ConfigResource, IReadOnlyList<ConfigEntry>> { [valid] = [] }).AsTask());
+        await AssertInvalidAdminRequestDoesNotConsumeFaultAsync<ArgumentException>(
+            admin => admin.IncrementalAlterConfigsAsync(
+                new Dictionary<ConfigResource, IReadOnlyList<ConfigAlter>>
+                {
+                    [valid] = [],
+                    [invalidTopic] = []
+                }).AsTask(),
+            admin => admin.IncrementalAlterConfigsAsync(
+                new Dictionary<ConfigResource, IReadOnlyList<ConfigAlter>> { [valid] = [] }).AsTask());
+    }
+
+    [Test]
     public async Task AdminFault_EmptyTopicIdDoesNotConsumeScriptedFailure()
     {
         var cluster = new InMemoryKafkaCluster();

@@ -691,7 +691,7 @@ public sealed class InMemoryAdminClient :
         ThrowIfDisposed();
 
         var resourceList = resources.ToArray();
-        ValidateDistinct(resourceList, nameof(resources));
+        ValidateConfigResources(resourceList, nameof(resources), requireDistinct: true);
         if (resourceList.Length == 0)
             await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
         for (var index = 0; index < resourceList.Length; index++)
@@ -712,6 +712,7 @@ public sealed class InMemoryAdminClient :
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
         var resources = configs.Keys.ToArray();
+        ValidateConfigResources(resources, nameof(configs), requireDistinct: false);
         if (resources.Length == 0)
             await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
         foreach (var resource in resources)
@@ -727,6 +728,7 @@ public sealed class InMemoryAdminClient :
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
         var resources = configs.Keys.ToArray();
+        ValidateConfigResources(resources, nameof(configs), requireDistinct: false);
         if (resources.Length == 0)
             await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
         foreach (var resource in resources)
@@ -1718,6 +1720,24 @@ public sealed class InMemoryAdminClient :
         {
             ArgumentNullException.ThrowIfNull(values[index], parameterName);
             if (!seen.Add(values[index]))
+                throw new ArgumentException("Values must be unique.", parameterName);
+        }
+    }
+
+    private static void ValidateConfigResources(
+        IReadOnlyList<ConfigResource> resources,
+        string parameterName,
+        bool requireDistinct)
+    {
+        HashSet<ConfigResource>? seen = requireDistinct && resources.Count > 1 ? [] : null;
+        for (var index = 0; index < resources.Count; index++)
+        {
+            var resource = resources[index];
+            ArgumentNullException.ThrowIfNull(resource, parameterName);
+            ArgumentNullException.ThrowIfNull(resource.Name, parameterName);
+            if (resource.Type is ConfigResourceType.Topic or ConfigResourceType.Group)
+                ArgumentException.ThrowIfNullOrWhiteSpace(resource.Name, parameterName);
+            if (seen is not null && !seen.Add(resource))
                 throw new ArgumentException("Values must be unique.", parameterName);
         }
     }

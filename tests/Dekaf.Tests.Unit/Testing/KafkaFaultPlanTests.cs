@@ -142,7 +142,57 @@ public sealed class KafkaFaultPlanTests
                 plan,
                 new KafkaFaultScope(KafkaFaultOperation.ShareConsume, "shared", 0, "workers"),
                 failure);
+            await Assert.That(plan.HasPotentialShareMatch(
+                KafkaFaultOperation.ShareConsume,
+                "workers",
+                assignment)).IsFalse();
         }
+    }
+
+    [Test]
+    public async Task ShareIndex_RemovesConsumedScopesIncrementally()
+    {
+        var plan = new KafkaFaultPlan();
+        var scope = new KafkaFaultScope(
+            KafkaFaultOperation.ShareConsume,
+            "shared",
+            partition: 0,
+            groupId: "workers");
+        var assignment = new HashSet<TopicPartition> { new("shared", 0) };
+        var firstFailure = new InvalidOperationException("first");
+        var secondFailure = new InvalidOperationException("second");
+        plan.Fail(scope, firstFailure);
+        var indexedVersion = plan.ShareFaultIndexVersion;
+        plan.Fail(scope, secondFailure);
+
+        await Assert.That(plan.ShareFaultIndexVersion).IsEqualTo(indexedVersion);
+        await AssertFaultAsync(plan, scope, firstFailure);
+        await Assert.That(plan.ShareFaultIndexVersion).IsEqualTo(indexedVersion);
+        await Assert.That(plan.HasPotentialShareMatch(
+            KafkaFaultOperation.ShareConsume,
+            "workers",
+            assignment)).IsTrue();
+
+        await AssertFaultAsync(plan, scope, secondFailure);
+
+        await Assert.That(plan.ShareFaultIndexVersion).IsGreaterThan(indexedVersion);
+        await Assert.That(plan.HasPotentialShareMatch(
+            KafkaFaultOperation.ShareConsume,
+            "workers",
+            assignment)).IsFalse();
+    }
+
+    [Test]
+    public async Task ShareIndex_UnrelatedPlanChangesDoNotInvalidateVersion()
+    {
+        var plan = new KafkaFaultPlan();
+        var version = plan.ShareFaultIndexVersion;
+
+        plan.Fail(
+            new KafkaFaultScope(KafkaFaultOperation.Admin),
+            new InvalidOperationException("admin"));
+
+        await Assert.That(plan.ShareFaultIndexVersion).IsEqualTo(version);
     }
 
     [Test]
