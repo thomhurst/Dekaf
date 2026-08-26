@@ -1194,6 +1194,12 @@ internal readonly record struct ValidationCelValue(
         ReadOnlyMemory<byte> binaryPayload = default) =>
         new(kind, default, false, 0, null, binaryPayload, SizeIndex: sizeIndex);
 
+    internal static ValidationCelValue FromCollection(
+        ValidationCelValueKind kind,
+        ReadOnlyMemory<byte> encoded,
+        int sizeIndex) =>
+        new(kind, default, false, 0, null, encoded, SizeIndex: sizeIndex);
+
     internal static ValidationCelValue FromJson(ReadOnlyMemory<byte> json, int sizeIndex = -1)
     {
         if (json.IsEmpty)
@@ -1636,10 +1642,19 @@ internal sealed class ValidationCelUnaryNode(ValidationCelTokenKind operation, V
 internal sealed class ValidationCelBinaryNode(
     ValidationCelTokenKind operation,
     ValidationCelNode left,
-    ValidationCelNode right,
-    int equalityIndex = -1) : ValidationCelNode
+    ValidationCelNode right) : ValidationCelNode
 {
-    private readonly int _equalityIndex = equalityIndex;
+    private readonly int _leftValueIndex = left is ValidationCelThisNode leftThis
+        ? leftThis.ValueIndex
+        : -1;
+    private readonly int _rightValueIndex = right is ValidationCelThisNode rightThis
+        ? rightThis.ValueIndex
+        : -1;
+
+    internal bool UsesCachedEquality =>
+        (operation is ValidationCelTokenKind.Equal or ValidationCelTokenKind.NotEqual) &&
+        _leftValueIndex >= 0 &&
+        _rightValueIndex >= 0;
 
     internal override ValidationCelValue Evaluate(ValidationCelContext context)
     {
@@ -1688,52 +1703,48 @@ internal sealed class ValidationCelBinaryNode(
             ValidationCelValueKind.Number => AreNumbersEqual(left, right),
             ValidationCelValueKind.String => ValidationCelStrings.Evaluate(left, right, ValidationCelStringOperation.Equal),
             ValidationCelValueKind.Bytes => left.Utf8Literal.Span.SequenceEqual(right.Utf8Literal.Span),
-            ValidationCelValueKind.Object when left.Json.IsEmpty && right.Json.IsEmpty =>
-                AreBinaryObjectValuesEqual(left, right, equalityGeneration),
             ValidationCelValueKind.Object or ValidationCelValueKind.Array =>
-                AreJsonValuesEqual(left, right, equalityGeneration),
+                AreAggregateValuesEqual(left, right, equalityGeneration),
             _ => false
         };
     }
 
-    private bool AreBinaryObjectValuesEqual(
+    private bool AreAggregateValuesEqual(
         ValidationCelValue left,
         ValidationCelValue right,
         uint equalityGeneration)
     {
-        if (equalityGeneration != 0 && _equalityIndex >= 0 && CompiledValidationRule.TryGetEquality(
-                equalityGeneration,
-                _equalityIndex,
-                out var value))
-        {
-            return value;
-        }
-        return left.Utf8Literal.Span.SequenceEqual(right.Utf8Literal.Span);
-    }
-
-    private bool AreJsonValuesEqual(
-        ValidationCelValue left,
-        ValidationCelValue right,
-        uint equalityGeneration)
-    {
-        if (_equalityIndex < 0)
-            return ValidationCelJsonEquality.AreEqual(left.Json.Span, right.Json.Span);
+        if (_leftValueIndex < 0 || _rightValueIndex < 0)
+            return CompareAggregateValues(left, right);
         if (CompiledValidationRule.TryGetEquality(
                 equalityGeneration,
-                _equalityIndex,
+                _leftValueIndex,
+                _rightValueIndex,
                 out var value))
             return value;
 
-        value = ValidationCelJsonEquality.AreEqual(left.Json.Span, right.Json.Span);
+        value = CompareAggregateValues(left, right);
         CompiledValidationRule.SetEquality(
             equalityGeneration,
-            _equalityIndex,
+            _leftValueIndex,
+            _rightValueIndex,
             value);
         return value;
     }
 
     private static bool AreNumbersEqual(ValidationCelValue left, ValidationCelValue right) =>
         !HasNaN(left, right) && CompareNumbers(left, right) == 0;
+
+    private static bool CompareAggregateValues(ValidationCelValue left, ValidationCelValue right)
+    {
+        if (left.Json.IsEmpty || right.Json.IsEmpty)
+        {
+            return left.Json.IsEmpty && right.Json.IsEmpty &&
+                left.Utf8Literal.Span.SequenceEqual(right.Utf8Literal.Span);
+        }
+
+        return ValidationCelJsonEquality.AreEqual(left.Json.Span, right.Json.Span);
+    }
 
     private static int Compare(ValidationCelValue left, ValidationCelValue right)
     {
@@ -2801,7 +2812,7 @@ internal sealed class ValidationCelParser
                     leftValue.ValueIndex,
                     rightValue.ValueIndex));
             }
-            left = new ValidationCelBinaryNode(operation, left, right, equalityIndex);
+            left = new ValidationCelBinaryNode(operation, left, right);
         }
         return left;
     }

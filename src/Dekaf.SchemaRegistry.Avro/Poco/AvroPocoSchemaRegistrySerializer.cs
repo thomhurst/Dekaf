@@ -480,7 +480,7 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
             var payload = new ReadOnlyMemory<byte>(buffer, 0, length);
             if (ruleExecutor is null)
             {
-                _inlineRuleValidators!.Get(GeneratedSchema.Value).Validate(
+                _inlineRuleValidators!.Register(entry.Schema!, GeneratedSchema.Value).Validate(
                     payload,
                     entry.SchemaId,
                     _config.ValidationRulesFailFast);

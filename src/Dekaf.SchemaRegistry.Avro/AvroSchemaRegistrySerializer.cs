@@ -444,7 +444,7 @@ public sealed class AvroSchemaRegistrySerializer<
             var payload = new ReadOnlyMemory<byte>(memoryStream.GetBuffer(), 0, avroPayloadLength);
             if (_config.RuleExecutor is null)
             {
-                _inlineRuleValidators!.Get(avroSchema).Validate(
+                _inlineRuleValidators!.Register(schemaEntry.Schema!, avroSchema).Validate(
                     payload,
                     schemaId,
                     _config.ValidationRulesFailFast);

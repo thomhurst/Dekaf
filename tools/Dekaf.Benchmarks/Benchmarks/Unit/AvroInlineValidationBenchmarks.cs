@@ -20,7 +20,6 @@ public class AvroInlineValidationBenchmarks
             {
               "type": "record",
               "name": "ValidationBenchmarkRecord",
-              "confluent:rules": [{ "name": "root", "expr": "this.name == 'dekaf'" }],
               "fields": [
                 {
                   "name": "name",

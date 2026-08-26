@@ -158,13 +158,17 @@ internal sealed class AvroValueRulePlan
         if (!HasAnyRules)
             return AvroValidationValueDecoder.Read(_schema, ref reader);
 
-        var start = reader.Position;
-        var preview = reader;
-        var value = AvroValidationValueDecoder.Read(_schema, ref preview);
-        var payload = preview.Source.Slice(start, preview.Position - start);
-        var rootSize = value.SizeIndex == 0 ? AvroValidationValueDecoder.Count(_schema, payload) : -1;
+        var value = ValidationCelValue.Missing;
+        var preview = default(AvroValidationReader);
         if (!_schemaRules.IsEmpty)
         {
+            var start = reader.Position;
+            preview = reader;
+            value = AvroValidationValueDecoder.Read(_schema, ref preview);
+            var payload = preview.Source.Slice(start, preview.Position - start);
+            var rootSize = value.SizeIndex == 0
+                ? AvroValidationValueDecoder.Count(_schema, payload)
+                : -1;
             _schemaRules.Evaluate(
                 value,
                 payload,
@@ -195,7 +199,10 @@ internal sealed class AvroValueRulePlan
                 ValidateUnion(ref reader, now, failFast, ref violations, ref path);
                 break;
             default:
-                reader = preview;
+                if (_schemaRules.IsEmpty)
+                    value = AvroValidationValueDecoder.Read(_schema, ref reader);
+                else
+                    reader = preview;
                 break;
         }
         return value;
@@ -471,7 +478,7 @@ internal sealed class AvroCompiledRuleSet
         var memberValues = _memberCount == 0
             ? default
             : CompiledValidationRule.GetMemberValues(_memberCount);
-        var sizes = UsesSize || _members is not null
+        var sizes = UsesSize || _members is not null || rootSize >= 0
             ? CompiledValidationRule.GetSizeValues(_memberCount + 1)
             : default;
         if (rootSize >= 0)
@@ -855,11 +862,23 @@ internal static class AvroValidationValueDecoder
                     null,
                     reader.Source.Slice(recordStart, reader.Position - recordStart));
             case AvroSchema.Type.Array:
+            {
+                var collectionStart = reader.Position;
                 SkipCollection(((global::Avro.ArraySchema)schema).ItemSchema, isMap: false, ref reader);
-                return ValidationCelValue.FromCollection(ValidationCelValueKind.Array, 0);
+                return ValidationCelValue.FromCollection(
+                    ValidationCelValueKind.Array,
+                    reader.Source.Slice(collectionStart, reader.Position - collectionStart),
+                    0);
+            }
             case AvroSchema.Type.Map:
+            {
+                var collectionStart = reader.Position;
                 SkipCollection(((global::Avro.MapSchema)schema).ValueSchema, isMap: true, ref reader);
-                return ValidationCelValue.FromCollection(ValidationCelValueKind.Object, 0);
+                return ValidationCelValue.FromCollection(
+                    ValidationCelValueKind.Object,
+                    reader.Source.Slice(collectionStart, reader.Position - collectionStart),
+                    0);
+            }
             case AvroSchema.Type.Union:
                 var union = (global::Avro.UnionSchema)schema;
                 var branch = reader.ReadLong();
