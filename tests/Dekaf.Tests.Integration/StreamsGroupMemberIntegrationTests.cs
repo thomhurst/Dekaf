@@ -270,10 +270,20 @@ public sealed class StreamsGroupMemberIntegrationTests(KafkaTestContainer kafka)
         IStreamsGroupMember member,
         IReadOnlyCollection<int> expectedPartitions)
     {
-        var descriptions = await admin.DescribeStreamsGroupsAsync([member.GroupId]);
-        var targeted = descriptions[member.GroupId].Members.Single().TargetAssignment.ActiveTasks
-            .SelectMany(static taskSet => taskSet.Partitions)
-            .ToArray();
+        var memberId = member.Snapshot.MemberId;
+        var expected = expectedPartitions.ToHashSet();
+        var targeted = await TestWait.WaitForConditionAsync(
+            async () =>
+            {
+                var descriptions = await admin.DescribeStreamsGroupsAsync([member.GroupId]);
+                return descriptions[member.GroupId].Members
+                    .SingleOrDefault(candidate => candidate.MemberId == memberId)?
+                    .TargetAssignment.ActiveTasks
+                    .SelectMany(static taskSet => taskSet.Partitions)
+                    .ToArray() ?? [];
+            },
+            expected.SetEquals,
+            description: $"Streams target assignment for member {memberId}");
         await Assert.That(targeted).IsEquivalentTo(expectedPartitions);
 
         var heartbeat = await member.UpdateAsync(new StreamsGroupMemberUpdate());
