@@ -41,6 +41,28 @@ public sealed class InMemoryConsumerLagTests
     }
 
     [Test]
+    public async Task CurrentLag_AfterGroupRebalance_ReturnsNullForPartitionNoLongerOwned()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic(Partition.Topic, partitionCount: 2);
+        var options = new InMemoryConsumerOptions
+        {
+            GroupId = "lag-group",
+            AutoOffsetReset = AutoOffsetReset.Earliest
+        };
+        await using var first = new InMemoryConsumer<string, string>(cluster, options);
+        first.Subscribe(Partition.Topic);
+        var initiallyOwned = first.Assignment;
+        await using var second = new InMemoryConsumer<string, string>(cluster, options);
+        second.Subscribe(Partition.Topic);
+        var currentlyOwned = first.Assignment;
+        var lostPartition = initiallyOwned.Except(currentlyOwned).Single();
+
+        await Assert.That(first.GetCurrentLag(lostPartition)).IsNull();
+        await Assert.That(await first.QueryCurrentLagAsync(lostPartition)).IsNull();
+    }
+
+    [Test]
     public async Task QueryCurrentLagAsync_HonorsCancellation()
     {
         var cluster = new InMemoryKafkaCluster();

@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Reflection;
 using Dekaf.Consumer;
 using Dekaf.Protocol.Messages;
@@ -148,23 +147,14 @@ public sealed class ConsumerLagTests
         KafkaConsumer<string, string> consumer,
         WatermarkOffsets watermarks)
     {
-        GetWatermarks(consumer)[Partition] = watermarks;
-        GetLagEndOffsets(consumer)[Partition] = watermarks.High;
+        UpdateWatermarksFromFetchResponse(consumer, new FetchResponsePartition
+        {
+            PartitionIndex = Partition.Partition,
+            HighWatermark = watermarks.High,
+            LastStableOffset = watermarks.High,
+            LogStartOffset = watermarks.Low
+        });
     }
-
-    private static ConcurrentDictionary<TopicPartition, WatermarkOffsets> GetWatermarks(
-        KafkaConsumer<string, string> consumer) =>
-        (ConcurrentDictionary<TopicPartition, WatermarkOffsets>)(typeof(KafkaConsumer<string, string>)
-            .GetField("_watermarks", BindingFlags.NonPublic | BindingFlags.Instance)
-            ?.GetValue(consumer)
-            ?? throw new InvalidOperationException("_watermarks field not found"));
-
-    private static ConcurrentDictionary<TopicPartition, long> GetLagEndOffsets(
-        KafkaConsumer<string, string> consumer) =>
-        (ConcurrentDictionary<TopicPartition, long>)(typeof(KafkaConsumer<string, string>)
-            .GetField("_lagEndOffsets", BindingFlags.NonPublic | BindingFlags.Instance)
-            ?.GetValue(consumer)
-            ?? throw new InvalidOperationException("_lagEndOffsets field not found"));
 
     private static void UpdateWatermarksFromFetchResponse(
         KafkaConsumer<string, string> consumer,

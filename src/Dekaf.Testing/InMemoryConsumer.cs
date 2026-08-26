@@ -1478,7 +1478,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
         lock (_gate)
         {
-            if (!_assignment.Contains(partition)
+            if (!GetCurrentAssignmentUnderLock().Contains(partition)
                 || !_positions.TryGetValue(partition, out var position)
                 || position < 0)
             {

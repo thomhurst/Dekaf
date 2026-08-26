@@ -1,7 +1,7 @@
-using System.Collections.Concurrent;
 using System.Reflection;
 using BenchmarkDotNet.Attributes;
 using Dekaf.Consumer;
+using Dekaf.Protocol.Messages;
 
 namespace Dekaf.Benchmarks.Benchmarks.Unit;
 
@@ -25,18 +25,14 @@ public class ConsumerLagBenchmarks
         ]);
 
         var concrete = (KafkaConsumer<byte[], byte[]>)_consumer;
-        var watermarks = (ConcurrentDictionary<TopicPartition, WatermarkOffsets>)(
-            typeof(KafkaConsumer<byte[], byte[]>)
-                .GetField("_watermarks", BindingFlags.Instance | BindingFlags.NonPublic)
-                ?.GetValue(concrete)
-            ?? throw new InvalidOperationException("_watermarks field not found"));
-        watermarks[_partition] = new WatermarkOffsets(0, 1_000);
-        var lagEndOffsets = (ConcurrentDictionary<TopicPartition, long>)(
-            typeof(KafkaConsumer<byte[], byte[]>)
-                .GetField("_lagEndOffsets", BindingFlags.Instance | BindingFlags.NonPublic)
-                ?.GetValue(concrete)
-            ?? throw new InvalidOperationException("_lagEndOffsets field not found"));
-        lagEndOffsets[_partition] = 1_000;
+        typeof(KafkaConsumer<byte[], byte[]>)
+            .GetMethod("UpdateWatermarksFromFetchResponse", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(concrete, [_partition.Topic, new FetchResponsePartition
+            {
+                PartitionIndex = _partition.Partition,
+                HighWatermark = 1_000,
+                LogStartOffset = 0
+            }]);
     }
 
     [Benchmark]
