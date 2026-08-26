@@ -2581,7 +2581,12 @@ internal ref struct AvroValidationPath
     internal void AppendMapKey(ReadOnlySpan<byte> utf8)
     {
         var characterCount = Encoding.UTF8.GetCharCount(utf8);
-        EnsureCapacity(checked(characterCount * 2 + 4));
+        if (characterCount > (int.MaxValue - 4) / 2)
+        {
+            throw new SchemaRegistryRuleException(
+                "Could not evaluate Avro validation rules: map key is too large.");
+        }
+        EnsureCapacity(characterCount * 2 + 4);
         _buffer[Length++] = '[';
         _buffer[Length++] = '"';
         var start = Length;

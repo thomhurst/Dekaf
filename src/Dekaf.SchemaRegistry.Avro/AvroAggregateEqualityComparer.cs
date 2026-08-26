@@ -46,6 +46,7 @@ internal sealed class AvroAggregateEqualityComparer(
     object schemaToken,
     bool rawEqualityCompatible) : IValidationCelAggregateComparer
 {
+    private const int MaximumMapEntryCount = 1_048_576;
     private const int StackRecordFieldCount = 16;
     private const int StackMapEntryCount = 16;
     private const int StackMapBucketCount = 32;
@@ -409,6 +410,11 @@ internal sealed class AvroAggregateEqualityComparer(
             if (count == 0)
                 return checked((int)total);
             total = checked(total + count);
+            if (total > MaximumMapEntryCount)
+            {
+                throw InvalidPayload(
+                    $"map entry count exceeds the supported limit of {MaximumMapEntryCount}");
+            }
             for (long index = 0; index < count; index++)
             {
                 _ = reader.ReadLengthPrefixed();
@@ -706,10 +712,6 @@ internal static class AvroValueSchemaComparer
                     ((global::Avro.MapSchema)left).ValueSchema,
                     ((global::Avro.MapSchema)right).ValueSchema,
                     pairs),
-                AvroSchema.Type.Union => UnionsAreEqual(
-                    (global::Avro.UnionSchema)left,
-                    (global::Avro.UnionSchema)right,
-                    pairs),
                 AvroSchema.Type.Fixed =>
                     ((global::Avro.FixedSchema)left).Size == ((global::Avro.FixedSchema)right).Size,
                 _ => true
@@ -777,18 +779,4 @@ internal static class AvroValueSchemaComparer
         return true;
     }
 
-    private static bool UnionsAreEqual(
-        global::Avro.UnionSchema left,
-        global::Avro.UnionSchema right,
-        HashSet<AvroSchemaPair> pairs)
-    {
-        if (left.Count != right.Count)
-            return false;
-        for (var index = 0; index < left.Count; index++)
-        {
-            if (!AreCelCompatible(left[index], right[index], pairs))
-                return false;
-        }
-        return true;
-    }
 }

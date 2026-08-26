@@ -34,6 +34,8 @@ public class AvroInlineValidationBenchmarks
     private ReadOnlyMemory<byte> _nullableAggregatePayload;
     private AvroInlineRuleValidator _mixedFloatingValidator = null!;
     private ReadOnlyMemory<byte> _mixedFloatingPayload;
+    private AvroInlineRuleValidator _mixedFloatingArithmeticValidator = null!;
+    private ReadOnlyMemory<byte> _mixedFloatingArithmeticPayload;
     private AvroInlineRuleValidator _nanAggregateValidator = null!;
     private ReadOnlyMemory<byte> _nanAggregatePayload;
     private AvroInlineRuleValidator _rootNanAggregateValidator = null!;
@@ -278,6 +280,35 @@ public class AvroInlineValidationBenchmarks
         _mixedFloatingPayload = floatingStream.ToArray();
         _mixedFloatingValidator = new AvroInlineRuleValidator(floatingSchema);
         _mixedFloatingValidator.Validate(_mixedFloatingPayload, 6, failFast: false);
+
+        const string mixedFloatingArithmeticSchema = """
+            {
+              "type": "record",
+              "name": "MixedFloatingArithmeticBenchmarkRecord",
+              "confluent:rules": [{
+                "name": "arithmetic",
+                "expr": "this.exact + this.floating == 2 && this.exact - this.floating == 0"
+              }],
+              "fields": [
+                { "name": "exact", "type": "long" },
+                { "name": "floating", "type": "double" }
+              ]
+            }
+            """;
+        var arithmeticSchema = (RecordSchema)AvroSchema.Parse(mixedFloatingArithmeticSchema);
+        var arithmeticRecord = new GenericRecord(arithmeticSchema);
+        arithmeticRecord.Add("exact", 1L);
+        arithmeticRecord.Add("floating", 1d);
+        using var arithmeticStream = new MemoryStream();
+        var arithmeticEncoder = new BinaryEncoder(arithmeticStream);
+        new GenericDatumWriter<GenericRecord>(arithmeticSchema).Write(arithmeticRecord, arithmeticEncoder);
+        arithmeticEncoder.Flush();
+        _mixedFloatingArithmeticPayload = arithmeticStream.ToArray();
+        _mixedFloatingArithmeticValidator = new AvroInlineRuleValidator(arithmeticSchema);
+        _mixedFloatingArithmeticValidator.Validate(
+            _mixedFloatingArithmeticPayload,
+            14,
+            failFast: false);
 
         const string nanAggregateSchema = """
             {
@@ -593,6 +624,13 @@ public class AvroInlineValidationBenchmarks
     [Benchmark]
     public void ValidateMixedFloatingComparison() =>
         _mixedFloatingValidator.Validate(_mixedFloatingPayload, 6, failFast: false);
+
+    [Benchmark]
+    public void ValidateMixedFloatingArithmetic() =>
+        _mixedFloatingArithmeticValidator.Validate(
+            _mixedFloatingArithmeticPayload,
+            14,
+            failFast: false);
 
     [Benchmark]
     public void ValidateNaNAggregateInequality() =>

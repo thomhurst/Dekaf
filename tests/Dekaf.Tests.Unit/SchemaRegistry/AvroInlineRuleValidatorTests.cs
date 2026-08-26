@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Buffers.Binary;
+using System.Globalization;
 using Avro;
 using Avro.Generic;
 using Avro.IO;
@@ -602,12 +603,15 @@ public class AvroInlineRuleValidatorTests
         var record = new GenericRecord(schema);
         record.Add("value", 0.5d);
 
-        new AvroInlineRuleValidator(schema).Validate(
-            Serialize(record, schema),
-            26,
-            failFast: false);
+        var validator = new AvroInlineRuleValidator(schema);
+        var payload = Serialize(record, schema);
+        validator.Validate(payload, 26, failFast: false);
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var index = 0; index < 100; index++)
+            validator.Validate(payload, 26, failFast: false);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
-        await Task.CompletedTask;
+        await Assert.That(allocated).IsEqualTo(0);
     }
 
     [Test]
@@ -630,6 +634,36 @@ public class AvroInlineRuleValidatorTests
         var schema = (RecordSchema)AvroSchema.Parse(schemaText);
         var record = new GenericRecord(schema);
         record.Add("value", 9007199254740992d);
+
+        new AvroInlineRuleValidator(schema).Validate(
+            Serialize(record, schema),
+            26,
+            failFast: false);
+
+        await Task.CompletedTask;
+    }
+
+    [Test]
+    public async Task Validate_MixedFloatingArithmeticPreservesExactIntegerPrecision()
+    {
+        const string schemaText = """
+            {
+              "type": "record",
+              "name": "FloatingArithmeticPrecisionRuleRecord",
+              "confluent:rules": [{
+                "name": "precision",
+                "expr": "this.exact - this.floating == 9007199254740992 && this.floating + this.exact == 9007199254740994"
+              }],
+              "fields": [
+                { "name": "exact", "type": "long" },
+                { "name": "floating", "type": "double" }
+              ]
+            }
+            """;
+        var schema = (RecordSchema)AvroSchema.Parse(schemaText);
+        var record = new GenericRecord(schema);
+        record.Add("exact", 9007199254740993L);
+        record.Add("floating", 1d);
 
         new AvroInlineRuleValidator(schema).Validate(
             Serialize(record, schema),
@@ -1019,6 +1053,55 @@ public class AvroInlineRuleValidatorTests
         new AvroInlineRuleValidator(schema).Validate(payload, 31, failFast: false);
 
         await Task.CompletedTask;
+    }
+
+    [Test]
+    public async Task Validate_EqualMapsUsePooledIndexWithoutAllocating()
+    {
+        const string schemaText = """
+            {
+              "type": "record",
+              "name": "PooledMapEqualityRecord",
+              "confluent:rules": [{ "name": "equal", "expr": "this.left == this.right" }],
+              "fields": [
+                { "name": "left", "type": { "type": "map", "values": "int" } },
+                { "name": "right", "type": { "type": "map", "values": "int" } }
+              ]
+            }
+            """;
+        var schema = (RecordSchema)AvroSchema.Parse(schemaText);
+        var left = new Dictionary<string, object>();
+        var right = new Dictionary<string, object>();
+        for (var index = 0; index < 17; index++)
+            left.Add(index.ToString(CultureInfo.InvariantCulture), index);
+        for (var index = 16; index >= 0; index--)
+            right.Add(index.ToString(CultureInfo.InvariantCulture), index);
+        var record = new GenericRecord(schema);
+        record.Add("left", left);
+        record.Add("right", right);
+        var validator = new AvroInlineRuleValidator(schema);
+        var payload = Serialize(record, schema);
+
+        validator.Validate(payload, 31, failFast: false);
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var index = 0; index < 100; index++)
+            validator.Validate(payload, 31, failFast: false);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        await Assert.That(allocated).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task Validate_MapEqualityRejectsOversizedEntryIndex()
+    {
+        var schema = AvroSchema.Parse("""{ "type": "map", "values": "null" }""");
+        var comparer = new AvroAggregateEqualityComparerFactory().Create(schema)!;
+        ReadOnlyMemory<byte> payload = new byte[] { 0x82, 0x80, 0x80, 0x01 };
+
+        var exception = Assert.Throws<SchemaRegistryRuleException>(() =>
+            ((IValidationCelAggregateComparer)comparer).AreEqual(payload, comparer, default));
+
+        await Assert.That(exception.Message).Contains("supported limit");
     }
 
     [Test]

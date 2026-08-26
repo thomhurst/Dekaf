@@ -1859,6 +1859,7 @@ internal sealed class ValidationCelBinaryNode(
     ValidationCelNode left,
     ValidationCelNode right) : ValidationCelNode
 {
+    private const double MaximumExactlyRepresentableDoubleInteger = 9_007_199_254_740_992d;
     private readonly bool _usesAggregateValueIndexes =
         operation is ValidationCelTokenKind.Equal or ValidationCelTokenKind.NotEqual &&
         left.HasAggregateValueIndex &&
@@ -2008,15 +2009,65 @@ internal sealed class ValidationCelBinaryNode(
         throw Unsupported("Comparison operands must have matching numeric or string types.");
     }
 
-    private static ValidationCelValue Add(ValidationCelValue left, ValidationCelValue right) =>
-        left.IsFloating || right.IsFloating
-            ? ValidationCelValue.FromFloating(GetFloatingNumber(left) + GetFloatingNumber(right))
-            : ValidationCelValue.FromNumber(RequireNumber(left) + RequireNumber(right));
+    private static ValidationCelValue Add(ValidationCelValue left, ValidationCelValue right)
+    {
+        if (!left.IsFloating && !right.IsFloating)
+            return ValidationCelValue.FromNumber(RequireNumber(left) + RequireNumber(right));
+        var leftFloating = GetFloatingNumber(left);
+        var rightFloating = GetFloatingNumber(right);
+        if (!RequiresDecimalMixedArithmetic(left, leftFloating) &&
+            !RequiresDecimalMixedArithmetic(right, rightFloating))
+        {
+            return ValidationCelValue.FromFloating(leftFloating + rightFloating);
+        }
+        return TryGetDecimalArithmeticNumber(left, out var leftNumber) &&
+            TryGetDecimalArithmeticNumber(right, out var rightNumber)
+            ? ValidationCelValue.FromNumber(leftNumber + rightNumber)
+            : ValidationCelValue.FromFloating(leftFloating + rightFloating);
+    }
 
-    private static ValidationCelValue Subtract(ValidationCelValue left, ValidationCelValue right) =>
-        left.IsFloating || right.IsFloating
-            ? ValidationCelValue.FromFloating(GetFloatingNumber(left) - GetFloatingNumber(right))
-            : ValidationCelValue.FromNumber(RequireNumber(left) - RequireNumber(right));
+    private static ValidationCelValue Subtract(ValidationCelValue left, ValidationCelValue right)
+    {
+        if (!left.IsFloating && !right.IsFloating)
+            return ValidationCelValue.FromNumber(RequireNumber(left) - RequireNumber(right));
+        var leftFloating = GetFloatingNumber(left);
+        var rightFloating = GetFloatingNumber(right);
+        if (!RequiresDecimalMixedArithmetic(left, leftFloating) &&
+            !RequiresDecimalMixedArithmetic(right, rightFloating))
+        {
+            return ValidationCelValue.FromFloating(leftFloating - rightFloating);
+        }
+        return TryGetDecimalArithmeticNumber(left, out var leftNumber) &&
+            TryGetDecimalArithmeticNumber(right, out var rightNumber)
+            ? ValidationCelValue.FromNumber(leftNumber - rightNumber)
+            : ValidationCelValue.FromFloating(leftFloating - rightFloating);
+    }
+
+    private static bool RequiresDecimalMixedArithmetic(
+        ValidationCelValue value,
+        double floating) =>
+        !value.IsFloating && Math.Abs(floating) >= MaximumExactlyRepresentableDoubleInteger;
+
+    private static bool TryGetDecimalArithmeticNumber(
+        ValidationCelValue value,
+        out decimal number)
+    {
+        if (!value.IsFloating)
+        {
+            number = RequireNumber(value);
+            return true;
+        }
+
+        var floating = value.Floating;
+        number = 0;
+        if (double.IsNaN(floating) || double.IsInfinity(floating) ||
+            floating <= (double)decimal.MinValue || floating >= (double)decimal.MaxValue)
+        {
+            return false;
+        }
+        number = (decimal)floating;
+        return true;
+    }
 
     private static double GetFloatingNumber(ValidationCelValue value) =>
         value.IsFloating || value.IsFloatingLiteral
