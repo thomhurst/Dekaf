@@ -9,6 +9,8 @@ namespace Dekaf.Tests.Unit.Testing;
 
 public sealed class InMemoryAdminShareFaultTests
 {
+    private const int StreamsAdminTimeoutMs = 20;
+
     [Test]
     public async Task AdminFaults_HonorTopicScopeAndScriptOrderBeforeMutation()
     {
@@ -148,24 +150,24 @@ public sealed class InMemoryAdminShareFaultTests
                 {
                     [groupId] = new() { TopicPartitions = [partition] }
                 },
-                new ListStreamsGroupOffsetsOptions { TimeoutMs = 20 }).AsTask(),
+                new ListStreamsGroupOffsetsOptions { TimeoutMs = StreamsAdminTimeoutMs }).AsTask(),
             partitionScoped: true);
         await AssertStreamsAdminTimeoutAsync(
             static (admin, groupId, partition) => admin.AlterStreamsGroupOffsetsAsync(
                 groupId,
                 [new TopicPartitionOffset(partition.Topic, partition.Partition, 84)],
-                new AlterStreamsGroupOffsetsOptions { TimeoutMs = 20 }).AsTask(),
+                new AlterStreamsGroupOffsetsOptions { TimeoutMs = StreamsAdminTimeoutMs }).AsTask(),
             partitionScoped: true);
         await AssertStreamsAdminTimeoutAsync(
             static (admin, groupId, partition) => admin.DeleteStreamsGroupOffsetsAsync(
                 groupId,
                 [partition],
-                new DeleteStreamsGroupOffsetsOptions { TimeoutMs = 20 }).AsTask(),
+                new DeleteStreamsGroupOffsetsOptions { TimeoutMs = StreamsAdminTimeoutMs }).AsTask(),
             partitionScoped: true);
         await AssertStreamsAdminTimeoutAsync(
             static (admin, groupId, _) => admin.DeleteStreamsGroupsAsync(
                 [groupId],
-                new DeleteStreamsGroupsOptions { TimeoutMs = 20 }).AsTask(),
+                new DeleteStreamsGroupsOptions { TimeoutMs = StreamsAdminTimeoutMs }).AsTask(),
             partitionScoped: false);
     }
 
@@ -1084,6 +1086,8 @@ public sealed class InMemoryAdminShareFaultTests
     {
         var cluster = new InMemoryKafkaCluster();
         var admin = new InMemoryAdminClient(cluster);
+        CancellationTokenSource? timeoutSource = null;
+        admin.ConfigureTimeoutSourceTestHook = source => timeoutSource = source;
         const string groupId = "streams-timeout";
         var partition = new TopicPartition("input", 0);
         cluster.CreateTopic(partition.Topic);
@@ -1102,10 +1106,14 @@ public sealed class InMemoryAdminShareFaultTests
 
         try
         {
-            await barrier.WaitUntilEnteredAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5));
+            var entered = barrier.WaitUntilEnteredAsync();
+            await Assert.That(entered.IsCompletedSuccessfully).IsTrue();
+            await entered;
+            timeoutSource!.Cancel();
             var exception = await Assert.ThrowsAsync<KafkaTimeoutException>(() => pending);
             await Assert.That(exception!.TimeoutKind).IsEqualTo(TimeoutKind.Api);
-            await Assert.That(exception.Configured).IsEqualTo(TimeSpan.FromMilliseconds(20));
+            await Assert.That(exception.Configured)
+                .IsEqualTo(TimeSpan.FromMilliseconds(StreamsAdminTimeoutMs));
         }
         finally
         {

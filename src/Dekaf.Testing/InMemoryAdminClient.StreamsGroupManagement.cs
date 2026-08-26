@@ -258,14 +258,22 @@ public sealed partial class InMemoryAdminClient
         ErrorCode = ErrorCode.None
     };
 
-    private static async ValueTask<T> ExecuteWithTimeoutAsync<T>(
+    private async ValueTask<T> ExecuteWithTimeoutAsync<T>(
         Func<CancellationToken, ValueTask<T>> operation,
         int timeoutMs,
         string operationName,
         CancellationToken cancellationToken)
     {
         using var timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeoutSource.CancelAfter(timeoutMs);
+        if (ConfigureTimeoutSourceTestHook is { } configureTimeoutSource)
+        {
+            configureTimeoutSource(timeoutSource);
+        }
+        else
+        {
+            timeoutSource.CancelAfter(timeoutMs);
+        }
+
         try
         {
             return await operation(timeoutSource.Token).ConfigureAwait(false);
