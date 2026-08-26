@@ -138,7 +138,7 @@ await using var consumer = await Kafka.CreateShareConsumer<string, string>()
     .WithGroupId("order-workers")
     .WithAcknowledgementCommitCallback(results =>
     {
-        foreach (var result in results.Span)
+        foreach (var result in results)
         {
             if (result.Exception is null)
             {
@@ -156,6 +156,8 @@ await using var consumer = await Kafka.CreateShareConsumer<string, string>()
 ```
 
 One `ShareAcknowledgementCommitResult` is reported per topic-partition. `Offsets` are ascending, `Succeeded` is true when `Exception` is null, and results are ordered by topic (ordinal) then partition.
+
+The result span is valid only while the callback runs. Copy individual result values when they must be retained. Each result's `Offsets` is an allocation-free view that supports indexed access, `foreach`, and `CopyTo`.
 
 The callback covers both acknowledgement transports:
 

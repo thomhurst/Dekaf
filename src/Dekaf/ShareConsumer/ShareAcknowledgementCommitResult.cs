@@ -4,11 +4,11 @@ namespace Dekaf.ShareConsumer;
 /// Reports the broker outcome for one topic-partition in a completed share-consumer
 /// acknowledgement commit.
 /// </summary>
-public sealed class ShareAcknowledgementCommitResult
+public readonly struct ShareAcknowledgementCommitResult
 {
     internal ShareAcknowledgementCommitResult(
         TopicPartition topicPartition,
-        ReadOnlyMemory<long> offsets,
+        ShareAcknowledgedOffsets offsets,
         Exception? exception)
     {
         TopicPartition = topicPartition;
@@ -22,9 +22,9 @@ public sealed class ShareAcknowledgementCommitResult
     public TopicPartition TopicPartition { get; }
 
     /// <summary>
-    /// Gets the acknowledged offsets in ascending order.
+    /// Gets an allocation-free view of the acknowledged offsets in ascending order.
     /// </summary>
-    public ReadOnlyMemory<long> Offsets { get; }
+    public ShareAcknowledgedOffsets Offsets { get; }
 
     /// <summary>
     /// Gets the final exception after broker retries, or <see langword="null"/> when all

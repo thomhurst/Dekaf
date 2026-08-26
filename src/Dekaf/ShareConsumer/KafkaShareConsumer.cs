@@ -40,7 +40,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
     private readonly AcknowledgementTracker _ackTracker = new();
     private readonly CompressionCodecRegistry _compressionCodecs;
     private readonly ILogger _logger;
-    private readonly Action<ReadOnlyMemory<ShareAcknowledgementCommitResult>>? _acknowledgementCommitCallback;
+    private readonly ShareAcknowledgementCommitCallback? _acknowledgementCommitCallback;
 
     // ThreadStatic reusable SerializationContext to avoid per-record allocations in ParsePartitionRecords.
     // Matches the pattern used by ConsumeResult<TKey, TValue> in the regular consumer.
@@ -1601,55 +1601,14 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         if (callback is null || acknowledgements is null || acknowledgements.Count == 0)
             return;
 
-        var topicPartitions = new TopicPartition[acknowledgements.Count];
-        acknowledgements.Keys.CopyTo(topicPartitions, 0);
-        System.Array.Sort<TopicPartition>(topicPartitions, CompareTopicPartitions);
-
-        var results = new ShareAcknowledgementCommitResult[topicPartitions.Length];
-        for (var i = 0; i < topicPartitions.Length; i++)
-        {
-            var topicPartition = topicPartitions[i];
-            Exception? exception = null;
-            errors?.TryGetValue(topicPartition, out exception);
-            results[i] = new ShareAcknowledgementCommitResult(
-                topicPartition,
-                GetAcknowledgedOffsets(acknowledgements[topicPartition]),
-                exception);
-        }
-
         try
         {
-            callback(results);
+            AcknowledgementCommitCallbackInvoker.Invoke(callback, acknowledgements, errors);
         }
         catch (Exception ex)
         {
             LogAcknowledgementCommitCallbackFailed(ex);
         }
-    }
-
-    private static int CompareTopicPartitions(TopicPartition left, TopicPartition right)
-    {
-        var topicComparison = string.CompareOrdinal(left.Topic, right.Topic);
-        return topicComparison != 0
-            ? topicComparison
-            : left.Partition.CompareTo(right.Partition);
-    }
-
-    private static long[] GetAcknowledgedOffsets(List<AcknowledgementBatchData> batches)
-    {
-        var count = 0;
-        foreach (var batch in batches)
-            count = checked(count + batch.AcknowledgeTypes.Length);
-
-        var offsets = new long[count];
-        var index = 0;
-        foreach (var batch in batches)
-        {
-            for (var i = 0; i < batch.AcknowledgeTypes.Length; i++)
-                offsets[index++] = batch.FirstOffset + i;
-        }
-
-        return offsets;
     }
 
     private void TrackRenewalDisposition(

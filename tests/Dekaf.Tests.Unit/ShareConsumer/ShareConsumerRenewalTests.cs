@@ -521,10 +521,10 @@ public sealed class ShareConsumerRenewalTests
         await Assert.That(outcomes).IsNotNull();
         await Assert.That(outcomes!).Count().IsEqualTo(2);
         await Assert.That(outcomes[0].TopicPartition).IsEqualTo(new TopicPartition("topic", 0));
-        await Assert.That(outcomes[0].Offsets.ToArray()).IsEquivalentTo([40L, 42L]);
+        await Assert.That(CopyOffsets(outcomes[0].Offsets)).IsEquivalentTo([40L, 42L]);
         await Assert.That(outcomes[0].Succeeded).IsTrue();
         await Assert.That(outcomes[1].TopicPartition).IsEqualTo(new TopicPartition("topic", 1));
-        await Assert.That(outcomes[1].Offsets.ToArray()).IsEquivalentTo([41L]);
+        await Assert.That(CopyOffsets(outcomes[1].Offsets)).IsEquivalentTo([41L]);
         await Assert.That(outcomes[1].Succeeded).IsTrue();
     }
 
@@ -689,7 +689,7 @@ public sealed class ShareConsumerRenewalTests
 
         await Assert.That(outcomes).HasSingleItem();
         await Assert.That(outcomes![0].Succeeded).IsTrue();
-        await Assert.That(outcomes[0].Offsets.ToArray()).IsEquivalentTo([42L]);
+        await Assert.That(CopyOffsets(outcomes[0].Offsets)).IsEquivalentTo([42L]);
     }
 
     [Test]
@@ -856,7 +856,7 @@ public sealed class ShareConsumerRenewalTests
         ShareAcknowledgementMode acknowledgementMode = ShareAcknowledgementMode.Explicit,
         int maxPollRecords = 500,
         CapturingConnection? secondConnection = null,
-        Action<ReadOnlyMemory<ShareAcknowledgementCommitResult>>? acknowledgementCommitCallback = null)
+        ShareAcknowledgementCommitCallback? acknowledgementCommitCallback = null)
     {
         var options = new ShareConsumerOptions
         {
@@ -1103,6 +1103,13 @@ public sealed class ShareConsumerRenewalTests
         return (bool)tracker.GetType()
             .GetProperty("HasPending", BindingFlags.Instance | BindingFlags.NonPublic)!
             .GetValue(tracker)!;
+    }
+
+    private static long[] CopyOffsets(ShareAcknowledgedOffsets offsets)
+    {
+        var copy = new long[offsets.Length];
+        offsets.CopyTo(copy);
+        return copy;
     }
 
     private static Dictionary<TopicPartition, List<AcknowledgementBatchData>> FlushPendingAcknowledgements(

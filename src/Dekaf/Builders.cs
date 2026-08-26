@@ -3414,7 +3414,7 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
     private int _fetchMaxWaitMs = 200;
     private int _maxPollRecords = 500;
     private ShareAcknowledgementMode _acknowledgementMode = ShareAcknowledgementMode.Implicit;
-    private Action<ReadOnlyMemory<ShareAcknowledgementCommitResult>>? _acknowledgementCommitCallback;
+    private ShareAcknowledgementCommitCallback? _acknowledgementCommitCallback;
     private ShareAcquireMode _shareAcquireMode = ShareAcquireMode.BatchOptimized;
     private int _sessionTimeoutMs = 45000;
     private int _heartbeatIntervalMs = 3000;
@@ -3550,11 +3550,12 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
     /// on the thread continuing <see cref="IKafkaShareConsumer{TKey,TValue}.PollAsync"/>,
     /// <see cref="IKafkaShareConsumer{TKey,TValue}.CommitAsync"/>, or close. Results are ordered
     /// by topic using ordinal comparison, then by partition. Callback exceptions are logged and
-    /// ignored. Keep the callback non-blocking and do not re-enter the consumer.
+    /// ignored. The result span is valid only for the callback invocation. Keep the callback
+    /// non-blocking and do not re-enter the consumer.
     /// </summary>
     /// <param name="callback">Callback that receives one result per acknowledged topic-partition.</param>
     public ShareConsumerBuilder<TKey, TValue> WithAcknowledgementCommitCallback(
-        Action<ReadOnlyMemory<ShareAcknowledgementCommitResult>> callback)
+        ShareAcknowledgementCommitCallback callback)
     {
         _acknowledgementCommitCallback = callback ?? throw new ArgumentNullException(nameof(callback));
         return this;

@@ -191,7 +191,9 @@ public class ShareConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
         await Assert.That(outcomes).HasSingleItem();
         await Assert.That(outcomes![0].TopicPartition)
             .IsEqualTo(new TopicPartition(topic, message.Partition));
-        await Assert.That(outcomes[0].Offsets.ToArray()).IsEquivalentTo([message.Offset]);
+        var acknowledgedOffsets = new long[outcomes[0].Offsets.Length];
+        outcomes[0].Offsets.CopyTo(acknowledgedOffsets);
+        await Assert.That(acknowledgedOffsets).IsEquivalentTo([message.Offset]);
         await Assert.That(outcomes[0].Succeeded).IsTrue();
     }
 

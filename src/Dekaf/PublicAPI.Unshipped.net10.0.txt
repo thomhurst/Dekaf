@@ -458,11 +458,24 @@ Dekaf.Producer.ProducerPartitionMetadata.ReplicaIds.init -> void (forwarded, con
 Dekaf.Producer.ProducerPartitionMetadata.TopicPartition.get -> Dekaf.TopicPartition (forwarded, contained in Dekaf.Abstractions)
 Dekaf.Producer.ProducerPartitionMetadata.TopicPartition.init -> void (forwarded, contained in Dekaf.Abstractions)
 static Dekaf.Producer.ProducerExtensions.GetPartitionsForAsync<TKey, TValue>(this Dekaf.Producer.IKafkaProducer<TKey, TValue>! producer, string! topic, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyList<Dekaf.Producer.ProducerPartitionMetadata!>!>
+Dekaf.ShareConsumer.ShareAcknowledgedOffsets
+Dekaf.ShareConsumer.ShareAcknowledgedOffsets.Enumerator
+Dekaf.ShareConsumer.ShareAcknowledgedOffsets.Enumerator.Current.get -> long
+Dekaf.ShareConsumer.ShareAcknowledgedOffsets.Enumerator.Enumerator() -> void
+Dekaf.ShareConsumer.ShareAcknowledgedOffsets.Enumerator.MoveNext() -> bool
+Dekaf.ShareConsumer.ShareAcknowledgedOffsets.GetEnumerator() -> Dekaf.ShareConsumer.ShareAcknowledgedOffsets.Enumerator
+Dekaf.ShareConsumer.ShareAcknowledgedOffsets.Length.get -> int
+Dekaf.ShareConsumer.ShareAcknowledgedOffsets.ShareAcknowledgedOffsets() -> void
+Dekaf.ShareConsumer.ShareAcknowledgedOffsets.CopyTo(System.Span<long> destination) -> void
+Dekaf.ShareConsumer.ShareAcknowledgedOffsets.this[int index].get -> long
+Dekaf.ShareConsumer.ShareAcknowledgementCommitCallback
+virtual Dekaf.ShareConsumer.ShareAcknowledgementCommitCallback.Invoke(System.ReadOnlySpan<Dekaf.ShareConsumer.ShareAcknowledgementCommitResult> results) -> void
 Dekaf.ShareConsumer.ShareAcknowledgementCommitResult
 Dekaf.ShareConsumer.ShareAcknowledgementCommitResult.Exception.get -> System.Exception?
-Dekaf.ShareConsumer.ShareAcknowledgementCommitResult.Offsets.get -> System.ReadOnlyMemory<long>
+Dekaf.ShareConsumer.ShareAcknowledgementCommitResult.Offsets.get -> Dekaf.ShareConsumer.ShareAcknowledgedOffsets
+Dekaf.ShareConsumer.ShareAcknowledgementCommitResult.ShareAcknowledgementCommitResult() -> void
 Dekaf.ShareConsumer.ShareAcknowledgementCommitResult.Succeeded.get -> bool
 Dekaf.ShareConsumer.ShareAcknowledgementCommitResult.TopicPartition.get -> Dekaf.TopicPartition
-Dekaf.ShareConsumer.ShareConsumerOptions.AcknowledgementCommitCallback.get -> System.Action<System.ReadOnlyMemory<Dekaf.ShareConsumer.ShareAcknowledgementCommitResult!>>?
+Dekaf.ShareConsumer.ShareConsumerOptions.AcknowledgementCommitCallback.get -> Dekaf.ShareConsumer.ShareAcknowledgementCommitCallback?
 Dekaf.ShareConsumer.ShareConsumerOptions.AcknowledgementCommitCallback.init -> void
-Dekaf.ShareConsumerBuilder<TKey, TValue>.WithAcknowledgementCommitCallback(System.Action<System.ReadOnlyMemory<Dekaf.ShareConsumer.ShareAcknowledgementCommitResult!>>! callback) -> Dekaf.ShareConsumerBuilder<TKey, TValue>!
+Dekaf.ShareConsumerBuilder<TKey, TValue>.WithAcknowledgementCommitCallback(Dekaf.ShareConsumer.ShareAcknowledgementCommitCallback! callback) -> Dekaf.ShareConsumerBuilder<TKey, TValue>!
