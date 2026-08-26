@@ -1,0 +1,31 @@
+edition = "2023";
+
+package dekaf.validation.editions;
+
+import "confluent/meta.proto";
+
+option csharp_namespace = "Dekaf.Tests.Unit.SchemaRegistry.ProtobufFixtures";
+option features.enum_type = CLOSED;
+
+enum ValidationEditionClosedStatus {
+  VALIDATION_EDITION_CLOSED_STATUS_UNSPECIFIED = 0;
+  VALIDATION_EDITION_CLOSED_STATUS_ACTIVE = 1;
+}
+
+message ValidationEditionClosedEnumEnvelope {
+  repeated ValidationEditionClosedStatus values = 1 [(confluent.field_meta) = {
+    rules: {
+      name: "closed-enum-unknowns"
+      expr: "size(this) == 0"
+    }
+  }];
+}
+
+message ValidationEditionClosedEnumBenchmarkEnvelope {
+  repeated ValidationEditionClosedStatus values = 1 [(confluent.field_meta) = {
+    rules: {
+      name: "closed-enum-known-value"
+      expr: "size(this) == 1"
+    }
+  }];
+}

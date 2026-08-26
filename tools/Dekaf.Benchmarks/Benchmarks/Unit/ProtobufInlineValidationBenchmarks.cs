@@ -24,6 +24,7 @@ public class ProtobufInlineValidationBenchmarks
     private ProtobufInlineRuleValidator _mapEqualityValidator = null!;
     private ProtobufInlineRuleValidator _collectionEqualityValidator = null!;
     private ProtobufInlineRuleValidator _sint32Validator = null!;
+    private ProtobufInlineRuleValidator _editionClosedEnumValidator = null!;
     private ProtobufInlineRuleExecutor _alternatingSchemaExecutor = null!;
     private Schema _serializedSchema = null!;
     private ProtobufSchemaRegistrySerializer<ValidationEnvelope> _serializer = null!;
@@ -38,6 +39,7 @@ public class ProtobufInlineValidationBenchmarks
     private byte[] _mapEqualityPayload = null!;
     private byte[] _collectionEqualityPayload = null!;
     private byte[] _sint32Payload = null!;
+    private byte[] _editionClosedEnumPayload = null!;
     private int _schemaIndex;
     private SerializationContext _context;
 
@@ -53,6 +55,7 @@ public class ProtobufInlineValidationBenchmarks
         _mapEqualityPayload = CreateMapEqualityPayload();
         _collectionEqualityPayload = CreateCollectionEqualityPayload();
         _sint32Payload = [8, 1];
+        _editionClosedEnumPayload = [10, 1, 1];
         _validator = new ProtobufInlineRuleValidator(ValidationEnvelope.Descriptor);
         _semanticEqualityValidator = new ProtobufInlineRuleValidator(
             ValidationMessageEqualityEnvelope.Descriptor);
@@ -62,6 +65,8 @@ public class ProtobufInlineValidationBenchmarks
             ValidationCollectionEnvelope.Descriptor);
         _sint32Validator = new ProtobufInlineRuleValidator(
             ValidationSint32BenchmarkEnvelope.Descriptor);
+        _editionClosedEnumValidator = new ProtobufInlineRuleValidator(
+            ValidationEditionClosedEnumBenchmarkEnvelope.Descriptor);
         _alternatingSchemaExecutor = new ProtobufInlineRuleExecutor(
             new BenchmarkSchemaRegistryClient(),
             ValidationEnvelope.Descriptor);
@@ -102,6 +107,10 @@ public class ProtobufInlineValidationBenchmarks
             schemaId: 1,
             failFast: false);
         _sint32Validator.Validate(_sint32Payload, schemaId: 1, failFast: false);
+        _editionClosedEnumValidator.Validate(
+            _editionClosedEnumPayload,
+            schemaId: 1,
+            failFast: false);
         _alternatingSchemaExecutor.Validate(_payload, schemaId: 2, _serializedSchema, failFast: false);
         _alternatingSchemaExecutor.Validate(_payload, schemaId: 3, _serializedSchema, failFast: false);
         var destination = _destination;
@@ -151,6 +160,13 @@ public class ProtobufInlineValidationBenchmarks
     [Benchmark]
     public void ValidateSInt32() =>
         _sint32Validator.Validate(_sint32Payload, schemaId: 1, failFast: false);
+
+    [Benchmark]
+    public void ValidateEditionClosedEnum() =>
+        _editionClosedEnumValidator.Validate(
+            _editionClosedEnumPayload,
+            schemaId: 1,
+            failFast: false);
 
     [Benchmark]
     public void ValidateAlternatingRegisteredSchemas()

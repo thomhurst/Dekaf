@@ -768,6 +768,25 @@ public sealed class ProtobufInlineRuleValidatorTests
     }
 
     [Test]
+    public async Task Validate_EditionsClosedEnumExcludesUnknownPackedValues()
+    {
+        var packed = new ArrayBufferWriter<byte>();
+        WriteVarint(packed, 99);
+        var payload = new ArrayBufferWriter<byte>();
+        WriteLengthDelimited(payload, fieldNumber: 1, packed.WrittenSpan);
+        var validator = new ProtobufInlineRuleValidator(
+            ValidationEditionClosedEnumEnvelope.Descriptor);
+
+        validator.Validate(payload.WrittenMemory, schemaId: 18, failFast: false);
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var index = 0; index < 100; index++)
+            validator.Validate(payload.WrittenMemory, schemaId: 18, failFast: false);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        await Assert.That(allocated).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task Validate_SInt32TruncatesOverlongVarintBeforeZigZagDecoding()
     {
         var payload = new ArrayBufferWriter<byte>();
@@ -995,6 +1014,48 @@ public sealed class ProtobufInlineRuleValidatorTests
 
         await Assert.That(exception.Violations.Select(static error => error.Rule.Name))
             .Contains("name-required");
+    }
+
+    [Test]
+    public async Task Deserializer_GuidInlineValidationUsesRegisteredDescriptor()
+    {
+        using var registry = new MockSchemaRegistryClient();
+        var descriptor = ValidationEnvelope.Descriptor.File.ToProto();
+        var age = descriptor.MessageType[0].Field[0];
+        var meta = age.Options.GetExtension(MetaExtensions.FieldMeta).Clone();
+        meta.Rules[0].Expr = "this <= 0";
+        age.Options.SetExtension(MetaExtensions.FieldMeta, meta);
+        var schemaId = await registry.RegisterSchemaAsync(
+            "validation-topic-value",
+            new Schema
+            {
+                SchemaType = SchemaType.Protobuf,
+                SchemaString = descriptor.ToByteString().ToBase64()
+            });
+        var guid = new Guid(schemaId, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+        var headerValue = new byte[SchemaIdentityFraming.SchemaGuidFrameSize + 1];
+        SchemaIdentityFraming.CreateSchemaGuidFrame(guid).CopyTo(headerValue, 0);
+        var context = new SerializationContext
+        {
+            Topic = "validation-topic",
+            Component = SerializationComponent.Value,
+            Headers = new Headers(1).Add(SchemaIdentityHeaderNames.Value, headerValue)
+        };
+        await using var deserializer = new ProtobufSchemaRegistryDeserializer<ValidationEnvelope>(
+            registry,
+            new ProtobufDeserializerConfig
+            {
+                SchemaIdStrategy = SchemaIdDeserializerStrategy.Header,
+                SkipSchemaValidation = true,
+                ValidationRulesExecution = ValidationRulesExecution.AfterDomainRules
+            });
+
+        var exception = Assert.Throws<ValidationRulesFailedException>(() =>
+            deserializer.Deserialize(CreateValidMessage().ToByteArray(), context));
+
+        await Assert.That(exception.Violations.Select(static error => error.Rule.Name))
+            .Contains("age-lower-bound");
+        await Assert.That(registry.LookupSchemaCallCount).IsEqualTo(1);
     }
 
     [Test]

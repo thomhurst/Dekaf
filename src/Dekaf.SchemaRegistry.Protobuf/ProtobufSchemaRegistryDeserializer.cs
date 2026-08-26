@@ -525,7 +525,8 @@ public sealed class ProtobufSchemaRegistryDeserializer<T>
         && lazy.Value.IsCompletedSuccessfully;
 
     private bool RequiresGuidSchema =>
-        !_config.SkipSchemaValidation || _ruleExecutor is not null || _migrationRunner is not null;
+        !_config.SkipSchemaValidation || _ruleExecutor is not null || _inlineRuleExecutor is not null ||
+        _migrationRunner is not null;
 
     private Task<GuidResolvedSchema> GetGuidSchemaAsync(
         GuidTopicKey key,
@@ -579,7 +580,7 @@ public sealed class ProtobufSchemaRegistryDeserializer<T>
                 $"Schema with GUID {key.SchemaGuid:D} is not a Protobuf schema. Type: {unscopedSchema.SchemaType}");
         }
 
-        if (_ruleExecutor is null && _migrationRunner is null)
+        if (_ruleExecutor is null && _inlineRuleExecutor is null && _migrationRunner is null)
             return new GuidResolvedSchema(-1, null, unscopedSchema);
 
         var subject = _subjectNames is null

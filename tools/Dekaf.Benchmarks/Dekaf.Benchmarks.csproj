@@ -41,6 +41,10 @@
               ProtoRoot="..\..\tests\Dekaf.Tests.Unit\Protos"
               Link="Protos\protobuf_validation.proto"
               GrpcServices="None" />
+    <Protobuf Include="..\..\tests\Dekaf.Tests.Unit\Protos\protobuf_validation_editions.proto"
+              ProtoRoot="..\..\tests\Dekaf.Tests.Unit\Protos"
+              Link="Protos\protobuf_validation_editions.proto"
+              GrpcServices="None" />
     <Protobuf Include="..\..\tests\Dekaf.Tests.Unit\Protos\protobuf_validation_child.proto"
               ProtoRoot="..\..\tests\Dekaf.Tests.Unit\Protos"
               Link="Protos\protobuf_validation_child.proto"

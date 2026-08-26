@@ -551,7 +551,7 @@ internal sealed class ProtobufMessageRulePlan
             while (reader.TryRead(out var wireField))
             {
                 if (!_fields.TryGetValue(wireField.Number, out var field) ||
-                    !ProtobufValidationValueDecoder.MatchesField(field.Descriptor, wireField))
+                    !field.Matches(wireField))
                     continue;
 
                 field.Observe(wireField, values, sizes, oneofOffset, ref mergedMessages);
@@ -753,11 +753,16 @@ internal sealed class ProtobufFieldRulePlan(
 {
     private readonly ValidationCelValue _defaultValue =
         ProtobufValidationValueDecoder.DeclaredDefault(descriptor);
+    private readonly bool _isClosedEnum = descriptor.FieldType == FieldType.Enum &&
+        ProtobufValidationValueDecoder.IsClosedEnum(descriptor);
 
     internal FieldDescriptor Descriptor { get; } = descriptor;
     internal ProtobufCompiledRuleSet Rules { get; } = rules;
     internal ProtobufMessageRulePlan? Child { get; } = child;
     internal int RuntimeIndex { get; } = runtimeIndex;
+
+    internal bool Matches(ProtobufValidationWireField field) =>
+        ProtobufValidationValueDecoder.MatchesField(Descriptor, field, _isClosedEnum);
 
     internal void GetMapValue(
         ReadOnlyMemory<byte> entryPayload,
@@ -833,7 +838,7 @@ internal sealed class ProtobufFieldRulePlan(
         {
             var count = field.WireType == ProtobufWireType.LengthDelimited &&
                         ProtobufValidationValueDecoder.IsPackable(Descriptor)
-                ? ProtobufValidationValueDecoder.CountPacked(Descriptor, field.Payload)
+                ? ProtobufValidationValueDecoder.CountPacked(Descriptor, field.Payload, _isClosedEnum)
                 : 1;
             if (!sizes.TryGet(RuntimeIndex + 1, out var current))
                 current = 0;
@@ -1699,7 +1704,7 @@ internal sealed class ProtobufMemberResolver
             while (reader.TryRead(out var field))
             {
                 if (!_fields.TryGetValue(field.Number, out var node) ||
-                    !ProtobufValidationValueDecoder.MatchesField(node.Descriptor, field))
+                    !node.Matches(field))
                     continue;
 
                 var previous = oneofs.Select(node.OneofIndex, node.RuntimeIndex);
@@ -1740,7 +1745,7 @@ internal sealed class ProtobufMemberResolver
             while (reader.TryRead(out var field))
             {
                 if (!_fields.TryGetValue(field.Number, out var node) ||
-                    !ProtobufValidationValueDecoder.MatchesField(node.Descriptor, field))
+                    !node.Matches(field))
                     continue;
 
                 var previous = oneofs.Select(node.OneofIndex, node.RuntimeIndex);
@@ -1771,6 +1776,8 @@ internal sealed class ProtobufMemberNode(FieldDescriptor descriptor)
 {
     private readonly ValidationCelValue _defaultValue =
         ProtobufValidationValueDecoder.DeclaredDefault(descriptor);
+    private readonly bool _isClosedEnum = descriptor.FieldType == FieldType.Enum &&
+        ProtobufValidationValueDecoder.IsClosedEnum(descriptor);
     private readonly FieldDescriptor? _mapKey = descriptor.IsMap
         ? descriptor.MessageType.FindFieldByNumber(1)
         : null;
@@ -1780,6 +1787,9 @@ internal sealed class ProtobufMemberNode(FieldDescriptor descriptor)
     internal int RuntimeIndex { get; set; }
     internal int OneofIndex { get; } = descriptor.ContainingOneof?.Index ?? -1;
     internal ProtobufMemberResolver? Child { get; set; }
+
+    internal bool Matches(ProtobufValidationWireField field) =>
+        ProtobufValidationValueDecoder.MatchesField(descriptor, field, _isClosedEnum);
 
     internal void Observe(
         ProtobufValidationWireField field,
@@ -1793,7 +1803,7 @@ internal sealed class ProtobufMemberNode(FieldDescriptor descriptor)
             {
                 var count = field.WireType == ProtobufWireType.LengthDelimited &&
                             ProtobufValidationValueDecoder.IsPackable(descriptor)
-                    ? ProtobufValidationValueDecoder.CountPacked(descriptor, field.Payload)
+                    ? ProtobufValidationValueDecoder.CountPacked(descriptor, field.Payload, _isClosedEnum)
                     : 1;
                 if (!sizes.TryGet(MemberIndex + 1, out var current))
                     current = 0;
@@ -2022,6 +2032,8 @@ internal ref struct ProtobufNestedMemberPayloads
 
 internal static class ProtobufValidationValueDecoder
 {
+    private static readonly ConditionalWeakTable<EnumDescriptor, EnumClosure> EditionEnumClosures = new();
+
     internal static ValidationCelValue MergeMessage(
         FieldDescriptor descriptor,
         ProtobufValidationWireField field,
@@ -2157,6 +2169,15 @@ internal static class ProtobufValidationValueDecoder
     }
 
     internal static int CountPacked(FieldDescriptor descriptor, ReadOnlyMemory<byte> payload)
+        => CountPacked(
+            descriptor,
+            payload,
+            descriptor.FieldType == FieldType.Enum && IsClosedEnum(descriptor));
+
+    internal static int CountPacked(
+        FieldDescriptor descriptor,
+        ReadOnlyMemory<byte> payload,
+        bool isClosedEnum)
     {
         var fieldType = descriptor.FieldType;
         var wireType = fieldType switch
@@ -2173,7 +2194,7 @@ internal static class ProtobufValidationValueDecoder
         var count = 0;
         var span = payload.Span;
         var offset = 0;
-        if (fieldType == FieldType.Enum && IsClosedEnum(descriptor))
+        if (isClosedEnum)
         {
             while (offset < span.Length)
             {
@@ -2221,8 +2242,18 @@ internal static class ProtobufValidationValueDecoder
     internal static bool MatchesField(
         FieldDescriptor descriptor,
         ProtobufValidationWireField field) =>
+        MatchesField(
+            descriptor,
+            field,
+            descriptor.FieldType == FieldType.Enum && IsClosedEnum(descriptor));
+
+    internal static bool MatchesField(
+        FieldDescriptor descriptor,
+        ProtobufValidationWireField field,
+        bool isClosedEnum) =>
         MatchesWireType(descriptor, field.WireType) &&
-        !IsUnknownClosedEnumValue(descriptor, field);
+        !(isClosedEnum && field.WireType == ProtobufWireType.Varint &&
+          descriptor.EnumType.FindValueByNumber(unchecked((int)field.Varint)) is null);
 
     internal static bool IsUnknownClosedEnumValue(
         FieldDescriptor descriptor,
@@ -2237,8 +2268,33 @@ internal static class ProtobufValidationValueDecoder
     internal static bool IsClosedEnum(FieldDescriptor descriptor)
     {
 #pragma warning disable CS0618 // Google.Protobuf exposes no public inherited enum-feature API.
-        return descriptor.EnumType.File.Syntax == Syntax.Proto2;
+        var syntax = descriptor.EnumType.File.Syntax;
+        if (syntax != Syntax.Editions)
+            return syntax == Syntax.Proto2;
 #pragma warning restore CS0618
+
+        return EditionEnumClosures.GetValue(
+            descriptor.EnumType,
+            static enumDescriptor => new EnumClosure(ResolveEditionEnumClosure(enumDescriptor))).IsClosed;
+    }
+
+    private static bool ResolveEditionEnumClosure(EnumDescriptor descriptor)
+    {
+        var features = descriptor.ToProto().Options?.Features;
+        if (features is { HasEnumType: true })
+            return features.EnumType == FeatureSet.Types.EnumType.Closed;
+
+        features = descriptor.File.ToProto().Options?.Features;
+        return features is
+        {
+            HasEnumType: true,
+            EnumType: FeatureSet.Types.EnumType.Closed
+        };
+    }
+
+    private sealed class EnumClosure(bool isClosed)
+    {
+        internal bool IsClosed { get; } = isClosed;
     }
 
     private static ValidationCelValue DecodeMessage(
