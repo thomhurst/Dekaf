@@ -80,6 +80,27 @@ foreach ($invalidPageInfo in @(
     }
 }
 
+foreach ($invalidPage in @(
+    [pscustomobject]@{
+        pageInfo = [pscustomobject]@{ hasNextPage = $false }
+    },
+    [pscustomobject]@{
+        nodes = $null
+        pageInfo = [pscustomobject]@{ hasNextPage = $false }
+    }
+)) {
+    $invalidNodesThrew = $false
+    try {
+        Get-AllReviewThreads -FetchPage { $invalidPage }
+    }
+    catch {
+        $invalidNodesThrew = $true
+    }
+    if (-not $invalidNodesThrew) {
+        throw 'Expected missing or null nodes to fail closed.'
+    }
+}
+
 $fetchFailureThrew = $false
 try {
     Get-AllReviewThreads -FetchPage { throw 'simulated API failure' }
