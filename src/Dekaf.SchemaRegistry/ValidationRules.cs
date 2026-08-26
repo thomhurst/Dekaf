@@ -451,6 +451,7 @@ internal struct ValidationCelMemberSlot
     internal int Length;
     internal ValidationCelValue Value;
     internal bool IsTyped;
+    internal bool IsPresent;
     internal uint Generation;
 }
 
@@ -459,6 +460,12 @@ internal readonly struct ValidationCelMemberValues(
     uint generation)
 {
     internal bool IsSet(int index) => values[index].Generation == generation;
+
+    internal bool IsPresent(int index)
+    {
+        ref readonly var value = ref values[index];
+        return value.Generation == generation && value.IsPresent;
+    }
 
     internal ReadOnlyMemory<byte> Get(int index, ReadOnlyMemory<byte> source)
     {
@@ -484,6 +491,7 @@ internal readonly struct ValidationCelMemberValues(
         value.Start = start;
         value.Length = length;
         value.IsTyped = false;
+        value.IsPresent = true;
         value.Generation = generation;
     }
 
@@ -492,6 +500,16 @@ internal readonly struct ValidationCelMemberValues(
         ref var value = ref values[index];
         value.Value = typedValue;
         value.IsTyped = true;
+        value.IsPresent = true;
+        value.Generation = generation;
+    }
+
+    internal void SetDefaultValue(int index, ValidationCelValue typedValue)
+    {
+        ref var value = ref values[index];
+        value.Value = typedValue;
+        value.IsTyped = true;
+        value.IsPresent = false;
         value.Generation = generation;
     }
 
@@ -1552,6 +1570,9 @@ internal sealed class ValidationCelThisNode(int memberIndex) : ValidationCelNode
 {
     internal int ValueIndex => memberIndex + 1;
 
+    internal bool IsPresent(ValidationCelContext context) =>
+        memberIndex < 0 || context.MemberValues.IsPresent(memberIndex);
+
     internal override ValidationCelValue Evaluate(ValidationCelContext context) =>
         context.UsesTypedValues
             ? memberIndex < 0
@@ -2356,7 +2377,9 @@ internal sealed class ValidationCelFunctionNode(
         {
             RequireArgumentCount(1);
             return ValidationCelValue.FromBoolean(
-                arguments[0].Evaluate(context).Kind != ValidationCelValueKind.Missing);
+                context.UsesTypedValues && arguments[0] is ValidationCelThisNode member
+                    ? member.IsPresent(context)
+                    : arguments[0].Evaluate(context).Kind != ValidationCelValueKind.Missing);
         }
 
         if (name == "size")

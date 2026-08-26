@@ -20,12 +20,14 @@ public class ProtobufInlineValidationBenchmarks
     private readonly ArrayBufferWriter<byte> _destination = new(512);
     private ProtobufInlineRuleValidator _validator = null!;
     private ProtobufInlineRuleValidator _semanticEqualityValidator = null!;
+    private ProtobufInlineRuleValidator _mapEqualityValidator = null!;
     private ProtobufSchemaRegistrySerializer<ValidationEnvelope> _serializer = null!;
     private ProtobufSchemaRegistrySerializer<ValidationEnvelope> _unvalidatedSerializer = null!;
     private CompiledValidationRule _mixedNumericRule = null!;
     private ValidationEnvelope _message = null!;
     private byte[] _payload = null!;
     private byte[] _semanticEqualityPayload = null!;
+    private byte[] _mapEqualityPayload = null!;
     private SerializationContext _context;
 
     [GlobalSetup]
@@ -34,9 +36,12 @@ public class ProtobufInlineValidationBenchmarks
         _message = CreateMessage();
         _payload = _message.ToByteArray();
         _semanticEqualityPayload = CreateSemanticEqualityPayload();
+        _mapEqualityPayload = CreateMapEqualityPayload();
         _validator = new ProtobufInlineRuleValidator(ValidationEnvelope.Descriptor);
         _semanticEqualityValidator = new ProtobufInlineRuleValidator(
             ValidationMessageEqualityEnvelope.Descriptor);
+        _mapEqualityValidator = new ProtobufInlineRuleValidator(
+            ValidationMapEqualityEnvelope.Descriptor);
         _serializer = new ProtobufSchemaRegistrySerializer<ValidationEnvelope>(
             new BenchmarkSchemaRegistryClient(),
             new ProtobufSerializerConfig
@@ -60,6 +65,7 @@ public class ProtobufInlineValidationBenchmarks
 
         _validator.Validate(_payload, schemaId: 1, failFast: false);
         _semanticEqualityValidator.Validate(_semanticEqualityPayload, schemaId: 1, failFast: false);
+        _mapEqualityValidator.Validate(_mapEqualityPayload, schemaId: 1, failFast: false);
         var destination = _destination;
         _serializer.Serialize(_message, ref destination, _context);
         _destination.Clear();
@@ -80,6 +86,10 @@ public class ProtobufInlineValidationBenchmarks
     [Benchmark]
     public void ValidateSemanticMessageEquality() =>
         _semanticEqualityValidator.Validate(_semanticEqualityPayload, schemaId: 1, failFast: false);
+
+    [Benchmark]
+    public void ValidateMapMessageEquality() =>
+        _mapEqualityValidator.Validate(_mapEqualityPayload, schemaId: 1, failFast: false);
 
     [Benchmark]
     public bool ValidateMixedNumericComparison() => _mixedNumericRule.Evaluate(
@@ -147,6 +157,30 @@ public class ProtobufInlineValidationBenchmarks
         WriteLengthDelimited(payload, 1, left.WrittenSpan);
         WriteLengthDelimited(payload, 2, right.WrittenSpan);
         return payload.WrittenSpan.ToArray();
+    }
+
+    private static byte[] CreateMapEqualityPayload()
+    {
+        var left = new ArrayBufferWriter<byte>();
+        WriteLengthDelimited(left, 1, CreateMapEntry("a"u8, 0));
+        WriteLengthDelimited(left, 1, CreateMapEntry("b"u8, 2));
+        WriteLengthDelimited(left, 1, CreateMapEntry("a"u8, 1));
+        var right = new ArrayBufferWriter<byte>();
+        WriteLengthDelimited(right, 1, CreateMapEntry("a"u8, 1));
+        WriteLengthDelimited(right, 1, CreateMapEntry("b"u8, 2));
+        var payload = new ArrayBufferWriter<byte>();
+        WriteLengthDelimited(payload, 1, left.WrittenSpan);
+        WriteLengthDelimited(payload, 2, right.WrittenSpan);
+        return payload.WrittenSpan.ToArray();
+    }
+
+    private static byte[] CreateMapEntry(ReadOnlySpan<byte> key, uint value)
+    {
+        var entry = new ArrayBufferWriter<byte>();
+        WriteLengthDelimited(entry, 1, key);
+        WriteVarint(entry, 2u << 3);
+        WriteVarint(entry, value);
+        return entry.WrittenSpan.ToArray();
     }
 
     private static void WriteLengthDelimited(

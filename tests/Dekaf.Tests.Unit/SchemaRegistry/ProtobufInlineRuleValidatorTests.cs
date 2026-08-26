@@ -45,6 +45,32 @@ public sealed class ProtobufInlineRuleValidatorTests
     }
 
     [Test]
+    public async Task Validate_KnownFieldWithWrongWireTypeRemainsUnknown()
+    {
+        var payload = new byte[] { 10, 1, 0 };
+        var validator = new ProtobufInlineRuleValidator(Proto2ValidationMessage.Descriptor);
+
+        validator.Validate(payload, schemaId: 18, failFast: false);
+
+        await Task.CompletedTask;
+    }
+
+    [Test]
+    public async Task Validate_AbsentPresenceAwareScalarsUseDefaults()
+    {
+        new ProtobufInlineRuleValidator(ValidationPresenceEnvelope.Descriptor).Validate(
+            ReadOnlyMemory<byte>.Empty,
+            schemaId: 17,
+            failFast: false);
+        new ProtobufInlineRuleValidator(Proto2PresenceValidationMessage.Descriptor).Validate(
+            ReadOnlyMemory<byte>.Empty,
+            schemaId: 18,
+            failFast: false);
+
+        await Task.CompletedTask;
+    }
+
+    [Test]
     public async Task Validate_InvalidPayload_AggregatesPrecisePaths()
     {
         var message = CreateValidMessage();
@@ -234,6 +260,40 @@ public sealed class ProtobufInlineRuleValidatorTests
     }
 
     [Test]
+    public async Task Validate_MessageEqualityUsesMapSemantics()
+    {
+        var left = new ArrayBufferWriter<byte>();
+        WriteLengthDelimited(left, fieldNumber: 1, CreateInt32MapEntry("a", 0));
+        WriteLengthDelimited(left, fieldNumber: 1, CreateInt32MapEntry("b", 2));
+        WriteLengthDelimited(left, fieldNumber: 1, CreateInt32MapEntry("a", 1));
+        var right = new ArrayBufferWriter<byte>();
+        WriteLengthDelimited(right, fieldNumber: 1, CreateInt32MapEntry("a", 1));
+        WriteLengthDelimited(right, fieldNumber: 1, CreateInt32MapEntry("b", 2));
+        var payload = new ArrayBufferWriter<byte>();
+        WriteLengthDelimited(payload, fieldNumber: 1, left.WrittenSpan);
+        WriteLengthDelimited(payload, fieldNumber: 2, right.WrittenSpan);
+        var validator = new ProtobufInlineRuleValidator(ValidationMapEqualityEnvelope.Descriptor);
+
+        validator.Validate(payload.WrittenMemory, schemaId: 17, failFast: false);
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var index = 0; index < 100; index++)
+            validator.Validate(payload.WrittenMemory, schemaId: 17, failFast: false);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        var unequalRight = new ArrayBufferWriter<byte>();
+        WriteLengthDelimited(unequalRight, fieldNumber: 1, CreateInt32MapEntry("a", 1));
+        WriteLengthDelimited(unequalRight, fieldNumber: 1, CreateInt32MapEntry("b", 3));
+        var unequalPayload = new ArrayBufferWriter<byte>();
+        WriteLengthDelimited(unequalPayload, fieldNumber: 1, left.WrittenSpan);
+        WriteLengthDelimited(unequalPayload, fieldNumber: 2, unequalRight.WrittenSpan);
+        var exception = Assert.Throws<ValidationRulesFailedException>(() =>
+            validator.Validate(unequalPayload.WrittenMemory, schemaId: 17, failFast: false));
+
+        await Assert.That(allocated).IsEqualTo(0);
+        await Assert.That(exception.Violations[0].Rule.Name).IsEqualTo("map-message-equality");
+    }
+
+    [Test]
     public async Task Validate_MessageEqualityRejectsExcessiveRecursion()
     {
         byte[] left = [8, 1];
@@ -279,6 +339,22 @@ public sealed class ProtobufInlineRuleValidatorTests
 
         await Assert.That(exception.Violations.Select(static violation => violation.Rule.Name))
             .Contains("group-value-positive");
+    }
+
+    [Test]
+    public async Task Validate_GroupsRejectExcessiveNesting()
+    {
+        var payload = new ArrayBufferWriter<byte>();
+        for (var depth = 0; depth <= ProtobufInlineRuleValidator.MaximumValidationDepth; depth++)
+            WriteVarint(payload, 99u << 3 | 3u);
+        for (var depth = 0; depth <= ProtobufInlineRuleValidator.MaximumValidationDepth; depth++)
+            WriteVarint(payload, 99u << 3 | 4u);
+        var validator = new ProtobufInlineRuleValidator(Proto2ValidationMessage.Descriptor);
+
+        var exception = Assert.Throws<SchemaRegistryRuleException>(() =>
+            validator.Validate(payload.WrittenMemory, schemaId: 17, failFast: false));
+
+        await Assert.That(exception.Message).Contains("group nesting exceeds");
     }
 
     [Test]
@@ -688,6 +764,15 @@ public sealed class ProtobufInlineRuleValidatorTests
         var entry = new ArrayBufferWriter<byte>();
         WriteLengthDelimited(entry, fieldNumber: 1, Encoding.UTF8.GetBytes(key));
         WriteLengthDelimited(entry, fieldNumber: 2, value);
+        return entry.WrittenSpan.ToArray();
+    }
+
+    private static byte[] CreateInt32MapEntry(string key, ulong value)
+    {
+        var entry = new ArrayBufferWriter<byte>();
+        WriteLengthDelimited(entry, fieldNumber: 1, Encoding.UTF8.GetBytes(key));
+        WriteVarint(entry, 2u << 3);
+        WriteVarint(entry, value);
         return entry.WrittenSpan.ToArray();
     }
 

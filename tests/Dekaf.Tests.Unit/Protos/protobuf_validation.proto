@@ -132,6 +132,41 @@ message ValidationEqualityChild {
   repeated int32 codes = 3;
 }
 
+message ValidationPresenceEnvelope {
+  option (confluent.message_meta) = {
+    rules: {
+      name: "absent-scalars-use-defaults"
+      expr: "!has(this.nickname) && this.nickname == ''"
+    }
+    rules: {
+      name: "inactive-oneof-scalars-use-defaults"
+      expr: "!has(this.phone) && this.phone == ''"
+    }
+  };
+
+  optional string nickname = 1;
+  oneof contact {
+    string email = 2;
+    string phone = 3;
+  }
+}
+
+message ValidationMapEqualityEnvelope {
+  option (confluent.message_meta) = {
+    rules: {
+      name: "map-message-equality"
+      expr: "this.left_child == this.right_child"
+    }
+  };
+
+  ValidationMapEqualityChild left_child = 1;
+  ValidationMapEqualityChild right_child = 2;
+}
+
+message ValidationMapEqualityChild {
+  map<string, int32> labels = 1;
+}
+
 enum ValidationStatus {
   VALIDATION_STATUS_UNSPECIFIED = 0;
   VALIDATION_STATUS_ACTIVE = 1;
