@@ -238,6 +238,7 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
         {
             ThrowIfDisposed();
             ReleasePendingUnderLock();
+            UnregisterShareGroupMemberUnderLock();
             _subscription.Clear();
             foreach (var topic in topics.Where(topic => !string.IsNullOrWhiteSpace(topic)).Distinct(StringComparer.Ordinal))
                 _subscription.Add(topic);
@@ -246,14 +247,8 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
             foreach (var topicPartition in topicPartitions)
                 _assignment.Add(topicPartition);
 
-            if (_subscription.Count == 0)
-            {
-                UnregisterShareGroupMemberUnderLock();
-            }
-            else if (_registration is null)
-            {
+            if (_subscription.Count != 0)
                 _registration = _cluster.RegisterShareGroupMember(_options.GroupId, _memberId);
-            }
 
             Volatile.Write(ref _shareFaultIndexVersion, -1);
         }
@@ -314,32 +309,42 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
     }
 
     public ValueTask CommitAsync(CancellationToken cancellationToken = default)
+        => CommitAsync(allowDisposed: false, cancellationToken);
+
+    private ValueTask CommitAsync(bool allowDisposed, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
         if (_commitSemaphore.Wait(0, cancellationToken))
-            return CommitAfterWaitAsync(cancellationToken);
+            return CommitAfterWaitAsync(allowDisposed, cancellationToken);
 
         return AwaitCommitSemaphoreAsync(
             _commitSemaphore.WaitAsync(cancellationToken),
+            allowDisposed,
             cancellationToken);
     }
 
-    private async ValueTask AwaitCommitSemaphoreAsync(Task wait, CancellationToken cancellationToken)
+    private async ValueTask AwaitCommitSemaphoreAsync(
+        Task wait,
+        bool allowDisposed,
+        CancellationToken cancellationToken)
     {
         await wait.ConfigureAwait(false);
-        await CommitAfterWaitAsync(cancellationToken).ConfigureAwait(false);
+        await CommitAfterWaitAsync(allowDisposed, cancellationToken).ConfigureAwait(false);
     }
 
-    private ValueTask CommitAfterWaitAsync(CancellationToken cancellationToken)
+    private ValueTask CommitAfterWaitAsync(bool allowDisposed, CancellationToken cancellationToken)
     {
         if (HasPotentialFault(KafkaFaultOperation.ShareAcknowledge))
-            return CommitWithFaultAsync(cancellationToken);
+            return CommitWithFaultAsync(allowDisposed, cancellationToken);
 
         try
         {
             lock (_gate)
             {
+                if (allowDisposed && _disposed)
+                    return ValueTask.CompletedTask;
+
                 ThrowIfDisposed();
                 if (_pending.Count == 0)
                     return ValueTask.CompletedTask;
@@ -368,13 +373,19 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
         }
     }
 
-    private ValueTask CommitWithFaultAsync(CancellationToken cancellationToken)
+    private ValueTask CommitWithFaultAsync(bool allowDisposed, CancellationToken cancellationToken)
     {
         var snapshotCount = 0;
         try
         {
             lock (_gate)
             {
+                if (allowDisposed && _disposed)
+                {
+                    _commitSemaphore.Release();
+                    return ValueTask.CompletedTask;
+                }
+
                 ThrowIfDisposed();
                 if (_pending.Count == 0)
                 {
@@ -490,7 +501,7 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
         if (_disposed)
             return;
 
-        await CommitAsync(cancellationToken).ConfigureAwait(false);
+        await CommitAsync(allowDisposed: true, cancellationToken).ConfigureAwait(false);
         lock (_gate)
         {
             if (_disposed)
@@ -512,9 +523,15 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
 
     private ShareConsumeResult<TKey, TValue>? TryTakeAvailableRecord()
     {
-        foreach (var partition in OrderedAssignment())
+        var assignment = OrderedAssignment(out var registration);
+        foreach (var partition in assignment)
         {
-            if (!TryAcquireRecord(partition, out var record, out var deliveryCount, out var registration))
+            if (!TryAcquireRecord(
+                    partition,
+                    registration,
+                    out var record,
+                    out var deliveryCount,
+                    out var acquiredRegistration))
                 continue;
 
             ShareConsumeResult<TKey, TValue> result;
@@ -524,11 +541,11 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
             }
             catch
             {
-                ReleaseAcquiredRecord(partition, record, registration);
+                ReleaseAcquiredRecord(partition, record, acquiredRegistration);
                 throw;
             }
 
-            return RegisterPending(partition, record, result, registration);
+            return RegisterPending(partition, record, result, acquiredRegistration);
         }
 
         return null;
@@ -542,9 +559,15 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
     private async ValueTask<ShareConsumeResult<TKey, TValue>?> TryTakeAvailableRecordAsync(
         CancellationToken cancellationToken)
     {
-        foreach (var partition in OrderedAssignment())
+        var assignment = OrderedAssignment(out var registration);
+        foreach (var partition in assignment)
         {
-            if (!TryAcquireRecord(partition, out var record, out var deliveryCount, out var registration))
+            if (!TryAcquireRecord(
+                    partition,
+                    registration,
+                    out var record,
+                    out var deliveryCount,
+                    out var acquiredRegistration))
                 continue;
 
             ShareConsumeResult<TKey, TValue> result;
@@ -554,11 +577,11 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
             }
             catch
             {
-                ReleaseAcquiredRecord(partition, record, registration);
+                ReleaseAcquiredRecord(partition, record, acquiredRegistration);
                 throw;
             }
 
-            return RegisterPending(partition, record, result, registration);
+            return RegisterPending(partition, record, result, acquiredRegistration);
         }
 
         return null;
@@ -567,7 +590,8 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
     private async ValueTask<ShareConsumeResult<TKey, TValue>?> TryTakeAvailableRecordWithFaultAsync(
         CancellationToken cancellationToken)
     {
-        foreach (var partition in OrderedAssignment())
+        var assignment = OrderedAssignment(out var assignmentRegistration);
+        foreach (var partition in assignment)
         {
             var hasPotentialFault = HasPotentialFault(KafkaFaultOperation.ShareConsume, partition);
             InMemoryRecord record;
@@ -575,7 +599,11 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
             ShareGroupMemberRegistration registration;
             if (hasPotentialFault)
             {
-                if (!TryAcquireRecordForFault(partition, out record, out registration))
+                if (!TryAcquireRecordForFault(
+                        partition,
+                        assignmentRegistration,
+                        out record,
+                        out registration))
                     continue;
 
                 try
@@ -616,7 +644,12 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
                     continue;
                 }
             }
-            else if (!TryAcquireRecord(partition, out record, out deliveryCount, out registration))
+            else if (!TryAcquireRecord(
+                         partition,
+                         assignmentRegistration,
+                         out record,
+                         out deliveryCount,
+                         out registration))
             {
                 continue;
             }
@@ -697,10 +730,11 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
         }
     }
 
-    private TopicPartition[] OrderedAssignment()
+    private TopicPartition[] OrderedAssignment(out ShareGroupMemberRegistration? registration)
     {
         lock (_gate)
         {
+            registration = _registration;
             return _assignment
                 .OrderBy(item => item.Topic, StringComparer.Ordinal)
                 .ThenBy(item => item.Partition)
@@ -710,27 +744,24 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
 
     private bool TryAcquireRecord(
         TopicPartition partition,
+        ShareGroupMemberRegistration? registration,
         out InMemoryRecord record,
         out int deliveryCount,
-        out ShareGroupMemberRegistration registration)
+        out ShareGroupMemberRegistration acquiredRegistration)
     {
         long offset;
-        ShareGroupMemberRegistration? currentRegistration;
         lock (_gate)
-        {
             offset = GetNextOffsetUnderLock(partition);
-            currentRegistration = _registration;
-        }
 
-        if (currentRegistration is null)
+        if (registration is null)
         {
             record = null!;
             deliveryCount = 0;
-            registration = null!;
+            acquiredRegistration = null!;
             return false;
         }
 
-        registration = currentRegistration;
+        acquiredRegistration = registration;
         return _cluster.TryAcquireShareRecord(
             _options.GroupId,
             _memberId,
@@ -743,25 +774,22 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
 
     private bool TryAcquireRecordForFault(
         TopicPartition partition,
+        ShareGroupMemberRegistration? registration,
         out InMemoryRecord record,
-        out ShareGroupMemberRegistration registration)
+        out ShareGroupMemberRegistration acquiredRegistration)
     {
         long offset;
-        ShareGroupMemberRegistration? currentRegistration;
         lock (_gate)
-        {
             offset = GetNextOffsetUnderLock(partition);
-            currentRegistration = _registration;
-        }
 
-        if (currentRegistration is null)
+        if (registration is null)
         {
             record = null!;
-            registration = null!;
+            acquiredRegistration = null!;
             return false;
         }
 
-        registration = currentRegistration;
+        acquiredRegistration = registration;
         return _cluster.TryAcquireShareRecordForFault(
             _options.GroupId,
             _memberId,

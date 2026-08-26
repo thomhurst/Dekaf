@@ -594,6 +594,28 @@ public sealed class InMemoryAdminShareFaultTests
     }
 
     [Test]
+    public async Task AdminFault_EmptyBrokerBatchPreservesPartitionScope()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var admin = new InMemoryAdminClient(cluster);
+        var partition = new TopicPartition("orders", 0);
+        var failure = new InvalidOperationException("blocked");
+        cluster.FaultPlan.Fail(
+            new KafkaFaultScope(
+                KafkaFaultOperation.Admin,
+                partition.Topic,
+                partition.Partition),
+            failure);
+
+        var actual = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            admin.DescribeLogDirsAsync([], [partition]).AsTask());
+        var retry = await admin.DescribeLogDirsAsync([], [partition]);
+
+        await Assert.That(actual).IsSameReferenceAs(failure);
+        await Assert.That(retry).IsEmpty();
+    }
+
+    [Test]
     public async Task AdminFault_InvalidCreateDelegationTokenDurationDoesNotConsumeScriptedFailure()
     {
         var cluster = new InMemoryKafkaCluster();
@@ -737,6 +759,36 @@ public sealed class InMemoryAdminShareFaultTests
     }
 
     [Test]
+    public async Task ShareConsumeBarrier_DropsRecordAfterSubscriptionSwitch()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.ProduceAsync("topic-a", "key-a", "value-a");
+        await producer.ProduceAsync("topic-b", "key-b", "value-b");
+        await using var consumer = new InMemoryShareConsumer<string, string>(
+            cluster,
+            new InMemoryShareConsumerOptions { GroupId = "workers" });
+        consumer.Subscribe("topic-a");
+        var barrier = cluster.FaultPlan.PauseNext(
+            new KafkaFaultScope(
+                KafkaFaultOperation.ShareConsume,
+                "topic-a",
+                partition: 0,
+                groupId: "workers"));
+        await using var stalePoll = consumer.PollAsync().GetAsyncEnumerator();
+        var staleMove = stalePoll.MoveNextAsync().AsTask();
+        await barrier.WaitUntilEnteredAsync();
+
+        consumer.Subscribe("topic-b");
+        var current = await consumer.PollAsync().FirstAsync();
+        await Assert.That(barrier.Release()).IsTrue();
+
+        await Assert.That(await staleMove).IsFalse();
+        await Assert.That(current.Topic).IsEqualTo("topic-b");
+        await Assert.That(current.Offset).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task ShareAcknowledgeFault_PreservesPendingRecordForRetry()
     {
         var cluster = new InMemoryKafkaCluster();
@@ -856,6 +908,32 @@ public sealed class InMemoryAdminShareFaultTests
         await Task.WhenAll(first, second);
         await Assert.That(cluster.GetShareGroupOffsets("workers")[topicPartition])
             .IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task ShareAcknowledgeBarrier_AllowsConcurrentIdempotentClose()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.ProduceAsync("shared", "key", "value");
+        var consumer = new InMemoryShareConsumer<string, string>(
+            cluster,
+            new InMemoryShareConsumerOptions { GroupId = "workers" });
+        consumer.Subscribe("shared");
+        consumer.Acknowledge(await consumer.PollAsync().FirstAsync());
+        var barrier = cluster.FaultPlan.PauseNext(
+            new KafkaFaultScope(KafkaFaultOperation.ShareAcknowledge));
+
+        var first = consumer.CloseAsync().AsTask();
+        await barrier.WaitUntilEnteredAsync();
+        var concurrent = new Task[8];
+        for (var index = 0; index < concurrent.Length; index++)
+            concurrent[index] = consumer.CloseAsync().AsTask();
+
+        await Assert.That(barrier.Release()).IsTrue();
+        await first;
+        await Task.WhenAll(concurrent);
+        await consumer.DisposeAsync();
     }
 
     [Test]

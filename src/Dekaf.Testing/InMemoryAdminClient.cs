@@ -1217,12 +1217,6 @@ public sealed class InMemoryAdminClient :
             ArgumentOutOfRangeException.ThrowIfNegative(targetBrokerIds[index]);
         foreach (var partition in targetPartitions)
             ValidateTopicPartition(partition);
-        if (targetBrokerIds.Length == 0)
-        {
-            await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
-            return new Dictionary<int, IReadOnlyDictionary<string, LogDirDescription>>();
-        }
-
         foreach (var partition in targetPartitions)
         {
             await ApplyAdminFaultAsync(
@@ -1232,6 +1226,8 @@ public sealed class InMemoryAdminClient :
         }
         if (targetPartitions.Length == 0)
             await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
+        if (targetBrokerIds.Length == 0)
+            return new Dictionary<int, IReadOnlyDictionary<string, LogDirDescription>>();
 
         var result = new Dictionary<int, IReadOnlyDictionary<string, LogDirDescription>>();
         foreach (var brokerId in targetBrokerIds)
