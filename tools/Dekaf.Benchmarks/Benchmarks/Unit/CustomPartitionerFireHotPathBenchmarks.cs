@@ -22,6 +22,7 @@ public class CustomPartitionerFireHotPathBenchmarks
     private const long FixtureCapacityBytes = 1L << 30;
     private static readonly string[] Keys = BenchmarkData.CreateKeys(10_000);
     private static readonly Header IdentityHeader = new("identity", new byte[] { 1 });
+    private static readonly Header CallerHeader = new("caller", new byte[] { 2 });
 
     private KafkaProducer<string, string> _producer = null!;
     private KafkaProducer<string, string> _recursiveProducer = null!;
@@ -32,6 +33,8 @@ public class CustomPartitionerFireHotPathBenchmarks
     private ProducerMessage<string, string>[] _messages = null!;
     private ProducerMessage<string, string>[] _recursiveMessages = null!;
     private readonly Headers _nestedStagingHeaders = new();
+    private readonly Headers _removalSourceHeaders = new Headers().Add(IdentityHeader).Add(CallerHeader);
+    private readonly Headers _removalWorkspaceHeaders = new(2);
 
     [GlobalSetup]
     public async Task Setup()
@@ -99,6 +102,7 @@ public class CustomPartitionerFireHotPathBenchmarks
         FireRecursiveBatch();
         NestedCallerHeaderStaging();
         FourCallerHeadersStaging();
+        RemoveCallerAndStagedHeaders();
     }
 
     private static async Task<KafkaProducer<string, string>> CreateProducerAsync(
@@ -204,6 +208,20 @@ public class CustomPartitionerFireHotPathBenchmarks
         headers.Add(IdentityHeader);
         var serializationCount = headers.SerializationCount;
         headers.Restore(in checkpoint);
+        return serializationCount;
+    }
+
+    [Benchmark]
+    public int RemoveCallerAndStagedHeaders()
+    {
+        var headers = _removalWorkspaceHeaders;
+        headers.Clear();
+        headers.BeginRecordHeaderStaging(_removalSourceHeaders);
+        headers.Add(IdentityHeader);
+        headers.Remove("identity");
+        headers.Add(IdentityHeader);
+        var serializationCount = headers.SerializationCount;
+        headers.Clear();
         return serializationCount;
     }
 

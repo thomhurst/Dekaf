@@ -552,6 +552,55 @@ public class KafkaProducerFastPathTests
     }
 
     [Test]
+    public async Task ProduceAsync_RecordHeaderSerializerCanRemoveCallerAndStagedHeaders()
+    {
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            ClientId = "test-record-header-removal-producer",
+            BufferMemory = ulong.MaxValue,
+            BatchSize = 4096,
+            LingerMs = 10,
+            RequestTimeoutMs = 500,
+            DeliveryTimeoutMs = 1000,
+            CloseTimeoutMs = 1000
+        };
+
+        await using var producer = new KafkaProducer<string, string>(
+            options,
+            Serializers.String,
+            new RemovingRecordHeaderStringSerializer());
+        await StopProducerBackgroundLoopsAsync(producer);
+        SeedProducerMetadata(producer);
+        SetInstanceField(producer, "_initialized", true);
+        var headers = new Headers()
+            .Add("identity", "caller")
+            .Add("caller", "owned");
+
+        var produceTask = producer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = Topic,
+            Key = "key",
+            Value = "value",
+            Headers = headers
+        });
+
+        var readyBatch = CompleteCurrentBatch(producer.RecordAccumulator, new TopicPartition(Topic, 0));
+        var record = readyBatch.RecordBatch.Records[0];
+        var recordHeaderKeys = record.Headers![..record.HeaderCount]
+            .Select(static header => header.Key)
+            .ToArray();
+        await Assert.That(recordHeaderKeys).DoesNotContain("identity");
+        await Assert.That(recordHeaderKeys).Contains("caller");
+        await Assert.That(recordHeaderKeys).Contains("retained");
+        await Assert.That(headers.Select(static header => header.Key).ToArray())
+            .IsEquivalentTo(["identity", "caller"]);
+
+        readyBatch.CompleteSend(baseOffset: 7, DateTimeOffset.UtcNow);
+        _ = await produceTask;
+    }
+
+    [Test]
     public async Task FireAsync_ConcurrentRecordHeaderSerialization_SharingCallerHeaders_IsIsolated()
     {
         var serializer = new OverlappingRecordHeaderAsyncSerializer();
@@ -1454,6 +1503,23 @@ public class KafkaProducerFastPathTests
                 _ => throw new ArgumentOutOfRangeException(nameof(context))
             };
             context.Headers!.Add(headerName, Encoding.UTF8.GetBytes(value));
+            Serializers.String.Serialize(value, ref destination, context);
+        }
+    }
+
+    private sealed class RemovingRecordHeaderStringSerializer : ISerializer<string>, IRecordHeaderSerializer
+    {
+        public bool ProducesRecordHeaders => true;
+
+        public void Serialize<TWriter>(string value, ref TWriter destination, SerializationContext context)
+            where TWriter : IBufferWriter<byte>
+#if NET10_0_OR_GREATER
+            , allows ref struct
+#endif
+        {
+            context.Headers!.Add("identity", "staged");
+            context.Headers.Remove("identity");
+            context.Headers.Add("retained", "value");
             Serializers.String.Serialize(value, ref destination, context);
         }
     }

@@ -527,6 +527,26 @@ public class HeadersTests
         await Assert.That(result).IsSameReferenceAs(headers);
     }
 
+    [Test]
+    public async Task Remove_StagedViewRemovesSourceAndExistingStagedHeadersWithoutMutatingSource()
+    {
+        var source = new Headers()
+            .Add("remove", "source")
+            .Add("source-keep", "value");
+        var headers = new Headers();
+        headers.BeginRecordHeaderStaging(source);
+        headers.Add("remove", "staged");
+        headers.Add("staged-keep", "value");
+
+        headers.Remove("remove");
+        headers.Add("remove", "added-after-removal");
+
+        await Assert.That(headers.Select(static header => header.Key).ToArray())
+            .IsEquivalentTo(["source-keep", "staged-keep", "remove"]);
+        await Assert.That(source.Select(static header => header.Key).ToArray())
+            .IsEquivalentTo(["remove", "source-keep"]);
+    }
+
     #endregion
 
     #region Clear Tests

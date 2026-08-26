@@ -232,12 +232,19 @@ public sealed class Headers : IReadOnlyList<Header>
     /// </summary>
     public Headers Remove(string key)
     {
+        if (_serializationSource is not null && ContainsSerializationHeader(key))
+        {
+            MaterializeWithout(key);
+            return this;
+        }
+
         // Manual loop to avoid closure allocation from RemoveAll predicate
         for (var i = _headers.Count - 1; i >= 0; i--)
         {
             if (_headers[i].Key == key)
                 RemoveAt(i);
         }
+        RemoveStagedHeaders(key);
         return this;
     }
 
@@ -521,6 +528,98 @@ public sealed class Headers : IReadOnlyList<Header>
             ValueSchemaIdentityHeader);
     }
 
+    private bool ContainsSerializationHeader(string key)
+    {
+        var count = SerializationCount;
+        for (var index = 0; index < count; index++)
+        {
+            if (GetSerializationHeader(index).Key == key)
+                return true;
+        }
+        return false;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private void MaterializeWithout(string key)
+    {
+        var count = SerializationCount;
+        var source = _serializationSource!;
+        _headers.Clear();
+        if (_headers.Capacity < count)
+            _headers.Capacity = count;
+        var traceparentIndex = -1;
+        var tracestateIndex = -1;
+        _keySchemaIdentityIndex = -1;
+        _valueSchemaIdentityIndex = -1;
+        for (var index = 0; index < count; index++)
+        {
+            var header = GetSerializationHeader(index);
+            if (header.Key == key)
+                continue;
+
+            var materializedIndex = _headers.Count;
+            _headers.Add(header);
+            if (header.HasDeferredTraceparent)
+                traceparentIndex = materializedIndex;
+            else if (header.DeferredValue is string)
+                tracestateIndex = materializedIndex;
+            TrackSchemaIdentityCandidate(header.Key, materializedIndex);
+        }
+
+        source.RemoveDeferredTraceContext();
+        EndRecordHeaderStaging();
+        _serializationSource = null;
+        _deferredTraceparentIndex = traceparentIndex;
+        _deferredTracestateIndex = tracestateIndex;
+        _stagingRecordHeaders = true;
+    }
+
+    private void RemoveStagedHeaders(string key)
+    {
+        var count = _stagedHeaderCount;
+        var retained = 0;
+        for (var index = 0; index < count; index++)
+        {
+            var header = GetStagedHeader(index);
+            if (header.Key != key)
+                SetStagedHeader(retained++, header);
+        }
+        if (retained == count)
+            return;
+
+        for (var index = retained; index < count; index++)
+            SetStagedHeader(index, default);
+        _stagedHeaderCount = retained;
+        if (retained <= 2)
+            ReturnStagedHeaderOverflow();
+        RebuildStagedSchemaIdentityIndexes();
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void SetStagedHeader(int index, Header header)
+    {
+        if (index == 0)
+            _stagedHeader0 = header;
+        else if (index == 1)
+            _stagedHeader1 = header;
+        else
+            _stagedHeaderOverflow![index - 2] = header;
+    }
+
+    private void RebuildStagedSchemaIdentityIndexes()
+    {
+        _stagedKeySchemaIdentityIndex = -1;
+        _stagedValueSchemaIdentityIndex = -1;
+        for (var index = 0; index < _stagedHeaderCount; index++)
+        {
+            var key = GetStagedHeader(index).Key;
+            if (string.Equals(key, KeySchemaIdentityHeader, StringComparison.Ordinal))
+                _stagedKeySchemaIdentityIndex = index;
+            else if (string.Equals(key, ValueSchemaIdentityHeader, StringComparison.Ordinal))
+                _stagedValueSchemaIdentityIndex = index;
+        }
+    }
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void AddHeader(Header header)
     {
@@ -568,20 +667,26 @@ public sealed class Headers : IReadOnlyList<Header>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal bool TryGetLastSchemaIdentity(SerializationComponent component, out Header header)
     {
-        var index = component switch
+        var stagedIndex = component switch
         {
-            SerializationComponent.Key => _stagedKeySchemaIdentityIndex >= 0
-                ? _stagedKeySchemaIdentityIndex
-                : _serializationSource?._keySchemaIdentityIndex ?? _keySchemaIdentityIndex,
-            SerializationComponent.Value => _stagedValueSchemaIdentityIndex >= 0
-                ? _stagedValueSchemaIdentityIndex
-                : _serializationSource?._valueSchemaIdentityIndex ?? _valueSchemaIdentityIndex,
+            SerializationComponent.Key => _stagedKeySchemaIdentityIndex,
+            SerializationComponent.Value => _stagedValueSchemaIdentityIndex,
             _ => throw new ArgumentOutOfRangeException(nameof(component), component, "Unknown serialization component.")
         };
-
-        if ((uint)index < (uint)SerializationCount)
+        if ((uint)stagedIndex < (uint)_stagedHeaderCount)
         {
-            header = GetSerializationHeader(index);
+            header = GetStagedHeader(stagedIndex);
+            return true;
+        }
+
+        var source = _serializationSource;
+        var index = component == SerializationComponent.Key
+            ? source?._keySchemaIdentityIndex ?? _keySchemaIdentityIndex
+            : source?._valueSchemaIdentityIndex ?? _valueSchemaIdentityIndex;
+        var headers = source?._headers ?? _headers;
+        if ((uint)index < (uint)headers.Count)
+        {
+            header = headers[index];
             return true;
         }
 
@@ -600,20 +705,14 @@ public sealed class Headers : IReadOnlyList<Header>
         else
             AddStagedOverflowHeader(header, stagedIndex - 2);
 
-        var source = _serializationSource;
-        var traceparentIndex = source?._deferredTraceparentIndex ?? _deferredTraceparentIndex;
-        var insertionIndex = traceparentIndex >= 0
-            ? traceparentIndex
-            : source?._headers.Count ?? _headers.Count;
-        var logicalIndex = insertionIndex + stagedIndex;
         _stagedHeaderCount = stagedIndex + 1;
         var key = header.Key;
         if (key.Length == KeySchemaIdentityHeader.Length
             && string.Equals(key, KeySchemaIdentityHeader, StringComparison.Ordinal))
-            _stagedKeySchemaIdentityIndex = logicalIndex;
+            _stagedKeySchemaIdentityIndex = stagedIndex;
         else if (key.Length == ValueSchemaIdentityHeader.Length
                  && string.Equals(key, ValueSchemaIdentityHeader, StringComparison.Ordinal))
-            _stagedValueSchemaIdentityIndex = logicalIndex;
+            _stagedValueSchemaIdentityIndex = stagedIndex;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
