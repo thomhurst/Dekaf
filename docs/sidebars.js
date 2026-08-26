@@ -80,7 +80,14 @@ const sidebars = {
     'compression',
     'dependency-injection',
     'observability',
-    'testing',
+    {
+      type: 'category',
+      label: 'Testing',
+      items: [
+        'testing',
+        'testing/fault-injection',
+      ],
+    },
     'performance',
     'benchmarks',
     'stress-tests',
