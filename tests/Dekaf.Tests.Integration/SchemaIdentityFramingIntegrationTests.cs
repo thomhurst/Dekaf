@@ -294,10 +294,12 @@ public sealed class SchemaIdentityFramingIntegrationTests(
         {
             await foreach (var _ in consumer.PollAsync(cancellationToken))
             {
+                continue;
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
+            return;
         }
     }
 

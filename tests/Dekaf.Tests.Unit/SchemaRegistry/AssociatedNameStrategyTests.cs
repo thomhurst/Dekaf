@@ -535,19 +535,23 @@ public sealed class AssociatedNameStrategyTests
         }
     }
 
-    [Arguments(false)]
-    [Arguments(true)]
+    [Arguments(false, false)]
+    [Arguments(false, true)]
+    [Arguments(true, false)]
+    [Arguments(true, true)]
     [Test]
-    public async Task JsonDeserializer_GuidHeader_PreparesConfiguredAsyncSubject(bool useRoutedHeaders)
+    public async Task JsonDeserializer_GuidHeader_PreparesColdSchema(
+        bool configureAsyncSubject,
+        bool useRoutedHeaders)
     {
-        const string subject = "configured-associated";
+        var subject = configureAsyncSubject ? "configured-associated" : "orders-value";
         using var client = new MockSchemaRegistryClient();
         var schemaId = await client.RegisterSchemaAsync(subject, new Schema
         {
             SchemaType = SchemaType.Json,
             SchemaString = """{"type":"integer"}"""
         });
-        var strategy = new FixedAsyncSubjectNameStrategy(subject);
+        var strategy = configureAsyncSubject ? new FixedAsyncSubjectNameStrategy(subject) : null;
         await using var deserializer = new JsonSchemaRegistryDeserializer<int>(
             client,
             jsonOptions: null,
@@ -595,7 +599,7 @@ public sealed class AssociatedNameStrategyTests
         }
 
         await Assert.That(value).IsEqualTo(42);
-        await Assert.That(strategy.CallCount).IsEqualTo(1);
+        await Assert.That(strategy?.CallCount ?? 0).IsEqualTo(configureAsyncSubject ? 1 : 0);
     }
 
     [Arguments(false)]

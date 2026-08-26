@@ -1277,7 +1277,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
             {
                 batch = RecordBatch.Read(ref reader, _compressionCodecs);
             }
-            catch
+            catch (InsufficientDataException)
             {
                 break; // Partial batch
             }
@@ -1375,7 +1375,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
             {
                 batch = RecordBatch.Read(ref reader, _compressionCodecs);
             }
-            catch
+            catch (InsufficientDataException)
             {
                 break; // Partial batch
             }
