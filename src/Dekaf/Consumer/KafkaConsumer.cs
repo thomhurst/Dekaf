@@ -8599,18 +8599,20 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         TopicPartition topicPartition,
         CancellationToken cancellationToken = default)
     {
-        var assignmentVersion = Volatile.Read(ref _assignmentEnsureVersion);
+        int? assignmentGeneration = _watermarkAssignmentVersions.TryGetValue(topicPartition, out var generation)
+            ? generation
+            : null;
         return QueryWatermarkOffsetsCoreAsync(
             topicPartition,
             cacheResult: true,
-            assignmentVersion,
+            assignmentGeneration,
             cancellationToken);
     }
 
     private async ValueTask<WatermarkOffsets> QueryWatermarkOffsetsCoreAsync(
         TopicPartition topicPartition,
         bool cacheResult,
-        int assignmentVersion,
+        int? assignmentGeneration,
         CancellationToken cancellationToken)
     {
         if (Volatile.Read(ref _consumerDisposed) != 0)
@@ -8692,12 +8694,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
                 if (cacheResult)
                 {
-                    UpdateCachedWatermarks(
+                    UpdateQueriedCachedWatermarks(
                         topicPartition,
                         lowWatermark,
                         highWatermark,
                         highWatermark,
-                        assignmentVersion);
+                        assignmentGeneration);
                 }
 
                 return watermarks;
@@ -8707,6 +8709,40 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         catch (OperationCanceledException ex) when (apiTimeout.DefaultTimeoutExpired)
         {
             throw apiTimeout.CreateTimeoutException(nameof(QueryWatermarkOffsetsAsync), ex);
+        }
+    }
+
+    private void UpdateQueriedCachedWatermarks(
+        TopicPartition partition,
+        long low,
+        long high,
+        long lagEndOffset,
+        int? assignmentGeneration)
+    {
+        lock (_snapshotStateGate)
+        {
+            if (assignmentGeneration is { } expectedGeneration)
+            {
+                if (!_assignmentSnapshot.Contains(partition)
+                    || !_watermarkAssignmentVersions.TryGetValue(partition, out var currentGeneration)
+                    || currentGeneration != expectedGeneration)
+                {
+                    return;
+                }
+            }
+            else if (_assignmentSnapshot.Contains(partition)
+                     || _watermarkAssignmentVersions.ContainsKey(partition))
+            {
+                return;
+            }
+
+            if (_watermarks.TryGetValue(partition, out var entry))
+            {
+                entry.Update(low, high, lagEndOffset);
+                return;
+            }
+
+            _watermarks.TryAdd(partition, new WatermarkCacheEntry(low, high, lagEndOffset));
         }
     }
 

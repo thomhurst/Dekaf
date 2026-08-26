@@ -236,13 +236,20 @@ public sealed class ConsumerLagTests
             UpdateWatermarksFromFetchResponse(consumer, CreateFetchResponse(30));
         };
 
-        UpdateWatermarksFromFetchResponse(
-            consumer,
-            CreateFetchResponse(20),
-            oldAssignmentVersion);
+        try
+        {
+            UpdateWatermarksFromFetchResponse(
+                consumer,
+                CreateFetchResponse(20),
+                oldAssignmentVersion);
 
-        await Assert.That(consumer.GetWatermarkOffsets(Partition)).IsEqualTo(new WatermarkOffsets(0, 30));
-        await Assert.That(consumer.GetCurrentLag(Partition)).IsEqualTo(20);
+            await Assert.That(consumer.GetWatermarkOffsets(Partition)).IsEqualTo(new WatermarkOffsets(0, 30));
+            await Assert.That(consumer.GetCurrentLag(Partition)).IsEqualTo(20);
+        }
+        finally
+        {
+            KafkaConsumer<string, string>.BeforeWatermarkCacheEntryCreationForTest = null;
+        }
     }
 
     [Test]
