@@ -82,7 +82,6 @@ public sealed class ConsumerExtensionsTests
     }
 
     [Test]
-    [Timeout(10_000)]
     public async Task Where_WithFilteredCallback_AwaitsBeforeRequestingNextItem(
         CancellationToken cancellationToken)
     {
@@ -100,7 +99,7 @@ public sealed class ConsumerExtensionsTests
                 async _ =>
                 {
                     callbackStarted.TrySetResult();
-                    await releaseCallback.Task;
+                    await releaseCallback.Task.WaitAsync(cancellationToken);
                 },
                 cancellationToken))
             {
