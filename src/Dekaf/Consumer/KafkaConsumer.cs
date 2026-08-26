@@ -10555,7 +10555,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         long high,
         long lagEndOffset)
     {
-        var entry = _watermarks.GetOrAdd(partition, static _ => new WatermarkCacheEntry());
+        var entry = _watermarks.GetOrAdd(
+            partition,
+            static (_, state) => new WatermarkCacheEntry(state.Low, state.High, state.LagEndOffset),
+            (Low: low, High: high, LagEndOffset: lagEndOffset));
         entry.Update(low, high, lagEndOffset);
     }
 
@@ -10567,6 +10570,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         private long _low;
         private long _high;
         private long _lagEndOffset;
+
+        public WatermarkCacheEntry(long low, long high, long lagEndOffset)
+        {
+            _low = low;
+            _high = high;
+            _lagEndOffset = lagEndOffset;
+        }
 
         public void Update(long low, long high, long lagEndOffset)
         {
