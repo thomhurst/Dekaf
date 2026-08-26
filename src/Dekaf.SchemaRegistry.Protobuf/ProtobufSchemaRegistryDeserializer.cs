@@ -161,26 +161,39 @@ public sealed class ProtobufSchemaRegistryDeserializer<T> :
         // Optionally validate the schema exists (with timeout to prevent indefinite hang)
         Schema? schema = null;
         string? ruleSubject = null;
-        if (!_config.SkipSchemaValidation || _config.RuleExecutor is SchemaRegistryRuleExecutor || _migrationRunner is not null)
+        if (!_config.SkipSchemaValidation || _config.RuleExecutor is SchemaRegistryRuleExecutor ||
+            _inlineRuleExecutor is not null || _migrationRunner is not null)
         {
-            if (preparedSubject is not null)
+            try
             {
-                ruleSubject = preparedSubject;
-                schema = _schemaRegistry.GetSchemaSync(schemaId, ruleSubject, SchemaRegistryTimeout);
+                if (preparedSubject is not null)
+                {
+                    ruleSubject = preparedSubject;
+                    schema = _schemaRegistry.GetSchemaSync(schemaId, ruleSubject, SchemaRegistryTimeout);
+                }
+                else if (_config.RuleExecutor is not null && _subjectNames is null)
+                {
+                    ruleSubject = SubjectNameResolver.GetTopicSubjectName(
+                        context.Topic,
+                        context.Component == SerializationComponent.Key);
+                    schema = _schemaRegistry.GetSchemaSync(schemaId, ruleSubject, SchemaRegistryTimeout);
+                }
+                else
+                {
+                    schema = _schemaRegistry.GetSchemaSync(schemaId, SchemaRegistryTimeout);
+                }
             }
-            else if (_config.RuleExecutor is not null && _subjectNames is null)
+            catch (Exception exception) when (
+                _config.SkipSchemaValidation &&
+                _inlineRuleExecutor is not null &&
+                _config.RuleExecutor is null &&
+                _migrationRunner is null &&
+                exception is TimeoutException or HttpRequestException or SchemaRegistryException)
             {
-                ruleSubject = SubjectNameResolver.GetTopicSubjectName(
-                    context.Topic,
-                    context.Component == SerializationComponent.Key);
-                schema = _schemaRegistry.GetSchemaSync(schemaId, ruleSubject, SchemaRegistryTimeout);
-            }
-            else
-            {
-                schema = _schemaRegistry.GetSchemaSync(schemaId, SchemaRegistryTimeout);
+                schema = null;
             }
 
-            if (!_config.SkipSchemaValidation && schema.SchemaType != SchemaType.Protobuf)
+            if (!_config.SkipSchemaValidation && schema!.SchemaType != SchemaType.Protobuf)
                 throw new InvalidOperationException($"Schema {schemaId} is not a Protobuf schema (type: {schema.SchemaType})");
         }
 

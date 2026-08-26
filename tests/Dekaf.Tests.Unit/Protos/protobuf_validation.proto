@@ -15,6 +15,10 @@ message ValidationEnvelope {
       name: "age-upper-bound"
       expr: "this.age <= 150"
     }
+    rules: {
+      name: "oneof-last-wins"
+      expr: "!has(this.email) || size(this.email) > 0"
+    }
   };
 
   int32 age = 1 [(confluent.field_meta) = {
@@ -99,6 +103,13 @@ message ValidationEnvelope {
     rules: {
       name: "packed-code-count"
       expr: "size(this) == 3"
+    }
+  }];
+
+  ValidationChild primary_child = 14 [(confluent.field_meta) = {
+    rules: {
+      name: "message-self-equality"
+      expr: "this == this && this.value > 0"
     }
   }];
 }

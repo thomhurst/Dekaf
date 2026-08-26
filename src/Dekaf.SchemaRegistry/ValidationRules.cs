@@ -1644,6 +1644,8 @@ internal sealed class ValidationCelBinaryNode(
             ValidationCelValueKind.Number => AreNumbersEqual(left, right),
             ValidationCelValueKind.String => ValidationCelStrings.Evaluate(left, right, ValidationCelStringOperation.Equal),
             ValidationCelValueKind.Bytes => left.Utf8Literal.Span.SequenceEqual(right.Utf8Literal.Span),
+            ValidationCelValueKind.Object when left.Json.IsEmpty && right.Json.IsEmpty =>
+                left.Utf8Literal.Span.SequenceEqual(right.Utf8Literal.Span),
             ValidationCelValueKind.Object or ValidationCelValueKind.Array =>
                 AreJsonValuesEqual(left, right, equalityGeneration),
             _ => false
@@ -1706,9 +1708,11 @@ internal sealed class ValidationCelBinaryNode(
     {
         if (left.IsFloating || right.IsFloating)
         {
-            var leftValue = left.IsFloating ? left.Floating : (double)RequireNumber(left);
-            var rightValue = right.IsFloating ? right.Floating : (double)RequireNumber(right);
-            return leftValue.CompareTo(rightValue);
+            if (left.IsFloating && right.IsFloating)
+                return left.Floating.CompareTo(right.Floating);
+            return left.IsFloating
+                ? CompareFloatingToExact(left.Floating, right)
+                : -CompareFloatingToExact(right.Floating, left);
         }
 
         // Number values reuse the Boolean slot to mark a successful decimal parse.
@@ -1720,6 +1724,140 @@ internal sealed class ValidationCelBinaryNode(
         }
 
         return CompareExactNumbers(left, right);
+    }
+
+    private static int CompareFloatingToExact(double floating, ValidationCelValue exact)
+    {
+        if (double.IsPositiveInfinity(floating))
+            return 1;
+        if (double.IsNegativeInfinity(floating))
+            return -1;
+
+        if (exact.Boolean && TryConvertIntegralFloating(floating, out var integral))
+            return integral.CompareTo(exact.Number);
+
+        Span<byte> floatingBuffer = stackalloc byte[1152];
+        var written = FormatExactFloating(floating, floatingBuffer);
+        Span<byte> exactBuffer = stackalloc byte[64];
+        return new ValidationCelJsonNumber(floatingBuffer[..written], negated: false)
+            .CompareTo(new ValidationCelJsonNumber(GetNumberText(exact, exactBuffer), exact.NumberNegated));
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static bool TryConvertIntegralFloating(double value, out decimal result)
+    {
+        if (value == 0)
+        {
+            result = 0;
+            return true;
+        }
+
+        var bits = BitConverter.DoubleToUInt64Bits(value);
+        var binaryExponent = (int)((bits >> 52) & 0x7ff) - 1023;
+        if ((uint)binaryExponent > 62)
+        {
+            result = default;
+            return false;
+        }
+
+        var significand = (bits & 0x000f_ffff_ffff_ffffUL) | 1UL << 52;
+        if (binaryExponent < 52 && (significand & ((1UL << (52 - binaryExponent)) - 1)) != 0)
+        {
+            result = default;
+            return false;
+        }
+
+        result = (long)value;
+        return true;
+    }
+
+    private static int FormatExactFloating(double value, Span<byte> destination)
+    {
+        const uint limbBase = 1_000_000_000;
+        var bits = BitConverter.DoubleToUInt64Bits(value);
+        var negative = (bits >> 63) != 0;
+        var exponentBits = (int)(bits >> 52) & 0x7ff;
+        var significand = bits & 0x000f_ffff_ffff_ffffUL;
+        int binaryExponent;
+        if (exponentBits == 0)
+        {
+            binaryExponent = -1074;
+        }
+        else
+        {
+            significand |= 1UL << 52;
+            binaryExponent = exponentBits - 1023 - 52;
+        }
+        if (significand == 0)
+        {
+            destination[0] = (byte)'0';
+            return 1;
+        }
+
+        Span<uint> limbs = stackalloc uint[128];
+        var limbCount = 0;
+        while (significand != 0)
+        {
+            limbs[limbCount++] = (uint)(significand % limbBase);
+            significand /= limbBase;
+        }
+
+        var multiplier = binaryExponent < 0 ? 5u : 2u;
+        var multiplyCount = Math.Abs(binaryExponent);
+        for (var multiplication = 0; multiplication < multiplyCount; multiplication++)
+        {
+            ulong carry = 0;
+            for (var index = 0; index < limbCount; index++)
+            {
+                var product = limbs[index] * (ulong)multiplier + carry;
+                limbs[index] = (uint)(product % limbBase);
+                carry = product / limbBase;
+            }
+            if (carry != 0)
+                limbs[limbCount++] = (uint)carry;
+        }
+
+        Span<byte> digits = stackalloc byte[1100];
+        if (!Utf8Formatter.TryFormat(limbs[limbCount - 1], digits, out var digitCount))
+            throw Unsupported("CEL floating-point number could not be formatted.");
+        for (var index = limbCount - 2; index >= 0; index--)
+        {
+            if (!Utf8Formatter.TryFormat(
+                    limbs[index],
+                    digits[digitCount..],
+                    out var limbDigits,
+                    new StandardFormat('D', 9)))
+            {
+                throw Unsupported("CEL floating-point number could not be formatted.");
+            }
+            digitCount += limbDigits;
+        }
+
+        var written = 0;
+        if (negative)
+            destination[written++] = (byte)'-';
+        var scale = binaryExponent < 0 ? -binaryExponent : 0;
+        if (scale == 0)
+        {
+            digits[..digitCount].CopyTo(destination[written..]);
+            return written + digitCount;
+        }
+        if (digitCount <= scale)
+        {
+            destination[written++] = (byte)'0';
+            destination[written++] = (byte)'.';
+            destination.Slice(written, scale - digitCount).Fill((byte)'0');
+            written += scale - digitCount;
+            digits[..digitCount].CopyTo(destination[written..]);
+            return written + digitCount;
+        }
+
+        var integerDigits = digitCount - scale;
+        digits[..integerDigits].CopyTo(destination[written..]);
+        written += integerDigits;
+        destination[written++] = (byte)'.';
+        digits.Slice(integerDigits, scale).CopyTo(destination[written..]);
+        return written + scale;
     }
 
     private static int CompareExactNumbers(ValidationCelValue left, ValidationCelValue right)

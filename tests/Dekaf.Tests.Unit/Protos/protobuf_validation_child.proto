@@ -15,4 +15,5 @@ message ValidationChild {
   };
 
   int32 value = 1;
+  ValidationChild child = 2;
 }

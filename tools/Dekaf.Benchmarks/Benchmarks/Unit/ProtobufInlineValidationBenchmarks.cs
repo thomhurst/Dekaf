@@ -21,6 +21,7 @@ public class ProtobufInlineValidationBenchmarks
     private ProtobufInlineRuleValidator _validator = null!;
     private ProtobufSchemaRegistrySerializer<ValidationEnvelope> _serializer = null!;
     private ProtobufSchemaRegistrySerializer<ValidationEnvelope> _unvalidatedSerializer = null!;
+    private CompiledValidationRule _mixedNumericRule = null!;
     private ValidationEnvelope _message = null!;
     private byte[] _payload = null!;
     private SerializationContext _context;
@@ -41,6 +42,11 @@ public class ProtobufInlineValidationBenchmarks
         _unvalidatedSerializer = new ProtobufSchemaRegistrySerializer<ValidationEnvelope>(
             new BenchmarkSchemaRegistryClient(),
             new ProtobufSerializerConfig { UseSchemaReferences = false });
+        _mixedNumericRule = CompiledValidationRule.Compile(
+            new ValidationRule { Name = "mixed-numeric", Expr = "this > 9007199254740992.0" },
+            new Dictionary<string, int>(StringComparer.Ordinal),
+            [],
+            []);
         _context = new SerializationContext
         {
             Topic = "protobuf-inline-validation",
@@ -64,6 +70,15 @@ public class ProtobufInlineValidationBenchmarks
 
     [Benchmark]
     public void ValidateRules() => _validator.Validate(_payload, schemaId: 1, failFast: false);
+
+    [Benchmark]
+    public bool ValidateMixedNumericComparison() => _mixedNumericRule.Evaluate(
+            ValidationCelValue.FromNumber(9007199254740993m),
+            nowUnixMilliseconds: 0,
+            default,
+            default,
+            equalityGeneration: 0)
+        .Boolean;
 
     [Benchmark]
     public void SerializeValidated()

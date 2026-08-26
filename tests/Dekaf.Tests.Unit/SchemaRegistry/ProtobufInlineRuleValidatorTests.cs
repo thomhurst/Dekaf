@@ -1,9 +1,11 @@
 using System.Buffers;
 using System.Buffers.Binary;
+using System.Text;
 using Dekaf.SchemaRegistry;
 using Dekaf.SchemaRegistry.Protobuf;
 using Dekaf.Serialization;
 using Dekaf.Tests.Unit.SchemaRegistry.ProtobufFixtures;
+using Dekaf.Tests.Unit.SchemaRegistry.ProtobufFixtures.Confluent;
 using Google.Protobuf;
 using Google.Protobuf.Reflection;
 using Google.Protobuf.WellKnownTypes;
@@ -141,6 +143,121 @@ public sealed class ProtobufInlineRuleValidatorTests
             ValidationCelValue.FromBytes(new byte[] { 0xff, 0x00 }));
 
         await Assert.That(result.Boolean).IsTrue();
+    }
+
+    [Test]
+    public async Task Validate_MixedFloatingComparisonsPreserveExactIntegerBounds()
+    {
+        var aboveTwoToThe53 = EvaluateTypedRule(
+            "9007199254740993 > 9007199254740992.0",
+            ValidationCelValue.FromNumber(0));
+        var belowTwoToThe64 = EvaluateTypedRule(
+            "18446744073709551615 < 18446744073709551616.0",
+            ValidationCelValue.FromNumber(0));
+        var exactAndSubnormal = EvaluateTypedRule(
+            "9007199254740992 == 9007199254740992.0 && 0 < 5e-324 && -5e-324 < 0",
+            ValidationCelValue.FromNumber(0));
+
+        await Assert.That(aboveTwoToThe53.Boolean).IsTrue();
+        await Assert.That(belowTwoToThe64.Boolean).IsTrue();
+        await Assert.That(exactAndSubnormal.Boolean).IsTrue();
+    }
+
+    [Test]
+    public async Task Validate_ProtobufMessageEqualityUsesWirePayload()
+    {
+        var payload = new byte[] { 8, 1 };
+        var result = EvaluateTypedRule(
+            "this == this",
+            new ValidationCelValue(
+                ValidationCelValueKind.Object,
+                default,
+                false,
+                0,
+                null,
+                payload));
+
+        await Assert.That(result.Boolean).IsTrue();
+    }
+
+    [Test]
+    public async Task Validate_ProtobufMergeAndOneofSemantics_AreAppliedBeforeRules()
+    {
+        var valid = CreateValidMessage();
+        valid.ChildrenByName.Clear();
+        var payload = new ArrayBufferWriter<byte>();
+        valid.WriteTo(payload);
+        WriteLengthDelimited(payload, fieldNumber: 14, [8, 1]);
+        WriteLengthDelimited(payload, fieldNumber: 14, []);
+        WriteLengthDelimited(payload, fieldNumber: 7, []);
+        WriteLengthDelimited(payload, fieldNumber: 8, "active"u8);
+        WriteLengthDelimited(payload, fieldNumber: 6, CreateMapEntry("duplicate", [8, 0]));
+        WriteLengthDelimited(payload, fieldNumber: 6, CreateMapEntry("duplicate", [8, 1]));
+        var validator = new ProtobufInlineRuleValidator(ValidationEnvelope.Descriptor);
+
+        validator.Validate(payload.WrittenMemory, schemaId: 17, failFast: false);
+
+        await Assert.That(payload.WrittenCount).IsGreaterThan(0);
+    }
+
+    [Test]
+    public async Task Validate_RecursiveMessagesRejectExcessiveDepth()
+    {
+        byte[] child = [8, 1];
+        for (var depth = 0; depth <= ProtobufInlineRuleValidator.MaximumValidationDepth; depth++)
+        {
+            var nested = new ArrayBufferWriter<byte>();
+            WriteLengthDelimited(nested, fieldNumber: 2, child);
+            child = nested.WrittenSpan.ToArray();
+        }
+        var envelope = new ArrayBufferWriter<byte>();
+        WriteLengthDelimited(envelope, fieldNumber: 5, child);
+        var validator = new ProtobufInlineRuleValidator(ValidationEnvelope.Descriptor);
+
+        var exception = Assert.Throws<SchemaRegistryRuleException>(() =>
+            validator.Validate(envelope.WrittenMemory, schemaId: 17, failFast: false));
+
+        await Assert.That(exception.Message).Contains("recursion exceeds");
+    }
+
+    [Test]
+    public async Task Validate_RegisteredReferenceUsesExactSubjectVersion()
+    {
+        using var registry = new MockSchemaRegistryClient();
+        var child = ValidationChild.Descriptor.File.ToProto();
+        _ = await registry.RegisterSchemaAsync(
+            "validation-child",
+            new Schema { SchemaType = SchemaType.Protobuf, SchemaString = child.ToByteString().ToBase64() });
+        var stricterChild = child.Clone();
+        var meta = stricterChild.MessageType[0].Options.GetExtension(MetaExtensions.MessageMeta).Clone();
+        meta.Rules[0].Expr = "this.value > 10";
+        stricterChild.MessageType[0].Options.SetExtension(MetaExtensions.MessageMeta, meta);
+        _ = await registry.RegisterSchemaAsync(
+            "validation-child",
+            new Schema { SchemaType = SchemaType.Protobuf, SchemaString = stricterChild.ToByteString().ToBase64() });
+        var root = new Schema
+        {
+            SchemaType = SchemaType.Protobuf,
+            SchemaString = ValidationEnvelope.Descriptor.File.SerializedData.ToBase64(),
+            References =
+            [
+                new SchemaReference
+                {
+                    Name = "protobuf_validation_child.proto",
+                    Subject = "validation-child",
+                    Version = 2
+                }
+            ]
+        };
+        IInlineValidationRuleExecutor validator =
+            new ProtobufInlineRuleValidator(ValidationEnvelope.Descriptor, registry);
+        var message = CreateValidMessage();
+
+        var exception = Assert.Throws<ValidationRulesFailedException>(() =>
+            validator.Validate(message.ToByteArray(), schemaId: 91, root, failFast: false));
+
+        await Assert.That(exception.Violations.Select(static violation => violation.Rule.Name))
+            .Contains("positive-child-value");
     }
 
     [Test]
@@ -449,6 +566,36 @@ public sealed class ProtobufInlineRuleValidatorTests
         wireBytes[5] = 0;
         payload.CopyTo(wireBytes.AsSpan(6));
         return wireBytes;
+    }
+
+    private static byte[] CreateMapEntry(string key, ReadOnlySpan<byte> value)
+    {
+        var entry = new ArrayBufferWriter<byte>();
+        WriteLengthDelimited(entry, fieldNumber: 1, Encoding.UTF8.GetBytes(key));
+        WriteLengthDelimited(entry, fieldNumber: 2, value);
+        return entry.WrittenSpan.ToArray();
+    }
+
+    private static void WriteLengthDelimited(
+        IBufferWriter<byte> writer,
+        int fieldNumber,
+        ReadOnlySpan<byte> value)
+    {
+        WriteVarint(writer, (uint)(fieldNumber << 3 | 2));
+        WriteVarint(writer, (uint)value.Length);
+        writer.Write(value);
+    }
+
+    private static void WriteVarint(IBufferWriter<byte> writer, uint value)
+    {
+        do
+        {
+            var span = writer.GetSpan(1);
+            var current = (byte)(value & 0x7f);
+            value >>= 7;
+            span[0] = value == 0 ? current : (byte)(current | 0x80);
+            writer.Advance(1);
+        } while (value != 0);
     }
 
     private static async Task<int> RegisterValidationSchema(

@@ -68,8 +68,14 @@
     <Protobuf Include="Protos\*.proto"
               Exclude="Protos\protobuf_inline_validation.proto"
               GrpcServices="None" />
-    <Protobuf Include="Protos\protobuf_inline_validation.proto" ProtoRoot="Protos" GrpcServices="None" />
-    <Protobuf Include="Protos\confluent\*.proto" ProtoRoot="Protos" GrpcServices="None" />
+    <Protobuf Include="Protos\protobuf_inline_validation.proto"
+              ProtoRoot="Protos"
+              AdditionalImportDirs="..\Dekaf.Tests.Unit\Protos"
+              GrpcServices="None" />
+    <Protobuf Include="..\Dekaf.Tests.Unit\Protos\confluent\meta.proto"
+              Link="Protos\confluent\meta.proto"
+              ProtoRoot="..\Dekaf.Tests.Unit\Protos"
+              GrpcServices="None" />
   </ItemGroup>
 
 </Project>

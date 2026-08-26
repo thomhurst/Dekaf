@@ -13,7 +13,7 @@ internal sealed class ProtobufInlineRuleExecutor(
     MessageDescriptor descriptor) : IInlineValidationRuleExecutor
 {
     private static readonly TimeSpan SchemaRegistryTimeout = TimeSpan.FromSeconds(30);
-    private readonly ProtobufInlineRuleValidator _validator = new(descriptor);
+    private readonly ProtobufInlineRuleValidator _validator = new(descriptor, schemaRegistry);
     private readonly ConcurrentDictionary<int, Schema> _globalSchemas = [];
     private SchemaCacheEntry? _lastSchema;
 
@@ -52,12 +52,21 @@ internal sealed class ProtobufInlineRuleExecutor(
         if (cached is { SchemaId: var cachedSchemaId } && cachedSchemaId == schemaId)
             return cached.Schema;
 
-        var candidate = ProtobufInlineRuleValidator.IsSerializedDescriptor(schema.SchemaString)
-            ? schema
-            : _globalSchemas.GetOrAdd(
-                schemaId,
-                static (id, registry) => registry.GetSchemaSync(id, SchemaRegistryTimeout),
-                schemaRegistry);
+        Schema candidate;
+        try
+        {
+            candidate = ProtobufInlineRuleValidator.IsSerializedDescriptor(schema.SchemaString)
+                ? schema
+                : _globalSchemas.GetOrAdd(
+                    schemaId,
+                    static (id, registry) => registry.GetSchemaSync(id, SchemaRegistryTimeout),
+                    schemaRegistry);
+        }
+        catch (Exception exception) when (exception is TimeoutException or
+            HttpRequestException or SchemaRegistryException)
+        {
+            candidate = schema;
+        }
         var resolved = ProtobufInlineRuleValidator.IsSerializedDescriptor(candidate.SchemaString)
             ? candidate
             : null;
@@ -70,19 +79,25 @@ internal sealed class ProtobufInlineRuleExecutor(
 
 internal sealed class ProtobufInlineRuleValidator : IInlineValidationRuleExecutor
 {
+    internal const int MaximumValidationDepth = 100;
+    private static readonly TimeSpan ReferenceResolutionTimeout = TimeSpan.FromSeconds(30);
     private readonly ProtobufMessageRulePlan _root;
     private readonly string _rootMessageName;
     private readonly string _rootSchema;
     private readonly Dictionary<string, ByteString> _knownFiles;
+    private readonly ISchemaRegistryClient? _schemaRegistry;
     private readonly ConcurrentDictionary<int, ProtobufInlineRuleValidator> _schemaValidators = [];
     private SchemaValidatorCacheEntry? _lastSchema;
 
-    internal ProtobufInlineRuleValidator(MessageDescriptor descriptor)
+    internal ProtobufInlineRuleValidator(
+        MessageDescriptor descriptor,
+        ISchemaRegistryClient? schemaRegistry = null)
     {
         ArgumentNullException.ThrowIfNull(descriptor);
         _rootMessageName = descriptor.FullName;
         _rootSchema = descriptor.File.SerializedData.ToBase64();
         _knownFiles = CreateKnownFileCatalog(descriptor.File);
+        _schemaRegistry = schemaRegistry;
         var plans = new Dictionary<MessageDescriptor, ProtobufMessageRulePlan>();
         _root = ProtobufMessageRulePlan.Create(descriptor, plans);
         ProtobufMessageRulePlan.Complete(plans);
@@ -101,7 +116,8 @@ internal sealed class ProtobufInlineRuleValidator : IInlineValidationRuleExecuto
                 DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                 failFast,
                 ref violations,
-                ref path);
+                ref path,
+                MaximumValidationDepth);
         }
         finally
         {
@@ -162,7 +178,8 @@ internal sealed class ProtobufInlineRuleValidator : IInlineValidationRuleExecuto
 
     private ProtobufInlineRuleValidator CreateSchemaValidator(Schema schema)
     {
-        if (string.Equals(schema.SchemaString, _rootSchema, StringComparison.Ordinal))
+        if (schema.References is not { Count: > 0 } &&
+            string.Equals(schema.SchemaString, _rootSchema, StringComparison.Ordinal))
             return this;
 
         ByteString rootData;
@@ -181,7 +198,8 @@ internal sealed class ProtobufInlineRuleValidator : IInlineValidationRuleExecuto
 
         var files = new List<ByteString>();
         var added = new HashSet<string>(StringComparer.Ordinal);
-        AddDependencies(rootProto, files, added);
+        var registeredFiles = ResolveReferences(schema);
+        AddDependencies(rootProto, files, added, registeredFiles);
         files.Add(rootData);
         IReadOnlyList<FileDescriptor> descriptors;
         try
@@ -212,30 +230,117 @@ internal sealed class ProtobufInlineRuleValidator : IInlineValidationRuleExecuto
                 $"Registered Protobuf schema does not contain message '{_rootMessageName}'.");
         }
 
-        return new ProtobufInlineRuleValidator(message);
+        return new ProtobufInlineRuleValidator(message, _schemaRegistry);
     }
 
     private void AddDependencies(
         FileDescriptorProto file,
         List<ByteString> files,
-        HashSet<string> added)
+        HashSet<string> added,
+        IReadOnlyDictionary<string, ByteString>? registeredFiles)
     {
         for (var index = 0; index < file.Dependency.Count; index++)
         {
             var name = file.Dependency[index];
             if (!added.Add(name))
                 continue;
-            if (!_knownFiles.TryGetValue(name, out var data))
+            if (registeredFiles is null || !registeredFiles.TryGetValue(name, out var data))
+                _knownFiles.TryGetValue(name, out data);
+            if (data is null)
             {
                 throw new SchemaRegistryRuleException(
                     $"Registered Protobuf schema dependency '{name}' is unavailable for inline validation.");
             }
 
             var dependency = FileDescriptorProto.Parser.ParseFrom(data);
-            AddDependencies(dependency, files, added);
+            AddDependencies(dependency, files, added, registeredFiles);
             files.Add(data);
         }
     }
+
+    private Dictionary<string, ByteString>? ResolveReferences(Schema schema)
+    {
+        if (schema.References is not { Count: > 0 } references)
+            return null;
+        if (_schemaRegistry is null)
+        {
+            throw new SchemaRegistryRuleException(
+                "Registered Protobuf schema references require a Schema Registry client.");
+        }
+
+        var files = new Dictionary<string, ByteString>(StringComparer.Ordinal);
+        var resolved = new Dictionary<(string Subject, int Version), ResolvedReference>();
+        var expanded = new HashSet<(string Subject, int Version)>();
+        ResolveReferences(references, files, resolved, expanded);
+        return files;
+    }
+
+    private void ResolveReferences(
+        IReadOnlyList<SchemaReference> references,
+        Dictionary<string, ByteString> files,
+        Dictionary<(string Subject, int Version), ResolvedReference> resolved,
+        HashSet<(string Subject, int Version)> expanded)
+    {
+        for (var index = 0; index < references.Count; index++)
+        {
+            var reference = references[index];
+            var key = (reference.Subject, reference.Version);
+            if (!resolved.TryGetValue(key, out var resolvedReference))
+            {
+                RegisteredSchema registered;
+                using var timeout = new CancellationTokenSource(ReferenceResolutionTimeout);
+                try
+                {
+                    registered = _schemaRegistry!.GetSchemaBySubjectAsync(
+                            reference.Subject,
+                            reference.Version.ToString(CultureInfo.InvariantCulture),
+                            timeout.Token)
+                        .WaitAsync(timeout.Token)
+                        .ConfigureAwait(false)
+                        .GetAwaiter()
+                        .GetResult();
+                }
+                catch (OperationCanceledException exception) when (timeout.IsCancellationRequested)
+                {
+                    throw new TimeoutException(
+                        $"Protobuf schema reference '{reference.Name}' resolution timed out.",
+                        exception);
+                }
+
+                if (registered.Schema.SchemaType != SchemaType.Protobuf)
+                {
+                    throw new SchemaRegistryRuleException(
+                        $"Protobuf schema reference '{reference.Name}' resolved to {registered.Schema.SchemaType}.");
+                }
+
+                ByteString data;
+                try
+                {
+                    data = ByteString.FromBase64(registered.Schema.SchemaString);
+                }
+                catch (FormatException exception)
+                {
+                    throw new SchemaRegistryRuleException(
+                        $"Could not decode Protobuf schema reference '{reference.Name}'.",
+                        exception);
+                }
+                resolvedReference = new ResolvedReference(registered.Schema, data);
+                resolved.Add(key, resolvedReference);
+            }
+
+            if (files.TryGetValue(reference.Name, out var existing) &&
+                !existing.Span.SequenceEqual(resolvedReference.Data.Span))
+            {
+                throw new SchemaRegistryRuleException(
+                    $"Protobuf schema reference '{reference.Name}' resolves to conflicting versions.");
+            }
+            files[reference.Name] = resolvedReference.Data;
+            if (expanded.Add(key) && resolvedReference.Schema.References is { Count: > 0 } nested)
+                ResolveReferences(nested, files, resolved, expanded);
+        }
+    }
+
+    private readonly record struct ResolvedReference(Schema Schema, ByteString Data);
 
     private static Dictionary<string, ByteString> CreateKnownFileCatalog(FileDescriptor root)
     {
@@ -281,7 +386,10 @@ internal sealed class ProtobufMessageRulePlan
     private ProtobufFieldRulePlan[] _allFields = [];
     private ProtobufFieldRulePlan[] _ruleFields = [];
     private int _fieldSlotCount;
+    private int _oneofCount;
     private bool _usesSizes;
+    private bool _hasMaps;
+    private bool _requiresRuleSnapshots;
 
     internal bool HasAnyRules { get; private set; }
 
@@ -336,17 +444,21 @@ internal sealed class ProtobufMessageRulePlan
                 child,
                 mapKey,
                 mapValue,
-                runtimeIndex++);
+                runtimeIndex++,
+                descriptor.ContainingOneof?.Index ?? -1);
             _fields.Add(descriptor.FieldNumber, field);
             allFields[index] = field;
             if (!rules.IsEmpty)
                 (ruleFields ??= []).Add(field);
             _usesSizes |= descriptor.IsRepeated || rules.UsesSize;
+            _hasMaps |= descriptor.IsMap;
+            _requiresRuleSnapshots |= rules.RequiresMemberResolution;
         }
 
         _allFields = allFields;
         _ruleFields = ruleFields is null ? [] : [.. ruleFields];
         _fieldSlotCount = runtimeIndex;
+        _oneofCount = _descriptor.Oneofs.Count;
         _usesSizes |= _messageRules.UsesSize;
         HasAnyRules = !_messageRules.IsEmpty || _ruleFields.Length != 0;
     }
@@ -381,10 +493,16 @@ internal sealed class ProtobufMessageRulePlan
         long now,
         bool failFast,
         ref List<ValidationRuleError>? violations,
-        ref ProtobufValidationPath path)
+        ref ProtobufValidationPath path,
+        int remainingDepth)
     {
         if (!HasAnyRules)
             return;
+        if (remainingDepth == 0)
+        {
+            throw new SchemaRegistryRuleException(
+                $"Could not evaluate Protobuf validation rules: message recursion exceeds {ProtobufInlineRuleValidator.MaximumValidationDepth} levels.");
+        }
 
         if (!_messageRules.IsEmpty)
         {
@@ -404,42 +522,144 @@ internal sealed class ProtobufMessageRulePlan
             return;
 
         var values = CompiledValidationRule.GetMemberValues(_fieldSlotCount);
-        var sizes = _usesSizes
-            ? CompiledValidationRule.GetSizeValues(_fieldSlotCount + 1)
+        var sizes = _usesSizes || _oneofCount != 0
+            ? CompiledValidationRule.GetSizeValues(_fieldSlotCount + 1 + _oneofCount)
             : default;
+        var oneofOffset = _fieldSlotCount + 1;
+        var mergedMessages = new ProtobufMergedMessageBuffers(_fieldSlotCount);
         var reader = new ProtobufValidationWireReader(payload);
-        while (reader.TryRead(out var wireField))
+        try
         {
-            if (!_fields.TryGetValue(wireField.Number, out var field))
-                continue;
+            while (reader.TryRead(out var wireField))
+            {
+                if (!_fields.TryGetValue(wireField.Number, out var field))
+                    continue;
 
-            field.Observe(wireField, values, sizes);
+                field.Observe(wireField, values, sizes, oneofOffset, ref mergedMessages);
+            }
+
+            var singularChildren = new ProtobufSingularChildEntries(_allFields.Length);
+            var mapEntries = new ProtobufMapEntries(GetMapEntryCount(sizes));
+            try
+            {
+                singularChildren.Capture(_allFields, values);
+                reader = new ProtobufValidationWireReader(payload);
+                while (reader.TryRead(out var wireField))
+                {
+                    if (!_fields.TryGetValue(wireField.Number, out var field) ||
+                        !field.Descriptor.IsMap ||
+                        wireField.WireType != ProtobufWireType.LengthDelimited ||
+                        !field.TryGetMapValue(wireField.Payload, out var mapKey, out var mapPayload))
+                    {
+                        continue;
+                    }
+                    mapEntries.Add(field, mapKey, mapPayload);
+                }
+                if (_hasMaps)
+                    mapEntries.ApplyUniqueSizes(_allFields, sizes);
+
+                var ruleFields = new ProtobufRuleFieldEntries(
+                    _ruleFields.Length,
+                    _requiresRuleSnapshots);
+                try
+                {
+                    ruleFields.Capture(_ruleFields, values, sizes);
+                    for (var index = 0; index < _ruleFields.Length; index++)
+                    {
+                        var field = _ruleFields[index];
+                        if (!ruleFields.TryGet(index, field, values, sizes, out var ruleValue,
+                                out var messagePayload, out var collectionSize))
+                        {
+                            continue;
+                        }
+
+                        var mark = path.Length;
+                        path.AppendField(field.Descriptor.Name);
+                        field.Rules.Evaluate(
+                            ruleValue,
+                            messagePayload,
+                            schemaId,
+                            now,
+                            failFast,
+                            ref violations,
+                            ref path,
+                            collectionSize);
+                        path.Truncate(mark);
+                        if (failFast && violations is not null)
+                            return;
+                    }
+                }
+                finally
+                {
+                    ruleFields.Dispose();
+                }
+
+                for (var index = 0; index < singularChildren.Count; index++)
+                {
+                    ref readonly var entry = ref singularChildren[index];
+
+                    var mark = path.Length;
+                    path.AppendField(entry.Field.Descriptor.Name);
+                    entry.Field.Child!.Validate(
+                        entry.Payload,
+                        schemaId,
+                        now,
+                        failFast,
+                        ref violations,
+                        ref path,
+                        remainingDepth - 1);
+                    path.Truncate(mark);
+                    if (failFast && violations is not null)
+                        return;
+                }
+
+                ValidateRepeatedChildren(
+                    payload,
+                    mapEntries,
+                    schemaId,
+                    now,
+                    failFast,
+                    ref violations,
+                    ref path,
+                    remainingDepth);
+            }
+            finally
+            {
+                singularChildren.Dispose();
+                mapEntries.Dispose();
+            }
         }
-
-        for (var index = 0; index < _ruleFields.Length; index++)
+        finally
         {
-            var field = _ruleFields[index];
-            field.ApplyDefault(values, sizes);
-            if (!values.IsSet(field.RuntimeIndex))
-                continue;
-
-            var mark = path.Length;
-            path.AppendField(field.Descriptor.Name);
-            field.Rules.Evaluate(
-                field.GetRuleValue(values),
-                field.GetMessagePayload(values),
-                schemaId,
-                now,
-                failFast,
-                ref violations,
-                ref path,
-                field.GetCollectionSize(sizes));
-            path.Truncate(mark);
-            if (failFast && violations is not null)
-                return;
+            mergedMessages.Dispose();
         }
+    }
 
-        reader = new ProtobufValidationWireReader(payload);
+    private int GetMapEntryCount(ValidationCelSizeValues sizes)
+    {
+        if (!_hasMaps)
+            return 0;
+        var count = 0;
+        for (var index = 0; index < _allFields.Length; index++)
+        {
+            var field = _allFields[index];
+            if (field.Descriptor.IsMap && sizes.TryGet(field.RuntimeIndex + 1, out var fieldCount))
+                count = checked(count + fieldCount);
+        }
+        return count;
+    }
+
+    private void ValidateRepeatedChildren(
+        ReadOnlyMemory<byte> payload,
+        ProtobufMapEntries mapEntries,
+        int schemaId,
+        long now,
+        bool failFast,
+        ref List<ValidationRuleError>? violations,
+        ref ProtobufValidationPath path,
+        int remainingDepth)
+    {
+        var reader = new ProtobufValidationWireReader(payload);
         Span<int> initialIndexes = stackalloc int[8];
         var repeatedIndexes = new ProtobufRepeatedIndexes(initialIndexes);
         try
@@ -447,32 +667,46 @@ internal sealed class ProtobufMessageRulePlan
             while (reader.TryRead(out var wireField))
             {
                 if (!_fields.TryGetValue(wireField.Number, out var field) ||
-                    field.Child is not { HasAnyRules: true })
+                    field.Descriptor.IsMap ||
+                    !field.Descriptor.IsRepeated ||
+                    field.Child is not { HasAnyRules: true } ||
+                    wireField.WireType != ProtobufWireType.LengthDelimited)
+                {
                     continue;
-                if (wireField.WireType != ProtobufWireType.LengthDelimited)
-                    continue;
+                }
 
                 var mark = path.Length;
                 path.AppendField(field.Descriptor.Name);
-                var childPayload = wireField.Payload;
-                if (field.Descriptor.IsMap)
-                {
-                    if (!field.TryGetMapValue(wireField.Payload, out var mapKey, out childPayload))
-                    {
-                        path.Truncate(mark);
-                        continue;
-                    }
-                    path.AppendMapKey(mapKey);
-                }
-                else if (field.Descriptor.IsRepeated)
-                    path.AppendIndex(repeatedIndexes.Take(field.RuntimeIndex));
+                path.AppendIndex(repeatedIndexes.Take(field.RuntimeIndex));
                 field.Child.Validate(
-                    childPayload,
+                    wireField.Payload,
                     schemaId,
                     now,
                     failFast,
                     ref violations,
-                    ref path);
+                    ref path,
+                    remainingDepth - 1);
+                path.Truncate(mark);
+                if (failFast && violations is not null)
+                    return;
+            }
+
+            for (var index = 0; index < mapEntries.Count; index++)
+            {
+                ref readonly var entry = ref mapEntries[index];
+                if (entry.Field.Child is not { HasAnyRules: true } child)
+                    continue;
+                var mark = path.Length;
+                path.AppendField(entry.Field.Descriptor.Name);
+                path.AppendMapKey(entry.Key);
+                child.Validate(
+                    entry.Payload,
+                    schemaId,
+                    now,
+                    failFast,
+                    ref violations,
+                    ref path,
+                    remainingDepth - 1);
                 path.Truncate(mark);
                 if (failFast && violations is not null)
                     return;
@@ -491,7 +725,8 @@ internal sealed class ProtobufFieldRulePlan(
     ProtobufMessageRulePlan? child,
     FieldDescriptor? mapKey,
     FieldDescriptor? mapValue,
-    int runtimeIndex)
+    int runtimeIndex,
+    int oneofIndex)
 {
     internal FieldDescriptor Descriptor { get; } = descriptor;
     internal ProtobufCompiledRuleSet Rules { get; } = rules;
@@ -505,7 +740,6 @@ internal sealed class ProtobufFieldRulePlan(
     {
         key = ProtobufValidationValueDecoder.Default(mapKey!);
         valuePayload = default;
-        var hasValue = false;
         var reader = new ProtobufValidationWireReader(entryPayload);
         while (reader.TryRead(out var field))
         {
@@ -515,16 +749,17 @@ internal sealed class ProtobufFieldRulePlan(
                      field.WireType == ProtobufWireType.LengthDelimited)
             {
                 valuePayload = field.Payload;
-                hasValue = true;
             }
         }
-        return hasValue;
+        return true;
     }
 
     internal void Observe(
         ProtobufValidationWireField field,
         ValidationCelMemberValues values,
-        ValidationCelSizeValues sizes)
+        ValidationCelSizeValues sizes,
+        int oneofOffset,
+        ref ProtobufMergedMessageBuffers mergedMessages)
     {
         if (Descriptor.IsRepeated)
         {
@@ -541,7 +776,30 @@ internal sealed class ProtobufFieldRulePlan(
             return;
         }
 
-        values.SetValue(RuntimeIndex, ProtobufValidationValueDecoder.Decode(Descriptor, field));
+        if (oneofIndex >= 0)
+        {
+            var oneofSlot = oneofOffset + oneofIndex;
+            if (sizes.TryGet(oneofSlot, out var previous) && previous != RuntimeIndex)
+            {
+                values.Clear(previous);
+                mergedMessages.Clear(previous);
+            }
+            sizes.Set(oneofSlot, RuntimeIndex);
+        }
+
+        var decoded = ProtobufValidationValueDecoder.Decode(Descriptor, field);
+        if (Descriptor.FieldType is FieldType.Message or FieldType.Group &&
+            values.IsSet(RuntimeIndex))
+        {
+            decoded = decoded with
+            {
+                Utf8Literal = mergedMessages.Merge(
+                    RuntimeIndex,
+                    values.GetValue(RuntimeIndex, default).Utf8Literal,
+                    decoded.Utf8Literal)
+            };
+        }
+        values.SetValue(RuntimeIndex, decoded);
     }
 
     internal void ApplyDefault(ValidationCelMemberValues values, ValidationCelSizeValues sizes)
@@ -586,6 +844,392 @@ internal sealed class ProtobufFieldRulePlan(
     }
 }
 
+internal ref struct ProtobufMergedMessageBuffers
+{
+    private readonly int _fieldCount;
+    private byte[][]? _buffers;
+    private int[]? _lengths;
+
+    internal ProtobufMergedMessageBuffers(int fieldCount)
+    {
+        _fieldCount = fieldCount;
+        _buffers = null;
+        _lengths = null;
+    }
+
+    internal ReadOnlyMemory<byte> Merge(
+        int fieldIndex,
+        ReadOnlyMemory<byte> previous,
+        ReadOnlyMemory<byte> current)
+    {
+        EnsureSlots();
+        var buffers = _buffers!;
+        var lengths = _lengths!;
+        var buffer = buffers[fieldIndex];
+        var previousLength = lengths[fieldIndex];
+        if (buffer is null)
+        {
+            buffer = ArrayPool<byte>.Shared.Rent(checked(previous.Length + current.Length));
+            previous.Span.CopyTo(buffer);
+            previousLength = previous.Length;
+            buffers[fieldIndex] = buffer;
+        }
+        else if (buffer.Length - previousLength < current.Length)
+        {
+            var replacement = ArrayPool<byte>.Shared.Rent(checked(previousLength + current.Length));
+            buffer.AsSpan(0, previousLength).CopyTo(replacement);
+            ArrayPool<byte>.Shared.Return(buffer);
+            buffer = replacement;
+            buffers[fieldIndex] = buffer;
+        }
+
+        current.Span.CopyTo(buffer.AsSpan(previousLength));
+        var length = checked(previousLength + current.Length);
+        lengths[fieldIndex] = length;
+        return buffer.AsMemory(0, length);
+    }
+
+    internal void Clear(int fieldIndex)
+    {
+        if (_buffers?[fieldIndex] is not { } buffer)
+            return;
+        ArrayPool<byte>.Shared.Return(buffer);
+        _buffers[fieldIndex] = null!;
+        _lengths![fieldIndex] = 0;
+    }
+
+    private void EnsureSlots()
+    {
+        if (_buffers is not null)
+            return;
+        _buffers = ArrayPool<byte[]>.Shared.Rent(_fieldCount);
+        Array.Clear(_buffers, 0, _fieldCount);
+        _lengths = ArrayPool<int>.Shared.Rent(_fieldCount);
+        Array.Clear(_lengths, 0, _fieldCount);
+    }
+
+    public void Dispose()
+    {
+        if (_buffers is null)
+            return;
+        for (var index = 0; index < _fieldCount; index++)
+        {
+            if (_buffers[index] is { } buffer)
+                ArrayPool<byte>.Shared.Return(buffer);
+        }
+        ArrayPool<byte[]>.Shared.Return(_buffers, clearArray: true);
+        ArrayPool<int>.Shared.Return(_lengths!);
+        _buffers = null;
+        _lengths = null;
+    }
+}
+
+internal struct ProtobufMapEntry
+{
+    internal ProtobufFieldRulePlan Field;
+    internal ValidationCelValue Key;
+    internal ReadOnlyMemory<byte> Payload;
+}
+
+internal struct ProtobufSingularChildEntry
+{
+    internal ProtobufFieldRulePlan Field;
+    internal ReadOnlyMemory<byte> Payload;
+}
+
+internal struct ProtobufRuleFieldEntry
+{
+    internal ValidationCelValue Value;
+    internal ReadOnlyMemory<byte> MessagePayload;
+    internal int CollectionSize;
+    internal bool IsSet;
+}
+
+internal ref struct ProtobufRuleFieldEntries
+{
+    private readonly int _count;
+    private bool _capture;
+    private ProtobufRuleFieldEntry[]? _entries;
+
+    internal ProtobufRuleFieldEntries(int count, bool capture)
+    {
+        _count = count;
+        _capture = capture;
+        _entries = null;
+    }
+
+    internal void Capture(
+        ReadOnlySpan<ProtobufFieldRulePlan> fields,
+        ValidationCelMemberValues values,
+        ValidationCelSizeValues sizes)
+    {
+        for (var index = 0; index < fields.Length; index++)
+            fields[index].ApplyDefault(values, sizes);
+        if (!_capture)
+            return;
+
+        _capture = false;
+        for (var index = 0; index < fields.Length; index++)
+        {
+            var field = fields[index];
+            if (field.Rules.RequiresMemberResolution && values.IsSet(field.RuntimeIndex))
+            {
+                _capture = true;
+                break;
+            }
+        }
+        if (!_capture)
+            return;
+
+        _entries = ArrayPool<ProtobufRuleFieldEntry>.Shared.Rent(_count);
+        for (var index = 0; index < fields.Length; index++)
+        {
+            var field = fields[index];
+            ref var entry = ref _entries[index];
+            entry.IsSet = values.IsSet(field.RuntimeIndex);
+            if (!entry.IsSet)
+                continue;
+            entry.Value = field.GetRuleValue(values);
+            entry.MessagePayload = field.GetMessagePayload(values);
+            entry.CollectionSize = field.GetCollectionSize(sizes);
+        }
+    }
+
+    internal bool TryGet(
+        int index,
+        ProtobufFieldRulePlan field,
+        ValidationCelMemberValues values,
+        ValidationCelSizeValues sizes,
+        out ValidationCelValue value,
+        out ReadOnlyMemory<byte> messagePayload,
+        out int collectionSize)
+    {
+        if (_capture)
+        {
+            ref readonly var entry = ref _entries![index];
+            value = entry.Value;
+            messagePayload = entry.MessagePayload;
+            collectionSize = entry.CollectionSize;
+            return entry.IsSet;
+        }
+
+        if (!values.IsSet(field.RuntimeIndex))
+        {
+            value = default;
+            messagePayload = default;
+            collectionSize = default;
+            return false;
+        }
+        value = field.GetRuleValue(values);
+        messagePayload = field.GetMessagePayload(values);
+        collectionSize = field.GetCollectionSize(sizes);
+        return true;
+    }
+
+    public void Dispose()
+    {
+        if (_entries is not null)
+            ArrayPool<ProtobufRuleFieldEntry>.Shared.Return(_entries, clearArray: true);
+        _entries = null;
+    }
+}
+
+internal ref struct ProtobufSingularChildEntries
+{
+    private readonly int _capacity;
+    private ProtobufSingularChildEntry[]? _entries;
+
+    internal ProtobufSingularChildEntries(int capacity)
+    {
+        _capacity = capacity;
+        _entries = null;
+        Count = 0;
+    }
+
+    internal int Count { get; private set; }
+
+    internal ref readonly ProtobufSingularChildEntry this[int index] => ref _entries![index];
+
+    internal void Capture(
+        ReadOnlySpan<ProtobufFieldRulePlan> fields,
+        ValidationCelMemberValues values)
+    {
+        for (var index = 0; index < fields.Length; index++)
+        {
+            var field = fields[index];
+            if (field.Descriptor.IsRepeated ||
+                field.Child is not { HasAnyRules: true } ||
+                !values.IsSet(field.RuntimeIndex))
+            {
+                continue;
+            }
+
+            _entries ??= ArrayPool<ProtobufSingularChildEntry>.Shared.Rent(_capacity);
+            ref var entry = ref _entries[Count++];
+            entry.Field = field;
+            entry.Payload = field.GetMessagePayload(values);
+        }
+    }
+
+    public void Dispose()
+    {
+        if (_entries is not null)
+            ArrayPool<ProtobufSingularChildEntry>.Shared.Return(_entries, clearArray: true);
+        _entries = null;
+        Count = 0;
+    }
+}
+
+internal ref struct ProtobufMapEntries
+{
+    private ProtobufMapEntry[]? _entries;
+    private int[]? _buckets;
+    private int _bucketCount;
+
+    internal ProtobufMapEntries(int capacity)
+    {
+        Count = 0;
+        if (capacity == 0)
+        {
+            _entries = null;
+            _buckets = null;
+            _bucketCount = 0;
+            return;
+        }
+
+        _entries = ArrayPool<ProtobufMapEntry>.Shared.Rent(capacity);
+        var bucketCount = 4;
+        while (bucketCount < capacity * 2)
+            bucketCount <<= 1;
+        _buckets = ArrayPool<int>.Shared.Rent(bucketCount);
+        _bucketCount = bucketCount;
+        Array.Clear(_buckets, 0, _bucketCount);
+    }
+
+    internal int Count { get; private set; }
+
+    internal ref readonly ProtobufMapEntry this[int index] => ref _entries![index];
+
+    internal void Add(
+        ProtobufFieldRulePlan field,
+        ValidationCelValue key,
+        ReadOnlyMemory<byte> payload)
+    {
+        EnsureCapacity(Count + 1);
+        var buckets = _buckets!;
+        var bucket = (int)(Hash(field.RuntimeIndex, key) & (uint)(_bucketCount - 1));
+        while (buckets[bucket] != 0)
+        {
+            ref var existing = ref _entries![buckets[bucket] - 1];
+            if (existing.Field.RuntimeIndex == field.RuntimeIndex && KeysEqual(existing.Key, key))
+            {
+                existing.Key = key;
+                existing.Payload = payload;
+                return;
+            }
+            bucket = (bucket + 1) & (_bucketCount - 1);
+        }
+
+        ref var entry = ref _entries![Count];
+        entry.Field = field;
+        entry.Key = key;
+        entry.Payload = payload;
+        buckets[bucket] = ++Count;
+    }
+
+    private void EnsureCapacity(int requiredCount)
+    {
+        if (_entries is not null &&
+            requiredCount <= _entries.Length &&
+            requiredCount * 2 <= _bucketCount)
+        {
+            return;
+        }
+
+        var entries = ArrayPool<ProtobufMapEntry>.Shared.Rent(requiredCount);
+        if (_entries is not null)
+            _entries.AsSpan(0, Count).CopyTo(entries);
+        var bucketCount = 4;
+        while (bucketCount < requiredCount * 2)
+            bucketCount <<= 1;
+        var buckets = ArrayPool<int>.Shared.Rent(bucketCount);
+        Array.Clear(buckets, 0, bucketCount);
+        for (var index = 0; index < Count; index++)
+        {
+            ref readonly var entry = ref entries[index];
+            var bucket = (int)(Hash(entry.Field.RuntimeIndex, entry.Key) & (uint)(bucketCount - 1));
+            while (buckets[bucket] != 0)
+                bucket = (bucket + 1) & (bucketCount - 1);
+            buckets[bucket] = index + 1;
+        }
+
+        if (_entries is not null)
+            ArrayPool<ProtobufMapEntry>.Shared.Return(_entries, clearArray: true);
+        if (_buckets is not null)
+            ArrayPool<int>.Shared.Return(_buckets);
+        _entries = entries;
+        _buckets = buckets;
+        _bucketCount = bucketCount;
+    }
+
+    internal void ApplyUniqueSizes(
+        ReadOnlySpan<ProtobufFieldRulePlan> fields,
+        ValidationCelSizeValues sizes)
+    {
+        for (var index = 0; index < fields.Length; index++)
+        {
+            var field = fields[index];
+            if (field.Descriptor.IsMap)
+                sizes.Set(field.RuntimeIndex + 1, 0);
+        }
+        for (var index = 0; index < Count; index++)
+        {
+            var fieldIndex = _entries![index].Field.RuntimeIndex + 1;
+            _ = sizes.TryGet(fieldIndex, out var count);
+            sizes.Set(fieldIndex, count + 1);
+        }
+    }
+
+    private static uint Hash(int fieldIndex, ValidationCelValue key)
+    {
+        var hash = unchecked((uint)fieldIndex * 16777619u) ^ (uint)key.Kind;
+        if (key.Kind == ValidationCelValueKind.Boolean)
+            return (hash ^ (key.Boolean ? 1u : 0u)) * 16777619u;
+        if (key.Kind == ValidationCelValueKind.Number)
+            return (hash ^ unchecked((uint)key.Number.GetHashCode())) * 16777619u;
+        var bytes = key.Utf8Literal.Span;
+        for (var index = 0; index < bytes.Length; index++)
+            hash = (hash ^ bytes[index]) * 16777619u;
+        return hash;
+    }
+
+    private static bool KeysEqual(ValidationCelValue left, ValidationCelValue right)
+    {
+        if (left.Kind != right.Kind)
+            return false;
+        return left.Kind switch
+        {
+            ValidationCelValueKind.Boolean => left.Boolean == right.Boolean,
+            ValidationCelValueKind.Number => left.Number == right.Number,
+            ValidationCelValueKind.String or ValidationCelValueKind.Bytes =>
+                left.Utf8Literal.Span.SequenceEqual(right.Utf8Literal.Span),
+            _ => false
+        };
+    }
+
+    public void Dispose()
+    {
+        if (_entries is not null)
+            ArrayPool<ProtobufMapEntry>.Shared.Return(_entries, clearArray: true);
+        if (_buckets is not null)
+            ArrayPool<int>.Shared.Return(_buckets);
+        _entries = null;
+        _buckets = null;
+        _bucketCount = 0;
+        Count = 0;
+    }
+}
+
 internal sealed class ProtobufCompiledRuleSet
 {
     internal static ProtobufCompiledRuleSet Empty { get; } = new([], null, false, false, 0);
@@ -611,6 +1255,7 @@ internal sealed class ProtobufCompiledRuleSet
 
     internal bool IsEmpty => _rules.Length == 0;
     internal bool UsesSize { get; }
+    internal bool RequiresMemberResolution => _members is not null;
 
     internal static ProtobufCompiledRuleSet Compile(
         IReadOnlyList<ValidationRule> rules,
@@ -713,14 +1358,18 @@ internal sealed class ProtobufCompiledRuleSet
 internal sealed class ProtobufMemberResolver
 {
     private readonly Dictionary<int, ProtobufMemberNode> _fields = [];
+    private readonly int _oneofCount;
     private ProtobufMemberNode[] _nodes = [];
+
+    private ProtobufMemberResolver(MessageDescriptor descriptor) =>
+        _oneofCount = descriptor.Oneofs.Count;
 
     internal static ProtobufMemberResolver Create(
         MessageDescriptor descriptor,
         IReadOnlyList<byte[][]> paths,
         IReadOnlyCollection<int> usedIndexes)
     {
-        var resolver = new ProtobufMemberResolver();
+        var resolver = new ProtobufMemberResolver(descriptor);
         foreach (var memberIndex in usedIndexes)
             resolver.Add(descriptor, paths[memberIndex], memberIndex, depth: 0);
         resolver.Freeze();
@@ -731,7 +1380,10 @@ internal sealed class ProtobufMemberResolver
     {
         _nodes = [.. _fields.Values];
         for (var index = 0; index < _nodes.Length; index++)
+        {
+            _nodes[index].RuntimeIndex = index;
             _nodes[index].Child?.Freeze();
+        }
     }
 
     private void Add(MessageDescriptor descriptor, byte[][] path, int memberIndex, int depth)
@@ -745,6 +1397,14 @@ internal sealed class ProtobufMemberResolver
             node = new ProtobufMemberNode(field);
             _fields.Add(field.FieldNumber, node);
         }
+        if (field.ContainingOneof is { } oneof)
+        {
+            for (var index = 0; index < oneof.Fields.Count; index++)
+            {
+                var sibling = oneof.Fields[index];
+                _fields.TryAdd(sibling.FieldNumber, new ProtobufMemberNode(sibling));
+            }
+        }
 
         if (depth == path.Length - 1)
         {
@@ -757,7 +1417,7 @@ internal sealed class ProtobufMemberResolver
             throw new SchemaRegistryRuleException(
                 $"Protobuf validation member path cannot descend through '{field.FullName}'.");
         }
-        node.Child ??= new ProtobufMemberResolver();
+        node.Child ??= new ProtobufMemberResolver(field.MessageType);
         node.Child.Add(field.MessageType, path, memberIndex, depth + 1);
     }
 
@@ -766,29 +1426,52 @@ internal sealed class ProtobufMemberResolver
         ValidationCelMemberValues values,
         ValidationCelSizeValues sizes)
     {
+        var nestedPayloads = new ProtobufNestedMemberPayloads(_nodes.Length);
+        Span<int> initialOneofs = stackalloc int[8];
+        var oneofs = new ProtobufOneofSelections(_oneofCount, initialOneofs);
         var reader = new ProtobufValidationWireReader(payload);
-        while (reader.TryRead(out var field))
+        try
         {
-            if (!_fields.TryGetValue(field.Number, out var node))
-                continue;
+            while (reader.TryRead(out var field))
+            {
+                if (!_fields.TryGetValue(field.Number, out var node))
+                    continue;
 
-            node.Observe(field, values, sizes);
+                var previous = oneofs.Select(node.OneofIndex, node.RuntimeIndex);
+                if (previous >= 0 && previous != node.RuntimeIndex)
+                    _nodes[previous].Clear(values, ref nestedPayloads);
+
+                node.Observe(field, values, sizes, ref nestedPayloads);
+            }
+
+            for (var index = 0; index < _nodes.Length; index++)
+            {
+                var node = _nodes[index];
+                node.ApplyDefault(values, sizes);
+                if (node.Child is not null && nestedPayloads.TryGet(index, out var childPayload))
+                    node.Child.Resolve(childPayload, values, sizes);
+            }
         }
-
-        for (var index = 0; index < _nodes.Length; index++)
-            _nodes[index].ApplyDefault(values, sizes);
+        finally
+        {
+            oneofs.Dispose();
+            nestedPayloads.Dispose();
+        }
     }
 }
 
 internal sealed class ProtobufMemberNode(FieldDescriptor descriptor)
 {
     internal int MemberIndex { get; set; } = -1;
+    internal int RuntimeIndex { get; set; }
+    internal int OneofIndex { get; } = descriptor.ContainingOneof?.Index ?? -1;
     internal ProtobufMemberResolver? Child { get; set; }
 
     internal void Observe(
         ProtobufValidationWireField field,
         ValidationCelMemberValues values,
-        ValidationCelSizeValues sizes)
+        ValidationCelSizeValues sizes,
+        ref ProtobufNestedMemberPayloads nestedPayloads)
     {
         if (MemberIndex >= 0)
         {
@@ -807,12 +1490,24 @@ internal sealed class ProtobufMemberNode(FieldDescriptor descriptor)
             }
             else
             {
-                values.SetValue(MemberIndex, ProtobufValidationValueDecoder.Decode(descriptor, field));
+                var decoded = ProtobufValidationValueDecoder.Decode(descriptor, field);
+                if (descriptor.FieldType is FieldType.Message or FieldType.Group &&
+                    values.IsSet(MemberIndex))
+                {
+                    decoded = decoded with
+                    {
+                        Utf8Literal = nestedPayloads.Merge(
+                            RuntimeIndex,
+                            values.GetValue(MemberIndex, default).Utf8Literal,
+                            decoded.Utf8Literal)
+                    };
+                }
+                values.SetValue(MemberIndex, decoded);
             }
         }
 
         if (Child is not null && field.WireType == ProtobufWireType.LengthDelimited)
-            Child.Resolve(field.Payload, values, sizes);
+            nestedPayloads.Observe(RuntimeIndex, field.Payload);
     }
 
     internal void ApplyDefault(
@@ -832,6 +1527,131 @@ internal sealed class ProtobufMemberNode(FieldDescriptor descriptor)
         {
             values.SetValue(MemberIndex, ProtobufValidationValueDecoder.Default(descriptor));
         }
+    }
+
+    internal void Clear(
+        ValidationCelMemberValues values,
+        ref ProtobufNestedMemberPayloads nestedPayloads)
+    {
+        if (MemberIndex >= 0)
+            values.Clear(MemberIndex);
+        nestedPayloads.Clear(RuntimeIndex);
+    }
+}
+
+internal ref struct ProtobufOneofSelections
+{
+    private Span<int> _selections;
+    private int[]? _rented;
+
+    internal ProtobufOneofSelections(int count, Span<int> initial)
+    {
+        if (count <= initial.Length)
+        {
+            _selections = initial[..count];
+            _rented = null;
+        }
+        else
+        {
+            _rented = ArrayPool<int>.Shared.Rent(count);
+            _selections = _rented.AsSpan(0, count);
+        }
+        _selections.Fill(-1);
+    }
+
+    internal int Select(int oneofIndex, int runtimeIndex)
+    {
+        if (oneofIndex < 0)
+            return -1;
+        ref var selected = ref _selections[oneofIndex];
+        var previous = selected;
+        selected = runtimeIndex;
+        return previous;
+    }
+
+    public void Dispose()
+    {
+        if (_rented is not null)
+            ArrayPool<int>.Shared.Return(_rented);
+        _rented = null;
+        _selections = default;
+    }
+}
+
+internal ref struct ProtobufNestedMemberPayloads
+{
+    private readonly int _count;
+    private ReadOnlyMemory<byte>[]? _payloads;
+    private byte[]? _observed;
+    private ProtobufMergedMessageBuffers _childMerged;
+    private ProtobufMergedMessageBuffers _memberMerged;
+
+    internal ProtobufNestedMemberPayloads(int count)
+    {
+        _count = count;
+        _payloads = null;
+        _observed = null;
+        _childMerged = new ProtobufMergedMessageBuffers(count);
+        _memberMerged = new ProtobufMergedMessageBuffers(count);
+    }
+
+    internal void Observe(int index, ReadOnlyMemory<byte> payload)
+    {
+        EnsurePayloads();
+        ref var current = ref _payloads![index];
+        current = _observed![index] == 0
+            ? payload
+            : _childMerged.Merge(index, current, payload);
+        _observed[index] = 1;
+    }
+
+    internal ReadOnlyMemory<byte> Merge(
+        int index,
+        ReadOnlyMemory<byte> previous,
+        ReadOnlyMemory<byte> current) => _memberMerged.Merge(index, previous, current);
+
+    internal void Clear(int index)
+    {
+        if (_payloads is not null)
+        {
+            _payloads[index] = default;
+            _observed![index] = 0;
+        }
+        _childMerged.Clear(index);
+        _memberMerged.Clear(index);
+    }
+
+    internal bool TryGet(int index, out ReadOnlyMemory<byte> payload)
+    {
+        if (_payloads is null || _observed![index] == 0)
+        {
+            payload = default;
+            return false;
+        }
+        payload = _payloads[index];
+        return true;
+    }
+
+    private void EnsurePayloads()
+    {
+        if (_payloads is not null)
+            return;
+        _payloads = ArrayPool<ReadOnlyMemory<byte>>.Shared.Rent(_count);
+        Array.Clear(_payloads, 0, _count);
+        _observed = ArrayPool<byte>.Shared.Rent(_count);
+        Array.Clear(_observed, 0, _count);
+    }
+
+    public void Dispose()
+    {
+        _childMerged.Dispose();
+        _memberMerged.Dispose();
+        if (_payloads is not null)
+            ArrayPool<ReadOnlyMemory<byte>>.Shared.Return(_payloads, clearArray: true);
+        if (_observed is not null)
+            ArrayPool<byte>.Shared.Return(_observed);
+        _payloads = null;
+        _observed = null;
     }
 }
 
