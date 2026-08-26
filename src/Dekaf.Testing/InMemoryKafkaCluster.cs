@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 using Dekaf.Admin;
 using Dekaf.Consumer;
@@ -24,7 +25,7 @@ public sealed class InMemoryKafkaCluster
     private readonly Dictionary<string, Dictionary<TopicPartition, TopicPartitionOffset>> _consumerGroupOffsets = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Dictionary<TopicPartition, TopicPartitionOffset>> _shareGroupOffsets = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Dictionary<string, ConsumerGroupMemberState>> _consumerGroupMembers = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, int> _consumerGroupGenerations = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, int> _consumerGroupGenerations = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Dictionary<string, int>> _shareGroupMembers = new(StringComparer.Ordinal);
     private readonly HashSet<string> _shareGroupsWithMemberHistory = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Dictionary<TopicPartition, Dictionary<long, ShareGroupMemberRegistration>>> _shareLeases = new(StringComparer.Ordinal);
@@ -38,6 +39,7 @@ public sealed class InMemoryKafkaCluster
     private long _nextProducerId;
     private long _nextConsumerGroupRegistrationId;
     private TimeSpan _produceLatency;
+    private int _nextConsumerGroupGeneration;
 
     public InMemoryKafkaCluster()
         : this(new InMemoryKafkaClusterOptions(), new KafkaFaultPlan())
@@ -210,7 +212,7 @@ public sealed class InMemoryKafkaCluster
 
             registrationId = ++_nextConsumerGroupRegistrationId;
             members[memberId] = new ConsumerGroupMemberState(registrationId, partitions);
-            var generation = _consumerGroupGenerations.GetValueOrDefault(groupId) + 1;
+            var generation = ++_nextConsumerGroupGeneration;
             _consumerGroupGenerations[groupId] = generation;
             return generation;
         }
@@ -237,9 +239,15 @@ public sealed class InMemoryKafkaCluster
 
             members.Remove(memberId);
 
-            _consumerGroupGenerations[groupId] = _consumerGroupGenerations.GetValueOrDefault(groupId) + 1;
             if (members.Count == 0)
+            {
                 _consumerGroupMembers.Remove(groupId);
+                _consumerGroupGenerations[groupId] = 0;
+            }
+            else
+            {
+                _consumerGroupGenerations[groupId] = ++_nextConsumerGroupGeneration;
+            }
         }
     }
 
@@ -274,8 +282,9 @@ public sealed class InMemoryKafkaCluster
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(groupId);
 
-        lock (_gate)
-            return _consumerGroupGenerations.GetValueOrDefault(groupId);
+        return _consumerGroupGenerations.TryGetValue(groupId, out var generation)
+            ? generation
+            : 0;
     }
 
     public IReadOnlyList<InMemoryRecord> ReadRecords(string topic, int partition = 0)
@@ -931,6 +940,26 @@ public sealed class InMemoryKafkaCluster
         await task.WaitAsync(timeout, cancellationToken).ConfigureAwait(false);
     }
 
+    internal Task ObserveRecordsChanged()
+    {
+        lock (_gate)
+        {
+            var task = _recordsChanged.Task;
+            if (task.IsCompleted)
+                _recordsChanged = NewRecordsChangedSource();
+            return task;
+        }
+    }
+
+    internal void SignalRecordsChanged()
+    {
+        TaskCompletionSource signal;
+        lock (_gate)
+            signal = _recordsChanged;
+
+        signal.TrySetResult();
+    }
+
     internal WatermarkOffsets GetWatermarks(TopicPartition topicPartition)
     {
         lock (_gate)
@@ -1037,6 +1066,19 @@ public sealed class InMemoryKafkaCluster
     {
         lock (_gate)
             CommitShareOffsetsUnderLock(groupId, offsets);
+    }
+
+    internal void CommitOffsets(string groupId, IReadOnlyList<TopicPartitionOffset> offsets)
+    {
+        lock (_gate)
+        {
+            var groupOffsets = GetOrCreateConsumerGroupOffsetsUnderLock(groupId);
+            for (var index = 0; index < offsets.Count; index++)
+            {
+                var offset = offsets[index];
+                groupOffsets[new TopicPartition(offset.Topic, offset.Partition)] = offset;
+            }
+        }
     }
 
     internal IReadOnlyDictionary<TopicPartition, long> GetGroupOffsets(string groupId)
@@ -1603,7 +1645,8 @@ public sealed class InMemoryKafkaCluster
     private bool RemoveConsumerGroupUnderLock(string groupId)
     {
         var existed = _consumerGroupOffsets.Remove(groupId);
-        return _consumerGroupGenerations.Remove(groupId) || existed;
+        var hadGeneration = _consumerGroupGenerations.TryRemove(groupId, out _);
+        return hadGeneration || existed;
     }
 
     private Dictionary<long, ShareGroupMemberRegistration>? GetShareLeasePartition(

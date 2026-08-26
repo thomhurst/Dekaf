@@ -16,6 +16,15 @@ namespace Dekaf.Tests.Unit.Testing;
 public sealed class InMemoryKafkaClusterTests
 {
     [Test]
+    public async Task Constructor_NullOptionsUsesOptionsOverload()
+    {
+        var actual = Assert.Throws<ArgumentNullException>(() =>
+            _ = new InMemoryKafkaCluster((InMemoryKafkaClusterOptions)null!));
+
+        await Assert.That(actual.ParamName).IsEqualTo("options");
+    }
+
+    [Test]
     public async Task AdminFeatures_KeepSupportedAndFinalizedRangesIndependent()
     {
         var cluster = new InMemoryKafkaCluster(new InMemoryKafkaClusterOptions
@@ -1766,6 +1775,59 @@ public sealed class InMemoryKafkaClusterTests
             .IsEquivalentTo([0, 1]);
         await Assert.That(new[] { first!.Value.Partition, second!.Value.Partition })
             .IsEquivalentTo([0, 1]);
+    }
+
+    [Test]
+    public async Task ConsumerGroupGeneration_IsScopedAndMonotonic()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.RegisterConsumerGroupMember("tracked", "a", [], out var trackedRegistrationId);
+        var initialGeneration = cluster.GetConsumerGroupGeneration("tracked");
+
+        cluster.RegisterConsumerGroupMember("unrelated", "b", [], out var unrelatedRegistrationId);
+        cluster.UnregisterConsumerGroupMember("unrelated", "b", unrelatedRegistrationId);
+
+        await Assert.That(cluster.GetConsumerGroupGeneration("tracked"))
+            .IsEqualTo(initialGeneration);
+
+        cluster.UnregisterConsumerGroupMember("tracked", "a", trackedRegistrationId);
+        await Assert.That(cluster.GetConsumerGroupGeneration("tracked")).IsEqualTo(0);
+        cluster.RegisterConsumerGroupMember("tracked", "c", [], out _);
+
+        await Assert.That(cluster.GetConsumerGroupGeneration("tracked"))
+            .IsGreaterThan(initialGeneration);
+    }
+
+    [Test]
+    public async Task ConsumerGroup_DuplicateMemberIdFencesStaleRegistrationWithoutSpinning()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("duplicate-member-topic");
+        await using var first = new InMemoryConsumer<string, string>(
+            cluster,
+            new InMemoryConsumerOptions
+            {
+                GroupId = "duplicate-members",
+                MemberId = "member",
+                AutoOffsetReset = AutoOffsetReset.Earliest
+            });
+        await using var replacement = new InMemoryConsumer<string, string>(
+            cluster,
+            new InMemoryConsumerOptions
+            {
+                GroupId = "duplicate-members",
+                MemberId = "member",
+                AutoOffsetReset = AutoOffsetReset.Earliest
+            });
+        first.Subscribe("duplicate-member-topic");
+        replacement.Subscribe("duplicate-member-topic");
+
+        // Keep a generation-loop regression bounded instead of hanging the test process.
+        var result = await Task.Run(() => first.ConsumeOneAsync(TimeSpan.Zero).AsTask())
+            .WaitAsync(TimeSpan.FromSeconds(5));
+
+        await Assert.That(result).IsNull();
+        await Assert.That(first.Assignment).IsEmpty();
     }
 
     [Test]
