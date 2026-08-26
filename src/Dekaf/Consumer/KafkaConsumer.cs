@@ -8790,6 +8790,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     throw new KafkaException(ErrorCode.LeaderNotAvailable, $"No leader found for partition {topicPartition}");
                 using var lease = connectionLease.Value;
                 var connection = lease.Connection;
+                var topicId = GetTopicId(
+                    _metadataManager.Metadata.CaptureSnapshot(),
+                    topicPartition.Topic);
 
                 var listOffsetsVersion = _metadataManager.GetNegotiatedApiVersion(
                     connection,
@@ -8855,14 +8858,47 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
                 if (cacheResult)
                 {
-                    UpdateQueriedCachedWatermarks(
+                    var cacheUpdated = UpdateQueriedCachedWatermarks(
                         topicPartition,
                         lowWatermark,
                         highWatermark,
                         highWatermark,
                         assignmentGeneration,
                         latestPartitionResponse.LeaderEpoch,
-                        watermarkUpdateSequence);
+                        watermarkUpdateSequence,
+                        topicId);
+                    if (!cacheUpdated && assignmentGeneration is null)
+                    {
+                        // ListOffsets responses do not carry topic IDs. Refresh identity only
+                        // when a regressive unassigned snapshot was rejected as stale.
+                        var refreshedTopicId = GetTopicId(
+                            _metadataManager.Metadata.CaptureSnapshot(),
+                            topicPartition.Topic);
+                        if (refreshedTopicId == topicId)
+                        {
+                            await _metadataManager.RefreshMetadataAsync(
+                                    [topicPartition.Topic],
+                                    forceRefresh: true,
+                                    cancellationToken: apiTimeout.Token)
+                                .ConfigureAwait(false);
+                            refreshedTopicId = GetTopicId(
+                                _metadataManager.Metadata.CaptureSnapshot(),
+                                topicPartition.Topic);
+                        }
+
+                        if (refreshedTopicId != topicId)
+                        {
+                            _ = UpdateQueriedCachedWatermarks(
+                                topicPartition,
+                                lowWatermark,
+                                highWatermark,
+                                highWatermark,
+                                assignmentGeneration,
+                                latestPartitionResponse.LeaderEpoch,
+                                watermarkUpdateSequence,
+                                refreshedTopicId);
+                        }
+                    }
                 }
 
                 return watermarks;
@@ -8875,14 +8911,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
     }
 
-    private void UpdateQueriedCachedWatermarks(
+    private bool UpdateQueriedCachedWatermarks(
         TopicPartition partition,
         long low,
         long high,
         long lagEndOffset,
         int? assignmentGeneration,
         int leaderEpoch,
-        long watermarkUpdateSequence)
+        long watermarkUpdateSequence,
+        Guid topicId)
     {
         lock (_snapshotStateGate)
         {
@@ -8892,13 +8929,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     || !_watermarkAssignmentVersions.TryGetValue(partition, out var currentGeneration)
                     || currentGeneration != expectedGeneration)
                 {
-                    return;
+                    return false;
                 }
             }
             else if (_assignmentSnapshot.Contains(partition)
                      || _watermarkAssignmentVersions.ContainsKey(partition))
             {
-                return;
+                return false;
             }
 
             if (assignmentGeneration is null)
@@ -8909,7 +8946,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     lagEndOffset,
                     GetMinimumFetchBufferEpoch(partition),
                     leaderEpoch,
-                    watermarkUpdateSequence);
+                    watermarkUpdateSequence,
+                    topicId);
                 if (_watermarks.TryGetValue(partition, out var existingEntry))
                 {
                     if (!existingEntry.TryReplaceWithNewerSnapshot(
@@ -8917,7 +8955,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                             partition,
                             retainedEntry))
                     {
-                        return;
+                        return false;
                     }
                 }
                 else
@@ -8926,7 +8964,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 }
 
                 RetainUnassignedWatermarkSnapshot(partition, retainedEntry, _assignmentSnapshot);
-                return;
+                return true;
             }
 
             if (_watermarks.TryGetValue(partition, out var entry))
@@ -8938,7 +8976,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     GetMinimumFetchBufferEpoch(partition),
                     leaderEpoch,
                     watermarkUpdateSequence);
-                return;
+                return true;
             }
 
             _watermarks.TryAdd(
@@ -8949,7 +8987,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     lagEndOffset,
                     GetMinimumFetchBufferEpoch(partition),
                     leaderEpoch,
-                    watermarkUpdateSequence));
+                    watermarkUpdateSequence,
+                    topicId));
+            return true;
         }
     }
 
@@ -11136,7 +11176,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 lagEndOffset,
                 GetMinimumFetchBufferEpoch(partition),
                 leaderEpoch,
-                watermarkUpdateSequence));
+                watermarkUpdateSequence,
+                GetTopicId(
+                    _metadataManager.Metadata.CaptureSnapshot(),
+                    partition.Topic)));
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
@@ -11171,7 +11214,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         lagEndOffset,
                         fetchBufferEpoch,
                         leaderEpoch,
-                        watermarkUpdateSequence)))
+                        watermarkUpdateSequence,
+                        GetTopicId(
+                            _metadataManager.Metadata.CaptureSnapshot(),
+                            partition.Topic))))
                 {
                     return;
                 }
@@ -11200,6 +11246,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         private int _watermarkOffsetsUpdateSequenceLow;
         private int _leaderEpoch;
         private int _minimumFetchBufferEpoch;
+        private readonly Guid _topicId;
         private long _low;
         private long _high;
         private long _lagEndOffset;
@@ -11213,13 +11260,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             long lagEndOffset,
             int minimumFetchBufferEpoch,
             int leaderEpoch,
-            long watermarkUpdateSequence)
+            long watermarkUpdateSequence,
+            Guid topicId)
         {
             _low = UnknownWatermarkOffset;
             _high = UnknownWatermarkOffset;
             _lagEndOffset = lagEndOffset;
             _leaderEpoch = leaderEpoch;
             _minimumFetchBufferEpoch = minimumFetchBufferEpoch;
+            _topicId = topicId;
             _watermarkUpdateState = long.MinValue | watermarkUpdateSequence;
         }
 
@@ -11229,13 +11278,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             long lagEndOffset,
             int minimumFetchBufferEpoch,
             int leaderEpoch,
-            long watermarkUpdateSequence)
+            long watermarkUpdateSequence,
+            Guid topicId)
         {
             _low = low;
             _high = high;
             _lagEndOffset = lagEndOffset;
             _leaderEpoch = leaderEpoch;
             _minimumFetchBufferEpoch = minimumFetchBufferEpoch;
+            _topicId = topicId;
             _watermarkUpdateState = watermarkUpdateSequence;
         }
 
@@ -11468,6 +11519,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         private bool CanReplaceWith(WatermarkCacheEntry replacement)
         {
+            if (replacement._topicId != Guid.Empty
+                && replacement._topicId != _topicId)
+            {
+                return (ulong)replacement._watermarkUpdateState
+                       >= (ulong)(_watermarkUpdateState & long.MaxValue);
+            }
+
             var currentLeaderEpoch = _leaderEpoch;
             var replacementLeaderEpoch = replacement._leaderEpoch;
             if (currentLeaderEpoch != UnknownLeaderEpoch)

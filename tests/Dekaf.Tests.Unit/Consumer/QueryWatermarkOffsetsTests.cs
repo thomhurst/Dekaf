@@ -277,6 +277,117 @@ public sealed class QueryWatermarkOffsetsTests
     }
 
     [Test]
+    public async Task QueryWatermarkOffsetsAsync_RecreatedUnassignedTopicReplacesRetainedOffsets()
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var connection = new LeaseTrackingConnection();
+        connectionPool.GetConnectionByIndexAsync(0, 1, Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult<IKafkaConnection>(connection));
+        var metadataManager = new MetadataManager(connectionPool, ["localhost:9092"]);
+        metadataManager.SetApiVersion(
+            ApiKey.ListOffsets,
+            ListOffsetsRequest.LowestSupportedVersion,
+            ListOffsetsRequest.HighestSupportedVersion);
+        metadataManager.Metadata.Update(CreateMetadataResponse(InitialTopicId));
+        await using var consumer = new KafkaConsumer<string, string>(
+            new ConsumerOptions
+            {
+                BootstrapServers = ["localhost:9092"],
+                GroupId = "test-group"
+            },
+            Serializers.String,
+            Serializers.String,
+            connectionPool,
+            metadataManager);
+        SetInitialized(consumer);
+        var partition = new TopicPartition(Topic, Partition);
+        var recreated = false;
+        connection.SendHandler = request =>
+        {
+            var timestamp = request.Topics[0].Partitions[0].Timestamp;
+            var offset = recreated
+                ? timestamp == EarliestOffsetTimestamp ? 0 : 5
+                : timestamp == EarliestOffsetTimestamp ? 10 : 100;
+            return ValueTask.FromResult(CreateListOffsetsResponse(request, offset));
+        };
+
+        await consumer.QueryWatermarkOffsetsAsync(partition);
+        recreated = true;
+        metadataManager.Metadata.Update(CreateMetadataResponse(Guid.NewGuid()));
+
+        await Assert.That(await consumer.QueryWatermarkOffsetsAsync(partition))
+            .IsEqualTo(new WatermarkOffsets(0, 5));
+        await Assert.That(consumer.GetWatermarkOffsets(partition))
+            .IsEqualTo(new WatermarkOffsets(0, 5));
+    }
+
+    [Test]
+    public async Task QueryWatermarkOffsetsAsync_OldTopicResponseCannotReplaceRecreatedTopic()
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var connection = new LeaseTrackingConnection();
+        connectionPool.GetConnectionByIndexAsync(0, 1, Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult<IKafkaConnection>(connection));
+        var metadataManager = new MetadataManager(connectionPool, ["localhost:9092"]);
+        metadataManager.SetApiVersion(
+            ApiKey.ListOffsets,
+            ListOffsetsRequest.LowestSupportedVersion,
+            ListOffsetsRequest.HighestSupportedVersion);
+        metadataManager.Metadata.Update(CreateMetadataResponse(InitialTopicId));
+        await using var consumer = new KafkaConsumer<string, string>(
+            new ConsumerOptions
+            {
+                BootstrapServers = ["localhost:9092"],
+                GroupId = "test-group"
+            },
+            Serializers.String,
+            Serializers.String,
+            connectionPool,
+            metadataManager);
+        SetInitialized(consumer);
+        var partition = new TopicPartition(Topic, Partition);
+        var oldRequestsStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseOldResponses = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var requestCount = 0;
+        connection.SendHandler = async request =>
+        {
+            var requestNumber = Interlocked.Increment(ref requestCount);
+            var timestamp = request.Topics[0].Partitions[0].Timestamp;
+            if (requestNumber <= 2)
+            {
+                if (requestNumber == 2)
+                    oldRequestsStarted.TrySetResult();
+                await releaseOldResponses.Task.ConfigureAwait(false);
+                return CreateListOffsetsResponse(
+                    request,
+                    timestamp == EarliestOffsetTimestamp ? 10 : 100);
+            }
+
+            return CreateListOffsetsResponse(
+                request,
+                timestamp == EarliestOffsetTimestamp ? 0 : 5);
+        };
+
+        var oldQuery = consumer.QueryWatermarkOffsetsAsync(partition).AsTask();
+        await oldRequestsStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        try
+        {
+            metadataManager.Metadata.Update(CreateMetadataResponse(Guid.NewGuid()));
+            await Assert.That(await consumer.QueryWatermarkOffsetsAsync(partition))
+                .IsEqualTo(new WatermarkOffsets(0, 5));
+        }
+        finally
+        {
+            releaseOldResponses.TrySetResult();
+        }
+
+        await Assert.That(await oldQuery.WaitAsync(TimeSpan.FromSeconds(1)))
+            .IsEqualTo(new WatermarkOffsets(10, 100));
+        await Assert.That(consumer.GetWatermarkOffsets(partition))
+            .IsEqualTo(new WatermarkOffsets(0, 5));
+    }
+
+    [Test]
     public async Task QueryWatermarkOffsetsAsync_ConcurrentPublishDuringFirstDispatchPublishesQueryResult()
     {
         var connectionPool = Substitute.For<IConnectionPool>();
@@ -858,7 +969,7 @@ public sealed class QueryWatermarkOffsetsTests
             "UpdateQueriedCachedWatermarks",
             BindingFlags.NonPublic | BindingFlags.Instance)
             ?? throw new InvalidOperationException("UpdateQueriedCachedWatermarks method not found.");
-        method.Invoke(consumer, [partition, low, high, high, null, -1, watermarkUpdateSequence]);
+        method.Invoke(consumer, [partition, low, high, high, null, -1, watermarkUpdateSequence, Guid.Empty]);
     }
 
     private static async ValueTask InvokeHandleTopicIdentityChangesAsync(

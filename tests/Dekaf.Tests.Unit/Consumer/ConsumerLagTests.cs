@@ -645,7 +645,8 @@ public sealed class ConsumerLagTests
             watermarks.High,
             null,
             -1,
-            updateSequence
+            updateSequence,
+            Guid.Empty
         ]);
     }
 
