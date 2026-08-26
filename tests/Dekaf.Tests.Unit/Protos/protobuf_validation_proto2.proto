@@ -40,6 +40,15 @@ message Proto2PresenceValidationMessage {
   optional Proto2PresenceStatus status = 6 [default = PROTO2_PRESENCE_STATUS_ACTIVE];
 }
 
+message Proto2PackedEnumValidationMessage {
+  repeated Proto2PresenceStatus statuses = 1 [packed = true, (confluent.field_meta) = {
+    rules: {
+      name: "known-packed-status-count"
+      expr: "size(this) <= 1"
+    }
+  }];
+}
+
 enum Proto2PresenceStatus {
   PROTO2_PRESENCE_STATUS_UNSPECIFIED = 0;
   PROTO2_PRESENCE_STATUS_ACTIVE = 1;

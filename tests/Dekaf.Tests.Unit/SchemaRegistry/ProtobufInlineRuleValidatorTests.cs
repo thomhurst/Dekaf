@@ -95,6 +95,25 @@ public sealed class ProtobufInlineRuleValidatorTests
     }
 
     [Test]
+    public async Task Validate_PackedUnknownClosedEnumValueIsExcludedFromCollection()
+    {
+        var packed = new ArrayBufferWriter<byte>();
+        WriteVarint(packed, 1);
+        WriteVarint(packed, 99);
+        var payload = new ArrayBufferWriter<byte>();
+        WriteLengthDelimited(payload, fieldNumber: 1, packed.WrittenSpan);
+        var validator = new ProtobufInlineRuleValidator(Proto2PackedEnumValidationMessage.Descriptor);
+
+        validator.Validate(payload.WrittenMemory, schemaId: 18, failFast: false);
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var index = 0; index < 100; index++)
+            validator.Validate(payload.WrittenMemory, schemaId: 18, failFast: false);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        await Assert.That(allocated).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task Validate_EncodedProto3DefaultUsesImplicitAbsence()
     {
         var payload = new ArrayBufferWriter<byte>();
@@ -270,6 +289,40 @@ public sealed class ProtobufInlineRuleValidatorTests
         validator.Validate(payload.WrittenMemory, schemaId: 17, failFast: false);
 
         await Assert.That(payload.WrittenCount).IsGreaterThan(0);
+    }
+
+    [Test]
+    public async Task Validate_TemporalMessagesMergeComponentsAcrossOuterOccurrences()
+    {
+        var seconds = new ArrayBufferWriter<byte>();
+        WriteVarint(seconds, 1u << 3);
+        WriteVarint(seconds, 1_700_000_000);
+        var nanos = new ArrayBufferWriter<byte>();
+        WriteVarint(nanos, 2u << 3);
+        WriteVarint(nanos, 5);
+        var durationSeconds = new ArrayBufferWriter<byte>();
+        WriteVarint(durationSeconds, 1u << 3);
+        WriteVarint(durationSeconds, 1);
+
+        var payload = new ArrayBufferWriter<byte>();
+        WriteLengthDelimited(payload, fieldNumber: 1, seconds.WrittenSpan);
+        WriteLengthDelimited(payload, fieldNumber: 1, nanos.WrittenSpan);
+        WriteLengthDelimited(payload, fieldNumber: 2, durationSeconds.WrittenSpan);
+        WriteLengthDelimited(payload, fieldNumber: 2, nanos.WrittenSpan);
+        var validator = new ProtobufInlineRuleValidator(ValidationTemporalEnvelope.Descriptor);
+        var parsed = ValidationTemporalEnvelope.Parser.ParseFrom(payload.WrittenSpan.ToArray());
+
+        validator.Validate(payload.WrittenMemory, schemaId: 17, failFast: false);
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var index = 0; index < 100; index++)
+            validator.Validate(payload.WrittenMemory, schemaId: 17, failFast: false);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        await Assert.That(parsed.CreatedAt.Seconds).IsEqualTo(1_700_000_000);
+        await Assert.That(parsed.CreatedAt.Nanos).IsEqualTo(5);
+        await Assert.That(parsed.Elapsed.Seconds).IsEqualTo(1);
+        await Assert.That(parsed.Elapsed.Nanos).IsEqualTo(5);
+        await Assert.That(allocated).IsEqualTo(0);
     }
 
     [Test]

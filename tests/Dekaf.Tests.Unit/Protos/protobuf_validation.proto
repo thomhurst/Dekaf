@@ -3,6 +3,7 @@ syntax = "proto3";
 package dekaf.validation;
 
 import "confluent/meta.proto";
+import "google/protobuf/duration.proto";
 import "google/protobuf/timestamp.proto";
 import "google/protobuf/wrappers.proto";
 import "protobuf_validation_child.proto";
@@ -121,6 +122,30 @@ message ValidationEnvelope {
     rules: {
       name: "label-last-wins"
       expr: "this == 'b'"
+    }
+  }];
+
+}
+
+message ValidationTemporalEnvelope {
+  option (confluent.message_meta) = {
+    rules: {
+      name: "temporal-components-merge"
+      expr: "this.created_at >= timestamp('2020-01-01T00:00:00Z') && this.elapsed > 1000"
+    }
+  };
+
+  google.protobuf.Timestamp created_at = 1 [(confluent.field_meta) = {
+    rules: {
+      name: "timestamp-components-merge"
+      expr: "this >= timestamp('2020-01-01T00:00:00Z')"
+    }
+  }];
+
+  google.protobuf.Duration elapsed = 2 [(confluent.field_meta) = {
+    rules: {
+      name: "duration-components-merge"
+      expr: "this > 1000"
     }
   }];
 }

@@ -1854,13 +1854,11 @@ internal static class ProtobufValidationValueDecoder
         if (IsWrapper(descriptor.MessageType.FullName))
             return HasWrapperValue(descriptor.MessageType, field.Payload) ? current : previous;
 
-        return current with
-        {
-            Utf8Literal = mergedMessages.Merge(
-                runtimeIndex,
-                previous.Utf8Literal,
-                current.Utf8Literal)
-        };
+        var mergedPayload = mergedMessages.Merge(
+            runtimeIndex,
+            previous.Utf8Literal,
+            current.Utf8Literal);
+        return DecodeMergedMessage(descriptor.MessageType, current, mergedPayload);
     }
 
     internal static ValidationCelValue MergeMessage(
@@ -1874,14 +1872,20 @@ internal static class ProtobufValidationValueDecoder
         if (IsWrapper(descriptor.MessageType.FullName))
             return HasWrapperValue(descriptor.MessageType, field.Payload) ? current : previous;
 
-        return current with
-        {
-            Utf8Literal = mergedMessages.Merge(
-                runtimeIndex,
-                previous.Utf8Literal,
-                current.Utf8Literal)
-        };
+        var mergedPayload = mergedMessages.Merge(
+            runtimeIndex,
+            previous.Utf8Literal,
+            current.Utf8Literal);
+        return DecodeMergedMessage(descriptor.MessageType, current, mergedPayload);
     }
+
+    private static ValidationCelValue DecodeMergedMessage(
+        MessageDescriptor descriptor,
+        ValidationCelValue current,
+        ReadOnlyMemory<byte> mergedPayload) => descriptor.FullName is
+            "google.protobuf.Timestamp" or "google.protobuf.Duration"
+        ? DecodeMessage(descriptor, mergedPayload)
+        : current with { Utf8Literal = mergedPayload };
 
     internal static ValidationCelValue Decode(
         FieldDescriptor descriptor,
@@ -1975,7 +1979,8 @@ internal static class ProtobufValidationValueDecoder
 
     internal static int CountPacked(FieldDescriptor descriptor, ReadOnlyMemory<byte> payload)
     {
-        var wireType = descriptor.FieldType switch
+        var fieldType = descriptor.FieldType;
+        var wireType = fieldType switch
         {
             FieldType.Double or FieldType.Fixed64 or FieldType.SFixed64 => ProtobufWireType.Fixed64,
             FieldType.Float or FieldType.Fixed32 or FieldType.SFixed32 => ProtobufWireType.Fixed32,
@@ -1989,6 +1994,17 @@ internal static class ProtobufValidationValueDecoder
         var count = 0;
         var span = payload.Span;
         var offset = 0;
+        if (fieldType == FieldType.Enum && IsClosedEnum(descriptor))
+        {
+            while (offset < span.Length)
+            {
+                var value = ProtobufValidationWireReader.ReadVarint(span, ref offset);
+                if (descriptor.EnumType.FindValueByNumber(unchecked((int)value)) is not null)
+                    count++;
+            }
+            return count;
+        }
+
         while (offset < span.Length)
         {
             _ = ProtobufValidationWireReader.ReadVarint(span, ref offset);
@@ -2035,21 +2051,26 @@ internal static class ProtobufValidationValueDecoder
     {
         if (descriptor.FieldType != FieldType.Enum || field.WireType != ProtobufWireType.Varint)
             return false;
-#pragma warning disable CS0618 // Google.Protobuf exposes no public inherited enum-feature API.
-        var isClosedEnum = descriptor.File.Syntax == Syntax.Proto2;
-#pragma warning restore CS0618
-        return isClosedEnum &&
+        return IsClosedEnum(descriptor) &&
                descriptor.EnumType.FindValueByNumber(unchecked((int)field.Varint)) is null;
+    }
+
+    private static bool IsClosedEnum(FieldDescriptor descriptor)
+    {
+#pragma warning disable CS0618 // Google.Protobuf exposes no public inherited enum-feature API.
+        return descriptor.File.Syntax == Syntax.Proto2;
+#pragma warning restore CS0618
     }
 
     private static ValidationCelValue DecodeMessage(
         MessageDescriptor descriptor,
         ReadOnlyMemory<byte> payload)
     {
-        if (descriptor.FullName == "google.protobuf.Timestamp")
-            return ValidationCelValue.FromNumber(ReadSecondsAndNanos(payload));
-        if (descriptor.FullName == "google.protobuf.Duration")
-            return ValidationCelValue.FromNumber(ReadSecondsAndNanos(payload));
+        if (descriptor.FullName is "google.protobuf.Timestamp" or "google.protobuf.Duration")
+            return ValidationCelValue.FromNumber(ReadSecondsAndNanos(payload)) with
+            {
+                Utf8Literal = payload
+            };
         if (IsWrapper(descriptor.FullName) && descriptor.FindFieldByNumber(1) is { } valueField)
         {
             var reader = new ProtobufValidationWireReader(payload);
