@@ -174,6 +174,7 @@ public sealed class InMemoryProducer<TKey, TValue> :
             {
                 TopicPartition = topicPartitions[i],
                 LeaderId = 0,
+                LeaderEpoch = 0,
                 ReplicaIds = SingleBrokerIds,
                 InSyncReplicaIds = SingleBrokerIds,
                 OfflineReplicaIds = Array.Empty<int>()

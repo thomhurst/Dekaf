@@ -69,7 +69,11 @@ public sealed class ProducerPartitionMetadataTests
         await Assert.That(partitions.Count).IsEqualTo(2);
         await Assert.That(partitions[1].LeaderId).IsEqualTo(2);
         _ = context.Connection.Received(1).SendAsync<MetadataRequest, MetadataResponse>(
-            Arg.Is<MetadataRequest>(request => request.Topics != null && request.Topics.Count == 1 && request.Topics[0].Name == Topic),
+            Arg.Is<MetadataRequest>(request =>
+                !request.AllowAutoTopicCreation &&
+                request.Topics != null &&
+                request.Topics.Count == 1 &&
+                request.Topics[0].Name == Topic),
             Arg.Any<short>(),
             Arg.Any<CancellationToken>());
     }
@@ -122,6 +126,7 @@ public sealed class ProducerPartitionMetadataTests
         await Assert.That(partitions.Select(static partition => partition.TopicPartition.Partition))
             .IsEquivalentTo([0, 1, 2]);
         await Assert.That(partitions.All(static partition => partition.LeaderId == 0)).IsTrue();
+        await Assert.That(partitions.All(static partition => partition.LeaderEpoch == 0)).IsTrue();
         await Assert.That(() => ((IList<ProducerPartitionMetadata>)partitions)[0] = partitions[1])
             .Throws<NotSupportedException>();
     }

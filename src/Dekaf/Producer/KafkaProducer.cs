@@ -147,7 +147,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         TopicInfo? topicInfo;
         try
         {
-            topicInfo = await _metadataManager.GetTopicMetadataAsync(topic, timeoutCts.Token)
+            topicInfo = await _metadataManager.GetTopicMetadataForInspectionAsync(topic, timeoutCts.Token)
                 .ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)

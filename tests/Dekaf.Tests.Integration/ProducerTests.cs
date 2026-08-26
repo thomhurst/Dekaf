@@ -1,5 +1,6 @@
 using Dekaf.Admin;
 using Dekaf.Consumer;
+using Dekaf.Errors;
 using Dekaf.Networking;
 using Dekaf.Producer;
 using Dekaf.Protocol.Messages;
@@ -32,6 +33,29 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         await Assert.That(partitions.All(static partition => partition.LeaderId >= 0)).IsTrue();
         await Assert.That(partitions.All(static partition => partition.ReplicaIds.Count > 0)).IsTrue();
         await Assert.That(partitions.All(static partition => partition.InSyncReplicaIds.Count > 0)).IsTrue();
+    }
+
+    [Test]
+    public async Task GetPartitionsForAsync_UnknownTopicDoesNotCreateTopic()
+    {
+        var topic = $"missing-partition-metadata-{Guid.NewGuid():N}";
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("test-producer-partition-metadata-missing")
+            .WithMaxBlock(TimeSpan.FromSeconds(1))
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        await Assert.That(async () => await producer.GetPartitionsForAsync(topic))
+            .Throws<KafkaTimeoutException>();
+
+        await using var admin = Kafka.CreateAdminClient()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .Build();
+        var topics = await admin.ListTopicsAsync();
+
+        await Assert.That(topics.Select(static listing => listing.Name)).DoesNotContain(topic);
     }
 
     [Test]
