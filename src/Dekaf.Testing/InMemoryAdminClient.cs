@@ -13,7 +13,8 @@ public sealed class InMemoryAdminClient :
     IAdminClient,
     IReplicaLogDirAdminClient,
     ITopicIdAdminClient,
-    ITransactionRemediationAdminClient
+    ITransactionRemediationAdminClient,
+    IShareGroupDeletionAdminClient
 {
     private static readonly TimeSpan DefaultDelegationTokenLifetime = TimeSpan.FromHours(24);
 
@@ -1094,12 +1095,18 @@ public sealed class InMemoryAdminClient :
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
 
+        var listedGroups = _cluster.ListShareGroups().ToDictionary(
+            static group => group.GroupId,
+            static group => group.HasActiveMembers,
+            StringComparer.Ordinal);
         var result = groupIds.ToDictionary(
             groupId => groupId,
             groupId => new ShareGroupDescription
             {
                 GroupId = groupId,
-                GroupState = "Stable",
+                GroupState = listedGroups.TryGetValue(groupId, out var hasActiveMembers) && !hasActiveMembers
+                    ? "Empty"
+                    : "Stable",
                 Members = []
             },
             StringComparer.Ordinal);
@@ -1111,7 +1118,59 @@ public sealed class InMemoryAdminClient :
         ListShareGroupsOptions? options = null,
         CancellationToken cancellationToken = default)
     {
-        return ListConsumerGroupsAsync(null, cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
+        ThrowIfDisposed();
+
+        var groups = _cluster.ListShareGroups();
+        var result = new List<GroupListing>(groups.Count);
+        foreach (var group in groups)
+        {
+            var state = group.HasActiveMembers ? "Stable" : "Empty";
+            if (options?.States is { Count: > 0 } states &&
+                !states.Contains(state, StringComparer.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            result.Add(new GroupListing
+            {
+                GroupId = group.GroupId,
+                ProtocolType = "share",
+                State = state
+            });
+        }
+
+        return ValueTask.FromResult<IReadOnlyList<GroupListing>>(result);
+    }
+
+    public ValueTask<IReadOnlyDictionary<string, DeleteShareGroupResult>> DeleteShareGroupsAsync(
+        IEnumerable<string> groupIds,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(groupIds);
+        cancellationToken.ThrowIfCancellationRequested();
+        ThrowIfDisposed();
+
+        var groupIdList = groupIds.ToArray();
+        var uniqueGroupIds = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var groupId in groupIdList)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(groupId);
+            if (!uniqueGroupIds.Add(groupId))
+                throw new ArgumentException($"Share group ID '{groupId}' is duplicated.", nameof(groupIds));
+        }
+
+        var results = new Dictionary<string, DeleteShareGroupResult>(groupIdList.Length, StringComparer.Ordinal);
+        foreach (var groupId in groupIdList)
+        {
+            results[groupId] = new DeleteShareGroupResult
+            {
+                GroupId = groupId,
+                ErrorCode = _cluster.DeleteShareGroup(groupId)
+            };
+        }
+
+        return ValueTask.FromResult<IReadOnlyDictionary<string, DeleteShareGroupResult>>(results);
     }
 
     public ValueTask<IReadOnlyList<ShareGroupOffsetDescription>> DescribeShareGroupOffsetsAsync(
@@ -1123,7 +1182,7 @@ public sealed class InMemoryAdminClient :
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
 
-        var groupOffsets = _cluster.GetGroupOffsets(groupId);
+        var groupOffsets = _cluster.GetShareGroupOffsets(groupId);
         var targetPartitions = partitions?.ToArray() ?? groupOffsets.Keys.ToArray();
         var result = targetPartitions
             .Select(partition =>
@@ -1154,7 +1213,7 @@ public sealed class InMemoryAdminClient :
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
 
-        _cluster.CommitOffsets(
+        _cluster.CommitShareOffsets(
             groupId,
             offsets.Select(offset => new TopicPartitionOffset(
                 offset.TopicPartition.Topic,
@@ -1175,12 +1234,12 @@ public sealed class InMemoryAdminClient :
         ThrowIfDisposed();
 
         var topicSet = topics.ToHashSet(StringComparer.Ordinal);
-        var partitions = _cluster.GetGroupOffsets(groupId)
+        var partitions = _cluster.GetShareGroupOffsets(groupId)
             .Keys
             .Where(partition => topicSet.Contains(partition.Topic))
             .ToArray();
 
-        _cluster.DeleteGroupOffsets(groupId, partitions);
+        _cluster.DeleteShareGroupOffsets(groupId, partitions);
         return ValueTask.CompletedTask;
     }
 

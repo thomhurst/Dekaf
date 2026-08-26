@@ -25,6 +25,7 @@ public sealed class AdminClient :
     IReplicaLogDirAdminClient,
     ITopicIdAdminClient,
     ITransactionRemediationAdminClient,
+    IShareGroupDeletionAdminClient,
     IKafkaClientStatusProvider
 {
     private const string MetadataQuorumTopic = "__cluster_metadata";
@@ -4963,6 +4964,155 @@ public sealed class AdminClient :
             }
 
             return result;
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async ValueTask<IReadOnlyDictionary<string, DeleteShareGroupResult>> DeleteShareGroupsAsync(
+        IEnumerable<string> groupIds,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(groupIds);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var groupIdList = groupIds.ToArray();
+        var uniqueGroupIds = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var groupId in groupIdList)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(groupId);
+            if (!uniqueGroupIds.Add(groupId))
+                throw new ArgumentException($"Share group ID '{groupId}' is duplicated.", nameof(groupIds));
+        }
+
+        if (groupIdList.Length == 0)
+            return new Dictionary<string, DeleteShareGroupResult>(StringComparer.Ordinal);
+
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+
+        // Both collections intentionally survive retry attempts: terminal results prevent
+        // resending completed groups, while ambiguity turns a later not-found response into success.
+        var results = new Dictionary<string, DeleteShareGroupResult>(groupIdList.Length, StringComparer.Ordinal);
+        var ambiguousGroups = new HashSet<string>(StringComparer.Ordinal);
+
+        return await WithRetryAsync<IReadOnlyDictionary<string, DeleteShareGroupResult>>(async () =>
+        {
+            var groupsByCoordinator = new Dictionary<int, List<string>>();
+            foreach (var groupId in groupIdList)
+            {
+                if (results.ContainsKey(groupId))
+                    continue;
+
+                int coordinatorId;
+                try
+                {
+                    coordinatorId = await FindGroupCoordinatorAsync(
+                        groupId,
+                        cancellationToken).ConfigureAwait(false);
+                }
+                catch (Errors.GroupException exception) when (
+                    exception.ErrorCode is { } errorCode &&
+                    !errorCode.IsRetriable() &&
+                    !errorCode.RequiresMetadataRefresh())
+                {
+                    results[groupId] = new DeleteShareGroupResult
+                    {
+                        GroupId = groupId,
+                        ErrorCode = errorCode
+                    };
+                    continue;
+                }
+
+                if (!groupsByCoordinator.TryGetValue(coordinatorId, out var coordinatorGroups))
+                {
+                    coordinatorGroups = [];
+                    groupsByCoordinator[coordinatorId] = coordinatorGroups;
+                }
+                coordinatorGroups.Add(groupId);
+            }
+
+            Exception? retryFailure = null;
+            foreach (var (coordinatorId, coordinatorGroups) in groupsByCoordinator)
+            {
+                using var connectionLease = await _connectionPool.LeaseConnectionAsync(
+                    coordinatorId,
+                    cancellationToken).ConfigureAwait(false);
+                var connection = connectionLease.Connection;
+                var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                    connection,
+                    Protocol.ApiKey.DeleteGroups,
+                    DeleteGroupsRequest.LowestSupportedVersion,
+                    DeleteGroupsRequest.HighestSupportedVersion);
+
+                DeleteGroupsResponse response;
+                try
+                {
+                    response = await connection.SendAsync<DeleteGroupsRequest, DeleteGroupsResponse>(
+                        new DeleteGroupsRequest { GroupsNames = coordinatorGroups },
+                        apiVersion,
+                        cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception exception) when (
+                    RetryHelper.IsRetriableRequestFailure(exception) &&
+                    !cancellationToken.IsCancellationRequested)
+                {
+                    ambiguousGroups.UnionWith(coordinatorGroups);
+                    retryFailure ??= exception;
+                    continue;
+                }
+
+                var coordinatorGroupIds = new HashSet<string>(coordinatorGroups, StringComparer.Ordinal);
+                var responseGroupIds = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var groupResult in response.Results)
+                {
+                    if (!coordinatorGroupIds.Contains(groupResult.GroupId))
+                        continue;
+
+                    responseGroupIds.Add(groupResult.GroupId);
+                    var errorCode = groupResult.ErrorCode;
+                    if (errorCode.IsRetriable() || errorCode.RequiresMetadataRefresh())
+                    {
+                        retryFailure ??= new Errors.GroupException(
+                            errorCode,
+                            $"DeleteShareGroups failed for group '{groupResult.GroupId}': {errorCode}")
+                        {
+                            GroupId = groupResult.GroupId
+                        };
+                        continue;
+                    }
+
+                    if (errorCode == Protocol.ErrorCode.GroupIdNotFound &&
+                        ambiguousGroups.Contains(groupResult.GroupId))
+                    {
+                        errorCode = Protocol.ErrorCode.None;
+                    }
+
+                    results[groupResult.GroupId] = new DeleteShareGroupResult
+                    {
+                        GroupId = groupResult.GroupId,
+                        ErrorCode = errorCode
+                    };
+                }
+
+                foreach (var groupId in coordinatorGroups)
+                {
+                    if (!responseGroupIds.Contains(groupId))
+                    {
+                        results[groupId] = new DeleteShareGroupResult
+                        {
+                            GroupId = groupId,
+                            ErrorCode = Protocol.ErrorCode.UnknownServerError
+                        };
+                    }
+                }
+            }
+
+            if (retryFailure is not null)
+                throw retryFailure;
+
+            var orderedResults = new Dictionary<string, DeleteShareGroupResult>(groupIdList.Length, StringComparer.Ordinal);
+            foreach (var groupId in groupIdList)
+                orderedResults[groupId] = results[groupId];
+
+            return orderedResults;
         }, cancellationToken).ConfigureAwait(false);
     }
 
