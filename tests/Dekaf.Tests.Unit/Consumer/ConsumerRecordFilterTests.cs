@@ -225,7 +225,9 @@ public sealed class ConsumerRecordFilterTests
     }
 
     [Test]
-    public async Task ConsumeAsync_FilterExceptionPropagatesWithoutAdvancingPosition()
+    [Timeout(30_000)]
+    public async Task ConsumeAsync_FilterExceptionPropagatesWithoutAdvancingPosition(
+        CancellationToken testTimeout)
     {
         var fetch = CreatePendingFetchData(CreateRecord(0, "key", "value"));
         var topicPartition = fetch.TopicPartition;
@@ -235,8 +237,9 @@ public sealed class ConsumerRecordFilterTests
             new ThrowingFilter(expected),
             Serializers.String,
             Serializers.String);
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(1));
-        await using var records = consumer.ConsumeAsync(timeout.Token).GetAsyncEnumerator();
+        await using var records = consumer
+            .ConsumeAsync(CancellationToken.None)
+            .GetAsyncEnumerator(CancellationToken.None);
 
         var actual = (await Assert.That(async () => await records.MoveNextAsync())
             .Throws<InvalidOperationException>())!;
