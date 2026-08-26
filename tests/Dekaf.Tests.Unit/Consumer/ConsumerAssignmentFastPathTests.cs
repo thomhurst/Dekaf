@@ -1600,7 +1600,7 @@ public sealed class ConsumerAssignmentFastPathTests
     }
 
     [Test]
-    public async Task TopicIdentityChange_FailedResetRestoresWatermarkGeneration()
+    public async Task TopicIdentityChange_FailedResetKeepsWatermarkGenerationInvalid()
     {
         var connectionPool = Substitute.For<IConnectionPool>();
         var connection = Substitute.For<IKafkaConnection>();
@@ -1633,7 +1633,7 @@ public sealed class ConsumerAssignmentFastPathTests
         _ = await Assert.That(async () => await InvokeHandleTopicIdentityChangesAsync(consumer))
             .Throws<KafkaException>();
 
-        await Assert.That(GetWatermarkAssignmentVersions(consumer)).ContainsKey(partition);
+        await Assert.That(GetWatermarkAssignmentVersions(consumer)).DoesNotContainKey(partition);
     }
 
     [Test]

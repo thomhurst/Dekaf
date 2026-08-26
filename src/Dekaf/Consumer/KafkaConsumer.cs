@@ -10399,11 +10399,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     }
 #endif
 
+                    RotateWatermarkCacheGenerations(recreatedPartitions);
                 }
                 finally
                 {
-                    RotateWatermarkCacheGenerations(recreatedPartitions);
-
                     if (resetTasks is not null)
                         ArrayPool<Task>.Shared.Return(resetTasks, clearArray: true);
 
