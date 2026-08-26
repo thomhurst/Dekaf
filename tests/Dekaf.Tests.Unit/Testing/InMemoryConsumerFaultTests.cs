@@ -549,13 +549,32 @@ public sealed class InMemoryConsumerFaultTests
     {
         var cluster = new InMemoryKafkaCluster();
         cluster.CreateTopic(Topic, partitionCount: 2);
-        await using var consumer = CreateConsumer(cluster, enableAutoOffsetStore: false);
+        var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = Topic,
+            Partition = 0,
+            Key = "key-0",
+            Value = "value-0"
+        });
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = Topic,
+            Partition = 0,
+            Key = "key-1",
+            Value = "value-1"
+        });
+        await using var consumer = CreateConsumer(
+            cluster,
+            enableAutoOffsetStore: true,
+            offsetCommitMode: OffsetCommitMode.Auto,
+            offsetStoreTiming: OffsetStoreTiming.AfterProcessing);
         var secondPartition = new TopicPartition(Topic, 1);
         consumer.Assign(Partition, secondPartition);
-        consumer.StoreOffsets([
-            new TopicPartitionOffset(Topic, 0, 1),
-            new TopicPartitionOffset(Topic, 1, 1)
-        ]);
+        consumer.StoreOffset(new TopicPartitionOffset(Topic, 1, 1));
+        var first = await consumer.ConsumeOneAsync(TimeSpan.Zero);
+        await Assert.That(first).IsNotNull();
+        await Assert.That(first!.Value.Offset).IsEqualTo(0);
         var barrier = cluster.FaultPlan.PauseNext(
             new KafkaFaultScope(KafkaFaultOperation.Commit, Topic, 0, GroupId));
 
@@ -568,6 +587,15 @@ public sealed class InMemoryConsumerFaultTests
 
         await Assert.That(cluster.GetCommittedOffset(GroupId, Partition)).IsEqualTo(1);
         await Assert.That(cluster.GetCommittedOffset(GroupId, secondPartition)).IsEqualTo(1);
+
+        cluster.FaultPlan.Fail(
+            new KafkaFaultScope(KafkaFaultOperation.Commit, groupId: GroupId),
+            new InvalidOperationException("already committed record was retried"));
+        var second = await consumer.ConsumeOneAsync(TimeSpan.Zero);
+        cluster.FaultPlan.Clear();
+
+        await Assert.That(second).IsNotNull();
+        await Assert.That(second!.Value.Offset).IsEqualTo(1);
     }
 
     [Test]

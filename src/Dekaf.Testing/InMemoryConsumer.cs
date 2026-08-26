@@ -840,12 +840,10 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
         TopicPartitionOffset? inDoubtRecord;
         CapturedCommitOffsets capturedCommit;
-        int consumerStateVersion;
         bool hasFaultApplication;
         ValueTask faultApplication;
         lock (_gate)
         {
-            consumerStateVersion = _consumerStateVersion;
             inDoubtRecord = _inDoubtNextOffset >= 0
                 ? new TopicPartitionOffset(
                     _inDoubtPartition.Topic,
@@ -872,8 +870,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         lock (_gate)
         {
             ThrowIfDisposed();
-            if (_consumerStateVersion == consumerStateVersion &&
-                IsCapturedCommitCurrentUnderLock(in capturedCommit) &&
+            if (IsCapturedCommitCurrentUnderLock(in capturedCommit) &&
                 inDoubtRecord is { } capturedInDoubt &&
                 _inDoubtNextOffset == capturedInDoubt.Offset &&
                 _inDoubtPartition.Topic == capturedInDoubt.Topic &&
