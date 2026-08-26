@@ -149,6 +149,60 @@ public sealed class ConsumeOneFastPathTests
     }
 
     [Test]
+    public async Task ConsumeOneAsync_AsyncKeySuspensionPreservesSyncValueHeadersAcrossConsumers()
+    {
+        var firstFetch = PendingFetchData.Create(Topic, Partition,
+        [
+            CreateBatch(20, CreateRecord(
+                0,
+                "first-key",
+                "first-value",
+                [new Header("record-id", "first"u8.ToArray())]))
+        ]);
+        var secondFetch = PendingFetchData.Create(Topic, Partition,
+        [
+            CreateBatch(20, CreateRecord(
+                0,
+                "second-key",
+                "second-value",
+                [new Header("record-id", "second"u8.ToArray())]))
+        ]);
+        var firstKeyDeserializer = new GatedAsyncStringDeserializer();
+        var firstValueDeserializer = new HeaderValueCapturingStringDeserializer();
+        var secondValueDeserializer = new HeaderValueCapturingStringDeserializer();
+        await using var firstConsumer = CreateInitializedConsumerWithDeserializers(
+            firstFetch,
+            valueDeserializer: firstValueDeserializer,
+            asyncKeyDeserializer: firstKeyDeserializer);
+        await using var secondConsumer = CreateInitializedConsumerWithDeserializers(
+            secondFetch,
+            valueDeserializer: secondValueDeserializer,
+            asyncKeyDeserializer: new CompletedAsyncStringDeserializer());
+        MarkManualAssignmentCurrent(firstConsumer);
+        MarkManualAssignmentCurrent(secondConsumer);
+
+        var firstConsume = firstConsumer.ConsumeOneAsync(TimeSpan.FromSeconds(10), CancellationToken.None);
+        if (firstConsume.IsCompleted)
+            throw new InvalidOperationException("The first key deserializer did not suspend.");
+
+        try
+        {
+            var secondConsume = secondConsumer.ConsumeOneAsync(TimeSpan.FromSeconds(1), CancellationToken.None);
+            if (!secondConsume.IsCompletedSuccessfully)
+                throw new InvalidOperationException("The second consume unexpectedly suspended.");
+            _ = secondConsume.Result;
+        }
+        finally
+        {
+            firstKeyDeserializer.Release();
+        }
+        _ = await firstConsume;
+
+        await Assert.That(firstValueDeserializer.HeaderValue).IsEqualTo("first");
+        await Assert.That(secondValueDeserializer.HeaderValue).IsEqualTo("second");
+    }
+
+    [Test]
     [NotInParallel("ActivityListener")]
     public async Task ConsumeOneAsync_ColdDeserializerPreparation_CreatesOneConsumeActivity()
     {
@@ -1261,7 +1315,8 @@ public sealed class ConsumeOneFastPathTests
         PendingFetchData fetch,
         IDeserializer<string>? keyDeserializer = null,
         IDeserializer<string>? valueDeserializer = null,
-        IAsyncDeserializer<string>? asyncValueDeserializer = null)
+        IAsyncDeserializer<string>? asyncValueDeserializer = null,
+        IAsyncDeserializer<string>? asyncKeyDeserializer = null)
     {
         var consumer = new KafkaConsumer<string, string>(
             new ConsumerOptions
@@ -1273,6 +1328,7 @@ public sealed class ConsumeOneFastPathTests
             },
             keyDeserializer ?? Serializers.String,
             valueDeserializer ?? Serializers.String,
+            asyncKeyDeserializer: asyncKeyDeserializer,
             asyncValueDeserializer: asyncValueDeserializer);
 
         SetInitialized(consumer);
@@ -1377,6 +1433,47 @@ public sealed class ConsumeOneFastPathTests
         {
             Headers = context.Headers;
             return ValueTask.FromResult(Encoding.UTF8.GetString(data.Span));
+        }
+    }
+
+    private sealed class GatedAsyncStringDeserializer : IAsyncDeserializer<string>
+    {
+        private readonly TaskCompletionSource _release = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public async ValueTask<string> DeserializeAsync(
+            ReadOnlyMemory<byte> data,
+            SerializationContext context,
+            CancellationToken cancellationToken = default)
+        {
+            await _release.Task.WaitAsync(cancellationToken);
+            return Encoding.UTF8.GetString(data.Span);
+        }
+
+        public void Release() => _release.TrySetResult();
+    }
+
+    private sealed class CompletedAsyncStringDeserializer : IAsyncDeserializer<string>
+    {
+        public ValueTask<string> DeserializeAsync(
+            ReadOnlyMemory<byte> data,
+            SerializationContext context,
+            CancellationToken cancellationToken = default) =>
+            ValueTask.FromResult(Encoding.UTF8.GetString(data.Span));
+    }
+
+    private sealed class HeaderValueCapturingStringDeserializer :
+        IDeserializer<string>,
+        IRecordHeaderDeserializer
+    {
+        public bool ConsumesRecordHeaders => true;
+
+        public string? HeaderValue { get; private set; }
+
+        public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
+        {
+            HeaderValue = context.Headers?[0].GetValueAsString();
+            return Encoding.UTF8.GetString(data.Span);
         }
     }
 

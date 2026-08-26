@@ -37,6 +37,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     private readonly bool _keyUsesRecordHeaders;
     private readonly bool _valueUsesRecordHeaders;
     private readonly bool _hasAsyncDeserializers;
+    private readonly Headers? _asyncDeserializationHeaders;
     private readonly InMemoryConsumerOptions _options;
     private readonly HashSet<string> _subscription = new(StringComparer.Ordinal);
     private readonly HashSet<TopicPartition> _assignment = [];
@@ -211,6 +212,10 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             ? asyncValueDeserializer is IRecordHeaderDeserializer { ConsumesRecordHeaders: true }
             : RecordHeaderDeserializer.UsesCallerOwnedHeaders(_valueDeserializer);
         _hasAsyncDeserializers = asyncKeyDeserializer is not null || asyncValueDeserializer is not null;
+        _asyncDeserializationHeaders = _hasAsyncDeserializers
+                                       && (_keyUsesRecordHeaders || _valueUsesRecordHeaders)
+            ? new Headers(2)
+            : null;
         _options = options ?? throw new ArgumentNullException(nameof(options));
         // Match KafkaConsumer, which treats an empty GroupId as "no consumer group"
         // (no coordinator, no commits). Normalizing here keeps every group-dependent
@@ -1281,14 +1286,15 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         InMemoryRecord record,
         CancellationToken cancellationToken)
     {
-        var asyncDeserializerUsesRecordHeaders =
-            (_asyncKeyDeserializer is not null && _keyUsesRecordHeaders)
-            || (_asyncValueDeserializer is not null && _valueUsesRecordHeaders);
         var serializationHeaders = _keyUsesRecordHeaders || _valueUsesRecordHeaders
-            ? asyncDeserializerUsesRecordHeaders
-                ? new Headers(record.Headers)
-                : ConsumeResult<TKey, TValue>.GetCallerOwnedSerializationHeaders(record.Headers)
+            ? _asyncDeserializationHeaders!
             : null;
+        if (serializationHeaders is not null)
+        {
+            serializationHeaders.Clear();
+            for (var index = 0; index < record.Headers.Count; index++)
+                serializationHeaders.Add(record.Headers[index]);
+        }
         TKey? key = default;
         if (!record.IsKeyNull)
         {

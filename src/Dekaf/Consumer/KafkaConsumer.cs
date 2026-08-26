@@ -1257,6 +1257,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private readonly bool _asyncKeyUsesRecordHeaders;
     private readonly bool _asyncValueUsesRecordHeaders;
     private readonly bool _hasAsyncDeserializers;
+    private readonly Headers? _asyncDeserializationHeaders;
     private readonly IAsyncDeserializerPreparer<TKey>? _keyDeserializerPreparer;
     private readonly IAsyncDeserializerPreparer<TValue>? _valueDeserializerPreparer;
     private readonly bool _hasDeserializerPreparers;
@@ -1787,6 +1788,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                         || _asyncKeyUsesRecordHeaders
                                         || _asyncValueUsesRecordHeaders;
         _hasAsyncDeserializers = asyncKeyDeserializer is not null || asyncValueDeserializer is not null;
+        _asyncDeserializationHeaders = _hasAsyncDeserializers && _hasRecordHeaderDeserializers
+            ? new Headers(2)
+            : null;
         _keyDeserializerPreparer = _keyDeserializer is IAsyncDeserializerPreparer<TKey> keyDeserializerPreparer &&
             _keyDeserializer is not IAsyncDeserializerPreparationRequirement { RequiresPreparation: false }
                 ? keyDeserializerPreparer
@@ -6767,14 +6771,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         var valueUsesRecordHeaders = _asyncValueDeserializer is not null
             ? _asyncValueUsesRecordHeaders
             : headerRouting.ValueRequiresMaterializedHeaders;
-        var asyncDeserializerUsesRecordHeaders =
-            (_asyncKeyDeserializer is not null && _asyncKeyUsesRecordHeaders)
-            || (_asyncValueDeserializer is not null && _asyncValueUsesRecordHeaders);
         var materializedHeaders = keyUsesRecordHeaders || valueUsesRecordHeaders
-            ? asyncDeserializerUsesRecordHeaders
-                ? RecordHeaderMaterializer.GetOwnedHeaders(in headerRouting)
-                : RecordHeaderMaterializer.GetCallerOwnedHeaders(in headerRouting)
+            ? _asyncDeserializationHeaders!
             : null;
+        if (materializedHeaders is not null)
+            headerRouting.CopyTo(materializedHeaders);
 
         TKey? key = default;
         if (!isKeyNull)

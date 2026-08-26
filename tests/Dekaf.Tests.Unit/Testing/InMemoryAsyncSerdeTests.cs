@@ -311,6 +311,71 @@ public sealed class InMemoryAsyncSerdeTests
     }
 
     [Test]
+    public async Task Consumer_AsyncKeySuspensionPreservesSyncValueHeadersAcrossConsumers()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        var firstKeyDeserializer = new BlockingAsyncDeserializer();
+        var firstValueDeserializer = new HeaderValueCapturingDeserializer();
+        var secondValueDeserializer = new HeaderValueCapturingDeserializer();
+        await using var firstConsumer = new InMemoryConsumer<string, string>(
+            cluster,
+            firstKeyDeserializer,
+            firstValueDeserializer,
+            new InMemoryConsumerOptions
+            {
+                GroupId = "first-header-consumer",
+                AutoOffsetReset = AutoOffsetReset.Earliest
+            });
+        await using var secondConsumer = new InMemoryConsumer<string, string>(
+            cluster,
+            new CompletedAsyncDeserializer(),
+            secondValueDeserializer,
+            new InMemoryConsumerOptions
+            {
+                GroupId = "second-header-consumer",
+                AutoOffsetReset = AutoOffsetReset.Earliest
+            });
+
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = "first-records",
+            Key = "first-key",
+            Value = "first-value",
+            Headers = Headers.Create("record-id", "first")
+        });
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = "second-records",
+            Key = "second-key",
+            Value = "second-value",
+            Headers = Headers.Create("record-id", "second")
+        });
+        firstConsumer.Subscribe("first-records");
+        secondConsumer.Subscribe("second-records");
+
+        var firstConsume = firstConsumer.ConsumeOneAsync(TimeSpan.FromSeconds(10));
+        if (firstConsume.IsCompleted)
+            throw new InvalidOperationException("The first key deserializer did not suspend.");
+
+        try
+        {
+            var secondConsume = secondConsumer.ConsumeOneAsync(TimeSpan.FromSeconds(1));
+            if (!secondConsume.IsCompletedSuccessfully)
+                throw new InvalidOperationException("The second consume unexpectedly suspended.");
+            _ = secondConsume.Result;
+        }
+        finally
+        {
+            firstKeyDeserializer.Release();
+        }
+        _ = await firstConsume;
+
+        await Assert.That(firstValueDeserializer.HeaderValue).IsEqualTo("first");
+        await Assert.That(secondValueDeserializer.HeaderValue).IsEqualTo("second");
+    }
+
+    [Test]
     public async Task ShareConsumer_AsyncDeserializers_RoundTripAndAcknowledge()
     {
         var cluster = new InMemoryKafkaCluster();
@@ -623,6 +688,30 @@ public sealed class InMemoryAsyncSerdeTests
         {
             Headers = context.Headers;
             return ValueTask.FromResult(Encoding.UTF8.GetString(data.Span));
+        }
+    }
+
+    private sealed class CompletedAsyncDeserializer : IAsyncDeserializer<string>
+    {
+        public ValueTask<string> DeserializeAsync(
+            ReadOnlyMemory<byte> data,
+            SerializationContext context,
+            CancellationToken cancellationToken = default) =>
+            ValueTask.FromResult(Encoding.UTF8.GetString(data.Span));
+    }
+
+    private sealed class HeaderValueCapturingDeserializer :
+        IDeserializer<string>,
+        IRecordHeaderDeserializer
+    {
+        public bool ConsumesRecordHeaders => true;
+
+        public string? HeaderValue { get; private set; }
+
+        public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
+        {
+            HeaderValue = context.Headers?[0].GetValueAsString();
+            return Encoding.UTF8.GetString(data.Span);
         }
     }
 
