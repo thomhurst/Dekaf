@@ -98,6 +98,7 @@ public class CustomPartitionerFireHotPathBenchmarks
         FireBatch();
         FireRecursiveBatch();
         NestedCallerHeaderStaging();
+        FourCallerHeadersStaging();
     }
 
     private static async Task<KafkaProducer<string, string>> CreateProducerAsync(
@@ -188,6 +189,21 @@ public class CustomPartitionerFireHotPathBenchmarks
         headers.Restore(in middleCheckpoint);
         var serializationCount = headers.SerializationCount;
         headers.Restore(in outerCheckpoint);
+        return serializationCount;
+    }
+
+    [Benchmark]
+    public int FourCallerHeadersStaging()
+    {
+        var headers = _nestedStagingHeaders;
+        var checkpoint = headers.CaptureCheckpoint();
+        headers.BeginRecordHeaderStaging();
+        headers.Add(IdentityHeader);
+        headers.Add(IdentityHeader);
+        headers.Add(IdentityHeader);
+        headers.Add(IdentityHeader);
+        var serializationCount = headers.SerializationCount;
+        headers.Restore(in checkpoint);
         return serializationCount;
     }
 

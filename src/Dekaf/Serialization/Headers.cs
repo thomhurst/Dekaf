@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Collections;
 using System.Runtime.CompilerServices;
 #if NETSTANDARD2_0
@@ -10,7 +11,7 @@ namespace Dekaf.Serialization;
 /// <summary>
 /// Collection of headers for a Kafka record.
 /// </summary>
-public sealed class Headers : IEnumerable<Header>
+public sealed class Headers : IReadOnlyList<Header>
 {
     // Keep synchronized with SchemaIdentityHeaderNames in Dekaf.SchemaRegistry.
     private const string KeySchemaIdentityHeader = "__key_schema_id";
@@ -27,6 +28,7 @@ public sealed class Headers : IEnumerable<Header>
     private int _valueSchemaIdentityIndex = -1;
     private Header _stagedHeader0;
     private Header _stagedHeader1;
+    private Header[]? _stagedHeaderOverflow;
     private int _stagedHeaderCount;
     private int _stagedKeySchemaIdentityIndex = -1;
     private int _stagedValueSchemaIdentityIndex = -1;
@@ -86,7 +88,7 @@ public sealed class Headers : IEnumerable<Header>
     /// <summary>
     /// Gets the number of headers.
     /// </summary>
-    public int Count => _serializationSource?._headers.Count ?? _headers.Count;
+    public int Count => SerializationCount;
 
     internal int SerializationCount => (_serializationSource?._headers.Count ?? _headers.Count) + _stagedHeaderCount;
 
@@ -111,7 +113,7 @@ public sealed class Headers : IEnumerable<Header>
     /// <summary>
     /// Gets the header at the specified index.
     /// </summary>
-    public Header this[int index] => (_serializationSource?._headers ?? _headers)[index];
+    public Header this[int index] => GetSerializationHeader(index);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal Header GetSerializationHeader(int index)
@@ -127,7 +129,7 @@ public sealed class Headers : IEnumerable<Header>
         if (index < insertionIndex)
             return headers[index];
         if (index < insertionIndex + stagedCount)
-            return index == insertionIndex ? _stagedHeader0 : _stagedHeader1;
+            return GetStagedHeader(index - insertionIndex);
         return headers[index - stagedCount];
     }
 
@@ -149,9 +151,8 @@ public sealed class Headers : IEnumerable<Header>
         for (var i = 0; i < insertionIndex; i++)
             destination[i] = headers[i];
 
-        destination[insertionIndex] = _stagedHeader0;
-        if (stagedCount == 2)
-            destination[insertionIndex + 1] = _stagedHeader1;
+        for (var i = 0; i < stagedCount; i++)
+            destination[insertionIndex + i] = GetStagedHeader(i);
 
         for (var i = insertionIndex; i < headers.Count; i++)
             destination[stagedCount + i] = headers[i];
@@ -189,10 +190,11 @@ public sealed class Headers : IEnumerable<Header>
     /// </summary>
     public Header? GetFirst(string key)
     {
-        // Manual loop to avoid closure allocation from lambda predicate
-        var headers = _serializationSource?._headers ?? _headers;
-        foreach (var header in headers)
+        // Manual loop to avoid closure allocation from lambda predicate.
+        var count = Count;
+        for (var index = 0; index < count; index++)
         {
+            var header = GetSerializationHeader(index);
             if (header.Key == key)
                 return header;
         }
@@ -207,9 +209,10 @@ public sealed class Headers : IEnumerable<Header>
     {
         // Use iterator method for zero-allocation deferred execution.
         // The state machine is only allocated when the caller enumerates.
-        var headers = _serializationSource?._headers ?? _headers;
-        foreach (var header in headers)
+        var count = Count;
+        for (var index = 0; index < count; index++)
         {
+            var header = GetSerializationHeader(index);
             if (header.Key == key)
                 yield return header;
         }
@@ -595,7 +598,7 @@ public sealed class Headers : IEnumerable<Header>
         else if (stagedIndex == 1)
             _stagedHeader1 = header;
         else
-            throw new InvalidOperationException("A producer can stage at most one record header per key and value serializer.");
+            AddStagedOverflowHeader(header, stagedIndex - 2);
 
         var source = _serializationSource;
         var traceparentIndex = source?._deferredTraceparentIndex ?? _deferredTraceparentIndex;
@@ -623,8 +626,49 @@ public sealed class Headers : IEnumerable<Header>
         _stagedHeaderCount = 0;
         _stagedHeader0 = default;
         _stagedHeader1 = default;
+        ReturnStagedHeaderOverflow();
         _stagedKeySchemaIdentityIndex = -1;
         _stagedValueSchemaIdentityIndex = -1;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private Header GetStagedHeader(int index) => index switch
+    {
+        0 => _stagedHeader0,
+        1 => _stagedHeader1,
+        _ => _stagedHeaderOverflow![index - 2]
+    };
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private void AddStagedOverflowHeader(Header header, int overflowIndex)
+    {
+        var overflow = _stagedHeaderOverflow;
+        if (overflow is null)
+        {
+            overflow = ArrayPool<Header>.Shared.Rent(4);
+            _stagedHeaderOverflow = overflow;
+        }
+        else if (overflowIndex == overflow.Length)
+        {
+            var resized = ArrayPool<Header>.Shared.Rent(checked(overflow.Length * 2));
+            overflow.AsSpan().CopyTo(resized);
+            ArrayPool<Header>.Shared.Return(overflow, clearArray: true);
+            overflow = resized;
+            _stagedHeaderOverflow = resized;
+        }
+
+        overflow[overflowIndex] = header;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void ReturnStagedHeaderOverflow()
+    {
+        var overflow = _stagedHeaderOverflow;
+        if (overflow is null)
+            return;
+
+        _stagedHeaderOverflow = null;
+        ArrayPool<Header>.Shared.Return(overflow, clearArray: true);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -633,6 +677,7 @@ public sealed class Headers : IEnumerable<Header>
         var checkpoint = new StagedRecordHeadersCheckpoint(
             _stagedHeader0,
             _stagedHeader1,
+            _stagedHeaderOverflow,
             _stagedHeaderCount,
             _stagedKeySchemaIdentityIndex,
             _stagedValueSchemaIdentityIndex);
@@ -660,6 +705,7 @@ public sealed class Headers : IEnumerable<Header>
         }
 
         _stagedRecordHeadersDepth = depth + 1;
+        _stagedHeaderOverflow = null;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -686,6 +732,7 @@ public sealed class Headers : IEnumerable<Header>
         _stagedRecordHeadersDepth = depth;
         _stagedHeader0 = checkpoint.Header0;
         _stagedHeader1 = checkpoint.Header1;
+        _stagedHeaderOverflow = checkpoint.Overflow;
         _stagedHeaderCount = checkpoint.Count;
         _stagedKeySchemaIdentityIndex = checkpoint.KeySchemaIdentityIndex;
         _stagedValueSchemaIdentityIndex = checkpoint.ValueSchemaIdentityIndex;
@@ -694,10 +741,21 @@ public sealed class Headers : IEnumerable<Header>
 
     private void ClearPreviousStagedRecordHeaders()
     {
+        ReturnStagedHeaderOverflow(_previousStagedRecordHeaders.Overflow);
         _previousStagedRecordHeaders = default;
         if (_stagedRecordHeadersStack is not null)
+        {
+            for (var index = 0; index < _stagedRecordHeadersDepth - 1; index++)
+                ReturnStagedHeaderOverflow(_stagedRecordHeadersStack[index].Overflow);
             Array.Clear(_stagedRecordHeadersStack, 0, _stagedRecordHeadersStack.Length);
+        }
         _stagedRecordHeadersDepth = 0;
+    }
+
+    private static void ReturnStagedHeaderOverflow(Header[]? overflow)
+    {
+        if (overflow is not null)
+            ArrayPool<Header>.Shared.Return(overflow, clearArray: true);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -787,6 +845,7 @@ public sealed class Headers : IEnumerable<Header>
     private readonly record struct StagedRecordHeadersCheckpoint(
         Header Header0,
         Header Header1,
+        Header[]? Overflow,
         int Count,
         int KeySchemaIdentityIndex,
         int ValueSchemaIdentityIndex);
@@ -854,9 +913,14 @@ public sealed class Headers : IEnumerable<Header>
     /// <summary>
     /// Gets all headers as a list.
     /// </summary>
-    public IReadOnlyList<Header> ToList() => (_serializationSource?._headers ?? _headers).AsReadOnly();
+    public IReadOnlyList<Header> ToList() => this;
 
-    public IEnumerator<Header> GetEnumerator() => (_serializationSource?._headers ?? _headers).GetEnumerator();
+    public IEnumerator<Header> GetEnumerator()
+    {
+        var count = Count;
+        for (var index = 0; index < count; index++)
+            yield return GetSerializationHeader(index);
+    }
     IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
 }
 
