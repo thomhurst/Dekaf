@@ -13,4 +13,13 @@ message Proto2ValidationMessage {
       expr: "this > 0"
     }
   }];
+
+  optional group Details = 2 [(confluent.field_meta) = {
+    rules: {
+      name: "group-value-positive"
+      expr: "this.value > 0"
+    }
+  }] {
+    optional int32 value = 3;
+  }
 }

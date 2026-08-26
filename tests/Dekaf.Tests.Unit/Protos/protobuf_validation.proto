@@ -114,6 +114,24 @@ message ValidationEnvelope {
   }];
 }
 
+message ValidationMessageEqualityEnvelope {
+  option (confluent.message_meta) = {
+    rules: {
+      name: "child-message-equality"
+      expr: "this.left_child == this.right_child"
+    }
+  };
+
+  ValidationEqualityChild left_child = 1;
+  ValidationEqualityChild right_child = 2;
+}
+
+message ValidationEqualityChild {
+  int32 value = 1;
+  ValidationEqualityChild child = 2;
+  repeated int32 codes = 3;
+}
+
 enum ValidationStatus {
   VALIDATION_STATUS_UNSPECIFIED = 0;
   VALIDATION_STATUS_ACTIVE = 1;

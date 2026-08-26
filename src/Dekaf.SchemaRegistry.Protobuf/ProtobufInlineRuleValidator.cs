@@ -423,7 +423,7 @@ internal sealed class ProtobufMessageRulePlan
             var descriptor = fields[index];
             var rules = ProtobufCompiledRuleSet.Compile(
                 ProtobufMetaRuleParser.ReadRules(descriptor.GetOptions()),
-                descriptor is { IsRepeated: false, FieldType: FieldType.Message }
+                descriptor is { IsRepeated: false, FieldType: FieldType.Message or FieldType.Group }
                     ? descriptor.MessageType
                     : null);
             var mapKey = descriptor.IsMap
@@ -670,7 +670,7 @@ internal sealed class ProtobufMessageRulePlan
                     field.Descriptor.IsMap ||
                     !field.Descriptor.IsRepeated ||
                     field.Child is not { HasAnyRules: true } ||
-                    wireField.WireType != ProtobufWireType.LengthDelimited)
+                    wireField.WireType is not (ProtobufWireType.LengthDelimited or ProtobufWireType.StartGroup))
                 {
                     continue;
                 }
@@ -821,7 +821,7 @@ internal sealed class ProtobufFieldRulePlan(
 
     internal ReadOnlyMemory<byte> GetMessagePayload(ValidationCelMemberValues values)
     {
-        if (Descriptor is not { IsRepeated: false, FieldType: FieldType.Message } ||
+        if (Descriptor is not { IsRepeated: false, FieldType: FieldType.Message or FieldType.Group } ||
             !values.IsSet(RuntimeIndex))
         {
             return default;
@@ -1232,22 +1232,25 @@ internal ref struct ProtobufMapEntries
 
 internal sealed class ProtobufCompiledRuleSet
 {
-    internal static ProtobufCompiledRuleSet Empty { get; } = new([], null, false, false, 0);
+    internal static ProtobufCompiledRuleSet Empty { get; } = new([], null, null, false, false, 0);
 
     private readonly CompiledValidationRule[] _rules;
     private readonly ProtobufMemberResolver? _members;
+    private readonly MessageDescriptor? _valueDescriptor;
     private readonly bool _usesCachedEquality;
     private readonly int _memberCount;
 
     private ProtobufCompiledRuleSet(
         CompiledValidationRule[] rules,
         ProtobufMemberResolver? members,
+        MessageDescriptor? valueDescriptor,
         bool usesSize,
         bool usesCachedEquality,
         int memberCount)
     {
         _rules = rules;
         _members = members;
+        _valueDescriptor = valueDescriptor;
         UsesSize = usesSize;
         _usesCachedEquality = usesCachedEquality;
         _memberCount = memberCount;
@@ -1270,16 +1273,19 @@ internal sealed class ProtobufCompiledRuleSet
         var compiled = new CompiledValidationRule[rules.Count];
         var usesSize = false;
         var usesCachedEquality = false;
+        var equalityIndexOffset = 0;
         for (var index = 0; index < rules.Count; index++)
         {
             var rule = CompiledValidationRule.Compile(
                 rules[index],
                 memberIndexes,
                 memberPaths,
-                usedMemberIndexes);
+                usedMemberIndexes,
+                equalityIndexOffset);
             compiled[index] = rule;
             usesSize |= rule.UsesSize;
             usesCachedEquality |= rule.UsesCachedEquality;
+            equalityIndexOffset += rule.EqualityPairs.Length;
         }
 
         var members = usedMemberIndexes.Count == 0 || valueDescriptor is null
@@ -1288,6 +1294,7 @@ internal sealed class ProtobufCompiledRuleSet
         return new ProtobufCompiledRuleSet(
             compiled,
             members,
+            valueDescriptor,
             usesSize,
             usesCachedEquality,
             memberPaths.Count);
@@ -1328,6 +1335,7 @@ internal sealed class ProtobufCompiledRuleSet
                 var rule = _rules[index];
                 try
                 {
+                    PrepareMessageEqualities(rule, value, memberValues, equalityGeneration);
                     var result = rule.Evaluate(value, now, memberValues, sizes, equalityGeneration);
                     if (result.Kind == ValidationResultKind.Boolean ? result.Boolean : result.String!.Length == 0)
                         continue;
@@ -1353,23 +1361,78 @@ internal sealed class ProtobufCompiledRuleSet
             ValidationCelStrings.End();
         }
     }
+
+    private void PrepareMessageEqualities(
+        CompiledValidationRule rule,
+        ValidationCelValue rootValue,
+        ValidationCelMemberValues memberValues,
+        uint equalityGeneration)
+    {
+        var pairs = rule.EqualityPairs;
+        for (var index = 0; index < pairs.Length; index++)
+        {
+            var pair = pairs[index];
+            var left = GetValue(pair.LeftValueIndex, rootValue, memberValues);
+            var right = GetValue(pair.RightValueIndex, rootValue, memberValues);
+            if (left.Kind != ValidationCelValueKind.Object ||
+                right.Kind != ValidationCelValueKind.Object ||
+                !left.Json.IsEmpty ||
+                !right.Json.IsEmpty)
+            {
+                continue;
+            }
+
+            var leftDescriptor = GetMessageDescriptor(pair.LeftValueIndex);
+            var rightDescriptor = GetMessageDescriptor(pair.RightValueIndex);
+            var equal = leftDescriptor is not null &&
+                ReferenceEquals(leftDescriptor, rightDescriptor) &&
+                ProtobufSemanticEquality.AreEqual(
+                    leftDescriptor,
+                    left.Utf8Literal,
+                    right.Utf8Literal);
+            CompiledValidationRule.SetEquality(
+                equalityGeneration,
+                pair.EqualityIndex,
+                equal);
+        }
+    }
+
+    private static ValidationCelValue GetValue(
+        int valueIndex,
+        ValidationCelValue rootValue,
+        ValidationCelMemberValues memberValues) =>
+        valueIndex == 0
+            ? rootValue
+            : memberValues.GetValue(valueIndex - 1, default);
+
+    private MessageDescriptor? GetMessageDescriptor(int valueIndex) =>
+        valueIndex == 0
+            ? _valueDescriptor
+            : _members?.GetMessageDescriptor(valueIndex - 1);
 }
 
 internal sealed class ProtobufMemberResolver
 {
     private readonly Dictionary<int, ProtobufMemberNode> _fields = [];
     private readonly int _oneofCount;
+    private readonly FieldDescriptor?[] _memberDescriptors;
     private ProtobufMemberNode[] _nodes = [];
 
-    private ProtobufMemberResolver(MessageDescriptor descriptor) =>
+    private ProtobufMemberResolver(
+        MessageDescriptor descriptor,
+        FieldDescriptor?[] memberDescriptors)
+    {
         _oneofCount = descriptor.Oneofs.Count;
+        _memberDescriptors = memberDescriptors;
+    }
 
     internal static ProtobufMemberResolver Create(
         MessageDescriptor descriptor,
         IReadOnlyList<byte[][]> paths,
         IReadOnlyCollection<int> usedIndexes)
     {
-        var resolver = new ProtobufMemberResolver(descriptor);
+        var memberDescriptors = new FieldDescriptor?[paths.Count];
+        var resolver = new ProtobufMemberResolver(descriptor, memberDescriptors);
         foreach (var memberIndex in usedIndexes)
             resolver.Add(descriptor, paths[memberIndex], memberIndex, depth: 0);
         resolver.Freeze();
@@ -1409,16 +1472,25 @@ internal sealed class ProtobufMemberResolver
         if (depth == path.Length - 1)
         {
             node.MemberIndex = memberIndex;
+            _memberDescriptors[memberIndex] = field;
             return;
         }
 
-        if (field is not { IsRepeated: false, FieldType: FieldType.Message })
+        if (field is not { IsRepeated: false, FieldType: FieldType.Message or FieldType.Group })
         {
             throw new SchemaRegistryRuleException(
                 $"Protobuf validation member path cannot descend through '{field.FullName}'.");
         }
-        node.Child ??= new ProtobufMemberResolver(field.MessageType);
+        node.Child ??= new ProtobufMemberResolver(field.MessageType, _memberDescriptors);
         node.Child.Add(field.MessageType, path, memberIndex, depth + 1);
+    }
+
+    internal MessageDescriptor? GetMessageDescriptor(int memberIndex)
+    {
+        var descriptor = _memberDescriptors[memberIndex];
+        return descriptor?.FieldType is FieldType.Message or FieldType.Group
+            ? descriptor.MessageType
+            : null;
     }
 
     internal void Resolve(
@@ -1506,7 +1578,8 @@ internal sealed class ProtobufMemberNode(FieldDescriptor descriptor)
             }
         }
 
-        if (Child is not null && field.WireType == ProtobufWireType.LengthDelimited)
+        if (Child is not null &&
+            field.WireType is ProtobufWireType.LengthDelimited or ProtobufWireType.StartGroup)
             nestedPayloads.Observe(RuntimeIndex, field.Payload);
     }
 
@@ -1661,7 +1734,7 @@ internal static class ProtobufValidationValueDecoder
         FieldDescriptor descriptor,
         ProtobufValidationWireField field)
     {
-        if (descriptor.FieldType == FieldType.Message)
+        if (descriptor.FieldType is FieldType.Message or FieldType.Group)
             return DecodeMessage(descriptor.MessageType, field.Payload);
         return descriptor.FieldType switch
         {
@@ -1740,12 +1813,13 @@ internal static class ProtobufValidationValueDecoder
         if (IsWrapper(descriptor.FullName) && descriptor.FindFieldByNumber(1) is { } valueField)
         {
             var reader = new ProtobufValidationWireReader(payload);
+            var value = Default(valueField);
             while (reader.TryRead(out var field))
             {
                 if (field.Number == 1)
-                    return Decode(valueField, field);
+                    value = Decode(valueField, field);
             }
-            return Default(valueField);
+            return value;
         }
 
         return new ValidationCelValue(
@@ -1788,6 +1862,321 @@ internal static class ProtobufValidationValueDecoder
 
     private static long DecodeZigZag64(ulong value) =>
         unchecked((long)((value >> 1) ^ (ulong)-(long)(value & 1)));
+}
+
+internal static class ProtobufSemanticEquality
+{
+    internal static bool AreEqual(
+        MessageDescriptor descriptor,
+        ReadOnlyMemory<byte> left,
+        ReadOnlyMemory<byte> right)
+    {
+        if (left.Span.SequenceEqual(right.Span))
+            return true;
+
+        var leftState = new ProtobufSemanticMessageState(descriptor, left);
+        try
+        {
+            var rightState = new ProtobufSemanticMessageState(descriptor, right);
+            try
+            {
+                if (leftState.HasUnknownFields || rightState.HasUnknownFields)
+                    return false;
+
+                var fields = descriptor.Fields.InFieldNumberOrder();
+                for (var index = 0; index < fields.Count; index++)
+                {
+                    var field = fields[index];
+                    if (field.IsRepeated)
+                    {
+                        if (!AreRepeatedValuesEqual(field, left, right))
+                            return false;
+                        continue;
+                    }
+
+                    ref readonly var leftField = ref leftState[field.Index];
+                    ref readonly var rightField = ref rightState[field.Index];
+                    if (!AreSingularValuesEqual(field, leftField, rightField))
+                        return false;
+                }
+                return true;
+            }
+            finally
+            {
+                rightState.Dispose();
+            }
+        }
+        finally
+        {
+            leftState.Dispose();
+        }
+    }
+
+    private static bool AreSingularValuesEqual(
+        FieldDescriptor descriptor,
+        in ProtobufSemanticFieldState left,
+        in ProtobufSemanticFieldState right)
+    {
+        if (left.IsSet != right.IsSet)
+        {
+            if (descriptor.HasPresence)
+                return false;
+            var present = left.IsSet ? left.Field : right.Field;
+            return AreScalarValuesEqual(
+                ProtobufValidationValueDecoder.Decode(descriptor, present),
+                ProtobufValidationValueDecoder.Default(descriptor));
+        }
+        if (!left.IsSet)
+            return true;
+        if (descriptor.FieldType is FieldType.Message or FieldType.Group)
+        {
+            return AreEqual(
+                descriptor.MessageType,
+                left.Field.Payload,
+                right.Field.Payload);
+        }
+        return AreScalarValuesEqual(
+            ProtobufValidationValueDecoder.Decode(descriptor, left.Field),
+            ProtobufValidationValueDecoder.Decode(descriptor, right.Field));
+    }
+
+    private static bool AreRepeatedValuesEqual(
+        FieldDescriptor descriptor,
+        ReadOnlyMemory<byte> left,
+        ReadOnlyMemory<byte> right)
+    {
+        var leftReader = new ProtobufRepeatedValueReader(left, descriptor);
+        var rightReader = new ProtobufRepeatedValueReader(right, descriptor);
+        while (true)
+        {
+            var hasLeft = leftReader.TryRead(out var leftField);
+            var hasRight = rightReader.TryRead(out var rightField);
+            if (!hasLeft || !hasRight)
+                return hasLeft == hasRight;
+            if (descriptor.FieldType is FieldType.Message or FieldType.Group)
+            {
+                if (!AreEqual(descriptor.MessageType, leftField.Payload, rightField.Payload))
+                    return false;
+            }
+            else if (!AreScalarValuesEqual(
+                         ProtobufValidationValueDecoder.Decode(descriptor, leftField),
+                         ProtobufValidationValueDecoder.Decode(descriptor, rightField)))
+            {
+                return false;
+            }
+        }
+    }
+
+    private static bool AreScalarValuesEqual(ValidationCelValue left, ValidationCelValue right)
+    {
+        if (left.Kind != right.Kind)
+            return false;
+        return left.Kind switch
+        {
+            ValidationCelValueKind.Boolean => left.Boolean == right.Boolean,
+            ValidationCelValueKind.Number when left.IsFloating || right.IsFloating =>
+                left.IsFloating && right.IsFloating && left.Floating.Equals(right.Floating),
+            ValidationCelValueKind.Number => left.Number == right.Number,
+            ValidationCelValueKind.String or ValidationCelValueKind.Bytes =>
+                left.Utf8Literal.Span.SequenceEqual(right.Utf8Literal.Span),
+            _ => false
+        };
+    }
+}
+
+internal ref struct ProtobufSemanticMessageState
+{
+    private ProtobufSemanticFieldState[]? _fields;
+    private readonly int _fieldCount;
+    private readonly int _bufferDepth;
+    private ProtobufMergedMessageBuffers _mergedMessages;
+
+    internal ProtobufSemanticMessageState(
+        MessageDescriptor descriptor,
+        ReadOnlyMemory<byte> payload)
+    {
+        var fieldCount = descriptor.Fields.InDeclarationOrder().Count;
+        _fields = ProtobufSemanticFieldBuffers.Rent(fieldCount, out _bufferDepth);
+        _fieldCount = fieldCount;
+        _mergedMessages = new ProtobufMergedMessageBuffers(fieldCount);
+        HasUnknownFields = false;
+
+        try
+        {
+            Span<int> initialOneofs = stackalloc int[8];
+            var oneofs = new ProtobufOneofSelections(descriptor.Oneofs.Count, initialOneofs);
+            try
+            {
+                var reader = new ProtobufValidationWireReader(payload);
+                while (reader.TryRead(out var wireField))
+                {
+                    var field = descriptor.FindFieldByNumber(wireField.Number);
+                    if (field is null)
+                    {
+                        HasUnknownFields = true;
+                        continue;
+                    }
+                    if (field.IsRepeated)
+                        continue;
+
+                    var previous = oneofs.Select(field.ContainingOneof?.Index ?? -1, field.Index);
+                    if (previous >= 0 && previous != field.Index)
+                    {
+                        _fields[previous] = default;
+                        _mergedMessages.Clear(previous);
+                    }
+
+                    ref var state = ref _fields[field.Index];
+                    if (state.IsSet && field.FieldType is FieldType.Message or FieldType.Group)
+                    {
+                        wireField = wireField with
+                        {
+                            Payload = _mergedMessages.Merge(
+                                field.Index,
+                                state.Field.Payload,
+                                wireField.Payload)
+                        };
+                    }
+                    state = new ProtobufSemanticFieldState(wireField, true);
+                }
+            }
+            finally
+            {
+                oneofs.Dispose();
+            }
+        }
+        catch
+        {
+            _mergedMessages.Dispose();
+            ProtobufSemanticFieldBuffers.Return(_fields, _fieldCount, _bufferDepth);
+            _fields = null;
+            throw;
+        }
+    }
+
+    internal bool HasUnknownFields { get; }
+
+    internal ref readonly ProtobufSemanticFieldState this[int index] =>
+        ref _fields![index];
+
+    public void Dispose()
+    {
+        _mergedMessages.Dispose();
+        if (_fields is not null)
+            ProtobufSemanticFieldBuffers.Return(_fields, _fieldCount, _bufferDepth);
+        _fields = null;
+    }
+}
+
+internal static class ProtobufSemanticFieldBuffers
+{
+    [ThreadStatic]
+    private static ProtobufSemanticFieldState[][]? t_buffers;
+
+    [ThreadStatic]
+    private static int t_depth;
+
+    internal static ProtobufSemanticFieldState[] Rent(int count, out int depth)
+    {
+        depth = t_depth++;
+        var buffers = t_buffers;
+        if (buffers is null)
+            t_buffers = buffers = new ProtobufSemanticFieldState[4][];
+        else if (depth >= buffers.Length)
+        {
+            Array.Resize(ref buffers, buffers.Length * 2);
+            t_buffers = buffers;
+        }
+
+        var fields = buffers[depth];
+        if (fields is null || fields.Length < count)
+            buffers[depth] = fields = new ProtobufSemanticFieldState[Math.Max(count, 8)];
+        else
+            Array.Clear(fields, 0, count);
+        return fields;
+    }
+
+    internal static void Return(ProtobufSemanticFieldState[] fields, int count, int depth)
+    {
+        Array.Clear(fields, 0, count);
+        if (depth != --t_depth)
+            throw new InvalidOperationException("Protobuf semantic equality buffers were returned out of order.");
+    }
+}
+
+internal readonly record struct ProtobufSemanticFieldState(
+    ProtobufValidationWireField Field,
+    bool IsSet);
+
+internal ref struct ProtobufRepeatedValueReader(
+    ReadOnlyMemory<byte> payload,
+    FieldDescriptor descriptor)
+{
+    private ProtobufValidationWireReader _reader = new(payload);
+    private ReadOnlyMemory<byte> _packed;
+    private int _packedOffset;
+
+    internal bool TryRead(out ProtobufValidationWireField field)
+    {
+        while (true)
+        {
+            if (_packedOffset < _packed.Length)
+            {
+                field = ReadPackedValue();
+                return true;
+            }
+
+            if (!_reader.TryRead(out field))
+            {
+                field = default;
+                return false;
+            }
+            if (field.Number != descriptor.FieldNumber)
+                continue;
+            if (field.WireType != ProtobufWireType.LengthDelimited ||
+                !ProtobufValidationValueDecoder.IsPackable(descriptor))
+            {
+                return true;
+            }
+
+            _packed = field.Payload;
+            _packedOffset = 0;
+        }
+    }
+
+    private ProtobufValidationWireField ReadPackedValue()
+    {
+        var span = _packed.Span;
+        switch (descriptor.FieldType)
+        {
+            case FieldType.Double:
+            case FieldType.Fixed64:
+            case FieldType.SFixed64:
+                EnsurePackedRemaining(sizeof(ulong));
+                var fixed64 = BinaryPrimitives.ReadUInt64LittleEndian(span[_packedOffset..]);
+                _packedOffset += sizeof(ulong);
+                return new(descriptor.FieldNumber, ProtobufWireType.Fixed64, default, 0, fixed64, 0);
+            case FieldType.Float:
+            case FieldType.Fixed32:
+            case FieldType.SFixed32:
+                EnsurePackedRemaining(sizeof(uint));
+                var fixed32 = BinaryPrimitives.ReadUInt32LittleEndian(span[_packedOffset..]);
+                _packedOffset += sizeof(uint);
+                return new(descriptor.FieldNumber, ProtobufWireType.Fixed32, default, 0, 0, fixed32);
+            default:
+                var varint = ProtobufValidationWireReader.ReadVarint(span, ref _packedOffset);
+                return new(descriptor.FieldNumber, ProtobufWireType.Varint, default, varint, 0, 0);
+        }
+    }
+
+    private void EnsurePackedRemaining(int length)
+    {
+        if (_packedOffset > _packed.Length - length)
+        {
+            throw new SchemaRegistryRuleException(
+                "Could not evaluate Protobuf validation rules: truncated packed field.");
+        }
+    }
 }
 
 internal static class ProtobufMetaRuleParser
@@ -1891,7 +2280,7 @@ internal ref struct ProtobufValidationWireReader
         }
 
         var tag = ReadVarint(span, ref _offset);
-        var number = checked((int)(tag >> 3));
+        var number = ReadFieldNumber(tag);
         var wireType = (ProtobufWireType)(tag & 7);
         if (number == 0)
             throw InvalidPayload("field number 0");
@@ -1923,8 +2312,7 @@ internal ref struct ProtobufValidationWireReader
                 field = new(number, wireType, default, 0, 0, fixed32);
                 return true;
             case ProtobufWireType.StartGroup:
-                SkipGroup(span, number);
-                field = new(number, wireType, default, 0, 0, 0);
+                field = new(number, wireType, ReadGroupPayload(span, number), 0, 0, 0);
                 return true;
             case ProtobufWireType.EndGroup:
                 throw InvalidPayload("unexpected end-group tag");
@@ -1948,18 +2336,20 @@ internal ref struct ProtobufValidationWireReader
         throw InvalidPayload("varint exceeds 10 bytes");
     }
 
-    private void SkipGroup(ReadOnlySpan<byte> source, int groupNumber)
+    private ReadOnlyMemory<byte> ReadGroupPayload(ReadOnlySpan<byte> source, int groupNumber)
     {
+        var payloadStart = _offset;
         while (_offset < source.Length)
         {
+            var tagStart = _offset;
             var tag = ReadVarint(source, ref _offset);
-            var number = checked((int)(tag >> 3));
+            var number = ReadFieldNumber(tag);
             var wireType = (ProtobufWireType)(tag & 7);
             if (wireType == ProtobufWireType.EndGroup)
             {
                 if (number != groupNumber)
                     throw InvalidPayload("mismatched end-group tag");
-                return;
+                return _source.Slice(payloadStart, tagStart - payloadStart);
             }
 
             SkipValue(source, number, wireType);
@@ -1986,7 +2376,7 @@ internal ref struct ProtobufValidationWireReader
                 _offset += (int)length;
                 break;
             case ProtobufWireType.StartGroup:
-                SkipGroup(source, number);
+                _ = ReadGroupPayload(source, number);
                 break;
             case ProtobufWireType.Fixed32:
                 EnsureRemaining(source, sizeof(uint));
@@ -2005,6 +2395,14 @@ internal ref struct ProtobufValidationWireReader
 
     private static SchemaRegistryRuleException InvalidPayload(string reason) =>
         new($"Could not evaluate Protobuf validation rules: {reason}.");
+
+    private static int ReadFieldNumber(ulong tag)
+    {
+        var number = tag >> 3;
+        if (number > int.MaxValue)
+            throw InvalidPayload("field number exceeds Int32.MaxValue");
+        return (int)number;
+    }
 }
 
 internal ref struct ProtobufValidationPath

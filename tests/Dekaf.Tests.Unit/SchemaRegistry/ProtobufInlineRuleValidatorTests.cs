@@ -201,6 +201,90 @@ public sealed class ProtobufInlineRuleValidatorTests
     }
 
     [Test]
+    public async Task Validate_MessageEqualityUsesDecodedValues()
+    {
+        var left = new ArrayBufferWriter<byte>();
+        WriteVarint(left, 8);
+        WriteVarint(left, 1);
+        WriteLengthDelimited(left, fieldNumber: 2, [8, 2]);
+        WriteLengthDelimited(left, fieldNumber: 3, [1, 2]);
+        var right = new ArrayBufferWriter<byte>();
+        WriteLengthDelimited(right, fieldNumber: 2, [8, 2]);
+        WriteVarint(right, 8);
+        WriteVarint(right, 0);
+        WriteVarint(right, 8);
+        WriteVarint(right, 1);
+        WriteVarint(right, 3u << 3);
+        WriteVarint(right, 1);
+        WriteVarint(right, 3u << 3);
+        WriteVarint(right, 2);
+        var payload = new ArrayBufferWriter<byte>();
+        WriteLengthDelimited(payload, fieldNumber: 1, left.WrittenSpan);
+        WriteLengthDelimited(payload, fieldNumber: 2, right.WrittenSpan);
+        var validator = new ProtobufInlineRuleValidator(ValidationMessageEqualityEnvelope.Descriptor);
+
+        validator.Validate(payload.WrittenMemory, schemaId: 17, failFast: false);
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var index = 0; index < 100; index++)
+            validator.Validate(payload.WrittenMemory, schemaId: 17, failFast: false);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        await Assert.That(payload.WrittenCount).IsGreaterThan(0);
+        await Assert.That(allocated).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task Validate_Proto2GroupPreservesNestedPayload()
+    {
+        var invalid = new ArrayBufferWriter<byte>();
+        WriteVarint(invalid, 2u << 3 | 3u);
+        WriteVarint(invalid, 3u << 3);
+        WriteVarint(invalid, 0);
+        WriteVarint(invalid, 2u << 3 | 4u);
+        var validator = new ProtobufInlineRuleValidator(Proto2ValidationMessage.Descriptor);
+
+        var exception = Assert.Throws<ValidationRulesFailedException>(() =>
+            validator.Validate(invalid.WrittenMemory, schemaId: 17, failFast: false));
+
+        await Assert.That(exception.Violations.Select(static violation => violation.Rule.Name))
+            .Contains("group-value-positive");
+    }
+
+    [Test]
+    public async Task Validate_WrapperUsesLastValueOccurrence()
+    {
+        var wrapper = new ArrayBufferWriter<byte>();
+        WriteVarint(wrapper, 8);
+        WriteVarint(wrapper, 5);
+        WriteVarint(wrapper, 8);
+        WriteVarint(wrapper, ulong.MaxValue);
+        var payload = new ArrayBufferWriter<byte>();
+        CreateValidMessage().WriteTo(payload);
+        WriteLengthDelimited(payload, fieldNumber: 12, wrapper.WrittenSpan);
+        var validator = new ProtobufInlineRuleValidator(ValidationEnvelope.Descriptor);
+
+        var exception = Assert.Throws<ValidationRulesFailedException>(() =>
+            validator.Validate(payload.WrittenMemory, schemaId: 17, failFast: false));
+
+        await Assert.That(exception.Violations.Select(static violation => violation.Rule.Name))
+            .Contains("score-not-negative");
+    }
+
+    [Test]
+    public async Task Validate_OversizedFieldNumberReportsRuleException()
+    {
+        var payload = new ArrayBufferWriter<byte>();
+        WriteVarint(payload, ((ulong)int.MaxValue + 1) << 3);
+        WriteVarint(payload, 0);
+        var validator = new ProtobufInlineRuleValidator(ValidationEnvelope.Descriptor);
+
+        var exception = Assert.Throws<SchemaRegistryRuleException>(() =>
+            validator.Validate(payload.WrittenMemory, schemaId: 17, failFast: false));
+
+        await Assert.That(exception.Message).Contains("field number exceeds Int32.MaxValue");
+    }
+
+    [Test]
     public async Task Validate_RecursiveMessagesRejectExcessiveDepth()
     {
         byte[] child = [8, 1];
@@ -586,7 +670,7 @@ public sealed class ProtobufInlineRuleValidatorTests
         writer.Write(value);
     }
 
-    private static void WriteVarint(IBufferWriter<byte> writer, uint value)
+    private static void WriteVarint(IBufferWriter<byte> writer, ulong value)
     {
         do
         {

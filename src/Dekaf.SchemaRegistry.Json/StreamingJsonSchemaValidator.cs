@@ -2096,6 +2096,7 @@ internal sealed class SchemaCompiler : IDisposable
 
         var compiled = new List<CompiledValidationRule>();
         var usedMemberIndexes = new HashSet<int>();
+        var equalityIndexOffset = 0;
         foreach (var element in rules.EnumerateArray())
         {
             var rule = new ValidationRule
@@ -2109,9 +2110,11 @@ internal sealed class SchemaCompiler : IDisposable
                 rule,
                 _validationMemberIndexes,
                 _validationMemberPaths,
-                usedMemberIndexes);
+                usedMemberIndexes,
+                equalityIndexOffset);
             usesSize |= compiledRule.UsesSize;
             usesCachedEquality |= compiledRule.UsesCachedEquality;
+            equalityIndexOffset += compiledRule.EqualityPairs.Length;
             compiled.Add(compiledRule);
         }
         if (usedMemberIndexes.Count != 0)

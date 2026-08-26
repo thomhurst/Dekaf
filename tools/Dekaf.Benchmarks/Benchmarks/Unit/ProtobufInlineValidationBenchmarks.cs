@@ -19,11 +19,13 @@ public class ProtobufInlineValidationBenchmarks
 {
     private readonly ArrayBufferWriter<byte> _destination = new(512);
     private ProtobufInlineRuleValidator _validator = null!;
+    private ProtobufInlineRuleValidator _semanticEqualityValidator = null!;
     private ProtobufSchemaRegistrySerializer<ValidationEnvelope> _serializer = null!;
     private ProtobufSchemaRegistrySerializer<ValidationEnvelope> _unvalidatedSerializer = null!;
     private CompiledValidationRule _mixedNumericRule = null!;
     private ValidationEnvelope _message = null!;
     private byte[] _payload = null!;
+    private byte[] _semanticEqualityPayload = null!;
     private SerializationContext _context;
 
     [GlobalSetup]
@@ -31,7 +33,10 @@ public class ProtobufInlineValidationBenchmarks
     {
         _message = CreateMessage();
         _payload = _message.ToByteArray();
+        _semanticEqualityPayload = CreateSemanticEqualityPayload();
         _validator = new ProtobufInlineRuleValidator(ValidationEnvelope.Descriptor);
+        _semanticEqualityValidator = new ProtobufInlineRuleValidator(
+            ValidationMessageEqualityEnvelope.Descriptor);
         _serializer = new ProtobufSchemaRegistrySerializer<ValidationEnvelope>(
             new BenchmarkSchemaRegistryClient(),
             new ProtobufSerializerConfig
@@ -54,6 +59,7 @@ public class ProtobufInlineValidationBenchmarks
         };
 
         _validator.Validate(_payload, schemaId: 1, failFast: false);
+        _semanticEqualityValidator.Validate(_semanticEqualityPayload, schemaId: 1, failFast: false);
         var destination = _destination;
         _serializer.Serialize(_message, ref destination, _context);
         _destination.Clear();
@@ -70,6 +76,10 @@ public class ProtobufInlineValidationBenchmarks
 
     [Benchmark]
     public void ValidateRules() => _validator.Validate(_payload, schemaId: 1, failFast: false);
+
+    [Benchmark]
+    public void ValidateSemanticMessageEquality() =>
+        _semanticEqualityValidator.Validate(_semanticEqualityPayload, schemaId: 1, failFast: false);
 
     [Benchmark]
     public bool ValidateMixedNumericComparison() => _mixedNumericRule.Evaluate(
@@ -116,6 +126,49 @@ public class ProtobufInlineValidationBenchmarks
         message.Codes.Add(2);
         message.Codes.Add(3);
         return message;
+    }
+
+    private static byte[] CreateSemanticEqualityPayload()
+    {
+        var left = new ArrayBufferWriter<byte>();
+        WriteVarint(left, 8);
+        WriteVarint(left, 1);
+        WriteLengthDelimited(left, 3, [1, 2]);
+        var right = new ArrayBufferWriter<byte>();
+        WriteVarint(right, 8);
+        WriteVarint(right, 0);
+        WriteVarint(right, 8);
+        WriteVarint(right, 1);
+        WriteVarint(right, 3u << 3);
+        WriteVarint(right, 1);
+        WriteVarint(right, 3u << 3);
+        WriteVarint(right, 2);
+        var payload = new ArrayBufferWriter<byte>();
+        WriteLengthDelimited(payload, 1, left.WrittenSpan);
+        WriteLengthDelimited(payload, 2, right.WrittenSpan);
+        return payload.WrittenSpan.ToArray();
+    }
+
+    private static void WriteLengthDelimited(
+        IBufferWriter<byte> writer,
+        int fieldNumber,
+        ReadOnlySpan<byte> value)
+    {
+        WriteVarint(writer, (uint)(fieldNumber << 3 | 2));
+        WriteVarint(writer, (uint)value.Length);
+        writer.Write(value);
+    }
+
+    private static void WriteVarint(IBufferWriter<byte> writer, uint value)
+    {
+        do
+        {
+            var span = writer.GetSpan(1);
+            var current = (byte)(value & 0x7f);
+            value >>= 7;
+            span[0] = value == 0 ? current : (byte)(current | 0x80);
+            writer.Advance(1);
+        } while (value != 0);
     }
 
     private sealed class BenchmarkSchemaRegistryClient : ISchemaRegistryClient
