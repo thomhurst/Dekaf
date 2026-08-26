@@ -101,7 +101,7 @@ public static class Serializers
     public static ISerde<Ignore> Ignore { get; } = new IgnoreSerde();
 }
 
-internal sealed class ByteArraySerde : ISerde<byte[]>
+internal sealed class ByteArraySerde : ISerde<byte[]>, IInputIsolatedDeserializer
 {
     public void Serialize<TWriter>(byte[] value, ref TWriter destination, SerializationContext context)
         where TWriter : IBufferWriter<byte>
@@ -120,7 +120,7 @@ internal sealed class ByteArraySerde : ISerde<byte[]>
     }
 }
 
-internal sealed class StringSerde : ISerde<string>
+internal sealed class StringSerde : ISerde<string>, IInputIsolatedDeserializer
 {
     public void Serialize<TWriter>(string value, ref TWriter destination, SerializationContext context)
         where TWriter : IBufferWriter<byte>
@@ -139,7 +139,7 @@ internal sealed class StringSerde : ISerde<string>
     }
 }
 
-internal sealed class NullableStringSerde : ISerde<string?>
+internal sealed class NullableStringSerde : ISerde<string?>, IInputIsolatedDeserializer
 {
     public void Serialize<TWriter>(string? value, ref TWriter destination, SerializationContext context)
         where TWriter : IBufferWriter<byte>
@@ -167,7 +167,7 @@ internal sealed class NullableStringSerde : ISerde<string?>
     }
 }
 
-internal sealed class Int32Serde : ISerde<int>
+internal sealed class Int32Serde : ISerde<int>, IInputIsolatedDeserializer
 {
     public void Serialize<TWriter>(int value, ref TWriter destination, SerializationContext context)
         where TWriter : IBufferWriter<byte>
@@ -186,7 +186,7 @@ internal sealed class Int32Serde : ISerde<int>
     }
 }
 
-internal sealed class Int64Serde : ISerde<long>
+internal sealed class Int64Serde : ISerde<long>, IInputIsolatedDeserializer
 {
     public void Serialize<TWriter>(long value, ref TWriter destination, SerializationContext context)
         where TWriter : IBufferWriter<byte>
@@ -205,7 +205,7 @@ internal sealed class Int64Serde : ISerde<long>
     }
 }
 
-internal sealed class GuidSerde : ISerde<Guid>
+internal sealed class GuidSerde : ISerde<Guid>, IInputIsolatedDeserializer
 {
     public void Serialize<TWriter>(Guid value, ref TWriter destination, SerializationContext context)
         where TWriter : IBufferWriter<byte>
@@ -224,7 +224,7 @@ internal sealed class GuidSerde : ISerde<Guid>
     }
 }
 
-internal sealed class DoubleSerde : ISerde<double>
+internal sealed class DoubleSerde : ISerde<double>, IInputIsolatedDeserializer
 {
     public void Serialize<TWriter>(double value, ref TWriter destination, SerializationContext context)
         where TWriter : IBufferWriter<byte>
@@ -243,7 +243,7 @@ internal sealed class DoubleSerde : ISerde<double>
     }
 }
 
-internal sealed class FloatSerde : ISerde<float>
+internal sealed class FloatSerde : ISerde<float>, IInputIsolatedDeserializer
 {
     public void Serialize<TWriter>(float value, ref TWriter destination, SerializationContext context)
         where TWriter : IBufferWriter<byte>
@@ -262,7 +262,7 @@ internal sealed class FloatSerde : ISerde<float>
     }
 }
 
-internal sealed class DateTimeSerde : ISerde<DateTime>
+internal sealed class DateTimeSerde : ISerde<DateTime>, IInputIsolatedDeserializer
 {
     public void Serialize<TWriter>(DateTime value, ref TWriter destination, SerializationContext context)
         where TWriter : IBufferWriter<byte>
@@ -282,7 +282,7 @@ internal sealed class DateTimeSerde : ISerde<DateTime>
     }
 }
 
-internal sealed class DateTimeOffsetSerde : ISerde<DateTimeOffset>
+internal sealed class DateTimeOffsetSerde : ISerde<DateTimeOffset>, IInputIsolatedDeserializer
 {
     public void Serialize<TWriter>(DateTimeOffset value, ref TWriter destination, SerializationContext context)
         where TWriter : IBufferWriter<byte>
@@ -306,7 +306,7 @@ internal sealed class DateTimeOffsetSerde : ISerde<DateTimeOffset>
     }
 }
 
-internal sealed class TimeSpanSerde : ISerde<TimeSpan>
+internal sealed class TimeSpanSerde : ISerde<TimeSpan>, IInputIsolatedDeserializer
 {
     public void Serialize<TWriter>(TimeSpan value, ref TWriter destination, SerializationContext context)
         where TWriter : IBufferWriter<byte>
@@ -326,7 +326,7 @@ internal sealed class TimeSpanSerde : ISerde<TimeSpan>
     }
 }
 
-internal sealed class NullSerde<T> : ISerde<T?> where T : class
+internal sealed class NullSerde<T> : ISerde<T?>, IInputIsolatedDeserializer where T : class
 {
     public void Serialize<TWriter>(T? value, ref TWriter destination, SerializationContext context)
         where TWriter : IBufferWriter<byte>
@@ -343,7 +343,7 @@ internal sealed class NullSerde<T> : ISerde<T?> where T : class
     }
 }
 
-internal sealed class IgnoreSerde : ISerde<Ignore>
+internal sealed class IgnoreSerde : ISerde<Ignore>, IInputIsolatedDeserializer
 {
     public void Serialize<TWriter>(Ignore value, ref TWriter destination, SerializationContext context)
         where TWriter : IBufferWriter<byte>

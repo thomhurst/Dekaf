@@ -61,6 +61,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     private readonly IAsyncDeserializer<TKey>? _asyncKeyDeserializer;
     private readonly IAsyncDeserializer<TValue>? _asyncValueDeserializer;
     private readonly bool _hasAsyncDeserializers;
+    private readonly bool _borrowStoredRecords;
     private readonly InMemoryConsumerOptions _options;
     private readonly HashSet<string> _subscription = new(StringComparer.Ordinal);
     private readonly HashSet<TopicPartition> _assignment = [];
@@ -68,6 +69,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     private readonly Dictionary<TopicPartition, long> _positions = [];
     private readonly Dictionary<TopicPartition, TopicPartitionOffset> _storedOffsets = [];
     private KafkaFaultScope[] _commitFaultScopes = new KafkaFaultScope[4];
+    private TopicPartitionOffset[] _commitOffsets = new TopicPartitionOffset[4];
     private Dictionary<TopicPartition, PendingAutoCommitAdvancement>? _pendingAutoCommitAdvancements;
     private int _storedOffsetsVersion;
     private long _potentialFaultPlanVersion = -1;
@@ -255,6 +257,8 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             ? valueDeserializer!
             : AsyncOnlyDeserializerPlaceholder<TValue>.Instance;
         _hasAsyncDeserializers = asyncKeyDeserializer is not null || asyncValueDeserializer is not null;
+        _borrowStoredRecords = CanBorrowStoredInput(_keyDeserializer, asyncKeyDeserializer) &&
+                               CanBorrowStoredInput(_valueDeserializer, asyncValueDeserializer);
         _options = options ?? throw new ArgumentNullException(nameof(options));
         // Match KafkaConsumer, which treats an empty GroupId as "no consumer group"
         // (no coordinator, no commits). Normalizing here keeps every group-dependent
@@ -1358,7 +1362,10 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             }
 
             if (changed)
+            {
+                EnsureCommitOffsetCapacity(_assignment.Count);
                 _consumerStateVersion++;
+            }
 
             RegisterConsumerGroupMemberUnderLock();
         }
@@ -1550,6 +1557,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                         bound.Partition,
                         position,
                         _options.IsolationLevel,
+                        _borrowStoredRecords,
                         out var record,
                         out var blockedByOngoingTransaction) &&
                     record.Offset < bound.EndOffset)
@@ -1818,6 +1826,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                         partition,
                         position,
                         _options.IsolationLevel,
+                        _borrowStoredRecords,
                         out var record))
                     continue;
 
@@ -2145,7 +2154,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     {
         try
         {
-            return new ConsumeResult<TKey, TValue>(
+            return ConsumeResult<TKey, TValue>.CreateWithCallerOwnedHeaders(
                 topic: topicPartition.Topic,
                 partition: topicPartition.Partition,
                 offset: record.Offset,
@@ -2158,7 +2167,8 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                 timestampType: TimestampType.CreateTime,
                 leaderEpoch: null,
                 keyDeserializer: _keyDeserializer,
-                valueDeserializer: _valueDeserializer);
+                valueDeserializer: _valueDeserializer,
+                deferHeaderSnapshot: _borrowStoredRecords);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -2247,10 +2257,11 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             record.Headers,
             record.TimestampMs,
             TimestampType.CreateTime,
-            leaderEpoch: null);
+            leaderEpoch: null,
+            deferHeaderSnapshot: _borrowStoredRecords);
     }
 
-    private static RecordDeserializationException CreateDeserializationException(
+    private RecordDeserializationException CreateDeserializationException(
         DeserializationExceptionOrigin origin,
         TopicPartition topicPartition,
         InMemoryRecord record,
@@ -2266,7 +2277,9 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             record.IsKeyNull,
             record.Value,
             record.IsValueNull,
-            record.Headers,
+            _borrowStoredRecords
+                ? LazyConsumeHeaders.CreateSnapshot(record.Headers)
+                : record.Headers,
             pooledHeaders: null,
             pooledHeaderCount: 0,
             innerException);
@@ -2290,6 +2303,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             _positions[partition] = position;
         }
 
+        EnsureCommitOffsetCapacity(_assignment.Count);
         _consumerStateVersion++;
     }
 
@@ -2401,22 +2415,45 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             cancellationToken);
     }
 
-    private void CommitOffsetsFrom(Dictionary<TopicPartition, TopicPartitionOffset> positions)
+    internal void CommitOffsetsFrom(Dictionary<TopicPartition, TopicPartitionOffset> positions)
     {
-        if (_groupId is null)
+        if (_groupId is null || positions.Count == 0)
             return;
 
-        var assignment = GetCurrentAssignmentUnderLock();
-        var offsets = positions
-            .Where(item => assignment.Contains(item.Key))
-            .Select(static item => item.Value)
-            .ToArray();
+        var assignment = GetPotentialFaultAssignmentUnderLock(out _, out _);
+        var count = 0;
+        foreach (var (partition, offset) in positions)
+        {
+            if (!assignment.Contains(partition))
+                continue;
 
-        if (offsets.Length == 0)
+            _commitOffsets[count++] = offset;
+        }
+
+        if (count == 0)
             return;
 
-        _cluster.CommitOffsets(_groupId, offsets);
+        _cluster.CommitOffsets(_groupId, _commitOffsets, count);
     }
+
+    private void EnsureCommitOffsetCapacity(int count)
+    {
+        if (count <= _commitOffsets.Length)
+            return;
+
+        var capacity = _commitOffsets.Length;
+        while (capacity < count)
+            capacity = checked(capacity * 2);
+        Array.Resize(ref _commitOffsets, capacity);
+    }
+
+    private static bool CanBorrowStoredInput<T>(
+        IDeserializer<T> deserializer,
+        IAsyncDeserializer<T>? asyncDeserializer) =>
+        asyncDeserializer is null
+            ? deserializer is IInputIsolatedDeserializer
+              && deserializer is not ICallerOwnedHeaderDeserializer<T>
+            : asyncDeserializer is IInputIsolatedDeserializer;
 
     private bool TryPrepareOnDeliveryAutoCommitFault(
         TopicPartition partition,
@@ -2763,6 +2800,8 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                     pending.Completion.Task,
                     cancellationToken);
             }
+            if (_indexedFaultPlan is { Count: 0 })
+                return default;
 
             var inDoubtOffset = _options.EnableAutoOffsetStore
                 ? new TopicPartitionOffset(

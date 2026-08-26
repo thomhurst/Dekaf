@@ -585,14 +585,22 @@ public sealed class InMemoryKafkaCluster
     }
 
     internal bool TryRead(TopicPartition topicPartition, long offset, out InMemoryRecord record) =>
-        TryRead(topicPartition, offset, IsolationLevel.ReadCommitted, out record, out _);
+        TryRead(topicPartition, offset, IsolationLevel.ReadCommitted, borrowStoredRecord: false, out record, out _);
 
     internal bool TryRead(
         TopicPartition topicPartition,
         long offset,
         IsolationLevel isolationLevel,
         out InMemoryRecord record) =>
-        TryRead(topicPartition, offset, isolationLevel, out record, out _);
+        TryRead(topicPartition, offset, isolationLevel, borrowStoredRecord: false, out record, out _);
+
+    internal bool TryRead(
+        TopicPartition topicPartition,
+        long offset,
+        IsolationLevel isolationLevel,
+        bool borrowStoredRecord,
+        out InMemoryRecord record) =>
+        TryRead(topicPartition, offset, isolationLevel, borrowStoredRecord, out record, out _);
 
     internal bool TryRead(
         TopicPartition topicPartition,
@@ -603,6 +611,7 @@ public sealed class InMemoryKafkaCluster
             topicPartition,
             offset,
             IsolationLevel.ReadCommitted,
+            borrowStoredRecord: false,
             out record,
             out blockedByOngoingTransaction);
 
@@ -610,6 +619,7 @@ public sealed class InMemoryKafkaCluster
         TopicPartition topicPartition,
         long offset,
         IsolationLevel isolationLevel,
+        bool borrowStoredRecord,
         out InMemoryRecord record,
         out bool blockedByOngoingTransaction)
     {
@@ -626,7 +636,7 @@ public sealed class InMemoryKafkaCluster
                 return false;
             }
 
-            record = CloneRecord(candidate);
+            record = borrowStoredRecord ? candidate : CloneRecord(candidate);
             return true;
         }
     }
@@ -1074,6 +1084,22 @@ public sealed class InMemoryKafkaCluster
         {
             var groupOffsets = GetOrCreateConsumerGroupOffsetsUnderLock(groupId);
             for (var index = 0; index < offsets.Count; index++)
+            {
+                var offset = offsets[index];
+                groupOffsets[new TopicPartition(offset.Topic, offset.Partition)] = offset;
+            }
+        }
+    }
+
+    internal void CommitOffsets(
+        string groupId,
+        TopicPartitionOffset[] offsets,
+        int offsetCount)
+    {
+        lock (_gate)
+        {
+            var groupOffsets = GetOrCreateConsumerGroupOffsetsUnderLock(groupId);
+            for (var index = 0; index < offsetCount; index++)
             {
                 var offset = offsets[index];
                 groupOffsets[new TopicPartition(offset.Topic, offset.Partition)] = offset;
@@ -1853,19 +1879,7 @@ public sealed class InMemoryKafkaCluster
     }
 
     private static IReadOnlyList<Header> CopyHeaders(IReadOnlyList<Header>? headers)
-    {
-        if (headers is null || headers.Count == 0)
-            return Array.Empty<Header>();
-
-        var copy = new Header[headers.Count];
-        for (var i = 0; i < headers.Count; i++)
-        {
-            var header = headers[i];
-            copy[i] = new Header(header.Key, header.IsValueNull ? null : header.Value.ToArray());
-        }
-
-        return copy;
-    }
+        => headers is null ? Array.Empty<Header>() : LazyConsumeHeaders.CreateSnapshot(headers);
 
     private static InMemoryRecord CloneRecord(InMemoryRecord record)
     {

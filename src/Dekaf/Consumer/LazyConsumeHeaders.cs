@@ -38,6 +38,23 @@ internal sealed class LazyConsumeHeaders : IReadOnlyList<Header>
         return new LazyConsumeHeaders(pooledHeaders, count, owner, generation);
     }
 
+    internal static IReadOnlyList<Header> CreateSnapshot(IReadOnlyList<Header> headers)
+    {
+        if (headers.Count == 0)
+            return Array.Empty<Header>();
+
+        var snapshot = new Header[headers.Count];
+        for (var index = 0; index < snapshot.Length; index++)
+        {
+            var header = headers[index];
+            snapshot[index] = new Header(
+                header.Key,
+                header.IsValueNull ? null : header.Value.ToArray());
+        }
+
+        return snapshot;
+    }
+
     public int Count => _count;
 
     public Header this[int index]

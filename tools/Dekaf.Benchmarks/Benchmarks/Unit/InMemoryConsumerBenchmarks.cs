@@ -10,6 +10,7 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 public class InMemoryConsumerBenchmarks
 {
     private const string Topic = "in-memory-consumer";
+    private const string MultiPartitionTopic = "in-memory-consumer-multi-partition";
     private const string GroupId = "benchmark-group";
     private const int SnapshotRecordCount = 256;
     private static readonly TopicPartitionOffset StoredOffset = new(Topic, 0, 1);
@@ -23,6 +24,9 @@ public class InMemoryConsumerBenchmarks
     private InMemoryConsumer<Ignore, Ignore> _manualStoreNoFaultConsumer = null!;
     private InMemoryConsumer<Ignore, Ignore> _customPlanStoredOffsetConsumer = null!;
     private InMemoryConsumer<Ignore, Ignore> _snapshotConsumer = null!;
+    private InMemoryConsumer<Ignore, Ignore>[] _multiPartitionCommitConsumers = null!;
+    private Dictionary<TopicPartition, TopicPartitionOffset> _multiPartitionCommitOffsets = null!;
+    private int _multiPartitionCommitConsumerIndex;
     private ConsumeResult<Ignore, Ignore>? _result;
 
     [GlobalSetup]
@@ -206,6 +210,48 @@ public class InMemoryConsumerBenchmarks
                 OffsetCommitMode = OffsetCommitMode.Manual
             });
         _snapshotConsumer.Subscribe(Topic);
+
+        SetupMultiPartitionCommitConsumers();
+    }
+
+    private void SetupMultiPartitionCommitConsumers()
+    {
+        var multiPartitionCluster = new InMemoryKafkaCluster();
+        multiPartitionCluster.CreateTopic(MultiPartitionTopic, partitionCount: 8);
+        var assignment = new TopicPartition[8];
+        var offsets = new TopicPartitionOffset[8];
+        var firstFourOffsets = new Dictionary<TopicPartition, TopicPartitionOffset>();
+        _multiPartitionCommitOffsets = [];
+        for (var partition = 0; partition < assignment.Length; partition++)
+        {
+            var topicPartition = new TopicPartition(MultiPartitionTopic, partition);
+            var offset = new TopicPartitionOffset(MultiPartitionTopic, partition, 1);
+            assignment[partition] = topicPartition;
+            offsets[partition] = offset;
+            _multiPartitionCommitOffsets.Add(topicPartition, offset);
+            if (partition < 4)
+                firstFourOffsets.Add(topicPartition, offset);
+        }
+
+        _multiPartitionCommitConsumers = new InMemoryConsumer<Ignore, Ignore>[128];
+        for (var consumerIndex = 0; consumerIndex < _multiPartitionCommitConsumers.Length; consumerIndex++)
+        {
+            var groupId = $"{GroupId}-{consumerIndex}";
+            multiPartitionCluster.CommitOffsets(groupId, offsets);
+            var consumer = new InMemoryConsumer<Ignore, Ignore>(
+                multiPartitionCluster,
+                new InMemoryConsumerOptions
+                {
+                    GroupId = groupId,
+                    AutoOffsetReset = AutoOffsetReset.Earliest,
+                    EnableAutoOffsetStore = false,
+                    OffsetCommitMode = OffsetCommitMode.Manual
+                });
+            consumer.Assign(assignment);
+            consumer.CommitOffsetsFrom(firstFourOffsets);
+
+            _multiPartitionCommitConsumers[consumerIndex] = consumer;
+        }
     }
 
     [Benchmark]
@@ -254,6 +300,14 @@ public class InMemoryConsumerBenchmarks
             throw new InvalidOperationException("Async auto-commit consume did not complete synchronously.");
 
         _result = operation.Result;
+    }
+
+    [Benchmark]
+    [InvocationCount(16)]
+    public void CommitStoredOffsetsEightPartitions()
+    {
+        _multiPartitionCommitConsumers[_multiPartitionCommitConsumerIndex++]
+            .CommitOffsetsFrom(_multiPartitionCommitOffsets);
     }
 
     [Benchmark]
@@ -342,7 +396,7 @@ public class InMemoryConsumerBenchmarks
         operation.GetAwaiter().GetResult();
     }
 
-    private sealed class CompletedIgnoreDeserializer : IAsyncDeserializer<Ignore>
+    private sealed class CompletedIgnoreDeserializer : IAsyncDeserializer<Ignore>, IInputIsolatedDeserializer
     {
         public ValueTask<Ignore> DeserializeAsync(
             ReadOnlyMemory<byte> data,
