@@ -73,6 +73,11 @@ Dekaf.Testing.IKafkaFaultPlan.Count.get -> int
 Dekaf.Testing.IKafkaFaultPlan.Fail(Dekaf.Testing.KafkaFaultScope scope, System.Exception! exception, int occurrenceCount = 1) -> void
 Dekaf.Testing.IKafkaFaultPlan.FailPersistently(Dekaf.Testing.KafkaFaultScope scope, System.Exception! exception) -> void
 Dekaf.Testing.IKafkaFaultPlan.FaultConsumed -> System.Action<Dekaf.Testing.KafkaFaultObservation>?
+Dekaf.Testing.IKafkaFaultPlan.HasMatchingFault(in Dekaf.Testing.KafkaFaultScope operationScope) -> bool
+Dekaf.Testing.IKafkaFaultPlan.HasPotentialFault(Dekaf.Testing.KafkaFaultOperation operation, string? groupId, System.Collections.Generic.IReadOnlySet<Dekaf.TopicPartition>! resources) -> bool
+Dekaf.Testing.IKafkaFaultPlan.TryGetFirstMatchingFaultScope(System.ReadOnlySpan<Dekaf.Testing.KafkaFaultScope> operationScopes, out Dekaf.Testing.KafkaFaultScope operationScope) -> bool
+Dekaf.Testing.IKafkaFaultPlan.TryApplyFirstMatchingFault(System.ReadOnlySpan<Dekaf.Testing.KafkaFaultScope> operationScopes, out System.Threading.Tasks.ValueTask application, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> bool
+Dekaf.Testing.IKafkaFaultPlan.Version.get -> long
 Dekaf.Testing.IKafkaFaultPlan.PauseNext(Dekaf.Testing.KafkaFaultScope scope) -> Dekaf.Testing.KafkaFaultBarrier!
 Dekaf.Testing.InMemoryProducer<TKey, TValue>.GetPartitionsForAsync(string! topic, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyList<Dekaf.Producer.ProducerPartitionMetadata!>!>
 Dekaf.Testing.KafkaFaultPlan
@@ -83,6 +88,11 @@ Dekaf.Testing.KafkaFaultPlan.Count.get -> int
 Dekaf.Testing.KafkaFaultPlan.Fail(Dekaf.Testing.KafkaFaultScope scope, System.Exception! exception, int occurrenceCount = 1) -> void
 Dekaf.Testing.KafkaFaultPlan.FailPersistently(Dekaf.Testing.KafkaFaultScope scope, System.Exception! exception) -> void
 Dekaf.Testing.KafkaFaultPlan.FaultConsumed -> System.Action<Dekaf.Testing.KafkaFaultObservation>?
+Dekaf.Testing.KafkaFaultPlan.HasMatchingFault(in Dekaf.Testing.KafkaFaultScope operationScope) -> bool
+Dekaf.Testing.KafkaFaultPlan.HasPotentialFault(Dekaf.Testing.KafkaFaultOperation operation, string? groupId, System.Collections.Generic.IReadOnlySet<Dekaf.TopicPartition>! resources) -> bool
+Dekaf.Testing.KafkaFaultPlan.TryGetFirstMatchingFaultScope(System.ReadOnlySpan<Dekaf.Testing.KafkaFaultScope> operationScopes, out Dekaf.Testing.KafkaFaultScope operationScope) -> bool
+Dekaf.Testing.KafkaFaultPlan.TryApplyFirstMatchingFault(System.ReadOnlySpan<Dekaf.Testing.KafkaFaultScope> operationScopes, out System.Threading.Tasks.ValueTask application, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> bool
+Dekaf.Testing.KafkaFaultPlan.Version.get -> long
 Dekaf.Testing.KafkaFaultPlan.KafkaFaultPlan() -> void
 Dekaf.Testing.KafkaFaultPlan.PauseNext(Dekaf.Testing.KafkaFaultScope scope) -> Dekaf.Testing.KafkaFaultBarrier!
 Dekaf.Testing.KafkaFaultScope

@@ -1167,7 +1167,34 @@ public sealed class InMemoryAdminShareFaultTests
 
         public int Count => 0;
 
+        public long Version => 0;
+
         public int GetResultCount { get; private set; }
+
+        public bool HasMatchingFault(in KafkaFaultScope operationScope) => false;
+
+        public bool HasPotentialFault(
+            KafkaFaultOperation operation,
+            string? groupId,
+            IReadOnlySet<TopicPartition> resources) => false;
+
+        public bool TryGetFirstMatchingFaultScope(
+            ReadOnlySpan<KafkaFaultScope> operationScopes,
+            out KafkaFaultScope operationScope)
+        {
+            operationScope = default;
+            return false;
+        }
+
+        public bool TryApplyFirstMatchingFault(
+            ReadOnlySpan<KafkaFaultScope> operationScopes,
+            out ValueTask application,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            application = ValueTask.CompletedTask;
+            return false;
+        }
 
         public void Fail(KafkaFaultScope scope, Exception exception, int occurrenceCount = 1) =>
             throw new NotSupportedException();
