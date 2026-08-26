@@ -593,10 +593,16 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
             LogCloseSessionsFailed(ex);
         }
 
-        // Step 3: Leave the share group
-        await _coordinator.LeaveGroupAsync(cancellationToken).ConfigureAwait(false);
-
-        await _telemetryManager.StopAsync(TimeSpan.FromSeconds(5), cancellationToken).ConfigureAwait(false);
+        // Step 3: Leave the share group, then stop telemetry even if leaving fails.
+        try
+        {
+            await _coordinator.LeaveGroupAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            await _telemetryManager.StopAsync(TimeSpan.FromSeconds(5), CancellationToken.None)
+                .ConfigureAwait(false);
+        }
     }
 
     public async ValueTask DisposeAsync()

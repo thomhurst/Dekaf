@@ -149,6 +149,8 @@ Guid? clientInstanceId = identity.ClientInstanceId;
 
 The property is `null` before telemetry negotiation succeeds, and remains `null` when
 telemetry is unavailable or unsupported by the broker. Reads use an allocation-free cache.
+Admin clients configured with `BootstrapControllers` do not start broker client telemetry,
+so their client instance ID remains `null`.
 After assignment, a refreshed subscription publishes its latest accepted identity atomically;
 the last assigned value remains readable after disposal.
 
