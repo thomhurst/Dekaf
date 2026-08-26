@@ -644,6 +644,46 @@ public sealed class AdminClientStreamsGroupManagementTests
     }
 
     [Test]
+    public async Task ListStreamsGroupOffsetsAsync_RetryExhaustionPreservesMappingDetailsAndGroupError()
+    {
+        var (admin, connection) = CreateAdmin();
+        SetupFindCoordinator(connection);
+        connection.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
+                Arg.Any<OffsetFetchRequest>(),
+                10,
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(new OffsetFetchResponse
+            {
+                Groups =
+                [
+                    new OffsetFetchResponseGroup
+                    {
+                        GroupId = FirstGroup,
+                        ErrorCode = ErrorCode.RequestTimedOut,
+                        Topics = []
+                    }
+                ]
+            }));
+        var valid = new TopicPartition(Topic, 0);
+        var missing = new TopicPartition("missing", 0);
+
+        var results = await admin.ListStreamsGroupOffsetsAsync(
+            new Dictionary<string, ListStreamsGroupOffsetsSpec>
+            {
+                [FirstGroup] = new() { TopicPartitions = [valid, missing] }
+            });
+
+        var result = results[FirstGroup];
+        await Assert.That(result.ErrorCode).IsEqualTo(ErrorCode.RequestTimedOut);
+        await Assert.That(result.Offsets[valid].ErrorCode).IsEqualTo(ErrorCode.UnknownServerError);
+        await Assert.That(result.Offsets[missing].ErrorCode).IsEqualTo(ErrorCode.UnknownTopicId);
+        await connection.Received(4).SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
+            Arg.Any<OffsetFetchRequest>(),
+            10,
+            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
     public async Task ListStreamsGroupOffsetsAsync_RetriesMissingTopicIdAfterMetadataRefresh()
     {
         const string refreshedTopic = "created-after-cache";

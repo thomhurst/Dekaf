@@ -382,6 +382,14 @@ public sealed partial class AdminClient
                 {
                     mappingRetryResults[groupId] = retryResult;
                 }
+                if ((response.ErrorCode.IsRetriable() || response.ErrorCode.RequiresMetadataRefresh()) &&
+                    mappingRetryResults.TryGetValue(groupId, out var mappingRetryResult))
+                {
+                    mappingRetryResults[groupId] = GroupOffsetsError(
+                        groupId,
+                        response.ErrorCode,
+                        mappingRetryResult.Offsets);
+                }
             }
             retryFailure ??= failure;
             return retryFailure;
@@ -412,6 +420,14 @@ public sealed partial class AdminClient
                     retryResults.TryGetValue(group.GroupId, out var retryResult))
                 {
                     mappingRetryResults[group.GroupId] = retryResult;
+                }
+                if ((group.ErrorCode.IsRetriable() || group.ErrorCode.RequiresMetadataRefresh()) &&
+                    mappingRetryResults.TryGetValue(group.GroupId, out var mappingRetryResult))
+                {
+                    mappingRetryResults[group.GroupId] = GroupOffsetsError(
+                        group.GroupId,
+                        group.ErrorCode,
+                        mappingRetryResult.Offsets);
                 }
             }
             retryFailure ??= failure;
@@ -1148,11 +1164,12 @@ public sealed partial class AdminClient
 
     private static StreamsGroupOffsetsResult GroupOffsetsError(
         string groupId,
-        Protocol.ErrorCode errorCode) => new()
+        Protocol.ErrorCode errorCode,
+        IReadOnlyDictionary<TopicPartition, StreamsGroupOffsetDescription>? offsets = null) => new()
     {
         GroupId = groupId,
         ErrorCode = errorCode,
-        Offsets = new Dictionary<TopicPartition, StreamsGroupOffsetDescription>()
+        Offsets = offsets ?? new Dictionary<TopicPartition, StreamsGroupOffsetDescription>()
     };
 
     private static StreamsGroupOffsetsResult EmptyGroupOffsetsResult(string groupId) => new()
