@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Reflection;
 using Dekaf.Compression;
 using Dekaf.Metadata;
 using Dekaf.Networking;
@@ -114,6 +115,42 @@ public sealed class ClientTelemetryManagerTests
     }
 
     [Test]
+    public async Task StopAsync_CanceledWhileWaitingForStartLock_RemainsRetryable()
+    {
+        await using var context = new TelemetryTestContext();
+        context.Connection.Enqueue(Subscription(
+            Guid.Parse("dddddddd-dddd-dddd-dddd-dddddddddddd"),
+            subscriptionId: 18,
+            pushIntervalMs: 60000));
+        context.Connection.Enqueue(new PushTelemetryResponse { ErrorCode = ErrorCode.None });
+        await context.Manager.StartAsync();
+
+        var startLock = (SemaphoreSlim)typeof(ClientTelemetryManager)
+            .GetField("_startLock", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .GetValue(context.Manager)!;
+        await startLock.WaitAsync();
+        try
+        {
+            using var cancellationSource = new CancellationTokenSource();
+            cancellationSource.Cancel();
+
+            await Assert.That(async () =>
+                    await context.Manager.StopAsync(TimeSpan.FromSeconds(2), cancellationSource.Token))
+                .Throws<OperationCanceledException>();
+        }
+        finally
+        {
+            startLock.Release();
+        }
+
+        await context.Manager.StopAsync(TimeSpan.FromSeconds(2));
+
+        var pushes = context.Connection.RequestsOfType<PushTelemetryRequest>();
+        await Assert.That(pushes.Count).IsEqualTo(1);
+        await Assert.That(pushes[0].Terminating).IsTrue();
+    }
+
+    [Test]
     public async Task DisposeAsync_DuringSubscriptionFetch_DoesNotDisposeStartLockUnderStart()
     {
         await using var context = new TelemetryTestContext();
@@ -133,6 +170,34 @@ public sealed class ClientTelemetryManagerTests
         await disposeTask.WaitAsync(TimeSpan.FromSeconds(2));
 
         await Assert.That(context.Manager.IsStarted).IsFalse();
+    }
+
+    [Test]
+    public async Task DisposeAsync_DuringStop_WaitsForStopCompletion()
+    {
+        await using var context = new TelemetryTestContext();
+        context.Connection.Enqueue(Subscription(
+            Guid.Parse("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"),
+            subscriptionId: 19,
+            pushIntervalMs: 60000));
+        context.Connection.BlockNextRequest<PushTelemetryRequest>();
+        await context.Manager.StartAsync();
+
+        var stopTask = context.Manager.StopAsync(TimeSpan.FromSeconds(2)).AsTask();
+        await context.Connection.WaitForBlockedRequestAsync(TimeSpan.FromSeconds(2));
+
+        var disposeTask = context.Manager.DisposeAsync().AsTask();
+        try
+        {
+            await Assert.That(disposeTask.IsCompleted).IsFalse();
+        }
+        finally
+        {
+            context.Connection.ReleaseBlockedRequest();
+        }
+
+        await stopTask.WaitAsync(TimeSpan.FromSeconds(2));
+        await disposeTask.WaitAsync(TimeSpan.FromSeconds(2));
     }
 
     [Test]
@@ -297,6 +362,7 @@ public sealed class ClientTelemetryManagerTests
 
         await Assert.That(context.Manager.IsDisabled).IsTrue();
         await Assert.That(context.Manager.IsStarted).IsFalse();
+        await Assert.That(context.Manager.ClientInstanceId).IsNull();
         await Assert.That(context.Connection.RequestsOfType<PushTelemetryRequest>().Count).IsEqualTo(0);
     }
 

@@ -109,6 +109,41 @@ public sealed class ShareConsumerConnectionOwnershipTests
     }
 
     [Test]
+    public async Task CloseAsync_CanceledLeaveToken_StillStopsTelemetry()
+    {
+        var options = CreateOptions();
+        var pool = Substitute.For<IConnectionPool>();
+        pool.GetConnectionByIndexAsync(1, 1, Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromException<IKafkaConnection>(new IOException("coordinator unavailable")));
+        await using var metadataManager = new MetadataManager(pool, options.BootstrapServers);
+        var consumer = new KafkaShareConsumer<string, string>(
+            options,
+            Substitute.For<IDeserializer<string>>(),
+            Substitute.For<IDeserializer<string>>(),
+            pool,
+            metadataManager);
+        SetMemberId(consumer, "member-1");
+        var coordinator = typeof(KafkaShareConsumer<string, string>)
+            .GetField("_coordinator", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .GetValue(consumer)!;
+        typeof(ShareConsumerCoordinator)
+            .GetField("_coordinatorId", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(coordinator, 1);
+
+        await consumer.CloseAsync(new CancellationToken(canceled: true));
+
+        var telemetryManager = typeof(KafkaShareConsumer<string, string>)
+            .GetField("_telemetryManager", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .GetValue(consumer)!;
+        var stopped = (int)telemetryManager.GetType()
+            .GetField("_stopped", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .GetValue(telemetryManager)!;
+        await Assert.That(stopped).IsEqualTo(1);
+
+        await consumer.DisposeAsync();
+    }
+
+    [Test]
     public async Task SendShareFetchForPartitionsAsync_HoldsConnectionLeaseThroughRequest()
     {
         var options = CreateOptions();

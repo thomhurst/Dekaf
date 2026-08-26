@@ -10,6 +10,7 @@ using Dekaf.Protocol.Messages;
 using Dekaf.Protocol.Records;
 using Dekaf.Serialization;
 using Dekaf.ShareConsumer;
+using Dekaf.Telemetry;
 
 namespace Dekaf.Tests.Unit.Diagnostics;
 
@@ -41,6 +42,7 @@ public sealed class KafkaClientStatusTests
 
         await Assert.That(producerStatus.Role).IsEqualTo(KafkaClientRole.Producer);
         await Assert.That(producerStatus.ClusterId).IsNull();
+        await Assert.That(producerStatus.ClientInstanceId).IsNull();
         await Assert.That(producerStatus.Producer).IsNotNull();
         await Assert.That(producerStatus.Producer!.Value.BufferedBytes).IsEqualTo(0);
         await Assert.That(producerStatus.Producer.Value.BufferCapacityBytes).IsGreaterThan(0UL);
@@ -51,6 +53,72 @@ public sealed class KafkaClientStatusTests
         await Assert.That(shareStatus.ConsumerGroup!.HasConsumerGroup).IsTrue();
         await Assert.That(adminStatus.Role).IsEqualTo(KafkaClientRole.Admin);
         await Assert.That(adminStatus.ClusterId).IsNull();
+        await Assert.That(adminStatus.ClientInstanceId).IsNull();
+
+        var identities = new IKafkaClientInstanceIdentity[]
+        {
+            (IKafkaClientInstanceIdentity)producer,
+            (IKafkaClientInstanceIdentity)consumer,
+            (IKafkaClientInstanceIdentity)shareConsumer,
+            admin
+        };
+        foreach (var identity in identities)
+            await Assert.That(identity.ClientInstanceId).IsNull();
+    }
+
+    [Test]
+    public async Task BuiltInClients_ExposeLatestCachedClientInstanceIdentity()
+    {
+        await using var producer = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .Build();
+        await using var consumer = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .Build();
+        await using var shareConsumer = Kafka.CreateShareConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithGroupId("identity-share-group")
+            .Build();
+        await using var admin = new AdminClient(new AdminClientOptions
+        {
+            BootstrapServers = ["localhost:9092"]
+        });
+        object[] clients = [producer, consumer, shareConsumer, admin];
+        Guid[] expectedIds =
+        [
+            Guid.Parse("11111111-1111-1111-1111-111111111111"),
+            Guid.Parse("22222222-2222-2222-2222-222222222222"),
+            Guid.Parse("33333333-3333-3333-3333-333333333333"),
+            Guid.Parse("44444444-4444-4444-4444-444444444444")
+        ];
+
+        for (var i = 0; i < clients.Length; i++)
+        {
+            SetClientInstanceId(clients[i], expectedIds[i]);
+            var identity = (IKafkaClientInstanceIdentity)clients[i];
+            var status = ((IKafkaClientStatusProvider)clients[i]).GetStatus();
+
+            await Assert.That(identity.ClientInstanceId).IsEqualTo(expectedIds[i]);
+            await Assert.That(status.ClientInstanceId).IsEqualTo(expectedIds[i]);
+        }
+    }
+
+    [Test]
+    public async Task ClientInstanceIdentity_RemainsAvailableAfterDisposal()
+    {
+        var producer = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .Build();
+        var clientInstanceId = Guid.Parse("55555555-5555-5555-5555-555555555555");
+        SetClientInstanceId(producer, clientInstanceId);
+
+        await producer.DisposeAsync();
+
+        await Assert.That(((IKafkaClientInstanceIdentity)producer).ClientInstanceId)
+            .IsEqualTo(clientInstanceId);
+        var status = ((IKafkaClientStatusProvider)producer).GetStatus();
+        await Assert.That(status.ClientInstanceId).IsEqualTo(clientInstanceId);
+        await Assert.That(status.IsStopped).IsTrue();
     }
 
     [Test]
@@ -255,6 +323,21 @@ public sealed class KafkaClientStatusTests
         (T)instance.GetType()
             .GetField(name, BindingFlags.NonPublic | BindingFlags.Instance)!
             .GetValue(instance)!;
+
+    private static void SetClientInstanceId(object client, Guid clientInstanceId)
+    {
+        var telemetryManager = GetField<ClientTelemetryManager>(client, "_telemetryManager");
+        typeof(ClientTelemetryManager)
+            .GetField("_subscription", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .SetValue(telemetryManager, new ClientTelemetrySubscription(
+                clientInstanceId,
+                SubscriptionId: 1,
+                CompressionType: 0,
+                PushIntervalMs: 60_000,
+                TelemetryMaxBytes: 1_024,
+                DeltaTemporality: false,
+                RequestedMetrics: []));
+    }
 
     private static void SetTrustedClusterId(MetadataManager metadataManager, string clusterId) =>
         typeof(MetadataManager)

@@ -48,11 +48,14 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
     private readonly IClientTelemetryPayloadProvider _payloadProvider;
     private readonly ILogger<ClientTelemetryManager> _logger;
     private readonly SemaphoreSlim _startLock = new(1, 1);
+    private readonly TaskCompletionSource<bool> _stopCompletion =
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     private CancellationTokenSource? _loopCts;
     private Task? _loopTask;
     private ClientTelemetrySubscription? _subscription;
     private int _started;
+    private int _stopRequested;
     private int _stopped;
     private int _disabled;
     private int _disposed;
@@ -73,15 +76,15 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
         _payloadProvider = payloadProvider ?? new ClientTelemetryPayloadProvider(_compressionCodecs);
     }
 
-    internal Guid ClientInstanceId => _subscription?.ClientInstanceId ?? Guid.Empty;
-    internal int SubscriptionId => _subscription?.SubscriptionId ?? -1;
+    internal Guid? ClientInstanceId => Volatile.Read(ref _subscription)?.ClientInstanceId;
+    internal int SubscriptionId => Volatile.Read(ref _subscription)?.SubscriptionId ?? -1;
     internal bool IsDisabled => Volatile.Read(ref _disabled) != 0;
     internal bool IsStarted => Volatile.Read(ref _started) != 0;
 
     public async ValueTask StartAsync(CancellationToken cancellationToken = default)
     {
         if (Volatile.Read(ref _disposed) != 0 ||
-            Volatile.Read(ref _stopped) != 0 ||
+            Volatile.Read(ref _stopRequested) != 0 ||
             Volatile.Read(ref _started) != 0 ||
             Volatile.Read(ref _disabled) != 0)
         {
@@ -92,7 +95,7 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
         try
         {
             if (Volatile.Read(ref _disposed) != 0 ||
-                Volatile.Read(ref _stopped) != 0 ||
+                Volatile.Read(ref _stopRequested) != 0 ||
                 Volatile.Read(ref _started) != 0 ||
                 Volatile.Read(ref _disabled) != 0)
             {
@@ -106,13 +109,13 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
             }
 
             if (Volatile.Read(ref _disposed) != 0 ||
-                Volatile.Read(ref _stopped) != 0 ||
+                Volatile.Read(ref _stopRequested) != 0 ||
                 Volatile.Read(ref _disabled) != 0)
             {
                 return;
             }
 
-            _subscription = subscription;
+            Volatile.Write(ref _subscription, subscription);
             var loopCts = new CancellationTokenSource();
             _loopCts = loopCts;
             Volatile.Write(ref _started, 1);
@@ -126,7 +129,7 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
 
     public async ValueTask StopAsync(TimeSpan timeout, CancellationToken cancellationToken = default)
     {
-        if (Interlocked.Exchange(ref _stopped, 1) != 0)
+        if (Volatile.Read(ref _stopped) != 0)
         {
             return;
         }
@@ -136,9 +139,18 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
             timeout = DefaultStopTimeout;
         }
 
+        Volatile.Write(ref _stopRequested, 1);
         await _startLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        var completesStop = false;
         try
         {
+            if (Interlocked.Exchange(ref _stopped, 1) != 0)
+            {
+                return;
+            }
+
+            completesStop = true;
+
             using var timeoutCts = new CancellationTokenSource(timeout);
             using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(timeoutCts.Token, cancellationToken);
             var stopToken = linkedCts.Token;
@@ -164,7 +176,7 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
 
             if (!stopToken.IsCancellationRequested &&
                 Volatile.Read(ref _disabled) == 0 &&
-                _subscription is { } subscription)
+                Volatile.Read(ref _subscription) is { } subscription)
             {
                 try
                 {
@@ -187,6 +199,8 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
         finally
         {
             _startLock.Release();
+            if (completesStop)
+                _stopCompletion.TrySetResult(true);
         }
     }
 
@@ -198,7 +212,11 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
         }
 
         await StopAsync(DefaultStopTimeout).ConfigureAwait(false);
-        _startLock.Dispose();
+        await _stopCompletion.Task.ConfigureAwait(false);
+
+        // A caller can pass the lifecycle pre-check immediately before disposal marks the manager
+        // disposed, then queue on this semaphore. Keep it alive until the manager becomes
+        // unreachable so those callers can drain without ObjectDisposedException.
     }
 
     private async Task RunLoopAsync(CancellationToken cancellationToken)
@@ -207,7 +225,7 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
         {
             while (!cancellationToken.IsCancellationRequested && Volatile.Read(ref _disabled) == 0)
             {
-                var subscription = _subscription;
+                var subscription = Volatile.Read(ref _subscription);
                 if (subscription is null)
                 {
                     return;
@@ -230,7 +248,7 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
 
                     if (refreshed is not null)
                     {
-                        _subscription = refreshed;
+                        Volatile.Write(ref _subscription, refreshed);
                     }
                 }
             }

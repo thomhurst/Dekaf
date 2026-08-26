@@ -139,6 +139,7 @@ Dekaf.Diagnostics.ProducerBacklogStatus.BufferPressureEventCount.init -> void
 Dekaf.Diagnostics.ConsumerGroupStatus
 Dekaf.Diagnostics.ConsumerGroupStatus.ConsumerGroupStatus() -> void
 Dekaf.Admin.AdminClient.ClusterId.get -> string?
+Dekaf.Admin.AdminClient.ClientInstanceId.get -> System.Guid?
 Dekaf.Admin.AdminClient.GetStatus() -> Dekaf.Diagnostics.KafkaClientStatus!
 Dekaf.Diagnostics.ConsumerGroupStatus.HasConsumerGroup.get -> bool
 Dekaf.Diagnostics.ConsumerGroupStatus.HasConsumerGroup.init -> void
@@ -161,6 +162,8 @@ Dekaf.Diagnostics.ConsumerGroupStatus.Assignment.get -> System.Collections.Gener
 Dekaf.Diagnostics.ProducerBacklogStatus.ProducerBacklogStatus(long BufferedBytes, ulong BufferCapacityBytes, int UnsealedBatchCount, long QueuedBatchCount, long InFlightBatchCount, long BufferPressureEventCount) -> void
 Dekaf.Diagnostics.ProducerBacklogStatus.BufferUtilization.get -> double
 Dekaf.Diagnostics.IKafkaClientIdentity.ClusterId.get -> string?
+Dekaf.Diagnostics.IKafkaClientInstanceIdentity
+Dekaf.Diagnostics.IKafkaClientInstanceIdentity.ClientInstanceId.get -> System.Guid?
 Dekaf.Diagnostics.ProducerBacklogStatus.IsAtCapacity.get -> bool
 Dekaf.Diagnostics.BrokerConnectionStatus.BrokerId.get -> int
 Dekaf.Diagnostics.BrokerConnectionStatus.Host.get -> string!
@@ -191,6 +194,8 @@ Dekaf.Diagnostics.KafkaClientStatus.Role.init -> void
 Dekaf.Diagnostics.KafkaClientStatus.ClusterId.init -> void
 Dekaf.Diagnostics.KafkaClientStatus.MetadataLastRefreshedAtUtc.get -> System.DateTimeOffset?
 Dekaf.Diagnostics.KafkaClientStatus.ClusterId.get -> string?
+Dekaf.Diagnostics.KafkaClientStatus.ClientInstanceId.get -> System.Guid?
+Dekaf.Diagnostics.KafkaClientStatus.ClientInstanceId.init -> void
 Dekaf.Diagnostics.KafkaClientStatus.IsStopped.get -> bool
 Dekaf.Diagnostics.KafkaClientStatus.MetadataLastRefreshedAtUtc.init -> void
 Dekaf.Diagnostics.KafkaClientStatus.Brokers.get -> System.Collections.Generic.IReadOnlyList<Dekaf.Diagnostics.BrokerConnectionStatus!>!
@@ -202,8 +207,10 @@ Dekaf.Diagnostics.KafkaClientStatus.ConsumerGroup.get -> Dekaf.Diagnostics.Consu
 Dekaf.Diagnostics.KafkaClientStatus.ConsumerGroup.init -> void
 Dekaf.Diagnostics.IKafkaClientStatusProvider.GetStatus() -> Dekaf.Diagnostics.KafkaClientStatus!
 Dekaf.Consumer.KafkaConsumer<TKey, TValue>.ClusterId.get -> string?
+Dekaf.Consumer.KafkaConsumer<TKey, TValue>.ClientInstanceId.get -> System.Guid?
 Dekaf.Consumer.KafkaConsumer<TKey, TValue>.GetStatus() -> Dekaf.Diagnostics.KafkaClientStatus!
 Dekaf.Producer.KafkaProducer<TKey, TValue>.ClusterId.get -> string?
+Dekaf.Producer.KafkaProducer<TKey, TValue>.ClientInstanceId.get -> System.Guid?
 Dekaf.Producer.KafkaProducer<TKey, TValue>.GetStatus() -> Dekaf.Diagnostics.KafkaClientStatus!
 Dekaf.Serialization.IAsyncDeserializerPreparer<T> (forwarded, contained in Dekaf.Abstractions)
 Dekaf.Serialization.IAsyncDeserializerPreparer<T>.TryDeserialize(System.ReadOnlyMemory<byte> data, Dekaf.Serialization.SerializationContext context, out T value) -> bool (forwarded, contained in Dekaf.Abstractions)

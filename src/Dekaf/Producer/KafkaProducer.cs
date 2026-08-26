@@ -28,6 +28,7 @@ namespace Dekaf.Producer;
 public sealed partial class KafkaProducer<TKey, TValue> :
     IKafkaProducer<TKey, TValue>,
     IProducerMetadata,
+    IKafkaClientInstanceIdentity,
     IKafkaClientStatusProvider,
     IProducerDiagnostics,
     IProducerFastPath<TKey, TValue>,
@@ -106,11 +107,15 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     public string? ClusterId => _metadataManager.ClusterId;
 
     /// <inheritdoc />
+    public Guid? ClientInstanceId => _telemetryManager.ClientInstanceId;
+
+    /// <inheritdoc />
     public KafkaClientStatus GetStatus() => KafkaClientStatusFactory.Capture(
         KafkaClientRole.Producer,
         _connectionPool,
         _metadataManager,
         Volatile.Read(ref _disposed) != 0,
+        clientInstanceId: ClientInstanceId,
         producer: new ProducerBacklogStatus(
             _accumulator.BufferedBytes,
             _accumulator.MaxBufferMemory,
