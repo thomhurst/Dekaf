@@ -336,6 +336,20 @@ public sealed class ProtobufInlineRuleValidatorTests
     }
 
     [Test]
+    public async Task Validate_FloatingValuesUseDoubleLiteralSemantics()
+    {
+        var decimalFraction = EvaluateTypedRule(
+            "this == 0.1 && this == 1e-1 && this != 0.10000000000000002",
+            ValidationCelValue.FromFloating(0.1d));
+        var subnormal = EvaluateTypedRule(
+            "this == 5e-324 && this > 0",
+            ValidationCelValue.FromFloating(double.Epsilon));
+
+        await Assert.That(decimalFraction.Boolean).IsTrue();
+        await Assert.That(subnormal.Boolean).IsTrue();
+    }
+
+    [Test]
     public async Task Validate_NaNComparisonsAreAlwaysFalse()
     {
         var result = EvaluateTypedRule(

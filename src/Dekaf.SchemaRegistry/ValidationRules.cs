@@ -1055,7 +1055,8 @@ internal readonly record struct ValidationCelValue(
     int SizeIndex = -1,
     bool IsUtf8Literal = false,
     double Floating = 0,
-    bool IsFloating = false)
+    bool IsFloating = false,
+    bool IsFloatingLiteral = false)
 {
     internal static ValidationCelValue Missing { get; } = new(ValidationCelValueKind.Missing, default, false, 0, null, default);
     internal static ValidationCelValue Null { get; } = new(ValidationCelValueKind.Null, default, false, 0, null, default);
@@ -1086,7 +1087,9 @@ internal readonly record struct ValidationCelValue(
             Number = !value.IsFloating && value.Boolean
                 ? value.Number == decimal.MinValue ? decimal.MaxValue : -value.Number
                 : value.Number,
-            Floating = value.IsFloating ? -value.Floating : value.Floating,
+            Floating = value.IsFloating || value.IsFloatingLiteral
+                ? -value.Floating
+                : value.Floating,
             NumberNegated = (!value.Json.IsEmpty || !value.Utf8Literal.IsEmpty) &&
                 !value.NumberNegated
         };
@@ -1103,13 +1106,24 @@ internal readonly record struct ValidationCelValue(
             NumberStyles.Float,
             CultureInfo.InvariantCulture,
             out var number);
+        var floating = 0d;
+        var isFloatingLiteral = (text.Contains('.') ||
+                                 text.Contains('e') ||
+                                 text.Contains('E')) &&
+            double.TryParse(
+                text,
+                NumberStyles.Float,
+                CultureInfo.InvariantCulture,
+                out floating);
         return new ValidationCelValue(
             ValidationCelValueKind.Number,
             default,
             hasDecimal,
             number,
             null,
-            utf8);
+            utf8,
+            Floating: floating,
+            IsFloatingLiteral: isFloatingLiteral);
     }
 
     private static bool IsNumberLiteral(ReadOnlySpan<char> text)
@@ -1736,7 +1750,9 @@ internal sealed class ValidationCelBinaryNode(
             : ValidationCelValue.FromNumber(RequireNumber(left) - RequireNumber(right));
 
     private static double GetFloatingNumber(ValidationCelValue value) =>
-        value.IsFloating ? value.Floating : (double)RequireNumber(value);
+        value.IsFloating || value.IsFloatingLiteral
+            ? value.Floating
+            : (double)RequireNumber(value);
 
     private static bool HasNaN(ValidationCelValue left, ValidationCelValue right) =>
         left.IsFloating && double.IsNaN(left.Floating) ||
@@ -1746,8 +1762,11 @@ internal sealed class ValidationCelBinaryNode(
     {
         if (left.IsFloating || right.IsFloating)
         {
-            if (left.IsFloating && right.IsFloating)
+            if (left.IsFloating && (right.IsFloating || right.IsFloatingLiteral) ||
+                right.IsFloating && left.IsFloatingLiteral)
+            {
                 return left.Floating.CompareTo(right.Floating);
+            }
             return left.IsFloating
                 ? CompareFloatingToExact(left.Floating, right)
                 : -CompareFloatingToExact(right.Floating, left);

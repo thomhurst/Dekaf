@@ -29,6 +29,7 @@ public class ProtobufInlineValidationBenchmarks
     private Schema _serializedSchema = null!;
     private ProtobufSchemaRegistrySerializer<ValidationEnvelope> _serializer = null!;
     private ProtobufSchemaRegistrySerializer<ValidationEnvelope> _unvalidatedSerializer = null!;
+    private CompiledValidationRule _floatingLiteralRule = null!;
     private CompiledValidationRule _mixedNumericRule = null!;
     private ValidationEnvelope _message = null!;
     private byte[] _payload = null!;
@@ -90,6 +91,11 @@ public class ProtobufInlineValidationBenchmarks
         _unvalidatedSerializer = new ProtobufSchemaRegistrySerializer<ValidationEnvelope>(
             new BenchmarkSchemaRegistryClient(),
             new ProtobufSerializerConfig { UseSchemaReferences = false });
+        _floatingLiteralRule = CompiledValidationRule.Compile(
+            new ValidationRule { Name = "floating-literal", Expr = "this == 0.1" },
+            new Dictionary<string, int>(StringComparer.Ordinal),
+            [],
+            []);
         _mixedNumericRule = CompiledValidationRule.Compile(
             new ValidationRule { Name = "mixed-numeric", Expr = "this > 9007199254740992.0" },
             new Dictionary<string, int>(StringComparer.Ordinal),
@@ -188,6 +194,15 @@ public class ProtobufInlineValidationBenchmarks
             _serializedSchema,
             failFast: false);
     }
+
+    [Benchmark]
+    public bool ValidateFloatingLiteralComparison() => _floatingLiteralRule.Evaluate(
+            ValidationCelValue.FromFloating(0.1d),
+            nowUnixMilliseconds: 0,
+            default,
+            default,
+            equalityGeneration: 0)
+        .Boolean;
 
     [Benchmark]
     public bool ValidateMixedNumericComparison() => _mixedNumericRule.Evaluate(
