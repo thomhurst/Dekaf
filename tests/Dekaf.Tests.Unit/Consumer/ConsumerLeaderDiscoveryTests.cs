@@ -982,7 +982,9 @@ public sealed class ConsumerLeaderDiscoveryTests
             .GetMethod("FetchFromBrokerAsync", BindingFlags.NonPublic | BindingFlags.Instance)
             ?? throw new InvalidOperationException("FetchFromBrokerAsync method not found");
 
-        var result = method.Invoke(consumer, [brokerId, partitions, fetchBufferEpoch, CancellationToken.None]);
+        var result = method.Invoke(
+            consumer,
+            [brokerId, partitions, fetchBufferEpoch, CancellationToken.None]);
         if (result is not ValueTask<List<PendingFetchData>?> valueTask)
             throw new InvalidOperationException("FetchFromBrokerAsync returned unexpected type");
 

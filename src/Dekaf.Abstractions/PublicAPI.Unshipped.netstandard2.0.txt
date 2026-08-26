@@ -40,6 +40,9 @@ Dekaf.Consumer.IConsumerCommitConfiguration.HasConsumerGroup.get -> bool
 Dekaf.Consumer.IConsumerCommitConfiguration.OffsetCommitMode.get -> Dekaf.Consumer.OffsetCommitMode
 Dekaf.Consumer.IConsumerCommittedOffsets
 Dekaf.Consumer.IConsumerCommittedOffsets.GetCommittedOffsetsAsync(System.Collections.Generic.IReadOnlyCollection<Dekaf.TopicPartition>! partitions, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<Dekaf.TopicPartition, Dekaf.TopicPartitionOffset>!>
+Dekaf.Consumer.IConsumerLag
+Dekaf.Consumer.IConsumerLag.GetCurrentLag(Dekaf.TopicPartition partition) -> long?
+Dekaf.Consumer.IConsumerLag.QueryCurrentLagAsync(Dekaf.TopicPartition partition, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<long?>
 Dekaf.Consumer.IConsumerOffsets
 Dekaf.Consumer.IConsumerOffsets.GetOffsetsForTimesAsync(System.Collections.Generic.IEnumerable<Dekaf.TopicPartitionTimestamp>! timestampsToSearch, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<Dekaf.TopicPartition, long>!>
 Dekaf.Consumer.IConsumerOffsets.GetWatermarkOffsets(Dekaf.TopicPartition topicPartition) -> Dekaf.WatermarkOffsets?

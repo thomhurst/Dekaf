@@ -232,6 +232,41 @@ public class WatermarkOffsetsTests(KafkaTestContainer kafka) : KafkaIntegrationT
     }
 
     [Test]
+    [Timeout(60_000)]
+    public async Task AssignedQuery_RetainsWatermarksAfterUnassignAndInvalidatesOnReassign(
+        CancellationToken testTimeout)
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync();
+        var partition = new TopicPartition(topic, 0);
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("retained-watermark-producer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync(testTimeout);
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = topic,
+            Key = "key",
+            Value = "value"
+        }, testTimeout);
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("retained-watermark-consumer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync(testTimeout);
+        consumer.Assign(partition);
+
+        var queried = await consumer.QueryWatermarkOffsetsAsync(partition, testTimeout);
+        consumer.Unassign();
+
+        await Assert.That(consumer.GetWatermarkOffsets(partition)).IsEqualTo(queried);
+
+        consumer.Assign(partition);
+
+        await Assert.That(consumer.GetWatermarkOffsets(partition)).IsNull();
+    }
+
+    [Test]
     public async Task GetWatermarkOffsets_MultiplePartitions_ReturnsSeparateValues()
     {
         // Arrange - create topic with multiple partitions
@@ -286,5 +321,60 @@ public class WatermarkOffsetsTests(KafkaTestContainer kafka) : KafkaIntegrationT
 
         await Assert.That(watermarks2.Low).IsEqualTo(0);
         await Assert.That(watermarks2.High).IsEqualTo(0); // no messages
+    }
+
+    [Test]
+    [Timeout(60_000)]
+    public async Task CurrentLag_ReportsBehindCaughtUpAndExplicitRefresh(CancellationToken testTimeout)
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync();
+        var partition = new TopicPartition(topic, 0);
+
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("lag-test-producer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync(testTimeout);
+
+        for (var i = 0; i < 5; i++)
+        {
+            await producer.ProduceAsync(new ProducerMessage<string, string>
+            {
+                Topic = topic,
+                Key = $"key-{i}",
+                Value = $"value-{i}"
+            }, testTimeout);
+        }
+
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("lag-test-consumer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync(testTimeout);
+        consumer.IncrementalAssign([new TopicPartitionOffset(topic, 0, 0)]);
+
+        await Assert.That(await consumer.QueryCurrentLagAsync(partition, testTimeout)).IsEqualTo(5);
+
+        for (var i = 0; i < 5; i++)
+        {
+            var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), testTimeout);
+            await Assert.That(result).IsNotNull();
+        }
+
+        await Assert.That(consumer.GetCurrentLag(partition)).IsEqualTo(0);
+
+        for (var i = 5; i < 7; i++)
+        {
+            await producer.ProduceAsync(new ProducerMessage<string, string>
+            {
+                Topic = topic,
+                Key = $"key-{i}",
+                Value = $"value-{i}"
+            }, testTimeout);
+        }
+
+        var cachedLag = consumer.GetCurrentLag(partition);
+        await Assert.That(cachedLag is >= 0 and <= 2).IsTrue();
+        await Assert.That(await consumer.QueryCurrentLagAsync(partition, testTimeout)).IsEqualTo(2);
     }
 }

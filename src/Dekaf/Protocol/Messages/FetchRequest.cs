@@ -7,11 +7,24 @@ namespace Dekaf.Protocol.Messages;
 /// Fetch request (API key 1).
 /// Fetches records from topic partitions.
 /// </summary>
-public sealed class FetchRequest : IKafkaRequest<FetchResponse>
+public sealed class FetchRequest : IKafkaRequest<FetchResponse>, IRequestWriteSequenceTarget
 {
     // Pool to reuse FetchRequest instances across fetch cycles.
     // One instance per fetch cycle per broker, so a small pool suffices.
     private static readonly FetchRequestPool s_pool = new();
+    private readonly Action _requestWriteStarted;
+    private IRequestWriteSequenceSource? _writeSequenceSource;
+    private long _writeSequence;
+
+    public FetchRequest() => _requestWriteStarted = OnRequestWriteStarted;
+
+    IRequestWriteSequenceSource? IRequestWriteSequenceTarget.WriteSequenceSource
+    {
+        set => _writeSequenceSource = value;
+    }
+
+    Action IRequestWriteSequenceTarget.RequestWriteStarted => _requestWriteStarted;
+    long IRequestWriteSequenceTarget.WriteSequence => _writeSequence;
 
     public static ApiKey ApiKey => ApiKey.Fetch;
     public static short LowestSupportedVersion => 4;
@@ -115,8 +128,14 @@ public sealed class FetchRequest : IKafkaRequest<FetchResponse>
             item.Topics = Array.Empty<FetchRequestTopic>();
             item.ForgottenTopicsData = null;
             item.RackId = null;
+            item._writeSequenceSource = null;
+            item._writeSequence = 0;
         }
     }
+
+    private void OnRequestWriteStarted() =>
+        _writeSequence = _writeSequenceSource?.NextRequestWriteSequence()
+            ?? throw new InvalidOperationException("Request write sequence source is not configured.");
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {

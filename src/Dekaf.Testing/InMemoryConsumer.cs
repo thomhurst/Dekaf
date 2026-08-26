@@ -16,6 +16,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     IBoundedKafkaConsumer<TKey, TValue>,
     IConsumerPositions,
     IConsumerCommittedOffsets,
+    IConsumerLag,
     IConsumerPartitions,
     IConsumerOffsets,
     IConsumerBatchOffsetStore,
@@ -111,6 +112,15 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     private readonly bool _keyUsesRecordHeaders;
     private readonly bool _valueUsesRecordHeaders;
     private readonly Headers? _asyncDeserializationHeaders;
+
+    [ThreadStatic]
+    private static Action? _afterLagWatermarkReadForTest;
+
+    internal static Action? AfterLagWatermarkReadForTest
+    {
+        get => _afterLagWatermarkReadForTest;
+        set => _afterLagWatermarkReadForTest = value;
+    }
 
     public InMemoryConsumer(InMemoryKafkaCluster cluster)
         : this(
@@ -1485,6 +1495,41 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         return _cluster.GetWatermarks(topicPartition);
     }
 
+    public long? GetCurrentLag(TopicPartition partition)
+    {
+        ThrowIfDisposed();
+
+        lock (_gate)
+        {
+            var assignment = GetCurrentAssignmentUnderLock(out var consumerGroupGeneration);
+            if (!assignment.Contains(partition)
+                || !_positions.TryGetValue(partition, out var position)
+                || position < 0)
+            {
+                return null;
+            }
+
+            var watermarks = _cluster.GetWatermarks(partition, _options.IsolationLevel);
+            AfterLagWatermarkReadForTest?.Invoke();
+            if (consumerGroupGeneration >= 0
+                && _groupId is not null
+                && _cluster.GetConsumerGroupGeneration(_groupId) != consumerGroupGeneration)
+            {
+                return null;
+            }
+
+            return position >= watermarks.High ? 0 : watermarks.High - position;
+        }
+    }
+
+    public ValueTask<long?> QueryCurrentLagAsync(
+        TopicPartition partition,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return ValueTask.FromResult(GetCurrentLag(partition));
+    }
+
     public ValueTask<WatermarkOffsets> QueryWatermarkOffsetsAsync(
         TopicPartition topicPartition,
         CancellationToken cancellationToken = default)
@@ -1841,8 +1886,18 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                         position,
                         _options.IsolationLevel,
                         _borrowStoredRecords,
-                        out var record))
+                        out var record,
+                        out _,
+                        out var nextReadableOffset))
+                {
+                    if (nextReadableOffset > position)
+                    {
+                        _positions[partition] = nextReadableOffset;
+                        if (_options.EnableAutoOffsetStore)
+                        StoreOffsetUnderLock(partition, nextReadableOffset);
+                    }
                     continue;
+                }
 
                 selectedPartition = partition;
                 selectedRecord = record;
