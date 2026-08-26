@@ -30,17 +30,36 @@ public class KafkaContainerDefault : KafkaTestContainer
     /// </summary>
     internal static int ParseVersion(string tag)
     {
-        var parts = tag.Split('.');
-        if (parts.Length != 3
-            || !int.TryParse(parts[0], out var major)
-            || !int.TryParse(parts[1], out var minor)
-            || !int.TryParse(parts[2], out var patch))
-        {
-            throw new InvalidOperationException(
-                $"KAFKA_TEST_IMAGE_TAG must be a three-part version like '4.2.0', but was '{tag}'.");
-        }
+        var (major, minor, patch) = ParseVersionParts(tag);
 
         return major * 100 + minor * 10 + patch;
+    }
+
+    internal static bool SupportsVersion(string tag, int supportedKafkaVersion)
+    {
+        var (major, minor, patch) = ParseVersionParts(tag);
+        var supportedMajor = supportedKafkaVersion / 100;
+        var supportedMinor = supportedKafkaVersion / 10 % 10;
+        var supportedPatch = supportedKafkaVersion % 10;
+
+        return major > supportedMajor
+            || major == supportedMajor && minor > supportedMinor
+            || major == supportedMajor && minor == supportedMinor && patch >= supportedPatch;
+    }
+
+    private static (int Major, int Minor, int Patch) ParseVersionParts(string tag)
+    {
+        var parts = tag.Split('.');
+        if (parts.Length == 3
+            && int.TryParse(parts[0], out var major)
+            && int.TryParse(parts[1], out var minor)
+            && int.TryParse(parts[2], out var patch))
+        {
+            return (major, minor, patch);
+        }
+
+        throw new InvalidOperationException(
+            $"KAFKA_TEST_IMAGE_TAG must be a three-part version like '4.2.0', but was '{tag}'.");
     }
 
     // Testcontainers.Kafka generates a startup script that sets
@@ -57,7 +76,7 @@ public class KafkaContainerDefault : KafkaTestContainer
 
     protected override KafkaBuilder ConfigureBuilder(KafkaBuilder builder)
     {
-        if (Version < 420)
+        if (!SupportsVersion(Tag, 420))
         {
             return builder;
         }
@@ -74,6 +93,13 @@ public class KafkaContainerDefault : KafkaTestContainer
             .WithEnvironment("KAFKA_GROUP_SHARE_ENABLE", "true")
             .WithEnvironment("KAFKA_GROUP_COORDINATOR_REBALANCE_PROTOCOLS", "classic,consumer,share,streams")
             .WithEnvironment("KAFKA_STREAMS_VERSION", "1")
+            // Keep Streams-group lifecycle tests deterministic without fixed-delay waits.
+            .WithEnvironment("KAFKA_GROUP_STREAMS_INITIAL_REBALANCE_DELAY_MS", "0")
+            .WithEnvironment("KAFKA_GROUP_STREAMS_ASSIGNMENT_INTERVAL_MS", "0")
+            .WithEnvironment("KAFKA_GROUP_STREAMS_HEARTBEAT_INTERVAL_MS", "500")
+            .WithEnvironment("KAFKA_GROUP_STREAMS_MIN_HEARTBEAT_INTERVAL_MS", "500")
+            .WithEnvironment("KAFKA_GROUP_STREAMS_SESSION_TIMEOUT_MS", "2000")
+            .WithEnvironment("KAFKA_GROUP_STREAMS_MIN_SESSION_TIMEOUT_MS", "1000")
             .WithEnvironment("KAFKA_GROUP_SHARE_RECORD_LOCK_DURATION_MS", "15000")
             .WithEnvironment("KAFKA_GROUP_SHARE_MIN_RECORD_LOCK_DURATION_MS", "5000")
             .WithEnvironment("KAFKA_GROUP_SHARE_MAX_RECORD_LOCK_DURATION_MS", "60000")
