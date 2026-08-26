@@ -765,19 +765,21 @@ public sealed class ConsumerPauseResumeCacheTests
     }
 
     [Test]
-    public async Task ConsumeAsync_RevocationDuringPrefetchWait_SuppressesRevokedPartition()
+    [Timeout(120_000)]
+    public async Task ConsumeAsync_RevocationDuringPrefetchWait_SuppressesRevokedPartition(
+        CancellationToken cancellationToken)
     {
         var revokedPartition = new TopicPartition(PrefetchedTopic, 0);
         var activePartition = new TopicPartition(PrefetchedTopic, 1);
-        using var waitEntered = new ManualResetEventSlim();
+        var waitEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         using var releaseWait = new ManualResetEventSlim();
         var prefetchBuffer = new MpscFetchBuffer(
             4,
             afterProducerWaiterCountIncrementedForTesting: null,
             beforeConsumerWaitSpinForTesting: () =>
             {
-                waitEntered.Set();
-                releaseWait.Wait();
+                waitEntered.TrySetResult();
+                releaseWait.Wait(cancellationToken);
             });
         var consumer = new KafkaConsumer<string, string>(
             new ConsumerOptions
@@ -807,20 +809,21 @@ public sealed class ConsumerPauseResumeCacheTests
 
         try
         {
-            records = consumer.ConsumeAsync(consumeCancellation.Token).GetAsyncEnumerator();
+            records = consumer.ConsumeAsync(consumeCancellation.Token)
+                .GetAsyncEnumerator(CancellationToken.None);
             moveNext = StartDedicatedMoveNext(records);
             var stagePendingClear = typeof(KafkaConsumer<string, string>).GetMethod(
                 "StagePendingFetchClear",
                 BindingFlags.Instance | BindingFlags.NonPublic)
                 ?? throw new InvalidOperationException("StagePendingFetchClear method not found");
 
-            await Assert.That(waitEntered.Wait(TimeSpan.FromSeconds(5))).IsTrue();
+            await waitEntered.Task.WaitAsync(cancellationToken);
             stagePendingClear.Invoke(consumer, [revokedPartition]);
             await Assert.That(prefetchBuffer.TryWrite(CreatePendingFetch(revokedPartition, 10, 1))).IsTrue();
             await Assert.That(prefetchBuffer.TryWrite(CreatePendingFetch(activePartition, 20, 1))).IsTrue();
             releaseWait.Set();
 
-            await Assert.That(await moveNext.WaitAsync(TimeSpan.FromSeconds(5))).IsTrue();
+            await Assert.That(await moveNext.WaitAsync(cancellationToken)).IsTrue();
             await Assert.That(records.Current.Topic).IsEqualTo(activePartition.Topic);
             await Assert.That(records.Current.Partition).IsEqualTo(activePartition.Partition);
             await Assert.That(records.Current.Offset).IsEqualTo(20);
