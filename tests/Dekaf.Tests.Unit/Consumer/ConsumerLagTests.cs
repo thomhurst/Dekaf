@@ -115,6 +115,18 @@ public sealed class ConsumerLagTests
     }
 
     [Test]
+    public async Task UnassignedWatermarks_OlderQueryCannotOverwriteNewerSnapshot()
+    {
+        await using var consumer = CreateConsumer();
+
+        SetQueriedCachedWatermarks(consumer, Partition, new WatermarkOffsets(10, 50), updateSequence: 2);
+        SetQueriedCachedWatermarks(consumer, Partition, new WatermarkOffsets(0, 25), updateSequence: 1);
+
+        await Assert.That(consumer.GetWatermarkOffsets(Partition))
+            .IsEqualTo(new WatermarkOffsets(10, 50));
+    }
+
+    [Test]
     public async Task UnassignAndAssign_PublicApisClearPartitionState()
     {
         await using var consumer = CreateConsumer();

@@ -8766,7 +8766,21 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     high,
                     lagEndOffset,
                     watermarkUpdateSequence);
-                _watermarks[partition] = retainedEntry;
+                if (_watermarks.TryGetValue(partition, out var existingEntry))
+                {
+                    if (!existingEntry.TryReplaceWithNewerSnapshot(
+                            _watermarks,
+                            partition,
+                            retainedEntry))
+                    {
+                        return;
+                    }
+                }
+                else
+                {
+                    _watermarks[partition] = retainedEntry;
+                }
+
                 RetainUnassignedWatermarkSnapshot(partition, retainedEntry, _assignmentSnapshot);
                 return;
             }
@@ -11155,6 +11169,30 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             Volatile.Write(ref _low, low);
             Volatile.Write(ref _high, high);
             _watermarkOffsetsUpdateSequenceLow = (int)watermarkUpdateSequence;
+        }
+
+        public bool TryReplaceWithNewerSnapshot(
+            ConcurrentDictionary<TopicPartition, WatermarkCacheEntry> watermarks,
+            TopicPartition partition,
+            WatermarkCacheEntry replacement)
+        {
+            var spinner = new SpinWait();
+            while (true)
+            {
+                var version = Volatile.Read(ref _version);
+                if ((version & 1) != 0
+                    || Interlocked.CompareExchange(ref _version, version + 1, version) != version)
+                {
+                    spinner.SpinOnce();
+                    continue;
+                }
+
+                var latestUpdateSequence = _watermarkUpdateState & long.MaxValue;
+                var replaced = replacement._watermarkUpdateState >= latestUpdateSequence
+                    && watermarks.TryUpdate(partition, replacement, this);
+                Volatile.Write(ref _version, version + 2);
+                return replaced;
+            }
         }
 
         public WatermarkOffsets? ReadWatermarks()
