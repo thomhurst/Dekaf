@@ -8481,15 +8481,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 return null;
             }
 
-            var lowWatermark = _watermarks.TryGetValue(partition, out var watermarks)
-                ? watermarks.ReadWatermarks().Low
-                : 0;
-            UpdateCachedWatermarks(
-                partition,
-                lowWatermark,
-                highWatermark,
-                highWatermark,
-                Volatile.Read(ref _assignmentEnsureVersion));
+            UpdateCachedLagEndOffset(partition, highWatermark);
             return CalculateLag(position, highWatermark);
         }
     }
@@ -10833,6 +10825,19 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         UpdateExistingCachedWatermarks(entry, low, high, lagEndOffset, assignmentVersion);
     }
 
+    // Called only after QueryCurrentLagCoreAsync revalidates assignment under
+    // _snapshotStateGate. A lag-only query must not fabricate public watermarks.
+    private void UpdateCachedLagEndOffset(TopicPartition partition, long lagEndOffset)
+    {
+        if (_watermarks.TryGetValue(partition, out var entry))
+        {
+            entry.UpdateLagEndOffset(lagEndOffset);
+            return;
+        }
+
+        _watermarks.TryAdd(partition, new WatermarkCacheEntry(lagEndOffset));
+    }
+
     [MethodImpl(MethodImplOptions.NoInlining)]
     private void CreateOrUpdateCachedWatermarksSlow(
         TopicPartition partition,
@@ -10884,12 +10889,21 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     private sealed class WatermarkCacheEntry
     {
+        private const long UnknownWatermarkOffset = -1;
+
         // Allocate once per partition, then update in place. The version is a seqlock:
         // odd while a writer owns the entry, even when readers can take a coherent snapshot.
         private int _version;
         private long _low;
         private long _high;
         private long _lagEndOffset;
+
+        public WatermarkCacheEntry(long lagEndOffset)
+        {
+            _low = UnknownWatermarkOffset;
+            _high = UnknownWatermarkOffset;
+            _lagEndOffset = lagEndOffset;
+        }
 
         public WatermarkCacheEntry(long low, long high, long lagEndOffset)
         {
@@ -10919,7 +10933,26 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             }
         }
 
-        public WatermarkOffsets ReadWatermarks()
+        public void UpdateLagEndOffset(long lagEndOffset)
+        {
+            var spinner = new SpinWait();
+            while (true)
+            {
+                var version = Volatile.Read(ref _version);
+                if ((version & 1) != 0
+                    || Interlocked.CompareExchange(ref _version, version + 1, version) != version)
+                {
+                    spinner.SpinOnce();
+                    continue;
+                }
+
+                Volatile.Write(ref _lagEndOffset, lagEndOffset);
+                Volatile.Write(ref _version, version + 2);
+                return;
+            }
+        }
+
+        public WatermarkOffsets? ReadWatermarks()
         {
             var spinner = new SpinWait();
             while (true)
@@ -10934,7 +10967,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 var low = Volatile.Read(ref _low);
                 var high = Volatile.Read(ref _high);
                 if (version == Volatile.Read(ref _version))
-                    return new WatermarkOffsets(low, high);
+                {
+                    return low >= 0 && high >= 0
+                        ? new WatermarkOffsets(low, high)
+                        : null;
+                }
 
                 spinner.SpinOnce();
             }

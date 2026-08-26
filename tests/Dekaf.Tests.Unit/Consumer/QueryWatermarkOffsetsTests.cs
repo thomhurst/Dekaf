@@ -96,9 +96,15 @@ public sealed class QueryWatermarkOffsetsTests
     public async Task QueryCurrentLagAsync_RefreshesEndOffsetAndUsesLatestPosition()
     {
         var connectionPool = Substitute.For<IConnectionPool>();
-        var connection = new LeaseTrackingConnection
+        var latestOffset = 42L;
+        var connection = new LeaseTrackingConnection();
+        connection.SendHandler = request =>
         {
-            SendHandler = request => ValueTask.FromResult(CreateListOffsetsResponse(request))
+            var timestamp = request.Topics[0].Partitions[0].Timestamp;
+            var offset = timestamp == LatestOffsetTimestamp
+                ? Volatile.Read(ref latestOffset)
+                : (long?)null;
+            return ValueTask.FromResult(CreateListOffsetsResponse(request, offset));
         };
         connectionPool.GetConnectionByIndexAsync(0, 1, Arg.Any<CancellationToken>())
             .Returns(ValueTask.FromResult<IKafkaConnection>(connection));
@@ -127,8 +133,20 @@ public sealed class QueryWatermarkOffsetsTests
 
         await Assert.That(lag).IsEqualTo(10);
         await Assert.That(consumer.GetCurrentLag(new TopicPartition(Topic, Partition))).IsEqualTo(10);
+        await Assert.That(consumer.GetWatermarkOffsets(new TopicPartition(Topic, Partition))).IsNull();
         await Assert.That(connection.LeaseAcquisitionCount).IsEqualTo(1);
         await Assert.That(connection.SendCount).IsEqualTo(1);
+
+        var watermarks = await consumer.QueryWatermarkOffsetsAsync(new TopicPartition(Topic, Partition));
+        await Assert.That(watermarks).IsEqualTo(new WatermarkOffsets(10, 42));
+        await Assert.That(connection.SendCount).IsEqualTo(3);
+
+        Volatile.Write(ref latestOffset, 50);
+        await Assert.That(await consumer.QueryCurrentLagAsync(new TopicPartition(Topic, Partition))).IsEqualTo(18);
+        await Assert.That(consumer.GetCurrentLag(new TopicPartition(Topic, Partition))).IsEqualTo(18);
+        await Assert.That(consumer.GetWatermarkOffsets(new TopicPartition(Topic, Partition)))
+            .IsEqualTo(new WatermarkOffsets(10, 42));
+        await Assert.That(connection.SendCount).IsEqualTo(4);
     }
 
     [Test]
