@@ -3451,6 +3451,18 @@ internal ref struct ProtobufSemanticMapState
                             value = new ProtobufSemanticFieldState(entryField, true);
                         }
                     }
+                    if (!value.IsSet && valueDescriptor.FieldType == FieldType.Message)
+                    {
+                        value = new ProtobufSemanticFieldState(
+                            new ProtobufValidationWireField(
+                                valueDescriptor.FieldNumber,
+                                ProtobufWireType.LengthDelimited,
+                                default,
+                                0,
+                                0,
+                                0),
+                            true);
+                    }
                     AddOrReplace(key, value, rentedValuePayload);
                     rentedValuePayload = null;
                 }

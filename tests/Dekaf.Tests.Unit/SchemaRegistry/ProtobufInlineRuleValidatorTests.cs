@@ -641,6 +641,26 @@ public sealed class ProtobufInlineRuleValidatorTests
     }
 
     [Test]
+    public async Task Validate_MapMessageEqualityTreatsAbsentValueAsEmptyMessage()
+    {
+        var left = new ArrayBufferWriter<byte>();
+        WriteLengthDelimited(left, fieldNumber: 2, CreateMessageMapEntry("child"));
+        var right = new ArrayBufferWriter<byte>();
+        WriteLengthDelimited(right, fieldNumber: 2,
+            CreateMessageMapEntry("child", ReadOnlyMemory<byte>.Empty));
+        var payload = CreateMessageEqualityPayload(left.WrittenSpan, right.WrittenSpan);
+        var validator = new ProtobufInlineRuleValidator(ValidationMapEqualityEnvelope.Descriptor);
+
+        validator.Validate(payload, schemaId: 17, failFast: false);
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var index = 0; index < 100; index++)
+            validator.Validate(payload, schemaId: 17, failFast: false);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        await Assert.That(allocated).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task Validate_MessageEqualityRejectsExcessiveRecursion()
     {
         byte[] left = [8, 1];
