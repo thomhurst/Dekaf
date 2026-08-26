@@ -206,7 +206,8 @@ internal sealed class CompiledValidationRule
         Dictionary<string, int> memberIndexes,
         List<byte[][]> memberPaths,
         HashSet<int> usedMemberIndexes,
-        int equalityIndexOffset = 0)
+        int equalityIndexOffset = 0,
+        Dictionary<ValidationCelEqualityOperands, int>? equalityIndexes = null)
     {
         ArgumentNullException.ThrowIfNull(rule);
         if (string.IsNullOrWhiteSpace(rule.Expr))
@@ -224,7 +225,8 @@ internal sealed class CompiledValidationRule
                 memberIndexes,
                 memberPaths,
                 usedMemberIndexes,
-                equalityIndexOffset);
+                equalityIndexOffset,
+                equalityIndexes);
             var expression = parser.Parse();
             return new CompiledValidationRule(
                 rule,
@@ -532,6 +534,10 @@ internal struct ValidationCelEqualitySlot
 
 internal readonly record struct ValidationCelEqualityPair(
     int EqualityIndex,
+    int LeftValueIndex,
+    int RightValueIndex);
+
+internal readonly record struct ValidationCelEqualityOperands(
     int LeftValueIndex,
     int RightValueIndex);
 
@@ -2667,13 +2673,15 @@ internal sealed class ValidationCelParser
         Dictionary<string, int> memberIndexes,
         List<byte[][]> memberPaths,
         HashSet<int> usedMemberIndexes,
-        int equalityIndexOffset)
+        int equalityIndexOffset,
+        Dictionary<ValidationCelEqualityOperands, int>? equalityIndexes)
     {
         _expression = expression;
         _memberIndexes = memberIndexes;
         _memberPaths = memberPaths;
         _usedMemberIndexes = usedMemberIndexes;
         _equalityIndexOffset = equalityIndexOffset;
+        _equalityIndexes = equalityIndexes;
         _current = ReadNextToken();
     }
 
@@ -2689,6 +2697,7 @@ internal sealed class ValidationCelParser
 
     private readonly List<ValidationCelEqualityPair> _equalityPairs = [];
     private readonly int _equalityIndexOffset;
+    private readonly Dictionary<ValidationCelEqualityOperands, int>? _equalityIndexes;
 
     private ValidationCelNode ParseConditional()
     {
@@ -2723,20 +2732,34 @@ internal sealed class ValidationCelParser
         {
             var operation = Take().Kind;
             var right = ParseComparison();
-            var equalityIndex = left is ValidationCelThisNode && right is ValidationCelThisNode
-                ? _equalityIndexOffset + _equalityPairs.Count
-                : -1;
-            var equality = new ValidationCelBinaryNode(operation, left, right, equalityIndex);
-            if (equalityIndex >= 0)
+            var equalityIndex = -1;
+            if (left is ValidationCelThisNode leftValue && right is ValidationCelThisNode rightValue)
             {
+                equalityIndex = GetEqualityIndex(leftValue.ValueIndex, rightValue.ValueIndex);
                 _equalityPairs.Add(new ValidationCelEqualityPair(
                     equalityIndex,
-                    ((ValidationCelThisNode)left).ValueIndex,
-                    ((ValidationCelThisNode)right).ValueIndex));
+                    leftValue.ValueIndex,
+                    rightValue.ValueIndex));
             }
-            left = equality;
+            left = new ValidationCelBinaryNode(operation, left, right, equalityIndex);
         }
         return left;
+    }
+
+    private int GetEqualityIndex(int leftValueIndex, int rightValueIndex)
+    {
+        if (_equalityIndexes is null)
+            return _equalityIndexOffset + _equalityPairs.Count;
+
+        var operands = leftValueIndex <= rightValueIndex
+            ? new ValidationCelEqualityOperands(leftValueIndex, rightValueIndex)
+            : new ValidationCelEqualityOperands(rightValueIndex, leftValueIndex);
+        if (_equalityIndexes.TryGetValue(operands, out var equalityIndex))
+            return equalityIndex;
+
+        equalityIndex = _equalityIndexes.Count;
+        _equalityIndexes.Add(operands, equalityIndex);
+        return equalityIndex;
     }
 
     private ValidationCelNode ParseComparison()
