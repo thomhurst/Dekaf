@@ -74,11 +74,16 @@ public class AvroInlineRuleValidatorTests
 
         var exception = Assert.Throws<ValidationRulesFailedException>(() =>
             validator.Validate(Serialize(record, schema), 17, failFast: false));
+        var failFastException = Assert.Throws<ValidationRulesFailedException>(() =>
+            validator.Validate(Serialize(record, schema), 17, failFast: true));
 
         await Assert.That(exception.Violations.Count).IsEqualTo(3);
+        await Assert.That(exception.Violations[0].Rule.Name).IsEqualTo("root");
         await Assert.That(exception.Message).Contains("$: root");
         await Assert.That(exception.Message).Contains("$.items[1]: positive");
         await Assert.That(exception.Message).Contains("$.labels[\"region\"]: label");
+        await Assert.That(failFastException.Violations.Count).IsEqualTo(1);
+        await Assert.That(failFastException.Violations[0].Rule.Name).IsEqualTo("root");
     }
 
     [Test]
@@ -1223,6 +1228,36 @@ public class AvroInlineRuleValidatorTests
             validator.Validate(Serialize(record, resolvedSchema), 29, failFast: false));
 
         await Assert.That(exception.Message).Contains("$.child.code: code");
+    }
+
+    [Test]
+    public async Task Provider_RegisteredSchemaIgnoresUnusedReference()
+    {
+        const string rootSchemaText = """
+            {"type":"record","name":"ReferenceRoot","namespace":"Dekaf.Tests","fields":[{"name":"code","type":"int","confluent:rules":[{"name":"code","expr":"this > 0"}]}]}
+            """;
+        var resolvedSchema = (RecordSchema)AvroSchema.Parse(rootSchemaText);
+        var registrySchema = new Dekaf.SchemaRegistry.Schema
+        {
+            SchemaType = SchemaType.Avro,
+            SchemaString = rootSchemaText,
+            References =
+            [
+                new SchemaReference
+                {
+                    Name = "Dekaf.Tests.UnusedChild",
+                    Subject = "unused-child",
+                    Version = 1
+                }
+            ]
+        };
+        var record = new GenericRecord(resolvedSchema);
+        record.Add("code", 1);
+        var validator = new AvroInlineRuleValidatorProvider().Register(registrySchema, resolvedSchema);
+
+        validator.Validate(Serialize(record, resolvedSchema), 30, failFast: false);
+
+        await Assert.That(validator).IsNotNull();
     }
 
     [Test]

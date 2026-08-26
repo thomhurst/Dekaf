@@ -61,6 +61,7 @@ internal sealed class AvroValueRulePlan
     private AvroCompiledRuleSet _schemaRules = AvroCompiledRuleSet.Empty;
     private AvroFieldRulePlan[] _fields = [];
     private AvroValueRulePlan[] _children = [];
+    private int[] _deferredSchemaRuleFieldIndexes = [];
     private bool _hasNestedRules;
 
     private AvroValueRulePlan(AvroSchema schema)
@@ -157,6 +158,27 @@ internal sealed class AvroValueRulePlan
                 }
             }
         }
+
+        foreach (var plan in plans.Values)
+            plan.InitializeDeferredSchemaRuleFields();
+    }
+
+    private void InitializeDeferredSchemaRuleFields()
+    {
+        var lastMemberFieldIndex = _schemaRules.LastRecordMemberIndex;
+        if (lastMemberFieldIndex <= 0)
+            return;
+
+        List<int>? deferred = null;
+        for (var index = 0; index < lastMemberFieldIndex; index++)
+        {
+            var field = _fields[index];
+            if (field.Rules.IsEmpty && !field.Child.HasAnyRules)
+                continue;
+            (deferred ??= []).Add(index);
+        }
+        if (deferred is not null)
+            _deferredSchemaRuleFieldIndexes = [.. deferred];
     }
 
     internal ValidationCelValue Validate(
@@ -168,6 +190,19 @@ internal sealed class AvroValueRulePlan
     {
         if (!HasAnyRules)
             return ReadValue(ref reader);
+
+        if (!_schemaRules.IsEmpty
+            && !_schemaRules.UsesRootValue
+            && _hasNestedRules
+            && _schema is global::Avro.RecordSchema)
+        {
+            return ValidateRecordWithDeferredNestedRules(
+                ref reader,
+                now,
+                failFast,
+                ref violations,
+                ref path);
+        }
 
         var value = ValidationCelValue.Missing;
         var preview = default(AvroValidationReader);
@@ -396,6 +431,170 @@ internal sealed class AvroValueRulePlan
         }
     }
 
+    private ValidationCelValue ValidateRecordWithDeferredNestedRules(
+        ref AvroValidationReader reader,
+        long now,
+        bool failFast,
+        ref List<ValidationRuleError>? violations,
+        scoped ref AvroValidationPath path)
+    {
+        // Resolve only the prefix needed by the record rule, evaluate that rule,
+        // then validate deferred fields in wire order. This preserves parent-first
+        // failures without rescanning the complete record on valid payloads.
+        var lastMemberFieldIndex = _schemaRules.LastRecordMemberIndex;
+        if (lastMemberFieldIndex < 0)
+        {
+            _schemaRules.EvaluateResolvedWithoutRoot(
+                _schemaRules.BeginMemberResolution(),
+                payloadLength: 0,
+                now,
+                failFast,
+                ref violations,
+                ref path);
+            if (failFast && violations is not null)
+            {
+                AvroValidationValueDecoder.Skip(_schema, ref reader);
+                return ValidationCelValue.Missing;
+            }
+
+            ValidateRecord(ref reader, now, failFast, ref violations, ref path);
+            return ValidationCelValue.Missing;
+        }
+
+        var deferredIndexes = _deferredSchemaRuleFieldIndexes;
+        var offsetCount = deferredIndexes.Length * 2;
+        int[]? rentedOffsets = null;
+        Span<int> offsets = offsetCount <= 128
+            ? stackalloc int[offsetCount]
+            : (rentedOffsets = ArrayPool<int>.Shared.Rent(offsetCount));
+        try
+        {
+            var resolution = _schemaRules.BeginMemberResolution();
+            var recordStart = reader.Position;
+            var lastFieldPayload = _schemaRules.ResolveRecordPrefix(
+                ref reader,
+                deferredIndexes,
+                offsets,
+                resolution);
+
+            _schemaRules.EvaluateResolvedWithoutRoot(
+                resolution,
+                reader.Position - recordStart,
+                now,
+                failFast,
+                ref violations,
+                ref path);
+            if (failFast && violations is not null)
+            {
+                SkipRecordFields(ref reader, lastMemberFieldIndex + 1);
+                return ValidationCelValue.Missing;
+            }
+
+            for (var index = 0; index < deferredIndexes.Length; index++)
+            {
+                var fieldReader = new AvroValidationReader(
+                    reader.Source.Slice(offsets[index * 2], offsets[index * 2 + 1]));
+                ValidateDeferredRecordField(
+                    _fields[deferredIndexes[index]],
+                    ref fieldReader,
+                    now,
+                    failFast,
+                    ref violations,
+                    ref path);
+                if (failFast && violations is not null)
+                {
+                    SkipRecordFields(ref reader, lastMemberFieldIndex + 1);
+                    return ValidationCelValue.Missing;
+                }
+            }
+
+            var lastField = _fields[lastMemberFieldIndex];
+            if (!lastField.Rules.IsEmpty || lastField.Child.HasAnyRules)
+            {
+                var fieldReader = new AvroValidationReader(
+                    reader.Source.Slice(lastFieldPayload.Start, lastFieldPayload.Length));
+                ValidateDeferredRecordField(
+                    lastField,
+                    ref fieldReader,
+                    now,
+                    failFast,
+                    ref violations,
+                    ref path);
+                if (failFast && violations is not null)
+                {
+                    SkipRecordFields(ref reader, lastMemberFieldIndex + 1);
+                    return ValidationCelValue.Missing;
+                }
+            }
+
+            for (var index = lastMemberFieldIndex + 1; index < _fields.Length; index++)
+            {
+                ValidateDeferredRecordField(
+                    _fields[index],
+                    ref reader,
+                    now,
+                    failFast,
+                    ref violations,
+                    ref path);
+                if (failFast && violations is not null)
+                {
+                    SkipRecordFields(ref reader, index + 1);
+                    break;
+                }
+            }
+            return ValidationCelValue.Missing;
+        }
+        finally
+        {
+            if (rentedOffsets is not null)
+                ArrayPool<int>.Shared.Return(rentedOffsets);
+        }
+    }
+
+    private void SkipRecordFields(ref AvroValidationReader reader, int startIndex)
+    {
+        for (var index = startIndex; index < _fields.Length; index++)
+            AvroValidationValueDecoder.Skip(_fields[index].Field.Schema, ref reader);
+    }
+
+    private static void ValidateDeferredRecordField(
+        AvroFieldRulePlan field,
+        ref AvroValidationReader reader,
+        long now,
+        bool failFast,
+        ref List<ValidationRuleError>? violations,
+        scoped ref AvroValidationPath path)
+    {
+        var mark = path.Length;
+        path.AppendField(field.Field.Name);
+        if (field.Rules.IsEmpty)
+        {
+            _ = field.Child.Validate(ref reader, now, failFast, ref violations, ref path);
+        }
+        else
+        {
+            var fieldStart = reader.Position;
+            var preview = reader;
+            var value = field.Child.ReadValue(ref preview);
+            var payload = preview.Source.Slice(fieldStart, preview.Position - fieldStart);
+            field.Rules.Evaluate(
+                value,
+                payload,
+                now,
+                failFast,
+                ref violations,
+                ref path,
+                value.SizeIndex == 0
+                    ? AvroValidationValueDecoder.Count(field.Field.Schema, payload)
+                    : -1);
+            if ((failFast && violations is not null) || !field.Child.HasAnyRules)
+                reader = preview;
+            else
+                _ = field.Child.Validate(ref reader, now, failFast, ref violations, ref path);
+        }
+        path.Truncate(mark);
+    }
+
     private ValidationCelValue ReadValue(ref AvroValidationReader reader)
     {
         if (_schema is not global::Avro.UnionSchema union)
@@ -419,6 +618,12 @@ internal sealed record AvroFieldRulePlan(
     AvroCompiledRuleSet Rules,
     AvroValueRulePlan Child);
 
+internal readonly record struct AvroMemberResolution(
+    ValidationCelMemberValues Members,
+    ValidationCelSizeValues Sizes);
+
+internal readonly record struct AvroFieldPayload(int Start, int Length);
+
 internal sealed class AvroCompiledRuleSet
 {
     internal static AvroCompiledRuleSet Empty { get; } = new([], null, false, false, false, false, 0, null);
@@ -430,6 +635,7 @@ internal sealed class AvroCompiledRuleSet
     private readonly bool _usesCachedEquality;
     private readonly bool _usesRootAggregateEquality;
     private readonly int _memberCount;
+    private readonly int _lastRecordMemberIndex;
 
     private AvroCompiledRuleSet(
         CompiledValidationRule[] rules,
@@ -448,6 +654,7 @@ internal sealed class AvroCompiledRuleSet
         _usesCachedEquality = usesCachedEquality;
         _usesRootAggregateEquality = usesRootAggregateEquality;
         _memberCount = memberCount;
+        _lastRecordMemberIndex = members?.LastRecordMemberIndex ?? -1;
         if (!usesRootAggregateEquality || valueSchema is null)
             return;
 
@@ -467,6 +674,7 @@ internal sealed class AvroCompiledRuleSet
     internal bool IsEmpty => _rules.Length == 0;
     internal bool UsesRootValue { get; }
     internal bool UsesSize { get; }
+    internal int LastRecordMemberIndex => _lastRecordMemberIndex;
 
     internal static AvroCompiledRuleSet Compile(
         IReadOnlyList<ValidationRule> rules,
@@ -584,22 +792,56 @@ internal sealed class AvroCompiledRuleSet
         ref List<ValidationRuleError>? violations,
         scoped ref AvroValidationPath path)
     {
-        var memberValues = _memberCount == 0
-            ? default
-            : CompiledValidationRule.GetMemberValues(_memberCount);
-        var sizes = UsesSize || _members is not null
-            ? CompiledValidationRule.GetSizeValues(_memberCount + 1)
-            : default;
+        var resolution = BeginMemberResolution();
         var start = reader.Position;
         if (_members is null)
             AvroValidationValueDecoder.Skip(valueSchema, ref reader);
         else
-            _members.Resolve(ref reader, memberValues, sizes);
+            _members.Resolve(ref reader, resolution.Members, resolution.Sizes);
+
+        EvaluateResolvedWithoutRoot(
+            resolution,
+            reader.Position - start,
+            now,
+            failFast,
+            ref violations,
+            ref path);
+    }
+
+    internal AvroMemberResolution BeginMemberResolution() => new(
+        _memberCount == 0
+            ? default
+            : CompiledValidationRule.GetMemberValues(_memberCount),
+        UsesSize || _members is not null
+            ? CompiledValidationRule.GetSizeValues(_memberCount + 1)
+            : default);
+
+    internal AvroFieldPayload ResolveRecordPrefix(
+        ref AvroValidationReader reader,
+        int[] deferredFieldIndexes,
+        scoped Span<int> deferredFieldOffsets,
+        AvroMemberResolution resolution) =>
+        _members!.ResolveRecordPrefix(
+            ref reader,
+            _lastRecordMemberIndex,
+            deferredFieldIndexes,
+            deferredFieldOffsets,
+            resolution.Members,
+            resolution.Sizes);
+
+    internal void EvaluateResolvedWithoutRoot(
+        AvroMemberResolution resolution,
+        int payloadLength,
+        long now,
+        bool failFast,
+        ref List<ValidationRuleError>? violations,
+        scoped ref AvroValidationPath path)
+    {
         var equalityGeneration = _usesCachedEquality
             ? CompiledValidationRule.BeginEqualityResolution()
             : 0;
 
-        ValidationCelStrings.Begin(_memberCount + 1, reader.Position - start);
+        ValidationCelStrings.Begin(_memberCount + 1, payloadLength);
         try
         {
             for (var index = 0; index < _rules.Length; index++)
@@ -610,8 +852,8 @@ internal sealed class AvroCompiledRuleSet
                     var result = rule.Evaluate(
                         ValidationCelValue.Missing,
                         now,
-                        memberValues,
-                        sizes,
+                        resolution.Members,
+                        resolution.Sizes,
                         equalityGeneration,
                         rootAggregateComparer: null);
                     if (result.Kind == ValidationResultKind.Boolean ? result.Boolean : result.String!.Length == 0)
@@ -658,6 +900,19 @@ internal sealed class AvroMemberResolver
     private readonly AvroSchema _valueSchema;
     private readonly AvroMemberResolver?[]? _unionBranches;
     private readonly AvroMemberNode?[] _fields;
+
+    internal int LastRecordMemberIndex
+    {
+        get
+        {
+            for (var index = _fields.Length - 1; index >= 0; index--)
+            {
+                if (_fields[index]?.HasTargets == true)
+                    return index;
+            }
+            return -1;
+        }
+    }
 
     private AvroMemberResolver(global::Avro.RecordSchema recordSchema)
     {
@@ -800,6 +1055,48 @@ internal sealed class AvroMemberResolver
                 AvroValidationValueDecoder.Skip(schema, ref reader);
             }
         }
+    }
+
+    internal AvroFieldPayload ResolveRecordPrefix(
+        ref AvroValidationReader reader,
+        int lastFieldIndex,
+        int[] deferredFieldIndexes,
+        scoped Span<int> deferredFieldOffsets,
+        ValidationCelMemberValues values,
+        ValidationCelSizeValues sizes)
+    {
+        var deferredPosition = 0;
+        var lastFieldStart = 0;
+        var lastFieldLength = 0;
+        for (var index = 0; index <= lastFieldIndex; index++)
+        {
+            var fieldStart = reader.Position;
+            var node = _fields[index]
+                ?? throw new InvalidOperationException("Avro validation member resolver is incomplete.");
+            var schema = node.Schema!;
+            AvroValidationValueDecoder.Skip(schema, ref reader);
+            var fieldLength = reader.Position - fieldStart;
+            if (index == lastFieldIndex)
+            {
+                lastFieldStart = fieldStart;
+                lastFieldLength = fieldLength;
+            }
+            else if (deferredPosition < deferredFieldIndexes.Length
+                && deferredFieldIndexes[deferredPosition] == index)
+            {
+                deferredFieldOffsets[deferredPosition * 2] = fieldStart;
+                deferredFieldOffsets[deferredPosition * 2 + 1] = fieldLength;
+                deferredPosition++;
+            }
+            if (node.HasTargets)
+            {
+                node.Resolve(
+                    reader.Source.Slice(fieldStart, fieldLength),
+                    values,
+                    sizes);
+            }
+        }
+        return new AvroFieldPayload(lastFieldStart, lastFieldLength);
     }
 
     private static global::Avro.Field? FindField(global::Avro.RecordSchema schema, string name)

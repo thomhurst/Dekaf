@@ -145,10 +145,9 @@ internal sealed class AvroInlineRuleValidatorProvider : IInlineValidationRuleExe
         for (var index = 0; index < references.Count; index++)
         {
             var visited = new HashSet<AvroSchema>(AvroSchemaReferenceComparer.Instance);
-            var referenced = FindNamedSchema(resolvedSchema, references[index].Name, visited)
-                ?? throw new SchemaRegistryRuleException(
-                    $"Could not resolve Avro validation schema reference '{references[index].Name}'.");
-            _ = names.Add(referenced);
+            var referenced = FindNamedSchema(resolvedSchema, references[index].Name, visited);
+            if (referenced is not null)
+                _ = names.Add(referenced);
         }
         return AvroSchema.Parse(registrySchema.SchemaString, names);
     }
