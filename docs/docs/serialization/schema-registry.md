@@ -930,7 +930,7 @@ The serializer and deserializer strategies are intentionally separate:
 | --- | --- | --- | --- |
 | `SchemaIdSerializerStrategy.Prefix` | Writes | — | Confluent-compatible default; payload carries the global integer ID. |
 | `SchemaIdSerializerStrategy.Header` | — | Writes | Payload is unprefixed; a `Headers` collection is required. |
-| `SchemaIdDeserializerStrategy.Prefix` | Reads | Rejects | Ignores identity headers and requires a valid prefix. |
+| `SchemaIdDeserializerStrategy.Prefix` | Reads | Header ignored | Parses the raw payload as a prefix without inspecting identity headers. |
 | `SchemaIdDeserializerStrategy.Header` | Rejects | Reads | Requires the reserved key/value identity header. |
 | `SchemaIdDeserializerStrategy.Dual` | Reads | Reads | Header wins when present; otherwise falls back to the prefix. This is the default reader strategy. |
 
@@ -938,6 +938,11 @@ The serializer and deserializer strategies are intentionally separate:
 GUID header into one record: when the header is present, `Dual` treats byte zero as application
 payload. A malformed reserved header never falls back to a valid prefix. Duplicate reserved headers
 follow Kafka header conventions: the last matching key/value identity is authoritative.
+
+`Prefix` is not a strict guard against header-framed records. It ignores identity headers and parses
+the first five payload bytes as a prefix. If those bytes happen to contain magic byte `0` and a
+registered nonnegative schema ID, the reader can decode the remaining bytes under an unintended
+schema instead of rejecting the record.
 
 For a rolling migration, deploy `Dual` readers first, switch writers from `Prefix` to `Header`, then
 optionally tighten readers to `Header` after all prefixed records have aged out. Keep `Dual` when a
@@ -979,7 +984,7 @@ deserializers reuse bounded caches. The registry must return a non-empty GUID an
 lookup. The checked-in interoperability vectors are generated with Confluent Schema Registry
 SerDes 2.15.0 and `confluentinc/cp-schema-registry:8.2.0` for all three schema formats.
 
-Identity failures are deterministic:
+Within the framing selected by the reader strategy, identity failures are deterministic:
 
 - Missing, null, empty, truncated, or unknown-magic headers fail instead of falling back.
 - Negative, truncated, or unknown-magic prefix IDs fail before payload decoding.
