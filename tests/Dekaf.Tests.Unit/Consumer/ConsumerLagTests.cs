@@ -9,6 +9,7 @@ namespace Dekaf.Tests.Unit.Consumer;
 [NotInParallel]
 public sealed class ConsumerLagTests
 {
+    private const int RetainedWatermarkLimit = 256;
     private static readonly TopicPartition Partition = new("lag-topic", 0);
 
     [Test]
@@ -55,6 +56,62 @@ public sealed class ConsumerLagTests
 
         await Assert.That(consumer.GetWatermarkOffsets(Partition)).IsEqualTo(new WatermarkOffsets(0, 25));
         await Assert.That(consumer.GetCurrentLag(Partition)).IsNull();
+    }
+
+    [Test]
+    public async Task UnassignedWatermarks_RetainOnlyNewest256Snapshots()
+    {
+        await using var consumer = CreateConsumer();
+
+        RetainWatermarksForPartitions(consumer, firstPartition: 0, RetainedWatermarkLimit + 1);
+
+        await Assert.That(consumer.GetWatermarkOffsets(Partition)).IsNull();
+        await Assert.That(consumer.GetWatermarkOffsets(new TopicPartition(Partition.Topic, 1)))
+            .IsEqualTo(new WatermarkOffsets(1, 101));
+        await Assert.That(consumer.GetWatermarkOffsets(
+                new TopicPartition(Partition.Topic, RetainedWatermarkLimit)))
+            .IsEqualTo(new WatermarkOffsets(RetainedWatermarkLimit, RetainedWatermarkLimit + 100));
+        await Assert.That(GetWatermarkCacheCount(consumer)).IsEqualTo(RetainedWatermarkLimit);
+    }
+
+    [Test]
+    public async Task UnassignedWatermarks_ExpiredTicketDoesNotRemoveReassignedEntry()
+    {
+        await using var consumer = CreateConsumer();
+        consumer.IncrementalAssign([new TopicPartitionOffset(Partition.Topic, Partition.Partition, 10)]);
+        SetCachedWatermarks(consumer, new WatermarkOffsets(0, 25));
+        consumer.IncrementalUnassign([Partition]);
+
+        consumer.IncrementalAssign([new TopicPartitionOffset(Partition.Topic, Partition.Partition, 20)]);
+        SetCachedWatermarks(consumer, new WatermarkOffsets(10, 50));
+
+        RetainWatermarksForPartitions(consumer, firstPartition: 1, RetainedWatermarkLimit);
+
+        await Assert.That(consumer.GetWatermarkOffsets(Partition))
+            .IsEqualTo(new WatermarkOffsets(10, 50));
+        await Assert.That(consumer.GetCurrentLag(Partition)).IsEqualTo(30);
+        await Assert.That(GetWatermarkCacheCount(consumer)).IsEqualTo(RetainedWatermarkLimit + 1);
+    }
+
+    [Test]
+    public async Task UnassignedWatermarks_ExpiredTicketDoesNotRemoveRefreshedEntry()
+    {
+        await using var consumer = CreateConsumer();
+        consumer.IncrementalAssign([new TopicPartitionOffset(Partition.Topic, Partition.Partition, 10)]);
+        SetCachedWatermarks(consumer, new WatermarkOffsets(0, 25));
+        consumer.IncrementalUnassign([Partition]);
+        SetQueriedCachedWatermarks(consumer, Partition, new WatermarkOffsets(10, 50), updateSequence: 1);
+
+        RetainWatermarksForPartitions(consumer, firstPartition: 1, RetainedWatermarkLimit - 1);
+
+        await Assert.That(consumer.GetWatermarkOffsets(Partition))
+            .IsEqualTo(new WatermarkOffsets(10, 50));
+        await Assert.That(GetWatermarkCacheCount(consumer)).IsEqualTo(RetainedWatermarkLimit);
+
+        RetainWatermarksForPartitions(consumer, firstPartition: RetainedWatermarkLimit, count: 1);
+
+        await Assert.That(consumer.GetWatermarkOffsets(Partition)).IsNull();
+        await Assert.That(GetWatermarkCacheCount(consumer)).IsEqualTo(RetainedWatermarkLimit);
     }
 
     [Test]
@@ -403,11 +460,35 @@ public sealed class ConsumerLagTests
 
     private static void SetCachedWatermarks(
         KafkaConsumer<string, string> consumer,
+        WatermarkOffsets watermarks) => SetCachedWatermarks(consumer, Partition, watermarks);
+
+    private static void RetainWatermarksForPartitions(
+        KafkaConsumer<string, string> consumer,
+        int firstPartition,
+        int count)
+    {
+        for (var partitionIndex = firstPartition; partitionIndex < firstPartition + count; partitionIndex++)
+        {
+            var partition = new TopicPartition(Partition.Topic, partitionIndex);
+            consumer.IncrementalAssign([
+                new TopicPartitionOffset(partition.Topic, partition.Partition, partitionIndex)
+            ]);
+            SetCachedWatermarks(
+                consumer,
+                partition,
+                new WatermarkOffsets(partitionIndex, partitionIndex + 100));
+            consumer.IncrementalUnassign([partition]);
+        }
+    }
+
+    private static void SetCachedWatermarks(
+        KafkaConsumer<string, string> consumer,
+        TopicPartition partition,
         WatermarkOffsets watermarks)
     {
-        UpdateWatermarksFromFetchResponse(consumer, new FetchResponsePartition
+        UpdateWatermarksFromFetchResponse(consumer, partition, new FetchResponsePartition
         {
-            PartitionIndex = Partition.Partition,
+            PartitionIndex = partition.Partition,
             HighWatermark = watermarks.High,
             LastStableOffset = watermarks.High,
             LogStartOffset = watermarks.Low
@@ -418,6 +499,18 @@ public sealed class ConsumerLagTests
         KafkaConsumer<string, string> consumer,
         FetchResponsePartition response,
         int? assignmentVersion = null,
+        long watermarkUpdateSequence = 0) => UpdateWatermarksFromFetchResponse(
+            consumer,
+            Partition,
+            response,
+            assignmentVersion,
+            watermarkUpdateSequence);
+
+    private static void UpdateWatermarksFromFetchResponse(
+        KafkaConsumer<string, string> consumer,
+        TopicPartition partition,
+        FetchResponsePartition response,
+        int? assignmentVersion = null,
         long watermarkUpdateSequence = 0)
     {
         var method = typeof(KafkaConsumer<string, string>).GetMethod(
@@ -425,10 +518,30 @@ public sealed class ConsumerLagTests
             BindingFlags.NonPublic | BindingFlags.Instance)
             ?? throw new InvalidOperationException("UpdateWatermarksFromFetchResponse method not found");
         method.Invoke(consumer, [
-            Partition,
+            partition,
             response,
             assignmentVersion ?? GetAssignmentVersion(consumer),
             watermarkUpdateSequence
+        ]);
+    }
+
+    private static void SetQueriedCachedWatermarks(
+        KafkaConsumer<string, string> consumer,
+        TopicPartition partition,
+        WatermarkOffsets watermarks,
+        long updateSequence)
+    {
+        var method = typeof(KafkaConsumer<string, string>).GetMethod(
+            "UpdateQueriedCachedWatermarks",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("UpdateQueriedCachedWatermarks method not found");
+        method.Invoke(consumer, [
+            partition,
+            watermarks.Low,
+            watermarks.High,
+            watermarks.High,
+            null,
+            updateSequence
         ]);
     }
 

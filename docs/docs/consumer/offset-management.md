@@ -237,6 +237,12 @@ watermark for `ReadUncommitted` and the last stable offset for `ReadCommitted`; 
 from the latest fetch or explicit query, so newly appended or newly committed records can make the
 result stale.
 
+`GetWatermarkOffsets` preserves a partition's last broker watermark after unassignment. The
+snapshot remains observable until the consumer retains 256 newer unassigned snapshots; assigning
+that partition again invalidates it immediately. This bounds cache growth for long-lived consumers
+that sweep across many manual assignments. Call `QueryWatermarkOffsetsAsync` when a current broker
+value is required.
+
 Refresh the isolation-visible end offset when the caller needs a current broker value:
 
 ```csharp

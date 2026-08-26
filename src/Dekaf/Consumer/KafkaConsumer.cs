@@ -1511,10 +1511,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private readonly object _snapshotStateGate = new();
     // Captured before each fetch/ListOffsets request so delayed responses cannot regress the cache.
     private long _watermarkUpdateSequence;
+    // Cold-path FIFO for bounding snapshots retained after unassignment or direct queries.
+    private Queue<RetainedWatermarkSnapshot>? _retainedWatermarkSnapshots;
 
     private static readonly long s_preferredReadReplicaMaxAgeTimestampDelta =
         (long)(TimeSpan.FromMinutes(5).TotalSeconds * Stopwatch.Frequency);
     private const long NoPreferredReplicaExpiry = long.MaxValue;
+    private const int MaxRetainedUnassignedWatermarkSnapshots = 256;
 
     private readonly record struct PartitionBrokerCacheEntry(
         Dictionary<int, List<TopicPartition>> PartitionsByBroker,
@@ -8756,6 +8759,18 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 return;
             }
 
+            if (assignmentGeneration is null)
+            {
+                var retainedEntry = new WatermarkCacheEntry(
+                    low,
+                    high,
+                    lagEndOffset,
+                    watermarkUpdateSequence);
+                _watermarks[partition] = retainedEntry;
+                RetainUnassignedWatermarkSnapshot(partition, retainedEntry, _assignmentSnapshot);
+                return;
+            }
+
             if (_watermarks.TryGetValue(partition, out var entry))
             {
                 entry.Update(low, high, lagEndOffset, watermarkUpdateSequence);
@@ -8767,6 +8782,34 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 new WatermarkCacheEntry(low, high, lagEndOffset, watermarkUpdateSequence));
         }
     }
+
+    // Must run under _snapshotStateGate. Every unassigned cache entry owns a current
+    // ticket. Refreshes replace the entry, so stale tickets cannot remove newer values.
+    private void RetainUnassignedWatermarkSnapshot(
+        TopicPartition partition,
+        WatermarkCacheEntry entry,
+        TopicPartitionSet assignmentSnapshot)
+    {
+        var retained = _retainedWatermarkSnapshots ??=
+            new Queue<RetainedWatermarkSnapshot>(MaxRetainedUnassignedWatermarkSnapshots + 1);
+        retained.Enqueue(new RetainedWatermarkSnapshot(partition, entry));
+
+        while (retained.Count > MaxRetainedUnassignedWatermarkSnapshots)
+        {
+            var expired = retained.Dequeue();
+            if (!assignmentSnapshot.Contains(expired.Partition))
+            {
+                _watermarks.TryRemove(
+                    new KeyValuePair<TopicPartition, WatermarkCacheEntry>(
+                        expired.Partition,
+                        expired.Entry));
+            }
+        }
+    }
+
+    private readonly record struct RetainedWatermarkSnapshot(
+        TopicPartition Partition,
+        WatermarkCacheEntry Entry);
 
     /// <inheritdoc />
     public async ValueTask InitializeAsync(CancellationToken cancellationToken = default)
@@ -9684,6 +9727,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     continue;
 
                 _watermarkAssignmentVersions.TryRemove(partition, out _);
+                if (_watermarks.TryGetValue(partition, out var entry))
+                    RetainUnassignedWatermarkSnapshot(partition, entry, assignmentSnapshot);
             }
 
             foreach (var partition in assignmentSnapshot)

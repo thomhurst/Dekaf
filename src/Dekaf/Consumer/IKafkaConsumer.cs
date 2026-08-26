@@ -475,6 +475,11 @@ public interface IConsumerOffsets
     /// The watermarks are updated from fetch responses as records are consumed.
     /// Returns null if no watermark data is cached for the partition.
     /// </summary>
+    /// <remarks>
+    /// After unassignment, the last snapshot remains available until 256 newer
+    /// unassigned snapshots are retained. Assigning the partition again invalidates
+    /// its retained snapshot immediately.
+    /// </remarks>
     /// <param name="topicPartition">The topic partition to get watermarks for.</param>
     /// <returns>The cached watermark offsets, or null if not available.</returns>
     WatermarkOffsets? GetWatermarkOffsets(TopicPartition topicPartition);
