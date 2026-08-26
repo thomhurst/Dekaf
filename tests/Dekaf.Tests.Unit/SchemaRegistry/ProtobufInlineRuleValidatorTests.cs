@@ -114,6 +114,48 @@ public sealed class ProtobufInlineRuleValidatorTests
     }
 
     [Test]
+    public async Task Validate_PackedUnknownClosedEnumValuesUseUnknownFieldEquality()
+    {
+        var leftPacked = new ArrayBufferWriter<byte>();
+        WriteVarint(leftPacked, 1);
+        WriteVarint(leftPacked, 99);
+        var left = new ArrayBufferWriter<byte>();
+        WriteLengthDelimited(left, fieldNumber: 1, leftPacked.WrittenSpan);
+
+        var rightPacked = new ArrayBufferWriter<byte>();
+        WriteVarint(rightPacked, 99);
+        WriteVarint(rightPacked, 1);
+        var right = new ArrayBufferWriter<byte>();
+        WriteLengthDelimited(right, fieldNumber: 1, rightPacked.WrittenSpan);
+
+        var payload = new ArrayBufferWriter<byte>();
+        WriteLengthDelimited(payload, fieldNumber: 1, left.WrittenSpan);
+        WriteLengthDelimited(payload, fieldNumber: 2, right.WrittenSpan);
+        var validator = new ProtobufInlineRuleValidator(Proto2PackedEnumEqualityEnvelope.Descriptor);
+
+        validator.Validate(payload.WrittenMemory, schemaId: 18, failFast: false);
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var index = 0; index < 100; index++)
+            validator.Validate(payload.WrittenMemory, schemaId: 18, failFast: false);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        rightPacked.Clear();
+        WriteVarint(rightPacked, 100);
+        WriteVarint(rightPacked, 1);
+        right.Clear();
+        WriteLengthDelimited(right, fieldNumber: 1, rightPacked.WrittenSpan);
+        payload.Clear();
+        WriteLengthDelimited(payload, fieldNumber: 1, left.WrittenSpan);
+        WriteLengthDelimited(payload, fieldNumber: 2, right.WrittenSpan);
+        var exception = Assert.Throws<ValidationRulesFailedException>(() =>
+            validator.Validate(payload.WrittenMemory, schemaId: 18, failFast: false));
+
+        await Assert.That(allocated).IsEqualTo(0);
+        await Assert.That(exception.Violations[0].Rule.Name)
+            .IsEqualTo("packed-enum-message-equality");
+    }
+
+    [Test]
     public async Task Validate_EncodedProto3DefaultUsesImplicitAbsence()
     {
         var payload = new ArrayBufferWriter<byte>();
@@ -289,6 +331,20 @@ public sealed class ProtobufInlineRuleValidatorTests
         validator.Validate(payload.WrittenMemory, schemaId: 17, failFast: false);
 
         await Assert.That(payload.WrittenCount).IsGreaterThan(0);
+    }
+
+    [Test]
+    public async Task Validate_TimestampLiteralPreservesNanosecondPrecision()
+    {
+        var oneNanosecond = EvaluateTypedRule(
+            "this == timestamp('1970-01-01T00:00:00.000000001Z')",
+            ValidationCelValue.FromNumber(0.000001m));
+        var oneHundredNanoseconds = EvaluateTypedRule(
+            "this == timestamp('2020-01-01T01:00:00.0000001+01:00')",
+            ValidationCelValue.FromNumber(1_577_836_800_000.0001m));
+
+        await Assert.That(oneNanosecond.Boolean).IsTrue();
+        await Assert.That(oneHundredNanoseconds.Boolean).IsTrue();
     }
 
     [Test]

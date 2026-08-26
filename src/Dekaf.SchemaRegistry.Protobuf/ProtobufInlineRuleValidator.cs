@@ -2045,7 +2045,7 @@ internal static class ProtobufValidationValueDecoder
         MatchesWireType(descriptor, field.WireType) &&
         !IsUnknownClosedEnumValue(descriptor, field);
 
-    private static bool IsUnknownClosedEnumValue(
+    internal static bool IsUnknownClosedEnumValue(
         FieldDescriptor descriptor,
         ProtobufValidationWireField field)
     {
@@ -2055,7 +2055,7 @@ internal static class ProtobufValidationValueDecoder
                descriptor.EnumType.FindValueByNumber(unchecked((int)field.Varint)) is null;
     }
 
-    private static bool IsClosedEnum(FieldDescriptor descriptor)
+    internal static bool IsClosedEnum(FieldDescriptor descriptor)
     {
 #pragma warning disable CS0618 // Google.Protobuf exposes no public inherited enum-feature API.
         return descriptor.File.Syntax == Syntax.Proto2;
@@ -2323,6 +2323,17 @@ internal static class ProtobufSemanticEquality
                     !AreUnknownFieldsEqual(descriptor, left, right, remainingDepth))
                     return false;
 
+                if (IsProto2(descriptor))
+                {
+                    return AreProto2FieldsEqual(
+                        descriptor,
+                        ref leftState,
+                        ref rightState,
+                        left,
+                        right,
+                        remainingDepth);
+                }
+
                 var fields = descriptor.Fields.InFieldNumberOrder();
                 for (var index = 0; index < fields.Count; index++)
                 {
@@ -2352,6 +2363,45 @@ internal static class ProtobufSemanticEquality
         {
             leftState.Dispose();
         }
+    }
+
+    private static bool AreProto2FieldsEqual(
+        MessageDescriptor descriptor,
+        ref ProtobufSemanticMessageState leftState,
+        ref ProtobufSemanticMessageState rightState,
+        ReadOnlyMemory<byte> left,
+        ReadOnlyMemory<byte> right,
+        int remainingDepth)
+    {
+        var fields = descriptor.Fields.InFieldNumberOrder();
+        for (var index = 0; index < fields.Count; index++)
+        {
+            var field = fields[index];
+            if (field.IsRepeated)
+            {
+                var areEqual = field.IsMap
+                    ? AreMapValuesEqual(field, left, right, remainingDepth)
+                    : field.FieldType == FieldType.Enum
+                        ? AreClosedEnumRepeatedValuesEqual(field, left, right)
+                        : AreRepeatedValuesEqual(field, left, right, remainingDepth);
+                if (!areEqual)
+                    return false;
+                continue;
+            }
+
+            ref readonly var leftField = ref leftState[field.Index];
+            ref readonly var rightField = ref rightState[field.Index];
+            if (!AreSingularValuesEqual(field, leftField, rightField, remainingDepth))
+                return false;
+        }
+        return true;
+    }
+
+    private static bool IsProto2(MessageDescriptor descriptor)
+    {
+#pragma warning disable CS0618 // Google.Protobuf exposes no public inherited enum-feature API.
+        return descriptor.File.Syntax == Syntax.Proto2;
+#pragma warning restore CS0618
     }
 
     private static bool AreSingularValuesEqual(
@@ -2407,6 +2457,24 @@ internal static class ProtobufSemanticEquality
             {
                 return false;
             }
+        }
+    }
+
+    private static bool AreClosedEnumRepeatedValuesEqual(
+        FieldDescriptor descriptor,
+        ReadOnlyMemory<byte> left,
+        ReadOnlyMemory<byte> right)
+    {
+        var leftReader = new ProtobufClosedEnumRepeatedValueReader(left, descriptor);
+        var rightReader = new ProtobufClosedEnumRepeatedValueReader(right, descriptor);
+        while (true)
+        {
+            var hasLeft = leftReader.TryRead(out var leftField);
+            var hasRight = rightReader.TryRead(out var rightField);
+            if (!hasLeft || !hasRight)
+                return hasLeft == hasRight;
+            if (unchecked((int)leftField.Varint) != unchecked((int)rightField.Varint))
+                return false;
         }
     }
 
@@ -2528,6 +2596,14 @@ internal ref struct ProtobufSemanticMessageState
                         HasUnknownFields = true;
                         continue;
                     }
+                    if (field.IsRepeated &&
+                        wireField.WireType == ProtobufWireType.LengthDelimited &&
+                        field.FieldType == FieldType.Enum &&
+                        ProtobufValidationValueDecoder.IsClosedEnum(field) &&
+                        ContainsUnknownPackedEnumValue(field, wireField.Payload))
+                    {
+                        HasUnknownFields = true;
+                    }
                     if (field.IsRepeated)
                         continue;
 
@@ -2570,6 +2646,21 @@ internal ref struct ProtobufSemanticMessageState
 
     internal ref readonly ProtobufSemanticFieldState this[int index] =>
         ref _fields![index];
+
+    private static bool ContainsUnknownPackedEnumValue(
+        FieldDescriptor descriptor,
+        ReadOnlyMemory<byte> payload)
+    {
+        var span = payload.Span;
+        var offset = 0;
+        while (offset < span.Length)
+        {
+            var value = ProtobufValidationWireReader.ReadVarint(span, ref offset);
+            if (descriptor.EnumType.FindValueByNumber(unchecked((int)value)) is null)
+                return true;
+        }
+        return false;
+    }
 
     public void Dispose()
     {
@@ -2691,7 +2782,39 @@ internal ref struct ProtobufUnknownFieldSetState
         {
             var known = descriptor?.FindFieldByNumber(field.Number);
             if (known is null || !ProtobufValidationValueDecoder.MatchesField(known, field))
+            {
                 Add(field);
+                continue;
+            }
+            if (known.FieldType == FieldType.Enum &&
+                known.IsRepeated &&
+                field.WireType == ProtobufWireType.LengthDelimited &&
+                ProtobufValidationValueDecoder.IsClosedEnum(known))
+            {
+                AddUnknownPackedEnumValues(known, field);
+            }
+        }
+    }
+
+    private void AddUnknownPackedEnumValues(
+        FieldDescriptor descriptor,
+        ProtobufValidationWireField packedField)
+    {
+        var span = packedField.Payload.Span;
+        var offset = 0;
+        while (offset < span.Length)
+        {
+            var value = ProtobufValidationWireReader.ReadVarint(span, ref offset);
+            if (descriptor.EnumType.FindValueByNumber(unchecked((int)value)) is null)
+            {
+                Add(new ProtobufValidationWireField(
+                    packedField.Number,
+                    ProtobufWireType.Varint,
+                    default,
+                    value,
+                    0,
+                    0));
+            }
         }
     }
 
@@ -3267,6 +3390,23 @@ internal ref struct ProtobufRepeatedValueReader(
             throw new SchemaRegistryRuleException(
                 "Could not evaluate Protobuf validation rules: truncated packed field.");
         }
+    }
+}
+
+internal ref struct ProtobufClosedEnumRepeatedValueReader(
+    ReadOnlyMemory<byte> payload,
+    FieldDescriptor descriptor)
+{
+    private ProtobufRepeatedValueReader _reader = new(payload, descriptor);
+
+    internal bool TryRead(out ProtobufValidationWireField field)
+    {
+        while (_reader.TryRead(out field))
+        {
+            if (!ProtobufValidationValueDecoder.IsUnknownClosedEnumValue(descriptor, field))
+                return true;
+        }
+        return false;
     }
 }
 

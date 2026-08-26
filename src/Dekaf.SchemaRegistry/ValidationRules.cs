@@ -2890,15 +2890,54 @@ internal sealed class ValidationCelParser
     private static ValidationCelNode ParseTimestamp(ValidationCelNode[] arguments)
     {
         if (arguments is not [ValidationCelLiteralNode { Value.Kind: ValidationCelValueKind.String } literal] ||
-            !DateTimeOffset.TryParse(
-                literal.Value.Literal,
-                CultureInfo.InvariantCulture,
-                DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
-                out var timestamp))
+            !TryParseTimestampMilliseconds(literal.Value.Literal, out var timestampMilliseconds))
             throw Unsupported("CEL function 'timestamp' requires one ISO-8601 string literal.");
 
         return new ValidationCelLiteralNode(
-            ValidationCelValue.FromNumber(timestamp.ToUnixTimeMilliseconds()));
+            ValidationCelValue.FromNumber(timestampMilliseconds));
+    }
+
+    private static bool TryParseTimestampMilliseconds(string? value, out decimal milliseconds)
+    {
+        milliseconds = 0;
+        if (!DateTimeOffset.TryParse(
+                value,
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
+                out var timestamp))
+        {
+            return false;
+        }
+
+        var utcTicks = timestamp.UtcDateTime.Ticks;
+        var fractionStart = value.IndexOf('.');
+        if (fractionStart < 0)
+        {
+            milliseconds = (utcTicks - DateTime.UnixEpoch.Ticks) / (decimal)TimeSpan.TicksPerMillisecond;
+            return true;
+        }
+
+        var nanoseconds = 0;
+        var digitCount = 0;
+        for (var index = fractionStart + 1; index < value.Length; index++)
+        {
+            var digit = value[index] - '0';
+            if ((uint)digit > 9)
+                break;
+            if (++digitCount > 9)
+                return false;
+            nanoseconds = nanoseconds * 10 + digit;
+        }
+        if (digitCount == 0)
+            return false;
+        while (digitCount++ < 9)
+            nanoseconds *= 10;
+
+        var wholeSecondTicks = utcTicks - utcTicks % TimeSpan.TicksPerSecond;
+        milliseconds =
+            (wholeSecondTicks - DateTime.UnixEpoch.Ticks) / (decimal)TimeSpan.TicksPerMillisecond +
+            nanoseconds / 1_000_000m;
+        return true;
     }
 
     private ValidationCelThisNode CreateThisNode(string identifier)

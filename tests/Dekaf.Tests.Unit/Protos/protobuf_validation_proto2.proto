@@ -49,6 +49,18 @@ message Proto2PackedEnumValidationMessage {
   }];
 }
 
+message Proto2PackedEnumEqualityEnvelope {
+  option (confluent.message_meta) = {
+    rules: {
+      name: "packed-enum-message-equality"
+      expr: "this.left == this.right"
+    }
+  };
+
+  optional Proto2PackedEnumValidationMessage left = 1;
+  optional Proto2PackedEnumValidationMessage right = 2;
+}
+
 enum Proto2PresenceStatus {
   PROTO2_PRESENCE_STATUS_UNSPECIFIED = 0;
   PROTO2_PRESENCE_STATUS_ACTIVE = 1;
