@@ -151,6 +151,168 @@ public sealed class BrokerUnackedByteBudgetTests
     }
 
     [Test]
+    public async Task DelayOverTarget_ProbesDownByQuarterWindow()
+    {
+        var controller = CreateController(latencyGovernorEnabled: true);
+        var now = T0;
+        var admissionBlocks = 0L;
+
+        // A fixed ambient delay lets slow start reach its optimistic 16-quantum window. Once
+        // slow start ends, the still-missed target must use the accelerated 25% treatment
+        // (16 -> 12), not the normal 12.5% knee-maintenance step (16 -> 14).
+        for (var pass = 0; pass < 4; pass++)
+        {
+            controller.RecordAcknowledgement(
+                100, Seconds(0.001), Seconds(0.050), false, controller.Generation, now);
+            _ = controller.CompleteInterval(0, 0, now, 0);
+        }
+
+        for (var i = 0; i < 100 && controller.Phase == BrokerWindowPhase.Steady; i++)
+        {
+            _ = DriveControllerEpoch(
+                controller,
+                ref now,
+                ref admissionBlocks,
+                sealToSendSeconds: 0.050);
+        }
+
+        await Assert.That(controller.Phase).IsEqualTo(BrokerWindowPhase.ProbeDown);
+        await Assert.That(controller.WindowBytes).IsEqualTo(1_200);
+    }
+
+    [Test]
+    public async Task CapBelowAcceleratedThreshold_UsesNormalStep()
+    {
+        var controller = new BrokerWindowController(
+            targetSeconds: 0.010,
+            floorBytes: 1,
+            capBytes: 1_000,
+            initialRequestBytes: 100,
+            latencyGovernorEnabled: true);
+        var now = T0;
+        var admissionBlocks = 0L;
+
+        for (var pass = 0; pass < 4; pass++)
+        {
+            controller.RecordAcknowledgement(
+                100, Seconds(0.001), Seconds(0.050), false, controller.Generation, now);
+            _ = controller.CompleteInterval(0, 0, now, 0);
+        }
+
+        StartNextProbe(
+            controller,
+            BrokerWindowPhase.ProbeDown,
+            ref now,
+            ref admissionBlocks,
+            sealToSendSeconds: 0.050);
+
+        // The 10-quantum cap is below the 11-quantum accelerated threshold. Cap clamping
+        // must not turn that threshold into 10 and permit the coarse 10 -> 7 treatment.
+        await Assert.That(controller.WindowBytes).IsEqualTo(800);
+    }
+
+    [Test]
+    public async Task AcceleratedDescent_StopsAtNormalPipelineFloor()
+    {
+        var controller = CreateController(latencyGovernorEnabled: true);
+        var now = T0;
+        var admissionBlocks = 0L;
+
+        for (var pass = 0; pass < 4; pass++)
+        {
+            controller.RecordAcknowledgement(
+                100, Seconds(0.001), Seconds(0.050), false, controller.Generation, now);
+            _ = controller.CompleteInterval(0, 0, now, 0);
+        }
+
+        StartNextProbe(
+            controller,
+            BrokerWindowPhase.ProbeDown,
+            ref now,
+            ref admissionBlocks,
+            sealToSendSeconds: 0.050);
+        await Assert.That(controller.WindowBytes).IsEqualTo(1_200);
+        _ = CompleteActiveProbe(
+            controller,
+            baselineWindow: 1_600,
+            ref now,
+            ref admissionBlocks,
+            candidateSealToSendSeconds: 0.050,
+            baselineSealToSendSeconds: 0.050);
+
+        StartNextProbe(
+            controller,
+            BrokerWindowPhase.ProbeDown,
+            ref now,
+            ref admissionBlocks,
+            sealToSendSeconds: 0.050);
+        await Assert.That(controller.WindowBytes).IsEqualTo(900);
+        _ = CompleteActiveProbe(
+            controller,
+            baselineWindow: 1_200,
+            ref now,
+            ref admissionBlocks,
+            candidateSealToSendSeconds: 0.050,
+            baselineSealToSendSeconds: 0.050);
+
+        StartNextProbe(
+            controller,
+            BrokerWindowPhase.ProbeDown,
+            ref now,
+            ref admissionBlocks,
+            sealToSendSeconds: 0.050);
+
+        // The 25% treatment would jump 9 -> 6 quanta. Once that candidate would cross the
+        // normal eight-quantum floor, use the 12.5% step (9 -> 7) for deep descent instead.
+        await Assert.That(controller.WindowBytes).IsEqualTo(700);
+    }
+
+    [Test]
+    public async Task RejectedAcceleratedDescent_RetriesWithNormalStep()
+    {
+        var controller = CreateController(latencyGovernorEnabled: true);
+        var now = T0;
+        var admissionBlocks = 0L;
+
+        for (var pass = 0; pass < 4; pass++)
+        {
+            controller.RecordAcknowledgement(
+                100, Seconds(0.001), Seconds(0.050), false, controller.Generation, now);
+            _ = controller.CompleteInterval(0, 0, now, 0);
+        }
+
+        for (var i = 0; i < 100 && controller.Phase == BrokerWindowPhase.Steady; i++)
+        {
+            _ = DriveControllerEpoch(
+                controller,
+                ref now,
+                ref admissionBlocks,
+                sealToSendSeconds: 0.050);
+        }
+        await Assert.That(controller.WindowBytes).IsEqualTo(1_200);
+
+        _ = CompleteActiveProbe(
+            controller,
+            baselineWindow: 1_600,
+            ref now,
+            ref admissionBlocks,
+            candidateLogicalBytes: 50,
+            candidateSealToSendSeconds: 0.050,
+            baselineSealToSendSeconds: 0.050);
+
+        for (var i = 0; i < 100 && controller.Phase == BrokerWindowPhase.Steady; i++)
+        {
+            _ = DriveControllerEpoch(
+                controller,
+                ref now,
+                ref admissionBlocks,
+                sealToSendSeconds: 0.050);
+        }
+
+        await Assert.That(controller.WindowBytes).IsEqualTo(1_400);
+    }
+
+    [Test]
     public async Task DeepDescent_RequiresDemonstratedDelayGain()
     {
         var controller = CreateController(latencyGovernorEnabled: true);
@@ -1164,12 +1326,19 @@ public sealed class BrokerUnackedByteBudgetTests
         BrokerWindowController controller,
         BrokerWindowPhase expectedPhase,
         ref long now,
-        ref long admissionBlocks)
+        ref long admissionBlocks,
+        double sealToSendSeconds = 0)
     {
         // Consecutive probe failures back the schedule off exponentially (up to 8x the
         // 60-epoch interval), so allow the longest backed-off wait before giving up.
         for (var i = 0; i < 600 && controller.Phase == BrokerWindowPhase.Steady; i++)
-            _ = DriveControllerEpoch(controller, ref now, ref admissionBlocks);
+        {
+            _ = DriveControllerEpoch(
+                controller,
+                ref now,
+                ref admissionBlocks,
+                sealToSendSeconds: sealToSendSeconds);
+        }
 
         if (controller.Phase != expectedPhase)
         {
