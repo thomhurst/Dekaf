@@ -4,22 +4,52 @@ using AvroSchema = global::Avro.Schema;
 
 namespace Dekaf.SchemaRegistry.Avro;
 
-internal sealed class AvroAggregateEqualityComparer(AvroSchema schema) : IValidationCelAggregateComparer
+internal sealed class AvroAggregateEqualityComparerFactory
+{
+    private readonly List<SchemaGroup> _groups = [];
+
+    internal AvroAggregateEqualityComparer? Create(AvroSchema schema)
+    {
+        if (schema.Tag is not (AvroSchema.Type.Record or AvroSchema.Type.Error or
+            AvroSchema.Type.Array or AvroSchema.Type.Map))
+        {
+            return null;
+        }
+
+        for (var index = 0; index < _groups.Count; index++)
+        {
+            var group = _groups[index];
+            if (AvroSchemaLogicalComparer.Instance.Equals(schema, group.Schema) ||
+                AvroValueSchemaComparer.AreEqual(schema, group.Schema))
+            {
+                return new AvroAggregateEqualityComparer(schema, group);
+            }
+        }
+
+        var newGroup = new SchemaGroup(schema);
+        _groups.Add(newGroup);
+        return new AvroAggregateEqualityComparer(schema, newGroup);
+    }
+
+    private sealed class SchemaGroup(AvroSchema schema)
+    {
+        internal AvroSchema Schema { get; } = schema;
+    }
+}
+
+internal sealed class AvroAggregateEqualityComparer(
+    AvroSchema schema,
+    object schemaToken) : IValidationCelAggregateComparer
 {
     private const int StackMapEntryCount = 16;
     private const int StackMapBucketCount = 32;
 
     private readonly AvroSchema _schema = schema;
     private readonly bool _requiresSemanticEquality = ContainsFloating(schema, []);
+    private readonly object _schemaToken = schemaToken;
 
-    internal static AvroAggregateEqualityComparer? Create(AvroSchema schema) => schema.Tag switch
-    {
-        AvroSchema.Type.Record or AvroSchema.Type.Error or
-        AvroSchema.Type.Array or AvroSchema.Type.Map => new(schema),
-        _ => null
-    };
-
-    bool IValidationCelAggregateComparer.RequiresSemanticEquality => _requiresSemanticEquality;
+    object? IValidationCelAggregateComparer.RawEqualityToken =>
+        _requiresSemanticEquality ? null : _schemaToken;
 
     bool IValidationCelAggregateComparer.AreEqual(
         ReadOnlyMemory<byte> left,
@@ -27,11 +57,8 @@ internal sealed class AvroAggregateEqualityComparer(AvroSchema schema) : IValida
         ReadOnlyMemory<byte> right)
     {
         if (rightComparer is not AvroAggregateEqualityComparer avroRight ||
-            (!AvroSchemaLogicalComparer.Instance.Equals(_schema, avroRight._schema) &&
-             !AvroValueSchemaComparer.AreEqual(_schema, avroRight._schema)))
-        {
+            !ReferenceEquals(_schemaToken, avroRight._schemaToken))
             return false;
-        }
 
         var leftReader = new AvroValidationReader(left);
         var rightReader = new AvroValidationReader(right);

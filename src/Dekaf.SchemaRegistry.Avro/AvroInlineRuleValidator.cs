@@ -842,7 +842,8 @@ internal readonly record struct AvroFieldPayload(int Start, int Length);
 
 internal sealed class AvroCompiledRuleSet
 {
-    internal static AvroCompiledRuleSet Empty { get; } = new([], null, false, false, false, false, 0, null);
+    internal static AvroCompiledRuleSet Empty { get; } = new(
+        [], null, false, false, false, false, 0, null, new AvroAggregateEqualityComparerFactory());
 
     private readonly CompiledValidationRule[] _rules;
     private readonly AvroMemberResolver? _members;
@@ -861,7 +862,8 @@ internal sealed class AvroCompiledRuleSet
         bool usesCachedEquality,
         bool usesRootAggregateEquality,
         int memberCount,
-        AvroSchema? valueSchema)
+        AvroSchema? valueSchema,
+        AvroAggregateEqualityComparerFactory aggregateComparerFactory)
     {
         _rules = rules;
         _members = members;
@@ -875,14 +877,14 @@ internal sealed class AvroCompiledRuleSet
             return;
 
         valueSchema = AvroValueRulePlan.Unwrap(valueSchema);
-        _rootAggregateComparer = AvroAggregateEqualityComparer.Create(valueSchema);
+        _rootAggregateComparer = aggregateComparerFactory.Create(valueSchema);
         if (valueSchema is not global::Avro.UnionSchema union)
             return;
 
         _rootUnionComparers = new AvroAggregateEqualityComparer?[union.Count];
         for (var index = 0; index < union.Count; index++)
         {
-            _rootUnionComparers[index] = AvroAggregateEqualityComparer.Create(
+            _rootUnionComparers[index] = aggregateComparerFactory.Create(
                 AvroValueRulePlan.Unwrap(union[index]));
         }
     }
@@ -922,9 +924,14 @@ internal sealed class AvroCompiledRuleSet
             usesRootAggregateEquality |= rule.UsesRootAggregateEquality;
         }
 
+        var aggregateComparerFactory = new AvroAggregateEqualityComparerFactory();
         var members = usedMemberIndexes.Count == 0
             ? null
-            : AvroMemberResolver.Create(valueSchema, memberPaths, usedMemberIndexes);
+            : AvroMemberResolver.Create(
+                valueSchema,
+                memberPaths,
+                usedMemberIndexes,
+                aggregateComparerFactory);
         return new AvroCompiledRuleSet(
             compiled,
             members,
@@ -933,7 +940,8 @@ internal sealed class AvroCompiledRuleSet
             usesCachedEquality,
             usesRootAggregateEquality,
             memberPaths.Count,
-            valueSchema);
+            valueSchema,
+            aggregateComparerFactory);
     }
 
     internal void Evaluate(
@@ -1127,6 +1135,7 @@ internal sealed class AvroCompiledRuleSet
 internal sealed class AvroMemberResolver
 {
     private readonly AvroSchema _valueSchema;
+    private readonly AvroAggregateEqualityComparerFactory _aggregateComparerFactory;
     private readonly AvroMemberResolver?[]? _unionBranches;
     private readonly AvroMemberNode?[] _fields;
     private readonly Dictionary<ReadOnlyMemory<byte>, AvroMemberNode>? _mapValues;
@@ -1144,22 +1153,31 @@ internal sealed class AvroMemberResolver
         }
     }
 
-    private AvroMemberResolver(global::Avro.RecordSchema recordSchema)
+    private AvroMemberResolver(
+        global::Avro.RecordSchema recordSchema,
+        AvroAggregateEqualityComparerFactory aggregateComparerFactory)
     {
         _valueSchema = recordSchema;
+        _aggregateComparerFactory = aggregateComparerFactory;
         _fields = new AvroMemberNode?[recordSchema.Fields.Count];
     }
 
-    private AvroMemberResolver(global::Avro.UnionSchema unionSchema)
+    private AvroMemberResolver(
+        global::Avro.UnionSchema unionSchema,
+        AvroAggregateEqualityComparerFactory aggregateComparerFactory)
     {
         _valueSchema = unionSchema;
+        _aggregateComparerFactory = aggregateComparerFactory;
         _unionBranches = new AvroMemberResolver?[unionSchema.Count];
         _fields = [];
     }
 
-    private AvroMemberResolver(global::Avro.MapSchema mapSchema)
+    private AvroMemberResolver(
+        global::Avro.MapSchema mapSchema,
+        AvroAggregateEqualityComparerFactory aggregateComparerFactory)
     {
         _valueSchema = mapSchema;
+        _aggregateComparerFactory = aggregateComparerFactory;
         _fields = [];
         _mapValues = new Dictionary<ReadOnlyMemory<byte>, AvroMemberNode>(AvroUtf8MemoryComparer.Instance);
     }
@@ -1167,17 +1185,18 @@ internal sealed class AvroMemberResolver
     internal static AvroMemberResolver? Create(
         AvroSchema valueSchema,
         IReadOnlyList<byte[][]> paths,
-        IReadOnlyCollection<int> usedIndexes)
+        IReadOnlyCollection<int> usedIndexes,
+        AvroAggregateEqualityComparerFactory aggregateComparerFactory)
     {
         valueSchema = AvroValueRulePlan.Unwrap(valueSchema);
         if (valueSchema is global::Avro.RecordSchema record)
-            return CreateRecord(record, paths, usedIndexes);
+            return CreateRecord(record, paths, usedIndexes, aggregateComparerFactory);
         if (valueSchema is global::Avro.MapSchema map)
-            return CreateMap(map, paths, usedIndexes);
+            return CreateMap(map, paths, usedIndexes, aggregateComparerFactory);
         if (valueSchema is not global::Avro.UnionSchema union)
             return null;
 
-        var resolver = new AvroMemberResolver(union);
+        var resolver = new AvroMemberResolver(union, aggregateComparerFactory);
         var resolvedIndexes = new bool[paths.Count];
         for (var branchIndex = 0; branchIndex < union.Count; branchIndex++)
         {
@@ -1194,13 +1213,13 @@ internal sealed class AvroMemberResolver
 
                 if (branch is global::Avro.RecordSchema branchRecord)
                 {
-                    branchResolver ??= CreateRecord(branchRecord);
+                    branchResolver ??= CreateRecord(branchRecord, aggregateComparerFactory);
                     branchResolver.Add(branchRecord, path, memberIndex, depth: 0);
                 }
                 else
                 {
                     var branchMap = (global::Avro.MapSchema)branch;
-                    branchResolver ??= CreateMap(branchMap);
+                    branchResolver ??= CreateMap(branchMap, aggregateComparerFactory);
                     branchResolver.Add(branchMap, path, memberIndex, depth: 0);
                 }
                 resolvedIndexes[memberIndex] = true;
@@ -1222,17 +1241,20 @@ internal sealed class AvroMemberResolver
     private static AvroMemberResolver CreateRecord(
         global::Avro.RecordSchema record,
         IReadOnlyList<byte[][]> paths,
-        IReadOnlyCollection<int> usedIndexes)
+        IReadOnlyCollection<int> usedIndexes,
+        AvroAggregateEqualityComparerFactory aggregateComparerFactory)
     {
-        var resolver = CreateRecord(record);
+        var resolver = CreateRecord(record, aggregateComparerFactory);
         foreach (var memberIndex in usedIndexes)
             resolver.Add(record, paths[memberIndex], memberIndex, depth: 0);
         return resolver;
     }
 
-    private static AvroMemberResolver CreateRecord(global::Avro.RecordSchema record)
+    private static AvroMemberResolver CreateRecord(
+        global::Avro.RecordSchema record,
+        AvroAggregateEqualityComparerFactory aggregateComparerFactory)
     {
-        var resolver = new AvroMemberResolver(record);
+        var resolver = new AvroMemberResolver(record, aggregateComparerFactory);
         resolver.SetSchemas(record);
         return resolver;
     }
@@ -1240,15 +1262,19 @@ internal sealed class AvroMemberResolver
     private static AvroMemberResolver CreateMap(
         global::Avro.MapSchema map,
         IReadOnlyList<byte[][]> paths,
-        IReadOnlyCollection<int> usedIndexes)
+        IReadOnlyCollection<int> usedIndexes,
+        AvroAggregateEqualityComparerFactory aggregateComparerFactory)
     {
-        var resolver = CreateMap(map);
+        var resolver = CreateMap(map, aggregateComparerFactory);
         foreach (var memberIndex in usedIndexes)
             resolver.Add(map, paths[memberIndex], memberIndex, depth: 0);
         return resolver;
     }
 
-    private static AvroMemberResolver CreateMap(global::Avro.MapSchema map) => new(map);
+    private static AvroMemberResolver CreateMap(
+        global::Avro.MapSchema map,
+        AvroAggregateEqualityComparerFactory aggregateComparerFactory) =>
+        new(map, aggregateComparerFactory);
 
     private void Add(
         global::Avro.RecordSchema schema,
@@ -1260,7 +1286,7 @@ internal sealed class AvroMemberResolver
         var field = FindField(schema, name)
             ?? throw new SchemaRegistryRuleException(
                 $"Avro validation rule refers to unknown field '{name}' on '{schema.Fullname}'.");
-        var node = _fields[field.Pos] ??= new AvroMemberNode();
+        var node = _fields[field.Pos] ??= new AvroMemberNode(_aggregateComparerFactory);
         if (depth == path.Length - 1)
         {
             node.AddMemberIndex(memberIndex);
@@ -1278,7 +1304,7 @@ internal sealed class AvroMemberResolver
         var key = (ReadOnlyMemory<byte>)path[depth];
         if (!_mapValues!.TryGetValue(key, out var node))
         {
-            node = new AvroMemberNode { Schema = schema.ValueSchema };
+            node = new AvroMemberNode(_aggregateComparerFactory) { Schema = schema.ValueSchema };
             _mapValues.Add(key, node);
         }
         if (depth == path.Length - 1)
@@ -1480,10 +1506,12 @@ internal sealed class AvroMemberResolver
     internal void SetSchemas(global::Avro.RecordSchema schema)
     {
         for (var index = 0; index < schema.Fields.Count; index++)
-            (_fields[index] ??= new AvroMemberNode()).Schema = schema.Fields[index].Schema;
+            (_fields[index] ??= new AvroMemberNode(_aggregateComparerFactory)).Schema =
+                schema.Fields[index].Schema;
     }
 
-    private sealed class AvroMemberNode
+    private sealed class AvroMemberNode(
+        AvroAggregateEqualityComparerFactory aggregateComparerFactory)
     {
         private readonly Dictionary<AvroSchema, AvroMemberResolver> _children =
             new(AvroSchemaReferenceComparer.Instance);
@@ -1501,7 +1529,7 @@ internal sealed class AvroMemberResolver
             {
                 _schema = value;
                 var schema = AvroValueRulePlan.Unwrap(value!);
-                _aggregateComparer = AvroAggregateEqualityComparer.Create(schema);
+                _aggregateComparer = aggregateComparerFactory.Create(schema);
                 _enumSymbols = AvroValidationValueDecoder.EncodeEnumSymbols(schema);
                 if (schema is not global::Avro.UnionSchema union)
                     return;
@@ -1510,7 +1538,7 @@ internal sealed class AvroMemberResolver
                 for (var index = 0; index < union.Count; index++)
                 {
                     var branch = AvroValueRulePlan.Unwrap(union[index]);
-                    _unionComparers[index] = AvroAggregateEqualityComparer.Create(branch);
+                    _unionComparers[index] = aggregateComparerFactory.Create(branch);
                     _unionEnumSymbols[index] = AvroValidationValueDecoder.EncodeEnumSymbols(branch);
                 }
             }
@@ -1586,8 +1614,8 @@ internal sealed class AvroMemberResolver
             {
                 child = schema switch
                 {
-                    global::Avro.RecordSchema record => CreateRecord(record),
-                    global::Avro.MapSchema map => CreateMap(map),
+                    global::Avro.RecordSchema record => CreateRecord(record, aggregateComparerFactory),
+                    global::Avro.MapSchema map => CreateMap(map, aggregateComparerFactory),
                     _ => throw new InvalidOperationException("Avro validation member resolver child is unsupported.")
                 };
                 _children.Add(schema, child);

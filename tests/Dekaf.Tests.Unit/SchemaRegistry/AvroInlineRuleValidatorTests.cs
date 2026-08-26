@@ -18,6 +18,8 @@ public class AvroInlineRuleValidatorTests
     private static readonly int[] TwoItems = [1, 2];
     private static readonly float[] OneFloat = [1f];
     private static readonly float[] TwoFloat = [2f];
+    private static readonly string[] OneString = ["a"];
+    private static readonly byte[][] OneBytes = [[(byte)'a']];
 
     private const string IntegrationSchema = """
         {
@@ -575,6 +577,36 @@ public class AvroInlineRuleValidatorTests
         Assert.Throws<ValidationRulesFailedException>(() =>
             validator.Validate(Serialize(record, schema), 27, failFast: false));
         await Task.CompletedTask;
+    }
+
+    [Test]
+    public async Task Validate_IdenticallyEncodedAggregatesRequireCompatibleSchemas()
+    {
+        const string schemaText = """
+            {
+              "type": "record",
+              "name": "AggregateSchemaEqualityRecord",
+              "confluent:rules": [{ "name": "different", "expr": "this.strings != this.bytes" }],
+              "fields": [
+                { "name": "strings", "type": { "type": "array", "items": "string" } },
+                { "name": "bytes", "type": { "type": "array", "items": "bytes" } }
+              ]
+            }
+            """;
+        var schema = (RecordSchema)AvroSchema.Parse(schemaText);
+        var record = new GenericRecord(schema);
+        record.Add("strings", OneString);
+        record.Add("bytes", OneBytes);
+        var payload = Serialize(record, schema);
+        var validator = new AvroInlineRuleValidator(schema);
+
+        validator.Validate(payload, 27, failFast: false);
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var index = 0; index < 100; index++)
+            validator.Validate(payload, 27, failFast: false);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        await Assert.That(allocated).IsEqualTo(0);
     }
 
     [Test]
