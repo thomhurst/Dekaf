@@ -915,3 +915,85 @@ constructor/builder-extension argument for JSON Schema and generic Schema Regist
 It affects only the enum-based `RecordName` and `TopicRecordName` strategies; `TopicName` and custom
 `ISubjectNameStrategy` implementations are unchanged. Disable the option after every producer and
 schema has moved to the standard subject.
+
+## Schema identity framing and Confluent interoperability
+
+Dekaf reads and writes the Confluent Schema Registry identity framing used by Avro, JSON Schema,
+and Protobuf serializers. Prefix framing places magic byte `0` and the big-endian global schema ID
+before the payload. Header framing leaves the payload unprefixed and writes magic byte `1` plus the
+network-order schema GUID to `__key_schema_id` or `__value_schema_id`. Protobuf appends its message
+index data to that identity header.
+
+The serializer and deserializer strategies are intentionally separate:
+
+| Writer / reader strategy | Prefix record | Header record | Behavior |
+| --- | --- | --- | --- |
+| `SchemaIdSerializerStrategy.Prefix` | Writes | — | Confluent-compatible default; payload carries the global integer ID. |
+| `SchemaIdSerializerStrategy.Header` | — | Writes | Payload is unprefixed; a `Headers` collection is required. |
+| `SchemaIdDeserializerStrategy.Prefix` | Reads | Header ignored | Parses the raw payload as a prefix without inspecting identity headers. |
+| `SchemaIdDeserializerStrategy.Header` | Rejects | Reads | Requires the reserved key/value identity header. |
+| `SchemaIdDeserializerStrategy.Dual` | Reads | Reads | Header wins when present; otherwise falls back to the prefix. This is the default reader strategy. |
+
+`Dual` is a reader migration mode, not a serializer mode. Do not combine a prefixed payload and a
+GUID header into one record: when the header is present, `Dual` treats byte zero as application
+payload. A malformed reserved header never falls back to a valid prefix. Duplicate reserved headers
+follow Kafka header conventions: the last matching key/value identity is authoritative.
+
+`Prefix` is not a strict guard against header-framed records. It ignores identity headers and parses
+the first five payload bytes as a prefix. If those bytes happen to contain magic byte `0` and a
+registered nonnegative schema ID, the reader can decode the remaining bytes under an unintended
+schema instead of rejecting the record.
+
+For a rolling migration, deploy `Dual` readers first, switch writers from `Prefix` to `Header`, then
+optionally tighten readers to `Header` after all prefixed records have aged out. Keep `Dual` when a
+topic deliberately accepts both writer generations.
+
+<!-- doc-test-ignore: Uses application-specific registry and Order types. -->
+```csharp
+using Dekaf.SchemaRegistry;
+using Dekaf.SchemaRegistry.Avro;
+
+var writer = new AvroSchemaRegistrySerializer<Order>(
+    registry,
+    new AvroSerializerConfig
+    {
+        // Use an already registered schema and emit its GUID as a Kafka header.
+        UseSchemaId = 123,
+        AutoRegisterSchemas = false,
+        SchemaIdStrategy = SchemaIdSerializerStrategy.Header
+    });
+
+var reader = new AvroSchemaRegistryDeserializer<Order>(
+    registry,
+    new AvroDeserializerConfig
+    {
+        // Accept existing prefix records and newly written header records.
+        SchemaIdStrategy = SchemaIdDeserializerStrategy.Dual
+    });
+```
+
+`UseSchemaId` has precedence over `UseLatestVersion` and `AutoRegisterSchemas`. Dekaf fetches the
+selected schema and validates that its format, root type, and Protobuf reference graph match the
+serializer type before emitting any bytes. `UseLatestVersion` takes precedence over auto-register
+or lookup when no explicit ID is set. Otherwise `AutoRegisterSchemas = true` registers or reuses
+the schema; `false` performs exact lookup.
+
+Header serialization resolves the registered schema GUID during preparation and caches the encoded
+frame. Header deserialization resolves GUIDs through Schema Registry; warm serializers and
+deserializers reuse bounded caches. The registry must return a non-empty GUID and support GUID
+lookup. The checked-in interoperability vectors are generated with Confluent Schema Registry
+SerDes 2.15.0 and `confluentinc/cp-schema-registry:8.2.0` for all three schema formats.
+
+Within the framing selected by the reader strategy, identity failures are deterministic:
+
+- Missing, null, empty, truncated, or unknown-magic headers fail instead of falling back.
+- Negative, truncated, or unknown-magic prefix IDs fail before payload decoding.
+- A GUID resolving to the wrong schema format or an explicit ID resolving to the wrong record type
+  fails before serialization/deserialization completes.
+- If subject-scoped lookup returns a different GUID or ID than the identity being processed, Dekaf
+  reports the conflict; it does not silently select either schema.
+- Protobuf rejects malformed or trailing message-index data after the GUID frame.
+
+Cross-client rollout tests should cover both key and value header names, every schema format, old
+prefix records, new header records, and malformed reserved headers. Do not strip the reserved
+identity header in middleware or copy it between key and value components.

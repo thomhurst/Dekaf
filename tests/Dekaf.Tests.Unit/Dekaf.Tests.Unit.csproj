@@ -61,6 +61,7 @@
     <EmbeddedResource Include="Protocol\ResponseFixtures\*.bin" />
     <Protobuf Include="Protos\*.proto" ProtoRoot="Protos" GrpcServices="None" />
     <Protobuf Include="Protos\confluent\*.proto" ProtoRoot="Protos" GrpcServices="None" />
+    <EmbeddedResource Include="SchemaRegistry\IdentityFixtures\*.json" />
   </ItemGroup>
 
 </Project>
