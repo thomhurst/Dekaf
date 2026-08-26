@@ -1095,17 +1095,6 @@ public sealed class InMemoryKafkaCluster
         }
     }
 
-    internal bool DeleteGroup(string groupId)
-    {
-        lock (_gate)
-        {
-            if (_consumerGroupMembers.TryGetValue(groupId, out var members) && members.Count != 0)
-                return false;
-
-            return RemoveConsumerGroupUnderLock(groupId);
-        }
-    }
-
     internal ShareGroupMemberRegistration RegisterShareGroupMember(string groupId, string memberId)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(groupId);
@@ -1181,7 +1170,7 @@ public sealed class InMemoryKafkaCluster
         }
     }
 
-    internal ErrorCode DeleteStreamsGroup(string groupId)
+    internal ErrorCode DeleteGroup(string groupId)
     {
         lock (_gate)
         {

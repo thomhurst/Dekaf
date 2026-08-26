@@ -312,7 +312,7 @@ public sealed partial class AdminClient
                 out var topicMap,
                 out var mappingErrors,
                 out var mappingFailure);
-            if (mappingErrors is not null)
+            if (mappingErrors is not null && !retryResults.ContainsKey(groupId))
             {
                 mappingRetryResults[groupId] = GroupOffsetsPartitionErrors(
                     groupId,
@@ -320,7 +320,7 @@ public sealed partial class AdminClient
                     mappingErrors,
                     Protocol.ErrorCode.UnknownServerError);
             }
-            else
+            else if (mappingErrors is null)
                 mappingRetryResults.Remove(groupId);
 
             retryFailure ??= mappingFailure;

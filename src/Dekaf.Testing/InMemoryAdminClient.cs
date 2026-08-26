@@ -373,11 +373,12 @@ public sealed partial class InMemoryAdminClient :
         {
             var groupId = groups[index];
             await ApplyAdminFaultAsync(cancellationToken, groupId: groupId).ConfigureAwait(false);
-            if (!_cluster.DeleteGroup(groupId))
+            var errorCode = _cluster.DeleteGroup(groupId);
+            if (errorCode != ErrorCode.None)
             {
                 throw new GroupException(
-                    ErrorCode.NonEmptyGroup,
-                    $"DeleteConsumerGroups failed for group '{groupId}': {ErrorCode.NonEmptyGroup}")
+                    errorCode,
+                    $"DeleteConsumerGroups failed for group '{groupId}': {errorCode}")
                 {
                     GroupId = groupId
                 };

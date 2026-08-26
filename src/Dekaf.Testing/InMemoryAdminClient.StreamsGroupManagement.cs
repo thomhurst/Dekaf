@@ -165,7 +165,7 @@ public sealed partial class InMemoryAdminClient
 
         foreach (var groupId in groupIdList)
         {
-            var errorCode = _cluster.DeleteStreamsGroup(groupId);
+            var errorCode = _cluster.DeleteGroup(groupId);
             if (errorCode != ErrorCode.None)
             {
                 results[groupId] = new DeleteStreamsGroupResult

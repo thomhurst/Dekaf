@@ -586,6 +586,55 @@ public sealed class AdminClientStreamsGroupManagementTests
     }
 
     [Test]
+    public async Task ListStreamsGroupOffsetsAsync_RetryExhaustionPreservesResponseSnapshot()
+    {
+        var (admin, connection) = CreateAdmin();
+        SetupFindCoordinator(connection);
+        connection.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
+                Arg.Any<OffsetFetchRequest>(),
+                10,
+                Arg.Any<CancellationToken>())
+            .Returns(
+                ValueTask.FromResult(new OffsetFetchResponse
+                {
+                    Groups =
+                    [
+                        new OffsetFetchResponseGroup
+                        {
+                            GroupId = FirstGroup,
+                            ErrorCode = ErrorCode.None,
+                            Topics =
+                            [
+                                new OffsetFetchResponseTopic
+                                {
+                                    TopicId = TopicId,
+                                    Partitions = [Offset(0, 42, ErrorCode.None)]
+                                }
+                            ]
+                        }
+                    ]
+                }),
+                ValueTask.FromException<OffsetFetchResponse>(new IOException("Coordinator unavailable.")),
+                ValueTask.FromException<OffsetFetchResponse>(new IOException("Coordinator unavailable.")),
+                ValueTask.FromException<OffsetFetchResponse>(new IOException("Coordinator unavailable.")));
+        var valid = new TopicPartition(Topic, 0);
+        var missing = new TopicPartition("missing", 0);
+
+        var results = await admin.ListStreamsGroupOffsetsAsync(
+            new Dictionary<string, ListStreamsGroupOffsetsSpec>
+            {
+                [FirstGroup] = new() { TopicPartitions = [valid, missing] }
+            });
+
+        await Assert.That(results[FirstGroup].Offsets[valid].Offset).IsEqualTo(42);
+        await Assert.That(results[FirstGroup].Offsets[missing].ErrorCode).IsEqualTo(ErrorCode.UnknownTopicId);
+        await connection.Received(4).SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
+            Arg.Any<OffsetFetchRequest>(),
+            10,
+            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
     public async Task ListStreamsGroupOffsetsAsync_RetriesMissingTopicIdAfterMetadataRefresh()
     {
         const string refreshedTopic = "created-after-cache";
