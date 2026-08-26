@@ -124,6 +124,56 @@ public sealed class ConsumeOneFastPathTests
     }
 
     [Test]
+    public async Task ConsumeOneAsync_ReentrantConsumerPreservesOuterRecordHeaders()
+    {
+        var nestedFetch = PendingFetchData.Create(Topic, Partition,
+        [
+            CreateBatch(20, CreateRecord(
+                0,
+                "nested-key",
+                "nested-value",
+                [new Header("record-id", "nested"u8.ToArray())]))
+        ]);
+        var nestedValueDeserializer = new HeaderValueCapturingStringDeserializer();
+        await using var nestedConsumer = CreateInitializedConsumerWithDeserializers(
+            nestedFetch,
+            valueDeserializer: nestedValueDeserializer);
+        MarkManualAssignmentCurrent(nestedConsumer);
+
+        var outerFetch = PendingFetchData.Create(Topic, Partition,
+        [
+            CreateBatch(20, CreateRecord(
+                0,
+                "outer-key",
+                "outer-value",
+                [new Header("record-id", "outer"u8.ToArray())]))
+        ]);
+        var outerValueDeserializer = new HeaderValueCapturingStringDeserializer();
+        var outerKeyDeserializer = new CallbackStringDeserializer(() =>
+        {
+            var nestedConsume = nestedConsumer.ConsumeOneAsync(
+                TimeSpan.FromSeconds(1),
+                CancellationToken.None);
+            if (!nestedConsume.IsCompletedSuccessfully)
+                throw new InvalidOperationException("The nested consume unexpectedly suspended.");
+            _ = nestedConsume.Result;
+        });
+        await using var outerConsumer = CreateInitializedConsumerWithDeserializers(
+            outerFetch,
+            outerKeyDeserializer,
+            outerValueDeserializer);
+        MarkManualAssignmentCurrent(outerConsumer);
+
+        var result = await outerConsumer.ConsumeOneAsync(
+            TimeSpan.FromSeconds(1),
+            CancellationToken.None);
+
+        await Assert.That(result).IsNotNull();
+        await Assert.That(nestedValueDeserializer.HeaderValue).IsEqualTo("nested");
+        await Assert.That(outerValueDeserializer.HeaderValue).IsEqualTo("outer");
+    }
+
+    [Test]
     public async Task ConsumeOneAsync_AsyncRecordHeaderDeserializerReceivesHeaders()
     {
         var fetch = PendingFetchData.Create(Topic, Partition,

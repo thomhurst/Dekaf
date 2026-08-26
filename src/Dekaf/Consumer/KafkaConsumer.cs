@@ -1247,6 +1247,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private readonly IDeserializer<TValue> _valueDeserializer;
     private readonly bool _hasRecordHeaderDeserializers;
     private readonly RecordHeaderRoutingPlan? _recordHeaderRoutingPlan;
+    private readonly Headers? _recordHeaderDeserializationHeaders;
     // Non-null when the user configured an IAsyncDeserializer for that component (issue #2309:
     // deserializers that perform per-record I/O, e.g. envelope decryption with short-lived keys).
     // When either is set, ConsumeAsync/ConsumeOneAsync await deserialization per record before
@@ -1778,6 +1779,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         _recordHeaderRoutingPlan = RecordHeaderRoutingPlan.Create(
             _keyDeserializer,
             _valueDeserializer);
+        _recordHeaderDeserializationHeaders = _recordHeaderRoutingPlan?.NeedsMaterializedHeaders is true
+            ? new Headers(2)
+            : null;
         _asyncKeyDeserializer = asyncKeyDeserializer;
         _asyncValueDeserializer = asyncValueDeserializer;
         _asyncKeyUsesRecordHeaders = asyncKeyDeserializer is
@@ -3129,6 +3133,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                         pending.CurrentPartitionLeaderEpoch >= 0
                                             ? pending.CurrentPartitionLeaderEpoch
                                             : null,
+                                        _recordHeaderDeserializationHeaders,
                                         _keyDeserializer,
                                         _valueDeserializer);
                                 }
@@ -5912,6 +5917,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                     pending.CurrentPartitionLeaderEpoch >= 0
                                         ? pending.CurrentPartitionLeaderEpoch
                                         : null,
+                                    _recordHeaderDeserializationHeaders,
                                     _keyDeserializer,
                                     _valueDeserializer);
                             }
@@ -6468,10 +6474,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         where TPreparedKeyMode : struct
     {
         var topic = pending.Topic;
-        var materializedHeaders = headerRouting.KeyRequiresMaterializedHeaders
-                                  || headerRouting.ValueRequiresMaterializedHeaders
-            ? RecordHeaderMaterializer.GetCallerOwnedHeaders(in headerRouting)
-            : null;
+        var materializedHeaders = _recordHeaderDeserializationHeaders;
+        if (materializedHeaders is not null)
+            headerRouting.CopyTo(materializedHeaders);
         TKey? key = default;
         if (!isKeyNull)
         {

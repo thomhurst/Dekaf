@@ -152,6 +152,84 @@ public sealed class ShareConsumerRecordPoolingTests
 
     [Test]
     [NotInParallel]
+    public async Task ParsePartitionRecords_ReentrantConsumerPreservesOuterRecordHeaders()
+    {
+        var nestedBuffer = new ArrayBufferWriter<byte>();
+        using var nestedBatch = new RecordBatch
+        {
+            BaseOffset = 17,
+            Records =
+            [
+                new Record
+                {
+                    Key = "nested-key"u8.ToArray(),
+                    Value = "nested-value"u8.ToArray(),
+                    Headers = [new Header("record-id", "nested"u8.ToArray())],
+                    HeaderCount = 1
+                }
+            ]
+        };
+        nestedBatch.Write(nestedBuffer);
+
+        var outerBuffer = new ArrayBufferWriter<byte>();
+        using var outerBatch = new RecordBatch
+        {
+            BaseOffset = 17,
+            Records =
+            [
+                new Record
+                {
+                    Key = "outer-key"u8.ToArray(),
+                    Value = "outer-value"u8.ToArray(),
+                    Headers = [new Header("record-id", "outer"u8.ToArray())],
+                    HeaderCount = 1
+                }
+            ]
+        };
+        outerBatch.Write(outerBuffer);
+
+        var options = new ShareConsumerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            GroupId = "share-header-reentrancy-test"
+        };
+        var pool = Substitute.For<IConnectionPool>();
+        await using var metadataManager = new MetadataManager(pool, options.BootstrapServers);
+        var nestedValueDeserializer = new HeaderValueCapturingStringDeserializer();
+        await using var nestedConsumer = new KafkaShareConsumer<string, string>(
+            options,
+            Serializers.String,
+            nestedValueDeserializer,
+            pool,
+            metadataManager);
+        var method = typeof(KafkaShareConsumer<string, string>).GetMethod(
+            "ParsePartitionRecords",
+            BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var topicInfo = new TopicInfo { Name = "topic", Partitions = [] };
+        var nestedPartition = CreatePartition(nestedBuffer.WrittenMemory);
+        var outerValueDeserializer = new HeaderValueCapturingStringDeserializer();
+        var outerKeyDeserializer = new CallbackStringDeserializer(() =>
+            _ = method.Invoke(nestedConsumer, [topicInfo, nestedPartition, 1]));
+        await using var outerConsumer = new KafkaShareConsumer<string, string>(
+            options,
+            outerKeyDeserializer,
+            outerValueDeserializer,
+            pool,
+            metadataManager);
+
+        _ = method.Invoke(outerConsumer,
+        [
+            topicInfo,
+            CreatePartition(outerBuffer.WrittenMemory),
+            1
+        ]);
+
+        await Assert.That(nestedValueDeserializer.HeaderValue).IsEqualTo("nested");
+        await Assert.That(outerValueDeserializer.HeaderValue).IsEqualTo("outer");
+    }
+
+    [Test]
+    [NotInParallel]
     public async Task ParsePartitionRecords_ColdHeaderPreparers_ParseEachBatchOnce()
     {
         var buffer = new ArrayBufferWriter<byte>();
@@ -350,6 +428,47 @@ public sealed class ShareConsumerRecordPoolingTests
             HeaderCount = context.Headers?.Count ?? 0;
             if (addMarker)
                 context.Headers!.Add("key-visited", Array.Empty<byte>());
+            return System.Text.Encoding.UTF8.GetString(data.Span);
+        }
+    }
+
+    private static ShareFetchResponsePartition CreatePartition(ReadOnlyMemory<byte> recordBytes) =>
+        new()
+        {
+            PartitionIndex = 0,
+            CurrentLeader = new ShareFetchLeaderIdAndEpoch(),
+            RecordBytes = recordBytes,
+            AcquiredRecords =
+            [
+                new ShareFetchAcquiredRecords
+                {
+                    FirstOffset = 17,
+                    LastOffset = 17,
+                    DeliveryCount = 1
+                }
+            ]
+        };
+
+    private sealed class HeaderValueCapturingStringDeserializer :
+        IDeserializer<string>,
+        IRecordHeaderDeserializer
+    {
+        public bool ConsumesRecordHeaders => true;
+
+        internal string? HeaderValue { get; private set; }
+
+        public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
+        {
+            HeaderValue = context.Headers?[0].GetValueAsString();
+            return System.Text.Encoding.UTF8.GetString(data.Span);
+        }
+    }
+
+    private sealed class CallbackStringDeserializer(Action callback) : IDeserializer<string>
+    {
+        public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
+        {
+            callback();
             return System.Text.Encoding.UTF8.GetString(data.Span);
         }
     }

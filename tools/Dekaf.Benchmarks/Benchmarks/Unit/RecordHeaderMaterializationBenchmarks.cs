@@ -14,6 +14,7 @@ public class RecordHeaderMaterializationBenchmarks
     private PendingFetchData _headerOwner = null!;
     private IDeserializer<string> _keyDeserializer = null!;
     private IDeserializer<string> _valueDeserializer = null!;
+    private Headers _materializedHeaders = null!;
     private RecordHeaderRoutingLookup _headerLookup;
 
     [GlobalSetup]
@@ -25,6 +26,7 @@ public class RecordHeaderMaterializationBenchmarks
             Array.Empty<RecordBatch>());
         _keyDeserializer = RecordHeaderDeserializer.WrapIfNeeded(new HeaderDeserializer());
         _valueDeserializer = RecordHeaderDeserializer.WrapIfNeeded(new HeaderDeserializer());
+        _materializedHeaders = new Headers(32);
         var plan = RecordHeaderRoutingPlan.Create(_keyDeserializer, _valueDeserializer)!;
         var headers = new Header[32];
         for (var index = 0; index < headers.Length; index++)
@@ -60,6 +62,7 @@ public class RecordHeaderMaterializationBenchmarks
             timestampMs: 0,
             timestampType: TimestampType.CreateTime,
             leaderEpoch: null,
+            _materializedHeaders,
             _keyDeserializer,
             _valueDeserializer);
 

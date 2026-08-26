@@ -36,6 +36,8 @@ internal sealed class RecordHeaderRoutingPlan
     internal int Count => _slots.Count;
     internal bool KeyRequiresMaterializedHeaders { get; }
     internal bool ValueRequiresMaterializedHeaders { get; }
+    internal bool NeedsMaterializedHeaders =>
+        KeyRequiresMaterializedHeaders || ValueRequiresMaterializedHeaders;
 
     internal bool TryGetSlot(string headerName, out int slot) =>
         _slots.TryGetValue(headerName, out slot);

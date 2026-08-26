@@ -746,14 +746,14 @@ public readonly struct ConsumeResult<TKey, TValue>
         long timestampMs,
         TimestampType timestampType,
         int? leaderEpoch,
+        Headers? headerWorkspace,
         IDeserializer<TKey>? keyDeserializer,
         IDeserializer<TValue>? valueDeserializer)
     {
         ref var serializationContext = ref t_serializationContext;
-        var materializedHeaders = headerRouting.KeyRequiresMaterializedHeaders
-                                  || headerRouting.ValueRequiresMaterializedHeaders
-            ? RecordHeaderMaterializer.GetCallerOwnedHeaders(in headerRouting)
-            : null;
+        if (headerWorkspace is not null)
+            headerRouting.CopyTo(headerWorkspace);
+        var materializedHeaders = headerWorkspace;
         TKey? key = default;
         if (!isKeyNull && keyDeserializer is not null)
         {

@@ -39,6 +39,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
     private readonly IAsyncDeserializerPreparer<TValue>? _valueDeserializerPreparer;
     private readonly bool _hasDeserializerPreparers;
     private readonly RecordHeaderRoutingPlan? _recordHeaderRoutingPlan;
+    private readonly Headers? _recordHeaderDeserializationHeaders;
     private readonly IConnectionPool _connectionPool;
     private readonly MetadataManager _metadataManager;
     private readonly ShareConsumerCoordinator _coordinator;
@@ -161,6 +162,9 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         _recordHeaderRoutingPlan = RecordHeaderRoutingPlan.Create(
             _keyDeserializer,
             _valueDeserializer);
+        _recordHeaderDeserializationHeaders = _recordHeaderRoutingPlan?.NeedsMaterializedHeaders is true
+            ? new Headers(2)
+            : null;
         _keyDeserializerPreparer = _keyDeserializer is IAsyncDeserializerPreparer<TKey> keyDeserializerPreparer &&
             _keyDeserializer is not IAsyncDeserializerPreparationRequirement { RequiresPreparation: false }
                 ? keyDeserializerPreparer
@@ -1311,10 +1315,9 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                     t_serializationContext.IsNull = record.IsKeyNull;
                     var headerRouting = record.CreateHeaderRoutingLookup(
                         _recordHeaderRoutingPlan);
-                    var materializedHeaders = headerRouting.KeyRequiresMaterializedHeaders
-                                              || headerRouting.ValueRequiresMaterializedHeaders
-                        ? RecordHeaderMaterializer.GetCallerOwnedHeaders(in headerRouting)
-                        : null;
+                    var materializedHeaders = _recordHeaderDeserializationHeaders;
+                    if (materializedHeaders is not null)
+                        headerRouting.CopyTo(materializedHeaders);
                     t_serializationContext.Headers = headerRouting.KeyRequiresMaterializedHeaders
                         ? materializedHeaders
                         : null;
@@ -1428,10 +1431,9 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                 t_serializationContext.IsNull = record.IsKeyNull;
                 var headerRouting = record.CreateHeaderRoutingLookup(
                     _recordHeaderRoutingPlan);
-                var materializedHeaders = headerRouting.KeyRequiresMaterializedHeaders
-                                          || headerRouting.ValueRequiresMaterializedHeaders
-                    ? RecordHeaderMaterializer.GetCallerOwnedHeaders(in headerRouting)
-                    : null;
+                var materializedHeaders = _recordHeaderDeserializationHeaders;
+                if (materializedHeaders is not null)
+                    headerRouting.CopyTo(materializedHeaders);
                 t_serializationContext.Headers = headerRouting.KeyRequiresMaterializedHeaders
                     ? materializedHeaders
                     : null;
