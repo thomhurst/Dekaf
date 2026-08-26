@@ -10,6 +10,8 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 [MemoryDiagnoser(displayGenColumns: false)]
 public class AvroInlineValidationBenchmarks
 {
+    private static readonly int[] TwoItems = [1, 2];
+
     private AvroInlineRuleValidator _validator = null!;
     private ReadOnlyMemory<byte> _payload;
     private AvroInlineRuleValidator _arrayEqualityValidator = null!;
@@ -19,6 +21,10 @@ public class AvroInlineValidationBenchmarks
     private ReadOnlyMemory<byte> _reorderedMapPayload;
     private AvroInlineRuleValidator _recordSizeValidator = null!;
     private ReadOnlyMemory<byte> _recordSizePayload;
+    private AvroInlineRuleValidator _nullableAggregateValidator = null!;
+    private ReadOnlyMemory<byte> _nullableAggregatePayload;
+    private AvroInlineRuleValidator _mixedFloatingValidator = null!;
+    private ReadOnlyMemory<byte> _mixedFloatingPayload;
 
     [GlobalSetup]
     public void Setup()
@@ -112,6 +118,58 @@ public class AvroInlineValidationBenchmarks
         _recordSizePayload = sizedStream.ToArray();
         _recordSizeValidator = new AvroInlineRuleValidator(sizedSchema);
         _recordSizeValidator.Validate(_recordSizePayload, 4, failFast: false);
+
+        const string nullableAggregateSchema = """
+            {
+              "type": "record",
+              "name": "NullableAggregateBenchmarkRecord",
+              "confluent:rules": [{ "name": "size", "expr": "size(this.items) == 2 && this.child.code == 7" }],
+              "fields": [
+                { "name": "items", "type": ["null", { "type": "array", "items": "int" }] },
+                {
+                  "name": "child",
+                  "type": ["null", {
+                    "type": "record",
+                    "name": "NullableAggregateBenchmarkChild",
+                    "fields": [{ "name": "code", "type": "int" }]
+                  }],
+                  "confluent:rules": [{ "name": "code", "expr": "this.code == 7" }]
+                }
+              ]
+            }
+            """;
+        var nullableSchema = (RecordSchema)AvroSchema.Parse(nullableAggregateSchema);
+        var nullableChildSchema = (RecordSchema)((UnionSchema)nullableSchema.Fields[1].Schema)[1];
+        var nullableChild = new GenericRecord(nullableChildSchema);
+        nullableChild.Add("code", 7);
+        var nullableRecord = new GenericRecord(nullableSchema);
+        nullableRecord.Add("items", TwoItems);
+        nullableRecord.Add("child", nullableChild);
+        using var nullableStream = new MemoryStream();
+        var nullableEncoder = new BinaryEncoder(nullableStream);
+        new GenericDatumWriter<GenericRecord>(nullableSchema).Write(nullableRecord, nullableEncoder);
+        nullableEncoder.Flush();
+        _nullableAggregatePayload = nullableStream.ToArray();
+        _nullableAggregateValidator = new AvroInlineRuleValidator(nullableSchema);
+        _nullableAggregateValidator.Validate(_nullableAggregatePayload, 5, failFast: false);
+
+        const string mixedFloatingSchema = """
+            {
+              "type": "double",
+              "confluent:rules": [{
+                "name": "precision",
+                "expr": "this != 9007199254740993 && this < 9007199254740993"
+              }]
+            }
+            """;
+        var floatingSchema = AvroSchema.Parse(mixedFloatingSchema);
+        using var floatingStream = new MemoryStream();
+        var floatingEncoder = new BinaryEncoder(floatingStream);
+        new GenericDatumWriter<double>(floatingSchema).Write(9007199254740992d, floatingEncoder);
+        floatingEncoder.Flush();
+        _mixedFloatingPayload = floatingStream.ToArray();
+        _mixedFloatingValidator = new AvroInlineRuleValidator(floatingSchema);
+        _mixedFloatingValidator.Validate(_mixedFloatingPayload, 6, failFast: false);
     }
 
     [Benchmark]
@@ -133,4 +191,12 @@ public class AvroInlineValidationBenchmarks
     [Benchmark]
     public void ValidateRecordSize() =>
         _recordSizeValidator.Validate(_recordSizePayload, 4, failFast: false);
+
+    [Benchmark]
+    public void ValidateNullableAggregateMembers() =>
+        _nullableAggregateValidator.Validate(_nullableAggregatePayload, 5, failFast: false);
+
+    [Benchmark]
+    public void ValidateMixedFloatingComparison() =>
+        _mixedFloatingValidator.Validate(_mixedFloatingPayload, 6, failFast: false);
 }

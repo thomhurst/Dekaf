@@ -82,7 +82,7 @@ internal sealed class AvroValueRulePlan
     {
         _schemaRules = AvroCompiledRuleSet.Compile(
             AvroInlineRuleParser.ReadRules(_schema),
-            _schema as global::Avro.RecordSchema);
+            _schema);
 
         switch (_schema)
         {
@@ -97,7 +97,7 @@ internal sealed class AvroValueRulePlan
                         field,
                         AvroCompiledRuleSet.Compile(
                             AvroInlineRuleParser.ReadRules(field),
-                            FindRecord(fieldSchema)),
+                            field.Schema),
                         child);
                 }
                 break;
@@ -429,7 +429,7 @@ internal sealed class AvroCompiledRuleSet
 
     internal static AvroCompiledRuleSet Compile(
         IReadOnlyList<ValidationRule> rules,
-        global::Avro.RecordSchema? valueSchema)
+        AvroSchema valueSchema)
     {
         if (rules.Count == 0)
             return Empty;
@@ -452,9 +452,10 @@ internal sealed class AvroCompiledRuleSet
             usesCachedEquality |= rule.UsesCachedEquality;
         }
 
-        var members = usedMemberIndexes.Count == 0 || valueSchema is null
+        var recordSchema = AvroValueRulePlan.FindRecord(valueSchema);
+        var members = usedMemberIndexes.Count == 0 || recordSchema is null
             ? null
-            : AvroMemberResolver.Create(valueSchema, memberPaths, usedMemberIndexes);
+            : AvroMemberResolver.Create(valueSchema, recordSchema, memberPaths, usedMemberIndexes);
         return new AvroCompiledRuleSet(
             compiled,
             members,
@@ -522,20 +523,27 @@ internal sealed class AvroCompiledRuleSet
 
 internal sealed class AvroMemberResolver
 {
+    private readonly AvroSchema _valueSchema;
+    private readonly global::Avro.RecordSchema _recordSchema;
     private readonly AvroMemberNode?[] _fields;
 
-    private AvroMemberResolver(global::Avro.RecordSchema schema) =>
-        _fields = new AvroMemberNode?[schema.Fields.Count];
+    private AvroMemberResolver(AvroSchema valueSchema, global::Avro.RecordSchema recordSchema)
+    {
+        _valueSchema = AvroValueRulePlan.Unwrap(valueSchema);
+        _recordSchema = recordSchema;
+        _fields = new AvroMemberNode?[recordSchema.Fields.Count];
+    }
 
     internal static AvroMemberResolver Create(
-        global::Avro.RecordSchema schema,
+        AvroSchema valueSchema,
+        global::Avro.RecordSchema recordSchema,
         IReadOnlyList<byte[][]> paths,
         IReadOnlyCollection<int> usedIndexes)
     {
-        var resolver = new AvroMemberResolver(schema);
-        resolver.SetSchemas(schema);
+        var resolver = new AvroMemberResolver(valueSchema, recordSchema);
+        resolver.SetSchemas(recordSchema);
         foreach (var memberIndex in usedIndexes)
-            resolver.Add(schema, paths[memberIndex], memberIndex, depth: 0);
+            resolver.Add(recordSchema, paths[memberIndex], memberIndex, depth: 0);
         return resolver;
     }
 
@@ -564,6 +572,15 @@ internal sealed class AvroMemberResolver
         ValidationCelSizeValues sizes)
     {
         var reader = new AvroValidationReader(payload);
+        if (_valueSchema is global::Avro.UnionSchema union)
+        {
+            var branch = reader.ReadLong();
+            if ((ulong)branch >= (ulong)union.Count)
+                throw new SchemaRegistryRuleException(
+                    $"Could not evaluate Avro validation rules: invalid union index {branch}.");
+            if (!ReferenceEquals(AvroValueRulePlan.Unwrap(union[(int)branch]), _recordSchema))
+                return;
+        }
         for (var index = 0; index < _fields.Length; index++)
         {
             var node = _fields[index];
@@ -681,7 +698,7 @@ internal sealed class AvroMemberResolver
         {
             if (!_children.TryGetValue(record, out var child))
             {
-                child = new AvroMemberResolver(record);
+                child = new AvroMemberResolver(record, record);
                 child.SetSchemas(record);
                 _children.Add(record, child);
             }
@@ -935,11 +952,18 @@ internal static class AvroValidationValueDecoder
     internal static int Count(AvroSchema schema, ReadOnlyMemory<byte> payload)
     {
         schema = AvroValueRulePlan.Unwrap(schema);
+        var reader = new AvroValidationReader(payload);
+        if (schema is global::Avro.UnionSchema union)
+        {
+            var branch = reader.ReadLong();
+            if ((ulong)branch >= (ulong)union.Count)
+                throw InvalidPayload($"invalid union index {branch}");
+            schema = AvroValueRulePlan.Unwrap(union[(int)branch]);
+        }
         if (schema is global::Avro.RecordSchema record)
             return record.Fields.Count;
         if (schema is not (global::Avro.ArraySchema or global::Avro.MapSchema))
             return -1;
-        var reader = new AvroValidationReader(payload);
         var count = 0L;
         while (true)
         {

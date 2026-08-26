@@ -1814,24 +1814,18 @@ internal sealed class ValidationCelBinaryNode(
 
     private static int? CompareNumbers(ValidationCelValue left, ValidationCelValue right)
     {
-        if (left.IsFloating || right.IsFloating)
+        if (left.IsFloating && right.IsFloating)
         {
-            if (left.IsFloating && double.IsNaN(left.Floating) ||
-                right.IsFloating && double.IsNaN(right.Floating))
-            {
+            if (double.IsNaN(left.Floating) || double.IsNaN(right.Floating))
                 return null;
-            }
-            if (left.IsFloating)
-            {
-                if (right.IsFloating || right.IsFloatingLiteral)
-                    return left.Floating.CompareTo(right.Floating);
-            }
-            else if (left.IsFloatingLiteral)
-                return left.Floating.CompareTo(right.Floating);
-
-            return left.IsFloating
-                ? CompareFloatingToExact(left.Floating, right)
-                : -CompareFloatingToExact(right.Floating, left);
+            return left.Floating.CompareTo(right.Floating);
+        }
+        if (left.IsFloating)
+            return CompareFloatingToExact(left.Floating, right);
+        if (right.IsFloating)
+        {
+            var comparison = CompareFloatingToExact(right.Floating, left);
+            return comparison.HasValue ? -comparison.Value : null;
         }
 
         // Number values reuse the Boolean slot to mark a successful decimal parse.
@@ -1845,8 +1839,10 @@ internal sealed class ValidationCelBinaryNode(
         return CompareExactNumbers(left, right);
     }
 
-    private static int CompareFloatingToExact(double floating, ValidationCelValue exact)
+    private static int? CompareFloatingToExact(double floating, ValidationCelValue exact)
     {
+        if (double.IsNaN(floating))
+            return null;
         if (double.IsPositiveInfinity(floating))
             return 1;
         if (double.IsNegativeInfinity(floating))

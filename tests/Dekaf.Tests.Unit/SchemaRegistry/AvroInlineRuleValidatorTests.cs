@@ -14,6 +14,8 @@ namespace Dekaf.Tests.Unit.SchemaRegistry;
 
 public class AvroInlineRuleValidatorTests
 {
+    private static readonly int[] TwoItems = [1, 2];
+
     private const string IntegrationSchema = """
         {
           "type": "record",
@@ -115,6 +117,40 @@ public class AvroInlineRuleValidatorTests
     }
 
     [Test]
+    public async Task Validate_NullableRecordFieldRuleResolvesSelectedBranchMembers()
+    {
+        const string schemaText = """
+            {
+              "type": "record",
+              "name": "NullableFieldRuleRecord",
+              "fields": [{
+                "name": "child",
+                "type": ["null", {
+                  "type": "record",
+                  "name": "NullableFieldRuleChild",
+                  "fields": [{ "name": "code", "type": "int" }]
+                }],
+                "confluent:rules": [{ "name": "code", "expr": "this.code == 7" }]
+              }]
+            }
+            """;
+        var schema = (RecordSchema)AvroSchema.Parse(schemaText);
+        var childSchema = (RecordSchema)((UnionSchema)schema.Fields[0].Schema)[1];
+        var child = new GenericRecord(childSchema);
+        var record = new GenericRecord(schema);
+        record.Add("child", child);
+        var validator = new AvroInlineRuleValidator(schema);
+
+        child.Add("code", 7);
+        validator.Validate(Serialize(record, schema), 18, failFast: false);
+
+        child.Add("code", 8);
+        Assert.Throws<ValidationRulesFailedException>(() =>
+            validator.Validate(Serialize(record, schema), 18, failFast: false));
+        await Task.CompletedTask;
+    }
+
+    [Test]
     public async Task Validate_RecordSizeUsesFieldCount()
     {
         const string schemaText = """
@@ -153,6 +189,48 @@ public class AvroInlineRuleValidatorTests
     }
 
     [Test]
+    public async Task Validate_NullableAggregateMemberSizesUseSelectedBranches()
+    {
+        const string schemaText = """
+            {
+              "type": "record",
+              "name": "NullableAggregateSizeRecord",
+              "confluent:rules": [{
+                "name": "sizes",
+                "expr": "size(this.items) == 2 && size(this.labels) == 1 && size(this.child) == 1"
+              }],
+              "fields": [
+                { "name": "items", "type": ["null", { "type": "array", "items": "int" }] },
+                { "name": "labels", "type": ["null", { "type": "map", "values": "int" }] },
+                {
+                  "name": "child",
+                  "type": ["null", {
+                    "type": "record",
+                    "name": "NullableAggregateSizeChild",
+                    "fields": [{ "name": "code", "type": "int" }]
+                  }]
+                }
+              ]
+            }
+            """;
+        var schema = (RecordSchema)AvroSchema.Parse(schemaText);
+        var childSchema = (RecordSchema)((UnionSchema)schema.Fields[2].Schema)[1];
+        var child = new GenericRecord(childSchema);
+        child.Add("code", 7);
+        var record = new GenericRecord(schema);
+        record.Add("items", TwoItems);
+        record.Add("labels", new Dictionary<string, object> { ["a"] = 1 });
+        record.Add("child", child);
+
+        new AvroInlineRuleValidator(schema).Validate(
+            Serialize(record, schema),
+            18,
+            failFast: false);
+
+        await Task.CompletedTask;
+    }
+
+    [Test]
     public async Task Validate_FloatingArithmeticPreservesFloatingOperands()
     {
         const string schemaText = """
@@ -169,6 +247,35 @@ public class AvroInlineRuleValidatorTests
         var schema = (RecordSchema)AvroSchema.Parse(schemaText);
         var record = new GenericRecord(schema);
         record.Add("value", 0.5d);
+
+        new AvroInlineRuleValidator(schema).Validate(
+            Serialize(record, schema),
+            26,
+            failFast: false);
+
+        await Task.CompletedTask;
+    }
+
+    [Test]
+    public async Task Validate_MixedFloatingComparisonPreservesExactIntegerPrecision()
+    {
+        const string schemaText = """
+            {
+              "type": "record",
+              "name": "FloatingPrecisionRuleRecord",
+              "fields": [{
+                "name": "value",
+                "type": "double",
+                "confluent:rules": [{
+                  "name": "precision",
+                  "expr": "this != 9007199254740993 && this < 9007199254740993 && 9007199254740993 > this"
+                }]
+              }]
+            }
+            """;
+        var schema = (RecordSchema)AvroSchema.Parse(schemaText);
+        var record = new GenericRecord(schema);
+        record.Add("value", 9007199254740992d);
 
         new AvroInlineRuleValidator(schema).Validate(
             Serialize(record, schema),
