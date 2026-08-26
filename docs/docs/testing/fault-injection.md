@@ -63,7 +63,11 @@ Choose the lifetime that represents the behavior under test:
 | `Fail(scope, exception)` | Throws once on the next matching operation. |
 | `Fail(scope, exception, occurrenceCount: n)` | Throws on the next `n` matching operations. The plan still reports one queued entry. |
 | `FailPersistently(scope, exception)` | Throws on every matching operation until cleared. |
-| `PauseNext(scope)` | Pauses the next matching operation at a one-shot barrier. |
+| `PauseNext(scope)` | Pauses the next matching asynchronous operation at a one-shot barrier. |
+
+Pause barriers cannot suspend the synchronous `StoreOffset`, `JoinGroup`, `SyncGroup`, or
+`Rebalance` boundaries. An unreleased barrier matched there throws `InvalidOperationException`;
+use `Fail` when testing those synchronous operations.
 
 `Clear(scope)` removes rules whose configured scope exactly equals `scope`; it does not perform
 wildcard matching. `Clear()` removes all queued rules. Both methods return the number of removed
@@ -122,9 +126,13 @@ operation's exception.
 ## Scenario: singleton producer fatal handling
 
 A `FatalTransactionException` injected at a producer or transaction fault boundary is captured by
-that producer. Every later operation on the same long-lived instance throws the same exception
-object. Recovery therefore requires replacing the producer, which lets an application test its
-singleton lifecycle policy without killing a broker.
+that producer. Later `ProduceAsync` calls and transaction-state APIs throw the same exception
+object: `BeginTransaction`, `InitTransactionsAsync`, `CompletePreparedTransactionAsync`, and the
+transaction produce, send-offsets, prepare, commit, and abort operations. `FireAsync` suppresses
+delivery errors by contract, while `FlushAsync`, `InitializeAsync`, `GetPartitionsForAsync`, and
+`ForTopic` do not check fatal state and are not health probes. Recovery therefore requires
+replacing the producer, which lets an application test its singleton lifecycle policy without
+killing a broker.
 
 ```csharp
 public static class SingletonProducerFatalScenario
