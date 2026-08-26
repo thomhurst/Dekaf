@@ -8,6 +8,7 @@ using Dekaf.SchemaRegistry;
 using Dekaf.SchemaRegistry.Avro;
 using Dekaf.SchemaRegistry.Avro.Poco;
 using Dekaf.Serialization;
+using NSubstitute;
 using AvroSchema = Avro.Schema;
 
 namespace Dekaf.Tests.Unit.SchemaRegistry;
@@ -311,6 +312,84 @@ public class AvroInlineRuleValidatorTests
         }
 
         await Task.CompletedTask;
+    }
+
+    [Test]
+    public async Task Validate_MapMemberAndNestedRulesPreserveParentFirstOrder()
+    {
+        const string schemaText = """
+            {
+              "type": "map",
+              "confluent:rules": [{ "name": "selected", "expr": "this.selected.code > 0" }],
+              "values": {
+                "type": "record",
+                "name": "MapNestedRuleValue",
+                "fields": [{
+                  "name": "code",
+                  "type": "int",
+                  "confluent:rules": [{ "name": "positive", "expr": "this > 0" }]
+                }]
+              }
+            }
+            """;
+        var schema = (MapSchema)AvroSchema.Parse(schemaText);
+        var valueSchema = (RecordSchema)schema.ValueSchema;
+        var invalidValue = new GenericRecord(valueSchema);
+        invalidValue.Add("code", -1);
+        var payload = Serialize(
+            new Dictionary<string, object> { ["selected"] = invalidValue },
+            schema);
+        var validator = new AvroInlineRuleValidator(schema);
+
+        var all = Assert.Throws<ValidationRulesFailedException>(() =>
+            validator.Validate(payload, 18, failFast: false));
+        var first = Assert.Throws<ValidationRulesFailedException>(() =>
+            validator.Validate(payload, 18, failFast: true));
+
+        await Assert.That(all.Violations).Count().IsEqualTo(2);
+        await Assert.That(all.Violations[0].Rule.Name).IsEqualTo("selected");
+        await Assert.That(all.Violations[1].Rule.Name).IsEqualTo("positive");
+        await Assert.That(first.Violations).HasSingleItem();
+        await Assert.That(first.Violations[0].Rule.Name).IsEqualTo("selected");
+    }
+
+    [Test]
+    public async Task Validate_UnionMemberAndNestedRulesPreserveParentFirstOrder()
+    {
+        const string schemaText = """
+            {
+              "type": [
+                "null",
+                {
+                  "type": "record",
+                  "name": "UnionNestedRuleValue",
+                  "fields": [{
+                    "name": "code",
+                    "type": "int",
+                    "confluent:rules": [{ "name": "positive", "expr": "this > 0" }]
+                  }]
+                }
+              ],
+              "confluent:rules": [{ "name": "selected", "expr": "this.code > 0" }]
+            }
+            """;
+        var schema = (UnionSchema)AvroSchema.Parse(schemaText);
+        var valueSchema = (RecordSchema)schema[1];
+        var invalidValue = new GenericRecord(valueSchema);
+        invalidValue.Add("code", -1);
+        var payload = Serialize(invalidValue, schema);
+        var validator = new AvroInlineRuleValidator(schema);
+
+        var all = Assert.Throws<ValidationRulesFailedException>(() =>
+            validator.Validate(payload, 18, failFast: false));
+        var first = Assert.Throws<ValidationRulesFailedException>(() =>
+            validator.Validate(payload, 18, failFast: true));
+
+        await Assert.That(all.Violations).Count().IsEqualTo(2);
+        await Assert.That(all.Violations[0].Rule.Name).IsEqualTo("selected");
+        await Assert.That(all.Violations[1].Rule.Name).IsEqualTo("positive");
+        await Assert.That(first.Violations).HasSingleItem();
+        await Assert.That(first.Violations[0].Rule.Name).IsEqualTo("selected");
     }
 
     [Test]
@@ -864,6 +943,137 @@ public class AvroInlineRuleValidatorTests
         Assert.Throws<ValidationRulesFailedException>(() =>
             serializer.Serialize(record, ref destination, CreateContext()));
 
+        await Assert.That(destination.WrittenCount).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task Serializer_AutoRegisterUsesRulesFromExistingRegistrySchema()
+    {
+        const string runtimeSchemaText = """
+            {
+              "type": "record",
+              "name": "IntegratedRuleRecord",
+              "fields": [{ "name": "age", "type": "int" }]
+            }
+            """;
+        var registeredSchema = new Dekaf.SchemaRegistry.Schema
+        {
+            SchemaType = SchemaType.Avro,
+            SchemaString = IntegrationSchema
+        };
+        var registry = Substitute.For<ISchemaRegistryClient>();
+        registry.GetOrRegisterSchemaAsync(
+                "validation-topic-value",
+                Arg.Any<Dekaf.SchemaRegistry.Schema>(),
+                Arg.Any<CancellationToken>())
+            .Returns(42);
+        registry.GetSchemaAsync(
+                42,
+                "validation-topic-value",
+                Arg.Any<CancellationToken>())
+            .Returns(registeredSchema);
+        var runtimeSchema = (RecordSchema)AvroSchema.Parse(runtimeSchemaText);
+        var record = new GenericRecord(runtimeSchema);
+        record.Add("age", -1);
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(
+            registry,
+            new AvroSerializerConfig
+            {
+                ValidationRulesExecution = ValidationRulesExecution.BeforeDomainRules
+            });
+        var destination = new ArrayBufferWriter<byte>();
+
+        Assert.Throws<ValidationRulesFailedException>(() =>
+            serializer.Serialize(record, ref destination, CreateContext()));
+
+        await registry.Received(1).GetSchemaAsync(
+            42,
+            "validation-topic-value",
+            Arg.Any<CancellationToken>());
+        await Assert.That(destination.WrittenCount).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task Serializer_ResolvesReferencedRegistryRulesBeforeValidation()
+    {
+        const string runtimeSchemaText = """
+            {
+              "type": "record",
+              "name": "ReferenceRoot",
+              "namespace": "Dekaf.Tests",
+              "fields": [{
+                "name": "child",
+                "type": {
+                  "type": "record",
+                  "name": "ReferencedChild",
+                  "fields": [{ "name": "code", "type": "int" }]
+                }
+              }]
+            }
+            """;
+        const string registeredChildSchemaText = """
+            {
+              "type": "record",
+              "name": "ReferencedChild",
+              "namespace": "Dekaf.Tests",
+              "fields": [{
+                "name": "code",
+                "type": "int",
+                "confluent:rules": [{ "name": "positive", "expr": "this > 0" }]
+              }]
+            }
+            """;
+        const string registeredRootSchemaText = """
+            {
+              "type": "record",
+              "name": "ReferenceRoot",
+              "namespace": "Dekaf.Tests",
+              "fields": [{ "name": "child", "type": "Dekaf.Tests.ReferencedChild" }]
+            }
+            """;
+        using var registry = new MockSchemaRegistryClient();
+        _ = await registry.RegisterSchemaAsync(
+            "referenced-child",
+            new Dekaf.SchemaRegistry.Schema
+            {
+                SchemaType = SchemaType.Avro,
+                SchemaString = registeredChildSchemaText
+            });
+        _ = await registry.RegisterSchemaAsync(
+            "validation-topic-value",
+            new Dekaf.SchemaRegistry.Schema
+            {
+                SchemaType = SchemaType.Avro,
+                SchemaString = registeredRootSchemaText,
+                References =
+                [
+                    new SchemaReference
+                    {
+                        Name = "Dekaf.Tests.ReferencedChild",
+                        Subject = "referenced-child",
+                        Version = 1
+                    }
+                ]
+            });
+        var runtimeSchema = (RecordSchema)AvroSchema.Parse(runtimeSchemaText);
+        var runtimeChildSchema = (RecordSchema)runtimeSchema.Fields[0].Schema;
+        var child = new GenericRecord(runtimeChildSchema);
+        child.Add("code", -1);
+        var record = new GenericRecord(runtimeSchema);
+        record.Add("child", child);
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(
+            registry,
+            new AvroSerializerConfig
+            {
+                UseLatestVersion = true,
+                ValidationRulesExecution = ValidationRulesExecution.BeforeDomainRules
+            });
+        var destination = new ArrayBufferWriter<byte>();
+
+        var exception = Assert.Throws<ValidationRulesFailedException>(() =>
+            serializer.Serialize(record, ref destination, CreateContext()));
+
+        await Assert.That(exception.Message).Contains("$.child.code: positive");
         await Assert.That(destination.WrittenCount).IsEqualTo(0);
     }
 
@@ -1508,6 +1718,15 @@ public class AvroInlineRuleValidatorTests
         using var stream = new MemoryStream();
         var encoder = new BinaryEncoder(stream);
         new GenericDatumWriter<GenericRecord>(schema).Write(record, encoder);
+        encoder.Flush();
+        return stream.ToArray();
+    }
+
+    private static byte[] Serialize(object value, AvroSchema schema)
+    {
+        using var stream = new MemoryStream();
+        var encoder = new BinaryEncoder(stream);
+        new GenericDatumWriter<object>(schema).Write(value, encoder);
         encoder.Flush();
         return stream.ToArray();
     }

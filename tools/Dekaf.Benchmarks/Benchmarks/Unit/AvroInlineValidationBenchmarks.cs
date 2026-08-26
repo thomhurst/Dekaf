@@ -1,3 +1,4 @@
+using System.Text;
 using Avro;
 using Avro.Generic;
 using Avro.IO;
@@ -36,6 +37,10 @@ public class AvroInlineValidationBenchmarks
     private ReadOnlyMemory<byte> _enumPayload;
     private AvroInlineRuleValidator _rootArrayNestedValidator = null!;
     private ReadOnlyMemory<byte> _rootArrayNestedPayload;
+    private AvroInlineRuleValidator _mapMemberNestedValidator = null!;
+    private ReadOnlyMemory<byte> _mapMemberNestedPayload;
+    private AvroInlineRuleValidator _unionMemberNestedValidator = null!;
+    private ReadOnlyMemory<byte> _unionMemberNestedPayload;
 
     [GlobalSetup]
     public void Setup()
@@ -308,6 +313,74 @@ public class AvroInlineValidationBenchmarks
         _rootArrayNestedPayload = rootArrayNestedStream.ToArray();
         _rootArrayNestedValidator = new AvroInlineRuleValidator(rootArrayNestedSchema);
         _rootArrayNestedValidator.Validate(_rootArrayNestedPayload, 12, failFast: false);
+
+        const string mapMemberNestedSchemaText = """
+            {
+              "type": "map",
+              "confluent:rules": [{ "name": "selected", "expr": "this.selected.code > 0" }],
+              "values": {
+                "type": "record",
+                "name": "MapMemberNestedBenchmarkValue",
+                "fields": [{
+                  "name": "code",
+                  "type": "int",
+                  "confluent:rules": [{ "name": "positive", "expr": "this > 0" }]
+                }]
+              }
+            }
+            """;
+        var mapMemberNestedSchema = (MapSchema)AvroSchema.Parse(mapMemberNestedSchemaText);
+        var mapMemberNestedValueSchema = (RecordSchema)mapMemberNestedSchema.ValueSchema;
+        var mapMemberNestedValues = new Dictionary<string, object>(128);
+        for (var index = 0; index < 127; index++)
+        {
+            var mapValue = new GenericRecord(mapMemberNestedValueSchema);
+            mapValue.Add("code", 1);
+            mapMemberNestedValues.Add($"entry-{index}", mapValue);
+        }
+        var selectedMapValue = new GenericRecord(mapMemberNestedValueSchema);
+        selectedMapValue.Add("code", 1);
+        mapMemberNestedValues.Add("selected", selectedMapValue);
+        using var mapMemberNestedStream = new MemoryStream();
+        var mapMemberNestedEncoder = new BinaryEncoder(mapMemberNestedStream);
+        new GenericDatumWriter<object>(mapMemberNestedSchema).Write(
+            mapMemberNestedValues,
+            mapMemberNestedEncoder);
+        mapMemberNestedEncoder.Flush();
+        _mapMemberNestedPayload = mapMemberNestedStream.ToArray();
+        _mapMemberNestedValidator = new AvroInlineRuleValidator(mapMemberNestedSchema);
+        _mapMemberNestedValidator.Validate(_mapMemberNestedPayload, 13, failFast: false);
+
+        var unionSchemaText = new StringBuilder(
+            "{\"type\":[\"null\",{\"type\":\"record\",\"name\":\"UnionMemberNestedBenchmarkValue\",\"fields\":[");
+        for (var index = 0; index < 128; index++)
+        {
+            if (index != 0)
+                unionSchemaText.Append(',');
+            unionSchemaText.Append("{\"name\":\"field").Append(index).Append("\",\"type\":\"int\"");
+            if (index == 0)
+            {
+                unionSchemaText.Append(
+                    ",\"confluent:rules\":[{\"name\":\"positive\",\"expr\":\"this > 0\"}]");
+            }
+            unionSchemaText.Append('}');
+        }
+        unionSchemaText.Append(
+            "]}],\"confluent:rules\":[{\"name\":\"selected\",\"expr\":\"this.field127 > 0\"}]}");
+        var unionMemberNestedSchema = (UnionSchema)AvroSchema.Parse(unionSchemaText.ToString());
+        var unionMemberNestedValueSchema = (RecordSchema)unionMemberNestedSchema[1];
+        var unionMemberNestedValue = new GenericRecord(unionMemberNestedValueSchema);
+        for (var index = 0; index < 128; index++)
+            unionMemberNestedValue.Add($"field{index}", 1);
+        using var unionMemberNestedStream = new MemoryStream();
+        var unionMemberNestedEncoder = new BinaryEncoder(unionMemberNestedStream);
+        new GenericDatumWriter<object>(unionMemberNestedSchema).Write(
+            unionMemberNestedValue,
+            unionMemberNestedEncoder);
+        unionMemberNestedEncoder.Flush();
+        _unionMemberNestedPayload = unionMemberNestedStream.ToArray();
+        _unionMemberNestedValidator = new AvroInlineRuleValidator(unionMemberNestedSchema);
+        _unionMemberNestedValidator.Validate(_unionMemberNestedPayload, 14, failFast: false);
     }
 
     [Benchmark]
@@ -361,4 +434,12 @@ public class AvroInlineValidationBenchmarks
     [Benchmark]
     public void ValidateRootArrayWithNestedRules() =>
         _rootArrayNestedValidator.Validate(_rootArrayNestedPayload, 12, failFast: false);
+
+    [Benchmark]
+    public void ValidateMapMemberWithNestedRules() =>
+        _mapMemberNestedValidator.Validate(_mapMemberNestedPayload, 13, failFast: false);
+
+    [Benchmark]
+    public void ValidateUnionMemberWithNestedRules() =>
+        _unionMemberNestedValidator.Validate(_unionMemberNestedPayload, 14, failFast: false);
 }

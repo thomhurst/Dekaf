@@ -532,7 +532,7 @@ public sealed class AvroSchemaRegistrySerializer<
         if (cached >= 0 && (int)(cached >> 1) == schemaId && (cached & 1) == 0)
             return null;
 
-        var validator = _inlineRuleValidators!.Register(registrySchema, avroSchema);
+        var validator = _inlineRuleValidators!.RegisterSerializerSchema(registrySchema, avroSchema);
         var hasRules = validator.HasAnyRules;
         Volatile.Write(
             ref _lastInlineValidationDecision,
@@ -553,7 +553,7 @@ public sealed class AvroSchemaRegistrySerializer<
             return _config.RuleExecutor!.TransformSerializedPayload(payload, context);
         }
 
-        var validator = _inlineRuleValidators.Register(registrySchema, avroSchema);
+        var validator = _inlineRuleValidators.RegisterSerializerSchema(registrySchema, avroSchema);
         if (_config.ValidationRulesExecution == ValidationRulesExecution.BeforeDomainRules)
             validator.Validate(payload, schemaId, _config.ValidationRulesFailFast);
         payload = ruleExecutor.TransformSerializedDomainPayload(payload, context);
@@ -837,7 +837,8 @@ public sealed class AvroSchemaRegistrySerializer<
                     subject,
                     registrySchema,
                     cancellationToken).ConfigureAwait(false);
-            var registeredSchema = _config.RuleExecutor is SchemaRegistryRuleExecutor
+            var registeredSchema = _config.RuleExecutor is SchemaRegistryRuleExecutor ||
+                                   _config.ValidationRulesExecution != ValidationRulesExecution.Disabled
                 ? await _schemaRegistry.GetSchemaAsync(schemaId, subject, cancellationToken).ConfigureAwait(false)
                 : registrySchema;
             return await CreateResolvedValueAsync(

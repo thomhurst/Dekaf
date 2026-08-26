@@ -52,6 +52,17 @@ internal sealed class AvroInlineRuleValidatorProvider : IInlineValidationRuleExe
         return RegisterSlow(registrySchema, resolvedSchema);
     }
 
+    internal AvroInlineRuleValidator RegisterSerializerSchema(
+        RegistrySchema registrySchema,
+        AvroSchema runtimeSchema)
+    {
+        if (_registeredSchemas.TryGetValue(registrySchema, out var existing))
+            return existing;
+        return registrySchema.References is { Count: > 0 }
+            ? Register(registrySchema, GetResolvedSchema(registrySchema))
+            : Register(registrySchema, runtimeSchema);
+    }
+
     internal AvroSchema GetResolvedSchema(RegistrySchema registrySchema)
     {
         if (_resolvedSchemas.TryGetValue(registrySchema, out var resolved))
