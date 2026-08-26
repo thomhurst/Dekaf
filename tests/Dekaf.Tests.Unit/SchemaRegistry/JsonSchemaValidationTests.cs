@@ -1908,24 +1908,19 @@ public sealed class JsonSchemaValidationTests
 
         Assert.Throws<NotSupportedException>(() =>
         {
-            if (useTypeInfo)
-            {
-                _ = new JsonSchemaRegistrySerializer<NamePayload>(
+            _ = useTypeInfo
+                ? new JsonSchemaRegistrySerializer<NamePayload>(
                     registry,
                     """{"type":"object"}""",
                     typeInfo,
                     config,
-                    options);
-            }
-            else
-            {
-                _ = new JsonSchemaRegistrySerializer<NamePayload>(
+                    options)
+                : new JsonSchemaRegistrySerializer<NamePayload>(
                     registry,
                     """{"type":"object"}""",
                     jsonOptions: null,
                     options,
                     config);
-            }
         });
     }
 

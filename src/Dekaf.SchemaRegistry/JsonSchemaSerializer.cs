@@ -1751,7 +1751,7 @@ public sealed class JsonSchemaRegistryDeserializer<T> :
             return true;
         }
 
-        var identity = ReadIdentity(data, identityHeader, out _);
+        var identity = ReadIdentity(data, identityHeader, out var payloadOffset);
         if (identity.SchemaGuid is { } schemaGuid)
         {
             var key = new GuidTopicKey(
@@ -1781,35 +1781,12 @@ public sealed class JsonSchemaRegistryDeserializer<T> :
             preparedSubject = prepared.Subject;
         }
 
-        value = DeserializeCore(data, context, identityHeader, preparedSubject);
+        value = DeserializeCore(data, context, identity, payloadOffset, preparedSubject);
         return true;
     }
 
     public T Deserialize(ReadOnlyMemory<byte> data, SerializationContext context) =>
-        DeserializeCore(data, context, preparedSubject: null);
-
-    private T DeserializeCore(
-        ReadOnlyMemory<byte> data,
-        SerializationContext context,
-        string? preparedSubject)
-    {
-        Header? identityHeader = null;
-        if (_schemaIdStrategy != SchemaIdDeserializerStrategy.Prefix
-            && context.Headers is { } callerHeaders)
-        {
-            var headerName = GetIdentityHeaderName(context.Component);
-            for (var index = callerHeaders.Count - 1; index >= 0; index--)
-            {
-                if (string.Equals(callerHeaders[index].Key, headerName, StringComparison.Ordinal))
-                {
-                    identityHeader = callerHeaders[index];
-                    break;
-                }
-            }
-        }
-
-        return DeserializeCore(data, context, identityHeader, preparedSubject);
-    }
+        DeserializeCore(data, context, FindCallerIdentityHeader(context), preparedSubject: null);
 
     T ICallerOwnedHeaderDeserializer<T>.DeserializeCallerOwned(
         ReadOnlyMemory<byte> data,
@@ -1845,6 +1822,16 @@ public sealed class JsonSchemaRegistryDeserializer<T> :
             return default!;
 
         var identity = ReadIdentity(data, identityHeader, out var payloadOffset);
+        return DeserializeCore(data, context, identity, payloadOffset, preparedSubject);
+    }
+
+    private T DeserializeCore(
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        SchemaIdentity identity,
+        int payloadOffset,
+        string? preparedSubject)
+    {
         var schemaId = identity.SchemaId ?? -1;
         var guidSchema = identity.SchemaGuid is { } schemaGuid
             ? GetGuidSchemaCached(schemaGuid, context)
@@ -2132,14 +2119,9 @@ public sealed class JsonSchemaRegistryDeserializer<T> :
             return null;
         }
 
-        var headerName = GetIdentityHeaderName(context.Component);
-        for (var index = headers.Count - 1; index >= 0; index--)
-        {
-            if (string.Equals(headers[index].Key, headerName, StringComparison.Ordinal))
-                return headers[index];
-        }
-
-        return null;
+        return headers.TryGetLastSchemaIdentity(context.Component, out var header)
+            ? header
+            : null;
     }
 
     private Header? FindRoutedIdentityHeader(

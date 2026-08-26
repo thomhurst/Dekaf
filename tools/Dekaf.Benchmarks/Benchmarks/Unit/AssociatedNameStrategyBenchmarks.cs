@@ -68,13 +68,16 @@ public class AssociatedNameStrategyBenchmarks
             });
         _jsonDeserializerPreparer = _jsonDeserializer;
         _jsonPayload = "42"u8.ToArray();
+        var jsonHeaders = new Headers(33).Add(
+            SchemaIdentityHeaderNames.Value,
+            SchemaIdentityFraming.CreateSchemaGuidFrame(AssociationHandler.SchemaGuid));
+        for (var index = 0; index < 32; index++)
+            jsonHeaders.Add(new Header($"noise-{index}", ReadOnlyMemory<byte>.Empty));
         _jsonDeserializationContext = new SerializationContext
         {
             Topic = _topic,
             Component = SerializationComponent.Value,
-            Headers = new Headers(1).Add(
-                SchemaIdentityHeaderNames.Value,
-                SchemaIdentityFraming.CreateSchemaGuidFrame(AssociationHandler.SchemaGuid))
+            Headers = jsonHeaders
         };
         _jsonDeserializerPreparer.PrepareAsync(_jsonPayload, _jsonDeserializationContext)
             .GetAwaiter()
