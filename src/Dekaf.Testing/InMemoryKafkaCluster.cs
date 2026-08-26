@@ -806,6 +806,7 @@ public sealed class InMemoryKafkaCluster
     internal void RollbackShareRecordAcquisition(
         string groupId,
         string memberId,
+        ShareGroupMemberRegistration registration,
         TopicPartition topicPartition,
         long offset)
     {
@@ -814,7 +815,8 @@ public sealed class InMemoryKafkaCluster
             if (!_shareLeases.TryGetValue(groupId, out var groupLeases) ||
                 !groupLeases.TryGetValue(topicPartition, out var partitionLeases) ||
                 !partitionLeases.TryGetValue(offset, out var lease) ||
-                !StringComparer.Ordinal.Equals(lease.MemberId, memberId))
+                !StringComparer.Ordinal.Equals(lease.MemberId, memberId) ||
+                !ReferenceEquals(lease, registration))
             {
                 return;
             }

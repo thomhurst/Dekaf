@@ -589,6 +589,7 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
                     _cluster.RollbackShareRecordAcquisition(
                         _options.GroupId,
                         _memberId,
+                        registration,
                         partition,
                         record.Offset);
                     throw;

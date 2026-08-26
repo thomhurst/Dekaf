@@ -700,6 +700,42 @@ public sealed class InMemoryAdminShareFaultTests
     }
 
     [Test]
+    public async Task ShareConsumeFault_StaleRollbackPreservesNewRegistrationLease()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.ProduceAsync("shared", "key", "value");
+        await using var consumer = new InMemoryShareConsumer<string, string>(
+            cluster,
+            new InMemoryShareConsumerOptions { GroupId = "workers", MemberId = "first" });
+        consumer.Subscribe("shared");
+        var scope = new KafkaFaultScope(
+            KafkaFaultOperation.ShareConsume,
+            "shared",
+            partition: 0,
+            groupId: "workers");
+        var barrier = cluster.FaultPlan.PauseNext(scope);
+        using var cancellation = new CancellationTokenSource();
+        var stalePoll = consumer.PollAsync(cancellation.Token).FirstAsync().AsTask();
+        await barrier.WaitUntilEnteredAsync();
+
+        consumer.Unsubscribe().Subscribe("shared");
+        var current = await consumer.PollAsync().FirstAsync();
+        cancellation.Cancel();
+
+        _ = await Assert.ThrowsAsync<OperationCanceledException>(() => stalePoll);
+        await Assert.That(barrier.Release()).IsTrue();
+        await using var otherConsumer = new InMemoryShareConsumer<string, string>(
+            cluster,
+            new InMemoryShareConsumerOptions { GroupId = "workers", MemberId = "second" });
+        otherConsumer.Subscribe("shared");
+        await using var duplicatePoll = otherConsumer.PollAsync().GetAsyncEnumerator();
+
+        await Assert.That(current.Offset).IsEqualTo(0);
+        await Assert.That(await duplicatePoll.MoveNextAsync()).IsFalse();
+    }
+
+    [Test]
     public async Task ShareAcknowledgeFault_PreservesPendingRecordForRetry()
     {
         var cluster = new InMemoryKafkaCluster();
@@ -722,12 +758,13 @@ public sealed class InMemoryAdminShareFaultTests
 
         var actual = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             consumer.CommitAsync().AsTask());
-        var beforeRetry = cluster.GetCommittedOffset("workers", new TopicPartition("shared", 0));
+        var topicPartition = new TopicPartition("shared", 0);
+        var beforeRetry = cluster.GetShareGroupOffsets("workers");
         await consumer.CommitAsync();
 
         await Assert.That(actual).IsSameReferenceAs(failure);
-        await Assert.That(beforeRetry).IsNull();
-        await Assert.That(cluster.GetCommittedOffset("workers", new TopicPartition("shared", 0)))
+        await Assert.That(beforeRetry.ContainsKey(topicPartition)).IsFalse();
+        await Assert.That(cluster.GetShareGroupOffsets("workers")[topicPartition])
             .IsEqualTo(1);
     }
 
@@ -784,12 +821,12 @@ public sealed class InMemoryAdminShareFaultTests
         cancellation.Cancel();
 
         _ = await Assert.ThrowsAsync<OperationCanceledException>(() => pending);
-        await Assert.That(cluster.GetCommittedOffset("workers", new TopicPartition("shared", 0)))
-            .IsNull();
+        var topicPartition = new TopicPartition("shared", 0);
+        await Assert.That(cluster.GetShareGroupOffsets("workers").ContainsKey(topicPartition)).IsFalse();
         await Assert.That(barrier.Release()).IsTrue();
 
         await consumer.CommitAsync();
-        await Assert.That(cluster.GetCommittedOffset("workers", new TopicPartition("shared", 0)))
+        await Assert.That(cluster.GetShareGroupOffsets("workers")[topicPartition])
             .IsEqualTo(1);
     }
 
@@ -812,11 +849,11 @@ public sealed class InMemoryAdminShareFaultTests
         var second = consumer.CommitAsync().AsTask();
 
         await Assert.That(second.IsCompleted).IsFalse();
-        await Assert.That(cluster.GetCommittedOffset("workers", new TopicPartition("shared", 0)))
-            .IsNull();
+        var topicPartition = new TopicPartition("shared", 0);
+        await Assert.That(cluster.GetShareGroupOffsets("workers").ContainsKey(topicPartition)).IsFalse();
         await Assert.That(barrier.Release()).IsTrue();
         await Task.WhenAll(first, second);
-        await Assert.That(cluster.GetCommittedOffset("workers", new TopicPartition("shared", 0)))
+        await Assert.That(cluster.GetShareGroupOffsets("workers")[topicPartition])
             .IsEqualTo(1);
     }
 
