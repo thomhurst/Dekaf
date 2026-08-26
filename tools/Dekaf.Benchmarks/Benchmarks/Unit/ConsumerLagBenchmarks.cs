@@ -25,14 +25,17 @@ public class ConsumerLagBenchmarks
         ]);
 
         var concrete = (KafkaConsumer<byte[], byte[]>)_consumer;
+        var assignmentVersion = (int)typeof(KafkaConsumer<byte[], byte[]>)
+            .GetField("_assignmentEnsureVersion", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .GetValue(concrete)!;
         typeof(KafkaConsumer<byte[], byte[]>)
             .GetMethod("UpdateWatermarksFromFetchResponse", BindingFlags.Instance | BindingFlags.NonPublic)!
-            .Invoke(concrete, [_partition.Topic, new FetchResponsePartition
+            .Invoke(concrete, [_partition, new FetchResponsePartition
             {
                 PartitionIndex = _partition.Partition,
                 HighWatermark = 1_000,
                 LogStartOffset = 0
-            }]);
+            }, assignmentVersion]);
     }
 
     [Benchmark]

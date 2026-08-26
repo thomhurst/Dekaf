@@ -2253,11 +2253,17 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private void PublishSubscriptionAndClearAssignment(bool invalidatePartitionCache)
     {
         PublishSubscriptionSnapshot();
+        var hadPaused = false;
         SemaphoreHelper.AcquireOrThrowDisposed(_assignmentLock, nameof(KafkaConsumer<TKey, TValue>));
         try
         {
-            _assignment.Clear();
-            PublishAssignmentSnapshot();
+            var previousAssignment = _assignmentSnapshot;
+            lock (_snapshotStateGate)
+            {
+                hadPaused = RemovePartitionState(previousAssignment);
+                _assignment.Clear();
+                PublishAssignmentSnapshot();
+            }
         }
         finally
         {
@@ -2272,6 +2278,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // one-time latency cost for the discarded prefetch.
         ClearFetchBuffer();
 
+        if (hadPaused)
+            PublishPausedSnapshot();
+
         if (invalidatePartitionCache)
             InvalidatePartitionCache();
 
@@ -2285,15 +2294,30 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         _topicPattern = null;
         _subscription.Clear();
         PublishSubscriptionSnapshot();
+        var hadPaused = false;
         SemaphoreHelper.AcquireOrThrowDisposed(_assignmentLock, nameof(KafkaConsumer<TKey, TValue>));
         try
         {
-            _assignment.Clear();
-            foreach (var partition in partitions)
+            var previousAssignment = _assignmentSnapshot;
+            lock (_snapshotStateGate)
             {
-                _assignment.Add(partition);
+                _assignment.Clear();
+                foreach (var partition in partitions)
+                {
+                    _assignment.Add(partition);
+                }
+
+                List<TopicPartition>? removedPartitions = null;
+                foreach (var partition in previousAssignment)
+                {
+                    if (!_assignment.Contains(partition))
+                        (removedPartitions ??= []).Add(partition);
+                }
+
+                if (removedPartitions is not null)
+                    hadPaused = RemovePartitionState(removedPartitions);
+                PublishAssignmentSnapshot();
             }
-            PublishAssignmentSnapshot();
         }
         finally
         {
@@ -2307,17 +2331,26 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // re-assigns and iterates (e.g., consume-per-partition patterns).
         ClearFetchBuffer();
 
+        if (hadPaused)
+            PublishPausedSnapshot();
+
         InvalidatePartitionCache();
         InvalidateFetchRequestCache();
     }
 
     public void Unassign()
     {
+        var hadPaused = false;
         SemaphoreHelper.AcquireOrThrowDisposed(_assignmentLock, nameof(KafkaConsumer<TKey, TValue>));
         try
         {
-            _assignment.Clear();
-            PublishAssignmentSnapshot();
+            var previousAssignment = _assignmentSnapshot;
+            lock (_snapshotStateGate)
+            {
+                hadPaused = RemovePartitionState(previousAssignment);
+                _assignment.Clear();
+                PublishAssignmentSnapshot();
+            }
         }
         finally
         {
@@ -2326,6 +2359,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         // Clear stale fetched data (same rationale as Assign).
         ClearFetchBuffer();
+
+        if (hadPaused)
+            PublishPausedSnapshot();
 
         InvalidatePartitionCache();
         InvalidateFetchRequestCache();
@@ -2343,25 +2379,29 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         SemaphoreHelper.AcquireOrThrowDisposed(_assignmentLock, nameof(KafkaConsumer<TKey, TValue>));
         try
         {
-            foreach (var tpo in partitions)
+            lock (_snapshotStateGate)
             {
-                var tp = new TopicPartition(tpo.Topic, tpo.Partition);
-                _assignment.Add(tp);
-
-                // If an offset is specified (>= 0), set the position
-                if (tpo.Offset >= 0)
+                foreach (var tpo in partitions)
                 {
-                    SetPosition(tp, tpo.Offset, dirty: false);
-                    if (tpo.LeaderEpoch >= 0)
-                        SetLastConsumedLeaderEpoch(tp, tpo.LeaderEpoch);
-                    else
-                        ClearLastConsumedLeaderEpoch(tp);
-                    _fetchPositions[tp] = tpo.Offset;
-                }
-                // Otherwise, positions will be initialized lazily based on auto.offset.reset
-            }
+                    var tp = new TopicPartition(tpo.Topic, tpo.Partition);
+                    if (_assignment.Add(tp))
+                        _watermarks.TryRemove(tp, out _);
 
-            PublishAssignmentSnapshot();
+                    // If an offset is specified (>= 0), set the position
+                    if (tpo.Offset >= 0)
+                    {
+                        SetPosition(tp, tpo.Offset, dirty: false);
+                        if (tpo.LeaderEpoch >= 0)
+                            SetLastConsumedLeaderEpoch(tp, tpo.LeaderEpoch);
+                        else
+                            ClearLastConsumedLeaderEpoch(tp);
+                        _fetchPositions[tp] = tpo.Offset;
+                    }
+                    // Otherwise, positions will be initialized lazily based on auto.offset.reset
+                }
+
+                PublishAssignmentSnapshot();
+            }
         }
         finally
         {
@@ -3898,6 +3938,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     private async ValueTask<(int Started, int TargetCount)> DispatchReadyBrokerPrefetchesAsync(CancellationToken cancellationToken)
     {
+        var assignmentVersion = Volatile.Read(ref _assignmentEnsureVersion);
         var partitionsByBroker = await GroupPartitionsByBrokerAsync(cancellationToken).ConfigureAwait(false);
         partitionsByBroker = ExcludePartitionsPendingFetchClear(partitionsByBroker);
         var fetchSessionSnapshot = ShouldUseFetchSessions && !_fetchSessions.IsEmpty
@@ -3942,6 +3983,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     startIndex,
                     count,
                     connectionIndex,
+                    assignmentVersion,
                     cancellationToken))
                 {
                     started++;
@@ -3984,6 +4026,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 0,
                 0,
                 key.ConnectionIndex,
+                assignmentVersion,
                 cancellationToken))
             {
                 started++;
@@ -4023,6 +4066,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         int partitionStartIndex,
         int partitionCount,
         int connectionIndex,
+        int assignmentVersion,
         CancellationToken cancellationToken)
     {
         var fetchBufferEpoch = Volatile.Read(ref _fetchBufferEpoch);
@@ -4035,6 +4079,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 partitionCount,
                 connectionIndex,
                 fetchBufferEpoch,
+                assignmentVersion,
                 cancellationToken));
     }
 
@@ -4045,6 +4090,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         int partitionCount,
         int connectionIndex,
         int fetchBufferEpoch,
+        int assignmentVersion,
         CancellationToken cancellationToken)
     {
         // Rent a CTS from the pool for the combined consume cancellation source
@@ -4068,6 +4114,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 partitionCount,
                 connectionIndex,
                 fetchBufferEpoch,
+                assignmentVersion,
                 consumeCts.Token,
                 consumeCts.Token).ConfigureAwait(false);
         }
@@ -4096,6 +4143,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         int partitionCount,
         int connectionIndex,
         int fetchBufferEpoch,
+        int assignmentVersion,
         CancellationToken linkedToken,
         CancellationToken consumeCancellationToken)
     {
@@ -4110,6 +4158,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 partitionCount,
                 connectionIndex,
                 fetchBufferEpoch,
+                assignmentVersion,
                 linkedToken).ConfigureAwait(false);
             _prefetchFailureTracker.Reset(failureKey);
         }
@@ -4216,6 +4265,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         int partitionCount,
         int connectionIndex,
         int fetchBufferEpoch,
+        int assignmentVersion,
         CancellationToken cancellationToken)
     {
         using var connectionLease = await _connectionPool.LeaseConnectionByIndexAsync(
@@ -4338,7 +4388,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                             continue;
 
                         // Update watermark cache from fetch response (even on errors, watermarks may be valid)
-                        UpdateWatermarksFromFetchResponse(topic, partitionResponse);
+                        UpdateWatermarksFromFetchResponse(tp, partitionResponse, assignmentVersion);
                         UpdatePreferredReadReplica(topic, partitionResponse);
 
                         if (partitionResponse.RecordParseError is { } parseError)
@@ -8350,8 +8400,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     public WatermarkOffsets? GetWatermarkOffsets(TopicPartition topicPartition)
     {
-        if (_watermarks.TryGetValue(topicPartition, out var entry))
+        var assignmentVersion = Volatile.Read(ref _assignmentEnsureVersion);
+        if (_watermarks.TryGetValue(topicPartition, out var entry)
+            && entry.AssignmentVersion == assignmentVersion
+            && assignmentVersion == Volatile.Read(ref _assignmentEnsureVersion))
+        {
             return entry.ReadWatermarks();
+        }
+
         return null;
     }
 
@@ -8365,6 +8421,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             || GetPositionWithoutCaching(partition) is not { } position
             || position < 0
             || !_watermarks.TryGetValue(partition, out var watermarks)
+            || watermarks.AssignmentVersion != assignmentVersion
             || assignmentVersion != Volatile.Read(ref _assignmentEnsureVersion))
         {
             return null;
@@ -8403,6 +8460,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         var watermarks = await QueryWatermarkOffsetsCoreAsync(
                 partition,
                 cacheResult: false,
+                assignmentVersion,
                 cancellationToken)
             .ConfigureAwait(false);
         lock (_snapshotStateGate)
@@ -8415,7 +8473,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 return null;
             }
 
-            UpdateCachedWatermarks(partition, watermarks.Low, watermarks.High, watermarks.High);
+            UpdateCachedWatermarks(
+                partition,
+                watermarks.Low,
+                watermarks.High,
+                watermarks.High,
+                assignmentVersion);
             return CalculateLag(position, watermarks.High);
         }
     }
@@ -8472,12 +8535,20 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     public ValueTask<WatermarkOffsets> QueryWatermarkOffsetsAsync(
         TopicPartition topicPartition,
-        CancellationToken cancellationToken = default) =>
-        QueryWatermarkOffsetsCoreAsync(topicPartition, cacheResult: true, cancellationToken);
+        CancellationToken cancellationToken = default)
+    {
+        var assignmentVersion = Volatile.Read(ref _assignmentEnsureVersion);
+        return QueryWatermarkOffsetsCoreAsync(
+            topicPartition,
+            cacheResult: true,
+            assignmentVersion,
+            cancellationToken);
+    }
 
     private async ValueTask<WatermarkOffsets> QueryWatermarkOffsetsCoreAsync(
         TopicPartition topicPartition,
         bool cacheResult,
+        int assignmentVersion,
         CancellationToken cancellationToken)
     {
         if (Volatile.Read(ref _consumerDisposed) != 0)
@@ -8558,7 +8629,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 var watermarks = new WatermarkOffsets(lowWatermark, highWatermark);
 
                 if (cacheResult)
-                    UpdateCachedWatermarks(topicPartition, lowWatermark, highWatermark, highWatermark);
+                {
+                    UpdateCachedWatermarks(
+                        topicPartition,
+                        lowWatermark,
+                        highWatermark,
+                        highWatermark,
+                        assignmentVersion);
+                }
 
                 return watermarks;
             }, _metadataManager, apiTimeout.Token, _options.RetryBackoffMs, _options.RetryBackoffMaxMs)
@@ -8872,11 +8950,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
                         // Clean up state for removed partitions while lag-query cache publication
                         // is excluded from the assignment transition.
-                        if (removedPartitions is not null)
-                        {
-                            if (RemovePartitionState(removedPartitions))
-                                PublishPausedSnapshot();
-                        }
+                        if (removedPartitions is not null && RemovePartitionState(removedPartitions))
+                            PublishPausedSnapshot();
                     }
                     InvalidatePartitionCache();
                     InvalidateFetchRequestCache();
@@ -9247,6 +9322,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 consumeCts.Cancel();
 
             var pausedSnapshotVersion = Volatile.Read(ref _pausedSnapshotVersion);
+            var assignmentVersion = Volatile.Read(ref _assignmentEnsureVersion);
             var partitionsByBroker = await GroupPartitionsByBrokerAsync(cancellationToken).ConfigureAwait(false);
             var fetchBufferEpoch = Volatile.Read(ref _fetchBufferEpoch);
             var fetchSessionSnapshot = ShouldUseFetchSessions && !_fetchSessions.IsEmpty
@@ -9276,7 +9352,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 {
                     scheduledFetchSessionBrokers?.Add(brokerId);
                     fetchTasks[taskCount++] = FetchFromBrokerWithErrorHandlingAsync(
-                        brokerId, partitions, fetchBufferEpoch, consumeCts.Token, consumeCts.Token);
+                        brokerId,
+                        partitions,
+                        fetchBufferEpoch,
+                        assignmentVersion,
+                        consumeCts.Token,
+                        consumeCts.Token);
                 }
 
                 foreach (var (key, handler) in fetchSessionSnapshot)
@@ -9297,7 +9378,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         continue;
 
                     fetchTasks[taskCount++] = FetchFromBrokerWithErrorHandlingAsync(
-                        key.BrokerId, [], fetchBufferEpoch, consumeCts.Token, consumeCts.Token);
+                        key.BrokerId,
+                        [],
+                        fetchBufferEpoch,
+                        assignmentVersion,
+                        consumeCts.Token,
+                        consumeCts.Token);
                 }
 
                 if (taskCount == 0)
@@ -9423,12 +9509,19 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         int brokerId,
         List<TopicPartition> partitions,
         int fetchBufferEpoch,
+        int assignmentVersion,
         CancellationToken linkedToken,
         CancellationToken consumeCancellationToken)
     {
         try
         {
-            return await FetchFromBrokerAsync(brokerId, partitions, fetchBufferEpoch, linkedToken).ConfigureAwait(false);
+            return await FetchFromBrokerAsync(
+                    brokerId,
+                    partitions,
+                    fetchBufferEpoch,
+                    assignmentVersion,
+                    linkedToken)
+                .ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (consumeCancellationToken.IsCancellationRequested)
         {
@@ -10129,6 +10222,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         int brokerId,
         List<TopicPartition> partitions,
         int fetchBufferEpoch,
+        int assignmentVersion,
         CancellationToken cancellationToken)
     {
         var fetchMaxBytes = CurrentFetchMaxBytes;
@@ -10240,7 +10334,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         continue;
 
                     // Update watermark cache from fetch response (even on errors, watermarks may be valid)
-                    UpdateWatermarksFromFetchResponse(topic, partitionResponse);
+                    UpdateWatermarksFromFetchResponse(tp, partitionResponse, assignmentVersion);
                     UpdatePreferredReadReplica(topic, partitionResponse);
 
                     if (partitionResponse.RecordParseError is { } parseError)
@@ -10555,20 +10649,27 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     /// The fetch response contains HighWatermark and LogStartOffset which correspond to
     /// the high and low watermarks respectively.
     /// </summary>
-    private void UpdateWatermarksFromFetchResponse(string topic, FetchResponsePartition partitionResponse)
+    private void UpdateWatermarksFromFetchResponse(
+        TopicPartition partition,
+        FetchResponsePartition partitionResponse,
+        int assignmentVersion)
     {
         // Only update if we have valid watermark data
         // HighWatermark is the next offset to be written (end of log)
         // LogStartOffset is the earliest available offset (start of log, may be > 0 due to retention)
         if (partitionResponse.HighWatermark >= 0)
         {
-            var tp = new TopicPartition(topic, partitionResponse.PartitionIndex);
             var low = partitionResponse.LogStartOffset >= 0 ? partitionResponse.LogStartOffset : 0;
             var lagEndOffset = _options.IsolationLevel == IsolationLevel.ReadCommitted
                 && partitionResponse.LastStableOffset >= 0
                     ? partitionResponse.LastStableOffset
                     : partitionResponse.HighWatermark;
-            UpdateCachedWatermarks(tp, low, partitionResponse.HighWatermark, lagEndOffset);
+            UpdateCachedWatermarks(
+                partition,
+                low,
+                partitionResponse.HighWatermark,
+                lagEndOffset,
+                assignmentVersion);
         }
     }
 
@@ -10576,13 +10677,30 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         TopicPartition partition,
         long low,
         long high,
-        long lagEndOffset)
+        long lagEndOffset,
+        int assignmentVersion)
     {
-        var entry = _watermarks.GetOrAdd(
-            partition,
-            static (_, state) => new WatermarkCacheEntry(state.Low, state.High, state.LagEndOffset),
-            (Low: low, High: high, LagEndOffset: lagEndOffset));
-        entry.Update(low, high, lagEndOffset);
+        while (assignmentVersion == Volatile.Read(ref _assignmentEnsureVersion))
+        {
+            if (!_watermarks.TryGetValue(partition, out var entry))
+            {
+                var created = new WatermarkCacheEntry(low, high, lagEndOffset, assignmentVersion);
+                if (_watermarks.TryAdd(partition, created))
+                    return;
+                continue;
+            }
+
+            if (entry.AssignmentVersion != assignmentVersion)
+            {
+                var replacement = new WatermarkCacheEntry(low, high, lagEndOffset, assignmentVersion);
+                if (_watermarks.TryUpdate(partition, replacement, entry))
+                    return;
+                continue;
+            }
+
+            entry.Update(low, high, lagEndOffset);
+            return;
+        }
     }
 
     private sealed class WatermarkCacheEntry
@@ -10594,12 +10712,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         private long _high;
         private long _lagEndOffset;
 
-        public WatermarkCacheEntry(long low, long high, long lagEndOffset)
+        public WatermarkCacheEntry(long low, long high, long lagEndOffset, int assignmentVersion)
         {
             _low = low;
             _high = high;
             _lagEndOffset = lagEndOffset;
+            AssignmentVersion = assignmentVersion;
         }
+
+        public int AssignmentVersion { get; }
 
         public void Update(long low, long high, long lagEndOffset)
         {

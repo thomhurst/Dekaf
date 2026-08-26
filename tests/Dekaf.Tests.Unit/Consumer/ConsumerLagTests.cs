@@ -57,6 +57,44 @@ public sealed class ConsumerLagTests
     }
 
     [Test]
+    public async Task GetCurrentLag_FullUnassignAndReassignClearsCachedState()
+    {
+        await using var consumer = CreateConsumer();
+        consumer.IncrementalAssign([new TopicPartitionOffset(Partition.Topic, Partition.Partition, 10)]);
+        SetCachedWatermarks(consumer, new WatermarkOffsets(0, 25));
+
+        consumer.Unassign();
+        consumer.Assign(Partition);
+        consumer.Seek(new TopicPartitionOffset(Partition.Topic, Partition.Partition, 10));
+
+        await Assert.That(consumer.GetPosition(Partition)).IsEqualTo(10);
+        await Assert.That(consumer.GetWatermarkOffsets(Partition)).IsNull();
+        await Assert.That(consumer.GetCurrentLag(Partition)).IsNull();
+    }
+
+    [Test]
+    public async Task GetCurrentLag_RejectsFetchWatermarkFromPreviousAssignment()
+    {
+        await using var consumer = CreateConsumer();
+        consumer.IncrementalAssign([new TopicPartitionOffset(Partition.Topic, Partition.Partition, 10)]);
+        var previousAssignmentVersion = GetAssignmentVersion(consumer);
+        SetCachedWatermarks(consumer, new WatermarkOffsets(0, 25));
+
+        consumer.IncrementalUnassign([Partition]);
+        consumer.IncrementalAssign([new TopicPartitionOffset(Partition.Topic, Partition.Partition, 20)]);
+        UpdateWatermarksFromFetchResponse(
+            consumer,
+            CreateFetchResponse(100),
+            previousAssignmentVersion);
+
+        await Assert.That(consumer.GetWatermarkOffsets(Partition)).IsNull();
+        await Assert.That(consumer.GetCurrentLag(Partition)).IsNull();
+
+        UpdateWatermarksFromFetchResponse(consumer, CreateFetchResponse(30));
+        await Assert.That(consumer.GetCurrentLag(Partition)).IsEqualTo(10);
+    }
+
+    [Test]
     public async Task GetCurrentLag_ReadCommittedUsesLastStableOffset()
     {
         await using var consumer = CreateConsumer(IsolationLevel.ReadCommitted);
@@ -87,7 +125,8 @@ public sealed class ConsumerLagTests
             .CreateDelegate<UpdateWatermarks>();
         var first = CreateFetchResponse(firstOffset);
         var second = CreateFetchResponse(secondOffset);
-        updateWatermarks(consumer, Partition.Topic, first);
+        var assignmentVersion = GetAssignmentVersion(consumer);
+        updateWatermarks(consumer, Partition, first, assignmentVersion);
         using var start = new ManualResetEventSlim();
         var writer = Task.Run(() =>
         {
@@ -95,7 +134,7 @@ public sealed class ConsumerLagTests
             for (var iteration = 0; iteration < 100_000; iteration++)
             {
                 var response = (iteration & 1) == 0 ? second : first;
-                updateWatermarks(consumer, Partition.Topic, response);
+                updateWatermarks(consumer, Partition, response, assignmentVersion);
             }
         });
 
@@ -206,14 +245,21 @@ public sealed class ConsumerLagTests
 
     private static void UpdateWatermarksFromFetchResponse(
         KafkaConsumer<string, string> consumer,
-        FetchResponsePartition response)
+        FetchResponsePartition response,
+        int? assignmentVersion = null)
     {
         var method = typeof(KafkaConsumer<string, string>).GetMethod(
             "UpdateWatermarksFromFetchResponse",
             BindingFlags.NonPublic | BindingFlags.Instance)
             ?? throw new InvalidOperationException("UpdateWatermarksFromFetchResponse method not found");
-        method.Invoke(consumer, [Partition.Topic, response]);
+        method.Invoke(consumer, [Partition, response, assignmentVersion ?? GetAssignmentVersion(consumer)]);
     }
+
+    private static int GetAssignmentVersion(KafkaConsumer<string, string> consumer) =>
+        (int)(typeof(KafkaConsumer<string, string>)
+            .GetField("_assignmentEnsureVersion", BindingFlags.NonPublic | BindingFlags.Instance)
+            ?.GetValue(consumer)
+            ?? throw new InvalidOperationException("_assignmentEnsureVersion field not found"));
 
     private static void SetInitialized(KafkaConsumer<string, string> consumer)
     {
@@ -225,6 +271,7 @@ public sealed class ConsumerLagTests
 
     private delegate void UpdateWatermarks(
         KafkaConsumer<string, string> consumer,
-        string topic,
-        FetchResponsePartition response);
+        TopicPartition partition,
+        FetchResponsePartition response,
+        int assignmentVersion);
 }
