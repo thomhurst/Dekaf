@@ -176,6 +176,53 @@ public class AvroInlineRuleValidatorTests
     }
 
     [Test]
+    public async Task Validate_MixedParentAndNestedMemberRulesPreserveParentMembers()
+    {
+        const string schemaText = """
+            {
+              "type": "record",
+              "name": "ParentMemberFrameRecord",
+              "confluent:rules": [{
+                "name": "parent-members",
+                "expr": "size(this) == 2 && this.name == 'allowed' && this.child.value == 1"
+              }],
+              "fields": [
+                { "name": "name", "type": "string" },
+                {
+                  "name": "child",
+                  "type": {
+                    "type": "record",
+                    "name": "NestedMemberFrameRecord",
+                    "confluent:rules": [{
+                      "name": "child-member",
+                      "expr": "size(this) == 1 && this.value == 1"
+                    }],
+                    "fields": [{ "name": "value", "type": "int" }]
+                  }
+                }
+              ]
+            }
+            """;
+        var schema = (RecordSchema)AvroSchema.Parse(schemaText);
+        var childSchema = (RecordSchema)schema.Fields[1].Schema;
+        var child = new GenericRecord(childSchema);
+        child.Add("value", 1);
+        var record = new GenericRecord(schema);
+        record.Add("name", "allowed");
+        record.Add("child", child);
+        var validator = new AvroInlineRuleValidator(schema);
+        var payload = Serialize(record, schema);
+
+        validator.Validate(payload, 17, failFast: false);
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var index = 0; index < 100; index++)
+            validator.Validate(payload, 17, failFast: false);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        await Assert.That(allocated).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task Validate_RootArrayAndMapValuesShareNestedTraversal()
     {
         const string arraySchemaText = """

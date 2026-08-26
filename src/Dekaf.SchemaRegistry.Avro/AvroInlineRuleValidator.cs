@@ -29,6 +29,7 @@ internal sealed class AvroInlineRuleValidator
         List<ValidationRuleError>? violations = null;
         var path = new AvroValidationPath(t_pathBuffer ??= new char[256]);
         var reader = new AvroValidationReader(payload);
+        var valueResolutionDepth = CompiledValidationRule.ValueResolutionDepth;
         try
         {
             _root.Validate(
@@ -42,6 +43,8 @@ internal sealed class AvroInlineRuleValidator
         }
         finally
         {
+            if (CompiledValidationRule.ValueResolutionDepth != valueResolutionDepth)
+                CompiledValidationRule.RestoreValueResolutionDepth(valueResolutionDepth);
             path.Dispose();
         }
 
@@ -379,6 +382,7 @@ internal sealed class AvroValueRulePlan
             failFast,
             ref violations,
             ref path);
+        resolution.Dispose();
         AppendNestedViolations(nestedViolations, failFast, ref violations);
         return ValidationCelValue.Missing;
     }
@@ -432,6 +436,7 @@ internal sealed class AvroValueRulePlan
             failFast,
             ref violations,
             ref path);
+        resolution.Dispose();
         AppendNestedViolations(nestedViolations, failFast, ref violations);
         return value;
     }
@@ -913,13 +918,15 @@ internal sealed class AvroValueRulePlan
         var lastMemberFieldIndex = _schemaRules.LastRecordMemberIndex;
         if (lastMemberFieldIndex < 0)
         {
+            var resolution = _schemaRules.BeginMemberResolution();
             _schemaRules.EvaluateResolvedWithoutRoot(
-                _schemaRules.BeginMemberResolution(),
+                resolution,
                 payloadLength: 0,
                 now,
                 failFast,
                 ref violations,
                 ref path);
+            resolution.Dispose();
             if (failFast && violations is not null)
             {
                 AvroValidationValueDecoder.Skip(_schema, ref reader);
@@ -953,6 +960,7 @@ internal sealed class AvroValueRulePlan
                 failFast,
                 ref violations,
                 ref path);
+            resolution.Dispose();
             if (failFast && violations is not null)
             {
                 SkipRecordFields(ref reader, lastMemberFieldIndex + 1);
@@ -1100,7 +1108,11 @@ internal sealed record AvroFieldRulePlan(
 
 internal readonly record struct AvroMemberResolution(
     ValidationCelMemberValues Members,
-    ValidationCelSizeValues Sizes);
+    ValidationCelSizeValues Sizes,
+    ValidationCelValueResolution ValueResolution) : IDisposable
+{
+    public void Dispose() => ValueResolution.Dispose();
+}
 
 internal readonly record struct AvroFieldPayload(int Start, int Length);
 
@@ -1217,11 +1229,19 @@ internal sealed class AvroCompiledRuleSet
         scoped ref AvroValidationPath path,
         int rootSize = -1)
     {
+        var isNested = CompiledValidationRule.HasActiveValueResolution;
+        var valueResolution = isNested
+            ? CompiledValidationRule.BeginValueResolution()
+            : default;
         var memberValues = _memberCount == 0
             ? default
-            : CompiledValidationRule.GetMemberValues(_memberCount);
+            : isNested
+                ? CompiledValidationRule.GetMemberValues(_memberCount, valueResolution)
+                : CompiledValidationRule.GetMemberValues(_memberCount);
         var sizes = UsesSize || _members is not null || rootSize >= 0
-            ? CompiledValidationRule.GetSizeValues(_memberCount + 1)
+            ? isNested
+                ? CompiledValidationRule.GetSizeValues(_memberCount + 1, valueResolution)
+                : CompiledValidationRule.GetSizeValues(_memberCount + 1)
             : default;
         if (rootSize >= 0)
             sizes.Set(0, rootSize);
@@ -1264,13 +1284,15 @@ internal sealed class AvroCompiledRuleSet
                 }
 
                 if (failFast)
-                    return;
+                    break;
             }
         }
         finally
         {
             ValidationCelStrings.End();
         }
+        if (isNested)
+            valueResolution.Dispose();
     }
 
     internal void EvaluateResolved(
@@ -1353,15 +1375,21 @@ internal sealed class AvroCompiledRuleSet
             failFast,
             ref violations,
             ref path);
+        resolution.Dispose();
     }
 
-    internal AvroMemberResolution BeginMemberResolution() => new(
-        _memberCount == 0
-            ? default
-            : CompiledValidationRule.GetMemberValues(_memberCount),
-        UsesSize || _members is not null
-            ? CompiledValidationRule.GetSizeValues(_memberCount + 1)
-            : default);
+    internal AvroMemberResolution BeginMemberResolution()
+    {
+        var valueResolution = CompiledValidationRule.BeginValueResolution();
+        return new AvroMemberResolution(
+            _memberCount == 0
+                ? default
+                : CompiledValidationRule.GetMemberValues(_memberCount, valueResolution),
+            UsesSize || _members is not null
+                ? CompiledValidationRule.GetSizeValues(_memberCount + 1, valueResolution)
+                : default,
+            valueResolution);
+    }
 
     internal AvroFieldPayload ResolveRecordPrefix(
         ref AvroValidationReader reader,

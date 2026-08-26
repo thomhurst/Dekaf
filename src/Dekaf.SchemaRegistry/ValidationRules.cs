@@ -182,6 +182,15 @@ internal sealed class CompiledValidationRule
     private static ValidationCelEqualitySlot[]? t_equalities;
 
     [ThreadStatic]
+    private static ValidationCelValueResolutionFrame[]? t_valueResolutionFrames;
+
+    [ThreadStatic]
+    private static int t_valueResolutionDepth;
+
+    [ThreadStatic]
+    private static ValidationCelEqualitySlots t_pairEqualities;
+
+    [ThreadStatic]
     private static uint t_equalityGeneration;
 
     private readonly ValidationCelNode? _expression;
@@ -366,6 +375,83 @@ internal sealed class CompiledValidationRule
         return new ValidationCelSizeValues(sizes, generation);
     }
 
+    internal static ValidationCelValueResolution BeginValueResolution()
+    {
+        var index = t_valueResolutionDepth++;
+        var frameIndex = index - 1;
+        var frames = t_valueResolutionFrames;
+        if (frameIndex >= 0 && (frames is null || frames.Length <= frameIndex))
+            GrowValueResolutionFrames(frameIndex + 1);
+        return new ValidationCelValueResolution(index);
+    }
+
+    internal static bool HasActiveValueResolution => t_valueResolutionDepth != 0;
+
+    internal static int ValueResolutionDepth => t_valueResolutionDepth;
+
+    internal static void RestoreValueResolutionDepth(int depth) =>
+        t_valueResolutionDepth = depth;
+
+    internal static ValidationCelMemberValues GetMemberValues(
+        int count,
+        ValidationCelValueResolution resolution)
+    {
+        if (resolution.Index == 0)
+            return GetMemberValues(count);
+
+        var index = resolution.Index - 1;
+        ref var frame = ref t_valueResolutionFrames![index];
+        var values = frame.MemberValues;
+        if (values is null || values.Length < count)
+            frame.MemberValues = values = new ValidationCelMemberSlot[Math.Max(count, 8)];
+
+        ref var generation = ref frame.MemberGeneration;
+        generation = unchecked(generation + 1);
+        if (generation == 0)
+        {
+            Array.Clear(values);
+            generation = 1;
+        }
+        return new ValidationCelMemberValues(values, generation);
+    }
+
+    internal static ValidationCelSizeValues GetSizeValues(
+        int count,
+        ValidationCelValueResolution resolution)
+    {
+        if (resolution.Index == 0)
+            return GetSizeValues(count);
+
+        var index = resolution.Index - 1;
+        ref var frame = ref t_valueResolutionFrames![index];
+        var sizes = frame.SizeValues;
+        if (sizes is null || sizes.Length < count)
+            frame.SizeValues = sizes = new ValidationCelSizeSlot[Math.Max(count, 8)];
+
+        ref var generation = ref frame.SizeGeneration;
+        generation = unchecked(generation + 1);
+        if (generation == 0)
+        {
+            Array.Clear(sizes);
+            generation = 1;
+        }
+        return new ValidationCelSizeValues(sizes, generation);
+    }
+
+    internal static void EndValueResolution(ValidationCelValueResolution resolution)
+    {
+        if (t_valueResolutionDepth != resolution.Index + 1)
+            throw new InvalidOperationException("CEL value resolutions must be released in reverse order.");
+        t_valueResolutionDepth--;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void GrowValueResolutionFrames(int count)
+    {
+        var length = Math.Max(count, 4);
+        Array.Resize(ref t_valueResolutionFrames, length);
+    }
+
     internal static uint BeginEqualityResolution()
     {
         var equalities = t_equalities;
@@ -374,6 +460,7 @@ internal sealed class CompiledValidationRule
         if (unchecked(++t_equalityGeneration) == 0)
         {
             Array.Clear(equalities);
+            t_pairEqualities = default;
             t_equalityGeneration = 1;
         }
         return t_equalityGeneration;
@@ -407,6 +494,43 @@ internal sealed class CompiledValidationRule
         slot.Value = value;
         slot.Generation = equalityGeneration;
     }
+
+    internal static bool TryGetEquality(
+        uint equalityGeneration,
+        int leftIndex,
+        int rightIndex,
+        out bool value)
+    {
+        NormalizeEqualityIndexes(ref leftIndex, ref rightIndex);
+        ref readonly var slot = ref t_pairEqualities[GetEqualitySlot(leftIndex, rightIndex)];
+        value = slot.Value;
+        return slot.Generation == equalityGeneration &&
+            slot.LeftIndex == leftIndex &&
+            slot.RightIndex == rightIndex;
+    }
+
+    internal static void SetEquality(
+        uint equalityGeneration,
+        int leftIndex,
+        int rightIndex,
+        bool value)
+    {
+        NormalizeEqualityIndexes(ref leftIndex, ref rightIndex);
+        ref var slot = ref t_pairEqualities[GetEqualitySlot(leftIndex, rightIndex)];
+        slot.LeftIndex = leftIndex;
+        slot.RightIndex = rightIndex;
+        slot.Value = value;
+        slot.Generation = equalityGeneration;
+    }
+
+    private static void NormalizeEqualityIndexes(ref int leftIndex, ref int rightIndex)
+    {
+        if (leftIndex > rightIndex)
+            (leftIndex, rightIndex) = (rightIndex, leftIndex);
+    }
+
+    private static int GetEqualitySlot(int leftIndex, int rightIndex) =>
+        (int)(((uint)leftIndex * 397u ^ (uint)rightIndex) & 7u);
 
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static void EnsureEqualityCapacity(int equalityIndex)
@@ -462,6 +586,21 @@ internal sealed class CompiledValidationRule
         t_resolvedMemberLength = value.Length;
         return memberValues;
     }
+}
+
+internal readonly struct ValidationCelValueResolution(int index) : IDisposable
+{
+    internal int Index { get; } = index;
+
+    public void Dispose() => CompiledValidationRule.EndValueResolution(this);
+}
+
+internal struct ValidationCelValueResolutionFrame
+{
+    internal ValidationCelMemberSlot[]? MemberValues;
+    internal uint MemberGeneration;
+    internal ValidationCelSizeSlot[]? SizeValues;
+    internal uint SizeGeneration;
 }
 
 internal readonly record struct ValidationCelContext(
@@ -589,8 +728,16 @@ internal readonly struct ValidationCelSizeValues(
 
 internal struct ValidationCelEqualitySlot
 {
+    internal int LeftIndex;
+    internal int RightIndex;
     internal bool Value;
     internal uint Generation;
+}
+
+[InlineArray(8)]
+internal struct ValidationCelEqualitySlots
+{
+    private ValidationCelEqualitySlot _element0;
 }
 
 internal readonly record struct ValidationCelEqualityPair(

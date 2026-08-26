@@ -43,6 +43,8 @@ public class AvroInlineValidationBenchmarks
     private ReadOnlyMemory<byte> _unionMemberNestedPayload;
     private AvroInlineRuleValidator _mixedRootMemberNestedValidator = null!;
     private ReadOnlyMemory<byte> _mixedRootMemberNestedPayload;
+    private AvroInlineRuleValidator _nestedMemberFrameValidator = null!;
+    private ReadOnlyMemory<byte> _nestedMemberFramePayload;
 
     [GlobalSetup]
     public void Setup()
@@ -421,6 +423,49 @@ public class AvroInlineValidationBenchmarks
             _mixedRootMemberNestedPayload,
             15,
             failFast: false);
+
+        const string nestedMemberFrameSchemaText = """
+            {
+              "type": "record",
+              "name": "NestedMemberFrameBenchmarkRecord",
+              "confluent:rules": [{
+                "name": "parent-members",
+                "expr": "size(this) == 2 && this.name == 'dekaf' && this.child.value == 1"
+              }],
+              "fields": [
+                { "name": "name", "type": "string" },
+                {
+                  "name": "child",
+                  "type": {
+                    "type": "record",
+                    "name": "NestedMemberFrameBenchmarkChild",
+                    "confluent:rules": [{
+                      "name": "child-member",
+                      "expr": "size(this) == 1 && this.value == 1"
+                    }],
+                    "fields": [{ "name": "value", "type": "int" }]
+                  }
+                }
+              ]
+            }
+            """;
+        var nestedMemberFrameSchema = (RecordSchema)AvroSchema.Parse(
+            nestedMemberFrameSchemaText);
+        var nestedMemberFrameChildSchema = (RecordSchema)nestedMemberFrameSchema.Fields[1].Schema;
+        var nestedMemberFrameChild = new GenericRecord(nestedMemberFrameChildSchema);
+        nestedMemberFrameChild.Add("value", 1);
+        var nestedMemberFrameRecord = new GenericRecord(nestedMemberFrameSchema);
+        nestedMemberFrameRecord.Add("name", "dekaf");
+        nestedMemberFrameRecord.Add("child", nestedMemberFrameChild);
+        using var nestedMemberFrameStream = new MemoryStream();
+        var nestedMemberFrameEncoder = new BinaryEncoder(nestedMemberFrameStream);
+        new GenericDatumWriter<GenericRecord>(nestedMemberFrameSchema).Write(
+            nestedMemberFrameRecord,
+            nestedMemberFrameEncoder);
+        nestedMemberFrameEncoder.Flush();
+        _nestedMemberFramePayload = nestedMemberFrameStream.ToArray();
+        _nestedMemberFrameValidator = new AvroInlineRuleValidator(nestedMemberFrameSchema);
+        _nestedMemberFrameValidator.Validate(_nestedMemberFramePayload, 16, failFast: false);
     }
 
     [Benchmark]
@@ -489,4 +534,8 @@ public class AvroInlineValidationBenchmarks
             _mixedRootMemberNestedPayload,
             15,
             failFast: false);
+
+    [Benchmark]
+    public void ValidateNestedMemberFrames() =>
+        _nestedMemberFrameValidator.Validate(_nestedMemberFramePayload, 16, failFast: false);
 }
