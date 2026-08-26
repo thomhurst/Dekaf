@@ -1,5 +1,6 @@
 using BenchmarkDotNet.Attributes;
 using Dekaf.Consumer;
+using Dekaf.Producer;
 using Dekaf.Serialization;
 using Dekaf.Testing;
 
@@ -10,12 +11,15 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 public class InMemoryConsumeAsyncOwnershipBenchmarks
 {
     private const string Topic = "in-memory-consume-async-ownership";
+    private const string HeaderTopic = "in-memory-consume-async-ownership-headers";
     private const string GroupId = "in-memory-consume-async-ownership-group";
-    private const int NormalRecordCount = 8_192;
+    private const int NormalRecordCount = 16_384;
     private static readonly TopicPartition Partition = new(Topic, 0);
 
     private InMemoryConsumer<Ignore, Ignore> _normalConsumer = null!;
     private CancellationTokenSource _normalCancellation = null!;
+    private InMemoryConsumer<Ignore, Ignore> _headerConsumer = null!;
+    private CancellationTokenSource _headerCancellation = null!;
     private InMemoryKafkaCluster _sharedCluster = null!;
     private InMemoryConsumer<Ignore, Ignore> _sharedConsumer = null!;
     private IAsyncEnumerator<ConsumeResult<Ignore, Ignore>> _sharedStream = null!;
@@ -28,11 +32,22 @@ public class InMemoryConsumeAsyncOwnershipBenchmarks
     {
         var cluster = new InMemoryKafkaCluster();
         var producer = new InMemoryProducer<Ignore, Ignore>(cluster);
+        var headers = Headers.Create("marker", new byte[] { 1, 2, 3, 4 });
         for (var index = 0; index < NormalRecordCount; index++)
+        {
             producer.ProduceAsync(Topic, default, default).GetAwaiter().GetResult();
+            producer.ProduceAsync(new ProducerMessage<Ignore, Ignore>
+            {
+                Topic = HeaderTopic,
+                Value = default,
+                Headers = headers
+            }).GetAwaiter().GetResult();
+        }
 
         _normalConsumer = CreateConsumer(cluster);
         _normalConsumer.Subscribe(Topic);
+        _headerConsumer = CreateConsumer(cluster);
+        _headerConsumer.Subscribe(HeaderTopic);
     }
 
     [IterationSetup(Target = nameof(ConsumeNormalProofPath))]
@@ -57,6 +72,33 @@ public class InMemoryConsumeAsyncOwnershipBenchmarks
             _result = result;
             if (++count == NormalRecordCount)
                 _normalCancellation.Cancel();
+        }
+
+        return count;
+    }
+
+    [IterationSetup(Target = nameof(ConsumeHeaderProofPath))]
+    public void SetupHeaderProofPath()
+    {
+        _headerCancellation = new CancellationTokenSource();
+        _headerConsumer.Seek(new TopicPartitionOffset(HeaderTopic, 0, 0));
+    }
+
+    [IterationCleanup(Target = nameof(ConsumeHeaderProofPath))]
+    public void CleanupHeaderProofPath() => _headerCancellation.Dispose();
+
+    [Benchmark(OperationsPerInvoke = NormalRecordCount)]
+    [InvocationCount(1)]
+    public async ValueTask<int> ConsumeHeaderProofPath()
+    {
+        var count = 0;
+        await foreach (var result in _headerConsumer
+                           .ConsumeAsync(_headerCancellation.Token)
+                           .ConfigureAwait(false))
+        {
+            _result = result;
+            if (++count == NormalRecordCount)
+                _headerCancellation.Cancel();
         }
 
         return count;
@@ -111,7 +153,11 @@ public class InMemoryConsumeAsyncOwnershipBenchmarks
     }
 
     [GlobalCleanup]
-    public void Cleanup() => _normalConsumer.DisposeAsync().AsTask().GetAwaiter().GetResult();
+    public void Cleanup()
+    {
+        _normalConsumer.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        _headerConsumer.DisposeAsync().AsTask().GetAwaiter().GetResult();
+    }
 
     private static InMemoryConsumer<Ignore, Ignore> CreateConsumer(InMemoryKafkaCluster cluster) =>
         new(

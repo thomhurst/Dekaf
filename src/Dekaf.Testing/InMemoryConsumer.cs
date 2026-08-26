@@ -2154,7 +2154,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     {
         try
         {
-            return new ConsumeResult<TKey, TValue>(
+            return ConsumeResult<TKey, TValue>.CreateWithCallerOwnedHeaders(
                 topic: topicPartition.Topic,
                 partition: topicPartition.Partition,
                 offset: record.Offset,
@@ -2167,7 +2167,8 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                 timestampType: TimestampType.CreateTime,
                 leaderEpoch: null,
                 keyDeserializer: _keyDeserializer,
-                valueDeserializer: _valueDeserializer);
+                valueDeserializer: _valueDeserializer,
+                deferHeaderSnapshot: _borrowStoredRecords);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -2256,10 +2257,11 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             record.Headers,
             record.TimestampMs,
             TimestampType.CreateTime,
-            leaderEpoch: null);
+            leaderEpoch: null,
+            deferHeaderSnapshot: _borrowStoredRecords);
     }
 
-    private static RecordDeserializationException CreateDeserializationException(
+    private RecordDeserializationException CreateDeserializationException(
         DeserializationExceptionOrigin origin,
         TopicPartition topicPartition,
         InMemoryRecord record,
@@ -2275,7 +2277,9 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             record.IsKeyNull,
             record.Value,
             record.IsValueNull,
-            record.Headers,
+            _borrowStoredRecords
+                ? LazyConsumeHeaders.CreateSnapshot(record.Headers)
+                : record.Headers,
             pooledHeaders: null,
             pooledHeaderCount: 0,
             innerException);
@@ -2448,6 +2452,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         IAsyncDeserializer<T>? asyncDeserializer) =>
         asyncDeserializer is null
             ? deserializer is IInputIsolatedDeserializer
+              && deserializer is not ICallerOwnedHeaderDeserializer<T>
             : asyncDeserializer is IInputIsolatedDeserializer;
 
     private bool TryPrepareOnDeliveryAutoCommitFault(

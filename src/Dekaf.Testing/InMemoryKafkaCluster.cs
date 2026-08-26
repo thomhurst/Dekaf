@@ -636,18 +636,7 @@ public sealed class InMemoryKafkaCluster
                 return false;
             }
 
-            if (!borrowStoredRecord)
-            {
-                record = CloneRecord(candidate);
-            }
-            else if (candidate.Headers.Count == 0)
-            {
-                record = candidate;
-            }
-            else
-            {
-                record = candidate with { Headers = CopyHeaders(candidate.Headers) };
-            }
+            record = borrowStoredRecord ? candidate : CloneRecord(candidate);
             return true;
         }
     }
@@ -1890,19 +1879,7 @@ public sealed class InMemoryKafkaCluster
     }
 
     private static IReadOnlyList<Header> CopyHeaders(IReadOnlyList<Header>? headers)
-    {
-        if (headers is null || headers.Count == 0)
-            return Array.Empty<Header>();
-
-        var copy = new Header[headers.Count];
-        for (var i = 0; i < headers.Count; i++)
-        {
-            var header = headers[i];
-            copy[i] = new Header(header.Key, header.IsValueNull ? null : header.Value.ToArray());
-        }
-
-        return copy;
-    }
+        => headers is null ? Array.Empty<Header>() : LazyConsumeHeaders.CreateSnapshot(headers);
 
     private static InMemoryRecord CloneRecord(InMemoryRecord record)
     {
