@@ -111,7 +111,11 @@ if (record.DeliveryCount >= 5)
 The mode controls what happens to records you do *not* explicitly acknowledge. It maps to Kafka's `share.acknowledgement.mode`:
 
 ```csharp
-.WithAcknowledgementMode(ShareAcknowledgementMode.Explicit)
+await using var consumer = await Kafka.CreateShareConsumer<string, string>()
+    .WithBootstrapServers("localhost:9092")
+    .WithGroupId("order-workers")
+    .WithAcknowledgementMode(ShareAcknowledgementMode.Explicit)
+    .BuildAsync(cancellationToken);
 ```
 
 **Implicit (default):** records from the previous poll that were not passed to `Acknowledge` are automatically accepted when the next `PollAsync` iteration or `CommitAsync` sends acknowledgements. Call `Acknowledge(record, Release)` or `Reject` *before* the next poll if a record must not be auto-accepted.
