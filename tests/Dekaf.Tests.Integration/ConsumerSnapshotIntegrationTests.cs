@@ -237,9 +237,15 @@ public sealed class ConsumerSnapshotIntegrationTests(KafkaTestContainer kafka)
         var moveNext = snapshot.MoveNextAsync().AsTask();
         await deserializer.WaitUntilBlockedAsync(timeout.Token).ConfigureAwait(false);
         snapshotCancellation.Cancel();
-        deserializer.Release();
-        await Assert.That(async () => await moveNext.ConfigureAwait(false))
-            .Throws<OperationCanceledException>();
+        try
+        {
+            await Assert.That(async () => await moveNext.ConfigureAwait(false))
+                .Throws<OperationCanceledException>();
+        }
+        finally
+        {
+            deserializer.Release();
+        }
 
         await consumer.CommitAsync(timeout.Token).ConfigureAwait(false);
         var committed = await consumer.GetCommittedOffsetAsync(partition, timeout.Token).ConfigureAwait(false);

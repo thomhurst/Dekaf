@@ -168,7 +168,8 @@ internal static class AotSmoke
         var buffer = new ArrayBufferWriter<byte>();
         var validation = new JsonSchemaValidationOptions
         {
-            ValidatorFactory = new StreamingJsonSchemaValidatorFactory(registry)
+            ValidatorFactory = new StreamingJsonSchemaValidatorFactory(registry),
+            ValidationRulesExecution = ValidationRulesExecution.AfterDomainRules
         };
 
         await using var serializer = new JsonSchemaRegistrySerializer<AotPayload>(
@@ -579,9 +580,13 @@ internal static class AotSmoke
     private const string AotPayloadJsonSchema = """
         {
           "type": "object",
+          "confluent:rules": [{ "name": "positiveId", "expr": "this.id > 0" }],
           "properties": {
             "id": { "type": "integer" },
-            "name": { "type": "string" }
+            "name": {
+              "type": "string",
+              "confluent:rules": [{ "name": "nameRequired", "expr": "size(this) > 0" }]
+            }
           },
           "required": [ "id", "name" ]
         }

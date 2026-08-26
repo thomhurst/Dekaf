@@ -12,7 +12,7 @@ namespace Dekaf.SchemaRegistry.Jsonata;
 /// Compiled queries are cached per rule and are safe for concurrent evaluation. Binary Avro and
 /// Protobuf payloads require codec-level object conversion and are rejected explicitly.
 /// </remarks>
-public sealed class JsonataSchemaRegistryRuleHandler : ISchemaRegistryRuleHandler
+public sealed class JsonataSchemaRegistryRuleHandler : ISchemaRegistryRuleTransformResultHandler
 {
     private const int MaxRetainedOutputBufferSize = 1024 * 1024;
 
@@ -27,7 +27,7 @@ public sealed class JsonataSchemaRegistryRuleHandler : ISchemaRegistryRuleHandle
     [ThreadStatic]
     private static byte[]? t_outputBuffer;
 
-    private readonly ConditionalWeakTable<SchemaRule, JsonataQuery> _queries = new();
+    private readonly ConditionalWeakTable<SchemaRule, CompiledRule> _rules = new();
 
     /// <inheritdoc />
     public string Type => RuleType;
@@ -41,6 +41,17 @@ public sealed class JsonataSchemaRegistryRuleHandler : ISchemaRegistryRuleHandle
     public ReadOnlyMemory<byte> TransformDeserializedPayload(
         ReadOnlyMemory<byte> payload,
         SchemaRegistryRuleHandlerContext context) => Transform(payload, context);
+
+    /// <inheritdoc />
+    public ReadOnlyMemory<byte> TransformDeserializedPayload(
+        ReadOnlyMemory<byte> payload,
+        SchemaRegistryRuleHandlerContext context,
+        out bool payloadChanged)
+    {
+        var result = Transform(payload, context);
+        payloadChanged = context.Rule.Kind == SchemaRuleKind.Transform && !payload.Equals(result);
+        return result;
+    }
 
     private ReadOnlyMemory<byte> Transform(
         ReadOnlyMemory<byte> payload,
@@ -60,8 +71,11 @@ public sealed class JsonataSchemaRegistryRuleHandler : ISchemaRegistryRuleHandle
         try
         {
             var input = JToken.Parse(StrictUtf8.GetString(payload.Span));
-            var query = _queries.GetValue(rule, static configuredRule => Compile(configuredRule));
-            result = query.Eval(input);
+            var compiledRule = _rules.GetValue(rule, static configuredRule => Compile(configuredRule));
+            if (compiledRule.PreservesPayloadRepresentation)
+                return payload;
+
+            result = compiledRule.Query.Eval(input);
         }
         catch (DecoderFallbackException exception)
         {
@@ -109,14 +123,17 @@ public sealed class JsonataSchemaRegistryRuleHandler : ISchemaRegistryRuleHandle
         return Encode(result.ToFlatString());
     }
 
-    private static JsonataQuery Compile(SchemaRule rule)
+    private static CompiledRule Compile(SchemaRule rule)
     {
         if (string.IsNullOrWhiteSpace(rule.Expr))
             throw new SchemaRegistryRuleException($"JSONata rule '{rule.Name}' has no expression.");
 
         try
         {
-            return new JsonataQuery(rule.Expr);
+            var expression = rule.Expr.AsSpan().Trim();
+            return new CompiledRule(
+                new JsonataQuery(rule.Expr),
+                rule.Kind == SchemaRuleKind.Transform && expression is ['$']);
         }
         catch (JsonataException exception)
         {
@@ -153,4 +170,6 @@ public sealed class JsonataSchemaRegistryRuleHandler : ISchemaRegistryRuleHandle
 
     private static string FormatType(JTokenType type) =>
         type.ToString().ToLowerInvariant();
+
+    private sealed record CompiledRule(JsonataQuery Query, bool PreservesPayloadRepresentation);
 }

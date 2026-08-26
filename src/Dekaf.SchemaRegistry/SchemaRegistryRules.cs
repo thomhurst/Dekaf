@@ -475,6 +475,27 @@ public interface ISchemaRegistryRuleHandler
 }
 
 /// <summary>
+/// Reports whether a read-side rule transform changed the payload representation.
+/// </summary>
+/// <remarks>
+/// Implement this optional interface when the handler can determine the result while transforming.
+/// It avoids a second full-payload comparison on deserialization hot paths. Implementations set
+/// <c>payloadChanged</c> to <see langword="false" /> only when they can certify that the transform
+/// preserved the input representation. A handler may report <see langword="true" /> when copied
+/// output happens to contain equal bytes but proving equality would require another payload scan.
+/// </remarks>
+public interface ISchemaRegistryRuleTransformResultHandler : ISchemaRegistryRuleHandler
+{
+    /// <summary>
+    /// Applies a read-side transform and reports whether the payload representation changed.
+    /// </summary>
+    ReadOnlyMemory<byte> TransformDeserializedPayload(
+        ReadOnlyMemory<byte> payload,
+        SchemaRegistryRuleHandlerContext context,
+        out bool payloadChanged);
+}
+
+/// <summary>
 /// Runs a configured Schema Registry rule success or failure action.
 /// </summary>
 public interface ISchemaRegistryRuleAction
@@ -596,14 +617,35 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
         SchemaRegistryRuleContext context,
         IJsonSchemaValidator validator,
         int schemaId)
+        => TransformSerializedPayload(
+            payload,
+            context,
+            validator,
+            schemaId,
+            validationRules: null,
+            ValidationRulesExecution.Disabled,
+            validationRulesFailFast: false);
+
+    internal ReadOnlyMemory<byte> TransformSerializedPayload(
+        ReadOnlyMemory<byte> payload,
+        SchemaRegistryRuleContext context,
+        IJsonSchemaValidator? validator,
+        int schemaId,
+        IJsonSchemaValidator? validationRules,
+        ValidationRulesExecution validationRulesExecution,
+        bool validationRulesFailFast)
     {
         ArgumentNullException.ThrowIfNull(context);
-        ArgumentNullException.ThrowIfNull(validator);
+
+        if (validationRulesExecution == ValidationRulesExecution.BeforeDomainRules)
+            validationRules!.ValidateRules(payload, schemaId, validationRulesFailFast);
 
         var ruleSet = context.Schema?.RuleSet;
         if (ruleSet is null || !ruleSet.HasDomainOrEncodingRules)
         {
-            validator.Validate(payload.Span, schemaId);
+            validator?.Validate(payload.Span, schemaId);
+            if (validationRulesExecution == ValidationRulesExecution.AfterDomainRules)
+                validationRules!.ValidateRules(payload, schemaId, validationRulesFailFast);
             return payload;
         }
 
@@ -612,7 +654,9 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
             case null or "" or "ALL" or "CLIENT":
                 break;
             case "GATEWAY" or "SERVER" or "NONE":
-                validator.Validate(payload.Span, schemaId);
+                validator?.Validate(payload.Span, schemaId);
+                if (validationRulesExecution == ValidationRulesExecution.AfterDomainRules)
+                    validationRules!.ValidateRules(payload, schemaId, validationRulesFailFast);
                 return payload;
             case { } enabledEnvironment:
                 throw new SchemaRegistryRuleException(
@@ -629,7 +673,9 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
                 start: 0,
                 count: plan.WriteDomainStepCount,
                 SchemaRegistryRuleDirection.Write);
-            validator.Validate(payload.Span, schemaId);
+            validator?.Validate(payload.Span, schemaId);
+            if (validationRulesExecution == ValidationRulesExecution.AfterDomainRules)
+                validationRules!.ValidateRules(payload, schemaId, validationRulesFailFast);
             return ApplyRules(
                 payload,
                 context,
@@ -640,7 +686,9 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
         }
 
         payload = ApplyRules(payload, context, ruleSet.DomainRules, SchemaRegistryRuleDirection.Write);
-        validator.Validate(payload.Span, schemaId);
+        validator?.Validate(payload.Span, schemaId);
+        if (validationRulesExecution == ValidationRulesExecution.AfterDomainRules)
+            validationRules!.ValidateRules(payload, schemaId, validationRulesFailFast);
         return ApplyRules(payload, context, ruleSet.EncodingRules, SchemaRegistryRuleDirection.Write);
     }
 
@@ -649,6 +697,23 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
         ReadOnlyMemory<byte> payload,
         SchemaRegistryRuleContext context)
         => ApplyRules(payload, context, SchemaRegistryRuleDirection.Read);
+
+    internal ReadOnlyMemory<byte> TransformDeserializedPayload(
+        ReadOnlyMemory<byte> payload,
+        SchemaRegistryRuleContext context,
+        IJsonSchemaValidator validationRules,
+        int schemaId,
+        ValidationRulesExecution validationRulesExecution,
+        bool validationRulesFailFast)
+    {
+        payload = TransformDeserializedEncodingPayload(payload, context);
+        if (validationRulesExecution == ValidationRulesExecution.BeforeDomainRules)
+            validationRules.ValidateRules(payload, schemaId, validationRulesFailFast);
+        payload = TransformDeserializedDomainPayload(payload, context);
+        if (validationRulesExecution == ValidationRulesExecution.AfterDomainRules)
+            validationRules.ValidateRules(payload, schemaId, validationRulesFailFast);
+        return payload;
+    }
 
     internal ReadOnlyMemory<byte> TransformDeserializedEncodingPayload(
         ReadOnlyMemory<byte> payload,
@@ -659,6 +724,15 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
         ReadOnlyMemory<byte> payload,
         SchemaRegistryRuleContext context)
         => ApplyReadRuleCollection(payload, context, useEncodingRules: false);
+
+    internal ReadOnlyMemory<byte> TransformDeserializedDomainPayload(
+        ReadOnlyMemory<byte> payload,
+        SchemaRegistryRuleContext context,
+        out bool payloadWasTransformed)
+        => ApplyReadDomainRuleCollectionWithTransformResult(
+            payload,
+            context,
+            out payloadWasTransformed);
 
     internal SchemaRegistryMigrationTransformResult TransformMigrationPayload(
         ref ReadOnlyMemory<byte> payload,
@@ -759,6 +833,39 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
             context,
             useEncodingRules ? ruleSet.EncodingRules : ruleSet.DomainRules,
             SchemaRegistryRuleDirection.Read);
+    }
+
+    private ReadOnlyMemory<byte> ApplyReadDomainRuleCollectionWithTransformResult(
+        ReadOnlyMemory<byte> payload,
+        SchemaRegistryRuleContext context,
+        out bool payloadWasTransformed)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+
+        payloadWasTransformed = false;
+        var ruleSet = context.Schema?.RuleSet;
+        if (ruleSet is null || !ruleSet.HasDomainOrEncodingRules || !ShouldExecute(ruleSet))
+            return payload;
+
+        if (ruleSet.HasFixedRuleCollections)
+        {
+            var plan = _executionPlans.GetValue(ruleSet, _createExecutionPlan);
+            return ApplyRulesWithTransformResult(
+                payload,
+                context,
+                plan.ReadSteps,
+                plan.ReadEncodingStepCount,
+                plan.ReadSteps.Length - plan.ReadEncodingStepCount,
+                SchemaRegistryRuleDirection.Read,
+                out payloadWasTransformed);
+        }
+
+        return ApplyRulesWithTransformResult(
+            payload,
+            context,
+            ruleSet.DomainRules,
+            SchemaRegistryRuleDirection.Read,
+            out payloadWasTransformed);
     }
 
     private ReadOnlyMemory<byte> ApplyRules(
@@ -866,6 +973,53 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
         return payload;
     }
 
+    private ReadOnlyMemory<byte> ApplyRulesWithTransformResult(
+        ReadOnlyMemory<byte> payload,
+        SchemaRegistryRuleContext context,
+        IReadOnlyList<SchemaRule>? rules,
+        SchemaRegistryRuleDirection direction,
+        out bool payloadWasTransformed)
+    {
+        payloadWasTransformed = false;
+        if (rules is null || rules.Count == 0)
+            return payload;
+
+        var input = payload;
+        var requiresContentComparison = false;
+        var isWrite = direction == SchemaRegistryRuleDirection.Write;
+        var index = isWrite ? 0 : rules.Count - 1;
+        var end = isWrite ? rules.Count : -1;
+        var step = isWrite ? 1 : -1;
+        for (; index != end; index += step)
+        {
+            var rule = rules[index];
+            if (!IsActiveRule(rule, direction))
+                continue;
+
+            _handlers.TryGetValue(rule.Type, out var handler);
+            if (ApplyRule(
+                    ref payload,
+                    context,
+                    rule,
+                    handler,
+                    direction,
+                    trackPayloadChange: true,
+                    out var payloadChanged) &&
+                rule.Kind == SchemaRuleKind.Transform)
+            {
+                if (payloadChanged is { } changed)
+                    payloadWasTransformed |= changed;
+                else
+                    requiresContentComparison = true;
+            }
+        }
+
+        if (requiresContentComparison)
+            payloadWasTransformed = PayloadContentChanged(input, payload);
+
+        return payload;
+    }
+
     private ReadOnlyMemory<byte> ApplyRules(
         ReadOnlyMemory<byte> payload,
         SchemaRegistryRuleContext context,
@@ -891,6 +1045,45 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
         return payload;
     }
 
+    private ReadOnlyMemory<byte> ApplyRulesWithTransformResult(
+        ReadOnlyMemory<byte> payload,
+        SchemaRegistryRuleContext context,
+        RuleExecutionStep[] steps,
+        int start,
+        int count,
+        SchemaRegistryRuleDirection direction,
+        out bool payloadWasTransformed)
+    {
+        payloadWasTransformed = false;
+        var input = payload;
+        var requiresContentComparison = false;
+        var end = start + count;
+        for (var i = start; i < end; i++)
+        {
+            ref readonly var step = ref steps[i];
+            if (ApplyRule(
+                    ref payload,
+                    context,
+                    step.Rule,
+                    step.Handler,
+                    direction,
+                    trackPayloadChange: true,
+                    out var payloadChanged) &&
+                step.Rule.Kind == SchemaRuleKind.Transform)
+            {
+                if (payloadChanged is { } changed)
+                    payloadWasTransformed |= changed;
+                else
+                    requiresContentComparison = true;
+            }
+        }
+
+        if (requiresContentComparison)
+            payloadWasTransformed = PayloadContentChanged(input, payload);
+
+        return payload;
+    }
+
     private ReadOnlyMemory<byte> ApplyRule(
         ReadOnlyMemory<byte> payload,
         SchemaRegistryRuleContext context,
@@ -907,8 +1100,26 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
         SchemaRegistryRuleContext context,
         SchemaRule rule,
         ISchemaRegistryRuleHandler? handler,
-        SchemaRegistryRuleDirection direction)
+        SchemaRegistryRuleDirection direction) =>
+        ApplyRule(
+            ref payload,
+            context,
+            rule,
+            handler,
+            direction,
+            trackPayloadChange: false,
+            out _);
+
+    private bool ApplyRule(
+        ref ReadOnlyMemory<byte> payload,
+        SchemaRegistryRuleContext context,
+        SchemaRule rule,
+        ISchemaRegistryRuleHandler? handler,
+        SchemaRegistryRuleDirection direction,
+        bool trackPayloadChange,
+        out bool? payloadChanged)
     {
+        payloadChanged = null;
         var handlerContext = RentHandlerContext(context, rule, direction);
         try
         {
@@ -923,9 +1134,30 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
             {
                 try
                 {
-                    transformedPayload = direction == SchemaRegistryRuleDirection.Write
-                        ? handler.TransformSerializedPayload(payload, handlerContext)
-                        : handler.TransformDeserializedPayload(payload, handlerContext);
+                    if (trackPayloadChange &&
+                        direction == SchemaRegistryRuleDirection.Read &&
+                        rule.Kind == SchemaRuleKind.Transform)
+                    {
+                        if (handler is ISchemaRegistryRuleTransformResultHandler resultHandler)
+                        {
+                            transformedPayload = resultHandler.TransformDeserializedPayload(
+                                payload,
+                                handlerContext,
+                                out var changed);
+                            payloadChanged = changed;
+                        }
+                        else
+                        {
+                            transformedPayload = handler.TransformDeserializedPayload(payload, handlerContext);
+                            payloadChanged = null;
+                        }
+                    }
+                    else
+                    {
+                        transformedPayload = direction == SchemaRegistryRuleDirection.Write
+                            ? handler.TransformSerializedPayload(payload, handlerContext)
+                            : handler.TransformDeserializedPayload(payload, handlerContext);
+                    }
                 }
                 catch (SchemaRegistryRuleException ex)
                 {
@@ -956,6 +1188,12 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
             ReturnHandlerContext(handlerContext);
         }
     }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static bool PayloadContentChanged(
+        ReadOnlyMemory<byte> input,
+        ReadOnlyMemory<byte> output) =>
+        !input.Equals(output) && !input.Span.SequenceEqual(output.Span);
 
     private RuleExecutionPlan CreateExecutionPlan(SchemaRuleSet ruleSet)
     {
