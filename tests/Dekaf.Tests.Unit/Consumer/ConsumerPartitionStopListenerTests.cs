@@ -125,7 +125,9 @@ public sealed class ConsumerPartitionStopListenerTests
         };
         var consumer = CreateConsumer(
             listener,
-            defaultApiTimeoutMs: 5_000,
+            // Keep the API backstop above telemetry's independent five-second stop bound.
+            // The TUnit timeout remains the outer hang guard for the whole test.
+            defaultApiTimeoutMs: 20_000,
             partitionStopTimeout: TimeSpan.FromMilliseconds(50));
         var partition = new TopicPartition("topic-a", 0);
         consumer.Assign(partition);
