@@ -461,34 +461,37 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         while (!cancellationToken.IsCancellationRequested)
         {
             var result = await ConsumeOneAsync(Timeout.InfiniteTimeSpan, cancellationToken).ConfigureAwait(false);
-            if (result.HasValue)
+            if (result is not { } consumed)
             {
-                yield return result.Value;
+                await WaitForCurrentAutoCommitDeliveryAsync(cancellationToken).ConfigureAwait(false);
+                continue;
+            }
 
-                // Resuming after the yield proves that the caller processed this record.
-                // Do this before the loop observes cancellation, matching KafkaConsumer.
-                ThrowIfDisposed();
-                var capturedProof = await ApplyInDoubtAutoCommitFaultAsync(
-                    CancellationToken.None).ConfigureAwait(false);
-                ThrowIfDisposed();
-                if (capturedProof is { SharedWaiter: true })
+            yield return consumed;
+
+            // Resuming after the yield proves that the caller processed this record.
+            // Do this before the loop observes cancellation, matching KafkaConsumer.
+            ThrowIfDisposed();
+            var capturedProof = await ApplyInDoubtAutoCommitFaultAsync(
+                CancellationToken.None).ConfigureAwait(false);
+            ThrowIfDisposed();
+            if (capturedProof is { SharedWaiter: true })
+            {
+                await WaitForSharedAutoCommitDeliveryAsync(
+                    capturedProof.Value,
+                    cancellationToken).ConfigureAwait(false);
+                continue;
+            }
+            try
+            {
+                lock (_gate)
                 {
-                    await WaitForSharedAutoCommitDeliveryAsync(
-                        capturedProof.Value,
-                        cancellationToken).ConfigureAwait(false);
-                    continue;
+                    ProveInDoubtRecordUnderLock(capturedProof);
                 }
-                try
-                {
-                    lock (_gate)
-                    {
-                        ProveInDoubtRecordUnderLock(capturedProof);
-                    }
-                }
-                finally
-                {
-                    CompleteSharedAutoCommitWaiters(capturedProof);
-                }
+            }
+            finally
+            {
+                CompleteSharedAutoCommitWaiters(capturedProof);
             }
         }
     }
@@ -572,20 +575,14 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                             consumerGroupGeneration);
 
                         ProveInDoubtRecordUnderLock(capturedProof);
-                        if (!TrySelectSnapshotRecordUnderLock(
+                        complete = !TrySelectSnapshotRecordUnderLock(
                                 partitions,
                                 ref activePartitionIndex,
                                 out partition,
                                 out record,
                                 out position,
-                                out pendingAutoCommitAdvancement))
-                        {
-                            complete = !pendingAutoCommitAdvancement;
-                        }
-                        else
-                        {
-                            complete = false;
-                        }
+                                out pendingAutoCommitAdvancement) &&
+                            !pendingAutoCommitAdvancement;
                     }
                 }
                 finally
@@ -884,8 +881,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                 ClearInDoubtRecordUnderLock();
             }
 
-            if (_consumerStateVersion == consumerStateVersion)
-                CommitCapturedOffsetsUnderLock(in capturedCommit);
+            CommitCapturedOffsetsUnderLock(in capturedCommit);
         }
     }
 
@@ -2860,6 +2856,39 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                 if (_inDoubtNextOffset < 0 ||
                     _inDoubtPartition.Equals(sharedProof.Partition) &&
                     _inDoubtNextOffset == sharedProof.Position)
+                {
+                    return;
+                }
+            }
+
+            await recordsChanged.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private async ValueTask WaitForCurrentAutoCommitDeliveryAsync(
+        CancellationToken cancellationToken)
+    {
+        TopicPartition partition;
+        long position;
+        lock (_gate)
+        {
+            ThrowIfDisposed();
+            if (_inDoubtNextOffset < 0)
+                return;
+
+            partition = _inDoubtPartition;
+            position = _inDoubtNextOffset;
+        }
+
+        while (true)
+        {
+            var recordsChanged = _cluster.ObserveRecordsChanged();
+            lock (_gate)
+            {
+                ThrowIfDisposed();
+                if (_inDoubtNextOffset < 0 ||
+                    !_inDoubtPartition.Equals(partition) ||
+                    _inDoubtNextOffset != position)
                 {
                     return;
                 }
