@@ -53,6 +53,7 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
     private Task? _loopTask;
     private ClientTelemetrySubscription? _subscription;
     private int _started;
+    private int _stopRequested;
     private int _stopped;
     private int _disabled;
     private int _disposed;
@@ -81,7 +82,7 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
     public async ValueTask StartAsync(CancellationToken cancellationToken = default)
     {
         if (Volatile.Read(ref _disposed) != 0 ||
-            Volatile.Read(ref _stopped) != 0 ||
+            Volatile.Read(ref _stopRequested) != 0 ||
             Volatile.Read(ref _started) != 0 ||
             Volatile.Read(ref _disabled) != 0)
         {
@@ -92,7 +93,7 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
         try
         {
             if (Volatile.Read(ref _disposed) != 0 ||
-                Volatile.Read(ref _stopped) != 0 ||
+                Volatile.Read(ref _stopRequested) != 0 ||
                 Volatile.Read(ref _started) != 0 ||
                 Volatile.Read(ref _disabled) != 0)
             {
@@ -106,7 +107,7 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
             }
 
             if (Volatile.Read(ref _disposed) != 0 ||
-                Volatile.Read(ref _stopped) != 0 ||
+                Volatile.Read(ref _stopRequested) != 0 ||
                 Volatile.Read(ref _disabled) != 0)
             {
                 return;
@@ -126,7 +127,7 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
 
     public async ValueTask StopAsync(TimeSpan timeout, CancellationToken cancellationToken = default)
     {
-        if (Interlocked.Exchange(ref _stopped, 1) != 0)
+        if (Volatile.Read(ref _stopped) != 0)
         {
             return;
         }
@@ -136,9 +137,15 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
             timeout = DefaultStopTimeout;
         }
 
+        Volatile.Write(ref _stopRequested, 1);
         await _startLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            if (Interlocked.Exchange(ref _stopped, 1) != 0)
+            {
+                return;
+            }
+
             using var timeoutCts = new CancellationTokenSource(timeout);
             using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(timeoutCts.Token, cancellationToken);
             var stopToken = linkedCts.Token;

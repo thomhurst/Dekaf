@@ -28,6 +28,7 @@ namespace Dekaf.Producer;
 public sealed partial class KafkaProducer<TKey, TValue> :
     IKafkaProducer<TKey, TValue>,
     IProducerMetadata,
+    IKafkaClientInstanceIdentity,
     IKafkaClientStatusProvider,
     IProducerDiagnostics,
     IProducerFastPath<TKey, TValue>,

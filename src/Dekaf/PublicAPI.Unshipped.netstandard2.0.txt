@@ -204,7 +204,8 @@ Dekaf.Diagnostics.KafkaClientStatus.Brokers.init -> void
 Dekaf.Diagnostics.KafkaClientStatus.ConsumerGroup.init -> void
 Dekaf.Diagnostics.IKafkaClientStatusProvider.GetStatus() -> Dekaf.Diagnostics.KafkaClientStatus!
 Dekaf.Diagnostics.IKafkaClientIdentity.ClusterId.get -> string?
-Dekaf.Diagnostics.IKafkaClientIdentity.ClientInstanceId.get -> System.Guid?
+Dekaf.Diagnostics.IKafkaClientInstanceIdentity
+Dekaf.Diagnostics.IKafkaClientInstanceIdentity.ClientInstanceId.get -> System.Guid?
 Dekaf.Consumer.KafkaConsumer<TKey, TValue>.ClusterId.get -> string?
 Dekaf.Consumer.KafkaConsumer<TKey, TValue>.ClientInstanceId.get -> System.Guid?
 Dekaf.Consumer.KafkaConsumer<TKey, TValue>.GetStatus() -> Dekaf.Diagnostics.KafkaClientStatus!

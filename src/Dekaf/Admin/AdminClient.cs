@@ -26,6 +26,7 @@ public sealed class AdminClient :
     ITopicIdAdminClient,
     ITransactionRemediationAdminClient,
     IShareGroupDeletionAdminClient,
+    IKafkaClientInstanceIdentity,
     IKafkaClientStatusProvider
 {
     private const string MetadataQuorumTopic = "__cluster_metadata";

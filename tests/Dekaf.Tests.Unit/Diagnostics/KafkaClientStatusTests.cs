@@ -55,12 +55,12 @@ public sealed class KafkaClientStatusTests
         await Assert.That(adminStatus.ClusterId).IsNull();
         await Assert.That(adminStatus.ClientInstanceId).IsNull();
 
-        var identities = new IKafkaClientIdentity[]
+        var identities = new IKafkaClientInstanceIdentity[]
         {
-            (IKafkaClientIdentity)producer,
-            (IKafkaClientIdentity)consumer,
-            (IKafkaClientIdentity)shareConsumer,
-            (IKafkaClientIdentity)admin
+            (IKafkaClientInstanceIdentity)producer,
+            (IKafkaClientInstanceIdentity)consumer,
+            (IKafkaClientInstanceIdentity)shareConsumer,
+            admin
         };
         foreach (var identity in identities)
             await Assert.That(identity.ClientInstanceId).IsNull();
@@ -95,7 +95,7 @@ public sealed class KafkaClientStatusTests
         for (var i = 0; i < clients.Length; i++)
         {
             SetClientInstanceId(clients[i], expectedIds[i]);
-            var identity = (IKafkaClientIdentity)clients[i];
+            var identity = (IKafkaClientInstanceIdentity)clients[i];
             var status = ((IKafkaClientStatusProvider)clients[i]).GetStatus();
 
             await Assert.That(identity.ClientInstanceId).IsEqualTo(expectedIds[i]);
@@ -114,7 +114,7 @@ public sealed class KafkaClientStatusTests
 
         await producer.DisposeAsync();
 
-        await Assert.That(((IKafkaClientIdentity)producer).ClientInstanceId)
+        await Assert.That(((IKafkaClientInstanceIdentity)producer).ClientInstanceId)
             .IsEqualTo(clientInstanceId);
         var status = ((IKafkaClientStatusProvider)producer).GetStatus();
         await Assert.That(status.ClientInstanceId).IsEqualTo(clientInstanceId);

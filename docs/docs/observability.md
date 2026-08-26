@@ -137,13 +137,13 @@ Applications can also contribute their own metrics to broker subscriptions via `
 ### Client instance IDs
 
 Built-in producers, consumers, Share Consumers, and Admin clients implement the optional
-`IKafkaClientIdentity` capability. Its `ClientInstanceId` property exposes the latest
+`IKafkaClientInstanceIdentity` capability. Its `ClientInstanceId` property exposes the latest
 broker-assigned KIP-714 identity without blocking or starting network I/O:
 
 ```csharp
 using Dekaf.Diagnostics;
 
-var identity = (IKafkaClientIdentity)producer;
+var identity = (IKafkaClientInstanceIdentity)producer;
 Guid? clientInstanceId = identity.ClientInstanceId;
 ```
 

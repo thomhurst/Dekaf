@@ -162,7 +162,8 @@ Dekaf.Diagnostics.ConsumerGroupStatus.Assignment.get -> System.Collections.Gener
 Dekaf.Diagnostics.ProducerBacklogStatus.ProducerBacklogStatus(long BufferedBytes, ulong BufferCapacityBytes, int UnsealedBatchCount, long QueuedBatchCount, long InFlightBatchCount, long BufferPressureEventCount) -> void
 Dekaf.Diagnostics.ProducerBacklogStatus.BufferUtilization.get -> double
 Dekaf.Diagnostics.IKafkaClientIdentity.ClusterId.get -> string?
-Dekaf.Diagnostics.IKafkaClientIdentity.ClientInstanceId.get -> System.Guid?
+Dekaf.Diagnostics.IKafkaClientInstanceIdentity
+Dekaf.Diagnostics.IKafkaClientInstanceIdentity.ClientInstanceId.get -> System.Guid?
 Dekaf.Diagnostics.ProducerBacklogStatus.IsAtCapacity.get -> bool
 Dekaf.Diagnostics.BrokerConnectionStatus.BrokerId.get -> int
 Dekaf.Diagnostics.BrokerConnectionStatus.Host.get -> string!

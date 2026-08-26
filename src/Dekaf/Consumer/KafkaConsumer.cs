@@ -1138,6 +1138,7 @@ internal static class ConsumerFetchPools
 /// <typeparam name="TValue">Value type.</typeparam>
 public sealed partial class KafkaConsumer<TKey, TValue> :
     IKafkaConsumer<TKey, TValue>,
+    IKafkaClientInstanceIdentity,
     IKafkaClientStatusProvider,
     IBoundedKafkaConsumer<TKey, TValue>,
     IConsumerGroupLiveness,

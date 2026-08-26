@@ -27,20 +27,23 @@ public sealed class ClientStatusIntegrationTests(KafkaTestContainer kafka) : Kaf
         await using var admin = client.CreateAdminClient().Build();
         _ = await admin.ListTopicsAsync(cancellationToken: cancellationToken);
 
-        var identities = new (string Role, IKafkaClientIdentity Identity)[]
+        var identities = new (
+            string Role,
+            IKafkaClientIdentity ClusterIdentity,
+            IKafkaClientInstanceIdentity InstanceIdentity)[]
         {
-            ("producer", (IKafkaClientIdentity)producer),
-            ("consumer", (IKafkaClientIdentity)consumer),
-            ("share consumer", (IKafkaClientIdentity)shareConsumer),
-            ("admin", (IKafkaClientIdentity)admin)
+            ("producer", (IKafkaClientIdentity)producer, (IKafkaClientInstanceIdentity)producer),
+            ("consumer", (IKafkaClientIdentity)consumer, (IKafkaClientInstanceIdentity)consumer),
+            ("share consumer", (IKafkaClientIdentity)shareConsumer, (IKafkaClientInstanceIdentity)shareConsumer),
+            ("admin", admin, admin)
         };
-        var clusterId = identities[0].Identity.ClusterId;
+        var clusterId = identities[0].ClusterIdentity.ClusterId;
 
         await Assert.That(clusterId).IsNotNull();
-        foreach (var (role, identity) in identities)
+        foreach (var (role, clusterIdentity, instanceIdentity) in identities)
         {
-            await Assert.That(identity.ClusterId).IsEqualTo(clusterId).Because($"{role} cluster ID");
-            await Assert.That(identity.ClientInstanceId).IsNull()
+            await Assert.That(clusterIdentity.ClusterId).IsEqualTo(clusterId).Because($"{role} cluster ID");
+            await Assert.That(instanceIdentity.ClientInstanceId).IsNull()
                 .Because($"{role} client instance ID without a broker telemetry receiver");
         }
     }

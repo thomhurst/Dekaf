@@ -16,7 +16,17 @@ public interface IKafkaClientIdentity
     /// before metadata supplies one.
     /// </summary>
     string? ClusterId { get; }
+}
 
+/// <summary>
+/// Optional capability exposing the cached KIP-714 identity of a Kafka client.
+/// </summary>
+/// <remarks>
+/// Dekaf's built-in producer, consumer, share consumer, and admin client implement this
+/// interface. The property is a non-blocking cache read and never starts network I/O.
+/// </remarks>
+public interface IKafkaClientInstanceIdentity
+{
     /// <summary>
     /// Gets the broker-assigned KIP-714 client instance ID, or <see langword="null"/>
     /// before telemetry negotiation succeeds or when the broker does not support telemetry.

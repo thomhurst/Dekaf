@@ -28,6 +28,7 @@ namespace Dekaf.ShareConsumer;
 /// </summary>
 internal sealed partial class KafkaShareConsumer<TKey, TValue> :
     IKafkaShareConsumer<TKey, TValue>,
+    IKafkaClientInstanceIdentity,
     IKafkaClientStatusProvider
 {
     private readonly ShareConsumerOptions _options;
