@@ -56,6 +56,83 @@ public class AvroSerializerIntegrationTests(KafkaWithSchemaRegistryContainer tes
         }
         """;
 
+    private const string InlineValidationRecordSchema = """
+        {
+            "type": "record",
+            "name": "InlineValidationRecord",
+            "namespace": "test",
+            "fields": [{
+                "name": "id",
+                "type": "int",
+                "confluent:rules": [{ "name": "positive-id", "expr": "this > 0" }]
+            }]
+        }
+        """;
+
+    [Test]
+    public async Task AvroInlineValidation_RejectsInvalidAndRoundTripsValidRecord()
+    {
+        var topic = await testInfra.CreateTestTopicAsync();
+        using var registryClient = new SchemaRegistryClient(new SchemaRegistryConfig
+        {
+            Url = testInfra.RegistryUrl
+        });
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(
+            registryClient,
+            new AvroSerializerConfig
+            {
+                ValidationRulesExecution = ValidationRulesExecution.BeforeDomainRules
+            });
+        await using var deserializer = new AvroSchemaRegistryDeserializer<GenericRecord>(
+            registryClient,
+            new AvroDeserializerConfig
+            {
+                ValidationRulesExecution = ValidationRulesExecution.AfterDomainRules
+            });
+        var schema = (Avro.RecordSchema)AvroSchema.Parse(InlineValidationRecordSchema);
+        var valid = new GenericRecord(schema);
+        valid.Add("id", 42);
+        var invalid = new GenericRecord(schema);
+        invalid.Add("id", -1);
+        await using var producer = await Kafka.CreateProducer<string, GenericRecord>()
+            .WithBootstrapServers(testInfra.BootstrapServers)
+            .WithClientId("avro-inline-validation-producer")
+            .WithValueSerializer(serializer)
+            .BuildAsync();
+
+        await producer.ProduceAsync(new ProducerMessage<string, GenericRecord>
+        {
+            Topic = topic,
+            Key = "valid",
+            Value = valid
+        }, CancellationToken.None);
+        await Assert.That(async () => await producer.ProduceAsync(new ProducerMessage<string, GenericRecord>
+        {
+            Topic = topic,
+            Key = "invalid",
+            Value = invalid
+        }, CancellationToken.None)).Throws<ValidationRulesFailedException>();
+
+        await using var consumer = await Kafka.CreateConsumer<string, GenericRecord>()
+            .WithBootstrapServers(testInfra.BootstrapServers)
+            .WithClientId("avro-inline-validation-consumer")
+            .WithGroupId($"avro-inline-validation-{Guid.NewGuid():N}")
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithValueDeserializer(deserializer)
+            .BuildAsync();
+        consumer.Subscribe(topic);
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        GenericRecord? consumed = null;
+        await foreach (var message in consumer.ConsumeAsync(cts.Token))
+        {
+            consumed = message.Value;
+            break;
+        }
+
+        await Assert.That(consumed).IsNotNull();
+        await Assert.That(consumed!["id"]).IsEqualTo(42);
+    }
+
     [Test]
     public async Task AvroSerializer_ProduceAndConsume_RoundTrips()
     {

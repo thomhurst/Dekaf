@@ -24,6 +24,7 @@ public class ProtobufInlineValidationBenchmarks
     private ProtobufInlineRuleValidator _mapEqualityValidator = null!;
     private ProtobufInlineRuleValidator _collectionEqualityValidator = null!;
     private ProtobufInlineRuleValidator _presenceValidator = null!;
+    private ProtobufInlineRuleValidator _rootSizeValidator = null!;
     private ProtobufInlineRuleValidator _sint32Validator = null!;
     private ProtobufInlineRuleValidator _editionClosedEnumValidator = null!;
     private ProtobufInlineRuleExecutor _alternatingSchemaExecutor = null!;
@@ -41,6 +42,7 @@ public class ProtobufInlineValidationBenchmarks
     private byte[] _mapEqualityPayload = null!;
     private byte[] _collectionEqualityPayload = null!;
     private byte[] _sint32Payload = null!;
+    private byte[] _rootSizePayload = null!;
     private byte[] _simpleLargePayload = null!;
     private byte[] _editionClosedEnumPayload = null!;
     private int _schemaIndex;
@@ -58,6 +60,11 @@ public class ProtobufInlineValidationBenchmarks
         _mapEqualityPayload = CreateMapEqualityPayload();
         _collectionEqualityPayload = CreateCollectionEqualityPayload();
         _sint32Payload = [8, 1];
+        _rootSizePayload = new ValidationRootSizeEnvelope
+        {
+            Nickname = string.Empty,
+            Email = string.Empty
+        }.ToByteArray();
         var simpleLargePayload = new ArrayBufferWriter<byte>(4096);
         simpleLargePayload.Write(_sint32Payload);
         WriteLengthDelimited(simpleLargePayload, fieldNumber: 100, new byte[4096]);
@@ -72,6 +79,8 @@ public class ProtobufInlineValidationBenchmarks
             ValidationCollectionEnvelope.Descriptor);
         _presenceValidator = new ProtobufInlineRuleValidator(
             ValidationPresenceEnvelope.Descriptor);
+        _rootSizeValidator = new ProtobufInlineRuleValidator(
+            ValidationRootSizeEnvelope.Descriptor);
         _sint32Validator = new ProtobufInlineRuleValidator(
             ValidationSint32BenchmarkEnvelope.Descriptor);
         _editionClosedEnumValidator = new ProtobufInlineRuleValidator(
@@ -121,6 +130,7 @@ public class ProtobufInlineValidationBenchmarks
             schemaId: 1,
             failFast: false);
         _presenceValidator.Validate(ReadOnlyMemory<byte>.Empty, schemaId: 1, failFast: false);
+        _rootSizeValidator.Validate(_rootSizePayload, schemaId: 1, failFast: false);
         _sint32Validator.Validate(_sint32Payload, schemaId: 1, failFast: false);
         _sint32Validator.Validate(_simpleLargePayload, schemaId: 1, failFast: false);
         _editionClosedEnumValidator.Validate(
@@ -176,6 +186,10 @@ public class ProtobufInlineValidationBenchmarks
     [Benchmark]
     public void ValidateAbsentWrapper() =>
         _presenceValidator.Validate(ReadOnlyMemory<byte>.Empty, schemaId: 1, failFast: false);
+
+    [Benchmark]
+    public void ValidateMessageRootSize() =>
+        _rootSizeValidator.Validate(_rootSizePayload, schemaId: 1, failFast: false);
 
     [Benchmark]
     public void ValidateSInt32() =>

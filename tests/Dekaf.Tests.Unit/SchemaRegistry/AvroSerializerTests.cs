@@ -461,6 +461,59 @@ public sealed class AvroSerializerTests
     }
 
     [Test]
+    public async Task HeaderStrategy_InlineValidationCacheDistinguishesGuidSchemas()
+    {
+        const string ruleFreeSchemaText =
+            "{\"type\":\"record\",\"name\":\"GuidValidationRecord\",\"fields\":[{\"name\":\"id\",\"type\":\"int\"}]}";
+        const string ruledSchemaText =
+            "{\"type\":\"record\",\"name\":\"GuidValidationRecord\",\"fields\":[{\"name\":\"id\",\"type\":\"int\",\"confluent:rules\":[{\"name\":\"positive\",\"expr\":\"this > 0\"}]}]}";
+        using var registry = new MockSchemaRegistryClient();
+        var ruleFreeId = await registry.RegisterSchemaAsync("guid-rule-free", new RegistrySchema
+        {
+            SchemaType = SchemaType.Avro,
+            SchemaString = ruleFreeSchemaText
+        });
+        var ruledId = await registry.RegisterSchemaAsync("guid-ruled", new RegistrySchema
+        {
+            SchemaType = SchemaType.Avro,
+            SchemaString = ruledSchemaText
+        });
+        var ruleFreeSchema = (Avro.RecordSchema)AvroSchema.Parse(ruleFreeSchemaText);
+        var ruleFreeRecord = new GenericRecord(ruleFreeSchema);
+        ruleFreeRecord.Add("id", -1);
+        var ruledSchema = (Avro.RecordSchema)AvroSchema.Parse(ruledSchemaText);
+        var ruledRecord = new GenericRecord(ruledSchema);
+        ruledRecord.Add("id", -1);
+        await using var deserializer = new AvroSchemaRegistryDeserializer<GenericRecord>(
+            registry,
+            new AvroDeserializerConfig
+            {
+                SchemaIdStrategy = SchemaIdDeserializerStrategy.Header,
+                ValidationRulesExecution = ValidationRulesExecution.BeforeDomainRules
+            });
+
+        _ = deserializer.Deserialize(
+            SerializeAvroRecord(ruleFreeRecord, ruleFreeSchema),
+            CreateGuidContext(ruleFreeId));
+        var exception = Assert.Throws<ValidationRulesFailedException>(() =>
+            deserializer.Deserialize(
+                SerializeAvroRecord(ruledRecord, ruledSchema),
+                CreateGuidContext(ruledId)));
+
+        await Assert.That(exception.Violations[0].Rule.Name).IsEqualTo("positive");
+
+        static SerializationContext CreateGuidContext(int schemaId) => new()
+        {
+            Topic = "guid-validation",
+            Component = SerializationComponent.Value,
+            Headers = new Headers().Add(new Header(
+                SchemaIdentityHeaderNames.Value,
+                SchemaIdentityFraming.CreateSchemaGuidFrame(
+                    new Guid(schemaId, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))))
+        };
+    }
+
+    [Test]
     [Arguments(SchemaIdDeserializerStrategy.Header)]
     [Arguments(SchemaIdDeserializerStrategy.Dual)]
     public async Task GuidStrategy_ReferencedGenericRecord_ResolvesWriterReferences(
@@ -2094,6 +2147,64 @@ public sealed class AvroSerializerTests
         await Assert.That(async () => await serializer.WarmupAsync(topic, record))
             .Throws<InvalidOperationException>()
             .WithMessageContaining("does not match");
+    }
+
+    [Test]
+    public async Task Serializer_StandaloneUseLatestValidatesReferencedSchemaWithoutWarmup()
+    {
+        const string addressSchemaJson =
+            """
+            {"type":"record","name":"Address","namespace":"test","fields":[{"name":"city","type":"string"}]}
+            """;
+        const string rootSchemaJson =
+            """
+            {"type":"record","name":"ReferencedRoot","namespace":"test","confluent:rules":[{"name":"london","expr":"this.address.city == 'London'"}],"fields":[{"name":"address","type":"test.Address"}]}
+            """;
+        const string topic = "avro-standalone-referenced-validation";
+        using var schemaRegistry = new MockSchemaRegistryClient();
+        _ = await schemaRegistry.RegisterSchemaAsync(
+            "standalone-address-value",
+            new RegistrySchema
+            {
+                SchemaType = SchemaType.Avro,
+                SchemaString = addressSchemaJson
+            });
+        _ = await schemaRegistry.RegisterSchemaAsync(
+            $"{topic}-value",
+            new RegistrySchema
+            {
+                SchemaType = SchemaType.Avro,
+                SchemaString = rootSchemaJson,
+                References =
+                [
+                    new SchemaReference
+                    {
+                        Name = "test.Address",
+                        Subject = "standalone-address-value",
+                        Version = 1
+                    }
+                ]
+            });
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(
+            schemaRegistry,
+            new AvroSerializerConfig
+            {
+                UseLatestVersion = true,
+                ValidationRulesExecution = ValidationRulesExecution.BeforeDomainRules
+            });
+        var names = new Avro.SchemaNames();
+        var addressSchema = (Avro.RecordSchema)AvroSchema.Parse(addressSchemaJson, names);
+        var rootSchema = (Avro.RecordSchema)AvroSchema.Parse(rootSchemaJson, names);
+        var address = new GenericRecord(addressSchema);
+        address.Add("city", "Paris");
+        var record = new GenericRecord(rootSchema);
+        record.Add("address", address);
+        var destination = new ArrayBufferWriter<byte>();
+
+        var exception = Assert.Throws<ValidationRulesFailedException>(() =>
+            serializer.Serialize(record, ref destination, CreateContext(topic)));
+
+        await Assert.That(exception.Violations[0].Rule.Name).IsEqualTo("london");
     }
 
     [Test]

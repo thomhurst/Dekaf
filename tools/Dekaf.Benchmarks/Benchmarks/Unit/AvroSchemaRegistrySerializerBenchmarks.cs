@@ -141,6 +141,8 @@ public class AvroSchemaRegistrySerializerBenchmarks
         """;
 
     private AvroSchemaRegistrySerializer<GenericRecord> _serializer = null!;
+    private AvroSchemaRegistrySerializer<GenericRecord> _validationEnabledSerializer = null!;
+    private AvroSchemaRegistrySerializer<GenericRecord> _validationWithRuleExecutorSerializer = null!;
     private AvroSchemaRegistrySerializer<GenericRecord> _missSerializer = null!;
     private AvroSchemaRegistrySerializer<GenericRecord> _equivalentOverflowSerializer = null!;
     private AvroSchemaRegistrySerializer<GenericRecord> _alternatingOverflowSerializer = null!;
@@ -168,6 +170,8 @@ public class AvroSchemaRegistrySerializerBenchmarks
     private GenericRecord[] _variableSizeRecords = null!;
     private SpecificBenchmarkRecord _specificRecord = null!;
     private ArrayBufferWriter<byte> _serializeBuffer = null!;
+    private ArrayBufferWriter<byte> _validationEnabledBuffer = null!;
+    private ArrayBufferWriter<byte> _validationWithRuleExecutorBuffer = null!;
     private ExactSizeBufferWriter _exactSizeSerializeBuffer = null!;
     private GenericRecord _stableRecord = null!;
     private GenericRecord[] _alternatingGenericRecords = null!;
@@ -182,6 +186,19 @@ public class AvroSchemaRegistrySerializerBenchmarks
         Avro.Util.LogicalTypeFactory.Instance.Register(new BenchmarkStringBytesLogicalType());
         Avro.Util.LogicalTypeFactory.Instance.Register(new BenchmarkIntBytesLogicalType());
         _serializer = new AvroSchemaRegistrySerializer<GenericRecord>(new BenchmarkSchemaRegistryClient());
+        _validationEnabledSerializer = new AvroSchemaRegistrySerializer<GenericRecord>(
+            new BenchmarkSchemaRegistryClient(),
+            new AvroSerializerConfig
+            {
+                ValidationRulesExecution = ValidationRulesExecution.BeforeDomainRules
+            });
+        _validationWithRuleExecutorSerializer = new AvroSchemaRegistrySerializer<GenericRecord>(
+            new BenchmarkSchemaRegistryClient(),
+            new AvroSerializerConfig
+            {
+                RuleExecutor = new SchemaRegistryRuleExecutor([]),
+                ValidationRulesExecution = ValidationRulesExecution.BeforeDomainRules
+            });
         _overflowSerializer = new AvroSchemaRegistrySerializer<GenericRecord>(
             new BenchmarkSchemaRegistryClient(),
             new AvroSerializerConfig { MaxCachedSchemas = 1 });
@@ -250,9 +267,18 @@ public class AvroSchemaRegistrySerializerBenchmarks
         ];
         _specificRecord = new SpecificBenchmarkRecord { Id = 42, Name = "benchmark" };
         _serializeBuffer = new ArrayBufferWriter<byte>();
+        _validationEnabledBuffer = new ArrayBufferWriter<byte>();
+        _validationWithRuleExecutorBuffer = new ArrayBufferWriter<byte>();
         _exactSizeSerializeBuffer = new ExactSizeBufferWriter(8192);
         _serializer.Serialize(_stableRecord, ref _serializeBuffer, _context);
         _serializeBuffer.ResetWrittenCount();
+        _validationEnabledSerializer.Serialize(_stableRecord, ref _validationEnabledBuffer, _context);
+        _validationEnabledBuffer.ResetWrittenCount();
+        _validationWithRuleExecutorSerializer.Serialize(
+            _stableRecord,
+            ref _validationWithRuleExecutorBuffer,
+            _context);
+        _validationWithRuleExecutorBuffer.ResetWrittenCount();
         _serializer.Serialize(_intRecord, ref _serializeBuffer, _context);
         _serializeBuffer.ResetWrittenCount();
         _serializer.Serialize(_nullableIntArrayRecord, ref _serializeBuffer, _context);
@@ -283,6 +309,8 @@ public class AvroSchemaRegistrySerializerBenchmarks
     public void Cleanup()
     {
         _serializer.DisposeAsync().GetAwaiter().GetResult();
+        _validationEnabledSerializer.DisposeAsync().GetAwaiter().GetResult();
+        _validationWithRuleExecutorSerializer.DisposeAsync().GetAwaiter().GetResult();
         _overflowSerializer.DisposeAsync().GetAwaiter().GetResult();
         _alternatingGenericSerializer.DisposeAsync().GetAwaiter().GetResult();
         _specificSerializer.DisposeAsync().GetAwaiter().GetResult();
@@ -425,6 +453,23 @@ public class AvroSchemaRegistrySerializerBenchmarks
     {
         _serializeBuffer.ResetWrittenCount();
         _serializer.Serialize(_stableRecord, ref _serializeBuffer, _context);
+    }
+
+    [Benchmark(Description = "Serialize rule-free record with inline validation enabled")]
+    public void SerializeRuleFreeRecordWithValidationEnabled()
+    {
+        _validationEnabledBuffer.ResetWrittenCount();
+        _validationEnabledSerializer.Serialize(_stableRecord, ref _validationEnabledBuffer, _context);
+    }
+
+    [Benchmark(Description = "Serialize rule-free record with validation and rule executor")]
+    public void SerializeRuleFreeRecordWithValidationAndRuleExecutor()
+    {
+        _validationWithRuleExecutorBuffer.ResetWrittenCount();
+        _validationWithRuleExecutorSerializer.Serialize(
+            _stableRecord,
+            ref _validationWithRuleExecutorBuffer,
+            _context);
     }
 
     [Benchmark(Description = "Serialize nullable-int array generic Avro record")]
@@ -762,16 +807,27 @@ public class AvroSchemaRegistrySerializerBenchmarks
     internal sealed class BenchmarkSchemaRegistryClient : ISchemaRegistryClient
     {
         private int _registrationCount;
+        private RegistrySchema? _schema;
 
         internal int RegistrationCount => Volatile.Read(ref _registrationCount);
 
         public Task<int> RegisterSchemaAsync(
             string subject,
             RegistrySchema schema,
-            CancellationToken cancellationToken = default) => Task.FromResult(1);
+            CancellationToken cancellationToken = default)
+        {
+            _schema = schema;
+            return Task.FromResult(1);
+        }
 
         public Task<RegistrySchema> GetSchemaAsync(int id, CancellationToken cancellationToken = default) =>
-            throw new NotSupportedException();
+            Task.FromResult(_schema ?? throw new InvalidOperationException("No schema has been registered."));
+
+        public Task<RegistrySchema> GetSchemaAsync(
+            int id,
+            string subject,
+            CancellationToken cancellationToken = default) =>
+            GetSchemaAsync(id, cancellationToken);
 
         public Task<RegisteredSchema> GetSchemaBySubjectAsync(
             string subject,
@@ -781,8 +837,11 @@ public class AvroSchemaRegistrySerializerBenchmarks
         public Task<int> GetOrRegisterSchemaAsync(
             string subject,
             RegistrySchema schema,
-            CancellationToken cancellationToken = default) =>
-            Task.FromResult(Interlocked.Increment(ref _registrationCount));
+            CancellationToken cancellationToken = default)
+        {
+            _schema = schema;
+            return Task.FromResult(Interlocked.Increment(ref _registrationCount));
+        }
 
         public Task<RegisteredSchema> LookupSchemaAsync(
             string subject,

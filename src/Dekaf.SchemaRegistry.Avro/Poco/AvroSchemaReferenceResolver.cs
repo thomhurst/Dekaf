@@ -9,6 +9,17 @@ internal static class AvroSchemaReferenceResolver
 {
     private const int MaxReferenceDepth = 128;
 
+    internal static async Task<AvroSchema> ParseAsync(
+        ISchemaRegistryClient schemaRegistry,
+        RegistrySchema schema,
+        CancellationToken cancellationToken)
+    {
+        if (schema.References is not { Count: > 0 })
+            return AvroSchema.Parse(schema.SchemaString);
+        var names = await ResolveAsync(schemaRegistry, schema, cancellationToken).ConfigureAwait(false);
+        return AvroSchema.Parse(schema.SchemaString, names);
+    }
+
     internal static async Task<AvroSchemaNames> ResolveAsync(
         ISchemaRegistryClient schemaRegistry,
         RegistrySchema schema,

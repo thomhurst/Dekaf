@@ -72,13 +72,15 @@ public sealed class AvroSchemaRegistrySerializer<
     private readonly int _maxOverflowLogicalSchemas;
     private readonly AllocationFreeSpecificRecordWriter<T>? _specificWriter;
     private readonly AvroSchema? _writerSchema;
-    private readonly AvroTaggedFieldTransformerProvider _taggedFieldTransformers = new();
+    private readonly AvroTaggedFieldTransformerProvider _taggedFieldTransformers;
+    private readonly AvroInlineRuleValidatorProvider? _inlineRuleValidators;
     private int _dynamicSchemaCacheCount;
     private int _overflowDynamicSchemaCacheCount;
     private int _hasEvictedOverflowLogicalSchemas;
     private DynamicSchemaCache? _lastDynamicSchemaCache;
     private DynamicSchemaCache? _previousDynamicSchemaCache;
     private SubjectSchemaIdCache? _associatedSubjectSchemaIdCache;
+    private long _lastInlineValidationDecision = -1;
 
     bool IRecordHeaderSerializer.ProducesRecordHeaders =>
         _schemaIdStrategy == SchemaIdSerializerStrategy.Header;
@@ -95,6 +97,7 @@ public sealed class AvroSchemaRegistrySerializer<
         bool ownsClient = false)
     {
         _schemaRegistry = schemaRegistry ?? throw new ArgumentNullException(nameof(schemaRegistry));
+        _taggedFieldTransformers = new AvroTaggedFieldTransformerProvider();
         _config = config ?? new AvroSerializerConfig();
         _schemaIdStrategy = _config.SchemaIdStrategy;
         _schemaSelectionMode = SchemaRegistrySerializerConfigValidator.ValidateAndResolve(
@@ -103,6 +106,10 @@ public sealed class AvroSchemaRegistrySerializer<
             _config.AutoRegisterSchemas);
         if (_schemaIdStrategy is not (SchemaIdSerializerStrategy.Prefix or SchemaIdSerializerStrategy.Header))
             throw new ArgumentOutOfRangeException(nameof(config), _schemaIdStrategy, "Unknown schema identity strategy.");
+        _inlineRuleValidators = AvroValidationConfiguration.Create(
+            schemaRegistry,
+            _config.ValidationRulesExecution,
+            _config.RuleExecutor);
         if (_config.CustomSubjectNameStrategy is null)
         {
             _asyncSubjectNameStrategy = _config.AsyncSubjectNameStrategy
@@ -169,15 +176,72 @@ public sealed class AvroSchemaRegistrySerializer<
         ArgumentNullException.ThrowIfNull(value);
         var avroSchema = GetSchemaForValue(value);
         var cache = GetSubjectSchemaIdCache(avroSchema);
-        if (cache.TryGet(topic, isKey, out var cached))
-            return new ValueTask<ResolvedSchemaContext>(ToResolvedContext(cached));
+        var preparation = cache.TryGet(topic, isKey, out var cached)
+            ? new ValueTask<ResolvedSchemaContext>(ToResolvedContext(cached))
+            : PrepareCoreAsync(
+                topic,
+                isKey,
+                avroSchema,
+                cache,
+                cancellationToken);
+        return PrepareInlineValidationAsync(preparation, avroSchema, cancellationToken);
+    }
 
-        return PrepareCoreAsync(
-            topic,
-            isKey,
-            avroSchema,
-            cache,
-            cancellationToken);
+    private ValueTask<ResolvedSchemaContext> PrepareInlineValidationAsync(
+        ValueTask<ResolvedSchemaContext> preparation,
+        AvroSchema runtimeSchema,
+        CancellationToken cancellationToken)
+    {
+        if (_inlineRuleValidators is null)
+            return preparation;
+        if (preparation.IsCompletedSuccessfully)
+        {
+            var resolved = preparation.Result;
+            var cached = Volatile.Read(ref _lastInlineValidationDecision);
+            if (cached >= 0 && (int)(cached >> 1) == resolved.SchemaId)
+                return new ValueTask<ResolvedSchemaContext>(resolved);
+            var validationPreparation = _inlineRuleValidators.PrepareSerializerSchemaAsync(
+                resolved.Schema,
+                runtimeSchema,
+                cancellationToken);
+            if (validationPreparation.IsCompletedSuccessfully)
+            {
+                CacheInlineValidationDecision(resolved.SchemaId, validationPreparation.Result);
+                return new ValueTask<ResolvedSchemaContext>(resolved);
+            }
+            return AwaitValidationCompletionAsync(this, resolved, validationPreparation);
+        }
+
+        return AwaitPreparationAndValidationAsync(this, preparation, runtimeSchema, cancellationToken);
+
+        static async ValueTask<ResolvedSchemaContext> AwaitValidationCompletionAsync(
+            AvroSchemaRegistrySerializer<T> serializer,
+            ResolvedSchemaContext resolved,
+            ValueTask<AvroInlineRuleValidator> pending)
+        {
+            var validator = await pending.ConfigureAwait(false);
+            serializer.CacheInlineValidationDecision(resolved.SchemaId, validator);
+            return resolved;
+        }
+
+        static async ValueTask<ResolvedSchemaContext> AwaitPreparationAndValidationAsync(
+            AvroSchemaRegistrySerializer<T> serializer,
+            ValueTask<ResolvedSchemaContext> pending,
+            AvroSchema runtimeSchema,
+            CancellationToken cancellationToken)
+        {
+            var resolved = await pending.ConfigureAwait(false);
+            var cached = Volatile.Read(ref serializer._lastInlineValidationDecision);
+            if (cached >= 0 && (int)(cached >> 1) == resolved.SchemaId)
+                return resolved;
+            var validator = await serializer._inlineRuleValidators!.PrepareSerializerSchemaAsync(
+                    resolved.Schema,
+                    runtimeSchema,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            serializer.CacheInlineValidationDecision(resolved.SchemaId, validator);
+            return resolved;
+        }
     }
 
     /// <inheritdoc />
@@ -250,7 +314,10 @@ public sealed class AvroSchemaRegistrySerializer<
         var schemaId = schemaEntry.SchemaId;
 
         var codecState = AvroCodecThreadStateCache.Serialization ??= new AvroSerializationThreadState();
-        if (_config.RuleExecutor is null)
+        AvroInlineRuleValidator? inlineValidator = null;
+        if (_config.RuleExecutor is null &&
+            (_inlineRuleValidators is null ||
+             (inlineValidator = GetInlineValidator(schemaId, schemaEntry.Schema!, avroSchema)) is null))
         {
             if (_schemaIdStrategy == SchemaIdSerializerStrategy.Prefix)
                 SerializeDirect(value, ref destination, schemaId, codecState);
@@ -259,7 +326,15 @@ public sealed class AvroSchemaRegistrySerializer<
             return;
         }
 
-        SerializeWithRuleExecutor(value, ref destination, context, schemaEntry, schemaId, avroSchema, codecState);
+        SerializeWithRuleExecutor(
+            value,
+            ref destination,
+            context,
+            schemaEntry,
+            schemaId,
+            avroSchema,
+            codecState,
+            inlineValidator);
     }
 
     void IAsyncSerializerPreparationAdmission<T>.SerializePrepared<TWriter>(
@@ -293,7 +368,10 @@ public sealed class AvroSchemaRegistrySerializer<
         var schemaId = schemaEntry.SchemaId;
 
         var codecState = AvroCodecThreadStateCache.Serialization ??= new AvroSerializationThreadState();
-        if (_config.RuleExecutor is null)
+        AvroInlineRuleValidator? inlineValidator = null;
+        if (_config.RuleExecutor is null &&
+            (_inlineRuleValidators is null ||
+             (inlineValidator = GetInlineValidator(schemaId, schemaEntry.Schema!, avroSchema)) is null))
         {
             if (_schemaIdStrategy == SchemaIdSerializerStrategy.Prefix)
                 SerializeDirect(value, ref destination, schemaId, codecState);
@@ -302,7 +380,15 @@ public sealed class AvroSchemaRegistrySerializer<
             return;
         }
 
-        SerializeWithRuleExecutor(value, ref destination, context, schemaEntry, schemaId, avroSchema, codecState);
+        SerializeWithRuleExecutor(
+            value,
+            ref destination,
+            context,
+            schemaEntry,
+            schemaId,
+            avroSchema,
+            codecState,
+            inlineValidator);
     }
 
     private SerializerPreparationAdmission ToAdmission(in ResolvedSchemaContext context)
@@ -419,7 +505,8 @@ public sealed class AvroSchemaRegistrySerializer<
         SubjectSchemaIdCache.SubjectSchemaIdCacheEntry schemaEntry,
         int schemaId,
         AvroSchema avroSchema,
-        AvroSerializationThreadState codecState)
+        AvroSerializationThreadState codecState,
+        AvroInlineRuleValidator? inlineValidator)
         where TWriter : IBufferWriter<byte>
 #if NET10_0_OR_GREATER
         , allows ref struct
@@ -438,22 +525,37 @@ public sealed class AvroSchemaRegistrySerializer<
 
             var avroPayloadLength = (int)memoryStream.Position;
             var payload = new ReadOnlyMemory<byte>(memoryStream.GetBuffer(), 0, avroPayloadLength);
-            var taggedFieldTransformer = _taggedFieldTransformers.Get(schemaEntry.Schema!, avroSchema);
-            var ruleContext = SchemaRegistryRuleContext.RentWithTaggedFieldTransformer(
-                context.Topic,
-                context.Component,
-                schemaId,
-                schemaEntry.Subject,
-                schemaEntry.Schema,
-                SchemaRegistryPayloadFormat.Avro,
-                taggedFieldTransformer);
-            try
+            if (_config.RuleExecutor is null)
             {
-                payload = _config.RuleExecutor!.TransformSerializedPayload(payload, ruleContext);
+                inlineValidator!.Validate(
+                    payload,
+                    schemaId,
+                    _config.ValidationRulesFailFast);
             }
-            finally
+            else
             {
-                ruleContext.Return();
+                var taggedFieldTransformer = _taggedFieldTransformers.Get(schemaEntry.Schema!, avroSchema);
+                var ruleContext = SchemaRegistryRuleContext.RentWithTaggedFieldTransformer(
+                    context.Topic,
+                    context.Component,
+                    schemaId,
+                    schemaEntry.Subject,
+                    schemaEntry.Schema,
+                    SchemaRegistryPayloadFormat.Avro,
+                    taggedFieldTransformer);
+                try
+                {
+                    payload = TransformSerializedPayload(
+                        payload,
+                        ruleContext,
+                        schemaId,
+                        schemaEntry.Schema!,
+                        avroSchema);
+                }
+                finally
+                {
+                    ruleContext.Return();
+                }
             }
 
             var payloadOffset = SchemaIdentitySerialization.GetPayloadOffset(_schemaIdStrategy);
@@ -475,6 +577,54 @@ public sealed class AvroSchemaRegistrySerializer<
             if (memoryStream.Capacity > MaxRetainedAvroPayloadBufferSize)
                 memoryStream.DetachBuffer();
         }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private AvroInlineRuleValidator? GetInlineValidator(
+        int schemaId,
+        RegistrySchema registrySchema,
+        AvroSchema avroSchema)
+    {
+        var cached = Volatile.Read(ref _lastInlineValidationDecision);
+        if (cached >= 0 && (int)(cached >> 1) == schemaId && (cached & 1) == 0)
+            return null;
+
+        var validator = _inlineRuleValidators!.RegisterSerializerSchema(registrySchema, avroSchema);
+        var hasRules = validator.HasAnyRules;
+        CacheInlineValidationDecision(schemaId, validator);
+        return hasRules ? validator : null;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void CacheInlineValidationDecision(
+        int schemaId,
+        AvroInlineRuleValidator validator) =>
+        Volatile.Write(
+            ref _lastInlineValidationDecision,
+            ((long)schemaId << 1) | (validator.HasAnyRules ? 1L : 0L));
+
+    private ReadOnlyMemory<byte> TransformSerializedPayload(
+        ReadOnlyMemory<byte> payload,
+        SchemaRegistryRuleContext context,
+        int schemaId,
+        Schema registrySchema,
+        AvroSchema avroSchema)
+    {
+        if (_inlineRuleValidators is null ||
+            _config.RuleExecutor is not SchemaRegistryRuleExecutor ruleExecutor)
+        {
+            return _config.RuleExecutor!.TransformSerializedPayload(payload, context);
+        }
+
+        var validator = GetInlineValidator(schemaId, registrySchema, avroSchema);
+        if (validator is not null &&
+            _config.ValidationRulesExecution == ValidationRulesExecution.BeforeDomainRules)
+            validator.Validate(payload, schemaId, _config.ValidationRulesFailFast);
+        payload = ruleExecutor.TransformSerializedDomainPayload(payload, context);
+        if (validator is not null &&
+            _config.ValidationRulesExecution == ValidationRulesExecution.AfterDomainRules)
+            validator.Validate(payload, schemaId, _config.ValidationRulesFailFast);
+        return ruleExecutor.TransformSerializedEncodingPayload(payload, context);
     }
 
     private static int GrowPayloadSizeHint(int currentHint, int requiredCapacity)
@@ -752,7 +902,8 @@ public sealed class AvroSchemaRegistrySerializer<
                     subject,
                     registrySchema,
                     cancellationToken).ConfigureAwait(false);
-            var registeredSchema = _config.RuleExecutor is SchemaRegistryRuleExecutor
+            var registeredSchema = _config.RuleExecutor is SchemaRegistryRuleExecutor ||
+                                   _config.ValidationRulesExecution != ValidationRulesExecution.Disabled
                 ? await _schemaRegistry.GetSchemaAsync(schemaId, subject, cancellationToken).ConfigureAwait(false)
                 : registrySchema;
             return await CreateResolvedValueAsync(

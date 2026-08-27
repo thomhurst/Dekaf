@@ -1,6 +1,7 @@
 using System.Buffers;
 using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using Avro.Generic;
 using Avro.IO;
@@ -62,6 +63,7 @@ public sealed class AvroSchemaRegistryDeserializer<
     private readonly ConcurrentQueue<KeyValuePair<GuidTopicKey, Lazy<Task<GuidResolvedSchema>>>>
         _guidSchemaEvictionQueue = new();
     private int _cachedGuidSchemaCount;
+    private int _nextGuidSchemaId;
     private readonly ConcurrentDictionary<AvroSchemaPair, GenericDatumReader<GenericRecord>> _genericReaders =
         new(AvroSchemaPairReferenceComparer.Instance);
     private readonly ConcurrentDictionary<AvroSchemaPair, SpecificDatumReader<T>> _specificReaders =
@@ -71,7 +73,9 @@ public sealed class AvroSchemaRegistryDeserializer<
     private readonly AvroSchema? _readerSchema;
     private readonly DeserializerSubjectNameCache? _subjectNames;
     private readonly SchemaRegistryMigrationRunner? _migrationRunner;
-    private readonly AvroTaggedFieldTransformerProvider _taggedFieldTransformers = new();
+    private readonly AvroTaggedFieldTransformerProvider _taggedFieldTransformers;
+    private readonly AvroInlineRuleValidatorProvider? _inlineRuleValidators;
+    private long _lastInlineValidationDecision = -1;
 
     /// <summary>
     /// Creates a new Avro Schema Registry deserializer.
@@ -85,10 +89,15 @@ public sealed class AvroSchemaRegistryDeserializer<
         bool ownsClient = false)
     {
         _schemaRegistry = schemaRegistry ?? throw new ArgumentNullException(nameof(schemaRegistry));
+        _taggedFieldTransformers = new AvroTaggedFieldTransformerProvider();
         _config = config ?? new AvroDeserializerConfig();
         if (_config.SchemaIdStrategy is not (SchemaIdDeserializerStrategy.Dual or SchemaIdDeserializerStrategy.Prefix or SchemaIdDeserializerStrategy.Header))
             throw new ArgumentOutOfRangeException(nameof(config), _config.SchemaIdStrategy, "Unknown schema identity strategy.");
         _ruleExecutor = _config.RuleExecutor;
+        _inlineRuleValidators = AvroValidationConfiguration.Create(
+            schemaRegistry,
+            _config.ValidationRulesExecution,
+            _config.RuleExecutor);
         _ownsClient = ownsClient;
         if (_config.UseLatestVersion && !string.IsNullOrEmpty(_config.ReaderSchema))
         {
@@ -120,6 +129,7 @@ public sealed class AvroSchemaRegistryDeserializer<
 
     bool IAsyncDeserializerPreparationRequirement.RequiresPreparation =>
         _config.SchemaIdStrategy != SchemaIdDeserializerStrategy.Prefix
+        || _migrationRunner is not null
         || _ruleExecutor is not null && _subjectNames is { RequiresPreparation: true };
 
     ValueTask IAsyncDeserializerPreparer<T>.PrepareAsync(
@@ -146,9 +156,12 @@ public sealed class AvroSchemaRegistryDeserializer<
 
         if (_config.SchemaIdStrategy == SchemaIdDeserializerStrategy.Prefix)
         {
+            if (!DeserializerSubjectNameCache.TryReadSchemaId(data, out var prefixSchemaId))
+                return default;
+            if (_migrationRunner is not null)
+                return PrepareMigrationAsync(prefixSchemaId, context, cancellationToken);
             return _ruleExecutor is not null
                 && _subjectNames is { RequiresPreparation: true } prefixSubjectNames
-                && DeserializerSubjectNameCache.TryReadSchemaId(data, out var prefixSchemaId)
                 ? prefixSubjectNames.PrepareAsync(
                     _schemaRegistry,
                     prefixSchemaId,
@@ -162,14 +175,20 @@ public sealed class AvroSchemaRegistryDeserializer<
         var identity = ReadIdentity(data, identityHeader, out _);
         if (identity.SchemaGuid is { } schemaGuid)
         {
-            return new ValueTask(GetGuidSchemaAsync(
+            var resolution = GetGuidSchemaAsync(
                 new GuidTopicKey(
                     schemaGuid,
                     context.Topic,
                     context.Component == SerializationComponent.Key,
                     _subjectNames?.Generation ?? 0),
-                cancellationToken));
+                cancellationToken);
+            return _migrationRunner is null
+                ? new ValueTask(resolution)
+                : PrepareGuidMigrationAsync(resolution, context, cancellationToken);
         }
+
+        if (_migrationRunner is not null)
+            return PrepareMigrationAsync(identity.SchemaId!.Value, context, cancellationToken);
 
         return _ruleExecutor is not null
             && _subjectNames is { RequiresPreparation: true } subjectNames
@@ -181,6 +200,93 @@ public sealed class AvroSchemaRegistryDeserializer<
                 FallbackRecordName,
                 cancellationToken)
             : default;
+    }
+
+    private async ValueTask PrepareGuidMigrationAsync(
+        Task<GuidResolvedSchema> resolution,
+        SerializationContext context,
+        CancellationToken cancellationToken)
+    {
+        var resolved = await resolution.ConfigureAwait(false);
+        await PrepareMigrationSchemasAsync(
+                resolved.SchemaId,
+                resolved.Subject!,
+                resolved.Schema,
+                resolved.WriterSchema,
+                cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    private async ValueTask PrepareMigrationAsync(
+        int schemaId,
+        SerializationContext context,
+        CancellationToken cancellationToken)
+    {
+        var unscopedSchema = await _schemaRegistry.GetSchemaAsync(schemaId, cancellationToken)
+            .ConfigureAwait(false);
+        if (_subjectNames is { RequiresPreparation: true } subjectNames)
+        {
+            await subjectNames.PrepareAsync(
+                    _schemaRegistry,
+                    schemaId,
+                    context.Topic,
+                    context.Component == SerializationComponent.Key,
+                    FallbackRecordName,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+        var subject = GetSubjectName(schemaId, unscopedSchema, context);
+        var scopedSchema = await _schemaRegistry.GetSchemaAsync(schemaId, subject, cancellationToken)
+            .ConfigureAwait(false);
+        var writerSchema = await AvroSchemaReferenceResolver.ParseAsync(
+                _schemaRegistry,
+                scopedSchema,
+                cancellationToken)
+            .ConfigureAwait(false);
+        await PrepareMigrationSchemasAsync(
+                schemaId,
+                subject,
+                scopedSchema,
+                writerSchema,
+                cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    private async ValueTask PrepareMigrationSchemasAsync(
+        int schemaId,
+        string subject,
+        Schema writerRegistrySchema,
+        AvroSchema writerSchema,
+        CancellationToken cancellationToken)
+    {
+        _ = _taggedFieldTransformers.GetResolved(writerRegistrySchema, writerSchema);
+        _inlineRuleValidators?.Register(writerRegistrySchema, writerSchema);
+        var targets = await _migrationRunner!.PrepareAsync(
+                schemaId,
+                subject,
+                writerRegistrySchema,
+                cancellationToken)
+            .ConfigureAwait(false);
+        await PrepareMigrationSchemaAsync(targets.ReaderSchema.Schema, cancellationToken)
+            .ConfigureAwait(false);
+        while (targets.MoveNext(out var target))
+        {
+            await PrepareMigrationSchemaAsync(target.Schema, cancellationToken)
+                .ConfigureAwait(false);
+        }
+    }
+
+    private async ValueTask PrepareMigrationSchemaAsync(
+        Schema registrySchema,
+        CancellationToken cancellationToken)
+    {
+        var resolved = await AvroSchemaReferenceResolver.ParseAsync(
+                _schemaRegistry,
+                registrySchema,
+                cancellationToken)
+            .ConfigureAwait(false);
+        _ = _taggedFieldTransformers.GetResolved(registrySchema, resolved);
+        _inlineRuleValidators?.Register(registrySchema, resolved);
     }
 
     bool IAsyncDeserializerPreparer<T>.TryDeserialize(
@@ -338,10 +444,10 @@ public sealed class AvroSchemaRegistryDeserializer<
         int payloadOffset,
         string? preparedSubject)
     {
-        var schemaId = identity.SchemaId ?? -1;
         var guidSchema = identity.SchemaGuid is { } schemaGuid
             ? GetGuidSchemaCached(schemaGuid, context)
             : null;
+        var schemaId = guidSchema?.SchemaId ?? identity.SchemaId!.Value;
 
         // Get writer schema from registry (cached with lazy initialization)
         var writerSchema = guidSchema?.WriterSchema ?? GetWriterSchemaCached(schemaId);
@@ -351,12 +457,14 @@ public sealed class AvroSchemaRegistryDeserializer<
         AvroSchema? migrationReaderSchema = null;
         if (_ruleExecutor is null)
         {
-            var directCodecState = AvroCodecThreadStateCache.Deserialization ??= new AvroDeserializationThreadState();
+            GetInlineValidator(schemaId, writerSchema)?.Validate(
+                payloadMemory, schemaId, _config.ValidationRulesFailFast);
+            var codecState = AvroCodecThreadStateCache.Deserialization ??= new AvroDeserializationThreadState();
             return ReadAvroPayload(
                 payloadMemory,
                 writerSchema,
                 migrationReaderSchema: null,
-                codecState: directCodecState);
+                codecState);
         }
 
         var taggedWorkspaceOperation = AvroTaggedFieldTransformerProvider.BeginOperation();
@@ -400,7 +508,35 @@ public sealed class AvroSchemaRegistryDeserializer<
                     _taggedFieldTransformers.Get(schema, writerSchema));
                 try
                 {
-                    payloadMemory = _ruleExecutor.TransformDeserializedPayload(payloadMemory, ruleContext);
+                    if (_inlineRuleValidators is not null &&
+                        _ruleExecutor is SchemaRegistryRuleExecutor builtInRuleExecutor)
+                    {
+                        var validator = _inlineRuleValidators.Register(schema, writerSchema);
+                        payloadMemory = builtInRuleExecutor.TransformDeserializedEncodingPayload(
+                            payloadMemory,
+                            ruleContext);
+                        if (_config.ValidationRulesExecution == ValidationRulesExecution.BeforeDomainRules)
+                        {
+                            validator.Validate(
+                                payloadMemory,
+                                schemaId,
+                                _config.ValidationRulesFailFast);
+                        }
+                        payloadMemory = builtInRuleExecutor.TransformDeserializedDomainPayload(
+                            payloadMemory,
+                            ruleContext);
+                        if (_config.ValidationRulesExecution == ValidationRulesExecution.AfterDomainRules)
+                        {
+                            validator.Validate(
+                                payloadMemory,
+                                schemaId,
+                                _config.ValidationRulesFailFast);
+                        }
+                    }
+                    else
+                    {
+                        payloadMemory = _ruleExecutor.TransformDeserializedPayload(payloadMemory, ruleContext);
+                    }
                 }
                 finally
                 {
@@ -409,17 +545,41 @@ public sealed class AvroSchemaRegistryDeserializer<
             }
             else
             {
-                var migration = _migrationRunner.Transform(
-                    payloadMemory,
-                    schemaId,
-                    subject,
-                    schema,
-                    context,
-                    SchemaRegistryPayloadFormat.Avro,
-                    _taggedFieldTransformers);
+                _inlineRuleValidators?.Register(schema, writerSchema);
+                var migration = _config.ValidationRulesExecution == ValidationRulesExecution.BeforeDomainRules
+                    ? _migrationRunner.TransformWithBeforeDomainValidation(
+                        payloadMemory,
+                        schemaId,
+                        subject,
+                        schema,
+                        context,
+                        SchemaRegistryPayloadFormat.Avro,
+                        _inlineRuleValidators!,
+                        _config.ValidationRulesFailFast,
+                        _taggedFieldTransformers)
+                    : _migrationRunner.Transform(
+                        payloadMemory,
+                        schemaId,
+                        subject,
+                        schema,
+                        context,
+                        SchemaRegistryPayloadFormat.Avro,
+                        _taggedFieldTransformers);
                 payloadMemory = migration.Payload;
-                writerSchema = GetWriterSchemaCached(migration.PayloadSchemaId);
-                migrationReaderSchema = GetWriterSchemaCached(migration.ReaderSchema.Id);
+                writerSchema = _inlineRuleValidators?.GetResolvedSchema(migration.PayloadSchema)
+                    ?? GetWriterSchemaCached(migration.PayloadSchemaId);
+                _inlineRuleValidators?.Register(migration.PayloadSchema, writerSchema);
+                if (_config.ValidationRulesExecution == ValidationRulesExecution.AfterDomainRules)
+                {
+                    ((IInlineValidationRuleExecutor)_inlineRuleValidators!).Validate(
+                        payloadMemory,
+                        migration.PayloadSchemaId,
+                        subject,
+                        migration.PayloadSchema,
+                        _config.ValidationRulesFailFast);
+                }
+                migrationReaderSchema = _inlineRuleValidators?.GetResolvedSchema(migration.ReaderSchema.Schema)
+                    ?? GetWriterSchemaCached(migration.ReaderSchema.Id);
             }
             var codecState = AvroCodecThreadStateCache.Deserialization ??= new AvroDeserializationThreadState();
             return ReadAvroPayload(payloadMemory, writerSchema, migrationReaderSchema, codecState);
@@ -520,7 +680,11 @@ public sealed class AvroSchemaRegistryDeserializer<
             var unscopedWriterSchema = unscopedNames is null
                 ? AvroSchema.Parse(unscopedSchema.SchemaString)
                 : AvroSchema.Parse(unscopedSchema.SchemaString, unscopedNames);
-            return new GuidResolvedSchema(-1, null, unscopedSchema, unscopedWriterSchema);
+            return new GuidResolvedSchema(
+                Interlocked.Decrement(ref _nextGuidSchemaId),
+                null,
+                unscopedSchema,
+                unscopedWriterSchema);
         }
 
         var subject = _subjectNames is null
@@ -623,6 +787,24 @@ public sealed class AvroSchemaRegistryDeserializer<
         string? Subject,
         Schema Schema,
         AvroSchema WriterSchema);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal AvroInlineRuleValidator? GetInlineValidator(int schemaId, AvroSchema writerSchema)
+    {
+        if (_inlineRuleValidators is null)
+            return null;
+
+        var cached = Volatile.Read(ref _lastInlineValidationDecision);
+        if (cached >= 0 && (int)(uint)(cached >> 1) == schemaId && (cached & 1) == 0)
+            return null;
+
+        var validator = _inlineRuleValidators.Get(writerSchema);
+        var hasRules = validator.HasAnyRules;
+        Volatile.Write(
+            ref _lastInlineValidationDecision,
+            ((long)(uint)schemaId << 1) | (hasRules ? 1L : 0L));
+        return hasRules ? validator : null;
+    }
 
     private string GetSubjectName(int schemaId, Schema schema, SerializationContext context)
     {
@@ -769,7 +951,11 @@ public sealed class AvroSchemaRegistryDeserializer<
                 throw new InvalidOperationException(
                     $"Schema with ID {schemaId} is not an Avro schema. Type: {registrySchema.SchemaType}");
 
-            return AvroSchema.Parse(registrySchema.SchemaString);
+            return await Poco.AvroSchemaReferenceResolver.ParseAsync(
+                    _schemaRegistry,
+                    registrySchema,
+                    CancellationToken.None)
+                .ConfigureAwait(false);
         }
         catch
         {

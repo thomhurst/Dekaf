@@ -1548,7 +1548,8 @@ public sealed class AvroPocoSchemaRegistryTests
     [Arguments(false)]
     [Arguments(true)]
     [Test]
-    public async Task GeneratedCodec_GuidHeader_SkipsConfiguredAsyncSubjectWithoutRules(bool useWarmup)
+    public async Task GeneratedCodec_GuidHeader_InlineValidationSkipsConfiguredAsyncSubjectWithoutRules(
+        bool useWarmup)
     {
         const string topic = "poco-guid-async-subject";
         var subject = $"{topic}-value";
@@ -1562,7 +1563,9 @@ public sealed class AvroPocoSchemaRegistryTests
             new AvroDeserializerConfig
             {
                 SchemaIdStrategy = SchemaIdDeserializerStrategy.Header,
-                AsyncSubjectNameStrategy = strategy
+                AsyncSubjectNameStrategy = strategy,
+                ValidationRulesExecution =
+                    Dekaf.SchemaRegistry.ValidationRulesExecution.BeforeDomainRules
             });
         var headers = new Headers();
         var context = new SerializationContext
@@ -1592,9 +1595,12 @@ public sealed class AvroPocoSchemaRegistryTests
         }
 
         var actual = deserializer.Deserialize(destination.WrittenMemory, context);
+        var cachedDecision = deserializer.LastInlineValidationDecision;
 
         await Assert.That(actual.Value).IsEqualTo(expected.Value);
         await Assert.That(strategy.CallCount).IsEqualTo(0);
+        await Assert.That(cachedDecision).IsGreaterThanOrEqualTo(0);
+        await Assert.That((int)(uint)(cachedDecision >> 1)).IsLessThan(0);
     }
 
     [Test]
@@ -1934,7 +1940,10 @@ public sealed class AvroPocoSchemaRegistryTests
         await Assert.That(allocated).IsEqualTo(0);
     }
 
+    // Keep unrelated TUnit work from delaying tier promotion into an exact per-thread
+    // allocation window. The test still creates its own concurrent worker pressure.
     [Test]
+    [NotInParallel]
     public async Task GeneratedCodec_RulesPathSubjectResolutionAllocatesZeroUnderParallelPressure()
     {
         using var registry = new MockSchemaRegistryClient();
@@ -2872,9 +2881,30 @@ public sealed class AvroPocoSchemaRegistryTests
             });
         await using var serializer = PocoReferencedRoot.CreateAvroSerializer(
             registry,
-            new AvroSerializerConfig { UseLatestVersion = true });
+            new AvroSerializerConfig
+            {
+                UseLatestVersion = true,
+                ValidationRulesExecution =
+                    Dekaf.SchemaRegistry.ValidationRulesExecution.BeforeDomainRules
+            });
 
         await serializer.WarmupAsync("poco-referenced-latest");
+        var schemaCallsAfterPreparation = registry.GetSchemaCallCount;
+        var destination = new ArrayBufferWriter<byte>();
+        serializer.Serialize(
+            new PocoReferencedRoot
+            {
+                Address = new PocoAddress { City = "London", PostCode = "SW1" }
+            },
+            ref destination,
+            new SerializationContext
+            {
+                Topic = "poco-referenced-latest",
+                Component = SerializationComponent.Value
+            });
+
+        await Assert.That(destination.WrittenCount).IsGreaterThan(5);
+        await Assert.That(registry.GetSchemaCallCount).IsEqualTo(schemaCallsAfterPreparation);
     }
 
     [Test]
