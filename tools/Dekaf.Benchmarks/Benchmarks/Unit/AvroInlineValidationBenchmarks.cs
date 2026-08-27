@@ -55,6 +55,8 @@ public class AvroInlineValidationBenchmarks
     private ReadOnlyMemory<byte> _unionMemberNestedPayload;
     private AvroInlineRuleValidator _mixedRootMemberNestedValidator = null!;
     private ReadOnlyMemory<byte> _mixedRootMemberNestedPayload;
+    private AvroInlineRuleValidator _mixedRootFieldRuleValidator = null!;
+    private ReadOnlyMemory<byte> _mixedRootFieldRulePayload;
     private AvroInlineRuleValidator _nestedMemberFrameValidator = null!;
     private ReadOnlyMemory<byte> _nestedMemberFramePayload;
 
@@ -577,6 +579,34 @@ public class AvroInlineValidationBenchmarks
             15,
             failFast: false);
 
+        const string mixedRootFieldRuleSchemaText = """
+            {
+              "type": "record",
+              "name": "MixedRootFieldRuleBenchmarkRecord",
+              "confluent:rules": [{
+                "name": "root-and-member",
+                "expr": "this == this && has(this.items)"
+              }],
+              "fields": [{
+                "name": "items",
+                "confluent:rules": [{ "name": "field-size", "expr": "size(this) == 128" }],
+                "type": { "type": "array", "items": "int" }
+              }]
+            }
+            """;
+        var mixedRootFieldRuleSchema = (RecordSchema)AvroSchema.Parse(mixedRootFieldRuleSchemaText);
+        var mixedRootFieldRuleRecord = new GenericRecord(mixedRootFieldRuleSchema);
+        mixedRootFieldRuleRecord.Add("items", Enumerable.Range(1, 128).ToArray());
+        using var mixedRootFieldRuleStream = new MemoryStream();
+        var mixedRootFieldRuleEncoder = new BinaryEncoder(mixedRootFieldRuleStream);
+        new GenericDatumWriter<GenericRecord>(mixedRootFieldRuleSchema).Write(
+            mixedRootFieldRuleRecord,
+            mixedRootFieldRuleEncoder);
+        mixedRootFieldRuleEncoder.Flush();
+        _mixedRootFieldRulePayload = mixedRootFieldRuleStream.ToArray();
+        _mixedRootFieldRuleValidator = new AvroInlineRuleValidator(mixedRootFieldRuleSchema);
+        _mixedRootFieldRuleValidator.Validate(_mixedRootFieldRulePayload, 21, failFast: false);
+
         const string nestedMemberFrameSchemaText = """
             {
               "type": "record",
@@ -734,6 +764,10 @@ public class AvroInlineValidationBenchmarks
             _mixedRootMemberNestedPayload,
             15,
             failFast: false);
+
+    [Benchmark]
+    public void ValidateMixedRootWithAggregateFieldRule() =>
+        _mixedRootFieldRuleValidator.Validate(_mixedRootFieldRulePayload, 21, failFast: false);
 
     [Benchmark]
     public void ValidateNestedMemberFrames() =>

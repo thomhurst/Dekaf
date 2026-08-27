@@ -370,6 +370,7 @@ internal sealed class AvroValueRulePlan
                     ref reader,
                     resolution,
                     now,
+                    failFast,
                     ref nestedViolations,
                     ref path);
                 break;
@@ -491,15 +492,15 @@ internal sealed class AvroValueRulePlan
                 return capturedValue;
             }
 
-            ValidateDeferredRecordField(
+            return ValidateDeferredRecordField(
                 field,
                 ref reader,
                 now,
                 failFast: false,
+                needsSize,
                 ref violations,
-                ref path);
-            size = -1;
-            return ValidationCelValue.Missing;
+                ref path,
+                out size);
         }
 
         var mark = path.Length;
@@ -617,6 +618,7 @@ internal sealed class AvroValueRulePlan
         ref AvroValidationReader reader,
         AvroMemberResolution resolution,
         long now,
+        bool failFast,
         ref List<ValidationRuleError>? nestedViolations,
         scoped ref AvroValidationPath path)
     {
@@ -629,7 +631,7 @@ internal sealed class AvroValueRulePlan
         _ = _children[(int)branch].Validate(
             ref reader,
             now,
-            failFast: false,
+            failFast,
             ref nestedViolations,
             ref path);
         _schemaRules.ResolveUnionBranch(
@@ -1131,8 +1133,10 @@ internal sealed class AvroValueRulePlan
                     ref fieldReader,
                     now,
                     failFast,
+                    needsSize: false,
                     ref violations,
-                    ref path);
+                    ref path,
+                    out _);
                 if (failFast && violations is not null)
                 {
                     SkipRecordFields(ref reader, lastMemberFieldIndex + 1);
@@ -1150,8 +1154,10 @@ internal sealed class AvroValueRulePlan
                     ref fieldReader,
                     now,
                     failFast,
+                    needsSize: false,
                     ref violations,
-                    ref path);
+                    ref path,
+                    out _);
                 if (failFast && violations is not null)
                 {
                     SkipRecordFields(ref reader, lastMemberFieldIndex + 1);
@@ -1166,8 +1172,10 @@ internal sealed class AvroValueRulePlan
                     ref reader,
                     now,
                     failFast,
+                    needsSize: false,
                     ref violations,
-                    ref path);
+                    ref path,
+                    out _);
                 if (failFast && violations is not null)
                 {
                     SkipRecordFields(ref reader, index + 1);
@@ -1189,37 +1197,44 @@ internal sealed class AvroValueRulePlan
             AvroValidationValueDecoder.Skip(_fields[index].Field.Schema, ref reader);
     }
 
-    private static void ValidateDeferredRecordField(
+    private static ValidationCelValue ValidateDeferredRecordField(
         AvroFieldRulePlan field,
         ref AvroValidationReader reader,
         long now,
         bool failFast,
+        bool needsSize,
         ref List<ValidationRuleError>? violations,
-        scoped ref AvroValidationPath path)
+        scoped ref AvroValidationPath path,
+        out int size)
     {
         var mark = path.Length;
         path.AppendField(field.Field.Name);
+        ValidationCelValue value;
         if (field.Rules.IsEmpty)
         {
-            _ = field.Child.Validate(ref reader, now, failFast, ref violations, ref path);
+            value = field.Child.Validate(ref reader, now, failFast, ref violations, ref path);
+            size = -1;
         }
         else if (CanFuseFieldRules(field))
         {
-            _ = EvaluateFieldRulesWithNestedTraversal(
+            value = EvaluateFieldRulesWithNestedTraversal(
                 field,
                 ref reader,
                 now,
                 failFast,
                 ref violations,
                 ref path,
-                out _);
+                out size);
         }
         else
         {
             var fieldStart = reader.Position;
             var preview = reader;
-            var value = field.Child.ReadValue(ref preview);
+            value = field.Child.ReadValue(ref preview);
             var payload = preview.Source.Slice(fieldStart, preview.Position - fieldStart);
+            size = value.SizeIndex == 0 && field.Rules.UsesRootSize
+                ? AvroValidationValueDecoder.Count(field.Field.Schema, payload)
+                : -1;
             field.Rules.Evaluate(
                 value,
                 payload,
@@ -1227,15 +1242,31 @@ internal sealed class AvroValueRulePlan
                 failFast,
                 ref violations,
                 ref path,
-                value.SizeIndex == 0 && field.Rules.UsesRootSize
-                    ? AvroValidationValueDecoder.Count(field.Field.Schema, payload)
-                    : -1);
+                size);
             if ((failFast && violations is not null) || !field.Child.HasAnyRules)
+            {
                 reader = preview;
+            }
             else
-                _ = field.Child.Validate(ref reader, now, failFast, ref violations, ref path);
+            {
+                var capturedValue = field.Child.ValidateAndCapture(
+                    ref reader,
+                    now,
+                    failFast,
+                    needsSize && size < 0,
+                    ref violations,
+                    ref path,
+                    out var capturedSize);
+                if (capturedValue.Kind != ValidationCelValueKind.Missing)
+                    value = capturedValue;
+                if (size < 0)
+                    size = capturedSize;
+            }
+            if (needsSize && size < 0 && value.SizeIndex == 0)
+                size = AvroValidationValueDecoder.Count(field.Field.Schema, payload);
         }
         path.Truncate(mark);
+        return value;
     }
 
     private ValidationCelValue ReadValue(ref AvroValidationReader reader)

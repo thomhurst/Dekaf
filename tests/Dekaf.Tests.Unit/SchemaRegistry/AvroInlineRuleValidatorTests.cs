@@ -571,6 +571,53 @@ public class AvroInlineRuleValidatorTests
     }
 
     [Test]
+    public async Task Validate_UnionMemberFailFastRetainsOnlyFirstNestedViolation()
+    {
+        const string schemaText = """
+            {
+              "type": [
+                "null",
+                {
+                  "type": "record",
+                  "name": "UnionFailFastNestedRuleValue",
+                  "fields": [{
+                    "name": "items",
+                    "type": {
+                      "type": "array",
+                      "items": {
+                        "type": "int",
+                        "confluent:rules": [{ "name": "positive", "expr": "this > 0" }]
+                      }
+                    }
+                  }]
+                }
+              ],
+              "confluent:rules": [{ "name": "selected", "expr": "has(this.items)" }]
+            }
+            """;
+        var schema = (UnionSchema)AvroSchema.Parse(schemaText);
+        var valueSchema = (RecordSchema)schema[1];
+        var singleValue = new GenericRecord(valueSchema);
+        singleValue.Add("items", new[] { -1 });
+        var manyValue = new GenericRecord(valueSchema);
+        manyValue.Add("items", Enumerable.Repeat(-1, 128).ToArray());
+        var singlePayload = Serialize(singleValue, schema);
+        var manyPayload = Serialize(manyValue, schema);
+        var validator = new AvroInlineRuleValidator(schema);
+
+        var exception = Assert.Throws<ValidationRulesFailedException>(() =>
+            validator.Validate(manyPayload, 18, failFast: true));
+        _ = MeasureFailedValidationAllocation(validator, singlePayload);
+        _ = MeasureFailedValidationAllocation(validator, manyPayload);
+        var singleAllocated = MeasureFailedValidationAllocation(validator, singlePayload);
+        var manyAllocated = MeasureFailedValidationAllocation(validator, manyPayload);
+
+        await Assert.That(exception.Violations).HasSingleItem();
+        await Assert.That(exception.Violations[0].Rule.Name).IsEqualTo("positive");
+        await Assert.That(manyAllocated).IsLessThanOrEqualTo(singleAllocated + 1024);
+    }
+
+    [Test]
     public async Task Validate_LogicalSchemaRetainsInlineRules()
     {
         const string schemaText = """
