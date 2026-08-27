@@ -301,39 +301,52 @@ internal sealed class MpscFetchBuffer
             spin.SpinOnce();
         }
 
-        if (!_readWaiter.TrySetCancellationToken(cancellationToken))
-            return new ValueTask<bool>(false);
+        if (!_readWaiter.TryClaim())
+            throw new InvalidOperationException("MpscFetchBuffer supports only one active reader.");
 
-        _afterConsumerCancellationRegisteredForTesting?.Invoke();
-        Volatile.Write(ref _consumerWaiting, 1);
-        Interlocked.MemoryBarrier();
-
-        lock (_dataAvailableWaiterLock)
+        var waitInstalled = false;
+        try
         {
-            // Re-check after publishing the waiter flag to avoid missed signals.
-            if (HasDataAvailable())
-            {
-                Volatile.Write(ref _consumerWaiting, 0);
-                return new ValueTask<bool>(true);
-            }
-
-            if (_completed)
-            {
-                Volatile.Write(ref _consumerWaiting, 0);
-                if (_completionError is not null)
-                    throw _completionError;
-                return new ValueTask<bool>(HasDataAvailable());
-            }
-
-            if (_readWaiter.IsDisposed)
-            {
-                Volatile.Write(ref _consumerWaiting, 0);
+            if (!_readWaiter.TrySetCancellationToken(cancellationToken))
                 return new ValueTask<bool>(false);
-            }
 
-            Debug.Assert(!_readWaiterActive, "MpscFetchBuffer supports one active reader.");
-            _readWaiterActive = true;
-            return _readWaiter.Prepare(timeoutMs);
+            _afterConsumerCancellationRegisteredForTesting?.Invoke();
+            Volatile.Write(ref _consumerWaiting, 1);
+            Interlocked.MemoryBarrier();
+
+            lock (_dataAvailableWaiterLock)
+            {
+                // Re-check after publishing the waiter flag to avoid missed signals.
+                if (HasDataAvailable())
+                {
+                    Volatile.Write(ref _consumerWaiting, 0);
+                    return new ValueTask<bool>(true);
+                }
+
+                if (_completed)
+                {
+                    Volatile.Write(ref _consumerWaiting, 0);
+                    if (_completionError is not null)
+                        throw _completionError;
+                    return new ValueTask<bool>(HasDataAvailable());
+                }
+
+                if (_readWaiter.IsDisposed)
+                {
+                    Volatile.Write(ref _consumerWaiting, 0);
+                    return new ValueTask<bool>(false);
+                }
+
+                var wait = _readWaiter.Prepare(timeoutMs);
+                _readWaiterActive = true;
+                waitInstalled = true;
+                return wait;
+            }
+        }
+        finally
+        {
+            if (!waitInstalled)
+                _readWaiter.ReleaseClaim();
         }
     }
 
@@ -441,6 +454,7 @@ internal sealed class MpscFetchBuffer
         private bool _queuedResult;
         private Exception? _queuedException;
         private int _cancellationRequested;
+        private int _claimed;
         private bool _disposed;
 
         public ReadWaiter(MpscFetchBuffer owner)
@@ -451,6 +465,10 @@ internal sealed class MpscFetchBuffer
         }
 
         public bool IsDisposed => _disposed;
+
+        public bool TryClaim() => Interlocked.CompareExchange(ref _claimed, 1, 0) == 0;
+
+        public void ReleaseClaim() => Volatile.Write(ref _claimed, 0);
 
         public bool TrySetCancellationToken(CancellationToken cancellationToken)
         {
@@ -617,6 +635,7 @@ internal sealed class MpscFetchBuffer
                 }
 
                 Volatile.Write(ref _owner._consumerWaiting, 0);
+                ReleaseClaim();
             }
         }
 
