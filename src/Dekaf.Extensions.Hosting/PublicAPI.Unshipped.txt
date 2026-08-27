@@ -1,1 +1,3 @@
 #nullable enable
+
+static Dekaf.Extensions.Hosting.DekafBuilderHostingExtensions.AddConsumerService<TService, TKey, TValue>(this Dekaf.Extensions.DependencyInjection.DekafBuilder! builder, System.Action<System.IServiceProvider!, Dekaf.ConsumerBuilder<TKey, TValue>!>! configure, System.Action<Dekaf.Consumer.DeadLetter.DeadLetterQueueBuilder!>? configureDeadLetterQueue = null) -> Dekaf.Extensions.DependencyInjection.DekafBuilder!

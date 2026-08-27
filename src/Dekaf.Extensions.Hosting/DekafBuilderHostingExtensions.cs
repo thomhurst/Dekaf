@@ -14,6 +14,33 @@ namespace Dekaf.Extensions.Hosting;
 public static class DekafBuilderHostingExtensions
 {
     /// <summary>
+    /// Adds a consumer configured using the service provider and a
+    /// <see cref="KafkaConsumerService{TKey, TValue}"/> hosted service that processes it, in one call.
+    /// </summary>
+    /// <typeparam name="TService">The hosted consumer service type.</typeparam>
+    /// <typeparam name="TKey">The message key type.</typeparam>
+    /// <typeparam name="TValue">The message value type.</typeparam>
+    /// <param name="builder">The Dekaf builder.</param>
+    /// <param name="configure">Configures the full consumer builder surface using the service provider.</param>
+    /// <param name="configureDeadLetterQueue">Optional dead letter queue configuration for the service.</param>
+    /// <returns>The builder instance for method chaining.</returns>
+    public static DekafBuilder AddConsumerService<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] TService,
+        TKey, TValue>(
+        this DekafBuilder builder,
+        Action<IServiceProvider, ConsumerBuilder<TKey, TValue>> configure,
+        Action<DeadLetterQueueBuilder>? configureDeadLetterQueue = null)
+        where TService : KafkaConsumerService<TKey, TValue>
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+        ArgumentNullException.ThrowIfNull(configure);
+        ReserveConsumerServiceRegistration<TService>(builder, serviceKey: null);
+        builder.AddConsumer(configure, configureDeadLetterQueue);
+        return RegisterHostedService<TService, TKey, TValue>(
+            builder, serviceKey: null, configureDeadLetterQueue is not null);
+    }
+
+    /// <summary>
     /// Adds a consumer and a <see cref="KafkaConsumerService{TKey, TValue}"/> hosted service that
     /// processes it, in one call. Equivalent to <c>AddConsumer</c> followed by
     /// <c>services.AddHostedService&lt;TService&gt;()</c>.

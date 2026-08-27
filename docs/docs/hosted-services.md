@@ -64,7 +64,7 @@ builder.Services.AddDekaf(dekaf =>
 });
 ```
 
-This registers the `IKafkaConsumer<string, Order>` singleton and the hosted service together — equivalent to `AddConsumer` followed by `builder.Services.AddHostedService<OrderProcessorService>()`, which remains available when you want to register them separately. Overloads accept a fluent configuration callback, typed `ConsumerOptions`, or an `IConfiguration` section, each with an optional dead-letter-queue callback.
+This registers the `IKafkaConsumer<string, Order>` singleton and the hosted service together — equivalent to `AddConsumer` followed by `builder.Services.AddHostedService<OrderProcessorService>()`, which remains available when you want to register them separately. Overloads accept a fluent configuration callback, typed `ConsumerOptions`, or an `IConfiguration` section, each with an optional dead-letter-queue callback. The fluent callback also has a service-provider-aware form, `(serviceProvider, consumer) => ...`, for resolving registered dependencies when the consumer singleton is created.
 
 To run several hosted services whose consumers share the same `TKey`/`TValue` pair, use the keyed overloads — each takes a `serviceKey` as the first argument and hands the service its own consumer (and dead-letter options) directly, with no `[FromKeyedServices]` attribute needed on the constructor:
 
