@@ -564,9 +564,12 @@ public class MpscFetchBufferTests
     }
 
     [Test]
-    public async Task WaitToReadAsync_DisposeAfterCancellationRegistration_DoesNotReactivateWaiter()
+    [Timeout(120_000)]
+    public async Task WaitToReadAsync_DisposeAfterCancellationRegistration_DoesNotReactivateWaiter(
+        CancellationToken cancellationToken)
     {
-        using var registrationCompleted = new ManualResetEventSlim();
+        var registrationCompleted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
         using var releaseWaiter = new ManualResetEventSlim();
         using var cts = new CancellationTokenSource();
         var buffer = new MpscFetchBuffer(
@@ -574,28 +577,33 @@ public class MpscFetchBufferTests
             afterProducerWaiterCountIncrementedForTesting: null,
             afterConsumerCancellationRegisteredForTesting: () =>
             {
-                registrationCompleted.Set();
-                releaseWaiter.Wait();
+                registrationCompleted.TrySetResult();
+                releaseWaiter.Wait(cancellationToken);
             });
 
-        var waitTask = Task.Run(() =>
-            buffer.WaitToReadAsync(Timeout.Infinite, cts.Token).AsTask());
+        var waitTask = Task.Factory.StartNew(
+            () => buffer.WaitToReadAsync(Timeout.Infinite, cts.Token).AsTask().GetAwaiter().GetResult(),
+            CancellationToken.None,
+            TaskCreationOptions.LongRunning,
+            TaskScheduler.Default);
 
         try
         {
-            await Assert.That(registrationCompleted.Wait(TimeSpan.FromSeconds(5))).IsTrue();
+            await registrationCompleted.Task.WaitAsync(cancellationToken);
 
             buffer.Dispose();
             releaseWaiter.Set();
 
-            await Assert.That(await waitTask).IsFalse();
+            await Assert.That(await waitTask.WaitAsync(cancellationToken)).IsFalse();
             await Assert.That(GetConsumerWaiting(buffer)).IsEqualTo(0);
             await Assert.That(IsReadWaiterActive(buffer)).IsFalse();
         }
         finally
         {
-            releaseWaiter.Set();
             buffer.Dispose();
+            releaseWaiter.Set();
+            Task waitObservation = waitTask;
+            await waitObservation.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
         }
     }
 
