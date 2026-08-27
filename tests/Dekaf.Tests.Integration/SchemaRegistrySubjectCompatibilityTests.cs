@@ -132,12 +132,13 @@ public sealed class SchemaRegistrySubjectCompatibilityTests(KafkaWithSchemaRegis
     {
         var topic = $"protobuf-subject-compat-{Guid.NewGuid():N}";
         using var confluentRegistry = CreateConfluentClient();
-        var confluentSerializer = new Confluent.SchemaRegistry.Serdes.ProtobufSerializer<TestPerson>(
-            confluentRegistry,
-            new Confluent.SchemaRegistry.Serdes.ProtobufSerializerConfig
-            {
-                SubjectNameStrategy = ConfluentSubjectNameStrategy.Record
-            });
+        Confluent.Kafka.IAsyncSerializer<TestPerson> confluentSerializer =
+            new Confluent.SchemaRegistry.Serdes.ProtobufSerializer<TestPerson>(
+                confluentRegistry,
+                new Confluent.SchemaRegistry.Serdes.ProtobufSerializerConfig
+                {
+                    SubjectNameStrategy = ConfluentSubjectNameStrategy.Record
+                });
         var value = new TestPerson { Id = 42, Name = "Compatibility", Email = "compat@example.com" };
 
         await confluentSerializer.SerializeAsync(
@@ -190,7 +191,7 @@ public sealed class SchemaRegistrySubjectCompatibilityTests(KafkaWithSchemaRegis
         await Assert.That(root.Schema.References[0].Version).IsEqualTo(2);
 
         using var confluentRegistry = CreateConfluentClient();
-        var confluentDeserializer =
+        Confluent.Kafka.IAsyncDeserializer<SchemaReferenceEnvelope> confluentDeserializer =
             new Confluent.SchemaRegistry.Serdes.ProtobufDeserializer<SchemaReferenceEnvelope>(confluentRegistry);
         var roundTrip = await confluentDeserializer.DeserializeAsync(
             destination.WrittenMemory,
