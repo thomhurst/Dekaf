@@ -6,7 +6,7 @@
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
     <ManagePackageVersionsCentrally>false</ManagePackageVersionsCentrally>
-    <LegacyDekafVersion Condition="'$(LegacyDekafVersion)' == ''">1.12.0</LegacyDekafVersion>
+    <LegacyDekafVersion Condition="'$(LegacyDekafVersion)' == ''">1.14.1</LegacyDekafVersion>
   </PropertyGroup>
 
   <ItemGroup>
