@@ -559,6 +559,8 @@ public sealed class ConsumerLeaderDiscoveryTests
     {
         var pool = Substitute.For<IConnectionPool>();
         var interceptor = new CallbackConsumerInterceptor();
+        var interceptorInvoked = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
         using var cancellationSource = new CancellationTokenSource();
         await using var metadataManager = CreateMetadataManager(pool);
         await using var consumer = CreateConsumer(pool, metadataManager, interceptor: interceptor);
@@ -567,18 +569,41 @@ public sealed class ConsumerLeaderDiscoveryTests
 
         interceptor.Callback = () =>
         {
-            InvokeResetToDivergingEpoch(
-                consumer,
-                CreateDivergingEpochResponse(),
-                GetFetchBufferEpoch(consumer));
-            cancellationSource.Cancel();
+            try
+            {
+                InvokeResetToDivergingEpoch(
+                    consumer,
+                    CreateDivergingEpochResponse(),
+                    GetFetchBufferEpoch(consumer));
+                interceptorInvoked.TrySetResult();
+            }
+            catch (Exception exception)
+            {
+                interceptorInvoked.TrySetException(exception);
+            }
+            finally
+            {
+                cancellationSource.Cancel();
+            }
         };
 
         GetPendingFetches(consumer).Enqueue(CreatePendingFetchData());
 
-        var result = await consumer.ConsumeOneAsync(
-            TimeSpan.FromSeconds(1),
-            cancellationSource.Token);
+        var consumeTask = consumer
+            .ConsumeOneAsync(Timeout.InfiniteTimeSpan, cancellationSource.Token)
+            .AsTask();
+        var interceptorWait = interceptorInvoked.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        try
+        {
+            await interceptorWait;
+        }
+        finally
+        {
+            cancellationSource.Cancel();
+            if (!interceptorWait.IsCompletedSuccessfully)
+                _ = await consumeTask.WaitAsync(TimeSpan.FromSeconds(30));
+        }
+        var result = await consumeTask.WaitAsync(TimeSpan.FromSeconds(30));
 
         await Assert.That(result).IsNull();
         InvokeCompleteDivergingEpochResets(consumer);
