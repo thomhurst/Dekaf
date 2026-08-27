@@ -12,6 +12,36 @@ namespace Dekaf.Tests.Unit.Hosting;
 public class AddConsumerServiceTests
 {
     [Test]
+    public async Task AddConsumerService_ServiceProviderOverload_ConfiguresConsumerAtResolution()
+    {
+        var services = new ServiceCollection();
+        var settings = new ConsumerServiceSettings("localhost:9092", "provider-group");
+        services.AddSingleton(settings);
+        ConsumerServiceSettings? resolvedSettings = null;
+
+        services.AddDekaf(builder =>
+        {
+            builder.AddConsumerService<TestService, string, string>((serviceProvider, consumer) =>
+            {
+                resolvedSettings = serviceProvider.GetRequiredService<ConsumerServiceSettings>();
+                consumer
+                    .WithBootstrapServers(resolvedSettings.BootstrapServers)
+                    .WithGroupId(resolvedSettings.GroupId);
+            });
+        });
+
+        await Assert.That(resolvedSettings).IsNull();
+
+        await using var provider = services.BuildServiceProvider();
+        _ = provider.GetRequiredService<IKafkaConsumer<string, string>>();
+
+        await Assert.That(resolvedSettings).IsSameReferenceAs(settings);
+        await Assert.That(services.Any(d =>
+            d.ServiceType == typeof(IHostedService) &&
+            d.ImplementationType == typeof(TestService))).IsTrue();
+    }
+
+    [Test]
     public async Task AddConsumerService_RegistersConsumerAndHostedService()
     {
         var services = new ServiceCollection();
@@ -341,6 +371,8 @@ public class AddConsumerServiceTests
             ConsumeResult<string, string> result, CancellationToken cancellationToken)
             => ValueTask.CompletedTask;
     }
+
+    private sealed record ConsumerServiceSettings(string BootstrapServers, string GroupId);
 
     private sealed class DlqTestService : KafkaConsumerService<string, string>
     {
