@@ -406,6 +406,7 @@ internal sealed class AvroValueRulePlan
                     ref reader,
                     resolution,
                     now,
+                    failFast,
                     ref nestedViolations,
                     ref path);
                 rootSize = _fields.Length;
@@ -442,20 +443,33 @@ internal sealed class AvroValueRulePlan
         ref AvroValidationReader reader,
         AvroMemberResolution resolution,
         long now,
+        bool failFast,
         ref List<ValidationRuleError>? nestedViolations,
         scoped ref AvroValidationPath path)
     {
         for (var index = 0; index < _fields.Length; index++)
         {
             var start = reader.Position;
-            var value = ValidateRecordFieldAndCapture(
-                _fields[index],
-                ref reader,
-                now,
-                _schemaRules.NeedsRecordFieldSize(index),
-                ref nestedViolations,
-                ref path,
-                out var size);
+            var field = _fields[index];
+            var needsSize = _schemaRules.NeedsRecordFieldSize(index);
+            ValidationCelValue value;
+            int size;
+            if (failFast && nestedViolations is not null)
+            {
+                value = CaptureRecordField(field, ref reader, needsSize, out size);
+            }
+            else
+            {
+                value = ValidateRecordFieldAndCapture(
+                    field,
+                    ref reader,
+                    now,
+                    failFast,
+                    needsSize,
+                    ref nestedViolations,
+                    ref path,
+                    out size);
+            }
             _schemaRules.ResolveRecordField(
                 index,
                 reader.Source.Slice(start, reader.Position - start),
@@ -469,6 +483,7 @@ internal sealed class AvroValueRulePlan
         AvroFieldRulePlan field,
         ref AvroValidationReader reader,
         long now,
+        bool failFast,
         bool needsSize,
         ref List<ValidationRuleError>? violations,
         scoped ref AvroValidationPath path,
@@ -484,7 +499,7 @@ internal sealed class AvroValueRulePlan
                     field,
                     ref reader,
                     now,
-                    failFast: false,
+                    failFast,
                     ref violations,
                     ref path,
                     out size);
@@ -496,7 +511,7 @@ internal sealed class AvroValueRulePlan
                 field,
                 ref reader,
                 now,
-                failFast: false,
+                failFast,
                 needsSize,
                 ref violations,
                 ref path,
@@ -508,7 +523,7 @@ internal sealed class AvroValueRulePlan
         var value = field.Child.ValidateAndCapture(
             ref reader,
             now,
-            failFast: false,
+            failFast,
             needsSize,
             ref violations,
             ref path,
@@ -1266,6 +1281,22 @@ internal sealed class AvroValueRulePlan
                 size = AvroValidationValueDecoder.Count(field.Field.Schema, payload);
         }
         path.Truncate(mark);
+        return value;
+    }
+
+    private static ValidationCelValue CaptureRecordField(
+        AvroFieldRulePlan field,
+        ref AvroValidationReader reader,
+        bool needsSize,
+        out int size)
+    {
+        var start = reader.Position;
+        var value = field.Child.ReadValue(ref reader);
+        size = needsSize && value.SizeIndex == 0
+            ? AvroValidationValueDecoder.Count(
+                field.Field.Schema,
+                reader.Source.Slice(start, reader.Position - start))
+            : -1;
         return value;
     }
 
