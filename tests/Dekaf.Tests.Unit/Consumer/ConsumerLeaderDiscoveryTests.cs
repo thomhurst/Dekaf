@@ -592,7 +592,17 @@ public sealed class ConsumerLeaderDiscoveryTests
         var consumeTask = consumer
             .ConsumeOneAsync(Timeout.InfiniteTimeSpan, cancellationSource.Token)
             .AsTask();
-        await interceptorInvoked.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        var interceptorWait = interceptorInvoked.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        try
+        {
+            await interceptorWait;
+        }
+        finally
+        {
+            cancellationSource.Cancel();
+            if (!interceptorWait.IsCompletedSuccessfully)
+                _ = await consumeTask.WaitAsync(TimeSpan.FromSeconds(30));
+        }
         var result = await consumeTask.WaitAsync(TimeSpan.FromSeconds(30));
 
         await Assert.That(result).IsNull();
