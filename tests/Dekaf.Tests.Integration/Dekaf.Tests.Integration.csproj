@@ -53,7 +53,7 @@
     <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Condition="'$(PublishAot)' != 'true'" />
     <PackageReference Include="Microsoft.Extensions.Hosting" />
     <PackageReference Include="protobuf-net.Reflection"
-                      Aliases="protobufnet"
+                      ExcludeAssets="compile"
                       Condition="'$(PublishAot)' != 'true'" />
     <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Condition="'$(PublishAot)' != 'true'" />
     <PackageReference Include="SSH.NET" PrivateAssets="All" />

@@ -55,17 +55,14 @@ public sealed class HostedServiceTests(KafkaTestContainer kafka) : KafkaIntegrat
         builder.Services.AddSingleton<TestTopicHolder>(new TestTopicHolder(topic));
         builder.Services.AddHostedService<TestConsumerService>();
 
-        var host = builder.Build();
+        using var host = builder.Build();
+        await host.StartAsync().ConfigureAwait(false);
 
-        // Start the host
-        using var cts = new CancellationTokenSource();
-        var hostTask = host.RunAsync(cts.Token);
-
-        // Give the consumer service time to start and join the group.
-        // The consumer needs to subscribe, join the group, and receive its partition
-        // assignment before it can receive messages. On CI runners this can take longer
-        // than on local machines due to thread pool contention.
-        await Task.Delay(2000).ConfigureAwait(false);
+        var consumer = host.Services.GetRequiredService<IKafkaConsumer<string, string>>();
+        await WaitForConditionAsync(
+            () => consumer.Assignment.Any(partition => partition.Topic == topic),
+            TimeSpan.FromSeconds(30),
+            description: "hosted consumer partition assignment");
 
         for (var i = 0; i < messageCount; i++)
         {
@@ -84,25 +81,63 @@ public sealed class HostedServiceTests(KafkaTestContainer kafka) : KafkaIntegrat
 
         await Assert.That(receivedMessages.Count).IsGreaterThanOrEqualTo(messageCount);
 
-        // Stop gracefully
-        cts.Cancel();
+        using var stopCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await host.StopAsync(stopCts.Token).ConfigureAwait(false);
+    }
 
-        try
+    [Test]
+    public async Task ServiceProviderConfiguredHostedService_ReceivesMessages()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync();
+        var receivedMessages = new ConcurrentBag<string>();
+        var settings = new HostedConsumerSettings(
+            KafkaContainer.BootstrapServers,
+            $"hosted-service-provider-{Guid.NewGuid():N}");
+
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        var builder = Host.CreateApplicationBuilder();
+        builder.Services.AddSingleton(settings);
+        builder.Services.AddSingleton(receivedMessages);
+        builder.Services.AddSingleton(new TestTopicHolder(topic));
+        builder.Services.AddDekaf(dekaf =>
         {
-            await hostTask.WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException)
+            dekaf.AddConsumerService<TestConsumerService, string, string>((serviceProvider, consumer) =>
+            {
+                var consumerSettings = serviceProvider.GetRequiredService<HostedConsumerSettings>();
+                consumer
+                    .WithBootstrapServers(consumerSettings.BootstrapServers)
+                    .WithGroupId(consumerSettings.GroupId)
+                    .WithAutoOffsetReset(AutoOffsetReset.Earliest);
+            });
+        });
+
+        using var host = builder.Build();
+        await host.StartAsync().ConfigureAwait(false);
+
+        var consumer = host.Services.GetRequiredService<IKafkaConsumer<string, string>>();
+        await WaitForConditionAsync(
+            () => consumer.Assignment.Any(partition => partition.Topic == topic),
+            TimeSpan.FromSeconds(30),
+            description: "hosted consumer partition assignment");
+
+        await producer.ProduceAsync(new ProducerMessage<string, string>
         {
-            // Expected
-        }
-        catch (TimeoutException)
-        {
-            // Host shutdown can be slow on resource-constrained CI runners
-        }
-        finally
-        {
-            host.Dispose();
-        }
+            Topic = topic,
+            Key = "provider-key",
+            Value = "provider-value"
+        }, CancellationToken.None);
+
+        await WaitForConditionAsync(
+            () => receivedMessages.Contains("provider-value"),
+            TimeSpan.FromSeconds(30),
+            description: "hosted consumer message receipt");
+
+        using var stopCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await host.StopAsync(stopCts.Token).ConfigureAwait(false);
     }
 
     [Test]
@@ -619,6 +654,8 @@ public sealed class HostedServiceTests(KafkaTestContainer kafka) : KafkaIntegrat
     {
         public string Topic { get; } = topic;
     }
+
+    private sealed record HostedConsumerSettings(string BootstrapServers, string GroupId);
 
     private sealed record RetryTopicInput(
         string Value,
