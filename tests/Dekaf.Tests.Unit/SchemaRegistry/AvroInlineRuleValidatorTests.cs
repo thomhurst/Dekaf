@@ -791,6 +791,42 @@ public class AvroInlineRuleValidatorTests
     }
 
     [Test]
+    public async Task Validate_SchemaRuledAggregateAndParentSizeAllocateZeroBytes()
+    {
+        const string schemaText = """
+            {
+              "type": "record",
+              "name": "SchemaRuledAggregateSizeRecord",
+              "confluent:rules": [{
+                "name": "member-size",
+                "expr": "size(this) == 1 && size(this.items) == 128"
+              }],
+              "fields": [{
+                "name": "items",
+                "type": {
+                  "type": "array",
+                  "items": "int",
+                  "confluent:rules": [{ "name": "schema-present", "expr": "this == this" }]
+                }
+              }]
+            }
+            """;
+        var schema = (RecordSchema)AvroSchema.Parse(schemaText);
+        var record = new GenericRecord(schema);
+        record.Add("items", Enumerable.Range(1, 128).ToArray());
+        var payload = Serialize(record, schema);
+        var validator = new AvroInlineRuleValidator(schema);
+        validator.Validate(payload, 39, failFast: false);
+
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var index = 0; index < 100; index++)
+            validator.Validate(payload, 39, failFast: false);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        await Assert.That(allocated).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task Validate_ConditionalSizeCountsOnlySelectedAggregate()
     {
         const string schemaText = """

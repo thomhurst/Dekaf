@@ -614,6 +614,17 @@ internal sealed class AvroValueRulePlan
                 sizeIndex: 0);
         }
 
+        if (needsSize && _validationStrategy == ValidationStrategy.Standard)
+        {
+            return ValidateSchemaRulesAndCapture(
+                ref reader,
+                now,
+                failFast,
+                ref violations,
+                ref path,
+                out size);
+        }
+
         var valueStart = reader.Position;
         var value = Validate(
             ref reader,
@@ -626,6 +637,53 @@ internal sealed class AvroValueRulePlan
                 _schema,
                 reader.Source.Slice(valueStart, reader.Position - valueStart))
             : -1;
+        return value;
+    }
+
+    private ValidationCelValue ValidateSchemaRulesAndCapture(
+        ref AvroValidationReader reader,
+        long now,
+        bool failFast,
+        ref List<ValidationRuleError>? violations,
+        scoped ref AvroValidationPath path,
+        out int size)
+    {
+        var start = reader.Position;
+        var preview = reader;
+        var value = ReadValue(ref preview, needsSize: true, out size);
+        var payload = preview.Source.Slice(start, preview.Position - start);
+        _schemaRules.Evaluate(
+            value,
+            payload,
+            now,
+            failFast,
+            ref violations,
+            ref path,
+            _schemaRules.UsesRootSize ? size : -1);
+        if ((failFast && violations is not null) || !_hasNestedRules)
+        {
+            reader = preview;
+            return value;
+        }
+
+        switch (_schema)
+        {
+            case global::Avro.RecordSchema:
+                ValidateRecord(ref reader, now, failFast, ref violations, ref path);
+                break;
+            case global::Avro.ArraySchema:
+                _ = ValidateArray(ref reader, now, failFast, ref violations, ref path);
+                break;
+            case global::Avro.MapSchema:
+                _ = ValidateMap(ref reader, now, failFast, ref violations, ref path);
+                break;
+            case global::Avro.UnionSchema:
+                ValidateUnion(ref reader, now, failFast, ref violations, ref path);
+                break;
+            default:
+                reader = preview;
+                break;
+        }
         return value;
     }
 

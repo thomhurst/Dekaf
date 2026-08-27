@@ -57,8 +57,8 @@ public class AvroInlineValidationBenchmarks
     private ReadOnlyMemory<byte> _mixedRootMemberNestedPayload;
     private AvroInlineRuleValidator _mixedRootFieldRuleValidator = null!;
     private ReadOnlyMemory<byte> _mixedRootFieldRulePayload;
-    private AvroInlineRuleValidator _nullableFieldSizeValidator = null!;
-    private ReadOnlyMemory<byte> _nullableFieldSizePayload;
+    private AvroInlineRuleValidator _schemaRuledFieldSizeValidator = null!;
+    private ReadOnlyMemory<byte> _schemaRuledFieldSizePayload;
     private AvroInlineRuleValidator _nestedMemberFrameValidator = null!;
     private ReadOnlyMemory<byte> _nestedMemberFramePayload;
 
@@ -609,33 +609,36 @@ public class AvroInlineValidationBenchmarks
         _mixedRootFieldRuleValidator = new AvroInlineRuleValidator(mixedRootFieldRuleSchema);
         _mixedRootFieldRuleValidator.Validate(_mixedRootFieldRulePayload, 21, failFast: false);
 
-        const string nullableFieldSizeSchemaText = """
+        const string schemaRuledFieldSizeSchemaText = """
             {
               "type": "record",
-              "name": "NullableFieldSizeBenchmarkRecord",
+              "name": "SchemaRuledFieldSizeBenchmarkRecord",
               "confluent:rules": [{
                 "name": "root-and-member-size",
                 "expr": "size(this) == 1 && size(this.items) == 128"
               }],
               "fields": [{
                 "name": "items",
-                "confluent:rules": [{ "name": "field-present", "expr": "this == this" }],
-                "type": ["null", { "type": "array", "items": "int" }]
+                "type": {
+                  "type": "array",
+                  "items": "int",
+                  "confluent:rules": [{ "name": "schema-present", "expr": "this == this" }]
+                }
               }]
             }
             """;
-        var nullableFieldSizeSchema = (RecordSchema)AvroSchema.Parse(nullableFieldSizeSchemaText);
-        var nullableFieldSizeRecord = new GenericRecord(nullableFieldSizeSchema);
-        nullableFieldSizeRecord.Add("items", Enumerable.Range(1, 128).ToArray());
-        using var nullableFieldSizeStream = new MemoryStream();
-        var nullableFieldSizeEncoder = new BinaryEncoder(nullableFieldSizeStream);
-        new GenericDatumWriter<GenericRecord>(nullableFieldSizeSchema).Write(
-            nullableFieldSizeRecord,
-            nullableFieldSizeEncoder);
-        nullableFieldSizeEncoder.Flush();
-        _nullableFieldSizePayload = nullableFieldSizeStream.ToArray();
-        _nullableFieldSizeValidator = new AvroInlineRuleValidator(nullableFieldSizeSchema);
-        _nullableFieldSizeValidator.Validate(_nullableFieldSizePayload, 22, failFast: false);
+        var schemaRuledFieldSizeSchema = (RecordSchema)AvroSchema.Parse(schemaRuledFieldSizeSchemaText);
+        var schemaRuledFieldSizeRecord = new GenericRecord(schemaRuledFieldSizeSchema);
+        schemaRuledFieldSizeRecord.Add("items", Enumerable.Range(1, 128).ToArray());
+        using var schemaRuledFieldSizeStream = new MemoryStream();
+        var schemaRuledFieldSizeEncoder = new BinaryEncoder(schemaRuledFieldSizeStream);
+        new GenericDatumWriter<GenericRecord>(schemaRuledFieldSizeSchema).Write(
+            schemaRuledFieldSizeRecord,
+            schemaRuledFieldSizeEncoder);
+        schemaRuledFieldSizeEncoder.Flush();
+        _schemaRuledFieldSizePayload = schemaRuledFieldSizeStream.ToArray();
+        _schemaRuledFieldSizeValidator = new AvroInlineRuleValidator(schemaRuledFieldSizeSchema);
+        _schemaRuledFieldSizeValidator.Validate(_schemaRuledFieldSizePayload, 22, failFast: false);
 
         const string nestedMemberFrameSchemaText = """
             {
@@ -800,8 +803,8 @@ public class AvroInlineValidationBenchmarks
         _mixedRootFieldRuleValidator.Validate(_mixedRootFieldRulePayload, 21, failFast: false);
 
     [Benchmark]
-    public void ValidateNullableAggregateFieldSize() =>
-        _nullableFieldSizeValidator.Validate(_nullableFieldSizePayload, 22, failFast: false);
+    public void ValidateSchemaRuledAggregateFieldSize() =>
+        _schemaRuledFieldSizeValidator.Validate(_schemaRuledFieldSizePayload, 22, failFast: false);
 
     [Benchmark]
     public void ValidateNestedMemberFrames() =>
