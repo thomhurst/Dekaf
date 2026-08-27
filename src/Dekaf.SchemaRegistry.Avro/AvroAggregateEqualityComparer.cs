@@ -167,7 +167,7 @@ internal sealed class AvroAggregateEqualityComparer(
             case AvroSchema.Type.Null:
                 return true;
             case AvroSchema.Type.Boolean:
-                return (left.Read(1).Span[0] != 0) == (right.Read(1).Span[0] != 0);
+                return left.ReadBoolean() == right.ReadBoolean();
             case AvroSchema.Type.Record:
             case AvroSchema.Type.Error:
                 var leftRecord = (global::Avro.RecordSchema)leftSchema;
@@ -766,7 +766,7 @@ internal sealed class AvroAggregateEqualityComparer(
             case AvroSchema.Type.Null:
                 return;
             case AvroSchema.Type.Boolean:
-                _ = reader.Read(1);
+                _ = reader.ReadBoolean();
                 return;
             case AvroSchema.Type.Int:
             case AvroSchema.Type.Long:

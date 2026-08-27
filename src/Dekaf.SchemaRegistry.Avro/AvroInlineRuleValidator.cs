@@ -3625,6 +3625,15 @@ internal ref struct AvroValidationReader(ReadOnlyMemory<byte> source)
         return result;
     }
 
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal bool ReadBoolean()
+    {
+        var value = Read(1).Span[0];
+        if (value > 1)
+            ThrowInvalidBoolean(value);
+        return value != 0;
+    }
+
     internal long ReadLong()
     {
         ulong encoded = 0;
@@ -3668,6 +3677,10 @@ internal ref struct AvroValidationReader(ReadOnlyMemory<byte> source)
 
     private static SchemaRegistryRuleException InvalidPayload(string reason) =>
         new($"Could not evaluate Avro validation rules: {reason}.");
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void ThrowInvalidBoolean(byte value) =>
+        throw InvalidPayload($"invalid boolean value {value}");
 }
 
 internal static class AvroValidationValueDecoder
@@ -3706,7 +3719,7 @@ internal static class AvroValidationValueDecoder
             case AvroSchema.Type.Null:
                 return ValidationCelValue.Null;
             case AvroSchema.Type.Boolean:
-                return ValidationCelValue.FromBoolean(reader.Read(1).Span[0] != 0);
+                return ValidationCelValue.FromBoolean(reader.ReadBoolean());
             case AvroSchema.Type.Int:
             case AvroSchema.Type.Long:
                 return ValidationCelValue.FromNumber(reader.ReadLong());
@@ -3883,7 +3896,7 @@ internal static class AvroValidationValueDecoder
             case AvroSchema.Type.Null:
                 return;
             case AvroSchema.Type.Boolean:
-                _ = reader.Read(1);
+                _ = reader.ReadBoolean();
                 return;
             case AvroSchema.Type.Int:
             case AvroSchema.Type.Long:
@@ -4013,7 +4026,7 @@ internal static class AvroValidationValueDecoder
             case AvroSchema.Type.Null:
                 return;
             case AvroSchema.Type.Boolean:
-                _ = reader.Read(1);
+                _ = reader.ReadBoolean();
                 return;
             case AvroSchema.Type.Int:
             case AvroSchema.Type.Long:

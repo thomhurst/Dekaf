@@ -2036,6 +2036,53 @@ public class AvroInlineRuleValidatorTests
     }
 
     [Test]
+    public async Task Validate_InvalidBooleanEncodingIsRejectedByReadAndSkipPaths()
+    {
+        const string readSchemaText = """
+            {
+              "type": "record",
+              "name": "InvalidBooleanReadRecord",
+              "fields": [{
+                "name": "enabled",
+                "type": "boolean",
+                "confluent:rules": [{ "name": "enabled", "expr": "this == true" }]
+              }]
+            }
+            """;
+        const string skipSchemaText = """
+            {
+              "type": "record",
+              "name": "InvalidBooleanSkipRecord",
+              "confluent:rules": [{ "name": "always", "expr": "true" }],
+              "fields": [{ "name": "enabled", "type": "boolean" }]
+            }
+            """;
+        var readValidator = new AvroInlineRuleValidator(AvroSchema.Parse(readSchemaText));
+        var skipValidator = new AvroInlineRuleValidator(AvroSchema.Parse(skipSchemaText));
+
+        var readException = Assert.Throws<SchemaRegistryRuleException>(() =>
+            readValidator.Validate(new byte[] { 2 }, 35, failFast: false));
+        var skipException = Assert.Throws<SchemaRegistryRuleException>(() =>
+            skipValidator.Validate(new byte[] { 2 }, 35, failFast: false));
+
+        await Assert.That(readException.Message).Contains("invalid boolean value 2");
+        await Assert.That(skipException.Message).Contains("invalid boolean value 2");
+    }
+
+    [Test]
+    public async Task Validate_AggregateEqualityRejectsInvalidBooleanEncoding()
+    {
+        var schema = AvroSchema.Parse("""{ "type": "array", "items": "boolean" }""");
+        var comparer = new AvroAggregateEqualityComparerFactory().Create(schema)!;
+        ReadOnlyMemory<byte> payload = new byte[] { 2, 2, 0 };
+
+        var exception = Assert.Throws<SchemaRegistryRuleException>(() =>
+            ((IValidationCelAggregateComparer)comparer).AreEqual(payload, comparer, payload));
+
+        await Assert.That(exception.Message).Contains("invalid boolean value 2");
+    }
+
+    [Test]
     public async Task Serializer_EnabledValidationRejectsInvalidGenericRecord()
     {
         var schema = (RecordSchema)AvroSchema.Parse(IntegrationSchema);
