@@ -24,8 +24,6 @@ internal sealed class AvroAggregateEqualityComparerFactory
         for (var index = 0; index < _groups.Count; index++)
         {
             var group = _groups[index];
-            if (requiresDepthGuard != group.RequiresDepthGuard)
-                continue;
             if (AvroSchemaLogicalComparer.Instance.Equals(schema, group.Schema) ||
                 AvroValueSchemaComparer.AreCelCompatible(schema, group.Schema))
             {
@@ -37,7 +35,7 @@ internal sealed class AvroAggregateEqualityComparerFactory
 
         if (selectedGroup is null)
         {
-            selectedGroup = new SchemaGroup(schema, requiresDepthGuard);
+            selectedGroup = new SchemaGroup(schema);
             _groups.Add(selectedGroup);
         }
 
@@ -49,9 +47,8 @@ internal sealed class AvroAggregateEqualityComparerFactory
         for (var index = 0; index < _comparers.Count; index++)
         {
             var existing = _comparers[index];
-            if (requiresDepthGuard == existing.RequiresDepthGuard &&
-                (AvroSchemaLogicalComparer.Instance.Equals(schema, existing.Schema) ||
-                 AvroValueSchemaComparer.AreCelCompatible(schema, existing.Schema)))
+            if (AvroSchemaLogicalComparer.Instance.Equals(schema, existing.Schema) ||
+                AvroValueSchemaComparer.AreCelCompatible(schema, existing.Schema))
             {
                 comparer.AddCompatible(existing);
                 existing.AddCompatible(comparer);
@@ -61,10 +58,9 @@ internal sealed class AvroAggregateEqualityComparerFactory
         return comparer;
     }
 
-    private sealed class SchemaGroup(AvroSchema schema, bool requiresDepthGuard)
+    private sealed class SchemaGroup(AvroSchema schema)
     {
         internal AvroSchema Schema { get; } = schema;
-        internal bool RequiresDepthGuard { get; } = requiresDepthGuard;
     }
 }
 
@@ -104,7 +100,7 @@ internal sealed class AvroAggregateEqualityComparer(
 
         var leftReader = new AvroValidationReader(left);
         var rightReader = new AvroValidationReader(right);
-        if (!_requiresDepthGuard)
+        if (!_requiresDepthGuard && !avroRight._requiresDepthGuard)
         {
             return AreEqual(_schema, avroRight._schema, ref leftReader, ref rightReader) &&
                 leftReader.End && rightReader.End;
@@ -120,7 +116,6 @@ internal sealed class AvroAggregateEqualityComparer(
     }
 
     internal AvroSchema Schema => _schema;
-    internal bool RequiresDepthGuard => _requiresDepthGuard;
 
     internal void AddCompatible(AvroAggregateEqualityComparer comparer) =>
         _compatibleSchemas.Add(comparer._schema);

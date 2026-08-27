@@ -1528,6 +1528,62 @@ public class AvroInlineRuleValidatorTests
     }
 
     [Test]
+    public async Task Validate_RecursiveAndFiniteAggregateSchemasCompareSelectedValues()
+    {
+        const string schemaText = """
+            {
+              "type": "record",
+              "name": "RecursiveFiniteEqualityRecord",
+              "confluent:rules": [{ "name": "equal", "expr": "this.left == this.right" }],
+              "fields": [
+                {
+                  "name": "left",
+                  "type": {
+                    "type": "record",
+                    "name": "RecursiveFiniteNode",
+                    "fields": [
+                      { "name": "value", "type": "int" },
+                      { "name": "next", "type": ["null", "RecursiveFiniteNode"] }
+                    ]
+                  }
+                },
+                {
+                  "name": "right",
+                  "type": {
+                    "type": "record",
+                    "name": "FiniteNode",
+                    "fields": [
+                      { "name": "value", "type": "int" },
+                      { "name": "next", "type": "null" }
+                    ]
+                  }
+                }
+              ]
+            }
+            """;
+        var schema = (RecordSchema)AvroSchema.Parse(schemaText);
+        var leftSchema = (RecordSchema)schema.Fields[0].Schema;
+        var rightSchema = (RecordSchema)schema.Fields[1].Schema;
+        var left = new GenericRecord(leftSchema);
+        left.Add("value", 1);
+        left.Add("next", null);
+        var right = new GenericRecord(rightSchema);
+        right.Add("value", 1);
+        right.Add("next", null);
+        var record = new GenericRecord(schema);
+        record.Add("left", left);
+        record.Add("right", right);
+        var validator = new AvroInlineRuleValidator(schema);
+
+        validator.Validate(Serialize(record, schema), 29, failFast: false);
+        right.Add("value", 2);
+        var exception = Assert.Throws<ValidationRulesFailedException>(() =>
+            validator.Validate(Serialize(record, schema), 29, failFast: false));
+
+        await Assert.That(exception.Violations[0].Rule.Name).IsEqualTo("equal");
+    }
+
+    [Test]
     public async Task Validate_ConditionalAggregateEqualityUsesSelectedComparer()
     {
         const string schemaText = """
