@@ -825,7 +825,12 @@ public class AvroInlineValidationBenchmarks
         _nestedMemberFrameValidator = new AvroInlineRuleValidator(nestedMemberFrameSchema);
         _nestedMemberFrameValidator.Validate(_nestedMemberFramePayload, 16, failFast: false);
 
-        const string recursiveValidationSchemaText = """
+        SetupRecursiveValidationBenchmark();
+    }
+
+    private void SetupRecursiveValidationBenchmark()
+    {
+        const string schemaText = """
             {
               "type": "record",
               "name": "RecursiveValidationBenchmarkNode",
@@ -839,12 +844,12 @@ public class AvroInlineValidationBenchmarks
               ]
             }
             """;
-        var recursiveValidationSchema = AvroSchema.Parse(recursiveValidationSchemaText);
-        var recursiveValidationPayload = new byte[16];
+        var schema = AvroSchema.Parse(schemaText);
+        var payload = new byte[16];
         for (var index = 0; index < 7; index++)
-            recursiveValidationPayload[index * 2 + 1] = 2;
-        _recursiveValidationPayload = recursiveValidationPayload;
-        _recursiveValidationValidator = new AvroInlineRuleValidator(recursiveValidationSchema);
+            payload[index * 2 + 1] = 2;
+        _recursiveValidationPayload = payload;
+        _recursiveValidationValidator = new AvroInlineRuleValidator(schema);
         _recursiveValidationValidator.Validate(
             _recursiveValidationPayload,
             31,
