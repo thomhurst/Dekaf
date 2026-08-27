@@ -1360,7 +1360,8 @@ public class KafkaProducerFastPathTests
         if (partitionBatch is not null)
         {
             var completeMethod = partitionBatch.GetType().GetMethod("Complete");
-            return (ReadyBatch)completeMethod!.Invoke(partitionBatch, null)!;
+            if (completeMethod!.Invoke(partitionBatch, null) is ReadyBatch completedBatch)
+                return completedBatch;
         }
 
         var peekFirstMethod = partitionDeque.GetType().GetMethod("PeekFirst");
