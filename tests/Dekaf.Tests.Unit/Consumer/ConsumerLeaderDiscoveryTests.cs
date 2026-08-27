@@ -580,6 +580,7 @@ public sealed class ConsumerLeaderDiscoveryTests
             catch (Exception exception)
             {
                 interceptorInvoked.TrySetException(exception);
+                throw;
             }
             finally
             {
@@ -601,7 +602,13 @@ public sealed class ConsumerLeaderDiscoveryTests
         {
             cancellationSource.Cancel();
             if (!interceptorWait.IsCompletedSuccessfully)
-                _ = await consumeTask.WaitAsync(TimeSpan.FromSeconds(30));
+            {
+                var completedTask = await Task.WhenAny(
+                    consumeTask,
+                    Task.Delay(TimeSpan.FromSeconds(30)));
+                if (ReferenceEquals(completedTask, consumeTask))
+                    _ = consumeTask.Exception;
+            }
         }
         var result = await consumeTask.WaitAsync(TimeSpan.FromSeconds(30));
 
