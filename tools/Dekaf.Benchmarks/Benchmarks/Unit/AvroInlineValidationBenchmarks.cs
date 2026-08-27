@@ -57,6 +57,8 @@ public class AvroInlineValidationBenchmarks
     private ReadOnlyMemory<byte> _mixedRootMemberNestedPayload;
     private AvroInlineRuleValidator _mixedRootFieldRuleValidator = null!;
     private ReadOnlyMemory<byte> _mixedRootFieldRulePayload;
+    private AvroInlineRuleValidator _nullableFieldSizeValidator = null!;
+    private ReadOnlyMemory<byte> _nullableFieldSizePayload;
     private AvroInlineRuleValidator _nestedMemberFrameValidator = null!;
     private ReadOnlyMemory<byte> _nestedMemberFramePayload;
 
@@ -607,6 +609,34 @@ public class AvroInlineValidationBenchmarks
         _mixedRootFieldRuleValidator = new AvroInlineRuleValidator(mixedRootFieldRuleSchema);
         _mixedRootFieldRuleValidator.Validate(_mixedRootFieldRulePayload, 21, failFast: false);
 
+        const string nullableFieldSizeSchemaText = """
+            {
+              "type": "record",
+              "name": "NullableFieldSizeBenchmarkRecord",
+              "confluent:rules": [{
+                "name": "root-and-member-size",
+                "expr": "size(this) == 1 && size(this.items) == 128"
+              }],
+              "fields": [{
+                "name": "items",
+                "confluent:rules": [{ "name": "field-present", "expr": "this == this" }],
+                "type": ["null", { "type": "array", "items": "int" }]
+              }]
+            }
+            """;
+        var nullableFieldSizeSchema = (RecordSchema)AvroSchema.Parse(nullableFieldSizeSchemaText);
+        var nullableFieldSizeRecord = new GenericRecord(nullableFieldSizeSchema);
+        nullableFieldSizeRecord.Add("items", Enumerable.Range(1, 128).ToArray());
+        using var nullableFieldSizeStream = new MemoryStream();
+        var nullableFieldSizeEncoder = new BinaryEncoder(nullableFieldSizeStream);
+        new GenericDatumWriter<GenericRecord>(nullableFieldSizeSchema).Write(
+            nullableFieldSizeRecord,
+            nullableFieldSizeEncoder);
+        nullableFieldSizeEncoder.Flush();
+        _nullableFieldSizePayload = nullableFieldSizeStream.ToArray();
+        _nullableFieldSizeValidator = new AvroInlineRuleValidator(nullableFieldSizeSchema);
+        _nullableFieldSizeValidator.Validate(_nullableFieldSizePayload, 22, failFast: false);
+
         const string nestedMemberFrameSchemaText = """
             {
               "type": "record",
@@ -768,6 +798,10 @@ public class AvroInlineValidationBenchmarks
     [Benchmark]
     public void ValidateMixedRootWithAggregateFieldRule() =>
         _mixedRootFieldRuleValidator.Validate(_mixedRootFieldRulePayload, 21, failFast: false);
+
+    [Benchmark]
+    public void ValidateNullableAggregateFieldSize() =>
+        _nullableFieldSizeValidator.Validate(_nullableFieldSizePayload, 22, failFast: false);
 
     [Benchmark]
     public void ValidateNestedMemberFrames() =>
