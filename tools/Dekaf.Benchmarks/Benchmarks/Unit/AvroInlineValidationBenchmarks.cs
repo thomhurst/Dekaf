@@ -69,6 +69,10 @@ public class AvroInlineValidationBenchmarks
     private ReadOnlyMemory<byte> _nestedMemberFramePayload;
     private AvroInlineRuleValidator _recursiveValidationValidator = null!;
     private ReadOnlyMemory<byte> _recursiveValidationPayload;
+    private AvroInlineRuleValidator _recursivePrefixValidator = null!;
+    private ReadOnlyMemory<byte> _recursivePrefixPayload;
+    private AvroInlineRuleValidator _recursiveFieldRuleValidator = null!;
+    private ReadOnlyMemory<byte> _recursiveFieldRulePayload;
 
     [GlobalSetup]
     public void Setup()
@@ -826,6 +830,8 @@ public class AvroInlineValidationBenchmarks
         _nestedMemberFrameValidator.Validate(_nestedMemberFramePayload, 16, failFast: false);
 
         SetupRecursiveValidationBenchmark();
+        SetupRecursivePrefixBenchmark();
+        SetupRecursiveFieldRuleBenchmark();
     }
 
     private void SetupRecursiveValidationBenchmark()
@@ -854,6 +860,52 @@ public class AvroInlineValidationBenchmarks
             _recursiveValidationPayload,
             31,
             failFast: false);
+    }
+
+    private void SetupRecursivePrefixBenchmark()
+    {
+        const string schemaText = """
+            {
+              "type": "record",
+              "name": "RecursivePrefixBenchmarkNode",
+              "confluent:rules": [{ "name": "marker", "expr": "this.marker >= 0" }],
+              "fields": [
+                { "name": "next", "type": ["null", "RecursivePrefixBenchmarkNode"] },
+                { "name": "marker", "type": "int" }
+              ]
+            }
+            """;
+        var payload = new byte[16];
+        payload.AsSpan(0, 7).Fill(2);
+        _recursivePrefixPayload = payload;
+        _recursivePrefixValidator = new AvroInlineRuleValidator(AvroSchema.Parse(schemaText));
+        _recursivePrefixValidator.Validate(_recursivePrefixPayload, 32, failFast: false);
+    }
+
+    private void SetupRecursiveFieldRuleBenchmark()
+    {
+        const string schemaText = """
+            {
+              "type": "record",
+              "name": "RecursiveFieldBenchmarkWrapper",
+              "fields": [{
+                "name": "node",
+                "type": {
+                  "type": "record",
+                  "name": "RecursiveFieldBenchmarkNode",
+                  "fields": [
+                    { "name": "next", "type": ["null", "RecursiveFieldBenchmarkNode"] }
+                  ]
+                },
+                "confluent:rules": [{ "name": "self", "expr": "this == this" }]
+              }]
+            }
+            """;
+        var payload = new byte[8];
+        payload.AsSpan(0, 7).Fill(2);
+        _recursiveFieldRulePayload = payload;
+        _recursiveFieldRuleValidator = new AvroInlineRuleValidator(AvroSchema.Parse(schemaText));
+        _recursiveFieldRuleValidator.Validate(_recursiveFieldRulePayload, 33, failFast: false);
     }
 
     [Benchmark]
@@ -1003,4 +1055,12 @@ public class AvroInlineValidationBenchmarks
     [Benchmark]
     public void ValidateRecursivePayload() =>
         _recursiveValidationValidator.Validate(_recursiveValidationPayload, 31, failFast: false);
+
+    [Benchmark]
+    public void ValidateRecursivePrefix() =>
+        _recursivePrefixValidator.Validate(_recursivePrefixPayload, 32, failFast: false);
+
+    [Benchmark]
+    public void ValidateRecursiveFieldRule() =>
+        _recursiveFieldRuleValidator.Validate(_recursiveFieldRulePayload, 33, failFast: false);
 }
