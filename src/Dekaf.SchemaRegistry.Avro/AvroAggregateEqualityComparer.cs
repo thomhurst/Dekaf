@@ -18,11 +18,14 @@ internal sealed class AvroAggregateEqualityComparerFactory
             return null;
         }
 
+        var requiresDepthGuard = AvroAggregateEqualityComparer.IsRecursive(schema);
         SchemaGroup? selectedGroup = null;
         var rawEqualityCompatible = true;
         for (var index = 0; index < _groups.Count; index++)
         {
             var group = _groups[index];
+            if (requiresDepthGuard != group.RequiresDepthGuard)
+                continue;
             if (AvroSchemaLogicalComparer.Instance.Equals(schema, group.Schema) ||
                 AvroValueSchemaComparer.AreCelCompatible(schema, group.Schema))
             {
@@ -34,19 +37,21 @@ internal sealed class AvroAggregateEqualityComparerFactory
 
         if (selectedGroup is null)
         {
-            selectedGroup = new SchemaGroup(schema);
+            selectedGroup = new SchemaGroup(schema, requiresDepthGuard);
             _groups.Add(selectedGroup);
         }
 
         var comparer = new AvroAggregateEqualityComparer(
             schema,
             selectedGroup,
-            rawEqualityCompatible);
+            rawEqualityCompatible,
+            requiresDepthGuard);
         for (var index = 0; index < _comparers.Count; index++)
         {
             var existing = _comparers[index];
-            if (AvroSchemaLogicalComparer.Instance.Equals(schema, existing.Schema) ||
-                AvroValueSchemaComparer.AreCelCompatible(schema, existing.Schema))
+            if (requiresDepthGuard == existing.RequiresDepthGuard &&
+                (AvroSchemaLogicalComparer.Instance.Equals(schema, existing.Schema) ||
+                 AvroValueSchemaComparer.AreCelCompatible(schema, existing.Schema)))
             {
                 comparer.AddCompatible(existing);
                 existing.AddCompatible(comparer);
@@ -56,17 +61,20 @@ internal sealed class AvroAggregateEqualityComparerFactory
         return comparer;
     }
 
-    private sealed class SchemaGroup(AvroSchema schema)
+    private sealed class SchemaGroup(AvroSchema schema, bool requiresDepthGuard)
     {
         internal AvroSchema Schema { get; } = schema;
+        internal bool RequiresDepthGuard { get; } = requiresDepthGuard;
     }
 }
 
 internal sealed class AvroAggregateEqualityComparer(
     AvroSchema schema,
     object schemaToken,
-    bool rawEqualityCompatible) : IValidationCelAggregateComparer
+    bool rawEqualityCompatible,
+    bool requiresDepthGuard) : IValidationCelAggregateComparer
 {
+    internal const int MaximumComparisonDepth = 100;
     private const int MaximumMapEntryCount = 1_048_576;
     private const int StackRecordFieldCount = 16;
     private const int StackMapEntryCount = 16;
@@ -75,7 +83,8 @@ internal sealed class AvroAggregateEqualityComparer(
     private readonly AvroSchema _schema = schema;
     private readonly HashSet<AvroSchema> _compatibleSchemas =
         new(AvroSchemaReferenceComparer.Instance) { schema };
-    private readonly bool _requiresSemanticEquality = ContainsFloating(schema, []);
+    private readonly bool _requiresDepthGuard = requiresDepthGuard;
+    private readonly bool _requiresSemanticEquality = RequiresSemanticEquality(schema);
     private readonly object _schemaToken = schemaToken;
 
     object? IValidationCelAggregateComparer.RawEqualityToken =>
@@ -95,11 +104,23 @@ internal sealed class AvroAggregateEqualityComparer(
 
         var leftReader = new AvroValidationReader(left);
         var rightReader = new AvroValidationReader(right);
-        return AreEqual(_schema, avroRight._schema, ref leftReader, ref rightReader) &&
+        if (!_requiresDepthGuard)
+        {
+            return AreEqual(_schema, avroRight._schema, ref leftReader, ref rightReader) &&
+                leftReader.End && rightReader.End;
+        }
+
+        return AreEqualGuarded(
+                _schema,
+                avroRight._schema,
+                ref leftReader,
+                ref rightReader,
+                MaximumComparisonDepth) &&
             leftReader.End && rightReader.End;
     }
 
     internal AvroSchema Schema => _schema;
+    internal bool RequiresDepthGuard => _requiresDepthGuard;
 
     internal void AddCompatible(AvroAggregateEqualityComparer comparer) =>
         _compatibleSchemas.Add(comparer._schema);
@@ -176,6 +197,74 @@ internal sealed class AvroAggregateEqualityComparer(
         }
     }
 
+    private static bool AreEqualGuarded(
+        AvroSchema leftSchema,
+        AvroSchema rightSchema,
+        ref AvroValidationReader left,
+        ref AvroValidationReader right,
+        int remainingDepth)
+    {
+        leftSchema = AvroValueRulePlan.Unwrap(leftSchema);
+        rightSchema = AvroValueRulePlan.Unwrap(rightSchema);
+        if (leftSchema is global::Avro.UnionSchema leftUnion)
+        {
+            var branch = left.ReadLong();
+            if ((ulong)branch >= (ulong)leftUnion.Count)
+                return false;
+            leftSchema = AvroValueRulePlan.Unwrap(leftUnion[(int)branch]);
+        }
+        if (rightSchema is global::Avro.UnionSchema rightUnion)
+        {
+            var branch = right.ReadLong();
+            if ((ulong)branch >= (ulong)rightUnion.Count)
+                return false;
+            rightSchema = AvroValueRulePlan.Unwrap(rightUnion[(int)branch]);
+        }
+
+        if (!IsAggregate(leftSchema.Tag) || !IsAggregate(rightSchema.Tag))
+            return AreEqual(leftSchema, rightSchema, ref left, ref right);
+        if (leftSchema.Tag != rightSchema.Tag &&
+            !(leftSchema.Tag is AvroSchema.Type.Record or AvroSchema.Type.Error &&
+              rightSchema.Tag is AvroSchema.Type.Record or AvroSchema.Type.Error))
+        {
+            return false;
+        }
+        if (remainingDepth == 0)
+        {
+            throw InvalidPayload(
+                $"aggregate recursion exceeds {MaximumComparisonDepth} levels");
+        }
+        remainingDepth--;
+
+        return leftSchema.Tag switch
+        {
+            AvroSchema.Type.Record or AvroSchema.Type.Error =>
+                GuardedRecordsAreEqual(
+                    (global::Avro.RecordSchema)leftSchema,
+                    (global::Avro.RecordSchema)rightSchema,
+                    ref left,
+                    ref right,
+                    remainingDepth),
+            AvroSchema.Type.Array => GuardedArraysAreEqual(
+                ((global::Avro.ArraySchema)leftSchema).ItemSchema,
+                ((global::Avro.ArraySchema)rightSchema).ItemSchema,
+                ref left,
+                ref right,
+                remainingDepth),
+            AvroSchema.Type.Map => GuardedMapsAreEqual(
+                ((global::Avro.MapSchema)leftSchema).ValueSchema,
+                ((global::Avro.MapSchema)rightSchema).ValueSchema,
+                ref left,
+                ref right,
+                remainingDepth),
+            _ => throw InvalidPayload($"unsupported schema type {leftSchema.Tag}")
+        };
+    }
+
+    private static bool IsAggregate(AvroSchema.Type type) =>
+        type is AvroSchema.Type.Record or AvroSchema.Type.Error or
+            AvroSchema.Type.Array or AvroSchema.Type.Map;
+
     private static bool RecordsAreEqualInOrder(
         global::Avro.RecordSchema schema,
         ref AvroValidationReader left,
@@ -222,6 +311,87 @@ internal sealed class AvroAggregateEqualityComparer(
                         rightField.Schema,
                         ref left,
                         ref rightFieldReader) ||
+                    !rightFieldReader.End)
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+        finally
+        {
+            if (rented is not null)
+                ArrayPool<RecordFieldPayload>.Shared.Return(rented);
+        }
+    }
+
+    private static bool GuardedRecordsAreEqual(
+        global::Avro.RecordSchema leftSchema,
+        global::Avro.RecordSchema rightSchema,
+        ref AvroValidationReader left,
+        ref AvroValidationReader right,
+        int remainingDepth)
+    {
+        if (!ReferenceEquals(leftSchema, rightSchema))
+        {
+            return GuardedRecordsAreEqualByName(
+                leftSchema,
+                rightSchema,
+                ref left,
+                ref right,
+                remainingDepth);
+        }
+
+        for (var index = 0; index < leftSchema.Fields.Count; index++)
+        {
+            var fieldSchema = leftSchema.Fields[index].Schema;
+            if (!AreEqualGuarded(
+                    fieldSchema,
+                    fieldSchema,
+                    ref left,
+                    ref right,
+                    remainingDepth))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static bool GuardedRecordsAreEqualByName(
+        global::Avro.RecordSchema leftSchema,
+        global::Avro.RecordSchema rightSchema,
+        ref AvroValidationReader left,
+        ref AvroValidationReader right,
+        int remainingDepth)
+    {
+        RecordFieldPayload[]? rented = null;
+        Span<RecordFieldPayload> rightFields = rightSchema.Fields.Count <= StackRecordFieldCount
+            ? stackalloc RecordFieldPayload[StackRecordFieldCount]
+            : (rented = ArrayPool<RecordFieldPayload>.Shared.Rent(rightSchema.Fields.Count));
+        try
+        {
+            for (var index = 0; index < rightSchema.Fields.Count; index++)
+            {
+                var start = right.Position;
+                SkipGuarded(rightSchema.Fields[index].Schema, ref right, remainingDepth);
+                rightFields[index] = new RecordFieldPayload(start, right.Position - start);
+            }
+
+            for (var index = 0; index < leftSchema.Fields.Count; index++)
+            {
+                var leftField = leftSchema.Fields[index];
+                if (!rightSchema.TryGetField(leftField.Name, out var rightField))
+                    return false;
+                var payload = rightFields[rightField.Pos];
+                var rightFieldReader = new AvroValidationReader(
+                    right.Source.Slice(payload.Start, payload.Length));
+                if (!AreEqualGuarded(
+                        leftField.Schema,
+                        rightField.Schema,
+                        ref left,
+                        ref rightFieldReader,
+                        remainingDepth) ||
                     !rightFieldReader.End)
                 {
                     return false;
@@ -364,6 +534,64 @@ internal sealed class AvroAggregateEqualityComparer(
         return false;
     }
 
+    internal static bool IsRecursive(AvroSchema schema) =>
+        ContainsRecursion(
+            schema,
+            new HashSet<AvroSchema>(AvroSchemaReferenceComparer.Instance),
+            new HashSet<AvroSchema>(AvroSchemaReferenceComparer.Instance));
+
+    private static bool RequiresSemanticEquality(AvroSchema schema) => ContainsFloating(schema, []);
+
+    private static bool ContainsRecursion(
+        AvroSchema schema,
+        HashSet<AvroSchema> active,
+        HashSet<AvroSchema> visited)
+    {
+        schema = AvroValueRulePlan.Unwrap(schema);
+        if (active.Contains(schema))
+            return true;
+        if (!visited.Add(schema))
+            return false;
+
+        active.Add(schema);
+        var recursive = schema switch
+        {
+            global::Avro.RecordSchema record => ContainsRecursion(record, active, visited),
+            global::Avro.ArraySchema array => ContainsRecursion(array.ItemSchema, active, visited),
+            global::Avro.MapSchema map => ContainsRecursion(map.ValueSchema, active, visited),
+            global::Avro.UnionSchema union => ContainsRecursion(union, active, visited),
+            _ => false
+        };
+        active.Remove(schema);
+        return recursive;
+    }
+
+    private static bool ContainsRecursion(
+        global::Avro.RecordSchema record,
+        HashSet<AvroSchema> active,
+        HashSet<AvroSchema> visited)
+    {
+        for (var index = 0; index < record.Fields.Count; index++)
+        {
+            if (ContainsRecursion(record.Fields[index].Schema, active, visited))
+                return true;
+        }
+        return false;
+    }
+
+    private static bool ContainsRecursion(
+        global::Avro.UnionSchema union,
+        HashSet<AvroSchema> active,
+        HashSet<AvroSchema> visited)
+    {
+        for (var index = 0; index < union.Count; index++)
+        {
+            if (ContainsRecursion(union[index], active, visited))
+                return true;
+        }
+        return false;
+    }
+
     private static bool ArraysAreEqual(
         AvroSchema leftItemSchema,
         AvroSchema rightItemSchema,
@@ -382,6 +610,37 @@ internal sealed class AvroAggregateEqualityComparer(
                 return leftRemaining == rightRemaining;
             if (!AreEqual(leftItemSchema, rightItemSchema, ref left, ref right))
                 return false;
+            leftRemaining--;
+            rightRemaining--;
+        }
+    }
+
+    private static bool GuardedArraysAreEqual(
+        AvroSchema leftItemSchema,
+        AvroSchema rightItemSchema,
+        ref AvroValidationReader left,
+        ref AvroValidationReader right,
+        int remainingDepth)
+    {
+        var leftRemaining = 0L;
+        var rightRemaining = 0L;
+        while (true)
+        {
+            if (leftRemaining == 0)
+                leftRemaining = left.ReadCollectionCount();
+            if (rightRemaining == 0)
+                rightRemaining = right.ReadCollectionCount();
+            if (leftRemaining == 0 || rightRemaining == 0)
+                return leftRemaining == rightRemaining;
+            if (!AreEqualGuarded(
+                    leftItemSchema,
+                    rightItemSchema,
+                    ref left,
+                    ref right,
+                    remainingDepth))
+            {
+                return false;
+            }
             leftRemaining--;
             rightRemaining--;
         }
@@ -428,6 +687,182 @@ internal sealed class AvroAggregateEqualityComparer(
                 ArrayPool<MapEntry>.Shared.Return(rentedEntries);
             if (rentedBuckets is not null)
                 ArrayPool<int>.Shared.Return(rentedBuckets);
+        }
+    }
+
+    private static bool GuardedMapsAreEqual(
+        AvroSchema leftValueSchema,
+        AvroSchema rightValueSchema,
+        ref AvroValidationReader left,
+        ref AvroValidationReader right,
+        int remainingDepth)
+    {
+        var leftPayload = left.Source.Slice(left.Position);
+        var rightPayload = right.Source.Slice(right.Position);
+        var leftCount = CountMapEntriesGuarded(leftValueSchema, leftPayload, remainingDepth);
+        var rightCount = CountMapEntriesGuarded(rightValueSchema, rightPayload, remainingDepth);
+        if (leftCount != rightCount)
+            return false;
+
+        MapEntry[]? rentedEntries = null;
+        int[]? rentedBuckets = null;
+        Span<MapEntry> entries = leftCount <= StackMapEntryCount
+            ? stackalloc MapEntry[StackMapEntryCount]
+            : (rentedEntries = ArrayPool<MapEntry>.Shared.Rent(leftCount));
+        Span<int> buckets = leftCount <= StackMapEntryCount
+            ? stackalloc int[StackMapBucketCount]
+            : (rentedBuckets = ArrayPool<int>.Shared.Rent(leftCount));
+        buckets.Fill(-1);
+        try
+        {
+            var leftSource = left.Source;
+            ReadMapEntriesGuarded(
+                leftValueSchema,
+                ref left,
+                entries,
+                buckets,
+                remainingDepth);
+            return GuardedMatchMapEntries(
+                leftValueSchema,
+                rightValueSchema,
+                leftSource,
+                ref right,
+                leftCount,
+                entries,
+                buckets,
+                remainingDepth);
+        }
+        finally
+        {
+            if (rentedEntries is not null)
+                ArrayPool<MapEntry>.Shared.Return(rentedEntries);
+            if (rentedBuckets is not null)
+                ArrayPool<int>.Shared.Return(rentedBuckets);
+        }
+    }
+
+    private static void SkipGuarded(
+        AvroSchema schema,
+        ref AvroValidationReader reader,
+        int remainingDepth)
+    {
+        schema = AvroValueRulePlan.Unwrap(schema);
+        if (schema is global::Avro.UnionSchema union)
+        {
+            var branch = reader.ReadLong();
+            if ((ulong)branch >= (ulong)union.Count)
+                throw InvalidPayload($"invalid union index {branch}");
+            SkipGuarded(union[(int)branch], ref reader, remainingDepth);
+            return;
+        }
+
+        if (IsAggregate(schema.Tag))
+        {
+            if (remainingDepth == 0)
+            {
+                throw InvalidPayload(
+                    $"aggregate recursion exceeds {MaximumComparisonDepth} levels");
+            }
+            remainingDepth--;
+        }
+
+        switch (schema.Tag)
+        {
+            case AvroSchema.Type.Null:
+                return;
+            case AvroSchema.Type.Boolean:
+                _ = reader.Read(1);
+                return;
+            case AvroSchema.Type.Int:
+            case AvroSchema.Type.Long:
+                _ = reader.ReadLong();
+                return;
+            case AvroSchema.Type.Enumeration:
+                var symbolIndex = reader.ReadLong();
+                if ((ulong)symbolIndex >= (ulong)((global::Avro.EnumSchema)schema).Symbols.Count)
+                    throw InvalidPayload($"invalid enum index {symbolIndex}");
+                return;
+            case AvroSchema.Type.Float:
+                _ = reader.Read(sizeof(float));
+                return;
+            case AvroSchema.Type.Double:
+                _ = reader.Read(sizeof(double));
+                return;
+            case AvroSchema.Type.String:
+            case AvroSchema.Type.Bytes:
+                _ = reader.ReadLengthPrefixed();
+                return;
+            case AvroSchema.Type.Fixed:
+                _ = reader.Read(((global::Avro.FixedSchema)schema).Size);
+                return;
+            case AvroSchema.Type.Record:
+            case AvroSchema.Type.Error:
+                var record = (global::Avro.RecordSchema)schema;
+                for (var index = 0; index < record.Fields.Count; index++)
+                    SkipGuarded(record.Fields[index].Schema, ref reader, remainingDepth);
+                return;
+            case AvroSchema.Type.Array:
+                SkipCollectionGuarded(
+                    ((global::Avro.ArraySchema)schema).ItemSchema,
+                    isMap: false,
+                    ref reader,
+                    remainingDepth);
+                return;
+            case AvroSchema.Type.Map:
+                SkipCollectionGuarded(
+                    ((global::Avro.MapSchema)schema).ValueSchema,
+                    isMap: true,
+                    ref reader,
+                    remainingDepth);
+                return;
+            default:
+                throw InvalidPayload($"unsupported schema type {schema.Tag}");
+        }
+    }
+
+    private static void SkipCollectionGuarded(
+        AvroSchema valueSchema,
+        bool isMap,
+        ref AvroValidationReader reader,
+        int remainingDepth)
+    {
+        while (true)
+        {
+            var count = reader.ReadCollectionCount();
+            if (count == 0)
+                return;
+            for (long index = 0; index < count; index++)
+            {
+                if (isMap)
+                    _ = reader.ReadLengthPrefixed();
+                SkipGuarded(valueSchema, ref reader, remainingDepth);
+            }
+        }
+    }
+
+    private static int CountMapEntriesGuarded(
+        AvroSchema valueSchema,
+        ReadOnlyMemory<byte> payload,
+        int remainingDepth)
+    {
+        var reader = new AvroValidationReader(payload);
+        var total = 0L;
+        while (true)
+        {
+            var count = reader.ReadCollectionCount();
+            if (count == 0)
+                return checked((int)total);
+            total = checked(total + count);
+            if (total > MaximumMapEntryCount)
+            {
+                throw InvalidPayload(
+                    $"map entry count exceeds the supported limit of {MaximumMapEntryCount}");
+            }
+            for (long index = 0; index < count; index++)
+            {
+                _ = reader.ReadLengthPrefixed();
+                SkipGuarded(valueSchema, ref reader, remainingDepth);
+            }
         }
     }
 
@@ -485,6 +920,38 @@ internal sealed class AvroAggregateEqualityComparer(
         }
     }
 
+    private static void ReadMapEntriesGuarded(
+        AvroSchema valueSchema,
+        ref AvroValidationReader reader,
+        scoped Span<MapEntry> entries,
+        scoped Span<int> buckets,
+        int remainingDepth)
+    {
+        var entryIndex = 0;
+        while (true)
+        {
+            var count = reader.ReadCollectionCount();
+            if (count == 0)
+                return;
+            for (long index = 0; index < count; index++)
+            {
+                var key = reader.ReadLengthPrefixed();
+                var keyStart = reader.Position - key.Length;
+                var valueStart = reader.Position;
+                SkipGuarded(valueSchema, ref reader, remainingDepth);
+                var hash = Hash(key.Span);
+                var bucket = (int)(hash % (uint)buckets.Length);
+                entries[entryIndex] = new MapEntry(
+                    keyStart,
+                    key.Length,
+                    valueStart,
+                    reader.Position - valueStart,
+                    buckets[bucket]);
+                buckets[bucket] = entryIndex++;
+            }
+        }
+    }
+
     private static bool MatchMapEntries(
         AvroSchema leftValueSchema,
         AvroSchema rightValueSchema,
@@ -523,6 +990,61 @@ internal sealed class AvroAggregateEqualityComparer(
                                 rightValueSchema,
                                 ref leftValue,
                                 ref rightValue) &&
+                            leftValue.End && rightValue.End)
+                        {
+                            entry.Matched = true;
+                            matched++;
+                            break;
+                        }
+                    }
+                    entryIndex = entry.Next;
+                }
+                if (entryIndex < 0)
+                    return false;
+            }
+        }
+    }
+
+    private static bool GuardedMatchMapEntries(
+        AvroSchema leftValueSchema,
+        AvroSchema rightValueSchema,
+        ReadOnlyMemory<byte> leftSource,
+        ref AvroValidationReader reader,
+        int entryCount,
+        scoped Span<MapEntry> entries,
+        scoped ReadOnlySpan<int> buckets,
+        int remainingDepth)
+    {
+        var matched = 0;
+        while (true)
+        {
+            var count = reader.ReadCollectionCount();
+            if (count == 0)
+                return matched == entryCount;
+            for (long index = 0; index < count; index++)
+            {
+                var key = reader.ReadLengthPrefixed();
+                var valueStart = reader.Position;
+                SkipGuarded(rightValueSchema, ref reader, remainingDepth);
+                var valueLength = reader.Position - valueStart;
+                var bucket = (int)(Hash(key.Span) % (uint)buckets.Length);
+                var entryIndex = buckets[bucket];
+                while (entryIndex >= 0)
+                {
+                    ref var entry = ref entries[entryIndex];
+                    if (!entry.Matched && key.Span.SequenceEqual(
+                            leftSource.Span.Slice(entry.KeyStart, entry.KeyLength)))
+                    {
+                        var leftValue = new AvroValidationReader(
+                            leftSource.Slice(entry.ValueStart, entry.ValueLength));
+                        var rightValue = new AvroValidationReader(
+                            reader.Source.Slice(valueStart, valueLength));
+                        if (AreEqualGuarded(
+                                leftValueSchema,
+                                rightValueSchema,
+                                ref leftValue,
+                                ref rightValue,
+                                remainingDepth) &&
                             leftValue.End && rightValue.End)
                         {
                             entry.Matched = true;

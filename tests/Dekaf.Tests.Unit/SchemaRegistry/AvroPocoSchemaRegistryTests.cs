@@ -1595,9 +1595,12 @@ public sealed class AvroPocoSchemaRegistryTests
         }
 
         var actual = deserializer.Deserialize(destination.WrittenMemory, context);
+        var cachedDecision = deserializer.LastInlineValidationDecision;
 
         await Assert.That(actual.Value).IsEqualTo(expected.Value);
         await Assert.That(strategy.CallCount).IsEqualTo(0);
+        await Assert.That(cachedDecision).IsGreaterThanOrEqualTo(0);
+        await Assert.That((int)(uint)(cachedDecision >> 1)).IsLessThan(0);
     }
 
     [Test]

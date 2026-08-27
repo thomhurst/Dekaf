@@ -1425,6 +1425,53 @@ public class AvroInlineRuleValidatorTests
     }
 
     [Test]
+    public async Task Validate_AggregateEqualityRejectsExcessiveRecursionDepth()
+    {
+        var schema = AvroSchema.Parse(
+            """
+            {
+              "type": "record",
+              "name": "RecursiveEqualityNode",
+              "fields": [
+                { "name": "value", "type": "double" },
+                { "name": "children", "type": { "type": "map", "values": "RecursiveEqualityNode" } }
+              ]
+            }
+            """);
+        var comparer = new AvroAggregateEqualityComparerFactory().Create(schema)!;
+        var payload = new ArrayBufferWriter<byte>();
+        for (var depth = 0; depth <= AvroAggregateEqualityComparer.MaximumComparisonDepth; depth++)
+        {
+            var node = payload.GetSpan(sizeof(double));
+            BinaryPrimitives.WriteDoubleLittleEndian(node, 1d);
+            payload.Advance(sizeof(double));
+            if (depth == AvroAggregateEqualityComparer.MaximumComparisonDepth)
+            {
+                payload.GetSpan(1)[0] = 0;
+                payload.Advance(1);
+                continue;
+            }
+            var child = payload.GetSpan(3);
+            child[0] = 2;
+            child[1] = 2;
+            child[2] = (byte)'x';
+            payload.Advance(3);
+        }
+        payload.GetSpan(AvroAggregateEqualityComparer.MaximumComparisonDepth)
+            [..AvroAggregateEqualityComparer.MaximumComparisonDepth]
+            .Clear();
+        payload.Advance(AvroAggregateEqualityComparer.MaximumComparisonDepth);
+
+        var exception = Assert.Throws<SchemaRegistryRuleException>(() =>
+            ((IValidationCelAggregateComparer)comparer).AreEqual(
+                payload.WrittenMemory,
+                comparer,
+                payload.WrittenMemory));
+
+        await Assert.That(exception.Message).Contains("recursion exceeds");
+    }
+
+    [Test]
     public async Task Validate_ConditionalAggregateEqualityUsesSelectedComparer()
     {
         const string schemaText = """

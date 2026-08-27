@@ -2,6 +2,7 @@ using Avro.Generic;
 using BenchmarkDotNet.Attributes;
 using Dekaf.SchemaRegistry;
 using Dekaf.SchemaRegistry.Avro;
+using Dekaf.SchemaRegistry.Avro.Poco;
 using Dekaf.SchemaRegistry.Protobuf;
 using Dekaf.Serialization;
 using Google.Protobuf.WellKnownTypes;
@@ -15,8 +16,11 @@ public class SchemaRegistryHeaderPreparationBenchmarks
 {
     private const string AvroValidationSchema =
         "{\"type\":\"record\",\"name\":\"ValidatedOrder\",\"fields\":[{\"name\":\"id\",\"type\":\"int\",\"confluent:rules\":[{\"name\":\"nonnegative\",\"expr\":\"this >= 0\"}]}]}";
+    private const string AvroPocoValidationSchema =
+        "{\"type\":\"record\",\"name\":\"PocoWriterUnionBenchmarkRecord\",\"namespace\":\"Dekaf.Benchmarks.Benchmarks.Unit\",\"fields\":[{\"name\":\"value\",\"type\":[\"int\",\"long\"]}]}";
     private static readonly Guid SchemaGuid = new("11111111-2222-3333-4444-555555555555");
     private static readonly byte[] AvroPayload = [84];
+    private static readonly byte[] AvroPocoPayload = [0, 84];
     private static readonly byte[] AvroPrefixPayload = [0, 0, 0, 0, 1, 84];
     private static readonly byte[] ProtobufPayload = [0x0A, 0x01, (byte)'x'];
     private static readonly byte[] ProtobufPrefixPayload = [0, 0, 0, 0, 1, 0, 0x0A, 0x01, (byte)'x'];
@@ -27,6 +31,8 @@ public class SchemaRegistryHeaderPreparationBenchmarks
     private IRecordHeaderAsyncDeserializerPreparer<StringValue> _protobufDualPreparer = null!;
     private IRecordHeaderAsyncDeserializerPreparer<GenericRecord> _avroDoubleReadPreparer = null!;
     private IRecordHeaderAsyncDeserializerPreparer<GenericRecord> _avroValidationPreparer = null!;
+    private IRecordHeaderAsyncDeserializerPreparer<PocoWriterUnionBenchmarkRecord>
+        _avroPocoValidationPreparer = null!;
     private IRecordHeaderAsyncDeserializerPreparer<StringValue> _protobufDoubleReadPreparer = null!;
     private SerializationContext _avroContext;
     private SerializationContext _protobufContext;
@@ -37,10 +43,14 @@ public class SchemaRegistryHeaderPreparationBenchmarks
     private RecordHeaderRoutingLookup _avroPrefixHeaders;
     private RecordHeaderRoutingLookup _protobufPrefixHeaders;
     private RecordHeaderRoutingLookup _avroValidationHeaders;
+    private RecordHeaderRoutingLookup _avroPocoValidationHeaders;
     private AvroSchemaRegistryDeserializer<GenericRecord> _avro = null!;
     private ProtobufSchemaRegistryDeserializer<StringValue> _protobuf = null!;
     private AvroSchemaRegistryDeserializer<GenericRecord> _avroDual = null!;
     private AvroSchemaRegistryDeserializer<GenericRecord> _avroValidation = null!;
+    private AvroPocoSchemaRegistryDeserializer<
+        PocoWriterUnionBenchmarkRecord,
+        PocoWriterUnionBenchmarkRecord.AvroCodec> _avroPocoValidation = null!;
     private Avro.Schema _avroValidationSchema = null!;
     private ProtobufSchemaRegistryDeserializer<StringValue> _protobufDual = null!;
 
@@ -105,6 +115,18 @@ public class SchemaRegistryHeaderPreparationBenchmarks
             });
         _avroValidationPreparer = _avroValidation;
         _avroValidationSchema = Avro.Schema.Parse(AvroValidationSchema);
+        _avroPocoValidation = PocoWriterUnionBenchmarkRecord.CreateAvroDeserializer(
+            new BenchmarkSchemaRegistryClient(new Schema
+            {
+                SchemaType = SchemaType.Avro,
+                SchemaString = AvroPocoValidationSchema
+            }),
+            new AvroDeserializerConfig
+            {
+                SchemaIdStrategy = SchemaIdDeserializerStrategy.Header,
+                ValidationRulesExecution = ValidationRulesExecution.BeforeDomainRules
+            });
+        _avroPocoValidationPreparer = _avroPocoValidation;
 
         var avroHeader = new Header(
             SchemaIdentityHeaderNames.Value,
@@ -122,6 +144,7 @@ public class SchemaRegistryHeaderPreparationBenchmarks
         _avroPrefixHeaders = CreateLookup(_avroDual, identityHeader: null);
         _protobufPrefixHeaders = CreateLookup(_protobufDual, identityHeader: null);
         _avroValidationHeaders = CreateLookup(_avroValidation, avroHeader);
+        _avroPocoValidationHeaders = CreateLookup(_avroPocoValidation, avroHeader);
 
         await PrepareAvroGuidHeaderCached().ConfigureAwait(false);
         await PrepareProtobufGuidHeaderCached().ConfigureAwait(false);
@@ -129,6 +152,12 @@ public class SchemaRegistryHeaderPreparationBenchmarks
                 AvroPayload,
                 _avroContext,
                 _avroValidationHeaders,
+                CancellationToken.None)
+            .ConfigureAwait(false);
+        await _avroPocoValidationPreparer.PrepareAsync(
+                AvroPocoPayload,
+                _avroContext,
+                _avroPocoValidationHeaders,
                 CancellationToken.None)
             .ConfigureAwait(false);
         _ = RecordHeaderDeserializer.Deserialize(
@@ -146,6 +175,7 @@ public class SchemaRegistryHeaderPreparationBenchmarks
         await _avroDual.DisposeAsync().ConfigureAwait(false);
         await _protobufDual.DisposeAsync().ConfigureAwait(false);
         await _avroValidation.DisposeAsync().ConfigureAwait(false);
+        await _avroPocoValidation.DisposeAsync().ConfigureAwait(false);
     }
 
     [Benchmark(Baseline = true)]
@@ -208,6 +238,21 @@ public class SchemaRegistryHeaderPreparationBenchmarks
     [Benchmark(Description = "Avro GUID inline-validator decision cache")]
     public object? ResolveAvroGuidInlineValidationDecision() =>
         _avroValidation.GetInlineValidator(-1, _avroValidationSchema);
+
+    [Benchmark(Description = "Avro POCO GUID header inline-validation cache")]
+    public PocoWriterUnionBenchmarkRecord DeserializeAvroPocoGuidHeaderWithInlineValidation()
+    {
+        if (!_avroPocoValidationPreparer.TryDeserialize(
+                AvroPocoPayload,
+                _avroContext,
+                in _avroPocoValidationHeaders,
+                out var value))
+        {
+            throw new InvalidOperationException("Avro POCO validation deserializer was not prepared.");
+        }
+
+        return value;
+    }
 
     [Benchmark(Description = "Protobuf Dual prefix prepared deserialize")]
     public StringValue DeserializeProtobufDualPrefixRouted()

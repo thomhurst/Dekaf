@@ -48,6 +48,7 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
     private int _nextGuidPlanId;
 
     internal int CachedPlanCount => Volatile.Read(ref _cachedPlanCount);
+    internal long LastInlineValidationDecision => Volatile.Read(ref _lastInlineValidationDecision);
 
     /// <summary>Creates a generated POCO Avro deserializer.</summary>
     public AvroPocoSchemaRegistryDeserializer(
@@ -509,14 +510,14 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
             return null;
 
         var cached = Volatile.Read(ref _lastInlineValidationDecision);
-        if (cached >= 0 && (int)(cached >> 1) == schemaId && (cached & 1) == 0)
+        if (cached >= 0 && (int)(uint)(cached >> 1) == schemaId && (cached & 1) == 0)
             return null;
 
         var validator = _inlineRuleValidators.Get(GetValidationSchema(schemaId, plan));
         var hasRules = validator.HasAnyRules;
         Volatile.Write(
             ref _lastInlineValidationDecision,
-            ((long)schemaId << 1) | (hasRules ? 1L : 0L));
+            ((long)(uint)schemaId << 1) | (hasRules ? 1L : 0L));
         return hasRules ? validator : null;
     }
 
