@@ -270,6 +270,81 @@ public class MpscFetchBufferTests
     }
 
     [Test]
+    public async Task WaitToReadAsync_ConcurrentWait_DoesNotInvalidateActiveWait()
+    {
+        var buffer = new MpscFetchBuffer(4);
+        var item = CreateDummy();
+        var firstWait = buffer.WaitToReadAsync(Timeout.Infinite, CancellationToken.None);
+
+        try
+        {
+            var overlappingWait = buffer.WaitToReadAsync(Timeout.Infinite, CancellationToken.None);
+            await Assert.That(await overlappingWait).IsFalse();
+            await Assert.That(firstWait.IsCompleted).IsFalse();
+
+            await Assert.That(buffer.TryWrite(item)).IsTrue();
+            await Assert.That(await firstWait).IsTrue();
+            await Assert.That(buffer.TryRead(out var read)).IsTrue();
+            await Assert.That(read).IsSameReferenceAs(item);
+        }
+        finally
+        {
+            item.Dispose();
+            buffer.Dispose();
+        }
+    }
+
+    [Test]
+    public async Task WaitToReadAsync_ConcurrentWaitAfterCompletion_DoesNotResetUnconsumedWait()
+    {
+        var buffer = new MpscFetchBuffer(4);
+        var firstWait = buffer.WaitToReadAsync(30_000, CancellationToken.None);
+
+        try
+        {
+            TriggerConsumerTimeout(buffer);
+            await TestWait.UntilAsync(() => firstWait.IsCompleted, TimeSpan.FromSeconds(5));
+
+            var overlappingWait = buffer.WaitToReadAsync(Timeout.Infinite, CancellationToken.None);
+            await Assert.That(await overlappingWait).IsFalse();
+
+            await Assert.That(await firstWait).IsFalse();
+
+            var nextWait = buffer.WaitToReadAsync(Timeout.Infinite, CancellationToken.None);
+            await Assert.That(nextWait.IsCompleted).IsFalse();
+            buffer.Complete();
+            await Assert.That(await nextWait).IsFalse();
+        }
+        finally
+        {
+            buffer.Dispose();
+        }
+    }
+
+    [Test]
+    public async Task WaitToReadAsync_ConcurrentWait_DoesNotReplaceActiveCancellation()
+    {
+        var buffer = new MpscFetchBuffer(4);
+        using var firstCts = new CancellationTokenSource();
+        using var secondCts = new CancellationTokenSource();
+        var firstWait = buffer.WaitToReadAsync(Timeout.Infinite, firstCts.Token);
+
+        try
+        {
+            var overlappingWait = buffer.WaitToReadAsync(Timeout.Infinite, secondCts.Token);
+            await Assert.That(await overlappingWait).IsFalse();
+
+            await firstCts.CancelAsync();
+            await Assert.That(async () => await firstWait)
+                .Throws<OperationCanceledException>();
+        }
+        finally
+        {
+            buffer.Dispose();
+        }
+    }
+
+    [Test]
     public async Task WaitToReadAsync_DataArrivesBeforePark_SkipsWaiter()
     {
         var item = CreateDummy();
