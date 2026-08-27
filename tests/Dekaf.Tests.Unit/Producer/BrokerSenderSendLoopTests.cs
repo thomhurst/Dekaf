@@ -568,8 +568,6 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             enableDeliveryDiagnostics: true);
         var accumulator = new RecordAccumulator(options);
         var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
-        var injectSibling = 0;
-        var expireWaveDeadline = 0;
         var idleWaitCount = 0;
         BrokerSender? sender = null;
         sender = CreateSender(
@@ -579,32 +577,26 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             (_, _, _, _, _) => { },
             onWaveCoalesceStarted: () =>
             {
-                if (Volatile.Read(ref injectSibling) != 0)
-                {
-                    sender!.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", 1));
-                    if (Volatile.Read(ref expireWaveDeadline) != 0)
-                    {
-                        // Expire both zero-linger deadlines after the sibling is queued.
-                        var deadline = Stopwatch.GetTimestamp() + Stopwatch.Frequency / 1_000;
-                        while (Stopwatch.GetTimestamp() < deadline)
-                            Thread.SpinWait(32);
-                    }
-                }
+                sender!.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", 1));
+
+                // Expire both zero-linger deadlines after the sibling is queued.
+                var deadline = Stopwatch.GetTimestamp() + Stopwatch.Frequency / 1_000;
+                while (Stopwatch.GetTimestamp() < deadline)
+                    Thread.SpinWait(32);
             },
             onIdleWaitStarted: () => Interlocked.Increment(ref idleWaitCount));
+
+        SeedKnownPartitions(
+            sender,
+            new TopicPartition("test-topic", 0),
+            new TopicPartition("test-topic", 1));
 
         try
         {
             await WaitUntilAsync(() => Volatile.Read(ref idleWaitCount) > 0, cancellationToken);
 
-            // Prime both known partitions in one request. The next single-partition event
-            // must enter the wave-coalesce path rather than being fully drained already.
             var expectedIdleWaitCount = Volatile.Read(ref idleWaitCount) + 1;
-            sender.EnqueueBulk(
-            [
-                CreateTestBatch(valueTaskSourcePool, "test-topic", 0),
-                CreateTestBatch(valueTaskSourcePool, "test-topic", 1)
-            ]);
+            sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", 0));
             await WaitUntilAsync(
                 () => accumulator.GetDeliveryDiagnosticsSnapshot()
                     .ProduceRequestCount == 1
@@ -612,8 +604,7 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
                     && Volatile.Read(ref idleWaitCount) >= expectedIdleWaitCount,
                 cancellationToken);
 
-            Volatile.Write(ref injectSibling, 1);
-            Volatile.Write(ref expireWaveDeadline, 1);
+            // Sender is fully idle again. Next event must re-arm wave coalescing.
             expectedIdleWaitCount = Volatile.Read(ref idleWaitCount) + 1;
             sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", 0));
             await WaitUntilAsync(
@@ -623,21 +614,11 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
                     && Volatile.Read(ref idleWaitCount) >= expectedIdleWaitCount,
                 cancellationToken);
 
-            // The sender is fully idle again. Waiting for this event must re-arm the wave.
-            expectedIdleWaitCount = Volatile.Read(ref idleWaitCount) + 1;
-            sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", 0));
-            await WaitUntilAsync(
-                () => accumulator.GetDeliveryDiagnosticsSnapshot()
-                    .ProduceRequestCount == 3
-                    && Volatile.Read(ref connection.SendFireAndForgetWithCallerTimeoutCalls) == 3
-                    && Volatile.Read(ref idleWaitCount) >= expectedIdleWaitCount,
-                cancellationToken);
-
             var diagnostic = accumulator.GetDeliveryDiagnosticsSnapshot();
-            await Assert.That(connection.SendFireAndForgetWithCallerTimeoutCalls).IsEqualTo(3);
+            await Assert.That(connection.SendFireAndForgetWithCallerTimeoutCalls).IsEqualTo(2);
             await Assert.That(diagnostic.CoalesceWidthHistogram
                     .Single(bucket => bucket.MinimumWidth == 2).RequestCount)
-                .IsEqualTo(3);
+                .IsEqualTo(2);
         }
         finally
         {
