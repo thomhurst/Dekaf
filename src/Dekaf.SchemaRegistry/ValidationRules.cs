@@ -507,6 +507,11 @@ internal sealed class CompiledValidationRule
         int rightIndex,
         out bool value)
     {
+        if (equalityGeneration == 0)
+        {
+            value = false;
+            return false;
+        }
         NormalizeEqualityIndexes(ref leftIndex, ref rightIndex);
         ref readonly var slot = ref t_pairEqualities[GetEqualitySlot(leftIndex, rightIndex)];
         value = slot.Value;
@@ -521,6 +526,8 @@ internal sealed class CompiledValidationRule
         int rightIndex,
         bool value)
     {
+        if (equalityGeneration == 0)
+            return;
         NormalizeEqualityIndexes(ref leftIndex, ref rightIndex);
         ref var slot = ref t_pairEqualities[GetEqualitySlot(leftIndex, rightIndex)];
         slot.LeftIndex = leftIndex;
@@ -1859,9 +1866,11 @@ internal sealed class ValidationCelUnaryNode(ValidationCelTokenKind operation, V
 internal sealed class ValidationCelBinaryNode(
     ValidationCelTokenKind operation,
     ValidationCelNode left,
-    ValidationCelNode right) : ValidationCelNode
+    ValidationCelNode right,
+    int equalityIndex = -1) : ValidationCelNode
 {
     private const double MaximumExactlyRepresentableDoubleInteger = 9_007_199_254_740_992d;
+    private readonly int _equalityIndex = equalityIndex;
     private readonly bool _usesAggregateValueIndexes =
         operation is ValidationCelTokenKind.Equal or ValidationCelTokenKind.NotEqual &&
         left.HasAggregateValueIndex &&
@@ -1907,7 +1916,7 @@ internal sealed class ValidationCelBinaryNode(
         };
     }
 
-    private static bool AreEqual(
+    private bool AreEqual(
         ValidationCelValue left,
         ValidationCelValue right,
         ValidationCelContext context,
@@ -1931,20 +1940,27 @@ internal sealed class ValidationCelBinaryNode(
         };
     }
 
-    private static bool AreAggregateValuesEqual(
+    private bool AreAggregateValuesEqual(
         ValidationCelValue left,
         ValidationCelValue right,
         ValidationCelContext context,
         int leftValueIndex,
         int rightValueIndex)
     {
+        if (_equalityIndex >= 0 && CompiledValidationRule.TryGetEquality(
+                context.EqualityGeneration,
+                _equalityIndex,
+                out var value))
+        {
+            return value;
+        }
         if (leftValueIndex < 0 || rightValueIndex < 0)
             return CompareAggregateValues(left, right);
         if (CompiledValidationRule.TryGetEquality(
                 context.EqualityGeneration,
                 leftValueIndex,
                 rightValueIndex,
-                out var value))
+                out value))
             return value;
 
         value = CompareAggregateValues(
@@ -2085,9 +2101,15 @@ internal sealed class ValidationCelBinaryNode(
             return left.Floating.CompareTo(right.Floating);
         }
         if (left.IsFloating)
+        {
+            if (right.IsFloatingLiteral)
+                return left.Floating.CompareTo(right.Floating);
             return CompareFloatingToExact(left.Floating, right);
+        }
         if (right.IsFloating)
         {
+            if (left.IsFloatingLiteral)
+                return left.Floating.CompareTo(right.Floating);
             var comparison = CompareFloatingToExact(right.Floating, left);
             return comparison.HasValue ? -comparison.Value : null;
         }
@@ -3163,7 +3185,7 @@ internal sealed class ValidationCelParser
                     leftValue.ValueIndex,
                     rightValue.ValueIndex));
             }
-            var equality = new ValidationCelBinaryNode(operation, left, right);
+            var equality = new ValidationCelBinaryNode(operation, left, right, equalityIndex);
             UsesCachedEquality |= equality.UsesCachedEquality;
             UsesRootAggregateEquality |= equality.UsesRootAggregateEquality;
             left = equality;

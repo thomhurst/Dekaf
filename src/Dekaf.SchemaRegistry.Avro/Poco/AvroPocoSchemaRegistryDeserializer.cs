@@ -748,6 +748,7 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
                     ((IInlineValidationRuleExecutor)_inlineRuleValidators).Validate(
                         migration.Payload,
                         migration.PayloadSchemaId,
+                        subject,
                         migration.PayloadSchema,
                         _config.ValidationRulesFailFast);
                 }

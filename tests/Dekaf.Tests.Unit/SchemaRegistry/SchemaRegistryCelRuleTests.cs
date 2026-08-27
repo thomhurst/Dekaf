@@ -23,7 +23,7 @@ public sealed class SchemaRegistryCelRuleTests
             memberIndexes,
             memberPaths,
             usedMemberIndexes,
-            sizedMemberIndexes);
+            sizedMemberIndexes: sizedMemberIndexes);
 
         await Assert.That(sizedMemberIndexes).DoesNotContain(memberIndexes["large"]);
         await Assert.That(sizedMemberIndexes).DoesNotContain(memberIndexes["small"]);

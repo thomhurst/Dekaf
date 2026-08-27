@@ -476,6 +476,7 @@ public sealed class AvroSchemaRegistryDeserializer<
                     ((IInlineValidationRuleExecutor)_inlineRuleValidators!).Validate(
                         payloadMemory,
                         migration.PayloadSchemaId,
+                        subject,
                         migration.PayloadSchema,
                         _config.ValidationRulesFailFast);
                 }

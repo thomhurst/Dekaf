@@ -2270,6 +2270,7 @@ public class AvroInlineRuleValidatorTests
             ((IInlineValidationRuleExecutor)provider).Validate(
                 Serialize(record, resolvedSchema),
                 33,
+                subject: null,
                 registrySchema,
                 failFast: false));
 
