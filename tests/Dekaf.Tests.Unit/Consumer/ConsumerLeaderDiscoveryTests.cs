@@ -559,6 +559,8 @@ public sealed class ConsumerLeaderDiscoveryTests
     {
         var pool = Substitute.For<IConnectionPool>();
         var interceptor = new CallbackConsumerInterceptor();
+        var interceptorInvoked = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
         using var cancellationSource = new CancellationTokenSource();
         await using var metadataManager = CreateMetadataManager(pool);
         await using var consumer = CreateConsumer(pool, metadataManager, interceptor: interceptor);
@@ -571,14 +573,17 @@ public sealed class ConsumerLeaderDiscoveryTests
                 consumer,
                 CreateDivergingEpochResponse(),
                 GetFetchBufferEpoch(consumer));
+            interceptorInvoked.TrySetResult();
             cancellationSource.Cancel();
         };
 
         GetPendingFetches(consumer).Enqueue(CreatePendingFetchData());
 
-        var result = await consumer.ConsumeOneAsync(
-            TimeSpan.FromSeconds(1),
-            cancellationSource.Token);
+        var consumeTask = consumer
+            .ConsumeOneAsync(Timeout.InfiniteTimeSpan, cancellationSource.Token)
+            .AsTask();
+        await interceptorInvoked.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        var result = await consumeTask;
 
         await Assert.That(result).IsNull();
         InvokeCompleteDivergingEpochResets(consumer);
