@@ -569,12 +569,22 @@ public sealed class ConsumerLeaderDiscoveryTests
 
         interceptor.Callback = () =>
         {
-            InvokeResetToDivergingEpoch(
-                consumer,
-                CreateDivergingEpochResponse(),
-                GetFetchBufferEpoch(consumer));
-            interceptorInvoked.TrySetResult();
-            cancellationSource.Cancel();
+            try
+            {
+                InvokeResetToDivergingEpoch(
+                    consumer,
+                    CreateDivergingEpochResponse(),
+                    GetFetchBufferEpoch(consumer));
+                interceptorInvoked.TrySetResult();
+            }
+            catch (Exception exception)
+            {
+                interceptorInvoked.TrySetException(exception);
+            }
+            finally
+            {
+                cancellationSource.Cancel();
+            }
         };
 
         GetPendingFetches(consumer).Enqueue(CreatePendingFetchData());
