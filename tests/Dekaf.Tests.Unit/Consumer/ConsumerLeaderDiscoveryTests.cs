@@ -575,10 +575,15 @@ public sealed class ConsumerLeaderDiscoveryTests
                     consumer,
                     CreateDivergingEpochResponse(),
                     GetFetchBufferEpoch(consumer));
+                interceptorInvoked.TrySetResult();
+            }
+            catch (Exception exception)
+            {
+                interceptorInvoked.TrySetException(exception);
+                throw;
             }
             finally
             {
-                interceptorInvoked.TrySetResult();
                 cancellationSource.Cancel();
             }
         };
