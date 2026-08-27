@@ -278,10 +278,8 @@ public class MpscFetchBufferTests
 
         try
         {
-            var exception = Assert.Throws<InvalidOperationException>(() =>
-                buffer.WaitToReadAsync(Timeout.Infinite, CancellationToken.None));
-            await Assert.That(exception.Message)
-                .IsEqualTo("MpscFetchBuffer supports only one active reader.");
+            var overlappingWait = buffer.WaitToReadAsync(Timeout.Infinite, CancellationToken.None);
+            await Assert.That(await overlappingWait).IsFalse();
             await Assert.That(firstWait.IsCompleted).IsFalse();
 
             await Assert.That(buffer.TryWrite(item)).IsTrue();
@@ -307,10 +305,8 @@ public class MpscFetchBufferTests
             TriggerConsumerTimeout(buffer);
             await TestWait.UntilAsync(() => firstWait.IsCompleted, TimeSpan.FromSeconds(5));
 
-            var exception = Assert.Throws<InvalidOperationException>(() =>
-                buffer.WaitToReadAsync(Timeout.Infinite, CancellationToken.None));
-            await Assert.That(exception.Message)
-                .IsEqualTo("MpscFetchBuffer supports only one active reader.");
+            var overlappingWait = buffer.WaitToReadAsync(Timeout.Infinite, CancellationToken.None);
+            await Assert.That(await overlappingWait).IsFalse();
 
             await Assert.That(await firstWait).IsFalse();
 
@@ -335,8 +331,8 @@ public class MpscFetchBufferTests
 
         try
         {
-            _ = Assert.Throws<InvalidOperationException>(() =>
-                buffer.WaitToReadAsync(Timeout.Infinite, secondCts.Token));
+            var overlappingWait = buffer.WaitToReadAsync(Timeout.Infinite, secondCts.Token);
+            await Assert.That(await overlappingWait).IsFalse();
 
             await firstCts.CancelAsync();
             await Assert.That(async () => await firstWait)

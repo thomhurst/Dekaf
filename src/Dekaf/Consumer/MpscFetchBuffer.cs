@@ -302,7 +302,7 @@ internal sealed class MpscFetchBuffer
         }
 
         if (!_readWaiter.TryClaim())
-            throw new InvalidOperationException("MpscFetchBuffer supports only one active reader.");
+            return new ValueTask<bool>(false);
 
         var waitInstalled = false;
         try
