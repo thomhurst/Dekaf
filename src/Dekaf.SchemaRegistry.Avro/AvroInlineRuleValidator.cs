@@ -10,6 +10,8 @@ namespace Dekaf.SchemaRegistry.Avro;
 
 internal sealed class AvroInlineRuleValidator
 {
+    internal const int MaximumValidationDepth = 100;
+
     [ThreadStatic]
     private static char[]? t_pathBuffer;
 
@@ -71,6 +73,7 @@ internal sealed class AvroValueRulePlan
     private readonly AvroSchema _schema;
     private readonly AvroSchema _ruleSchema;
     private readonly ReadOnlyMemory<byte>[]? _enumSymbols;
+    private readonly bool _requiresValidationDepthGuard;
     private AvroCompiledRuleSet _schemaRules = AvroCompiledRuleSet.Empty;
     private AvroFieldRulePlan[] _fields = [];
     private AvroValueRulePlan[] _children = [];
@@ -83,6 +86,9 @@ internal sealed class AvroValueRulePlan
         _schema = Unwrap(schema);
         _ruleSchema = schema;
         _enumSymbols = AvroValidationValueDecoder.EncodeEnumSymbols(_schema);
+        _requiresValidationDepthGuard =
+            _schema is global::Avro.RecordSchema &&
+            AvroAggregateEqualityComparer.IsRecursive(_schema);
     }
 
     internal bool HasAnyRules { get; private set; }
@@ -236,6 +242,153 @@ internal sealed class AvroValueRulePlan
         if (!HasAnyRules)
             return ReadValue(ref reader);
 
+        // Keep the non-recursive dispatch inline: routing it through ValidateCore regresses
+        // warmed validation. Recursive schemas alone pay for the guarded helper call.
+        if (_requiresValidationDepthGuard)
+        {
+            return ValidateWithDepthGuard(
+                ref reader,
+                now,
+                failFast,
+                ref violations,
+                ref path);
+        }
+
+        if (_validationStrategy != ValidationStrategy.Standard)
+        {
+            if (_validationStrategy == ValidationStrategy.AggregateRoot)
+            {
+                return ValidateAggregateWithRootRules(
+                    ref reader,
+                    now,
+                    failFast,
+                    ref violations,
+                    ref path);
+            }
+
+            if (_validationStrategy == ValidationStrategy.AggregateRootAndMembers)
+            {
+                return ValidateAggregateWithRootAndMemberRules(
+                    ref reader,
+                    now,
+                    failFast,
+                    ref violations,
+                    ref path);
+            }
+
+            if (_validationStrategy == ValidationStrategy.DeferredMembers)
+            {
+                return ValidateWithDeferredMemberRules(
+                    ref reader,
+                    now,
+                    failFast,
+                    ref violations,
+                    ref path);
+            }
+
+            return ValidateRecordWithDeferredNestedRules(
+                ref reader,
+                now,
+                failFast,
+                ref violations,
+                ref path);
+        }
+
+        var value = ValidationCelValue.Missing;
+        var preview = default(AvroValidationReader);
+        if (!_schemaRules.IsEmpty)
+        {
+            var start = reader.Position;
+            preview = reader;
+            if (_schemaRules.UsesRootValue)
+            {
+                value = ReadValue(ref preview);
+                var payload = preview.Source.Slice(start, preview.Position - start);
+                var rootSize = value.SizeIndex == 0 && _schemaRules.UsesRootSize
+                    ? AvroValidationValueDecoder.Count(_schema, payload)
+                    : -1;
+                _schemaRules.Evaluate(
+                    value,
+                    payload,
+                    now,
+                    failFast,
+                    ref violations,
+                    ref path,
+                    rootSize);
+            }
+            else
+            {
+                _schemaRules.EvaluateWithoutRoot(
+                    ref preview,
+                    _schema,
+                    now,
+                    failFast,
+                    ref violations,
+                    ref path);
+            }
+            if (failFast && violations is not null)
+            {
+                reader = preview;
+                return value;
+            }
+            if (!_hasNestedRules)
+            {
+                reader = preview;
+                return value;
+            }
+        }
+
+        switch (_schema)
+        {
+            case global::Avro.RecordSchema:
+                ValidateRecord(ref reader, now, failFast, ref violations, ref path);
+                break;
+            case global::Avro.ArraySchema:
+                _ = ValidateArray(ref reader, now, failFast, ref violations, ref path);
+                break;
+            case global::Avro.MapSchema:
+                _ = ValidateMap(ref reader, now, failFast, ref violations, ref path);
+                break;
+            case global::Avro.UnionSchema:
+                ValidateUnion(ref reader, now, failFast, ref violations, ref path);
+                break;
+            default:
+                if (_schemaRules.IsEmpty)
+                    value = ReadValue(ref reader);
+                else
+                    reader = preview;
+                break;
+        }
+        return value;
+    }
+
+    private ValidationCelValue ValidateWithDepthGuard(
+        ref AvroValidationReader reader,
+        long now,
+        bool failFast,
+        ref List<ValidationRuleError>? violations,
+        scoped ref AvroValidationPath path)
+    {
+        path.EnterValidation();
+        // A thrown validation exception terminates the root operation and disposes the path;
+        // only successful traversal needs to restore the sibling depth.
+        var value = ValidateCore(
+            ref reader,
+            now,
+            failFast,
+            ref violations,
+            ref path);
+        path.ExitValidation();
+        return value;
+    }
+
+    private ValidationCelValue ValidateCore(
+        ref AvroValidationReader reader,
+        long now,
+        bool failFast,
+        ref List<ValidationRuleError>? violations,
+        scoped ref AvroValidationPath path)
+    {
         if (_validationStrategy != ValidationStrategy.Standard)
         {
             if (_validationStrategy == ValidationStrategy.AggregateRoot)
@@ -3530,16 +3683,30 @@ internal ref struct AvroValidationPath
 {
     private Span<char> _buffer;
     private char[]? _rented;
+    private int _remainingValidationDepth;
 
     internal AvroValidationPath(Span<char> initialBuffer)
     {
         _buffer = initialBuffer;
         _rented = null;
+        _remainingValidationDepth = AvroInlineRuleValidator.MaximumValidationDepth;
         _buffer[0] = '$';
         Length = 1;
     }
 
     internal int Length { get; private set; }
+
+    internal void EnterValidation()
+    {
+        if (_remainingValidationDepth == 0)
+        {
+            throw new SchemaRegistryRuleException(
+                $"Could not evaluate Avro validation rules: value recursion exceeds {AvroInlineRuleValidator.MaximumValidationDepth} levels.");
+        }
+        _remainingValidationDepth--;
+    }
+
+    internal void ExitValidation() => _remainingValidationDepth++;
 
     internal void AppendField(string name)
     {

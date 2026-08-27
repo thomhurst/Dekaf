@@ -67,6 +67,8 @@ public class AvroInlineValidationBenchmarks
     private ReadOnlyMemory<byte> _schemaRuledFieldSizePayload;
     private AvroInlineRuleValidator _nestedMemberFrameValidator = null!;
     private ReadOnlyMemory<byte> _nestedMemberFramePayload;
+    private AvroInlineRuleValidator _recursiveValidationValidator = null!;
+    private ReadOnlyMemory<byte> _recursiveValidationPayload;
 
     [GlobalSetup]
     public void Setup()
@@ -822,6 +824,31 @@ public class AvroInlineValidationBenchmarks
         _nestedMemberFramePayload = nestedMemberFrameStream.ToArray();
         _nestedMemberFrameValidator = new AvroInlineRuleValidator(nestedMemberFrameSchema);
         _nestedMemberFrameValidator.Validate(_nestedMemberFramePayload, 16, failFast: false);
+
+        const string recursiveValidationSchemaText = """
+            {
+              "type": "record",
+              "name": "RecursiveValidationBenchmarkNode",
+              "fields": [
+                {
+                  "name": "value",
+                  "type": "int",
+                  "confluent:rules": [{ "name": "nonnegative", "expr": "this >= 0" }]
+                },
+                { "name": "next", "type": ["null", "RecursiveValidationBenchmarkNode"] }
+              ]
+            }
+            """;
+        var recursiveValidationSchema = AvroSchema.Parse(recursiveValidationSchemaText);
+        var recursiveValidationPayload = new byte[16];
+        for (var index = 0; index < 7; index++)
+            recursiveValidationPayload[index * 2 + 1] = 2;
+        _recursiveValidationPayload = recursiveValidationPayload;
+        _recursiveValidationValidator = new AvroInlineRuleValidator(recursiveValidationSchema);
+        _recursiveValidationValidator.Validate(
+            _recursiveValidationPayload,
+            31,
+            failFast: false);
     }
 
     [Benchmark]
@@ -967,4 +994,8 @@ public class AvroInlineValidationBenchmarks
     [Benchmark]
     public void ValidateNestedMemberFrames() =>
         _nestedMemberFrameValidator.Validate(_nestedMemberFramePayload, 16, failFast: false);
+
+    [Benchmark]
+    public void ValidateRecursivePayload() =>
+        _recursiveValidationValidator.Validate(_recursiveValidationPayload, 31, failFast: false);
 }

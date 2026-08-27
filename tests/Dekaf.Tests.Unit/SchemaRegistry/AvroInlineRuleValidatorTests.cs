@@ -1637,6 +1637,51 @@ public class AvroInlineRuleValidatorTests
     }
 
     [Test]
+    public async Task Validate_RecursivePayloadRejectsExcessiveValidationDepth()
+    {
+        const string schemaText = """
+            {
+              "type": "record",
+              "name": "RecursiveValidationNode",
+              "fields": [
+                {
+                  "name": "value",
+                  "type": "int",
+                  "confluent:rules": [{ "name": "nonnegative", "expr": "this >= 0" }]
+                },
+                { "name": "next", "type": ["null", "RecursiveValidationNode"] }
+              ]
+            }
+            """;
+        var schema = AvroSchema.Parse(schemaText);
+        var validator = new AvroInlineRuleValidator(schema);
+
+        validator.Validate(
+            CreatePayload(AvroInlineRuleValidator.MaximumValidationDepth),
+            31,
+            failFast: false);
+        var exception = Assert.Throws<SchemaRegistryRuleException>(() =>
+            validator.Validate(
+                CreatePayload(AvroInlineRuleValidator.MaximumValidationDepth + 1),
+                31,
+                failFast: false));
+
+        await Assert.That(exception.Message).Contains(
+            $"recursion exceeds {AvroInlineRuleValidator.MaximumValidationDepth} levels");
+
+        static byte[] CreatePayload(int nodeCount)
+        {
+            var payload = new byte[nodeCount * 2];
+            for (var index = 0; index < nodeCount; index++)
+            {
+                payload[index * 2] = 0;
+                payload[index * 2 + 1] = index == nodeCount - 1 ? (byte)0 : (byte)2;
+            }
+            return payload;
+        }
+    }
+
+    [Test]
     public async Task Validate_RecursiveAndFiniteAggregateSchemasCompareSelectedValues()
     {
         const string schemaText = """
