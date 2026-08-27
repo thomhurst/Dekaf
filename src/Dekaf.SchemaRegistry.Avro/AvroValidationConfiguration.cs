@@ -97,16 +97,13 @@ internal sealed class AvroInlineRuleValidatorProvider : IInlineValidationRuleExe
     {
         if (_resolvedSchemas.TryGetValue(registrySchema, out var resolved))
             return resolved;
-        if (_schemaRegistry is null)
+        if (registrySchema.References is { Count: > 0 })
         {
             throw new SchemaRegistryRuleException(
-                "Could not resolve registered Avro schema references without a Schema Registry client.");
+                "Referenced Avro schema is not prepared. Consume through an asynchronous API or call WarmupAsync first.");
         }
 
-        resolved = Poco.AvroSchemaReferenceResolver.Parse(
-            _schemaRegistry,
-            registrySchema,
-            TimeSpan.FromSeconds(30));
+        resolved = AvroSchema.Parse(registrySchema.SchemaString);
         _ = Register(registrySchema, resolved);
         return _resolvedSchemas.GetValue(
             registrySchema,

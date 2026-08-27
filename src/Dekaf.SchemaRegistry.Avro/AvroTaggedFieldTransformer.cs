@@ -1373,15 +1373,11 @@ internal sealed class AvroTaggedFieldTransformerProvider : ISchemaRegistryTagged
     private readonly ConditionalWeakTable<RegistrySchema, AvroSchema> _resolvedSchemas = new();
     private readonly ConditionalWeakTable<RegistrySchema, PayloadSchemaTransformers>.CreateValueCallback
         _createPayloadTransformers;
-    private readonly ISchemaRegistryClient? _schemaRegistry;
     private SerializerTransformerEntry? _lastSerializerTransformer;
     private PayloadSchemaTransformers? _lastPayloadSchema;
 
-    internal AvroTaggedFieldTransformerProvider(ISchemaRegistryClient? schemaRegistry = null)
-    {
-        _schemaRegistry = schemaRegistry;
+    internal AvroTaggedFieldTransformerProvider() =>
         _createPayloadTransformers = CreatePayloadTransformers;
-    }
 
     public ISchemaRegistryTaggedFieldTransformer Get(
         RegistrySchema payloadSchema,
@@ -1407,16 +1403,13 @@ internal sealed class AvroTaggedFieldTransformerProvider : ISchemaRegistryTagged
     {
         if (_resolvedSchemas.TryGetValue(schema, out var resolved))
             return resolved;
-        if (_schemaRegistry is null && schema.References is { Count: > 0 })
+        if (schema.References is { Count: > 0 })
         {
             throw new SchemaRegistryRuleException(
-                "Could not resolve registered Avro schema references without a Schema Registry client.");
+                "Referenced Avro schema is not prepared. Consume through an asynchronous API or call WarmupAsync first.");
         }
 
-        resolved = Poco.AvroSchemaReferenceResolver.Parse(
-            _schemaRegistry!,
-            schema,
-            TimeSpan.FromSeconds(30));
+        resolved = AvroSchema.Parse(schema.SchemaString);
         _resolvedSchemas.AddOrUpdate(schema, resolved);
         return _resolvedSchemas.GetValue(
             schema,

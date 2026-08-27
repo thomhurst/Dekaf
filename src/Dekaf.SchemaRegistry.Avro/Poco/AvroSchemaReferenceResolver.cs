@@ -20,16 +20,6 @@ internal static class AvroSchemaReferenceResolver
         return AvroSchema.Parse(schema.SchemaString, names);
     }
 
-    internal static AvroSchema Parse(
-        ISchemaRegistryClient schemaRegistry,
-        RegistrySchema schema,
-        TimeSpan timeout) =>
-        ParseAsync(schemaRegistry, schema, CancellationToken.None)
-            .WaitAsync(timeout)
-            .ConfigureAwait(false)
-            .GetAwaiter()
-            .GetResult();
-
     internal static async Task<AvroSchemaNames> ResolveAsync(
         ISchemaRegistryClient schemaRegistry,
         RegistrySchema schema,

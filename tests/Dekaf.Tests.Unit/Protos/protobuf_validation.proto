@@ -266,6 +266,23 @@ message ValidationSint32BenchmarkEnvelope {
   }];
 }
 
+message ValidationRootSizeEnvelope {
+  option (confluent.message_meta) = {
+    rules: {
+      name: "root-size"
+      expr: "size(this) == 2 + (has(this.nickname) ? 1 : 0) + (has(this.email) ? 1 : 0)"
+    }
+  };
+
+  int32 age = 1;
+  repeated string tags = 2;
+  optional string nickname = 3;
+  oneof contact {
+    string email = 4;
+    string phone = 5;
+  }
+}
+
 enum ValidationStatus {
   VALIDATION_STATUS_UNSPECIFIED = 0;
   VALIDATION_STATUS_ACTIVE = 1;

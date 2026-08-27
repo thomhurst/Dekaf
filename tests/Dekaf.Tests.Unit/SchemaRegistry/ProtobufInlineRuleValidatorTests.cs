@@ -85,6 +85,30 @@ public sealed class ProtobufInlineRuleValidatorTests
     }
 
     [Test]
+    public async Task Validate_MessageRootSizeCountsExposedFieldsWithoutAllocating()
+    {
+        var validator = new ProtobufInlineRuleValidator(ValidationRootSizeEnvelope.Descriptor);
+        var populated = new ValidationRootSizeEnvelope
+        {
+            Nickname = string.Empty,
+            Email = string.Empty
+        };
+        var populatedPayload = populated.ToByteArray();
+
+        validator.Validate(ReadOnlyMemory<byte>.Empty, schemaId: 17, failFast: false);
+        validator.Validate(populatedPayload, schemaId: 17, failFast: false);
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var index = 0; index < 100; index++)
+        {
+            validator.Validate(ReadOnlyMemory<byte>.Empty, schemaId: 17, failFast: false);
+            validator.Validate(populatedPayload, schemaId: 17, failFast: false);
+        }
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        await Assert.That(allocated).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task Validate_UnknownClosedEnumValueUsesDeclaredDefault()
     {
         var payload = new ArrayBufferWriter<byte>();

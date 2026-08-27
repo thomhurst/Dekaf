@@ -2165,9 +2165,11 @@ public class AvroInlineRuleValidatorTests
                 ValidationRulesExecution = ValidationRulesExecution.BeforeDomainRules
             });
 
-        var result = deserializer.Deserialize(
-            CreateWireBytes(writerSchemaId, Serialize(writer, writerSchema)),
-            CreateContext());
+        var wire = CreateWireBytes(writerSchemaId, Serialize(writer, writerSchema));
+        var context = CreateContext();
+        var preparer = (IAsyncDeserializerPreparer<GenericRecord>)deserializer;
+        await preparer.PrepareAsync(wire, context);
+        await Assert.That(preparer.TryDeserialize(wire, context, out var result)).IsTrue();
 
         await Assert.That(((GenericRecord)result["child"])["code"]).IsEqualTo(1);
         await Assert.That(calls).IsEquivalentTo(["upgrade"]);

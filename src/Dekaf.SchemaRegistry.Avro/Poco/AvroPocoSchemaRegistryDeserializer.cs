@@ -56,7 +56,7 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
         bool ownsClient = false)
     {
         _schemaRegistry = schemaRegistry ?? throw new ArgumentNullException(nameof(schemaRegistry));
-        _taggedFieldTransformers = new AvroTaggedFieldTransformerProvider(schemaRegistry);
+        _taggedFieldTransformers = new AvroTaggedFieldTransformerProvider();
         _config = config ?? new AvroDeserializerConfig();
         if (_config.SchemaIdStrategy is not (
             SchemaIdDeserializerStrategy.Dual

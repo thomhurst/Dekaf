@@ -463,6 +463,7 @@ internal sealed class ProtobufMessageRulePlan
     private ProtobufFieldRulePlan[] _allFields = [];
     private ProtobufFieldRulePlan[] _ruleFields = [];
     private int _fieldSlotCount;
+    private int _implicitRootSize;
     private int _oneofCount;
     private bool _usesSizes;
     private bool _hasMaps;
@@ -530,6 +531,8 @@ internal sealed class ProtobufMessageRulePlan
             if (!rules.IsEmpty)
                 (ruleFields ??= []).Add(field);
             _usesSizes |= descriptor.IsRepeated || rules.UsesSize;
+            if (!descriptor.HasPresence)
+                _implicitRootSize++;
             _hasMaps |= descriptor.IsMap;
             _requiresRuleSnapshots |= rules.RequiresMemberResolution;
         }
@@ -597,7 +600,7 @@ internal sealed class ProtobufMessageRulePlan
                 $"Could not evaluate Protobuf validation rules: message recursion exceeds {ProtobufInlineRuleValidator.MaximumValidationDepth} levels.");
         }
 
-        if (!_messageRules.IsEmpty)
+        if (!_messageRules.IsEmpty && !_messageRules.UsesRootSize)
         {
             _messageRules.Evaluate(
                 ValidationCelValue.FromCollection(ValidationCelValueKind.Object, 0),
@@ -612,7 +615,21 @@ internal sealed class ProtobufMessageRulePlan
         }
 
         if (_fields.Count == 0)
+        {
+            if (_messageRules.UsesRootSize)
+            {
+                _messageRules.Evaluate(
+                    ValidationCelValue.FromCollection(ValidationCelValueKind.Object, 0),
+                    payload,
+                    schemaId,
+                    now,
+                    failFast,
+                    ref violations,
+                    ref path,
+                    rootSize: 0);
+            }
             return;
+        }
 
         var values = CompiledValidationRule.GetMemberValues(_fieldSlotCount);
         var sizes = _usesSizes || _oneofCount != 0
@@ -621,6 +638,7 @@ internal sealed class ProtobufMessageRulePlan
         var oneofOffset = _fieldSlotCount + 1;
         var mergedMessages = new ProtobufMergedMessageBuffers(_fieldSlotCount);
         var reader = new ProtobufValidationWireReader(payload);
+        var rootSize = _messageRules.UsesRootSize ? _implicitRootSize : -1;
         try
         {
             while (reader.TryRead(out var wireField))
@@ -629,7 +647,24 @@ internal sealed class ProtobufMessageRulePlan
                     !field.Matches(wireField))
                     continue;
 
+                if (rootSize >= 0 && field.AddsPresentRootMember(values, sizes, oneofOffset))
+                    rootSize++;
                 field.Observe(wireField, values, sizes, oneofOffset, ref mergedMessages);
+            }
+
+            if (_messageRules.UsesRootSize)
+            {
+                _messageRules.Evaluate(
+                    ValidationCelValue.FromCollection(ValidationCelValueKind.Object, 0),
+                    payload,
+                    schemaId,
+                    now,
+                    failFast,
+                    ref violations,
+                    ref path,
+                    rootSize);
+                if (failFast && violations is not null)
+                    return;
             }
 
             var singularChildren = new ProtobufSingularChildEntries(_allFields.Length);
@@ -840,6 +875,14 @@ internal sealed class ProtobufFieldRulePlan(
     internal ProtobufCompiledRuleSet Rules { get; } = rules;
     internal ProtobufMessageRulePlan? Child { get; } = child;
     internal int RuntimeIndex { get; } = runtimeIndex;
+
+    internal bool AddsPresentRootMember(
+        ValidationCelMemberValues values,
+        ValidationCelSizeValues sizes,
+        int oneofOffset) =>
+        Descriptor.HasPresence &&
+        !values.IsSet(RuntimeIndex) &&
+        (oneofIndex < 0 || !sizes.TryGet(oneofOffset + oneofIndex, out _));
 
     internal bool Matches(ProtobufValidationWireField field) =>
         ProtobufValidationValueDecoder.MatchesField(Descriptor, field, _isClosedEnum);
@@ -1452,7 +1495,7 @@ internal ref struct ProtobufMapEntries
 
 internal sealed class ProtobufCompiledRuleSet
 {
-    internal static ProtobufCompiledRuleSet Empty { get; } = new([], null, null, null, false, false, 0);
+    internal static ProtobufCompiledRuleSet Empty { get; } = new([], null, null, null, false, false, false, 0);
 
     private readonly CompiledValidationRule[] _rules;
     private readonly ProtobufMemberResolver? _members;
@@ -1467,6 +1510,7 @@ internal sealed class ProtobufCompiledRuleSet
         MessageDescriptor? valueDescriptor,
         FieldDescriptor? valueFieldDescriptor,
         bool usesSize,
+        bool usesRootSize,
         bool usesCachedEquality,
         int memberCount)
     {
@@ -1475,12 +1519,14 @@ internal sealed class ProtobufCompiledRuleSet
         _valueDescriptor = valueDescriptor;
         _valueFieldDescriptor = valueFieldDescriptor;
         UsesSize = usesSize;
+        UsesRootSize = usesRootSize;
         _usesCachedEquality = usesCachedEquality;
         _memberCount = memberCount;
     }
 
     internal bool IsEmpty => _rules.Length == 0;
     internal bool UsesSize { get; }
+    internal bool UsesRootSize { get; }
     internal bool RequiresMemberResolution => _members is not null;
 
     internal static ProtobufCompiledRuleSet Compile(
@@ -1496,6 +1542,7 @@ internal sealed class ProtobufCompiledRuleSet
         var usedMemberIndexes = new HashSet<int>();
         var compiled = new CompiledValidationRule[rules.Count];
         var usesSize = false;
+        var usesRootSize = false;
         var usesCachedEquality = false;
         var equalityIndexOffset = 0;
         for (var index = 0; index < rules.Count; index++)
@@ -1508,6 +1555,7 @@ internal sealed class ProtobufCompiledRuleSet
                 equalityIndexOffset);
             compiled[index] = rule;
             usesSize |= rule.UsesSize;
+            usesRootSize |= rule.UsesRootSize;
             usesCachedEquality |= rule.UsesCachedEquality;
             equalityIndexOffset += rule.EqualityPairs.Length;
         }
@@ -1521,6 +1569,7 @@ internal sealed class ProtobufCompiledRuleSet
             valueDescriptor,
             valueFieldDescriptor,
             usesSize,
+            usesRootSize,
             usesCachedEquality,
             memberPaths.Count);
     }

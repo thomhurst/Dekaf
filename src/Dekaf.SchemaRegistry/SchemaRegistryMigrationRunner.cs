@@ -60,7 +60,7 @@ internal sealed class SchemaRegistryMigrationRunner
         {
             if (!IsExpired(plan))
                 return new ValueTask<PreparedTargetEnumerator>(
-                    PreparedTargetEnumerator.Create(plan.Steps));
+                    PreparedTargetEnumerator.Create(plan.ReaderSchema, plan.Steps));
 
             _plans.TryRemove(subject, writerSchema, plan);
             return AwaitPreparedPlanAsync(schemaId, subject, writerSchema, cancellationToken);
@@ -72,7 +72,7 @@ internal sealed class SchemaRegistryMigrationRunner
             {
                 Volatile.Write(ref _lastPlan, plan);
                 return new ValueTask<PreparedTargetEnumerator>(
-                    PreparedTargetEnumerator.Create(plan.Steps));
+                    PreparedTargetEnumerator.Create(plan.ReaderSchema, plan.Steps));
             }
 
             _plans.TryRemove(subject, writerSchema, plan);
@@ -102,7 +102,7 @@ internal sealed class SchemaRegistryMigrationRunner
 
         Volatile.Write(ref _lastPlan, plan);
         plan.MarkPrepared();
-        return PreparedTargetEnumerator.Create(plan.Steps);
+        return PreparedTargetEnumerator.Create(plan.ReaderSchema, plan.Steps);
     }
 
     internal bool TryUsePreparedPlan(int schemaId, string subject, Schema writerSchema)
@@ -713,16 +713,23 @@ internal sealed class SchemaRegistryMigrationRunner
 
     internal struct PreparedTargetEnumerator
     {
+        private readonly RegisteredSchema? _readerSchema;
         private readonly MigrationStep[]? _steps;
         private int _index;
 
-        private PreparedTargetEnumerator(MigrationStep[] steps)
+        private PreparedTargetEnumerator(RegisteredSchema readerSchema, MigrationStep[] steps)
         {
+            _readerSchema = readerSchema;
             _steps = steps;
             _index = 0;
         }
 
-        internal static PreparedTargetEnumerator Create(MigrationStep[] steps) => new(steps);
+        internal static PreparedTargetEnumerator Create(
+            RegisteredSchema readerSchema,
+            MigrationStep[] steps) => new(readerSchema, steps);
+
+        internal RegisteredSchema ReaderSchema => _readerSchema ??
+            throw new InvalidOperationException("Migration plan is not prepared.");
 
         internal bool MoveNext(out RegisteredSchema target)
         {

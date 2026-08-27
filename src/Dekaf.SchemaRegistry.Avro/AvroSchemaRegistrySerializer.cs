@@ -97,7 +97,7 @@ public sealed class AvroSchemaRegistrySerializer<
         bool ownsClient = false)
     {
         _schemaRegistry = schemaRegistry ?? throw new ArgumentNullException(nameof(schemaRegistry));
-        _taggedFieldTransformers = new AvroTaggedFieldTransformerProvider(schemaRegistry);
+        _taggedFieldTransformers = new AvroTaggedFieldTransformerProvider();
         _config = config ?? new AvroSerializerConfig();
         _schemaIdStrategy = _config.SchemaIdStrategy;
         _schemaSelectionMode = SchemaRegistrySerializerConfigValidator.ValidateAndResolve(
@@ -616,11 +616,13 @@ public sealed class AvroSchemaRegistrySerializer<
             return _config.RuleExecutor!.TransformSerializedPayload(payload, context);
         }
 
-        var validator = _inlineRuleValidators.RegisterSerializerSchema(registrySchema, avroSchema);
-        if (_config.ValidationRulesExecution == ValidationRulesExecution.BeforeDomainRules)
+        var validator = GetInlineValidator(schemaId, registrySchema, avroSchema);
+        if (validator is not null &&
+            _config.ValidationRulesExecution == ValidationRulesExecution.BeforeDomainRules)
             validator.Validate(payload, schemaId, _config.ValidationRulesFailFast);
         payload = ruleExecutor.TransformSerializedDomainPayload(payload, context);
-        if (_config.ValidationRulesExecution == ValidationRulesExecution.AfterDomainRules)
+        if (validator is not null &&
+            _config.ValidationRulesExecution == ValidationRulesExecution.AfterDomainRules)
             validator.Validate(payload, schemaId, _config.ValidationRulesFailFast);
         return ruleExecutor.TransformSerializedEncodingPayload(payload, context);
     }

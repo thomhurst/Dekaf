@@ -13,6 +13,8 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 [ShortRunJob]
 public class SchemaRegistryHeaderPreparationBenchmarks
 {
+    private const string AvroValidationSchema =
+        "{\"type\":\"record\",\"name\":\"ValidatedOrder\",\"fields\":[{\"name\":\"id\",\"type\":\"int\",\"confluent:rules\":[{\"name\":\"nonnegative\",\"expr\":\"this >= 0\"}]}]}";
     private static readonly Guid SchemaGuid = new("11111111-2222-3333-4444-555555555555");
     private static readonly byte[] AvroPayload = [84];
     private static readonly byte[] AvroPrefixPayload = [0, 0, 0, 0, 1, 84];
@@ -24,6 +26,7 @@ public class SchemaRegistryHeaderPreparationBenchmarks
     private IRecordHeaderAsyncDeserializerPreparer<GenericRecord> _avroDualPreparer = null!;
     private IRecordHeaderAsyncDeserializerPreparer<StringValue> _protobufDualPreparer = null!;
     private IRecordHeaderAsyncDeserializerPreparer<GenericRecord> _avroDoubleReadPreparer = null!;
+    private IRecordHeaderAsyncDeserializerPreparer<GenericRecord> _avroValidationPreparer = null!;
     private IRecordHeaderAsyncDeserializerPreparer<StringValue> _protobufDoubleReadPreparer = null!;
     private SerializationContext _avroContext;
     private SerializationContext _protobufContext;
@@ -33,9 +36,12 @@ public class SchemaRegistryHeaderPreparationBenchmarks
     private RecordHeaderRoutingLookup _protobufHeaders;
     private RecordHeaderRoutingLookup _avroPrefixHeaders;
     private RecordHeaderRoutingLookup _protobufPrefixHeaders;
+    private RecordHeaderRoutingLookup _avroValidationHeaders;
     private AvroSchemaRegistryDeserializer<GenericRecord> _avro = null!;
     private ProtobufSchemaRegistryDeserializer<StringValue> _protobuf = null!;
     private AvroSchemaRegistryDeserializer<GenericRecord> _avroDual = null!;
+    private AvroSchemaRegistryDeserializer<GenericRecord> _avroValidation = null!;
+    private Avro.Schema _avroValidationSchema = null!;
     private ProtobufSchemaRegistryDeserializer<StringValue> _protobufDual = null!;
 
     [GlobalSetup]
@@ -86,6 +92,19 @@ public class SchemaRegistryHeaderPreparationBenchmarks
         _protobufDualPreparer = _protobufDual;
         _avroDoubleReadPreparer = new DoubleReadPrefixPreparer<GenericRecord>(_avroDual);
         _protobufDoubleReadPreparer = new DoubleReadPrefixPreparer<StringValue>(_protobufDual);
+        _avroValidation = new AvroSchemaRegistryDeserializer<GenericRecord>(
+            new BenchmarkSchemaRegistryClient(new Schema
+            {
+                SchemaType = SchemaType.Avro,
+                SchemaString = AvroValidationSchema
+            }),
+            new AvroDeserializerConfig
+            {
+                SchemaIdStrategy = SchemaIdDeserializerStrategy.Header,
+                ValidationRulesExecution = ValidationRulesExecution.BeforeDomainRules
+            });
+        _avroValidationPreparer = _avroValidation;
+        _avroValidationSchema = Avro.Schema.Parse(AvroValidationSchema);
 
         var avroHeader = new Header(
             SchemaIdentityHeaderNames.Value,
@@ -102,9 +121,16 @@ public class SchemaRegistryHeaderPreparationBenchmarks
         _protobufHeaders = CreateLookup(_protobuf, protobufHeader);
         _avroPrefixHeaders = CreateLookup(_avroDual, identityHeader: null);
         _protobufPrefixHeaders = CreateLookup(_protobufDual, identityHeader: null);
+        _avroValidationHeaders = CreateLookup(_avroValidation, avroHeader);
 
         await PrepareAvroGuidHeaderCached().ConfigureAwait(false);
         await PrepareProtobufGuidHeaderCached().ConfigureAwait(false);
+        await _avroValidationPreparer.PrepareAsync(
+                AvroPayload,
+                _avroContext,
+                _avroValidationHeaders,
+                CancellationToken.None)
+            .ConfigureAwait(false);
         _ = RecordHeaderDeserializer.Deserialize(
             _avroDual,
             AvroPrefixPayload,
@@ -119,6 +145,7 @@ public class SchemaRegistryHeaderPreparationBenchmarks
         await _protobuf.DisposeAsync().ConfigureAwait(false);
         await _avroDual.DisposeAsync().ConfigureAwait(false);
         await _protobufDual.DisposeAsync().ConfigureAwait(false);
+        await _avroValidation.DisposeAsync().ConfigureAwait(false);
     }
 
     [Benchmark(Baseline = true)]
@@ -162,6 +189,25 @@ public class SchemaRegistryHeaderPreparationBenchmarks
             out var value);
         return value;
     }
+
+    [Benchmark(Description = "Avro GUID header inline-validation cache")]
+    public GenericRecord DeserializeAvroGuidHeaderWithInlineValidation()
+    {
+        if (!_avroValidationPreparer.TryDeserialize(
+                AvroPayload,
+                _avroContext,
+                in _avroValidationHeaders,
+                out var value))
+        {
+            throw new InvalidOperationException("Avro validation deserializer was not prepared.");
+        }
+
+        return value;
+    }
+
+    [Benchmark(Description = "Avro GUID inline-validator decision cache")]
+    public object? ResolveAvroGuidInlineValidationDecision() =>
+        _avroValidation.GetInlineValidator(-1, _avroValidationSchema);
 
     [Benchmark(Description = "Protobuf Dual prefix prepared deserialize")]
     public StringValue DeserializeProtobufDualPrefixRouted()
