@@ -433,7 +433,9 @@ public sealed class ConsumerConnectionOwnershipTests
     }
 
     [Test]
-    public async Task StandaloneConsumer_Dispose_KeepsPoolAliveUntilRetiredLeaseReleases()
+    [Timeout(30_000)]
+    public async Task StandaloneConsumer_Dispose_KeepsPoolAliveUntilRetiredLeaseReleases(
+        CancellationToken cancellationToken)
     {
         var pool = CreatePool();
         var removedConnection = new TrackedConnection(
@@ -449,12 +451,14 @@ public sealed class ConsumerConnectionOwnershipTests
 
         try
         {
-            await Task.Delay(TimeSpan.FromSeconds(5.2));
+            await removedConnection.RetirementLeaseObserved.WaitAsync(cancellationToken);
+            await Assert.That(disposeTask.IsCompleted).IsFalse();
             _ = pool.DidNotReceive().DisposeAsync();
 
             removedConnection.ReleaseLease();
             leaseReleased = true;
-            await disposeTask.WaitAsync(TimeSpan.FromSeconds(5));
+            await removedConnection.DisposalStarted.WaitAsync(cancellationToken);
+            await disposeTask.WaitAsync(cancellationToken);
         }
         finally
         {
