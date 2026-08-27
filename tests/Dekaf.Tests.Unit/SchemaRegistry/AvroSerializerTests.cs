@@ -2150,6 +2150,64 @@ public sealed class AvroSerializerTests
     }
 
     [Test]
+    public async Task Serializer_StandaloneUseLatestValidatesReferencedSchemaWithoutWarmup()
+    {
+        const string addressSchemaJson =
+            """
+            {"type":"record","name":"Address","namespace":"test","fields":[{"name":"city","type":"string"}]}
+            """;
+        const string rootSchemaJson =
+            """
+            {"type":"record","name":"ReferencedRoot","namespace":"test","confluent:rules":[{"name":"london","expr":"this.address.city == 'London'"}],"fields":[{"name":"address","type":"test.Address"}]}
+            """;
+        const string topic = "avro-standalone-referenced-validation";
+        using var schemaRegistry = new MockSchemaRegistryClient();
+        _ = await schemaRegistry.RegisterSchemaAsync(
+            "standalone-address-value",
+            new RegistrySchema
+            {
+                SchemaType = SchemaType.Avro,
+                SchemaString = addressSchemaJson
+            });
+        _ = await schemaRegistry.RegisterSchemaAsync(
+            $"{topic}-value",
+            new RegistrySchema
+            {
+                SchemaType = SchemaType.Avro,
+                SchemaString = rootSchemaJson,
+                References =
+                [
+                    new SchemaReference
+                    {
+                        Name = "test.Address",
+                        Subject = "standalone-address-value",
+                        Version = 1
+                    }
+                ]
+            });
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(
+            schemaRegistry,
+            new AvroSerializerConfig
+            {
+                UseLatestVersion = true,
+                ValidationRulesExecution = ValidationRulesExecution.BeforeDomainRules
+            });
+        var names = new Avro.SchemaNames();
+        var addressSchema = (Avro.RecordSchema)AvroSchema.Parse(addressSchemaJson, names);
+        var rootSchema = (Avro.RecordSchema)AvroSchema.Parse(rootSchemaJson, names);
+        var address = new GenericRecord(addressSchema);
+        address.Add("city", "Paris");
+        var record = new GenericRecord(rootSchema);
+        record.Add("address", address);
+        var destination = new ArrayBufferWriter<byte>();
+
+        var exception = Assert.Throws<ValidationRulesFailedException>(() =>
+            serializer.Serialize(record, ref destination, CreateContext(topic)));
+
+        await Assert.That(exception.Violations[0].Rule.Name).IsEqualTo("london");
+    }
+
+    [Test]
     public async Task Serializer_WarmupAsync_PreCachesSchemaId()
     {
         // Arrange

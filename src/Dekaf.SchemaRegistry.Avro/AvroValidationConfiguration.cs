@@ -58,9 +58,7 @@ internal sealed class AvroInlineRuleValidatorProvider : IInlineValidationRuleExe
     {
         if (_registeredSchemas.TryGetValue(registrySchema, out var existing))
             return existing;
-        return registrySchema.References is { Count: > 0 }
-            ? Register(registrySchema, GetResolvedSchema(registrySchema))
-            : Register(registrySchema, runtimeSchema);
+        return Register(registrySchema, runtimeSchema);
     }
 
     internal ValueTask<AvroInlineRuleValidator> PrepareSerializerSchemaAsync(
