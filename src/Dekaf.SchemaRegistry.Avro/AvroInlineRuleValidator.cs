@@ -799,24 +799,41 @@ internal sealed class AvroValueRulePlan
         var start = reader.Position;
         var branchResolver = memberResolver.GetUnionBranchResolver((int)branch);
         if (branchResolver is not null &&
-            child._schemaRules.IsEmpty &&
-            child._schema is global::Avro.RecordSchema)
+            child._schemaRules.IsEmpty)
         {
-            child.ValidateRecordWithMemberResolver(
-                ref reader,
-                branchResolver,
-                resolution,
-                now,
-                failFast,
-                ref nestedViolations,
-                ref path);
-            size = child._fields.Length;
+            switch (child._schema)
+            {
+                case global::Avro.RecordSchema:
+                    child.ValidateRecordWithMemberResolver(
+                        ref reader,
+                        branchResolver,
+                        resolution,
+                        now,
+                        failFast,
+                        ref nestedViolations,
+                        ref path);
+                    size = child._fields.Length;
+                    break;
+                case global::Avro.MapSchema:
+                    size = child.ValidateMapWithMemberResolver(
+                        ref reader,
+                        branchResolver,
+                        resolution,
+                        now,
+                        failFast,
+                        ref nestedViolations,
+                        ref path);
+                    break;
+                default:
+                    goto Deferred;
+            }
             return ValidationCelValue.FromCollection(
                 ValidationCelValueKind.Object,
                 reader.Source.Slice(start, reader.Position - start),
                 sizeIndex: 0);
         }
 
+Deferred:
         var value = child.ValidateAndCapture(
             ref reader,
             now,
@@ -832,6 +849,146 @@ internal sealed class AvroValueRulePlan
         return value;
     }
 
+    private ValidationCelValue ValidateAndCaptureWithMemberNode(
+        ref AvroValidationReader reader,
+        AvroMemberResolver.AvroMemberNode memberNode,
+        AvroMemberResolution resolution,
+        long now,
+        bool failFast,
+        ref List<ValidationRuleError>? nestedViolations,
+        scoped ref AvroValidationPath path,
+        out int size)
+    {
+        var start = reader.Position;
+        if (_schemaRules.IsEmpty &&
+            memberNode.TryGetChildResolver(_schema, out var childResolver))
+        {
+            ValidationCelValue value;
+            switch (_schema)
+            {
+                case global::Avro.RecordSchema:
+                    ValidateRecordWithMemberResolver(
+                        ref reader,
+                        childResolver,
+                        resolution,
+                        now,
+                        failFast,
+                        ref nestedViolations,
+                        ref path);
+                    size = _fields.Length;
+                    break;
+                case global::Avro.MapSchema:
+                    size = ValidateMapWithMemberResolver(
+                        ref reader,
+                        childResolver,
+                        resolution,
+                        now,
+                        failFast,
+                        ref nestedViolations,
+                        ref path);
+                    break;
+                default:
+                    goto Deferred;
+            }
+            value = ValidationCelValue.FromCollection(
+                ValidationCelValueKind.Object,
+                reader.Source.Slice(start, reader.Position - start),
+                sizeIndex: 0);
+            memberNode.ResolveCapturedValue(
+                reader.Source.Slice(start, reader.Position - start),
+                value,
+                size,
+                resolution.Members,
+                resolution.Sizes);
+            return value;
+        }
+
+        if (_schemaRules.IsEmpty && _schema is global::Avro.UnionSchema union)
+        {
+            var branch = reader.ReadLong();
+            if ((ulong)branch >= (ulong)union.Count)
+                throw InvalidPayload($"invalid union index {branch}");
+
+            var child = _children[(int)branch];
+            var childStart = reader.Position;
+            if (child._schemaRules.IsEmpty &&
+                memberNode.TryGetChildResolver(child._schema, out childResolver))
+            {
+                switch (child._schema)
+                {
+                    case global::Avro.RecordSchema:
+                        child.ValidateRecordWithMemberResolver(
+                            ref reader,
+                            childResolver,
+                            resolution,
+                            now,
+                            failFast,
+                            ref nestedViolations,
+                            ref path);
+                        size = child._fields.Length;
+                        break;
+                    case global::Avro.MapSchema:
+                        size = child.ValidateMapWithMemberResolver(
+                            ref reader,
+                            childResolver,
+                            resolution,
+                            now,
+                            failFast,
+                            ref nestedViolations,
+                            ref path);
+                        break;
+                    default:
+                        goto DeferredBranch;
+                }
+                var value = ValidationCelValue.FromCollection(
+                    ValidationCelValueKind.Object,
+                    reader.Source.Slice(childStart, reader.Position - childStart),
+                    sizeIndex: 0);
+                memberNode.ResolveCapturedValue(
+                    reader.Source.Slice(start, reader.Position - start),
+                    value,
+                    size,
+                    resolution.Members,
+                    resolution.Sizes);
+                return value;
+            }
+
+DeferredBranch:
+            var branchValue = child.ValidateAndCapture(
+                ref reader,
+                now,
+                failFast,
+                memberNode.NeedsSize,
+                ref nestedViolations,
+                ref path,
+                out size);
+            memberNode.ResolveCaptured(
+                reader.Source.Slice(start, reader.Position - start),
+                branchValue,
+                size,
+                resolution.Members,
+                resolution.Sizes);
+            return branchValue;
+        }
+
+Deferred:
+        var capturedValue = ValidateAndCapture(
+            ref reader,
+            now,
+            failFast,
+            memberNode.NeedsSize,
+            ref nestedViolations,
+            ref path,
+            out size);
+        memberNode.ResolveCaptured(
+            reader.Source.Slice(start, reader.Position - start),
+            capturedValue,
+            size,
+            resolution.Members,
+            resolution.Sizes);
+        return capturedValue;
+    }
+
     private void ValidateRecordWithMemberResolver(
         ref AvroValidationReader reader,
         AvroMemberResolver memberResolver,
@@ -841,6 +998,19 @@ internal sealed class AvroValueRulePlan
         ref List<ValidationRuleError>? nestedViolations,
         scoped ref AvroValidationPath path)
     {
+        if (memberResolver.HasDescendantTargets)
+        {
+            ValidateRecordWithDescendantMemberResolver(
+                ref reader,
+                memberResolver,
+                resolution,
+                now,
+                failFast,
+                ref nestedViolations,
+                ref path);
+            return;
+        }
+
         for (var index = 0; index < _fields.Length; index++)
         {
             var start = reader.Position;
@@ -867,6 +1037,133 @@ internal sealed class AvroValueRulePlan
                 size,
                 resolution.Members,
                 resolution.Sizes);
+        }
+    }
+
+    private void ValidateRecordWithDescendantMemberResolver(
+        ref AvroValidationReader reader,
+        AvroMemberResolver memberResolver,
+        AvroMemberResolution resolution,
+        long now,
+        bool failFast,
+        ref List<ValidationRuleError>? nestedViolations,
+        scoped ref AvroValidationPath path)
+    {
+        for (var index = 0; index < _fields.Length; index++)
+        {
+            var start = reader.Position;
+            var field = _fields[index];
+            var fieldResolver = memberResolver.GetRecordFieldResolver(index);
+            var needsSize = fieldResolver.NeedsSize;
+            ValidationCelValue value;
+            int size;
+            if (failFast && nestedViolations is not null)
+                value = CaptureRecordField(field, ref reader, needsSize, out size);
+            else if (field.Rules.IsEmpty && fieldResolver.HasChildren)
+            {
+                var mark = path.Length;
+                path.AppendField(field.Field.Name);
+                value = field.Child.ValidateAndCaptureWithMemberNode(
+                    ref reader,
+                    fieldResolver,
+                    resolution,
+                    now,
+                    failFast,
+                    ref nestedViolations,
+                    ref path,
+                    out size);
+                path.Truncate(mark);
+                continue;
+            }
+            else
+                value = ValidateRecordFieldAndCapture(
+                    field,
+                    ref reader,
+                    now,
+                    failFast,
+                    needsSize,
+                    ref nestedViolations,
+                    ref path,
+                    out size);
+            if (fieldResolver.HasTargets)
+            {
+                fieldResolver.ResolveCaptured(
+                    reader.Source.Slice(start, reader.Position - start),
+                    value,
+                    size,
+                    resolution.Members,
+                    resolution.Sizes);
+            }
+        }
+    }
+
+    private int ValidateMapWithMemberResolver(
+        ref AvroValidationReader reader,
+        AvroMemberResolver memberResolver,
+        AvroMemberResolution resolution,
+        long now,
+        bool failFast,
+        ref List<ValidationRuleError>? nestedViolations,
+        scoped ref AvroValidationPath path)
+    {
+        var valuePlan = _children[0];
+        var itemCount = 0;
+        while (true)
+        {
+            var count = reader.ReadCollectionCount();
+            if (count == 0)
+                return itemCount;
+            for (long index = 0; index < count; index++)
+            {
+                itemCount = checked(itemCount + 1);
+                var key = reader.ReadLengthPrefixed();
+                memberResolver.TryGetMapEntryResolver(key, out var valueResolver);
+                var valueStart = reader.Position;
+                if (failFast && nestedViolations is not null)
+                {
+                    AvroValidationValueDecoder.Skip(valuePlan._schema, ref reader);
+                    valueResolver?.Resolve(
+                        reader.Source.Slice(valueStart, reader.Position - valueStart),
+                        resolution.Members,
+                        resolution.Sizes);
+                    continue;
+                }
+
+                var mark = path.Length;
+                path.AppendMapKey(key.Span);
+                ValidationCelValue value;
+                int size;
+                if (valueResolver?.HasChildren == true)
+                {
+                    value = valuePlan.ValidateAndCaptureWithMemberNode(
+                        ref reader,
+                        valueResolver,
+                        resolution,
+                        now,
+                        failFast,
+                        ref nestedViolations,
+                        ref path,
+                        out size);
+                }
+                else
+                {
+                    value = valuePlan.ValidateAndCapture(
+                        ref reader,
+                        now,
+                        failFast,
+                        valueResolver?.NeedsSize ?? false,
+                        ref nestedViolations,
+                        ref path,
+                        out size);
+                    valueResolver?.ResolveCaptured(
+                        reader.Source.Slice(valueStart, reader.Position - valueStart),
+                        value,
+                        size,
+                        resolution.Members,
+                        resolution.Sizes);
+                }
+                path.Truncate(mark);
+            }
         }
     }
 
@@ -2087,8 +2384,10 @@ internal sealed class AvroMemberResolver
     private readonly AvroMemberNode?[] _fields;
     private readonly Dictionary<ReadOnlyMemory<byte>, AvroMemberNode>? _mapValues;
     private bool _hasMapEntrySizeDemand;
+    private bool _hasDescendantTargets;
 
     internal bool HasMapEntrySizeDemand => _hasMapEntrySizeDemand;
+    internal bool HasDescendantTargets => _hasDescendantTargets;
 
     internal int LastRecordMemberIndex
     {
@@ -2266,6 +2565,7 @@ internal sealed class AvroMemberResolver
             node.AddMemberIndex(memberIndex, needsSize);
             return;
         }
+        _hasDescendantTargets = true;
         node.AddChild(field.Schema, path, memberIndex, needsSize, depth + 1);
     }
 
@@ -2288,6 +2588,7 @@ internal sealed class AvroMemberResolver
             _hasMapEntrySizeDemand |= needsSize;
             return;
         }
+        _hasDescendantTargets = true;
         node.AddChild(schema.ValueSchema, path, memberIndex, needsSize, depth + 1);
     }
 
@@ -2417,6 +2718,10 @@ internal sealed class AvroMemberResolver
         if (node.HasTargets)
             node.ResolveCaptured(payload, value, size, values, sizes);
     }
+
+    internal AvroMemberNode GetRecordFieldResolver(int fieldIndex) =>
+        _fields[fieldIndex]
+            ?? throw new InvalidOperationException("Avro validation member resolver is incomplete.");
 
     internal bool NeedsRecordFieldSize(int fieldIndex) =>
         _fields[fieldIndex]?.NeedsSize ?? false;
@@ -2560,7 +2865,13 @@ internal sealed class AvroMemberResolver
         }
         internal int MemberIndex { get; private set; } = -1;
         internal bool HasTargets => MemberIndex >= 0 || _children.Count != 0;
+        internal bool HasChildren => _children.Count != 0;
         internal bool NeedsSize => _needsSize;
+
+        internal bool TryGetChildResolver(
+            AvroSchema schema,
+            out AvroMemberResolver childResolver) =>
+            _children.TryGetValue(AvroValueRulePlan.Unwrap(schema), out childResolver!);
 
         internal void AddMemberIndex(int memberIndex, bool needsSize)
         {
@@ -2758,6 +3069,44 @@ internal sealed class AvroMemberResolver
                 return;
             if (_children.TryGetValue(schema, out var child))
                 child.Resolve(payload, values, sizes);
+        }
+
+        internal void ResolveCapturedValue(
+            ReadOnlyMemory<byte> payload,
+            ValidationCelValue value,
+            int size,
+            ValidationCelMemberValues values,
+            ValidationCelSizeValues sizes)
+        {
+            if (MemberIndex < 0)
+                return;
+
+            var schema = AvroValueRulePlan.Unwrap(Schema!);
+            var aggregateComparer = _aggregateComparer;
+            if (schema is global::Avro.UnionSchema union)
+            {
+                var branchReader = new AvroValidationReader(payload);
+                var branch = branchReader.ReadLong();
+                if ((ulong)branch >= (ulong)union.Count)
+                    throw new SchemaRegistryRuleException(
+                        $"Could not evaluate Avro validation rules: invalid union index {branch}.");
+                aggregateComparer = _unionComparers![(int)branch];
+            }
+
+            SetMemberValue(MemberIndex, value, size, values, sizes, aggregateComparer);
+            var additionalIndexes = _additionalMemberIndexes;
+            if (additionalIndexes is null)
+                return;
+            for (var index = 0; index < additionalIndexes.Length; index++)
+            {
+                SetMemberValue(
+                    additionalIndexes[index],
+                    value,
+                    size,
+                    values,
+                    sizes,
+                    aggregateComparer);
+            }
         }
 
         private static void SetMemberValue(

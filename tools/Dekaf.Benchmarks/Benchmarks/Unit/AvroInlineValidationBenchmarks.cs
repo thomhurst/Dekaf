@@ -59,6 +59,10 @@ public class AvroInlineValidationBenchmarks
     private ReadOnlyMemory<byte> _mixedRootFieldRulePayload;
     private AvroInlineRuleValidator _fieldMemberNestedValidator = null!;
     private ReadOnlyMemory<byte> _fieldMemberNestedPayload;
+    private AvroInlineRuleValidator _descendantFieldMemberNestedValidator = null!;
+    private ReadOnlyMemory<byte> _descendantFieldMemberNestedPayload;
+    private AvroInlineRuleValidator _unionMapFieldMemberNestedValidator = null!;
+    private ReadOnlyMemory<byte> _unionMapFieldMemberNestedPayload;
     private AvroInlineRuleValidator _schemaRuledFieldSizeValidator = null!;
     private ReadOnlyMemory<byte> _schemaRuledFieldSizePayload;
     private AvroInlineRuleValidator _nestedMemberFrameValidator = null!;
@@ -655,6 +659,96 @@ public class AvroInlineValidationBenchmarks
         _fieldMemberNestedValidator = new AvroInlineRuleValidator(fieldMemberNestedSchema);
         _fieldMemberNestedValidator.Validate(_fieldMemberNestedPayload, 28, failFast: false);
 
+        const string descendantFieldMemberNestedSchemaText = """
+            {
+              "type": "record",
+              "name": "DescendantFieldMemberNestedBenchmarkRecord",
+              "fields": [{
+                "name": "container",
+                "confluent:rules": [{ "name": "selected", "expr": "this.child.code == 1" }],
+                "type": {
+                  "type": "record",
+                  "name": "DescendantFieldMemberNestedBenchmarkContainer",
+                  "fields": [{
+                    "name": "child",
+                    "type": {
+                      "type": "record",
+                      "name": "DescendantFieldMemberNestedBenchmarkChild",
+                      "fields": [
+                        {
+                          "name": "items",
+                          "type": { "type": "array", "items": "int" }
+                        },
+                        { "name": "code", "type": "int" },
+                        {
+                          "name": "guard",
+                          "type": "int",
+                          "confluent:rules": [{ "name": "positive", "expr": "this > 0" }]
+                        }
+                      ]
+                    }
+                  }]
+                }
+              }]
+            }
+            """;
+        var descendantSchema = (RecordSchema)AvroSchema.Parse(
+            descendantFieldMemberNestedSchemaText);
+        var descendantContainerSchema = (RecordSchema)descendantSchema.Fields[0].Schema;
+        var descendantChildSchema = (RecordSchema)descendantContainerSchema.Fields[0].Schema;
+        var descendantChild = new GenericRecord(descendantChildSchema);
+        descendantChild.Add("items", Enumerable.Range(1, 1024).ToArray());
+        descendantChild.Add("code", 1);
+        descendantChild.Add("guard", 1);
+        var descendantContainer = new GenericRecord(descendantContainerSchema);
+        descendantContainer.Add("child", descendantChild);
+        var descendantRecord = new GenericRecord(descendantSchema);
+        descendantRecord.Add("container", descendantContainer);
+        using var descendantStream = new MemoryStream();
+        var descendantEncoder = new BinaryEncoder(descendantStream);
+        new GenericDatumWriter<GenericRecord>(descendantSchema).Write(
+            descendantRecord,
+            descendantEncoder);
+        descendantEncoder.Flush();
+        _descendantFieldMemberNestedPayload = descendantStream.ToArray();
+        _descendantFieldMemberNestedValidator = new AvroInlineRuleValidator(descendantSchema);
+        _descendantFieldMemberNestedValidator.Validate(
+            _descendantFieldMemberNestedPayload,
+            30,
+            failFast: false);
+
+        const string unionMapFieldMemberNestedSchemaText = """
+            {
+              "type": "record",
+              "name": "UnionMapFieldMemberNestedBenchmarkRecord",
+              "fields": [{
+                "name": "value",
+                "type": ["null", {
+                  "type": "map",
+                  "values": "int"
+                }],
+                "confluent:rules": [{ "name": "selected", "expr": "this.selected == 1" }]
+              }]
+            }
+            """;
+        var unionMapSchema = (RecordSchema)AvroSchema.Parse(unionMapFieldMemberNestedSchemaText);
+        var unionMapValues = new Dictionary<string, object>(1024);
+        for (var index = 0; index < 1023; index++)
+            unionMapValues.Add($"item-{index}", 1);
+        unionMapValues.Add("selected", 1);
+        var unionMapRecord = new GenericRecord(unionMapSchema);
+        unionMapRecord.Add("value", unionMapValues);
+        using var unionMapStream = new MemoryStream();
+        var unionMapEncoder = new BinaryEncoder(unionMapStream);
+        new GenericDatumWriter<GenericRecord>(unionMapSchema).Write(unionMapRecord, unionMapEncoder);
+        unionMapEncoder.Flush();
+        _unionMapFieldMemberNestedPayload = unionMapStream.ToArray();
+        _unionMapFieldMemberNestedValidator = new AvroInlineRuleValidator(unionMapSchema);
+        _unionMapFieldMemberNestedValidator.Validate(
+            _unionMapFieldMemberNestedPayload,
+            30,
+            failFast: false);
+
         const string schemaRuledFieldSizeSchemaText = """
             {
               "type": "record",
@@ -851,6 +945,20 @@ public class AvroInlineValidationBenchmarks
     [Benchmark]
     public void ValidateAggregateFieldMemberWithNestedRules() =>
         _fieldMemberNestedValidator.Validate(_fieldMemberNestedPayload, 28, failFast: false);
+
+    [Benchmark]
+    public void ValidateDescendantFieldMemberWithNestedRules() =>
+        _descendantFieldMemberNestedValidator.Validate(
+            _descendantFieldMemberNestedPayload,
+            30,
+            failFast: false);
+
+    [Benchmark]
+    public void ValidateUnionMapFieldMemberWithNestedRules() =>
+        _unionMapFieldMemberNestedValidator.Validate(
+            _unionMapFieldMemberNestedPayload,
+            30,
+            failFast: false);
 
     [Benchmark]
     public void ValidateSchemaRuledAggregateFieldSize() =>
