@@ -57,6 +57,8 @@ public class AvroInlineValidationBenchmarks
     private ReadOnlyMemory<byte> _mixedRootMemberNestedPayload;
     private AvroInlineRuleValidator _mixedRootFieldRuleValidator = null!;
     private ReadOnlyMemory<byte> _mixedRootFieldRulePayload;
+    private AvroInlineRuleValidator _fieldMemberNestedValidator = null!;
+    private ReadOnlyMemory<byte> _fieldMemberNestedPayload;
     private AvroInlineRuleValidator _schemaRuledFieldSizeValidator = null!;
     private ReadOnlyMemory<byte> _schemaRuledFieldSizePayload;
     private AvroInlineRuleValidator _nestedMemberFrameValidator = null!;
@@ -609,6 +611,50 @@ public class AvroInlineValidationBenchmarks
         _mixedRootFieldRuleValidator = new AvroInlineRuleValidator(mixedRootFieldRuleSchema);
         _mixedRootFieldRuleValidator.Validate(_mixedRootFieldRulePayload, 21, failFast: false);
 
+        const string fieldMemberNestedSchemaText = """
+            {
+              "type": "record",
+              "name": "FieldMemberNestedBenchmarkRecord",
+              "fields": [{
+                "name": "child",
+                "confluent:rules": [{ "name": "selected", "expr": "this.code == 1" }],
+                "type": {
+                  "type": "record",
+                  "name": "FieldMemberNestedBenchmarkChild",
+                  "fields": [
+                    { "name": "code", "type": "int" },
+                    {
+                      "name": "items",
+                      "type": {
+                        "type": "array",
+                        "items": {
+                          "type": "int",
+                          "confluent:rules": [{ "name": "positive", "expr": "this > 0" }]
+                        }
+                      }
+                    }
+                  ]
+                }
+              }]
+            }
+            """;
+        var fieldMemberNestedSchema = (RecordSchema)AvroSchema.Parse(fieldMemberNestedSchemaText);
+        var fieldMemberNestedChildSchema = (RecordSchema)fieldMemberNestedSchema.Fields[0].Schema;
+        var fieldMemberNestedChild = new GenericRecord(fieldMemberNestedChildSchema);
+        fieldMemberNestedChild.Add("code", 1);
+        fieldMemberNestedChild.Add("items", Enumerable.Range(1, 128).ToArray());
+        var fieldMemberNestedRecord = new GenericRecord(fieldMemberNestedSchema);
+        fieldMemberNestedRecord.Add("child", fieldMemberNestedChild);
+        using var fieldMemberNestedStream = new MemoryStream();
+        var fieldMemberNestedEncoder = new BinaryEncoder(fieldMemberNestedStream);
+        new GenericDatumWriter<GenericRecord>(fieldMemberNestedSchema).Write(
+            fieldMemberNestedRecord,
+            fieldMemberNestedEncoder);
+        fieldMemberNestedEncoder.Flush();
+        _fieldMemberNestedPayload = fieldMemberNestedStream.ToArray();
+        _fieldMemberNestedValidator = new AvroInlineRuleValidator(fieldMemberNestedSchema);
+        _fieldMemberNestedValidator.Validate(_fieldMemberNestedPayload, 28, failFast: false);
+
         const string schemaRuledFieldSizeSchemaText = """
             {
               "type": "record",
@@ -801,6 +847,10 @@ public class AvroInlineValidationBenchmarks
     [Benchmark]
     public void ValidateMixedRootWithAggregateFieldRule() =>
         _mixedRootFieldRuleValidator.Validate(_mixedRootFieldRulePayload, 21, failFast: false);
+
+    [Benchmark]
+    public void ValidateAggregateFieldMemberWithNestedRules() =>
+        _fieldMemberNestedValidator.Validate(_fieldMemberNestedPayload, 28, failFast: false);
 
     [Benchmark]
     public void ValidateSchemaRuledAggregateFieldSize() =>

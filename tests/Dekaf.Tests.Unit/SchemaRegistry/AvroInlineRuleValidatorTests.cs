@@ -179,6 +179,53 @@ public class AvroInlineRuleValidatorTests
     }
 
     [Test]
+    public async Task Validate_AggregateFieldMemberAndNestedRulesShareTraversal()
+    {
+        const string schemaText = """
+            {
+              "type": "record",
+              "name": "FieldMemberNestedRuleRecord",
+              "fields": [{
+                "name": "child",
+                "confluent:rules": [{ "name": "field-member", "expr": "this.code > 0" }],
+                "type": {
+                  "type": "record",
+                  "name": "FieldMemberNestedRuleChild",
+                  "fields": [{
+                    "name": "code",
+                    "type": "int",
+                    "confluent:rules": [{ "name": "positive", "expr": "this > 0" }]
+                  }]
+                }
+              }]
+            }
+            """;
+        var schema = (RecordSchema)AvroSchema.Parse(schemaText);
+        var childSchema = (RecordSchema)schema.Fields[0].Schema;
+        var child = new GenericRecord(childSchema);
+        child.Add("code", 1);
+        var record = new GenericRecord(schema);
+        record.Add("child", child);
+        var payload = Serialize(record, schema);
+        var validator = new AvroInlineRuleValidator(schema);
+
+        validator.Validate(payload, 28, failFast: false);
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var index = 0; index < 100; index++)
+            validator.Validate(payload, 28, failFast: false);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        child.Add("code", -1);
+        var exception = Assert.Throws<ValidationRulesFailedException>(() =>
+            validator.Validate(Serialize(record, schema), 28, failFast: false));
+
+        await Assert.That(allocated).IsEqualTo(0);
+        await Assert.That(exception.Violations.Count).IsEqualTo(2);
+        await Assert.That(exception.Violations[0].Rule.Name).IsEqualTo("field-member");
+        await Assert.That(exception.Violations[1].Rule.Name).IsEqualTo("positive");
+    }
+
+    [Test]
     public async Task Validate_MixedParentAndNestedMemberRulesPreserveParentMembers()
     {
         const string schemaText = """
@@ -391,7 +438,11 @@ public class AvroInlineRuleValidatorTests
                 "type": ["null", {
                   "type": "record",
                   "name": "NullableFieldRuleChild",
-                  "fields": [{ "name": "code", "type": "int" }]
+                  "fields": [{
+                    "name": "code",
+                    "type": "int",
+                    "confluent:rules": [{ "name": "positive", "expr": "this > 0" }]
+                  }]
                 }],
                 "confluent:rules": [{ "name": "code", "expr": "this.code == 7" }]
               }]
@@ -405,12 +456,17 @@ public class AvroInlineRuleValidatorTests
         var validator = new AvroInlineRuleValidator(schema);
 
         child.Add("code", 7);
-        validator.Validate(Serialize(record, schema), 18, failFast: false);
+        var payload = Serialize(record, schema);
+        validator.Validate(payload, 18, failFast: false);
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var index = 0; index < 100; index++)
+            validator.Validate(payload, 18, failFast: false);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
         child.Add("code", 8);
         Assert.Throws<ValidationRulesFailedException>(() =>
             validator.Validate(Serialize(record, schema), 18, failFast: false));
-        await Task.CompletedTask;
+        await Assert.That(allocated).IsEqualTo(0);
     }
 
     [Test]
