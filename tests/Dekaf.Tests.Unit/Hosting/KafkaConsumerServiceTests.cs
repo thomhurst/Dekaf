@@ -18,7 +18,7 @@ public sealed class KafkaConsumerServiceTests
     [Test]
     public async Task ExecuteAsync_SubscribesToTopics()
     {
-        var consumer = Substitute.For<IKafkaConsumer<string, string>>();
+        var consumer = CreateConsumerSubstitute();
         consumer.ConsumeAsync(Arg.Any<CancellationToken>())
             .Returns(callInfo => WaitForCancellation(callInfo.ArgAt<CancellationToken>(0)));
 
@@ -47,7 +47,7 @@ public sealed class KafkaConsumerServiceTests
     [Test]
     public async Task ExecuteAsync_WithRetryTopics_SubscribesToSourceAndRetryTopics()
     {
-        var consumer = Substitute.For<IKafkaConsumer<string, string>>();
+        var consumer = CreateConsumerSubstitute();
         consumer.ConsumeAsync(Arg.Any<CancellationToken>())
             .Returns(callInfo => WaitForCancellation(callInfo.ArgAt<CancellationToken>(0)));
 
@@ -78,7 +78,7 @@ public sealed class KafkaConsumerServiceTests
     [Test]
     public async Task ExecuteAsync_ProcessesMessages()
     {
-        var consumer = Substitute.For<IKafkaConsumer<string, string>>();
+        var consumer = CreateConsumerSubstitute();
         consumer.ConsumeAsync(Arg.Any<CancellationToken>())
             .Returns(CreateResults(("topic-a", 0, 0), ("topic-a", 0, 1)));
 
@@ -101,7 +101,7 @@ public sealed class KafkaConsumerServiceTests
     [Test]
     public async Task ExecuteAsync_OnProcessError_CallsOnErrorAsync()
     {
-        var consumer = Substitute.For<IKafkaConsumer<string, string>>();
+        var consumer = CreateConsumerSubstitute();
         consumer.ConsumeAsync(Arg.Any<CancellationToken>())
             .Returns(CreateResults(("topic-a", 0, 0)));
 
@@ -127,7 +127,7 @@ public sealed class KafkaConsumerServiceTests
     [Test]
     public async Task ProcessWithRetriesAsync_UnhandledFailure_DefaultDispositionPreservesForRetry()
     {
-        var consumer = Substitute.For<IKafkaConsumer<string, string>>();
+        var consumer = CreateConsumerSubstitute();
         var service = new FailingConsumerService(consumer, ["orders"]);
         var result = CreateResult("orders", partition: 1, offset: 42);
 
@@ -159,7 +159,7 @@ public sealed class KafkaConsumerServiceTests
     [Test]
     public async Task ProcessWithRetriesAsync_UnhandledFailure_ExplicitDiscardContinues()
     {
-        var consumer = Substitute.For<IKafkaConsumer<string, string>>();
+        var consumer = CreateConsumerSubstitute();
         var service = new FailingConsumerService(
             consumer,
             ["orders"],
@@ -177,7 +177,7 @@ public sealed class KafkaConsumerServiceTests
     [Test]
     public async Task ProcessWithRetriesAsync_DeadLetterRoutingFails_DefaultDispositionPreservesForRetry()
     {
-        var consumer = Substitute.For<IKafkaConsumer<string, string>>();
+        var consumer = CreateConsumerSubstitute();
         var producer = Substitute.For<IKafkaProducer<byte[]?, byte[]?>>();
         var routingException = new InvalidOperationException("DLQ unavailable");
         producer.ProduceAsync(Arg.Any<ProducerMessage<byte[]?, byte[]?>>(), Arg.Any<CancellationToken>())
@@ -214,7 +214,7 @@ public sealed class KafkaConsumerServiceTests
     [Test]
     public async Task ProcessWithRetriesAsync_RetryTopicRoutingFails_DefaultDispositionPreservesForRetry()
     {
-        var consumer = Substitute.For<IKafkaConsumer<string, string>>();
+        var consumer = CreateConsumerSubstitute();
         var producer = Substitute.For<IKafkaProducer<byte[]?, byte[]?>>();
         var routingException = new InvalidOperationException("Retry topic unavailable");
         producer.ProduceAsync(Arg.Any<ProducerMessage<byte[]?, byte[]?>>(), Arg.Any<CancellationToken>())
@@ -285,9 +285,29 @@ public sealed class KafkaConsumerServiceTests
     }
 
     [Test]
-    public async Task ExecuteAsync_RetryTopicMessageNotDue_PausesAndSeeksWithoutProcessing()
+    public async Task StartAsync_HiddenOffsetTiming_RejectsBeforeConsuming()
     {
         var consumer = Substitute.For<IKafkaConsumer<string, string>>();
+
+        await AssertHiddenOffsetTimingRejectedAsync(consumer);
+    }
+
+    [Test]
+    public async Task StartAsync_AutomaticCommitWithHiddenOffsetTiming_RejectsBeforeConsuming()
+    {
+        var consumer = Substitute.For<IKafkaConsumer<string, string>, IConsumerCommitConfiguration>();
+        var configuration = (IConsumerCommitConfiguration)consumer;
+        configuration.OffsetCommitMode.Returns(OffsetCommitMode.Auto);
+        configuration.EnableAutoOffsetStore.Returns(true);
+        configuration.HasConsumerGroup.Returns(true);
+
+        await AssertHiddenOffsetTimingRejectedAsync(consumer);
+    }
+
+    [Test]
+    public async Task ExecuteAsync_RetryTopicMessageNotDue_PausesAndSeeksWithoutProcessing()
+    {
+        var consumer = CreateConsumerSubstitute();
         var positions = Substitute.For<IConsumerPositions>();
         var partitions = Substitute.For<IConsumerPartitions>();
         consumer.Positions.Returns(positions);
@@ -338,7 +358,7 @@ public sealed class KafkaConsumerServiceTests
     [Test]
     public async Task ExecuteAsync_RetryTopicMessageWithLaterOffset_DoesNotOverwritePendingSeek()
     {
-        var consumer = Substitute.For<IKafkaConsumer<string, string>>();
+        var consumer = CreateConsumerSubstitute();
         var positions = Substitute.For<IConsumerPositions>();
         var partitions = Substitute.For<IConsumerPartitions>();
         consumer.Positions.Returns(positions);
@@ -412,7 +432,7 @@ public sealed class KafkaConsumerServiceTests
     [Test]
     public async Task ProcessWithRetriesAsync_RetryTopicsExhausted_RoutesToDeadLetterEvenBelowMaxFailures()
     {
-        var consumer = Substitute.For<IKafkaConsumer<string, string>>();
+        var consumer = CreateConsumerSubstitute();
         var producer = Substitute.For<IKafkaProducer<byte[]?, byte[]?>>();
         producer.ProduceAsync(Arg.Any<ProducerMessage<byte[]?, byte[]?>>(), Arg.Any<CancellationToken>())
             .Returns(new ValueTask<RecordMetadata>(default(RecordMetadata)));
@@ -451,7 +471,7 @@ public sealed class KafkaConsumerServiceTests
     [Test]
     public async Task ProcessWithRetriesAsync_RetryPolicy_UsesNextRetryTopicTierAfterLocalRetries()
     {
-        var consumer = Substitute.For<IKafkaConsumer<string, string>>();
+        var consumer = CreateConsumerSubstitute();
         var producer = Substitute.For<IKafkaProducer<byte[]?, byte[]?>>();
         producer.ProduceAsync(Arg.Any<ProducerMessage<byte[]?, byte[]?>>(), Arg.Any<CancellationToken>())
             .Returns(new ValueTask<RecordMetadata>(default(RecordMetadata)));
@@ -487,7 +507,7 @@ public sealed class KafkaConsumerServiceTests
     [Test]
     public async Task ProcessWithRetriesAsync_CustomDeadLetterPolicy_ControlsRoutingAndTopic()
     {
-        var consumer = Substitute.For<IKafkaConsumer<string, string>>();
+        var consumer = CreateConsumerSubstitute();
         var producer = Substitute.For<IKafkaProducer<byte[]?, byte[]?>>();
         producer.ProduceAsync(Arg.Any<ProducerMessage<byte[]?, byte[]?>>(), Arg.Any<CancellationToken>())
             .Returns(new ValueTask<RecordMetadata>(default(RecordMetadata)));
@@ -515,7 +535,7 @@ public sealed class KafkaConsumerServiceTests
     [Test]
     public async Task ProcessWithRetriesAsync_FireAndForget_RoutesToDeadLetterViaFireAsync()
     {
-        var consumer = Substitute.For<IKafkaConsumer<string, string>>();
+        var consumer = CreateConsumerSubstitute();
         var producer = Substitute.For<IKafkaProducer<byte[]?, byte[]?>>();
         producer.FireAsync(Arg.Any<ProducerMessage<byte[]?, byte[]?>>())
             .Returns(ValueTask.CompletedTask);
@@ -536,7 +556,7 @@ public sealed class KafkaConsumerServiceTests
     [Test]
     public async Task ProcessWithRetriesAsync_ShutdownCancelsDlqWrite_PropagatesInsteadOfSwallowing()
     {
-        var consumer = Substitute.For<IKafkaConsumer<string, string>>();
+        var consumer = CreateConsumerSubstitute();
         var producer = Substitute.For<IKafkaProducer<byte[]?, byte[]?>>();
         using var cts = new CancellationTokenSource();
         producer.ProduceAsync(Arg.Any<ProducerMessage<byte[]?, byte[]?>>(), Arg.Any<CancellationToken>())
@@ -566,7 +586,7 @@ public sealed class KafkaConsumerServiceTests
     [Test]
     public async Task StopAsync_ShutdownCancelsDlqWrite_SkipsDrainSoInDoubtRecordIsNotCommitted()
     {
-        var consumer = Substitute.For<IKafkaConsumer<string, string>>();
+        var consumer = CreateConsumerSubstitute();
         consumer.ConsumeAsync(Arg.Any<CancellationToken>())
             .Returns(callInfo => YieldOneThenWait(
                 CreateResult("orders", partition: 1, offset: 42),
@@ -613,7 +633,7 @@ public sealed class KafkaConsumerServiceTests
     [Test]
     public async Task StopAsync_DrainTimeoutCancelsDlqWrite_SkipsFinalCommit()
     {
-        var consumer = Substitute.For<IKafkaConsumer<string, string>>();
+        var consumer = CreateConsumerSubstitute();
         consumer.ConsumeAsync(Arg.Any<CancellationToken>())
             .Returns(callInfo => WaitForCancellation(callInfo.ArgAt<CancellationToken>(0)));
 
@@ -699,7 +719,7 @@ public sealed class KafkaConsumerServiceTests
     [Test]
     public async Task StopAsync_ProcessAsyncCancelledMidRecord_SkipsDrainAndFinalCommit()
     {
-        var consumer = Substitute.For<IKafkaConsumer<string, string>>();
+        var consumer = CreateConsumerSubstitute();
         consumer.ConsumeAsync(Arg.Any<CancellationToken>())
             .Returns(callInfo => YieldOneThenWait(
                 CreateResult("orders", partition: 1, offset: 42),
@@ -740,7 +760,7 @@ public sealed class KafkaConsumerServiceTests
     [Test]
     public async Task Constructor_DeadLetterPolicyWithoutOptions_Throws()
     {
-        var consumer = Substitute.For<IKafkaConsumer<string, string>>();
+        var consumer = CreateConsumerSubstitute();
         var policy = Substitute.For<IDeadLetterPolicy<string, string>>();
 
         await Assert.That(() => new FailingConsumerService(
@@ -754,7 +774,7 @@ public sealed class KafkaConsumerServiceTests
     [Test]
     public async Task StopAsync_CommitsOffsets()
     {
-        var consumer = Substitute.For<IKafkaConsumer<string, string>>();
+        var consumer = CreateConsumerSubstitute();
         consumer.ConsumeAsync(Arg.Any<CancellationToken>())
             .Returns(callInfo => WaitForCancellation(callInfo.ArgAt<CancellationToken>(0)));
 
@@ -774,7 +794,7 @@ public sealed class KafkaConsumerServiceTests
     [Test]
     public async Task StopAsync_CommitFails_DoesNotThrow()
     {
-        var consumer = Substitute.For<IKafkaConsumer<string, string>>();
+        var consumer = CreateConsumerSubstitute();
         consumer.ConsumeAsync(Arg.Any<CancellationToken>())
             .Returns(callInfo => WaitForCancellation(callInfo.ArgAt<CancellationToken>(0)));
         consumer.CommitAsync(Arg.Any<CancellationToken>())
@@ -800,7 +820,7 @@ public sealed class KafkaConsumerServiceTests
     [Test]
     public async Task StopAsync_DrainOnShutdownTrue_DrainsBufferedMessages()
     {
-        var consumer = Substitute.For<IKafkaConsumer<string, string>>();
+        var consumer = CreateConsumerSubstitute();
         consumer.ConsumeAsync(Arg.Any<CancellationToken>())
             .Returns(callInfo => WaitForCancellation(callInfo.ArgAt<CancellationToken>(0)));
 
@@ -849,7 +869,7 @@ public sealed class KafkaConsumerServiceTests
     [Test]
     public async Task StopAsync_DrainOnShutdownFalse_SkipsDrain()
     {
-        var consumer = Substitute.For<IKafkaConsumer<string, string>>();
+        var consumer = CreateConsumerSubstitute();
         consumer.ConsumeAsync(Arg.Any<CancellationToken>())
             .Returns(callInfo => WaitForCancellation(callInfo.ArgAt<CancellationToken>(0)));
 
@@ -871,7 +891,7 @@ public sealed class KafkaConsumerServiceTests
     [Test]
     public async Task StopAsync_DrainOnShutdown_CommitsOffsetsAfterDrain()
     {
-        var consumer = Substitute.For<IKafkaConsumer<string, string>>();
+        var consumer = CreateConsumerSubstitute();
         consumer.ConsumeAsync(Arg.Any<CancellationToken>())
             .Returns(callInfo => WaitForCancellation(callInfo.ArgAt<CancellationToken>(0)));
 
@@ -897,7 +917,7 @@ public sealed class KafkaConsumerServiceTests
     [Test]
     public async Task StopAsync_DrainTimeoutElapsed_CompletesAndCommits()
     {
-        var consumer = Substitute.For<IKafkaConsumer<string, string>>();
+        var consumer = CreateConsumerSubstitute();
         consumer.ConsumeAsync(Arg.Any<CancellationToken>())
             .Returns(callInfo => WaitForCancellation(callInfo.ArgAt<CancellationToken>(0)));
 
@@ -977,7 +997,7 @@ public sealed class KafkaConsumerServiceTests
     [Test]
     public async Task DisposeAsync_AwaitsConsumerDisposal()
     {
-        var consumer = Substitute.For<IKafkaConsumer<string, string>>();
+        var consumer = CreateConsumerSubstitute();
         var disposal = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         consumer.DisposeAsync().Returns(_ => new ValueTask(disposal.Task));
         var service = new TestConsumerService(consumer, ["topic-a"]);
@@ -996,7 +1016,7 @@ public sealed class KafkaConsumerServiceTests
     [Test]
     public async Task Dispose_InvokesConsumerDisposal()
     {
-        var consumer = Substitute.For<IKafkaConsumer<string, string>>();
+        var consumer = CreateConsumerSubstitute();
         var service = new TestConsumerService(consumer, ["topic-a"]);
 
         service.Dispose();
@@ -1124,6 +1144,40 @@ public sealed class KafkaConsumerServiceTests
             ?? throw new InvalidOperationException("ProcessWithRetriesAsync method not found.");
 
         return (ValueTask)method.Invoke(service, [result, cancellationToken])!;
+    }
+
+    private static IKafkaConsumer<string, string> CreateConsumerSubstitute()
+    {
+        var consumer = Substitute.For<
+            IKafkaConsumer<string, string>,
+            IConsumerOffsetStoreTimingConfiguration>();
+        var configuration = (IConsumerOffsetStoreTimingConfiguration)consumer;
+        configuration.OffsetCommitMode.Returns(OffsetCommitMode.Auto);
+        configuration.EnableAutoOffsetStore.Returns(true);
+        configuration.HasConsumerGroup.Returns(true);
+        configuration.StoresOffsetsOnDelivery.Returns(false);
+        return consumer;
+    }
+
+    private static async Task AssertHiddenOffsetTimingRejectedAsync(
+        IKafkaConsumer<string, string> consumer)
+    {
+        var service = new TestConsumerService(consumer, ["orders"]);
+
+        InvalidOperationException? caught = null;
+        try
+        {
+            await service.StartAsync(CancellationToken.None);
+            await service.ExecuteTask!;
+        }
+        catch (InvalidOperationException ex)
+        {
+            caught = ex;
+        }
+
+        await Assert.That(caught).IsNotNull();
+        await Assert.That(caught!.Message).Contains(nameof(IConsumerOffsetStoreTimingConfiguration));
+        await consumer.DidNotReceive().InitializeAsync(Arg.Any<CancellationToken>());
     }
 
     private static void SetDlqProducer(

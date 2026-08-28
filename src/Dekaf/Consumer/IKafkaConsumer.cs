@@ -282,8 +282,9 @@ public interface IConsumerCommitConfiguration
 /// Optional capability exposing when a consumer stages offsets for automatic commit.
 /// </summary>
 /// <remarks>
-/// Dekaf's built-in consumers implement this interface. Consumer wrappers can implement it to
-/// preserve delivery-safety validation performed by hosted processing services.
+/// Dekaf's built-in consumers implement this interface. Consumer wrappers used by
+/// <c>KafkaConsumerService</c> must expose it when automatic grouped commits are enabled;
+/// otherwise the service cannot prove that failed records remain uncommitted and fails closed.
 /// </remarks>
 public interface IConsumerOffsetStoreTimingConfiguration : IConsumerCommitConfiguration
 {

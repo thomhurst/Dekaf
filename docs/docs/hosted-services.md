@@ -175,7 +175,7 @@ When `ProcessAsync` throws, the service works through these layers:
 
 The terminal disposition defaults to `MessageFailureDisposition.Retry`. The exception exits the consume loop, the failed record stays uncommitted, and it is redelivered after restart or rebalance. Under the generic host's default `BackgroundServiceExceptionBehavior`, the failure also stops the host. If that behavior is configured to ignore background-service exceptions, this consumer service still stops; the record remains available for a later service instance.
 
-This guarantee requires after-processing offset staging. `KafkaConsumerService` rejects consumers configured with `WithAtMostOnceProcessing()` at startup because `OffsetStoreTiming.OnDelivery` can commit a record before `ProcessAsync` reports failure. Use the default `WithAtLeastOnceProcessing()` semantics with hosted consumer services.
+This guarantee requires after-processing offset staging. `KafkaConsumerService` rejects consumers configured with `WithAtMostOnceProcessing()` at startup because `OffsetStoreTiming.OnDelivery` can commit a record before `ProcessAsync` reports failure. Consumer decorators must forward `IConsumerOffsetStoreTimingConfiguration`; the service fails closed when automatic grouped commits are enabled but timing is hidden. Use the default `WithAtLeastOnceProcessing()` semantics with hosted consumer services.
 
 Override `GetFailureDispositionAsync` to explicitly discard failures your application considers non-retryable. Returning `Discard` allows the loop to continue and acknowledges the record when the next message is pulled, so use it only when losing that record's work is intentional:
 

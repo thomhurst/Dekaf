@@ -156,21 +156,7 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        if (_consumer is IConsumerOffsetStoreTimingConfiguration
-            {
-                OffsetCommitMode: OffsetCommitMode.Auto,
-                EnableAutoOffsetStore: true,
-                HasConsumerGroup: true,
-                StoresOffsetsOnDelivery: true
-            })
-        {
-            throw new InvalidOperationException(
-                $"{nameof(KafkaConsumerService<TKey, TValue>)} requires " +
-                $"{nameof(OffsetStoreTiming)}.{nameof(OffsetStoreTiming.AfterProcessing)} because its default " +
-                $"{nameof(MessageFailureDisposition)}.{nameof(MessageFailureDisposition.Retry)} must leave failed " +
-                "records uncommitted. Remove WithAtMostOnceProcessing() or use a custom hosted service that " +
-                "explicitly accepts at-most-once failure semantics.");
-        }
+        ValidateRetrySafeOffsetConfiguration();
 
         // Enable raw byte capture and create DLQ producer if configured
         if (_deadLetterOptions is not null && _consumer is IRawRecordAccessor rawAccessor)
@@ -227,6 +213,44 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
             LogConsumerServiceFailed(ex);
             throw;
         }
+    }
+
+    private void ValidateRetrySafeOffsetConfiguration()
+    {
+        if (_consumer is IConsumerOffsetStoreTimingConfiguration timingConfiguration)
+        {
+            if (timingConfiguration is
+                {
+                    OffsetCommitMode: OffsetCommitMode.Auto,
+                    EnableAutoOffsetStore: true,
+                    HasConsumerGroup: true,
+                    StoresOffsetsOnDelivery: true
+                })
+            {
+                throw new InvalidOperationException(
+                    $"{nameof(KafkaConsumerService<TKey, TValue>)} requires " +
+                    $"{nameof(OffsetStoreTiming)}.{nameof(OffsetStoreTiming.AfterProcessing)} because its default " +
+                    $"{nameof(MessageFailureDisposition)}.{nameof(MessageFailureDisposition.Retry)} must leave failed " +
+                    "records uncommitted. Remove WithAtMostOnceProcessing() or use a custom hosted service that " +
+                    "explicitly accepts at-most-once failure semantics.");
+            }
+
+            return;
+        }
+
+        if (_consumer is IConsumerCommitConfiguration commitConfiguration &&
+            (commitConfiguration.OffsetCommitMode != OffsetCommitMode.Auto ||
+             !commitConfiguration.EnableAutoOffsetStore ||
+             !commitConfiguration.HasConsumerGroup))
+        {
+            return;
+        }
+
+        throw new InvalidOperationException(
+            $"{nameof(KafkaConsumerService<TKey, TValue>)} cannot verify retry-safe offset staging because the " +
+            $"consumer does not implement {nameof(IConsumerOffsetStoreTimingConfiguration)}. Consumer wrappers " +
+            "must expose this capability so on-delivery staging cannot bypass " +
+            $"{nameof(MessageFailureDisposition)}.{nameof(MessageFailureDisposition.Retry)}.");
     }
 
     public override async Task StopAsync(CancellationToken cancellationToken)
