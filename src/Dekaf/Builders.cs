@@ -101,6 +101,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     private bool _enableAdaptiveConnections = true;
     private int _maxConnectionsPerBroker = ProducerOptions.DefaultMaxConnectionsPerBroker;
     private bool _isMaxConnectionsPerBrokerConfigured;
+    private long? _scaleCooldownMsOverride;
     private bool _enableDeliveryDiagnostics;
     private readonly Dictionary<string, ApplicationTelemetryMetric> _applicationMetrics = new(StringComparer.Ordinal);
 
@@ -337,6 +338,15 @@ public sealed class ProducerBuilder<TKey, TValue>
         _enableAdaptiveConnections = true;
         _maxConnectionsPerBroker = maxConnections;
         _isMaxConnectionsPerBrokerConfigured = true;
+        return this;
+    }
+
+    internal ProducerBuilder<TKey, TValue> WithAdaptiveScaleCooldownForTesting(TimeSpan cooldown)
+    {
+        if (cooldown < TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(cooldown), "Adaptive scale cooldown cannot be negative");
+
+        _scaleCooldownMsOverride = (long)cooldown.TotalMilliseconds;
         return this;
     }
 
@@ -1489,6 +1499,7 @@ public sealed class ProducerBuilder<TKey, TValue>
             RetryPolicy = _retryPolicy,
             EnableAdaptiveConnections = _enableAdaptiveConnections,
             MaxConnectionsPerBroker = _maxConnectionsPerBroker,
+            ScaleCooldownMsOverride = _scaleCooldownMsOverride,
             EnableDeliveryDiagnostics = _enableDeliveryDiagnostics,
             ApplicationMetrics = _applicationMetrics.Count > 0 ? _applicationMetrics.Values.ToArray() : []
         };
