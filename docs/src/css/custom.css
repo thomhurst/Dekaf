@@ -155,12 +155,12 @@ body {
 .menu__list-item-collapsible,
 .menu__link { border-radius: 6px; }
 
-.theme-doc-sidebar-container .menu__link {
+.theme-doc-sidebar-menu .menu__link {
   border-left: 3px solid transparent;
   line-height: 1.45;
 }
 
-.theme-doc-sidebar-container .menu__link--active:not(.menu__link--sublist) {
+.theme-doc-sidebar-menu .menu__link--active:not(.menu__link--sublist) {
   border-left-color: var(--dekaf-lime);
   color: var(--ifm-menu-color-active);
   background: var(--dekaf-accent-wash);
@@ -168,7 +168,7 @@ body {
   font-weight: 700;
 }
 
-.theme-doc-sidebar-container .menu__link--active:not(.menu__link--sublist)::after {
+.theme-doc-sidebar-menu .menu__link--active:not(.menu__link--sublist)::after {
   width: 5px;
   height: 5px;
   flex: 0 0 auto;
@@ -343,6 +343,11 @@ tbody tr:nth-child(even) { background: rgba(105, 81, 232, 0.035); }
 
 @media (max-width: 996px) {
   :root { --ifm-navbar-height: 3.75rem; }
+
+  /* A backdrop filter makes fixed descendants use the navbar as their containing
+     block, clipping Docusaurus' mobile sidebar and backdrop to the header height. */
+  .navbar { backdrop-filter: none; }
+  .navbar-sidebar { background: var(--ifm-background-surface-color); }
   .theme-doc-sidebar-container { background: var(--ifm-background-surface-color); }
 }
 
