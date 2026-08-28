@@ -5826,8 +5826,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     // The first adaptive group owns a different physical slot 0. Logical
                     // route fencing cannot represent that identity change (0 -> 0), so drain
                     // the old stream completely before ApplyScaleUp drops its pin.
-                    if (_connectionCount == 1
-                        && !_hasScaledConnectionGroup
+                    if (_isIdempotent
+                        && IsFirstSlotZeroIdentitySwap()
                         && Volatile.Read(ref _totalPendingResponseCount) > 0)
                     {
                         return ScaleUpAwaitingSlotZeroDrain;
@@ -6212,7 +6212,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         var oldCount = _connectionCount;
         // A true singleton comes from the endpoint cache, while the new indexed group owns
         // a different slot 0. Drop the old pin so routing adopts the group's real connection.
-        if (oldCount == 1 && !_hasScaledConnectionGroup)
+        if (IsFirstSlotZeroIdentitySwap())
             _pinnedConnections[0] = null;
 
         _hasScaledConnectionGroup = true;
@@ -6251,6 +6251,18 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
         LogAdaptiveScaleUp(_brokerId, oldCount, actualCount);
         return actualCount;
+    }
+
+    private bool IsFirstSlotZeroIdentitySwap()
+    {
+        if (_connectionCount != 1 || _hasScaledConnectionGroup)
+            return false;
+
+        var pinnedConnection = _pinnedConnections[0];
+        // Custom pools cannot prove group identity, so preserve the correctness fence.
+        return pinnedConnection is null
+            || _connectionPool is not IConnectionGroupIdentitySource identitySource
+            || !identitySource.IsConnectionAtIndex(_brokerId, 0, pinnedConnection);
     }
 
     /// <summary>

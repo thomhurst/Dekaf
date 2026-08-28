@@ -71,6 +71,17 @@ internal interface IConnectionPoolDiagnostics
     int GetMaxObservedBrokerThrottleTimeMs();
 }
 
+/// <summary>
+/// Reports connection-group identity without creating or replacing connections.
+/// </summary>
+internal interface IConnectionGroupIdentitySource
+{
+    /// <summary>
+    /// Returns whether <paramref name="connection"/> is the current connection at the broker index.
+    /// </summary>
+    bool IsConnectionAtIndex(int brokerId, int index, IKafkaConnection connection);
+}
+
 internal interface IConnectionPoolStatusSource
 {
     IReadOnlyList<Diagnostics.BrokerConnectionStatus> GetBrokerConnectionStatus();
