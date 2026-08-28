@@ -201,7 +201,17 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
         {
             await foreach (var result in _consumer.ConsumeAsync(stoppingToken).ConfigureAwait(false))
             {
-                await ProcessTrackingInDoubtAsync(result, stoppingToken).ConfigureAwait(false);
+                // Keep this catch in the long-lived loop state machine. An async helper would
+                // allocate its own state-machine box whenever ProcessAsync suspends.
+                try
+                {
+                    await ProcessWithRetriesAsync(result, stoppingToken).ConfigureAwait(false);
+                }
+                catch
+                {
+                    _hasInDoubtFailedRecord = true;
+                    throw;
+                }
             }
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
@@ -332,7 +342,17 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
                 }
 
                 drainedCount++;
-                await ProcessTrackingInDoubtAsync(result.Value, drainCts.Token).ConfigureAwait(false);
+                // Keep this catch in the long-lived drain state machine for the same reason as
+                // the main consume loop: an async helper would allocate once per drained record.
+                try
+                {
+                    await ProcessWithRetriesAsync(result.Value, drainCts.Token).ConfigureAwait(false);
+                }
+                catch
+                {
+                    _hasInDoubtFailedRecord = true;
+                    throw;
+                }
 
                 LogDrainProgress(drainedCount);
             }
@@ -427,28 +447,8 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
         }
     }
 
-    /// <summary>
-    /// Runs the record through the failure-handling pipeline, flagging it in-doubt if handling
-    /// escapes (e.g. shutdown cancelled its awaited DLQ write, or ProcessAsync honored
-    /// cancellation). An in-doubt record must never become committable: any further pull would
-    /// mark it proven, and an explicit commit under auto mode would vouch for it directly — so
-    /// StopAsync consults this flag to skip draining and the final commit.
-    /// </summary>
-    private async ValueTask ProcessTrackingInDoubtAsync(
-        ConsumeResult<TKey, TValue> result, CancellationToken cancellationToken)
-    {
-        try
-        {
-            await ProcessWithRetriesAsync(result, cancellationToken).ConfigureAwait(false);
-        }
-        catch
-        {
-            _hasInDoubtFailedRecord = true;
-            throw;
-        }
-    }
-
-    private async ValueTask ProcessWithRetriesAsync(
+    /// <summary>Processes one record through local retries and durable failure routing.</summary>
+    internal async ValueTask ProcessWithRetriesAsync(
         ConsumeResult<TKey, TValue> result, CancellationToken stoppingToken)
     {
         if (PostponeRetryTopicMessageIfNeeded(result, stoppingToken))
