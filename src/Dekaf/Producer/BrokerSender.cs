@@ -840,6 +840,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private const long ScaleCooldownMs = 5_000;
     private const long PartitionLimitedDiagnosticIntervalMs = 15_000;
     private const double ScaleUtilizationThreshold = 0.7;
+    private const int ScaleUpAwaitingSlotZeroDrain = -1;
 
     private const int MaxScaleStep = 3; // Cap per scale-up to avoid over-provisioning from a brief spike
 
@@ -1522,6 +1523,20 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 {
                     var hasUnreadEvent = !_isIdempotent && eventReader.TryPeek(out _);
                     var scaledToCount = MaybeScaleConnections(carryOver, hasUnreadEvent);
+
+                    if (scaledToCount == ScaleUpAwaitingSlotZeroDrain)
+                    {
+                        // The first adaptive scale replaces endpoint-cache slot 0 with the
+                        // indexed group's distinct slot 0. Stop admitting new writes until
+                        // every request on the old physical stream completes; otherwise a
+                        // logically unchanged partition can cross streams and violate broker
+                        // append order or idempotent sequence order.
+                        await WaitForAnyResponseAsync(
+                                SelectPendingResponseWaitMs(ComputeNextWakeupMs(carryOver)),
+                                cancellationToken)
+                            .ConfigureAwait(false);
+                        continue;
+                    }
 
                     if (scaledToCount > 0)
                     {
@@ -5786,7 +5801,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// so the send loop is never blocked by TCP handshakes or connection draining.
     /// Field mutations happen on the send loop thread when the background task completes
     /// (polled each iteration).
-    /// Returns the new connection count if scaling completed this iteration, or 0 otherwise.
+    /// Returns the new connection count when scaling completes, 0 when no action is required,
+    /// or <see cref="ScaleUpAwaitingSlotZeroDrain"/> while the original slot 0 is draining.
     /// </summary>
     private int MaybeScaleConnections(PartitionCarryOver carryOver, bool hasUnreadEvent)
     {
@@ -5800,14 +5816,34 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 return 0; // Still connecting — send loop continues unblocked
 
             var task = _pendingScaleTask;
-            _pendingScaleTask = null;
 
             if (task.Status == TaskStatus.RanToCompletion)
             {
                 var actualCount = task.Result;
                 if (actualCount > _connectionCount)
                 {
-                    return ApplyScaleUp(actualCount);
+                    // Use one identity snapshot for both the drain decision and pin update.
+                    // A concurrent slot replacement between separate checks could otherwise
+                    // skip the drain using the old identity, then drop the pin using the new one.
+                    var slotZeroIdentitySwap = IsFirstSlotZeroIdentitySwap();
+
+                    // A pool configured at width one serves slot 0 from its endpoint cache.
+                    // The first adaptive group owns a different physical slot 0. Logical
+                    // route fencing cannot represent that identity change (0 -> 0), so drain
+                    // the old stream completely before ApplyScaleUp drops its pin. This preserves
+                    // broker append order for non-idempotent producers and sequence order for
+                    // idempotent producers.
+                    if (slotZeroIdentitySwap
+                        && Volatile.Read(ref _totalPendingResponseCount) > 0)
+                    {
+                        if (carryOver.Count > 0)
+                            SweepExpiredCarryOver(carryOver);
+
+                        return ScaleUpAwaitingSlotZeroDrain;
+                    }
+
+                    _pendingScaleTask = null;
+                    return ApplyScaleUp(actualCount, slotZeroIdentitySwap);
                 }
             }
             else if (task.Exception is not null)
@@ -5815,6 +5851,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 LogAdaptiveScaleFailed(task.Exception.InnerException ?? task.Exception, _brokerId, _connectionCount);
             }
 
+            _pendingScaleTask = null;
             return 0;
         }
 
@@ -6175,7 +6212,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// Applies a scale-up by expanding send-loop arrays and updating the connection count.
     /// Returns the new connection count.
     /// </summary>
-    private int ApplyScaleUp(int actualCount)
+    private int ApplyScaleUp(int actualCount, bool slotZeroIdentitySwap)
     {
         // A shared pool's group can exceed this sender's ceiling (another producer with a
         // higher MaxConnectionsPerBroker may have grown it) — clamp to our array capacity.
@@ -6184,7 +6221,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         var oldCount = _connectionCount;
         // A true singleton comes from the endpoint cache, while the new indexed group owns
         // a different slot 0. Drop the old pin so routing adopts the group's real connection.
-        if (oldCount == 1 && !_hasScaledConnectionGroup)
+        if (slotZeroIdentitySwap)
             _pinnedConnections[0] = null;
 
         _hasScaledConnectionGroup = true;
@@ -6223,6 +6260,18 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
         LogAdaptiveScaleUp(_brokerId, oldCount, actualCount);
         return actualCount;
+    }
+
+    private bool IsFirstSlotZeroIdentitySwap()
+    {
+        if (_connectionCount != 1 || _hasScaledConnectionGroup)
+            return false;
+
+        var pinnedConnection = _pinnedConnections[0];
+        // Custom pools cannot prove group identity, so preserve the correctness fence.
+        return pinnedConnection is null
+            || _connectionPool is not IConnectionGroupIdentitySource identitySource
+            || !identitySource.IsConnectionAtIndex(_brokerId, 0, pinnedConnection);
     }
 
     /// <summary>

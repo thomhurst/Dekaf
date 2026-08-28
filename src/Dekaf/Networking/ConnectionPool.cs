@@ -17,6 +17,7 @@ namespace Dekaf.Networking;
 public sealed partial class ConnectionPool :
     IConnectionPool,
     IConnectionPoolDiagnostics,
+    IConnectionGroupIdentitySource,
     IConnectionPoolStatusSource,
     IBrokerThrottleProvider,
     IConnectionCapabilityObserverPool,
@@ -466,6 +467,14 @@ public sealed partial class ConnectionPool :
             .ConfigureAwait(false);
         return MarkConnectionAcquired(created);
     }
+
+    bool IConnectionGroupIdentitySource.IsConnectionAtIndex(
+        int brokerId,
+        int index,
+        IKafkaConnection connection) =>
+        _connectionGroupsById.TryGetValue(brokerId, out var group)
+        && (uint)index < (uint)group.Length
+        && ReferenceEquals(Volatile.Read(ref group[index]), connection);
 
     public async ValueTask<IKafkaConnection> GetConnectionByIndexAsync(int brokerId, int index, CancellationToken cancellationToken = default)
     {

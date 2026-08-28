@@ -507,7 +507,7 @@ public sealed class AdaptiveScaleDownTests
 
                 await pool.ScaleConnectionGroupAsync(1, 2);
                 senderType.GetMethod("ApplyScaleUp", BindingFlags.Instance | BindingFlags.NonPublic)!
-                    .Invoke(sender, [2]);
+                    .Invoke(sender, [2, false]);
                 connections[0].LastUsedTimestampMs = StaleIdleTimestamp();
                 connections[1].LastUsedTimestampMs = StaleIdleTimestamp();
 
@@ -601,7 +601,8 @@ public sealed class AdaptiveScaleDownTests
         Action<ReadyBatch, int>? rerouteBatch = null,
         bool canPhysicallyShrinkConnections = true,
         TimeSpan? disposalDrainTimeout = null,
-        BrokerUnackedByteBudget? unackedBudget = null) =>
+        BrokerUnackedByteBudget? unackedBudget = null,
+        Func<long>? getTimestamp = null) =>
         new(
             brokerId: 1, pool,
             new MetadataManager(pool, options.BootstrapServers),
@@ -619,7 +620,8 @@ public sealed class AdaptiveScaleDownTests
             logger: null,
             canPhysicallyShrinkConnections: canPhysicallyShrinkConnections,
             unackedBudget: unackedBudget,
-            disposalDrainTimeout: disposalDrainTimeout);
+            disposalDrainTimeout: disposalDrainTimeout,
+            getTimestamp: getTimestamp);
 
     private static IKafkaConnection?[] GetPinnedConnections(BrokerSender sender)
         => (IKafkaConnection?[])typeof(BrokerSender).GetField(
@@ -1246,14 +1248,14 @@ public sealed class AdaptiveScaleDownTests
         return carryOver;
     }
 
-    private static void InvokeMaybeScaleConnections(
+    private static int InvokeMaybeScaleConnections(
         BrokerSender sender,
         object? carryOver = null,
         bool hasUnreadEvent = false) =>
-        typeof(BrokerSender).GetMethod(
+        (int)typeof(BrokerSender).GetMethod(
             "MaybeScaleConnections",
             BindingFlags.Instance | BindingFlags.NonPublic)!
-            .Invoke(sender, [carryOver ?? CreateCarryOver(), hasUnreadEvent]);
+            .Invoke(sender, [carryOver ?? CreateCarryOver(), hasUnreadEvent])!;
 
     private static T GetField<T>(object instance, string fieldName) =>
         (T)instance.GetType().GetField(
@@ -1295,10 +1297,135 @@ public sealed class AdaptiveScaleDownTests
             typeof(BrokerSender).GetMethod(
                     "ApplyScaleUp",
                     BindingFlags.Instance | BindingFlags.NonPublic)!
-                .Invoke(sender, [2]);
+                .Invoke(sender, [2, true]);
 
             using var indexedLease = await GetConnectionLeaseAtIndexAsync(sender, 0);
             await Assert.That(indexedLease.Connection).IsSameReferenceAs(indexedConnection);
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
+    [Arguments(true)]
+    [Arguments(false)]
+    public async Task FirstScaleUp_WaitsForEndpointRequestsBeforeSwitchingSlotZero(bool idempotent)
+    {
+        var options = CreateOptions(idempotent);
+        var accumulator = new RecordAccumulator(options);
+        var pool = Substitute.For<IConnectionPool>();
+        var endpointConnection = Substitute.For<IKafkaConnection>();
+        endpointConnection.IsConnected.Returns(true);
+        var sender = CreateSender(pool, options, accumulator, onAcknowledgement: null);
+        await StopSendLoopAsync(sender);
+
+        try
+        {
+            GetPinnedConnections(sender)[0] = endpointConnection;
+            SetField(sender, "_pendingScaleTask", Task.FromResult(2));
+            SetField(sender, "_totalPendingResponseCount", 1);
+
+            var draining = InvokeMaybeScaleConnections(sender);
+
+            await Assert.That(draining).IsEqualTo(-1);
+            await Assert.That(GetField<int>(sender, "_connectionCount")).IsEqualTo(1);
+            await Assert.That(GetField<Task<int>?>(sender, "_pendingScaleTask") is null).IsFalse();
+            await Assert.That(GetPinnedConnections(sender)[0]).IsSameReferenceAs(endpointConnection);
+
+            SetField(sender, "_totalPendingResponseCount", 0);
+            var scaled = InvokeMaybeScaleConnections(sender);
+
+            await Assert.That(scaled).IsEqualTo(2);
+            await Assert.That(GetField<int>(sender, "_connectionCount")).IsEqualTo(2);
+            await Assert.That(GetField<Task<int>?>(sender, "_pendingScaleTask") is null).IsTrue();
+            await Assert.That(GetPinnedConnections(sender)[0] is null).IsTrue();
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task FirstScaleUp_DrainExpiresCarryOverBeforeWaiting()
+    {
+        var options = CreateOptions(idempotent: true, deliveryTimeoutMs: 1);
+        var accumulator = new RecordAccumulator(options);
+        var pool = Substitute.For<IConnectionPool>();
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        Exception? acknowledgementException = null;
+        var testTimestamp = 0L;
+        var sender = CreateSender(
+            pool,
+            options,
+            accumulator,
+            (_, _, _, _, exception) => acknowledgementException = exception,
+            getTimestamp: () => Volatile.Read(ref testTimestamp));
+        await StopSendLoopAsync(sender);
+
+        try
+        {
+            var batch = CreateTestBatch(valueTaskSourcePool, partition: 0);
+            var carryOver = CreateCarryOver(batch);
+            Volatile.Write(
+                ref testTimestamp,
+                batch.StopwatchCreatedTicks + options.DeliveryTimeoutTicks);
+            SetField(sender, "_pendingScaleTask", Task.FromResult(2));
+            SetField(sender, "_totalPendingResponseCount", 1);
+
+            var draining = InvokeMaybeScaleConnections(sender, carryOver);
+            var carryOverCount = (int)carryOver.GetType().GetProperty("Count")!.GetValue(carryOver)!;
+
+            await Assert.That(draining).IsEqualTo(-1);
+            await Assert.That(carryOverCount).IsEqualTo(0);
+            await Assert.That(acknowledgementException).IsTypeOf<KafkaTimeoutException>();
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task FirstScaleUp_SlotZeroReplacementAfterIdentityProofSkipsDrainAndKeepsPin()
+    {
+        var options = CreateOptions(idempotent: true);
+        var accumulator = new RecordAccumulator(options);
+        var indexedConnection = Substitute.For<IKafkaConnection>();
+        indexedConnection.IsConnected.Returns(true);
+        var pool = new IdentityAwareConnectionPool(
+            Substitute.For<IConnectionPool>(),
+            brokerId: 1,
+            index: 0,
+            indexedConnection,
+            replaceAfterFirstIdentityCheck: true);
+        var sender = CreateSender(
+            pool,
+            options,
+            accumulator,
+            onAcknowledgement: null,
+            canPhysicallyShrinkConnections: false);
+        await StopSendLoopAsync(sender);
+
+        try
+        {
+            GetPinnedConnections(sender)[0] = indexedConnection;
+            SetField(sender, "_pendingScaleTask", Task.FromResult(2));
+            SetField(sender, "_totalPendingResponseCount", 1);
+
+            var scaled = InvokeMaybeScaleConnections(sender);
+
+            await Assert.That(scaled).IsEqualTo(2);
+            await Assert.That(GetField<int>(sender, "_connectionCount")).IsEqualTo(2);
+            await Assert.That(GetField<Task<int>?>(sender, "_pendingScaleTask") is null).IsTrue();
+            await Assert.That(GetPinnedConnections(sender)[0]).IsSameReferenceAs(indexedConnection);
+            await Assert.That(pool.IdentityCheckCount).IsEqualTo(1);
         }
         finally
         {
@@ -1341,7 +1468,7 @@ public sealed class AdaptiveScaleDownTests
                 typeof(BrokerSender).GetMethod(
                     "ApplyScaleUp",
                     BindingFlags.Instance | BindingFlags.NonPublic)!
-                    .Invoke(sender, [2]);
+                    .Invoke(sender, [2, true]);
                 typeof(BrokerSender).GetField(
                     "_connectionCount",
                     BindingFlags.Instance | BindingFlags.NonPublic)!
@@ -1763,6 +1890,69 @@ public sealed class AdaptiveScaleDownTests
             await sender.DisposeAsync();
             await accumulator.DisposeAsync();
             await vtPool.DisposeAsync();
+        }
+    }
+
+    private sealed class IdentityAwareConnectionPool(
+        IConnectionPool inner,
+        int brokerId,
+        int index,
+        IKafkaConnection connection,
+        bool replaceAfterFirstIdentityCheck = false) : IConnectionPool, IConnectionGroupIdentitySource
+    {
+        private int _identityCheckCount;
+
+        public int IdentityCheckCount => Volatile.Read(ref _identityCheckCount);
+
+        public ValueTask<IKafkaConnection> GetConnectionAsync(
+            int requestedBrokerId,
+            CancellationToken cancellationToken = default) =>
+            inner.GetConnectionAsync(requestedBrokerId, cancellationToken);
+
+        public ValueTask<IKafkaConnection> GetConnectionByIndexAsync(
+            int requestedBrokerId,
+            int requestedIndex,
+            CancellationToken cancellationToken = default) =>
+            inner.GetConnectionByIndexAsync(requestedBrokerId, requestedIndex, cancellationToken);
+
+        public ValueTask<IKafkaConnection> GetConnectionAsync(
+            string host,
+            int port,
+            CancellationToken cancellationToken = default) =>
+            inner.GetConnectionAsync(host, port, cancellationToken);
+
+        public void RegisterBroker(int requestedBrokerId, string host, int port) =>
+            inner.RegisterBroker(requestedBrokerId, host, port);
+
+        public ValueTask<int> ScaleConnectionGroupAsync(
+            int requestedBrokerId,
+            int newCount,
+            CancellationToken cancellationToken = default) =>
+            inner.ScaleConnectionGroupAsync(requestedBrokerId, newCount, cancellationToken);
+
+        public ValueTask<IKafkaConnection?> ShrinkConnectionGroupAsync(
+            int requestedBrokerId,
+            int newCount,
+            CancellationToken cancellationToken = default) =>
+            inner.ShrinkConnectionGroupAsync(requestedBrokerId, newCount, cancellationToken);
+
+        public ValueTask RemoveConnectionAsync(int requestedBrokerId) =>
+            inner.RemoveConnectionAsync(requestedBrokerId);
+
+        public ValueTask CloseAllAsync() => inner.CloseAllAsync();
+
+        public ValueTask DisposeAsync() => inner.DisposeAsync();
+
+        public bool IsConnectionAtIndex(
+            int requestedBrokerId,
+            int requestedIndex,
+            IKafkaConnection requestedConnection)
+        {
+            var identityCheckCount = Interlocked.Increment(ref _identityCheckCount);
+            return requestedBrokerId == brokerId
+            && requestedIndex == index
+            && ReferenceEquals(requestedConnection, connection)
+            && (!replaceAfterFirstIdentityCheck || identityCheckCount == 1);
         }
     }
 }
