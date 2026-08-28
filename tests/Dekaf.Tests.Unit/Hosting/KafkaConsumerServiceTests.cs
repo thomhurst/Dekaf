@@ -160,18 +160,68 @@ public sealed class KafkaConsumerServiceTests
     public async Task ProcessWithRetriesAsync_UnhandledFailure_ExplicitDiscardContinues()
     {
         var consumer = CreateConsumerSubstitute();
+        ConfigureStrictManualOffsetStore(consumer);
         var service = new FailingConsumerService(
             consumer,
             ["orders"],
             failureDisposition: MessageFailureDisposition.Discard);
+        var result = CreateResult("orders", partition: 1, offset: 42);
 
         await ProcessWithRetriesAsync(
             service,
-            CreateResult("orders", partition: 1, offset: 42),
+            result,
             CancellationToken.None);
 
         await Assert.That(service.FailureContexts).Count().IsEqualTo(1);
         await Assert.That(service.FailureContexts[0].Stage).IsEqualTo(MessageFailureStage.Processing);
+        consumer.Received(1).StoreOffset(result);
+    }
+
+    [Test]
+    public async Task ProcessWithRetriesAsync_DeadLetterRouted_StrictManualModeStoresOffset()
+    {
+        var consumer = CreateConsumerSubstitute();
+        ConfigureStrictManualOffsetStore(consumer);
+        var producer = Substitute.For<IKafkaProducer<byte[]?, byte[]?>>();
+        producer.ProduceAsync(Arg.Any<ProducerMessage<byte[]?, byte[]?>>(), Arg.Any<CancellationToken>())
+            .Returns(new ValueTask<RecordMetadata>(default(RecordMetadata)));
+        var service = new FailingConsumerService(
+            consumer,
+            ["orders"],
+            deadLetterOptions: new DeadLetterOptions());
+        SetDlqProducer(service, producer);
+        var result = CreateResult("orders", partition: 1, offset: 42);
+
+        await ProcessWithRetriesAsync(service, result, CancellationToken.None);
+
+        consumer.Received(1).StoreOffset(result);
+    }
+
+    [Test]
+    public async Task ProcessWithRetriesAsync_RetryTopicRouted_StrictManualModeStoresOffset()
+    {
+        var consumer = CreateConsumerSubstitute();
+        ConfigureStrictManualOffsetStore(consumer);
+        var producer = Substitute.For<IKafkaProducer<byte[]?, byte[]?>>();
+        producer.ProduceAsync(Arg.Any<ProducerMessage<byte[]?, byte[]?>>(), Arg.Any<CancellationToken>())
+            .Returns(new ValueTask<RecordMetadata>(default(RecordMetadata)));
+        var service = new FailingConsumerService(
+            consumer,
+            ["orders"],
+            deadLetterOptions: new DeadLetterOptions
+            {
+                MaxFailures = 2,
+                RetryTopics = new RetryTopicOptions
+                {
+                    Delays = [TimeSpan.FromSeconds(5)]
+                }
+            });
+        SetDlqProducer(service, producer);
+        var result = CreateResult("orders", partition: 1, offset: 42);
+
+        await ProcessWithRetriesAsync(service, result, CancellationToken.None);
+
+        consumer.Received(1).StoreOffset(result);
     }
 
     [Test]
@@ -1157,6 +1207,13 @@ public sealed class KafkaConsumerServiceTests
         configuration.HasConsumerGroup.Returns(true);
         configuration.StoresOffsetsOnDelivery.Returns(false);
         return consumer;
+    }
+
+    private static void ConfigureStrictManualOffsetStore(IKafkaConsumer<string, string> consumer)
+    {
+        var configuration = (IConsumerOffsetStoreTimingConfiguration)consumer;
+        configuration.OffsetCommitMode.Returns(OffsetCommitMode.Manual);
+        configuration.EnableAutoOffsetStore.Returns(false);
     }
 
     private static async Task AssertHiddenOffsetTimingRejectedAsync(
