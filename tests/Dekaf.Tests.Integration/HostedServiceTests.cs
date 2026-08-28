@@ -651,6 +651,64 @@ public sealed class HostedServiceTests(KafkaTestContainer kafka) : KafkaIntegrat
     }
 
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task RoutedFailure_StrictManualModeNotRedeliveredOnRestart(bool useRetryTopic)
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 1);
+        var groupId = $"hosted-failure-route-{Guid.NewGuid():N}";
+        var attempts = new ConcurrentBag<string>();
+        var retryDelay = TimeSpan.FromHours(1);
+        var retryTopics = useRetryTopic
+            ? new RetryTopicOptions { Delays = [retryDelay] }
+            : null;
+        var deadLetterOptions = new DeadLetterOptions
+        {
+            BootstrapServers = KafkaContainer.BootstrapServers,
+            MaxFailures = useRetryTopic ? 2 : 1,
+            RetryTopics = retryTopics
+        };
+        var routedTopic = retryTopics?.GetRetryTopic(topic, retryDelay) ?? topic + ".DLQ";
+        await KafkaContainer.CreateTopicAsync(routedTopic, partitions: 1);
+
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        await producer.ProduceAsync(topic, "k1", "fail-1", CancellationToken.None);
+        await producer.ProduceAsync(topic, "k2", "ok-1", CancellationToken.None);
+
+        await RunRoutedFailureServiceAsync(
+            topic,
+            groupId,
+            attempts,
+            deadLetterOptions,
+            stopWhen: () => attempts.Contains("ok-1"));
+
+        await using (var offsetProbe = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithGroupId(groupId)
+            .BuildAsync())
+        {
+            var committed = await offsetProbe.GetCommittedOffsetAsync(
+                new TopicPartition(topic, 0), CancellationToken.None);
+            await Assert.That(committed).IsEqualTo(1);
+        }
+
+        await producer.ProduceAsync(topic, "k3", "ok-2", CancellationToken.None);
+
+        await RunRoutedFailureServiceAsync(
+            topic,
+            groupId,
+            attempts,
+            deadLetterOptions,
+            stopWhen: () => attempts.Contains("ok-2"));
+
+        await Assert.That(attempts.Count(value => value == "fail-1")).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task ManualCommitMode_StoredOffsetsCommitted_DespiteInterruptedRecord()
     {
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 1);
@@ -758,6 +816,39 @@ public sealed class HostedServiceTests(KafkaTestContainer kafka) : KafkaIntegrat
             {
                 host.Dispose();
             }
+        }
+    }
+
+    private async Task RunRoutedFailureServiceAsync(
+        string topic,
+        string groupId,
+        ConcurrentBag<string> attempts,
+        DeadLetterOptions deadLetterOptions,
+        Func<bool> stopWhen)
+    {
+        var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithGroupId(groupId)
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithOffsetCommitMode(OffsetCommitMode.Manual)
+            .WithAutoOffsetStore(false)
+            .BuildAsync();
+        var service = new RoutingDurabilityConsumerService(
+            consumer,
+            GlobalTestSetup.GetLoggerFactory().CreateLogger<RoutingDurabilityConsumerService>(),
+            attempts,
+            new TestTopicHolder(topic),
+            deadLetterOptions);
+
+        try
+        {
+            await service.StartAsync(CancellationToken.None);
+            await WaitForConditionAsync(stopWhen, TimeSpan.FromSeconds(45));
+            await service.StopAsync(CancellationToken.None);
+        }
+        finally
+        {
+            await service.DisposeAsync();
         }
     }
 
@@ -1066,6 +1157,36 @@ public sealed class HostedServiceTests(KafkaTestContainer kafka) : KafkaIntegrat
 
             _receivedMessages.Add(result.Value!);
             return ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed class RoutingDurabilityConsumerService : KafkaConsumerService<string, string>
+    {
+        private readonly ConcurrentBag<string> _attempts;
+        private readonly TestTopicHolder _topicHolder;
+
+        public RoutingDurabilityConsumerService(
+            IKafkaConsumer<string, string> consumer,
+            ILogger<RoutingDurabilityConsumerService> logger,
+            ConcurrentBag<string> attempts,
+            TestTopicHolder topicHolder,
+            DeadLetterOptions deadLetterOptions)
+            : base(consumer, logger, deadLetterOptions)
+        {
+            _attempts = attempts;
+            _topicHolder = topicHolder;
+        }
+
+        protected override IEnumerable<string> Topics => [_topicHolder.Topic];
+
+        protected override ValueTask ProcessAsync(
+            ConsumeResult<string, string> result,
+            CancellationToken cancellationToken)
+        {
+            _attempts.Add(result.Value!);
+            return result.Value?.StartsWith("fail-", StringComparison.Ordinal) == true
+                ? ValueTask.FromException(new InvalidOperationException($"Intentional failure for {result.Value}"))
+                : ValueTask.CompletedTask;
         }
     }
 

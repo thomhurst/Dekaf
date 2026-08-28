@@ -496,6 +496,7 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
                     .ConfigureAwait(false);
                 if (retryTopicOutcome.Result == RetryTopicRouteResult.Routed)
                 {
+                    StoreResolvedOffsetIfRequired(result);
                     return;
                 }
 
@@ -511,6 +512,7 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
                         .ConfigureAwait(false);
                     if (deadLetterException is null)
                     {
+                        StoreResolvedOffsetIfRequired(result);
                         return;
                     }
 
@@ -565,18 +567,7 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
 
         if (disposition == MessageFailureDisposition.Discard)
         {
-            // With automatic offset storage disabled, continuing the loop does not stage the
-            // discarded record. Store it explicitly so the next periodic or final commit makes
-            // the caller's discard decision durable.
-            if (_consumer is IConsumerCommitConfiguration
-                {
-                    EnableAutoOffsetStore: false,
-                    HasConsumerGroup: true
-                })
-            {
-                _consumer.StoreOffset(result);
-            }
-
+            StoreResolvedOffsetIfRequired(result);
             LogMessageDiscarded(result.Topic, result.Partition, result.Offset, failureCount, stage);
             return;
         }
@@ -587,6 +578,21 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
         }
 
         ExceptionDispatchInfo.Capture(routingException ?? processingException).Throw();
+    }
+
+    private void StoreResolvedOffsetIfRequired(ConsumeResult<TKey, TValue> result)
+    {
+        // Framework-resolved records never return to application code. In strict manual-store
+        // mode, stage them explicitly so the next commit makes the resolution
+        // durable and does not route or discard the same record again after restart.
+        if (_consumer is IConsumerCommitConfiguration
+            {
+                EnableAutoOffsetStore: false,
+                HasConsumerGroup: true
+            })
+        {
+            _consumer.StoreOffset(result);
+        }
     }
 
     private static int GetNextRetryTopicFailureCount(int previousFailureCount) => previousFailureCount + 1;
