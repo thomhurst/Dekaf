@@ -474,7 +474,7 @@ public sealed partial class ConnectionPool :
         IKafkaConnection connection) =>
         _connectionGroupsById.TryGetValue(brokerId, out var group)
         && (uint)index < (uint)group.Length
-        && ReferenceEquals(group[index], connection);
+        && ReferenceEquals(Volatile.Read(ref group[index]), connection);
 
     public async ValueTask<IKafkaConnection> GetConnectionByIndexAsync(int brokerId, int index, CancellationToken cancellationToken = default)
     {
