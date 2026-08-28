@@ -564,7 +564,7 @@ public sealed class HostedServiceTests(KafkaTestContainer kafka) : KafkaIntegrat
     }
 
     [Test]
-    public async Task UnhandledFailure_ExplicitDiscard_CommitsAndContinues()
+    public async Task UnhandledFailure_ExplicitDiscard_StrictManualModeNotRedeliveredOnRestart()
     {
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 1);
         var groupId = $"hosted-failure-discard-{Guid.NewGuid():N}";
@@ -579,12 +579,13 @@ public sealed class HostedServiceTests(KafkaTestContainer kafka) : KafkaIntegrat
             .BuildAsync();
 
         await producer.ProduceAsync(topic, "k1", "fail-1", CancellationToken.None);
-        await producer.ProduceAsync(topic, "k2", "ok-1", CancellationToken.None);
 
         var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithOffsetCommitMode(OffsetCommitMode.Manual)
+            .WithAutoOffsetStore(false)
             .BuildAsync();
         var service = new FailureDispositionConsumerService(
             consumer,
@@ -596,9 +597,7 @@ public sealed class HostedServiceTests(KafkaTestContainer kafka) : KafkaIntegrat
         try
         {
             await service.StartAsync(CancellationToken.None);
-            await WaitForConditionAsync(
-                () => processed.Contains("ok-1") && failure.FailureObserved.Task.IsCompleted,
-                TimeSpan.FromSeconds(45));
+            await failure.FailureObserved.Task.WaitAsync(TimeSpan.FromSeconds(45));
             await service.StopAsync(CancellationToken.None);
         }
         finally
@@ -613,11 +612,42 @@ public sealed class HostedServiceTests(KafkaTestContainer kafka) : KafkaIntegrat
         var committed = await offsetProbe.GetCommittedOffsetAsync(
             new TopicPartition(topic, 0), CancellationToken.None);
 
-        await Assert.That(committed).IsEqualTo(2);
+        await Assert.That(committed).IsEqualTo(1);
         await Assert.That(processed).DoesNotContain("fail-1");
-        await Assert.That(processed).Contains("ok-1");
         await Assert.That(failure.Context).IsNotNull();
         await Assert.That(failure.Context!.Value.Result.Offset).IsEqualTo(0);
+
+        await producer.ProduceAsync(topic, "k2", "ok-1", CancellationToken.None);
+
+        var restartFailure = new FailureDispositionHolder(
+            failOnce: false,
+            disposition: MessageFailureDisposition.Discard);
+        var restartConsumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithGroupId(groupId)
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithOffsetCommitMode(OffsetCommitMode.Manual)
+            .WithAutoOffsetStore(false)
+            .BuildAsync();
+        var restartService = new FailureDispositionConsumerService(
+            restartConsumer,
+            GlobalTestSetup.GetLoggerFactory().CreateLogger<FailureDispositionConsumerService>(),
+            processed,
+            new TestTopicHolder(topic),
+            restartFailure);
+
+        try
+        {
+            await restartService.StartAsync(CancellationToken.None);
+            await WaitForConditionAsync(() => processed.Contains("ok-1"), TimeSpan.FromSeconds(45));
+            await restartService.StopAsync(CancellationToken.None);
+        }
+        finally
+        {
+            await restartService.DisposeAsync();
+        }
+
+        await Assert.That(restartFailure.Context).IsNull();
     }
 
     [Test]

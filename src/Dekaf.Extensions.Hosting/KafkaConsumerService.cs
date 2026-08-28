@@ -565,6 +565,18 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
 
         if (disposition == MessageFailureDisposition.Discard)
         {
+            // With automatic offset storage disabled, continuing the loop does not stage the
+            // discarded record. Store it explicitly so the next periodic or final commit makes
+            // the caller's discard decision durable.
+            if (_consumer is IConsumerCommitConfiguration
+                {
+                    EnableAutoOffsetStore: false,
+                    HasConsumerGroup: true
+                })
+            {
+                _consumer.StoreOffset(result);
+            }
+
             LogMessageDiscarded(result.Topic, result.Partition, result.Offset, failureCount, stage);
             return;
         }
