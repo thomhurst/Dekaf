@@ -1246,14 +1246,14 @@ public sealed class AdaptiveScaleDownTests
         return carryOver;
     }
 
-    private static void InvokeMaybeScaleConnections(
+    private static int InvokeMaybeScaleConnections(
         BrokerSender sender,
         object? carryOver = null,
         bool hasUnreadEvent = false) =>
-        typeof(BrokerSender).GetMethod(
+        (int)typeof(BrokerSender).GetMethod(
             "MaybeScaleConnections",
             BindingFlags.Instance | BindingFlags.NonPublic)!
-            .Invoke(sender, [carryOver ?? CreateCarryOver(), hasUnreadEvent]);
+            .Invoke(sender, [carryOver ?? CreateCarryOver(), hasUnreadEvent])!;
 
     private static T GetField<T>(object instance, string fieldName) =>
         (T)instance.GetType().GetField(
@@ -1299,6 +1299,44 @@ public sealed class AdaptiveScaleDownTests
 
             using var indexedLease = await GetConnectionLeaseAtIndexAsync(sender, 0);
             await Assert.That(indexedLease.Connection).IsSameReferenceAs(indexedConnection);
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task FirstScaleUp_WaitsForEndpointRequestsBeforeSwitchingSlotZero()
+    {
+        var options = CreateOptions(idempotent: true);
+        var accumulator = new RecordAccumulator(options);
+        var pool = Substitute.For<IConnectionPool>();
+        var endpointConnection = Substitute.For<IKafkaConnection>();
+        endpointConnection.IsConnected.Returns(true);
+        var sender = CreateSender(pool, options, accumulator, onAcknowledgement: null);
+
+        try
+        {
+            GetPinnedConnections(sender)[0] = endpointConnection;
+            SetField(sender, "_pendingScaleTask", Task.FromResult(2));
+            SetField(sender, "_totalPendingResponseCount", 1);
+
+            var draining = InvokeMaybeScaleConnections(sender);
+
+            await Assert.That(draining).IsEqualTo(-1);
+            await Assert.That(GetField<int>(sender, "_connectionCount")).IsEqualTo(1);
+            await Assert.That(GetField<Task<int>?>(sender, "_pendingScaleTask") is null).IsFalse();
+            await Assert.That(GetPinnedConnections(sender)[0]).IsSameReferenceAs(endpointConnection);
+
+            SetField(sender, "_totalPendingResponseCount", 0);
+            var scaled = InvokeMaybeScaleConnections(sender);
+
+            await Assert.That(scaled).IsEqualTo(2);
+            await Assert.That(GetField<int>(sender, "_connectionCount")).IsEqualTo(2);
+            await Assert.That(GetField<Task<int>?>(sender, "_pendingScaleTask") is null).IsTrue();
+            await Assert.That(GetPinnedConnections(sender)[0] is null).IsTrue();
         }
         finally
         {

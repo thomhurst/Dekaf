@@ -357,6 +357,7 @@ public sealed class MultiConnectionProducerTests(KafkaTestContainer kafka) : Kaf
             .WithBufferMemory(512UL * 1024)
             .WithBatchSize(16 * 1024)
             .WithLinger(TimeSpan.FromMilliseconds(1))
+            .WithDeliveryDiagnostics()
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
@@ -366,6 +367,13 @@ public sealed class MultiConnectionProducerTests(KafkaTestContainer kafka) : Kaf
         }
 
         await producer.FlushWithTimeoutAsync(timeoutSeconds: 60);
+        var diagnostics = ((IProducerDiagnostics)producer).GetDeliveryDiagnosticsSnapshot();
+
+        await Assert.That(diagnostics.ConnectionScaleEvents.Any(
+                static scale => scale.OldConnectionCount == 1
+                    && scale.NewConnectionCount > 1))
+            .IsTrue()
+            .Because("the delivery assertion must exercise first adaptive scale-up");
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)

@@ -840,6 +840,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private const long ScaleCooldownMs = 5_000;
     private const long PartitionLimitedDiagnosticIntervalMs = 15_000;
     private const double ScaleUtilizationThreshold = 0.7;
+    private const int ScaleUpAwaitingSlotZeroDrain = -1;
 
     private const int MaxScaleStep = 3; // Cap per scale-up to avoid over-provisioning from a brief spike
 
@@ -1522,6 +1523,20 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 {
                     var hasUnreadEvent = !_isIdempotent && eventReader.TryPeek(out _);
                     var scaledToCount = MaybeScaleConnections(carryOver, hasUnreadEvent);
+
+                    if (scaledToCount == ScaleUpAwaitingSlotZeroDrain)
+                    {
+                        // The first adaptive scale replaces endpoint-cache slot 0 with the
+                        // indexed group's distinct slot 0. Stop admitting new writes until
+                        // every request on the old physical stream completes; otherwise a
+                        // logically unchanged partition can cross streams and violate
+                        // idempotent sequence order.
+                        await WaitForAnyResponseAsync(
+                                SelectPendingResponseWaitMs(ComputeNextWakeupMs(carryOver)),
+                                cancellationToken)
+                            .ConfigureAwait(false);
+                        continue;
+                    }
 
                     if (scaledToCount > 0)
                     {
@@ -5786,7 +5801,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// so the send loop is never blocked by TCP handshakes or connection draining.
     /// Field mutations happen on the send loop thread when the background task completes
     /// (polled each iteration).
-    /// Returns the new connection count if scaling completed this iteration, or 0 otherwise.
+    /// Returns the new connection count when scaling completes, 0 when no action is required,
+    /// or <see cref="ScaleUpAwaitingSlotZeroDrain"/> while the original slot 0 is draining.
     /// </summary>
     private int MaybeScaleConnections(PartitionCarryOver carryOver, bool hasUnreadEvent)
     {
@@ -5800,13 +5816,24 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 return 0; // Still connecting — send loop continues unblocked
 
             var task = _pendingScaleTask;
-            _pendingScaleTask = null;
 
             if (task.Status == TaskStatus.RanToCompletion)
             {
                 var actualCount = task.Result;
                 if (actualCount > _connectionCount)
                 {
+                    // A pool configured at width one serves slot 0 from its endpoint cache.
+                    // The first adaptive group owns a different physical slot 0. Logical
+                    // route fencing cannot represent that identity change (0 -> 0), so drain
+                    // the old stream completely before ApplyScaleUp drops its pin.
+                    if (_connectionCount == 1
+                        && !_hasScaledConnectionGroup
+                        && Volatile.Read(ref _totalPendingResponseCount) > 0)
+                    {
+                        return ScaleUpAwaitingSlotZeroDrain;
+                    }
+
+                    _pendingScaleTask = null;
                     return ApplyScaleUp(actualCount);
                 }
             }
@@ -5815,6 +5842,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 LogAdaptiveScaleFailed(task.Exception.InnerException ?? task.Exception, _brokerId, _connectionCount);
             }
 
+            _pendingScaleTask = null;
             return 0;
         }
 
