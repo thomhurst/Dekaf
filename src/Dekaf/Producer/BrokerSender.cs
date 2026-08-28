@@ -5830,9 +5830,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     // A pool configured at width one serves slot 0 from its endpoint cache.
                     // The first adaptive group owns a different physical slot 0. Logical
                     // route fencing cannot represent that identity change (0 -> 0), so drain
-                    // the old stream completely before ApplyScaleUp drops its pin.
-                    if (_isIdempotent
-                        && slotZeroIdentitySwap
+                    // the old stream completely before ApplyScaleUp drops its pin. This preserves
+                    // broker append order for non-idempotent producers and sequence order for
+                    // idempotent producers.
+                    if (slotZeroIdentitySwap
                         && Volatile.Read(ref _totalPendingResponseCount) > 0)
                     {
                         return ScaleUpAwaitingSlotZeroDrain;

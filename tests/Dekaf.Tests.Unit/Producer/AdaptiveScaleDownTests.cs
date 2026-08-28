@@ -1308,9 +1308,11 @@ public sealed class AdaptiveScaleDownTests
     }
 
     [Test]
-    public async Task FirstScaleUp_WaitsForEndpointRequestsBeforeSwitchingSlotZero()
+    [Arguments(true)]
+    [Arguments(false)]
+    public async Task FirstScaleUp_WaitsForEndpointRequestsBeforeSwitchingSlotZero(bool idempotent)
     {
-        var options = CreateOptions(idempotent: true);
+        var options = CreateOptions(idempotent);
         var accumulator = new RecordAccumulator(options);
         var pool = Substitute.For<IConnectionPool>();
         var endpointConnection = Substitute.For<IKafkaConnection>();
@@ -1332,37 +1334,6 @@ public sealed class AdaptiveScaleDownTests
             await Assert.That(GetPinnedConnections(sender)[0]).IsSameReferenceAs(endpointConnection);
 
             SetField(sender, "_totalPendingResponseCount", 0);
-            var scaled = InvokeMaybeScaleConnections(sender);
-
-            await Assert.That(scaled).IsEqualTo(2);
-            await Assert.That(GetField<int>(sender, "_connectionCount")).IsEqualTo(2);
-            await Assert.That(GetField<Task<int>?>(sender, "_pendingScaleTask") is null).IsTrue();
-            await Assert.That(GetPinnedConnections(sender)[0] is null).IsTrue();
-        }
-        finally
-        {
-            await sender.DisposeAsync();
-            await accumulator.DisposeAsync();
-        }
-    }
-
-    [Test]
-    public async Task FirstScaleUp_NonIdempotentProducerDoesNotWaitForSlotZeroDrain()
-    {
-        var options = CreateOptions(idempotent: false);
-        var accumulator = new RecordAccumulator(options);
-        var pool = Substitute.For<IConnectionPool>();
-        var endpointConnection = Substitute.For<IKafkaConnection>();
-        endpointConnection.IsConnected.Returns(true);
-        var sender = CreateSender(pool, options, accumulator, onAcknowledgement: null);
-        await StopSendLoopAsync(sender);
-
-        try
-        {
-            GetPinnedConnections(sender)[0] = endpointConnection;
-            SetField(sender, "_pendingScaleTask", Task.FromResult(2));
-            SetField(sender, "_totalPendingResponseCount", 1);
-
             var scaled = InvokeMaybeScaleConnections(sender);
 
             await Assert.That(scaled).IsEqualTo(2);
