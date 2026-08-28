@@ -601,7 +601,8 @@ public sealed class AdaptiveScaleDownTests
         Action<ReadyBatch, int>? rerouteBatch = null,
         bool canPhysicallyShrinkConnections = true,
         TimeSpan? disposalDrainTimeout = null,
-        BrokerUnackedByteBudget? unackedBudget = null) =>
+        BrokerUnackedByteBudget? unackedBudget = null,
+        Func<long>? getTimestamp = null) =>
         new(
             brokerId: 1, pool,
             new MetadataManager(pool, options.BootstrapServers),
@@ -619,7 +620,8 @@ public sealed class AdaptiveScaleDownTests
             logger: null,
             canPhysicallyShrinkConnections: canPhysicallyShrinkConnections,
             unackedBudget: unackedBudget,
-            disposalDrainTimeout: disposalDrainTimeout);
+            disposalDrainTimeout: disposalDrainTimeout,
+            getTimestamp: getTimestamp);
 
     private static IKafkaConnection?[] GetPinnedConnections(BrokerSender sender)
         => (IKafkaConnection?[])typeof(BrokerSender).GetField(
@@ -1345,6 +1347,48 @@ public sealed class AdaptiveScaleDownTests
         {
             await sender.DisposeAsync();
             await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task FirstScaleUp_DrainExpiresCarryOverBeforeWaiting()
+    {
+        var options = CreateOptions(idempotent: true, deliveryTimeoutMs: 1);
+        var accumulator = new RecordAccumulator(options);
+        var pool = Substitute.For<IConnectionPool>();
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        Exception? acknowledgementException = null;
+        var testTimestamp = 0L;
+        var sender = CreateSender(
+            pool,
+            options,
+            accumulator,
+            (_, _, _, _, exception) => acknowledgementException = exception,
+            getTimestamp: () => Volatile.Read(ref testTimestamp));
+        await StopSendLoopAsync(sender);
+
+        try
+        {
+            var batch = CreateTestBatch(valueTaskSourcePool, partition: 0);
+            var carryOver = CreateCarryOver(batch);
+            Volatile.Write(
+                ref testTimestamp,
+                batch.StopwatchCreatedTicks + options.DeliveryTimeoutTicks);
+            SetField(sender, "_pendingScaleTask", Task.FromResult(2));
+            SetField(sender, "_totalPendingResponseCount", 1);
+
+            var draining = InvokeMaybeScaleConnections(sender, carryOver);
+            var carryOverCount = (int)carryOver.GetType().GetProperty("Count")!.GetValue(carryOver)!;
+
+            await Assert.That(draining).IsEqualTo(-1);
+            await Assert.That(carryOverCount).IsEqualTo(0);
+            await Assert.That(acknowledgementException).IsTypeOf<KafkaTimeoutException>();
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
         }
     }
 

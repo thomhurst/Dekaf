@@ -1529,8 +1529,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         // The first adaptive scale replaces endpoint-cache slot 0 with the
                         // indexed group's distinct slot 0. Stop admitting new writes until
                         // every request on the old physical stream completes; otherwise a
-                        // logically unchanged partition can cross streams and violate
-                        // idempotent sequence order.
+                        // logically unchanged partition can cross streams and violate broker
+                        // append order or idempotent sequence order.
                         await WaitForAnyResponseAsync(
                                 SelectPendingResponseWaitMs(ComputeNextWakeupMs(carryOver)),
                                 cancellationToken)
@@ -5836,6 +5836,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     if (slotZeroIdentitySwap
                         && Volatile.Read(ref _totalPendingResponseCount) > 0)
                     {
+                        if (carryOver.Count > 0)
+                            SweepExpiredCarryOver(carryOver);
+
                         return ScaleUpAwaitingSlotZeroDrain;
                     }
 
