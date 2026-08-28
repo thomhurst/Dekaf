@@ -4555,7 +4555,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         // Send loop exited — replace with a fresh BrokerSender.
         // This handles transient connection errors that killed the send loop.
         LogBrokerSenderReplaced(brokerId);
-        var replacement = CreateBrokerSender(brokerId);
+        var replacement = CreateBrokerSenderCore(brokerId);
         if (_brokerSenders.TryUpdate(brokerId, replacement, sender))
         {
             // Dispose old sender asynchronously (its finally block already cleaned up).
@@ -4588,6 +4588,26 @@ public sealed partial class KafkaProducer<TKey, TValue> :
 
     private BrokerSender CreateBrokerSender(int brokerId)
     {
+        // ConcurrentDictionary may invoke a GetOrAdd value factory multiple times. A
+        // BrokerSender starts a send loop during construction, so publish the value while
+        // serializing factory calls. Later factories then return the published sender.
+        lock (_brokerSenders)
+        {
+            if (_brokerSenders.TryGetValue(brokerId, out var sender))
+            {
+                return sender;
+            }
+
+            sender = CreateBrokerSenderCore(brokerId);
+            _brokerSenders.TryAdd(brokerId, sender);
+            return sender;
+        }
+    }
+
+    private BrokerSender CreateBrokerSenderCore(int brokerId)
+    {
+        BeforeBrokerSenderCreationForTest?.Invoke();
+
         // Epoch bump recovery is only for non-transactional idempotent producers.
         // Transactional producers manage epochs via InitTransactionsAsync.
         // Non-idempotent producers don't have producer IDs or epochs at all.
@@ -4962,6 +4982,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     }
 
     internal Action? BeforeActiveLingerWaitForTest;
+    internal Action? BeforeBrokerSenderCreationForTest;
 
     /// <inheritdoc />
     public async ValueTask InitializeAsync(CancellationToken cancellationToken = default)
