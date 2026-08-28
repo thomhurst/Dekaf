@@ -105,7 +105,10 @@ public sealed class KafkaConsumerServiceTests
         consumer.ConsumeAsync(Arg.Any<CancellationToken>())
             .Returns(CreateResults(("topic-a", 0, 0)));
 
-        var service = new FailingConsumerService(consumer, ["topic-a"]);
+        var service = new FailingConsumerService(
+            consumer,
+            ["topic-a"],
+            failureDisposition: MessageFailureDisposition.Discard);
 
         await service.StartAsync(CancellationToken.None);
 
@@ -119,6 +122,93 @@ public sealed class KafkaConsumerServiceTests
         await service.StopAsync(CancellationToken.None);
 
         await Assert.That(service.Errors).Count().IsGreaterThanOrEqualTo(1);
+    }
+
+    [Test]
+    public async Task ProcessWithRetriesAsync_UnhandledFailure_DefaultDispositionPreservesForRetry()
+    {
+        var consumer = Substitute.For<IKafkaConsumer<string, string>>();
+        var service = new FailingConsumerService(consumer, ["orders"]);
+        var result = CreateResult("orders", partition: 1, offset: 42);
+
+        InvalidOperationException? caught = null;
+        try
+        {
+            await ProcessWithRetriesAsync(service, result, CancellationToken.None);
+        }
+        catch (InvalidOperationException ex)
+        {
+            caught = ex;
+        }
+
+        await Assert.That(caught).IsNotNull();
+        await Assert.That(caught!.Message).IsEqualTo("Processing failed");
+        await Assert.That(service.FailureContexts).Count().IsEqualTo(1);
+
+        var context = service.FailureContexts[0];
+        await Assert.That(context.Result.Topic).IsEqualTo("orders");
+        await Assert.That(context.Result.Partition).IsEqualTo(1);
+        await Assert.That(context.Result.Offset).IsEqualTo(42);
+        await Assert.That(context.ProcessingException).IsSameReferenceAs(caught);
+        await Assert.That(context.AttemptNumber).IsEqualTo(1);
+        await Assert.That(context.FailureCount).IsEqualTo(1);
+        await Assert.That(context.Stage).IsEqualTo(MessageFailureStage.Processing);
+        await Assert.That(context.RoutingException).IsNull();
+    }
+
+    [Test]
+    public async Task ProcessWithRetriesAsync_UnhandledFailure_ExplicitDiscardContinues()
+    {
+        var consumer = Substitute.For<IKafkaConsumer<string, string>>();
+        var service = new FailingConsumerService(
+            consumer,
+            ["orders"],
+            failureDisposition: MessageFailureDisposition.Discard);
+
+        await ProcessWithRetriesAsync(
+            service,
+            CreateResult("orders", partition: 1, offset: 42),
+            CancellationToken.None);
+
+        await Assert.That(service.FailureContexts).Count().IsEqualTo(1);
+        await Assert.That(service.FailureContexts[0].Stage).IsEqualTo(MessageFailureStage.Processing);
+    }
+
+    [Test]
+    public async Task ProcessWithRetriesAsync_DeadLetterRoutingFails_DefaultDispositionPreservesForRetry()
+    {
+        var consumer = Substitute.For<IKafkaConsumer<string, string>>();
+        var producer = Substitute.For<IKafkaProducer<byte[]?, byte[]?>>();
+        var routingException = new InvalidOperationException("DLQ unavailable");
+        producer.ProduceAsync(Arg.Any<ProducerMessage<byte[]?, byte[]?>>(), Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromException<RecordMetadata>(routingException));
+
+        var service = new FailingConsumerService(
+            consumer,
+            ["orders"],
+            deadLetterOptions: new DeadLetterOptions());
+        SetDlqProducer(service, producer);
+
+        InvalidOperationException? caught = null;
+        try
+        {
+            await ProcessWithRetriesAsync(
+                service,
+                CreateResult("orders", partition: 1, offset: 42),
+                CancellationToken.None);
+        }
+        catch (InvalidOperationException ex)
+        {
+            caught = ex;
+        }
+
+        await Assert.That(caught).IsSameReferenceAs(routingException);
+        await Assert.That(service.FailureContexts).Count().IsEqualTo(1);
+
+        var context = service.FailureContexts[0];
+        await Assert.That(context.Stage).IsEqualTo(MessageFailureStage.DeadLetterRouting);
+        await Assert.That(context.RoutingException).IsSameReferenceAs(routingException);
+        await Assert.That(context.ProcessingException.Message).IsEqualTo("Processing failed");
     }
 
     [Test]
@@ -1019,7 +1109,10 @@ public sealed class KafkaConsumerServiceTests
 
     private sealed class FailingConsumerService : TestableKafkaConsumerService
     {
+        private readonly MessageFailureDisposition? _failureDisposition;
+
         public List<Exception> Errors { get; } = [];
+        public List<MessageFailureContext<string, string>> FailureContexts { get; } = [];
 
         public FailingConsumerService(
             IKafkaConsumer<string, string> consumer,
@@ -1027,10 +1120,12 @@ public sealed class KafkaConsumerServiceTests
             DeadLetterOptions? deadLetterOptions = null,
             IRetryPolicy? retryPolicy = null,
             IDeadLetterPolicy<string, string>? deadLetterPolicy = null,
-            KafkaConsumerServiceOptions? serviceOptions = null)
+            KafkaConsumerServiceOptions? serviceOptions = null,
+            MessageFailureDisposition? failureDisposition = null)
             : base(consumer, topics, options: serviceOptions, deadLetterOptions: deadLetterOptions,
                 retryPolicy: retryPolicy, deadLetterPolicy: deadLetterPolicy)
         {
+            _failureDisposition = failureDisposition;
         }
 
         protected override ValueTask ProcessAsync(ConsumeResult<string, string> result, CancellationToken cancellationToken)
@@ -1042,6 +1137,16 @@ public sealed class KafkaConsumerServiceTests
         {
             Errors.Add(exception);
             return ValueTask.CompletedTask;
+        }
+
+        protected override ValueTask<MessageFailureDisposition> GetFailureDispositionAsync(
+            MessageFailureContext<string, string> context,
+            CancellationToken cancellationToken)
+        {
+            FailureContexts.Add(context);
+            return _failureDisposition is { } disposition
+                ? new ValueTask<MessageFailureDisposition>(disposition)
+                : base.GetFailureDispositionAsync(context, cancellationToken);
         }
     }
 

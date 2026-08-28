@@ -120,6 +120,7 @@ The service subscribes to `Topics` itself — do not call `SubscribeTo` on the c
 | `Topics` | Yes | Topics to subscribe to. |
 | `ProcessAsync` | Yes | Handle one record. Throwing signals a processing failure. |
 | `OnErrorAsync` | No | Called on every processing failure before any retry or routing decision. Default logs. |
+| `GetFailureDispositionAsync` | No | Makes the terminal retry/discard decision when no retry or routing path succeeds. Default: `Retry`. |
 | `OnDeadLetterRoutingFailedAsync` | No | Called when a DLQ produce itself fails. Default logs. |
 | `OnRetryTopicRoutingFailedAsync` | No | Called when a retry-topic produce fails. Default logs. |
 
@@ -165,13 +166,30 @@ A scope per message is the standard pattern and its cost is negligible next to a
 
 ## Failure Handling
 
-When `ProcessAsync` throws, the service works through up to three layers, each optional:
+When `ProcessAsync` throws, the service works through these layers:
 
 1. **In-place retries** — if an `IRetryPolicy` was passed to the base constructor, the message is retried in place with the policy's delays until the policy is exhausted.
 2. **Retry topics** — if `DeadLetterOptions.RetryTopics` is configured, the message is produced to the next retry tier and the offset moves on. See [Dead Letter Queues](consumer/dead-letter-queues.md#tiered-retry-topics).
 3. **Dead letter queue** — if `DeadLetterOptions` is configured and the failure count reaches `MaxFailures` (or all retry tiers are exhausted), the original bytes are produced to the DLQ topic.
+4. **Terminal disposition** — if no configured retry or durable routing operation succeeds, `GetFailureDispositionAsync` decides whether to preserve or discard the record.
 
-With none of these configured, the failure is logged via `OnErrorAsync` and the service moves to the next message. Note what that means for delivery: the consumer's [at-least-once offset staging](consumer/delivery-semantics.md) treats a *consumed* record as processed once the loop advances, so a skipped failure is effectively dropped. Configure a DLQ (or rethrow from `OnErrorAsync` after recording the failure) if failed records must be preserved.
+The terminal disposition defaults to `MessageFailureDisposition.Retry`. The exception exits the consume loop, the failed record stays uncommitted, and it is redelivered after restart or rebalance. Under the generic host's default `BackgroundServiceExceptionBehavior`, the failure also stops the host. If that behavior is configured to ignore background-service exceptions, this consumer service still stops; the record remains available for a later service instance.
+
+Override `GetFailureDispositionAsync` to explicitly discard failures your application considers non-retryable. Returning `Discard` allows the loop to continue and acknowledges the record when the next message is pulled, so use it only when losing that record's work is intentional:
+
+```csharp
+protected override ValueTask<MessageFailureDisposition> GetFailureDispositionAsync(
+    MessageFailureContext<string, Order> context,
+    CancellationToken cancellationToken)
+{
+    if (context.ProcessingException is OrderValidationException)
+        return new(MessageFailureDisposition.Discard);
+
+    return base.GetFailureDispositionAsync(context, cancellationToken);
+}
+```
+
+`MessageFailureContext` includes the record, original processing exception, local attempt number, cumulative failure count, terminal stage, and any retry-topic or DLQ routing exception. An exception thrown by the decision hook also exits the loop and preserves the record.
 
 ```csharp
 public sealed class OrderProcessorService : KafkaConsumerService<string, Order>

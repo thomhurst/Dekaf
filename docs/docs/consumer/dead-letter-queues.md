@@ -82,22 +82,21 @@ By default (`AwaitDelivery = true`), the service awaits the broker's acknowledgm
 
 Call `FireAndForget()` (or set `AwaitDelivery = false`) to trade that guarantee for lower per-failure latency: DLQ writes become fire-and-forget, and a crash after the offset commits but before the DLQ write lands can lose the dead-letter copy. This is only worth considering when failures are frequent enough that the extra round-trip matters — for the typical case where dead-lettering is rare, keep the default.
 
-If the DLQ produce itself fails (DLQ topic missing, cluster unreachable), the service invokes `OnDeadLetterRoutingFailedAsync`, which logs by default, and then moves on — the record is *not* redelivered. Override the hook to raise an alert or stop the service if a lost dead letter is unacceptable in your system:
+If the DLQ produce itself fails (DLQ topic missing, cluster unreachable), the service invokes `OnDeadLetterRoutingFailedAsync`, which logs by default. If no other durable routing path succeeds, `GetFailureDispositionAsync` then applies its default `Retry` disposition: the exception exits the consume loop and the source record remains uncommitted for redelivery. Override the routing hook for metrics or alerts; override the disposition hook only if discarding the original record is intentional:
 
 ```csharp
 protected override ValueTask OnDeadLetterRoutingFailedAsync(
     Exception exception, ConsumeResult<string, Order> result, CancellationToken cancellationToken)
 {
     _metrics.DlqRoutingFailures.Add(1);
-    throw new InvalidOperationException(
-        $"Could not dead-letter {result.Topic}[{result.Partition}]@{result.Offset}; stopping.", exception);
+    return ValueTask.CompletedTask;
 }
 ```
 
 ## Failure Counting
 
 - **Without retry topics or a retry policy:** the record is retried in place until `MaxFailures` is reached, then dead-lettered. The default `MaxFailures = 1` dead-letters on the first failure.
-- **With an `IRetryPolicy`:** the policy's in-place retries run first; when it is exhausted, the total attempt count is compared against `MaxFailures`. Keep `MaxFailures` ≤ the policy's maximum attempts — if the policy gives up before `MaxFailures` is reached, the record is skipped without being dead-lettered (the service logs a warning whenever a failed record is skipped while a DLQ is configured).
+- **With an `IRetryPolicy`:** the policy's in-place retries run first; when it is exhausted, the total attempt count is compared against `MaxFailures`. Keep `MaxFailures` ≤ the policy's maximum attempts if every exhausted message should reach the DLQ. Otherwise terminal disposition applies; its default preserves the source record for retry.
 - **With retry topics:** each hop makes one local attempt (plus any retry-policy attempts), and the cumulative count travels with the record in headers.
 
 ## Tiered Retry Topics
@@ -120,7 +119,7 @@ With this configuration a record that keeps failing flows `orders` → `orders-r
 - When a retry-topic record arrives before its due time, the service pauses that partition, waits out the remaining delay, then resumes and reprocesses. The main topic's partitions are never paused by this.
 - When all tiers are exhausted, the record goes to the DLQ regardless of `MaxFailures`.
 
-Retry-topic and DLQ writes use the same `AwaitDelivery` setting, and retry-topic produce failures invoke `OnRetryTopicRoutingFailedAsync`.
+Retry-topic and DLQ writes use the same `AwaitDelivery` setting, and retry-topic produce failures invoke `OnRetryTopicRoutingFailedAsync`. If neither a retry-topic write nor a later DLQ write succeeds, terminal disposition defaults to preserving the source record for retry.
 
 ## Custom Routing Policy
 
