@@ -42,7 +42,7 @@ public enum MessageFailureStage
 /// <summary>
 /// Describes a message processing failure that has no durable successful outcome.
 /// </summary>
-public sealed class MessageFailureContext<TKey, TValue>
+public readonly struct MessageFailureContext<TKey, TValue>
 {
     /// <summary>
     /// Initializes a new failure context.

@@ -96,7 +96,7 @@ protected override ValueTask OnDeadLetterRoutingFailedAsync(
 ## Failure Counting
 
 - **Without retry topics or a retry policy:** the record is retried in place until `MaxFailures` is reached, then dead-lettered. The default `MaxFailures = 1` dead-letters on the first failure.
-- **With an `IRetryPolicy`:** the policy's in-place retries run first; when it is exhausted, the total attempt count is compared against `MaxFailures`. Keep `MaxFailures` ≤ the policy's maximum attempts if every exhausted message should reach the DLQ. Otherwise terminal disposition applies; its default preserves the source record for retry.
+- **With an `IRetryPolicy`:** the policy's in-place retries run first; when it is exhausted, the total attempt count is compared against `MaxFailures`. Keep `MaxFailures` ≤ the policy's maximum attempts if every exhausted message should reach the DLQ. Otherwise terminal disposition applies; the default `Retry` disposition exits the consume loop and leaves the source record uncommitted for redelivery.
 - **With retry topics:** each hop makes one local attempt (plus any retry-policy attempts), and the cumulative count travels with the record in headers.
 
 ## Tiered Retry Topics

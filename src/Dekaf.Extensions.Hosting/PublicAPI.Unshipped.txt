@@ -4,6 +4,7 @@ static Dekaf.Extensions.Hosting.DekafBuilderHostingExtensions.AddConsumerService
 Dekaf.Extensions.Hosting.MessageFailureContext<TKey, TValue>
 Dekaf.Extensions.Hosting.MessageFailureContext<TKey, TValue>.AttemptNumber.get -> int
 Dekaf.Extensions.Hosting.MessageFailureContext<TKey, TValue>.FailureCount.get -> int
+Dekaf.Extensions.Hosting.MessageFailureContext<TKey, TValue>.MessageFailureContext() -> void
 Dekaf.Extensions.Hosting.MessageFailureContext<TKey, TValue>.MessageFailureContext(Dekaf.Consumer.ConsumeResult<TKey, TValue> result, System.Exception! processingException, int attemptNumber, int failureCount, Dekaf.Extensions.Hosting.MessageFailureStage stage, System.Exception? routingException = null) -> void
 Dekaf.Extensions.Hosting.MessageFailureContext<TKey, TValue>.ProcessingException.get -> System.Exception!
 Dekaf.Extensions.Hosting.MessageFailureContext<TKey, TValue>.Result.get -> Dekaf.Consumer.ConsumeResult<TKey, TValue>
@@ -16,4 +17,4 @@ Dekaf.Extensions.Hosting.MessageFailureStage
 Dekaf.Extensions.Hosting.MessageFailureStage.DeadLetterRouting = 2 -> Dekaf.Extensions.Hosting.MessageFailureStage
 Dekaf.Extensions.Hosting.MessageFailureStage.Processing = 0 -> Dekaf.Extensions.Hosting.MessageFailureStage
 Dekaf.Extensions.Hosting.MessageFailureStage.RetryTopicRouting = 1 -> Dekaf.Extensions.Hosting.MessageFailureStage
-virtual Dekaf.Extensions.Hosting.KafkaConsumerService<TKey, TValue>.GetFailureDispositionAsync(Dekaf.Extensions.Hosting.MessageFailureContext<TKey, TValue>! context, System.Threading.CancellationToken cancellationToken) -> System.Threading.Tasks.ValueTask<Dekaf.Extensions.Hosting.MessageFailureDisposition>
+virtual Dekaf.Extensions.Hosting.KafkaConsumerService<TKey, TValue>.GetFailureDispositionAsync(Dekaf.Extensions.Hosting.MessageFailureContext<TKey, TValue> context, System.Threading.CancellationToken cancellationToken) -> System.Threading.Tasks.ValueTask<Dekaf.Extensions.Hosting.MessageFailureDisposition>

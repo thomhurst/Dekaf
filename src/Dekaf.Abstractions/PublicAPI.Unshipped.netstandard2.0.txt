@@ -38,6 +38,8 @@ Dekaf.Consumer.IConsumerCommitConfiguration
 Dekaf.Consumer.IConsumerCommitConfiguration.EnableAutoOffsetStore.get -> bool
 Dekaf.Consumer.IConsumerCommitConfiguration.HasConsumerGroup.get -> bool
 Dekaf.Consumer.IConsumerCommitConfiguration.OffsetCommitMode.get -> Dekaf.Consumer.OffsetCommitMode
+Dekaf.Consumer.IConsumerOffsetStoreTimingConfiguration
+Dekaf.Consumer.IConsumerOffsetStoreTimingConfiguration.StoresOffsetsOnDelivery.get -> bool
 Dekaf.Consumer.IConsumerCommittedOffsets
 Dekaf.Consumer.IConsumerCommittedOffsets.GetCommittedOffsetsAsync(System.Collections.Generic.IReadOnlyCollection<Dekaf.TopicPartition>! partitions, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<Dekaf.TopicPartition, Dekaf.TopicPartitionOffset>!>
 Dekaf.Consumer.IConsumerLag

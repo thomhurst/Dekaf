@@ -212,6 +212,79 @@ public sealed class KafkaConsumerServiceTests
     }
 
     [Test]
+    public async Task ProcessWithRetriesAsync_RetryTopicRoutingFails_DefaultDispositionPreservesForRetry()
+    {
+        var consumer = Substitute.For<IKafkaConsumer<string, string>>();
+        var producer = Substitute.For<IKafkaProducer<byte[]?, byte[]?>>();
+        var routingException = new InvalidOperationException("Retry topic unavailable");
+        producer.ProduceAsync(Arg.Any<ProducerMessage<byte[]?, byte[]?>>(), Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromException<RecordMetadata>(routingException));
+
+        var service = new FailingConsumerService(
+            consumer,
+            ["orders"],
+            deadLetterOptions: new DeadLetterOptions
+            {
+                MaxFailures = 3,
+                RetryTopics = new RetryTopicOptions
+                {
+                    Delays = [TimeSpan.FromSeconds(5)]
+                }
+            });
+        SetDlqProducer(service, producer);
+
+        InvalidOperationException? caught = null;
+        try
+        {
+            await ProcessWithRetriesAsync(
+                service,
+                CreateResult("orders", partition: 1, offset: 42),
+                CancellationToken.None);
+        }
+        catch (InvalidOperationException ex)
+        {
+            caught = ex;
+        }
+
+        await Assert.That(caught).IsSameReferenceAs(routingException);
+        await Assert.That(service.FailureContexts).Count().IsEqualTo(1);
+
+        var context = service.FailureContexts[0];
+        await Assert.That(context.Stage).IsEqualTo(MessageFailureStage.RetryTopicRouting);
+        await Assert.That(context.RoutingException).IsSameReferenceAs(routingException);
+        await Assert.That(context.ProcessingException.Message).IsEqualTo("Processing failed");
+    }
+
+    [Test]
+    public async Task StartAsync_AtMostOnceProcessing_RejectsIncompatibleFailureRetry()
+    {
+        var consumer = Substitute.For<
+            IKafkaConsumer<string, string>,
+            IConsumerOffsetStoreTimingConfiguration>();
+        var configuration = (IConsumerOffsetStoreTimingConfiguration)consumer;
+        configuration.OffsetCommitMode.Returns(OffsetCommitMode.Auto);
+        configuration.EnableAutoOffsetStore.Returns(true);
+        configuration.HasConsumerGroup.Returns(true);
+        configuration.StoresOffsetsOnDelivery.Returns(true);
+        var service = new TestConsumerService(consumer, ["orders"]);
+
+        InvalidOperationException? caught = null;
+        try
+        {
+            await service.StartAsync(CancellationToken.None);
+            await service.ExecuteTask!;
+        }
+        catch (InvalidOperationException ex)
+        {
+            caught = ex;
+        }
+
+        await Assert.That(caught).IsNotNull();
+        await Assert.That(caught!.Message).Contains("WithAtMostOnceProcessing");
+        await consumer.DidNotReceive().InitializeAsync(Arg.Any<CancellationToken>());
+    }
+
+    [Test]
     public async Task ExecuteAsync_RetryTopicMessageNotDue_PausesAndSeeksWithoutProcessing()
     {
         var consumer = Substitute.For<IKafkaConsumer<string, string>>();

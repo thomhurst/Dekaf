@@ -15,6 +15,7 @@ using Dekaf.Telemetry;
 
 [assembly: TypeForwardedTo(typeof(IConsumerBatchOffsetStore))]
 [assembly: TypeForwardedTo(typeof(IConsumerCommitConfiguration))]
+[assembly: TypeForwardedTo(typeof(IConsumerOffsetStoreTimingConfiguration))]
 [assembly: TypeForwardedTo(typeof(IConsumerCommittedOffsets))]
 [assembly: TypeForwardedTo(typeof(IConsumerLag))]
 [assembly: TypeForwardedTo(typeof(IConsumerPositions))]

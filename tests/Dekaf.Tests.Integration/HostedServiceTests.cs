@@ -560,7 +560,7 @@ public sealed class HostedServiceTests(KafkaTestContainer kafka) : KafkaIntegrat
         await Assert.That(processed).Contains("fail-1");
         await Assert.That(processed).Contains("ok-2");
         await Assert.That(failure.Context).IsNotNull();
-        await Assert.That(failure.Context!.Stage).IsEqualTo(MessageFailureStage.Processing);
+        await Assert.That(failure.Context!.Value.Stage).IsEqualTo(MessageFailureStage.Processing);
     }
 
     [Test]
@@ -617,7 +617,7 @@ public sealed class HostedServiceTests(KafkaTestContainer kafka) : KafkaIntegrat
         await Assert.That(processed).DoesNotContain("fail-1");
         await Assert.That(processed).Contains("ok-1");
         await Assert.That(failure.Context).IsNotNull();
-        await Assert.That(failure.Context!.Result.Offset).IsEqualTo(0);
+        await Assert.That(failure.Context!.Value.Result.Offset).IsEqualTo(0);
     }
 
     [Test]

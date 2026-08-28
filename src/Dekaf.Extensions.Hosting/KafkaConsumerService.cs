@@ -156,6 +156,22 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        if (_consumer is IConsumerOffsetStoreTimingConfiguration
+            {
+                OffsetCommitMode: OffsetCommitMode.Auto,
+                EnableAutoOffsetStore: true,
+                HasConsumerGroup: true,
+                StoresOffsetsOnDelivery: true
+            })
+        {
+            throw new InvalidOperationException(
+                $"{nameof(KafkaConsumerService<TKey, TValue>)} requires " +
+                $"{nameof(OffsetStoreTiming)}.{nameof(OffsetStoreTiming.AfterProcessing)} because its default " +
+                $"{nameof(MessageFailureDisposition)}.{nameof(MessageFailureDisposition.Retry)} must leave failed " +
+                "records uncommitted. Remove WithAtMostOnceProcessing() or use a custom hosted service that " +
+                "explicitly accepts at-most-once failure semantics.");
+        }
+
         // Enable raw byte capture and create DLQ producer if configured
         if (_deadLetterOptions is not null && _consumer is IRawRecordAccessor rawAccessor)
         {

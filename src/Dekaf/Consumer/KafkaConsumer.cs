@@ -1150,7 +1150,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     IConsumerOffsets,
     IConsumerRebalanceEventSource,
     IConsumerLoggerFactorySource,
-    IConsumerCommitConfiguration,
+    IConsumerOffsetStoreTimingConfiguration,
     IConsumerBatchOffsetStore,
     DeadLetter.IRawRecordAccessor,
     IBudgetedInstance
@@ -2177,6 +2177,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     bool IConsumerCommitConfiguration.EnableAutoOffsetStore => _options.EnableAutoOffsetStore;
 
     bool IConsumerCommitConfiguration.HasConsumerGroup => !string.IsNullOrEmpty(_options.GroupId);
+
+    bool IConsumerOffsetStoreTimingConfiguration.StoresOffsetsOnDelivery =>
+        _options.EnableAutoOffsetStore &&
+        _options.OffsetStoreTiming == OffsetStoreTiming.OnDelivery;
 
     /// <inheritdoc />
     public void RegisterMetricForSubscription(ApplicationTelemetryMetric metric)
