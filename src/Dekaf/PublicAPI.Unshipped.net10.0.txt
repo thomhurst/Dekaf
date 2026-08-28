@@ -1,4 +1,7 @@
 #nullable enable
+
+Dekaf.Consumer.IConsumerOffsetStoreTimingConfiguration (forwarded, contained in Dekaf.Abstractions)
+Dekaf.Consumer.IConsumerOffsetStoreTimingConfiguration.StoresOffsetsOnDelivery.get -> bool (forwarded, contained in Dekaf.Abstractions)
 Dekaf.Admin.AdminClient.DeleteTopicsAsync(System.Collections.Generic.IEnumerable<System.Guid>! topicIds, Dekaf.Admin.DeleteTopicsOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
 Dekaf.Admin.AdminClient.DescribeTopicsAsync(System.Collections.Generic.IEnumerable<System.Guid>! topicIds, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<System.Guid, Dekaf.Admin.TopicDescription!>!>
 Dekaf.Admin.AdminClientTopicIdExtensions

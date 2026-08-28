@@ -482,6 +482,145 @@ public sealed class HostedServiceTests(KafkaTestContainer kafka) : KafkaIntegrat
     }
 
     [Test]
+    public async Task UnhandledFailure_DefaultDisposition_RedeliveredOnRestart()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 1);
+        var groupId = $"hosted-failure-retry-{Guid.NewGuid():N}";
+        var processed = new ConcurrentBag<string>();
+        var failure = new FailureDispositionHolder(failOnce: true);
+
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        await producer.ProduceAsync(topic, "k1", "ok-1", CancellationToken.None);
+        await producer.ProduceAsync(topic, "k2", "fail-1", CancellationToken.None);
+        await producer.ProduceAsync(topic, "k3", "ok-2", CancellationToken.None);
+
+        var firstConsumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithGroupId(groupId)
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .BuildAsync();
+        var firstService = new FailureDispositionConsumerService(
+            firstConsumer,
+            GlobalTestSetup.GetLoggerFactory().CreateLogger<FailureDispositionConsumerService>(),
+            processed,
+            new TestTopicHolder(topic),
+            failure);
+
+        try
+        {
+            await firstService.StartAsync(CancellationToken.None);
+            await failure.FailureObserved.Task.WaitAsync(TimeSpan.FromSeconds(45));
+            await firstService.StopAsync(CancellationToken.None);
+        }
+        finally
+        {
+            await firstService.DisposeAsync();
+        }
+
+        await using (var offsetProbe = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithGroupId(groupId)
+            .BuildAsync())
+        {
+            var committed = await offsetProbe.GetCommittedOffsetAsync(
+                new TopicPartition(topic, 0), CancellationToken.None);
+            await Assert.That(committed).IsEqualTo(1);
+        }
+
+        var secondConsumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithGroupId(groupId)
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .BuildAsync();
+        var secondService = new FailureDispositionConsumerService(
+            secondConsumer,
+            GlobalTestSetup.GetLoggerFactory().CreateLogger<FailureDispositionConsumerService>(),
+            processed,
+            new TestTopicHolder(topic),
+            failure);
+
+        try
+        {
+            await secondService.StartAsync(CancellationToken.None);
+            await WaitForConditionAsync(
+                () => processed.Contains("fail-1") && processed.Contains("ok-2"),
+                TimeSpan.FromSeconds(45));
+            await secondService.StopAsync(CancellationToken.None);
+        }
+        finally
+        {
+            await secondService.DisposeAsync();
+        }
+
+        await Assert.That(processed.Count(value => value == "ok-1")).IsEqualTo(1);
+        await Assert.That(processed).Contains("fail-1");
+        await Assert.That(processed).Contains("ok-2");
+        await Assert.That(failure.Context).IsNotNull();
+        await Assert.That(failure.Context!.Value.Stage).IsEqualTo(MessageFailureStage.Processing);
+    }
+
+    [Test]
+    public async Task UnhandledFailure_ExplicitDiscard_CommitsAndContinues()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 1);
+        var groupId = $"hosted-failure-discard-{Guid.NewGuid():N}";
+        var processed = new ConcurrentBag<string>();
+        var failure = new FailureDispositionHolder(
+            failOnce: false,
+            disposition: MessageFailureDisposition.Discard);
+
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        await producer.ProduceAsync(topic, "k1", "fail-1", CancellationToken.None);
+        await producer.ProduceAsync(topic, "k2", "ok-1", CancellationToken.None);
+
+        var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithGroupId(groupId)
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .BuildAsync();
+        var service = new FailureDispositionConsumerService(
+            consumer,
+            GlobalTestSetup.GetLoggerFactory().CreateLogger<FailureDispositionConsumerService>(),
+            processed,
+            new TestTopicHolder(topic),
+            failure);
+
+        try
+        {
+            await service.StartAsync(CancellationToken.None);
+            await WaitForConditionAsync(
+                () => processed.Contains("ok-1") && failure.FailureObserved.Task.IsCompleted,
+                TimeSpan.FromSeconds(45));
+            await service.StopAsync(CancellationToken.None);
+        }
+        finally
+        {
+            await service.DisposeAsync();
+        }
+
+        await using var offsetProbe = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithGroupId(groupId)
+            .BuildAsync();
+        var committed = await offsetProbe.GetCommittedOffsetAsync(
+            new TopicPartition(topic, 0), CancellationToken.None);
+
+        await Assert.That(committed).IsEqualTo(2);
+        await Assert.That(processed).DoesNotContain("fail-1");
+        await Assert.That(processed).Contains("ok-1");
+        await Assert.That(failure.Context).IsNotNull();
+        await Assert.That(failure.Context!.Value.Result.Offset).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task ManualCommitMode_StoredOffsetsCommitted_DespiteInterruptedRecord()
     {
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 1);
@@ -742,6 +881,75 @@ public sealed class HostedServiceTests(KafkaTestContainer kafka) : KafkaIntegrat
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public bool TryClaim() => Interlocked.Exchange(ref _claimed, 1) == 0;
+    }
+
+    private sealed class FailureDispositionHolder(
+        bool failOnce,
+        MessageFailureDisposition? disposition = null)
+    {
+        private int _failureClaimed;
+
+        public MessageFailureDisposition? Disposition { get; } = disposition;
+        public MessageFailureContext<string, string>? Context { get; private set; }
+        public TaskCompletionSource FailureObserved { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public bool ShouldFail(string? value)
+        {
+            if (value?.StartsWith("fail-", StringComparison.Ordinal) != true)
+                return false;
+
+            return !failOnce || Interlocked.Exchange(ref _failureClaimed, 1) == 0;
+        }
+
+        public void Record(MessageFailureContext<string, string> context)
+        {
+            Context = context;
+            FailureObserved.TrySetResult();
+        }
+    }
+
+    private sealed class FailureDispositionConsumerService : KafkaConsumerService<string, string>
+    {
+        private readonly ConcurrentBag<string> _processed;
+        private readonly TestTopicHolder _topicHolder;
+        private readonly FailureDispositionHolder _failure;
+
+        public FailureDispositionConsumerService(
+            IKafkaConsumer<string, string> consumer,
+            ILogger<FailureDispositionConsumerService> logger,
+            ConcurrentBag<string> processed,
+            TestTopicHolder topicHolder,
+            FailureDispositionHolder failure)
+            : base(consumer, logger)
+        {
+            _processed = processed;
+            _topicHolder = topicHolder;
+            _failure = failure;
+        }
+
+        protected override IEnumerable<string> Topics => [_topicHolder.Topic];
+
+        protected override ValueTask ProcessAsync(
+            ConsumeResult<string, string> result,
+            CancellationToken cancellationToken)
+        {
+            if (_failure.ShouldFail(result.Value))
+                throw new InvalidOperationException($"Intentional failure for {result.Value}");
+
+            _processed.Add(result.Value!);
+            return ValueTask.CompletedTask;
+        }
+
+        protected override ValueTask<MessageFailureDisposition> GetFailureDispositionAsync(
+            MessageFailureContext<string, string> context,
+            CancellationToken cancellationToken)
+        {
+            _failure.Record(context);
+            return _failure.Disposition is { } disposition
+                ? new ValueTask<MessageFailureDisposition>(disposition)
+                : base.GetFailureDispositionAsync(context, cancellationToken);
+        }
     }
 
     private class InterruptibleConsumerService : KafkaConsumerService<string, string>

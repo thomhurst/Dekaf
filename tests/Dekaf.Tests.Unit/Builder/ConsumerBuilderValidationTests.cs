@@ -201,6 +201,7 @@ public class ConsumerBuilderValidationTests
 
         var options = GetConsumerOptions(consumer);
         var commitConfiguration = (IConsumerCommitConfiguration)consumer;
+        var offsetStoreConfiguration = (IConsumerOffsetStoreTimingConfiguration)consumer;
 
         await Assert.That(options.OffsetCommitMode).IsEqualTo(OffsetCommitMode.Auto);
         await Assert.That(options.EnableAutoOffsetStore).IsTrue();
@@ -208,6 +209,7 @@ public class ConsumerBuilderValidationTests
         await Assert.That(commitConfiguration.OffsetCommitMode).IsEqualTo(OffsetCommitMode.Auto);
         await Assert.That(commitConfiguration.EnableAutoOffsetStore).IsTrue();
         await Assert.That(commitConfiguration.HasConsumerGroup).IsTrue();
+        await Assert.That(offsetStoreConfiguration.StoresOffsetsOnDelivery).IsFalse();
     }
 
     [Test]
@@ -252,10 +254,12 @@ public class ConsumerBuilderValidationTests
             .Build();
 
         var options = GetConsumerOptions(consumer);
+        var offsetStoreConfiguration = (IConsumerOffsetStoreTimingConfiguration)consumer;
 
         await Assert.That(options.OffsetCommitMode).IsEqualTo(OffsetCommitMode.Auto);
         await Assert.That(options.EnableAutoOffsetStore).IsTrue();
         await Assert.That(options.OffsetStoreTiming).IsEqualTo(OffsetStoreTiming.OnDelivery);
+        await Assert.That(offsetStoreConfiguration.StoresOffsetsOnDelivery).IsTrue();
     }
 
     [Test]

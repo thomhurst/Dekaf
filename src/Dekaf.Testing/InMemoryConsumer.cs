@@ -20,7 +20,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     IConsumerPartitions,
     IConsumerOffsets,
     IConsumerBatchOffsetStore,
-    IConsumerCommitConfiguration
+    IConsumerOffsetStoreTimingConfiguration
 {
     private readonly record struct SnapshotPartitionBound(
         TopicPartition Partition,
@@ -370,6 +370,10 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     bool IConsumerCommitConfiguration.EnableAutoOffsetStore => _options.EnableAutoOffsetStore;
 
     bool IConsumerCommitConfiguration.HasConsumerGroup => _groupId is not null;
+
+    bool IConsumerOffsetStoreTimingConfiguration.StoresOffsetsOnDelivery =>
+        _options.EnableAutoOffsetStore &&
+        _options.OffsetStoreTiming == OffsetStoreTiming.OnDelivery;
 
 #if !NET10_0_OR_GREATER
     IReadOnlyCollection<string> IKafkaConsumer<TKey, TValue>.Subscription => Subscription;

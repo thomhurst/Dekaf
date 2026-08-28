@@ -402,5 +402,5 @@ public sealed class OrderProcessor : KafkaConsumerService<string, Order>
 }
 ```
 
-Failed messages flow `orders` → `orders-retry-5s` → `orders-retry-30s` → `orders.DLQ`, carrying headers with the source offset and failure details. See the [Hosted Consumer Services](https://thomhurst.github.io/Dekaf/docs/hosted-services) and [Dead Letter Queues](https://thomhurst.github.io/Dekaf/docs/consumer/dead-letter-queues) docs.
+Failed messages flow `orders` → `orders-retry-5s` → `orders-retry-30s` → `orders.DLQ`, carrying headers with the source offset and failure details. If no retry or durable routing path succeeds, the service preserves the source record for retry by default; override `GetFailureDispositionAsync` to explicitly discard selected failures. Hosted consumer services require after-processing offset staging and reject `WithAtMostOnceProcessing()`. See the [Hosted Consumer Services](https://thomhurst.github.io/Dekaf/docs/hosted-services) and [Dead Letter Queues](https://thomhurst.github.io/Dekaf/docs/consumer/dead-letter-queues) docs.
 

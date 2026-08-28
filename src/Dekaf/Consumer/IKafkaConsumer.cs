@@ -279,6 +279,20 @@ public interface IConsumerCommitConfiguration
 }
 
 /// <summary>
+/// Optional capability exposing when a consumer stages offsets for automatic commit.
+/// </summary>
+/// <remarks>
+/// Dekaf's built-in consumers implement this interface. Consumer wrappers used by
+/// <c>KafkaConsumerService</c> must expose it when automatic grouped commits are enabled;
+/// otherwise the service cannot prove that failed records remain uncommitted and fails closed.
+/// </remarks>
+public interface IConsumerOffsetStoreTimingConfiguration : IConsumerCommitConfiguration
+{
+    /// <summary>Gets whether consumed offsets are staged when records are delivered.</summary>
+    bool StoresOffsetsOnDelivery { get; }
+}
+
+/// <summary>
 /// Position and seek operations for a Kafka consumer.
 /// </summary>
 public interface IConsumerPositions
