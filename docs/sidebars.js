@@ -1,19 +1,15 @@
 /** @type {import('@docusaurus/plugin-content-docs').SidebarsConfig} */
 const sidebars = {
   tutorialSidebar: [
-    'intro',
-    'getting-started',
-    'migrating-from-confluent-kafka',
-    'compatibility',
-    'api-compatibility',
     {
       type: 'category',
-      label: 'Admin',
+      label: 'Start Here',
       items: [
-        'admin/topic-identifiers',
-        'admin/transaction-remediation',
-        'admin/replica-log-directories',
-        'admin/streams-group-management',
+        'intro',
+        'getting-started',
+        'compatibility',
+        'migrating-from-confluent-kafka',
+        'configuration/confluent-migration',
       ],
     },
     {
@@ -39,33 +35,35 @@ const sidebars = {
         'consumer/filtering-and-routing',
         'consumer/offset-management',
         'consumer/consumer-groups',
+        'consumer/share-consumers',
         'consumer/partitioned-processing-api',
         'consumer/linq-extensions',
         'consumer/dead-letter-queues',
         'consumer/manual-assignment',
       ],
     },
-    'hosted-services',
     {
       type: 'category',
-      label: 'Configuration',
+      label: 'Configuration & Hosting',
       items: [
         'configuration/presets',
         'configuration/producer-options',
         'configuration/consumer-options',
         'configuration/client-dns-lookup',
-        'configuration/confluent-migration',
+        'dependency-injection',
+        'hosted-services',
       ],
     },
     {
       type: 'category',
-      label: 'Serialization',
+      label: 'Serialization & Compression',
       items: [
         'serialization/built-in',
         'serialization/json',
         'serialization/schema-registry',
         'serialization/routing',
         'serialization/custom',
+        'compression',
       ],
     },
     {
@@ -77,9 +75,17 @@ const sidebars = {
         'security/oauth',
       ],
     },
-    'compression',
-    'dependency-injection',
-    'observability',
+    {
+      type: 'category',
+      label: 'Operations & Administration',
+      items: [
+        'observability',
+        'admin/topic-identifiers',
+        'admin/transaction-remediation',
+        'admin/replica-log-directories',
+        'admin/streams-group-management',
+      ],
+    },
     {
       type: 'category',
       label: 'Testing',
@@ -88,14 +94,17 @@ const sidebars = {
         'testing/fault-injection',
       ],
     },
-    'performance',
-    'benchmarks',
-    'stress-tests',
     {
       type: 'category',
-      label: 'RFCs',
-      items: ['rfcs/dekaf-streams', 'rfcs/dekaf-streams-scope'],
+      label: 'Performance & Reliability',
+      items: [
+        'performance',
+        'benchmarks',
+        'stress-tests',
+        'soak-tests',
+      ],
     },
+    'api-compatibility',
   ],
 };
 
