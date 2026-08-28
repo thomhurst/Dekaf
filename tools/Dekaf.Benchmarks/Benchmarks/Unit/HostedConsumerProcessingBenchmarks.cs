@@ -6,7 +6,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Dekaf.Benchmarks.Benchmarks.Unit;
 
-/// <summary>Measures the complete hosted-consumer processing chain for asynchronously completed handlers.</summary>
+/// <summary>Measures the complete hosted-consumer processing chain before and after wrapper removal.</summary>
 [MemoryDiagnoser(displayGenColumns: false)]
 [ShortRunJob]
 public class HostedConsumerProcessingBenchmarks
@@ -26,8 +26,11 @@ public class HostedConsumerProcessingBenchmarks
         leaderEpoch: null,
         keyDeserializer: null,
         valueDeserializer: null);
-    private AsyncConsumerService _service = null!;
+    private ConsumerService _service = null!;
     private bool _hasInDoubtFailedRecord;
+
+    [Params(false, true)]
+    public bool HandlerSuspends { get; set; }
 
     [GlobalSetup]
     public void Setup()
@@ -39,11 +42,11 @@ public class HostedConsumerProcessingBenchmarks
                 OffsetCommitMode = OffsetCommitMode.Manual,
                 EnableAutoOffsetStore = false
             });
-        _service = new AsyncConsumerService(consumer);
+        _service = new ConsumerService(consumer, HandlerSuspends);
     }
 
     [Benchmark(Baseline = true, OperationsPerInvoke = Operations)]
-    public async ValueTask<bool> AdditionalAsyncWrapper()
+    public async ValueTask<bool> Before_AdditionalAsyncWrapper()
     {
         for (var index = 0; index < Operations; index++)
             await ProcessTrackingInDoubtAsync(_result).ConfigureAwait(false);
@@ -52,7 +55,7 @@ public class HostedConsumerProcessingBenchmarks
     }
 
     [Benchmark(OperationsPerInvoke = Operations)]
-    public async ValueTask<bool> ExistingLoopStateMachine()
+    public async ValueTask<bool> After_ExistingLoopStateMachine()
     {
         for (var index = 0; index < Operations; index++)
         {
@@ -83,14 +86,19 @@ public class HostedConsumerProcessingBenchmarks
         }
     }
 
-    private sealed class AsyncConsumerService(IKafkaConsumer<string, string> consumer)
+    private sealed class ConsumerService(
+        IKafkaConsumer<string, string> consumer,
+        bool handlerSuspends)
         : KafkaConsumerService<string, string>(consumer, NullLogger.Instance)
     {
         protected override IEnumerable<string> Topics => ["orders"];
 
-        protected override async ValueTask ProcessAsync(
+        protected override ValueTask ProcessAsync(
             ConsumeResult<string, string> result,
             CancellationToken cancellationToken)
+            => handlerSuspends ? SuspendAsync() : ValueTask.CompletedTask;
+
+        private static async ValueTask SuspendAsync()
         {
             await Task.Yield();
         }

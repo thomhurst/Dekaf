@@ -160,18 +160,23 @@ public sealed class KafkaConsumerServiceTests
     public async Task ProcessWithRetriesAsync_UnhandledFailure_ExplicitDiscardContinues()
     {
         var consumer = CreateConsumerSubstitute();
+        var configuration = (IConsumerOffsetStoreTimingConfiguration)consumer;
+        configuration.OffsetCommitMode.Returns(OffsetCommitMode.Manual);
+        configuration.EnableAutoOffsetStore.Returns(false);
         var service = new FailingConsumerService(
             consumer,
             ["orders"],
             failureDisposition: MessageFailureDisposition.Discard);
+        var result = CreateResult("orders", partition: 1, offset: 42);
 
         await ProcessWithRetriesAsync(
             service,
-            CreateResult("orders", partition: 1, offset: 42),
+            result,
             CancellationToken.None);
 
         await Assert.That(service.FailureContexts).Count().IsEqualTo(1);
         await Assert.That(service.FailureContexts[0].Stage).IsEqualTo(MessageFailureStage.Processing);
+        consumer.Received(1).StoreOffset(result);
     }
 
     [Test]
