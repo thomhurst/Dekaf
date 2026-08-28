@@ -819,7 +819,7 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
             typeof(BrokerSender).GetMethod(
                 "ApplyScaleUp",
                 BindingFlags.Instance | BindingFlags.NonPublic)!
-                .Invoke(sender, [2]);
+                .Invoke(sender, [2, true]);
 
             var getConnection = typeof(BrokerSender).GetMethod(
                 "GetConnectionForPartition",

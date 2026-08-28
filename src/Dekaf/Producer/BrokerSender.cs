@@ -5822,19 +5822,24 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 var actualCount = task.Result;
                 if (actualCount > _connectionCount)
                 {
+                    // Use one identity snapshot for both the drain decision and pin update.
+                    // A concurrent slot replacement between separate checks could otherwise
+                    // skip the drain using the old identity, then drop the pin using the new one.
+                    var slotZeroIdentitySwap = IsFirstSlotZeroIdentitySwap();
+
                     // A pool configured at width one serves slot 0 from its endpoint cache.
                     // The first adaptive group owns a different physical slot 0. Logical
                     // route fencing cannot represent that identity change (0 -> 0), so drain
                     // the old stream completely before ApplyScaleUp drops its pin.
                     if (_isIdempotent
-                        && IsFirstSlotZeroIdentitySwap()
+                        && slotZeroIdentitySwap
                         && Volatile.Read(ref _totalPendingResponseCount) > 0)
                     {
                         return ScaleUpAwaitingSlotZeroDrain;
                     }
 
                     _pendingScaleTask = null;
-                    return ApplyScaleUp(actualCount);
+                    return ApplyScaleUp(actualCount, slotZeroIdentitySwap);
                 }
             }
             else if (task.Exception is not null)
@@ -6203,7 +6208,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// Applies a scale-up by expanding send-loop arrays and updating the connection count.
     /// Returns the new connection count.
     /// </summary>
-    private int ApplyScaleUp(int actualCount)
+    private int ApplyScaleUp(int actualCount, bool slotZeroIdentitySwap)
     {
         // A shared pool's group can exceed this sender's ceiling (another producer with a
         // higher MaxConnectionsPerBroker may have grown it) — clamp to our array capacity.
@@ -6212,7 +6217,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         var oldCount = _connectionCount;
         // A true singleton comes from the endpoint cache, while the new indexed group owns
         // a different slot 0. Drop the old pin so routing adopts the group's real connection.
-        if (IsFirstSlotZeroIdentitySwap())
+        if (slotZeroIdentitySwap)
             _pinnedConnections[0] = null;
 
         _hasScaledConnectionGroup = true;

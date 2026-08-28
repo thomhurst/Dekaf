@@ -507,7 +507,7 @@ public sealed class AdaptiveScaleDownTests
 
                 await pool.ScaleConnectionGroupAsync(1, 2);
                 senderType.GetMethod("ApplyScaleUp", BindingFlags.Instance | BindingFlags.NonPublic)!
-                    .Invoke(sender, [2]);
+                    .Invoke(sender, [2, false]);
                 connections[0].LastUsedTimestampMs = StaleIdleTimestamp();
                 connections[1].LastUsedTimestampMs = StaleIdleTimestamp();
 
@@ -1295,7 +1295,7 @@ public sealed class AdaptiveScaleDownTests
             typeof(BrokerSender).GetMethod(
                     "ApplyScaleUp",
                     BindingFlags.Instance | BindingFlags.NonPublic)!
-                .Invoke(sender, [2]);
+                .Invoke(sender, [2, true]);
 
             using var indexedLease = await GetConnectionLeaseAtIndexAsync(sender, 0);
             await Assert.That(indexedLease.Connection).IsSameReferenceAs(indexedConnection);
@@ -1378,7 +1378,7 @@ public sealed class AdaptiveScaleDownTests
     }
 
     [Test]
-    public async Task FirstScaleUp_AlreadyIndexedSlotZeroSkipsDrainAndKeepsPin()
+    public async Task FirstScaleUp_SlotZeroReplacementAfterIdentityProofSkipsDrainAndKeepsPin()
     {
         var options = CreateOptions(idempotent: true);
         var accumulator = new RecordAccumulator(options);
@@ -1388,7 +1388,8 @@ public sealed class AdaptiveScaleDownTests
             Substitute.For<IConnectionPool>(),
             brokerId: 1,
             index: 0,
-            indexedConnection);
+            indexedConnection,
+            replaceAfterFirstIdentityCheck: true);
         var sender = CreateSender(
             pool,
             options,
@@ -1409,6 +1410,7 @@ public sealed class AdaptiveScaleDownTests
             await Assert.That(GetField<int>(sender, "_connectionCount")).IsEqualTo(2);
             await Assert.That(GetField<Task<int>?>(sender, "_pendingScaleTask") is null).IsTrue();
             await Assert.That(GetPinnedConnections(sender)[0]).IsSameReferenceAs(indexedConnection);
+            await Assert.That(pool.IdentityCheckCount).IsEqualTo(1);
         }
         finally
         {
@@ -1451,7 +1453,7 @@ public sealed class AdaptiveScaleDownTests
                 typeof(BrokerSender).GetMethod(
                     "ApplyScaleUp",
                     BindingFlags.Instance | BindingFlags.NonPublic)!
-                    .Invoke(sender, [2]);
+                    .Invoke(sender, [2, true]);
                 typeof(BrokerSender).GetField(
                     "_connectionCount",
                     BindingFlags.Instance | BindingFlags.NonPublic)!
@@ -1880,8 +1882,13 @@ public sealed class AdaptiveScaleDownTests
         IConnectionPool inner,
         int brokerId,
         int index,
-        IKafkaConnection connection) : IConnectionPool, IConnectionGroupIdentitySource
+        IKafkaConnection connection,
+        bool replaceAfterFirstIdentityCheck = false) : IConnectionPool, IConnectionGroupIdentitySource
     {
+        private int _identityCheckCount;
+
+        public int IdentityCheckCount => Volatile.Read(ref _identityCheckCount);
+
         public ValueTask<IKafkaConnection> GetConnectionAsync(
             int requestedBrokerId,
             CancellationToken cancellationToken = default) =>
@@ -1924,9 +1931,13 @@ public sealed class AdaptiveScaleDownTests
         public bool IsConnectionAtIndex(
             int requestedBrokerId,
             int requestedIndex,
-            IKafkaConnection requestedConnection) =>
-            requestedBrokerId == brokerId
+            IKafkaConnection requestedConnection)
+        {
+            var identityCheckCount = Interlocked.Increment(ref _identityCheckCount);
+            return requestedBrokerId == brokerId
             && requestedIndex == index
-            && ReferenceEquals(requestedConnection, connection);
+            && ReferenceEquals(requestedConnection, connection)
+            && (!replaceAfterFirstIdentityCheck || identityCheckCount == 1);
+        }
     }
 }
