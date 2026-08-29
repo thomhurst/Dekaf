@@ -34,4 +34,25 @@ public sealed class BenchmarkJobSelectionTests
         await Assert.That(BenchmarkJobSelection.GetExplicitJob(["--job=Unknown"]))
             .IsNull();
     }
+
+    [Test]
+    [Arguments("--job Dry")]
+    [Arguments("--job=Dry")]
+    public async Task ExpandResponseFiles_JobOption_ResolvesExplicitJob(string contents)
+    {
+        var responseFile = Path.GetTempFileName();
+        try
+        {
+            await File.WriteAllTextAsync(responseFile, contents);
+
+            var arguments = BenchmarkJobSelection.ExpandResponseFiles([$"@{responseFile}"]);
+
+            await Assert.That(BenchmarkJobSelection.GetExplicitJob(arguments))
+                .IsEqualTo(BenchmarkJob.Dry);
+        }
+        finally
+        {
+            File.Delete(responseFile);
+        }
+    }
 }

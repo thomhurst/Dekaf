@@ -6,8 +6,9 @@ using Dekaf.Benchmarks.Infrastructure;
 
 var config = DefaultConfig.Instance
     .WithOptions(ConfigOptions.DisableOptimizationsValidator);
+var benchmarkArguments = BenchmarkJobSelection.ExpandResponseFiles(args);
 
-if (BenchmarkJobSelection.GetExplicitJob(args) is { } selectedJob)
+if (BenchmarkJobSelection.GetExplicitJob(benchmarkArguments) is { } selectedJob)
 {
     var job = selectedJob switch
     {
@@ -33,4 +34,4 @@ if (BenchmarkJobSelection.GetExplicitJob(args) is { } selectedJob)
 //   dotnet run -c Release                          (run all benchmarks)
 
 BenchmarkSwitcher.FromAssembly(typeof(Program).Assembly)
-    .Run(args, config);
+    .Run(benchmarkArguments, config);
