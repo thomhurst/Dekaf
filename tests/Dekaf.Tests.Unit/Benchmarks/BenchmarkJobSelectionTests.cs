@@ -20,6 +20,8 @@ public sealed class BenchmarkJobSelectionTests
             .IsEqualTo(BenchmarkJob.Medium);
         await Assert.That(BenchmarkJobSelection.GetExplicitJob(["-j=Long"]))
             .IsEqualTo(BenchmarkJob.Long);
+        await Assert.That(BenchmarkJobSelection.GetExplicitJob(["--job=VeryLong"]))
+            .IsEqualTo(BenchmarkJob.VeryLong);
         await Assert.That(BenchmarkJobSelection.GetExplicitJob(["--job=Default"]))
             .IsEqualTo(BenchmarkJob.Default);
     }

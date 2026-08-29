@@ -8,6 +8,7 @@ internal enum BenchmarkJob
     Short,
     Medium,
     Long,
+    VeryLong,
     Default
 }
 
@@ -57,6 +58,7 @@ internal static class BenchmarkJobSelection
         "SHORT" => BenchmarkJob.Short,
         "MEDIUM" => BenchmarkJob.Medium,
         "LONG" => BenchmarkJob.Long,
+        "VERYLONG" => BenchmarkJob.VeryLong,
         "DEFAULT" => BenchmarkJob.Default,
         _ => null
     };
