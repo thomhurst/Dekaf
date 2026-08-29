@@ -1641,7 +1641,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 // channel would be for an already-coalesced partition and get carried over, making
                 // the spin pure waste. This is especially important for single-partition topics
                 // where coalescedCount is always 1 and every MicroLinger iteration is wasted.
-                if (waveCoalesceArmed
+                if (ShouldFormWave(_isIdempotent, _onWaveCoalesceStarted is not null)
+                    && waveCoalesceArmed
                     && coalescedCount > 0
                     && coalescedCount < maxCoalesce
                     && coalescedPartitions.Count < _knownPartitions.Count
@@ -2537,6 +2538,16 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         var batch = coalescedBatches[0];
         return batch.RecordCount != 1 || batch.CompletionSourcesCount != 1;
     }
+
+    /// <summary>
+    /// Idempotent requests skip the arrival spin. Their batches already fill almost every
+    /// request, so waiting for another partition adds delivery latency without improving
+    /// request density. The observer override preserves deterministic send-loop failure
+    /// injection in tests; production senders do not install this callback.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static bool ShouldFormWave(bool isIdempotent, bool hasWaveCoalesceObserver) =>
+        !isIdempotent || hasWaveCoalesceObserver;
 
     /// <summary>
     /// True when a response partition belongs to the expected batch. The caller proves the

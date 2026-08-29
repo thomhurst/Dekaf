@@ -318,6 +318,23 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
     }
 
     [Test]
+    public async Task ShouldFormWave_IdempotentProducerWithoutObserver_ReturnsFalse()
+    {
+        await Assert.That(BrokerSender.ShouldFormWave(
+                isIdempotent: true,
+                hasWaveCoalesceObserver: false))
+            .IsFalse();
+        await Assert.That(BrokerSender.ShouldFormWave(
+                isIdempotent: false,
+                hasWaveCoalesceObserver: false))
+            .IsTrue();
+        await Assert.That(BrokerSender.ShouldFormWave(
+                isIdempotent: true,
+                hasWaveCoalesceObserver: true))
+            .IsTrue();
+    }
+
+    [Test]
     public async Task IsMatchingResponsePartition_RequiresExactTopicPartition()
     {
         var expected = new TopicPartition("test-topic", 2);

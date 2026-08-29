@@ -52,3 +52,36 @@ public class WaveCoalesceTailBenchmarks
         _maximumArrivalGapTicks,
         _additionalBatchCount);
 }
+
+[MemoryDiagnoser]
+public class IdempotentWaveCoalesceBenchmarks
+{
+    private bool _isIdempotent;
+    private bool _hasWaveCoalesceObserver;
+    private long _quietTicks;
+
+    [GlobalSetup]
+    public void Setup()
+    {
+        _isIdempotent = true;
+        _hasWaveCoalesceObserver = false;
+        _quietTicks = Math.Max(1, Stopwatch.Frequency * 75 / 1_000_000);
+    }
+
+    [Benchmark(Baseline = true)]
+    public long LegacyWaveProbe()
+    {
+        var deadline = Stopwatch.GetTimestamp() + _quietTicks;
+        do
+        {
+            Thread.SpinWait(32);
+        }
+        while (Stopwatch.GetTimestamp() < deadline);
+
+        return deadline;
+    }
+
+    [Benchmark]
+    public bool SkipIdempotentWaveProbe() =>
+        BrokerSender.ShouldFormWave(_isIdempotent, _hasWaveCoalesceObserver);
+}
