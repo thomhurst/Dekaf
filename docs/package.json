@@ -28,7 +28,7 @@
     "@docusaurus/types": "^3.10.2"
   },
   "overrides": {
-    "serialize-javascript": "7.1.0"
+    "serialize-javascript": "7.1.1"
   },
   "browserslist": {
     "production": [
