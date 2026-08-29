@@ -9,18 +9,19 @@ var config = DefaultConfig.Instance
 
 if (BenchmarkJobSelection.GetExplicitJob(args) is { } selectedJob)
 {
-    var jobId = selectedJob switch
+    var job = selectedJob switch
     {
-        BenchmarkJob.Dry => Job.Dry.ResolvedId,
-        BenchmarkJob.Short => Job.ShortRun.ResolvedId,
-        BenchmarkJob.Medium => Job.MediumRun.ResolvedId,
-        BenchmarkJob.Long => Job.LongRun.ResolvedId,
-        BenchmarkJob.Default => Job.Default.ResolvedId,
+        BenchmarkJob.Dry => Job.Dry,
+        BenchmarkJob.Short => Job.ShortRun,
+        BenchmarkJob.Medium => Job.MediumRun,
+        BenchmarkJob.Long => Job.LongRun,
+        BenchmarkJob.Default => Job.Default,
         _ => throw new System.Diagnostics.UnreachableException()
     };
 
+    config = config.AddJob(job);
     config = config.AddFilter(new SimpleFilter(benchmarkCase =>
-        string.Equals(benchmarkCase.Job.ResolvedId, jobId, StringComparison.Ordinal)));
+        string.Equals(benchmarkCase.Job.ResolvedId, job.ResolvedId, StringComparison.Ordinal)));
 }
 
 // Pass all arguments to BenchmarkSwitcher for flexible filtering
