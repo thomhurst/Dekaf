@@ -57,4 +57,24 @@ public sealed class BenchmarkJobSelectionTests
             File.Delete(responseFile);
         }
     }
+
+    [Test]
+    public async Task ExpandResponseFiles_QuotedPath_PreservesBenchmarkDotNetWorkaround()
+    {
+        var responseFile = Path.GetTempFileName();
+        var artifactsPath = Path.Combine(Path.GetTempPath(), "benchmark results");
+        try
+        {
+            await File.WriteAllTextAsync(responseFile, $"--artifacts \"{artifactsPath}\" --job Dry");
+
+            var arguments = BenchmarkJobSelection.ExpandResponseFiles([$"@{responseFile}"]);
+
+            await Assert.That(arguments.SequenceEqual(
+                ["--artifacts", $" {artifactsPath}", "--job", "Dry"])).IsTrue();
+        }
+        finally
+        {
+            File.Delete(responseFile);
+        }
+    }
 }
