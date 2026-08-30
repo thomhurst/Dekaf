@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using System.Reflection;
 using System.Text;
 using System.Text.RegularExpressions;
 using Microsoft.CodeAnalysis;
@@ -8,8 +9,6 @@ namespace Dekaf.DocTests;
 
 internal static partial class Program
 {
-    private const string IgnorePrefix = "<!-- doc-test-ignore:";
-
     private static readonly CSharpParseOptions ParseOptions = new(
         LanguageVersion.Preview);
 
@@ -26,6 +25,7 @@ internal static partial class Program
         using System.Buffers.Binary;
         using System.Collections.Concurrent;
         using System.Collections.Generic;
+        using System.Diagnostics;
         using System.IO;
         using System.Linq;
         using System.Net;
@@ -34,6 +34,7 @@ internal static partial class Program
         using System.Security.Authentication;
         using System.Security.Cryptography;
         using System.Security.Cryptography.X509Certificates;
+        using System.Runtime.CompilerServices;
         using System.Text;
         using System.Text.Json;
         using System.Text.Json.Serialization;
@@ -85,6 +86,7 @@ internal static partial class Program
         using Dekaf.Testing;
         using Google.Cloud.Kms.V1;
         using Microsoft.AspNetCore.Builder;
+        using Microsoft.AspNetCore.Mvc;
         using Microsoft.Extensions.Configuration;
         using Microsoft.Extensions.DependencyInjection;
         using Microsoft.Extensions.Hosting;
@@ -100,86 +102,61 @@ internal static partial class Program
         var repositoryRoot = GetRepositoryRoot(args);
         var references = GetMetadataReferences();
         var snippets = ReadSnippets(repositoryRoot);
+        var jsonGenerator = LoadJsonSourceGenerator();
         var failures = new List<Failure>();
-        var compiled = 0;
-        var excluded = 0;
 
-        foreach (var snippet in snippets)
+        for (var index = 0; index < snippets.Count; index++)
         {
-            if (snippet.IgnoreReason is not null)
-            {
-                Console.WriteLine($"EXCLUDED {snippet.Id} ({snippet.IgnoreReason})");
-                excluded++;
-                continue;
-            }
-
+            var snippet = snippets[index];
             var source = BuildSource(snippet);
             var syntaxTree = CSharpSyntaxTree.ParseText(source, ParseOptions, snippet.Path);
             var outputKind = syntaxTree.GetCompilationUnitRoot().Members
                 .Any(static member => member is Microsoft.CodeAnalysis.CSharp.Syntax.GlobalStatementSyntax)
                 ? OutputKind.ConsoleApplication
                 : OutputKind.DynamicallyLinkedLibrary;
-            var compilation = CSharpCompilation.Create(
-                $"DekafDocSnippet{compiled}",
+            Compilation compilation = CSharpCompilation.Create(
+                $"DekafDocSnippet{index}",
                 [syntaxTree],
                 references,
                 CompilationOptions.WithOutputKind(outputKind));
+            ImmutableArray<Diagnostic> generatorDiagnostics = [];
+
+            if (snippet.Source.Contains("[JsonSerializable(", StringComparison.Ordinal))
+            {
+                CSharpGeneratorDriver
+                    .Create([jsonGenerator], parseOptions: ParseOptions)
+                    .RunGeneratorsAndUpdateCompilation(
+                        compilation,
+                        out compilation,
+                        out generatorDiagnostics);
+            }
 
             var errors = compilation.GetDiagnostics()
+                .Concat(generatorDiagnostics)
                 .Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error)
                 .ToArray();
 
             if (errors.Length == 0)
             {
-                compiled++;
                 continue;
             }
 
             var shownErrors = errors.Take(5).Select(FormatDiagnostic);
             var omitted = errors.Length > 5 ? $"{Environment.NewLine}  ... {errors.Length - 5} more errors" : string.Empty;
             var display = $"{snippet.Id}:{Environment.NewLine}{string.Join(Environment.NewLine, shownErrors)}{omitted}";
-            var signature = string.Join(
-                '\n',
-                errors
-                    .Select(static diagnostic => $"{diagnostic.Id}:{diagnostic.GetMessage()}")
-                    .Order(StringComparer.Ordinal));
-            failures.Add(new Failure(snippet, display, signature));
+            failures.Add(new Failure(display));
         }
 
-        Console.WriteLine($"Compiled {compiled} C# documentation snippets; excluded {excluded}.");
+        Console.WriteLine($"Compiled {snippets.Count} C# documentation snippets.");
         if (failures.Count == 0)
         {
             return 0;
         }
 
-        var fingerprint = GetFailureFingerprint(failures);
-        var baselinePath = Path.Combine(repositoryRoot, "tests", "Dekaf.DocTests", "KnownFailures.sha256");
-        if (File.Exists(baselinePath)
-            && string.Equals(File.ReadAllText(baselinePath).Trim(), fingerprint, StringComparison.OrdinalIgnoreCase))
-        {
-            Console.WriteLine($"Matched {failures.Count} known legacy snippet failures ({fingerprint}).");
-            return 0;
-        }
-
         Console.Error.WriteLine($"{failures.Count} documentation snippets failed compilation:");
         Console.Error.WriteLine(string.Join(Environment.NewLine + Environment.NewLine, failures.Select(static failure => failure.Display)));
-        Console.Error.WriteLine($"Actual known-failure fingerprint: {fingerprint}");
         return 1;
     }
-
-    private static string GetFailureFingerprint(IEnumerable<Failure> failures)
-    {
-        var content = string.Join(
-            '\n',
-            failures
-                .OrderBy(static failure => failure.Snippet.Id, StringComparer.Ordinal)
-                .Select(static failure =>
-                    $"{failure.Snippet.Id}|{GetHash(failure.Snippet.Source)}|{failure.Signature}"));
-        return GetHash(content);
-    }
-
-    private static string GetHash(string value) =>
-        Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(value)));
 
     private static string GetRepositoryRoot(string[] args)
     {
@@ -206,7 +183,10 @@ internal static partial class Program
             paths.UnionWith(platformAssemblies.Split(Path.PathSeparator));
         }
 
-        paths.UnionWith(Directory.EnumerateFiles(AppContext.BaseDirectory, "*.dll"));
+        paths.UnionWith(Directory.EnumerateFiles(AppContext.BaseDirectory, "*.dll")
+            .Where(static path => !Path.GetFileName(path).Equals(
+                "System.Text.Json.SourceGeneration.dll",
+                StringComparison.OrdinalIgnoreCase)));
         return paths
             .Select(static path => (MetadataReference)MetadataReference.CreateFromFile(path))
             .ToImmutableArray();
@@ -273,6 +253,15 @@ internal static partial class Program
     {
         var relativePath = Path.GetRelativePath(repositoryRoot, documentPath).Replace('\\', '/');
         var lines = File.ReadAllLines(documentPath);
+        var suppressionLine = Array.FindIndex(
+            lines,
+            static line => line.Contains("<!-- doc-test-", StringComparison.Ordinal));
+        if (suppressionLine >= 0)
+        {
+            throw new InvalidOperationException(
+                $"Documentation test suppression at {relativePath}:{suppressionLine + 1} is not allowed.");
+        }
+
         var ordinal = 0;
 
         for (var lineIndex = 0; lineIndex < lines.Length; lineIndex++)
@@ -283,7 +272,6 @@ internal static partial class Program
             }
 
             ordinal++;
-            var fenceIndex = lineIndex;
             var startLine = lineIndex + 2;
             var source = new StringBuilder();
             for (lineIndex++; lineIndex < lines.Length && !FenceEndRegex().IsMatch(lines[lineIndex]); lineIndex++)
@@ -296,28 +284,18 @@ internal static partial class Program
                 throw new InvalidOperationException($"Unclosed C# fence at {relativePath}:{startLine}.");
             }
 
-            var directive = fenceIndex > 0 ? lines[fenceIndex - 1].Trim() : string.Empty;
-            var ignoreReason = ParseIgnoreDirective(directive, relativePath, startLine);
-            snippets.Add(new Snippet(relativePath, ordinal, startLine, source.ToString(), ignoreReason));
+            snippets.Add(new Snippet(relativePath, ordinal, startLine, source.ToString()));
         }
     }
 
-    private static string? ParseIgnoreDirective(string directive, string relativePath, int startLine)
+    private static ISourceGenerator LoadJsonSourceGenerator()
     {
-        if (!directive.StartsWith("<!-- doc-test-", StringComparison.Ordinal))
-        {
-            return null;
-        }
-
-        var match = IgnoreDirectiveRegex().Match(directive);
-        if (!match.Success)
-        {
-            throw new InvalidOperationException(
-                $"Unknown or malformed documentation test directive before {relativePath}:{startLine}. " +
-                $"Use '{IgnorePrefix} reason -->'.");
-        }
-
-        return match.Groups[1].Value;
+        var assemblyPath = Path.Combine(AppContext.BaseDirectory, "System.Text.Json.SourceGeneration.dll");
+        var assembly = Assembly.LoadFrom(assemblyPath);
+        var generatorType = assembly.GetType(
+            "System.Text.Json.SourceGeneration.JsonSourceGenerator",
+            throwOnError: true)!;
+        return ((IIncrementalGenerator)Activator.CreateInstance(generatorType)!).AsSourceGenerator();
     }
 
     private static string BuildSource(Snippet snippet)
@@ -328,7 +306,20 @@ internal static partial class Program
             source = BuildBuilderChain(snippet, source);
         }
 
-        return $"{Prelude}{Environment.NewLine}#line {snippet.StartLine} \"{snippet.Path}\"{Environment.NewLine}{source}";
+        var snippetUsings = source
+            .ReplaceLineEndings("\n")
+            .Split('\n')
+            .Select(static line => line.Trim())
+            .Where(static line => line.StartsWith("using ", StringComparison.Ordinal))
+            .ToHashSet(StringComparer.Ordinal);
+        var prelude = string.Join(
+            Environment.NewLine,
+            Prelude
+                .ReplaceLineEndings("\n")
+                .Split('\n')
+                .Where(line => !snippetUsings.Contains(line.Trim())));
+
+        return $"{prelude}{Environment.NewLine}#line {snippet.StartLine} \"{snippet.Path}\"{Environment.NewLine}{source}";
     }
 
     private static string BuildBuilderChain(Snippet snippet, string source)
@@ -402,9 +393,6 @@ internal static partial class Program
     [GeneratedRegex("^```\\s*$", RegexOptions.CultureInvariant)]
     private static partial Regex FenceEndRegex();
 
-    [GeneratedRegex("^<!--\\s*doc-test-ignore:\\s*(.+?)\\s*-->$", RegexOptions.CultureInvariant)]
-    private static partial Regex IgnoreDirectiveRegex();
-
     [GeneratedRegex("(?s)^(\\s*(?://[^\\r\\n]*(?:\\r?\\n|$)\\s*)*)(\\.)", RegexOptions.CultureInvariant)]
     private static partial Regex BuilderChainRegex();
 
@@ -417,10 +405,10 @@ internal static partial class Program
     [GeneratedRegex("dotnet\\s+run[^\\r\\n]*?--project\\s+([^\\s\\\\]+)", RegexOptions.CultureInvariant)]
     private static partial Regex RunProjectRegex();
 
-    private sealed record Snippet(string Path, int Ordinal, int StartLine, string Source, string? IgnoreReason)
+    private sealed record Snippet(string Path, int Ordinal, int StartLine, string Source)
     {
         public string Id => $"{Path}#{Ordinal}";
     }
 
-    private sealed record Failure(Snippet Snippet, string Display, string Signature);
+    private sealed record Failure(string Display);
 }

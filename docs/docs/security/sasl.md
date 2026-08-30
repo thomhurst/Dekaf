@@ -62,7 +62,8 @@ using Dekaf;
 
 var gssapiConfig = new GssapiConfig
 {
-    ServicePrincipal = "kafka/broker.example.com@EXAMPLE.COM",
+    ServiceName = "kafka",
+    Realm = "EXAMPLE.COM",
     KeytabPath = "/path/to/client.keytab",
     Principal = "client@EXAMPLE.COM"
 };
@@ -167,16 +168,18 @@ Never hardcode credentials:
 
 ```csharp
 // ✅ Good - from environment
-var password = Environment.GetEnvironmentVariable("KAFKA_PASSWORD");
+var environmentPassword = Environment.GetEnvironmentVariable("KAFKA_PASSWORD");
 
 // ✅ Good - from configuration
-var password = configuration["Kafka:Password"];
+var configuredPassword = configuration["Kafka:Password"];
 
 // ✅ Good - from secret manager
-var password = await secretManager.GetSecretAsync("kafka-password");
+var managedPassword = await secretManager.GetSecretAsync("kafka-password");
 
 // ❌ Bad - hardcoded
-.WithSaslPlain("user", "MySecretPassword123")
+var insecureProducer = Kafka.CreateProducer<string, string>()
+    .WithBootstrapServers("localhost:9092")
+    .WithSaslPlain("user", "MySecretPassword123");
 ```
 
 ## Complete Example

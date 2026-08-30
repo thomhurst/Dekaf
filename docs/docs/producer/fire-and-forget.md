@@ -111,6 +111,18 @@ Here's how the different methods compare:
 Here's a pattern for high-throughput event streaming:
 
 ```csharp
+// Usage
+var publisher = new EventPublisher(eventProducer, NullLogger<EventPublisher>.Instance);
+
+// Publish many events quickly
+foreach (var evt in events)
+{
+    await publisher.PublishAsync(evt.Type, evt.Serialize());
+}
+
+// When shutting down
+await publisher.DisposeAsync();
+
 public class EventPublisher : IAsyncDisposable
 {
     private readonly IKafkaProducer<string, byte[]> _producer;
@@ -163,18 +175,6 @@ public class EventPublisher : IAsyncDisposable
             success, failure);
     }
 }
-
-// Usage
-var publisher = new EventPublisher(producer, logger);
-
-// Publish many events quickly
-foreach (var evt in events)
-{
-    await publisher.PublishAsync(evt.Type, evt.Serialize());
-}
-
-// When shutting down
-await publisher.DisposeAsync();
 ```
 
 ## Combining with Batching Settings

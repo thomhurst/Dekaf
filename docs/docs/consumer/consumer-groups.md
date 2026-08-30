@@ -162,6 +162,12 @@ Use `IConsumerAwareRebalanceListener` when a callback must operate on the consum
 without capturing its unrestricted instance:
 
 ```csharp
+var consumer = await Kafka.CreateConsumer<string, string>()
+    .WithBootstrapServers("localhost:9092")
+    .WithGroupId("my-group")
+    .WithRebalanceListener(new ConsumerAwareListener())
+    .BuildAsync();
+
 public sealed class ConsumerAwareListener : IConsumerAwareRebalanceListener
 {
     public ValueTask OnPartitionsAssignedAsync(
@@ -189,12 +195,6 @@ public sealed class ConsumerAwareListener : IConsumerAwareRebalanceListener
         IEnumerable<TopicPartition> partitions,
         CancellationToken ct) => ValueTask.CompletedTask;
 }
-
-var consumer = await Kafka.CreateConsumer<string, string>()
-    .WithBootstrapServers("localhost:9092")
-    .WithGroupId("my-group")
-    .WithRebalanceListener(new ConsumerAwareListener())
-    .BuildAsync();
 ```
 
 `IRebalanceConsumer` exposes commit/store, position and seek, pause/resume,

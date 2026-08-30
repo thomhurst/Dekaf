@@ -10,14 +10,15 @@ For maximum control or specialized formats, implement custom serializers.
 ## Interfaces
 
 ```csharp
-public interface ISerializer<T>
+public interface ISerializer<in T>
 {
-    void Serialize(T value, IBufferWriter<byte> output, SerializationContext context);
+    void Serialize<TWriter>(T value, ref TWriter output, SerializationContext context)
+        where TWriter : IBufferWriter<byte>, allows ref struct;
 }
 
-public interface IDeserializer<T>
+public interface IDeserializer<out T>
 {
-    T Deserialize(ReadOnlySequence<byte> data, SerializationContext context);
+    T Deserialize(ReadOnlyMemory<byte> data, SerializationContext context);
 }
 ```
 
@@ -26,9 +27,16 @@ public interface IDeserializer<T>
 ```csharp
 using Dekaf;
 
+// Usage
+var producer = await Kafka.CreateProducer<string, Order>()
+    .WithBootstrapServers("localhost:9092")
+    .WithValueSerializer(new OrderSerializer())
+    .BuildAsync();
+
 public class OrderSerializer : ISerializer<Order>, IDeserializer<Order>
 {
-    public void Serialize(Order value, IBufferWriter<byte> output, SerializationContext context)
+    public void Serialize<TWriter>(Order value, ref TWriter output, SerializationContext context)
+        where TWriter : IBufferWriter<byte>, allows ref struct
     {
         var json = JsonSerializer.SerializeToUtf8Bytes(value);
         var span = output.GetSpan(json.Length);
@@ -36,18 +44,12 @@ public class OrderSerializer : ISerializer<Order>, IDeserializer<Order>
         output.Advance(json.Length);
     }
 
-    public Order Deserialize(ReadOnlySequence<byte> data, SerializationContext context)
+    public Order Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
     {
-        return JsonSerializer.Deserialize<Order>(data.FirstSpan)
+        return JsonSerializer.Deserialize<Order>(data.Span)
             ?? throw new SerializationException("Failed to deserialize Order");
     }
 }
-
-// Usage
-var producer = await Kafka.CreateProducer<string, Order>()
-    .WithBootstrapServers("localhost:9092")
-    .WithValueSerializer(new OrderSerializer())
-    .BuildAsync();
 ```
 
 ## Zero-Allocation Serializer
@@ -57,18 +59,17 @@ Use `IBufferWriter<byte>` for zero-allocation serialization:
 ```csharp
 public class Int32Serializer : ISerializer<int>, IDeserializer<int>
 {
-    public void Serialize(int value, IBufferWriter<byte> output, SerializationContext context)
+    public void Serialize<TWriter>(int value, ref TWriter output, SerializationContext context)
+        where TWriter : IBufferWriter<byte>, allows ref struct
     {
         var span = output.GetSpan(4);
         BinaryPrimitives.WriteInt32BigEndian(span, value);
         output.Advance(4);
     }
 
-    public int Deserialize(ReadOnlySequence<byte> data, SerializationContext context)
+    public int Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
     {
-        Span<byte> buffer = stackalloc byte[4];
-        data.Slice(0, 4).CopyTo(buffer);
-        return BinaryPrimitives.ReadInt32BigEndian(buffer);
+        return BinaryPrimitives.ReadInt32BigEndian(data.Span);
     }
 }
 ```
@@ -80,7 +81,8 @@ Access message metadata during serialization:
 ```csharp
 public class ContextAwareSerializer : ISerializer<MyType>
 {
-    public void Serialize(MyType value, IBufferWriter<byte> output, SerializationContext context)
+    public void Serialize<TWriter>(MyType value, ref TWriter output, SerializationContext context)
+        where TWriter : IBufferWriter<byte>, allows ref struct
     {
         // Access context
         string topic = context.Topic;
@@ -91,35 +93,6 @@ public class ContextAwareSerializer : ISerializer<MyType>
         // ...
     }
 }
-```
-
-## MessagePack Example
-
-High-performance binary serialization:
-
-```csharp
-using Dekaf;
-
-using MessagePack;
-
-public class MessagePackSerializer<T> : ISerializer<T>, IDeserializer<T>
-{
-    public void Serialize(T value, IBufferWriter<byte> output, SerializationContext context)
-    {
-        MessagePackSerializer.Serialize(output, value);
-    }
-
-    public T Deserialize(ReadOnlySequence<byte> data, SerializationContext context)
-    {
-        return MessagePackSerializer.Deserialize<T>(data);
-    }
-}
-
-// Usage
-var producer = await Kafka.CreateProducer<string, Order>()
-    .WithBootstrapServers("localhost:9092")
-    .WithValueSerializer(new MessagePackSerializer<Order>())
-    .BuildAsync();
 ```
 
 ## Null Handling
@@ -133,7 +106,8 @@ public class NullableSerializer<T> : ISerializer<T?>, IDeserializer<T?>
     private readonly ISerializer<T> _inner;
     private readonly IDeserializer<T> _innerDeserializer;
 
-    public void Serialize(T? value, IBufferWriter<byte> output, SerializationContext context)
+    public void Serialize<TWriter>(T? value, ref TWriter output, SerializationContext context)
+        where TWriter : IBufferWriter<byte>, allows ref struct
     {
         if (value is null)
         {
@@ -141,10 +115,10 @@ public class NullableSerializer<T> : ISerializer<T?>, IDeserializer<T?>
             return;
         }
 
-        _inner.Serialize(value, output, context);
+        _inner.Serialize(value, ref output, context);
     }
 
-    public T? Deserialize(ReadOnlySequence<byte> data, SerializationContext context)
+    public T? Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
     {
         if (data.IsEmpty)
         {
@@ -163,19 +137,6 @@ Implement both interfaces in one class for convenience:
 ```csharp
 using Dekaf;
 
-public class OrderCodec : ISerializer<Order>, IDeserializer<Order>
-{
-    public void Serialize(Order value, IBufferWriter<byte> output, SerializationContext context)
-    {
-        // Serialization logic
-    }
-
-    public Order Deserialize(ReadOnlySequence<byte> data, SerializationContext context)
-    {
-        // Deserialization logic
-    }
-}
-
 // Use same instance for both
 var codec = new OrderCodec();
 
@@ -186,6 +147,21 @@ var producer = await Kafka.CreateProducer<string, Order>()
 var consumer = await Kafka.CreateConsumer<string, Order>()
     .WithValueDeserializer(codec)
     .BuildAsync();
+
+public class OrderCodec : ISerializer<Order>, IDeserializer<Order>
+{
+    public void Serialize<TWriter>(Order value, ref TWriter output, SerializationContext context)
+        where TWriter : IBufferWriter<byte>, allows ref struct
+    {
+        // Serialization logic
+    }
+
+    public Order Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
+    {
+        // Deserialization logic
+        return new Order();
+    }
+}
 ```
 
 ## Async Serializers (IAsyncSerde)
@@ -197,6 +173,15 @@ keys per message — implement `IAsyncSerializer<T>` / `IAsyncDeserializer<T>` (
 ```csharp
 using Dekaf;
 using Dekaf.Serialization;
+
+// Same builder methods — the async overload is picked by type
+var producer = await Kafka.CreateProducer<string, Order>()
+    .WithValueSerializer(new EncryptingSerde())
+    .BuildAsync();
+
+var consumer = await Kafka.CreateConsumer<string, Order>()
+    .WithValueDeserializer(new EncryptingSerde())
+    .BuildAsync();
 
 public class EncryptingSerde : IAsyncSerde<Order>
 {
@@ -215,18 +200,9 @@ public class EncryptingSerde : IAsyncSerde<Order>
     {
         var key = await FetchEncryptionKeyAsync(cancellationToken);
         // `data` is pooled memory — only valid until this method's task completes.
-        return JsonSerializer.Deserialize<Order>(Decrypt(data.Span, key))!;
+        return JsonSerializer.Deserialize<Order>(Decrypt(data, key))!;
     }
 }
-
-// Same builder methods — the async overload is picked by type
-var producer = await Kafka.CreateProducer<string, Order>()
-    .WithValueSerializer(new EncryptingSerde())
-    .BuildAsync();
-
-var consumer = await Kafka.CreateConsumer<string, Order>()
-    .WithValueDeserializer(new EncryptingSerde())
-    .BuildAsync();
 ```
 
 Behavior and trade-offs:

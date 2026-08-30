@@ -180,14 +180,28 @@ This guarantee requires after-processing offset staging. `KafkaConsumerService` 
 Override `GetFailureDispositionAsync` to explicitly discard failures your application considers non-retryable. Returning `Discard` allows the loop to continue and acknowledges the record when the next message is pulled, so use it only when losing that record's work is intentional:
 
 ```csharp
-protected override ValueTask<MessageFailureDisposition> GetFailureDispositionAsync(
-    MessageFailureContext<string, Order> context,
-    CancellationToken cancellationToken)
+public sealed class OrderProcessorService : KafkaConsumerService<string, Order>
 {
-    if (context.ProcessingException is OrderValidationException)
-        return new(MessageFailureDisposition.Discard);
+    public OrderProcessorService(
+        IKafkaConsumer<string, Order> consumer,
+        ILogger<OrderProcessorService> logger)
+        : base(consumer, logger) { }
 
-    return base.GetFailureDispositionAsync(context, cancellationToken);
+    protected override IEnumerable<string> Topics => ["orders"];
+
+    protected override ValueTask ProcessAsync(
+        ConsumeResult<string, Order> result,
+        CancellationToken cancellationToken) => ValueTask.CompletedTask;
+
+    protected override ValueTask<MessageFailureDisposition> GetFailureDispositionAsync(
+        MessageFailureContext<string, Order> context,
+        CancellationToken cancellationToken)
+    {
+        if (context.ProcessingException is OrderValidationException)
+            return new(MessageFailureDisposition.Discard);
+
+        return base.GetFailureDispositionAsync(context, cancellationToken);
+    }
 }
 ```
 
@@ -211,7 +225,12 @@ public sealed class OrderProcessorService : KafkaConsumerService<string, Order>
             })
     {
     }
-    // ...
+
+    protected override IEnumerable<string> Topics => ["orders"];
+
+    protected override ValueTask ProcessAsync(
+        ConsumeResult<string, Order> result,
+        CancellationToken cancellationToken) => ValueTask.CompletedTask;
 }
 ```
 

@@ -182,15 +182,13 @@ await producer.ProduceAsync("orders", "order-1", "paid");
 For event sourcing, use the aggregate ID as the key:
 
 ```csharp
-public class EventStore
+public sealed class EventStore(IKafkaProducer<string, string> producer)
 {
-    private readonly IKafkaProducer<string, string> _producer;
-
     public async Task AppendEventAsync(string aggregateId, object @event)
     {
         // All events for an aggregate go to the same partition
         // Guarantees they're consumed in order
-        await _producer.ProduceAsync(
+        await producer.ProduceAsync(
             "events",
             aggregateId,  // Key = aggregate ID
             JsonSerializer.Serialize(@event)
@@ -198,12 +196,21 @@ public class EventStore
     }
 }
 
-// Usage
-var store = new EventStore(producer);
-await store.AppendEventAsync("user-123", new UserRegistered { ... });
-await store.AppendEventAsync("user-123", new EmailVerified { ... });
-await store.AppendEventAsync("user-123", new ProfileUpdated { ... });
-// These will always be consumed in this order
+public static class EventStoreExample
+{
+    public static async Task AppendUserEventsAsync(IKafkaProducer<string, string> producer)
+    {
+        var store = new EventStore(producer);
+        await store.AppendEventAsync("user-123", new UserRegistered());
+        await store.AppendEventAsync("user-123", new EmailVerified());
+        await store.AppendEventAsync("user-123", new ProfileUpdated());
+        // These will always be consumed in this order.
+    }
+}
+
+public sealed record UserRegistered;
+public sealed record EmailVerified;
+public sealed record ProfileUpdated;
 ```
 
 ## Practical Example: Multi-Tenant System

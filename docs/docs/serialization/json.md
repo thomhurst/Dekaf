@@ -30,7 +30,7 @@ var order = new Order
     Id = "order-123",
     CustomerId = "customer-456",
     Total = 99.99m,
-    Items = new[] { "item1", "item2" }
+    Items = ["item1", "item2"]
 };
 
 await producer.ProduceAsync("orders", order.Id, order);
@@ -83,17 +83,17 @@ For NativeAOT, use System.Text.Json source-generated metadata instead of reflect
 using System.Text.Json.Serialization;
 using Dekaf.Serialization.Json;
 
-[JsonSerializable(typeof(Order))]
-[JsonSerializable(typeof(OrderKey))]
-[JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
-public partial class OrderJsonContext : JsonSerializerContext { }
-
 var serializer = new JsonSerializer<Order>(OrderJsonContext.Default.Order);
 
 await using var producer = await Kafka.CreateProducer<string, Order>()
     .WithBootstrapServers("localhost:9092")
     .WithValueSerializer(serializer)
     .BuildAsync();
+
+[JsonSerializable(typeof(Order))]
+[JsonSerializable(typeof(OrderKey))]
+[JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
+public partial class OrderJsonContext : JsonSerializerContext { }
 ```
 
 The fluent helpers also accept source-generated metadata:
@@ -112,6 +112,10 @@ await using var consumer = await Kafka.CreateConsumer<OrderKey, Order>()
     .UseJsonDeserializer(OrderJsonContext.Default.Order)
     .SubscribeTo("orders")
     .BuildAsync();
+
+[JsonSerializable(typeof(Order))]
+[JsonSerializable(typeof(OrderKey))]
+public partial class OrderJsonContext : JsonSerializerContext { }
 ```
 
 `JsonSerializerOptions` overloads remain available for non-AOT applications, but they can require runtime reflection depending on the configured converters and payload types.
@@ -179,10 +183,10 @@ public class OrderShipped : OrderEvent { public string TrackingId { get; set; } 
 - Use source generators for NativeAOT and better performance:
 
 ```csharp
+var serializer = new JsonSerializer<Order>(OrderJsonContext.Default.Order);
+
 [JsonSerializable(typeof(Order))]
 public partial class OrderJsonContext : JsonSerializerContext { }
-
-var serializer = new JsonSerializer<Order>(OrderJsonContext.Default.Order);
 ```
 
 ## Complete Example

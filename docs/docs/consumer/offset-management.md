@@ -319,9 +319,9 @@ implement that capability to participate without breaking existing `IKafkaConsum
 Seek and pause/resume operations mutate current consumer state and return `void`. Keep them as separate statements:
 
 ```csharp
-// Before
-consumer.Seek(new TopicPartitionOffset("my-topic", 0, 100))
-    .Pause(new TopicPartition("my-topic", 0));
+// Before (invalid: Seek returns void)
+// consumer.Seek(new TopicPartitionOffset("my-topic", 0, 100))
+//     .Pause(new TopicPartition("my-topic", 0));
 
 // After
 consumer.Positions.Seek(new TopicPartitionOffset("my-topic", 0, 100));
@@ -337,7 +337,7 @@ var targetTime = DateTimeOffset.UtcNow.AddHours(-1);
 
 var offsets = await consumer.Offsets.GetOffsetsForTimesAsync(new[]
 {
-    new TopicPartitionTimestamp("my-topic", 0, targetTime)
+    new TopicPartitionTimestamp("my-topic", 0, targetTime.ToUnixTimeMilliseconds())
 });
 
 foreach (var (tp, offset) in offsets)
@@ -379,10 +379,10 @@ True exactly-once requires coordinating offset commits with your output:
 
 ```csharp
 // Using transactions
-await producer.BeginTransactionAsync();
-await producer.ProduceAsync("output", key, result);
-await producer.SendOffsetsToTransactionAsync(consumer.ConsumerGroupMetadata, offsets);
-await producer.CommitTransactionAsync();
+await using var transaction = producer.BeginTransaction();
+await transaction.ProduceAsync("output", key, result);
+await transaction.SendOffsetsToTransactionAsync(offsets, consumer.ConsumerGroupMetadata);
+await transaction.CommitAsync();
 
 // Or with a database transaction
 using var dbTransaction = await db.BeginTransactionAsync();

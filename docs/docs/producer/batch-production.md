@@ -12,9 +12,9 @@ When you need to send multiple messages, Dekaf provides efficient batch APIs tha
 `ProduceAsync` returns a `ValueTask<RecordMetadata>` for performance reasons - it can complete synchronously when messages are added to an internal buffer. However, this creates a challenge when sending multiple messages:
 
 ```csharp
-// ❌ Don't do this - ValueTask can only be awaited once
-var tasks = messages.Select(m => producer.ProduceAsync("topic", m.Key, m.Value));
-await Task.WhenAll(tasks);  // This doesn't work with ValueTask!
+// ❌ Avoid this - converting every ValueTask allocates a Task when it does not complete synchronously
+var tasks = messages.Select(m => producer.ProduceAsync("topic", m.Key, m.Value).AsTask());
+await Task.WhenAll(tasks);
 ```
 
 ## ProduceAllAsync
@@ -176,32 +176,36 @@ await producer.FlushAsync();
 Here's a complete example processing a batch of orders:
 
 ```csharp
-public async Task ProcessOrderBatchAsync(IReadOnlyList<Order> orders)
+public sealed class OrderBatchProcessor(
+    IKafkaProducer<string, Order> producer,
+    ILogger<OrderBatchProcessor> logger)
 {
-    var messages = orders.Select(order => new ProducerMessage<string, Order>
+    public async Task ProcessOrderBatchAsync(IReadOnlyList<Order> orders)
     {
-        Topic = "orders",
-        Key = order.Id,
-        Value = order,
-        Headers = Headers.Create()
-            .Add("source", "batch-processor")
-            .Add("batch-size", orders.Count.ToString())
-    }).ToList();
+        var messages = orders.Select(order => new ProducerMessage<string, Order>
+        {
+            Topic = "orders",
+            Key = order.Id,
+            Value = order,
+            Headers = Headers.Create()
+                .Add("source", "batch-processor")
+                .Add("batch-size", orders.Count.ToString())
+        }).ToList();
 
-    try
-    {
-        var results = await _producer.ProduceAllAsync(messages);
+        try
+        {
+            var results = await producer.ProduceAllAsync(messages);
 
-        _logger.LogInformation(
-            "Sent {Count} orders across {Partitions} partitions",
-            results.Length,
-            results.Select(r => r.Partition).Distinct().Count()
-        );
-    }
-    catch (AggregateException ex)
-    {
-        _logger.LogError(ex, "Failed to send some orders in batch");
-        throw;
+            logger.LogInformation(
+                "Sent {Count} orders across {Partitions} partitions",
+                results.Length,
+                results.Select(r => r.Partition).Distinct().Count());
+        }
+        catch (AggregateException ex)
+        {
+            logger.LogError(ex, "Failed to send some orders in batch");
+            throw;
+        }
     }
 }
 ```

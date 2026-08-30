@@ -120,14 +120,13 @@ important ones with code.
 
 Here's a typical Confluent producer:
 
-<!-- doc-test-ignore: Requires the Confluent.Kafka package being migrated away from. -->
 ```csharp
 using Confluent.Kafka;
 
-using var producer = new ProducerBuilder<string, string>(new ProducerConfig
+using var producer = new Confluent.Kafka.ProducerBuilder<string, string>(new ProducerConfig
 {
     BootstrapServers = "localhost:9092",
-    Acks = Acks.All,
+    Acks = Confluent.Kafka.Acks.All,
     EnableIdempotence = true,
     LingerMs = 5
 }).Build();
@@ -235,15 +234,14 @@ buffer may have gone back to the pool, and you'll get an `ObjectDisposedExceptio
 
 A typical Confluent poll loop:
 
-<!-- doc-test-ignore: Requires the Confluent.Kafka package being migrated away from. -->
 ```csharp
 using Confluent.Kafka;
 
-using var consumer = new ConsumerBuilder<string, string>(new ConsumerConfig
+using var consumer = new Confluent.Kafka.ConsumerBuilder<string, string>(new ConsumerConfig
 {
     BootstrapServers = "localhost:9092",
     GroupId = "orders-service",
-    AutoOffsetReset = AutoOffsetReset.Earliest
+    AutoOffsetReset = Confluent.Kafka.AutoOffsetReset.Earliest
 }).Build();
 
 consumer.Subscribe("orders");

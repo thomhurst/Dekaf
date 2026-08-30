@@ -57,23 +57,21 @@ The transactional ID must be unique per producer instance. If two producers use 
 ## Basic Transaction Flow
 
 ```csharp
+await using var transaction = producer.BeginTransaction();
 try
 {
-    // Start the transaction
-    await producer.BeginTransactionAsync();
-
     // Send messages within the transaction
-    await producer.ProduceAsync("orders", orderId, orderJson);
-    await producer.ProduceAsync("audit-log", orderId, auditEntry);
-    await producer.ProduceAsync("notifications", userId, notification);
+    await transaction.ProduceAsync("orders", orderId, orderJson);
+    await transaction.ProduceAsync("audit-log", orderId, auditEntry);
+    await transaction.ProduceAsync("notifications", userId, notification);
 
     // Commit - all messages become visible atomically
-    await producer.CommitTransactionAsync();
+    await transaction.CommitAsync();
 }
 catch (Exception ex)
 {
     // Abort - none of the messages become visible
-    await producer.AbortTransactionAsync();
+    await transaction.AbortAsync();
     throw;
 }
 ```
@@ -144,24 +142,23 @@ await foreach (var message in consumer.ConsumeAsync(ct))
 {
     try
     {
-        await producer.BeginTransactionAsync();
+        await using var transaction = producer.BeginTransaction();
 
         // Process and produce output
-        var result = Process(message.Value);
-        await producer.ProduceAsync("output-topic", message.Key, result);
+        var result = message.Value.ToUpperInvariant();
+        await transaction.ProduceAsync("output-topic", message.Key, result);
 
         // Commit offsets within the transaction
-        await producer.SendOffsetsToTransactionAsync(
-            consumer.ConsumerGroupMetadata,
-            new[] { new TopicPartitionOffset(message.Topic, message.Partition, message.Offset + 1) }
+        await transaction.SendOffsetsToTransactionAsync(
+            new[] { new TopicPartitionOffset(message.Topic, message.Partition, message.Offset + 1) },
+            consumer.ConsumerGroupMetadata
         );
 
-        await producer.CommitTransactionAsync();
+        await transaction.CommitAsync();
     }
     catch (Exception ex)
     {
-        await producer.AbortTransactionAsync();
-        _logger.LogError(ex, "Failed to process message, transaction aborted");
+        _logger.LogError(ex, "Failed to process message; transaction disposal aborts it");
     }
 }
 ```
@@ -177,10 +174,12 @@ Consumers can choose whether to read uncommitted messages:
 
 ```csharp
 // Read all messages, including uncommitted (default)
-.WithIsolationLevel(IsolationLevel.ReadUncommitted)
+var readUncommitted = Kafka.CreateConsumer<string, string>()
+    .WithIsolationLevel(IsolationLevel.ReadUncommitted);
 
 // Only read committed messages
-.WithIsolationLevel(IsolationLevel.ReadCommitted)
+var readCommitted = Kafka.CreateConsumer<string, string>()
+    .WithIsolationLevel(IsolationLevel.ReadCommitted);
 ```
 
 :::tip
@@ -208,28 +207,28 @@ If a transaction isn't committed or aborted within the timeout, Kafka will abort
 Different errors require different handling:
 
 ```csharp
+await using var transaction = producer.BeginTransaction();
 try
 {
-    await producer.BeginTransactionAsync();
     // ... produce messages ...
-    await producer.CommitTransactionAsync();
+    await transaction.CommitAsync();
 }
-catch (ProducerFencedException)
+catch (FatalTransactionException)
 {
     // Another producer with the same transactional ID took over
     // This producer is no longer valid - must recreate
     throw;
 }
-catch (TransactionAbortedException)
+catch (AbortableTransactionException)
 {
     // Transaction was aborted by Kafka (timeout, etc.)
     // Can retry with a new transaction
-    await producer.AbortTransactionAsync();
+    await transaction.AbortAsync();
 }
 catch (Exception ex)
 {
     // Other errors - abort and possibly retry
-    await producer.AbortTransactionAsync();
+    await transaction.AbortAsync();
     throw;
 }
 ```
@@ -245,17 +244,21 @@ Long-running transactions:
 
 ```csharp
 // ✅ Good - quick transaction
-await producer.BeginTransactionAsync();
-await producer.ProduceAsync("topic", key, value);
-await producer.CommitTransactionAsync();
+await using (var shortTransaction = producer.BeginTransaction())
+{
+    await shortTransaction.ProduceAsync("topic", key, value);
+    await shortTransaction.CommitAsync();
+}
 
 // ❌ Bad - long-running transaction
-await producer.BeginTransactionAsync();
-foreach (var item in millionsOfItems)  // Too many items!
+await using (var longTransaction = producer.BeginTransaction())
 {
-    await producer.ProduceAsync("topic", item.Key, item.Value);
+    foreach (var item in millionsOfItems)  // Too many items!
+    {
+        await longTransaction.ProduceAsync("topic", item, item);
+    }
+    await longTransaction.CommitAsync();
 }
-await producer.CommitTransactionAsync();
 ```
 
 ### 2. Unique Transactional IDs
@@ -264,10 +267,10 @@ Use instance-specific IDs to avoid fencing:
 
 ```csharp
 // ✅ Good - unique per instance
-var transactionalId = $"order-processor-{Environment.MachineName}-{Guid.NewGuid():N}";
+var uniqueTransactionalId = $"order-processor-{Environment.MachineName}-{Guid.NewGuid():N}";
 
 // ❌ Bad - will cause fencing when scaled
-var transactionalId = "order-processor";  // Same ID for all instances!
+var sharedTransactionalId = "order-processor";  // Same ID for all instances!
 ```
 
 ### 3. Idempotent Operations
@@ -282,7 +285,7 @@ var outputKey = $"{inputMessage.Topic}-{inputMessage.Partition}-{inputMessage.Of
 if (await IsAlreadyProcessedAsync(outputKey))
 {
     // Skip - this handles edge cases during recovery
-    continue;
+    Console.WriteLine("Already processed");
 }
 ```
 
@@ -303,29 +306,28 @@ public class ExactlyOnceProcessor
         {
             try
             {
-                await _producer.BeginTransactionAsync();
+                await using var transaction = _producer.BeginTransaction();
 
                 var offsets = new List<TopicPartitionOffset>();
 
                 foreach (var msg in batch)
                 {
                     var result = Transform(msg.Value);
-                    await _producer.ProduceAsync("output", msg.Key, result);
+                    await transaction.ProduceAsync("output", msg.Key, result);
                     offsets.Add(new TopicPartitionOffset(msg.Topic, msg.Partition, msg.Offset + 1));
                 }
 
-                await _producer.SendOffsetsToTransactionAsync(
-                    _consumer.ConsumerGroupMetadata!,
-                    offsets
+                await transaction.SendOffsetsToTransactionAsync(
+                    offsets,
+                    _consumer.ConsumerGroupMetadata
                 );
 
-                await _producer.CommitTransactionAsync();
+                await transaction.CommitAsync();
                 _logger.LogInformation("Committed batch of {Count} messages", batch.Count);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Transaction failed, aborting");
-                await _producer.AbortTransactionAsync();
+                _logger.LogError(ex, "Transaction failed; transaction disposal aborts it");
             }
         }
     }
