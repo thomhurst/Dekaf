@@ -106,19 +106,19 @@ Not sure which settings to use? We've got you covered with presets for common sc
 using Dekaf;
 
 // Maximize throughput (batching, compression, relaxed durability)
-var producer = await Kafka.CreateProducer<string, string>()
+var highThroughputProducer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .ForHighThroughput()
     .BuildAsync();
 
 // Minimize latency (no batching delay, smaller batches)
-var producer = await Kafka.CreateProducer<string, string>()
+var lowLatencyProducer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .ForLowLatency()
     .BuildAsync();
 
 // Maximum reliability (all replicas must ack, idempotent)
-var producer = await Kafka.CreateProducer<string, string>()
+var reliableProducer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .ForReliability()
     .BuildAsync();
@@ -206,7 +206,7 @@ using Dekaf;
 
 // Auto mode (default): Offsets committed automatically in the background
 // Good for: Log processing, analytics, cases where losing a message is OK
-var consumer = await Kafka.CreateConsumer<string, string>()
+var autoCommitConsumer = await Kafka.CreateConsumer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithGroupId("my-group")
     .WithOffsetCommitMode(OffsetCommitMode.Auto)
@@ -217,16 +217,16 @@ var consumer = await Kafka.CreateConsumer<string, string>()
 // consumed position for each partition. This gives you at-least-once semantics:
 // if your app crashes before committing, messages will be redelivered on restart.
 // Good for: Payment processing, order handling, anything where you can't lose messages
-var consumer = await Kafka.CreateConsumer<string, string>()
+var manualCommitConsumer = await Kafka.CreateConsumer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithGroupId("my-group")
     .WithOffsetCommitMode(OffsetCommitMode.Manual)
     .BuildAsync();
 
-await foreach (var msg in consumer.ConsumeAsync(ct))
+await foreach (var msg in manualCommitConsumer.ConsumeAsync(ct))
 {
     await ProcessAsync(msg);
-    await consumer.CommitAsync();  // Commits offset for all consumed messages
+    await manualCommitConsumer.CommitAsync();  // Commits offset for all consumed messages
 }
 ```
 
@@ -245,7 +245,7 @@ Then enable it:
 ```csharp
 using Dekaf;
 
-var producer = await Kafka.CreateProducer<string, string>()
+var plainProducer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .UseLz4Compression()
     .BuildAsync();
@@ -286,7 +286,7 @@ topic and schema-ID deserializers plus topic and runtime-type serializers.
 ```csharp
 using Dekaf;
 
-var producer = await Kafka.CreateProducer<string, string>()
+var scramProducer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("kafka.example.com:9093")
     .UseTls()
     .BuildAsync();
@@ -298,14 +298,14 @@ var producer = await Kafka.CreateProducer<string, string>()
 using Dekaf;
 
 // SASL/PLAIN
-var producer = await Kafka.CreateProducer<string, string>()
+var plainProducer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("kafka.example.com:9093")
     .UseTls()
     .WithSaslPlain("username", "password")
     .BuildAsync();
 
 // SASL/SCRAM-SHA-512
-var producer = await Kafka.CreateProducer<string, string>()
+var scramSha512Producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("kafka.example.com:9093")
     .UseTls()
     .WithSaslScramSha512("username", "password")

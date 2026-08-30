@@ -48,7 +48,7 @@ consumer.Subscribe("my-topic");
 consumer.Subscribe("topic1", "topic2", "topic3");
 
 // Using the builder
-var consumer = await Kafka.CreateConsumer<string, string>()
+var subscribedConsumer = await Kafka.CreateConsumer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithGroupId("my-group")
     .SubscribeTo("my-topic")  // Subscribe during build
@@ -58,8 +58,8 @@ var consumer = await Kafka.CreateConsumer<string, string>()
 Consumer mutation methods are commands and return `void`. Keep live consumer operations as separate statements:
 
 ```csharp
-// Before
-consumer.Subscribe("my-topic").Pause(new TopicPartition("my-topic", 0));
+// Before (invalid: Subscribe returns void)
+// consumer.Subscribe("my-topic").Pause(new TopicPartition("my-topic", 0));
 
 // After
 consumer.Subscribe("my-topic");

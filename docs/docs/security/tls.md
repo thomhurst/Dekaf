@@ -14,7 +14,7 @@ Enable TLS for encrypted connections:
 ```csharp
 using Dekaf;
 
-var producer = await Kafka.CreateProducer<string, string>()
+var fileCertificateProducer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("kafka.example.com:9093")
     .UseTls()
     .BuildAsync();
@@ -34,7 +34,7 @@ var tlsConfig = new TlsConfig
     CaCertificatePath = "/path/to/ca.crt"
 };
 
-var producer = await Kafka.CreateProducer<string, string>()
+var inMemoryCertificateProducer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("kafka.example.com:9093")
     .UseTls(tlsConfig)
     .BuildAsync();
@@ -48,7 +48,7 @@ For client certificate authentication:
 using Dekaf;
 
 // Using file paths
-var producer = await Kafka.CreateProducer<string, string>()
+var certificateProducer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("kafka.example.com:9093")
     .UseMutualTls(
         caCertPath: "/path/to/ca.crt",
@@ -164,15 +164,13 @@ var tlsConfig = new TlsConfig
 ### Debug Certificate Issues
 
 ```csharp
+var cert = X509CertificateLoader.LoadCertificateFromFile("/path/to/ca.crt");
+Console.WriteLine($"Subject: {cert.Subject}");
+Console.WriteLine($"Issuer: {cert.Issuer}");
+
 var tlsConfig = new TlsConfig
 {
-    CaCertificatePath = "/path/to/ca.crt",
-    ServerCertificateValidationCallback = (sender, cert, chain, errors) =>
-    {
-        Console.WriteLine($"Subject: {cert.Subject}");
-        Console.WriteLine($"Issuer: {cert.Issuer}");
-        Console.WriteLine($"Errors: {errors}");
-        return errors == SslPolicyErrors.None;
-    }
+    CaCertificateObject = cert,
+    ValidateServerCertificate = true
 };
 ```

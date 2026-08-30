@@ -219,7 +219,7 @@ Dekaf automatically refreshes tokens before they expire. The token provider is c
 
     var token = await _tokenService.GetTokenAsync(ct);
 
-    _logger.LogDebug("Token expires at {ExpiresAt}", token.Expiration);
+    _logger.LogDebug("Token refreshed");
 
     return token;
 })
@@ -261,7 +261,7 @@ public class OAuthKafkaClientFactory
         {
             TokenValue = token.AccessToken,
             Expiration = token.ExpiresAt,
-            PrincipalName = token.Claims.Subject
+            PrincipalName = token.Subject
         };
     }
 }

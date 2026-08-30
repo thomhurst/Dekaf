@@ -17,6 +17,14 @@ Implement `IConsumerRecordFilter` and register the instance on the consumer buil
 using Dekaf.Consumer;
 using Dekaf.Serialization;
 
+await using var filteredConsumer = await Kafka.CreateConsumer<string, Order>()
+    .WithBootstrapServers("localhost:9092")
+    .WithGroupId("orders")
+    .WithRecordFilter(new EventFilter())
+    .WithValueDeserializer(orderDeserializer)
+    .SubscribeTo("events")
+    .BuildAsync();
+
 sealed class EventFilter : IConsumerRecordFilter
 {
     public bool ShouldDeserialize(scoped in ConsumerRecordFilterContext context)
@@ -33,14 +41,6 @@ sealed class EventFilter : IConsumerRecordFilter
         return false;
     }
 }
-
-await using var consumer = await Kafka.CreateConsumer<string, Order>()
-    .WithBootstrapServers("localhost:9092")
-    .WithGroupId("orders")
-    .WithRecordFilter(new EventFilter())
-    .WithValueDeserializer(orderDeserializer)
-    .SubscribeTo("events")
-    .BuildAsync();
 ```
 
 The context exposes `Topic`, `Partition`, `Offset`, timestamp information, leader epoch, raw

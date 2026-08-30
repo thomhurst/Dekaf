@@ -42,7 +42,12 @@ public sealed class OrderProcessorService : KafkaConsumerService<string, Order>
         : base(consumer, logger, deadLetterOptions)
     {
     }
-    // ...
+
+    protected override IEnumerable<string> Topics => ["orders"];
+
+    protected override ValueTask ProcessAsync(
+        ConsumeResult<string, Order> result,
+        CancellationToken cancellationToken) => ValueTask.CompletedTask;
 }
 ```
 
@@ -85,11 +90,25 @@ Call `FireAndForget()` (or set `AwaitDelivery = false`) to trade that guarantee 
 If the DLQ produce itself fails (DLQ topic missing, cluster unreachable), the service invokes `OnDeadLetterRoutingFailedAsync`, which logs by default. If no other durable routing path succeeds, `GetFailureDispositionAsync` then applies its default `Retry` disposition: the exception exits the consume loop and the source record remains uncommitted for redelivery. Override the routing hook for metrics or alerts; override the disposition hook only if discarding the original record is intentional:
 
 ```csharp
-protected override ValueTask OnDeadLetterRoutingFailedAsync(
-    Exception exception, ConsumeResult<string, Order> result, CancellationToken cancellationToken)
+public sealed class OrderProcessorService : KafkaConsumerService<string, Order>
 {
-    _metrics.DlqRoutingFailures.Add(1);
-    return ValueTask.CompletedTask;
+    public OrderProcessorService(
+        IKafkaConsumer<string, Order> consumer,
+        ILogger<OrderProcessorService> logger)
+        : base(consumer, logger) { }
+
+    protected override IEnumerable<string> Topics => ["orders"];
+
+    protected override ValueTask ProcessAsync(
+        ConsumeResult<string, Order> result,
+        CancellationToken cancellationToken) => ValueTask.CompletedTask;
+
+    protected override ValueTask OnDeadLetterRoutingFailedAsync(
+        Exception exception, ConsumeResult<string, Order> result, CancellationToken cancellationToken)
+    {
+        _metrics.DlqRoutingFailures.Add(1);
+        return ValueTask.CompletedTask;
+    }
 }
 ```
 
@@ -104,11 +123,16 @@ protected override ValueTask OnDeadLetterRoutingFailedAsync(
 For transient failures (a dependency briefly down), immediate in-place retries are often wasted. Retry topics give failed records escalating delays without ever blocking the main topic's partition:
 
 ```csharp
-dekaf.AddConsumerService<OrderProcessorService, string, Order>(
-    consumer => /* ... */,
-    dlq => dlq
-        .WithRetryTopics(TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(30), TimeSpan.FromMinutes(5))
-        .WithMaxFailures(4));
+builder.Services.AddDekaf(dekaf =>
+{
+    dekaf.AddConsumerService<OrderProcessorService, string, Order>(
+        consumer => consumer
+            .WithBootstrapServers("localhost:9092")
+            .WithGroupId("orders-service"),
+        dlq => dlq
+            .WithRetryTopics(TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(30), TimeSpan.FromMinutes(5))
+            .WithMaxFailures(4));
+});
 ```
 
 With this configuration a record that keeps failing flows `orders` → `orders-retry-5s` → `orders-retry-30s` → `orders-retry-5m` → `orders.DLQ`. How it works:
@@ -136,21 +160,35 @@ public sealed class PoisonOnlyPolicy : IDeadLetterPolicy<string, Order>
 ```
 
 ```csharp
-public OrderProcessorService(
-    IKafkaConsumer<string, Order> consumer,
-    ILogger<OrderProcessorService> logger,
-    DeadLetterOptions deadLetterOptions)
-    : base(consumer, logger, deadLetterOptions,
-        retryPolicy: null, serviceOptions: null,
-        deadLetterPolicy: new PoisonOnlyPolicy())
+public sealed class OrderProcessorService : KafkaConsumerService<string, Order>
 {
+    public OrderProcessorService(
+        IKafkaConsumer<string, Order> consumer,
+        ILogger<OrderProcessorService> logger,
+        DeadLetterOptions deadLetterOptions,
+        IDeadLetterPolicy<string, Order> deadLetterPolicy)
+        : base(consumer, logger, deadLetterOptions,
+            retryPolicy: null, serviceOptions: null,
+            deadLetterPolicy: deadLetterPolicy)
+    {
+    }
+
+    protected override IEnumerable<string> Topics => ["orders"];
+
+    protected override ValueTask ProcessAsync(
+        ConsumeResult<string, Order> result,
+        CancellationToken cancellationToken) => ValueTask.CompletedTask;
 }
 ```
 
 One thing the policy does *not* control: how many local attempts a record gets. That still comes from `MaxFailures` (or an `IRetryPolicy`), so for the `failureCount >= 5` branch above to ever be reached, the DLQ registration must allow five attempts — otherwise the record is skipped (with a warning) after the default single attempt:
 
 ```csharp
-dlq => dlq.WithMaxFailures(5)   // align local attempts with the policy's threshold
+builder.Services.AddDekaf(dekaf =>
+    dekaf.AddConsumerService<OrderProcessorService, string, Order>(
+        configuration,
+        configureDeadLetterQueue: dlq => dlq
+            .WithMaxFailures(5))); // align local attempts with the policy's threshold
 ```
 
 ## Topic Provisioning

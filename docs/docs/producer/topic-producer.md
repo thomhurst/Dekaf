@@ -73,8 +73,8 @@ With a topic producer, the topic is implicit:
 
 ```csharp
 // Topic producer - no topic parameter
-await producer.ProduceAsync("key", "value");
-await producer.ProduceAsync("key2", "value2");
+await topicProducer.ProduceAsync("key", "value");
+await topicProducer.ProduceAsync("key2", "value2");
 ```
 
 ## Available Methods
@@ -85,16 +85,16 @@ Send a message and wait for acknowledgment:
 
 ```csharp
 // Key and value
-var metadata = await producer.ProduceAsync("key", "value");
+var basicMetadata = await topicProducer.ProduceAsync("key", "value");
 
 // With headers
-var metadata = await producer.ProduceAsync("key", "value", headers);
+var headerMetadata = await topicProducer.ProduceAsync("key", "value", headers);
 
 // To a specific partition
-var metadata = await producer.ProduceAsync(partition: 2, "key", "value");
+var partitionMetadata = await topicProducer.ProduceAsync(partition: 2, "key", "value");
 
 // Full control with TopicProducerMessage
-var metadata = await producer.ProduceAsync(new TopicProducerMessage<string, string>
+var fullMetadata = await topicProducer.ProduceAsync(new TopicProducerMessage<string, string>
 {
     Key = "key",
     Value = "value",
@@ -110,13 +110,13 @@ Queue a message without waiting for broker acknowledgment. The returned `ValueTa
 
 ```csharp
 // Basic fire-and-forget
-await producer.FireAsync("key", "value");
+await topicProducer.FireAsync("key", "value");
 
 // With headers
-await producer.FireAsync("key", "value", headers);
+await topicProducer.FireAsync("key", "value", headers);
 
 // With delivery callback
-await producer.FireAsync("key", "value", (metadata, error) =>
+await topicProducer.FireAsync("key", "value", (metadata, error) =>
 {
     if (error is not null)
         Console.WriteLine($"Failed: {error.Message}");
@@ -131,7 +131,7 @@ Send multiple messages and wait for all acknowledgments:
 
 ```csharp
 // Simple tuples
-var results = await producer.ProduceAllAsync(new[]
+var tupleResults = await topicProducer.ProduceAllAsync(new (string? Key, string Value)[]
 {
     ("key1", "value1"),
     ("key2", "value2"),
@@ -139,7 +139,7 @@ var results = await producer.ProduceAllAsync(new[]
 });
 
 // With TopicProducerMessage for full control
-var results = await producer.ProduceAllAsync(new[]
+var messageResults = await topicProducer.ProduceAllAsync(new[]
 {
     new TopicProducerMessage<string, string> { Key = "key1", Value = "value1" },
     new TopicProducerMessage<string, string> { Key = "key2", Value = "value2", Partition = 0 }
@@ -151,7 +151,7 @@ var results = await producer.ProduceAllAsync(new[]
 Ensure all pending messages are delivered:
 
 ```csharp
-await producer.FlushAsync();
+await topicProducer.FlushAsync();
 ```
 
 ## Disposal Semantics

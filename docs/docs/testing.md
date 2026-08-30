@@ -25,11 +25,7 @@ Run the gate locally with:
 dotnet run --project tests/Dekaf.DocTests --configuration Release --framework net10.0 -- --repository-root .
 ```
 
-Dekaf's existing documentation contains many legacy snippets that are not yet standalone. Their exact source and compiler diagnostics are pinned by `KnownFailures.sha256`; any source or API change invalidates the baseline and requires review. Prefer making a fragment standalone. When application-specific context would obscure the example, exclude it explicitly with a reason immediately before the fence:
-
-```markdown
-<!-- doc-test-ignore: Application transport implementation is omitted. -->
-```
+Every extracted C# fence must compile. The gate has no failure baseline, exclusions, or suppression directives: one compiler or source-generator error fails the run. Keep fragments focused by using the shared application context only for prerequisites that the surrounding documentation intentionally omits.
 
 ## Direct use
 

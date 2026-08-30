@@ -115,13 +115,13 @@ an API error; configure a non-associated strategy or an explicit fallback for th
 using Dekaf.SchemaRegistry;
 using Dekaf.SchemaRegistry.Avro;
 
-var schemaRegistry = new CachedSchemaRegistryClient(
+using var schemaRegistry = new SchemaRegistryClient(
     new SchemaRegistryConfig { Url = "http://localhost:8081" }
 );
 
 var producer = await Kafka.CreateProducer<string, Order>()
     .WithBootstrapServers("localhost:9092")
-    .WithValueSerializer(new AvroSerializer<Order>(schemaRegistry))
+    .WithValueSerializer(new AvroSchemaRegistrySerializer<Order>(schemaRegistry))
     .BuildAsync();
 
 await producer.ProduceAsync("orders", order.Id, order);
@@ -130,9 +130,9 @@ await producer.ProduceAsync("orders", order.Id, order);
 ### With Generic Records
 
 ```csharp
-var serializer = new AvroSerializer<GenericRecord>(schemaRegistry);
+var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(schemaRegistry);
 
-var schema = (RecordSchema)Schema.Parse(@"{
+var schema = (RecordSchema)Avro.Schema.Parse(@"{
     ""type"": ""record"",
     ""name"": ""Order"",
     ""fields"": [
@@ -141,11 +141,16 @@ var schema = (RecordSchema)Schema.Parse(@"{
     ]
 }");
 
-var record = new GenericRecord(schema);
-record.Add("id", "order-123");
-record.Add("total", 99.99);
+var genericRecord = new GenericRecord(schema);
+genericRecord.Add("id", "order-123");
+genericRecord.Add("total", 99.99);
 
-await producer.ProduceAsync("orders", "order-123", record);
+await using var genericProducer = await Kafka.CreateProducer<string, GenericRecord>()
+    .WithBootstrapServers("localhost:9092")
+    .WithValueSerializer(serializer)
+    .BuildAsync();
+
+await genericProducer.ProduceAsync("orders", "order-123", genericRecord);
 ```
 
 For zero-allocation `GenericRecord` serialization, Avro map values must use
@@ -239,13 +244,14 @@ first record arrives.
 using Dekaf.SchemaRegistry;
 using Dekaf.SchemaRegistry.Protobuf;
 
-var schemaRegistry = new CachedSchemaRegistryClient(
+using var schemaRegistry = new SchemaRegistryClient(
     new SchemaRegistryConfig { Url = "http://localhost:8081" }
 );
 
-var producer = await Kafka.CreateProducer<string, OrderProto>()
+var producer = await Kafka.CreateProducer<string, Google.Protobuf.WellKnownTypes.StringValue>()
     .WithBootstrapServers("localhost:9092")
-    .WithValueSerializer(new ProtobufSerializer<OrderProto>(schemaRegistry))
+    .WithValueSerializer(
+        new ProtobufSchemaRegistrySerializer<Google.Protobuf.WellKnownTypes.StringValue>(schemaRegistry))
     .BuildAsync();
 ```
 
@@ -280,6 +286,10 @@ var validation = new JsonSchemaValidationOptions
     ValidatorFactory = new StreamingJsonSchemaValidatorFactory(registry),
     Mode = JsonSchemaValidationMode.Both
 };
+
+var orderSchema = """
+    { "type": "object", "properties": { "id": { "type": "string" } } }
+    """;
 
 var producer = await Kafka.CreateProducer<string, Order>()
     .WithBootstrapServers("localhost:9092")
@@ -448,7 +458,7 @@ var config = new SchemaRegistryConfig
     ClientCertificate = certificate
 };
 
-var schemaRegistry = new CachedSchemaRegistryClient(config);
+using var schemaRegistry = new SchemaRegistryClient(config);
 ```
 
 ### HTTP pipeline customization
@@ -798,7 +808,7 @@ using Dekaf;
 var consumer = await Kafka.CreateConsumer<string, Order>()
     .WithBootstrapServers("localhost:9092")
     .WithGroupId("order-processors")
-    .WithValueDeserializer(new AvroDeserializer<Order>(schemaRegistry))
+    .WithValueDeserializer(new AvroSchemaRegistryDeserializer<Order>(schemaRegistry))
     .SubscribeTo("orders")
     .BuildAsync();
 
@@ -948,7 +958,6 @@ For a rolling migration, deploy `Dual` readers first, switch writers from `Prefi
 optionally tighten readers to `Header` after all prefixed records have aged out. Keep `Dual` when a
 topic deliberately accepts both writer generations.
 
-<!-- doc-test-ignore: Uses application-specific registry and Order types. -->
 ```csharp
 using Dekaf.SchemaRegistry;
 using Dekaf.SchemaRegistry.Avro;

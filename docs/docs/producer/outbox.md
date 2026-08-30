@@ -60,7 +60,11 @@ Register the store and the relay:
 using Dekaf.Outbox;
 using Dekaf.Outbox.EntityFrameworkCore;
 
-builder.Services.AddDbContextFactory<OrdersContext>(o => o.UseNpgsql(connectionString));
+builder.Services.AddDbContextFactory<OrdersContext>(options =>
+{
+    // Configure the EF Core provider used by your application here.
+    options.EnableDetailedErrors();
+});
 builder.Services.AddDekafEntityFrameworkCoreOutboxStore<OrdersContext>();
 builder.Services.AddDekafOutboxRelay(
     producer => producer.WithBootstrapServers("localhost:9092"));
@@ -110,16 +114,20 @@ The two ticks columns read as raw `long`s in ad-hoc queries; convert with `new D
 Point the tables anywhere with `OutboxModelOptions`:
 
 ```csharp
-protected override void OnModelCreating(ModelBuilder modelBuilder)
+public sealed class CustomOutboxContext(DbContextOptions<CustomOutboxContext> options)
+    : DbContext(options)
 {
-    // Every property is optional - pick your own names or omit to keep the defaults.
-    modelBuilder.UseDekafOutbox(new OutboxModelOptions
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
-        Schema = "messaging",                     // default: provider default schema
-        MessagesTableName = "orders_outbox",      // default: dekaf_outbox_messages
-        LeasesTableName = "orders_outbox_leases", // default: dekaf_outbox_leases
-        RelaysTableName = "orders_outbox_relays"  // default: dekaf_outbox_relays
-    });
+        // Every property is optional - omit any property to keep its default.
+        modelBuilder.UseDekafOutbox(new OutboxModelOptions
+        {
+            Schema = "messaging",
+            MessagesTableName = "orders_outbox",
+            LeasesTableName = "orders_outbox_leases",
+            RelaysTableName = "orders_outbox_relays"
+        });
+    }
 }
 ```
 
@@ -166,20 +174,23 @@ Write the outbox row in the same transaction as the business change:
 using Dekaf.Outbox.EntityFrameworkCore;
 using Dekaf.Serialization;
 
-public async Task PlaceOrderAsync(Order order, CancellationToken cancellationToken)
+public sealed class OrderApplicationService(IDbContextFactory<OrdersContext> contextFactory)
 {
-    await using var context = await _contextFactory.CreateDbContextAsync(cancellationToken);
+    public async Task PlaceOrderAsync(Order order, CancellationToken cancellationToken)
+    {
+        await using var context = await contextFactory.CreateDbContextAsync(cancellationToken);
 
-    context.Orders.Add(order);
-    context.AddOutboxMessage(
-        topic: "orders",
-        key: order.Id.ToString(),
-        value: JsonSerializer.Serialize(order),
-        keySerializer: Serializers.String,
-        valueSerializer: Serializers.String);
+        context.Orders.Add(order);
+        context.AddOutboxMessage(
+            topic: "orders",
+            key: order.Id,
+            value: JsonSerializer.Serialize(order),
+            keySerializer: Serializers.String,
+            valueSerializer: Serializers.String);
 
-    // One commit: business row and message are atomic.
-    await context.SaveChangesAsync(cancellationToken);
+        // One commit: business row and message are atomic.
+        await context.SaveChangesAsync(cancellationToken);
+    }
 }
 ```
 
@@ -190,7 +201,7 @@ Key and value are stored **pre-serialized** — the relay is a byte pass-through
 At-least-once means consumers may see a record twice (crash between broker ack and row deletion, or a lease takeover). Deduplicate on the stamped header:
 
 ```csharp
-var messageId = result.Headers.FirstOrDefault(h => h.Key == "x-outbox-message-id");
+var messageId = outboxResult.Headers.FirstOrDefault(h => h.Key == "x-outbox-message-id");
 // Track processed ids (e.g. an inbox table keyed by the GUID) and skip repeats.
 ```
 
@@ -230,23 +241,29 @@ What a storage technology must provide:
 **Message identity is opaque to the relay.** `MarkPublishedAsync` always receives the *same instances* `GetNextBatchAsync` returned — a contiguous prefix, in order. A store can therefore identify what to delete three ways:
 
 ```csharp
-// 1. Relational: by the Id column (what the EF Core store does)
-var ids = published.Select(m => m.Id);
-
-// 2. Any store: by MessageId, the always-present unique GUID
-var ids = published.Select(m => m.MessageId);
-
-// 3. NoSQL with native ids: subclass OutboxMessage, return your subclass
-//    from GetNextBatchAsync, and downcast on the way back
-private sealed class MongoOutboxMessage : OutboxMessage
+public sealed class MongoOutboxMessage : OutboxMessage
 {
-    public required ObjectId DocumentId { get; init; }
+    public required string DocumentId { get; init; }
 }
 
-public ValueTask MarkPublishedAsync(int bucket, IReadOnlyList<OutboxMessage> published, CancellationToken ct)
+public sealed class MongoOutboxStore
 {
-    var documentIds = published.Cast<MongoOutboxMessage>().Select(m => m.DocumentId);
-    // collection.DeleteManyAsync(filter on documentIds)
+    public ValueTask MarkPublishedAsync(
+        int bucket,
+        IReadOnlyList<OutboxMessage> published,
+        CancellationToken cancellationToken)
+    {
+        // Relational stores can identify rows by Id; any store can use MessageId.
+        var relationalIds = published.Select(message => message.Id);
+        var messageIds = published.Select(message => message.MessageId);
+
+        // A NoSQL store can instead return a subclass carrying its native identifier.
+        var documentIds = published
+            .Cast<MongoOutboxMessage>()
+            .Select(message => message.DocumentId);
+
+        return ValueTask.CompletedTask;
+    }
 }
 ```
 

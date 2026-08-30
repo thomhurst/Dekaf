@@ -271,12 +271,14 @@ Extensions can be chained for complex pipelines:
 
 ```csharp
 // Filter, transform, batch
-await foreach (var batch in consumer.ConsumeAsync(ct)
+await foreach (var messages in consumer.ConsumeAsync(ct)
     .Where(m => m.Key != null)
     .Where(m => m.Value.Length > 0)
-    .Select(m => new ProcessedMessage(m.Key!, m.Value, m.Timestamp))
     .Batch(50))
 {
+    var batch = messages
+        .Select(m => new ProcessedMessage(m.Key!, m.Value, m.Timestamp))
+        .ToArray();
     await ProcessBatchAsync(batch);
     await consumer.CommitAsync();
 }
@@ -325,13 +327,13 @@ Choose batch sizes based on your use case:
 
 ```csharp
 // Small batches for low-latency processing
-.Batch(10)
+consumer.ConsumeAsync(ct).Batch(10);
 
 // Larger batches for bulk operations
-.Batch(1000)
+consumer.ConsumeAsync(ct).Batch(1000);
 
 // Consider memory when batching large messages
-.Batch(100)  // If messages are large
+consumer.ConsumeAsync(ct).Batch(100);  // If messages are large
 ```
 
 ## Real-World Examples
@@ -340,11 +342,13 @@ Choose batch sizes based on your use case:
 
 ```csharp
 // Process only error logs, batch for Elasticsearch
-await foreach (var batch in consumer.ConsumeAsync(ct)
+await foreach (var messages in consumer.ConsumeAsync(ct)
     .Where(m => m.Value.Contains("\"level\":\"error\""))
-    .Select(m => JsonSerializer.Deserialize<LogEntry>(m.Value)!)
     .Batch(200))
 {
+    var batch = messages
+        .Select(m => JsonSerializer.Deserialize<LogEntry>(m.Value)!)
+        .ToArray();
     await elasticClient.BulkIndexAsync(batch);
     await consumer.CommitAsync();
 }

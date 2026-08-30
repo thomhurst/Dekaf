@@ -131,9 +131,9 @@ consumer.Partitions.IncrementalUnassign(new[]
 Assignment and seek methods mutate a live consumer and return `void`, so write them as sequential commands:
 
 ```csharp
-// Before
-consumer.Assign(new TopicPartition("my-topic", 0))
-    .SeekToBeginning(new TopicPartition("my-topic", 0));
+// Before (invalid: Assign returns void)
+// consumer.Assign(new TopicPartition("my-topic", 0))
+//     .SeekToBeginning(new TopicPartition("my-topic", 0));
 
 // After
 consumer.Partitions.Assign(new TopicPartition("my-topic", 0));
@@ -226,12 +226,15 @@ public class MultiPartitionWorker
     private readonly IKafkaConsumer<string, string> _consumer;
     private readonly ConcurrentDictionary<int, long> _offsets = new();
 
-    public MultiPartitionWorker(string bootstrapServers)
+    public static async Task<MultiPartitionWorker> CreateAsync(string bootstrapServers)
     {
-        _consumer = await Kafka.CreateConsumer<string, string>()
+        var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(bootstrapServers)
             .BuildAsync();
+        return new MultiPartitionWorker(consumer);
     }
+
+    private MultiPartitionWorker(IKafkaConsumer<string, string> consumer) => _consumer = consumer;
 
     public async Task StartAsync(string topic, int[] partitions, CancellationToken ct)
     {

@@ -93,7 +93,7 @@ var signature = ComputeSignature(messageBody);
 headers.Add("signature", signature);  // byte[]
 
 // Or from existing memory
-headers.Add("checksum", checksumBytes.AsMemory());
+headers.Add("checksum", checksumBytes);
 ```
 
 ## Reading Headers (Consumer Side)
@@ -171,12 +171,14 @@ var headers = Headers.Create()
 
 ```csharp
 // ✅ Good - short, meaningful keys
-.Add("tid", traceId)
-.Add("src", "order-svc")
+var compactHeaders = Headers.Create()
+    .Add("tid", traceId)
+    .Add("src", "order-svc");
 
 // ❌ Avoid - verbose keys waste bytes
-.Add("x-correlation-trace-identifier", traceId)
-.Add("originating-service-name", "order-service")
+var verboseHeaders = Headers.Create()
+    .Add("x-correlation-trace-identifier", traceId)
+    .Add("originating-service-name", "order-service");
 ```
 
 ## Complete Example

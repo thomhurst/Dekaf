@@ -27,12 +27,12 @@ When you create a producer or consumer without specifying serializers, Dekaf aut
 using Dekaf;
 
 // Automatically uses Serializers.String for both key and value
-var producer = await Kafka.CreateProducer<string, string>()
+var stringProducer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .BuildAsync();
 
 // Automatically uses Serializers.String for key, Serializers.Int64 for value
-var producer = await Kafka.CreateProducer<string, long>()
+var longProducer = await Kafka.CreateProducer<string, long>()
     .WithBootstrapServers("localhost:9092")
     .BuildAsync();
 ```
@@ -130,7 +130,7 @@ var producer = await Kafka.CreateProducer<Ignore, string>()
     .BuildAsync();
 
 // Key is always null
-await producer.ProduceAsync("topic", Ignore.Value, "value");
+await producer.ProduceAsync("topic", default, "value");
 ```
 
 ## Using Serializers Explicitly

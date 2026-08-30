@@ -89,18 +89,18 @@ Dekaf automatically scales up TCP connections per broker when the producer detec
 
 ```csharp
 // Adaptive scaling is enabled by default — just build the producer
-var producer = Kafka.CreateProducer<string, string>()
+var defaultProducer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .Build();
 
 // Customize the maximum connections
-var producer = Kafka.CreateProducer<string, string>()
+var adaptiveProducer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithAdaptiveConnections(maxConnections: 5)
     .Build();
 
 // Disable if you need fixed connection topology
-var producer = Kafka.CreateProducer<string, string>()
+var fixedConnectionProducer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithoutAdaptiveConnections()
     .WithConnectionsPerBroker(3)
@@ -126,13 +126,13 @@ When you need to push as many messages as possible:
 ```csharp
 using Dekaf;
 
-var producer = await Kafka.CreateProducer<string, string>()
+var presetProducer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .ForHighThroughput()  // Preset configuration
     .BuildAsync();
 
 // Or manual configuration
-var producer = await Kafka.CreateProducer<string, string>()
+var manuallyTunedProducer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithAcks(Acks.Leader)           // Don't wait for all replicas
     .WithLinger(TimeSpan.FromMilliseconds(5)) // Batch for 5ms
@@ -148,13 +148,13 @@ When every millisecond counts:
 ```csharp
 using Dekaf;
 
-var producer = await Kafka.CreateProducer<string, string>()
+var presetProducer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .ForLowLatency()  // Preset configuration
     .BuildAsync();
 
 // Or manual configuration
-var producer = await Kafka.CreateProducer<string, string>()
+var manuallyTunedProducer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithAcks(Acks.Leader)
     .WithLinger(TimeSpan.Zero) // Send immediately
@@ -169,13 +169,13 @@ When you absolutely cannot lose a message:
 ```csharp
 using Dekaf;
 
-var producer = await Kafka.CreateProducer<string, string>()
+var presetProducer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .ForReliability()  // Preset configuration
     .BuildAsync();
 
 // Or manual configuration
-var producer = await Kafka.CreateProducer<string, string>()
+var manuallyTunedProducer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithAcks(Acks.All)
     .WithIdempotence(true)
@@ -338,12 +338,15 @@ public class MessageService
 }
 
 // Bad - creating per request
-public async Task SendAsync(string message)
+public class PerRequestMessageService
 {
-    await using var producer = await Kafka.CreateProducer<string, string>()
-        .WithBootstrapServers("localhost:9092")
-        .BuildAsync();
-    // ...
+    public async Task SendAsync(string message)
+    {
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .BuildAsync();
+        // ...
+    }
 }
 ```
 
@@ -419,7 +422,7 @@ public class MyBenchmarks
     private IKafkaProducer<string, string> _producer;
 
     [GlobalSetup]
-    public void Setup()
+    public async Task Setup()
     {
         _producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers("localhost:9092")

@@ -67,22 +67,22 @@ Share groups do not support manual partition assignment — `Subscribe` is the o
 `PollAsync` returns an `IAsyncEnumerable` of acquired records:
 
 ```csharp
-await foreach (var record in consumer.PollAsync(cancellationToken))
+await foreach (var record in shareConsumer.PollAsync(cancellationToken))
 {
     try
     {
         await ProcessAsync(record.Value);
-        consumer.Acknowledge(record, AcknowledgeType.Accept);
+        shareConsumer.Acknowledge(record, AcknowledgeType.Accept);
     }
     catch (TransientException)
     {
         // Redeliver to any group member (this one or another)
-        consumer.Acknowledge(record, AcknowledgeType.Release);
+        shareConsumer.Acknowledge(record, AcknowledgeType.Release);
     }
     catch (PoisonMessageException)
     {
         // Permanently reject - never redelivered
-        consumer.Acknowledge(record, AcknowledgeType.Reject);
+        shareConsumer.Acknowledge(record, AcknowledgeType.Reject);
     }
 }
 ```
@@ -101,7 +101,7 @@ The three acknowledgement types:
 if (record.DeliveryCount >= 5)
 {
     await deadLetterProducer.ProduceAsync("orders-dlq", record.Key, record.Value);
-    consumer.Acknowledge(record, AcknowledgeType.Reject);
+    shareConsumer.Acknowledge(record, AcknowledgeType.Reject);
     return;
 }
 ```
@@ -175,8 +175,8 @@ Records are delivered under a broker-side acquisition lock (default 30 seconds, 
 For work that outlives the lock, renew it:
 
 ```csharp
-consumer.Acknowledge(record, AcknowledgeType.Renew);
-await consumer.CommitAsync(cancellationToken); // Sends the renewal
+shareConsumer.Acknowledge(record, AcknowledgeType.Renew);
+await shareConsumer.CommitAsync(cancellationToken); // Sends the renewal
 // ...continue long-running processing, then Accept/Release/Reject as normal
 ```
 
