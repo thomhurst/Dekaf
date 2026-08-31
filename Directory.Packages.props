@@ -23,7 +23,7 @@
     <PackageVersion Include="Dekaf.Abstractions" Version="$(DekafPackageVersion)" />
     <PackageVersion Include="GitVersion.MsBuild" Version="6.8.2" />
     <PackageVersion Include="Google.Cloud.Kms.V1" Version="3.26.0" />
-    <PackageVersion Include="Google.Protobuf" Version="3.36.0" />
+    <PackageVersion Include="Google.Protobuf" Version="3.36.1" />
     <PackageVersion Include="Grpc.Core.Api" Version="2.83.0" />
     <PackageVersion Include="Grpc.Tools" Version="2.83.0" />
     <PackageVersion Include="Jsonata.Net.Native" Version="3.0.0" />
