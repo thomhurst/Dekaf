@@ -1638,7 +1638,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private long _fetchBufferMemoryBytes = 100L * 1024 * 1024;
     private bool _isFetchBufferMemoryConfigured;
     private int _maxPartitionFetchBytes = 1048576;
-    private int _fetchMaxWaitMs = 200;
+    private int _fetchMaxWaitMs = 500;
     private int _maxPollRecords = 500;
     private int _maxPollIntervalMs = 300000;
     private int _sessionTimeoutMs = 45000;
@@ -2089,7 +2089,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     /// Sets the maximum time the server will block before responding to a fetch request
     /// if there isn't sufficient data to satisfy <see cref="WithFetchMinBytes"/>.
     /// Equivalent to Kafka's <c>fetch.max.wait.ms</c> configuration.
-    /// Default is 200ms.
+    /// Default is 500ms.
     /// </summary>
     /// <param name="maxWait">The maximum wait duration. Must be positive.</param>
     /// <returns>The builder instance for method chaining.</returns>
@@ -2918,7 +2918,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     /// <list type="bullet">
     /// <item><description>MaxPollRecords: 1000 (larger batches)</description></item>
     /// <item><description>FetchMinBytes: 1KB (wait for more data)</description></item>
-    /// <item><description>FetchMaxWaitMs: 200ms (matches default; higher values like 500ms cause stalls when the prefetch pipeline restarts after hitting memory limits)</description></item>
+    /// <item><description>FetchMaxWaitMs: 200ms (lower than the 500ms default to prevent stalls when the prefetch pipeline restarts after hitting memory limits)</description></item>
     /// <item><description>MaxPartitionFetchBytes: 4MB (larger fetch responses reduce round-trip overhead per byte)</description></item>
     /// <item><description>FetchMaxBytes: 100MB initially, adapting up to 200MB</description></item>
     /// <item><description>FetchBufferMemory: 1000MB unless explicitly configured (bounds aggregate raw Fetch responses)</description></item>

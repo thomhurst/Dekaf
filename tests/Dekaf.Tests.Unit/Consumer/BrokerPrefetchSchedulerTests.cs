@@ -49,6 +49,23 @@ public sealed class BrokerPrefetchSchedulerTests
     }
 
     [Test]
+    public async Task WaitForAny_SinglePendingTask_PropagatesWaitCancellation()
+    {
+        var scheduler = new BrokerPrefetchScheduler();
+        var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        scheduler.TryStart((BrokerId: 1, ConnectionIndex: 0), () => completion.Task);
+
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        await Assert.That(async () => await scheduler.WaitForAnyAsync(cts.Token).ConfigureAwait(false))
+            .Throws<OperationCanceledException>();
+
+        completion.SetResult();
+        await scheduler.DrainAllSafelyAsync(static _ => { }, static _ => false).ConfigureAwait(false);
+    }
+
+    [Test]
     public async Task DrainAllSafely_ReturnsFirstMatchingFailureAndObservesAll()
     {
         var scheduler = new BrokerPrefetchScheduler();

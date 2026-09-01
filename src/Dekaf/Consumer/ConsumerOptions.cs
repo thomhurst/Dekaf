@@ -159,7 +159,7 @@ public sealed class ConsumerOptions
     /// <summary>
     /// Fetch maximum wait time in milliseconds.
     /// </summary>
-    public int FetchMaxWaitMs { get; init; } = 200;
+    public int FetchMaxWaitMs { get; init; } = 500;
 
     /// <summary>
     /// Enable KIP-227 incremental fetch sessions when supported by the broker.

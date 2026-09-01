@@ -10,6 +10,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\..\src\Dekaf.Abstractions\Dekaf.Abstractions.csproj" />
     <ProjectReference Include="..\..\src\Dekaf\Dekaf.csproj" />
     <ProjectReference Include="..\..\src\Dekaf.Serialization.Json\Dekaf.Serialization.Json.csproj" />
   </ItemGroup>

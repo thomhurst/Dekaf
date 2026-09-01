@@ -98,10 +98,10 @@ public class ConsumerOptionsDefaultsTests
     }
 
     [Test]
-    public async Task FetchMaxWaitMs_DefaultsTo_200()
+    public async Task FetchMaxWaitMs_DefaultsTo_500()
     {
         var options = CreateOptions();
-        await Assert.That(options.FetchMaxWaitMs).IsEqualTo(200);
+        await Assert.That(options.FetchMaxWaitMs).IsEqualTo(500);
     }
 
     [Test]

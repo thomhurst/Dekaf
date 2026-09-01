@@ -50,6 +50,34 @@ internal sealed class BrokerPrefetchScheduler
         if (_inFlight.Count == 0)
             return;
 
+        if (_inFlight.Count == 1)
+        {
+            Task? task = null;
+            foreach (var entry in _inFlight)
+            {
+                task = entry.Value;
+                break;
+            }
+
+            if (!task!.IsCompleted)
+            {
+                try
+                {
+                    await task.WaitAsync(cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch when (task.IsCompleted)
+                {
+                    // DrainCompletedAsync owns observing and propagating fetch failures.
+                }
+            }
+
+            return;
+        }
+
         var tasks = _inFlight.Values.ToArray();
         await Task.WhenAny(tasks).WaitAsync(cancellationToken).ConfigureAwait(false);
     }
