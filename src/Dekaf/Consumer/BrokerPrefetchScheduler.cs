@@ -4,7 +4,7 @@ internal sealed class BrokerPrefetchScheduler
 {
     private readonly Dictionary<(int BrokerId, int ConnectionIndex), Task> _inFlight = [];
     private readonly List<KeyValuePair<(int BrokerId, int ConnectionIndex), Task>> _completed = [];
-    // Maintained during add/drain so the common single-task wait needs no dictionary enumeration.
+    // Populated only while the scheduler has remained single-task since becoming non-empty.
     private Task? _singleInFlightTask;
 
     public int InFlightCount => _inFlight.Count;
@@ -26,18 +26,10 @@ internal sealed class BrokerPrefetchScheduler
 
     public async ValueTask<int> DrainCompletedAsync()
     {
-        Task? solePendingTask = null;
-        var pendingCount = 0;
-
         foreach (var entry in _inFlight)
         {
             if (entry.Value.IsCompleted)
                 _completed.Add(entry);
-            else
-            {
-                pendingCount++;
-                solePendingTask = pendingCount == 1 ? entry.Value : null;
-            }
         }
 
         try
@@ -46,12 +38,7 @@ internal sealed class BrokerPrefetchScheduler
             {
                 var (key, task) = _completed[i];
                 if (_inFlight.Remove(key))
-                {
-                    _singleInFlightTask = _inFlight.Count == 1
-                        ? solePendingTask ?? _completed[^1].Value
-                        : null;
                     await task.ConfigureAwait(false);
-                }
             }
 
             return _completed.Count;
@@ -67,10 +54,8 @@ internal sealed class BrokerPrefetchScheduler
         if (_inFlight.Count == 0)
             return;
 
-        if (_inFlight.Count == 1)
+        if (_inFlight.Count == 1 && _singleInFlightTask is { } task)
         {
-            var task = _singleInFlightTask!;
-
             if (!task.IsCompleted)
             {
                 var waitTask = task.WaitAsync(cancellationToken);
