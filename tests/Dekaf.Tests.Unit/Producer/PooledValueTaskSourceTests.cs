@@ -628,14 +628,12 @@ public class PooledValueTaskSourceTests
         source.SetResult(42);
         source.ObserveForFireAndForget();
 
-        // Give a tiny bit of time for the callback to execute
-        await Task.Yield();
-
-        // Source should have been returned to pool
-        await Assert.That(pool.ApproximateCount).IsEqualTo(1);
-
-        // Should be able to rent the same instance again
+        // Already-completed observation returns synchronously, so rent again on the same thread
+        // to exercise Reservoir's thread-local fast path deterministically.
+        var retainedCount = pool.ApproximateCount;
         var sameSource = pool.Rent();
+
+        await Assert.That(retainedCount).IsEqualTo(1);
         await Assert.That(source).IsSameReferenceAs(sameSource);
     }
 

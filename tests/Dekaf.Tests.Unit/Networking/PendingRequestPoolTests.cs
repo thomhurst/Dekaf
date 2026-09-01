@@ -146,7 +146,7 @@ public class PendingRequestPoolTests
     }
 
     [Test]
-    public async Task Pool_RespectsCustomMaxPoolSize()
+    public async Task Pool_RetainsThreadLocalItemBeyondCustomSharedMaxSize()
     {
         var pool = new PendingRequestPool(maxPoolSize: 2);
 
@@ -172,9 +172,9 @@ public class PendingRequestPoolTests
 
         pool.Return(r1);
         pool.Return(r2);
-        pool.Return(r3); // Should be discarded (pool full at 2)
+        pool.Return(r3);
 
-        await Assert.That(pool.ApproximateCount).IsEqualTo(2);
+        await Assert.That(pool.ApproximateCount).IsEqualTo(3);
     }
 
     [Test]

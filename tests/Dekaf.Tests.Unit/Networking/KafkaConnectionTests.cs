@@ -432,10 +432,6 @@ public sealed class KafkaConnectionTests
 
         try
         {
-            var baseline = KafkaConnection.GetPipelinedResponsePoolCount<
-                ApiVersionsRequest,
-                ApiVersionsResponse>();
-            var expectedAfterReturn = Math.Max(1, baseline);
             var port = ((IPEndPoint)listener.LocalEndpoint).Port;
             var acceptTask = AcceptAndCompleteHandshakeAsync(listener, cancellationToken);
             await using var connection = new KafkaConnection(
@@ -451,6 +447,9 @@ public sealed class KafkaConnectionTests
                     new ApiVersionsRequest { ClientSoftwareName = "test", ClientSoftwareVersion = "1.0" },
                     apiVersion: 3,
                     callerTimeout.Token);
+            var expectedAfterReturn = KafkaConnection.GetPipelinedResponsePoolCount<
+                ApiVersionsRequest,
+                ApiVersionsResponse>() + 1;
             await ReadRequestFrameAsync(serverClient.GetStream(), cancellationToken);
 
             if (abandonBeforeCompletion)
@@ -496,10 +495,6 @@ public sealed class KafkaConnectionTests
 
         try
         {
-            var baseline = KafkaConnection.GetPipelinedResponsePoolCount<
-                ApiVersionsRequest,
-                ApiVersionsResponse>();
-            var expectedAfterReturn = Math.Max(1, baseline);
             var port = ((IPEndPoint)listener.LocalEndpoint).Port;
             var acceptTask = AcceptAndCompleteHandshakeAsync(listener, cancellationToken);
             await using var connection = new KafkaConnection(
@@ -515,6 +510,9 @@ public sealed class KafkaConnectionTests
                     new ApiVersionsRequest { ClientSoftwareName = "test", ClientSoftwareVersion = "1.0" },
                     apiVersion: 3,
                     callerTimeout.Token);
+            var expectedAfterReturn = KafkaConnection.GetPipelinedResponsePoolCount<
+                ApiVersionsRequest,
+                ApiVersionsResponse>() + 1;
             await ReadRequestFrameAsync(serverClient.GetStream(), cancellationToken);
 
             var cancelTask = callerTimeout.CancelAsync();
@@ -610,10 +608,6 @@ public sealed class KafkaConnectionTests
 
         try
         {
-            var baseline = KafkaConnection.GetPipelinedResponsePoolCount<
-                ApiVersionsRequest,
-                ApiVersionsResponse>();
-            var expectedAfterReturn = Math.Max(1, baseline);
             var port = ((IPEndPoint)listener.LocalEndpoint).Port;
             var acceptTask = AcceptAndCompleteHandshakeAsync(listener, cancellationToken);
             await using var connection = new KafkaConnection(IPAddress.Loopback.ToString(), port);
@@ -625,6 +619,9 @@ public sealed class KafkaConnectionTests
                     new ApiVersionsRequest { ClientSoftwareName = "test", ClientSoftwareVersion = "1.0" },
                     apiVersion: 3,
                     cancellationToken);
+            var expectedAfterReturn = KafkaConnection.GetPipelinedResponsePoolCount<
+                ApiVersionsRequest,
+                ApiVersionsResponse>() + 1;
             var requestFrame = await ReadRequestFrameAsync(serverClient.GetStream(), cancellationToken);
             var correlationId = BinaryPrimitives.ReadInt32BigEndian(requestFrame.AsSpan(4, 4));
             await serverClient.GetStream().WriteAsync(
@@ -658,11 +655,6 @@ public sealed class KafkaConnectionTests
 
         try
         {
-            var baseline = KafkaConnection.GetPipelinedResponsePoolCount<
-                ApiVersionsRequest,
-                ApiVersionsResponse>();
-            var expectedWhileRetained = Math.Max(0, baseline - 1);
-            var expectedAfterReturn = Math.Max(1, baseline);
             var port = ((IPEndPoint)listener.LocalEndpoint).Port;
             var acceptTask = AcceptAndCompleteHandshakeAsync(listener, cancellationToken);
             await using var connection = new KafkaConnection(IPAddress.Loopback.ToString(), port);
@@ -674,6 +666,10 @@ public sealed class KafkaConnectionTests
                     new ApiVersionsRequest { ClientSoftwareName = "test", ClientSoftwareVersion = "1.0" },
                     apiVersion: 3,
                     cancellationToken);
+            var expectedWhileRetained = KafkaConnection.GetPipelinedResponsePoolCount<
+                ApiVersionsRequest,
+                ApiVersionsResponse>();
+            var expectedAfterReturn = expectedWhileRetained + 1;
             await Assert.That(response.TryRetainExternalOwner())
                 .IsEqualTo(ExternalOwnershipClaimResult.Retained);
             await Assert.That(response.TryRetainExternalOwner())
