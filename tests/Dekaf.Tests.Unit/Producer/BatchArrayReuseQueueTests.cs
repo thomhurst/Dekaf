@@ -23,27 +23,24 @@ public class BatchArrayReuseQueueTests
     }
 
     [Test]
-    public async Task Enqueue_BeyondThreadLocalAndSharedCapacity_FallsBackToArrayPool()
+    public async Task Enqueue_AtCapacity_FallsBackToArrayPool()
     {
         var queue = new BatchArrayReuseQueue(maxSize: 2);
 
-        // Fill the current thread's slot and the two shared slots.
-        queue.EnqueueOrReturn(CreateTestArray());
+        // Fill the queue to capacity.
         queue.EnqueueOrReturn(CreateTestArray());
         queue.EnqueueOrReturn(CreateTestArray());
 
-        // This one should be returned to ArrayPool because both tiers are full.
+        // This one should be returned to ArrayPool because the queue is full.
         queue.EnqueueOrReturn(CreateTestArray());
 
         var success1 = queue.TryDequeue(out _);
         var success2 = queue.TryDequeue(out _);
         var success3 = queue.TryDequeue(out _);
-        var success4 = queue.TryDequeue(out _);
 
         await Assert.That(success1).IsTrue();
         await Assert.That(success2).IsTrue();
-        await Assert.That(success3).IsTrue();
-        await Assert.That(success4).IsFalse();
+        await Assert.That(success3).IsFalse();
     }
 
     [Test]

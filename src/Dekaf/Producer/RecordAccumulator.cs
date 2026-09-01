@@ -8882,8 +8882,7 @@ internal sealed class ReadyBatchPool(int maxPoolSize = BatchArena.DefaultPoolSiz
 /// Reuse queue for completion source arrays rented by PartitionBatch.
 /// When ReadyBatch finishes cleanup, it pushes the array here instead of returning it to
 /// ArrayPool. PartitionBatch.PrepareForPooling() dequeues from here first, falling back
-/// to ArrayPool on miss. Reservoir may retain one array per participating thread beyond
-/// the configured shared capacity. Fire-only batches retain their array and skip the handoff.
+/// to ArrayPool on miss. Fire-only batches retain their array and skip the handoff.
 /// </summary>
 internal sealed class BatchArrayReuseQueue
 {
@@ -8899,8 +8898,8 @@ internal sealed class BatchArrayReuseQueue
     }
 
     /// <summary>
-    /// Pushes the array for reuse. If the returning thread's slot and shared tier are full,
-    /// the array is returned to the dedicated ArrayPool instead.
+    /// Pushes the array for reuse. If the queue is full, the array is returned
+    /// to the dedicated ArrayPool instead.
     /// </summary>
     public void EnqueueOrReturn(PooledValueTaskSource<RecordMetadata>[] completionSources)
         => _pool.Return(completionSources);

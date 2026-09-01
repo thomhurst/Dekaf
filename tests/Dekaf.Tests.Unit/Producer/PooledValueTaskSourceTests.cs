@@ -628,8 +628,8 @@ public class PooledValueTaskSourceTests
         source.SetResult(42);
         source.ObserveForFireAndForget();
 
-        // Already-completed observation returns synchronously, so rent again on the same thread
-        // to exercise Reservoir's thread-local fast path deterministically.
+        // Already-completed observation returns synchronously, so rent again immediately
+        // to verify the returned source is reusable deterministically.
         var retainedCount = pool.ApproximateCount;
         var sameSource = pool.Rent();
 

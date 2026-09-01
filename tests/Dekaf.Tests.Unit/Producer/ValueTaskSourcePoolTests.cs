@@ -171,7 +171,7 @@ public class ValueTaskSourcePoolTests
     }
 
     [Test]
-    public async Task Pool_RetainsThreadLocalItemBeyondSharedMaxSize()
+    public async Task Pool_RespectsMaxSize()
     {
         const int maxSize = 5;
         var pool = new ValueTaskSourcePool<int>(maxPoolSize: maxSize);
@@ -190,8 +190,7 @@ public class ValueTaskSourcePoolTests
             await source.Task.ConfigureAwait(false);
         }
 
-        // One current-thread item is retained in addition to the bounded shared tier.
-        await Assert.That(pool.ApproximateCount).IsEqualTo(maxSize + 1);
+        await Assert.That(pool.ApproximateCount).IsEqualTo(maxSize);
     }
 
     [Test]
@@ -427,7 +426,7 @@ public class ValueTaskSourcePoolTests
         var barrier = new Barrier(workerCount);
         var tasks = new List<Task>();
 
-        // Concurrent workers exercise both shared storage and their thread-local slots.
+        // Concurrent workers exercise the shared storage.
         for (var t = 0; t < workerCount; t++)
         {
             tasks.Add(Task.Run(async () =>
@@ -447,7 +446,7 @@ public class ValueTaskSourcePoolTests
         await Task.WhenAll(tasks).ConfigureAwait(false);
 
         // Pool should be in a consistent state
-        await Assert.That(pool.ApproximateCount).IsLessThanOrEqualTo(maxPoolSize + workerCount);
+        await Assert.That(pool.ApproximateCount).IsLessThanOrEqualTo(maxPoolSize);
         await Assert.That(pool.ApproximateCount).IsGreaterThanOrEqualTo(0);
     }
 }
