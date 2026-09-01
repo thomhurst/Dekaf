@@ -122,7 +122,8 @@ internal sealed class RentedBufferWriter : IBufferWriter<byte>, IDisposable
         _buffer = newBuffer;
     }
 
-    private readonly struct PoolPolicy : Reservoir.IPooledObjectPolicy<RentedBufferWriter>
+    private readonly struct PoolPolicy
+        : Reservoir.IPooledObjectPolicy<RentedBufferWriter>, Reservoir.INonThrowingResetPolicy
     {
         public RentedBufferWriter Create() => new();
 

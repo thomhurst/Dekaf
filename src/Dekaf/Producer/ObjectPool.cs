@@ -170,7 +170,7 @@ internal abstract class ObjectPool<T> where T : class
     }
 
     private readonly struct PoolPolicy(PoolState state)
-        : Reservoir.IPooledObjectDestroyPolicy<T>
+        : Reservoir.IPooledObjectDestroyPolicy<T>, Reservoir.INonThrowingResetPolicy
     {
         public T Create()
         {

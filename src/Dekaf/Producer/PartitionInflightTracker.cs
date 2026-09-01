@@ -166,7 +166,7 @@ internal sealed class InflightEntryPool
     }
 
     private readonly struct InflightEntryPolicy(InflightEntryPool owner)
-        : Reservoir.IPooledObjectPolicy<InflightEntry>
+        : Reservoir.IPooledObjectPolicy<InflightEntry>, Reservoir.INonThrowingResetPolicy
     {
         public InflightEntry Create()
         {

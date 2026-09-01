@@ -1479,7 +1479,8 @@ public sealed partial class KafkaConnection :
 
         private readonly struct PoolPolicy
             : Reservoir.IPooledObjectDestroyPolicy<
-                PooledPipelinedResponse<TRequest, TResponse>>
+                PooledPipelinedResponse<TRequest, TResponse>>,
+              Reservoir.INonThrowingResetPolicy
         {
             public PooledPipelinedResponse<TRequest, TResponse> Create()
             {
