@@ -4,14 +4,15 @@ using Dekaf.Internal;
 namespace Dekaf.Producer;
 
 /// <summary>
-/// Thread-safe bounded object pool backed by Reservoir.
-/// Provides pre-warming, retained-count diagnostics, dynamic capacity ratcheting,
-/// and miss tracking for Dekaf's pooled producer and protocol objects.
+/// Thread-safe object pool backed by Reservoir.
+/// Provides pre-warming, retained-count diagnostics, dynamic shared-capacity ratcheting,
+/// a thread-local fast path, and miss tracking for Dekaf's pooled producer and protocol objects.
 /// </summary>
 /// <remarks>
 /// Subclasses implement <see cref="Create"/> to produce new items and <see cref="Reset"/>
 /// to prepare returned items for reuse. Reservoir supplies fixed-capacity, zero-allocation
-/// storage specialized for small and large pools.
+/// shared storage specialized for small and large pools. By default, each participating thread
+/// may retain one additional item for faster same-thread reuse.
 /// </remarks>
 /// <typeparam name="T">Pooled reference type.</typeparam>
 internal abstract class ObjectPool<T> where T : class
@@ -20,11 +21,12 @@ internal abstract class ObjectPool<T> where T : class
     private PoolState _poolState;
     private PoolState? _retiredPool;
     private readonly Lock _resizeLock = new();
+    private readonly bool _threadLocalFastPath;
     private int _maxPoolSize;
     private int _retainedCount;
     private long _misses;
 
-    /// <summary>Maximum number of items retained.</summary>
+    /// <summary>Maximum number of items retained by the shared tier.</summary>
     public int MaxPoolSize => Volatile.Read(ref _maxPoolSize);
 
     /// <summary>
@@ -32,18 +34,19 @@ internal abstract class ObjectPool<T> where T : class
     /// Reservoir remains the sole authority for retention decisions.
     /// </summary>
     /// <remarks>
-    /// Concurrent rents, returns, and pool replacement can make this value transiently
-    /// inaccurate. Do not use it as a correctness gate or expect pre-warming during concurrent
-    /// use to reach an exact retained count.
+    /// Includes both shared and thread-local retained items. Concurrent rents, returns, and pool
+    /// replacement can make this value transiently inaccurate. Do not use it as a correctness
+    /// gate or expect pre-warming during concurrent use to reach an exact retained count.
     /// </remarks>
     public int ApproximateCount => Volatile.Read(ref _retainedCount);
 
     /// <summary>Number of empty-pool rents that created an item.</summary>
     public long Misses => Volatile.Read(ref _misses);
 
-    protected ObjectPool(int maxPoolSize)
+    protected ObjectPool(int maxPoolSize, bool threadLocalFastPath = true)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxPoolSize);
+        _threadLocalFastPath = threadLocalFastPath;
         _maxPoolSize = maxPoolSize;
         _poolState = CreatePool(maxPoolSize);
         _pool = _poolState.Pool;
@@ -67,7 +70,7 @@ internal abstract class ObjectPool<T> where T : class
         return item;
     }
 
-    /// <summary>Returns an item, discarding it when retained capacity is full.</summary>
+    /// <summary>Returns an item, discarding it when thread-local and shared capacity are full.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void Return(T item)
     {
@@ -77,7 +80,7 @@ internal abstract class ObjectPool<T> where T : class
         Interlocked.Increment(ref _retainedCount);
     }
 
-    /// <summary>Increases retained capacity.</summary>
+    /// <summary>Increases shared retained capacity.</summary>
     public void RatchetMaxPoolSize(int newSize)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(newSize);
@@ -152,7 +155,10 @@ internal abstract class ObjectPool<T> where T : class
     private PoolState CreatePool(int capacity)
     {
         var state = new PoolState(this);
-        state.Pool = new Reservoir.ObjectPool<T, PoolPolicy>(new PoolPolicy(state), capacity);
+        state.Pool = new Reservoir.ObjectPool<T, PoolPolicy>(
+            new PoolPolicy(state),
+            capacity,
+            _threadLocalFastPath);
         return state;
     }
 
