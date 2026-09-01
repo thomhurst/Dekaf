@@ -145,7 +145,8 @@ internal sealed class InflightEntryPool
         MaxPoolSize = maxPoolSize;
         _pool = new Reservoir.ObjectPool<InflightEntry, InflightEntryPolicy>(
             new InflightEntryPolicy(this),
-            maxPoolSize);
+            maxPoolSize,
+            threadLocalFastPath: false);
     }
 
     public int MaxPoolSize { get; }

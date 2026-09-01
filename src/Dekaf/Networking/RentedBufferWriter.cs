@@ -22,7 +22,10 @@ namespace Dekaf.Networking;
 internal sealed class RentedBufferWriter : IBufferWriter<byte>, IDisposable
 {
     private const int MaxPoolSize = 256;
-    private static readonly Reservoir.ObjectPool<RentedBufferWriter, PoolPolicy> Pool = new(MaxPoolSize);
+    // Rent and Dispose bracket synchronous request serialization before any await, so this is the
+    // one producer pool that reliably benefits from Reservoir's same-thread fast path.
+    private static readonly Reservoir.ObjectPool<RentedBufferWriter, PoolPolicy> Pool =
+        new(default, MaxPoolSize, threadLocalFastPath: true);
 
     private byte[] _buffer = null!;
     private int _written;

@@ -914,7 +914,8 @@ internal sealed class PendingFetchData : IDisposable
         var state = new PendingFetchDataPoolState();
         state.Pool = new Reservoir.ObjectPool<PendingFetchData, PendingFetchDataPolicy>(
             new PendingFetchDataPolicy(state),
-            capacity);
+            capacity,
+            threadLocalFastPath: false);
         return state;
     }
 
