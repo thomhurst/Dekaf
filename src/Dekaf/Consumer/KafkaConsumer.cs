@@ -912,9 +912,11 @@ internal sealed class PendingFetchData : IDisposable
     private static PendingFetchDataPoolState CreatePool(int capacity)
     {
         var state = new PendingFetchDataPoolState();
+        // The fetch loop creates entries that the consumer thread later disposes.
         state.Pool = new Reservoir.ObjectPool<PendingFetchData, PendingFetchDataPolicy>(
             new PendingFetchDataPolicy(state),
-            capacity);
+            capacity,
+            threadLocalFastPath: false);
         return state;
     }
 

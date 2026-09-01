@@ -5102,9 +5102,12 @@ internal sealed class PendingRequestPool
     public PendingRequestPool(int maxPoolSize)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxPoolSize);
+        // Requests are rented before asynchronous I/O and returned by response or
+        // failure continuations that commonly run on another thread.
         _pool = new Reservoir.ObjectPool<PooledPendingRequest, PoolPolicy>(
             new PoolPolicy(this),
-            maxPoolSize);
+            maxPoolSize,
+            threadLocalFastPath: false);
     }
 
     public int ApproximateCount => Volatile.Read(ref _poolCount);

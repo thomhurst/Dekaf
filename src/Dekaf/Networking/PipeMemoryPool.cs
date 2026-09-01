@@ -77,9 +77,12 @@ internal sealed class PipeMemoryPool : MemoryPool<byte>
     public PipeMemoryPool(int maxArrayLength = 4 * 1024 * 1024, int maxArraysPerBucket = 32)
     {
         _pool = ArrayPool<byte>.Create(maxArrayLength, maxArraysPerBucket);
+        // Owners are shared across connections and can be disposed on a different
+        // thread from the one that created the response reader.
         _ownerPool = new Reservoir.ObjectPool<PooledMemoryOwner, PooledMemoryOwnerPolicy>(
             new PooledMemoryOwnerPolicy(this),
-            MaxOwnerPoolSize);
+            MaxOwnerPoolSize,
+            threadLocalFastPath: false);
     }
 
     internal static PipeMemoryPool Create(

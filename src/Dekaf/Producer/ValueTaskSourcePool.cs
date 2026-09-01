@@ -82,9 +82,12 @@ public sealed class ValueTaskSourcePool<T> : IAsyncDisposable
             throw new ArgumentOutOfRangeException(nameof(maxPoolSize), "Max pool size must be positive.");
 
         _maxPoolSize = maxPoolSize;
+        // GetResult performs the automatic return after an async completion, so the
+        // return commonly runs on a different thread from Rent.
         _pool = new Reservoir.ObjectPool<PooledValueTaskSource<T>, PoolPolicy>(
             new PoolPolicy(this),
-            maxPoolSize);
+            maxPoolSize,
+            threadLocalFastPath: false);
     }
 
     /// <summary>

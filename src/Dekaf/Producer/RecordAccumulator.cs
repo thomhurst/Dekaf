@@ -877,6 +877,8 @@ internal sealed class BatchArena
         s_pool.Return(arena);
     }
 
+    // Append threads rent arenas that sender cleanup can return. Shared storage also
+    // keeps MaxPoolSize as the hard bound on retained POH buffers.
     private sealed class BatchArenaPool(int maxPoolSize)
         : ObjectPool<BatchArena>(maxPoolSize, threadLocalFastPath: false)
     {
