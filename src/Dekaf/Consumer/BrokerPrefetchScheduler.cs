@@ -4,6 +4,8 @@ internal sealed class BrokerPrefetchScheduler
 {
     private readonly Dictionary<(int BrokerId, int ConnectionIndex), Task> _inFlight = [];
     private readonly List<KeyValuePair<(int BrokerId, int ConnectionIndex), Task>> _completed = [];
+    // Populated only while the scheduler has remained single-task since becoming non-empty.
+    private Task? _singleInFlightTask;
 
     public int InFlightCount => _inFlight.Count;
 
@@ -16,7 +18,9 @@ internal sealed class BrokerPrefetchScheduler
         if (_inFlight.ContainsKey(key))
             return false;
 
-        _inFlight.Add(key, taskFactory());
+        var task = taskFactory();
+        _inFlight.Add(key, task);
+        _singleInFlightTask = _inFlight.Count == 1 ? task : null;
         return true;
     }
 
@@ -50,6 +54,20 @@ internal sealed class BrokerPrefetchScheduler
         if (_inFlight.Count == 0)
             return;
 
+        if (_inFlight.Count == 1 && _singleInFlightTask is { } task)
+        {
+            if (!task.IsCompleted)
+            {
+                var waitTask = task.WaitAsync(cancellationToken);
+                await waitTask.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+
+                if (waitTask.IsCanceled && cancellationToken.IsCancellationRequested)
+                    cancellationToken.ThrowIfCancellationRequested();
+            }
+
+            return;
+        }
+
         var tasks = _inFlight.Values.ToArray();
         await Task.WhenAny(tasks).WaitAsync(cancellationToken).ConfigureAwait(false);
     }
@@ -63,6 +81,7 @@ internal sealed class BrokerPrefetchScheduler
 
         var tasks = _inFlight.Values.ToArray();
         _inFlight.Clear();
+        _singleInFlightTask = null;
         Exception? firstFailure = null;
 
         for (var i = 0; i < tasks.Length; i++)

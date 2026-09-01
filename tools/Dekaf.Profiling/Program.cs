@@ -1,8 +1,10 @@
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
+using System.Text;
 using Dekaf.Admin;
 using Dekaf.Consumer;
 using Dekaf.Producer;
+using DotNet.Testcontainers.Configurations;
 using Testcontainers.Kafka;
 using DekafLib = Dekaf;
 
@@ -20,6 +22,8 @@ namespace Dekaf.Profiling;
 ///   producer-batch        - Batch producer (fires batch, awaits all)
 ///   producer-fnf-3conn-gc - #1369 GC outlier repro: non-idempotent FireAsync vs idempotent twin
 ///   consumer              - Consumer consuming messages
+///   consumer-idle         - Consumer idle CPU and allocation measurement
+///   process-idle          - No-consumer process CPU and allocation control
 ///   roundtrip             - End-to-end produce then consume
 ///   all                   - Run all scenarios sequentially
 ///
@@ -44,6 +48,13 @@ public static class Program
     private const string ProducerFnf3ConnGcScenario = "producer-fnf-3conn-gc";
     private const int ProducerFnf3ConnGcPartitions = 6;
     private const ulong ProducerBufferMemoryBytes = 512UL * 1024 * 1024;
+    private static readonly byte[] KafkaRunWrapperScript = Encoding.UTF8.GetBytes(
+        "#!/bin/bash\n" +
+        ". /etc/kafka/docker/bash-config\n" +
+        "export KAFKA_ADVERTISED_LISTENERS=$(echo \"$KAFKA_ADVERTISED_LISTENERS\" | sed 's/,$//')\n" +
+        ". /etc/kafka/docker/configureDefaults\n" +
+        ". /etc/kafka/docker/configure\n" +
+        ". /etc/kafka/docker/launch\n");
 
     /// <summary>
     /// Pre-allocated keys to eliminate string interpolation allocations in hot paths.
@@ -125,6 +136,12 @@ public static class Program
                     break;
                 case "consumer":
                     await RunConsumerAsync(kafka.BootstrapServers, durationSeconds, messageSize, batchSize).ConfigureAwait(false);
+                    break;
+                case "consumer-idle":
+                    await RunIdleConsumerAsync(kafka.BootstrapServers, durationSeconds).ConfigureAwait(false);
+                    break;
+                case "process-idle":
+                    await RunIdleControlAsync(durationSeconds).ConfigureAwait(false);
                     break;
                 case "roundtrip":
                     await RunRoundtripAsync(kafka, durationSeconds, messageSize, batchSize).ConfigureAwait(false);
@@ -516,6 +533,88 @@ public static class Program
         PrintResults("Messages consumed", count, sw.Elapsed, gcStats);
     }
 
+    private static async Task RunIdleConsumerAsync(string bootstrapServers, int durationSeconds)
+    {
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(bootstrapServers)
+            .WithClientId("profiling-idle-consumer")
+            .WithGroupId($"profiling-idle-group-{Guid.NewGuid():N}")
+            .BuildAsync()
+            .ConfigureAwait(false);
+
+        consumer.Subscribe(Topic);
+
+        using var cts = new CancellationTokenSource();
+        var consumeTask = ConsumeUntilCanceledAsync(consumer, cts.Token);
+        IdleProfileResult result;
+        try
+        {
+            using var assignmentCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            while (consumer.Assignment.Count == 0)
+                await Task.Delay(10, assignmentCts.Token).ConfigureAwait(false);
+
+            result = await MeasureIdleAsync(durationSeconds).ConfigureAwait(false);
+        }
+        finally
+        {
+            cts.Cancel();
+            await consumeTask.ConfigureAwait(false);
+        }
+
+        PrintIdleResults(result);
+    }
+
+    private static async Task RunIdleControlAsync(int durationSeconds)
+        => PrintIdleResults(await MeasureIdleAsync(durationSeconds).ConfigureAwait(false));
+
+    private static async Task<IdleProfileResult> MeasureIdleAsync(int durationSeconds)
+    {
+        // Exclude startup, connection creation, group assignment, and JIT from measurement.
+        await Task.Delay(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
+        ForceFullGc();
+
+        var cpuStart = Environment.CpuUsage.TotalTime;
+        var allocatedStart = GC.GetTotalAllocatedBytes(precise: true);
+        var gen0Start = GC.CollectionCount(0);
+        var sw = Stopwatch.StartNew();
+
+        await Task.Delay(TimeSpan.FromSeconds(durationSeconds)).ConfigureAwait(false);
+
+        sw.Stop();
+        return new IdleProfileResult(
+            sw.Elapsed,
+            Environment.CpuUsage.TotalTime - cpuStart,
+            GC.GetTotalAllocatedBytes(precise: true) - allocatedStart,
+            GC.CollectionCount(0) - gen0Start);
+    }
+
+    private static void PrintIdleResults(IdleProfileResult result)
+    {
+        Console.WriteLine($"  Wall time: {result.Elapsed.TotalSeconds:F3}s");
+        Console.WriteLine($"  CPU time: {result.CpuTime.TotalMilliseconds:F3}ms");
+        Console.WriteLine($"  Average CPU: {result.CpuTime.TotalSeconds / result.Elapsed.TotalSeconds * 1000:F3} millicores");
+        Console.WriteLine($"  Allocated: {FormatBytes(result.AllocatedBytes)}");
+        Console.WriteLine($"  Allocation rate: {result.AllocatedBytes / result.Elapsed.TotalSeconds:N0} B/sec");
+        Console.WriteLine($"  Gen0 GCs: {result.Gen0Collections}");
+    }
+
+    private static async Task ConsumeUntilCanceledAsync(
+        IKafkaConsumer<string, string> consumer,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await foreach (var _ in consumer.ConsumeAsync(cancellationToken).ConfigureAwait(false))
+            {
+                // Keep the consumer fetch loop active until cancellation.
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return;
+        }
+    }
+
     private static async Task RunRoundtripAsync(KafkaEnvironment kafka, int durationSeconds, int messageSize, int batchSize)
     {
         var messageValue = new string('x', messageSize);
@@ -613,8 +712,16 @@ public static class Program
         }
 
         Console.WriteLine("Starting Kafka container via Testcontainers...");
-        var container = new KafkaBuilder("confluentinc/cp-kafka:7.5.0")
+        var container = new KafkaBuilder("apache/kafka:4.3.1")
             .WithPortBinding(9092, true)
+            .WithResourceMapping(
+                KafkaRunWrapperScript,
+                "/etc/kafka/docker/run",
+                0,
+                0,
+                UnixFileModes.UserRead | UnixFileModes.UserWrite | UnixFileModes.UserExecute |
+                UnixFileModes.GroupRead | UnixFileModes.GroupExecute |
+                UnixFileModes.OtherRead | UnixFileModes.OtherExecute)
             .Build();
 
         await container.StartAsync().ConfigureAwait(false);
@@ -679,6 +786,8 @@ public static class Program
               producer-batch        - Batch producer (fires batch, awaits all)
               producer-fnf-3conn-gc - #1369 GC outlier repro: non-idempotent FireAsync vs idempotent twin
               consumer              - Consumer consuming messages
+              consumer-idle         - Consumer idle CPU and allocation measurement
+              process-idle          - No-consumer process CPU and allocation control
               roundtrip             - End-to-end produce then consume
               all                   - Run all scenarios sequentially
 
@@ -768,6 +877,12 @@ public static class Program
     }
 
     private sealed record ProducerProfileResult(string Name, long MessageCount, TimeSpan Elapsed, GcStats GcStats);
+
+    private readonly record struct IdleProfileResult(
+        TimeSpan Elapsed,
+        TimeSpan CpuTime,
+        long AllocatedBytes,
+        int Gen0Collections);
 
     /// <summary>
     /// Tracks GC collection counts across all generations.
