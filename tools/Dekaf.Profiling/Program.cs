@@ -546,14 +546,20 @@ public static class Program
 
         using var cts = new CancellationTokenSource();
         var consumeTask = ConsumeUntilCanceledAsync(consumer, cts.Token);
-        using var assignmentCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        while (consumer.Assignment.Count == 0)
-            await Task.Delay(10, assignmentCts.Token).ConfigureAwait(false);
+        IdleProfileResult result;
+        try
+        {
+            using var assignmentCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            while (consumer.Assignment.Count == 0)
+                await Task.Delay(10, assignmentCts.Token).ConfigureAwait(false);
 
-        var result = await MeasureIdleAsync(durationSeconds).ConfigureAwait(false);
-
-        cts.Cancel();
-        await consumeTask.ConfigureAwait(false);
+            result = await MeasureIdleAsync(durationSeconds).ConfigureAwait(false);
+        }
+        finally
+        {
+            cts.Cancel();
+            await consumeTask.ConfigureAwait(false);
+        }
 
         PrintIdleResults(result);
     }
