@@ -5088,9 +5088,8 @@ internal sealed class PooledResponseMemory : IPooledMemory
 }
 
 /// <summary>
-/// Thread-safe pool for <see cref="PooledPendingRequest"/> instances.
-/// Uses Reservoir's bounded, preallocated shared storage and thread-local fast path for
-/// zero-allocation rent and return.
+/// Thread-safe bounded pool for <see cref="PooledPendingRequest"/> instances.
+/// Uses Reservoir's bounded, preallocated storage for zero-allocation rent and return.
 /// </summary>
 internal sealed class PendingRequestPool
 {
@@ -5103,9 +5102,12 @@ internal sealed class PendingRequestPool
     public PendingRequestPool(int maxPoolSize)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxPoolSize);
+        // Requests are rented before asynchronous I/O and returned by response or
+        // failure continuations that commonly run on another thread.
         _pool = new Reservoir.ObjectPool<PooledPendingRequest, PoolPolicy>(
             new PoolPolicy(this),
-            maxPoolSize);
+            maxPoolSize,
+            threadLocalFastPath: false);
     }
 
     public int ApproximateCount => Volatile.Read(ref _poolCount);
@@ -5123,7 +5125,7 @@ internal sealed class PendingRequestPool
 
     /// <summary>
     /// Returns a <see cref="PooledPendingRequest"/> to the pool for reuse.
-    /// If both the returning thread's slot and the shared tier are full, the instance is discarded.
+    /// If the pool is full, the instance is discarded.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void Return(PooledPendingRequest request)
