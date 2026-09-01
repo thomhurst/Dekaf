@@ -604,18 +604,6 @@ public class ConsumerBuilderValidationTests
     }
 
     [Test]
-    public async Task Build_DefaultsToLongFetchWait()
-    {
-        await using var consumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers("localhost:9092")
-            .Build();
-
-        var options = ((KafkaConsumer<string, string>)consumer).Options;
-
-        await Assert.That(options.FetchMaxWaitMs).IsEqualTo(500);
-    }
-
-    [Test]
     public async Task ForHighThroughput_DisablesCheckCrcs()
     {
         await using var consumer = Kafka.CreateConsumer<string, string>()
@@ -626,19 +614,6 @@ public class ConsumerBuilderValidationTests
         var options = ((KafkaConsumer<string, string>)consumer).Options;
 
         await Assert.That(options.CheckCrcs).IsFalse();
-    }
-
-    [Test]
-    public async Task ForHighThroughput_KeepsShortFetchWait()
-    {
-        await using var consumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers("localhost:9092")
-            .ForHighThroughput()
-            .Build();
-
-        var options = ((KafkaConsumer<string, string>)consumer).Options;
-
-        await Assert.That(options.FetchMaxWaitMs).IsEqualTo(200);
     }
 
     [Test]

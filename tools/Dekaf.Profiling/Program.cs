@@ -600,10 +600,12 @@ public static class Program
         {
             await foreach (var _ in consumer.ConsumeAsync(cancellationToken).ConfigureAwait(false))
             {
+                // Keep the consumer fetch loop active until cancellation.
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
+            return;
         }
     }
 

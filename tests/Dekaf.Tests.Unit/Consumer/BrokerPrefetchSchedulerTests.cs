@@ -26,10 +26,16 @@ public sealed class BrokerPrefetchSchedulerTests
         await Assert.That(drained).IsEqualTo(1);
 
         await Assert.That(scheduler.InFlightCount).IsEqualTo(1);
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var waitTask = scheduler.WaitForAnyAsync(cts.Token).AsTask();
+        await Assert.That(waitTask.IsCompleted).IsFalse();
+
+        slowBrokerCanComplete.SetResult();
+        await waitTask.ConfigureAwait(false);
+
         await Assert.That(scheduler.TryStart((BrokerId: 2, ConnectionIndex: 0), static () => Task.CompletedTask)).IsTrue();
         await Assert.That(scheduler.TryStart((BrokerId: 1, ConnectionIndex: 0), static () => Task.CompletedTask)).IsFalse();
 
-        slowBrokerCanComplete.SetResult();
         await scheduler.DrainAllSafelyAsync(static _ => { }, static _ => false).ConfigureAwait(false);
     }
 
@@ -63,6 +69,26 @@ public sealed class BrokerPrefetchSchedulerTests
 
         completion.SetResult();
         await scheduler.DrainAllSafelyAsync(static _ => { }, static _ => false).ConfigureAwait(false);
+    }
+
+    [Test]
+    public async Task WaitForAny_SinglePendingTask_DefersFaultToDrain()
+    {
+        var scheduler = new BrokerPrefetchScheduler();
+        var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var failure = new InvalidOperationException("broker failed");
+        scheduler.TryStart((BrokerId: 1, ConnectionIndex: 0), () => completion.Task);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var waitTask = scheduler.WaitForAnyAsync(cts.Token).AsTask();
+        await Assert.That(waitTask.IsCompleted).IsFalse();
+
+        completion.SetException(failure);
+        await waitTask.ConfigureAwait(false);
+
+        var exception = await Assert.That(async () => await scheduler.DrainCompletedAsync().ConfigureAwait(false))
+            .Throws<InvalidOperationException>();
+        await Assert.That(exception).IsSameReferenceAs(failure);
     }
 
     [Test]
