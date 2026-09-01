@@ -348,14 +348,14 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
     /// </summary>
     internal const int TotalBatchHeaderSize = BatchBodyOffset + BatchHeaderSize;
 
-    // Strictly bounded pool of scratch buffer caches for RecordBatch serialization/deserialization.
+    // Bounded pool of scratch buffer caches for RecordBatch serialization/deserialization.
     // Previously [ThreadStatic], but ConfigureAwait(false) in BrokerSender send loops causes
     // thread migration — each unique thread that handled serialization retained a permanent
     // ~1MB buffer rented from DekafPools.SerializationBuffers. With 3+ brokers, dozens of
     // threads accumulated caches over time, depleting the pool and driving Gen2 GC pressure.
     private const int MaxPooledCaches = 16;
     private static readonly Reservoir.ObjectPool<SerializationCache, SerializationCachePolicy>
-        s_cachePool = new(default, MaxPooledCaches, threadLocalFastPath: false);
+        s_cachePool = new(MaxPooledCaches);
 
     /// <summary>
     /// Holds scratch buffer state for a single RecordBatch serialization/deserialization operation.

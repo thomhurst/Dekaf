@@ -45,11 +45,10 @@ internal sealed class PipeMemoryPool : MemoryPool<byte>
     private int _disposed;
 
     /// <summary>
-    /// Maximum number of <see cref="PooledMemoryOwner"/> wrapper objects retained by the shared tier.
+    /// Maximum number of <see cref="PooledMemoryOwner"/> wrapper objects to retain.
     /// Each connection's <see cref="ResponseFrameReader"/> holds one receive buffer for the
     /// connection's lifetime; 64 covers peak connection counts and reconnect churn with
-    /// headroom. Each participating thread may retain one additional wrapper; returned wrappers
-    /// hold no byte array, so the extra thread-local retention is small.
+    /// headroom, while bounding retained wrapper objects to ~2 KB total.
     /// </summary>
     private const int MaxOwnerPoolSize = 64;
 

@@ -35,9 +35,8 @@ public static class ValueTaskSourcePool
 }
 
 /// <summary>
-/// Thread-safe pool for <see cref="PooledValueTaskSource{T}"/> instances.
-/// Uses Reservoir's bounded, preallocated shared storage and thread-local fast path for
-/// zero-allocation Rent/Return.
+/// Thread-safe bounded pool for <see cref="PooledValueTaskSource{T}"/> instances.
+/// Uses Reservoir's bounded, preallocated striped storage for zero-allocation Rent/Return.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -52,10 +51,10 @@ public static class ValueTaskSourcePool
 /// per-operation allocations and specializes storage for configured capacity.
 /// </para>
 /// <para>
-/// The pool has a configurable maximum shared-tier size. Each participating thread may retain
-/// one additional instance for faster same-thread reuse. When both tiers reject a return, the
-/// instance is discarded. This bounds shared retention while reducing allocations in typical
-/// workloads.
+/// The pool has a configurable maximum size. When the pool is empty, new instances are created.
+/// When returning an instance to a full pool, the instance is discarded (let GC handle it).
+/// This bounded approach prevents unbounded memory growth while still reducing allocations
+/// in typical workloads.
 /// </para>
 /// </remarks>
 /// <typeparam name="T">The result type of the value task sources.</typeparam>
@@ -67,16 +66,16 @@ public sealed class ValueTaskSourcePool<T> : IAsyncDisposable
     private int _disposed;
 
     /// <summary>
-    /// Creates a new pool with the default maximum shared-tier size.
+    /// Creates a new pool with the default maximum size.
     /// </summary>
     public ValueTaskSourcePool() : this(ValueTaskSourcePool.FallbackMaxPoolSize)
     {
     }
 
     /// <summary>
-    /// Creates a new pool with a specified maximum shared-tier size.
+    /// Creates a new pool with a specified maximum size.
     /// </summary>
-    /// <param name="maxPoolSize">Maximum number of instances retained by the shared tier.</param>
+    /// <param name="maxPoolSize">Maximum number of instances to keep in the pool.</param>
     public ValueTaskSourcePool(int maxPoolSize)
     {
         if (maxPoolSize <= 0)
@@ -106,7 +105,7 @@ public sealed class ValueTaskSourcePool<T> : IAsyncDisposable
 
     /// <summary>
     /// Returns a <see cref="PooledValueTaskSource{T}"/> to the pool for reuse.
-    /// If both the returning thread's slot and the shared tier are full, the instance is discarded.
+    /// If the pool is full, the instance is discarded.
     /// </summary>
     /// <remarks>
     /// This method is typically called automatically by <see cref="PooledValueTaskSource{T}"/>
@@ -125,13 +124,13 @@ public sealed class ValueTaskSourcePool<T> : IAsyncDisposable
     }
 
     /// <summary>
-    /// Gets the best-effort number of instances currently retained across shared and thread-local tiers.
+    /// Gets the best-effort number of instances currently in the pool.
     /// Reservoir remains the sole authority for retention decisions.
     /// </summary>
     public int ApproximateCount => Volatile.Read(ref _retainedCount);
 
     /// <summary>
-    /// Gets the maximum shared-tier pool size.
+    /// Gets the maximum pool size.
     /// </summary>
     public int MaxPoolSize => _maxPoolSize;
 
