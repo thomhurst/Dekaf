@@ -388,7 +388,8 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
         => s_cachePool.Return(cache);
 
     private readonly struct SerializationCachePolicy
-        : Reservoir.IPooledObjectDestroyPolicy<SerializationCache>
+        : Reservoir.IPooledObjectDestroyPolicy<SerializationCache>,
+          Reservoir.INonThrowingResetPolicy
     {
         public SerializationCache Create() => new();
 

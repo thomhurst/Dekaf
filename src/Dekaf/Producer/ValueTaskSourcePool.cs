@@ -151,7 +151,8 @@ public sealed class ValueTaskSourcePool<T> : IAsyncDisposable
     }
 
     private readonly struct PoolPolicy(ValueTaskSourcePool<T> owner)
-        : Reservoir.IPooledObjectDestroyPolicy<PooledValueTaskSource<T>>
+        : Reservoir.IPooledObjectDestroyPolicy<PooledValueTaskSource<T>>,
+          Reservoir.INonThrowingResetPolicy
     {
         public PooledValueTaskSource<T> Create()
         {

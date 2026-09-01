@@ -196,7 +196,7 @@ internal sealed class PipeMemoryPool : MemoryPool<byte>
     }
 
     private readonly struct PooledMemoryOwnerPolicy(PipeMemoryPool owner)
-        : Reservoir.IPooledObjectPolicy<PooledMemoryOwner>
+        : Reservoir.IPooledObjectPolicy<PooledMemoryOwner>, Reservoir.INonThrowingResetPolicy
     {
         public PooledMemoryOwner Create() => new(owner);
 

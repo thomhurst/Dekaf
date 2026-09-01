@@ -937,7 +937,8 @@ internal sealed class PendingFetchData : IDisposable
     }
 
     private readonly struct PendingFetchDataPolicy(PendingFetchDataPoolState state)
-        : Reservoir.IPooledObjectDestroyPolicy<PendingFetchData>
+        : Reservoir.IPooledObjectDestroyPolicy<PendingFetchData>,
+          Reservoir.INonThrowingResetPolicy
     {
         public PendingFetchData Create() => new();
 

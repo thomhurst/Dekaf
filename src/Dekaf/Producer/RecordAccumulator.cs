@@ -8926,7 +8926,8 @@ internal sealed class BatchArrayReuseQueue
     public void Clear() => _pool.Clear();
 
     private readonly struct CompletionSourceArrayPolicy
-        : Reservoir.IPooledObjectDestroyPolicy<PooledValueTaskSource<RecordMetadata>[]>
+        : Reservoir.IPooledObjectDestroyPolicy<PooledValueTaskSource<RecordMetadata>[]>,
+          Reservoir.INonThrowingResetPolicy
     {
         // Empty singleton represents a cache miss without allocating or renting an unusable array.
         public PooledValueTaskSource<RecordMetadata>[] Create() => [];
