@@ -11,8 +11,7 @@ internal enum PrefetchLoopAction
 
 internal readonly record struct PrefetchLoopDecision(
     PrefetchLoopAction Action,
-    bool ReportBacklog,
-    bool RecordFetchWait);
+    bool ReportBacklog);
 
 internal static class PrefetchLoopControl
 {
@@ -36,14 +35,14 @@ internal static class PrefetchLoopControl
         bool hasInFlight)
     {
         if (started > 0)
-            return new PrefetchLoopDecision(PrefetchLoopAction.Continue, ReportBacklog: false, RecordFetchWait: false);
+            return new PrefetchLoopDecision(PrefetchLoopAction.Continue, ReportBacklog: false);
 
         if (hasInFlight)
         {
             var hasBacklog = targetCount > 0;
-            return new PrefetchLoopDecision(PrefetchLoopAction.WaitForAny, hasBacklog, RecordFetchWait: true);
+            return new PrefetchLoopDecision(PrefetchLoopAction.WaitForAny, hasBacklog);
         }
 
-        return new PrefetchLoopDecision(PrefetchLoopAction.DelayNoWork, ReportBacklog: false, RecordFetchWait: false);
+        return new PrefetchLoopDecision(PrefetchLoopAction.DelayNoWork, ReportBacklog: false);
     }
 }

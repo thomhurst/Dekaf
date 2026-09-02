@@ -3,47 +3,99 @@ using Dekaf.Consumer;
 
 namespace Dekaf.Benchmarks.Benchmarks.Unit;
 
+/// <summary>
+/// Measures one prefetch-loop wake cycle, amortized over <see cref="WakeCycles"/> cycles per
+/// invocation so per-wake time and allocation are resolvable: start a task for the completing
+/// key, wait for any in-flight task, complete it, resume, drain it. <c>TaskWhenAny_*</c> is the
+/// hand-rolled reference (dictionary snapshot + <c>Task.WhenAny</c> + <c>WaitAsync</c>) the
+/// scheduler used to inline and serves as the within-run control; <c>Scheduler_*</c> exercise
+/// <see cref="BrokerPrefetchScheduler"/> itself. Both variants pay the same per-cycle
+/// <see cref="TaskCompletionSource"/> and closure, so the difference is the wake-up mechanism.
+/// </summary>
 [MemoryDiagnoser]
 [ShortRunJob]
 public class BrokerPrefetchSchedulerBenchmarks
 {
-    private BrokerPrefetchScheduler _scheduler = null!;
-    private TaskCompletionSource _completion = null!;
+    private const int WakeCycles = 1_000;
+    private const int PendingPeers = 3;
+    private static readonly Task PendingTask = new TaskCompletionSource().Task;
+    private static readonly (int BrokerId, int ConnectionIndex) CompletingKey = (BrokerId: 0, ConnectionIndex: 0);
+
+    private BrokerPrefetchScheduler _singleScheduler = null!;
+    private BrokerPrefetchScheduler _multiScheduler = null!;
+    private Dictionary<(int BrokerId, int ConnectionIndex), Task> _whenAnySingle = null!;
+    private Dictionary<(int BrokerId, int ConnectionIndex), Task> _whenAnyMulti = null!;
     private CancellationTokenSource _cancellation = null!;
 
-    [IterationSetup]
-    public void Setup()
+    [GlobalSetup]
+    public void GlobalSetup()
     {
-        _scheduler = new BrokerPrefetchScheduler();
-        _completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         _cancellation = new CancellationTokenSource();
-
-        if (!_scheduler.TryStart((BrokerId: 1, ConnectionIndex: 0), () => _completion.Task))
-            throw new InvalidOperationException("Could not register benchmark task.");
+        _singleScheduler = new BrokerPrefetchScheduler();
+        _multiScheduler = new BrokerPrefetchScheduler();
+        _whenAnySingle = [];
+        _whenAnyMulti = [];
+        for (var peer = 1; peer <= PendingPeers; peer++)
+        {
+            var key = (BrokerId: peer, ConnectionIndex: 0);
+            _multiScheduler.TryStart(key, static () => PendingTask);
+            _whenAnyMulti[key] = PendingTask;
+        }
     }
 
-    [IterationCleanup]
-    public void Cleanup() => _cancellation.Dispose();
+    [GlobalCleanup]
+    public void GlobalCleanup() => _cancellation.Dispose();
 
-    [Benchmark(Baseline = true)]
-    public ValueTask TaskWhenAny_PendingCancellable()
+    [Benchmark(Baseline = true, OperationsPerInvoke = WakeCycles)]
+    public Task TaskWhenAny_SinglePending() => RunTaskWhenAnyCyclesAsync(_whenAnySingle);
+
+    [Benchmark(OperationsPerInvoke = WakeCycles)]
+    public Task Scheduler_SinglePending() => RunSchedulerCyclesAsync(_singleScheduler);
+
+    [Benchmark(OperationsPerInvoke = WakeCycles)]
+    public Task TaskWhenAny_MultiPending() => RunTaskWhenAnyCyclesAsync(_whenAnyMulti);
+
+    [Benchmark(OperationsPerInvoke = WakeCycles)]
+    public Task Scheduler_MultiPending() => RunSchedulerCyclesAsync(_multiScheduler);
+
+    private async Task RunSchedulerCyclesAsync(BrokerPrefetchScheduler scheduler)
     {
-        var wait = WaitWithTaskWhenAnyAsync(_completion.Task, _cancellation.Token);
-        _completion.SetResult();
-        return wait;
+        for (var cycle = 0; cycle < WakeCycles; cycle++)
+        {
+            var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            if (!scheduler.TryStart(CompletingKey, () => completion.Task))
+                throw new InvalidOperationException("Completing key was still in flight.");
+
+            var wait = scheduler.WaitForAnyAsync(_cancellation.Token);
+            completion.SetResult();
+            await wait.ConfigureAwait(false);
+
+            if (await scheduler.DrainCompletedAsync().ConfigureAwait(false) != 1)
+                throw new InvalidOperationException("Expected exactly one completed task per cycle.");
+        }
     }
 
-    [Benchmark]
-    public ValueTask SingleTask_PendingCancellable()
+    private async Task RunTaskWhenAnyCyclesAsync(Dictionary<(int BrokerId, int ConnectionIndex), Task> inFlight)
     {
-        var wait = _scheduler.WaitForAnyAsync(_cancellation.Token);
-        _completion.SetResult();
-        return wait;
+        for (var cycle = 0; cycle < WakeCycles; cycle++)
+        {
+            var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            inFlight[CompletingKey] = completion.Task;
+
+            var wait = WaitWithTaskWhenAnyAsync(inFlight, _cancellation.Token);
+            completion.SetResult();
+            await wait.ConfigureAwait(false);
+
+            if (!inFlight.Remove(CompletingKey))
+                throw new InvalidOperationException("Completing key was not tracked.");
+        }
     }
 
-    private static async ValueTask WaitWithTaskWhenAnyAsync(Task task, CancellationToken cancellationToken)
+    private static async ValueTask WaitWithTaskWhenAnyAsync(
+        Dictionary<(int BrokerId, int ConnectionIndex), Task> inFlight,
+        CancellationToken cancellationToken)
     {
-        Task[] tasks = [task];
+        var tasks = inFlight.Values.ToArray();
         await Task.WhenAny(tasks).WaitAsync(cancellationToken).ConfigureAwait(false);
     }
 }

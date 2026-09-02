@@ -37,7 +37,9 @@ internal sealed class AdaptiveFetchSizer
     private int _consecutiveGrowSignals;
     private int _consecutiveShrinkSignals;
     private long _lastFetchStartTimestamp;
-    private long _lastFetchEndTimestamp;
+    // Published as one atomic value so a fetch latency is never assembled from the start of one
+    // fetch and the end of another when several broker tasks record concurrently.
+    private long _lastFetchDurationTicks;
 
     /// <summary>
     /// The current adaptive MaxPartitionFetchBytes value.
@@ -111,12 +113,27 @@ internal sealed class AdaptiveFetchSizer
     }
 
     /// <summary>
-    /// Records the completion of a fetch operation. Call after the fetch response is received.
+    /// Records the completion of the fetch started by <see cref="RecordFetchStart"/>.
+    /// Call after the fetch response is received.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void RecordFetchEnd()
     {
-        _lastFetchEndTimestamp = Stopwatch.GetTimestamp();
+        if (_lastFetchStartTimestamp != 0)
+            RecordFetchCompleted(_lastFetchStartTimestamp);
+    }
+
+    /// <summary>
+    /// Publishes the latency of a fetch that started at <paramref name="fetchStartTimestamp"/>
+    /// (a <see cref="Stopwatch.GetTimestamp"/> value). Safe to call from concurrent broker
+    /// prefetch tasks; the most recently completed fetch wins.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public void RecordFetchCompleted(long fetchStartTimestamp)
+    {
+        var elapsedTicks = Stopwatch.GetTimestamp() - fetchStartTimestamp;
+        if (elapsedTicks > 0)
+            Volatile.Write(ref _lastFetchDurationTicks, elapsedTicks);
     }
 
     /// <summary>
@@ -127,13 +144,11 @@ internal sealed class AdaptiveFetchSizer
     /// <param name="processingDuration">Time spent processing the fetched records.</param>
     public void ReportProcessingComplete(TimeSpan processingDuration)
     {
-        if (_lastFetchStartTimestamp == 0 || _lastFetchEndTimestamp == 0)
+        var fetchDurationTicks = Volatile.Read(ref _lastFetchDurationTicks);
+        if (fetchDurationTicks <= 0)
             return;
 
-        var fetchDuration = Stopwatch.GetElapsedTime(_lastFetchStartTimestamp, _lastFetchEndTimestamp);
-
-        if (fetchDuration <= TimeSpan.Zero)
-            return;
+        var fetchDuration = Stopwatch.GetElapsedTime(0, fetchDurationTicks);
 
         var ratio = processingDuration.TotalSeconds / fetchDuration.TotalSeconds;
         EvaluateAndAdjust(ratio);

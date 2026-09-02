@@ -25,7 +25,7 @@ internal sealed class AsyncAutoResetSignal : IValueTaskSource<bool>,
     private const int QueuedShutdown = 2;
 
     private ManualResetValueTaskSourceCore<bool> _core;
-    private readonly bool _inlineTimeoutContinuations;
+    private readonly bool _inlineSignalContinuations;
     private int _queuedCompletion;
 
     /// <summary>
@@ -63,10 +63,19 @@ internal sealed class AsyncAutoResetSignal : IValueTaskSource<bool>,
     private int _shutdownRequested; // 0 = running, 1 = shutdown requested — terminal once set
     private CancellationToken _shutdownToken;
 
-    public AsyncAutoResetSignal(bool inlineTimeoutContinuations = false)
+    /// <param name="inlineTimeoutContinuations">
+    /// Run the waiter inline on the timer thread when a timeout fires; <see cref="Signal"/> and
+    /// shutdown then hop through the thread pool so their callers never run the waiter.
+    /// </param>
+    /// <param name="inlineSignalContinuations">
+    /// Run the waiter inline on the thread that calls <see cref="Signal"/> (and, as above, on
+    /// the timer thread); shutdown still hops through the thread pool. Use when the signaler
+    /// has nothing left to do, so a hop would only add wake-up latency.
+    /// </param>
+    public AsyncAutoResetSignal(bool inlineTimeoutContinuations = false, bool inlineSignalContinuations = false)
     {
-        _inlineTimeoutContinuations = inlineTimeoutContinuations;
-        _core.RunContinuationsAsynchronously = !inlineTimeoutContinuations;
+        _inlineSignalContinuations = inlineSignalContinuations;
+        _core.RunContinuationsAsynchronously = !inlineTimeoutContinuations && !inlineSignalContinuations;
         _timeoutCallback = static state =>
         {
             var self = (AsyncAutoResetSignal)state!;
@@ -233,7 +242,9 @@ internal sealed class AsyncAutoResetSignal : IValueTaskSource<bool>,
 
     private void CompleteSignal()
     {
-        if (!_inlineTimeoutContinuations)
+        // Default mode: the core queues the continuation. Inline-signal mode: the signaler runs
+        // it. Inline-timeout mode: only the timer may run the waiter inline, so hop via the pool.
+        if (_core.RunContinuationsAsynchronously || _inlineSignalContinuations)
         {
             _core.SetResult(true);
             return;
@@ -245,7 +256,7 @@ internal sealed class AsyncAutoResetSignal : IValueTaskSource<bool>,
 
     private void CompleteShutdown()
     {
-        if (!_inlineTimeoutContinuations)
+        if (_core.RunContinuationsAsynchronously)
         {
             _core.SetException(new OperationCanceledException(_shutdownToken));
             return;

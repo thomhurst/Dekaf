@@ -1136,8 +1136,11 @@ internal static class ConsumerFetchPools
 /// <list type="bullet">
 ///   <item><description><b>Prefetch loop</b> (<see cref="PrefetchLoopAsync"/>): Runs on a background
 ///     thread when <c>QueuedMinMessages &gt; 1</c>, fetching records ahead of the consume loop.
-///     Coordinates with the user thread via the bounded <see cref="_prefetchBuffer"/> and
-///     lock-free <see cref="_eofEmitted"/> for EOF state.</description></item>
+///     It plans which partitions each <c>(broker, connection)</c> fetches and starts one
+///     self-continuing task per key; the task re-issues fetches on its leased connection while
+///     that plan stays valid (see <see cref="BrokerPrefetchScheduler"/>). Coordinates with the
+///     user thread via the bounded <see cref="_prefetchBuffer"/> and lock-free
+///     <see cref="_eofEmitted"/> for EOF state.</description></item>
 ///   <item><description><b>Heartbeat</b> (managed by <see cref="ConsumerCoordinator"/>): Sends
 ///     periodic heartbeats to the group coordinator on a background thread to keep the consumer
 ///     alive in the group.</description></item>
@@ -3913,11 +3916,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     if (decision.Action == PrefetchLoopAction.WaitForAny)
                     {
                         ReportBrokerPrefetchBacklog(decision.ReportBacklog);
-                        if (decision.RecordFetchWait)
-                            _adaptiveFetchSizer?.RecordFetchStart();
                         await _brokerPrefetchScheduler.WaitForAnyAsync(cancellationToken).ConfigureAwait(false);
-                        if (decision.RecordFetchWait)
-                            _adaptiveFetchSizer?.RecordFetchEnd();
                         ReportBrokerPrefetchBacklog(decision.ReportBacklog);
                     }
                     else if (decision.Action == PrefetchLoopAction.DelayNoWork)
@@ -3997,6 +3996,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     {
         var partitionsByBroker = await GroupPartitionsByBrokerAsync(cancellationToken).ConfigureAwait(false);
         partitionsByBroker = ExcludePartitionsPendingFetchClear(partitionsByBroker);
+        var plan = CapturePrefetchPlanStamp(partitionsByBroker);
         var fetchSessionSnapshot = ShouldUseFetchSessions && !_fetchSessions.IsEmpty
             ? _fetchSessions.ToArray()
             : Array.Empty<KeyValuePair<(int BrokerId, int ConnectionIndex), FetchSessionHandler>>();
@@ -4039,6 +4039,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     startIndex,
                     count,
                     connectionIndex,
+                    plan,
                     cancellationToken))
                 {
                     started++;
@@ -4081,6 +4082,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 0,
                 0,
                 key.ConnectionIndex,
+                PrefetchPlanStamp.SingleFetch,
                 cancellationToken))
             {
                 started++;
@@ -4120,6 +4122,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         int partitionStartIndex,
         int partitionCount,
         int connectionIndex,
+        PrefetchPlanStamp plan,
         CancellationToken cancellationToken)
     {
         var fetchBufferEpoch = Volatile.Read(ref _fetchBufferEpoch);
@@ -4132,8 +4135,83 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 partitionCount,
                 connectionIndex,
                 fetchBufferEpoch,
+                plan,
                 cancellationToken));
     }
+
+    /// <summary>
+    /// Stamps the plan the loop is about to dispatch. Only a plan served straight from the
+    /// partition cache can be re-validated by version later; anything else (an uncached result
+    /// or a revocation-filtered copy) is dispatched as single fetches, as before.
+    /// </summary>
+    private PrefetchPlanStamp CapturePrefetchPlanStamp(Dictionary<int, List<TopicPartition>> partitionsByBroker)
+    {
+        lock (_partitionCacheLock)
+        {
+            if (_cachedPartitionsByBroker is not { } cached
+                || !ReferenceEquals(cached.PartitionsByBroker, partitionsByBroker))
+            {
+                return PrefetchPlanStamp.SingleFetch;
+            }
+
+            return new PrefetchPlanStamp(
+                CanReissue: true,
+                Volatile.Read(ref _assignmentVersion),
+                Volatile.Read(ref _appliedConnectionCount),
+                _metadataManager.Metadata.CaptureSnapshot(),
+                cached.PreferredReplicaExpiresAtTimestamp);
+        }
+    }
+
+    /// <summary>
+    /// Lock-free check, run by a broker prefetch task between fetches, that the plan it was
+    /// started with is still what <see cref="DispatchReadyBrokerPrefetchesAsync"/> would compute
+    /// now and that the central loop has nothing else pending. Every input the loop consults is
+    /// covered: the partition-cache version (assignment, pause/resume, preferred replicas,
+    /// snapshots), the fetch-buffer epoch (seeks, resets, revocations), routing width and
+    /// in-progress transitions, pending coordinator revocations, metadata refreshes (leader and
+    /// topic identity changes), preferred-replica expiry, prefetch-memory admission, and
+    /// coordinator/assignment currency.
+    /// </summary>
+    private bool CanReissueBrokerPrefetch(in PrefetchPlanStamp plan, int fetchBufferEpoch)
+    {
+        if (Volatile.Read(ref _assignmentVersion) != plan.AssignmentVersion
+            || Volatile.Read(ref _fetchBufferEpoch) != fetchBufferEpoch
+            || Volatile.Read(ref _appliedConnectionCount) != plan.ConnectionCount
+            || Volatile.Read(ref _connectionRoutingTransitionTask) is not null
+            || Volatile.Read(ref _coordinatorRevokedPartitionsPendingFetchClearMarkerPresent) != 0
+            || HasPendingCoordinatorRevocations()
+            || !ReferenceEquals(_metadataManager.Metadata.CaptureSnapshot(), plan.MetadataSnapshot)
+            || Volatile.Read(ref _consumerDisposed) != 0
+            || Volatile.Read(ref _closed) != 0)
+        {
+            return false;
+        }
+
+        if (plan.PreferredReplicaExpiresAtTimestamp != NoPreferredReplicaExpiry
+            && plan.PreferredReplicaExpiresAtTimestamp <= Stopwatch.GetTimestamp())
+        {
+            return false;
+        }
+
+        if (PrefetchLoopControl.ShouldWaitForMemory(
+                Interlocked.Read(ref _prefetchedBytes),
+                CalculatePrefetchMaxBytes(CurrentQueuedMaxBytes)))
+        {
+            return false;
+        }
+
+        return IsEnsureAssignmentCurrent();
+    }
+
+    /// <summary>
+    /// Reports what the loop would report when re-dispatching a completed fetch: at this instant
+    /// the key's single pipeline slot is free. Only the loop may call
+    /// <see cref="ConsumerConnectionScaler.MaybeScale"/>, because a scale operation drains the
+    /// scheduler and the scheduler is single-threaded to the loop.
+    /// </summary>
+    private void ReportBrokerPrefetchReissue() =>
+        _connectionScaler?.ReportPipelineUtilization(0, pipelineDepth: 1);
 
     private async Task RunBrokerPrefetchAsync(
         int brokerId,
@@ -4142,6 +4220,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         int partitionCount,
         int connectionIndex,
         int fetchBufferEpoch,
+        PrefetchPlanStamp plan,
         CancellationToken cancellationToken)
     {
         // Rent a CTS from the pool for the combined consume cancellation source
@@ -4165,6 +4244,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 partitionCount,
                 connectionIndex,
                 fetchBufferEpoch,
+                plan,
                 consumeCts.Token,
                 consumeCts.Token).ConfigureAwait(false);
         }
@@ -4193,6 +4273,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         int partitionCount,
         int connectionIndex,
         int fetchBufferEpoch,
+        PrefetchPlanStamp plan,
         CancellationToken linkedToken,
         CancellationToken consumeCancellationToken)
     {
@@ -4200,6 +4281,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         try
         {
+            // PrefetchFromBrokerAsync clears this key's failure streak after its first success.
             await PrefetchFromBrokerAsync(
                 brokerId,
                 partitions,
@@ -4207,8 +4289,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 partitionCount,
                 connectionIndex,
                 fetchBufferEpoch,
+                plan,
                 linkedToken).ConfigureAwait(false);
-            _prefetchFailureTracker.Reset(failureKey);
         }
         catch (OperationCanceledException) when (consumeCancellationToken.IsCancellationRequested)
         {
@@ -4313,6 +4395,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         int partitionCount,
         int connectionIndex,
         int fetchBufferEpoch,
+        PrefetchPlanStamp plan,
         CancellationToken cancellationToken)
     {
         using var connectionLease = await _connectionPool.LeaseConnectionByIndexAsync(
@@ -4326,7 +4409,65 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             ApiKey.Fetch,
             FetchRequest.LowestSupportedVersion,
             FetchRequest.HighestSupportedVersion);
+        var failureKey = new PrefetchFailureKey(brokerId, connectionIndex);
+        var failureStreakCleared = false;
 
+        // Self-continuing fetch loop; loop ownership is documented on BrokerPrefetchScheduler.
+        // Every iteration issues exactly one request on this connection's fetch session, and the
+        // task keeps the leased connection until the plan it was started with can no longer be
+        // trusted, at which point control returns to the central prefetch loop.
+        while (true)
+        {
+            var canReissue = await FetchOnceFromBrokerAsync(
+                connection,
+                apiVersion,
+                brokerId,
+                partitions,
+                partitionStartIndex,
+                partitionCount,
+                connectionIndex,
+                fetchBufferEpoch,
+                cancellationToken).ConfigureAwait(false);
+
+            // A failure always ends the task, so only the first success has a streak to clear.
+            if (!failureStreakCleared)
+            {
+                _prefetchFailureTracker.Reset(failureKey);
+                failureStreakCleared = true;
+            }
+
+            if (!canReissue
+                || partitionCount == 0
+                || !plan.CanReissue
+                || cancellationToken.IsCancellationRequested
+                || !CanReissueBrokerPrefetch(in plan, fetchBufferEpoch))
+            {
+                return;
+            }
+
+            ReportBrokerPrefetchReissue();
+        }
+    }
+
+    /// <summary>
+    /// Issues one fetch on <paramref name="connection"/> and publishes its records to the
+    /// prefetch buffer. Returns <see langword="true"/> when every partition in the response was
+    /// plain data (records, or an empty poll), so the caller may immediately issue the next
+    /// fetch with the same plan; <see langword="false"/> when the response carried anything the
+    /// central prefetch loop must react to first: a session-level error, a partition error or
+    /// diverging epoch, a topic identity refresh, or a partition that went stale mid-fetch.
+    /// </summary>
+    private async ValueTask<bool> FetchOnceFromBrokerAsync(
+        IKafkaConnection connection,
+        short apiVersion,
+        int brokerId,
+        List<TopicPartition> partitions,
+        int partitionStartIndex,
+        int partitionCount,
+        int connectionIndex,
+        int fetchBufferEpoch,
+        CancellationToken cancellationToken)
+    {
         // Resolve any special offset values — pass index range to avoid GetRange allocation
         await ResolveSpecialOffsetsAsync(partitions, partitionStartIndex, partitionCount, cancellationToken).ConfigureAwait(false);
 
@@ -4390,6 +4531,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             }
 
             RecordFetchDuration(fetchStarted, brokerId);
+            _adaptiveFetchSizer?.RecordFetchCompleted(fetchStarted);
 
             // Take ownership of pooled memory from the response (if zero-copy was used)
             var memoryOwner = response.PooledMemoryOwner;
@@ -4402,7 +4544,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 LogFetchSessionError(brokerId, response.ErrorCode);
                 response.ReturnToPool();
                 memoryOwner?.Dispose();
-                return;
+                return false;
             }
 
             fetchSessionHandler?.HandleResponse(response);
@@ -4415,6 +4557,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             var pendingItems = _prefetchPendingItemsByBroker.GetOrAdd((brokerId, connectionIndex), static _ => []);
             pendingItems.Clear();
             var queuedDivergingEpochReset = false;
+            var canReissue = true;
             Dictionary<string, Guid>? topicIdentityRefreshes = null;
 
             // Write to prefetch channel
@@ -4435,7 +4578,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     {
                         var tp = new TopicPartition(topic, partitionResponse.PartitionIndex);
                         if (ShouldDropStaleFetchPartition(tp, fetchBufferEpoch))
+                        {
+                            canReissue = false;
                             continue;
+                        }
 
                         // Update watermark cache from fetch response (even on errors, watermarks may be valid)
                         UpdateWatermarksFromFetchResponse(
@@ -4448,6 +4594,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
                         if (partitionResponse.RecordParseError is { } parseError)
                         {
+                            canReissue = false;
                             pendingItems.Add(PendingFetchData.CreateError(
                                 topic,
                                 partitionResponse.PartitionIndex,
@@ -4459,6 +4606,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
                         if (partitionResponse.DivergingEpoch is not null)
                         {
+                            canReissue = false;
                             _stuckFetchPositionTracker.Reset(tp);
                             if (ResetToDivergingEpoch(
                                 topic,
@@ -4473,6 +4621,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
                         if (partitionResponse.ErrorCode != ErrorCode.None)
                         {
+                            canReissue = false;
                             _stuckFetchPositionTracker.Reset(tp);
                             if (partitionResponse.ErrorCode == ErrorCode.OffsetOutOfRange)
                             {
@@ -4577,6 +4726,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             }
 
             memoryOwner?.Dispose();
+            return canReissue;
         }
         finally
         {
@@ -9189,6 +9339,30 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
     }
 
+    /// <summary>
+    /// True when <see cref="EnsureAssignmentAsync"/> would return on its lock-free fast path: no
+    /// pattern refresh is due, the group member is stable with its assignment already applied
+    /// (or the manual assignment is unchanged). Mirrors that method's early returns and must be
+    /// kept in sync with them; broker prefetch tasks use it to decide whether the central loop
+    /// needs to run before the next fetch.
+    /// </summary>
+    private bool IsEnsureAssignmentCurrent()
+    {
+        if (_topicFilter is not null && IsFilterRefreshDue())
+            return false;
+
+        var subscriptionSnapshot = _subscriptionSnapshot;
+        var topicPattern = _topicPattern;
+        var coordinator = _coordinator;
+        if ((subscriptionSnapshot.Count != 0 || topicPattern is not null) && coordinator is not null)
+        {
+            return coordinator.IsEnsureActiveGroupCurrent(subscriptionSnapshot, topicPattern)
+                && IsCoordinatorAssignmentSyncCurrent(coordinator, out _);
+        }
+
+        return IsManualAssignmentEnsureCurrent();
+    }
+
     internal async ValueTask EnsureAssignmentAsync(CancellationToken cancellationToken)
     {
         // Refresh pattern subscription BEFORE acquiring the lock — RefreshFilteredTopicsAsync
@@ -10026,26 +10200,31 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     /// <summary>
     /// Invalidates the cached partition grouping. Called whenever _assignment or _paused changes.
     /// </summary>
+    /// <remarks>
+    /// <see cref="_assignmentVersion"/> changes only under <see cref="_partitionCacheLock"/>, in
+    /// the same critical section as the cache it describes (here and in the paused/resumed cache
+    /// patches). <see cref="CapturePrefetchPlanStamp"/> relies on this: a version read under the
+    /// lock while the cache is populated is exactly the version that cached plan was built for,
+    /// so a broker prefetch task can detect any later change with one volatile read.
+    /// </remarks>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void InvalidatePartitionCache()
     {
-        Interlocked.Increment(ref _assignmentVersion);
         lock (_partitionCacheLock)
         {
+            Interlocked.Increment(ref _assignmentVersion);
             _cachedPartitionsByBroker = null;
         }
     }
 
     private void UpdateCachesForPausedPartitions(IReadOnlyList<TopicPartition> partitions)
     {
-        Interlocked.Increment(ref _assignmentVersion);
         RemovePausedPartitionsFromPartitionCache(partitions);
         InvalidateFetchRequestCache();
     }
 
     private void UpdateCachesForResumedPartitions(IReadOnlyList<TopicPartition> partitions)
     {
-        Interlocked.Increment(ref _assignmentVersion);
         AddResumedPartitionsToPartitionCache(partitions);
         InvalidateFetchRequestCache();
     }
@@ -10054,6 +10233,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     {
         lock (_partitionCacheLock)
         {
+            Interlocked.Increment(ref _assignmentVersion);
             var cachedEntry = _cachedPartitionsByBroker;
             if (cachedEntry is null)
                 return;
@@ -10092,6 +10272,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     {
         lock (_partitionCacheLock)
         {
+            Interlocked.Increment(ref _assignmentVersion);
             var cachedEntry = _cachedPartitionsByBroker;
             if (cachedEntry is null)
                 return;
@@ -13126,6 +13307,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         _initLock.Dispose();
         _topicIdentityLock.Dispose();
         _prefetchMemoryAvailable.Dispose();
+        _brokerPrefetchScheduler.Dispose();
 
         if (_coordinator is not null)
             await _coordinator.DisposeAsync().ConfigureAwait(false);
