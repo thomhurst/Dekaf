@@ -2523,19 +2523,27 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     }
 
     /// <summary>
-    /// Serial transactional ProduceAsync traffic cannot enqueue another record until its sole
-    /// completion resolves, so spinning for a co-temporal batch can never improve coalescing.
+    /// Whether a single-batch wave should spin for siblings. Two shapes prove the spin can
+    /// never improve coalescing because the only producer is awaiting the batch in hand:
+    /// a batch the accumulator sealed as the producer's sole demand (#2510 bypass,
+    /// <see cref="ReadyBatch.SealedAsSoleDemand"/>), and serial transactional ProduceAsync
+    /// traffic, which cannot enqueue another record until its sole completion resolves.
+    /// Skipping here also keeps the wave out of <see cref="WaveCoalesceGate"/> accounting,
+    /// so a skipped wave is counted neither fruitless nor fruitful.
     /// </summary>
     internal static bool ShouldMicroLinger(
         ReadyBatch[] coalescedBatches,
         int coalescedCount,
         bool isTransactional)
     {
-        if (!isTransactional || coalescedCount != 1)
+        if (coalescedCount != 1)
             return true;
 
         var batch = coalescedBatches[0];
-        return batch.RecordCount != 1 || batch.CompletionSourcesCount != 1;
+        if (batch.SealedAsSoleDemand)
+            return false;
+
+        return !isTransactional || batch.RecordCount != 1 || batch.CompletionSourcesCount != 1;
     }
 
     /// <summary>

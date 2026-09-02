@@ -4939,8 +4939,17 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         if (_options.LingerMs == 0)
             return !ShouldDeferPartialBatchSeal(pd, batch);
 
-        return IsAppLimitedAwaitedAppend(batch, completionSource)
-            && !IsMuted(pd);
+        if (!IsAppLimitedAwaitedAppend(batch, completionSource)
+            || IsMuted(pd))
+        {
+            return false;
+        }
+
+        // The gate just proved this record is the producer's only demand. Record that on the
+        // batch so the sender can skip its sibling-wait spin: the sole caller is awaiting this
+        // very batch, so no sibling batch can be appended until it is acknowledged.
+        batch.MarkSealedAsSoleDemand();
+        return true;
     }
 
     /// <summary>
@@ -7788,6 +7797,7 @@ internal sealed class PartitionBatch
     private int _reservedSize;
     private BrokerUnackedByteBudget? _admissionBudget;
     private long _admissionGeneration;
+    private bool _sealedAsSoleDemand;
     private int _admissionReservedBytes;
     private int _effectiveBatchSizeLimit;
     // Note: _offsetDelta removed - it always equals _recordCount at assignment time
@@ -7914,6 +7924,7 @@ internal sealed class PartitionBatch
         ReleaseAdmissionReservation();
         _isCompleted = 0;  // Only reset here - see remarks
         _completedBatch = null;
+        _sealedAsSoleDemand = false;
     }
 
     /// <summary>
@@ -8735,6 +8746,15 @@ internal sealed class PartitionBatch
         return elapsedMs >= lingerMs;
     }
 
+    /// <summary>
+    /// Records that the app-limited awaited-produce gate (#2510) proved this batch to be the
+    /// producer's only demand at seal time. Called under the deque lock immediately before
+    /// the batch is detached for sealing; <see cref="Complete"/> carries the fact onto the
+    /// <see cref="ReadyBatch"/> so the sender can skip its sibling-wait spin.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal void MarkSealedAsSoleDemand() => _sealedAsSoleDemand = true;
+
     public ReadyBatch? Complete()
     {
         // Atomically mark as completed - only first caller proceeds
@@ -8824,6 +8844,7 @@ internal sealed class PartitionBatch
                 completionSourceIndexes: _completionSourceIndexes,
                 callbackDenseCount: _callbackIndexes is null ? _callbackCount : _callbackDenseCount,
                 callbackIndexes: _callbackIndexes);
+            readyBatch.SealedAsSoleDemand = _sealedAsSoleDemand;
 
             if (_admissionBudget is { } admissionBudget)
             {
@@ -9608,6 +9629,19 @@ internal sealed class ReadyBatch
     internal bool IsRetry { get; set; }
 
     /// <summary>
+    /// True when the accumulator's app-limited awaited-produce gate (#2510) proved, at seal
+    /// time, that this batch was the producer's only demand: one awaited record, no other
+    /// unsealed or undelivered batch, no bulk produce scope. The sole caller is awaiting this
+    /// batch, so no sibling batch can arrive while the sender forms the request wave —
+    /// <see cref="BrokerSender.ShouldMicroLinger"/> skips the wave-coalesce spin for it.
+    /// Set only by <see cref="PartitionBatch.Complete"/> on that bypass path; every other
+    /// seal (linger expiry, size-full, flush, zero-linger) leaves it false. It stays with the
+    /// batch object across retry and reroute — the sole caller is still awaiting that batch —
+    /// and is cleared with the rest of the per-lifecycle state in Initialize/Reset.
+    /// </summary>
+    internal bool SealedAsSoleDemand { get; set; }
+
+    /// <summary>
     /// True while this batch owns a crash-recovery mute reference. Kept separate from
     /// <see cref="IsRetry"/> because the reference survives sender-to-sender reroutes and
     /// is released only when the batch reaches a terminal state.
@@ -9904,6 +9938,7 @@ internal sealed class ReadyBatch
         IsSplitBatch = false;
         MaxRecordSize = 0;
         ObservedCompressionRatio = 1.0;
+        SealedAsSoleDemand = false;
     }
 
     /// <summary>
@@ -9984,6 +10019,7 @@ internal sealed class ReadyBatch
         IsSplitBatch = false;
         MaxRecordSize = 0;
         ObservedCompressionRatio = 1.0;
+        SealedAsSoleDemand = false;
         _diagTraceLen = 0;
 
         // NOTE: _cleanedUp, _completed, and _sendCompleted are NOT reset here. They stay
