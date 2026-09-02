@@ -3391,7 +3391,13 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         bool signalOnConcurrentSweep,
         int observedSweepVersion)
     {
-        if (Interlocked.Exchange(ref pd.LingerQueued, 1) == 0)
+        // Steady-state awaited appends land in a partition that is already queued, so a plain
+        // read answers them; the exchange stays the single-enqueuer arbiter for the 0 -> 1
+        // transition. Every clear runs under pd.Lock alongside the batch detach (or in the
+        // linger sweep right before it takes pd.Lock), so an appender that reads 1 either
+        // has its record in a queued batch or in one the sweep is about to visit.
+        if (Volatile.Read(ref pd.LingerQueued) == 0
+            && Interlocked.Exchange(ref pd.LingerQueued, 1) == 0)
         {
             _lingerPartitions.Enqueue(topicPartition);
             if (signalLingerLoop

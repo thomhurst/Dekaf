@@ -155,7 +155,10 @@ public class PooledValueTaskSourceTests
             await source.Task.ConfigureAwait(false);
         });
 
-        await Assert.That(pool.ApproximateCount).IsEqualTo(1);
+        var reused = pool.Rent();
+        await Assert.That(reused).IsSameReferenceAs(source);
+        reused.SetResult(42);
+        await reused.Task.ConfigureAwait(false);
     }
 
     [Test]
@@ -622,7 +625,6 @@ public class PooledValueTaskSourceTests
         var pool = new ValueTaskSourcePool<int>(maxPoolSize: 1);
 
         var source = pool.Rent();
-        await Assert.That(pool.ApproximateCount).IsEqualTo(0);
 
         // Complete before observing
         source.SetResult(42);
@@ -630,11 +632,11 @@ public class PooledValueTaskSourceTests
 
         // Already-completed observation returns synchronously, so rent again immediately
         // to verify the returned source is reusable deterministically.
-        var retainedCount = pool.ApproximateCount;
         var sameSource = pool.Rent();
 
-        await Assert.That(retainedCount).IsEqualTo(1);
         await Assert.That(source).IsSameReferenceAs(sameSource);
+        sameSource.SetResult(43);
+        await sameSource.Task.ConfigureAwait(false);
     }
 
     [Test]
@@ -643,24 +645,24 @@ public class PooledValueTaskSourceTests
         var pool = new ValueTaskSourcePool<int>(maxPoolSize: 1);
 
         var source = pool.Rent();
-        await Assert.That(pool.ApproximateCount).IsEqualTo(0);
+
+        // The fire-and-forget continuation runs GetResult on a pool thread, and the delivery
+        // handler is its last observable step before the finally block returns the source.
+        var continuationRan = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        source.SetDeliveryHandler((_, _) => continuationRan.TrySetResult());
 
         // Observe before completing (registers continuation)
         source.ObserveForFireAndForget();
 
-        // Not yet in pool because not completed
-        await Assert.That(pool.ApproximateCount).IsEqualTo(0);
-
         // Complete after observing - should trigger continuation
         source.SetResult(42);
 
-        // The completion continuation returns the source to the pool. Poll for it with no
-        // wall-clock deadline: a fixed cap flaked when CI thread-pool starvation delayed the
-        // continuation past it. TUnit's test-level timeout is the backstop for a real hang.
-        await TestWait.UntilAsync(() => pool.ApproximateCount == 1, CancellationToken.None);
+        await continuationRan.Task.WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
 
-        // Source should have been returned to pool
-        await Assert.That(pool.ApproximateCount).IsEqualTo(1);
+        var returned = await RentUntilReusedAsync(pool, source).ConfigureAwait(false);
+        await Assert.That(returned).IsSameReferenceAs(source);
+        returned.SetResult(43);
+        await returned.Task.ConfigureAwait(false);
     }
 
     [Test]
@@ -673,10 +675,10 @@ public class PooledValueTaskSourceTests
         source.SetException(new InvalidOperationException("Test"));
         source.ObserveForFireAndForget();
 
-        // Should not throw, should just return to pool
-        await Task.Yield();
-
-        await Assert.That(pool.ApproximateCount).IsEqualTo(1);
+        var reused = pool.Rent();
+        await Assert.That(reused).IsSameReferenceAs(source);
+        reused.SetResult(42);
+        await reused.Task.ConfigureAwait(false);
     }
 
     [Test]
@@ -1105,6 +1107,31 @@ public class PooledValueTaskSourceTests
 
         await Assert.That(completedBeforeRelease).IsTrue();
         return awaiter.GetResult();
+    }
+
+    /// <summary>
+    /// Rents until <paramref name="expected"/> comes back. Call it only after the continuation
+    /// that returns <paramref name="expected"/> has been observed, so the remaining window is
+    /// the tail of that continuation's GetResult. Sources rented in the meantime are held,
+    /// never completed or returned: a single-slot pool would otherwise retain the stray source
+    /// and reject <paramref name="expected"/>'s return, so this loop would never terminate.
+    /// </summary>
+    private static async Task<PooledValueTaskSource<int>> RentUntilReusedAsync(
+        ValueTaskSourcePool<int> pool,
+        PooledValueTaskSource<int> expected)
+    {
+        var deadline = Environment.TickCount64 + 30_000;
+        while (true)
+        {
+            var source = pool.Rent();
+            if (ReferenceEquals(source, expected))
+                return source;
+
+            if (Environment.TickCount64 > deadline)
+                throw new TimeoutException("The expected source was not returned to the pool.");
+
+            await Task.Yield();
+        }
     }
 
     private static void InitializeBatch(ReadyBatch batch)

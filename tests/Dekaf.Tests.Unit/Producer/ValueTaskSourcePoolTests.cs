@@ -1,3 +1,5 @@
+using System.Reflection;
+using System.Runtime.Loader;
 using Dekaf.Producer;
 
 namespace Dekaf.Tests.Unit.Producer;
@@ -46,16 +48,16 @@ public class ValueTaskSourcePoolTests
     {
         var pool = new ValueTaskSourcePool<int>(maxPoolSize: 10);
 
-        // Pool should start empty
-        await Assert.That(pool.ApproximateCount).IsEqualTo(0);
-
         // Rent, complete, and await
         var source = pool.Rent();
         source.SetResult(42);
         await source.Task.ConfigureAwait(false);
 
-        // Source should have auto-returned to pool
-        await Assert.That(pool.ApproximateCount).IsEqualTo(1);
+        // A second rent returns the same instance, proving the first source auto-returned.
+        var reused = pool.Rent();
+        await Assert.That(reused).IsSameReferenceAs(source);
+        reused.SetResult(43);
+        await reused.Task.ConfigureAwait(false);
     }
 
     [Test]
@@ -190,7 +192,25 @@ public class ValueTaskSourcePoolTests
             await source.Task.ConfigureAwait(false);
         }
 
-        await Assert.That(pool.ApproximateCount).IsEqualTo(maxSize);
+        var originalSources = new HashSet<PooledValueTaskSource<int>>(
+            sources,
+            ReferenceEqualityComparer.Instance);
+        var secondRent = new List<PooledValueTaskSource<int>>(sources.Count);
+        var reusedCount = 0;
+        for (var i = 0; i < sources.Count; i++)
+        {
+            var rented = pool.Rent();
+            secondRent.Add(rented);
+            if (originalSources.Contains(rented))
+                reusedCount++;
+        }
+
+        await Assert.That(reusedCount).IsEqualTo(maxSize);
+        foreach (var source in secondRent)
+        {
+            source.SetResult(2);
+            await source.Task.ConfigureAwait(false);
+        }
     }
 
     [Test]
@@ -274,7 +294,7 @@ public class ValueTaskSourcePoolTests
     }
 
     [Test]
-    public async Task Dispose_ClearsPool()
+    public async Task Dispose_ClearsPoolAndPreventsFurtherRent()
     {
         var pool = new ValueTaskSourcePool<int>();
 
@@ -282,13 +302,10 @@ public class ValueTaskSourcePoolTests
         var source = pool.Rent();
         source.SetResult(42);
         await source.Task.ConfigureAwait(false);
-        await Assert.That(pool.ApproximateCount).IsEqualTo(1);
 
-        // Dispose
         await pool.DisposeAsync().ConfigureAwait(false);
 
-        // Pool should be empty
-        await Assert.That(pool.ApproximateCount).IsEqualTo(0);
+        await Assert.That(() => pool.Rent()).Throws<ObjectDisposedException>();
     }
 
     [Test]
@@ -317,9 +334,6 @@ public class ValueTaskSourcePoolTests
         // Complete the source - Return should be silent (not throw)
         source.SetResult(42);
         await source.Task.ConfigureAwait(false);
-
-        // If we get here without exception, the test passes
-        await Assert.That(pool.ApproximateCount).IsEqualTo(0);
     }
 
     [Test]
@@ -349,8 +363,6 @@ public class ValueTaskSourcePoolTests
         await Task.WhenAll(tasks).ConfigureAwait(false);
 
         await Assert.That(completedCount).IsEqualTo(operationCount);
-        // Pool should have some items (up to max)
-        await Assert.That(pool.ApproximateCount).IsLessThanOrEqualTo(50);
     }
 
     [Test]
@@ -390,7 +402,7 @@ public class ValueTaskSourcePoolTests
     }
 
     [Test]
-    public async Task ApproximateCount_TracksPoolSize()
+    public async Task ApproximateCount_ReturnsZero_WhenDiagnosticsAreNotEnabled()
     {
         var pool = new ValueTaskSourcePool<int>(maxPoolSize: 10);
 
@@ -403,7 +415,6 @@ public class ValueTaskSourcePoolTests
             sources.Add(pool.Rent());
         }
 
-        // Still 0 - sources are rented, not returned
         await Assert.That(pool.ApproximateCount).IsEqualTo(0);
 
         // Complete and await all
@@ -413,8 +424,29 @@ public class ValueTaskSourcePoolTests
             await sources[i].Task.ConfigureAwait(false);
         }
 
-        // Now should have 5 in pool
-        await Assert.That(pool.ApproximateCount).IsEqualTo(5);
+        // Tracking stays disabled even after sources return to the pool.
+        await Assert.That(pool.ApproximateCount).IsEqualTo(0);
+    }
+
+    [Test]
+    [NotInParallel("ValueTaskSourcePoolDiagnostics")]
+    public async Task ApproximateCount_TracksPoolSize_WhenDiagnosticsAreEnabledBeforeLoad()
+    {
+        // Lock the normal test assembly into the default-off mode before changing the process-wide
+        // switch. A separately loaded Dekaf assembly then models an application opting in before
+        // its first pool use.
+        await Assert.That(ValueTaskSourcePool.TrackRetainedCount).IsFalse();
+
+        AppContext.SetSwitch(ValueTaskSourcePool.TrackRetainedCountSwitchName, true);
+        try
+        {
+            var count = await RunDiagnosticsScenarioInIsolatedContextAsync().ConfigureAwait(false);
+            await Assert.That(count).IsEqualTo(1);
+        }
+        finally
+        {
+            AppContext.SetSwitch(ValueTaskSourcePool.TrackRetainedCountSwitchName, false);
+        }
     }
 
     [Test]
@@ -445,8 +477,54 @@ public class ValueTaskSourcePoolTests
 
         await Task.WhenAll(tasks).ConfigureAwait(false);
 
-        // Pool should be in a consistent state
-        await Assert.That(pool.ApproximateCount).IsLessThanOrEqualTo(maxPoolSize);
-        await Assert.That(pool.ApproximateCount).IsGreaterThanOrEqualTo(0);
+        // Pool remains usable after concurrent rent/return operations.
+        var source = pool.Rent();
+        source.SetResult(42);
+        await Assert.That(await source.Task.ConfigureAwait(false)).IsEqualTo(42);
+    }
+
+    private static async Task<int> RunDiagnosticsScenarioInIsolatedContextAsync()
+    {
+        var assemblyPath = typeof(ValueTaskSourcePool).Assembly.Location;
+        var loadContext = new IsolatedLoadContext(assemblyPath);
+        try
+        {
+            var assembly = loadContext.LoadFromAssemblyPath(assemblyPath);
+            var openPoolType = assembly.GetType("Dekaf.Producer.ValueTaskSourcePool`1", throwOnError: true)!;
+            var poolType = openPoolType.MakeGenericType(typeof(int));
+            var pool = Activator.CreateInstance(poolType, 10)!;
+            var source = poolType.GetMethod(nameof(ValueTaskSourcePool<int>.Rent))!.Invoke(pool, null)!;
+            var sourceType = source.GetType();
+
+            sourceType.GetMethod(nameof(PooledValueTaskSource<int>.SetResult))!.Invoke(source, [42]);
+            var task = (ValueTask<int>)sourceType
+                .GetProperty(nameof(PooledValueTaskSource<int>.Task))!
+                .GetValue(source)!;
+            await task.ConfigureAwait(false);
+
+            var count = (int)poolType
+                .GetProperty(nameof(ValueTaskSourcePool<int>.ApproximateCount))!
+                .GetValue(pool)!;
+            var disposeTask = (ValueTask)poolType
+                .GetMethod(nameof(ValueTaskSourcePool<int>.DisposeAsync))!
+                .Invoke(pool, null)!;
+            await disposeTask.ConfigureAwait(false);
+            return count;
+        }
+        finally
+        {
+            loadContext.Unload();
+        }
+    }
+
+    private sealed class IsolatedLoadContext(string assemblyPath) : AssemblyLoadContext(isCollectible: true)
+    {
+        private readonly AssemblyDependencyResolver _resolver = new(assemblyPath);
+
+        protected override Assembly? Load(AssemblyName assemblyName)
+        {
+            var path = _resolver.ResolveAssemblyToPath(assemblyName);
+            return path is null ? null : LoadFromAssemblyPath(path);
+        }
     }
 }
