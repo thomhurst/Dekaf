@@ -15,19 +15,24 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 public class ResponseBufferPoolBenchmarks
 {
     private const int LiveResponses = 16;
+    private const int CeilingWaveResponses = 256;
     private const int FetchFrameBytes = 1024 * 1024;
     private const int CaughtUpFrameBytes = 256 * 1024;
+    private const int CeilingWaveFrameBytes = 128 * 1024;
     private const int ProduceFrameBytes = 8 * 1024;
     private const int PageBytes = 4096;
 
-    // 4 = ResponseBufferPool.Default; 20 = PoolSizing.ForConsumerResponseBuffers(1 broker, depth 3, 4 connections).
-    [Params(4, 20)]
+    // 4 = ResponseBufferPool.Default; 20 = PoolSizing.ForConsumerResponseBuffers(1 broker, depth 3, 4 connections);
+    // 256 = PoolSizing.MaxResponseBuffers, the retention ceiling every native bucket allocates slots for.
+    [Params(4, 20, 256)]
     public int Depth { get; set; }
 
     private ResponseBufferPool _pool = null!;
     private ResponseBufferPool _grownPool = null!;
+    private ResponseBufferPool _ceilingWavePool = null!;
     private NativeResponseBuffer[] _nativeLive = null!;
     private NativeResponseBuffer[] _grownLive = null!;
+    private NativeResponseBuffer[] _ceilingWaveLive = null!;
     private byte[][] _managedLive = null!;
 
     [GlobalSetup]
@@ -55,6 +60,13 @@ public class ResponseBufferPoolBenchmarks
             _grownLive[i].Return();
         for (var i = 0; i < LiveResponses; i++)
             _grownLive[i] = _grownPool.RentNative(FetchFrameBytes);
+
+        // A wave the size of the retention ceiling, so a covering pool's bucket sweeps its
+        // whole slot range every invocation.
+        _ceilingWavePool = CreatePool();
+        _ceilingWaveLive = new NativeResponseBuffer[CeilingWaveResponses];
+        for (var i = 0; i < CeilingWaveResponses; i++)
+            _ceilingWaveLive[i] = _ceilingWavePool.RentNative(CeilingWaveFrameBytes);
     }
 
     [GlobalCleanup]
@@ -67,8 +79,12 @@ public class ResponseBufferPoolBenchmarks
             _pool.Pool.Return(_managedLive[i]);
         }
 
+        for (var i = 0; i < CeilingWaveResponses; i++)
+            _ceilingWaveLive[i].Return();
+
         _pool.TrimNativeBuffers();
         _grownPool.TrimNativeBuffers();
+        _ceilingWavePool.TrimNativeBuffers();
     }
 
     /// <summary>
@@ -84,14 +100,23 @@ public class ResponseBufferPoolBenchmarks
 
     /// <summary>Fetch-sized frames through the native path.</summary>
     [Benchmark(OperationsPerInvoke = LiveResponses)]
-    public void NativeFetchFrames_1MB() => ReturnAndRefillWave(_pool, _nativeLive);
+    public void NativeFetchFrames_1MB() => ReturnAndRefillWave(_pool, _nativeLive, FetchFrameBytes);
 
     /// <summary>
     /// Same wave on a pool whose allowance is partly held by dormant frames of the previous,
     /// smaller capacity: shows whether the retained set follows the live frame size.
     /// </summary>
     [Benchmark(OperationsPerInvoke = LiveResponses)]
-    public void NativeFetchFrames_1MB_AfterFrameSizeGrowth() => ReturnAndRefillWave(_grownPool, _grownLive);
+    public void NativeFetchFrames_1MB_AfterFrameSizeGrowth() => ReturnAndRefillWave(_grownPool, _grownLive, FetchFrameBytes);
+
+    /// <summary>
+    /// A wave the size of the retention ceiling (256 frames) released and refilled. On a
+    /// covering pool the bucket's occupancy sweeps its entire slot range twice per invocation,
+    /// which is where a slot scan degrades to O(depth) per frame; the per-frame time here
+    /// should match the 16-frame rows at the same depth.
+    /// </summary>
+    [Benchmark(OperationsPerInvoke = CeilingWaveResponses)]
+    public void NativeCeilingWave_128KB() => ReturnAndRefillWave(_ceilingWavePool, _ceilingWaveLive, CeilingWaveFrameBytes);
 
     /// <summary>Produce-response-sized frames through the managed array pool.</summary>
     [Benchmark(OperationsPerInvoke = LiveResponses)]
@@ -118,14 +143,14 @@ public class ResponseBufferPoolBenchmarks
     /// touched once, as a socket receive would, so a freshly allocated buffer pays its
     /// page faults here.
     /// </summary>
-    private static void ReturnAndRefillWave(ResponseBufferPool pool, NativeResponseBuffer[] live)
+    private static void ReturnAndRefillWave(ResponseBufferPool pool, NativeResponseBuffer[] live, int frameBytes)
     {
         for (var i = 0; i < live.Length; i++)
             live[i].Return();
 
         for (var i = 0; i < live.Length; i++)
         {
-            var buffer = pool.RentNative(FetchFrameBytes);
+            var buffer = pool.RentNative(frameBytes);
             TouchPages(buffer.GetSpan());
             live[i] = buffer;
         }
