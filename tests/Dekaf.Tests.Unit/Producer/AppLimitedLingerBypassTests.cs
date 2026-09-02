@@ -1,3 +1,4 @@
+using System.Reflection;
 using Dekaf.Metadata;
 using Dekaf.Networking;
 using Dekaf.Producer;
@@ -417,6 +418,38 @@ public class AppLimitedLingerBypassTests
 
             batch.Reenqueued(nowMs: 0);
 
+            await Assert.That(batch.IsRetry).IsTrue();
+            await Assert.That(batch.SealedAsSoleDemand).IsFalse();
+            LeakGateHarness.RetireBatch(accumulator, batch, offset: 0);
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+            await pool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task SoleDemandFlag_IsClearedWhenBatchIsPreparedForLoopExitRedelivery()
+    {
+        // The sender's loop-exit redelivery is the other retry-marking site it owns outright
+        // (HandleRetriableBatch clears the flag on the same line as IsRetry but needs a live
+        // sender to reach). It is static and touches only the batch, so it is driven directly.
+        var prepare = typeof(BrokerSender).GetMethod(
+            "PrepareLoopExitRedelivery",
+            BindingFlags.Static | BindingFlags.NonPublic)!;
+        var accumulator = new RecordAccumulator(CreateOptions(lingerMs: 5_000));
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
+
+        try
+        {
+            AppendAwaited(accumulator, pool);
+            var batch = DrainSealedBatch(accumulator);
+            await Assert.That(batch.SealedAsSoleDemand).IsTrue();
+
+            var prepared = (bool)prepare.Invoke(null, [batch, batch.Generation])!;
+
+            await Assert.That(prepared).IsTrue();
             await Assert.That(batch.IsRetry).IsTrue();
             await Assert.That(batch.SealedAsSoleDemand).IsFalse();
             LeakGateHarness.RetireBatch(accumulator, batch, offset: 0);
