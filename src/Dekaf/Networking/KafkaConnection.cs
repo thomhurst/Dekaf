@@ -5,6 +5,7 @@ using System.Diagnostics;
 using System.Net;
 using System.Net.Security;
 using System.Net.Sockets;
+using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
@@ -4610,6 +4611,9 @@ internal sealed class ResponseBufferPool
     /// no longer rounds, so every distinct frame size would need its own bucket.
     /// </summary>
     private const int MaxPooledNativeCapacity = 1 << 30;
+
+    /// <summary>One slot per power of two from 1 to <see cref="MaxPooledNativeCapacity"/>.</summary>
+    private const int NativeBucketSlotCount = 31;
 #if !NETSTANDARD2_0
     private const long NativeMemoryPressureRefreshMilliseconds = 1_000;
 #endif
@@ -4622,9 +4626,14 @@ internal sealed class ResponseBufferPool
         (int MaxArrayLength, int ManagedArraysPerBucket, int MaxRetainedNativeBuffers),
         ResponseBufferPool>
         s_sharedPools = new();
-    // Copy-on-write: buckets are only ever added (one per power-of-two capacity seen), so
-    // rent, return, eviction, and trim can walk the array without enumerator allocations.
-    private NativeBufferBucket[] _nativeBuckets = [];
+    /// <summary>
+    /// Bucket slots for every retainable power-of-two capacity, indexed by
+    /// <see cref="NativeBucketIndex"/> (log2 of the capacity), so rent and return resolve
+    /// their bucket in O(1) regardless of how many capacities adaptive fetch sizing has
+    /// visited. Slots are filled lazily and never cleared; eviction and trim walk the
+    /// fixed array without enumerator allocations.
+    /// </summary>
+    private readonly NativeBufferBucket?[] _nativeBuckets = new NativeBufferBucket?[NativeBucketSlotCount];
     private int _retainedNativeBufferCount;
     private int _highNativeMemoryPressure;
 #if !NETSTANDARD2_0
@@ -4718,10 +4727,9 @@ internal sealed class ResponseBufferPool
     internal NativeResponseBuffer RentNative(int minimumLength)
     {
         var capacity = RoundUpToPowerOfTwo(minimumLength);
-        var bucket = capacity <= MaxPooledNativeCapacity
-            ? FindNativeBucket(Volatile.Read(ref _nativeBuckets), capacity)
-            : null;
-        if (bucket is not null && bucket.TryRent(out var pointer))
+        if (capacity <= MaxPooledNativeCapacity
+            && Volatile.Read(ref _nativeBuckets[NativeBucketIndex(capacity)]) is { } bucket
+            && bucket.TryRent(out var pointer))
         {
             Interlocked.Decrement(ref _retainedNativeBufferCount);
             return NativeResponseBuffer.Rent(this, pointer, capacity);
@@ -4750,7 +4758,15 @@ internal sealed class ResponseBufferPool
             return;
         }
 
-        GetOrAddNativeBucket(capacity).Return(pointer);
+        if (!GetOrAddNativeBucket(capacity).TryReturn(pointer))
+        {
+            // Every slot of this capacity is occupied. The global count admits at most one
+            // buffer per slot, so this is only reachable while a concurrent trim has popped a
+            // slot but not yet given back its allowance; freeing keeps the bound exact.
+            Interlocked.Decrement(ref _retainedNativeBufferCount);
+            Marshal.FreeHGlobal(pointer);
+            return;
+        }
 
         // Pressure can begin after the first check but before this buffer is published.
         if (Volatile.Read(ref _highNativeMemoryPressure) != 0)
@@ -4767,9 +4783,11 @@ internal sealed class ResponseBufferPool
     /// </summary>
     private bool TryEvictDormantBuffer(int capacity)
     {
-        foreach (var bucket in Volatile.Read(ref _nativeBuckets))
+        var buckets = _nativeBuckets;
+        for (var i = 0; i < buckets.Length; i++)
         {
-            if (bucket.Capacity == capacity || !bucket.TryRent(out var pointer))
+            var bucket = Volatile.Read(ref buckets[i]);
+            if (bucket is null || bucket.Capacity == capacity || !bucket.TryRent(out var pointer))
                 continue;
 
             Marshal.FreeHGlobal(pointer);
@@ -4782,38 +4800,28 @@ internal sealed class ResponseBufferPool
 
     private NativeBufferBucket GetOrAddNativeBucket(int capacity)
     {
-        while (true)
-        {
-            var buckets = Volatile.Read(ref _nativeBuckets);
-            var existing = FindNativeBucket(buckets, capacity);
-            if (existing is not null)
-                return existing;
+        ref var slot = ref _nativeBuckets[NativeBucketIndex(capacity)];
+        var existing = Volatile.Read(ref slot);
+        if (existing is not null)
+            return existing;
 
-            var added = new NativeBufferBucket[buckets.Length + 1];
-            buckets.AsSpan().CopyTo(added);
-            var bucket = new NativeBufferBucket(capacity);
-            added[buckets.Length] = bucket;
-            if (Interlocked.CompareExchange(ref _nativeBuckets, added, buckets) == buckets)
-                return bucket;
-        }
+        var created = new NativeBufferBucket(capacity, MaxRetainedNativeBuffers);
+        return Interlocked.CompareExchange(ref slot, created, null) ?? created;
     }
 
-    private static NativeBufferBucket? FindNativeBucket(NativeBufferBucket[] buckets, int capacity)
-    {
-        foreach (var bucket in buckets)
-        {
-            if (bucket.Capacity == capacity)
-                return bucket;
-        }
-
-        return null;
-    }
+    /// <summary>Slot of a power-of-two <paramref name="capacity"/> in <see cref="_nativeBuckets"/>.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static int NativeBucketIndex(int capacity) => BitOperations.Log2((uint)capacity);
 
     internal int TrimNativeBuffers()
     {
         var released = 0;
-        foreach (var bucket in Volatile.Read(ref _nativeBuckets))
-            released += bucket.Trim();
+        var buckets = _nativeBuckets;
+        for (var i = 0; i < buckets.Length; i++)
+        {
+            if (Volatile.Read(ref buckets[i]) is { } bucket)
+                released += bucket.Trim();
+        }
 
         if (released > 0)
             Interlocked.Add(ref _retainedNativeBufferCount, -released);
@@ -4872,20 +4880,66 @@ internal sealed class ResponseBufferPool
         return (int)rounded;
     }
 
-    private sealed class NativeBufferBucket(int capacity)
+    /// <summary>
+    /// Retained buffers of one capacity. Pointers live in fixed slots claimed and released
+    /// with interlocked exchanges (<see cref="IntPtr.Zero"/> marks an empty slot), so
+    /// retaining a frame allocates nothing; a <c>ConcurrentStack</c> pushed a 32 B node per
+    /// retained frame. The slot count is the pool's global allowance, which the caller
+    /// enforces before returning, and the occupancy hint lets rent skip an empty bucket
+    /// without scanning.
+    /// </summary>
+    private sealed class NativeBufferBucket(int capacity, int slotCount)
     {
-        private readonly ConcurrentStack<IntPtr> _buffers = new();
+        private readonly IntPtr[] _slots = new IntPtr[slotCount];
+        private int _occupied;
 
         internal int Capacity => capacity;
 
-        internal bool TryRent(out IntPtr pointer) => _buffers.TryPop(out pointer);
+        internal bool TryRent(out IntPtr pointer)
+        {
+            if (Volatile.Read(ref _occupied) > 0)
+            {
+                var slots = _slots;
+                for (var i = 0; i < slots.Length; i++)
+                {
+                    if (Volatile.Read(ref slots[i]) == IntPtr.Zero)
+                        continue;
 
-        internal void Return(IntPtr pointer) => _buffers.Push(pointer);
+                    pointer = Interlocked.Exchange(ref slots[i], IntPtr.Zero);
+                    if (pointer != IntPtr.Zero)
+                    {
+                        Interlocked.Decrement(ref _occupied);
+                        return true;
+                    }
+                }
+            }
+
+            pointer = IntPtr.Zero;
+            return false;
+        }
+
+        internal bool TryReturn(IntPtr pointer)
+        {
+            var slots = _slots;
+            for (var i = 0; i < slots.Length; i++)
+            {
+                if (Volatile.Read(ref slots[i]) != IntPtr.Zero)
+                    continue;
+
+                if (Interlocked.CompareExchange(ref slots[i], pointer, IntPtr.Zero) == IntPtr.Zero)
+                {
+                    Interlocked.Increment(ref _occupied);
+                    return true;
+                }
+            }
+
+            return false;
+        }
 
         internal int Trim()
         {
             var released = 0;
-            while (_buffers.TryPop(out var pointer))
+            while (TryRent(out var pointer))
             {
                 Marshal.FreeHGlobal(pointer);
                 released++;
