@@ -249,7 +249,7 @@ public sealed class AdaptiveScaleDownTests
             await GetField<Task>(sender, "_sendLoopTask");
             GetField<HashSet<TopicPartition>>(sender, "_knownPartitions")
                 .Add(new TopicPartition(Topic, 0));
-            SetField(accumulator, "_bufferedBytes", (long)options.BufferMemory);
+            AccumulatorTestHelpers.SetBufferedBytesForTest(accumulator, (long)options.BufferMemory);
             SetField(accumulator, "_bufferPressureEvents", 100L);
 
             InvokeMaybeScaleConnections(sender);

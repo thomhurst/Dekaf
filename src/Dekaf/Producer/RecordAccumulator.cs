@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Numerics;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Threading.Channels;
 using System.Threading.Tasks.Sources;
 using Dekaf.Compression;
@@ -1109,6 +1110,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private readonly bool _unackedBudgetEnabled;
     private readonly int _admissionLeaseQuantumBytes;
 
+
     /// <summary>
     /// Muted partitions — skipped by Ready() and Drain(). The value is a reference count:
     /// independent BrokerSenders and crash-recovery barriers may overlap for the same partition.
@@ -1367,7 +1369,25 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     // Buffer memory tracking for backpressure.
     // Stored as long so Volatile.Read/Interlocked.Exchange apply; always holds a non-negative value.
     private long _maxBufferMemory;
-    private long _bufferedBytes;
+
+    // The one accumulator-wide counter every producer thread writes (batch-lease refills) and the
+    // sender writes (batch releases). Padded onto its own cache line so those writes do not
+    // invalidate the lines holding the read-mostly fields the per-record path reads (_disposed,
+    // _maxBufferMemory, _options, _unackedBudgetEnabled, the deque cache).
+    private PaddedBufferedBytes _bufferedBytes;
+
+    /// <summary>
+    /// A <see cref="long"/> isolated on its own cache line: a full line of padding before and
+    /// after <see cref="Value"/>, so no other field of the enclosing object can share it.
+    /// </summary>
+    [StructLayout(LayoutKind.Explicit, Size = 3 * CacheLineBytes)]
+    private struct PaddedBufferedBytes
+    {
+        public const int CacheLineBytes = 64;
+
+        [FieldOffset(CacheLineBytes)]
+        public long Value;
+    }
     // Adaptive connection scaling: counts slow-path entries in ReserveMemoryAsync
     private long _bufferPressureEvents;
     // Dynamic pool ratchet: last pressure snapshot when pool was ratcheted.
@@ -2190,7 +2210,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         var splitBytes = 0L;
         foreach (var child in splitBatches)
             splitBytes += child.DataSize;
-        Interlocked.Add(ref _bufferedBytes, splitBytes);
+        Interlocked.Add(ref _bufferedBytes.Value, splitBytes);
 
         var pd = GetOrCreateDeque(splitBatches[0].TopicPartition);
         using (var guard = new SpinLockGuard(ref pd.Lock))
@@ -2414,7 +2434,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 // spacing keeps a live spin from flooding the log.
                 if (drainPassCount == drainSpinTripwire)
                 {
-                    LogPendingAppendDrainSpinning(drainPassCount, _pendingAppends.Count, Volatile.Read(ref _bufferedBytes));
+                    LogPendingAppendDrainSpinning(drainPassCount, _pendingAppends.Count, Volatile.Read(ref _bufferedBytes.Value));
                     drainSpinTripwire *= 10;
                 }
                 var drainRequestVersion = Volatile.Read(ref _pendingAppendDrainRequestVersion);
@@ -2530,7 +2550,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 // another pass (preventing a spin while admission remains blocked).
                 if ((!madeProgress && !drainRequested)
                     || _pendingAppends.IsEmpty
-                    || (ulong)Volatile.Read(ref _bufferedBytes) >= (ulong)Volatile.Read(ref _maxBufferMemory))
+                    || (ulong)Volatile.Read(ref _bufferedBytes.Value) >= (ulong)Volatile.Read(ref _maxBufferMemory))
                 {
                     return true;
                 }
@@ -4503,15 +4523,18 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// </summary>
     /// <remarks>
     /// <para>
-    /// The BufferMemory reservation is taken before the lock, exactly as the reservation path
-    /// does: <see cref="TryReserveMemory"/> is a contended accumulator-wide atomic, and holding
-    /// the partition lock across it made four threads on four distinct partitions ~55% slower
-    /// per record (AccumulatorAdmissionAppendBenchmarks 4T-split, 64 ns to 100 ns) even though
-    /// nothing else contends for those locks.
+    /// BufferMemory is consumed from the batch's lease (<see cref="PartitionBatch.HasMemoryLeaseCapacity"/>)
+    /// and only an exhausted lease refills from the accumulator-wide counter
+    /// (<see cref="TryReserveMemoryLease"/>): one contended atomic per quantum instead of one per
+    /// record. The per-record <see cref="TryReserveMemory"/> was measured to cost ~55% per record
+    /// when held under this lock by four threads on four distinct partitions (64 ns to 100 ns),
+    /// so the refill's rarity is what makes running it under the lock acceptable; the two-phase
+    /// path still reserves exactly per record before its lock and attaches that reservation to
+    /// the batch at commit.
     /// </para>
     /// <para>
-    /// Every early exit returns whatever it reserved (BufferMemory, and the broker lease when one
-    /// was taken) before the caller continues with the unchanged reservation-based protocol,
+    /// Every early exit returns whatever it reserved (a BufferMemory lease refill, and the broker
+    /// lease when one was taken) before the caller continues with the unchanged reservation-based protocol,
     /// which owns batch rotation, header-bearing records, blocked or re-routed admission,
     /// BufferMemory backpressure and FIFO behind queued slow-path appends. The two paths
     /// therefore never double-account a record. Those exits are per batch (rotation) or cold
@@ -4544,15 +4567,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         if (Volatile.Read(ref pd.SlowPathAppendCount) != 0)
             return false;
 
-        // BufferMemory exhausted: the reservation path queues the record behind the same
-        // backpressure.
-        if (!TryReserveMemory(recordSize))
-            return false;
-
         PartitionBatch? batchToComplete = null;
         BrokerUnackedByteBudget? leaseBudget = null;
         var leaseBytes = 0;
         long leaseGeneration = 0;
+        var memoryLease = 0;
         var committed = false;
         var actualBytesAdded = 0;
 
@@ -4570,6 +4589,16 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 || !currentBatch.CanFitEstimatedRecord(recordSize))
             {
                 return false;
+            }
+
+            // BufferMemory: consume the batch's lease; refill only when it is exhausted. A refill
+            // that cannot grant even the record itself means BufferMemory is exhausted, and the
+            // reservation path queues the record behind the same backpressure.
+            if (!currentBatch.HasMemoryLeaseCapacity(recordSize))
+            {
+                memoryLease = TryReserveMemoryLease(recordSize);
+                if (memoryLease == 0)
+                    return false;
             }
 
             if (_unackedBudgetEnabled)
@@ -4599,13 +4628,16 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 headerCount: 0,
                 completionSource,
                 callback,
-                estimatedSize: recordSize);
+                estimatedSize: recordSize,
+                memoryFromBatchLease: true);
 
             // The estimate fit but the arena could not take the encoded record: rotation belongs
             // to the two-phase path.
             if (!result.Success)
                 return false;
 
+            if (memoryLease > 0)
+                currentBatch.AddMemoryLease(memoryLease);
             if (leaseBudget is not null)
                 currentBatch.AddAdmissionLease(leaseBudget, leaseGeneration, leaseBytes);
 
@@ -4623,12 +4655,13 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         {
             // Runs after the guard released the lock (ReleaseMemory drains pending appends and
             // must never run under pd.Lock). Nothing to undo on the committed path: the batch
-            // now owns both the record's BufferMemory and the lease credit.
+            // now owns both leases.
             if (!committed)
             {
-                // Lease first: the drain may need that credit.
+                // Broker lease first: the drain may need that credit.
                 leaseBudget?.Release(leaseBytes);
-                ReleaseMemory(recordSize);
+                if (memoryLease > 0)
+                    ReleaseMemory(memoryLease);
             }
         }
 
@@ -4815,8 +4848,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// <summary>
     /// Completes and returns a batch removed from the active append path.
     /// The caller must release <paramref name="bytesToRelease"/> after the partition
-    /// rotation gate is cleared. On success this is the seal-time overestimate refund.
-    /// On failure this is the whole reserved batch size unless released here.
+    /// rotation gate is cleared. On success this is the unused remainder of the batch's
+    /// BufferMemory lease (quantum credit not consumed plus estimate overshoot). On failure this
+    /// is the whole leased batch size unless released here.
     /// </summary>
     private ReadyBatch? CompleteDetachedBatch(
         PartitionBatch currentBatch,
@@ -5347,7 +5381,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// <summary>
     /// Gets the current buffered memory usage in bytes.
     /// </summary>
-    public long BufferedBytes => Volatile.Read(ref _bufferedBytes);
+    /// <summary>
+    /// BufferMemory currently reserved: bytes of sealed and in-flight batches plus, for each open
+    /// batch, its lease (records already written and up to one unconsumed quantum, refunded at seal).
+    /// </summary>
+    public long BufferedBytes => Volatile.Read(ref _bufferedBytes.Value);
 
     /// <summary>
     /// Gets the maximum buffer memory limit in bytes.
@@ -5419,7 +5457,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// Gets the current buffer utilization as a ratio (0.0 to 1.0+).
     /// Used by adaptive connection scaling to confirm buffer is actually full.
     /// </summary>
-    internal double BufferUtilization => (double)Volatile.Read(ref _bufferedBytes) / (double)(ulong)Volatile.Read(ref _maxBufferMemory);
+    internal double BufferUtilization => (double)Volatile.Read(ref _bufferedBytes.Value) / (double)(ulong)Volatile.Read(ref _maxBufferMemory);
 
     /// <summary>
     /// Attempts to reserve buffer memory for a record without blocking.
@@ -5437,13 +5475,50 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         // Hoisted once per call — rebalancing is rare and one-cycle staleness is acceptable
         // (matches the snapshot semantics already used for _bufferedBytes).
         var max = (ulong)Volatile.Read(ref _maxBufferMemory);
-        var newValue = Interlocked.Add(ref _bufferedBytes, recordSize);
+        var newValue = Interlocked.Add(ref _bufferedBytes.Value, recordSize);
 
         if ((ulong)newValue <= max)
             return true;
 
-        Interlocked.Add(ref _bufferedBytes, -recordSize);
+        Interlocked.Add(ref _bufferedBytes.Value, -recordSize);
         return false;
+    }
+
+    /// <summary>
+    /// Reserves a batch-local BufferMemory lease for the single-lock append path: one quantum
+    /// (the same <see cref="_admissionLeaseQuantumBytes"/> sizing as the broker lease) when it
+    /// fits, otherwise exactly <paramref name="recordSize"/> when at least that fits (a record
+    /// that would fit never waits for quantum headroom), otherwise nothing. Records then consume
+    /// the batch-local lease under the partition lock, so this contended atomic runs once per
+    /// quantum instead of once per record; the unused remainder is refunded at seal
+    /// (<see cref="PartitionBatch.OverestimatedBytes"/>). A CAS loop rather than add-with-rollback
+    /// so a refused quantum never transiently pushes the counter over the limit and fails a
+    /// concurrent exact reservation.
+    /// </summary>
+    /// <returns>The bytes reserved, or 0 when even the record itself does not fit.</returns>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal int TryReserveMemoryLease(int recordSize)
+    {
+        var quantum = Math.Max(_admissionLeaseQuantumBytes, recordSize);
+        var max = (ulong)Volatile.Read(ref _maxBufferMemory);
+        var current = Volatile.Read(ref _bufferedBytes.Value);
+        while (true)
+        {
+            var available = max > (ulong)current ? max - (ulong)current : 0;
+            int grant;
+            if (available >= (ulong)quantum)
+                grant = quantum;
+            else if (available >= (ulong)recordSize)
+                grant = recordSize;
+            else
+                return 0;
+
+            var observed = Interlocked.CompareExchange(ref _bufferedBytes.Value, current + grant, current);
+            if (observed == current)
+                return grant;
+
+            current = observed;
+        }
     }
 
     /// <summary>
@@ -5460,7 +5535,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         // ProducerDataPool bucket capacity to reduce pool misses.
         MaybeRatchetPoolCapacity(pressureCount);
 
-        var currentBufferedBytes = Volatile.Read(ref _bufferedBytes);
+        var currentBufferedBytes = Volatile.Read(ref _bufferedBytes.Value);
         var currentMaxBufferMemory = (ulong)Volatile.Read(ref _maxBufferMemory);
         LogBufferMemoryWaiting(recordSize, currentBufferedBytes, currentMaxBufferMemory);
         var currentTicks = Dekaf.MonotonicClock.GetMilliseconds();
@@ -5501,7 +5576,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
             // Re-check AFTER incrementing to close the missed-signal window.
             // Without this, ReleaseMemory can see waiters=0 and skip the signal.
-            if ((ulong)Volatile.Read(ref _bufferedBytes) < (ulong)Volatile.Read(ref _maxBufferMemory))
+            if ((ulong)Volatile.Read(ref _bufferedBytes.Value) < (ulong)Volatile.Read(ref _maxBufferMemory))
             {
                 Interlocked.Decrement(ref _bufferSpaceWaiters);
                 continue; // space likely available, re-evaluate TryReserveMemory
@@ -5602,7 +5677,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// </summary>
     internal void ReleaseMemory(int batchSize)
     {
-        var newValue = Interlocked.Add(ref _bufferedBytes, -batchSize);
+        var newValue = Interlocked.Add(ref _bufferedBytes.Value, -batchSize);
         LogBufferMemoryReleased(batchSize, newValue);
 
         // DEFENSIVE: Detect accounting bugs early
@@ -5657,7 +5732,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// </summary>
     private void ReleaseMemoryWithoutDrain(int size)
     {
-        Interlocked.Add(ref _bufferedBytes, -size);
+        Interlocked.Add(ref _bufferedBytes.Value, -size);
         // No drain or signal — we're already inside the drain loop.
     }
 
@@ -7816,6 +7891,12 @@ internal sealed class PartitionBatch
     private int _encodedRecordsLength;
     private int _estimatedSize;
     private int _reservedSize;
+
+    // BufferMemory reserved from the accumulator on this batch's behalf: exact per-record
+    // reservations attached by the two-phase path plus quanta leased by the single-lock path.
+    // Invariant: _memoryLeaseBytes >= _reservedSize >= _estimatedSize. Seal refunds
+    // _memoryLeaseBytes - _estimatedSize; failure paths refund all of it.
+    private int _memoryLeaseBytes;
     private BrokerUnackedByteBudget? _admissionBudget;
     private long _admissionGeneration;
     private int _admissionReservedBytes;
@@ -7941,6 +8022,7 @@ internal sealed class PartitionBatch
         _encodedRecordsLength = 0;
         _estimatedSize = 0;
         _reservedSize = 0;
+        _memoryLeaseBytes = 0;
         ReleaseAdmissionReservation();
         _isCompleted = 0;  // Only reset here - see remarks
         _completedBatch = null;
@@ -7997,6 +8079,7 @@ internal sealed class PartitionBatch
         _encodedRecordsLength = 0;
         _estimatedSize = 0;
         _reservedSize = 0;
+        _memoryLeaseBytes = 0;
         ReleaseAdmissionReservation();
         // _isCompleted stays at 1 - batch is "completed" while in pool
         _completedBatch = null;
@@ -8016,7 +8099,22 @@ internal sealed class PartitionBatch
     public int RecordCount => _recordCount;
     public int EstimatedSize => _estimatedSize;
     public int ReservedSize => _reservedSize;
-    public int OverestimatedBytes => Math.Max(0, _reservedSize - _estimatedSize);
+    public int MemoryLeaseBytes => _memoryLeaseBytes;
+
+    /// <summary>
+    /// BufferMemory to refund at seal: everything leased for this batch that its encoded records
+    /// do not occupy (unconsumed quantum credit plus estimate overshoot).
+    /// </summary>
+    public int OverestimatedBytes => Math.Max(0, _memoryLeaseBytes - _estimatedSize);
+
+    /// <summary>True when the batch's BufferMemory lease still covers an estimated record.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal bool HasMemoryLeaseCapacity(int estimatedSize) =>
+        (long)_memoryLeaseBytes - _reservedSize >= estimatedSize;
+
+    /// <summary>Attaches BufferMemory reserved from the accumulator to this batch's lease.</summary>
+    internal void AddMemoryLease(int bytes) =>
+        _memoryLeaseBytes = checked(_memoryLeaseBytes + bytes);
     public int CompletionSourcesCount => _completionSourceCount;
     public bool IsExactlyAtSizeLimit =>
         (long)RecordBatch.TotalBatchHeaderSize + _encodedRecordsLength == EffectiveBatchSizeLimit;
@@ -8211,7 +8309,8 @@ internal sealed class PartitionBatch
         int headerCount,
         PooledValueTaskSource<RecordMetadata>? completionSource,
         Action<RecordMetadata, Exception?>? callback,
-        int estimatedSize)
+        int estimatedSize,
+        bool memoryFromBatchLease = false)
     {
         var result = TryReserveAppendFromSpans(
             timestamp,
@@ -8250,7 +8349,8 @@ internal sealed class PartitionBatch
                 callback,
                 headers,
                 headerCount,
-                estimatedSize);
+                estimatedSize,
+                memoryFromBatchLease);
         }
 
         return result;
@@ -8510,17 +8610,24 @@ internal sealed class PartitionBatch
         Action<RecordMetadata, Exception?>? callback,
         Header[]? headers,
         int headerCount,
-        int estimatedSize)
+        int estimatedSize,
+        bool memoryFromBatchLease = false)
     {
-        CommitReservedAppend(reservedAppend, completionSource, callback, estimatedSize);
+        CommitReservedAppend(reservedAppend, completionSource, callback, estimatedSize, memoryFromBatchLease);
         RecordAccumulator.ReturnPooledHeaders(headers, headerCount);
     }
 
+    /// <param name="memoryFromBatchLease">
+    /// True when the record's BufferMemory came from this batch's existing lease (single-lock
+    /// path); false when the caller reserved exactly <paramref name="estimatedSize"/> from the
+    /// accumulator and that reservation now transfers to the batch's lease.
+    /// </param>
     private void CommitReservedAppend(
         in ReservedRecordAppend reservedAppend,
         PooledValueTaskSource<RecordMetadata>? completionSource,
         Action<RecordMetadata, Exception?>? callback,
-        int estimatedSize)
+        int estimatedSize,
+        bool memoryFromBatchLease = false)
     {
         var recordIndex = reservedAppend.RecordIndex;
 
@@ -8564,6 +8671,8 @@ internal sealed class PartitionBatch
         _recordCount = recordIndex + 1;
         _estimatedSize += reservedAppend.EncodedRecordSize;
         _reservedSize += estimatedSize;
+        if (!memoryFromBatchLease)
+            _memoryLeaseBytes = checked(_memoryLeaseBytes + estimatedSize);
     }
 
     internal static void CancelReservedAppend(in ReservedRecordAppend reservedAppend)
@@ -8909,7 +9018,7 @@ internal sealed class PartitionBatch
 
     internal int FailCompleteFailure(Exception exception)
     {
-        var bytesToRelease = _reservedSize;
+        var bytesToRelease = _memoryLeaseBytes;
         ReleaseAdmissionReservation();
 
         if (_completionSourceCount > 0 && _completionSources is not null)
@@ -8954,6 +9063,7 @@ internal sealed class PartitionBatch
         _encodedRecordsLength = 0;
         _estimatedSize = 0;
         _reservedSize = 0;
+        _memoryLeaseBytes = 0;
         _completedBatch = null;
 
         return bytesToRelease;
@@ -8979,6 +9089,7 @@ internal sealed class PartitionBatch
         _encodedRecordsLength = 0;
         _estimatedSize = 0;
         _reservedSize = 0;
+        _memoryLeaseBytes = 0;
         _completedBatch = null;
     }
 

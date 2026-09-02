@@ -4562,17 +4562,19 @@ public class RecordAccumulatorTests
     }
 
     private static void SetBufferedBytesForTest(RecordAccumulator accumulator, long value)
-    {
-        var bufferedBytesField = typeof(RecordAccumulator).GetField("_bufferedBytes",
-            BindingFlags.NonPublic | BindingFlags.Instance);
-        bufferedBytesField!.SetValue(accumulator, value);
-    }
+        => AccumulatorTestHelpers.SetBufferedBytesForTest(accumulator, value);
 
+    /// <summary>
+    /// Makes the batch's BufferMemory lease exceed its encoded size by a known amount so the seal
+    /// path has exactly that much to refund (the lease, not the per-record estimate sum, is what
+    /// seal reconciles).
+    /// </summary>
     private static int ForceSealOverestimateForTest(RecordAccumulator accumulator, PartitionBatch batch)
     {
         const int overestimatedBytes = 123;
         SetPrivateField(batch, "_reservedSize", batch.EstimatedSize + overestimatedBytes);
-        SetBufferedBytesForTest(accumulator, batch.ReservedSize);
+        SetPrivateField(batch, "_memoryLeaseBytes", batch.EstimatedSize + overestimatedBytes);
+        SetBufferedBytesForTest(accumulator, batch.MemoryLeaseBytes);
         return overestimatedBytes;
     }
 

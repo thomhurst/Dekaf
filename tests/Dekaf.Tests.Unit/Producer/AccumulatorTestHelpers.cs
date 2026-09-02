@@ -48,6 +48,19 @@ internal static class AccumulatorTestHelpers
     }
 
     /// <summary>
+    /// Overwrites the accumulator's BufferMemory counter. The counter lives in a cache-line-padded
+    /// struct (<c>PaddedBufferedBytes.Value</c>), so the boxed struct is updated and written back.
+    /// </summary>
+    public static void SetBufferedBytesForTest(RecordAccumulator accumulator, long value)
+    {
+        var field = typeof(RecordAccumulator).GetField("_bufferedBytes", BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("Field '_bufferedBytes' not found on RecordAccumulator.");
+        var padded = field.GetValue(accumulator)!;
+        padded.GetType().GetField("Value")!.SetValue(padded, value);
+        field.SetValue(accumulator, padded);
+    }
+
+    /// <summary>
     /// Reads a private instance field via reflection.
     /// </summary>
     public static T GetPrivateField<T>(object instance, string fieldName)

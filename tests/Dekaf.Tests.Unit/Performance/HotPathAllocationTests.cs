@@ -175,11 +175,16 @@ public class HotPathAllocationTests
 
     private static int Fire(KafkaProducer<string, string> producer)
     {
+        // BufferedBytes only moves when the open batch refills its BufferMemory lease (once per
+        // 64 KB), so the record's arrival is observed on the open batch itself.
         var accumulator = producer.RecordAccumulator;
-        var bufferedBefore = accumulator.BufferedBytes;
+        var before = OpenBatchEstimatedSize(accumulator);
         producer.FireAsync(Topic, "allocation-key", "allocation-value").GetAwaiter().GetResult();
-        return accumulator.BufferedBytes > bufferedBefore ? 1 : 0;
+        return OpenBatchEstimatedSize(accumulator) > before ? 1 : 0;
     }
+
+    private static int OpenBatchEstimatedSize(RecordAccumulator accumulator)
+        => accumulator.TryGetBatch(Topic, partition: 0, out var batch) ? batch!.EstimatedSize : 0;
 
     private static AllocationMeasurement WarmAndMeasure(
         Func<int> operation,
