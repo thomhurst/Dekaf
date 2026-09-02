@@ -30,6 +30,14 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 /// 1:1000 deterministically. Expected allocation: 0 B per append after warmup; a nonzero
 /// Allocated column can only come from the drainer-behind cold path (see AccumulatorAppendBenchmarks).
 /// </para>
+/// <para>
+/// Allocation accounting on the multi-threaded shapes: BenchmarkDotNet's MemoryDiagnoser reads
+/// <see cref="GC.GetTotalAllocatedBytes(bool)"/>, which is process-wide, so the Allocated
+/// column already includes the append workers (and the drainer). As an independent check
+/// every append thread also snapshots <see cref="GC.GetAllocatedBytesForCurrentThread"/>
+/// around its loop; the summed delta is printed at cleanup (<c>[alloc]</c> line in the run
+/// log, covering every invocation including pilot and warmup).
+/// </para>
 /// </remarks>
 [MemoryDiagnoser]
 [SimpleJob(RunStrategy.Throughput, launchCount: 1, warmupCount: 3, iterationCount: 3)]
@@ -53,6 +61,8 @@ public class AccumulatorAdmissionAppendBenchmarks
     private AppendWorker[] _workers = [];
     private Barrier? _barrier;
     private volatile bool _stopWorkers;
+    private long _appendThreadAllocatedBytes;
+    private long _appendThreadAppends;
 
     [Params(SingleThread, FourThreadsSamePartition, FourThreadsDistinctPartitions)]
     public string Shape { get; set; } = SingleThread;
@@ -151,6 +161,13 @@ public class AccumulatorAdmissionAppendBenchmarks
             _barrier.Dispose();
         }
 
+        var appends = Volatile.Read(ref _appendThreadAppends);
+        var allocated = Volatile.Read(ref _appendThreadAllocatedBytes);
+        Console.WriteLine(
+            $"[alloc] Shape={Shape} AdmissionEnabled={AdmissionEnabled} appendThreads={ThreadCount} " +
+            $"appends={appends} appendThreadAllocatedBytes={allocated} " +
+            $"bytesPerAppend={(appends == 0 ? 0 : (double)allocated / appends):F3}");
+
         _drainerCts.Cancel();
         _drainerThread.Join();
         _drainerCts.Dispose();
@@ -167,14 +184,27 @@ public class AccumulatorAdmissionAppendBenchmarks
     {
         if (_barrier is null)
         {
-            var ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            for (var i = 0; i < AppendsPerInvoke; i++)
-                Append(partition: 0, ts);
+            AppendLoop(partition: 0, AppendsPerInvoke);
             return;
         }
 
         _barrier.SignalAndWait(); // start
         _barrier.SignalAndWait(); // finish
+    }
+
+    /// <summary>
+    /// One invocation's appends on the calling thread, with that thread's allocated-byte
+    /// delta folded into the cleanup report.
+    /// </summary>
+    private void AppendLoop(int partition, int appends)
+    {
+        var allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
+        var ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        for (var i = 0; i < appends; i++)
+            Append(partition, ts);
+
+        Interlocked.Add(ref _appendThreadAllocatedBytes, GC.GetAllocatedBytesForCurrentThread() - allocatedBefore);
+        Interlocked.Add(ref _appendThreadAppends, appends);
     }
 
     private void Append(int partition, long ts)
@@ -253,9 +283,7 @@ public class AccumulatorAdmissionAppendBenchmarks
                 if (owner._stopWorkers)
                     return;
 
-                var ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-                for (var i = 0; i < appendsPerInvoke; i++)
-                    owner.Append(partition, ts);
+                owner.AppendLoop(partition, appendsPerInvoke);
 
                 barrier.SignalAndWait(); // finish
             }
