@@ -32,6 +32,20 @@ public static class ValueTaskSourcePool
     /// <returns>A pool size scaled to the expected concurrency level.</returns>
     public static int CalculatePoolSize(ulong bufferMemory, int batchSize)
         => PoolSizing.ForProducer(bufferMemory, batchSize).ValueTaskSources;
+
+    /// <summary>
+    /// <see cref="AppContext"/> switch that enables <see cref="ValueTaskSourcePool{T}.ApproximateCount"/>
+    /// tracking; see that property for why it is off by default.
+    /// </summary>
+    internal const string TrackRetainedCountSwitchName = "Dekaf.Producer.ValueTaskSourcePool.TrackRetainedCount";
+
+    /// <summary>
+    /// Read once at type initialization so the JIT folds the checks in
+    /// <see cref="ValueTaskSourcePool{T}.Rent"/> and <see cref="ValueTaskSourcePool{T}.Return"/>
+    /// away when tracking is off.
+    /// </summary>
+    internal static readonly bool TrackRetainedCount =
+        AppContext.TryGetSwitch(TrackRetainedCountSwitchName, out var enabled) && enabled;
 }
 
 /// <summary>
@@ -102,7 +116,7 @@ public sealed class ValueTaskSourcePool<T> : IAsyncDisposable
             throw new ObjectDisposedException(nameof(ValueTaskSourcePool<T>));
 
         var source = _pool.Rent();
-        Interlocked.Decrement(ref _retainedCount);
+        TrackRetained(-1);
         return source;
     }
 
@@ -123,13 +137,32 @@ public sealed class ValueTaskSourcePool<T> : IAsyncDisposable
 
         _pool.Return(source);
         // Destroy runs synchronously on rejection or disposal, balancing this lifecycle count.
-        Interlocked.Increment(ref _retainedCount);
+        TrackRetained(1);
+    }
+
+    /// <summary>
+    /// Diagnostics-only count maintenance. <see cref="ValueTaskSourcePool.TrackRetainedCount"/> is a
+    /// static readonly the JIT folds, so with tracking off this inlines to nothing.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void TrackRetained(int delta)
+    {
+        if (ValueTaskSourcePool.TrackRetainedCount)
+            Interlocked.Add(ref _retainedCount, delta);
     }
 
     /// <summary>
     /// Gets the best-effort number of instances currently in the pool.
-    /// Reservoir remains the sole authority for retention decisions.
     /// </summary>
+    /// <remarks>
+    /// Tracking is off by default and the property returns 0. Reservoir does not expose a
+    /// retained count, and keeping one costs two interlocked operations per awaited produce
+    /// (<see cref="Rent"/> on the caller thread, <see cref="Return"/> on the completing thread)
+    /// that nothing in the library consumes. Enable the
+    /// <c>Dekaf.Producer.ValueTaskSourcePool.TrackRetainedCount</c> <see cref="AppContext"/>
+    /// switch before the first pool is created to maintain it. Reservoir remains the sole
+    /// authority for retention decisions.
+    /// </remarks>
     public int ApproximateCount => Volatile.Read(ref _retainedCount);
 
     /// <summary>
@@ -158,13 +191,12 @@ public sealed class ValueTaskSourcePool<T> : IAsyncDisposable
         {
             var source = new PooledValueTaskSource<T>();
             source.SetPool(owner);
-            Interlocked.Increment(ref owner._retainedCount);
+            owner.TrackRetained(1);
             return source;
         }
 
         public bool TryReset(PooledValueTaskSource<T> source) => true;
 
-        public void Destroy(PooledValueTaskSource<T> source) =>
-            Interlocked.Decrement(ref owner._retainedCount);
+        public void Destroy(PooledValueTaskSource<T> source) => owner.TrackRetained(-1);
     }
 }
