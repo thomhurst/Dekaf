@@ -1898,6 +1898,69 @@ public class RecordBatchTests
         await Assert.That(readerAtEnd).IsTrue();
     }
 
+    [Test]
+    public async Task Record_Read_SpanBackedReader_ParsesFieldsAndConsumesExactlyDeclaredLength()
+    {
+        // A span-backed reader has no memory to slice, so Record.Read copies the body once and
+        // parses that copy; the fields must still come back intact and the outer reader must
+        // land exactly on the next record.
+        var first = new Record
+        {
+            Key = "key"u8.ToArray(),
+            Value = "value"u8.ToArray(),
+            Headers = [new Header("h", "hv"u8.ToArray())],
+            HeaderCount = 1
+        };
+        var second = new Record { OffsetDelta = 1, IsKeyNull = true, Value = "second"u8.ToArray() };
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        first.Write(ref writer);
+        second.Write(ref writer);
+        var reader = new KafkaProtocolReader(buffer.WrittenSpan);
+
+        var parsedFirst = Record.Read(ref reader);
+        var parsedSecond = Record.Read(ref reader);
+        var readerAtEnd = reader.End;
+
+        await Assert.That(parsedFirst.Key.ToArray()).IsEquivalentTo("key"u8.ToArray());
+        await Assert.That(parsedFirst.Value.ToArray()).IsEquivalentTo("value"u8.ToArray());
+        await Assert.That(parsedFirst.HeaderCount).IsEqualTo(1);
+        await Assert.That(parsedFirst.Headers![0].Key).IsEqualTo("h");
+        await Assert.That(parsedFirst.Headers[0].Value.ToArray()).IsEquivalentTo("hv"u8.ToArray());
+        await Assert.That(parsedSecond.OffsetDelta).IsEqualTo(1);
+        await Assert.That(parsedSecond.IsKeyNull).IsTrue();
+        await Assert.That(parsedSecond.Value.ToArray()).IsEquivalentTo("second"u8.ToArray());
+        await Assert.That(readerAtEnd).IsTrue();
+    }
+
+    [Test]
+    public async Task Record_Read_SpanBackedReader_KeyLengthOverrunsDeclaredBody_ThrowsMalformedProtocolData()
+    {
+        var body = new ArrayBufferWriter<byte>();
+        var bodyWriter = new KafkaProtocolWriter(body);
+        bodyWriter.WriteInt8(0); // attributes
+        bodyWriter.WriteVarLong(0); // timestamp delta
+        bodyWriter.WriteVarInt(0); // offset delta
+        bodyWriter.WriteVarInt(40); // key length: only 4 body bytes follow
+        bodyWriter.WriteRawBytes(new byte[] { 1, 2, 3, 4 });
+        var framed = FrameRecordBody(body.WrittenSpan, trailingBytes: 128);
+
+        MalformedProtocolDataException? exception = null;
+        try
+        {
+            var reader = new KafkaProtocolReader(framed.Span);
+            Record.Read(ref reader);
+        }
+        catch (MalformedProtocolDataException ex)
+        {
+            exception = ex;
+        }
+
+        await Assert.That(exception).IsNotNull();
+        await Assert.That(exception!.Message).Contains("declared length");
+        await Assert.That(exception.InnerException).IsTypeOf<InsufficientDataException>();
+    }
+
     /// <summary>
     /// Frames a hand-encoded record body as it appears on the wire: the length varint, the
     /// body, and optionally trailing bytes standing in for the records that follow it.

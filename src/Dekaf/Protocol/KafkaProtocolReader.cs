@@ -106,6 +106,14 @@ public ref struct KafkaProtocolReader
     public readonly long Remaining => _isContiguous ? _span.Length - _position : _reader.Remaining;
     public readonly bool End => _isContiguous ? _position >= _span.Length : _reader.End;
 
+    /// <summary>
+    /// True when <see cref="ReadMemorySlice(int)"/> must copy: the reader was constructed
+    /// over a <see cref="ReadOnlySpan{T}"/>, which has no backing memory to slice. Lets a
+    /// caller that would otherwise slice many fields take one copy of the enclosing region
+    /// and slice that instead.
+    /// </summary>
+    internal readonly bool SlicesCopy => _isContiguous && !_hasMemory;
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public sbyte ReadInt8()
     {

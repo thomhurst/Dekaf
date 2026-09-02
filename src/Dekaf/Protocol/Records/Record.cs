@@ -145,6 +145,15 @@ public readonly record struct Record
 
         try
         {
+            if (reader.SlicesCopy && length <= availableBodyBytes)
+            {
+                // A span-backed reader copies on every ReadMemorySlice, so parsing in place
+                // would cost one array per key, value, and header field. Copy the body once
+                // and slice that array instead, as the former sub-reader path did.
+                var bodyReader = new KafkaProtocolReader(reader.ReadMemorySlice(length));
+                return ReadBody(ref bodyReader, length, bodyStart: 0, headerRoutingPlan);
+            }
+
             return ReadBody(ref reader, length, bodyStart, headerRoutingPlan);
         }
         catch (RecordBodyLengthMismatchException ex)
