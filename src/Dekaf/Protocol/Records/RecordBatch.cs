@@ -543,6 +543,14 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
     internal int UnparsedLazyRecordCount =>
         ReferenceEquals(_records, this) && _parsedRecords is null ? _recordCount : -1;
 
+    /// <summary>
+    /// Parses this lazy batch's records into <paramref name="records"/> starting at
+    /// <paramref name="offset"/> instead of a batch-owned pooled array. The slice must cover the
+    /// batch's full declared record count: parsing throws instead of growing a shared slab. The
+    /// slab owner keeps the array alive for the batch's lifetime and clears the range it handed
+    /// out before returning the slab to its pool; disposing the batch returns its pooled header
+    /// arrays but does not scrub its slice.
+    /// </summary>
     internal void UseParsedRecordSlab(Record[] records, int offset)
     {
         if (!ReferenceEquals(_records, this) || _parsedRecords is not null)
@@ -682,15 +690,15 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
         _parsedRecords = null;
         if (parsedRecords is not null)
         {
-            for (var i = 0; i < _parsedRecordCount; i++)
+            // Pooled header arrays go back regardless of who owns the Record array.
+            var parsed = parsedRecords.AsSpan(_parsedRecordsOffset, _parsedRecordCount);
+            for (var i = 0; i < parsed.Length; i++)
             {
-                var recordIndex = _parsedRecordsOffset + i;
-                if (parsedRecords[recordIndex].Headers is { } headers)
+                if (parsed[i].Headers is { } headers)
                     ArrayPool<Header>.Shared.Return(headers, clearArray: true);
-                if (!_ownsParsedRecords)
-                    parsedRecords[recordIndex] = default;
             }
 
+            // A shared slab is cleared by its PendingFetchData owner (see UseParsedRecordSlab).
             if (_ownsParsedRecords)
                 ArrayPool<Record>.Shared.Return(parsedRecords, clearArray: true);
         }

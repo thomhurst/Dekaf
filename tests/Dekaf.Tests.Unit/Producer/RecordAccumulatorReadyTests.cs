@@ -683,6 +683,54 @@ public class RecordAccumulatorReadyTests
     }
 
     [Test]
+    public async Task MutePartition_IsReferenceCounted_ReadyResumesOnlyAfterLastUnmute()
+    {
+        // Overlapping mute holders (independent BrokerSenders, crash-recovery barriers) must
+        // each release before Ready() may drain the partition again. Muting a partition that
+        // has never been appended to must be honored once appends arrive.
+        var options = CreateTestOptions(batchSize: 50);
+        var accumulator = new RecordAccumulator(options);
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
+        var metadataManager = CreateMetadataManager("test-topic", 1, nodeId: 1);
+        var tp = new TopicPartition("test-topic", 0);
+
+        try
+        {
+            await Assert.That(accumulator.IsMuted(tp)).IsFalse();
+
+            accumulator.MutePartition(tp);
+            accumulator.MutePartition(tp);
+            await Assert.That(accumulator.IsMuted(tp)).IsTrue();
+
+            for (var i = 0; i < 10; i++)
+                AccumulatorTestHelpers.AppendAwaitedNullRecord(accumulator, pool, "test-topic");
+
+            // One holder releasing leaves the partition muted: Ready() drops the notification.
+            accumulator.UnmutePartition(tp);
+            await Assert.That(accumulator.IsMuted(tp)).IsTrue();
+            var readyNodes = new HashSet<int>();
+            accumulator.Ready(metadataManager, readyNodes);
+            await Assert.That(readyNodes).IsEmpty();
+
+            // The last holder releasing re-notifies the sealed batches.
+            accumulator.UnmutePartition(tp);
+            await Assert.That(accumulator.IsMuted(tp)).IsFalse();
+            accumulator.Ready(metadataManager, readyNodes);
+            await Assert.That(readyNodes).Contains(1);
+
+            // An unbalanced release is a no-op, not an underflow into a muted state.
+            accumulator.UnmutePartition(tp);
+            await Assert.That(accumulator.IsMuted(tp)).IsFalse();
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+            await pool.DisposeAsync();
+            await metadataManager.DisposeAsync();
+        }
+    }
+
+    [Test]
     public async Task Ready_MultiplePartitions_OnlyReportsReadyOnes()
     {
         // Verifies that with many partitions, only the ones with sealed batches are reported.

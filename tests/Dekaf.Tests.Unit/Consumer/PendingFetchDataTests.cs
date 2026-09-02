@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Reflection;
 using Dekaf.Consumer;
 using Dekaf.Internal;
@@ -11,6 +12,12 @@ public class PendingFetchDataTests
         .GetField("_activityName", BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly FieldInfo PoolField = typeof(PendingFetchData)
         .GetField("s_pool", BindingFlags.Static | BindingFlags.NonPublic)!;
+    private static readonly FieldInfo ParsedRecordSlabField = typeof(PendingFetchData)
+        .GetField("_parsedRecordSlab", BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly FieldInfo ParsedRecordSlabOwnerField = typeof(PendingFetchData)
+        .GetField("_parsedRecordSlabOwner", BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly FieldInfo ParsedRecordSlabLengthField = typeof(PendingFetchData)
+        .GetField("_parsedRecordSlabLength", BindingFlags.Instance | BindingFlags.NonPublic)!;
 
     private static void ClearPool() =>
         PoolField.FieldType.GetMethod(nameof(Reservoir.ObjectPool<object>.Clear))!
@@ -186,19 +193,40 @@ public class PendingFetchDataTests
     [NotInParallel]
     public async Task Dispose_ReleasesParsedRecordSlabBeforePooledReuse()
     {
-        var slabField = typeof(PendingFetchData)
-            .GetField("_parsedRecordSlab", BindingFlags.Instance | BindingFlags.NonPublic)!;
         ClearPool();
         var first = PendingFetchData.Create("topic-1", 0, Array.Empty<RecordBatch>());
+        var slabPool = new RecordingSlabPool();
         var slab = new Record[32];
         slab[^1] = new Record { Value = new byte[] { 42 } };
-        slabField.SetValue(first, slab);
+        ParsedRecordSlabField.SetValue(first, slab);
+        ParsedRecordSlabOwnerField.SetValue(first, slabPool);
+        ParsedRecordSlabLengthField.SetValue(first, slab.Length);
         first.Dispose();
 
         using var second = PendingFetchData.Create("topic-2", 1, Array.Empty<RecordBatch>());
 
         await Assert.That(second).IsSameReferenceAs(first);
-        await Assert.That(slabField.GetValue(second)).IsNull();
+        await Assert.That(ParsedRecordSlabField.GetValue(second)).IsNull();
+        await Assert.That(ParsedRecordSlabOwnerField.GetValue(second)).IsNull();
+        await Assert.That(ParsedRecordSlabLengthField.GetValue(second)).IsEqualTo(0);
+        // The owner scrubs the used range itself and returns to the pool it rented from,
+        // without paying for the pool's whole-array clear.
+        await Assert.That(slabPool.Returned).IsSameReferenceAs(slab);
+        await Assert.That(slabPool.ReturnedWithClear).IsFalse();
         await Assert.That(slab[^1]).IsEqualTo(default(Record));
+    }
+
+    private sealed class RecordingSlabPool : ArrayPool<Record>
+    {
+        public Record[]? Returned { get; private set; }
+        public bool? ReturnedWithClear { get; private set; }
+
+        public override Record[] Rent(int minimumLength) => new Record[minimumLength];
+
+        public override void Return(Record[] array, bool clearArray = false)
+        {
+            Returned = array;
+            ReturnedWithClear = clearArray;
+        }
     }
 }

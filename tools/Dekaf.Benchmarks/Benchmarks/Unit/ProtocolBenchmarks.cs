@@ -3,6 +3,7 @@ using BenchmarkDotNet.Attributes;
 using Dekaf.Benchmarks.Infrastructure;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Records;
+using Dekaf.Serialization;
 
 namespace Dekaf.Benchmarks.Benchmarks.Unit;
 
@@ -25,6 +26,9 @@ public class ProtocolBenchmarks
     private byte[] _varIntData = null!;
     private byte[] _recordBatchBytes = null!;
     private byte[] _compressedRecordBatchBytes = null!;
+    private byte[] _largeRecordBatchBytes = null!;
+    private byte[] _largeRecordBatchWithHeadersBytes = null!;
+    private byte[] _largeRecordsBytes = null!;
     private RecordBatch _writeBatch = null!;
     private string _testString = null!;
     private string _longString = null!;
@@ -77,7 +81,57 @@ public class ProtocolBenchmarks
         batch.Write(tempBuffer, CompressionType.Gzip);
         _compressedRecordBatchBytes = tempBuffer.WrittenSpan.ToArray();
 
+        // Consumer-shaped batches: 1000 records of 1 KB so per-record parse cost dominates
+        // the fixed batch-header cost, with and without headers.
+        _largeRecordBatchBytes = WriteBatch(tempBuffer, CreateThousandRecordBatch(headers: null));
+        _largeRecordBatchWithHeadersBytes = WriteBatch(tempBuffer, CreateThousandRecordBatch(
+        [
+            new Header("traceparent", "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"u8.ToArray()),
+            new Header("content-type", "application/json"u8.ToArray())
+        ]));
+
+        // The same 1000 records without the batch envelope, for the direct Record.Read rows.
+        _largeRecordsBytes = WriteRecords(tempBuffer, CreateThousandRecordBatch(headers: null).Records);
+
         _writeBatch = CreateTenRecordBatch();
+    }
+
+    private static byte[] WriteBatch(ArrayBufferWriter<byte> buffer, RecordBatch batch)
+    {
+        buffer.Clear();
+        batch.Write(buffer);
+        return buffer.WrittenSpan.ToArray();
+    }
+
+    private static byte[] WriteRecords(ArrayBufferWriter<byte> buffer, IReadOnlyList<Record> records)
+    {
+        buffer.Clear();
+        var writer = new KafkaProtocolWriter(buffer);
+        for (var i = 0; i < records.Count; i++)
+            records[i].Write(ref writer);
+        return buffer.WrittenSpan.ToArray();
+    }
+
+    private static RecordBatch CreateThousandRecordBatch(Header[]? headers)
+    {
+        var value = new byte[1024];
+        Random.Shared.NextBytes(value);
+        return new RecordBatch
+        {
+            BaseOffset = 0,
+            BaseTimestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            MaxTimestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            LastOffsetDelta = 999,
+            Records = Enumerable.Range(0, 1000).Select(i => new Record
+            {
+                TimestampDelta = i,
+                OffsetDelta = i,
+                Key = System.Text.Encoding.UTF8.GetBytes($"key-{i}"),
+                Value = value,
+                Headers = headers,
+                HeaderCount = headers?.Length ?? 0
+            }).ToList()
+        };
     }
 
     // No [IterationSetup]: its presence would force single-invocation iterations
@@ -256,9 +310,47 @@ public class ProtocolBenchmarks
     }
 
     [Benchmark(Description = "Read + Iterate RecordBatch (10 records)")]
-    public int ReadAndIterateRecordBatch()
+    public int ReadAndIterateRecordBatch() => ReadAndIterate(_recordBatchBytes);
+
+    [Benchmark(Description = "Read + Iterate RecordBatch (1000 records, 1 KB)")]
+    public int ReadAndIterateLargeRecordBatch() => ReadAndIterate(_largeRecordBatchBytes);
+
+    [Benchmark(Description = "Read + Iterate RecordBatch (1000 records, 1 KB, 2 headers)")]
+    public int ReadAndIterateLargeRecordBatchWithHeaders() => ReadAndIterate(_largeRecordBatchWithHeadersBytes);
+
+    /// <summary>
+    /// Direct <see cref="Record.Read(ref KafkaProtocolReader)"/> over a memory-backed reader:
+    /// key and value are zero-copy slices of the buffer.
+    /// </summary>
+    [Benchmark(Description = "Read Records, memory-backed reader (1000 records, 1 KB)")]
+    public int ReadRecordsFromMemoryReader()
     {
-        var reader = new KafkaProtocolReader(_recordBatchBytes);
+        var reader = new KafkaProtocolReader(_largeRecordsBytes);
+        return ReadRecords(ref reader);
+    }
+
+    /// <summary>
+    /// Same records over a span-backed reader, which cannot hand out memory slices: expected
+    /// cost is one body copy per record, never one array per field.
+    /// </summary>
+    [Benchmark(Description = "Read Records, span-backed reader (1000 records, 1 KB)")]
+    public int ReadRecordsFromSpanReader()
+    {
+        var reader = new KafkaProtocolReader(_largeRecordsBytes.AsSpan());
+        return ReadRecords(ref reader);
+    }
+
+    private static int ReadRecords(ref KafkaProtocolReader reader)
+    {
+        var sum = 0;
+        while (!reader.End)
+            sum += Record.Read(ref reader).OffsetDelta;
+        return sum;
+    }
+
+    private static int ReadAndIterate(byte[] batchBytes)
+    {
+        var reader = new KafkaProtocolReader(batchBytes);
         var batch = RecordBatch.Read(ref reader);
         var sum = 0;
         for (var i = 0; i < batch.Records.Count; i++)
