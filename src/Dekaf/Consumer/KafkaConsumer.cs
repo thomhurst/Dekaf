@@ -4216,13 +4216,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     }
 
     /// <summary>
-    /// Reports what the loop would report when re-dispatching a completed fetch: at this instant
-    /// the key's single pipeline slot is free. Only the loop may call
+    /// Reports the completed fetch the task is about to re-issue, exactly as the loop would have
+    /// reported it (see <see cref="ConsumerConnectionScaler.ReportFetchReissue"/>), and returns
+    /// whether a scale decision is now due. Only the loop may call
     /// <see cref="ConsumerConnectionScaler.MaybeScale"/>, because a scale operation drains the
-    /// scheduler and the scheduler is single-threaded to the loop.
+    /// scheduler and the scheduler is single-threaded to the loop; a due decision therefore ends
+    /// the task, and the loop's <see cref="ReportBrokerPrefetchBacklog"/> on wake-up acts on it.
     /// </summary>
-    private void ReportBrokerPrefetchReissue() =>
-        _connectionScaler?.ReportPipelineUtilization(0, pipelineDepth: 1);
+    private bool IsScaleDecisionDueOnReissue() =>
+        _connectionScaler is { } scaler && scaler.ReportFetchReissue();
 
     private async Task RunBrokerPrefetchAsync(
         int brokerId,
@@ -4451,12 +4453,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 || partitionCount == 0
                 || !plan.CanReissue
                 || cancellationToken.IsCancellationRequested
-                || !CanReissueBrokerPrefetch(in plan, fetchBufferEpoch))
+                || !CanReissueBrokerPrefetch(in plan, fetchBufferEpoch)
+                || IsScaleDecisionDueOnReissue())
             {
                 return;
             }
-
-            ReportBrokerPrefetchReissue();
         }
     }
 

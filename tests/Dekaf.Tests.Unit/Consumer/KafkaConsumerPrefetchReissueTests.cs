@@ -136,6 +136,38 @@ public sealed class KafkaConsumerPrefetchReissueTests
             .IsSameReferenceAs(metadataManager.Metadata.CaptureSnapshot());
     }
 
+    [Test]
+    [Timeout(60_000)]
+    public async Task ScaleDecisionDue_EndsTaskSoLoopCanScaleUp(CancellationToken cancellationToken)
+    {
+        var connection = new FetchServingConnection();
+        await using var metadataManager = CreateMetadataManager(connection);
+        await using var consumer = CreateConsumer(connection, metadataManager, adaptiveConnections: true);
+        consumer.IncrementalAssign([new TopicPartitionOffset(Topic, 0, 10)]);
+
+        await StartPrefetchAsync(consumer, cancellationToken);
+        await TestWait.UntilAsync(() => connection.FetchCount >= 3, WaitTimeout);
+        await Assert.That(connection.LeaseAcquisitionCount).IsEqualTo(1);
+
+        var scaler = GetConnectionScaler(consumer);
+        await Assert.That(scaler.CurrentConnectionCount).IsEqualTo(1);
+
+        // Steady re-issuing never accumulates saturation (each fetch restarts the window, as the
+        // loop-owned path did). A fetch that outlasts the scale-up threshold is a due decision:
+        // the task must end so the loop, the only MaybeScale caller, can act on it.
+        scaler.TestAdvanceTime(TimeSpan.FromSeconds(6));
+
+        await TestWait.UntilAsync(() => scaler.CurrentConnectionCount == 2, WaitTimeout);
+        await TestWait.UntilAsync(() => connection.LeaseAcquisitionCount >= 2, WaitTimeout);
+        var fetchesAtScale = connection.FetchCount;
+        await TestWait.UntilAsync(() => connection.FetchCount >= fetchesAtScale + 3, WaitTimeout);
+        await Assert.That(scaler.CurrentConnectionCount).IsEqualTo(2);
+    }
+
+    private static ConsumerConnectionScaler GetConnectionScaler(KafkaConsumer<string, string> consumer) =>
+        (ConsumerConnectionScaler?)GetPrivateField("_connectionScaler").GetValue(consumer)
+        ?? throw new InvalidOperationException("Adaptive connection scaler not created.");
+
     private static object? GetObservedTopicIdentityMarker(KafkaConsumer<string, string> consumer) =>
         GetPrivateField("_observedTopicIdentityMarker").GetValue(consumer);
 
@@ -158,7 +190,8 @@ public sealed class KafkaConsumerPrefetchReissueTests
 
     private static KafkaConsumer<string, string> CreateConsumer(
         FetchServingConnection connection,
-        MetadataManager metadataManager)
+        MetadataManager metadataManager,
+        bool adaptiveConnections = false)
     {
         var pool = Substitute.For<IConnectionPool>();
         pool.DisposeAsync().Returns(ValueTask.CompletedTask);
@@ -173,7 +206,10 @@ public sealed class KafkaConsumerPrefetchReissueTests
                 BootstrapServers = ["localhost:9092"],
                 ClientId = "prefetch-reissue-test",
                 OffsetCommitMode = OffsetCommitMode.Manual,
-                EnableAdaptiveConnections = false,
+                // One fetch connection either way; adaptive mode may add the coordination one.
+                ConnectionsPerBroker = 1,
+                MaxConnectionsPerBroker = adaptiveConnections ? 2 : 1,
+                EnableAdaptiveConnections = adaptiveConnections,
                 IsAutoTuned = false
             },
             Serializers.String,
