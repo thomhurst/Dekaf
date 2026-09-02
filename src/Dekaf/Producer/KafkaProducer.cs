@@ -704,6 +704,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             DekafPools.RatchetSerializationBucketCapacity(sizes.SerializationArraysPerBucket);
             ProduceResponse.RatchetPoolSize(sizes.ProduceResponsePoolSize);
             connectionPool.RatchetPipeMemoryBucketCapacity(sizes.PipeMemoryArraysPerBucket);
+            connectionPool.RatchetResponseBufferRetention(sizes.ResponseBuffersPerBucket, sizes.ResponseBuffersPerBucket);
         });
 
         _compressionCodecs = CreateCompressionCodecRegistry(options);

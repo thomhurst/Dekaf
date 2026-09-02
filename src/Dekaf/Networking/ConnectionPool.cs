@@ -332,6 +332,10 @@ public sealed partial class ConnectionPool :
         }
     }
 
+    /// <inheritdoc cref="ResponseBufferPool.RatchetRetention"/>
+    internal void RatchetResponseBufferRetention(int managedArraysPerBucket, int maxRetainedNativeBuffers) =>
+        _responseBufferPool.RatchetRetention(managedArraysPerBucket, maxRetainedNativeBuffers);
+
     /// <summary>
     /// Increases the shared PipeMemoryPool bucket capacity if <paramref name="bucketCapacity"/>
     /// exceeds the current value. New connections will use the larger pool; existing connections

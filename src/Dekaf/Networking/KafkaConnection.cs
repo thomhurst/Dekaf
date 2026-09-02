@@ -4634,6 +4634,13 @@ internal sealed class ResponseBufferPool
     /// fixed array without enumerator allocations.
     /// </summary>
     private readonly NativeBufferBucket?[] _nativeBuckets = new NativeBufferBucket?[NativeBucketSlotCount];
+    private readonly RatchetableArrayPool<byte> _managedArrays;
+    /// <summary>
+    /// Slots allocated per native bucket: the retention ceiling, so a later
+    /// <see cref="RatchetRetention"/> never has to resize a bucket under live rents.
+    /// </summary>
+    private readonly int _nativeSlotCapacity;
+    private int _maxRetainedNativeBuffers;
     private int _retainedNativeBufferCount;
     private int _highNativeMemoryPressure;
 #if !NETSTANDARD2_0
@@ -4641,10 +4648,10 @@ internal sealed class ResponseBufferPool
     private readonly bool _monitorNativeMemoryPressure;
 #endif
 
-    internal ArrayPool<byte> Pool { get; }
+    internal ArrayPool<byte> Pool => _managedArrays.Pool;
     internal int MaxArrayLength { get; }
-    internal int ManagedArraysPerBucket { get; }
-    internal int MaxRetainedNativeBuffers { get; }
+    internal int ManagedArraysPerBucket => _managedArrays.CurrentArraysPerBucket;
+    internal int MaxRetainedNativeBuffers => Volatile.Read(ref _maxRetainedNativeBuffers);
     internal int RetainedNativeBufferCount => Volatile.Read(ref _retainedNativeBufferCount);
 
     internal ResponseBufferPool(
@@ -4657,14 +4664,31 @@ internal sealed class ResponseBufferPool
         var nativeRetentionLimit = maxRetainedNativeBuffers ?? managedArraysPerBucket;
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(nativeRetentionLimit);
         MaxArrayLength = maxArrayLength;
-        ManagedArraysPerBucket = managedArraysPerBucket;
-        MaxRetainedNativeBuffers = nativeRetentionLimit;
+        _maxRetainedNativeBuffers = nativeRetentionLimit;
+        _nativeSlotCapacity = Math.Max(nativeRetentionLimit, PoolSizing.MaxResponseBuffers);
 #if !NETSTANDARD2_0
         _monitorNativeMemoryPressure = monitorNativeMemoryPressure;
 #endif
-        Pool = ArrayPool<byte>.Create(
-            maxArrayLength: maxArrayLength,
-            maxArraysPerBucket: managedArraysPerBucket);
+        _managedArrays = new RatchetableArrayPool<byte>(maxArrayLength, managedArraysPerBucket);
+    }
+
+    /// <summary>
+    /// Raises the retention depth to the working set of a newly discovered topology. Pools are
+    /// sized from the bootstrap seed count before metadata reports the real broker count, so
+    /// producers, consumers, and shared clients call this from the broker-count-discovered
+    /// callback; like every other Dekaf pool ratchet it only ever grows. The managed side
+    /// swaps in a deeper <see cref="ArrayPool{T}"/> (arrays rented from the previous instance
+    /// return into the new one); the native allowance is a monotonic counter bound, capped at
+    /// the slot capacity every bucket was allocated with, so no bucket is ever resized.
+    /// </summary>
+    internal void RatchetRetention(int managedArraysPerBucket, int maxRetainedNativeBuffers)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(managedArraysPerBucket);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxRetainedNativeBuffers);
+        _managedArrays.RatchetBucketCapacity(managedArraysPerBucket);
+        InterlockedHelper.RatchetUp(
+            ref _maxRetainedNativeBuffers,
+            Math.Min(maxRetainedNativeBuffers, _nativeSlotCapacity));
     }
 
     /// <summary>
@@ -4691,6 +4715,12 @@ internal sealed class ResponseBufferPool
     internal static ResponseBufferPool CreateDefaultSized(int responseBuffersPerBucket)
         => GetOrAddShared(DefaultMaxArrayLength, responseBuffersPerBucket, responseBuffersPerBucket);
 
+    /// <summary>
+    /// Shared instances are keyed by their construction-time sizing. A pool that has since
+    /// grown through <see cref="RatchetRetention"/> stays under its original key: a later
+    /// caller asking for the shallower configuration receives the deeper pool, which retains
+    /// at most the peak live working set either way.
+    /// </summary>
     private static ResponseBufferPool GetOrAddShared(
         int maxArrayLength,
         int managedArraysPerBucket,
@@ -4805,7 +4835,7 @@ internal sealed class ResponseBufferPool
         if (existing is not null)
             return existing;
 
-        var created = new NativeBufferBucket(capacity, MaxRetainedNativeBuffers);
+        var created = new NativeBufferBucket(capacity, _nativeSlotCapacity);
         return Interlocked.CompareExchange(ref slot, created, null) ?? created;
     }
 

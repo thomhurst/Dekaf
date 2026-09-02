@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+using Dekaf.Internal;
 using Dekaf.Networking;
 
 namespace Dekaf.Tests.Unit.Networking;
@@ -458,5 +460,124 @@ public class ResponseBufferPoolTests
         await Assert.That(nativeShallow.MaxRetainedNativeBuffers).IsEqualTo(4);
         await Assert.That(ResponseBufferPool.Create(20 * 1024 * 1024, 16))
             .IsSameReferenceAs(consumer);
+    }
+
+    [Test]
+    public async Task NativePool_RentsMostRecentlyReturnedBufferFirst()
+    {
+        var pool = new ResponseBufferPool(1024 * 1024, managedArraysPerBucket: 4);
+        var first = pool.RentNative(ResponseBufferPool.NativeMemoryThresholdBytes);
+        var second = pool.RentNative(ResponseBufferPool.NativeMemoryThresholdBytes);
+        var firstAddress = first.Address;
+        var secondAddress = second.Address;
+
+        first.Return();
+        second.Return();
+
+        var warm = pool.RentNative(ResponseBufferPool.NativeMemoryThresholdBytes);
+        var cold = pool.RentNative(ResponseBufferPool.NativeMemoryThresholdBytes);
+
+        await Assert.That(warm.Address).IsEqualTo(secondAddress)
+            .Because("the most recently returned frame is the cache-warm one");
+        await Assert.That(cold.Address).IsEqualTo(firstAddress);
+        warm.Return();
+        cold.Return();
+        pool.TrimNativeBuffers();
+    }
+
+    [Test]
+    public async Task NativePool_ConcurrentRentAndReturn_NeverHandsOutOneBufferTwiceOrLosesOne()
+    {
+        const int allowance = 8;
+        const int threads = 8;
+        const int iterations = 20_000;
+        var pool = new ResponseBufferPool(
+            1024 * 1024,
+            managedArraysPerBucket: allowance,
+            maxRetainedNativeBuffers: allowance);
+        var live = new ConcurrentDictionary<IntPtr, byte>();
+        var duplicates = 0;
+        var workers = new Task[threads];
+        for (var t = 0; t < threads; t++)
+        {
+            workers[t] = Task.Run(() =>
+            {
+                for (var i = 0; i < iterations; i++)
+                {
+                    var buffer = pool.RentNative(ResponseBufferPool.NativeMemoryThresholdBytes);
+                    if (!live.TryAdd(buffer.Address, 0))
+                        Interlocked.Increment(ref duplicates);
+                    buffer.GetSpan()[0] = (byte)i;
+                    live.TryRemove(buffer.Address, out _);
+                    buffer.Return();
+                }
+            });
+        }
+
+        await Task.WhenAll(workers);
+
+        await Assert.That(duplicates).IsEqualTo(0)
+            .Because("a retained slot must be popped by exactly one renter");
+        var retained = pool.RetainedNativeBufferCount;
+        await Assert.That(retained).IsLessThanOrEqualTo(allowance);
+        await Assert.That(pool.TrimNativeBuffers()).IsEqualTo(retained)
+            .Because("every counted buffer is reachable from the retained chain");
+        await Assert.That(pool.RetainedNativeBufferCount).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task RatchetRetention_RaisesAllowanceAndRetainsBeyondSeedDepth()
+    {
+        var pool = new ResponseBufferPool(
+            1024 * 1024,
+            managedArraysPerBucket: 2,
+            maxRetainedNativeBuffers: 2);
+        var frames = new NativeResponseBuffer[4];
+        for (var i = 0; i < frames.Length; i++)
+            frames[i] = pool.RentNative(ResponseBufferPool.NativeMemoryThresholdBytes);
+        for (var i = 0; i < frames.Length; i++)
+            frames[i].Return();
+        await Assert.That(pool.RetainedNativeBufferCount).IsEqualTo(2)
+            .Because("the seed-count allowance frees the surplus");
+
+        var managedBeforeRatchet = pool.Pool;
+        var rentedBeforeRatchet = pool.Pool.Rent(8 * 1024);
+        pool.RatchetRetention(4, 4);
+
+        await Assert.That(pool.MaxRetainedNativeBuffers).IsEqualTo(4);
+        await Assert.That(pool.ManagedArraysPerBucket).IsEqualTo(4);
+        await Assert.That(pool.Pool).IsNotSameReferenceAs(managedBeforeRatchet);
+        pool.Pool.Return(rentedBeforeRatchet);
+
+        for (var i = 0; i < frames.Length; i++)
+            frames[i] = pool.RentNative(ResponseBufferPool.NativeMemoryThresholdBytes);
+        for (var i = 0; i < frames.Length; i++)
+            frames[i].Return();
+
+        await Assert.That(pool.RetainedNativeBufferCount).IsEqualTo(4)
+            .Because("the discovered topology's working set is retained in full");
+        pool.TrimNativeBuffers();
+    }
+
+    [Test]
+    public async Task RatchetRetention_NeverLowersAndCapsAtSizingCeiling()
+    {
+        var pool = new ResponseBufferPool(
+            1024 * 1024,
+            managedArraysPerBucket: 8,
+            maxRetainedNativeBuffers: 8);
+        var managed = pool.Pool;
+
+        pool.RatchetRetention(2, 2);
+
+        await Assert.That(pool.ManagedArraysPerBucket).IsEqualTo(8);
+        await Assert.That(pool.MaxRetainedNativeBuffers).IsEqualTo(8);
+        await Assert.That(pool.Pool).IsSameReferenceAs(managed);
+
+        pool.RatchetRetention(PoolSizing.MaxResponseBuffers, PoolSizing.MaxResponseBuffers * 4);
+
+        await Assert.That(pool.ManagedArraysPerBucket).IsEqualTo(PoolSizing.MaxResponseBuffers);
+        await Assert.That(pool.MaxRetainedNativeBuffers).IsEqualTo(PoolSizing.MaxResponseBuffers)
+            .Because("buckets are allocated with the sizing ceiling's slot count, so the allowance cannot exceed it");
     }
 }

@@ -26,7 +26,7 @@ internal static class PoolSizing
     private const int MinConsumerPrefetchBufferCapacity = 16;
     private const int MaxConsumerPrefetchBufferCapacity = 1024;
     private const int MinResponseBuffers = 16;
-    private const int MaxResponseBuffers = 256;
+    internal const int MaxResponseBuffers = 256;
     private const int MinConsumerParsedRecordSlabsPerBucket = 16;
     private const int MaxConsumerParsedRecordSlabsPerBucket = 64;
 
