@@ -1741,7 +1741,6 @@ public class RecordBatchTests
     [Test]
     public async Task Record_Read_HeaderCountExceedsRemainingRecordBody_ThrowsMalformedProtocolData()
     {
-        var buffer = new ArrayBufferWriter<byte>();
         var body = new ArrayBufferWriter<byte>();
         var bodyWriter = new KafkaProtocolWriter(body);
         bodyWriter.WriteInt8(0); // attributes
@@ -1751,21 +1750,9 @@ public class RecordBatchTests
         bodyWriter.WriteVarInt(-1); // null value
         bodyWriter.WriteVarInt(1024); // impossible: no bytes remain for headers
 
-        var writer = new KafkaProtocolWriter(buffer);
-        writer.WriteVarInt(bodyWriter.BytesWritten);
-        writer.WriteRawBytes(body.WrittenSpan);
+        var exception = ReadRecordExpectingMalformedData(FrameRecordBody(body.WrittenSpan));
 
-        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
-
-        try
-        {
-            Record.Read(ref reader);
-            throw new InvalidOperationException("Expected MalformedProtocolDataException was not thrown");
-        }
-        catch (MalformedProtocolDataException ex)
-        {
-            await Assert.That(ex.Message).Contains("header count");
-        }
+        await Assert.That(exception.Message).Contains("header count");
     }
 
     [Test]
@@ -1782,21 +1769,9 @@ public class RecordBatchTests
         bodyWriter.WriteVarInt(headerCount);
         bodyWriter.WriteRawBytes(new byte[headerCount * 2]); // minimal empty key/value headers
 
-        var buffer = new ArrayBufferWriter<byte>();
-        var writer = new KafkaProtocolWriter(buffer);
-        writer.WriteVarInt(bodyWriter.BytesWritten);
-        writer.WriteRawBytes(body.WrittenSpan);
-        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+        var exception = ReadRecordExpectingMalformedData(FrameRecordBody(body.WrittenSpan));
 
-        try
-        {
-            Record.Read(ref reader);
-            throw new InvalidOperationException("Expected MalformedProtocolDataException was not thrown");
-        }
-        catch (MalformedProtocolDataException ex)
-        {
-            await Assert.That(ex.Message).Contains("header count");
-        }
+        await Assert.That(exception.Message).Contains("header count");
     }
 
     [Test]
@@ -1812,22 +1787,148 @@ public class RecordBatchTests
         bodyWriter.WriteVarInt(2); // header count
         bodyWriter.WriteRawBytes(new byte[] { 0, 0, 0x80, 0x80 });
 
+        var exception = ReadRecordExpectingMalformedData(FrameRecordBody(body.WrittenSpan));
+
+        // Expected: the rented Header[] is returned before the exception escapes.
+        await Assert.That(exception.InnerException).IsTypeOf<InsufficientDataException>();
+    }
+
+    [Test]
+    public async Task Record_Read_KeyLengthOverrunsDeclaredBody_ThrowsMalformedProtocolData()
+    {
+        // The key claims more bytes than the declared body holds, but the buffer continues
+        // (as it would with a following record). The body is parsed in place with the outer
+        // reader, so the overrun must be caught against the declared length, not the buffer.
+        var body = new ArrayBufferWriter<byte>();
+        var bodyWriter = new KafkaProtocolWriter(body);
+        bodyWriter.WriteInt8(0); // attributes
+        bodyWriter.WriteVarLong(0); // timestamp delta
+        bodyWriter.WriteVarInt(0); // offset delta
+        bodyWriter.WriteVarInt(40); // key length: only 4 body bytes follow
+        bodyWriter.WriteRawBytes(new byte[] { 1, 2, 3, 4 });
+
+        var exception = ReadRecordExpectingMalformedData(
+            FrameRecordBody(body.WrittenSpan, trailingBytes: 128));
+
+        await Assert.That(exception.Message).Contains("declared length");
+        await Assert.That(exception.InnerException).IsTypeOf<InsufficientDataException>();
+    }
+
+    [Test]
+    public async Task Record_Read_HeaderValueLengthOverrunsDeclaredBody_ThrowsMalformedProtocolData()
+    {
+        var body = new ArrayBufferWriter<byte>();
+        var bodyWriter = new KafkaProtocolWriter(body);
+        bodyWriter.WriteInt8(0); // attributes
+        bodyWriter.WriteVarLong(0); // timestamp delta
+        bodyWriter.WriteVarInt(0); // offset delta
+        bodyWriter.WriteVarInt(-1); // null key
+        bodyWriter.WriteVarInt(-1); // null value
+        bodyWriter.WriteVarInt(1); // header count
+        bodyWriter.WriteVarInt(1); // header key length
+        bodyWriter.WriteRawBytes("k"u8);
+        bodyWriter.WriteVarInt(64); // header value length: no body bytes remain
+
+        var exception = ReadRecordExpectingMalformedData(
+            FrameRecordBody(body.WrittenSpan, trailingBytes: 128));
+
+        await Assert.That(exception.Message).Contains("declared length");
+        await Assert.That(exception.InnerException).IsTypeOf<InsufficientDataException>();
+    }
+
+    [Test]
+    public async Task Record_Read_VarIntFieldsOverrunDeclaredBody_ThrowsMalformedProtocolData()
+    {
+        // A non-canonical three-byte varlong makes the body longer than its declared length
+        // without any slice exceeding the bound; the overrun is observed after the fact.
+        var body = new ArrayBufferWriter<byte>();
+        var bodyWriter = new KafkaProtocolWriter(body);
+        bodyWriter.WriteInt8(0); // attributes
+        bodyWriter.WriteRawBytes(new byte[] { 0x80, 0x80, 0x00 }); // timestamp delta 0, 3 bytes
+        bodyWriter.WriteVarInt(0); // offset delta
+        bodyWriter.WriteVarInt(-1); // null key
+        bodyWriter.WriteVarInt(-1); // null value
+        bodyWriter.WriteVarInt(0); // header count
+
+        var exception = ReadRecordExpectingMalformedData(
+            FrameRecordBody(body.WrittenSpan, declaredLength: body.WrittenCount - 2, trailingBytes: 128));
+
+        await Assert.That(exception.Message).Contains("declared length");
+        await Assert.That(exception.InnerException).IsTypeOf<InsufficientDataException>();
+    }
+
+    [Test]
+    public async Task Record_Read_DeclaredLengthExceedsEncodedBody_ThrowsMalformedProtocolData()
+    {
+        var body = new ArrayBufferWriter<byte>();
+        var bodyWriter = new KafkaProtocolWriter(body);
+        bodyWriter.WriteInt8(0); // attributes
+        bodyWriter.WriteVarLong(0); // timestamp delta
+        bodyWriter.WriteVarInt(0); // offset delta
+        bodyWriter.WriteVarInt(-1); // null key
+        bodyWriter.WriteVarInt(-1); // null value
+        bodyWriter.WriteVarInt(0); // header count
+
+        var exception = ReadRecordExpectingMalformedData(
+            FrameRecordBody(body.WrittenSpan, declaredLength: body.WrittenCount + 3, trailingBytes: 128));
+
+        await Assert.That(exception.Message).Contains("length mismatch");
+    }
+
+    [Test]
+    public async Task Record_Read_ValidRecordFollowedByMoreData_ConsumesExactlyDeclaredLength()
+    {
+        var first = new Record { Key = "key"u8.ToArray(), Value = "value"u8.ToArray() };
+        var second = new Record { OffsetDelta = 1, IsKeyNull = true, Value = "second"u8.ToArray() };
         var buffer = new ArrayBufferWriter<byte>();
         var writer = new KafkaProtocolWriter(buffer);
-        writer.WriteVarInt(bodyWriter.BytesWritten);
-        writer.WriteRawBytes(body.WrittenSpan);
+        first.Write(ref writer);
+        second.Write(ref writer);
         var reader = new KafkaProtocolReader(buffer.WrittenMemory);
 
+        var parsedFirst = Record.Read(ref reader);
+        var parsedSecond = Record.Read(ref reader);
+        var readerAtEnd = reader.End;
+
+        await Assert.That(parsedFirst.Key.ToArray()).IsEquivalentTo("key"u8.ToArray());
+        await Assert.That(parsedFirst.Value.ToArray()).IsEquivalentTo("value"u8.ToArray());
+        await Assert.That(parsedSecond.OffsetDelta).IsEqualTo(1);
+        await Assert.That(parsedSecond.IsKeyNull).IsTrue();
+        await Assert.That(parsedSecond.Value.ToArray()).IsEquivalentTo("second"u8.ToArray());
+        await Assert.That(readerAtEnd).IsTrue();
+    }
+
+    /// <summary>
+    /// Frames a hand-encoded record body as it appears on the wire: the length varint, the
+    /// body, and optionally trailing bytes standing in for the records that follow it.
+    /// </summary>
+    private static ReadOnlyMemory<byte> FrameRecordBody(
+        ReadOnlySpan<byte> body,
+        int? declaredLength = null,
+        int trailingBytes = 0)
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        writer.WriteVarInt(declaredLength ?? body.Length);
+        writer.WriteRawBytes(body);
+        if (trailingBytes > 0)
+            writer.WriteRawBytes(new byte[trailingBytes]);
+        return buffer.WrittenMemory;
+    }
+
+    private static MalformedProtocolDataException ReadRecordExpectingMalformedData(ReadOnlyMemory<byte> bytes)
+    {
+        var reader = new KafkaProtocolReader(bytes);
         try
         {
             Record.Read(ref reader);
-            throw new InvalidOperationException("Expected MalformedProtocolDataException was not thrown");
         }
         catch (MalformedProtocolDataException ex)
         {
-            // Expected: the rented Header[] is returned before the exception escapes.
-            await Assert.That(ex.InnerException).IsTypeOf<InsufficientDataException>();
+            return ex;
         }
+
+        throw new InvalidOperationException("Expected MalformedProtocolDataException was not thrown");
     }
 
     #endregion

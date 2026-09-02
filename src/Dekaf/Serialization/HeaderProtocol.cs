@@ -79,14 +79,19 @@ internal static class HeaderProtocol
         writer.AddBytesWritten(keyByteCount);
     }
 
-    internal static Header Read(ref KafkaProtocolReader reader)
+    /// <summary>
+    /// Reads a header whose key and value must lie within the enclosing record body ending at
+    /// <paramref name="bodyEnd"/> (a reader offset). Bounding the slices here keeps a corrupt
+    /// header length from interning or exposing bytes that belong to later records.
+    /// </summary>
+    internal static Header Read(ref KafkaProtocolReader reader, long bodyEnd)
     {
         var keyLength = reader.ReadVarInt();
-        var key = s_keyCache.Intern(reader.ReadMemorySlice(keyLength));
+        var key = s_keyCache.Intern(reader.ReadMemorySlice(keyLength, bodyEnd));
 
         var valueLength = reader.ReadVarInt();
         var isValueNull = valueLength < 0;
-        var value = isValueNull ? ReadOnlyMemory<byte>.Empty : reader.ReadMemorySlice(valueLength);
+        var value = isValueNull ? ReadOnlyMemory<byte>.Empty : reader.ReadMemorySlice(valueLength, bodyEnd);
 
         return new Header(key, value, isNull: isValueNull);
     }

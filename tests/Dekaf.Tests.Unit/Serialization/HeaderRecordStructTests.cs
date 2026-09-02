@@ -183,7 +183,7 @@ public class HeaderRecordStructTests
         HeaderProtocol.Write(in header, ref writer);
 
         var reader = new KafkaProtocolReader(buffer.WrittenMemory);
-        return HeaderProtocol.Read(ref reader);
+        return HeaderProtocol.Read(ref reader, bodyEnd: buffer.WrittenCount);
     }
 
     private sealed class NonArrayMemoryManager(byte[] bytes) : MemoryManager<byte>

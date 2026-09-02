@@ -842,6 +842,21 @@ public ref struct KafkaProtocolReader
     }
 
     /// <summary>
+    /// Reads a slice like <see cref="ReadMemorySlice(int)"/>, but fails with
+    /// <see cref="InsufficientDataException"/> when the slice would extend past
+    /// <paramref name="limit"/>, an absolute <see cref="Consumed"/> offset. Lets a
+    /// length-prefixed body be parsed in place with the same bounds a reader sliced to
+    /// that length would enforce, without constructing one.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal ReadOnlyMemory<byte> ReadMemorySlice(int count, long limit)
+    {
+        if (count > limit - Consumed)
+            ThrowInsufficientData();
+        return ReadMemorySlice(count);
+    }
+
+    /// <summary>
     /// Reads an array with 4-byte length prefix (legacy format).
     /// </summary>
     public T[] ReadArray<T>(ReadFunc<T> readItem)
@@ -1315,7 +1330,7 @@ public ref struct KafkaProtocolReader
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private static void ThrowInsufficientData()
+    internal static void ThrowInsufficientData()
     {
         throw new InsufficientDataException();
     }

@@ -136,19 +136,16 @@ public readonly record struct Record
         if (length < 0)
             throw new MalformedProtocolDataException($"Invalid record length {length}");
 
+        // The body is parsed in place with the caller's reader rather than through a
+        // per-record sub-reader sliced to the declared length. Every variable-length field
+        // is bounded by the declared body end before it is sliced, so a corrupt interior
+        // field still cannot consume later records or masquerade as truncation (#2065).
         var availableBodyBytes = reader.Remaining;
-        var bodyReader = reader;
-        var bodyStart = bodyReader.Consumed;
-        if (length <= availableBodyBytes)
-        {
-            bodyReader = new KafkaProtocolReader(reader.GetRemainingSequence().Slice(0, length));
-            bodyStart = 0;
-            reader.Skip(length);
-        }
+        var bodyStart = reader.Consumed;
 
         try
         {
-            return ReadBody(ref bodyReader, length, bodyStart, headerRoutingPlan);
+            return ReadBody(ref reader, length, bodyStart, headerRoutingPlan);
         }
         catch (RecordBodyLengthMismatchException ex)
         {
@@ -170,17 +167,19 @@ public readonly record struct Record
         long bodyStart,
         RecordHeaderRoutingPlan? headerRoutingPlan)
     {
+        var bodyEnd = bodyStart + length;
+
         var attributes = (byte)reader.ReadInt8();
         var timestampDelta = reader.ReadVarLong();
         var offsetDelta = reader.ReadVarInt();
 
         var keyLength = reader.ReadVarInt();
         var isKeyNull = keyLength < 0;
-        var key = isKeyNull ? ReadOnlyMemory<byte>.Empty : reader.ReadMemorySlice(keyLength);
+        var key = isKeyNull ? ReadOnlyMemory<byte>.Empty : reader.ReadMemorySlice(keyLength, bodyEnd);
 
         var valueLength = reader.ReadVarInt();
         var isValueNull = valueLength < 0;
-        var value = isValueNull ? ReadOnlyMemory<byte>.Empty : reader.ReadMemorySlice(valueLength);
+        var value = isValueNull ? ReadOnlyMemory<byte>.Empty : reader.ReadMemorySlice(valueLength, bodyEnd);
 
         var headerCount = reader.ReadVarInt();
         ValidateHeaderCount(headerCount, length, reader.Consumed - bodyStart, reader.Remaining);
@@ -209,7 +208,7 @@ public readonly record struct Record
             {
                 for (var i = 0; i < headerCount; i++)
                 {
-                    var header = HeaderProtocol.Read(ref reader);
+                    var header = HeaderProtocol.Read(ref reader, bodyEnd);
                     headers[i] = header;
                     if (headerRoutingPlan is not null
                         && headerRoutingPlan.TryGetSlot(header.Key, out var slot))
@@ -384,11 +383,24 @@ public readonly record struct Record
         };
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static void ValidateBodyLength(int declaredLength, long consumedLength)
     {
         if (consumedLength != declaredLength)
-            throw new RecordBodyLengthMismatchException(
-                $"Record body length mismatch: declared {declaredLength}, consumed {consumedLength}");
+            ThrowBodyLengthMismatch(declaredLength, consumedLength);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void ThrowBodyLengthMismatch(int declaredLength, long consumedLength)
+    {
+        // Fixed-width fields and varints are not pre-bounded, so a corrupt body can run past
+        // its declared end before the mismatch is observed. That is the same condition a
+        // reader bounded to the declared length would have reported as exhausted.
+        if (consumedLength > declaredLength)
+            KafkaProtocolReader.ThrowInsufficientData();
+
+        throw new RecordBodyLengthMismatchException(
+            $"Record body length mismatch: declared {declaredLength}, consumed {consumedLength}");
     }
 
     private sealed class RecordBodyLengthMismatchException(string message) : Exception(message);
@@ -396,7 +408,9 @@ public readonly record struct Record
     private static void ValidateHeaderCount(int headerCount, int recordBodyLength, long bodyBytesRead, long readerRemaining)
     {
         var remainingInRecord = recordBodyLength - bodyBytesRead;
-        if (remainingInRecord < 0 || headerCount < 0 || headerCount > MaxReasonableHeaderCount)
+        if (remainingInRecord < 0)
+            KafkaProtocolReader.ThrowInsufficientData();
+        if (headerCount < 0 || headerCount > MaxReasonableHeaderCount)
             throw new MalformedProtocolDataException($"Invalid record header count {headerCount}");
 
         // A header needs at least one byte for key length and one byte for value length.
