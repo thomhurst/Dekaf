@@ -1,5 +1,7 @@
 using System.Diagnostics;
+using System.Diagnostics.Tracing;
 using BenchmarkDotNet.Attributes;
+using BenchmarkDotNet.Engines;
 using Dekaf.Benchmarks.Infrastructure;
 using Dekaf.Tooling;
 using DekafProducer = Dekaf.Producer;
@@ -29,15 +31,17 @@ public class ProducerSingleTailBenchmarks
     private const int MessageSize = 100;
 
     // BenchmarkDotNet also invokes the benchmark during its pilot and warmup stages, and those
-    // calls carry JIT, first metadata fetch, and connection setup. The sample array cannot tell
-    // stages apart, so the distribution drops a fixed leading prefix and reports how many.
-    private const int WarmupSamplesDiscarded = OperationsPerInvoke * 5;
-
+    // calls carry JIT, first metadata fetch, and connection setup. The engine announces each
+    // stage on its EventSource, so the listener flags the measured (Workload/Actual)
+    // iterations and only their calls are recorded; the rest are counted and reported so the
+    // discard can be cross-checked against the job's pilot and warmup invocation counts.
+    private MeasuredStageListener _stageListener = null!;
     private KafkaTestEnvironment _kafka = null!;
     private DekafProducer.IKafkaProducer<string, string> _producer = null!;
     private string _messageValue = null!;
     private long[] _samples = null!;
     private int _sampleCount;
+    private int _unmeasuredSamples;
 
     [Params(0, 5)]
     public int LingerMs { get; set; }
@@ -45,12 +49,14 @@ public class ProducerSingleTailBenchmarks
     [GlobalSetup]
     public async Task SetupAsync()
     {
+        _stageListener = new MeasuredStageListener();
         _kafka = await KafkaTestEnvironment.CreateAsync().ConfigureAwait(false);
         await _kafka.CreateTopicAsync(Topic, 3).ConfigureAwait(false);
 
         _messageValue = new string('x', MessageSize);
         _samples = new long[MaxSamples];
         _sampleCount = 0;
+        _unmeasuredSamples = 0;
 
         _producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(_kafka.BootstrapServers)
@@ -75,6 +81,7 @@ public class ProducerSingleTailBenchmarks
     public async Task CleanupAsync()
     {
         PrintDistribution();
+        _stageListener.Dispose();
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
         try
         {
@@ -95,6 +102,18 @@ public class ProducerSingleTailBenchmarks
     public async ValueTask Dekaf_ProduceSingleSerial()
     {
         var producer = _producer;
+        if (!_stageListener.IsMeasuring)
+        {
+            for (var i = 0; i < OperationsPerInvoke; i++)
+            {
+                await producer.ProduceAsync(Topic, "key", _messageValue, CancellationToken.None)
+                    .ConfigureAwait(false);
+            }
+
+            _unmeasuredSamples += OperationsPerInvoke;
+            return;
+        }
+
         var samples = _samples;
         var count = _sampleCount;
         for (var i = 0; i < OperationsPerInvoke; i++)
@@ -111,23 +130,23 @@ public class ProducerSingleTailBenchmarks
 
     private void PrintDistribution()
     {
-        var skipped = Math.Min(_sampleCount, WarmupSamplesDiscarded);
-        var count = _sampleCount - skipped;
+        var count = _sampleCount;
         if (count == 0)
         {
-            Console.WriteLine($"[tail] LingerMs={LingerMs} no samples after skipping {skipped}");
+            Console.WriteLine(
+                $"[tail] LingerMs={LingerMs} no measured samples (unmeasured={_unmeasuredSamples})");
             return;
         }
 
         var sorted = new long[count];
-        Array.Copy(_samples, skipped, sorted, 0, count);
+        Array.Copy(_samples, 0, sorted, 0, count);
         Array.Sort(sorted);
         var ticksPerMicrosecond = Stopwatch.Frequency / 1_000_000.0;
         var over500Us = count - LowerBound(sorted, (long)(500 * ticksPerMicrosecond));
         var over1Ms = count - LowerBound(sorted, (long)(1_000 * ticksPerMicrosecond));
 
         Console.WriteLine(
-            $"[tail] LingerMs={LingerMs} n={count} skipped={skipped} " +
+            $"[tail] LingerMs={LingerMs} n={count} unmeasured={_unmeasuredSamples} " +
             $"p50={Percentile(sorted, 0.50) / ticksPerMicrosecond:F1}us " +
             $"p90={Percentile(sorted, 0.90) / ticksPerMicrosecond:F1}us " +
             $"p99={Percentile(sorted, 0.99) / ticksPerMicrosecond:F1}us " +
@@ -150,5 +169,33 @@ public class ProducerSingleTailBenchmarks
         }
 
         return ~index;
+    }
+
+    /// <summary>
+    /// Tracks whether the engine is inside a measured workload iteration by listening to
+    /// BenchmarkDotNet's <see cref="EngineEventSource"/>: <c>WorkloadActualStart</c> and
+    /// <c>WorkloadActualStop</c> bracket exactly the iterations that feed the reported
+    /// statistics, so jitting, pilot, warmup and overhead invocations are excluded whatever
+    /// counts the selected job uses.
+    /// </summary>
+    private sealed class MeasuredStageListener : EventListener
+    {
+        private volatile bool _measuring;
+
+        public bool IsMeasuring => _measuring;
+
+        protected override void OnEventSourceCreated(EventSource eventSource)
+        {
+            if (eventSource.Name == EngineEventSource.SourceName)
+                EnableEvents(eventSource, EventLevel.Informational);
+        }
+
+        protected override void OnEventWritten(EventWrittenEventArgs eventData)
+        {
+            if (eventData.EventId == EngineEventSource.WorkloadActualStartEventId)
+                _measuring = true;
+            else if (eventData.EventId == EngineEventSource.WorkloadActualStopEventId)
+                _measuring = false;
+        }
     }
 }
