@@ -96,6 +96,10 @@ internal ref struct SpinLockGuard
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void Dispose()
     {
+        // Keep the full-fence Exit(). Exit(useMemoryBarrier: false) — a plain release store of
+        // the cleared owned bit — saved nothing measurable single-threaded and made four threads
+        // appending to four distinct partitions ~1.7x slower per record
+        // (AccumulatorAdmissionAppendBenchmarks, 4T-split: 92 ns → 154-195 ns).
         if (_taken) _lock.Exit();
     }
 }
@@ -952,7 +956,10 @@ internal sealed class BatchArena
 
     /// <summary>
     /// Tries to allocate space in the arena and returns a span for writing.
-    /// Thread-safe: uses CAS to atomically claim space in the arena.
+    /// Single-writer: the owning <see cref="PartitionBatch"/> only allocates while its
+    /// partition lock is held (see <see cref="PartitionBatch.TryReserveAppendFromSpans"/>),
+    /// so the position advance is a plain read-modify-write. The volatile store keeps the
+    /// lock-free readers (<see cref="Position"/>, <see cref="RemainingCapacity"/>) coherent.
     /// </summary>
     /// <param name="size">Number of bytes needed.</param>
     /// <param name="span">Output span to write to.</param>
@@ -961,30 +968,21 @@ internal sealed class BatchArena
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool TryAllocate(int size, out Span<byte> span, out int offset)
     {
-        // CAS loop for thread-safe allocation.
-        // Multiple threads may race to allocate space, but each will get a unique region.
-        while (true)
+        var currentPos = _position;
+        var newPos = currentPos + size;
+
+        if (newPos > _buffer.Length)
         {
-            var currentPos = Volatile.Read(ref _position);
-            var newPos = currentPos + size;
-
-            if (newPos > _buffer.Length)
-            {
-                // Not enough space - don't grow, let caller rotate batch
-                span = default;
-                offset = 0;
-                return false;
-            }
-
-            // Atomically claim this region
-            if (Interlocked.CompareExchange(ref _position, newPos, currentPos) == currentPos)
-            {
-                offset = currentPos;
-                span = _buffer.AsSpan(currentPos, size);
-                return true;
-            }
-            // CAS failed - another thread allocated, retry with new position
+            // Not enough space - don't grow, let caller rotate batch
+            span = default;
+            offset = 0;
+            return false;
         }
+
+        Volatile.Write(ref _position, newPos);
+        offset = currentPos;
+        span = _buffer.AsSpan(currentPos, size);
+        return true;
     }
 
     /// <summary>
@@ -1007,12 +1005,17 @@ internal sealed class BatchArena
 
     /// <summary>
     /// Rewinds the last allocation if no later allocation has occurred.
-    /// Used only while the owning partition lock is held to abandon a failed record encode.
+    /// Used only while the owning partition lock is held to abandon a failed record encode,
+    /// so like <see cref="TryAllocate"/> it is a plain single-writer read-modify-write.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool TryRewindLastAllocation(int offset, int length)
     {
-        return Interlocked.CompareExchange(ref _position, offset, offset + length) == offset + length;
+        if (_position != offset + length)
+            return false;
+
+        Volatile.Write(ref _position, offset);
+        return true;
     }
 
     /// <summary>
@@ -1483,8 +1486,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         public bool AppendInProgress;
 
         /// <summary>
-        /// One append owns the admission-to-commit handoff. This keeps the current batch
-        /// stable while the gate decides whether the append needs a new batch lease.
+        /// One two-phase append owns the admission-to-commit handoff. This keeps the current batch
+        /// stable while the gate decides whether the append needs a new batch lease. The
+        /// single-lock fast path (<see cref="TryAppendFromSpansSingleLock"/>) decides and commits
+        /// under one lock hold, so it never takes the slot; it only refuses to run while a
+        /// two-phase appender holds it.
         /// </summary>
         public int AdmissionInProgress;
 
@@ -2832,6 +2838,34 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     }
 
     /// <summary>
+    /// Test-only sender stand-in that observes the production publication order: a sealed batch
+    /// is visible only through its <see cref="_readyPartitions"/> notification, which the sealing
+    /// thread enqueues after its last touch of the <see cref="ReadyBatch"/>. The deque-polling
+    /// <see cref="TryDrainBatch(out ReadyBatch?)"/> can hand a batch to a concurrent drainer before
+    /// that publication, so recycling it races the sealer's <c>StartPreSerialization</c>. Single
+    /// consumer, like <see cref="Ready"/>; notifications for partitions without a queued batch
+    /// (duplicates) are dropped.
+    /// </summary>
+    internal bool TryDrainPublishedBatch([System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out ReadyBatch? batch)
+    {
+        while (_readyPartitions.TryDequeue(out var topicPartition))
+        {
+            if (!_partitionDeques.TryGetValue(topicPartition, out var pd))
+                continue;
+
+            using var guard = new SpinLockGuard(ref pd.Lock);
+            if (pd.Count > 0)
+            {
+                batch = pd.PollFirst()!;
+                return true;
+            }
+        }
+
+        batch = null;
+        return false;
+    }
+
+    /// <summary>
     /// Returns a ReadyBatch to the pool for reuse.
     /// Called by KafkaProducer after batch is processed.
     /// </summary>
@@ -3861,6 +3895,13 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             pd, topic, partition, keyIsNull, keyLength, valueIsNull, valueLength,
             headers, headerCount, recordSize);
 
+        if (headers is null && headerCount == 0
+            && TryAppendFromSpansSingleLock(pd, topic, partition, timestamp, keyData, keyIsNull,
+                valueData, valueIsNull, completionSource, callback: null, recordSize, partitionCount))
+        {
+            return true;
+        }
+
         if (!TryAdmitAndReserve(pd, topic, partition, recordSize, out var admissionReservation))
             return false;
 
@@ -3890,10 +3931,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         bool returnHeadersOnFailure,
         AdmissionReservation admissionReservation)
     {
-        // Headerless records dominate every producer mode. When the current batch has room,
-        // encode and commit under one partition-lock acquisition instead of publishing
-        // AppendInProgress and reacquiring the lock after encoding. Rotation and header paths
-        // retain the two-phase protocol.
+        // Headerless records normally commit in TryAppendFromSpansSingleLock; this path runs
+        // after that attempt yielded (a two-phase appender held the admission slot, rotation or
+        // an encode was in progress, or the batch was full) and the caller took the admission
+        // reservation. When the current batch has room by now, encode and commit under one
+        // partition-lock acquisition instead of publishing AppendInProgress and reacquiring
+        // the lock after encoding. Rotation and header paths retain the two-phase protocol.
         if (headers is null && headerCount == 0)
         {
             var appendCommitted = false;
@@ -4316,8 +4359,17 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             throw;
         }
 
-        // Hot path: non-blocking gate check + CAS reservation — no async state machine
-        // allocated. An over-budget broker applies the same backpressure as a full buffer.
+        // Hot path: headerless records commit under a single partition-lock hold (lease decision,
+        // encode, commit). Anything it cannot handle in place falls through to the
+        // reservation-based path: non-blocking gate check + CAS reservation — no async state
+        // machine allocated. An over-budget broker applies the same backpressure as a full buffer.
+        if (headers is null && headerCount == 0
+            && TryAppendFromSpansSingleLock(pd, topic, partition, timestamp, keyData, keyIsNull,
+                valueData, valueIsNull, completionSource: null, callback, recordSize, partitionCount))
+        {
+            return new ValueTask<bool>(true);
+        }
+
         if (TryAdmitAndReserve(pd, topic, partition, recordSize, out var admissionReservation))
             return new ValueTask<bool>(AppendFromSpansAfterReservationCore(pd, topic, partition, timestamp,
                 keyData, keyIsNull, valueData, valueIsNull, headers, headerCount, completionSource: null,
@@ -4402,6 +4454,165 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             Topic = topic,
             Partition = partition
         };
+    }
+
+    /// <summary>
+    /// Single-lock fast path for headerless span appends. With the admission window enabled
+    /// (the default), a record previously paid two partition-lock acquisitions: one inside
+    /// <see cref="TryReserveForAppend"/> for the lease decision, guarded by the
+    /// <see cref="PartitionDeque.AdmissionInProgress"/> CAS handoff so the batch could not
+    /// rotate before the commit, and a second in <see cref="TryAppendFromSpansToCurrentBatchFast"/>
+    /// for the encode and commit. Here the lease decision, the encode and the commit all run
+    /// under one hold of the partition lock, so the batch is stable by construction and the
+    /// handoff slot is not needed.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The BufferMemory reservation is taken before the lock, exactly as the reservation path
+    /// does: <see cref="TryReserveMemory"/> is a contended accumulator-wide atomic, and holding
+    /// the partition lock across it made four threads on four distinct partitions ~55% slower
+    /// per record (AccumulatorAdmissionAppendBenchmarks 4T-split, 64 ns to 100 ns) even though
+    /// nothing else contends for those locks.
+    /// </para>
+    /// <para>
+    /// Every early exit returns whatever it reserved (BufferMemory, and the broker lease when one
+    /// was taken) before the caller continues with the unchanged reservation-based protocol,
+    /// which owns batch rotation, header-bearing records, blocked or re-routed admission,
+    /// BufferMemory backpressure and FIFO behind queued slow-path appends. The two paths
+    /// therefore never double-account a record. Those exits are per batch (rotation) or cold
+    /// (blocked admission, exhausted BufferMemory), so the full <see cref="ReleaseMemory"/>,
+    /// which also drains pending appends, is the right undo.
+    /// </para>
+    /// </remarks>
+    /// <returns>
+    /// <see langword="true"/> when the record was committed to the current batch;
+    /// <see langword="false"/> when the caller must take the reservation-based path.
+    /// </returns>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool TryAppendFromSpansSingleLock(
+        PartitionDeque pd,
+        string topic,
+        int partition,
+        long timestamp,
+        ReadOnlySpan<byte> keyData,
+        bool keyIsNull,
+        ReadOnlySpan<byte> valueData,
+        bool valueIsNull,
+        PooledValueTaskSource<RecordMetadata>? completionSource,
+        Action<RecordMetadata, Exception?>? callback,
+        int recordSize,
+        int partitionCount)
+    {
+        // Queued slow-path appends own the partition until they drain (FIFO). The reservation
+        // path also records the admission block and requests a flush when the broker is over
+        // budget, so leave that bookkeeping to it.
+        if (Volatile.Read(ref pd.SlowPathAppendCount) != 0)
+            return false;
+
+        // BufferMemory exhausted: the reservation path queues the record behind the same
+        // backpressure.
+        if (!TryReserveMemory(recordSize))
+            return false;
+
+        PartitionBatch? batchToComplete = null;
+        BrokerUnackedByteBudget? leaseBudget = null;
+        var leaseBytes = 0;
+        long leaseGeneration = 0;
+        var committed = false;
+        var actualBytesAdded = 0;
+
+        try
+        {
+            using var guard = new SpinLockGuard(ref pd.Lock);
+
+            // A two-phase appender holding the admission slot has made a lease decision it has
+            // not committed yet; appending ahead of it would invalidate that decision.
+            if (Volatile.Read(ref _disposed) != 0
+                || pd.RotationInProgress
+                || pd.AppendInProgress
+                || Volatile.Read(ref pd.AdmissionInProgress) != 0
+                || pd.CurrentBatch is not { } currentBatch
+                || !currentBatch.CanFitEstimatedRecord(recordSize))
+            {
+                return false;
+            }
+
+            if (_unackedBudgetEnabled)
+            {
+                var budget = GetCachedAdmissionBudget(pd, topic, partition);
+                if (budget is not null && !currentBatch.HasAdmissionCapacity(budget, recordSize))
+                {
+                    // The batch's local credit is exhausted: replenish one fixed-size lease so
+                    // most records keep consuming local credit without touching the broker
+                    // window. A rejected lease (over budget, or a leader that moved) needs the
+                    // refresh and flush-request bookkeeping of the reservation path.
+                    leaseBytes = GetAdmissionLeaseBytes(recordSize);
+                    if (!budget.TryReserve(leaseBytes, out leaseGeneration))
+                        return false;
+
+                    leaseBudget = budget;
+                }
+            }
+
+            var result = currentBatch.TryAppendFromSpans(
+                timestamp,
+                keyData,
+                keyIsNull,
+                valueData,
+                valueIsNull,
+                headers: null,
+                headerCount: 0,
+                completionSource,
+                callback,
+                estimatedSize: recordSize);
+
+            // The estimate fit but the arena could not take the encoded record: rotation belongs
+            // to the two-phase path.
+            if (!result.Success)
+                return false;
+
+            if (leaseBudget is not null)
+                currentBatch.AddAdmissionLease(leaseBudget, leaseGeneration, leaseBytes);
+
+            committed = true;
+            actualBytesAdded = result.ActualSizeAdded;
+            ProducerDebugCounters.RecordMessageAppended(hasCompletionSource: completionSource is not null);
+
+            if (result.FirstCompletionSourceInBatch)
+                TrackPendingAwaitedProduceBatch();
+
+            if (ShouldSealAppendedBatch(pd, currentBatch, completionSource))
+                batchToComplete = DetachCurrentBatchForSealUnderLock(pd, currentBatch);
+        }
+        finally
+        {
+            // Runs after the guard released the lock (ReleaseMemory drains pending appends and
+            // must never run under pd.Lock). Nothing to undo on the committed path: the batch
+            // now owns both the record's BufferMemory and the lease credit.
+            if (!committed)
+            {
+                // Lease first: the drain may need that credit.
+                leaseBudget?.Release(leaseBytes);
+                ReleaseMemory(recordSize);
+            }
+        }
+
+        if (!committed)
+            return false;
+
+        NotifyRecordAppended(topic, partition, actualBytesAdded, partitionCount);
+        if (batchToComplete is not null)
+        {
+            var readyBatch = CompleteDetachedBatchAndEnqueue(pd, batchToComplete);
+            if (readyBatch is not null)
+                StartPreSerialization(readyBatch);
+        }
+        else if (completionSource is not null)
+        {
+            QueueLingerPartition(pd, new TopicPartition(topic, partition), signalLingerLoop: false);
+        }
+
+        return true;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
