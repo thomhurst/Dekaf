@@ -19,17 +19,20 @@ public class RecordBatchTests
     #region RecordBatch Structure Tests
 
     [Test]
+    // Asserts on the slab after it re-enters the shared static pool; a parallel renter would overwrite it.
+    [NotInParallel]
     public async Task PendingFetchData_MultipleBatchesShareParsedRecordSlab()
     {
-        var first = ReadWrittenBatch(CreateTwoRecordBatch());
+        Header[] headers = [new Header("route", "value"u8.ToArray())];
+        var first = ReadWrittenBatch(CreateTwoRecordBatch(headers));
         var second = ReadWrittenBatch(new RecordBatch
         {
             BaseOffset = 2,
             BaseTimestamp = 1002,
             MaxTimestamp = 1002,
-            Records = [new Record { OffsetDelta = 0, Value = "value-2"u8.ToArray() }]
+            Records = [new Record { OffsetDelta = 0, Value = "value-2"u8.ToArray(), Headers = headers, HeaderCount = 1 }]
         });
-        using var pending = PendingFetchData.Create("topic", 0, [first, second]);
+        var pending = PendingFetchData.Create("topic", 0, [first, second]);
 
         await Assert.That(first.GetParsedRecordsArray()).IsNull();
         await Assert.That(second.GetParsedRecordsArray()).IsNull();
@@ -43,6 +46,8 @@ public class RecordBatchTests
         await Assert.That(second.GetParsedRecordsOffset()).IsEqualTo(2);
         await Assert.That(slab![0].Value.ToArray()).IsEquivalentTo("value-0"u8.ToArray());
         await Assert.That(slab[2].Value.ToArray()).IsEquivalentTo("value-2"u8.ToArray());
+        for (var i = 0; i < 3; i++)
+            await Assert.That(slab[i].Headers).IsNotNull();
         await Assert.That(pending.MoveNext()).IsTrue();
         await Assert.That(pending.CurrentRecord.Value.ToArray()).IsEquivalentTo("value-0"u8.ToArray());
         await Assert.That(pending.MoveNext()).IsTrue();
@@ -52,9 +57,15 @@ public class RecordBatchTests
 
         first.Dispose();
 
-        await Assert.That(slab[0]).IsEqualTo(default(Record));
-        await Assert.That(slab[1]).IsEqualTo(default(Record));
+        // Disposing one batch does not touch its neighbour's slice.
         await Assert.That(slab[2].Value.ToArray()).IsEquivalentTo("value-2"u8.ToArray());
+
+        pending.Dispose();
+
+        // Records hold pooled header arrays and frame slices; the owner scrubs the whole used
+        // range once when the slab returns to its pool, so none of them ride back in.
+        for (var i = 0; i < 3; i++)
+            await Assert.That(slab[i]).IsEqualTo(default(Record));
     }
 
     [Test]
@@ -1139,7 +1150,7 @@ public class RecordBatchTests
             checkCrcs);
     }
 
-    private static RecordBatch CreateTwoRecordBatch() => new()
+    private static RecordBatch CreateTwoRecordBatch(Header[]? headers = null) => new()
     {
         BaseOffset = 0,
         BaseTimestamp = 1000,
@@ -1152,14 +1163,18 @@ public class RecordBatchTests
                 OffsetDelta = 0,
                 TimestampDelta = 0,
                 Key = "key-0"u8.ToArray(),
-                Value = "value-0"u8.ToArray()
+                Value = "value-0"u8.ToArray(),
+                Headers = headers,
+                HeaderCount = headers?.Length ?? 0
             },
             new Record
             {
                 OffsetDelta = 1,
                 TimestampDelta = 1,
                 Key = "key-1"u8.ToArray(),
-                Value = "value-1"u8.ToArray()
+                Value = "value-1"u8.ToArray(),
+                Headers = headers,
+                HeaderCount = headers?.Length ?? 0
             }
         ]
     };
