@@ -858,8 +858,9 @@ internal sealed class PendingFetchData : IDisposable
             // range before the slab re-enters its pool (the batches above have already returned
             // their header arrays); the pool's own clearArray would memset the whole rounded-up bucket.
             parsedRecordSlab.AsSpan(0, parsedRecordSlabLength).Clear();
-            Debug.Assert(parsedRecordSlabOwner is not null, "Slab rented without recording its pool.");
-            parsedRecordSlabOwner?.Return(parsedRecordSlab, clearArray: false);
+            // The owner is recorded in the same step that rents the slab (EagerParseAll), so a
+            // non-null slab always has one.
+            parsedRecordSlabOwner!.Return(parsedRecordSlab, clearArray: false);
         }
 
         // Return the batch list to the pool for reuse

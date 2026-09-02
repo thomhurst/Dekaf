@@ -66,14 +66,13 @@ public class ParsedRecordSlabLifecycleBenchmarks
         var reader = new KafkaProtocolReader(_wire.Memory);
         _batches[0] = RecordBatch.Read(ref reader);
 
-        var pending = PendingFetchData.Create("bench-topic", 0, _batches);
+        using var pending = PendingFetchData.Create("bench-topic", 0, _batches);
         pending.EagerParseAll();
 
         long consumedBytes = 0;
         while (pending.MoveNext())
             consumedBytes += pending.CurrentRecord.Value.Length;
 
-        pending.Dispose();
         return consumedBytes;
     }
 

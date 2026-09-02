@@ -32,7 +32,9 @@ public class RecordBatchTests
             MaxTimestamp = 1002,
             Records = [new Record { OffsetDelta = 0, Value = "value-2"u8.ToArray(), Headers = headers, HeaderCount = 1 }]
         });
-        var pending = PendingFetchData.Create("topic", 0, [first, second]);
+        // Disposed explicitly mid-test to observe the slab scrub; Dispose is idempotent, so the
+        // using-disposal on an assertion failure is a no-op after that.
+        using var pending = PendingFetchData.Create("topic", 0, [first, second]);
 
         await Assert.That(first.GetParsedRecordsArray()).IsNull();
         await Assert.That(second.GetParsedRecordsArray()).IsNull();
