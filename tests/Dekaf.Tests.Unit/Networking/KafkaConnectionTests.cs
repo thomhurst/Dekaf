@@ -305,36 +305,108 @@ public sealed class KafkaConnectionTests
         var first = sender.SendAsync(pair.Client);
         await Assert.That(first.IsCompleted).IsFalse();
 
-        // Register a raw continuation (no async state machine) that consumes the result and
-        // immediately reuses the sender for a second frame. With inline continuations this
+        // Drive the same loop the production writer runs (LoadSendWindow -> SendAsync ->
+        // ConsumeSentBytes until no segments remain) from raw continuations, with no async state
+        // machine in between: every asynchronous completion consumes its byte count and reuses the
+        // sender for the next send directly inside the callback. With inline continuations that
         // runs inside CompleteSend, so it exercises the reset-before-signal ordering directly.
-        var firstBytes = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var secondSend = new TaskCompletionSource<Task<int>>(TaskCreationOptions.RunContinuationsAsynchronously);
-        first.GetAwaiter().UnsafeOnCompleted(() =>
+        // Linux completes large loopback sends in pieces, so the loop must tolerate partial counts;
+        // the frame is sent twice (two passes) to prove the args are reusable after a completion.
+        var firstPass = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondPass = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var pass = 0;
+        var passBytes = 0;
+        var inlineReuses = 0;
+
+        void Fail(Exception ex)
+        {
+            firstPass.TrySetException(ex);
+            secondPass.TrySetException(ex);
+        }
+
+        void OnSent(int bytesSent)
+        {
+            sender.ConsumeSentBytes(bytesSent);
+            passBytes += bytesSent;
+        }
+
+        void Continue()
         {
             try
             {
-                var bytesSent = first.GetAwaiter().GetResult();
-                sender.ConsumeSentBytes(bytesSent);
-                firstBytes.TrySetResult(bytesSent);
+                while (true)
+                {
+                    if (!sender.HasPendingSegments)
+                    {
+                        var completed = pass == 0 ? firstPass : secondPass;
+                        var bytes = passBytes;
+                        if (pass == 0)
+                        {
+                            pass = 1;
+                            passBytes = 0;
+                            sender.BeginPendingSend();
+                            completed.TrySetResult(bytes);
+                            continue;
+                        }
 
-                sender.BeginPendingSend();
-                sender.LoadSendWindow();
-                secondSend.TrySetResult(sender.SendAsync(pair.Client).AsTask());
+                        completed.TrySetResult(bytes);
+                        return;
+                    }
+
+                    sender.LoadSendWindow();
+                    inlineReuses++;
+                    var send = sender.SendAsync(pair.Client);
+                    if (!send.IsCompleted)
+                    {
+                        var awaiter = send.GetAwaiter();
+                        awaiter.UnsafeOnCompleted(() =>
+                        {
+                            try
+                            {
+                                OnSent(awaiter.GetResult());
+                            }
+                            catch (Exception ex)
+                            {
+                                Fail(ex);
+                                return;
+                            }
+
+                            Continue();
+                        });
+                        return;
+                    }
+
+                    OnSent(send.GetAwaiter().GetResult());
+                }
             }
             catch (Exception ex)
             {
-                firstBytes.TrySetException(ex);
-                secondSend.TrySetException(ex);
+                Fail(ex);
             }
+        }
+
+        var firstAwaiter = first.GetAwaiter();
+        firstAwaiter.UnsafeOnCompleted(() =>
+        {
+            try
+            {
+                OnSent(firstAwaiter.GetResult());
+            }
+            catch (Exception ex)
+            {
+                Fail(ex);
+                return;
+            }
+
+            Continue();
         });
 
         var receive = ReceiveExactlyAsync(pair.Server, frame.Length * 2, cancellationToken);
-        await Assert.That(await firstBytes.Task).IsEqualTo(frame.Length);
-        var secondBytes = await await secondSend.Task;
-        await Assert.That(secondBytes).IsEqualTo(frame.Length);
-        sender.ConsumeSentBytes(secondBytes);
+        await Assert.That(await firstPass.Task).IsEqualTo(frame.Length);
+        await Assert.That(await secondPass.Task).IsEqualTo(frame.Length);
         await Assert.That(sender.HasPendingSegments).IsFalse();
+        // At least the second pass issued a SendAsync from inside a completion callback.
+        await Assert.That(inlineReuses).IsGreaterThanOrEqualTo(1);
 
         var received = await receive;
         await Assert.That(received.AsSpan(0, frame.Length).SequenceEqual(frame)).IsTrue();
