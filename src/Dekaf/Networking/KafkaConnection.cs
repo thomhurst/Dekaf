@@ -3969,9 +3969,16 @@ public sealed partial class KafkaConnection :
         private readonly SocketAsyncEventArgs _eventArgs = new();
         private int _pendingSegmentIndex;
         private int _pendingSegmentOffset;
+        // The SocketAsyncEventArgs.Completed callback already runs on a ThreadPool thread
+        // (Windows IOCP and Linux SocketAsyncEngine completions are both dispatched through
+        // the pool). Queueing the continuation again would add a second enqueue/dequeue and
+        // a possible worker wake per asynchronous produce write, while the connection's
+        // write lock stays held across the hop. Resume inline, as .NET's own
+        // AwaitableSocketAsyncEventArgs does; CompleteSend resets the event args before it
+        // signals so a continuation that immediately reuses the sender sees clean state.
         private ManualResetValueTaskSourceCore<int> _core = new()
         {
-            RunContinuationsAsynchronously = true
+            RunContinuationsAsynchronously = false
         };
 
         public SocketScatterGatherSender(int pendingSegmentCapacity = MaximumSegmentsPerSend)
@@ -4070,6 +4077,8 @@ public sealed partial class KafkaConnection :
 
         private void CompleteSend(object? sender, SocketAsyncEventArgs eventArgs)
         {
+            // Continuations run inline from here: the event args must be reusable before
+            // the awaiting writer is resumed, because it may call SendAsync again directly.
             eventArgs.BufferList = null;
             if (eventArgs.SocketError == SocketError.Success)
                 _core.SetResult(eventArgs.BytesTransferred);

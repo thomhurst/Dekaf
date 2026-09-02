@@ -260,6 +260,135 @@ public sealed class KafkaConnectionTests
     }
 
     [Test]
+    [Timeout(10_000)]
+    public async Task ScatterGatherSender_SynchronousCompletion_ReturnsCompletedValueTaskAndAllowsReuse(
+        CancellationToken cancellationToken)
+    {
+        using var pair = await LoopbackSocketPair.CreateAsync(forceAsynchronousSends: false, cancellationToken);
+        using var sender = new KafkaConnection.SocketScatterGatherSender();
+        var frame = CreateFrame(segmentBytes: 16, sender);
+        var receive = ReceiveExactlyAsync(pair.Server, frame.Length * 2, cancellationToken);
+
+        // A 256-byte frame against default socket buffers is accepted by the kernel immediately.
+        sender.BeginPendingSend();
+        sender.LoadSendWindow();
+        var first = sender.SendAsync(pair.Client);
+        await Assert.That(first.IsCompleted).IsTrue();
+        await Assert.That(first.Result).IsEqualTo(frame.Length);
+
+        // The event args must be free again without a completion callback having run.
+        sender.BeginPendingSend();
+        sender.LoadSendWindow();
+        var second = sender.SendAsync(pair.Client);
+        await Assert.That(second.IsCompleted).IsTrue();
+        await Assert.That(second.Result).IsEqualTo(frame.Length);
+
+        var received = await receive;
+        await Assert.That(received.AsSpan(0, frame.Length).SequenceEqual(frame)).IsTrue();
+        await Assert.That(received.AsSpan(frame.Length).SequenceEqual(frame)).IsTrue();
+    }
+
+    [Test]
+    [Timeout(10_000)]
+    public async Task ScatterGatherSender_AsynchronousCompletion_ContinuationReusesSenderInline(
+        CancellationToken cancellationToken)
+    {
+        using var pair = await LoopbackSocketPair.CreateAsync(forceAsynchronousSends: true, cancellationToken);
+        using var sender = new KafkaConnection.SocketScatterGatherSender();
+        var frame = CreateFrame(segmentBytes: 64 * 1024, sender);
+
+        // Nobody is reading yet and the client has no send buffer, so the 1 MB send stays pending
+        // and its result is produced by the SocketAsyncEventArgs.Completed callback once the
+        // receiver below drains the peer.
+        sender.BeginPendingSend();
+        sender.LoadSendWindow();
+        var first = sender.SendAsync(pair.Client);
+        await Assert.That(first.IsCompleted).IsFalse();
+
+        // Register a raw continuation (no async state machine) that consumes the result and
+        // immediately reuses the sender for a second frame. With inline continuations this
+        // runs inside CompleteSend, so it exercises the reset-before-signal ordering directly.
+        var firstBytes = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondSend = new TaskCompletionSource<Task<int>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        first.GetAwaiter().UnsafeOnCompleted(() =>
+        {
+            try
+            {
+                var bytesSent = first.GetAwaiter().GetResult();
+                sender.ConsumeSentBytes(bytesSent);
+                firstBytes.TrySetResult(bytesSent);
+
+                sender.BeginPendingSend();
+                sender.LoadSendWindow();
+                secondSend.TrySetResult(sender.SendAsync(pair.Client).AsTask());
+            }
+            catch (Exception ex)
+            {
+                firstBytes.TrySetException(ex);
+                secondSend.TrySetException(ex);
+            }
+        });
+
+        var receive = ReceiveExactlyAsync(pair.Server, frame.Length * 2, cancellationToken);
+        await Assert.That(await firstBytes.Task).IsEqualTo(frame.Length);
+        var secondBytes = await await secondSend.Task;
+        await Assert.That(secondBytes).IsEqualTo(frame.Length);
+        sender.ConsumeSentBytes(secondBytes);
+        await Assert.That(sender.HasPendingSegments).IsFalse();
+
+        var received = await receive;
+        await Assert.That(received.AsSpan(0, frame.Length).SequenceEqual(frame)).IsTrue();
+        await Assert.That(received.AsSpan(frame.Length).SequenceEqual(frame)).IsTrue();
+    }
+
+    [Test]
+    [Timeout(10_000)]
+    public async Task ScatterGatherSender_SocketClosedDuringAsynchronousSend_FaultsAwaiter(
+        CancellationToken cancellationToken)
+    {
+        using var pair = await LoopbackSocketPair.CreateAsync(forceAsynchronousSends: true, cancellationToken);
+        using var sender = new KafkaConnection.SocketScatterGatherSender();
+        CreateFrame(segmentBytes: 64 * 1024, sender);
+
+        // Nobody reads the peer, so a 1 MB frame stays pending until the socket is closed.
+        sender.BeginPendingSend();
+        sender.LoadSendWindow();
+        var send = sender.SendAsync(pair.Client);
+        await Assert.That(send.IsCompleted).IsFalse();
+
+        pair.Client.Dispose();
+
+        var act = async () => await send;
+        await Assert.That(act).Throws<SocketException>();
+    }
+
+    private static byte[] CreateFrame(int segmentBytes, KafkaConnection.SocketScatterGatherSender sender)
+    {
+        var frame = new byte[KafkaConnection.SocketScatterGatherSender.MaximumSegmentsPerSend * segmentBytes];
+        Random.Shared.NextBytes(frame);
+        for (var offset = 0; offset < frame.Length; offset += segmentBytes)
+            sender.PendingSegments.Add(new ArraySegment<byte>(frame, offset, segmentBytes));
+
+        return frame;
+    }
+
+    private static async Task<byte[]> ReceiveExactlyAsync(Socket socket, int count, CancellationToken cancellationToken)
+    {
+        var buffer = new byte[count];
+        var received = 0;
+        while (received < count)
+        {
+            var read = await socket.ReceiveAsync(buffer.AsMemory(received), cancellationToken);
+            if (read == 0)
+                throw new IOException("Peer closed before the expected bytes arrived.");
+
+            received += read;
+        }
+
+        return buffer;
+    }
+
+    [Test]
     public async Task SingleBatchProduceSegments_UnpreparedCompressedBatch_FallsBack()
     {
         var batch = new RecordBatch
@@ -2063,6 +2192,68 @@ public sealed class KafkaConnectionTests
                 DisposeCount++;
 
             base.Dispose(disposing);
+        }
+    }
+
+    /// <summary>
+    /// Connected loopback TCP pair for driving <see cref="KafkaConnection.SocketScatterGatherSender"/>
+    /// through its synchronous and asynchronous completion paths deterministically.
+    /// </summary>
+    private sealed class LoopbackSocketPair : IDisposable
+    {
+        private const int AsynchronousReceiveBufferSize = 8 * 1024;
+
+        private LoopbackSocketPair(Socket client, Socket server)
+        {
+            Client = client;
+            Server = server;
+        }
+
+        public Socket Client { get; }
+        public Socket Server { get; }
+
+        /// <param name="forceAsynchronousSends">
+        /// Gives the client a zero-length send buffer so a send completes only once the peer has
+        /// acknowledged the data, i.e. asynchronously on Windows and Linux alike, and caps the peer's
+        /// receive buffer at 8 KB. Windows otherwise accepts an arbitrarily large send synchronously
+        /// whenever the socket's queue is empty, regardless of the configured send buffer size.
+        /// </param>
+        public static async Task<LoopbackSocketPair> CreateAsync(
+            bool forceAsynchronousSends,
+            CancellationToken cancellationToken)
+        {
+            using var listener = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+            listener.Bind(new IPEndPoint(IPAddress.Loopback, 0));
+            listener.Listen(1);
+
+            var client = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp)
+            {
+                NoDelay = true,
+            };
+            try
+            {
+                if (forceAsynchronousSends)
+                    client.SendBufferSize = 0;
+
+                var acceptTask = listener.AcceptAsync(cancellationToken);
+                await client.ConnectAsync(listener.LocalEndPoint!, cancellationToken);
+                var server = await acceptTask;
+                if (forceAsynchronousSends)
+                    server.ReceiveBufferSize = AsynchronousReceiveBufferSize;
+
+                return new LoopbackSocketPair(client, server);
+            }
+            catch
+            {
+                client.Dispose();
+                throw;
+            }
+        }
+
+        public void Dispose()
+        {
+            Client.Dispose();
+            Server.Dispose();
         }
     }
 }
