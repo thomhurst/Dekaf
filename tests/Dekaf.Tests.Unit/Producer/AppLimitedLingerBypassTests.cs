@@ -400,6 +400,34 @@ public class AppLimitedLingerBypassTests
         }
     }
 
+    [Test]
+    public async Task SoleDemandFlag_IsClearedWhenBatchIsReenqueuedForRetry()
+    {
+        // The proof only covers the first send attempt: once a batch is marked for retry,
+        // backoff has given other callers time to enqueue siblings, so the sender must spin
+        // for them again on the retry wave.
+        var accumulator = new RecordAccumulator(CreateOptions(lingerMs: 5_000));
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
+
+        try
+        {
+            AppendAwaited(accumulator, pool);
+            var batch = DrainSealedBatch(accumulator);
+            await Assert.That(batch.SealedAsSoleDemand).IsTrue();
+
+            batch.Reenqueued(nowMs: 0);
+
+            await Assert.That(batch.IsRetry).IsTrue();
+            await Assert.That(batch.SealedAsSoleDemand).IsFalse();
+            LeakGateHarness.RetireBatch(accumulator, batch, offset: 0);
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+            await pool.DisposeAsync();
+        }
+    }
+
     private static ReadyBatch DrainSealedBatch(RecordAccumulator accumulator)
     {
         if (!accumulator.TryDrainBatch(new TopicPartition(Topic, 0), out var batch))

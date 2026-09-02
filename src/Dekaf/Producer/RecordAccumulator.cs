@@ -9635,9 +9635,11 @@ internal sealed class ReadyBatch
     /// batch, so no sibling batch can arrive while the sender forms the request wave —
     /// <see cref="BrokerSender.ShouldMicroLinger"/> skips the wave-coalesce spin for it.
     /// Set only by <see cref="PartitionBatch.Complete"/> on that bypass path; every other
-    /// seal (linger expiry, size-full, flush, zero-linger) leaves it false. It stays with the
-    /// batch object across retry and reroute — the sole caller is still awaiting that batch —
-    /// and is cleared with the rest of the per-lifecycle state in Initialize/Reset.
+    /// seal (linger expiry, size-full, flush, zero-linger) leaves it false. The proof is only
+    /// honoured on the first send attempt: marking the batch for retry (sender carry-over,
+    /// loop-exit redelivery, <see cref="Reenqueued"/>) clears it, because by then backoff has
+    /// given other callers time to enqueue siblings. It is also cleared with the rest of the
+    /// per-lifecycle state in Initialize/Reset.
     /// </summary>
     internal bool SealedAsSoleDemand { get; set; }
 
@@ -9706,6 +9708,7 @@ internal sealed class ReadyBatch
     {
         _createdTimestamp = Stopwatch.GetTimestamp();
         IsRetry = true;
+        SealedAsSoleDemand = false;
     }
 
     internal void PreserveDeliveryTimeline(ReadyBatch source)

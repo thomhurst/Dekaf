@@ -3804,6 +3804,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // in forward order, each response's retry must go AFTER earlier responses'
         // retries for the same partition to preserve FIFO ordering.
         batch.IsRetry = true;
+        // The sole-demand proof held at seal time; by the retry, backoff has given other
+        // callers time to enqueue siblings, so the sender must spin for them again.
+        batch.SealedAsSoleDemand = false;
         batch.AppendDiag('H'); // HandleRetriableBatch → carry-over
         carryOver.AddAfterRetries(new BatchReference(batch, generation));
     }
@@ -5231,6 +5234,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 return false;
 
             batch.IsRetry = true;
+            batch.SealedAsSoleDemand = false;
             batch.AppendDiag('Y');
             return batch.IsCurrentIncarnation(expectedGeneration);
         }

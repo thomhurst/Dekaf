@@ -28,6 +28,11 @@ public class ProducerSingleTailBenchmarks
     private const int MaxSamples = 1 << 20;
     private const int MessageSize = 100;
 
+    // BenchmarkDotNet also invokes the benchmark during its pilot and warmup stages, and those
+    // calls carry JIT, first metadata fetch, and connection setup. The sample array cannot tell
+    // stages apart, so the distribution drops a fixed leading prefix and reports how many.
+    private const int WarmupSamplesDiscarded = OperationsPerInvoke * 5;
+
     private KafkaTestEnvironment _kafka = null!;
     private DekafProducer.IKafkaProducer<string, string> _producer = null!;
     private string _messageValue = null!;
@@ -106,22 +111,23 @@ public class ProducerSingleTailBenchmarks
 
     private void PrintDistribution()
     {
-        var count = _sampleCount;
+        var skipped = Math.Min(_sampleCount, WarmupSamplesDiscarded);
+        var count = _sampleCount - skipped;
         if (count == 0)
         {
-            Console.WriteLine($"[tail] LingerMs={LingerMs} no samples");
+            Console.WriteLine($"[tail] LingerMs={LingerMs} no samples after skipping {skipped}");
             return;
         }
 
         var sorted = new long[count];
-        Array.Copy(_samples, sorted, count);
+        Array.Copy(_samples, skipped, sorted, 0, count);
         Array.Sort(sorted);
         var ticksPerMicrosecond = Stopwatch.Frequency / 1_000_000.0;
         var over500Us = count - LowerBound(sorted, (long)(500 * ticksPerMicrosecond));
         var over1Ms = count - LowerBound(sorted, (long)(1_000 * ticksPerMicrosecond));
 
         Console.WriteLine(
-            $"[tail] LingerMs={LingerMs} n={count} " +
+            $"[tail] LingerMs={LingerMs} n={count} skipped={skipped} " +
             $"p50={Percentile(sorted, 0.50) / ticksPerMicrosecond:F1}us " +
             $"p90={Percentile(sorted, 0.90) / ticksPerMicrosecond:F1}us " +
             $"p99={Percentile(sorted, 0.99) / ticksPerMicrosecond:F1}us " +
