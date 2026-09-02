@@ -4881,70 +4881,108 @@ internal sealed class ResponseBufferPool
     }
 
     /// <summary>
-    /// Retained buffers of one capacity. Pointers live in fixed slots claimed and released
-    /// with interlocked exchanges (<see cref="IntPtr.Zero"/> marks an empty slot), so
-    /// retaining a frame allocates nothing; a <c>ConcurrentStack</c> pushed a 32 B node per
-    /// retained frame. The slot count is the pool's global allowance, which the caller
-    /// enforces before returning. Returns fill upward from a top hint and rents take the
-    /// slot just below it, so the bucket behaves as a stack (the most recently returned,
-    /// cache-warm frame is rented first) and both scans are one step long in steady state.
-    /// The hint is written plainly: a stale value only lengthens a scan, which wraps over
-    /// the whole array before giving up.
+    /// Retained buffers of one capacity. Pointers live in a fixed slot array threaded by two
+    /// index-linked Treiber stacks: the retained chain links the slots holding a buffer and
+    /// the free chain links the empty ones. A return pops a free slot, stores the pointer,
+    /// and pushes the slot onto the retained chain; a rent does the reverse. Each is one CAS
+    /// per chain operation with no slot scan, whatever the slot count or occupancy pattern,
+    /// and retaining a frame allocates nothing (the two arrays are allocated once per
+    /// capacity tier). Each chain head packs a 32-bit version above the slot index and every
+    /// successful CAS bumps it, so a pop whose <c>next</c> read went stale because the slot
+    /// was popped and pushed back meanwhile fails its CAS instead of corrupting the chain
+    /// (the ABA case of pointer-only stacks). Rents take the most recently returned,
+    /// cache-warm frame first.
     /// </summary>
-    private sealed class NativeBufferBucket(int capacity, int slotCount)
+    private sealed class NativeBufferBucket
     {
-        private readonly IntPtr[] _slots = new IntPtr[slotCount];
-        private int _top;
+        private const int None = -1;
+        private const long VersionIncrement = 1L << 32;
+        private const long VersionMask = unchecked((long)0xFFFF_FFFF_0000_0000);
 
-        internal int Capacity => capacity;
+        private readonly IntPtr[] _slots;
+        private readonly int[] _next;
+        private long _retainedHead;
+        private long _freeHead;
+
+        internal NativeBufferBucket(int capacity, int slotCount)
+        {
+            Capacity = capacity;
+            _slots = new IntPtr[slotCount];
+            _next = new int[slotCount];
+            for (var i = 0; i < slotCount - 1; i++)
+                _next[i] = i + 1;
+            _next[slotCount - 1] = None;
+            _freeHead = Pack(0L, 0);
+            _retainedHead = Pack(0L, None);
+        }
+
+        internal int Capacity { get; }
 
         internal bool TryRent(out IntPtr pointer)
         {
-            var slots = _slots;
-            var start = Math.Min(Volatile.Read(ref _top), slots.Length) - 1;
-            for (var n = 0; n < slots.Length; n++)
+            var index = Pop(ref _retainedHead);
+            if (index < 0)
             {
-                var i = start - n;
-                if (i < 0)
-                    i += slots.Length;
-
-                if (Volatile.Read(ref slots[i]) == IntPtr.Zero)
-                    continue;
-
-                pointer = Interlocked.Exchange(ref slots[i], IntPtr.Zero);
-                if (pointer != IntPtr.Zero)
-                {
-                    Volatile.Write(ref _top, i);
-                    return true;
-                }
+                pointer = IntPtr.Zero;
+                return false;
             }
 
-            pointer = IntPtr.Zero;
-            return false;
+            // The pop's CAS orders this read after the returner's store, which preceded its
+            // push. The slot is private to this thread until it is pushed onto the free chain.
+            pointer = _slots[index];
+            _slots[index] = IntPtr.Zero;
+            Push(ref _freeHead, index);
+            return true;
         }
 
         internal bool TryReturn(IntPtr pointer)
         {
-            var slots = _slots;
-            var start = Math.Min(Volatile.Read(ref _top), slots.Length - 1);
-            for (var n = 0; n < slots.Length; n++)
-            {
-                var i = start + n;
-                if (i >= slots.Length)
-                    i -= slots.Length;
+            var index = Pop(ref _freeHead);
+            if (index < 0)
+                return false;
 
-                if (Volatile.Read(ref slots[i]) != IntPtr.Zero)
-                    continue;
-
-                if (Interlocked.CompareExchange(ref slots[i], pointer, IntPtr.Zero) == IntPtr.Zero)
-                {
-                    Volatile.Write(ref _top, i + 1);
-                    return true;
-                }
-            }
-
-            return false;
+            _slots[index] = pointer;
+            Push(ref _retainedHead, index);
+            return true;
         }
+
+        private int Pop(ref long head)
+        {
+            var next = _next;
+            while (true)
+            {
+                var current = Volatile.Read(ref head);
+                var index = unchecked((int)current);
+                if (index < 0)
+                    return None;
+
+                // A stale successor is harmless: the version guarantees the CAS below fails
+                // if this index left and re-entered the chain since the head was read.
+                var updated = Pack(NextVersion(current), Volatile.Read(ref next[index]));
+                if (Interlocked.CompareExchange(ref head, updated, current) == current)
+                    return index;
+            }
+        }
+
+        private void Push(ref long head, int index)
+        {
+            var next = _next;
+            while (true)
+            {
+                var current = Volatile.Read(ref head);
+                Volatile.Write(ref next[index], unchecked((int)current));
+                var updated = Pack(NextVersion(current), index);
+                if (Interlocked.CompareExchange(ref head, updated, current) == current)
+                    return;
+            }
+        }
+
+        /// <summary>Head word: <paramref name="version"/> in the high 32 bits, the slot index (or <see cref="None"/>) in the low 32.</summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static long Pack(long version, int index) => version | (uint)index;
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static long NextVersion(long head) => unchecked((head & VersionMask) + VersionIncrement);
 
         internal int Trim()
         {
