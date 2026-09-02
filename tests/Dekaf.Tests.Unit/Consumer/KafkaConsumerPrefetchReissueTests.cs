@@ -251,7 +251,8 @@ public sealed class KafkaConsumerPrefetchReissueTests
                 Interlocked.Increment(ref _fetchCount);
             }
 
-            return (TResponse)(object)new FetchResponse { ErrorCode = ErrorCode.None };
+            object response = new FetchResponse { ErrorCode = ErrorCode.None };
+            return (TResponse)response;
         }
 
         public ValueTask SendFireAndForgetAsync<TRequest, TResponse>(

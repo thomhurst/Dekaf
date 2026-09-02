@@ -63,6 +63,10 @@ internal sealed class AsyncAutoResetSignal : IValueTaskSource<bool>,
     private int _shutdownRequested; // 0 = running, 1 = shutdown requested — terminal once set
     private CancellationToken _shutdownToken;
 
+    /// <summary>
+    /// Creates a signal. By default every continuation hops through the thread pool; the flags
+    /// select which completing thread may run the waiter inline instead.
+    /// </summary>
     /// <param name="inlineTimeoutContinuations">
     /// Run the waiter inline on the timer thread when a timeout fires; <see cref="Signal"/> and
     /// shutdown then hop through the thread pool so their callers never run the waiter.
