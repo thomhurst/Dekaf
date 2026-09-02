@@ -1084,8 +1084,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private readonly ProducerOptions _options;
     private readonly bool _serializeBatchesPerPartition;
     private readonly CompressionCodecRegistry? _compressionCodecs;
-    private readonly ConcurrentDictionary<string, int> _singleBatchRequestFixedSizes =
-        new(StringComparer.Ordinal);
 
     /// <summary>
     /// Per-partition deques of sealed ReadyBatches, matching Java's
@@ -1110,12 +1108,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private readonly int _admissionLeaseQuantumBytes;
 
     /// <summary>
-    /// Muted partitions — skipped by Ready() and Drain(). The value is a reference count:
-    /// independent BrokerSenders and crash-recovery barriers may overlap for the same partition.
-    /// Updates are serialized by <see cref="_partitionMuteLock"/>, while Ready/Drain perform
-    /// lock-free presence checks.
+    /// Serializes the read-modify-write of <see cref="PartitionDeque.MuteCount"/>. Readers
+    /// (Ready, Drain, and the append seal decision) never take it.
     /// </summary>
-    private readonly ConcurrentDictionary<TopicPartition, int> _mutedPartitions = new();
     private readonly System.Threading.Lock _partitionMuteLock = new();
 
     /// <summary>
@@ -1422,6 +1417,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
     private readonly record struct DrainablePendingAppend(
         PendingAppend Operation,
+        PartitionDeque Deque,
         AdmissionReservation AdmissionReservation);
 
     /// <summary>
@@ -1441,6 +1437,25 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         public readonly string Topic = topicPartition.Topic;
         public readonly int Partition = topicPartition.Partition;
         public readonly RecordAccumulator Owner = owner;
+
+        /// <summary>
+        /// Conservative fixed ProduceRequest body size for a single-batch request to this
+        /// topic — a pure function of (TransactionalId, Topic), computed once per deque so
+        /// the per-record MaxRequestSize guard is a field read.
+        /// </summary>
+        public readonly int SingleBatchRequestFixedSize =
+            ProduceRequestSizeCalculator.GetConservativeSingleBatchFixedSize(
+                owner._options.TransactionalId,
+                topicPartition.Topic);
+
+        /// <summary>
+        /// Mute reference count — a muted partition is skipped by Ready() and Drain(), and
+        /// LingerMs == 0 appends keep its partial batch open. Independent BrokerSenders and
+        /// crash-recovery barriers may overlap for the same partition, hence a count rather
+        /// than a flag. Updates are serialized by <see cref="_partitionMuteLock"/>; readers
+        /// perform a lock-free volatile read.
+        /// </summary>
+        public int MuteCount;
 
         /// <summary>Per-partition lock for deque access (matches Java's synchronized(deque)).
         /// SpinLock avoids kernel transitions for the brief critical sections in append/drain paths.</summary>
@@ -1677,17 +1692,17 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             var dequeued = _readyPartitions.TryDequeue(out var tp);
             Debug.Assert(dequeued, "TryDequeue failed despite being the sole consumer of _readyPartitions");
 
-            if (_mutedPartitions.ContainsKey(tp))
+            var pd = _partitionDeques.GetValueOrDefault(tp);
+            if (pd is null)
+                continue;
+
+            if (IsMuted(pd))
             {
                 // Drop the notification; UnmutePartition() will re-enqueue if the
                 // partition still has sealed batches. This avoids unbounded queue
                 // growth while a partition stays muted across many sender cycles.
                 continue;
             }
-
-            var pd = _partitionDeques.GetValueOrDefault(tp);
-            if (pd is null)
-                continue;
 
             ReadyBatch? head;
             {
@@ -1805,7 +1820,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     {
         foreach (var (topicPartition, pd) in _partitionDeques)
         {
-            if (_mutedPartitions.ContainsKey(topicPartition))
+            if (IsMuted(pd))
                 continue;
 
             ReadyBatch? head;
@@ -1933,11 +1948,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 }
             }
 
-            if (_mutedPartitions.ContainsKey(tp))
-                continue;
-
             var pd = _partitionDeques.GetValueOrDefault(tp);
-            if (pd is null)
+            if (pd is null || IsMuted(pd))
                 continue;
 
             ReadyBatch? batch;
@@ -1963,7 +1975,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     continue;
 
                 batchRequestSize = ProduceRequestSizeCalculator.GetSingleBatchRequestBodySize(
-                    GetSingleBatchRequestFixedSize(tp.Topic),
+                    pd.SingleBatchRequestFixedSize,
                     batch.EncodedSize);
                 oversizedBatch = batchRequestSize > maxRequestSize;
                 if (!oversizedBatch && ready.Count > 0 && size + batchRequestSize > maxRequestSize)
@@ -2249,13 +2261,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
     internal void MutePartition(TopicPartition tp)
     {
+        var pd = GetOrCreateDeque(tp);
         lock (_partitionMuteLock)
-        {
-            if (_mutedPartitions.TryGetValue(tp, out var count))
-                _mutedPartitions[tp] = count + 1;
-            else
-                _mutedPartitions[tp] = 1;
-        }
+            Volatile.Write(ref pd.MuteCount, pd.MuteCount + 1);
     }
 
     /// <summary>
@@ -2296,38 +2304,42 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
     internal void UnmutePartition(TopicPartition tp)
     {
+        if (!_partitionDeques.TryGetValue(tp, out var pd))
+            return;
+
         lock (_partitionMuteLock)
         {
-            if (!_mutedPartitions.TryGetValue(tp, out var count))
+            var count = pd.MuteCount;
+            if (count == 0)
                 return;
 
+            // The count must reach zero before notification so Ready() cannot consume the
+            // notification while the partition still appears muted.
+            Volatile.Write(ref pd.MuteCount, count - 1);
             if (count > 1)
-            {
-                _mutedPartitions[tp] = count - 1;
                 return;
-            }
-
-            // Remove must precede notification so Ready() cannot consume the notification
-            // while the partition still appears muted.
-            _mutedPartitions.TryRemove(tp, out _);
         }
 
         // Re-notify so Ready() picks up any sealed batches that were skipped while muted.
-        if (HasQueuedBatches(tp))
+        if (HasQueuedBatches(pd))
             _readyPartitions.Enqueue(tp);
 
-        if (_partitionDeques.TryGetValue(tp, out var pd))
-            ReactivateDeferredLinger(tp, pd);
+        ReactivateDeferredLinger(tp, pd);
 
         SignalWakeup(); // Wake sender loop so it can drain the newly-unmuted partition
     }
-    internal bool IsMuted(TopicPartition tp) => _mutedPartitions.ContainsKey(tp);
+
+    internal bool IsMuted(TopicPartition tp)
+        => _partitionDeques.TryGetValue(tp, out var pd) && IsMuted(pd);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static bool IsMuted(PartitionDeque pd) => Volatile.Read(ref pd.MuteCount) != 0;
 
     internal bool HasQueuedBatches(TopicPartition tp)
-    {
-        if (!_partitionDeques.TryGetValue(tp, out var pd))
-            return false;
+        => _partitionDeques.TryGetValue(tp, out var pd) && HasQueuedBatches(pd);
 
+    private static bool HasQueuedBatches(PartitionDeque pd)
+    {
         using var guard = new SpinLockGuard(ref pd.Lock);
         return pd.PeekFirst() is not null;
     }
@@ -2454,8 +2466,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                             continue;
                         }
 
+                        var candidateDeque = GetOrCreateDeque(candidate.Topic, candidate.Partition);
                         if (!TryReserveForAppend(
-                                GetOrCreateDeque(candidate.Topic, candidate.Partition),
+                                candidateDeque,
                                 candidate.Topic,
                                 candidate.Partition,
                                 candidate.RecordSize,
@@ -2473,6 +2486,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
                         _drainablePendingAppends.Add(new DrainablePendingAppend(
                             candidate,
+                            candidateDeque,
                             admissionReservation));
                     }
 
@@ -2485,7 +2499,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     var op = drainable.Operation;
                     // Claim the operation with CAS BEFORE touching resources.
                     // This prevents timeout/cancel from cleaning up key/value/headers
-                    // while AppendAfterReservation is using them.
+                    // while AppendPooledAfterReservationCore is using them.
                     if (!op.TryClaim())
                     {
                         // Timeout/cancel won the race and already cleaned up resources.
@@ -2499,7 +2513,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
                     try
                     {
-                        var result = AppendAfterReservation(
+                        var result = AppendPooledAfterReservationCore(
+                            drainable.Deque,
                             op.Topic, op.Partition, op.Timestamp,
                             op.Key, op.Value, op.Headers, op.HeaderCount,
                             op.CompletionSource, op.Callback, op.RecordSize, op.PartitionCount,
@@ -2510,7 +2525,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     }
                     catch (Exception ex)
                     {
-                        // AppendAfterReservation handles its own resource cleanup on throw
+                        // AppendPooledAfterReservationCore handles its own resource cleanup on throw
                         op.ReleasePendingCountAfterClaim();
                         op.CompleteException(ex);
                     }
@@ -3406,7 +3421,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     {
         if (Volatile.Read(ref pd.LingerDeferred) == 0
             || Volatile.Read(ref pd.QueueBytes) > 0
-            || _mutedPartitions.ContainsKey(topicPartition)
+            || IsMuted(pd)
             || Interlocked.CompareExchange(ref pd.LingerDeferred, 0, 1) != 1)
         {
             return;
@@ -3438,12 +3453,13 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         if (Volatile.Read(ref _disposed) != 0)
             return new ValueTask<bool>(false);
 
+        var pd = GetOrCreateDeque(topic, partition);
         int recordSize;
         try
         {
             recordSize = PartitionBatch.EstimateRecordSize(key.Length, value.Length, headers, headerCount);
             ThrowIfRecordExceedsMaxRequestSize(
-                topic, partition, key.IsNull, key.Length, value.IsNull, value.Length,
+                pd, topic, partition, key.IsNull, key.Length, value.IsNull, value.Length,
                 headers, headerCount, recordSize);
         }
         catch
@@ -3456,9 +3472,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         // Hot path: non-blocking gate check + CAS reservation — no async state machine
         // allocated. An over-budget broker applies the same backpressure as a full buffer.
-        if (TryAdmitAndReserve(GetOrCreateDeque(topic, partition), topic, partition, recordSize,
-                out var admissionReservation))
-            return new ValueTask<bool>(AppendAfterReservation(topic, partition, timestamp, key, value,
+        if (TryAdmitAndReserve(pd, topic, partition, recordSize, out var admissionReservation))
+            return new ValueTask<bool>(AppendPooledAfterReservationCore(pd, topic, partition, timestamp, key, value,
                 headers, headerCount, completionSource, callback, recordSize, partitionCount,
                 admissionReservation));
 
@@ -3468,25 +3483,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             headers, headerCount, completionSource, callback, recordSize, cancellationToken, partitionCount);
     }
 
-    private bool AppendAfterReservation(
-        string topic,
-        int partition,
-        long timestamp,
-        PooledMemory key,
-        PooledMemory value,
-        Header[]? headers,
-        int headerCount,
-        PooledValueTaskSource<RecordMetadata>? completionSource,
-        Action<RecordMetadata, Exception?>? callback,
-        int recordSize,
-        int partitionCount,
-        AdmissionReservation admissionReservation)
-    {
-        return AppendPooledAfterReservationCore(topic, partition, timestamp, key, value, headers, headerCount,
-            completionSource, callback, recordSize, partitionCount, admissionReservation);
-    }
-
     private bool AppendPooledAfterReservationCore(
+        PartitionDeque pd,
         string topic,
         int partition,
         long timestamp,
@@ -3501,7 +3499,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         AdmissionReservation admissionReservation)
     {
         var topicPartition = new TopicPartition(topic, partition);
-        var pd = GetOrCreateDeque(topic, partition);
         ReadyBatch? sealedBatchToEnqueue = null;
         var sealedBatchBytesToRelease = 0;
         PartitionBatch? rentedBatch = null;
@@ -3842,12 +3839,13 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         if (Volatile.Read(ref _disposed) != 0)
             return false;
 
+        var pd = GetOrCreateDeque(topic, partition);
         int recordSize;
         try
         {
             recordSize = PartitionBatch.EstimateRecordSize(key.Length, value.Length, headers, headerCount);
             ThrowIfRecordExceedsMaxRequestSize(
-                topic, partition, key.IsNull, key.Length, value.IsNull, value.Length,
+                pd, topic, partition, key.IsNull, key.Length, value.IsNull, value.Length,
                 headers, headerCount, recordSize);
         }
         catch
@@ -3861,11 +3859,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         // Try the admission gate + non-blocking memory reservation. If the buffer is full
         // or the destination broker is over its unacked-byte budget, return false so the
         // caller (ProduceAsync fast path) falls back to the async path.
-        if (!TryAdmitAndReserve(GetOrCreateDeque(topic, partition), topic, partition, recordSize,
-                out var admissionReservation))
+        if (!TryAdmitAndReserve(pd, topic, partition, recordSize, out var admissionReservation))
             return false;
 
-        return AppendPooledAfterReservationCore(topic, partition, timestamp, key, value, headers, headerCount,
+        return AppendPooledAfterReservationCore(pd, topic, partition, timestamp, key, value, headers, headerCount,
             completionSource, callback: null, recordSize, partitionCount, admissionReservation);
     }
 
@@ -3890,14 +3887,14 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         if (Volatile.Read(ref _disposed) != 0)
             return false;
 
+        var pd = GetOrCreateDeque(topic, partition);
         var keyLength = keyIsNull ? 0 : keyData.Length;
         var valueLength = valueIsNull ? 0 : valueData.Length;
         var recordSize = PartitionBatch.EstimateRecordSize(keyLength, valueLength, headers, headerCount);
         ThrowIfRecordExceedsMaxRequestSize(
-            topic, partition, keyIsNull, keyLength, valueIsNull, valueLength,
+            pd, topic, partition, keyIsNull, keyLength, valueIsNull, valueLength,
             headers, headerCount, recordSize);
 
-        var pd = GetOrCreateDeque(topic, partition);
         if (headers is null && headerCount == 0
             && TryAppendFromSpansSingleLock(pd, topic, partition, timestamp, keyData, keyIsNull,
                 valueData, valueIsNull, completionSource, callback: null, recordSize, partitionCount))
@@ -3913,6 +3910,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             recordSize, partitionCount, returnHeadersOnFailure: false, admissionReservation);
     }
 
+    /// <summary>
+    /// Synchronous append-under-lock logic for span-based append after memory has been reserved.
+    /// </summary>
     private bool AppendFromSpansAfterReservationCore(
         PartitionDeque pd,
         string topic,
@@ -4342,6 +4342,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         if (Volatile.Read(ref _disposed) != 0)
             return new ValueTask<bool>(false);
 
+        var pd = GetOrCreateDeque(topic, partition);
         var keyLength = keyIsNull ? 0 : keyData.Length;
         var valueLength = valueIsNull ? 0 : valueData.Length;
         int recordSize;
@@ -4349,7 +4350,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         {
             recordSize = PartitionBatch.EstimateRecordSize(keyLength, valueLength, headers, headerCount);
             ThrowIfRecordExceedsMaxRequestSize(
-                topic, partition, keyIsNull, keyLength, valueIsNull, valueLength,
+                pd, topic, partition, keyIsNull, keyLength, valueIsNull, valueLength,
                 headers, headerCount, recordSize);
         }
         catch
@@ -4362,7 +4363,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         // encode, commit). Anything it cannot handle in place falls through to the
         // reservation-based path: non-blocking gate check + CAS reservation — no async state
         // machine allocated. An over-budget broker applies the same backpressure as a full buffer.
-        var pd = GetOrCreateDeque(topic, partition);
         if (headers is null && headerCount == 0
             && TryAppendFromSpansSingleLock(pd, topic, partition, timestamp, keyData, keyIsNull,
                 valueData, valueIsNull, completionSource: null, callback, recordSize, partitionCount))
@@ -4371,9 +4371,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         }
 
         if (TryAdmitAndReserve(pd, topic, partition, recordSize, out var admissionReservation))
-            return new ValueTask<bool>(AppendFromSpansAfterReservation(pd, topic, partition, timestamp,
-                keyData, keyIsNull, valueData, valueIsNull, headers, headerCount, callback, recordSize,
-                partitionCount, admissionReservation));
+            return new ValueTask<bool>(AppendFromSpansAfterReservationCore(pd, topic, partition, timestamp,
+                keyData, keyIsNull, valueData, valueIsNull, headers, headerCount, completionSource: null,
+                callback, recordSize, partitionCount, returnHeadersOnFailure: true, admissionReservation));
 
         // Cold path: buffer full. Copy spans to PooledMemory BEFORE the await boundary
         // (ReadOnlySpan<byte> cannot survive across async suspension points).
@@ -4386,6 +4386,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void ThrowIfRecordExceedsMaxRequestSize(
+        PartitionDeque pd,
         string topic,
         int partition,
         bool keyIsNull,
@@ -4399,7 +4400,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         var maxRequestSize = _options.MaxRequestSize > 0
             ? _options.MaxRequestSize
             : ProduceRequestSizeCalculator.DefaultMaxRequestSize;
-        var fixedSize = GetSingleBatchRequestFixedSize(topic);
+        var fixedSize = pd.SingleBatchRequestFixedSize;
         var estimatedBatchSize = (long)RecordBatch.TotalBatchHeaderSize + estimatedRecordSize;
         if (estimatedBatchSize <= int.MaxValue)
         {
@@ -4453,42 +4454,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             Topic = topic,
             Partition = partition
         };
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private int GetSingleBatchRequestFixedSize(string topic)
-    {
-        if (_singleBatchRequestFixedSizes.TryGetValue(topic, out var fixedSize))
-            return fixedSize;
-
-        fixedSize = ProduceRequestSizeCalculator.GetConservativeSingleBatchFixedSize(
-            _options.TransactionalId,
-            topic);
-        return _singleBatchRequestFixedSizes.GetOrAdd(topic, fixedSize);
-    }
-
-    /// <summary>
-    /// Synchronous append-under-lock logic for span-based append after memory has been reserved.
-    /// </summary>
-    private bool AppendFromSpansAfterReservation(
-        PartitionDeque pd,
-        string topic,
-        int partition,
-        long timestamp,
-        ReadOnlySpan<byte> keyData,
-        bool keyIsNull,
-        ReadOnlySpan<byte> valueData,
-        bool valueIsNull,
-        Header[]? headers,
-        int headerCount,
-        Action<RecordMetadata, Exception?>? callback,
-        int recordSize,
-        int partitionCount,
-        AdmissionReservation admissionReservation)
-    {
-        return AppendFromSpansAfterReservationCore(pd, topic, partition, timestamp, keyData, keyIsNull,
-            valueData, valueIsNull, headers, headerCount, completionSource: null, callback,
-            recordSize, partitionCount, returnHeadersOnFailure: true, admissionReservation);
     }
 
     /// <summary>
@@ -4969,7 +4934,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             return !ShouldDeferPartialBatchSeal(pd, batch);
 
         return IsAppLimitedAwaitedAppend(batch, completionSource)
-            && !_mutedPartitions.ContainsKey(batch.TopicPartition);
+            && !IsMuted(pd);
     }
 
     /// <summary>
@@ -5029,10 +4994,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool ShouldDeferPartialBatchSeal(PartitionDeque pd, PartitionBatch batch)
     {
-        var topicPartition = batch.TopicPartition;
         var hasPipelineBatch = Volatile.Read(ref pd.QueueBytes) > 0;
         return ShouldDeferPartialBatchSeal(
-            _mutedPartitions.ContainsKey(topicPartition),
+            IsMuted(pd),
             _serializeBatchesPerPartition,
             hasPipelineBatch,
             batch.EstimatedSize,
@@ -6965,7 +6929,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             var elapsed = Stopwatch.GetElapsedTime(batch.StopwatchCreatedTicks);
 
             // Diagnostic: capture partition state to help identify why batch was orphaned
-            var isMuted = _mutedPartitions.ContainsKey(batch.TopicPartition);
+            var isMuted = IsMuted(batch.TopicPartition);
             var inDeque = false;
             var dequeCount = 0;
             if (_partitionDeques.TryGetValue(batch.TopicPartition, out var pd))

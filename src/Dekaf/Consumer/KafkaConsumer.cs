@@ -111,6 +111,7 @@ internal sealed class PendingFetchData : IDisposable
     private IPooledMemory? _memoryOwner;
     private Record[]? _parsedRecordSlab;
     private ArrayPool<Record>? _parsedRecordSlabOwner;
+    private int _parsedRecordSlabLength;
     private int _batchIndex = -1;
     private int _recordIndex = -1;
     private int _disposed;
@@ -366,10 +367,11 @@ internal sealed class PendingFetchData : IDisposable
             return;
 
         var slabPool = Volatile.Read(ref s_parsedRecordSlabPool);
+        // No rent-side clear: ReleaseReference scrubs the used range before every return.
         var slab = slabPool.Rent(totalRecordCount);
         _parsedRecordSlab = slab;
         _parsedRecordSlabOwner = slabPool;
-        slab.AsSpan(0, totalRecordCount).Clear();
+        _parsedRecordSlabLength = totalRecordCount;
         var offset = 0;
         for (var i = 0; i < batchCount; i++)
         {
@@ -378,6 +380,8 @@ internal sealed class PendingFetchData : IDisposable
             batch.UseParsedRecordSlab(slab, offset);
             offset += recordCount;
         }
+
+        Debug.Assert(offset == totalRecordCount, "Slab slices must exactly cover the range ReleaseReference clears.");
     }
 
     public static PendingFetchData CreateError(string topic, int partitionIndex, ConsumeException error)
@@ -844,11 +848,20 @@ internal sealed class PendingFetchData : IDisposable
 
         var parsedRecordSlab = _parsedRecordSlab;
         var parsedRecordSlabOwner = _parsedRecordSlabOwner;
+        var parsedRecordSlabLength = _parsedRecordSlabLength;
         _parsedRecordSlab = null;
         _parsedRecordSlabOwner = null;
+        _parsedRecordSlabLength = 0;
         if (parsedRecordSlab is not null)
-            (parsedRecordSlabOwner ?? Volatile.Read(ref s_parsedRecordSlabPool))
-                .Return(parsedRecordSlab, clearArray: true);
+        {
+            // Records reference pooled Header[] arrays and frame slices, so clear exactly the used
+            // range before the slab re-enters its pool (the batches above have already returned
+            // their header arrays); the pool's own clearArray would memset the whole rounded-up bucket.
+            parsedRecordSlab.AsSpan(0, parsedRecordSlabLength).Clear();
+            // The owner is recorded in the same step that rents the slab (EagerParseAll), so a
+            // non-null slab always has one.
+            parsedRecordSlabOwner!.Return(parsedRecordSlab, clearArray: false);
+        }
 
         // Return the batch list to the pool for reuse
         if (_batches is List<RecordBatch> batchList)
