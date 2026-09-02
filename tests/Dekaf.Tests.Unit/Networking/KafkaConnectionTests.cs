@@ -295,11 +295,15 @@ public sealed class KafkaConnectionTests
     {
         using var pair = await LoopbackSocketPair.CreateAsync(forceAsynchronousSends: true, cancellationToken);
         using var sender = new KafkaConnection.SocketScatterGatherSender();
-        var frame = CreateFrame(segmentBytes: 64 * 1024, sender);
+        // 64 KB: large enough that the peer's 8 KB receive buffer plus the client's minimal send
+        // buffer cannot absorb it, so the send is guaranteed to pend on both platforms, yet small
+        // enough that Linux loopback (which paces such tiny-buffer transfers at ~150 KB/s via
+        // delayed ACKs) moves both passes well inside the test timeout.
+        var frame = CreateFrame(segmentBytes: 4 * 1024, sender);
 
-        // Nobody is reading yet and the client has no send buffer, so the 1 MB send stays pending
-        // and its result is produced by the SocketAsyncEventArgs.Completed callback once the
-        // receiver below drains the peer.
+        // Nobody is reading yet and the client has no send buffer, so the send stays pending and
+        // its result is produced by the SocketAsyncEventArgs.Completed callback once the receiver
+        // below drains the peer.
         sender.BeginPendingSend();
         sender.LoadSendWindow();
         var first = sender.SendAsync(pair.Client);
