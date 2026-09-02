@@ -646,11 +646,18 @@ public class PooledValueTaskSourceTests
 
         var source = pool.Rent();
 
+        // The fire-and-forget continuation runs GetResult on a pool thread, and the delivery
+        // handler is its last observable step before the finally block returns the source.
+        var continuationRan = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        source.SetDeliveryHandler((_, _) => continuationRan.TrySetResult());
+
         // Observe before completing (registers continuation)
         source.ObserveForFireAndForget();
 
         // Complete after observing - should trigger continuation
         source.SetResult(42);
+
+        await continuationRan.Task.WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
 
         var returned = await RentUntilReusedAsync(pool, source).ConfigureAwait(false);
         await Assert.That(returned).IsSameReferenceAs(source);
@@ -1102,18 +1109,27 @@ public class PooledValueTaskSourceTests
         return awaiter.GetResult();
     }
 
+    /// <summary>
+    /// Rents until <paramref name="expected"/> comes back. Call it only after the continuation
+    /// that returns <paramref name="expected"/> has been observed, so the remaining window is
+    /// the tail of that continuation's GetResult. Sources rented in the meantime are held,
+    /// never completed or returned: a single-slot pool would otherwise retain the stray source
+    /// and reject <paramref name="expected"/>'s return, so this loop would never terminate.
+    /// </summary>
     private static async Task<PooledValueTaskSource<int>> RentUntilReusedAsync(
         ValueTaskSourcePool<int> pool,
         PooledValueTaskSource<int> expected)
     {
+        var deadline = Environment.TickCount64 + 30_000;
         while (true)
         {
             var source = pool.Rent();
             if (ReferenceEquals(source, expected))
                 return source;
 
-            source.SetResult(0);
-            await source.Task.ConfigureAwait(false);
+            if (Environment.TickCount64 > deadline)
+                throw new TimeoutException("The expected source was not returned to the pool.");
+
             await Task.Yield();
         }
     }
