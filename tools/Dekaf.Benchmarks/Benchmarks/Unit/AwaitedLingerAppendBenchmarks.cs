@@ -17,9 +17,10 @@ public class AwaitedLingerAppendBenchmarks
     private const int MessageSize = 100;
     private const int PartitionCount = 8;
 
-    // One completion source shared by every record: the accumulator only stores the reference and
-    // no batch is ever delivered here, so completion-source pooling stays out of the measurement
-    // (see ValueTaskSourcePoolBenchmarks for that cost).
+    // One completion source shared by every record: the accumulator only stores the reference, and
+    // the drainer's CompleteSend completes it exactly once (every later TrySetResult is a no-op),
+    // so completion-source pooling stays out of the measurement (see ValueTaskSourcePoolBenchmarks
+    // for that cost).
     private readonly PooledValueTaskSource<RecordMetadata> _completion = new();
     private RecordAccumulator _accumulator = null!;
     private RecordAccumulator.BulkProduceScope _bulkScope;
@@ -27,6 +28,11 @@ public class AwaitedLingerAppendBenchmarks
     private byte[] _value = null!;
     private CancellationTokenSource _drainerCts = null!;
     private Task _drainerTask = null!;
+    // MemoryDiagnoser's Allocated column is process-wide (drainer and timer threads included);
+    // these isolate the append thread itself. Printed at cleanup as an [alloc] line covering
+    // every invocation, pilot and warmup included.
+    private long _appendThreadAllocatedBytes;
+    private long _appendThreadAppends;
 
     [GlobalSetup]
     public void Setup()
@@ -60,9 +66,16 @@ public class AwaitedLingerAppendBenchmarks
     public async Task Cleanup()
     {
         _drainerCts.Cancel();
-        try { await _drainerTask.ConfigureAwait(false); } catch (OperationCanceledException) { }
+        // DrainLoop polls the token instead of throwing on it, so the task completes normally.
+        await _drainerTask.ConfigureAwait(false);
         _bulkScope.Dispose();
         await _accumulator.DisposeAsync().ConfigureAwait(false);
+
+        var appends = Volatile.Read(ref _appendThreadAppends);
+        var allocated = Volatile.Read(ref _appendThreadAllocatedBytes);
+        Console.WriteLine(
+            $"[alloc] appends={appends} appendThreadAllocatedBytes={allocated} " +
+            $"bytesPerAppend={(appends == 0 ? 0 : (double)allocated / appends):F3}");
     }
 
     /// <summary>
@@ -71,9 +84,17 @@ public class AwaitedLingerAppendBenchmarks
     [Benchmark(OperationsPerInvoke = 100)]
     public void AppendAwaitedSinglePartition()
     {
+        var allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
         var ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         for (var i = 0; i < 100; i++)
             Append(partition: 0, ts);
+        RecordAppendThreadAllocation(allocatedBefore, 100);
+    }
+
+    private void RecordAppendThreadAllocation(long allocatedBefore, int appends)
+    {
+        _appendThreadAllocatedBytes += GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
+        _appendThreadAppends += appends;
     }
 
     /// <summary>
@@ -82,9 +103,11 @@ public class AwaitedLingerAppendBenchmarks
     [Benchmark(OperationsPerInvoke = 100)]
     public void AppendAwaitedMultiPartition()
     {
+        var allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
         var ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         for (var i = 0; i < 100; i++)
             Append(i % PartitionCount, ts);
+        RecordAppendThreadAllocation(allocatedBefore, 100);
     }
 
     private void Append(int partition, long ts)
@@ -119,10 +142,19 @@ public class AwaitedLingerAppendBenchmarks
     private void DrainAll()
     {
         while (_accumulator.TryDrainBatch(out var batch))
-        {
-            _accumulator.ReleaseMemory(batch.DataSize);
-            _accumulator.ReturnReadyBatch(batch);
-        }
+            Retire(batch);
+    }
+
+    /// <summary>
+    /// Retires a sealed batch the way the sender does after an acknowledgement: complete
+    /// delivery first so the pooled batch is not recycled as an orphan (that path allocates
+    /// a diagnostic exception per batch), then release BufferMemory and return it to its pool.
+    /// </summary>
+    private void Retire(ReadyBatch batch)
+    {
+        batch.CompleteSend(baseOffset: 0, DateTimeOffset.UnixEpoch);
+        _accumulator.ReleaseMemory(batch.DataSize);
+        _accumulator.ReturnReadyBatch(batch);
     }
 
     private void DrainLoop(CancellationToken ct)
@@ -132,8 +164,7 @@ public class AwaitedLingerAppendBenchmarks
         {
             if (_accumulator.TryDrainBatch(out var batch))
             {
-                _accumulator.ReleaseMemory(batch.DataSize);
-                _accumulator.ReturnReadyBatch(batch);
+                Retire(batch);
                 spinner.Reset();
             }
             else
