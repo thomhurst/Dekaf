@@ -4885,32 +4885,37 @@ internal sealed class ResponseBufferPool
     /// with interlocked exchanges (<see cref="IntPtr.Zero"/> marks an empty slot), so
     /// retaining a frame allocates nothing; a <c>ConcurrentStack</c> pushed a 32 B node per
     /// retained frame. The slot count is the pool's global allowance, which the caller
-    /// enforces before returning, and the occupancy hint lets rent skip an empty bucket
-    /// without scanning.
+    /// enforces before returning. Returns fill upward from a top hint and rents take the
+    /// slot just below it, so the bucket behaves as a stack (the most recently returned,
+    /// cache-warm frame is rented first) and both scans are one step long in steady state.
+    /// The hint is written plainly: a stale value only lengthens a scan, which wraps over
+    /// the whole array before giving up.
     /// </summary>
     private sealed class NativeBufferBucket(int capacity, int slotCount)
     {
         private readonly IntPtr[] _slots = new IntPtr[slotCount];
-        private int _occupied;
+        private int _top;
 
         internal int Capacity => capacity;
 
         internal bool TryRent(out IntPtr pointer)
         {
-            if (Volatile.Read(ref _occupied) > 0)
+            var slots = _slots;
+            var start = Math.Min(Volatile.Read(ref _top), slots.Length) - 1;
+            for (var n = 0; n < slots.Length; n++)
             {
-                var slots = _slots;
-                for (var i = 0; i < slots.Length; i++)
-                {
-                    if (Volatile.Read(ref slots[i]) == IntPtr.Zero)
-                        continue;
+                var i = start - n;
+                if (i < 0)
+                    i += slots.Length;
 
-                    pointer = Interlocked.Exchange(ref slots[i], IntPtr.Zero);
-                    if (pointer != IntPtr.Zero)
-                    {
-                        Interlocked.Decrement(ref _occupied);
-                        return true;
-                    }
+                if (Volatile.Read(ref slots[i]) == IntPtr.Zero)
+                    continue;
+
+                pointer = Interlocked.Exchange(ref slots[i], IntPtr.Zero);
+                if (pointer != IntPtr.Zero)
+                {
+                    Volatile.Write(ref _top, i);
+                    return true;
                 }
             }
 
@@ -4921,14 +4926,19 @@ internal sealed class ResponseBufferPool
         internal bool TryReturn(IntPtr pointer)
         {
             var slots = _slots;
-            for (var i = 0; i < slots.Length; i++)
+            var start = Math.Min(Volatile.Read(ref _top), slots.Length - 1);
+            for (var n = 0; n < slots.Length; n++)
             {
+                var i = start + n;
+                if (i >= slots.Length)
+                    i -= slots.Length;
+
                 if (Volatile.Read(ref slots[i]) != IntPtr.Zero)
                     continue;
 
                 if (Interlocked.CompareExchange(ref slots[i], pointer, IntPtr.Zero) == IntPtr.Zero)
                 {
-                    Interlocked.Increment(ref _occupied);
+                    Volatile.Write(ref _top, i + 1);
                     return true;
                 }
             }
