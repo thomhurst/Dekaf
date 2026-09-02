@@ -169,7 +169,7 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
     /// <summary>
     /// Claims ownership of this operation (CAS from pending to completed).
     /// Called by <see cref="RecordAccumulator.DrainPendingAppends"/> BEFORE calling
-    /// <see cref="RecordAccumulator.AppendAfterReservation"/> to prevent timeout/cancel
+    /// <see cref="RecordAccumulator.AppendPooledAfterReservationCore"/> to prevent timeout/cancel
     /// from cleaning up resources while the drain is using them.
     /// </summary>
     /// <returns>True if this call won the race; false if timeout/cancel/dispose already completed it.</returns>
@@ -189,16 +189,16 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
     internal void ReleasePendingCountAfterClaim() => ReleasePendingCount();
 
     /// <summary>
-    /// Sets the successful result after <see cref="TryClaim"/> + AppendAfterReservation.
+    /// Sets the successful result after <see cref="TryClaim"/> + AppendPooledAfterReservationCore.
     /// Must only be called after <see cref="TryClaim"/> returned true.
-    /// Resources are consumed by AppendAfterReservation — no cleanup needed.
+    /// Resources are consumed by AppendPooledAfterReservationCore — no cleanup needed.
     /// </summary>
     public void CompleteResult(bool result) => _core.SetResult(result);
 
     /// <summary>
-    /// Sets an exception result after <see cref="TryClaim"/> + failed AppendAfterReservation.
+    /// Sets an exception result after <see cref="TryClaim"/> + failed AppendPooledAfterReservationCore.
     /// Must only be called after <see cref="TryClaim"/> returned true.
-    /// AppendAfterReservation handles its own resource cleanup on throw.
+    /// AppendPooledAfterReservationCore handles its own resource cleanup on throw.
     /// </summary>
     public void CompleteException(Exception exception) => _core.SetException(exception);
 
