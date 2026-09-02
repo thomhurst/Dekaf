@@ -152,6 +152,70 @@ public class ResponseBufferPoolTests
     }
 
     [Test]
+    public async Task NativePool_OverAllowanceReturnEvictsStaleCapacityInsteadOfFreeingLiveSize()
+    {
+        // The consumer was caught up (small frames) and then fell behind (large frames). The
+        // small frames sit dormant in their bucket; retaining the large frames must evict
+        // them rather than leave the live size permanently over the allowance.
+        const int allowance = 4;
+        const int smallCapacity = ResponseBufferPool.NativeMemoryThresholdBytes;
+        const int largeCapacity = ResponseBufferPool.NativeMemoryThresholdBytes * 8;
+        var pool = new ResponseBufferPool(
+            16 * 1024 * 1024,
+            managedArraysPerBucket: allowance,
+            maxRetainedNativeBuffers: allowance);
+        var frames = new NativeResponseBuffer[allowance];
+        for (var i = 0; i < allowance; i++)
+            frames[i] = pool.RentNative(smallCapacity);
+        for (var i = 0; i < allowance; i++)
+            frames[i].Return();
+        await Assert.That(pool.RetainedNativeBufferCount).IsEqualTo(allowance);
+
+        for (var i = 0; i < allowance; i++)
+            frames[i] = pool.RentNative(largeCapacity);
+
+        await Assert.That(pool.RetainedNativeBufferCount).IsEqualTo(allowance)
+            .Because("renting a new capacity leaves the stale capacity's buffers dormant");
+
+        for (var i = 0; i < allowance; i++)
+            frames[i].Return();
+
+        await Assert.That(pool.RetainedNativeBufferCount).IsEqualTo(allowance)
+            .Because("the global allowance is preserved while its contents migrate");
+
+        for (var i = 0; i < allowance; i++)
+            frames[i] = pool.RentNative(largeCapacity);
+
+        // The count only decrements on a hit, so reaching zero proves every large rent
+        // reused a retained buffer and every stale small buffer was evicted to make room.
+        await Assert.That(pool.RetainedNativeBufferCount).IsEqualTo(0);
+
+        for (var i = 0; i < allowance; i++)
+            frames[i].Return();
+        pool.TrimNativeBuffers();
+    }
+
+    [Test]
+    public async Task NativePool_OverAllowanceReturnOfLiveCapacityStillFreesSurplus()
+    {
+        var pool = new ResponseBufferPool(
+            1024 * 1024,
+            managedArraysPerBucket: 2,
+            maxRetainedNativeBuffers: 2);
+        var first = pool.RentNative(ResponseBufferPool.NativeMemoryThresholdBytes);
+        var second = pool.RentNative(ResponseBufferPool.NativeMemoryThresholdBytes);
+        var third = pool.RentNative(ResponseBufferPool.NativeMemoryThresholdBytes);
+
+        first.Return();
+        second.Return();
+        third.Return();
+
+        await Assert.That(pool.RetainedNativeBufferCount).IsEqualTo(2)
+            .Because("with no other capacity to evict, the surplus of the live size is freed");
+        pool.TrimNativeBuffers();
+    }
+
+    [Test]
     public async Task NativePool_TrimReleasesAllDormantBuffers()
     {
         var pool = new ResponseBufferPool(1024 * 1024, managedArraysPerBucket: 4);
@@ -349,6 +413,25 @@ public class ResponseBufferPoolTests
         var default2 = ResponseBufferPool.Default;
 
         await Assert.That(default1).IsSameReferenceAs(default2);
+    }
+
+    [Test]
+    public async Task CreateDefaultSized_UsesDefaultCeilingWithRequestedDepth()
+    {
+        var pool = ResponseBufferPool.CreateDefaultSized(30);
+
+        await Assert.That(pool.MaxArrayLength).IsEqualTo(ResponseBufferPool.DefaultMaxArrayLength);
+        await Assert.That(pool.ManagedArraysPerBucket).IsEqualTo(30);
+        await Assert.That(pool.MaxRetainedNativeBuffers).IsEqualTo(30);
+        await Assert.That(pool).IsNotSameReferenceAs(ResponseBufferPool.Default);
+        await Assert.That(ResponseBufferPool.CreateDefaultSized(30)).IsSameReferenceAs(pool);
+    }
+
+    [Test]
+    public async Task CreateDefaultSized_WithDefaultDepth_ReturnsDefaultInstance()
+    {
+        await Assert.That(ResponseBufferPool.CreateDefaultSized(4))
+            .IsSameReferenceAs(ResponseBufferPool.Default);
     }
 
     [Test]

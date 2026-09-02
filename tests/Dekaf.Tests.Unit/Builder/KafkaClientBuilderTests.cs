@@ -3,6 +3,7 @@ using System.Net.Security;
 using Dekaf.Metadata;
 using Dekaf.Networking;
 using Dekaf.Consumer;
+using Dekaf.Internal;
 using Dekaf.Producer;
 using Dekaf.Security.Sasl;
 using Dekaf.Streams;
@@ -406,6 +407,46 @@ public sealed class KafkaClientBuilderTests
         var pool = GetField<ConnectionPool>(consumer, "_connectionPool");
         var responseBufferPool = GetField<ResponseBufferPool>(pool, "_responseBufferPool");
 
+        await Assert.That(responseBufferPool.MaxArrayLength)
+            .IsEqualTo(200 * 1024 * 1024 + ResponseBufferPool.ProtocolOverheadBytes);
+    }
+
+    [Test]
+    public async Task RootClient_ConsumerConnectionPool_RetainsDeepestPrefetchWorkingSet()
+    {
+        await using var client = Kafka.Connect("broker1:9092,broker2:9092", builder => builder
+            .WithMaxConnectionsPerBroker(4));
+        await using var consumer = client.CreateConsumer<string, string>().Build();
+
+        var pool = GetField<ConnectionPool>(consumer, "_connectionPool");
+        var responseBufferPool = GetField<ResponseBufferPool>(pool, "_responseBufferPool");
+
+        var expected = PoolSizing.ForSharedClientConsumerResponseBuffers(
+            brokerCount: 2,
+            maxConnectionsPerBroker: 4);
+        await Assert.That(responseBufferPool.ManagedArraysPerBucket).IsEqualTo(expected);
+        await Assert.That(responseBufferPool.MaxRetainedNativeBuffers).IsEqualTo(expected);
+    }
+
+    [Test]
+    public async Task RootClient_ProducerConnectionPool_RetainsPeakInFlightWorkingSet()
+    {
+        await using var client = Kafka.Connect("broker1:9092,broker2:9092", builder => builder
+            .WithMaxConnectionsPerBroker(4)
+            .WithMaxInFlightRequestsPerConnection(5));
+        await using var producer = client.CreateProducer<string, string>().Build();
+
+        var pool = GetField<ConnectionPool>(producer, "_connectionPool");
+        var responseBufferPool = GetField<ResponseBufferPool>(pool, "_responseBufferPool");
+
+        var expected = PoolSizing.ForSharedPools(
+            brokerCount: 2,
+            connectionsPerBroker: 1,
+            maxInFlightRequestsPerConnection: 5,
+            batchSize: 1048576,
+            maxConnectionsPerBroker: 4).ResponseBuffersPerBucket;
+        await Assert.That(responseBufferPool.ManagedArraysPerBucket).IsEqualTo(expected);
+        await Assert.That(responseBufferPool.MaxRetainedNativeBuffers).IsEqualTo(expected);
         await Assert.That(responseBufferPool.MaxArrayLength)
             .IsEqualTo(200 * 1024 * 1024 + ResponseBufferPool.ProtocolOverheadBytes);
     }

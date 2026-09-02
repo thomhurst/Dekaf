@@ -772,20 +772,24 @@ internal sealed class KafkaClientInfrastructure : IAsyncDisposable
             batchSize: 1048576,
             maxConnectionsPerBroker: options.MaxConnectionsPerBroker);
 
+        var consumerResponseBuffers = PoolSizing.ForSharedClientConsumerResponseBuffers(
+            brokerCount: options.BootstrapServers.Count,
+            maxConnectionsPerBroker: options.MaxConnectionsPerBroker);
+
         var connectionOptions = CreateConnectionOptions(options);
         var connectionPool = new ConnectionPool(
             options.ClientId,
             connectionOptions,
             options.LoggerFactory,
             options.ConnectionsPerBroker,
-            ResponseBufferPool.Create(SharedResponseBufferFetchMaxBytes),
+            ResponseBufferPool.Create(SharedResponseBufferFetchMaxBytes, poolSizes.ResponseBuffersPerBucket),
             pipeMemoryBucketCapacity: poolSizes.PipeMemoryArraysPerBucket);
         var consumerConnectionPool = new ConnectionPool(
             options.ClientId,
             connectionOptions,
             options.LoggerFactory,
             options.ConnectionsPerBroker,
-            ResponseBufferPool.Create(SharedResponseBufferFetchMaxBytes),
+            ResponseBufferPool.Create(SharedResponseBufferFetchMaxBytes, consumerResponseBuffers),
             pipeMemoryBucketCapacity: poolSizes.PipeMemoryArraysPerBucket,
             responseMemoryAdmissionsEnabled: true);
 

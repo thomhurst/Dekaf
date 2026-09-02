@@ -4569,6 +4569,16 @@ public sealed class ConnectionOptions
 /// <c>ArrayPool&lt;byte&gt;</c> so that large multi-partition fetch responses are pooled
 /// instead of falling through to unpooled LOH allocations.
 /// </summary>
+/// <remarks>
+/// Retention depth must cover the live response working set (in-flight requests x peak
+/// connections for producers; prefetch pipeline slots x brokers x connections for
+/// consumers). Below that depth the managed buckets allocate a fresh array and the native
+/// path pays <c>AllocHGlobal</c>/<c>FreeHGlobal</c> plus first-touch page faults on every
+/// frame. Dormant memory is bounded by <see cref="ManagedArraysPerBucket"/> arrays per
+/// managed size bucket in use, plus <see cref="MaxRetainedNativeBuffers"/> native buffers
+/// in total across all native capacities (at most that many times the largest native
+/// capacity in use); native retention is released under high memory load.
+/// </remarks>
 internal sealed class ResponseBufferPool
 {
     // Managed arrays at or above this size enter the LOH and force full collections while
@@ -4589,10 +4599,17 @@ internal sealed class ResponseBufferPool
     private const int SizeTierBytes = 1024 * 1024;
 
     /// <summary>
-    /// Default shared instance used by producers, admin clients, and connections
-    /// that don't have consumer-specific configuration.
+    /// Depth of <see cref="Default"/>, the shared instance for admin clients, share consumers,
+    /// direct connections, and tests. Producers and consumers size their pools from topology
+    /// via <see cref="Internal.PoolSizing"/>.
     /// </summary>
     private const int DefaultManagedArraysPerBucket = 4;
+
+    /// <summary>
+    /// Largest native capacity that is retained. Above this, <see cref="RoundUpToPowerOfTwo"/>
+    /// no longer rounds, so every distinct frame size would need its own bucket.
+    /// </summary>
+    private const int MaxPooledNativeCapacity = 1 << 30;
 #if !NETSTANDARD2_0
     private const long NativeMemoryPressureRefreshMilliseconds = 1_000;
 #endif
@@ -4605,7 +4622,9 @@ internal sealed class ResponseBufferPool
         (int MaxArrayLength, int ManagedArraysPerBucket, int MaxRetainedNativeBuffers),
         ResponseBufferPool>
         s_sharedPools = new();
-    private readonly ConcurrentDictionary<int, NativeBufferBucket> _nativeBuckets = new();
+    // Copy-on-write: buckets are only ever added (one per power-of-two capacity seen), so
+    // rent, return, eviction, and trim can walk the array without enumerator allocations.
+    private NativeBufferBucket[] _nativeBuckets = [];
     private int _retainedNativeBufferCount;
     private int _highNativeMemoryPressure;
 #if !NETSTANDARD2_0
@@ -4648,21 +4667,36 @@ internal sealed class ResponseBufferPool
         int fetchMaxBytes,
         int managedArraysPerBucket = DefaultManagedArraysPerBucket,
         int? maxRetainedNativeBuffers = null)
-    {
-        var maxArrayLength = ComputeMaxArrayLength(fetchMaxBytes);
-        var nativeRetentionLimit = maxRetainedNativeBuffers ?? managedArraysPerBucket;
-        return maxArrayLength == DefaultMaxArrayLength
+        => GetOrAddShared(
+            ComputeMaxArrayLength(fetchMaxBytes),
+            managedArraysPerBucket,
+            maxRetainedNativeBuffers ?? managedArraysPerBucket);
+
+    /// <summary>
+    /// Returns a process-shared <see cref="ResponseBufferPool"/> with the
+    /// <see cref="DefaultMaxArrayLength"/> ceiling used for producer, admin, and coordination
+    /// traffic, retaining <paramref name="responseBuffersPerBucket"/> managed arrays per size
+    /// bucket and the same number of native buffers in total (see
+    /// <see cref="Internal.PoolSizing.SharedPoolSizes.ResponseBuffersPerBucket"/>).
+    /// </summary>
+    internal static ResponseBufferPool CreateDefaultSized(int responseBuffersPerBucket)
+        => GetOrAddShared(DefaultMaxArrayLength, responseBuffersPerBucket, responseBuffersPerBucket);
+
+    private static ResponseBufferPool GetOrAddShared(
+        int maxArrayLength,
+        int managedArraysPerBucket,
+        int maxRetainedNativeBuffers)
+        => maxArrayLength == DefaultMaxArrayLength
             && managedArraysPerBucket == DefaultManagedArraysPerBucket
-            && nativeRetentionLimit == DefaultManagedArraysPerBucket
+            && maxRetainedNativeBuffers == DefaultManagedArraysPerBucket
             ? Default
             : s_sharedPools.GetOrAdd(
-                (maxArrayLength, managedArraysPerBucket, nativeRetentionLimit),
+                (maxArrayLength, managedArraysPerBucket, maxRetainedNativeBuffers),
                 static configuration => new ResponseBufferPool(
                     configuration.MaxArrayLength,
                     configuration.ManagedArraysPerBucket,
                     configuration.MaxRetainedNativeBuffers,
                     monitorNativeMemoryPressure: true));
-    }
 
     internal static int ComputeMaxArrayLength(int fetchMaxBytes)
     {
@@ -4684,10 +4718,10 @@ internal sealed class ResponseBufferPool
     internal NativeResponseBuffer RentNative(int minimumLength)
     {
         var capacity = RoundUpToPowerOfTwo(minimumLength);
-        var bucket = _nativeBuckets.GetOrAdd(
-            capacity,
-            static _ => new NativeBufferBucket());
-        if (bucket.TryRent(out var pointer))
+        var bucket = capacity <= MaxPooledNativeCapacity
+            ? FindNativeBucket(Volatile.Read(ref _nativeBuckets), capacity)
+            : null;
+        if (bucket is not null && bucket.TryRent(out var pointer))
         {
             Interlocked.Decrement(ref _retainedNativeBufferCount);
             return NativeResponseBuffer.Rent(this, pointer, capacity);
@@ -4701,33 +4735,84 @@ internal sealed class ResponseBufferPool
 #if !NETSTANDARD2_0
         RefreshNativeMemoryPressure();
 #endif
-        if (Volatile.Read(ref _highNativeMemoryPressure) != 0)
+        if (Volatile.Read(ref _highNativeMemoryPressure) != 0 || capacity > MaxPooledNativeCapacity)
         {
             Marshal.FreeHGlobal(pointer);
             return;
         }
 
-        if (Interlocked.Increment(ref _retainedNativeBufferCount) > MaxRetainedNativeBuffers)
+        if (Interlocked.Increment(ref _retainedNativeBufferCount) > MaxRetainedNativeBuffers
+            && !TryEvictDormantBuffer(capacity))
         {
+            // Nothing of another capacity to evict: this size alone exceeds the allowance.
             Interlocked.Decrement(ref _retainedNativeBufferCount);
             Marshal.FreeHGlobal(pointer);
             return;
         }
 
-        var bucket = _nativeBuckets.GetOrAdd(
-            capacity,
-            static _ => new NativeBufferBucket());
-        bucket.Return(pointer);
+        GetOrAddNativeBucket(capacity).Return(pointer);
 
         // Pressure can begin after the first check but before this buffer is published.
         if (Volatile.Read(ref _highNativeMemoryPressure) != 0)
             TrimNativeBuffers();
     }
 
+    /// <summary>
+    /// Frees one dormant buffer whose capacity differs from <paramref name="capacity"/> so the
+    /// retained set follows the live response size. Fetch frames move between power-of-two
+    /// capacities as consumer lag or adaptive fetch sizing changes; without eviction the
+    /// stale capacity's dormant buffers hold the global allowance and every frame of the new
+    /// size is freed on return and re-allocated on rent. The global bound is unchanged: the
+    /// evicted buffer's allowance is what the returned buffer takes.
+    /// </summary>
+    private bool TryEvictDormantBuffer(int capacity)
+    {
+        foreach (var bucket in Volatile.Read(ref _nativeBuckets))
+        {
+            if (bucket.Capacity == capacity || !bucket.TryRent(out var pointer))
+                continue;
+
+            Marshal.FreeHGlobal(pointer);
+            Interlocked.Decrement(ref _retainedNativeBufferCount);
+            return true;
+        }
+
+        return false;
+    }
+
+    private NativeBufferBucket GetOrAddNativeBucket(int capacity)
+    {
+        while (true)
+        {
+            var buckets = Volatile.Read(ref _nativeBuckets);
+            var existing = FindNativeBucket(buckets, capacity);
+            if (existing is not null)
+                return existing;
+
+            var added = new NativeBufferBucket[buckets.Length + 1];
+            buckets.AsSpan().CopyTo(added);
+            var bucket = new NativeBufferBucket(capacity);
+            added[buckets.Length] = bucket;
+            if (Interlocked.CompareExchange(ref _nativeBuckets, added, buckets) == buckets)
+                return bucket;
+        }
+    }
+
+    private static NativeBufferBucket? FindNativeBucket(NativeBufferBucket[] buckets, int capacity)
+    {
+        foreach (var bucket in buckets)
+        {
+            if (bucket.Capacity == capacity)
+                return bucket;
+        }
+
+        return null;
+    }
+
     internal int TrimNativeBuffers()
     {
         var released = 0;
-        foreach (var bucket in _nativeBuckets.Values)
+        foreach (var bucket in Volatile.Read(ref _nativeBuckets))
             released += bucket.Trim();
 
         if (released > 0)
@@ -4774,7 +4859,7 @@ internal sealed class ResponseBufferPool
 
     private static int RoundUpToPowerOfTwo(int value)
     {
-        if (value > 1 << 30)
+        if (value > MaxPooledNativeCapacity)
             return value;
 
         var rounded = (uint)(value - 1);
@@ -4787,9 +4872,11 @@ internal sealed class ResponseBufferPool
         return (int)rounded;
     }
 
-    private sealed class NativeBufferBucket
+    private sealed class NativeBufferBucket(int capacity)
     {
         private readonly ConcurrentStack<IntPtr> _buffers = new();
+
+        internal int Capacity => capacity;
 
         internal bool TryRent(out IntPtr pointer) => _buffers.TryPop(out pointer);
 

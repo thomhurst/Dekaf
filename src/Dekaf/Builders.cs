@@ -1690,7 +1690,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private TimeSpan? _metadataMaxAge;
     private IsolationLevel _isolationLevel = IsolationLevel.ReadUncommitted;
     private IRetryPolicy? _retryPolicy;
-    private int _prefetchPipelineDepth = 3;
+    private int _prefetchPipelineDepth = ConsumerOptions.DefaultPrefetchPipelineDepth;
     private int _connectionsPerBroker = 2;
     private bool _enableAdaptiveConnections = true;
     private int _maxConnectionsPerBroker = ConsumerOptions.DefaultMaxConnectionsPerBroker;
@@ -2622,14 +2622,14 @@ public sealed class ConsumerBuilder<TKey, TValue>
     /// which would saturate broker connections and increase memory usage from buffered
     /// responses without proportional throughput gain.
     /// </summary>
-    /// <param name="depth">The pipeline depth (1-8). Default is 2.</param>
+    /// <param name="depth">The pipeline depth (1-8). Default is 3.</param>
     /// <returns>The builder instance for method chaining.</returns>
     public ConsumerBuilder<TKey, TValue> WithPrefetchPipelineDepth(int depth)
     {
         // Capped at 8: beyond this, additional in-flight fetches saturate broker
         // connections and buffer memory without meaningful throughput improvement.
-        if (depth is < 1 or > 8)
-            throw new ArgumentOutOfRangeException(nameof(depth), "Prefetch pipeline depth must be between 1 and 8");
+        if (depth is < 1 or > ConsumerOptions.MaxPrefetchPipelineDepth)
+            throw new ArgumentOutOfRangeException(nameof(depth), $"Prefetch pipeline depth must be between 1 and {ConsumerOptions.MaxPrefetchPipelineDepth}");
         _prefetchPipelineDepth = depth;
         return this;
     }

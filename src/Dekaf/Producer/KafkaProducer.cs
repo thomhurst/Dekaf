@@ -542,7 +542,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             },
             loggerFactory,
             options.ConnectionsPerBroker,
-            ResponseBufferPool.Default,
+            ResponseBufferPool.CreateDefaultSized(sharedPoolSizes.ResponseBuffersPerBucket),
             pipeMemoryBucketCapacity: sharedPoolSizes.PipeMemoryArraysPerBucket,
             telemetryMetricCollector: telemetryMetricCollector);
 
