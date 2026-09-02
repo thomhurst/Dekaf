@@ -17,8 +17,9 @@ namespace Dekaf.Consumer;
 /// </param>
 /// <param name="ConnectionCount">Applied routing width the plan split partitions across.</param>
 /// <param name="MetadataSnapshot">
-/// Cluster metadata snapshot current when the plan was stamped; any refresh (leader or topic
-/// identity changes) hands control back to the loop.
+/// Cluster metadata snapshot the plan was grouped against, i.e. the one whose topic identities
+/// had been processed when the plan was stamped; any refresh (leader or topic identity changes)
+/// hands control back to the loop.
 /// </param>
 /// <param name="PreferredReplicaExpiresAtTimestamp">
 /// Earliest preferred-replica expiry in the plan, or <c>long.MaxValue</c> when none applies.

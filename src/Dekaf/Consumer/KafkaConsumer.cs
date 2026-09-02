@@ -4142,10 +4142,19 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     /// <summary>
     /// Stamps the plan the loop is about to dispatch. Only a plan served straight from the
     /// partition cache can be re-validated by version later; anything else (an uncached result
-    /// or a revocation-filtered copy) is dispatched as single fetches, as before.
+    /// or a revocation-filtered copy) is dispatched as single fetches, as before. The stamped
+    /// metadata snapshot must be the one whose topic identities
+    /// <see cref="GroupPartitionsByBrokerAsync"/> processed (published as
+    /// <see cref="_observedTopicIdentityMarker"/>); a refresh that landed after that pass is
+    /// left for the loop's next iteration, otherwise a re-issuing task would keep accepting a
+    /// snapshot whose topic identity changes were never applied to its fetch positions.
     /// </summary>
     private PrefetchPlanStamp CapturePrefetchPlanStamp(Dictionary<int, List<TopicPartition>> partitionsByBroker)
     {
+        var metadataSnapshot = _metadataManager.Metadata.CaptureSnapshot();
+        if (!ReferenceEquals(metadataSnapshot, Volatile.Read(ref _observedTopicIdentityMarker)))
+            return PrefetchPlanStamp.SingleFetch;
+
         lock (_partitionCacheLock)
         {
             if (_cachedPartitionsByBroker is not { } cached
@@ -4158,7 +4167,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 CanReissue: true,
                 Volatile.Read(ref _assignmentVersion),
                 Volatile.Read(ref _appliedConnectionCount),
-                _metadataManager.Metadata.CaptureSnapshot(),
+                metadataSnapshot,
                 cached.PreferredReplicaExpiresAtTimestamp);
         }
     }
@@ -4170,8 +4179,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     /// covered: the partition-cache version (assignment, pause/resume, preferred replicas,
     /// snapshots), the fetch-buffer epoch (seeks, resets, revocations), routing width and
     /// in-progress transitions, pending coordinator revocations, metadata refreshes (leader and
-    /// topic identity changes), preferred-replica expiry, prefetch-memory admission, and
-    /// coordinator/assignment currency.
+    /// topic identity changes: the current snapshot must be the stamped one, and the stamped one
+    /// must still be the snapshot whose topic identities were last processed), preferred-replica
+    /// expiry, prefetch-memory admission, and coordinator/assignment currency.
     /// </summary>
     private bool CanReissueBrokerPrefetch(in PrefetchPlanStamp plan, int fetchBufferEpoch)
     {
@@ -4182,6 +4192,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             || Volatile.Read(ref _coordinatorRevokedPartitionsPendingFetchClearMarkerPresent) != 0
             || HasPendingCoordinatorRevocations()
             || !ReferenceEquals(_metadataManager.Metadata.CaptureSnapshot(), plan.MetadataSnapshot)
+            || !ReferenceEquals(Volatile.Read(ref _observedTopicIdentityMarker), plan.MetadataSnapshot)
             || Volatile.Read(ref _consumerDisposed) != 0
             || Volatile.Read(ref _closed) != 0)
         {

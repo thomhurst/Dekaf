@@ -87,6 +87,65 @@ public sealed class KafkaConsumerPrefetchReissueTests
         await Assert.That(connection.LeaseAcquisitionCount).IsEqualTo(2);
     }
 
+    [Test]
+    [Timeout(60_000)]
+    public async Task MetadataRefresh_EndsTaskAndNextTaskReissuesOnRefreshedSnapshot(CancellationToken cancellationToken)
+    {
+        var connection = new FetchServingConnection();
+        await using var metadataManager = CreateMetadataManager(connection);
+        await using var consumer = CreateConsumer(connection, metadataManager);
+        consumer.IncrementalAssign([new TopicPartitionOffset(Topic, 0, 10)]);
+
+        await StartPrefetchAsync(consumer, cancellationToken);
+        await TestWait.UntilAsync(() => connection.FetchCount >= 3, WaitTimeout);
+        await Assert.That(connection.LeaseAcquisitionCount).IsEqualTo(1);
+
+        // Any refresh publishes a new snapshot, even with identical content; the plan is stamped
+        // with the snapshot it was grouped against, so the task hands back to the loop.
+        metadataManager.Metadata.Update(CreateMetadataResponse());
+
+        await TestWait.UntilAsync(() => connection.LeaseAcquisitionCount == 2, WaitTimeout);
+        var fetchesAtRefresh = connection.FetchCount;
+        await TestWait.UntilAsync(() => connection.FetchCount >= fetchesAtRefresh + 3, WaitTimeout);
+        await Assert.That(connection.LeaseAcquisitionCount).IsEqualTo(2);
+    }
+
+    [Test]
+    [Timeout(60_000)]
+    public async Task TopicIdentityMarkerBehindPlan_EndsTaskUntilLoopReprocessesSnapshot(CancellationToken cancellationToken)
+    {
+        var connection = new FetchServingConnection();
+        await using var metadataManager = CreateMetadataManager(connection);
+        await using var consumer = CreateConsumer(connection, metadataManager);
+        consumer.IncrementalAssign([new TopicPartitionOffset(Topic, 0, 10)]);
+
+        await StartPrefetchAsync(consumer, cancellationToken);
+        await TestWait.UntilAsync(() => connection.FetchCount >= 3, WaitTimeout);
+        await Assert.That(connection.LeaseAcquisitionCount).IsEqualTo(1);
+
+        // The current snapshot still matches the plan, but the topic-identity pass no longer
+        // vouches for it (an assignment publish replaces the marker the same way). The task must
+        // stop re-issuing; the loop reprocesses the snapshot, restamps, and a fresh task resumes.
+        SetObservedTopicIdentityMarker(consumer, new object());
+
+        await TestWait.UntilAsync(() => connection.LeaseAcquisitionCount == 2, WaitTimeout);
+        var fetchesAtRestamp = connection.FetchCount;
+        await TestWait.UntilAsync(() => connection.FetchCount >= fetchesAtRestamp + 3, WaitTimeout);
+        await Assert.That(connection.LeaseAcquisitionCount).IsEqualTo(2);
+        await Assert.That(GetObservedTopicIdentityMarker(consumer))
+            .IsSameReferenceAs(metadataManager.Metadata.CaptureSnapshot());
+    }
+
+    private static object? GetObservedTopicIdentityMarker(KafkaConsumer<string, string> consumer) =>
+        GetPrivateField("_observedTopicIdentityMarker").GetValue(consumer);
+
+    private static void SetObservedTopicIdentityMarker(KafkaConsumer<string, string> consumer, object marker) =>
+        GetPrivateField("_observedTopicIdentityMarker").SetValue(consumer, marker);
+
+    private static FieldInfo GetPrivateField(string name) =>
+        typeof(KafkaConsumer<string, string>).GetField(name, BindingFlags.NonPublic | BindingFlags.Instance)
+        ?? throw new InvalidOperationException($"{name} field not found.");
+
     private static async Task StartPrefetchAsync(
         KafkaConsumer<string, string> consumer,
         CancellationToken cancellationToken)
@@ -122,11 +181,7 @@ public sealed class KafkaConsumerPrefetchReissueTests
             pool,
             metadataManager);
 
-        var initialized = typeof(KafkaConsumer<string, string>).GetField(
-            "_initialized",
-            BindingFlags.NonPublic | BindingFlags.Instance)
-            ?? throw new InvalidOperationException("_initialized field not found.");
-        initialized.SetValue(consumer, true);
+        GetPrivateField("_initialized").SetValue(consumer, true);
         return consumer;
     }
 
@@ -140,35 +195,37 @@ public sealed class KafkaConsumerPrefetchReissueTests
             ApiKey.Fetch,
             FetchRequest.LowestSupportedVersion,
             FetchRequest.HighestSupportedVersion);
-        metadataManager.Metadata.Update(new MetadataResponse
-        {
-            Brokers =
-            [
-                new BrokerMetadata { NodeId = 1, Host = "localhost", Port = 9092 }
-            ],
-            Topics =
-            [
-                new TopicMetadata
-                {
-                    Name = Topic,
-                    TopicId = TopicId,
-                    ErrorCode = ErrorCode.None,
-                    Partitions =
-                    [
-                        new PartitionMetadata
-                        {
-                            PartitionIndex = 0,
-                            LeaderId = 1,
-                            ErrorCode = ErrorCode.None,
-                            ReplicaNodes = [1],
-                            IsrNodes = [1]
-                        }
-                    ]
-                }
-            ]
-        });
+        metadataManager.Metadata.Update(CreateMetadataResponse());
         return metadataManager;
     }
+
+    private static MetadataResponse CreateMetadataResponse() => new()
+    {
+        Brokers =
+        [
+            new BrokerMetadata { NodeId = 1, Host = "localhost", Port = 9092 }
+        ],
+        Topics =
+        [
+            new TopicMetadata
+            {
+                Name = Topic,
+                TopicId = TopicId,
+                ErrorCode = ErrorCode.None,
+                Partitions =
+                [
+                    new PartitionMetadata
+                    {
+                        PartitionIndex = 0,
+                        LeaderId = 1,
+                        ErrorCode = ErrorCode.None,
+                        ReplicaNodes = [1],
+                        IsrNodes = [1]
+                    }
+                ]
+            }
+        ]
+    };
 
     /// <summary>
     /// Answers every fetch with an empty response after a short broker-like wait, and counts
