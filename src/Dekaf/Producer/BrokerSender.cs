@@ -2541,7 +2541,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
         var batch = coalescedBatches[0];
         if (batch.SealedAsSoleDemand)
-            return false;
+            return !batch.HasPendingSoleDemand;
 
         return !isTransactional || batch.RecordCount != 1 || batch.CompletionSourcesCount != 1;
     }

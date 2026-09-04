@@ -20,6 +20,36 @@ public sealed class BrokerSenderSoleDemandWaveTests : ScriptedProduceResponseFix
     private const string Topic = "sole-demand-topic";
 
     [Test]
+    public async Task ShouldMicroLinger_CancelledSoleWaiter_KeepsSpinningAfterSourceReuse()
+    {
+        var source = new PooledValueTaskSource<RecordMetadata>();
+        var delivery = source.Task;
+        var batch = new ReadyBatch();
+        batch.Initialize(new TopicPartition(Topic, 0), new RecordBatch { Records = [] },
+            [source], completionSourcesCount: 1, recordCount: 1, dataSize: 100);
+        batch.SealedAsSoleDemand = true;
+        using var cancellation = new CancellationTokenSource();
+        source.RegisterCancellation(cancellation.Token);
+
+        await Assert.That(BrokerSender.ShouldMicroLinger([batch], 1, isTransactional: false)).IsFalse();
+        cancellation.Cancel();
+        await Assert.That(BrokerSender.ShouldMicroLinger([batch], 1, isTransactional: false)).IsTrue();
+        await Assert.That(BrokerSender.ShouldMicroLinger([batch], 1, isTransactional: true)).IsTrue();
+
+        await Assert.That(async () => await delivery).Throws<OperationCanceledException>();
+        // GetResult resets the source to Pending. The original batch must not mistake
+        // this new incarnation for its own still-waiting caller.
+        await Assert.That(source.Task.IsCompleted).IsFalse();
+        await Assert.That(BrokerSender.ShouldMicroLinger([batch], 1, isTransactional: false)).IsTrue();
+
+        var nextBatch = new ReadyBatch();
+        nextBatch.Initialize(new TopicPartition(Topic, 1), new RecordBatch { Records = [] },
+            [source], completionSourcesCount: 1, recordCount: 1, dataSize: 100);
+        nextBatch.SealedAsSoleDemand = true;
+        await Assert.That(BrokerSender.ShouldMicroLinger([nextBatch], 1, isTransactional: false)).IsFalse();
+    }
+
+    [Test]
     public async Task ShouldMicroLinger_SoleDemandSingleBatchWave_SkipsSpin()
     {
         var pool = new ValueTaskSourcePool<RecordMetadata>();

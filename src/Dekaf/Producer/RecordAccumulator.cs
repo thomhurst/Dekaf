@@ -9639,9 +9639,32 @@ internal sealed class ReadyBatch
     /// honoured on the first send attempt: marking the batch for retry (sender carry-over,
     /// loop-exit redelivery, <see cref="Reenqueued"/>) clears it, because by then backoff has
     /// given other callers time to enqueue siblings. It is also cleared with the rest of the
-    /// per-lifecycle state in Initialize/Reset.
+    /// per-lifecycle state in Initialize/Reset. The sender additionally checks
+    /// <see cref="HasPendingSoleDemand"/> because cancellation can release the caller
+    /// during the first attempt, before any retry clears this seal-time hint.
     /// </summary>
-    internal bool SealedAsSoleDemand { get; set; }
+    internal bool SealedAsSoleDemand
+    {
+        get => _sealedAsSoleDemand;
+        set
+        {
+            if (value)
+                _soleDemandCancellationVersion = _completionSourcesArray![0].CancellationVersion;
+            _sealedAsSoleDemand = value;
+        }
+    }
+
+    private bool _sealedAsSoleDemand;
+    private long _soleDemandCancellationVersion;
+
+    /// <summary>
+    /// Cancellation releases the sole caller before delivery. Compare the captured version
+    /// even after that caller consumes the cancellation and the completion source is reused.
+    /// Only the sole-demand wave reads this state; no per-message cancellation hook is needed.
+    /// </summary>
+    internal bool HasPendingSoleDemand
+        => _completionSourcesArray![0].IsPending
+            && _completionSourcesArray[0].CancellationVersion == _soleDemandCancellationVersion;
 
     /// <summary>
     /// True while this batch owns a crash-recovery mute reference. Kept separate from

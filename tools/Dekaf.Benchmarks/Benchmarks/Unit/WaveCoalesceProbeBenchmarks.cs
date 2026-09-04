@@ -101,7 +101,7 @@ public class WaveCoalesceSoleDemandBenchmarks
         batch.Initialize(
             new TopicPartition("wave-coalesce", partition),
             new RecordBatch { Records = Array.Empty<Record>() },
-            new PooledValueTaskSource<RecordMetadata>[1],
+            [new PooledValueTaskSource<RecordMetadata>()],
             completionSourcesCount: 1,
             recordCount: 1,
             dataSize: 100);
