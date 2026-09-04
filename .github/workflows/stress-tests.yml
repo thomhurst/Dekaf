@@ -1,873 +1,113 @@
 name: Stress Tests
-run-name: Stress Tests (${{ github.event.inputs.full_run == 'true' && 'all / weekly full' || github.event.inputs.lane || 'all' }}${{ github.event_name == 'workflow_dispatch' && github.event.inputs.full_run != 'true' && ' / dekaf only' || '' }}${{ github.event.inputs.full_run != 'true' && github.event.inputs.dispatch_shape != 'lane-default' && github.event.inputs.dispatch_shape && format(' / {0}', github.event.inputs.dispatch_shape) || '' }}${{ github.event.inputs.baseline_sha && ' / exact-SHA A-B-A' || '' }})
-
+run-name: Five-minute PR A-B-A comparisons (2990, 2992, 2993)
 on:
-  schedule:
-    - cron: '0 2 * * 0'  # Weekly Sunday 2 AM UTC
   workflow_dispatch:
     inputs:
-      # Required so every manual dispatch makes an explicit cost decision: each
-      # lane is its own paid 8-core runner job (up to 3 hours), so pick the single
-      # lane whose data you need. Manual dispatches run Dekaf only by default —
-      # Confluent's numbers don't change with Dekaf code. full_run is the explicit
-      # exception for a weekly-equivalent paired comparison and publish run.
-      # Manual dispatches also default to the cheap dispatch_shape (below);
-      # baseline_sha explicitly replaces it with three baseline/candidate/baseline
-      # segments for one supported producer lane.
       lane:
-        description: 'Stress lane to run (one paid runner job per lane; "all" is Dekaf-only unless full_run is enabled)'
+        description: 'Temporary workflow: only the three explicitly pinned PRs'
         required: true
-        type: choice
-        options:
-          - producer-1b
-          - producer-3b
-          - producer-idempotent-1b
-          - producer-idempotent-3b
-          - producer-acks-all-1b
-          - producer-acks-all-3b
-          - producer-transactional-3b
-          - producer-roundtrip-steady-1b
-          - consumer-1b
-          - consumer-batch-1b
-          - consumer-raw-1b
-          - consumer-raw-batch-1b
-          - all
+        default: all
       duration_minutes:
-        description: 'Test duration in minutes'
-        required: false
-        default: '15'
-      message_size:
-        description: 'Message size in bytes'
-        required: false
-        default: '1000'
-      roundtrip_steady_seconds:
-        description: 'Measured producer duration for steady-state round-trip scenario'
-        required: false
-        default: '60'
-      consumer_fetch_diagnostics:
-        description: 'Enable Dekaf consumer fetch diagnostics (debug runs only; adds Dekaf-only overhead to the measured window)'
-        required: false
-        default: 'false'
-      # Keep this choice input below duration_minutes: the options-sync test in
-      # .github/scripts/test_stress_trend.py slices the workflow text from the
-      # first 'options:' to 'duration_minutes:' to read the lane list.
-      # Manual dispatches default to the cheap shape (one sample, no Dekaf
-      # 3-connection pass), so a single-lane feedback run costs one measured
-      # duration. lane-default restores the lane's full shape (extra samples +
-      # 3conn pass where the lane defines them) but still runs Dekaf only unless
-      # full_run is enabled. Scheduled runs always use the full paired shape.
-      dispatch_shape:
-        description: 'cheap = 1 sample/no 3conn; cheap-with-3conn adds control pass; lane-default = full lane shape'
-        required: false
-        type: choice
-        default: cheap
-        options:
-          - cheap
-          - cheap-with-3conn
-          - lane-default
-      full_run:
-        description: 'Weekly-equivalent paired matrix; overrides lane/shape and publishes docs/history (12 paid jobs; main only)'
-        required: false
-        type: boolean
-        default: false
+        description: 'Measured minutes per revision/configuration; fixed at five'
+        default: '5'
       baseline_sha:
-        description: 'Duration-based producer lanes only: exact SHA for baseline → candidate → baseline; triples duration and blocks on regression/noisy controls'
-        required: false
-        default: ''
-      profile_mode:
-        description: 'Attach phased diagnostics to one Dekaf lane (off for normal acceptance runs)'
-        required: false
-        type: choice
-        default: 'off'
-        options:
-          - 'off'
-          - cpu
-          - contention
-          - gc
-          - full
-      profile_windows:
-        description: 'Trace windows as measured-phase offset_seconds:duration_seconds:label'
-        required: false
-        default: '60:30:healthy,330:30:pre-collapse,420:30:collapse,600:30:degraded'
-      profile_counters:
-        description: 'Collect one-second System.Runtime + Dekaf meter counters across the measured phase'
-        required: false
-        type: boolean
-        default: true
-      profile_stacks:
-        description: 'Capture a managed stack snapshot at each trace window'
-        required: false
-        type: boolean
-        default: true
-
+        description: 'Exact main SHA'
+        default: c5d993b4c3e6390912f22ee2d97bb3482452f13a
 permissions:
   contents: read
-
-# Scoped per lane+event so a cheap single-lane dispatch is not queued for hours
-# behind a full-matrix run. Publishing runs share the all-schedule group because
-# they update the same docs/history branch; other lanes use isolated VMs and
-# share no mutable state.
-concurrency:
-  group: stress-tests-${{ (github.event_name == 'schedule' || github.event.inputs.full_run == 'true') && 'all-schedule' || format('{0}-{1}', github.event.inputs.lane || 'all', github.event_name) }}
-  cancel-in-progress: false
-
 env:
   ContinuousIntegrationBuild: true
   Deterministic: true
-
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
 jobs:
-  # Resolves the lane input to the matrix that actually runs, on a free runner,
-  # before any paid 8-core runner spins up. Keep the lane list here in sync with
-  # the workflow_dispatch choice options above (enforced by
-  # test_workflow_lane_options_match_selectable_lanes in .github/scripts).
-  select-lanes:
-    name: Select Lanes
-    runs-on: ubuntu-latest
-    outputs:
-      matrix: ${{ steps.select.outputs.matrix }}
-      full_run: ${{ steps.select.outputs.full_run }}
-    steps:
-      - name: Select lanes for this run
-        id: select
-        env:
-          LANE: ${{ github.event.inputs.lane }}
-          DISPATCH_SHAPE: ${{ github.event.inputs.dispatch_shape }}
-          FULL_RUN: ${{ github.event.inputs.full_run }}
-          CONSUMER_FETCH_DIAGNOSTICS: ${{ github.event.inputs.consumer_fetch_diagnostics }}
-          BASELINE_SHA: ${{ github.event.inputs.baseline_sha }}
-          PROFILE_MODE: ${{ github.event.inputs.profile_mode }}
-          EVENT_NAME: ${{ github.event_name }}
-        run: |
-          # The UI enforces the required choice input, but API/CLI dispatches can
-          # omit it; fail fast here rather than defaulting a manual run to the
-          # full (expensive) matrix. Scheduled runs have no inputs and always run
-          # the full matrix.
-          if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ -z "$LANE" ]; then
-            echo "::error::Missing required 'lane' input. Pass -f lane=<lane> (single paid-runner job) or -f lane=all for the full matrix."
-            exit 1
-          fi
-          lane="${LANE:-all}"
-
-          # Scheduled runs are full by definition. Manual full_run is the explicit
-          # paid/publishing override: it runs only from main and forces the same
-          # all-lane selection as the weekly schedule.
-          full_run=false
-          if [ "$EVENT_NAME" = "schedule" ]; then
-            full_run=true
-          elif [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$FULL_RUN" = "true" ]; then
-            if [ "$GITHUB_REF" != "refs/heads/main" ]; then
-              echo "::error::full_run must be dispatched from main so docs/history publishing and the regression gate can run."
-              exit 1
-            fi
-            full_run=true
-            lane="all"
-          fi
-
-          # Normal manual dispatches remain Dekaf-only. Full runs retain each
-          # lane's paired/Dekaf-only client definition.
-          client=""
-          if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$full_run" != "true" ]; then
-            client="dekaf"
-          fi
-
-          # Dispatch-shape override. Empty (scheduled runs) means lane-default;
-          # the dispatch UI defaults to the cheap shape.
-          shape="$DISPATCH_SHAPE"
-          [ "$shape" = "lane-default" ] && shape=""
-          case "$shape" in
-            ""|cheap|cheap-with-3conn) ;;
-            *)
-              echo "::error::Unknown dispatch_shape '$shape'. Valid values: cheap, cheap-with-3conn, lane-default."
-              exit 1
-              ;;
-          esac
-          if [ "$full_run" = "true" ]; then
-            shape=""
-          fi
-
-          if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$full_run" = "true" ]; then
-            echo "::notice::Manual full_run selected: running all 12 paid lanes with the weekly paired shape, then publishing docs/history."
-          elif [ "$lane" = "all" ] && [ "$EVENT_NAME" = "workflow_dispatch" ]; then
-            # Surface the cost/publish reality before 12 paid runners start:
-            # normal manual runs are Dekaf-only and do not publish docs/history.
-            echo "::notice::Manual lane=all runs every lane Dekaf-only and does not publish docs/history; enable full_run for the weekly paired publish run."
-          fi
-          if [ "$full_run" = "true" ] && [ "$CONSUMER_FETCH_DIAGNOSTICS" = "true" ]; then
-            echo "::error::full_run cannot enable consumer_fetch_diagnostics because its Dekaf-only overhead would invalidate the published comparison."
-            exit 1
-          fi
-
-          profile_mode="${PROFILE_MODE:-off}"
-          case "$profile_mode" in
-            off|cpu|contention|gc|full) ;;
-            *)
-              echo "::error::Unknown profile_mode '$profile_mode'. Valid values: off, cpu, contention, gc, full."
-              exit 1
-              ;;
-          esac
-          if [ "$profile_mode" != "off" ] && [ "$lane" = "all" ]; then
-            echo "::error::Profiling requires one explicit lane. It is diagnostic, not a sweep."
-            exit 1
-          fi
-
-          baseline_sha="$BASELINE_SHA"
-          if [ -n "$baseline_sha" ]; then
-            if ! [[ "$baseline_sha" =~ ^[0-9a-fA-F]{40}$ ]]; then
-              echo "::error::baseline_sha must be an exact 40-character Git SHA."
-              exit 1
-            fi
-            if [ "$lane" = "all" ]; then
-              echo "::error::Exact-SHA A-B-A requires one explicit lane."
-              exit 1
-            fi
-            if [ "$profile_mode" != "off" ]; then
-              echo "::error::Exact-SHA A-B-A and profiling are separate measurement modes."
-              exit 1
-            fi
-            case "$lane" in
-              producer-1b|producer-3b|producer-idempotent-1b|producer-idempotent-3b|producer-acks-all-1b|producer-acks-all-3b) ;;
-              *)
-                echo "::error::Exact-SHA A-B-A requires a duration-based producer lane with delivery-latency metrics."
-                exit 1
-                ;;
-            esac
-          fi
-
-          # timeout_minutes rationale: at a 30-minute dispatch the paired_samples=2
-          # lanes run four paired client durations plus one 3-connection duration
-          # (180 min); acks-all 1-broker runs four measured durations (150 min);
-          # all lanes leave setup/publish headroom. Reduced dispatch shapes scale
-          # these budgets down proportionally to surviving measured durations
-          # (see the jq below).
-          cat > lanes.json << 'EOF'
-          [
-            {"lane": "producer-1b", "scenario": "producer", "client": "all", "brokers": 1, "paired_samples": 2, "run_3conn": true, "artifact_suffix": "-with-3conn", "timeout_minutes": 180, "name": "Producer (Paired)"},
-            {"lane": "producer-3b", "scenario": "producer", "client": "all", "brokers": 3, "run_3conn": true, "artifact_suffix": "-with-3conn", "timeout_minutes": 150, "name": "Producer (Paired, 3 Brokers)"},
-            {"lane": "producer-idempotent-1b", "scenario": "producer-idempotent", "client": "all", "brokers": 1, "paired_samples": 2, "run_3conn": true, "artifact_suffix": "-with-3conn", "timeout_minutes": 180, "name": "Producer Idempotent (Paired)"},
-            {"lane": "producer-idempotent-3b", "scenario": "producer-idempotent", "client": "all", "brokers": 3, "run_3conn": true, "artifact_suffix": "-with-3conn", "timeout_minutes": 150, "name": "Producer Idempotent (Paired, 3 Brokers)"},
-            {"lane": "producer-acks-all-1b", "scenario": "producer-acks-all", "client": "all", "brokers": 1, "paired_samples": 2, "timeout_minutes": 150, "name": "Producer Acks All (Paired)"},
-            {"lane": "producer-acks-all-3b", "scenario": "producer-acks-all", "client": "all", "brokers": 3, "timeout_minutes": 120, "name": "Producer Acks All (Paired, 3 Brokers)"},
-            {"lane": "producer-transactional-3b", "scenario": "producer-transactional", "client": "all", "brokers": 3, "timeout_minutes": 150, "name": "Transactional EOS (Paired, 3 Brokers)"},
-            {"lane": "producer-roundtrip-steady-1b", "scenario": "producer-roundtrip-steady", "client": "all", "brokers": 1, "message_size": 128, "roundtrip_steady_seconds": 60, "timeout_minutes": 90, "name": "Producer → Consumer Round-Trip Steady State (Paired)"},
-            {"lane": "consumer-1b", "scenario": "consumer", "client": "all", "brokers": 1, "timeout_minutes": 90, "name": "Consumer (Paired)"},
-            {"lane": "consumer-batch-1b", "scenario": "consumer-batch", "client": "dekaf", "brokers": 1, "timeout_minutes": 60, "name": "Dekaf Consumer Batch"},
-            {"lane": "consumer-raw-1b", "scenario": "consumer-raw", "client": "dekaf", "brokers": 1, "timeout_minutes": 60, "name": "Dekaf Consumer Raw"},
-            {"lane": "consumer-raw-batch-1b", "scenario": "consumer-raw-batch", "client": "dekaf", "brokers": 1, "timeout_minutes": 60, "name": "Dekaf Consumer Raw Batch"}
-          ]
-          EOF
-
-          # The manual dekaf override applies only to paired lanes (client ==
-          # "all"): Dekaf-only lanes keep their client, and overridden lanes
-          # drop to one sample — paired_samples exists to alternate client
-          # order, which is meaningless for a single client. The Dekaf-only
-          # 3-connection pass is the dispatch shape's call (cheap drops it;
-          # cheap-with-3conn and lane-default keep it where the lane defines
-          # it). timeout_minutes scales down proportionally to the measured
-          # durations that survive the overrides, so a hung reduced dispatch
-          # cannot hold a paid runner for the full-shape budget. A-B-A reserves
-          # three segment budgets; profile runs keep the lane budget because
-          # attach tooling adds overhead outside that per-duration model.
-          matrix=$(jq -c --arg lane "$lane" --arg client "$client" --arg shape "$shape" --arg profile_mode "$profile_mode" --arg baseline_sha "$baseline_sha" '
-            def segments: ((.paired_samples // 1) * (if .client == "all" then 2 else 1 end)) + (if .run_3conn == true then 1 else 0 end);
-            def drop_3conn: .run_3conn = false | .artifact_suffix = "";
-            {include: [ .[]
-              | select($lane == "all" or .lane == $lane)
-              | segments as $full_segments
-              | ((.timeout_minutes / $full_segments) | ceil) as $segment_budget
-              | if $client != "" and .client == "all" then
-                  .client = $client
-                  | .paired_samples = 1
-                else . end
-              | if $shape != "" then .paired_samples = 1 else . end
-              | if $shape == "cheap" then drop_3conn else . end
-              | if $baseline_sha != "" then
-                  .baseline_sha = $baseline_sha
-                  | .client = "dekaf"
-                  | .paired_samples = 1
-                  | drop_3conn
-                  | .artifact_suffix = "-aba"
-                  | .timeout_minutes = $segment_budget * 3
-                elif $profile_mode != "off" then
-                  .client = "dekaf"
-                  | .paired_samples = 1
-                  | .run_3conn = false
-                  | .artifact_suffix = "-profile"
-                else
-                  if segments < $full_segments then .timeout_minutes = $segment_budget * segments else . end
-                end
-            ]}' lanes.json)
-          count=$(echo "$matrix" | jq '.include | length')
-          if [ "$count" -eq 0 ]; then
-            echo "::error::Unknown lane '$lane'. Valid lanes: all $(jq -r '[.[].lane] | join(" ")' lanes.json)"
-            exit 1
-          fi
-
-          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
-          # Only scheduled or explicitly opted-in manual full runs may publish.
-          # Normal manual runs stay single-client/partial and would wipe rows or
-          # ratio columns from the regenerated docs/history tables.
-          echo "full_run=$full_run" >> "$GITHUB_OUTPUT"
-          echo "Selected $count lane(s) for '$lane'${client:+ (client override: $client)}${shape:+ (shape: $shape)}${profile_mode:+ (profile: $profile_mode)}${baseline_sha:+ (baseline A-B-A: $baseline_sha)}"
-
-  # Run each scenario in parallel. Comparable clients run sequentially inside the
-  # same job/VM so published ratios share hardware and noisy-neighbor conditions;
-  # 1-broker producer acceptance lanes repeat in both client orders.
-  stress-test:
-    needs: select-lanes
+  compare:
+    name: PR ${{ matrix.pr }} — ${{ matrix.scenario }}
+    runs-on: ubicloud-standard-8
+    timeout-minutes: 55
     strategy:
       fail-fast: false
-      matrix: ${{ fromJson(needs.select-lanes.outputs.matrix) }}
-
-    name: ${{ matrix.name }}
-    # 8 vCPUs, split so the client under test is the measured bottleneck:
-    # brokers are pinned to BROKER_CPUS, the client to CLIENT_CPUS. On a shared-core
-    # runner both clients just saturate the broker and report identical numbers.
-    runs-on: ubicloud-standard-8
-    timeout-minutes: ${{ matrix.timeout_minutes }}
+      max-parallel: 3
+      matrix:
+        include:
+          - pr: 2990
+            sha: 9778462c0d380e331684eb0ae9cd4d8f392c089c
+            scenario: producer-async
+            lingers: '0 5'
+            gc_adaptation: '1'
+          - pr: 2992
+            sha: 3d12aeef9dd45e196c7700230801ed7b821b17bc
+            scenario: consumer
+            lingers: '5'
+            gc_adaptation: '0'
+          - pr: 2993
+            sha: 647afa58f4c0ad32209507a4300047dd57fada50
+            scenario: consumer
+            lingers: '5'
+            gc_adaptation: '0'
     env:
+      PR_NUMBER: ${{ matrix.pr }}
+      CANDIDATE_SHA: ${{ matrix.sha }}
+      BASELINE_SHA: ${{ inputs.baseline_sha }}
+      DURATION_MINUTES: ${{ inputs.duration_minutes }}
+      SCENARIO: ${{ matrix.scenario }}
+      LINGERS: ${{ matrix.lingers }}
+      DOTNET_GCDynamicAdaptationMode: ${{ matrix.gc_adaptation }}
+      KAFKA_BOOTSTRAP_SERVERS: localhost:9092
+      KAFKA_TEST_IMAGE_TAG: '4.3.1'
       BROKER_CPUS: 0-5
       CLIENT_CPUS: 6,7
-      # .NET 10 DATAS can shrink Server GC heap count at Gen2 boundaries on the
-      # two-core consumer runner, creating permanent throughput steps unrelated to
-      # either Kafka client. Pin consumer jobs to stable Server GC topology so paired
-      # comparisons measure client work; producer jobs retain the runtime default.
-      DOTNET_GCDynamicAdaptationMode: ${{ startsWith(matrix.scenario, 'consumer') && '0' || '1' }}
-      # Broker log dirs live on tmpfs so disk I/O never caps ingestion. Sized above the
-      # worst-case retention overshoot (see KafkaEnvironment.RetentionConfig for the
-      # math); a fill halts the broker, so the disk monitor below samples usage during
-      # the run to make one visible in the job output.
       BROKER_TMPFS: 6g
-      # Broker JVM heap: the image default (1 GB) is undersized for ~1 GB/s ingestion.
-      BROKER_HEAP: -Xmx2g -Xms2g
-
+      BROKER_HEAP: '-Xms2g -Xmx2g'
     steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Checkout exact baseline
-        if: matrix.baseline_sha != ''
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: ${{ matrix.baseline_sha }}
-          path: baseline-source
-
-      - name: Setup .NET
-        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+          persist-credentials: false
+      - name: Validate bounded dispatch
+        shell: bash
+        run: |
+          [[ "$DURATION_MINUTES" == 5 ]]
+          [[ "$BASELINE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]
+      - name: Checkout main baseline
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.baseline_sha }}
+          path: versions/main
+          persist-credentials: false
+      - name: Checkout PR candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ matrix.sha }}
+          path: versions/candidate
+          persist-credentials: false
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
         with:
           dotnet-version: '10.0.x'
-
-      - name: Install stack diagnostics
+      - name: Build both revisions before measurement
+        shell: bash
         run: |
-          diagnostics_manifest=.config/stress-diagnostics/dotnet-tools.json
-          stack_version="$(jq -er '.tools["dotnet-stack"].version' "$diagnostics_manifest")"
-          dotnet tool install --global dotnet-stack --version "$stack_version"
-          echo "$HOME/.dotnet/tools" >> "$GITHUB_PATH"
-
-      - name: Install profiling diagnostics
-        if: github.event_name == 'workflow_dispatch' && github.event.inputs.profile_mode != 'off'
-        run: |
-          diagnostics_manifest=.config/stress-diagnostics/dotnet-tools.json
-          counters_version="$(jq -er '.tools["dotnet-counters"].version' "$diagnostics_manifest")"
-          trace_version="$(jq -er '.tools["dotnet-trace"].version' "$diagnostics_manifest")"
-          dotnet tool install --global dotnet-counters --version "$counters_version"
-          dotnet tool install --global dotnet-trace --version "$trace_version"
-          if [ "${{ github.event.inputs.profile_mode }}" = "gc" ]; then
-            # gc dispatches also capture per-window heap dumps (PROFILE_GCDUMP below);
-            # other modes never run gcdump, so skip the install cost.
-            gcdump_version="$(jq -er '.tools["dotnet-gcdump"].version' "$diagnostics_manifest")"
-            dotnet tool install --global dotnet-gcdump --version "$gcdump_version"
-          fi
-
-      - name: Build Stress Tests (candidate)
-        run: dotnet build tools/Dekaf.StressTests --configuration Release
-
-      - name: Build Stress Tests (exact baseline)
-        if: matrix.baseline_sha != ''
-        run: dotnet build baseline-source/tools/Dekaf.StressTests --configuration Release
-
-      - name: Start Kafka
-        if: matrix.brokers == 1
-        run: |
-          # Broker pinned to its own cores (client under test gets the rest) and log
-          # dir on tmpfs so neither broker CPU starvation nor disk I/O caps ingestion.
-          # mode=1777: the Kafka image runs as a non-root user, which cannot write to
-          # a default root-owned tmpfs mount.
-          # KAFKA_LOG_INITIAL_TASK_DELAY_MS=1000 is load-bearing — without it the broker
-          # dies of tmpfs fill before its first retention sweep; see the rationale on
-          # KafkaEnvironment.RetentionConfig.
-          docker run -d --name kafka \
-            --cpuset-cpus="${BROKER_CPUS}" \
-            --tmpfs /var/lib/kafka/data:rw,size=${BROKER_TMPFS},mode=1777 \
-            -p 9092:9092 \
-            -e KAFKA_HEAP_OPTS="${BROKER_HEAP}" \
-            -e KAFKA_NODE_ID=1 \
-            -e KAFKA_PROCESS_ROLES=broker,controller \
-            -e KAFKA_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093 \
-            -e KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://localhost:9092 \
-            -e KAFKA_CONTROLLER_LISTENER_NAMES=CONTROLLER \
-            -e KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT \
-            -e KAFKA_CONTROLLER_QUORUM_VOTERS=1@localhost:9093 \
-            -e KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1 \
-            -e KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1 \
-            -e KAFKA_TRANSACTION_STATE_LOG_MIN_ISR=1 \
-            -e KAFKA_LOG_DIRS=/var/lib/kafka/data \
-            -e CLUSTER_ID=MkU3OEVBNTcwNTJENDM2Qg \
-            -e KAFKA_LOG_RETENTION_MS=10000 \
-            -e KAFKA_LOG_RETENTION_BYTES=134217728 \
-            -e KAFKA_LOG_SEGMENT_BYTES=33554432 \
-            -e KAFKA_LOG_SEGMENT_DELETE_DELAY_MS=100 \
-            -e KAFKA_LOG_RETENTION_CHECK_INTERVAL_MS=1000 \
-            -e KAFKA_LOG_INITIAL_TASK_DELAY_MS=1000 \
-            -e KAFKA_LOG_CLEANUP_POLICY=delete \
-            apache/kafka:4.3.1
-
-          echo "Waiting for Kafka to be ready..."
-          for i in {1..60}; do
-            if docker exec kafka /opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1; then
-              echo "Kafka is ready"
-              break
-            fi
-            echo "Waiting... ($i/60)"
-            sleep 2
-          done
-
-          # The retention settings above are what keeps the tmpfs from filling; verify
-          # the image actually applied them rather than assuming the env mapping worked.
-          echo "=== Effective broker retention/segment config ==="
-          docker logs kafka 2>&1 | grep -E 'log\.retention\.|log\.segment\.|log\.cleanup' | head -15 || true
-
-      - name: Run ${{ matrix.name }} Stress Test
-        env:
-          KAFKA_BOOTSTRAP_SERVERS: ${{ matrix.brokers == 1 && 'localhost:9092' || '' }}
-          # Multi-broker runs start brokers via Testcontainers from inside the client
-          # process; these apply the same core pinning and tmpfs as the docker run above.
-          STRESS_BROKER_CPUSET: ${{ env.BROKER_CPUS }}
-          STRESS_BROKER_TMPFS: ${{ env.BROKER_TMPFS }}
-          STRESS_BROKER_HEAP: ${{ env.BROKER_HEAP }}
-          PROFILE_MODE: ${{ github.event.inputs.profile_mode || 'off' }}
-          BASELINE_SHA: ${{ matrix.baseline_sha }}
-        run: |
-          # Background disk monitor: samples every broker's log-dir usage so a tmpfs
-          # fill (ingestion outpacing retention — the known broker-halt failure mode)
-          # is visible in the uploaded artifacts. Iterates docker ps each tick because
-          # multi-broker containers are started later by the test process itself.
-          # Pinned to the broker cores: the docker exec round trips must not steal
-          # cycles from the client cores whose isolation this job exists to provide.
-          taskset -c "${BROKER_CPUS}" bash -c '
-            while true; do
-              containers=$(docker ps --format "{{.Names}}")
-              if [ -z "$containers" ]; then
-                # A dead broker vanishes from docker ps; log that instead of going
-                # silent so the artifact shows *when* it died, not just that it did.
-                echo "[$(date -u "+%H:%M:%S")] no running containers"
-              fi
-              for c in $containers; do
-                line=$(docker exec "$c" df -h /var/lib/kafka/data 2>/dev/null | tail -n 1) \
-                  && echo "[$(date -u "+%H:%M:%S")] $c: $line"
-              done
-              sleep 15
-            done
-          ' > "$GITHUB_WORKSPACE/broker-disk.log" 2>&1 &
-          DISK_MONITOR_PID=$!
-          trap 'kill $DISK_MONITOR_PID 2>/dev/null || true' EXIT
-
-          # Consumer fetch diagnostics are opt-in: they add Dekaf-only overhead inside the
-          # measured window, so measurement runs keep them off and debug dispatches enable them.
-          # An array so multi-token additions stay separate argv entries: appending a
-          # space-separated string as one quoted element would reach the client as a
-          # single unparseable argument.
-          EXTRA_ARGS=()
-          if [ "${{ github.event.inputs.consumer_fetch_diagnostics }}" = "true" ]; then
-            EXTRA_ARGS+=(--consumer-fetch-diagnostics)
-          fi
-
-          if [ -n "$BASELINE_SHA" ]; then
-            run_aba() {
-              label="$1"
-              project_dir="$2"
-              output_dir="$3"
-              echo "Running exact-SHA A-B-A segment: $label"
-              taskset -c "${CLIENT_CPUS}" dotnet run \
-                --project "$project_dir/Dekaf.StressTests.csproj" \
-                --configuration Release --no-build -- \
-                --duration ${{ github.event.inputs.duration_minutes || '15' }} \
-                --message-size ${{ matrix.message_size || github.event.inputs.message_size || '1000' }} \
-                --scenario ${{ matrix.scenario }} \
-                --client dekaf \
-                --brokers ${{ matrix.brokers }} \
-                --connections-per-broker 1 \
-                --producer-delivery-diagnostics \
-                --roundtrip-steady-seconds ${{ github.event.inputs.roundtrip_steady_seconds || matrix.roundtrip_steady_seconds || '60' }} \
-                "${EXTRA_ARGS[@]}" \
-                --output "$output_dir"
-            }
-
-            run_aba \
-              baseline-a \
-              "$GITHUB_WORKSPACE/baseline-source/tools/Dekaf.StressTests" \
-              "$GITHUB_WORKSPACE/aba-results/baseline-a"
-            run_aba \
-              candidate-b \
-              "$GITHUB_WORKSPACE/tools/Dekaf.StressTests" \
-              "$GITHUB_WORKSPACE/tools/Dekaf.StressTests/results"
-            run_aba \
-              baseline-a2 \
-              "$GITHUB_WORKSPACE/baseline-source/tools/Dekaf.StressTests" \
-              "$GITHUB_WORKSPACE/aba-results/baseline-a2"
-            exit 0
-          fi
-
-          cd tools/Dekaf.StressTests
-          # Client pinned to its own cores: whichever client pushes more through the
-          # same cores is genuinely faster, instead of both saturating the broker.
-          paired_samples=${{ matrix.paired_samples || 1 }}
-          for sample in $(seq 1 "${paired_samples}"); do
-            if (( (${{ github.run_number }} + sample - 1) % 2 == 0 )); then
-              export STRESS_CLIENT_ORDER=confluent-first
-            else
-              export STRESS_CLIENT_ORDER=dekaf-first
-            fi
-            export STRESS_PAIRED_SAMPLE_INDEX=${sample}
-            export STRESS_PAIRED_SAMPLE_COUNT=${paired_samples}
-            echo "Paired sample ${sample}/${paired_samples}; client order: ${STRESS_CLIENT_ORDER}"
-
-            # Delivery diagnostics are always on in CI so a message-loss failure ships the
-            # in-flight batch dump needed to debug it, instead of "Not captured".
-            STRESS_ARGS=(
-              --duration ${{ github.event.inputs.duration_minutes || '15' }}
-              --message-size ${{ matrix.message_size || github.event.inputs.message_size || '1000' }}
-              --scenario ${{ matrix.scenario }}
-              --client ${{ matrix.client }}
-              --brokers ${{ matrix.brokers }}
-              --connections-per-broker 1
-              --producer-delivery-diagnostics
-              --roundtrip-steady-seconds ${{ github.event.inputs.roundtrip_steady_seconds || matrix.roundtrip_steady_seconds || '60' }}
-              --output ./results
-            )
-            STRESS_ARGS+=("${EXTRA_ARGS[@]}")
-
-            if [ "$PROFILE_MODE" != "off" ]; then
-              # The stress process retains the normal client-core isolation. Attach
-              # tools use one broker core; profiling runs diagnose within-run change
-              # and are intentionally excluded from acceptance/trend publication.
-              PROFILE_OUTPUT_DIR="$PWD/results/profiling" \
-              TRACE_PROFILE="$PROFILE_MODE" \
-              TRACE_WINDOWS="${{ github.event.inputs.profile_windows }}" \
-              PROFILE_COUNTERS="${{ github.event.inputs.profile_counters }}" \
-              PROFILE_STACKS="${{ github.event.inputs.profile_stacks }}" \
-              PROFILE_GCDUMP="$([ "$PROFILE_MODE" = "gc" ] && echo true || echo false)" \
-              STRESS_CPUSET="$CLIENT_CPUS" \
-              PROFILER_CPUSET="5" \
-              bash ../../tools/profile-stress-test.sh "${STRESS_ARGS[@]}"
-            else
-              taskset -c ${CLIENT_CPUS} dotnet run --configuration Release --no-build -- "${STRESS_ARGS[@]}"
-            fi
-          done
-
-          if [ "${{ matrix.run_3conn }}" = "true" ]; then
-            echo "Running Dekaf 3-connection variant on the same VM"
-            taskset -c ${CLIENT_CPUS} dotnet run --configuration Release --no-build -- \
-              --duration ${{ github.event.inputs.duration_minutes || '15' }} \
-              --message-size ${{ matrix.message_size || github.event.inputs.message_size || '1000' }} \
-              --scenario ${{ matrix.scenario }} \
-              --client dekaf \
-              --brokers ${{ matrix.brokers }} \
-              --connections-per-broker 3 \
-              --producer-delivery-diagnostics \
-              "${EXTRA_ARGS[@]}" \
-              --roundtrip-steady-seconds ${{ github.event.inputs.roundtrip_steady_seconds || matrix.roundtrip_steady_seconds || '60' }} \
-              --output ./results
-          fi
-
-      - name: Broker Diagnostics
+          mkdir -p evidence
+          test "$(git -C versions/main rev-parse HEAD)" = "$BASELINE_SHA"
+          test "$(git -C versions/candidate rev-parse HEAD)" = "$CANDIDATE_SHA"
+          dotnet build versions/main/tools/Dekaf.StressTests -c Release > evidence/build-main.log 2>&1 || { tail -60 evidence/build-main.log; exit 1; }
+          dotnet build versions/candidate/tools/Dekaf.StressTests -c Release > evidence/build-candidate.log 2>&1 || { tail -60 evidence/build-candidate.log; exit 1; }
+          lscpu > evidence/cpu.txt
+          dotnet --info > evidence/dotnet.txt
+          uname -a > evidence/os.txt
+      - name: Run bracketing five-minute comparisons
+        shell: bash
+        run: bash .github/pr-comparison/run.sh
+      - name: Summarize all available metrics
         if: always()
-        run: |
-          echo "=== Broker log-dir usage over time ==="
-          cat "$GITHUB_WORKSPACE/broker-disk.log" 2>/dev/null || echo "(no disk log captured)"
-          # Multi-broker containers are owned by the test process, which dumps their
-          # diagnostics before disposing them; only the workflow-managed single broker
-          # is still around to inspect here.
-          if [ "${{ matrix.brokers }}" = "1" ]; then
-            echo "=== Broker errors/storage events ==="
-            docker logs kafka 2>&1 | grep -iE 'ERROR|FATAL|No space|IOException|offline|shutdown' | tail -40 || true
-            echo "=== Broker last 60 log lines ==="
-            docker logs --tail 60 kafka 2>&1 || true
-          fi
-
-      # A broker that dies mid-run (e.g. log dir full -> LogManager shutdown) makes
-      # every number in this job's results meaningless; fail the job so they are never
-      # published. Producer scenarios also fail client-side (a dead broker fails the
-      # post-run end-offset query — that is what covers multi-broker runs, whose
-      # containers the test process owns and disposes), but consumer scenarios have no
-      # such check and would otherwise report near-zero throughput as a valid result;
-      # this step also gives a clearer verdict than the client's exception trace.
-      - name: Verify Broker Survived
-        if: matrix.brokers == 1
-        run: |
-          status=$(docker inspect -f '{{.State.Status}}' kafka 2>/dev/null || echo "missing")
-          if [ "$status" != "running" ]; then
-            echo "::error::Broker container is '$status' — it died during the run; see Broker Diagnostics above"
-            exit 1
-          fi
-          echo "Broker container is running"
-
-      - name: Compare exact baseline A-B-A
-        if: always() && matrix.baseline_sha != ''
-        run: >-
-          python3 .github/scripts/stress_aba.py
-          --baseline-a aba-results/baseline-a
-          --candidate tools/Dekaf.StressTests/results
-          --baseline-a2 aba-results/baseline-a2
-          --baseline-sha "${{ matrix.baseline_sha }}"
-          --candidate-sha "${{ github.sha }}"
-          --output aba-results/comparison.json
-          --summary "$GITHUB_STEP_SUMMARY"
-
-      - name: Upload Results
+        shell: bash
+        run: python3 .github/pr-comparison/report.py evidence --summary "$GITHUB_STEP_SUMMARY"
+      - name: Upload raw evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: results-${{ matrix.scenario }}-${{ matrix.brokers }}brokers${{ matrix.artifact_suffix }}
-          path: |
-            tools/Dekaf.StressTests/results/
-            broker-disk.log
+          name: pr-${{ matrix.pr }}-five-minute-comparison
+          path: evidence/
           retention-days: 90
-
-      - name: Upload exact baseline A-B-A controls
-        if: always() && matrix.baseline_sha != ''
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: aba-controls-${{ matrix.scenario }}-${{ matrix.brokers }}brokers
-          path: aba-results/
-          retention-days: 90
-
-      - name: Stop Kafka
-        if: always() && matrix.brokers == 1
+      - name: Stop task broker
+        if: always()
         run: docker rm -f kafka || true
-
-  # Collect all results and generate summary
-  generate-summary:
-    needs: stress-test
-    runs-on: ubuntu-latest
-    if: always()
-    outputs:
-      regression_failure: ${{ steps.stress-trends.outputs.should_fail }}
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Setup .NET
-        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
-        with:
-          dotnet-version: '10.0.x'
-
-      - name: Download All Results
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        with:
-          pattern: results-*
-          path: ./all-results
-          # NOT merge-multiple: matrix jobs for the same client+scenario can emit
-          # identically named result files (runs starting in the same second), and
-          # merging would silently overwrite one — dropping rows from the published
-          # tables. Per-artifact subdirectories keep every result; the recursive
-          # glob below finds them all.
-          merge-multiple: false
-
-      - name: List Downloaded Results
-        run: |
-          echo "=== Downloaded Results ==="
-          find ./all-results -type f -name "*.json" | head -20
-          echo "=== Contents ==="
-          for f in $(find ./all-results -type f -name "*.json"); do
-            echo "--- $f ---"
-            cat "$f" | head -50
-          done
-
-      - name: Merge Results and Generate Summary
-        env:
-          PYTHONPATH: .github/scripts
-        run: |
-          python3 << 'EOF'
-          import json
-          import os
-          import glob
-          from datetime import datetime
-          from stress_report import generate_scenario_tables, format_gc_table, results_with_run_metadata
-
-          # Parse only result envelopes; watchdog diagnostics are separate JSON artifacts.
-          json_files = glob.glob("all-results/**/stress-test-results*.json", recursive=True)
-          print(f"Found {len(json_files)} result files")
-
-          if not json_files:
-              print("No results found")
-              exit(0)
-
-          # Collect all individual results
-          all_results = []
-          run_started = None
-          run_completed = None
-          machine_name = None
-          processor_count = None
-
-          for json_file in json_files:
-              print(f"Processing: {json_file}")
-              try:
-                  with open(json_file) as f:
-                      data = json.load(f)
-
-                  # Handle both single result and wrapped results format
-                  if 'results' in data:
-                      # Wrapped format from StressTestResults
-                      all_results.extend(results_with_run_metadata(data))
-                      if run_started is None or data.get('runStartedAtUtc', '') < run_started:
-                          run_started = data.get('runStartedAtUtc')
-                      if run_completed is None or data.get('runCompletedAtUtc', '') > run_completed:
-                          run_completed = data.get('runCompletedAtUtc')
-                      machine_name = data.get('machineName', machine_name)
-                      processor_count = data.get('processorCount', processor_count)
-                  else:
-                      # Single result format
-                      all_results.append(data)
-
-              except Exception as e:
-                  print(f"Error processing {json_file}: {e}")
-
-          print(f"Collected {len(all_results)} test results")
-
-          # Create merged results
-          merged = {
-              'runStartedAtUtc': run_started or datetime.utcnow().isoformat(),
-              'runCompletedAtUtc': run_completed or datetime.utcnow().isoformat(),
-              'machineName': machine_name or 'GitHub Actions',
-              'processorCount': processor_count or 4,
-              'results': all_results
-          }
-
-          # Save merged results
-          os.makedirs('merged-results', exist_ok=True)
-          merged_path = f"merged-results/stress-test-results-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}.json"
-          with open(merged_path, 'w') as f:
-              json.dump(merged, f, indent=2)
-          print(f"Saved merged results to: {merged_path}")
-
-          # Generate markdown summary
-          output = []
-          output.append("# Dekaf Stress Test Results")
-          output.append("")
-          output.append(f"**Run Date:** {run_started or 'N/A'}")
-          output.append(f"**Machine:** {machine_name or 'GitHub Actions'} ({processor_count or 'N/A'} processors)")
-          output.append("")
-
-          output.extend(generate_scenario_tables(all_results, include_ratio=True))
-          output.extend(format_gc_table(all_results))
-
-          # Write to GitHub summary
-          summary_path = os.environ.get('GITHUB_STEP_SUMMARY')
-          if summary_path:
-              with open(summary_path, 'a') as f:
-                  f.write('\n'.join(output))
-              print(f"Wrote summary to GITHUB_STEP_SUMMARY")
-
-          # Also print to console
-          print('\n'.join(output))
-          EOF
-
-      - name: Detect Performance Trends
-        id: stress-trends
-        env:
-          PYTHONPATH: .github/scripts
-        run: |
-          mkdir -p merged-results
-          result_file=$(find merged-results -type f -name 'stress-test-results-*.json' | sort | tail -1)
-          if [ -z "$result_file" ]; then
-            echo "::error::Merged stress-test results were not produced"
-            exit 1
-          fi
-
-          python3 .github/scripts/stress_trend.py \
-            --results "$result_file" \
-            --history .github/stress-history.json \
-            --output merged-results/stress-history.json \
-            --summary "$GITHUB_STEP_SUMMARY" \
-            --github-output "$GITHUB_OUTPUT"
-
-      - name: Upload Merged Results
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: stress-test-results-merged
-          path: merged-results/
-          retention-days: 90
-
-  publish-to-docs:
-    name: Publish Stress Test Results to Documentation
-    needs: [select-lanes, stress-test, generate-summary]
-    runs-on: ubuntu-latest
-    # stress-test success is required: a failed scenario (e.g. broker died mid-run)
-    # must block the docs update rather than publish a partial or invalid table.
-    # Normal manual dispatches do not publish: their partial/single-client rows
-    # would wipe lanes or ratio columns because docs/history are regenerated from
-    # this run alone. Scheduled runs and explicit manual full_run dispatches emit
-    # the complete paired matrix and may publish.
-    if: github.ref == 'refs/heads/main' && needs.select-lanes.outputs.full_run == 'true' && needs.stress-test.result == 'success' && needs.generate-summary.result == 'success'
-
-    permissions:
-      contents: write
-      pull-requests: write
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Download Merged Results
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        with:
-          name: stress-test-results-merged
-          path: ./results
-
-      - name: Update Stress Trend History
-        run: cp ./results/stress-history.json .github/stress-history.json
-
-      - name: Generate Stress Test Documentation
-        run: |
-          python3 .github/scripts/stress_report.py --results-dir results --output docs/docs/stress-tests.md
-
-      - name: Create Pull Request
-        id: create-pr
-        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8
-        with:
-          commit-message: 'docs: Update stress test results'
-          title: 'docs: Update stress test results'
-          body: 'Automated update of stress test results and rolling trend history from latest CI run.'
-          branch: docs/stress-test-results
-          delete-branch: true
-
-      - name: Auto-merge Pull Request
-        # GITHUB_TOKEN cannot bypass the default-branch ruleset. Use the same
-        # owner PAT as the benchmark workflow so the history update merges now.
-        if: steps.create-pr.outputs.pull-request-number && steps.create-pr.outputs.pull-request-operation != 'closed'
-        env:
-          GH_TOKEN: ${{ secrets.BENCHMARK_MERGE_TOKEN }}
-          PR_NUMBER: ${{ steps.create-pr.outputs.pull-request-number }}
-        run: gh pr merge "$PR_NUMBER" --squash --delete-branch --admin
-
-  regression-gate:
-    name: Fail on Stress Regressions
-    needs: [stress-test, generate-summary, publish-to-docs]
-    runs-on: ubuntu-latest
-    # Wait for the docs PR so valid regression observations are persisted before
-    # reporting a repeated regression. Partial/Dekaf-only manual dispatches skip
-    # publish-to-docs and this gate because their observations are not persisted;
-    # manual full_run dispatches follow the scheduled publish/gate path.
-    if: >-
-      always() &&
-      needs.stress-test.result == 'success' &&
-      needs.generate-summary.result == 'success' &&
-      needs.publish-to-docs.result == 'success' &&
-      needs.generate-summary.outputs.regression_failure == 'true'
-    steps:
-      - name: Report Regression
-        run: |
-          echo "Stress regression detected; see Stress Trend Analysis above."
-          exit 1
