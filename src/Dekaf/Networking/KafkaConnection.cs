@@ -4786,6 +4786,18 @@ internal sealed class ResponseBufferPool
             return;
         }
 
+        var bucketIndex = NativeBucketIndex(capacity);
+        // A full pool containing only this capacity cannot retain this return. Avoid
+        // incrementing and undoing the shared reservation counter for every surplus frame.
+        // Concurrent rents or a retention ratchet may make room after this snapshot;
+        // dropping a surplus buffer is still safe, and the next return can use that room.
+        if (Volatile.Read(ref _retainedNativeBufferCount) >= MaxRetainedNativeBuffers
+            && ((uint)Volatile.Read(ref _nativeBucketsWithBuffers) & ~(1u << bucketIndex)) == 0)
+        {
+            Marshal.FreeHGlobal(pointer);
+            return;
+        }
+
         if (Interlocked.Increment(ref _retainedNativeBufferCount) > MaxRetainedNativeBuffers
             && !TryEvictDormantBuffer(capacity))
         {
@@ -4795,7 +4807,6 @@ internal sealed class ResponseBufferPool
             return;
         }
 
-        var bucketIndex = NativeBucketIndex(capacity);
         if (!_nativeBuckets[bucketIndex].TryReturn(pointer))
         {
             // Every slot of this capacity is occupied. The global count admits at most one
