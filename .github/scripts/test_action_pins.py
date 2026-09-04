@@ -16,6 +16,29 @@ PIN_PATTERN = re.compile(
 
 
 class ActionPinTests(unittest.TestCase):
+    def test_remote_actions_are_pinned_to_full_commit_shas(self) -> None:
+        for workflow_path in WORKFLOW_DIRECTORY.iterdir():
+            if workflow_path.suffix not in {".yml", ".yaml"}:
+                continue
+
+            for line_number, line in enumerate(
+                workflow_path.read_text(encoding="utf-8").splitlines(), start=1
+            ):
+                match = re.match(r"^\s*(?:-\s+)?uses:\s*([^\s#]+)", line)
+                if match is None:
+                    continue
+
+                action = match.group(1).strip("\"'")
+                if action.startswith(("./", "docker://")):
+                    continue
+
+                with self.subTest(workflow=workflow_path.name, line=line_number):
+                    self.assertRegex(
+                        action,
+                        r"^[^@]+@[0-9a-fA-F]{40}$",
+                        "Remote actions must be pinned to a full-length commit SHA",
+                    )
+
     def test_actions_without_moving_major_tags_use_exact_release_comments(self) -> None:
         found_actions: set[str] = set()
 
