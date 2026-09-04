@@ -1,7 +1,36 @@
+using System.Runtime.InteropServices;
 using BenchmarkDotNet.Attributes;
 using Dekaf.Networking;
 
 namespace Dekaf.Benchmarks.Benchmarks.Unit;
+
+/// <summary>
+/// Surplus native returns above the 256-buffer retention ceiling. Keep the retained set
+/// full and allocate the incoming native pointer directly, excluding the separate
+/// NativeResponseBuffer wrapper pool's own 256-object ceiling from this measurement.
+/// </summary>
+[MemoryDiagnoser]
+public class ResponseBufferOverflowBenchmarks
+{
+    private const int RetainedBuffers = 256;
+    private const int FrameBytes = 128 * 1024;
+    private ResponseBufferPool _pool = null!;
+
+    [GlobalSetup]
+    public void Setup()
+    {
+        _pool = new ResponseBufferPool(ResponseBufferPool.DefaultMaxArrayLength,
+            managedArraysPerBucket: 256, maxRetainedNativeBuffers: 256);
+        for (var i = 0; i < RetainedBuffers; i++)
+            _pool.ReturnNative(Marshal.AllocHGlobal(FrameBytes), FrameBytes);
+    }
+
+    [Benchmark]
+    public void SurplusReturn() => _pool.ReturnNative(Marshal.AllocHGlobal(FrameBytes), FrameBytes);
+
+    [GlobalCleanup]
+    public void Cleanup() => _pool.TrimNativeBuffers();
+}
 
 /// <summary>
 /// Measures <see cref="ResponseBufferPool"/> rent/return when a wave of live response frames
