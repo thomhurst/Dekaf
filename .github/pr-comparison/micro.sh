@@ -2,7 +2,8 @@
 set -euo pipefail
 root="$PWD"
 mkdir -p evidence
-for version in main pool-before pool-candidate fetch-before fetch-candidate; do
+cp .github/pr-comparison/ProducerResponseWaitProbe.cs versions/producer-candidate/tools/Dekaf.Benchmarks/Benchmarks/Unit/
+for version in main pool-before pool-candidate fetch-before fetch-candidate producer-candidate; do
   if [[ "$version" == main ]]; then
     cp versions/pool-before/tools/Dekaf.Benchmarks/Benchmarks/Unit/ResponseBufferPoolBenchmarks.cs \
       versions/main/tools/Dekaf.Benchmarks/Benchmarks/Unit/ResponseBufferPoolBenchmarks.cs
@@ -32,6 +33,7 @@ run_bench() {
 pool_filters=('*ResponseBufferPoolBenchmarks.NativeCeilingWave_128KB*'
   '*ResponseBufferPoolBenchmarks.NativeFetchFrames_1MB_AfterFrameSizeGrowth*'
   '*ResponseBufferOverflowBenchmarks*')
+run_bench producer-candidate producer-response-wait '*ProducerResponseWaitProbe*'
 run_bench main pool-main-a "${pool_filters[@]}"
 run_bench pool-before pool-before-a "${pool_filters[@]}"
 run_bench pool-candidate pool-candidate "${pool_filters[@]}"

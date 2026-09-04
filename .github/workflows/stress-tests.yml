@@ -1,5 +1,5 @@
 name: Stress Tests
-run-name: Consumer bottleneck candidates - targeted microbenchmarks
+run-name: PR bottleneck candidates - targeted microbenchmarks
 on:
   workflow_dispatch:
 permissions:
@@ -40,6 +40,11 @@ jobs:
         with:
           ref: e6aabd518dbde30505fe354b6149ad1c3eddbf19
           path: versions/fetch-candidate
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: fe04e9a478f83ad26062d8ed9d93245cc9c68129
+          path: versions/producer-candidate
           persist-credentials: false
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
         with:
