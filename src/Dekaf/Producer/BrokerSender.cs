@@ -2082,6 +2082,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 }
 
                 // ── 7. Compute timeout and wait ──
+                // Lifetime shutdown completes the writer before cancelling _cts. Tokenless
+                // channel waits therefore still wake on shutdown and can reuse the runtime's
+                // single-reader waiter instead of allocating a cancellable waiter per event.
                 if (transactionEnrollmentReady)
                     continue;
 
@@ -2122,7 +2125,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             // Re-check the immutable broker-partition snapshot on the next pass.
                         }
                     }
-                    else if (!await eventReader.WaitToReadAsync(cancellationToken).ConfigureAwait(false))
+                    else if (!await eventReader.WaitToReadAsync(CancellationToken.None).ConfigureAwait(false))
                     {
                         break;
                     }
@@ -2165,7 +2168,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         // Note: if this wakes on a ResponseReady event, the freed in-flight slot
                         // is only visible after ProcessCompletedResponses runs at the top of the
                         // next iteration — not in this one.
-                        if (!await eventReader.WaitToReadAsync(cancellationToken)
+                        if (!await eventReader.WaitToReadAsync(CancellationToken.None)
                             .ConfigureAwait(false))
                             break;
                     }
@@ -3856,9 +3859,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// deadline; shorter polling intervals remain available for blocked buckets and throttling.
     ///
     /// Zero-allocation in steady state: the signal uses a reusable internal timer for
-    /// the timeout and a one-time shutdown token registration for cancellation.
+    /// the timeout and a one-time shutdown token registration for cancellation. Return its
+    /// ValueTask directly; an async wrapper would allocate whenever the response is pending.
     /// </summary>
-    private async ValueTask WaitForAnyResponseAsync(
+    private ValueTask<bool> WaitForAnyResponseAsync(
         int timeoutMs,
         CancellationToken cancellationToken)
     {
@@ -3866,10 +3870,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
         // WaitAsync returns true if signaled, false on timeout.
         // Throws OperationCanceledException only on shutdown (via RegisterShutdownToken).
-        await _anyResponseCompleted.WaitAsync(timeoutMs).ConfigureAwait(false);
+        return _anyResponseCompleted.WaitAsync(timeoutMs);
     }
 
-    private ValueTask WaitForNoPendingCarryOverAsync(
+    private ValueTask<bool> WaitForNoPendingCarryOverAsync(
         int wakeupMs,
         CancellationToken cancellationToken) =>
         WaitForAnyResponseAsync(Math.Min(wakeupMs, 100), cancellationToken);
@@ -5679,8 +5683,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     {
         LogDisposing(_brokerId);
 
-        // Complete the channel so no new events are accepted, then cancel the CTS so
-        // WaitToReadAsync is interrupted promptly. We use CancelAsync here (rather than
+        // Complete the channel so no new events are accepted and tokenless channel waits
+        // wake, then cancel the CTS for response waits and I/O. We use CancelAsync (rather than
         // synchronous Cancel) because CTS cancellation callbacks may perform I/O and we
         // are already in an async context that can await them without blocking a thread.
         _eventChannel.Writer.TryComplete();

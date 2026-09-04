@@ -386,7 +386,7 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             var senderRetryReady = (Action)typeof(BrokerSender).GetField(
                 "_senderRetryReadyCallback",
                 BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(sender)!;
-            var wait = (ValueTask)waitMethod.Invoke(
+            var wait = (ValueTask<bool>)waitMethod.Invoke(
                 sender,
                 [10_000, cancellationToken])!;
             var waitTask = wait.AsTask();
@@ -396,6 +396,37 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             senderRetryReady();
 
             await waitTask;
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Shutdown_WakesIdleChannelWait(bool requestCancellation, CancellationToken cancellationToken)
+    {
+        var idle = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var options = CreateOptions();
+        var accumulator = new RecordAccumulator(options);
+        var sender = CreateSender(Substitute.For<IConnectionPool>(), options, accumulator,
+            static (_, _, _, _, _) => { }, onIdleWaitStarted: () => idle.TrySetResult());
+
+        try
+        {
+            await idle.Task.WaitAsync(cancellationToken);
+            var loop = (Task)typeof(BrokerSender).GetField("_sendLoopTask",
+                BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(sender)!;
+            if (requestCancellation)
+                sender.RequestCancellation();
+            else
+                await sender.DisposeAsync();
+
+            await loop.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
+            await Assert.That(sender.IsAlive).IsFalse();
         }
         finally
         {
