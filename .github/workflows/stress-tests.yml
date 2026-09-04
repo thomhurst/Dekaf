@@ -1,5 +1,5 @@
 name: Stress Tests
-run-name: PR 2990 zero linger - one exact repeat
+run-name: PR 2990 positive-only wait reuse - exact parent A-B-A
 on:
   workflow_dispatch:
 permissions:
@@ -9,9 +9,9 @@ env:
   Deterministic: true
   DOTNET_CLI_TELEMETRY_OPTOUT: true
   BASELINE_SHA: 9778462c0d380e331684eb0ae9cd4d8f392c089c
-  CANDIDATE_SHA: 2e324e04d3286eb1989775808ab57506c1f84701
+  CANDIDATE_SHA: f3c971bae8bf07369fc80f614ea53699f2d5549b
   PR_NUMBER: '2990'
-  LINGERS: '0'
+  LINGERS: '0 5'
   DURATION_MINUTES: '5'
   SCENARIO: producer-async
   CLIENT_CPUS: 6,7
@@ -24,7 +24,7 @@ env:
 jobs:
   compare:
     runs-on: ubicloud-standard-8
-    timeout-minutes: 30
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -66,7 +66,7 @@ jobs:
             --iterationCount 10 --iterationTime 250 --memory --exporters json \
             --artifacts "$root/evidence/channel-wait" > "$root/evidence/channel-wait.log" 2>&1
           python3 "$root/.github/pr-comparison/validate-bdn.py" "$root/evidence/channel-wait"
-      - name: Run five-minute parent-candidate-parent at 0 ms
+      - name: Run five-minute parent-candidate-parent at 0 and 5 ms
         shell: bash
         run: bash .github/pr-comparison/run.sh
       - name: Apply repository A-B-A comparison
@@ -74,7 +74,7 @@ jobs:
         shell: bash
         run: |
           failed=0
-          for linger in 0; do
+          for linger in 0 5; do
             python3 .github/scripts/stress_aba.py \
               --baseline-a "evidence/linger-$linger/main-a" \
               --candidate "evidence/linger-$linger/candidate" \
@@ -88,10 +88,9 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: pr-2990-pooled-waits-repeat-zero
+          name: pr-2990-positive-only-waits-aba
           path: evidence/
           retention-days: 90
       - name: Stop task broker
         if: always()
         run: docker rm -f kafka || true
-
