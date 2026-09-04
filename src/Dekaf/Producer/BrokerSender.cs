@@ -3856,9 +3856,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// deadline; shorter polling intervals remain available for blocked buckets and throttling.
     ///
     /// Zero-allocation in steady state: the signal uses a reusable internal timer for
-    /// the timeout and a one-time shutdown token registration for cancellation.
+    /// the timeout and a one-time shutdown token registration for cancellation. Return its
+    /// ValueTask directly; an async wrapper would allocate whenever the response is pending.
     /// </summary>
-    private async ValueTask WaitForAnyResponseAsync(
+    private ValueTask<bool> WaitForAnyResponseAsync(
         int timeoutMs,
         CancellationToken cancellationToken)
     {
@@ -3866,10 +3867,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
         // WaitAsync returns true if signaled, false on timeout.
         // Throws OperationCanceledException only on shutdown (via RegisterShutdownToken).
-        await _anyResponseCompleted.WaitAsync(timeoutMs).ConfigureAwait(false);
+        return _anyResponseCompleted.WaitAsync(timeoutMs);
     }
 
-    private ValueTask WaitForNoPendingCarryOverAsync(
+    private ValueTask<bool> WaitForNoPendingCarryOverAsync(
         int wakeupMs,
         CancellationToken cancellationToken) =>
         WaitForAnyResponseAsync(Math.Min(wakeupMs, 100), cancellationToken);

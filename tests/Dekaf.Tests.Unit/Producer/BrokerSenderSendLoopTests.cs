@@ -386,7 +386,7 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             var senderRetryReady = (Action)typeof(BrokerSender).GetField(
                 "_senderRetryReadyCallback",
                 BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(sender)!;
-            var wait = (ValueTask)waitMethod.Invoke(
+            var wait = (ValueTask<bool>)waitMethod.Invoke(
                 sender,
                 [10_000, cancellationToken])!;
             var waitTask = wait.AsTask();
