@@ -4634,7 +4634,8 @@ internal sealed class ResponseBufferPool
     /// </summary>
     private readonly NativeBufferBucket[] _nativeBuckets = new NativeBufferBucket[NativeBucketSlotCount];
     // Availability hint updated on empty/nonempty transitions. An overflow return probes
-    // one indicated alternative, never scans capacity slots. Concurrent renters may win it.
+    // an indicated alternative, never scans capacity slots. Retry only when a concurrent
+    // renter wins that buffer, as with the bucket's own lock-free stack operations.
     private int _nativeBucketsWithBuffers;
     private readonly RatchetableArrayPool<byte> _managedArrays;
     /// <summary>
@@ -4822,27 +4823,29 @@ internal sealed class ResponseBufferPool
     /// </summary>
     private bool TryEvictDormantBuffer(int capacity)
     {
-        var alternatives = (uint)Volatile.Read(ref _nativeBucketsWithBuffers)
-            & ~(1u << NativeBucketIndex(capacity));
-        if (alternatives == 0)
-            return false;
-
-        var index = BitOperations.Log2(alternatives);
-        var bucket = _nativeBuckets[index];
-        if (!bucket.TryRent(out var pointer))
+        var excludedCapacity = 1u << NativeBucketIndex(capacity);
+        while (true)
         {
-            // A renter consumed this bucket since its last return. Repair just this hint;
-            // under contention the incoming buffer may be freed even if another tier is
-            // available. Retention is opportunistic and the global allowance stays exact.
-            ClearEmptyNativeBucket(index);
-            return false;
-        }
+            var alternatives = (uint)Volatile.Read(ref _nativeBucketsWithBuffers) & ~excludedCapacity;
+            if (alternatives == 0)
+                return false;
 
-        Marshal.FreeHGlobal(pointer);
-        Interlocked.Decrement(ref _retainedNativeBufferCount);
-        if (!bucket.HasRetainedBuffers)
-            ClearEmptyNativeBucket(index);
-        return true;
+            var index = BitOperations.Log2(alternatives);
+            var bucket = _nativeBuckets[index];
+            if (!bucket.TryRent(out var pointer))
+            {
+                // A concurrent renter won the indicated capacity. Repair its bit and
+                // retry from the current mask so another available tier is not discarded.
+                ClearEmptyNativeBucket(index);
+                continue;
+            }
+
+            Marshal.FreeHGlobal(pointer);
+            Interlocked.Decrement(ref _retainedNativeBufferCount);
+            if (!bucket.HasRetainedBuffers)
+                ClearEmptyNativeBucket(index);
+            return true;
+        }
     }
 
     private void MarkNativeBucketAvailable(int index)
