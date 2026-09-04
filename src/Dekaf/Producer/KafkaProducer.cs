@@ -542,7 +542,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             },
             loggerFactory,
             options.ConnectionsPerBroker,
-            ResponseBufferPool.Default,
+            ResponseBufferPool.CreateDefaultSized(sharedPoolSizes.ResponseBuffersPerBucket),
             pipeMemoryBucketCapacity: sharedPoolSizes.PipeMemoryArraysPerBucket,
             telemetryMetricCollector: telemetryMetricCollector);
 
@@ -704,6 +704,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             DekafPools.RatchetSerializationBucketCapacity(sizes.SerializationArraysPerBucket);
             ProduceResponse.RatchetPoolSize(sizes.ProduceResponsePoolSize);
             connectionPool.RatchetPipeMemoryBucketCapacity(sizes.PipeMemoryArraysPerBucket);
+            connectionPool.RatchetResponseBufferRetention(sizes.ResponseBuffersPerBucket, sizes.ResponseBuffersPerBucket);
         });
 
         _compressionCodecs = CreateCompressionCodecRegistry(options);

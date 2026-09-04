@@ -44,6 +44,8 @@ public sealed class ConsumerOptions
     private bool _isReconnectBackoffMaxMsConfigured;
     private TimeSpan? _connectionTimeoutMax;
     internal const int DefaultMaxConnectionsPerBroker = 4;
+    internal const int DefaultPrefetchPipelineDepth = 3;
+    internal const int MaxPrefetchPipelineDepth = 8;
 
     /// <summary>
     /// Bootstrap servers (host:port,host:port).
@@ -526,7 +528,7 @@ public sealed class ConsumerOptions
     /// Higher values (up to 8) allow more overlapping fetches, which can improve
     /// throughput for single-broker setups by hiding network latency. Default is 3.
     /// </summary>
-    public int PrefetchPipelineDepth { get; init; } = 3;
+    public int PrefetchPipelineDepth { get; init; } = DefaultPrefetchPipelineDepth;
 
     /// <summary>
     /// Number of TCP connections to maintain per broker.

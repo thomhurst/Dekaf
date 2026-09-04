@@ -1,3 +1,4 @@
+using Dekaf.Consumer;
 using Dekaf.Internal;
 using Dekaf.Producer;
 
@@ -265,7 +266,48 @@ public class PoolSizingTests
         await Assert.That(capacity).IsEqualTo(expected);
     }
 
+    [Test]
+    [Arguments(1, 4, 40)] // 1 broker x (8 + 2 slots) x 4 connections
+    [Arguments(2, 4, 80)]
+    [Arguments(1, 1, 16)]
+    public async Task ForSharedClientConsumerResponseBuffers_SizesForDeepestPipeline(
+        int brokerCount,
+        int maxConnectionsPerBroker,
+        int expected)
+    {
+        var capacity = PoolSizing.ForSharedClientConsumerResponseBuffers(brokerCount, maxConnectionsPerBroker);
+
+        await Assert.That(capacity).IsEqualTo(expected);
+        await Assert.That(capacity).IsEqualTo(PoolSizing.ForConsumerResponseBuffers(
+            brokerCount,
+            ConsumerOptions.MaxPrefetchPipelineDepth,
+            maxConnectionsPerBroker));
+    }
+
     // --- ForSharedPools tests ---
+
+    [Test]
+    [Arguments(1, 1, 1, 16)]
+    [Arguments(1, 3, 5, 30)] // default standalone producer: 1 x 3 peak connections x 5 in flight, x2
+    [Arguments(2, 4, 5, 80)]
+    [Arguments(3, 4, 5, 120)]
+    [Arguments(16, 10, 5, 256)]
+    [Arguments(int.MaxValue, int.MaxValue, int.MaxValue, 256)]
+    public async Task ForSharedPools_ResponseBuffers_CoverPeakInFlightWorkingSetWithinBounds(
+        int brokerCount,
+        int maxConnectionsPerBroker,
+        int maxInFlightRequestsPerConnection,
+        int expected)
+    {
+        var sizes = PoolSizing.ForSharedPools(
+            brokerCount,
+            connectionsPerBroker: 1,
+            maxInFlightRequestsPerConnection,
+            batchSize: 1048576,
+            maxConnectionsPerBroker);
+
+        await Assert.That(sizes.ResponseBuffersPerBucket).IsEqualTo(expected);
+    }
 
     [Test]
     public async Task ForSharedPools_SingleBroker_DefaultBatch_ReturnsDepthForAdaptiveScaling()

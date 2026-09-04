@@ -47,8 +47,8 @@ public sealed class ProduceResponse : IKafkaResponse
     private const int MinRequestBytesPerRecord = 4;
 
     // Absolute ceilings for the ratchet, chosen independently of any single connection's
-    // actual frame size (standalone producers read responses through the 16 MiB
-    // ResponseBufferPool.Default frame; producers sharing a KafkaClient read through a
+    // actual frame size (standalone producers read responses through a 16 MiB
+    // ResponseBufferPool.DefaultMaxArrayLength frame; producers sharing a KafkaClient read through a
     // pool sized by the client's SharedResponseBufferFetchMaxBytes constant, a ~201 MiB
     // tier). The ceiling budget is what a 16 MiB frame can encode at each entry's minimum
     // legitimate response encoding — deliberately conservative so one producer's huge

@@ -1288,6 +1288,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private readonly Diagnostics.ConsumerFetchBufferStateSource _fetchBufferMetricSource;
     private readonly IDekafMemoryBudget _memoryBudget;
     private readonly bool _ownsInfrastructure;
+    private readonly IDisposable? _brokerCountDiscoveredRegistration;
     private readonly ConsumerCoordinator? _coordinator;
     private readonly Func<bool> _tryRecordPollFast;
     private readonly CompressionCodecRegistry _compressionCodecs;
@@ -1873,6 +1874,19 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         _metadataManager = infrastructure.Metadata;
         _ownsInfrastructure = ownsInfrastructure;
         _memoryBudget = memoryBudget;
+
+        // The response pool was sized from the bootstrap seed count; grow it to the prefetch
+        // working set of the broker count metadata actually reports. Ratchets only grow.
+        if (infrastructure.Pool is ConnectionPool ratchetableConnectionPool)
+        {
+            var prefetchPipelineDepth = options.PrefetchPipelineDepth;
+            var maxConnectionsPerBroker = options.MaxConnectionsPerBroker;
+            _brokerCountDiscoveredRegistration = _metadataManager.AddBrokerCountDiscoveredCallback(brokerCount =>
+            {
+                var depth = PoolSizing.ForConsumerResponseBuffers(brokerCount, prefetchPipelineDepth, maxConnectionsPerBroker);
+                ratchetableConnectionPool.RatchetResponseBufferRetention(depth, depth);
+            });
+        }
         _telemetryMetricCollector = infrastructure.TelemetryMetricCollector;
         _telemetryMetricCollector.RegisterMetricsForSubscription(options.ApplicationMetrics);
         _loggerFactory = loggerFactory;
@@ -13131,6 +13145,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             await _coordinator.DisposeAsync().ConfigureAwait(false);
 
         await _telemetryManager.DisposeAsync().ConfigureAwait(false);
+        _brokerCountDiscoveredRegistration?.Dispose();
         if (_ownsInfrastructure)
         {
             await _metadataManager.DisposeAsync().ConfigureAwait(false);

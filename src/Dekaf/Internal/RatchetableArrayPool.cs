@@ -6,7 +6,8 @@ namespace Dekaf.Internal;
 /// An <see cref="ArrayPool{T}"/> wrapper that supports monotonically-increasing bucket depth.
 /// When <see cref="RatchetBucketCapacity"/> is called with a value greater than the current depth,
 /// a new <c>ConfigurableArrayPool</c> is created and atomically swapped in. The old pool instance
-/// becomes GC-eligible once outstanding rentals are returned.
+/// becomes GC-eligible once callers release their references to it. Outstanding arrays
+/// can be returned to the replacement pool; arrays do not retain their originating pool.
 /// </summary>
 internal sealed class RatchetableArrayPool<T>
 {

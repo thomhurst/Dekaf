@@ -1,6 +1,7 @@
 using System.Reflection;
 using Dekaf.Consumer;
 using Dekaf.Internal;
+using Dekaf.Metadata;
 using Dekaf.Networking;
 using Dekaf.Serialization;
 
@@ -103,6 +104,48 @@ public sealed class ConsumerResponseBufferSizingTests
 
         await Assert.That(responsePool.ManagedArraysPerBucket).IsEqualTo(expectedWorkingSet);
         await Assert.That(responsePool.MaxRetainedNativeBuffers).IsEqualTo(expectedWorkingSet);
+    }
+
+    [Test]
+    public async Task ConsumerInfrastructure_RatchetsResponsePoolWhenMetadataDiscoversMoreBrokers()
+    {
+        var options = new ConsumerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            ConnectionsPerBroker = 1,
+            MaxConnectionsPerBroker = 5,
+            EnableAdaptiveConnections = true,
+            PrefetchPipelineDepth = 4
+        };
+        await using var consumer = new KafkaConsumer<string, string>(
+            options,
+            Serializers.String,
+            Serializers.String);
+
+        var connectionPool = GetField<ConnectionPool>(consumer, "_connectionPool");
+        var responsePool = GetField<ResponseBufferPool>(connectionPool, "_responseBufferPool");
+        var metadataManager = GetField<MetadataManager>(consumer, "_metadataManager");
+        var seeded = PoolSizing.ForConsumerResponseBuffers(
+            brokerCount: 1,
+            options.PrefetchPipelineDepth,
+            options.MaxConnectionsPerBroker);
+        await Assert.That(responsePool.MaxRetainedNativeBuffers).IsEqualTo(seeded);
+
+        const int discoveredBrokers = 12;
+        metadataManager.NotifyBrokerCountDiscovered(discoveredBrokers);
+
+        var expected = PoolSizing.ForConsumerResponseBuffers(
+            discoveredBrokers,
+            options.PrefetchPipelineDepth,
+            options.MaxConnectionsPerBroker);
+        await Assert.That(expected).IsGreaterThan(seeded);
+        await Assert.That(responsePool.ManagedArraysPerBucket).IsEqualTo(expected);
+        await Assert.That(responsePool.MaxRetainedNativeBuffers).IsEqualTo(expected);
+
+        metadataManager.NotifyBrokerCountDiscovered(1);
+
+        await Assert.That(responsePool.MaxRetainedNativeBuffers).IsEqualTo(expected)
+            .Because("a smaller metadata response never shrinks the pool");
     }
 
     private static T GetField<T>(object target, string name) =>

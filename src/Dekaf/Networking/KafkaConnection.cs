@@ -5,6 +5,7 @@ using System.Diagnostics;
 using System.Net;
 using System.Net.Security;
 using System.Net.Sockets;
+using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
@@ -4569,6 +4570,16 @@ public sealed class ConnectionOptions
 /// <c>ArrayPool&lt;byte&gt;</c> so that large multi-partition fetch responses are pooled
 /// instead of falling through to unpooled LOH allocations.
 /// </summary>
+/// <remarks>
+/// Retention depth must cover the live response working set (in-flight requests x peak
+/// connections for producers; prefetch pipeline slots x brokers x connections for
+/// consumers). Below that depth the managed buckets allocate a fresh array and the native
+/// path pays <c>AllocHGlobal</c>/<c>FreeHGlobal</c> plus first-touch page faults on every
+/// frame. Dormant memory is bounded by <see cref="ManagedArraysPerBucket"/> arrays per
+/// managed size bucket in use, plus <see cref="MaxRetainedNativeBuffers"/> native buffers
+/// in total across all native capacities (at most that many times the largest native
+/// capacity in use); native retention is released under high memory load.
+/// </remarks>
 internal sealed class ResponseBufferPool
 {
     // Managed arrays at or above this size enter the LOH and force full collections while
@@ -4589,10 +4600,20 @@ internal sealed class ResponseBufferPool
     private const int SizeTierBytes = 1024 * 1024;
 
     /// <summary>
-    /// Default shared instance used by producers, admin clients, and connections
-    /// that don't have consumer-specific configuration.
+    /// Depth of <see cref="Default"/>, the shared instance for admin clients, share consumers,
+    /// direct connections, and tests. Producers and consumers size their pools from topology
+    /// via <see cref="Internal.PoolSizing"/>.
     /// </summary>
     private const int DefaultManagedArraysPerBucket = 4;
+
+    /// <summary>
+    /// Largest native capacity that is retained. Above this, <see cref="RoundUpToPowerOfTwo"/>
+    /// no longer rounds, so every distinct frame size would need its own bucket.
+    /// </summary>
+    private const int MaxPooledNativeCapacity = 1 << 30;
+
+    /// <summary>One slot per power of two from 1 to <see cref="MaxPooledNativeCapacity"/>.</summary>
+    private const int NativeBucketSlotCount = 31;
 #if !NETSTANDARD2_0
     private const long NativeMemoryPressureRefreshMilliseconds = 1_000;
 #endif
@@ -4605,7 +4626,24 @@ internal sealed class ResponseBufferPool
         (int MaxArrayLength, int ManagedArraysPerBucket, int MaxRetainedNativeBuffers),
         ResponseBufferPool>
         s_sharedPools = new();
-    private readonly ConcurrentDictionary<int, NativeBufferBucket> _nativeBuckets = new();
+    /// <summary>
+    /// Bucket slots for every retainable power-of-two capacity, indexed by
+    /// <see cref="NativeBucketIndex"/> (log2 of the capacity), so rent and return resolve
+    /// their bucket in O(1) regardless of how many capacities adaptive fetch sizing has
+    /// visited. Storage is allocated during construction, before any response is returned.
+    /// </summary>
+    private readonly NativeBufferBucket[] _nativeBuckets = new NativeBufferBucket[NativeBucketSlotCount];
+    // Availability hint updated on empty/nonempty transitions. An overflow return probes
+    // an indicated alternative, never scans capacity slots. Retry only when a concurrent
+    // renter wins that buffer, as with the bucket's own lock-free stack operations.
+    private int _nativeBucketsWithBuffers;
+    private readonly RatchetableArrayPool<byte> _managedArrays;
+    /// <summary>
+    /// Slots allocated per native bucket: the retention ceiling, so a later
+    /// <see cref="RatchetRetention"/> never has to resize a bucket under live rents.
+    /// </summary>
+    private readonly int _nativeSlotCapacity;
+    private int _maxRetainedNativeBuffers;
     private int _retainedNativeBufferCount;
     private int _highNativeMemoryPressure;
 #if !NETSTANDARD2_0
@@ -4613,10 +4651,10 @@ internal sealed class ResponseBufferPool
     private readonly bool _monitorNativeMemoryPressure;
 #endif
 
-    internal ArrayPool<byte> Pool { get; }
+    internal ArrayPool<byte> Pool => _managedArrays.Pool;
     internal int MaxArrayLength { get; }
-    internal int ManagedArraysPerBucket { get; }
-    internal int MaxRetainedNativeBuffers { get; }
+    internal int ManagedArraysPerBucket => _managedArrays.CurrentArraysPerBucket;
+    internal int MaxRetainedNativeBuffers => Volatile.Read(ref _maxRetainedNativeBuffers);
     internal int RetainedNativeBufferCount => Volatile.Read(ref _retainedNativeBufferCount);
 
     internal ResponseBufferPool(
@@ -4629,14 +4667,33 @@ internal sealed class ResponseBufferPool
         var nativeRetentionLimit = maxRetainedNativeBuffers ?? managedArraysPerBucket;
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(nativeRetentionLimit);
         MaxArrayLength = maxArrayLength;
-        ManagedArraysPerBucket = managedArraysPerBucket;
-        MaxRetainedNativeBuffers = nativeRetentionLimit;
+        _maxRetainedNativeBuffers = nativeRetentionLimit;
+        _nativeSlotCapacity = Math.Max(nativeRetentionLimit, PoolSizing.MaxResponseBuffers);
+        for (var i = 0; i < _nativeBuckets.Length; i++)
+            _nativeBuckets[i] = new NativeBufferBucket(_nativeSlotCapacity);
 #if !NETSTANDARD2_0
         _monitorNativeMemoryPressure = monitorNativeMemoryPressure;
 #endif
-        Pool = ArrayPool<byte>.Create(
-            maxArrayLength: maxArrayLength,
-            maxArraysPerBucket: managedArraysPerBucket);
+        _managedArrays = new RatchetableArrayPool<byte>(maxArrayLength, managedArraysPerBucket);
+    }
+
+    /// <summary>
+    /// Raises the retention depth to the working set of a newly discovered topology. Pools are
+    /// sized from the bootstrap seed count before metadata reports the real broker count, so
+    /// producers, consumers, and shared clients call this from the broker-count-discovered
+    /// callback; like every other Dekaf pool ratchet it only ever grows. The managed side
+    /// swaps in a deeper <see cref="ArrayPool{T}"/> (arrays rented from the previous instance
+    /// return into the new one); the native allowance is a monotonic counter bound, capped at
+    /// the slot capacity every bucket was allocated with, so no bucket is ever resized.
+    /// </summary>
+    internal void RatchetRetention(int managedArraysPerBucket, int maxRetainedNativeBuffers)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(managedArraysPerBucket);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxRetainedNativeBuffers);
+        _managedArrays.RatchetBucketCapacity(managedArraysPerBucket);
+        InterlockedHelper.RatchetUp(
+            ref _maxRetainedNativeBuffers,
+            Math.Min(maxRetainedNativeBuffers, _nativeSlotCapacity));
     }
 
     /// <summary>
@@ -4648,21 +4705,42 @@ internal sealed class ResponseBufferPool
         int fetchMaxBytes,
         int managedArraysPerBucket = DefaultManagedArraysPerBucket,
         int? maxRetainedNativeBuffers = null)
-    {
-        var maxArrayLength = ComputeMaxArrayLength(fetchMaxBytes);
-        var nativeRetentionLimit = maxRetainedNativeBuffers ?? managedArraysPerBucket;
-        return maxArrayLength == DefaultMaxArrayLength
+        => GetOrAddShared(
+            ComputeMaxArrayLength(fetchMaxBytes),
+            managedArraysPerBucket,
+            maxRetainedNativeBuffers ?? managedArraysPerBucket);
+
+    /// <summary>
+    /// Returns a process-shared <see cref="ResponseBufferPool"/> with the
+    /// <see cref="DefaultMaxArrayLength"/> ceiling used for producer, admin, and coordination
+    /// traffic, retaining <paramref name="responseBuffersPerBucket"/> managed arrays per size
+    /// bucket and the same number of native buffers in total (see
+    /// <see cref="Internal.PoolSizing.SharedPoolSizes.ResponseBuffersPerBucket"/>).
+    /// </summary>
+    internal static ResponseBufferPool CreateDefaultSized(int responseBuffersPerBucket)
+        => GetOrAddShared(DefaultMaxArrayLength, responseBuffersPerBucket, responseBuffersPerBucket);
+
+    /// <summary>
+    /// Shared instances are keyed by their construction-time sizing. A pool that has since
+    /// grown through <see cref="RatchetRetention"/> stays under its original key: a later
+    /// caller asking for the shallower configuration receives the deeper pool, which retains
+    /// at most the peak live working set either way.
+    /// </summary>
+    private static ResponseBufferPool GetOrAddShared(
+        int maxArrayLength,
+        int managedArraysPerBucket,
+        int maxRetainedNativeBuffers)
+        => maxArrayLength == DefaultMaxArrayLength
             && managedArraysPerBucket == DefaultManagedArraysPerBucket
-            && nativeRetentionLimit == DefaultManagedArraysPerBucket
+            && maxRetainedNativeBuffers == DefaultManagedArraysPerBucket
             ? Default
             : s_sharedPools.GetOrAdd(
-                (maxArrayLength, managedArraysPerBucket, nativeRetentionLimit),
+                (maxArrayLength, managedArraysPerBucket, maxRetainedNativeBuffers),
                 static configuration => new ResponseBufferPool(
                     configuration.MaxArrayLength,
                     configuration.ManagedArraysPerBucket,
                     configuration.MaxRetainedNativeBuffers,
                     monitorNativeMemoryPressure: true));
-    }
 
     internal static int ComputeMaxArrayLength(int fetchMaxBytes)
     {
@@ -4684,12 +4762,13 @@ internal sealed class ResponseBufferPool
     internal NativeResponseBuffer RentNative(int minimumLength)
     {
         var capacity = RoundUpToPowerOfTwo(minimumLength);
-        var bucket = _nativeBuckets.GetOrAdd(
-            capacity,
-            static _ => new NativeBufferBucket());
-        if (bucket.TryRent(out var pointer))
+        if (capacity <= MaxPooledNativeCapacity
+            && _nativeBuckets[NativeBucketIndex(capacity)].TryRent(out var pointer))
         {
             Interlocked.Decrement(ref _retainedNativeBufferCount);
+            var index = NativeBucketIndex(capacity);
+            if (!_nativeBuckets[index].HasRetainedBuffers)
+                ClearEmptyNativeBucket(index);
             return NativeResponseBuffer.Rent(this, pointer, capacity);
         }
 
@@ -4701,34 +4780,103 @@ internal sealed class ResponseBufferPool
 #if !NETSTANDARD2_0
         RefreshNativeMemoryPressure();
 #endif
-        if (Volatile.Read(ref _highNativeMemoryPressure) != 0)
+        if (Volatile.Read(ref _highNativeMemoryPressure) != 0 || capacity > MaxPooledNativeCapacity)
         {
             Marshal.FreeHGlobal(pointer);
             return;
         }
 
-        if (Interlocked.Increment(ref _retainedNativeBufferCount) > MaxRetainedNativeBuffers)
+        if (Interlocked.Increment(ref _retainedNativeBufferCount) > MaxRetainedNativeBuffers
+            && !TryEvictDormantBuffer(capacity))
         {
+            // Nothing of another capacity to evict: this size alone exceeds the allowance.
             Interlocked.Decrement(ref _retainedNativeBufferCount);
             Marshal.FreeHGlobal(pointer);
             return;
         }
 
-        var bucket = _nativeBuckets.GetOrAdd(
-            capacity,
-            static _ => new NativeBufferBucket());
-        bucket.Return(pointer);
+        var bucketIndex = NativeBucketIndex(capacity);
+        if (!_nativeBuckets[bucketIndex].TryReturn(pointer))
+        {
+            // Every slot of this capacity is occupied. The global count admits at most one
+            // buffer per slot, so this is only reachable while a concurrent trim has popped a
+            // slot but not yet given back its allowance; freeing keeps the bound exact.
+            Interlocked.Decrement(ref _retainedNativeBufferCount);
+            Marshal.FreeHGlobal(pointer);
+            return;
+        }
+
+        MarkNativeBucketAvailable(bucketIndex);
 
         // Pressure can begin after the first check but before this buffer is published.
         if (Volatile.Read(ref _highNativeMemoryPressure) != 0)
             TrimNativeBuffers();
     }
 
+    /// <summary>
+    /// Frees one dormant buffer whose capacity differs from <paramref name="capacity"/> so the
+    /// retained set follows the live response size. Fetch frames move between power-of-two
+    /// capacities as consumer lag or adaptive fetch sizing changes; without eviction the
+    /// stale capacity's dormant buffers hold the global allowance and every frame of the new
+    /// size is freed on return and re-allocated on rent. The global bound is unchanged: the
+    /// evicted buffer's allowance is what the returned buffer takes.
+    /// </summary>
+    private bool TryEvictDormantBuffer(int capacity)
+    {
+        var excludedCapacity = 1u << NativeBucketIndex(capacity);
+        while (true)
+        {
+            var alternatives = (uint)Volatile.Read(ref _nativeBucketsWithBuffers) & ~excludedCapacity;
+            if (alternatives == 0)
+                return false;
+
+            var index = BitOperations.Log2(alternatives);
+            var bucket = _nativeBuckets[index];
+            if (!bucket.TryRent(out var pointer))
+            {
+                // A concurrent renter won the indicated capacity. Repair its bit and
+                // retry from the current mask so another available tier is not discarded.
+                ClearEmptyNativeBucket(index);
+                continue;
+            }
+
+            Marshal.FreeHGlobal(pointer);
+            Interlocked.Decrement(ref _retainedNativeBufferCount);
+            if (!bucket.HasRetainedBuffers)
+                ClearEmptyNativeBucket(index);
+            return true;
+        }
+    }
+
+    private void MarkNativeBucketAvailable(int index)
+    {
+        var bit = 1 << index;
+        if ((Volatile.Read(ref _nativeBucketsWithBuffers) & bit) == 0)
+            Interlocked.Or(ref _nativeBucketsWithBuffers, bit);
+    }
+
+    private void ClearEmptyNativeBucket(int index)
+    {
+        Interlocked.And(ref _nativeBucketsWithBuffers, ~(1 << index));
+        // A concurrent return may have observed the old set bit after publishing its
+        // pointer. Recheck after clearing so that publication cannot be hidden forever.
+        if (_nativeBuckets[index].HasRetainedBuffers)
+            MarkNativeBucketAvailable(index);
+    }
+
+    /// <summary>Slot of a power-of-two <paramref name="capacity"/> in <see cref="_nativeBuckets"/>.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static int NativeBucketIndex(int capacity) => BitOperations.Log2((uint)capacity);
+
     internal int TrimNativeBuffers()
     {
         var released = 0;
-        foreach (var bucket in _nativeBuckets.Values)
-            released += bucket.Trim();
+        var buckets = _nativeBuckets;
+        for (var i = 0; i < buckets.Length; i++)
+        {
+            released += buckets[i].Trim();
+            ClearEmptyNativeBucket(i);
+        }
 
         if (released > 0)
             Interlocked.Add(ref _retainedNativeBufferCount, -released);
@@ -4774,7 +4922,7 @@ internal sealed class ResponseBufferPool
 
     private static int RoundUpToPowerOfTwo(int value)
     {
-        if (value > 1 << 30)
+        if (value > MaxPooledNativeCapacity)
             return value;
 
         var rounded = (uint)(value - 1);
@@ -4787,18 +4935,113 @@ internal sealed class ResponseBufferPool
         return (int)rounded;
     }
 
+    /// <summary>
+    /// Retained buffers of one capacity. Pointers live in a fixed slot array threaded by two
+    /// index-linked Treiber stacks: the retained chain links the slots holding a buffer and
+    /// the free chain links the empty ones. A return pops a free slot, stores the pointer,
+    /// and pushes the slot onto the retained chain; a rent does the reverse. Each is one CAS
+    /// per chain operation with no slot scan, whatever the slot count or occupancy pattern,
+    /// and retaining a frame allocates nothing (the two arrays are allocated once per
+    /// capacity tier). Each chain head packs a 32-bit version above the slot index and every
+    /// successful CAS bumps it, so a pop whose <c>next</c> read went stale because the slot
+    /// was popped and pushed back meanwhile fails its CAS instead of corrupting the chain
+    /// (the ABA case of pointer-only stacks). Rents take the most recently returned,
+    /// cache-warm frame first.
+    /// </summary>
     private sealed class NativeBufferBucket
     {
-        private readonly ConcurrentStack<IntPtr> _buffers = new();
+        private const int None = -1;
+        private const long VersionIncrement = 1L << 32;
+        private const long VersionMask = unchecked((long)0xFFFF_FFFF_0000_0000);
 
-        internal bool TryRent(out IntPtr pointer) => _buffers.TryPop(out pointer);
+        private readonly IntPtr[] _slots;
+        private readonly int[] _next;
+        private long _retainedHead;
+        private long _freeHead;
 
-        internal void Return(IntPtr pointer) => _buffers.Push(pointer);
+        internal NativeBufferBucket(int slotCount)
+        {
+            _slots = new IntPtr[slotCount];
+            _next = new int[slotCount];
+            for (var i = 0; i < slotCount - 1; i++)
+                _next[i] = i + 1;
+            _next[slotCount - 1] = None;
+            _freeHead = Pack(0L, 0);
+            _retainedHead = Pack(0L, None);
+        }
+
+        internal bool HasRetainedBuffers => unchecked((int)Volatile.Read(ref _retainedHead)) >= 0;
+
+        internal bool TryRent(out IntPtr pointer)
+        {
+            var index = Pop(ref _retainedHead);
+            if (index < 0)
+            {
+                pointer = IntPtr.Zero;
+                return false;
+            }
+
+            // The pop's CAS orders this read after the returner's store, which preceded its
+            // push. The slot is private to this thread until it is pushed onto the free chain.
+            pointer = _slots[index];
+            _slots[index] = IntPtr.Zero;
+            Push(ref _freeHead, index);
+            return true;
+        }
+
+        internal bool TryReturn(IntPtr pointer)
+        {
+            var index = Pop(ref _freeHead);
+            if (index < 0)
+                return false;
+
+            _slots[index] = pointer;
+            Push(ref _retainedHead, index);
+            return true;
+        }
+
+        private int Pop(ref long head)
+        {
+            var next = _next;
+            while (true)
+            {
+                var current = Volatile.Read(ref head);
+                var index = unchecked((int)current);
+                if (index < 0)
+                    return None;
+
+                // A stale successor is harmless: the version guarantees the CAS below fails
+                // if this index left and re-entered the chain since the head was read.
+                var updated = Pack(NextVersion(current), Volatile.Read(ref next[index]));
+                if (Interlocked.CompareExchange(ref head, updated, current) == current)
+                    return index;
+            }
+        }
+
+        private void Push(ref long head, int index)
+        {
+            var next = _next;
+            while (true)
+            {
+                var current = Volatile.Read(ref head);
+                Volatile.Write(ref next[index], unchecked((int)current));
+                var updated = Pack(NextVersion(current), index);
+                if (Interlocked.CompareExchange(ref head, updated, current) == current)
+                    return;
+            }
+        }
+
+        /// <summary>Head word: <paramref name="version"/> in the high 32 bits, the slot index (or <see cref="None"/>) in the low 32.</summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static long Pack(long version, int index) => version | (uint)index;
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static long NextVersion(long head) => unchecked((head & VersionMask) + VersionIncrement);
 
         internal int Trim()
         {
             var released = 0;
-            while (_buffers.TryPop(out var pointer))
+            while (TryRent(out var pointer))
             {
                 Marshal.FreeHGlobal(pointer);
                 released++;

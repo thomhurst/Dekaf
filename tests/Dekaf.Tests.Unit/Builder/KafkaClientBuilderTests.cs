@@ -3,6 +3,7 @@ using System.Net.Security;
 using Dekaf.Metadata;
 using Dekaf.Networking;
 using Dekaf.Consumer;
+using Dekaf.Internal;
 using Dekaf.Producer;
 using Dekaf.Security.Sasl;
 using Dekaf.Streams;
@@ -411,6 +412,96 @@ public sealed class KafkaClientBuilderTests
     }
 
     [Test]
+    public async Task RootClient_ConsumerConnectionPool_RetainsDeepestPrefetchWorkingSet()
+    {
+        await using var client = Kafka.Connect("broker1:9092,broker2:9092", builder => builder
+            .WithMaxConnectionsPerBroker(4));
+        await using var consumer = client.CreateConsumer<string, string>().Build();
+
+        var pool = GetField<ConnectionPool>(consumer, "_connectionPool");
+        var responseBufferPool = GetField<ResponseBufferPool>(pool, "_responseBufferPool");
+
+        var expected = PoolSizing.ForSharedClientConsumerResponseBuffers(
+            brokerCount: 2,
+            maxConnectionsPerBroker: 4);
+        await Assert.That(responseBufferPool.ManagedArraysPerBucket).IsEqualTo(expected);
+        await Assert.That(responseBufferPool.MaxRetainedNativeBuffers).IsEqualTo(expected);
+    }
+
+    [Test]
+    public async Task RootClient_ProducerConnectionPool_RetainsPeakInFlightWorkingSet()
+    {
+        await using var client = Kafka.Connect("broker1:9092,broker2:9092", builder => builder
+            .WithMaxConnectionsPerBroker(4)
+            .WithMaxInFlightRequestsPerConnection(5));
+        await using var producer = client.CreateProducer<string, string>().Build();
+
+        var pool = GetField<ConnectionPool>(producer, "_connectionPool");
+        var responseBufferPool = GetField<ResponseBufferPool>(pool, "_responseBufferPool");
+
+        var expected = PoolSizing.ForSharedPools(
+            brokerCount: 2,
+            connectionsPerBroker: 1,
+            maxInFlightRequestsPerConnection: 5,
+            batchSize: 1048576,
+            maxConnectionsPerBroker: 4).ResponseBuffersPerBucket;
+        await Assert.That(responseBufferPool.ManagedArraysPerBucket).IsEqualTo(expected);
+        await Assert.That(responseBufferPool.MaxRetainedNativeBuffers).IsEqualTo(expected);
+        await Assert.That(responseBufferPool.MaxArrayLength)
+            .IsEqualTo(200 * 1024 * 1024 + ResponseBufferPool.ProtocolOverheadBytes);
+    }
+
+    [Test]
+    public async Task RootClient_ResponseBufferPools_RatchetWhenMetadataDiscoversMoreBrokers()
+    {
+        // A single seed endpoint for a nine-broker cluster: both shared pools are sized from
+        // the seed count at construction and must grow once metadata reports the topology.
+        await using var client = Kafka.Connect("broker1:9092", builder => builder
+            .WithMaxConnectionsPerBroker(6)
+            .WithMaxInFlightRequestsPerConnection(5));
+        await using var producer = client.CreateProducer<string, string>().Build();
+        await using var consumer = client.CreateConsumer<string, string>().Build();
+
+        var producerResponsePool = GetField<ResponseBufferPool>(
+            GetField<ConnectionPool>(producer, "_connectionPool"),
+            "_responseBufferPool");
+        var consumerResponsePool = GetField<ResponseBufferPool>(
+            GetField<ConnectionPool>(consumer, "_connectionPool"),
+            "_responseBufferPool");
+        var infrastructure = GetField<KafkaClientInfrastructure>(client, "_infrastructure");
+        var seededProducer = PoolSizing.ForSharedPools(
+            brokerCount: 1,
+            connectionsPerBroker: 1,
+            maxInFlightRequestsPerConnection: 5,
+            batchSize: 1048576,
+            maxConnectionsPerBroker: 6).ResponseBuffersPerBucket;
+        var seededConsumer = PoolSizing.ForSharedClientConsumerResponseBuffers(
+            brokerCount: 1,
+            maxConnectionsPerBroker: 6);
+        await Assert.That(producerResponsePool.MaxRetainedNativeBuffers).IsEqualTo(seededProducer);
+        await Assert.That(consumerResponsePool.MaxRetainedNativeBuffers).IsEqualTo(seededConsumer);
+
+        const int discoveredBrokers = 9;
+        infrastructure.MetadataManager.NotifyBrokerCountDiscovered(discoveredBrokers);
+
+        var expectedProducer = PoolSizing.ForSharedPools(
+            brokerCount: discoveredBrokers,
+            connectionsPerBroker: 1,
+            maxInFlightRequestsPerConnection: 5,
+            batchSize: 1048576,
+            maxConnectionsPerBroker: 6).ResponseBuffersPerBucket;
+        var expectedConsumer = PoolSizing.ForSharedClientConsumerResponseBuffers(
+            brokerCount: discoveredBrokers,
+            maxConnectionsPerBroker: 6);
+        await Assert.That(expectedProducer).IsGreaterThan(seededProducer);
+        await Assert.That(expectedConsumer).IsGreaterThan(seededConsumer);
+        await Assert.That(producerResponsePool.ManagedArraysPerBucket).IsEqualTo(expectedProducer);
+        await Assert.That(producerResponsePool.MaxRetainedNativeBuffers).IsEqualTo(expectedProducer);
+        await Assert.That(consumerResponsePool.ManagedArraysPerBucket).IsEqualTo(expectedConsumer);
+        await Assert.That(consumerResponsePool.MaxRetainedNativeBuffers).IsEqualTo(expectedConsumer);
+    }
+
+    [Test]
     public async Task MetadataManager_BrokerCountCallbacks_AreMulticast()
     {
         await using var metadataManager = new MetadataManager(
@@ -431,14 +522,19 @@ public sealed class KafkaClientBuilderTests
     public async Task RootClient_CreatedProducer_DisposeRemovesBrokerCountCallback()
     {
         await using var client = Kafka.Connect("localhost:9092");
+        var infrastructure = GetField<KafkaClientInfrastructure>(client, "_infrastructure");
+        // The shared client holds its own registration (response-pool ratchet) for its lifetime.
+        var clientOwnedCallbacks = infrastructure.MetadataManager.BrokerCountDiscoveredCallbackCount;
+        await Assert.That(clientOwnedCallbacks).IsEqualTo(1);
+
         var producer = client.CreateProducer<string, string>().Build();
         var metadataManager = GetField<MetadataManager>(producer, "_metadataManager");
 
-        await Assert.That(metadataManager.BrokerCountDiscoveredCallbackCount).IsEqualTo(1);
+        await Assert.That(metadataManager.BrokerCountDiscoveredCallbackCount).IsEqualTo(clientOwnedCallbacks + 1);
 
         await producer.DisposeAsync();
 
-        await Assert.That(metadataManager.BrokerCountDiscoveredCallbackCount).IsEqualTo(0);
+        await Assert.That(metadataManager.BrokerCountDiscoveredCallbackCount).IsEqualTo(clientOwnedCallbacks);
     }
 
     [Test]

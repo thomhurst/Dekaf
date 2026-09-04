@@ -1,3 +1,5 @@
+using Dekaf.Consumer;
+
 namespace Dekaf.Internal;
 
 /// <summary>
@@ -23,8 +25,8 @@ internal static class PoolSizing
     private const int MaxValueTaskSources = 65536;
     private const int MinConsumerPrefetchBufferCapacity = 16;
     private const int MaxConsumerPrefetchBufferCapacity = 1024;
-    private const int MinConsumerResponseBuffers = 16;
-    private const int MaxConsumerResponseBuffers = 256;
+    private const int MinResponseBuffers = 16;
+    internal const int MaxResponseBuffers = 256;
     private const int MinConsumerParsedRecordSlabsPerBucket = 16;
     private const int MaxConsumerParsedRecordSlabsPerBucket = 64;
 
@@ -188,9 +190,22 @@ internal static class PoolSizing
 
         return ClampPoolDepth(
             liveResponseBuffers,
-            MinConsumerResponseBuffers,
-            MaxConsumerResponseBuffers);
+            MinResponseBuffers,
+            MaxResponseBuffers);
     }
+
+    /// <summary>
+    /// Response-buffer depth for the consumer-role pool of a shared <c>KafkaClient</c>. The
+    /// pool exists before any consumer does and cannot be resized, so it is sized for the
+    /// deepest prefetch pipeline a consumer built from the client can configure. A cap above
+    /// the live working set costs nothing: dormant buffers never exceed the peak live count,
+    /// so a default-depth consumer retains exactly what its standalone pool would.
+    /// </summary>
+    internal static int ForSharedClientConsumerResponseBuffers(int brokerCount, int maxConnectionsPerBroker)
+        => ForConsumerResponseBuffers(
+            brokerCount,
+            ConsumerOptions.MaxPrefetchPipelineDepth,
+            maxConnectionsPerBroker);
 
     private static long CeilingDivide(long value, long divisor) =>
         (value + divisor - 1L) / divisor;
@@ -236,6 +251,13 @@ internal static class PoolSizing
         /// hold enough responses to avoid allocation under concurrent load.
         /// </summary>
         public required int ProduceResponsePoolSize { get; init; }
+
+        /// <summary>
+        /// Depth for the shared <see cref="Networking.ResponseBufferPool"/> that receives
+        /// producer, admin, and coordination responses (managed arrays per size bucket and
+        /// native buffers in total): peak in-flight requests across peak connections, x2.
+        /// </summary>
+        public required int ResponseBuffersPerBucket { get; init; }
     }
 
     /// <summary>
@@ -307,6 +329,16 @@ internal static class PoolSizing
             floor: 64,
             ceiling: ProduceResponsePoolSizeCeiling);
 
+        // ResponseBufferPool: one live response frame per in-flight request per peak
+        // connection, with 2x headroom because a completed request's in-flight slot is
+        // reused before its response frame is parsed and disposed. Peak (not configured)
+        // connections matter because adaptive scaling multiplies concurrent receive loops
+        // that all rent from this one shared pool.
+        var responseBuffers = ClampPoolDepth(
+            SaturatingMultiply(peakInFlightBatches, 2L),
+            MinResponseBuffers,
+            MaxResponseBuffers);
+
         return new SharedPoolSizes
         {
             ProducerDataArraysPerBucket = producerDataArrays,
@@ -314,6 +346,7 @@ internal static class PoolSizing
             PipeMemoryArraysPerBucket = pipeMemoryArrays,
             SerializationArraysPerBucket = serializationArrays,
             ProduceResponsePoolSize = responsePoolSize,
+            ResponseBuffersPerBucket = responseBuffers,
         };
     }
 

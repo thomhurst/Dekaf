@@ -714,6 +714,7 @@ internal sealed class KafkaClientInfrastructure : IAsyncDisposable
 {
     private const int SharedResponseBufferFetchMaxBytes = 200 * 1024 * 1024;
 
+    private readonly IDisposable _brokerCountDiscoveredRegistration;
     private int _disposed;
 
     private KafkaClientInfrastructure(
@@ -721,6 +722,7 @@ internal sealed class KafkaClientInfrastructure : IAsyncDisposable
         ConnectionPool connectionPool,
         ConnectionPool consumerConnectionPool,
         MetadataManager metadataManager,
+        IDisposable brokerCountDiscoveredRegistration,
         IDekafMemoryBudget memoryBudget,
         ILoggerFactory? loggerFactory,
         int connectionsPerBroker,
@@ -736,6 +738,7 @@ internal sealed class KafkaClientInfrastructure : IAsyncDisposable
         ConnectionPool = connectionPool;
         ConsumerConnectionPool = consumerConnectionPool;
         MetadataManager = metadataManager;
+        _brokerCountDiscoveredRegistration = brokerCountDiscoveredRegistration;
         MemoryBudget = memoryBudget;
         LoggerFactory = loggerFactory;
         ConnectionsPerBroker = connectionsPerBroker;
@@ -772,20 +775,30 @@ internal sealed class KafkaClientInfrastructure : IAsyncDisposable
             batchSize: 1048576,
             maxConnectionsPerBroker: options.MaxConnectionsPerBroker);
 
+        var consumerResponseBuffers = PoolSizing.ForSharedClientConsumerResponseBuffers(
+            brokerCount: options.BootstrapServers.Count,
+            maxConnectionsPerBroker: options.MaxConnectionsPerBroker);
+
         var connectionOptions = CreateConnectionOptions(options);
+        var producerResponseBufferPool = ResponseBufferPool.Create(
+            SharedResponseBufferFetchMaxBytes,
+            poolSizes.ResponseBuffersPerBucket);
+        var consumerResponseBufferPool = ResponseBufferPool.Create(
+            SharedResponseBufferFetchMaxBytes,
+            consumerResponseBuffers);
         var connectionPool = new ConnectionPool(
             options.ClientId,
             connectionOptions,
             options.LoggerFactory,
             options.ConnectionsPerBroker,
-            ResponseBufferPool.Create(SharedResponseBufferFetchMaxBytes),
+            producerResponseBufferPool,
             pipeMemoryBucketCapacity: poolSizes.PipeMemoryArraysPerBucket);
         var consumerConnectionPool = new ConnectionPool(
             options.ClientId,
             connectionOptions,
             options.LoggerFactory,
             options.ConnectionsPerBroker,
-            ResponseBufferPool.Create(SharedResponseBufferFetchMaxBytes),
+            consumerResponseBufferPool,
             pipeMemoryBucketCapacity: poolSizes.PipeMemoryArraysPerBucket,
             responseMemoryAdmissionsEnabled: true);
 
@@ -808,11 +821,31 @@ internal sealed class KafkaClientInfrastructure : IAsyncDisposable
             logger: options.LoggerFactory?.CreateLogger<MetadataManager>());
         metadataManager.SetAdditionalBrokerRegistrationTarget(consumerConnectionPool);
 
+        // Both response pools were sized from the seed count; grow them to the working set of
+        // the topology metadata actually reports. Every client built from this
+        // infrastructure shares these pools, so the ratchet lives with the metadata manager.
+        var connectionsPerBroker = options.ConnectionsPerBroker;
+        var maxInFlight = options.MaxInFlightRequestsPerConnection;
+        var maxConnectionsPerBroker = options.MaxConnectionsPerBroker;
+        var brokerCountDiscoveredRegistration = metadataManager.AddBrokerCountDiscoveredCallback(brokerCount =>
+        {
+            var producerDepth = PoolSizing.ForSharedPools(
+                brokerCount,
+                connectionsPerBroker,
+                maxInFlight,
+                batchSize: 1048576,
+                maxConnectionsPerBroker).ResponseBuffersPerBucket;
+            producerResponseBufferPool.RatchetRetention(producerDepth, producerDepth);
+            var consumerDepth = PoolSizing.ForSharedClientConsumerResponseBuffers(brokerCount, maxConnectionsPerBroker);
+            consumerResponseBufferPool.RatchetRetention(consumerDepth, consumerDepth);
+        });
+
         return new KafkaClientInfrastructure(
             options.BootstrapServers,
             connectionPool,
             consumerConnectionPool,
             metadataManager,
+            brokerCountDiscoveredRegistration,
             new ClientMemoryBudget(options.MemoryBudgetBytes),
             options.LoggerFactory,
             options.ConnectionsPerBroker,
@@ -860,6 +893,7 @@ internal sealed class KafkaClientInfrastructure : IAsyncDisposable
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
             return;
 
+        _brokerCountDiscoveredRegistration.Dispose();
         await MetadataManager.DisposeAsync().ConfigureAwait(false);
         await ConsumerConnectionPool.DisposeAsync().ConfigureAwait(false);
         await ConnectionPool.DisposeAsync().ConfigureAwait(false);
