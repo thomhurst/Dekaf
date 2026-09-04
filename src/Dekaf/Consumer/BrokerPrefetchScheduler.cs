@@ -39,10 +39,15 @@ internal sealed class BrokerPrefetchScheduler : IDisposable
     // former Task.WhenAny/WaitAsync promises resumed it.
     private readonly AsyncAutoResetSignal _completionSignal = new(inlineSignalContinuations: true);
     private readonly Action _signalCompletion;
+    // Only callbacks share the completion counter; removals belong to the loop, so
+    // draining needs no atomic write. Removals may lead queued callbacks temporarily:
+    // those callbacks repay the difference instead of waking a reused key spuriously.
+    private long _completedTaskCount;
+    private long _removedTaskCount;
 
     public BrokerPrefetchScheduler()
     {
-        _signalCompletion = _completionSignal.Signal;
+        _signalCompletion = OnTaskCompleted;
     }
 
     public int InFlightCount => _inFlight.Count;
@@ -61,8 +66,17 @@ internal sealed class BrokerPrefetchScheduler : IDisposable
         // Completion only wakes the loop; the task's result and any exception are harvested
         // by DrainCompletedAsync. A first continuation on a task stores the delegate directly,
         // so this registration does not allocate.
-        task.ConfigureAwait(false).GetAwaiter().UnsafeOnCompleted(_signalCompletion);
+        if (task.IsCompleted)
+            Interlocked.Increment(ref _completedTaskCount);
+        else
+            task.ConfigureAwait(false).GetAwaiter().UnsafeOnCompleted(_signalCompletion);
         return true;
+    }
+
+    private void OnTaskCompleted()
+    {
+        Interlocked.Increment(ref _completedTaskCount);
+        _completionSignal.Signal();
     }
 
     public async ValueTask<int> DrainCompletedAsync()
@@ -79,7 +93,10 @@ internal sealed class BrokerPrefetchScheduler : IDisposable
             {
                 var (key, task) = _completed[i];
                 if (_inFlight.Remove(key))
+                {
+                    _removedTaskCount++;
                     await task.ConfigureAwait(false);
+                }
             }
 
             return _completed.Count;
@@ -93,8 +110,8 @@ internal sealed class BrokerPrefetchScheduler : IDisposable
     /// <summary>
     /// Returns once at least one tracked task has completed. Returns immediately when a
     /// completed task is already waiting to be drained; otherwise awaits the completion signal.
-    /// A signal left over from a task that was drained before this wait is re-checked against
-    /// the tracked set, so it never produces a wake-up with nothing to drain.
+    /// A signal left over from a drained task is checked against the completion balance,
+    /// so it never produces a wake-up with nothing to drain. The check is O(1).
     /// </summary>
     public async ValueTask WaitForAnyAsync(CancellationToken cancellationToken)
     {
@@ -103,22 +120,11 @@ internal sealed class BrokerPrefetchScheduler : IDisposable
 
         _completionSignal.RegisterShutdownToken(cancellationToken);
 
-        while (!HasCompletedInFlight())
+        while (Volatile.Read(ref _completedTaskCount) <= _removedTaskCount)
         {
             cancellationToken.ThrowIfCancellationRequested();
             await _completionSignal.WaitAsync(Timeout.Infinite).ConfigureAwait(false);
         }
-    }
-
-    private bool HasCompletedInFlight()
-    {
-        foreach (var task in _inFlight.Values)
-        {
-            if (task.IsCompleted)
-                return true;
-        }
-
-        return false;
     }
 
     public async ValueTask<Exception?> DrainAllSafelyAsync(
@@ -130,6 +136,7 @@ internal sealed class BrokerPrefetchScheduler : IDisposable
 
         var tasks = _inFlight.Values.ToArray();
         _inFlight.Clear();
+        _removedTaskCount += tasks.Length;
         Exception? firstFailure = null;
 
         for (var i = 0; i < tasks.Length; i++)

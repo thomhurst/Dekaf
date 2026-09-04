@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using BenchmarkDotNet.Attributes;
 using Dekaf.Consumer;
 
@@ -63,7 +64,7 @@ public class BrokerPrefetchSchedulerBenchmarks
         for (var cycle = 0; cycle < WakeCycles; cycle++)
         {
             var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            if (!scheduler.TryStart(CompletingKey, () => completion.Task))
+            if (!scheduler.TryStart(CompletingKey, CreateTaskFactory(completion)))
                 throw new InvalidOperationException("Completing key was still in flight.");
 
             var wait = scheduler.WaitForAnyAsync(_cancellation.Token);
@@ -80,7 +81,7 @@ public class BrokerPrefetchSchedulerBenchmarks
         for (var cycle = 0; cycle < WakeCycles; cycle++)
         {
             var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            inFlight[CompletingKey] = completion.Task;
+            inFlight[CompletingKey] = CreateTaskFactory(completion)();
 
             var wait = WaitWithTaskWhenAnyAsync(inFlight, _cancellation.Token);
             completion.SetResult();
@@ -90,6 +91,10 @@ public class BrokerPrefetchSchedulerBenchmarks
                 throw new InvalidOperationException("Completing key was not tracked.");
         }
     }
+
+    // Keep both paths' factory allocation observable across the same call boundary.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static Func<Task> CreateTaskFactory(TaskCompletionSource completion) => () => completion.Task;
 
     private static async ValueTask WaitWithTaskWhenAnyAsync(
         Dictionary<(int BrokerId, int ConnectionIndex), Task> inFlight,
