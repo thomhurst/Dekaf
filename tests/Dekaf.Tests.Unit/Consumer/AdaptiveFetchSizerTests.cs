@@ -321,6 +321,32 @@ public class AdaptiveFetchSizerTests
         await Assert.That(sizer.CurrentPartitionFetchBytes).IsEqualTo(initial);
     }
 
+    [Test]
+    public async Task RecordFetchEnd_WithoutStart_IsIgnored()
+    {
+        var sizer = CreateSizerWithWindowOne();
+        var initial = sizer.CurrentPartitionFetchBytes;
+
+        sizer.RecordFetchEnd();
+        sizer.ReportProcessingComplete(TimeSpan.FromMilliseconds(100));
+
+        await Assert.That(sizer.CurrentPartitionFetchBytes).IsEqualTo(initial);
+    }
+
+    [Test]
+    public async Task RecordFetchCompleted_PublishesFetchLatencyForProcessingRatio()
+    {
+        var sizer = CreateSizerWithWindowOne();
+        var initial = sizer.CurrentPartitionFetchBytes;
+
+        // A fetch that took ~1s against 10ms of processing is a keeping-up (grow) signal.
+        var oneSecondAgo = System.Diagnostics.Stopwatch.GetTimestamp() - System.Diagnostics.Stopwatch.Frequency;
+        sizer.RecordFetchCompleted(oneSecondAgo);
+        sizer.ReportProcessingComplete(TimeSpan.FromMilliseconds(10));
+
+        await Assert.That(sizer.CurrentPartitionFetchBytes).IsGreaterThan(initial);
+    }
+
     #endregion
 
     #region Configuration defaults

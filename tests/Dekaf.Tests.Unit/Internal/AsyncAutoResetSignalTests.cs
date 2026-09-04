@@ -61,4 +61,46 @@ public class AsyncAutoResetSignalTests
                 await signal.WaitAsync(Timeout.Infinite).AsTask().WaitAsync(TimeSpan.FromSeconds(1)))
             .Throws<OperationCanceledException>();
     }
+
+    [Test]
+    public async Task InlineSignalContinuations_ResumeWaiterOnSignalerThreadAndRearm()
+    {
+        using var signal = new AsyncAutoResetSignal(inlineSignalContinuations: true);
+
+        for (var i = 0; i < 100; i++)
+        {
+            var resumedOnThread = 0;
+            var waiter = ObserveResumeThreadAsync(signal, thread => Volatile.Write(ref resumedOnThread, thread));
+
+            signal.Signal();
+
+            // The waiter's continuation ran inside Signal(), on this thread, before it returned.
+            await Assert.That(Volatile.Read(ref resumedOnThread)).IsEqualTo(Environment.CurrentManagedThreadId);
+            await waiter;
+        }
+
+        // A signal with no waiter is stored and consumed by the next wait.
+        signal.Signal();
+        await Assert.That(await signal.WaitAsync(Timeout.Infinite)).IsTrue();
+    }
+
+    [Test]
+    public async Task InlineSignalContinuations_ShutdownStillCompletesWaiter()
+    {
+        using var signal = new AsyncAutoResetSignal(inlineSignalContinuations: true);
+        using var cancellation = new CancellationTokenSource();
+        signal.RegisterShutdownToken(cancellation.Token);
+
+        var wait = signal.WaitAsync(Timeout.Infinite).AsTask();
+        cancellation.Cancel();
+
+        await Assert.That(async () => await wait.WaitAsync(TimeSpan.FromSeconds(5)))
+            .Throws<OperationCanceledException>();
+    }
+
+    private static async Task ObserveResumeThreadAsync(AsyncAutoResetSignal signal, Action<int> onResumed)
+    {
+        await signal.WaitAsync(Timeout.Infinite).ConfigureAwait(false);
+        onResumed(Environment.CurrentManagedThreadId);
+    }
 }

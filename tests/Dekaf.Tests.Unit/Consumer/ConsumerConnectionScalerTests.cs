@@ -371,6 +371,153 @@ public sealed class ConsumerConnectionScalerTests
     }
 
     [Test]
+    public async Task ReportFetchReissue_FetchBelowThreshold_NotDue_AndRestartsSaturationWindow()
+    {
+        var scaleUpCount = 0;
+        var scaler = new ConsumerConnectionScaler(
+            initialConnectionCount: 2,
+            maxConnectionCount: 4,
+            scaleUpAsync: ct => { scaleUpCount++; return ValueTask.CompletedTask; },
+            scaleDownAsync: ct => { return ValueTask.CompletedTask; });
+
+        // The loop's backlogged wait opens the window; the task then re-issues after two 3 s
+        // fetches. The loop-owned path reset the window at every completion, so back-to-back
+        // fetches must not read as one 6 s saturation window.
+        scaler.ReportPipelineUtilization(1, 1);
+        scaler.TestAdvanceTime(TimeSpan.FromSeconds(3));
+        await Assert.That(scaler.ReportFetchReissue()).IsFalse();
+        scaler.TestAdvanceTime(TimeSpan.FromSeconds(3));
+        await Assert.That(scaler.ReportFetchReissue()).IsFalse();
+
+        scaler.ReportPipelineUtilization(1, 1);
+        scaler.MaybeScale();
+        await Assert.That(scaleUpCount).IsEqualTo(0);
+        await Assert.That(scaler.CurrentConnectionCount).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task ReportFetchReissue_FetchAboveThreshold_Due_AndLoopScalesUp()
+    {
+        var scaleUpCount = 0;
+        var scaler = new ConsumerConnectionScaler(
+            initialConnectionCount: 2,
+            maxConnectionCount: 4,
+            scaleUpAsync: ct => { scaleUpCount++; return ValueTask.CompletedTask; },
+            scaleDownAsync: ct => { return ValueTask.CompletedTask; });
+
+        scaler.ReportPipelineUtilization(1, 1);
+        scaler.TestAdvanceTime(TimeSpan.FromSeconds(6));
+        await Assert.That(scaler.ReportFetchReissue()).IsTrue();
+        // The window is left for the loop, so the decision stays due until the loop acts.
+        await Assert.That(scaler.ReportFetchReissue()).IsTrue();
+
+        // The loop's wake-up sequence after the task hands control back.
+        scaler.ReportPipelineUtilization(1, 1);
+        scaler.MaybeScale();
+        await Assert.That(scaleUpCount).IsEqualTo(1);
+        await Assert.That(scaler.CurrentConnectionCount).IsEqualTo(3);
+
+        // Re-dispatch, then a long fetch inside the cooldown: not due, window restarted.
+        scaler.ReportPipelineUtilization(0, 1);
+        scaler.ReportPipelineUtilization(1, 1);
+        scaler.TestAdvanceTime(TimeSpan.FromSeconds(4));
+        await Assert.That(scaler.ReportFetchReissue()).IsFalse();
+
+        // Past the cooldown, the next over-threshold fetch is due again.
+        scaler.TestAdvanceTime(TimeSpan.FromSeconds(6));
+        await Assert.That(scaler.ReportFetchReissue()).IsTrue();
+        scaler.ReportPipelineUtilization(1, 1);
+        scaler.MaybeScale();
+        await Assert.That(scaleUpCount).IsEqualTo(2);
+        await Assert.That(scaler.CurrentConnectionCount).IsEqualTo(4);
+    }
+
+    [Test]
+    public async Task ReportFetchReissue_AtMaxConnections_NeverDue()
+    {
+        var scaler = new ConsumerConnectionScaler(
+            initialConnectionCount: 2,
+            maxConnectionCount: 2,
+            scaleUpAsync: ct => { return ValueTask.CompletedTask; },
+            scaleDownAsync: ct => { return ValueTask.CompletedTask; });
+
+        scaler.ReportPipelineUtilization(1, 1);
+        scaler.TestAdvanceTime(TimeSpan.FromSeconds(6));
+        await Assert.That(scaler.ReportFetchReissue()).IsFalse();
+    }
+
+    [Test]
+    public async Task ReportFetchReissue_SustainedReissue_DoesNotAccumulateLowUtilization()
+    {
+        var scaleDownCount = 0;
+        var scaler = new ConsumerConnectionScaler(
+            initialConnectionCount: 2,
+            maxConnectionCount: 3,
+            scaleUpAsync: ct => { return ValueTask.CompletedTask; },
+            scaleDownAsync: ct => { scaleDownCount++; return ValueTask.CompletedTask; });
+        scaler.TestSetConnectionCount(3);
+
+        // Loop re-dispatch (slot idle for an instant) then the backlogged wait, as before the
+        // first re-issue; then 160 s of back-to-back fetches on the busy slot.
+        scaler.ReportPipelineUtilization(0, 1);
+        scaler.ReportPipelineUtilization(1, 1);
+        for (var i = 0; i < 40; i++)
+        {
+            scaler.TestAdvanceTime(TimeSpan.FromSeconds(4));
+            await Assert.That(scaler.ReportFetchReissue()).IsFalse();
+        }
+
+        scaler.ReportPipelineUtilization(1, 1);
+        scaler.MaybeScale();
+        await Assert.That(scaleDownCount).IsEqualTo(0);
+        await Assert.That(scaler.CurrentConnectionCount).IsEqualTo(3);
+    }
+
+    [Test]
+    public async Task ReportPipelineUtilization_ConcurrentWithReissueAndMaybeScale_ScalesOnce()
+    {
+        var scaleUpCount = 0;
+        var scaler = new ConsumerConnectionScaler(
+            initialConnectionCount: 2,
+            maxConnectionCount: 4,
+            scaleUpAsync: ct => { Interlocked.Increment(ref scaleUpCount); return ValueTask.CompletedTask; },
+            scaleDownAsync: ct => { return ValueTask.CompletedTask; });
+
+        scaler.ReportPipelineUtilization(1, 1);
+        scaler.TestAdvanceTime(TimeSpan.FromSeconds(6));
+
+        // Broker tasks report re-issues while the loop reports and evaluates: every window
+        // update and decision is serialized, so exactly one scale-up is taken for the one
+        // over-threshold window and the cooldown holds after it.
+        const int threadCount = 8;
+        using var barrier = new Barrier(threadCount);
+        var workers = new Task[threadCount];
+        for (var t = 0; t < threadCount; t++)
+        {
+            var isBrokerTask = (t & 1) == 0;
+            workers[t] = Task.Run(() =>
+            {
+                barrier.SignalAndWait();
+                for (var i = 0; i < 2_000; i++)
+                {
+                    if (isBrokerTask)
+                        scaler.ReportFetchReissue();
+                    else
+                        scaler.ReportPipelineUtilization(1, 1);
+
+                    if ((i & 63) == 0)
+                        scaler.MaybeScale();
+                }
+            });
+        }
+
+        await Task.WhenAll(workers);
+        scaler.MaybeScale();
+        await Assert.That(scaleUpCount).IsEqualTo(1);
+        await Assert.That(scaler.CurrentConnectionCount).IsEqualTo(3);
+    }
+
+    [Test]
     public async Task SplitPartitions_SingleConnection_ReturnsSingleGroup()
     {
         var groups = new (int StartIndex, int Count)[1];

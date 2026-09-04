@@ -5,6 +5,81 @@ namespace Dekaf.Tests.Unit.Consumer;
 public sealed class BrokerPrefetchSchedulerTests
 {
     [Test]
+    public async Task TryStart_StateFactory_DuplicateKeyDoesNotInvokeFactory()
+    {
+        using var scheduler = new BrokerPrefetchScheduler();
+        var completion = new TaskCompletionSource();
+        await Assert.That(scheduler.TryStart((1, 0), completion, static state => state.Task)).IsTrue();
+        await Assert.That(scheduler.TryStart((1, 0), 42,
+            static _ => throw new InvalidOperationException("Duplicate factory invoked"))).IsFalse();
+        completion.SetResult();
+        await Assert.That(await scheduler.DrainCompletedAsync()).IsEqualTo(1);
+        await Assert.That(scheduler.TryStart((1, 0), Task.CompletedTask, static state => state)).IsTrue();
+        await Assert.That(await scheduler.DrainCompletedAsync()).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task TryStart_StateFactory_ThrowDoesNotReserveKey()
+    {
+        using var scheduler = new BrokerPrefetchScheduler();
+        await Assert.That(() => scheduler.TryStart((1, 0), 42,
+            static _ => throw new InvalidOperationException("Factory failed"))).Throws<InvalidOperationException>();
+        await Assert.That(scheduler.InFlightCount).IsEqualTo(0);
+        await Assert.That(scheduler.TryStart((1, 0), Task.CompletedTask, static state => state)).IsTrue();
+        await Assert.That(await scheduler.DrainCompletedAsync()).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task WaitForAny_DrainedSignal_DoesNotCompleteWaitForReusedKey()
+    {
+        using var scheduler = new BrokerPrefetchScheduler();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var first = new TaskCompletionSource();
+        scheduler.TryStart((1, 0), () => first.Task);
+        first.SetResult(); // Inline notification leaves a signal with no waiter.
+        await Assert.That(await scheduler.DrainCompletedAsync()).IsEqualTo(1);
+
+        var next = new TaskCompletionSource();
+        scheduler.TryStart((1, 0), () => next.Task);
+        var wait = scheduler.WaitForAnyAsync(timeout.Token);
+        await Assert.That(wait.IsCompleted).IsFalse();
+        next.SetResult();
+        await wait;
+        await Assert.That(await scheduler.DrainCompletedAsync()).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task WaitForAny_AfterDrainAll_DoesNotCountPreviousTasks()
+    {
+        using var scheduler = new BrokerPrefetchScheduler();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var first = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        scheduler.TryStart((1, 0), () => first.Task);
+        var drain = scheduler.DrainAllSafelyAsync(static _ => { }, static _ => false);
+        first.SetResult();
+        await drain;
+
+        var next = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        scheduler.TryStart((1, 0), () => next.Task);
+        var wait = scheduler.WaitForAnyAsync(timeout.Token);
+        await Assert.That(wait.IsCompleted).IsFalse();
+        next.SetResult();
+        await wait;
+        await Assert.That(await scheduler.DrainCompletedAsync()).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task DrainCompleted_FaultLeavesRemainingCompletionAvailable()
+    {
+        using var scheduler = new BrokerPrefetchScheduler();
+        scheduler.TryStart((1, 0), static () => Task.FromException(new InvalidOperationException()));
+        scheduler.TryStart((2, 0), static () => Task.CompletedTask);
+        await Assert.That(async () => await scheduler.DrainCompletedAsync()).Throws<InvalidOperationException>();
+        await Assert.That(scheduler.WaitForAnyAsync(CancellationToken.None).IsCompletedSuccessfully).IsTrue();
+        await Assert.That(await scheduler.DrainCompletedAsync()).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task DrainCompleted_AllowsFastBrokerRestartWhileSlowBrokerRemainsInFlight()
     {
         var scheduler = new BrokerPrefetchScheduler();
@@ -89,6 +164,76 @@ public sealed class BrokerPrefetchSchedulerTests
         var exception = await Assert.That(async () => await scheduler.DrainCompletedAsync().ConfigureAwait(false))
             .Throws<InvalidOperationException>();
         await Assert.That(exception).IsSameReferenceAs(failure);
+    }
+
+    [Test]
+    public async Task WaitForAny_MultiplePendingTasks_WakesWhenAnyOneCompletes()
+    {
+        var scheduler = new BrokerPrefetchScheduler();
+        var completions = new TaskCompletionSource[4];
+        for (var broker = 0; broker < completions.Length; broker++)
+        {
+            var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            completions[broker] = completion;
+            scheduler.TryStart((BrokerId: broker, ConnectionIndex: 0), () => completion.Task);
+        }
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var waitTask = scheduler.WaitForAnyAsync(cts.Token).AsTask();
+        await Assert.That(waitTask.IsCompleted).IsFalse();
+
+        completions[2].SetResult();
+        await waitTask.WaitAsync(TimeSpan.FromSeconds(10));
+
+        await Assert.That(await scheduler.DrainCompletedAsync()).IsEqualTo(1);
+        await Assert.That(scheduler.InFlightCount).IsEqualTo(3);
+        await Assert.That(scheduler.TryStart((BrokerId: 2, ConnectionIndex: 0), () => completions[2].Task)).IsTrue();
+
+        foreach (var completion in completions)
+            completion.TrySetResult();
+        await scheduler.DrainAllSafelyAsync(static _ => { }, static _ => false);
+    }
+
+    [Test]
+    public async Task WaitForAny_RepeatedWaits_WakeForEachSuccessiveCompletion()
+    {
+        var scheduler = new BrokerPrefetchScheduler();
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+
+        for (var round = 0; round < 3; round++)
+        {
+            var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            await Assert.That(scheduler.TryStart((BrokerId: 1, ConnectionIndex: 0), () => completion.Task)).IsTrue();
+
+            var waitTask = scheduler.WaitForAnyAsync(cts.Token).AsTask();
+            await Assert.That(waitTask.IsCompleted).IsFalse();
+
+            completion.SetResult();
+            await waitTask.WaitAsync(TimeSpan.FromSeconds(10));
+            await Assert.That(await scheduler.DrainCompletedAsync()).IsEqualTo(1);
+        }
+
+        await Assert.That(scheduler.HasInFlight).IsFalse();
+    }
+
+    [Test]
+    public async Task WaitForAny_CancelledDuringWait_Throws()
+    {
+        var scheduler = new BrokerPrefetchScheduler();
+        var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        scheduler.TryStart((BrokerId: 1, ConnectionIndex: 0), () => completion.Task);
+
+        using var cts = new CancellationTokenSource();
+        var waitTask = scheduler.WaitForAnyAsync(cts.Token).AsTask();
+        await Assert.That(waitTask.IsCompleted).IsFalse();
+
+        cts.Cancel();
+
+        await Assert.That(async () => await waitTask.WaitAsync(TimeSpan.FromSeconds(10)))
+            .Throws<OperationCanceledException>();
+
+        completion.SetResult();
+        await scheduler.DrainAllSafelyAsync(static _ => { }, static _ => false);
     }
 
     [Test]

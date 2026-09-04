@@ -218,14 +218,10 @@ public sealed class KafkaConsumerPrefetchMemorySignalTests
 
     private static void SetFetchTiming(AdaptiveFetchSizer sizer, TimeSpan duration)
     {
-        var startField = typeof(AdaptiveFetchSizer)
-            .GetField("_lastFetchStartTimestamp", BindingFlags.NonPublic | BindingFlags.Instance)!;
-        var endField = typeof(AdaptiveFetchSizer)
-            .GetField("_lastFetchEndTimestamp", BindingFlags.NonPublic | BindingFlags.Instance)!;
-        var end = Stopwatch.GetTimestamp();
-        var start = end - (long)(duration.TotalSeconds * Stopwatch.Frequency);
-        startField.SetValue(sizer, start);
-        endField.SetValue(sizer, end);
+        var durationField = typeof(AdaptiveFetchSizer)
+            .GetField("_lastFetchDurationTicks", BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("_lastFetchDurationTicks field not found - was it renamed?");
+        durationField.SetValue(sizer, (long)(duration.TotalSeconds * Stopwatch.Frequency));
     }
 
     private static MethodInfo GetReportAdaptiveProcessingComplete()

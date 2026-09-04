@@ -59,34 +59,104 @@ internal sealed class ConsumerConnectionScaler : IDisposable
 
     /// <summary>
     /// Reports current pipeline utilization. Call this each time a fetch completes or is dispatched.
+    /// The utilization windows are read and cleared by <see cref="MaybeScale"/> under
+    /// <see cref="_operationLock"/>, and broker prefetch tasks report concurrently with the loop
+    /// (see <see cref="ReportFetchReissue"/>), so the update takes the same lock. This runs once
+    /// per loop iteration or per fetch, never per message.
     /// </summary>
     public void ReportPipelineUtilization(int inFlightCount, int pipelineDepth)
     {
         var now = GetTimestamp();
         var isSaturated = inFlightCount >= pipelineDepth;
 
-        if (isSaturated)
-        {
-            if (_saturationStartTimestamp == 0)
-                _saturationStartTimestamp = now;
-        }
-        else if (_saturationStartTimestamp != 0)
-        {
-            _saturationStartTimestamp = 0;
-        }
-
         // Integer comparison equivalent to: (inFlightCount / pipelineDepth) < 0.3
         var isLowUtilization = pipelineDepth > 0 && inFlightCount * 10 < pipelineDepth * 3;
 
-        if (isLowUtilization)
+        lock (_operationLock)
         {
-            if (_lowUtilizationStartTimestamp == 0)
-                _lowUtilizationStartTimestamp = now;
+            if (isSaturated)
+            {
+                if (_saturationStartTimestamp == 0)
+                    _saturationStartTimestamp = now;
+            }
+            else if (_saturationStartTimestamp != 0)
+            {
+                _saturationStartTimestamp = 0;
+            }
+
+            if (isLowUtilization)
+            {
+                if (_lowUtilizationStartTimestamp == 0)
+                    _lowUtilizationStartTimestamp = now;
+            }
+            else if (_lowUtilizationStartTimestamp != 0)
+            {
+                _lowUtilizationStartTimestamp = 0;
+            }
         }
-        else if (_lowUtilizationStartTimestamp != 0)
+    }
+
+    /// <summary>
+    /// Reports, from a broker prefetch task about to re-issue a fetch on its own lease, the
+    /// completion the loop would otherwise have observed for that key. The loop-owned path
+    /// restarts the saturation window at every completion (re-dispatching the key reports its
+    /// slot idle, and the next backlogged wait reports it busy again), so that window has always
+    /// measured a single fetch; this mirrors it exactly, and keeps the low-utilization window
+    /// clear because the slot is busy again immediately.
+    /// </summary>
+    /// <returns>
+    /// <see langword="true"/> when <see cref="MaybeScale"/> would act now. The caller must then
+    /// hand control back to the loop, which owns <see cref="MaybeScale"/>, instead of
+    /// re-issuing; the windows are left intact for it. Once per fetch, never per message.
+    /// </returns>
+    public bool ReportFetchReissue()
+    {
+        var now = GetTimestamp();
+        lock (_operationLock)
         {
+            if (SelectScaleDirectionLocked(now) != ScaleDirection.None)
+                return true;
+
+            _saturationStartTimestamp = now;
             _lowUtilizationStartTimestamp = 0;
+            return false;
         }
+    }
+
+    private enum ScaleDirection
+    {
+        None,
+        Up,
+        Down
+    }
+
+    /// <summary>
+    /// The decision <see cref="MaybeScale"/> would take at <paramref name="now"/>, without
+    /// applying it. Must be called under <see cref="_operationLock"/>.
+    /// </summary>
+    private ScaleDirection SelectScaleDirectionLocked(long now)
+    {
+        if (_stopping != 0)
+            return ScaleDirection.None;
+
+        if (_lastScaleTimestamp != 0 && Stopwatch.GetElapsedTime(_lastScaleTimestamp, now) < Cooldown)
+            return ScaleDirection.None;
+
+        if (_saturationStartTimestamp != 0
+            && _currentConnectionCount < _maxConnectionCount
+            && Stopwatch.GetElapsedTime(_saturationStartTimestamp, now) >= ScaleUpSustained)
+        {
+            return ScaleDirection.Up;
+        }
+
+        if (_lowUtilizationStartTimestamp != 0
+            && _currentConnectionCount > _initialConnectionCount
+            && Stopwatch.GetElapsedTime(_lowUtilizationStartTimestamp, now) >= ScaleDownSustained)
+        {
+            return ScaleDirection.Down;
+        }
+
+        return ScaleDirection.None;
     }
 
     /// <summary>
@@ -101,37 +171,27 @@ internal sealed class ConsumerConnectionScaler : IDisposable
         TaskCompletionSource? operationReservation = null;
         lock (_operationLock)
         {
-            if (_stopping != 0)
-                return;
-
-            if (_lastScaleTimestamp != 0 && Stopwatch.GetElapsedTime(_lastScaleTimestamp, now) < Cooldown)
-                return;
-
-            if (_saturationStartTimestamp != 0
-                && _currentConnectionCount < _maxConnectionCount
-                && Stopwatch.GetElapsedTime(_saturationStartTimestamp, now) >= ScaleUpSustained)
+            switch (SelectScaleDirectionLocked(now))
             {
-                Interlocked.Increment(ref _currentConnectionCount);
-                _saturationStartTimestamp = 0;
-                _lastScaleTimestamp = now;
-                operation = _scaleUpAsync;
-            }
-            else if (_lowUtilizationStartTimestamp != 0
-                && _currentConnectionCount > _initialConnectionCount
-                && Stopwatch.GetElapsedTime(_lowUtilizationStartTimestamp, now) >= ScaleDownSustained)
-            {
-                Interlocked.Decrement(ref _currentConnectionCount);
-                _lowUtilizationStartTimestamp = 0;
-                _lastScaleTimestamp = now;
-                operation = _scaleDownAsync;
+                case ScaleDirection.Up:
+                    Interlocked.Increment(ref _currentConnectionCount);
+                    _saturationStartTimestamp = 0;
+                    _lastScaleTimestamp = now;
+                    operation = _scaleUpAsync;
+                    break;
+                case ScaleDirection.Down:
+                    Interlocked.Decrement(ref _currentConnectionCount);
+                    _lowUtilizationStartTimestamp = 0;
+                    _lastScaleTimestamp = now;
+                    operation = _scaleDownAsync;
+                    break;
+                default:
+                    return;
             }
 
-            if (operation is not null)
-            {
-                operationReservation = new TaskCompletionSource(
-                    TaskCreationOptions.RunContinuationsAsynchronously);
-                _pendingOperations.Add(operationReservation.Task);
-            }
+            operationReservation = new TaskCompletionSource(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            _pendingOperations.Add(operationReservation.Task);
         }
 
         if (operationReservation is not null)

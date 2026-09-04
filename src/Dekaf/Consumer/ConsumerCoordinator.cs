@@ -383,6 +383,18 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         && Volatile.Read(ref _fatalHeartbeatException) is null
         && Volatile.Read(ref _maxPollExpiredAtPollVersion) < 0;
 
+    /// <summary>
+    /// True when <see cref="EnsureActiveGroupAsync(StringSet, string?, CancellationToken)"/>
+    /// would return on its lock-free fast path: the member is stable in the group for exactly
+    /// this subscription, is not disposed, and no fatal heartbeat failure is waiting to surface.
+    /// Mirrors that method's early-return conditions and must be kept in sync with them.
+    /// </summary>
+    internal bool IsEnsureActiveGroupCurrent(StringSet topics, string? subscribedTopicRegex) =>
+        Volatile.Read(ref _disposed) == 0
+        && _state == CoordinatorState.Stable
+        && Volatile.Read(ref _fatalHeartbeatException) is null
+        && SubscriptionMatches(topics, subscribedTopicRegex);
+
     internal bool TryRecordPollFast() => TryRecordPollFast(out _);
 
     /// <summary>

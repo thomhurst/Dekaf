@@ -23,7 +23,6 @@ public sealed class PrefetchLoopControlTests
 
         await Assert.That(decision.Action).IsEqualTo(PrefetchLoopAction.WaitForAny);
         await Assert.That(decision.ReportBacklog).IsTrue();
-        await Assert.That(decision.RecordFetchWait).IsTrue();
     }
 
     [Test]
@@ -36,7 +35,6 @@ public sealed class PrefetchLoopControlTests
 
         await Assert.That(decision.Action).IsEqualTo(PrefetchLoopAction.WaitForAny);
         await Assert.That(decision.ReportBacklog).IsFalse();
-        await Assert.That(decision.RecordFetchWait).IsTrue();
     }
 
     [Test]
@@ -49,7 +47,6 @@ public sealed class PrefetchLoopControlTests
 
         await Assert.That(decision.Action).IsEqualTo(PrefetchLoopAction.DelayNoWork);
         await Assert.That(decision.ReportBacklog).IsFalse();
-        await Assert.That(decision.RecordFetchWait).IsFalse();
     }
 
     [Test]
@@ -62,7 +59,6 @@ public sealed class PrefetchLoopControlTests
 
         await Assert.That(decision.Action).IsEqualTo(PrefetchLoopAction.Continue);
         await Assert.That(decision.ReportBacklog).IsFalse();
-        await Assert.That(decision.RecordFetchWait).IsFalse();
     }
 
     [Test]
