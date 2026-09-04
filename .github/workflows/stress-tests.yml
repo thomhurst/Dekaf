@@ -1,5 +1,5 @@
 name: Stress Tests
-run-name: PR 2993 pooled scheduler wait - exact parent A-B-A
+run-name: PR 2990 zero linger - one exact repeat
 on:
   workflow_dispatch:
 permissions:
@@ -8,34 +8,90 @@ env:
   ContinuousIntegrationBuild: true
   Deterministic: true
   DOTNET_CLI_TELEMETRY_OPTOUT: true
+  BASELINE_SHA: 9778462c0d380e331684eb0ae9cd4d8f392c089c
+  CANDIDATE_SHA: 2e324e04d3286eb1989775808ab57506c1f84701
+  PR_NUMBER: '2990'
+  LINGERS: '0'
+  DURATION_MINUTES: '5'
+  SCENARIO: producer-async
+  CLIENT_CPUS: 6,7
+  BROKER_CPUS: 0-5
+  BROKER_TMPFS: 6g
+  BROKER_HEAP: '-Xms2g -Xmx2g'
+  KAFKA_BOOTSTRAP_SERVERS: localhost:9092
+  KAFKA_TEST_IMAGE_TAG: '4.3.1'
+  DOTNET_GCDynamicAdaptationMode: '1'
 jobs:
   compare:
     runs-on: ubicloud-standard-8
-    timeout-minutes: 22
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: e6aabd518dbde30505fe354b6149ad1c3eddbf19
+          ref: ${{ env.BASELINE_SHA }}
           path: versions/main
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: a68ca4a2265de539762d192b16ab0b9a48f39f34
+          ref: ${{ env.CANDIDATE_SHA }}
           path: versions/candidate
           persist-credentials: false
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
         with:
           dotnet-version: '10.0.x'
-      - name: Compare actual scheduler waits and full wake cycles
+      - name: Build both revisions with identical final-delivery accounting
         shell: bash
-        run: bash .github/pr-comparison/scheduler-wait.sh
-      - name: Upload complete benchmark evidence
+        run: |
+          mkdir -p evidence
+          python3 .github/pr-comparison/count-final-delivery.py
+          git -C versions/main diff -- tools/Dekaf.StressTests/Scenarios/ProducerAsyncStressTest.cs > evidence/harness.patch
+          for version in main candidate; do
+            git -C "versions/$version" rev-parse HEAD > "evidence/$version.sha"
+            dotnet build "versions/$version/tools/Dekaf.StressTests" -c Release > "evidence/build-$version.log" 2>&1 || { tail -60 "evidence/build-$version.log"; exit 1; }
+          done
+          dotnet build versions/candidate/tools/Dekaf.Benchmarks -c Release > evidence/build-benchmark.log 2>&1 || { tail -60 evidence/build-benchmark.log; exit 1; }
+          lscpu > evidence/cpu.txt
+          lscpu -e > evidence/cpu-topology.txt
+          dotnet --info > evidence/dotnet.txt
+      - name: Verify channel waiter allocation
+        shell: bash
+        run: |
+          root="$PWD"
+          cd versions/candidate
+          taskset -c 6,7 dotnet tools/Dekaf.Benchmarks/bin/Release/net10.0/Dekaf.Benchmarks.dll \
+            --filter '*ProducerChannelWaitBenchmarks*' --job Short --warmupCount 5 \
+            --iterationCount 10 --iterationTime 250 --memory --exporters json \
+            --artifacts "$root/evidence/channel-wait" > "$root/evidence/channel-wait.log" 2>&1
+          python3 "$root/.github/pr-comparison/validate-bdn.py" "$root/evidence/channel-wait"
+      - name: Run five-minute parent-candidate-parent at 0 ms
+        shell: bash
+        run: bash .github/pr-comparison/run.sh
+      - name: Apply repository A-B-A comparison
+        if: always()
+        shell: bash
+        run: |
+          failed=0
+          for linger in 0; do
+            python3 .github/scripts/stress_aba.py \
+              --baseline-a "evidence/linger-$linger/main-a" \
+              --candidate "evidence/linger-$linger/candidate" \
+              --baseline-a2 "evidence/linger-$linger/main-b" \
+              --baseline-sha "$BASELINE_SHA" --candidate-sha "$CANDIDATE_SHA" \
+              --output "evidence/pareto-$linger.json" --summary "$GITHUB_STEP_SUMMARY" \
+              > "evidence/pareto-$linger.md" || failed=1
+          done
+          exit "$failed"
+      - name: Upload raw performance evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: pr-2993-pooled-scheduler-wait
+          name: pr-2990-pooled-waits-repeat-zero
           path: evidence/
           retention-days: 90
+      - name: Stop task broker
+        if: always()
+        run: docker rm -f kafka || true
+
