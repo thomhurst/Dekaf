@@ -4,6 +4,56 @@ using Dekaf.Consumer;
 
 namespace Dekaf.Benchmarks.Benchmarks.Unit;
 
+[MemoryDiagnoser]
+public class BrokerPrefetchDispatchBenchmarks
+{
+    private BrokerPrefetchScheduler _pending = null!;
+    private BrokerPrefetchScheduler _completed = null!;
+    private Task _task = null!;
+
+    [GlobalSetup]
+    public void Setup()
+    {
+        _pending = new BrokerPrefetchScheduler();
+        _completed = new BrokerPrefetchScheduler();
+        _task = Task.CompletedTask;
+        _pending.TryStart((1, 0), static () => new TaskCompletionSource().Task);
+        // Populate the completed list before measuring steady dispatch.
+        _completed.TryStart((1, 0), static () => Task.CompletedTask);
+        _completed.DrainCompletedAsync().GetAwaiter().GetResult();
+    }
+
+    [Benchmark(Baseline = true)]
+    public bool CapturingFactory_Pending() => _pending.TryStart((1, 0), Capture(_task));
+
+    [Benchmark]
+    public bool StateFactory_Pending() => _pending.TryStart((1, 0), _task, static task => task);
+
+    [Benchmark]
+    public ValueTask<int> CapturingFactory_StartAndDrain()
+    {
+        _completed.TryStart((1, 0), Capture(_task));
+        return _completed.DrainCompletedAsync();
+    }
+
+    [Benchmark]
+    public ValueTask<int> StateFactory_StartAndDrain()
+    {
+        _completed.TryStart((1, 0), _task, static task => task);
+        return _completed.DrainCompletedAsync();
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static Func<Task> Capture(Task task) => () => task;
+
+    [GlobalCleanup]
+    public void Cleanup()
+    {
+        _pending.Dispose();
+        _completed.Dispose();
+    }
+}
+
 /// <summary>
 /// Measures one prefetch-loop wake cycle, amortized over <see cref="WakeCycles"/> cycles per
 /// invocation so per-wake time and allocation are resolvable: start a task for the completing

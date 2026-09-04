@@ -5,6 +5,31 @@ namespace Dekaf.Tests.Unit.Consumer;
 public sealed class BrokerPrefetchSchedulerTests
 {
     [Test]
+    public async Task TryStart_StateFactory_DuplicateKeyDoesNotInvokeFactory()
+    {
+        using var scheduler = new BrokerPrefetchScheduler();
+        var completion = new TaskCompletionSource();
+        await Assert.That(scheduler.TryStart((1, 0), completion, static state => state.Task)).IsTrue();
+        await Assert.That(scheduler.TryStart((1, 0), 42,
+            static _ => throw new InvalidOperationException("Duplicate factory invoked"))).IsFalse();
+        completion.SetResult();
+        await Assert.That(await scheduler.DrainCompletedAsync()).IsEqualTo(1);
+        await Assert.That(scheduler.TryStart((1, 0), Task.CompletedTask, static state => state)).IsTrue();
+        await Assert.That(await scheduler.DrainCompletedAsync()).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task TryStart_StateFactory_ThrowDoesNotReserveKey()
+    {
+        using var scheduler = new BrokerPrefetchScheduler();
+        await Assert.That(() => scheduler.TryStart((1, 0), 42,
+            static _ => throw new InvalidOperationException("Factory failed"))).Throws<InvalidOperationException>();
+        await Assert.That(scheduler.InFlightCount).IsEqualTo(0);
+        await Assert.That(scheduler.TryStart((1, 0), Task.CompletedTask, static state => state)).IsTrue();
+        await Assert.That(await scheduler.DrainCompletedAsync()).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task WaitForAny_DrainedSignal_DoesNotCompleteWaitForReusedKey()
     {
         using var scheduler = new BrokerPrefetchScheduler();

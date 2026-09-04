@@ -57,11 +57,17 @@ internal sealed class BrokerPrefetchScheduler : IDisposable
     public bool TryStart(
         (int BrokerId, int ConnectionIndex) key,
         Func<Task> taskFactory)
+        => TryStart(key, taskFactory, static factory => factory());
+
+    public bool TryStart<TState>(
+        (int BrokerId, int ConnectionIndex) key,
+        TState state,
+        Func<TState, Task> taskFactory)
     {
         if (_inFlight.ContainsKey(key))
             return false;
 
-        var task = taskFactory();
+        var task = taskFactory(state);
         _inFlight.Add(key, task);
         // Completion only wakes the loop; the task's result and any exception are harvested
         // by DrainCompletedAsync. A first continuation on a task stores the delegate directly,

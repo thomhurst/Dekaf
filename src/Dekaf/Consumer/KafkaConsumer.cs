@@ -4128,15 +4128,19 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         var fetchBufferEpoch = Volatile.Read(ref _fetchBufferEpoch);
         return _brokerPrefetchScheduler.TryStart(
             (brokerId, connectionIndex),
-            () => RunBrokerPrefetchAsync(
-                brokerId,
-                partitions,
-                partitionStartIndex,
-                partitionCount,
-                connectionIndex,
-                fetchBufferEpoch,
-                plan,
-                cancellationToken));
+            (Consumer: this, BrokerId: brokerId, Partitions: partitions,
+                PartitionStartIndex: partitionStartIndex, PartitionCount: partitionCount,
+                ConnectionIndex: connectionIndex, FetchBufferEpoch: fetchBufferEpoch,
+                Plan: plan, CancellationToken: cancellationToken),
+            static state => state.Consumer.RunBrokerPrefetchAsync(
+                state.BrokerId,
+                state.Partitions,
+                state.PartitionStartIndex,
+                state.PartitionCount,
+                state.ConnectionIndex,
+                state.FetchBufferEpoch,
+                state.Plan,
+                state.CancellationToken));
     }
 
     /// <summary>
