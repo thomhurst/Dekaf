@@ -1340,6 +1340,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // conservative request budget across batches from separate drain passes.
         var coalescedRequestBudgetUsed = 0L;
         var waveCoalesceBounds = SelectWaveCoalesceBounds(_options.LingerMs);
+        var isZeroLinger = _options.LingerMs == 0;
         var waveCoalesceMaxTicks = MicrosecondsToStopwatchTicks(waveCoalesceBounds.MaximumMicroseconds);
         var waveCoalesceQuietTicks = MicrosecondsToStopwatchTicks(waveCoalesceBounds.QuietMicroseconds);
         var waveCoalesceArmed = true;
@@ -1647,10 +1648,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     && coalescedPartitions.Count < _knownPartitions.Count
                     && carryOver.Count == 0
                     && waveCoalesceGate.ShouldSpin(Stopwatch.GetTimestamp())
-                    && ShouldMicroLinger(
-                        coalescedBatches,
-                        coalescedCount,
-                        _options.TransactionalId is not null))
+                    && (isZeroLinger
+                        ? ShouldMicroLingerAtZeroLinger(
+                            coalescedBatches, coalescedCount, _options.TransactionalId is not null)
+                        : ShouldMicroLinger(
+                            coalescedBatches, coalescedCount, _options.TransactionalId is not null)))
                 {
                     waveCoalesceArmed = false;
                     var coalescedCountBeforeSpin = coalescedCount;
@@ -2523,8 +2525,24 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     }
 
     /// <summary>
-    /// Whether a single-batch wave should spin for siblings. Two shapes prove the spin can
-    /// never improve coalescing because the only producer is awaiting the batch in hand:
+    /// The legacy zero-linger decision. Nontransactional traffic returns before touching
+    /// batch state; zero-linger seals never carry a sole-demand proof.
+    /// </summary>
+    internal static bool ShouldMicroLingerAtZeroLinger(
+        ReadyBatch[] coalescedBatches,
+        int coalescedCount,
+        bool isTransactional)
+    {
+        if (!isTransactional || coalescedCount != 1)
+            return true;
+
+        var batch = coalescedBatches[0];
+        return batch.RecordCount != 1 || batch.CompletionSourcesCount != 1;
+    }
+
+    /// <summary>
+    /// Whether a positive-linger single-batch wave should spin for siblings. Two shapes
+    /// prove the spin can never improve coalescing because the only producer is awaiting the batch in hand:
     /// a batch the accumulator sealed as the producer's sole demand (#2510 bypass,
     /// <see cref="ReadyBatch.SealedAsSoleDemand"/>), and serial transactional ProduceAsync
     /// traffic, which cannot enqueue another record until its sole completion resolves.

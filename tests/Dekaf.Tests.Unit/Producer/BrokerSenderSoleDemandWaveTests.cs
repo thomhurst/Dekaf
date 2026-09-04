@@ -20,6 +20,35 @@ public sealed class BrokerSenderSoleDemandWaveTests : ScriptedProduceResponseFix
     private const string Topic = "sole-demand-topic";
 
     [Test]
+    public async Task ZeroLinger_NontransactionalWave_DoesNotReadBatchState()
+    {
+        // A missing batch is intentional: the legacy nontransactional decision needs
+        // only configuration and must not read sole-demand or completion state.
+        await Assert.That(BrokerSender.ShouldMicroLingerAtZeroLinger([], 1, isTransactional: false)).IsTrue();
+        await Assert.That(BrokerSender.ShouldMicroLingerAtZeroLinger([], 2, isTransactional: true)).IsTrue();
+    }
+
+    [Test]
+    public async Task ZeroLinger_TransactionalSingleRecord_KeepsLegacySkip()
+    {
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
+        try
+        {
+            var (batch, _) = CreateBatch(pool, partition: 0, soleDemand: false);
+            await Assert.That(BrokerSender.ShouldMicroLingerAtZeroLinger([batch], 1, isTransactional: true)).IsFalse();
+
+            var multiRecordBatch = new ReadyBatch();
+            multiRecordBatch.Initialize(new TopicPartition(Topic, 0), new RecordBatch { Records = [] },
+                completionSourcesArray: null, completionSourcesCount: 0, recordCount: 2, dataSize: 100);
+            await Assert.That(BrokerSender.ShouldMicroLingerAtZeroLinger([multiRecordBatch], 1, isTransactional: true)).IsTrue();
+        }
+        finally
+        {
+            await pool.DisposeAsync();
+        }
+    }
+
+    [Test]
     public async Task ShouldMicroLinger_CancelledSoleWaiter_KeepsSpinningAfterSourceReuse()
     {
         var source = new PooledValueTaskSource<RecordMetadata>();
@@ -103,8 +132,12 @@ public sealed class BrokerSenderSoleDemandWaveTests : ScriptedProduceResponseFix
     }
 
     [Test]
+    [Arguments(0)]
+    [Arguments(1)]
+    [Arguments(5)]
     [Timeout(60_000)]
-    public async Task SendLoop_SoleDemandBatch_SkipsWaveCoalesceSpin_UnflaggedBatchStillSpins(
+    public async Task SendLoop_ZeroLingerUsesLegacySpin_PositiveLingerSkipsSoleDemand(
+        int lingerMs,
         CancellationToken cancellationToken)
     {
         var responses = new Queue<TaskCompletionSource<ProduceResponse>>(
@@ -115,7 +148,7 @@ public sealed class BrokerSenderSoleDemandWaveTests : ScriptedProduceResponseFix
         var (pool, connection) = CreateMockConnection(responses);
         connection.CaptureProduceRequests = true;
         cancellationToken = GuardUnscriptedSends(cancellationToken);
-        var options = CreateOptions();
+        var options = CreateOptions(lingerMs);
         var accumulator = new RecordAccumulator(options);
         var vtPool = new ValueTaskSourcePool<RecordMetadata>();
         var spinsStarted = 0;
@@ -137,14 +170,15 @@ public sealed class BrokerSenderSoleDemandWaveTests : ScriptedProduceResponseFix
             var metadata = await soleDemandDelivery.WaitAsync(cancellationToken);
 
             await Assert.That(metadata.Offset).IsEqualTo(10);
-            await Assert.That(Volatile.Read(ref spinsStarted)).IsEqualTo(0);
+            var expectedFlaggedSpins = lingerMs == 0 ? 1 : 0;
+            await Assert.That(Volatile.Read(ref spinsStarted)).IsEqualTo(expectedFlaggedSpins);
 
             var (unflagged, unflaggedDelivery) = CreateBatch(vtPool, partition: 0, soleDemand: false);
             sender.Enqueue(unflagged);
             metadata = await unflaggedDelivery.WaitAsync(cancellationToken);
 
             await Assert.That(metadata.Offset).IsEqualTo(11);
-            await Assert.That(Volatile.Read(ref spinsStarted)).IsEqualTo(1);
+            await Assert.That(Volatile.Read(ref spinsStarted)).IsEqualTo(expectedFlaggedSpins + 1);
             int capturedRequestCount;
             lock (connection.CapturedProduceRequests)
             {
@@ -219,14 +253,14 @@ public sealed class BrokerSenderSoleDemandWaveTests : ScriptedProduceResponseFix
         }
     }
 
-    private static ProducerOptions CreateOptions() => new()
+    private static ProducerOptions CreateOptions(int lingerMs = 5) => new()
     {
         BootstrapServers = ["localhost:9092"],
         MaxInFlightRequestsPerConnection = 1,
         ConnectionsPerBroker = 1,
         EnableIdempotence = true,
         Acks = Acks.All,
-        LingerMs = 5,
+        LingerMs = lingerMs,
         RetryBackoffMs = 100,
         RetryBackoffMaxMs = 1000,
         DeliveryTimeoutMs = 30_000,

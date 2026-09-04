@@ -95,6 +95,18 @@ public class WaveCoalesceSoleDemandBenchmarks
     public bool SoleDemandWave()
         => BrokerSender.ShouldMicroLinger(_soleDemandWave, 1, isTransactional: false);
 
+    [Benchmark]
+    public bool ZeroLingerMultiBatchWave()
+        => BrokerSender.ShouldMicroLingerAtZeroLinger(_multiBatchWave, 2, isTransactional: false);
+
+    [Benchmark]
+    public bool ZeroLingerUnflaggedSingleBatchWave()
+        => BrokerSender.ShouldMicroLingerAtZeroLinger(_unflaggedWave, 1, isTransactional: false);
+
+    [Benchmark]
+    public bool ZeroLingerTransactionalSerialWave()
+        => BrokerSender.ShouldMicroLingerAtZeroLinger(_unflaggedWave, 1, isTransactional: true);
+
     private static ReadyBatch CreateSingleAwaitedRecordBatch(int partition)
     {
         var batch = new ReadyBatch();
