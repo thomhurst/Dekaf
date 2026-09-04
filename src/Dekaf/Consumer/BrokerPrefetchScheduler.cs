@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using Dekaf.Internal;
 
 namespace Dekaf.Consumer;
@@ -119,6 +120,10 @@ internal sealed class BrokerPrefetchScheduler : IDisposable
     /// A signal left over from a drained task is checked against the completion balance,
     /// so it never produces a wake-up with nothing to drain. The check is O(1).
     /// </summary>
+    // The loop awaits each result once, allowing suspended waits to reuse their state box.
+#if NET
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
+#endif
     public async ValueTask WaitForAnyAsync(CancellationToken cancellationToken)
     {
         if (_inFlight.Count == 0)
