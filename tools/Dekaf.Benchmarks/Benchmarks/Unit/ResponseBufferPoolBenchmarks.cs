@@ -25,6 +25,9 @@ public class ResponseBufferOverflowBenchmarks
             _pool.ReturnNative(Marshal.AllocHGlobal(FrameBytes), FrameBytes);
     }
 
+    [Benchmark(Baseline = true)]
+    public void AllocateAndFree() => Marshal.FreeHGlobal(Marshal.AllocHGlobal(FrameBytes));
+
     [Benchmark]
     public void SurplusReturn() => _pool.ReturnNative(Marshal.AllocHGlobal(FrameBytes), FrameBytes);
 
