@@ -1269,7 +1269,8 @@ public sealed class AdaptiveScaleDownTests
 
     private static async Task StopSendLoopAsync(BrokerSender sender)
     {
-        GetField<CancellationTokenSource>(sender, "_cts").Cancel();
+        // Use the sender's shutdown boundary so its channel wait is also released.
+        sender.RequestCancellation();
         await GetField<Task>(sender, "_sendLoopTask").WaitAsync(TimeSpan.FromSeconds(5));
     }
 

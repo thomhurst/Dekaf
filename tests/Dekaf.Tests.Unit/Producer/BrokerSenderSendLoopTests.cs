@@ -405,6 +405,39 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
     }
 
     [Test]
+    [Arguments(0, false)]
+    [Arguments(0, true)]
+    [Arguments(5, false)]
+    [Arguments(5, true)]
+    public async Task Shutdown_WakesIdleChannelWait(int lingerMs, bool requestCancellation, CancellationToken cancellationToken)
+    {
+        var idle = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var options = CreateOptions(lingerMs: lingerMs);
+        var accumulator = new RecordAccumulator(options);
+        var sender = CreateSender(Substitute.For<IConnectionPool>(), options, accumulator,
+            static (_, _, _, _, _) => { }, onIdleWaitStarted: () => idle.TrySetResult());
+
+        try
+        {
+            await idle.Task.WaitAsync(cancellationToken);
+            var loop = (Task)typeof(BrokerSender).GetField("_sendLoopTask",
+                BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(sender)!;
+            if (requestCancellation)
+                sender.RequestCancellation();
+            else
+                await sender.DisposeAsync();
+
+            await loop.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
+            await Assert.That(sender.IsAlive).IsFalse();
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
     public async Task FailedSenderSplit_PreSerializationFailure_ReleasesPipelineAccounting()
     {
         const string topic = "failed-sender-split";

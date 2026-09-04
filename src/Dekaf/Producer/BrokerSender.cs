@@ -1341,6 +1341,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         var coalescedRequestBudgetUsed = 0L;
         var waveCoalesceBounds = SelectWaveCoalesceBounds(_options.LingerMs);
         var isZeroLinger = _options.LingerMs == 0;
+        // Keep the legacy cancellable wait at zero linger. Positive-linger shutdown
+        // completes the writer first, allowing the single-reader waiter to be reused.
+        var channelWaitCancellationToken = isZeroLinger ? cancellationToken : CancellationToken.None;
         var waveCoalesceMaxTicks = MicrosecondsToStopwatchTicks(waveCoalesceBounds.MaximumMicroseconds);
         var waveCoalesceQuietTicks = MicrosecondsToStopwatchTicks(waveCoalesceBounds.QuietMicroseconds);
         var waveCoalesceArmed = true;
@@ -2122,7 +2125,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             // Re-check the immutable broker-partition snapshot on the next pass.
                         }
                     }
-                    else if (!await eventReader.WaitToReadAsync(cancellationToken).ConfigureAwait(false))
+                    else if (!await eventReader.WaitToReadAsync(channelWaitCancellationToken).ConfigureAwait(false))
                     {
                         break;
                     }
@@ -2165,7 +2168,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         // Note: if this wakes on a ResponseReady event, the freed in-flight slot
                         // is only visible after ProcessCompletedResponses runs at the top of the
                         // next iteration — not in this one.
-                        if (!await eventReader.WaitToReadAsync(cancellationToken)
+                        if (!await eventReader.WaitToReadAsync(channelWaitCancellationToken)
                             .ConfigureAwait(false))
                             break;
                     }
@@ -3855,7 +3858,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// for the supplied interval. The normal response-only path supplies the next request
     /// deadline; shorter polling intervals remain available for blocked buckets and throttling.
     ///
-    /// Zero-allocation in steady state: the signal uses a reusable internal timer for
+    /// The underlying signal uses a reusable internal timer for
     /// the timeout and a one-time shutdown token registration for cancellation.
     /// </summary>
     private async ValueTask WaitForAnyResponseAsync(
@@ -5679,8 +5682,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     {
         LogDisposing(_brokerId);
 
-        // Complete the channel so no new events are accepted, then cancel the CTS so
-        // WaitToReadAsync is interrupted promptly. We use CancelAsync here (rather than
+        // Complete the channel so no new events are accepted and channel waits wake,
+        // then cancel the CTS for response waits and I/O. We use CancelAsync (rather than
         // synchronous Cancel) because CTS cancellation callbacks may perform I/O and we
         // are already in an async context that can await them without blocking a thread.
         _eventChannel.Writer.TryComplete();
