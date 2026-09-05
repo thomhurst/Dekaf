@@ -139,6 +139,7 @@ jobs:
           DISPATCH_SHAPE: ${{ github.event.inputs.dispatch_shape }}
           FULL_RUN: ${{ github.event.inputs.full_run }}
           CONSUMER_FETCH_DIAGNOSTICS: ${{ github.event.inputs.consumer_fetch_diagnostics }}
+          ADAPTIVE_CONNECTIONS: ${{ github.event.inputs.adaptive_connections }}
           BASELINE_SHA: ${{ github.event.inputs.baseline_sha }}
           PROFILE_MODE: ${{ github.event.inputs.profile_mode }}
           EVENT_NAME: ${{ github.event_name }}
@@ -199,6 +200,10 @@ jobs:
           fi
           if [ "$full_run" = "true" ] && [ "$CONSUMER_FETCH_DIAGNOSTICS" = "true" ]; then
             echo "::error::full_run cannot enable consumer_fetch_diagnostics because its Dekaf-only overhead would invalidate the published comparison."
+            exit 1
+          fi
+          if [ "$full_run" = "true" ] && [ "$ADAPTIVE_CONNECTIONS" = "true" ]; then
+            echo "::error::full_run cannot enable adaptive_connections because relabelling every producer result 'Dekaf (adaptive)' removes the Dekaf group from the published comparison and silently blanks the headline rows."
             exit 1
           fi
 
