@@ -27,7 +27,8 @@
 #   PROFILE_START_TIMEOUT Seconds allowed for measured phase to start (default: 300).
 #   STRESS_CPUSET         Optional target process CPU affinity.
 #   PROFILER_CPUSET       Optional diagnostics process CPU affinity.
-#   KAFKA_BOOTSTRAP_SERVERS External Kafka address (default: localhost:9092).
+#   KAFKA_BOOTSTRAP_SERVERS External Kafka address (default when unset: localhost:9092;
+#                         export it empty to let the harness start its own brokers).
 
 set -euo pipefail
 
@@ -54,7 +55,11 @@ PROFILE_GCDUMP="${PROFILE_GCDUMP:-false}"
 PROFILE_SUMMARY="${PROFILE_SUMMARY:-true}"
 PROFILE_VALIDATE_ONLY="${PROFILE_VALIDATE_ONLY:-false}"
 PROFILE_START_TIMEOUT="${PROFILE_START_TIMEOUT:-300}"
-export KAFKA_BOOTSTRAP_SERVERS="${KAFKA_BOOTSTRAP_SERVERS:-localhost:9092}"
+# Default only when the variable is UNSET. The workflow exports an explicitly empty value
+# for multi-broker lanes so the harness starts its own cluster; ":-" turned that empty
+# value into localhost:9092 and every 3-broker profile run failed with connection refused
+# (run 33963174587).
+export KAFKA_BOOTSTRAP_SERVERS="${KAFKA_BOOTSTRAP_SERVERS-localhost:9092}"
 
 fail() {
     echo "ERROR: $*" >&2
