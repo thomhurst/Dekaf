@@ -206,9 +206,11 @@ public sealed class ProducerOptions
     internal bool IsAutoTuned { get; init; }
 
     /// <summary>
-    /// Soft target, in milliseconds, for controllable per-broker producer queueing latency
-    /// (batch seal to socket send). Configured linger and broker round-trip time are excluded.
-    /// Controls a per-broker logical-byte congestion window. The controller probes upward
+    /// Soft target, in milliseconds, for per-broker producer delivery latency (append to
+    /// broker acknowledgement). Configured <see cref="LingerMs"/> is the caller's chosen
+    /// batching delay, so the controller governs the remainder (target minus linger, never
+    /// below half the target) as controllable queueing latency; broker round-trip time is
+    /// excluded from the governed sample. Controls a per-broker logical-byte congestion window. The controller probes upward
     /// and downward to find the smallest window that preserves acknowledged goodput; upward
     /// growth is retained only when goodput improves without controllable queue-delay growth.
     /// Persistent delay causes a fast decrease. Every record reserves the window before

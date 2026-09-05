@@ -216,11 +216,13 @@ public sealed class ProducerBuilder<TKey, TValue>
     }
 
     /// <summary>
-    /// Sets the soft target for per-broker producer queueing latency (append to ack).
-    /// The producer bounds each broker's unacknowledged bytes to a preferred measured
-    /// bandwidth-delay product safety horizon, capped by the target but never below one
-    /// bandwidth-delay product. This avoids standing queueing under sustained overload
-    /// without making throughput window-limited.
+    /// Sets the soft target for per-broker producer delivery latency (append to ack).
+    /// The configured linger is the caller's chosen batching delay, so the controller
+    /// governs the remainder (target minus linger, never below half the target) as
+    /// controllable queueing latency. The producer bounds each broker's unacknowledged
+    /// bytes to a preferred measured bandwidth-delay product safety horizon, capped by that
+    /// budget but never below one bandwidth-delay product. This avoids standing queueing
+    /// under sustained overload without making throughput window-limited.
     /// </summary>
     /// <param name="target">The latency target. <see cref="TimeSpan.Zero"/> disables the bound.</param>
     /// <remarks>
