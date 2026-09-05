@@ -1947,6 +1947,11 @@ class StressTrendTests(unittest.TestCase):
             selector,
         )
         self.assertIn('if [ "$full_run" = "true" ]; then\n            shape=""', selector)
+        self.assertIn('def drop_adaptive: .run_adaptive = false;', selector)
+        self.assertIn('if $shape == "cheap" then drop_3conn | drop_adaptive else . end', selector)
+        self.assertIn('if $shape == "cheap-with-3conn" then drop_adaptive else . end', selector)
+        self.assertIn('"${{ matrix.run_adaptive }}" = "true"', workflow)
+        self.assertEqual(4, workflow.count('"run_adaptive": true'))
         self.assertIn(
             '[ "$full_run" = "true" ] && [ "$CONSUMER_FETCH_DIAGNOSTICS" = "true" ]',
             selector,

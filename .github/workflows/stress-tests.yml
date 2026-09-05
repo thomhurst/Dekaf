@@ -251,10 +251,10 @@ jobs:
           # (see the jq below).
           cat > lanes.json << 'EOF'
           [
-            {"lane": "producer-1b", "scenario": "producer", "client": "all", "brokers": 1, "paired_samples": 2, "run_3conn": true, "artifact_suffix": "-with-3conn", "timeout_minutes": 180, "name": "Producer (Paired)"},
-            {"lane": "producer-3b", "scenario": "producer", "client": "all", "brokers": 3, "run_3conn": true, "artifact_suffix": "-with-3conn", "timeout_minutes": 150, "name": "Producer (Paired, 3 Brokers)"},
-            {"lane": "producer-idempotent-1b", "scenario": "producer-idempotent", "client": "all", "brokers": 1, "paired_samples": 2, "run_3conn": true, "artifact_suffix": "-with-3conn", "timeout_minutes": 180, "name": "Producer Idempotent (Paired)"},
-            {"lane": "producer-idempotent-3b", "scenario": "producer-idempotent", "client": "all", "brokers": 3, "run_3conn": true, "artifact_suffix": "-with-3conn", "timeout_minutes": 150, "name": "Producer Idempotent (Paired, 3 Brokers)"},
+            {"lane": "producer-1b", "scenario": "producer", "client": "all", "brokers": 1, "paired_samples": 2, "run_3conn": true, "run_adaptive": true, "artifact_suffix": "-with-3conn", "timeout_minutes": 180, "name": "Producer (Paired)"},
+            {"lane": "producer-3b", "scenario": "producer", "client": "all", "brokers": 3, "run_3conn": true, "run_adaptive": true, "artifact_suffix": "-with-3conn", "timeout_minutes": 150, "name": "Producer (Paired, 3 Brokers)"},
+            {"lane": "producer-idempotent-1b", "scenario": "producer-idempotent", "client": "all", "brokers": 1, "paired_samples": 2, "run_3conn": true, "run_adaptive": true, "artifact_suffix": "-with-3conn", "timeout_minutes": 180, "name": "Producer Idempotent (Paired)"},
+            {"lane": "producer-idempotent-3b", "scenario": "producer-idempotent", "client": "all", "brokers": 3, "run_3conn": true, "run_adaptive": true, "artifact_suffix": "-with-3conn", "timeout_minutes": 150, "name": "Producer Idempotent (Paired, 3 Brokers)"},
             {"lane": "producer-acks-all-1b", "scenario": "producer-acks-all", "client": "all", "brokers": 1, "paired_samples": 2, "timeout_minutes": 150, "name": "Producer Acks All (Paired)"},
             {"lane": "producer-acks-all-3b", "scenario": "producer-acks-all", "client": "all", "brokers": 3, "timeout_minutes": 120, "name": "Producer Acks All (Paired, 3 Brokers)"},
             {"lane": "producer-transactional-3b", "scenario": "producer-transactional", "client": "all", "brokers": 3, "timeout_minutes": 150, "name": "Transactional EOS (Paired, 3 Brokers)"},
@@ -278,8 +278,9 @@ jobs:
           # three segment budgets; profile runs keep the lane budget because
           # attach tooling adds overhead outside that per-duration model.
           matrix=$(jq -c --arg lane "$lane" --arg client "$client" --arg shape "$shape" --arg profile_mode "$profile_mode" --arg baseline_sha "$baseline_sha" '
-            def segments: ((.paired_samples // 1) * (if .client == "all" then 2 else 1 end)) + (if .run_3conn == true then 1 else 0 end);
+            def segments: ((.paired_samples // 1) * (if .client == "all" then 2 else 1 end)) + (if .run_3conn == true then 1 else 0 end) + (if .run_adaptive == true then 1 else 0 end);
             def drop_3conn: .run_3conn = false | .artifact_suffix = "";
+            def drop_adaptive: .run_adaptive = false;
             {include: [ .[]
               | select($lane == "all" or .lane == $lane)
               | segments as $full_segments
@@ -289,18 +290,21 @@ jobs:
                   | .paired_samples = 1
                 else . end
               | if $shape != "" then .paired_samples = 1 else . end
-              | if $shape == "cheap" then drop_3conn else . end
+              | if $shape == "cheap" then drop_3conn | drop_adaptive else . end
+              | if $shape == "cheap-with-3conn" then drop_adaptive else . end
               | if $baseline_sha != "" then
                   .baseline_sha = $baseline_sha
                   | .client = "dekaf"
                   | .paired_samples = 1
                   | drop_3conn
+                  | drop_adaptive
                   | .artifact_suffix = "-aba"
                   | .timeout_minutes = $segment_budget * 3
                 elif $profile_mode != "off" then
                   .client = "dekaf"
                   | .paired_samples = 1
                   | .run_3conn = false
+                  | drop_adaptive
                   | .artifact_suffix = "-profile"
                 else
                   if segments < $full_segments then .timeout_minutes = $segment_budget * segments else . end
@@ -586,6 +590,27 @@ jobs:
               --client dekaf \
               --brokers ${{ matrix.brokers }} \
               --connections-per-broker 3 \
+              --producer-delivery-diagnostics \
+              "${EXTRA_ARGS[@]}" \
+              --roundtrip-steady-seconds ${{ github.event.inputs.roundtrip_steady_seconds || matrix.roundtrip_steady_seconds || '60' }} \
+              --output ./results
+          fi
+
+          # Library-default pass: adaptive connection scaling left enabled, one connection to
+          # start. Results are labelled "Dekaf (adaptive)" and group separately from the pinned
+          # Dekaf rows (see #3014), so the published tables show what the default configuration
+          # delivers next to the like-for-like comparison. Skipped when the whole run is already
+          # adaptive via the adaptive_connections input.
+          if [ "${{ matrix.run_adaptive }}" = "true" ] && [ "${{ github.event.inputs.adaptive_connections }}" != "true" ]; then
+            echo "Running Dekaf adaptive-connections (library default) variant on the same VM"
+            taskset -c ${CLIENT_CPUS} dotnet run --configuration Release --no-build -- \
+              --duration ${{ github.event.inputs.duration_minutes || '15' }} \
+              --message-size ${{ matrix.message_size || github.event.inputs.message_size || '1000' }} \
+              --scenario ${{ matrix.scenario }} \
+              --client dekaf \
+              --brokers ${{ matrix.brokers }} \
+              --connections-per-broker 1 \
+              --adaptive-connections \
               --producer-delivery-diagnostics \
               "${EXTRA_ARGS[@]}" \
               --roundtrip-steady-seconds ${{ github.event.inputs.roundtrip_steady_seconds || matrix.roundtrip_steady_seconds || '60' }} \
