@@ -137,8 +137,13 @@ public static class Program
             $"fail at {ProgressWatchdog.DefaultExitAfter.TotalMinutes:F0} minutes");
         if (options.ConnectionsPerBroker > 1)
             Console.WriteLine($"Multi-connection: {options.ConnectionsPerBroker} connections per broker (Dekaf only)");
-        if (options.AdaptiveConnections)
+        // Adaptive scaling is only effective on the single-connection pass; the 3-connection
+        // control pass pins its count even when the flag is forwarded to it (see
+        // StressTestOptions.AdaptiveConnections below), so the banner mirrors that condition.
+        if (options.AdaptiveConnections && options.ConnectionsPerBroker == 1)
             Console.WriteLine("Adaptive connections: Dekaf producer scaling left at the library default (Dekaf only)");
+        else if (options.AdaptiveConnections)
+            Console.WriteLine("Adaptive connections: requested but pinned for this multi-connection pass");
         Console.WriteLine(new string('-', 50));
 
         Directory.CreateDirectory(options.OutputPath);
