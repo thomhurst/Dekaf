@@ -79,6 +79,11 @@ on:
         description: 'Duration-based producer lanes only: exact SHA for baseline → candidate → baseline; triples duration and blocks on regression/noisy controls'
         required: false
         default: ''
+      aba_second_candidate:
+        description: 'Exact-SHA A-B-A only: add a fourth segment (candidate again after the second baseline) so candidate drift is measured and gated like control drift; quadruples the measured duration'
+        required: false
+        type: boolean
+        default: false
       profile_mode:
         description: 'Attach phased diagnostics to one Dekaf lane (off for normal acceptance runs)'
         required: false
@@ -141,6 +146,7 @@ jobs:
           CONSUMER_FETCH_DIAGNOSTICS: ${{ github.event.inputs.consumer_fetch_diagnostics }}
           ADAPTIVE_CONNECTIONS: ${{ github.event.inputs.adaptive_connections }}
           BASELINE_SHA: ${{ github.event.inputs.baseline_sha }}
+          ABA_SECOND_CANDIDATE: ${{ github.event.inputs.aba_second_candidate }}
           PROFILE_MODE: ${{ github.event.inputs.profile_mode }}
           EVENT_NAME: ${{ github.event_name }}
         run: |
@@ -281,7 +287,11 @@ jobs:
           # cannot hold a paid runner for the full-shape budget. A-B-A reserves
           # three segment budgets; profile runs keep the lane budget because
           # attach tooling adds overhead outside that per-duration model.
-          matrix=$(jq -c --arg lane "$lane" --arg client "$client" --arg shape "$shape" --arg profile_mode "$profile_mode" --arg baseline_sha "$baseline_sha" '
+          aba_segments=3
+          if [ -n "$baseline_sha" ] && [ "$ABA_SECOND_CANDIDATE" = "true" ]; then
+            aba_segments=4
+          fi
+          matrix=$(jq -c --arg lane "$lane" --arg client "$client" --arg shape "$shape" --arg profile_mode "$profile_mode" --arg baseline_sha "$baseline_sha" --argjson aba_segments "$aba_segments" '
             def segments: ((.paired_samples // 1) * (if .client == "all" then 2 else 1 end)) + (if .run_3conn == true then 1 else 0 end) + (if .run_adaptive == true then 1 else 0 end);
             def drop_3conn: .run_3conn = false | .artifact_suffix = "";
             def drop_adaptive: .run_adaptive = false;
@@ -303,7 +313,8 @@ jobs:
                   | drop_3conn
                   | drop_adaptive
                   | .artifact_suffix = "-aba"
-                  | .timeout_minutes = $segment_budget * 3
+                  | .aba_second_candidate = ($aba_segments == 4)
+                  | .timeout_minutes = $segment_budget * $aba_segments
                 elif $profile_mode != "off" then
                   .client = "dekaf"
                   | .paired_samples = 1
@@ -535,6 +546,12 @@ jobs:
               baseline-a2 \
               "$GITHUB_WORKSPACE/baseline-source/tools/Dekaf.StressTests" \
               "$GITHUB_WORKSPACE/aba-results/baseline-a2"
+            if [ "${{ matrix.aba_second_candidate }}" = "true" ]; then
+              run_aba \
+                candidate-b2 \
+                "$GITHUB_WORKSPACE/tools/Dekaf.StressTests" \
+                "$GITHUB_WORKSPACE/aba-results/candidate-b2"
+            fi
             exit 0
           fi
 
@@ -655,15 +672,20 @@ jobs:
 
       - name: Compare exact baseline A-B-A
         if: always() && matrix.baseline_sha != ''
-        run: >-
-          python3 .github/scripts/stress_aba.py
-          --baseline-a aba-results/baseline-a
-          --candidate tools/Dekaf.StressTests/results
-          --baseline-a2 aba-results/baseline-a2
-          --baseline-sha "${{ matrix.baseline_sha }}"
-          --candidate-sha "${{ github.sha }}"
-          --output aba-results/comparison.json
-          --summary "$GITHUB_STEP_SUMMARY"
+        run: |
+          extra=()
+          if [ "${{ matrix.aba_second_candidate }}" = "true" ]; then
+            extra+=(--candidate-b2 aba-results/candidate-b2)
+          fi
+          python3 .github/scripts/stress_aba.py \
+            --baseline-a aba-results/baseline-a \
+            --candidate tools/Dekaf.StressTests/results \
+            --baseline-a2 aba-results/baseline-a2 \
+            "${extra[@]}" \
+            --baseline-sha "${{ matrix.baseline_sha }}" \
+            --candidate-sha "${{ github.sha }}" \
+            --output aba-results/comparison.json \
+            --summary "$GITHUB_STEP_SUMMARY"
 
       - name: Upload Results
         if: always()
