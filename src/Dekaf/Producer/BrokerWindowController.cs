@@ -61,14 +61,19 @@ internal sealed class BrokerWindowController
 
     private const int SizeBucketCount = 16;
     private const int SizeBucketShift = 8;
-    // The control run sustained its knee at roughly seven full requests. One extra quantum
-    // absorbs response/scheduler granularity without allowing fragmented requests to redefine
-    // the floor. Descent below this floor is allowed only while the controlled-delay EWMA
-    // exceeds the delivery-latency target (see LatencyDescentPipelineQuanta).
-    private const int MinimumPipelineQuanta = 8;
-    // floor(11 * 0.75) is the first accelerated candidate that remains at or above the
-    // normal eight-quantum floor. Smaller windows use the normal step for deep descent.
-    private const int MinimumAcceleratedDescentQuanta = 11;
+    // Normal down-probes (goodput-guarded only) may reach this floor; descent below it is
+    // allowed only while the governed delay exceeds the target AND each step demonstrably
+    // buys latency (see LatencyDescentPipelineQuanta). The floor used to be eight quanta,
+    // encoding a one-broker knee of ~seven full requests. Against brokers that drain ~450 MB/s
+    // (three-broker topologies on shared cores) eight 1 MB quanta are ~18 ms of standing
+    // queue, and PR #3013's paired runs showed windows parking exactly there with the
+    // governed delay a few hundred microseconds over the budget: too little excess for the
+    // sub-floor delay-gain test, too much for the caller. Four quanta keep two requests on the
+    // wire while two seal, and the paired goodput guard still stops descent at any knee.
+    private const int MinimumPipelineQuanta = 4;
+    // floor(6 * 0.75) is the first accelerated candidate that remains at or above the
+    // normal four-quantum floor. Smaller windows use the normal step for deep descent.
+    private const int MinimumAcceleratedDescentQuanta = 6;
     // Deep-descent floor while over the latency target: two quanta keep the acknowledgement
     // clock pipelined (one request on the wire while the next seals). The eight-quantum
     // floor encoded a one-broker knee and forced ~3x the delivery-latency target of standing
@@ -454,7 +459,7 @@ internal sealed class BrokerWindowController
             requestedWindow);
     }
 
-    /// <summary>Lowest window a down-probe may propose. The legacy eight-quantum floor holds
+    /// <summary>Lowest window a down-probe may propose. The normal four-quantum floor holds
     /// while latency is on target; descent below it is justified only by a missed target,
     /// and even then each step must pass the paired goodput guard.</summary>
     private long ProbeFloorBytes(bool descentBias) => QuantaFloorBytes(

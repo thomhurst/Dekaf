@@ -255,7 +255,7 @@ public sealed class BrokerUnackedByteBudgetTests
         var controller = new BrokerWindowController(
             targetSeconds: 0.010,
             floorBytes: 1,
-            capBytes: 1_000,
+            capBytes: 500,
             initialRequestBytes: 100,
             latencyGovernorEnabled: true);
         var now = T0;
@@ -275,9 +275,9 @@ public sealed class BrokerUnackedByteBudgetTests
             ref admissionBlocks,
             sealToSendSeconds: 0.050);
 
-        // The 10-quantum cap is below the 11-quantum accelerated threshold. Cap clamping
-        // must not turn that threshold into 10 and permit the coarse 10 -> 7 treatment.
-        await Assert.That(controller.WindowBytes).IsEqualTo(800);
+        // The 5-quantum cap is below the 6-quantum accelerated threshold. Cap clamping
+        // must not turn that threshold into 5 and permit the coarse 5 -> 3 treatment.
+        await Assert.That(controller.WindowBytes).IsEqualTo(400);
     }
 
     [Test]
@@ -331,9 +331,40 @@ public sealed class BrokerUnackedByteBudgetTests
             ref admissionBlocks,
             sealToSendSeconds: 0.050);
 
-        // The 25% treatment would jump 9 -> 6 quanta. Once that candidate would cross the
-        // normal eight-quantum floor, use the 12.5% step (9 -> 7) for deep descent instead.
-        await Assert.That(controller.WindowBytes).IsEqualTo(700);
+        // The 25% treatment jumps 9 -> 6 quanta, still above the normal four-quantum floor.
+        await Assert.That(controller.WindowBytes).IsEqualTo(600);
+        _ = CompleteActiveProbe(
+            controller,
+            baselineWindow: 900,
+            ref now,
+            ref admissionBlocks,
+            candidateSealToSendSeconds: 0.050,
+            baselineSealToSendSeconds: 0.050);
+
+        // From six quanta the 25% treatment lands exactly on the floor (6 -> 4).
+        StartNextProbe(
+            controller,
+            BrokerWindowPhase.ProbeDown,
+            ref now,
+            ref admissionBlocks,
+            sealToSendSeconds: 0.050);
+        await Assert.That(controller.WindowBytes).IsEqualTo(400);
+        _ = CompleteActiveProbe(
+            controller,
+            baselineWindow: 600,
+            ref now,
+            ref admissionBlocks,
+            candidateSealToSendSeconds: 0.050,
+            baselineSealToSendSeconds: 0.050);
+
+        // Below the floor only the 12.5% deep-descent step is used (4 -> 3).
+        StartNextProbe(
+            controller,
+            BrokerWindowPhase.ProbeDown,
+            ref now,
+            ref admissionBlocks,
+            sealToSendSeconds: 0.050);
+        await Assert.That(controller.WindowBytes).IsEqualTo(300);
     }
 
     [Test]
@@ -390,8 +421,8 @@ public sealed class BrokerUnackedByteBudgetTests
         _ = controller.CompleteInterval(admissionBlocks, 0, now, 0);
 
         // Delay is over target but window-independent (a fixed 50ms): shrinking below the
-        // legacy floor cannot help, so every sub-floor experiment fails its delay-gain
-        // requirement and the window holds at the legacy floor.
+        // normal floor cannot help, so every sub-floor experiment fails its delay-gain
+        // requirement and the window holds at the normal four-quantum floor.
         for (var i = 0; i < 2_000; i++)
         {
             _ = DriveControllerEpoch(
@@ -401,7 +432,7 @@ public sealed class BrokerUnackedByteBudgetTests
                 sealToSendSeconds: 0.050);
         }
 
-        await Assert.That(controller.WindowBytes).IsGreaterThanOrEqualTo(800);
+        await Assert.That(controller.WindowBytes).IsGreaterThanOrEqualTo(400);
     }
 
     [Test]
@@ -412,12 +443,12 @@ public sealed class BrokerUnackedByteBudgetTests
         var admissionBlocks = 0L;
         _ = controller.CompleteInterval(admissionBlocks, 0, now, 0);
 
-        // On-target delay keeps the legacy eight-quantum floor: the governor's deep descent
+        // On-target delay keeps the normal four-quantum floor: the governor's deep descent
         // is justified only by a missed latency target.
         for (var i = 0; i < 1_000; i++)
             _ = DriveControllerEpoch(controller, ref now, ref admissionBlocks);
 
-        await Assert.That(controller.WindowBytes).IsGreaterThanOrEqualTo(800);
+        await Assert.That(controller.WindowBytes).IsGreaterThanOrEqualTo(400);
     }
 
     [Test]
@@ -428,13 +459,25 @@ public sealed class BrokerUnackedByteBudgetTests
         var admissionBlocks = 0L;
         _ = controller.CompleteInterval(admissionBlocks, 0, now, 0);
 
-        // Flat goodput walks the window down to the legacy floor; sustained admission
+        // Flat goodput walks the window down to the normal floor; sustained admission
         // blocking then lets up-probes pass at "not worse" goodput, so the window recovers
         // instead of staying trapped under the +3% growth bar it can never clear on noise.
+        // Flat goodput also passes every later down-probe, so the trajectory is a sawtooth:
+        // assert the recovery itself (a window above the optimistic start after touching the
+        // floor) rather than the phase the sawtooth happens to be in at a fixed epoch.
+        var touchedFloor = false;
+        var recoveredAfterFloor = 0L;
         for (var i = 0; i < 5_000; i++)
+        {
             _ = DriveControllerEpoch(controller, ref now, ref admissionBlocks);
+            if (controller.WindowBytes <= 400)
+                touchedFloor = true;
+            else if (touchedFloor)
+                recoveredAfterFloor = Math.Max(recoveredAfterFloor, controller.WindowBytes);
+        }
 
-        await Assert.That(controller.WindowBytes).IsGreaterThan(1_600);
+        await Assert.That(touchedFloor).IsTrue();
+        await Assert.That(recoveredAfterFloor).IsGreaterThan(1_600);
     }
 
     [Test]
@@ -1146,7 +1189,7 @@ public sealed class BrokerUnackedByteBudgetTests
             _ = DriveControllerEpoch(controller, ref now, ref admissionBlocks, rttSeconds: 0.050);
 
         await Assert.That(controller.RequestQuantumBytes).IsEqualTo(100);
-        await Assert.That(controller.WindowBytes).IsGreaterThanOrEqualTo(800);
+        await Assert.That(controller.WindowBytes).IsGreaterThanOrEqualTo(400);
     }
 
     [Test]
