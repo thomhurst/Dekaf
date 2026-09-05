@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from stress_aba import compare, main
+from stress_aba import compare, main, markdown
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -165,6 +165,64 @@ class StressAbaComparisonTests(unittest.TestCase):
         )
         alloc = next(metric for metric in noisy["metrics"] if metric["key"] == "alloc")
         self.assertEqual("inconclusive", alloc["status"])
+
+    def test_four_segments_average_candidates_and_pass(self):
+        comparison = compare(
+            result(100), result(104), result(100), candidate_b2_result=result(102)
+        )
+
+        self.assertEqual("pass", comparison["verdict"])
+        self.assertEqual(2, comparison["candidateSegments"])
+        throughput = next(
+            metric for metric in comparison["metrics"] if metric["key"] == "throughput"
+        )
+        self.assertAlmostEqual(103.0, throughput["candidate"])
+        self.assertAlmostEqual(104.0, throughput["candidateB"])
+        self.assertAlmostEqual(102.0, throughput["candidateB2"])
+        self.assertGreater(throughput["candidateDriftPercent"], 1.0)
+
+    def test_four_segments_candidate_drift_is_inconclusive_like_control_drift(self):
+        # Candidates disagree by 20% while both controls agree: the mean sits above the
+        # controls but neither decisiveness override holds, so the metric is inconclusive.
+        comparison = compare(
+            result(100), result(95), result(100), candidate_b2_result=result(116)
+        )
+
+        throughput = next(
+            metric for metric in comparison["metrics"] if metric["key"] == "throughput"
+        )
+        self.assertEqual("inconclusive", throughput["status"])
+        self.assertEqual("inconclusive", comparison["verdict"])
+
+    def test_four_segments_decisive_overrides_need_both_candidates(self):
+        both_better = compare(
+            result(p99=15.0), result(p99=12.0), result(p99=16.0), candidate_b2_result=result(p99=13.0)
+        )
+        p99 = next(metric for metric in both_better["metrics"] if metric["key"] == "p99")
+        self.assertEqual("pass", p99["status"])
+
+        one_worse = compare(
+            result(p99=15.0), result(p99=12.0), result(p99=16.0), candidate_b2_result=result(p99=17.0)
+        )
+        p99 = next(metric for metric in one_worse["metrics"] if metric["key"] == "p99")
+        self.assertNotEqual("pass", p99["status"])
+
+    def test_four_segments_second_candidate_stability_breach_is_regression(self):
+        comparison = compare(
+            result(100), result(100), result(100), candidate_b2_result=result(100, stability=0.7)
+        )
+
+        self.assertEqual("regression", comparison["verdict"])
+
+    def test_four_segments_markdown_shows_both_candidates(self):
+        comparison = compare(
+            result(100), result(104), result(100), candidate_b2_result=result(102)
+        )
+        report = markdown(comparison, "a" * 40, "b" * 40)
+
+        self.assertIn("four segments (A-B-A-B)", report)
+        self.assertIn("| Candidate B2 |", report)
+        self.assertIn("Candidate drift", report)
 
     def test_candidate_beating_both_noisy_controls_passes(self):
         # Run 29525842754: candidate p99 (14.85ms) was better than both controls
@@ -348,18 +406,24 @@ class StressAbaWorkflowTests(unittest.TestCase):
         self.assertIn('.client = "dekaf"', self.workflow)
         self.assertIn('.paired_samples = 1', self.workflow)
         self.assertIn('| drop_3conn', self.workflow)
-        self.assertIn('.timeout_minutes = $segment_budget * 3', self.workflow)
+        self.assertIn('.timeout_minutes = $segment_budget * $aba_segments', self.workflow)
+        self.assertIn('.aba_second_candidate = ($aba_segments == 4)', self.workflow)
+        self.assertIn('aba_second_candidate:', self.workflow)
 
     def test_runs_baseline_candidate_baseline_in_that_order(self):
         first = self.workflow.index("run_aba \\\n              baseline-a \\")
         candidate = self.workflow.index("run_aba \\\n              candidate-b \\")
         second = self.workflow.index("run_aba \\\n              baseline-a2 \\")
+        fourth = self.workflow.index("run_aba \\\n                candidate-b2 \\")
         self.assertLess(first, candidate)
         self.assertLess(candidate, second)
+        self.assertLess(second, fourth)
+        self.assertIn('if [ "${{ matrix.aba_second_candidate }}" = "true" ]; then', self.workflow)
 
     def test_compares_and_uploads_controls_separately(self):
         self.assertIn("python3 .github/scripts/stress_aba.py", self.workflow)
         self.assertIn("--candidate tools/Dekaf.StressTests/results", self.workflow)
+        self.assertIn("extra+=(--candidate-b2 aba-results/candidate-b2)", self.workflow)
         self.assertIn("name: aba-controls-", self.workflow)
         self.assertIn("path: aba-results/", self.workflow)
 
