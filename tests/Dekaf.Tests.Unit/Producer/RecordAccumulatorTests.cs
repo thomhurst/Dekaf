@@ -4465,7 +4465,10 @@ public class RecordAccumulatorTests
     {
         var partitionDeque = GetPartitionDeque(accumulator, topicPartition);
         var lockField = partitionDeque.GetType().GetField("Lock");
-        lockField!.SetValue(partitionDeque, Activator.CreateInstance(lockField.FieldType, [true]));
+        // PartitionSpinLock (net10.0) exposes IsHeld without owner tracking; only the
+        // netstandard2.0 compatibility lock needs a tracking-enabled instance swapped in.
+        if (lockField!.FieldType.GetConstructor([typeof(bool)]) is not null)
+            lockField.SetValue(partitionDeque, Activator.CreateInstance(lockField.FieldType, [true]));
     }
 
     private static PendingAppend CreatePendingAppend(
@@ -4655,7 +4658,12 @@ public class RecordAccumulatorTests
             if (partitionLock is SpinLock spinLock)
                 return spinLock.IsHeldByCurrentThread;
 
-            var property = partitionLock.GetType().GetProperty("IsHeldByCurrentThread");
+            var property = partitionLock.GetType().GetProperty("IsHeldByCurrentThread")
+                ?? partitionLock.GetType().GetProperty(
+                    "IsHeld",
+                    System.Reflection.BindingFlags.Instance
+                    | System.Reflection.BindingFlags.Public
+                    | System.Reflection.BindingFlags.NonPublic);
             return property != null && (bool)property.GetValue(partitionLock)!;
         }
 

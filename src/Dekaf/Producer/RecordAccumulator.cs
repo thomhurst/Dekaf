@@ -16,6 +16,8 @@ using Dekaf.Serialization;
 using Microsoft.Extensions.Logging;
 #if NETSTANDARD2_0
 using SpinLock = Dekaf.Producer.CompatibilitySpinLock;
+using PartitionSpinLock = Dekaf.Producer.CompatibilitySpinLock;
+using PartitionLockGuard = Dekaf.Producer.SpinLockGuard;
 #endif
 
 namespace Dekaf.Producer;
@@ -100,6 +102,99 @@ internal ref struct SpinLockGuard
         // the cleared owned bit — saved nothing measurable single-threaded and made four threads
         // appending to four distinct partitions ~1.7x slower per record
         // (AccumulatorAdmissionAppendBenchmarks, 4T-split: 92 ns → 154-195 ns).
+        if (_taken) _lock.Exit();
+    }
+}
+#endif
+
+#if !NETSTANDARD2_0
+/// <summary>
+/// Spin lock for the per-partition deque. Same uncontended cost as
+/// <see cref="System.Threading.SpinLock"/> (one CAS to enter, one full-fence exchange to exit)
+/// but the contended path never calls <c>Thread.Sleep(1)</c>: the BCL lock's
+/// <c>ContinueTryEnter</c> spins with <c>SpinOnce(SLEEP_ONE_FREQUENCY = 40)</c>, so once a
+/// holder is preempted (two client cores hosting the append thread, the seal drainer and one
+/// send loop per broker) every waiter beyond 40 iterations sleeps a full millisecond. The
+/// three-broker CPU profile (run 33963361644) attributed 1.7% of samples to
+/// <c>Thread.Sleep</c> under <c>AppendFromSpansAfterReservationCore</c> and
+/// <c>SealBatchesAsync</c>; a 1 ms stall of the append thread at ~1.2M msg/s delays ~1,200
+/// records. The exit keeps the full fence: a plain release store made the 4T-split append
+/// benchmark ~1.7x slower (see <see cref="SpinLockGuard.Dispose"/>).
+/// </summary>
+internal struct PartitionSpinLock
+{
+    private const int SpinIterations = 10;
+    private const int Sleep0EveryHowManyYields = 5;
+    private static readonly bool s_singleProcessor = Environment.ProcessorCount == 1;
+
+    private int _held;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public void Enter(ref bool lockTaken)
+    {
+        if (Interlocked.CompareExchange(ref _held, 1, 0) == 0)
+        {
+            lockTaken = true;
+            return;
+        }
+
+        EnterContended(ref lockTaken);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private void EnterContended(ref bool lockTaken)
+    {
+        var spins = 0;
+        var yields = 0;
+        while (true)
+        {
+            if (!s_singleProcessor && spins < SpinIterations)
+            {
+                Thread.SpinWait(4 << spins);
+                spins++;
+            }
+            else if (++yields % Sleep0EveryHowManyYields == 0)
+            {
+                Thread.Sleep(0);
+            }
+            else
+            {
+                Thread.Yield();
+            }
+
+            if (Volatile.Read(ref _held) == 0 && Interlocked.CompareExchange(ref _held, 1, 0) == 0)
+            {
+                lockTaken = true;
+                return;
+            }
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public void Exit() => Interlocked.Exchange(ref _held, 0);
+
+    /// <summary>Diagnostics/tests only: whether any thread currently holds the lock.</summary>
+    internal bool IsHeld => Volatile.Read(ref _held) != 0;
+}
+
+/// <summary>RAII guard for <see cref="PartitionSpinLock"/>; use with
+/// <c>using var guard = new PartitionLockGuard(ref pd.Lock);</c>.</summary>
+internal ref struct PartitionLockGuard
+{
+    private ref PartitionSpinLock _lock;
+    private bool _taken;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public PartitionLockGuard(ref PartitionSpinLock spinLock)
+    {
+        _lock = ref spinLock;
+        _taken = false;
+        _lock.Enter(ref _taken);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public void Dispose()
+    {
         if (_taken) _lock.Exit();
     }
 }
@@ -1459,7 +1554,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         /// <summary>Per-partition lock for deque access (matches Java's synchronized(deque)).
         /// SpinLock avoids kernel transitions for the brief critical sections in append/drain paths.</summary>
-        public SpinLock Lock = new(enableThreadOwnerTracking: false);
+#if NETSTANDARD2_0
+        public PartitionSpinLock Lock = new(enableThreadOwnerTracking: false);
+#else
+        public PartitionSpinLock Lock;
+#endif
 
         /// <summary>Current unsealed batch accepting new records. Null if no active batch.</summary>
         public PartitionBatch? CurrentBatch;
@@ -1706,7 +1805,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
             ReadyBatch? head;
             {
-                using var guard = new SpinLockGuard(ref pd.Lock);
+                using var guard = new PartitionLockGuard(ref pd.Lock);
                 head = pd.PeekFirst();
             }
 
@@ -1826,7 +1925,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             ReadyBatch? head;
             int dequeDepth;
             {
-                using var guard = new SpinLockGuard(ref pd.Lock);
+                using var guard = new PartitionLockGuard(ref pd.Lock);
                 head = pd.PeekFirst();
                 dequeDepth = pd.Count;
             }
@@ -1956,7 +2055,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             var batchRequestSize = 0;
             var oversizedBatch = false;
             {
-                using var guard = new SpinLockGuard(ref pd.Lock);
+                using var guard = new PartitionLockGuard(ref pd.Lock);
                 batch = pd.PeekFirst();
                 if (batch is null)
                     continue;
@@ -2070,7 +2169,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         batch.Reenqueued(nowMs);
         var pd = GetOrCreateDeque(batch.TopicPartition);
         {
-            using var guard = new SpinLockGuard(ref pd.Lock);
+            using var guard = new PartitionLockGuard(ref pd.Lock);
             if (ProducerId >= 0)
                 pd.InsertInSequenceOrder(batch);
             else
@@ -2205,7 +2304,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         Interlocked.Add(ref _bufferedBytes, splitBytes);
 
         var pd = GetOrCreateDeque(splitBatches[0].TopicPartition);
-        using (var guard = new SpinLockGuard(ref pd.Lock))
+        using (var guard = new PartitionLockGuard(ref pd.Lock))
         {
             for (var i = splitBatches.Count - 1; i >= 0; i--)
             {
@@ -2340,7 +2439,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
     private static bool HasQueuedBatches(PartitionDeque pd)
     {
-        using var guard = new SpinLockGuard(ref pd.Lock);
+        using var guard = new PartitionLockGuard(ref pd.Lock);
         return pd.PeekFirst() is not null;
     }
 
@@ -2828,7 +2927,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     {
         if (_partitionDeques.TryGetValue(topicPartition, out var pd))
         {
-            using var guard = new SpinLockGuard(ref pd.Lock);
+            using var guard = new PartitionLockGuard(ref pd.Lock);
             batch = pd.PollFirst();
             return batch is not null;
         }
@@ -2853,7 +2952,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             if (!_partitionDeques.TryGetValue(topicPartition, out var pd))
                 continue;
 
-            using var guard = new SpinLockGuard(ref pd.Lock);
+            using var guard = new PartitionLockGuard(ref pd.Lock);
             if (pd.Count > 0)
             {
                 batch = pd.PollFirst()!;
@@ -3547,7 +3646,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 var actualBytesAdded = 0;
 
                 {
-                    using var guard = new SpinLockGuard(ref pd.Lock);
+                    using var guard = new PartitionLockGuard(ref pd.Lock);
 
                     if (Volatile.Read(ref _disposed) != 0)
                     {
@@ -4043,7 +4142,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 var reservedFirstAwaitedProduceInBatch = false;
 
                 {
-                    using var guard = new SpinLockGuard(ref pd.Lock);
+                    using var guard = new PartitionLockGuard(ref pd.Lock);
 
                     if (Volatile.Read(ref _disposed) != 0)
                     {
@@ -4161,7 +4260,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
                         var disposedAfterReserve = false;
                         {
-                            using var guard = new SpinLockGuard(ref pd.Lock);
+                            using var guard = new PartitionLockGuard(ref pd.Lock);
 
                             if (Volatile.Read(ref _disposed) != 0)
                             {
@@ -4231,7 +4330,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     {
                         if (!committedReservedAppend)
                         {
-                            using var guard = new SpinLockGuard(ref pd.Lock);
+                            using var guard = new PartitionLockGuard(ref pd.Lock);
                             PartitionBatch.CancelReservedAppend(reservedAppend);
                             ClearAppendAndRotationInProgressUnderLock();
                         }
@@ -4529,7 +4628,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         try
         {
-            using var guard = new SpinLockGuard(ref pd.Lock);
+            using var guard = new PartitionLockGuard(ref pd.Lock);
 
             // A two-phase appender holding the admission slot has made a lease decision it has
             // not committed yet; appending ahead of it would invalidate that decision.
@@ -4644,7 +4743,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         var drainPendingAfterAppend = false;
 
         {
-            using var guard = new SpinLockGuard(ref pd.Lock);
+            using var guard = new PartitionLockGuard(ref pd.Lock);
 
             if (Volatile.Read(ref _disposed) != 0
                 || pd.RotationInProgress
@@ -5055,7 +5154,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         }
 
         {
-            using var guard = new SpinLockGuard(ref pd.Lock);
+            using var guard = new PartitionLockGuard(ref pd.Lock);
             if (readyBatch is not null)
             {
                 // Disposal's final deque drain takes this same lock. Either publication wins
@@ -5127,7 +5226,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
     private static void ClearRotationInProgress(PartitionDeque pd)
     {
-        using var guard = new SpinLockGuard(ref pd.Lock);
+        using var guard = new PartitionLockGuard(ref pd.Lock);
         ClearRotationInProgressUnderLock(pd);
     }
 
@@ -5664,7 +5763,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     {
         if (_partitionDeques.TryGetValue(new TopicPartition(topic, partition), out var pd))
         {
-            using var guard = new SpinLockGuard(ref pd.Lock);
+            using var guard = new PartitionLockGuard(ref pd.Lock);
             if (pd.CurrentBatch is not null)
             {
                 Interlocked.Decrement(ref _unsealedBatchCount);
@@ -5882,7 +5981,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             var waitForRotation = false;
 
             {
-                using var guard = new SpinLockGuard(ref pd.Lock);
+                using var guard = new PartitionLockGuard(ref pd.Lock);
 
                 if (pd.RotationInProgress
                     || pd.AppendInProgress
@@ -6307,7 +6406,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         BrokerUnackedByteBudget? blockedBudget = null;
         try
         {
-            using (var guard = new SpinLockGuard(ref partitionDeque.Lock))
+            using (var guard = new PartitionLockGuard(ref partitionDeque.Lock))
             {
                 var currentBatch = partitionDeque.CurrentBatch;
                 var budget = GetCachedAdmissionBudget(partitionDeque, topic, partition);
@@ -6446,7 +6545,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         int partition,
         BrokerUnackedByteBudget budget)
     {
-        using (var guard = new SpinLockGuard(ref partitionDeque.Lock))
+        using (var guard = new PartitionLockGuard(ref partitionDeque.Lock))
         {
             if (partitionDeque.CurrentBatch is null
                 || Volatile.Read(ref partitionDeque.AdmissionFlushRequested) != 0
@@ -6940,7 +7039,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             var dequeCount = 0;
             if (_partitionDeques.TryGetValue(batch.TopicPartition, out var pd))
             {
-                using var guard = new SpinLockGuard(ref pd.Lock);
+                using var guard = new PartitionLockGuard(ref pd.Lock);
                 dequeCount = pd.Count;
                 inDeque = pd.Contains(batch);
             }
@@ -7051,7 +7150,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             {
                 var waitForAppend = false;
                 {
-                    using var guard = new SpinLockGuard(ref pd.Lock);
+                    using var guard = new PartitionLockGuard(ref pd.Lock);
 
                     if (pd.AppendInProgress
                         || Volatile.Read(ref pd.AdmissionInProgress) != 0)
@@ -7191,7 +7290,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         if (!_partitionDeques.TryGetValue(batch.TopicPartition, out var pd))
             return false;
 
-        using var guard = new SpinLockGuard(ref pd.Lock);
+        using var guard = new PartitionLockGuard(ref pd.Lock);
         return pd.Contains(batch);
     }
 
@@ -7482,7 +7581,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 var appendWaitTimedOut = false;
 
                 {
-                    using var guard = new SpinLockGuard(ref pd.Lock);
+                    using var guard = new PartitionLockGuard(ref pd.Lock);
 
                     if (pd.AppendInProgress
                         || Volatile.Read(ref pd.AdmissionInProgress) != 0)
@@ -7566,7 +7665,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         {
             var pd = kvp.Value;
             {
-                using var guard = new SpinLockGuard(ref pd.Lock);
+                using var guard = new PartitionLockGuard(ref pd.Lock);
                 DrainReadyBatchesForDisposeUnderLock(pd, disposedException);
             }
         }
