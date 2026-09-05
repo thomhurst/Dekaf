@@ -316,9 +316,14 @@ class StressReportTests(unittest.TestCase):
         self.assertEqual(1, len(evaluations))
         evaluation = evaluations[0]
         self.assertEqual("latencyP95TargetRatio", evaluation["metric"])
+        self.assertEqual(
+            "Delivery latency p95 / target (product bar)", evaluation["metricLabel"]
+        )
         self.assertAlmostEqual(3.1, evaluation["current"])
         self.assertEqual(3.0, evaluation["upper"])
         self.assertTrue(evaluation["thresholdBreach"])
+        # Product bars report; the trend band in stress_trend.py gates.
+        self.assertFalse(evaluation["failureEligible"])
 
     def test_paired_latency_thresholds_enforce_target_without_pairing_multi_connection_results(self):
         confluent = stress_result("Confluent", effective_rate=1000)

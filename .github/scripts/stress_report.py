@@ -27,7 +27,9 @@ SCENARIO_TITLES = {
     'consumer-raw-batch': 'Consumer (Raw Batch)',
 }
 
+# Delivery-latency product bars: reported, never gating (see paired_latency_thresholds).
 LATENCY_RATIO_THRESHOLD = 2.0
+LATENCY_TARGET_P95_MULTIPLIER = 3.0
 MAX_TIMELINE_ROWS = 100
 
 # Plain-language scenario labels for the user-facing docs page. Internal keys
@@ -254,86 +256,80 @@ def intra_run_throughput(result):
 
 
 def paired_latency_thresholds(results):
-    """Compare each Dekaf p50/p99 with its matching Confluent result."""
-    baselines = {}
-    for result in results:
-        if str(result.get('client', '')).casefold() != 'confluent':
-            continue
-        latency = result.get('latency')
-        if not isinstance(latency, dict):
-            continue
-        baselines[_latency_identity(result)] = latency
+    """Report each Dekaf lane against the delivery-latency product bars.
+
+    Every row is a non-gating warning (``failureEligible`` is False): p95 against
+    the configured delivery-latency target, and p50/p99 against the same-run
+    Confluent control. The regression gate for latency lives in stress_trend.py,
+    which trends each percentile against the lane's own history band; hard bars
+    placed inside a lane's run-to-run noise made that gate flip on noise
+    (producer-3b went red 8 of 10 weeks on a rotating metric with no change).
+    """
+    controls = {
+        _latency_identity(result): result
+        for result in results
+        if str(result.get('client', '')).casefold() == 'confluent'
+    }
 
     evaluations = []
     for result in results:
         client = str(result.get('client', ''))
         if not client.casefold().startswith('dekaf'):
             continue
-        latency = result.get('latency')
-        if not isinstance(latency, dict):
-            continue
 
         target_ms = result.get('deliveryLatencyTargetMs')
-        p95_us = latency.get('p95Us')
-        if _positive_finite_number(target_ms) and _positive_finite_number(p95_us):
-            ratio = p95_us / (target_ms * 1_000)
-            breached = ratio > 3.0
-            evaluations.append({
-                'scenario': _latency_scenario_label(result),
-                'metric': 'latencyP95TargetRatio',
-                'metricLabel': 'Delivery latency p95 / target',
-                'current': ratio,
-                'baselineCount': 0,
-                'median': None,
-                'mad': None,
-                'lower': None,
-                'upper': 3.0,
-                'status': 'regression' if breached else 'stable',
-                'repeatedRegression': False,
-                'thresholdBreach': breached,
-                'thresholdDirection': 'maximum',
-                'latencyThreshold': True,
-            })
+        p95_ms = delivery_latency_ms(result, 'p95Us')
+        if _positive_finite_number(target_ms) and p95_ms is not None:
+            evaluations.append(_product_bar(
+                result,
+                'latencyP95TargetRatio',
+                'Delivery latency p95 / target',
+                p95_ms / target_ms,
+                LATENCY_TARGET_P95_MULTIPLIER,
+            ))
 
         # Multi-connection Dekaf variants use their own throughput profile and have no
         # like-for-like Confluent pair, but the absolute configured target still applies.
         if client.casefold() != 'dekaf':
             continue
 
-        baseline = baselines.get(_latency_identity(result))
-        if baseline is None:
+        control = controls.get(_latency_identity(result))
+        if control is None:
             continue
 
         for field, metric, label in (
             ('p50Us', 'latencyP50Ratio', 'Delivery latency p50 / Confluent'),
             ('p99Us', 'latencyP99Ratio', 'Delivery latency p99 / Confluent'),
         ):
-            current = latency.get(field)
-            reference = baseline.get(field)
-            if (
-                not _positive_finite_number(current)
-                or not _positive_finite_number(reference)
-            ):
+            current = delivery_latency_ms(result, field)
+            reference = delivery_latency_ms(control, field)
+            if current is None or reference is None:
                 continue
-            ratio = current / reference
-            breached = ratio > LATENCY_RATIO_THRESHOLD
-            evaluations.append({
-                'scenario': _latency_scenario_label(result),
-                'metric': metric,
-                'metricLabel': label,
-                'current': ratio,
-                'baselineCount': 0,
-                'median': None,
-                'mad': None,
-                'lower': None,
-                'upper': LATENCY_RATIO_THRESHOLD,
-                'status': 'regression' if breached else 'stable',
-                'repeatedRegression': False,
-                'thresholdBreach': breached,
-                'thresholdDirection': 'maximum',
-                'latencyThreshold': True,
-            })
+            evaluations.append(_product_bar(
+                result, metric, label, current / reference, LATENCY_RATIO_THRESHOLD
+            ))
     return evaluations
+
+
+def _product_bar(result, metric, label, ratio, limit):
+    breached = ratio > limit
+    return {
+        'scenario': _latency_scenario_label(result),
+        'metric': metric,
+        'metricLabel': f'{label} (product bar)',
+        'current': ratio,
+        'baselineCount': 0,
+        'median': None,
+        'mad': None,
+        'lower': None,
+        'upper': limit,
+        'status': 'regression' if breached else 'stable',
+        'repeatedRegression': False,
+        'thresholdBreach': breached,
+        'thresholdDirection': 'maximum',
+        'latencyThreshold': True,
+        'failureEligible': False,
+    }
 
 
 def _positive_finite_number(value):
@@ -406,6 +402,17 @@ def comparison_rate(result):
     """Rate used for ranking and ratios: median interval rate when present, else headline rate."""
     rate = median_interval_rate(result)
     return rate if rate is not None else effective_rate(result)
+
+
+def delivery_latency_ms(result, field):
+    """Sampled delivery-latency percentile in milliseconds, or None when absent."""
+    latency = result.get('latency')
+    if not isinstance(latency, dict):
+        return None
+    value = latency.get(field)
+    if not _positive_finite_number(value):
+        return None
+    return value / 1_000
 
 
 def geometric_mean(values):
@@ -1458,7 +1465,8 @@ _METHODOLOGY_BULLETS = [
     "- **Round-Trip CPU Scope**: CPU time covers both bulk production and consumer validation; it is not a producer-only metric",
     "- **Round-Trip Alloc Scope**: the GC/alloc window likewise spans production plus consume-side validation; values are deliberately consumed as byte[] on both clients for parity, so each consumed payload is materialized as a fresh array (~152 B at 128 B messages) — the expected allocation floor for this lane, not a leak",
     "- **CPU Efficiency**: CPU time per message differentiates client efficiency even at equal throughput",
-    "- **Noise-Aware Trends**: each scenario is compared with its last 10 matching runs using a median ± 2×MAD band; one adverse excursion warns and two consecutive regressions fail the workflow",
+    "- **Noise-Aware Trends**: each scenario's throughput, CPU per message and Dekaf delivery-latency p50/p95/p99 are compared with its last 10 matching runs using a median ± 2×MAD band; one adverse excursion warns and two consecutive regressions fail the workflow, and paired lanes fail only when the same-run Dekaf/Confluent ratio regressed too",
+    f"- **Latency Product Bars**: p95 within {LATENCY_TARGET_P95_MULTIPLIER:g}× the configured delivery-latency target and p50/p99 within {LATENCY_RATIO_THRESHOLD:g}× the same-run Confluent control are reported as product goals, not gates; a lane that misses a bar shows a warning until the trend band moves it",
     "- **Parallel Execution**: Each scenario runs in its own isolated environment",
     "- **Both Clients**: Direct comparison between Dekaf and Confluent.Kafka",
     "- **Memory Monitoring**: Tracks GC behavior and memory usage over time",

@@ -2,14 +2,18 @@
 
 import argparse
 import json
+from functools import partial
 from math import isfinite
 from pathlib import Path
 from statistics import median
 
 from stress_report import (
+    LATENCY_RATIO_THRESHOLD,
+    LATENCY_TARGET_P95_MULTIPLIER,
     PAIRED_ORDER_LABELS,
     comparison_rate,
     cpu_micros_per_message,
+    delivery_latency_ms,
     effective_rate,
     geometric_mean,
     intra_run_throughput,
@@ -58,6 +62,26 @@ _METRICS = {
         "lower_is_regression": False,
     },
 }
+
+# Dekaf trends its delivery-latency percentiles like any other metric. Confluent's
+# are recorded (they seed the ratio baseline) but neither trended nor used as an
+# environment indicator: a noisy control tail must not evict a lane from the
+# baselines, and the ratio row already normalises runner-wide latency noise.
+for _percentile in ("p50", "p95", "p99"):
+    _METRICS[f"deliveryLatency{_percentile.upper()}Ms"] = {
+        "label": f"Delivery latency {_percentile} ms",
+        "extract": partial(delivery_latency_ms, field=f"{_percentile}Us"),
+        "lower_is_regression": False,
+        "environment_indicator": False,
+    }
+
+# A Confluent trend regression on these metrics marks the lane's VM as shifted.
+_ENVIRONMENT_INDICATORS = frozenset(
+    metric for metric, definition in _METRICS.items()
+    if definition.get("environment_indicator", True)
+)
+# Confluent's values for the rest are recorded for ratio baselines, never trended.
+_CONTROL_RECORD_ONLY = frozenset(_METRICS) - _ENVIRONMENT_INDICATORS
 
 
 def _finite_number(value):
@@ -187,11 +211,11 @@ def _is_confluent(result):
     return str(result.get("client", "")).casefold().startswith("confluent")
 
 
-def _pair_identity(result):
-    """Match a Dekaf scenario to its same-run Confluent control.
+def _lane_identity(result):
+    """The lane a result ran on: scenario, broker count and workload shape, i.e. one VM.
 
-    Client and consumer connection count are intentionally excluded: each client uses its
-    own connection preset, while broker count and workload shape define the paired run.
+    Client, client order and connection count are intentionally excluded: every
+    client, order and connection variant of a lane shares that VM.
     """
     return (
         str(result.get("scenario", "unknown")).casefold(),
@@ -201,8 +225,40 @@ def _pair_identity(result):
         _consumer_seed_batch_size(result),
         _roundtrip_messages(result),
         result.get("roundTripSteadySeconds"),
-        paired_order_identity(result),
     )
+
+
+def _pair_identity(result):
+    """Match a Dekaf scenario to its same-run Confluent control: the lane plus client order."""
+    return _lane_identity(result) + (paired_order_identity(result),)
+
+
+def _apply_environment_shift(run):
+    """Flag every observation from a lane whose Confluent control regressed.
+
+    Derived from the stored trend fields on every load and write rather than
+    trusted from the file, so the rule can change without migrating the committed
+    history. A lane is one paid VM: a regressed control there says nothing about
+    the other lanes. Flagging the whole run instead kept every observation since
+    2026-07-13 out of the baselines, because some Confluent row regresses in
+    nearly every run.
+    """
+    results = run.get("results", [])
+    shifted = {
+        _lane_identity(item)
+        for item in results
+        if _is_confluent(item)
+        and any(
+            item.get(f"{metric}Trend") == "regression"
+            for metric in _ENVIRONMENT_INDICATORS
+        )
+    }
+    for item in results:
+        if _lane_identity(item) in shifted:
+            item["environmentShiftSuspected"] = True
+        else:
+            item.pop("environmentShiftSuspected", None)
+    run.pop("environmentShiftSuspected", None)
 
 
 # Synthetic order-balanced aggregates carry their trend metrics precomputed under
@@ -385,6 +441,7 @@ def _reconstructed_aggregate_observation(run, family_key):
 
 def _matching_control_ratios(runs, result, metric):
     pair_key = _pair_identity(result)
+    lane = _lane_identity(result)
     candidate_key = _identity(result)
     is_aggregate = _AGGREGATE_METRICS_FIELD in result
     family_key = _order_family_key(result) if is_aggregate else None
@@ -392,8 +449,6 @@ def _matching_control_ratios(runs, result, metric):
     ratios = []
 
     for run in runs:
-        if run.get("environmentShiftSuspected", False):
-            continue
         matching_results = [
             item
             for item in run.get("results", [])
@@ -407,7 +462,7 @@ def _matching_control_ratios(runs, result, metric):
         control = next((item for item in matching_results if _is_confluent(item)), None)
         if candidate is None:
             if is_aggregate:
-                ratio = _reconstructed_control_ratio(run, family_key, pair_key, metric)
+                ratio = _reconstructed_control_ratio(run, family_key, lane, metric)
                 if ratio is not None:
                     ratios.append(ratio)
             continue
@@ -428,7 +483,7 @@ def _matching_control_ratios(runs, result, metric):
             # its geomean so order-less candidates (e.g. the "Dekaf (3conn)"
             # control) keep a continuous ratio baseline across the rename
             # window too.
-            control_value = _reconstructed_ordered_control_value(run, pair_key, metric)
+            control_value = _reconstructed_ordered_control_value(run, lane, metric)
         if control_value is None:
             continue
 
@@ -437,7 +492,7 @@ def _matching_control_ratios(runs, result, metric):
     return ratios[-HISTORY_LIMIT:]
 
 
-def _reconstructed_control_ratio(run, family_key, pair_key, metric):
+def _reconstructed_control_ratio(run, family_key, lane, metric):
     """Candidate/control ratio rebuilt from a historical run's ordered pairs.
 
     Mirrors _reconstructed_aggregate_observation for the ratio series: interim
@@ -467,27 +522,26 @@ def _reconstructed_control_ratio(run, family_key, pair_key, metric):
     candidate_value = geometric_mean(
         [sample.get(metric) for sample in candidate_samples]
     )
-    control_value = _reconstructed_ordered_control_value(run, pair_key, metric)
+    control_value = _reconstructed_ordered_control_value(run, lane, metric)
     if candidate_value is None or control_value is None:
         return None
     return candidate_value / control_value
 
 
-def _reconstructed_ordered_control_value(run, pair_key, metric):
+def _reconstructed_ordered_control_value(run, lane, metric):
     """Geomean control value rebuilt from a run's complete ordered Confluent pair.
 
     Requires a single unambiguous ordered control family matching the pair's
     shape; anything else (partial pair, duplicates, competing control
     variants) yields None so no ratio is fabricated.
     """
-    shape_key = pair_key[:-1]
     control_samples = [
         item
         for item in run.get("results", [])
         if paired_order_identity(item) is not None
         and not item.get("environmentShiftSuspected", False)
         and _is_confluent(item)
-        and _pair_identity(item)[:-1] == shape_key
+        and _lane_identity(item) == lane
     ]
     if len({_order_family_key(item) for item in control_samples}) != 1:
         return None
@@ -619,14 +673,14 @@ def evaluate_and_update(history, current_results, run_started_at):
     runs = history.get("runs", []) if history is not None else []
     if not isinstance(runs, list):
         raise ValueError("Stress history 'runs' must be a list")
+    for run in runs:
+        _apply_environment_shift(run)
 
     # A re-run of the same result set replaces its prior entry and never uses itself
     # as baseline data.
     baseline_runs = [run for run in runs if run.get("runStartedAtUtc") != run_started_at]
     evaluations = []
     observations = []
-    should_fail = False
-    environment_shift_suspected = False
     # Order-balanced pairs trend as one synthetic geomean aggregate per client
     # family (attached to the pre-rename plain series); the aggregates are
     # evaluated first so ordered diagnostics can borrow their family's verdict.
@@ -643,6 +697,7 @@ def evaluate_and_update(history, current_results, run_started_at):
         is_confluent = _is_confluent(result)
         is_aggregate = _AGGREGATE_METRICS_FIELD in result
         family_key = _order_family_key(result)
+        control = None if is_confluent else controls.get(_pair_identity(result))
         # Ordered samples stay as diagnostics for the metrics their family's
         # aggregate trends: raw values are recorded, but they carry no band,
         # cannot gate, and never grow parallel per-order history series.
@@ -651,6 +706,8 @@ def evaluate_and_update(history, current_results, run_started_at):
             if not is_aggregate and paired_order_identity(result) is not None
             else frozenset()
         )
+        if is_confluent:
+            diagnostic_metrics |= _CONTROL_RECORD_ONLY
         prior = _matching_observations(baseline_runs, result)
         observation = _identity_record(result)
         if is_aggregate:
@@ -672,9 +729,7 @@ def evaluate_and_update(history, current_results, run_started_at):
                     # Directly trended raw results check their same-run control;
                     # ordered diagnostics stay raw — their family's aggregate
                     # already accounted for any backlog per sample.
-                    delivered = _delivered_rate_if_backlogged(
-                        result, controls.get(_pair_identity(result))
-                    )
+                    delivered = _delivered_rate_if_backlogged(result, control)
                     if delivered is not None:
                         value = delivered
                         backlog_substituted = True
@@ -752,7 +807,6 @@ def evaluate_and_update(history, current_results, run_started_at):
             observation[f"{metric}Trend"] = evaluation["status"]
 
             ratio_evaluation = None
-            control = controls.get(_pair_identity(result)) if not is_confluent else None
             control_value = (
                 _metric_value(control, metric, definition) if control is not None else None
             )
@@ -779,13 +833,11 @@ def evaluate_and_update(history, current_results, run_started_at):
                 evaluation["failureEligible"] = evaluation["repeatedRegression"]
 
             if is_confluent and evaluation["status"] == "regression":
-                environment_shift_suspected = True
                 evaluation["environmentShiftSuspected"] = True
 
             evaluations.append(evaluation)
             if ratio_evaluation is not None:
                 evaluations.append(ratio_evaluation)
-            should_fail = should_fail or evaluation["failureEligible"]
             if metric == "messagesPerSecond":
                 throughput_regression = evaluation["status"] == "regression"
 
@@ -856,28 +908,18 @@ def evaluate_and_update(history, current_results, run_started_at):
                 })
                 observation[metric] = value
                 observation[trend_field] = status
-                should_fail = should_fail or failure_eligible
 
         observations.append(observation)
 
-    # Environment shifts model runner-wide noise: one regressed Confluent control makes
-    # every observation from the same run unsafe for future absolute baselines.
-    if environment_shift_suspected:
-        for observation in observations:
-            observation["environmentShiftSuspected"] = True
-
-    latency_evaluations = paired_latency_thresholds(current_results)
-    evaluations.extend(latency_evaluations)
-    should_fail = should_fail or any(
-        item['thresholdBreach'] for item in latency_evaluations
-    )
+    # Product bars are reported only; latency gating happened above on the bands.
+    evaluations.extend(paired_latency_thresholds(current_results))
+    should_fail = any(item.get("failureEligible", False) for item in evaluations)
 
     current_run = {
         "runStartedAtUtc": run_started_at,
         "results": observations,
     }
-    if environment_shift_suspected:
-        current_run["environmentShiftSuspected"] = True
+    _apply_environment_shift(current_run)
     updated_runs = baseline_runs + [current_run]
     updated = {
         "version": HISTORY_VERSION,
@@ -903,6 +945,13 @@ def format_markdown(evaluations):
             "Confluent regressions remain environment warnings."
         ),
         (
+            "Dekaf delivery-latency p50/p95/p99 trend under the same band and "
+            "corroboration rules. The latency product bars (p95 <= "
+            f"{LATENCY_TARGET_P95_MULTIPLIER:g}x the configured target, p50/p99 <= "
+            f"{LATENCY_RATIO_THRESHOLD:g}x the same-run Confluent control) are "
+            "reported as warnings and never fail the run."
+        ),
+        (
             "Messages/sec trends on the median sampled interval rate when the run "
             "recorded interval samples (the rate the docs tables rank on); results "
             "and history entries without samples fall back to the whole-run mean. "
@@ -921,8 +970,8 @@ def format_markdown(evaluations):
     if any(item.get("environmentShiftSuspected") for item in evaluations):
         lines.extend([
             "",
-            "> Environment shift suspected: Confluent control regressed beyond its trailing band; "
-            "this run is excluded from absolute baselines.",
+            "> Environment shift suspected: a Confluent control regressed beyond its trailing "
+            "band; that lane's observations are excluded from absolute baselines.",
         ])
 
     lines.extend([
@@ -955,7 +1004,7 @@ def format_markdown(evaluations):
         status = labels[item["status"]]
         if item.get("thresholdBreach"):
             if item.get("latencyThreshold"):
-                status = "Threshold breach (fail)"
+                status = "Product bar missed (warning)"
             elif item.get("failureEligible"):
                 status = "Repeated threshold breach (fail)"
             elif item.get("corroborated") is False:
@@ -995,9 +1044,9 @@ def emit_annotations(evaluations):
             continue
 
         if item.get("thresholdBreach"):
-            level = "error" if item.get("failureEligible", True) else "warning"
+            level = "error" if item.get("failureEligible", False) else "warning"
             prefix = (
-                "Latency threshold breach"
+                "Latency product bar missed"
                 if item.get("latencyThreshold")
                 else "Intra-run threshold breach"
             )

@@ -142,7 +142,7 @@ class StressTrendTests(unittest.TestCase):
         self.assertIn(60, _pair_identity(dekaf))
         self.assertNotIn(8_000_000, _pair_identity(dekaf))
 
-    def test_paired_latency_threshold_breach_fails_without_history(self):
+    def test_paired_latency_product_bars_warn_without_failing(self):
         confluent = result(
             client="Confluent",
             latency={"p50Us": 10_000, "p99Us": 50_000},
@@ -158,15 +158,202 @@ class StressTrendTests(unittest.TestCase):
             "2026-07-01T02:00:00Z",
         )
 
-        latency = [item for item in evaluations if item.get("latencyThreshold")]
-        self.assertTrue(should_fail)
-        self.assertEqual(2, len(latency))
-        by_metric = {item["metric"]: item for item in latency}
+        bars = [item for item in evaluations if item.get("latencyThreshold")]
+        self.assertFalse(should_fail)
+        self.assertEqual(2, len(bars))
+        by_metric = {item["metric"]: item for item in bars}
         self.assertFalse(by_metric["latencyP50Ratio"]["thresholdBreach"])
         self.assertTrue(by_metric["latencyP99Ratio"]["thresholdBreach"])
-        markdown = format_markdown(latency)
-        self.assertIn("Threshold breach (fail)", markdown)
-        self.assertNotIn("Repeated threshold breach", markdown)
+        self.assertTrue(all(item["failureEligible"] is False for item in bars))
+        markdown = format_markdown(bars)
+        self.assertIn("Product bar missed (warning)", markdown)
+        self.assertNotIn("(fail)", markdown)
+        with redirect_stdout(StringIO()) as annotations:
+            emit_annotations(bars)
+        self.assertIn("::warning", annotations.getvalue())
+        self.assertNotIn("::error", annotations.getvalue())
+        self.assertIn("Latency product bar missed", annotations.getvalue())
+
+    def test_latency_percentiles_trend_for_dekaf_and_are_recorded_for_confluent(self):
+        confluent = result(
+            client="Confluent",
+            latency={"p50Us": 6_000, "p95Us": 20_000, "p99Us": 40_000},
+        )
+        dekaf = result(
+            client="Dekaf",
+            latency={"p50Us": 9_000, "p95Us": 12_000, "p99Us": 15_000},
+        )
+
+        evaluations, updated, should_fail = evaluate_and_update(
+            {"version": 1, "runs": []},
+            [confluent, dekaf],
+            "2026-07-01T02:00:00Z",
+        )
+
+        self.assertFalse(should_fail)
+        p50 = client_metric(evaluations, "deliveryLatencyP50Ms", "Dekaf")
+        self.assertEqual("insufficient-history", p50["status"])
+        self.assertAlmostEqual(9.0, p50["current"])
+        self.assertAlmostEqual(
+            12.0, client_metric(evaluations, "deliveryLatencyP95Ms", "Dekaf")["current"]
+        )
+        self.assertAlmostEqual(
+            15.0, client_metric(evaluations, "deliveryLatencyP99Ms", "Dekaf")["current"]
+        )
+        ratio = client_metric(evaluations, "deliveryLatencyP50MsControlRatio", "Dekaf")
+        self.assertAlmostEqual(1.5, ratio["current"])
+        self.assertEqual("Delivery latency p50 ms / Confluent", ratio["metricLabel"])
+        self.assertFalse(any(
+            item["metric"].startswith("deliveryLatency")
+            and item["scenario"].split(" / ")[1] == "Confluent"
+            for item in evaluations
+        ))
+
+        observations = {
+            item["client"]: item for item in updated["runs"][-1]["results"]
+        }
+        self.assertAlmostEqual(9.0, observations["Dekaf"]["deliveryLatencyP50Ms"])
+        self.assertEqual(
+            "insufficient-history", observations["Dekaf"]["deliveryLatencyP50MsTrend"]
+        )
+        self.assertAlmostEqual(6.0, observations["Confluent"]["deliveryLatencyP50Ms"])
+        self.assertNotIn("deliveryLatencyP50MsTrend", observations["Confluent"])
+        self.assertNotIn("environmentShiftSuspected", updated["runs"][-1])
+
+    def latency_history_runs(self, dekaf_p50=8.0, confluent_p50=6.0):
+        runs = []
+        for index in range(1, 4):
+            run = paired_history_run(index)
+            run["results"][0]["deliveryLatencyP50Ms"] = dekaf_p50
+            run["results"][0]["deliveryLatencyP50MsTrend"] = "stable"
+            run["results"][1]["deliveryLatencyP50Ms"] = confluent_p50
+            runs.append(run)
+        warned = paired_history_run(4)
+        warned["results"][0]["deliveryLatencyP50Ms"] = dekaf_p50 * 1.4
+        warned["results"][0]["deliveryLatencyP50MsTrend"] = "regression"
+        warned["results"][0]["deliveryLatencyP50MsControlRatioTrend"] = "regression"
+        warned["results"][1]["deliveryLatencyP50Ms"] = confluent_p50
+        runs.append(warned)
+        return runs
+
+    def test_repeated_latency_regression_fails_when_control_ratio_also_regresses(self):
+        evaluations, _, should_fail = evaluate_and_update(
+            {"version": 1, "runs": self.latency_history_runs()},
+            [
+                result(latency={"p50Us": 11_000}),
+                result(client="Confluent", latency={"p50Us": 6_000}),
+            ],
+            "2026-07-01T02:00:00Z",
+        )
+
+        p50 = client_metric(evaluations, "deliveryLatencyP50Ms", "Dekaf")
+        ratio = client_metric(evaluations, "deliveryLatencyP50MsControlRatio", "Dekaf")
+        self.assertEqual("regression", p50["status"])
+        self.assertTrue(p50["repeatedRegression"])
+        self.assertTrue(p50["corroborated"])
+        self.assertTrue(p50["failureEligible"])
+        self.assertEqual("regression", ratio["status"])
+        self.assertAlmostEqual(8.0, p50["median"])
+        self.assertTrue(should_fail)
+        self.assertIn("Repeated regression (fail)", format_markdown(evaluations))
+
+    def test_repeated_latency_regression_is_control_normalized_when_confluent_moves_too(self):
+        evaluations, _, should_fail = evaluate_and_update(
+            {"version": 1, "runs": self.latency_history_runs()},
+            [
+                result(latency={"p50Us": 11_000}),
+                result(client="Confluent", latency={"p50Us": 8_250}),
+            ],
+            "2026-07-01T02:00:00Z",
+        )
+
+        p50 = client_metric(evaluations, "deliveryLatencyP50Ms", "Dekaf")
+        ratio = client_metric(evaluations, "deliveryLatencyP50MsControlRatio", "Dekaf")
+        self.assertTrue(p50["repeatedRegression"])
+        self.assertFalse(p50["corroborated"])
+        self.assertFalse(p50["failureEligible"])
+        self.assertEqual("stable", ratio["status"])
+        self.assertFalse(should_fail)
+        self.assertIn(
+            "Repeated regression (control-normalized warning)",
+            format_markdown(evaluations),
+        )
+
+    def test_first_latency_regression_warns_without_failing(self):
+        runs = self.latency_history_runs()[:3]
+
+        evaluations, updated, should_fail = evaluate_and_update(
+            {"version": 1, "runs": runs},
+            [
+                result(latency={"p50Us": 11_000}),
+                result(client="Confluent", latency={"p50Us": 6_000}),
+            ],
+            "2026-07-01T02:00:00Z",
+        )
+
+        p50 = client_metric(evaluations, "deliveryLatencyP50Ms", "Dekaf")
+        self.assertEqual("regression", p50["status"])
+        self.assertFalse(p50["repeatedRegression"])
+        self.assertFalse(p50["failureEligible"])
+        self.assertFalse(should_fail)
+        self.assertEqual(
+            "regression", updated["runs"][-1]["results"][0]["deliveryLatencyP50MsTrend"]
+        )
+
+    def test_confluent_latency_regression_never_marks_environment_shift(self):
+        runs = self.latency_history_runs()[:3]
+
+        evaluations, updated, should_fail = evaluate_and_update(
+            {"version": 1, "runs": runs},
+            [
+                result(latency={"p50Us": 8_000}),
+                result(client="Confluent", latency={"p50Us": 30_000}),
+            ],
+            "2026-07-01T02:00:00Z",
+        )
+
+        self.assertFalse(should_fail)
+        self.assertFalse(any(item.get("environmentShiftSuspected") for item in evaluations))
+        self.assertNotIn("environmentShiftSuspected", updated["runs"][-1])
+        confluent = next(
+            item for item in updated["runs"][-1]["results"] if item["client"] == "Confluent"
+        )
+        self.assertAlmostEqual(30.0, confluent["deliveryLatencyP50Ms"])
+        self.assertNotIn("deliveryLatencyP50MsTrend", confluent)
+        ratio = client_metric(evaluations, "deliveryLatencyP50MsControlRatio", "Dekaf")
+        self.assertEqual("improvement", ratio["status"])
+
+    def test_order_balanced_aggregate_trends_latency_geomean(self):
+        samples = self.order_balanced_samples()
+        samples[0]["latency"] = {"p50Us": 8_000}
+        samples[3]["latency"] = {"p50Us": 12_500}
+        samples[1]["latency"] = {"p50Us": 5_000}
+        samples[2]["latency"] = {"p50Us": 5_000}
+
+        evaluations, updated, _ = evaluate_and_update(
+            {"version": 1, "runs": []},
+            samples,
+            "2026-07-01T02:00:00Z",
+        )
+
+        p50_rows = [
+            item for item in evaluations
+            if item["metric"] == "deliveryLatencyP50Ms"
+        ]
+        self.assertEqual(1, len(p50_rows))
+        self.assertNotIn("first", p50_rows[0]["scenario"])
+        self.assertAlmostEqual(10.0, p50_rows[0]["current"])
+        ratio = next(
+            item for item in evaluations
+            if item["metric"] == "deliveryLatencyP50MsControlRatio"
+        )
+        self.assertAlmostEqual(2.0, ratio["current"])
+        ordered = [
+            item for item in updated["runs"][-1]["results"]
+            if item.get("pairedClientOrder") and item["client"] == "Dekaf"
+        ]
+        self.assertEqual({8.0, 12.5}, {item["deliveryLatencyP50Ms"] for item in ordered})
+        self.assertTrue(all("deliveryLatencyP50MsTrend" not in item for item in ordered))
 
     def test_first_intra_run_threshold_breach_warns_without_failing(self):
         evaluations, updated, should_fail = evaluate_and_update(
@@ -336,7 +523,6 @@ class StressTrendTests(unittest.TestCase):
         self.assertTrue(throughput["repeatedRegression"])
         self.assertFalse(throughput["failureEligible"])
         self.assertTrue(throughput["environmentShiftSuspected"])
-        self.assertTrue(updated["runs"][-1]["environmentShiftSuspected"])
         self.assertTrue(
             updated["runs"][-1]["results"][0]["environmentShiftSuspected"]
         )
@@ -347,7 +533,7 @@ class StressTrendTests(unittest.TestCase):
         self.assertIn("Environment shift suspected", annotations.getvalue())
         self.assertFalse(should_fail)
 
-    def test_environment_shift_excludes_every_observation_in_same_run(self):
+    def test_environment_shift_excludes_only_the_regressed_lane(self):
         runs = []
         for index in range(1, 4):
             run = history_run(index, client="Confluent")
@@ -374,18 +560,79 @@ class StressTrendTests(unittest.TestCase):
             {"version": 1, "runs": runs},
             [
                 result(client="Confluent", messages_per_second=650.0),
+                result(client="Dekaf", messages_per_second=1_000.0),
+                result(client="Dekaf (3conn)", messages_per_second=1_500.0),
                 result(scenario="consumer", messages_per_second=1_000.0),
             ],
             "2026-07-01T02:00:00Z",
         )
 
         current = updated["runs"][-1]
-        self.assertTrue(current["environmentShiftSuspected"])
-        self.assertTrue(all(
-            observation["environmentShiftSuspected"]
+        flagged = {
+            (observation["scenario"], observation["client"])
             for observation in current["results"]
-        ))
+            if observation.get("environmentShiftSuspected")
+        }
+        # Every client and connection variant that shared the producer VM is
+        # excluded; the consumer lane ran on its own VM and keeps its baseline.
+        self.assertEqual(
+            {("producer", "Confluent"), ("producer", "Dekaf"), ("producer", "Dekaf (3conn)")},
+            flagged,
+        )
         self.assertFalse(should_fail)
+
+    def test_stale_run_wide_shift_flags_are_rederived_on_load(self):
+        # History written by the old run-wide rule carries flags on every
+        # observation and on the run; only lanes whose Confluent control
+        # actually regressed keep them, so the frozen baselines thaw.
+        runs = []
+        for index in range(1, 5):
+            run = paired_history_run(index)
+            run["environmentShiftSuspected"] = True
+            for observation in run["results"]:
+                observation["environmentShiftSuspected"] = True
+            runs.append(run)
+
+        evaluations, updated, _ = evaluate_and_update(
+            {"version": 1, "runs": runs},
+            [result(), result(client="Confluent", messages_per_second=500.0)],
+            "2026-07-01T02:00:00Z",
+        )
+
+        throughput = client_metric(evaluations, "messagesPerSecond", "Dekaf")
+        self.assertEqual(4, throughput["baselineCount"])
+        self.assertEqual("stable", throughput["status"])
+        for run in updated["runs"]:
+            self.assertNotIn("environmentShiftSuspected", run)
+            self.assertTrue(all(
+                "environmentShiftSuspected" not in observation
+                for observation in run["results"]
+            ))
+
+    def test_clean_lane_in_shifted_run_still_feeds_absolute_and_ratio_baselines(self):
+        runs = [paired_history_run(i) for i in range(1, 4)]
+        shifted = paired_history_run(4, dekaf_messages_per_second=1000.0)
+        # The consumer lane regressed in run 4; the producer lane stayed clean
+        # and must keep contributing to both the absolute and the ratio band.
+        shifted["results"].append({
+            **shifted["results"][1],
+            "scenario": "consumer",
+            "messagesPerSecond": 200.0,
+            "messagesPerSecondTrend": "regression",
+            "environmentShiftSuspected": True,
+        })
+        runs.append(shifted)
+
+        evaluations, _, _ = evaluate_and_update(
+            {"version": 1, "runs": runs},
+            [result(), result(client="Confluent", messages_per_second=500.0)],
+            "2026-07-01T02:00:00Z",
+        )
+
+        throughput = client_metric(evaluations, "messagesPerSecond", "Dekaf")
+        ratio = client_metric(evaluations, "messagesPerSecondControlRatio", "Dekaf")
+        self.assertEqual(4, throughput["baselineCount"])
+        self.assertEqual(4, ratio["baselineCount"])
 
     def test_paired_proportional_regressions_do_not_fail_when_control_ratio_is_stable(self):
         runs = [paired_history_run(i) for i in range(1, 4)]
@@ -917,11 +1164,16 @@ class StressTrendTests(unittest.TestCase):
 
     def test_environment_shift_observations_do_not_enter_absolute_baseline(self):
         runs = [history_run(i) for i in range(1, 4)]
-        runs.append({
-            **history_run(4, messages_per_second=5000.0),
-            "environmentShiftSuspected": True,
+        # The exclusion is derived from the stored Confluent trend, not from a
+        # persisted flag, so a rule change never needs a history migration.
+        shifted = history_run(4, messages_per_second=5000.0)
+        shifted["results"].append({
+            **shifted["results"][0],
+            "client": "Confluent",
+            "messagesPerSecond": 100.0,
+            "messagesPerSecondTrend": "regression",
         })
-        runs[-1]["results"][0]["environmentShiftSuspected"] = True
+        runs.append(shifted)
 
         evaluations, _, _ = evaluate_and_update(
             {"version": 1, "runs": runs},
@@ -942,8 +1194,7 @@ class StressTrendTests(unittest.TestCase):
             dekaf_messages_per_second=5000.0,
             confluent_messages_per_second=1000.0,
         )
-        for observation in environment_shift["results"]:
-            observation["environmentShiftSuspected"] = True
+        environment_shift["results"][1]["messagesPerSecondTrend"] = "regression"
         runs.append(environment_shift)
 
         evaluations, _, _ = evaluate_and_update(
