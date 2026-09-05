@@ -21,6 +21,10 @@ class Metric:
     higher_is_better: bool
     gated: bool = True
     floor: bool = False
+    # Absolute spread below which differences in this metric's unit are treated as noise in
+    # both directions: neither control drift nor a candidate delta smaller than this can
+    # decide the metric. Percentage gates still apply above it.
+    noise_floor: float = 0.0
 
 
 # Steady/peak is a shape statistic: it normalizes a run's settled throughput by that same
@@ -38,7 +42,13 @@ METRICS = (
     Metric("p95", "Latency p95", "ms", False),
     Metric("p99", "Latency p99", "ms", False),
     Metric("cpu", "CPU", "us/msg", False),
-    Metric("alloc", "Allocation", "B/msg", False),
+    # Producer hot paths allocate 0 B/msg by design; the residual 0.5-0.9 B/msg is cold-path
+    # activity (metadata refreshes, probes, samplers) whose run-to-run spread is 0.1-0.25
+    # B/msg, i.e. 16-33% relative. Runs 33961873612 and 33966278396 were ruled INCONCLUSIVE
+    # on that spread alone while every other row passed. Sub-byte allocation differences are
+    # not evidence in either direction, so the allocation gate carries a 1 B/msg noise floor;
+    # consumer lanes at ~2 KB/msg are unaffected because their 3% tolerance is ~60 B/msg.
+    Metric("alloc", "Allocation", "B/msg", False, noise_floor=1.0),
     Metric("stability", "Steady/peak ratio", "ratio", True, floor=True),
     Metric("max", "Latency max", "ms", False, gated=False),
     Metric("averageRequest", "Average request", "KiB", True, gated=False),
@@ -166,6 +176,8 @@ def _metric_status(
 
     delta_percent = 100 * (candidate - baseline_mean) / baseline_mean
     control_drift_percent = 100 * abs(baseline_a2 - baseline_a) / abs(baseline_mean)
+    control_spread = abs(baseline_a2 - baseline_a)
+    noise_floor = metric.noise_floor
     if not metric.gated:
         status = "recorded"
     elif metric.floor:
@@ -174,15 +186,25 @@ def _metric_status(
         if metric.higher_is_better:
             worse_than_both = candidate < min(baseline_a, baseline_a2) * (
                 1 - tolerance_percent / 100
-            )
+            ) and min(baseline_a, baseline_a2) - candidate > noise_floor
             better_than_both = candidate >= max(baseline_a, baseline_a2)
-            adverse = delta_percent < -tolerance_percent
+            adverse = delta_percent < -tolerance_percent and (
+                baseline_mean - candidate > noise_floor
+            )
         else:
             worse_than_both = candidate > max(baseline_a, baseline_a2) * (
                 1 + tolerance_percent / 100
-            )
+            ) and candidate - max(baseline_a, baseline_a2) > noise_floor
             better_than_both = candidate <= min(baseline_a, baseline_a2)
-            adverse = delta_percent > tolerance_percent
+            adverse = delta_percent > tolerance_percent and (
+                candidate - baseline_mean > noise_floor
+            )
+        # A control spread inside the noise floor cannot make the comparison inconclusive:
+        # the controls agree to within what the metric can resolve.
+        controls_disagree = (
+            control_drift_percent > max_control_drift_percent
+            and control_spread > noise_floor
+        )
 
         # Symmetric decisiveness overrides for noisy controls: a candidate worse than both
         # bracketing controls by more than the tolerance is a regression no matter how far
@@ -195,7 +217,7 @@ def _metric_status(
             status = "regression"
         elif better_than_both:
             status = "pass"
-        elif control_drift_percent > max_control_drift_percent:
+        elif controls_disagree:
             status = "inconclusive"
         elif adverse:
             status = "regression"
@@ -212,6 +234,7 @@ def _metric_status(
         "baselineMean": baseline_mean,
         "deltaPercent": delta_percent,
         "controlDriftPercent": control_drift_percent,
+        "noiseFloor": noise_floor,
         "status": status,
         "gated": metric.gated,
     }
@@ -296,7 +319,8 @@ def markdown(comparison, baseline_sha, candidate_sha):
         "",
         f"Baseline: `{baseline_sha}` · Candidate: `{candidate_sha}` · "
         f"adverse tolerance: {comparison['tolerancePercent']:.1f}% · "
-        f"maximum control drift: {comparison['maxControlDriftPercent']:.1f}%",
+        f"maximum control drift: {comparison['maxControlDriftPercent']:.1f}% · "
+        "allocation noise floor: 1.0 B/msg",
         "",
         "| Metric | Baseline A | Candidate B | Baseline A2 | B vs mean | Control drift | Gate |",
         "|---|---:|---:|---:|---:|---:|---|",
