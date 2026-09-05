@@ -137,6 +137,13 @@ public static class Program
             $"fail at {ProgressWatchdog.DefaultExitAfter.TotalMinutes:F0} minutes");
         if (options.ConnectionsPerBroker > 1)
             Console.WriteLine($"Multi-connection: {options.ConnectionsPerBroker} connections per broker (Dekaf only)");
+        // Adaptive scaling is only effective on the single-connection pass; the 3-connection
+        // control pass pins its count even when the flag is forwarded to it (see
+        // StressTestOptions.AdaptiveConnections below), so the banner mirrors that condition.
+        if (options.AdaptiveConnections && options.ConnectionsPerBroker == 1)
+            Console.WriteLine("Adaptive connections: Dekaf producer scaling left at the library default (Dekaf only)");
+        else if (options.AdaptiveConnections)
+            Console.WriteLine("Adaptive connections: requested but pinned for this multi-connection pass");
         Console.WriteLine(new string('-', 50));
 
         Directory.CreateDirectory(options.OutputPath);
@@ -225,6 +232,7 @@ public static class Program
             Compression = options.Compression,
             BrokerCount = options.Brokers,
             ConnectionsPerBroker = connectionsPerBroker,
+            AdaptiveConnections = options.AdaptiveConnections && connectionsPerBroker == 1,
             RoundTripSteadySeconds = options.RoundTripSteadySeconds,
             RoundTripSteadyMaxLogBytes = roundTripSteadyMaxLogBytes,
             EnableProducerDeliveryDiagnostics = options.EnableProducerDeliveryDiagnostics,
@@ -295,6 +303,8 @@ public static class Program
                 Console.WriteLine($"=== Running: {scenario.Client} {scenario.Name} ===");
 
                 var result = await RunScenarioAsync(scenario, connectionsPerBroker: 1).ConfigureAwait(false);
+                if (options.AdaptiveConnections && scenario.Client == "Dekaf" && UsesProducerTopic(scenario.Name))
+                    result.Client = "Dekaf (adaptive)";
                 results.Add(result);
 
                 GC.Collect();
@@ -964,6 +974,9 @@ public static class Program
                 case "--roundtrip-steady-seconds":
                     options.RoundTripSteadySeconds = ParsePositiveInt(args[++i], "--roundtrip-steady-seconds");
                     break;
+                case "--adaptive-connections":
+                    options.AdaptiveConnections = true;
+                    break;
                 case "--producer-delivery-diagnostics":
                     options.EnableProducerDeliveryDiagnostics = true;
                     break;
@@ -1089,6 +1102,7 @@ public static class Program
               --compression <type>   Compression type: none, lz4, snappy, zstd (default: none)
               --brokers <count>      Number of Kafka brokers (default: 1, use 3 for multi-broker)
               --connections-per-broker <n>  TCP connections per broker (default: 1, pass 3 for multi-connection comparison)
+              --adaptive-connections  Keep Dekaf's default adaptive connection scaling (results labelled "Dekaf (adaptive)")
               --seed-messages <count> Messages pre-seeded into the consumer topic (default: 2000000)
               --producer-delivery-diagnostics  Capture Dekaf producer delivery diagnostics on message loss and watchdog stalls
               --consumer-fetch-diagnostics  Capture Dekaf consumer fetch diagnostics (debug runs only; adds Dekaf-only overhead)
@@ -1145,6 +1159,7 @@ public static class Program
         public string Compression { get; set; } = "none";
         public int Brokers { get; set; } = 1;
         public int ConnectionsPerBroker { get; set; } = 1;
+        public bool AdaptiveConnections { get; set; }
         public int SeedMessages { get; set; } = 2_000_000;
         public int RoundTripSteadySeconds { get; set; } = 60;
         public bool EnableProducerDeliveryDiagnostics { get; set; }

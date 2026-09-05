@@ -50,7 +50,7 @@ internal sealed class ProducerRoundTripStressTest : IStressTestScenario
             .WithConnectionsPerBroker(options.ConnectionsPerBroker)
             // Confluent uses exactly the configured connection count. Keep this comparison
             // fixed too so adaptive scale events cannot change ordering or the test profile.
-            .WithoutAdaptiveConnections();
+            .WithStressConnectionPolicy(options);
 
         _ = options.Compression switch
         {

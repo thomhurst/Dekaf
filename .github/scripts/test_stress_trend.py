@@ -1951,6 +1951,14 @@ class StressTrendTests(unittest.TestCase):
             '[ "$full_run" = "true" ] && [ "$CONSUMER_FETCH_DIAGNOSTICS" = "true" ]',
             selector,
         )
+        self.assertIn(
+            '[ "$full_run" = "true" ] && [ "$ADAPTIVE_CONNECTIONS" = "true" ]',
+            selector,
+        )
+        self.assertIn(
+            'ADAPTIVE_CONNECTIONS: ${{ github.event.inputs.adaptive_connections }}',
+            workflow,
+        )
         self.assertIn('echo "full_run=$full_run"', selector)
         self.assertIn(
             "(github.event_name == 'schedule' || github.event.inputs.full_run == 'true') && 'all-schedule'",

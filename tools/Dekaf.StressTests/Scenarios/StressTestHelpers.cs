@@ -11,6 +11,15 @@ namespace Dekaf.StressTests.Scenarios;
 internal static class StressTestHelpers
 {
     /// <summary>
+    /// Pins the configured connection count for like-for-like comparison with Confluent
+    /// unless the run asked to measure Dekaf's default adaptive scaling.
+    /// </summary>
+    internal static ProducerBuilder<TKey, TValue> WithStressConnectionPolicy<TKey, TValue>(
+        this ProducerBuilder<TKey, TValue> builder,
+        StressTestOptions options) =>
+        options.AdaptiveConnections ? builder : builder.WithoutAdaptiveConnections();
+
+    /// <summary>
     /// Producer scenarios sample true end-to-end delivery latency on 1 in N messages.
     /// Fire-and-forget latency only measures buffer-append time, which says nothing
     /// about broker round-trips; sampling keeps the measurement honest without

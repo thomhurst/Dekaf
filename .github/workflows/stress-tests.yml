@@ -48,6 +48,11 @@ on:
         description: 'Enable Dekaf consumer fetch diagnostics (debug runs only; adds Dekaf-only overhead to the measured window)'
         required: false
         default: 'false'
+      adaptive_connections:
+        description: 'Leave Dekaf producer adaptive connection scaling at the library default instead of pinning one connection (results labelled "Dekaf (adaptive)"; measurement only, never published)'
+        required: false
+        type: boolean
+        default: false
       # Keep this choice input below duration_minutes: the options-sync test in
       # .github/scripts/test_stress_trend.py slices the workflow text from the
       # first 'options:' to 'duration_minutes:' to read the lane list.
@@ -134,6 +139,7 @@ jobs:
           DISPATCH_SHAPE: ${{ github.event.inputs.dispatch_shape }}
           FULL_RUN: ${{ github.event.inputs.full_run }}
           CONSUMER_FETCH_DIAGNOSTICS: ${{ github.event.inputs.consumer_fetch_diagnostics }}
+          ADAPTIVE_CONNECTIONS: ${{ github.event.inputs.adaptive_connections }}
           BASELINE_SHA: ${{ github.event.inputs.baseline_sha }}
           PROFILE_MODE: ${{ github.event.inputs.profile_mode }}
           EVENT_NAME: ${{ github.event_name }}
@@ -194,6 +200,10 @@ jobs:
           fi
           if [ "$full_run" = "true" ] && [ "$CONSUMER_FETCH_DIAGNOSTICS" = "true" ]; then
             echo "::error::full_run cannot enable consumer_fetch_diagnostics because its Dekaf-only overhead would invalidate the published comparison."
+            exit 1
+          fi
+          if [ "$full_run" = "true" ] && [ "$ADAPTIVE_CONNECTIONS" = "true" ]; then
+            echo "::error::full_run cannot enable adaptive_connections because relabelling every producer result 'Dekaf (adaptive)' removes the Dekaf group from the published comparison and silently blanks the headline rows."
             exit 1
           fi
 
@@ -479,6 +489,9 @@ jobs:
           EXTRA_ARGS=()
           if [ "${{ github.event.inputs.consumer_fetch_diagnostics }}" = "true" ]; then
             EXTRA_ARGS+=(--consumer-fetch-diagnostics)
+          fi
+          if [ "${{ github.event.inputs.adaptive_connections }}" = "true" ]; then
+            EXTRA_ARGS+=(--adaptive-connections)
           fi
 
           if [ -n "$BASELINE_SHA" ]; then

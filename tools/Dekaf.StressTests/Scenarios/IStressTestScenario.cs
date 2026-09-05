@@ -27,6 +27,13 @@ internal sealed class StressTestOptions
     public string Compression { get; init; } = "none";
     public int BrokerCount { get; init; } = 1;
     public int ConnectionsPerBroker { get; init; } = 1;
+
+    /// <summary>
+    /// Leaves the Dekaf producer's default adaptive connection scaling enabled instead of
+    /// pinning the configured connection count. Measures the library default configuration;
+    /// results are labelled "Dekaf (adaptive)" so they never enter the pinned baseline band.
+    /// </summary>
+    public bool AdaptiveConnections { get; init; }
     public int RoundTripSteadySeconds { get; init; } = 60;
 
     /// <summary>
