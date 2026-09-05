@@ -379,7 +379,8 @@ Stress tests measure sustained performance over extended periods against real Ka
 - **Round-Trip CPU Scope**: CPU time covers both bulk production and consumer validation; it is not a producer-only metric
 - **Round-Trip Alloc Scope**: the GC/alloc window likewise spans production plus consume-side validation; values are deliberately consumed as byte[] on both clients for parity, so each consumed payload is materialized as a fresh array (~152 B at 128 B messages) — the expected allocation floor for this lane, not a leak
 - **CPU Efficiency**: CPU time per message differentiates client efficiency even at equal throughput
-- **Noise-Aware Trends**: each scenario is compared with its last 10 matching runs using a median ± 2×MAD band; one adverse excursion warns and two consecutive regressions fail the workflow
+- **Noise-Aware Trends**: each scenario's throughput, CPU per message and Dekaf delivery-latency p50/p95/p99 are compared with its last 10 matching runs using a median ± 2×MAD band; one adverse excursion warns and two consecutive regressions fail the workflow, and paired lanes fail only when the same-run Dekaf/Confluent ratio regressed too
+- **Latency Product Bars**: p95 within 3× the configured delivery-latency target and p50/p99 within 2× the same-run Confluent control are reported as product goals, not gates; a lane that misses a bar shows a warning until the trend band moves it
 - **Parallel Execution**: Each scenario runs in its own isolated environment
 - **Both Clients**: Direct comparison between Dekaf and Confluent.Kafka
 - **Memory Monitoring**: Tracks GC behavior and memory usage over time
