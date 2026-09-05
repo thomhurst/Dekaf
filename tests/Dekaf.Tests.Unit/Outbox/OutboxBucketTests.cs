@@ -139,7 +139,7 @@ public class OutboxBucketTests
 
         await Assert.That(headers).IsNotNull();
         await Assert.That(headers!).Count().IsEqualTo(1);
-        await Assert.That(headers[0].Key).IsEqualTo("identity");
+        await Assert.That(headers![0].Key).IsEqualTo("identity");
         await Assert.That(headers[0].GetValueAsString()).IsEqualTo("created");
     }
 

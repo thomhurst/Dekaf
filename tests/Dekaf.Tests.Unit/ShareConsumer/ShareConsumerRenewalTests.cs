@@ -520,7 +520,7 @@ public sealed class ShareConsumerRenewalTests
 
         await Assert.That(outcomes).IsNotNull();
         await Assert.That(outcomes!).Count().IsEqualTo(2);
-        await Assert.That(outcomes[0].TopicPartition).IsEqualTo(new TopicPartition("topic", 0));
+        await Assert.That(outcomes![0].TopicPartition).IsEqualTo(new TopicPartition("topic", 0));
         await Assert.That(CopyOffsets(outcomes[0].Offsets)).IsEquivalentTo([40L, 42L]);
         await Assert.That(outcomes[0].Succeeded).IsTrue();
         await Assert.That(outcomes[1].TopicPartition).IsEqualTo(new TopicPartition("topic", 1));

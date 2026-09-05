@@ -228,7 +228,7 @@ public sealed class ProducerDeliveryDiagnosticsTests
         await Assert.That(current.RequestRttMicrosLog2Histogram!.Sum()).IsEqualTo(1);
         await Assert.That(current.AdmissionBlockMicrosLog2Histogram).IsNotNull();
         await Assert.That(current.AdmissionBlockMicrosLog2Histogram!.Sum()).IsEqualTo(1);
-        await Assert.That(current.AdmissionBlockMicrosLog2Histogram.Skip(12).Sum()).IsEqualTo(1)
+        await Assert.That(current.AdmissionBlockMicrosLog2Histogram!.Skip(12).Sum()).IsEqualTo(1)
             .Because("the synthetic block began eight milliseconds earlier; scheduling may extend it");
         await Assert.That(current.CurrentAdmissionBlockMicros).IsEqualTo(0);
         await Assert.That(snapshot.BudgetProbeEvents).IsEmpty();

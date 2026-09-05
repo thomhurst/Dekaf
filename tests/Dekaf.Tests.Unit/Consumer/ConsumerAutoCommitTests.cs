@@ -40,7 +40,7 @@ public class ConsumerAutoCommitTests
         var secondTask = (Task?)taskField.GetValue(consumer);
         var secondCts = (CancellationTokenSource?)ctsField.GetValue(consumer);
 
-        await Assert.That(firstTask).IsNotNull();
+        await Assert.That((object?)firstTask).IsNotNull();
         await Assert.That(firstCts).IsNotNull();
         await Assert.That(ReferenceEquals(secondTask, firstTask)).IsTrue();
         await Assert.That(ReferenceEquals(secondCts, firstCts)).IsTrue();

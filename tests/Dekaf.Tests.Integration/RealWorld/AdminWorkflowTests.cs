@@ -532,7 +532,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
 
             await Assert.That(offsetsBefore).IsNotNull();
             await Assert.That(offsetsBefore!).ContainsKey(tp);
-            await Assert.That(offsetsBefore[tp]).IsEqualTo(5);
+            await Assert.That(offsetsBefore![tp]).IsEqualTo(5);
 
             // Reset offset to 0 (retry for group state transition)
             for (var attempt = 0; attempt < 8; attempt++)
@@ -1074,7 +1074,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
 
             await Assert.That(offsets).IsNotNull();
             await Assert.That(offsets!).ContainsKey(tp);
-            await Assert.That(offsets[tp]).IsEqualTo(3);
+            await Assert.That(offsets![tp]).IsEqualTo(3);
 
             // Step 6: Alter offsets back to 0
             for (var attempt = 0; attempt < 8; attempt++)

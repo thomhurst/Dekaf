@@ -40,7 +40,7 @@ public sealed class GlobalInterceptorOrderingTests
 
         // Simulate interceptor invocation (same order as the producer pipeline)
         var message = new ProducerMessage<string, string> { Topic = "test", Key = "key", Value = "value" };
-        foreach (var interceptor in interceptors)
+        foreach (var interceptor in interceptors!)
         {
             message = interceptor.OnSend(message);
         }
@@ -76,7 +76,7 @@ public sealed class GlobalInterceptorOrderingTests
         await Assert.That(interceptors!).Count().IsEqualTo(2);
 
         var message = new ProducerMessage<string, string> { Topic = "test", Key = "key", Value = "value" };
-        foreach (var interceptor in interceptors)
+        foreach (var interceptor in interceptors!)
         {
             message = interceptor.OnSend(message);
         }
@@ -115,7 +115,7 @@ public sealed class GlobalInterceptorOrderingTests
         await Assert.That(interceptors!).Count().IsEqualTo(2);
 
         var message = new ProducerMessage<string, string> { Topic = "test", Key = "key", Value = "value" };
-        foreach (var interceptor in interceptors)
+        foreach (var interceptor in interceptors!)
         {
             message = interceptor.OnSend(message);
         }
@@ -154,7 +154,7 @@ public sealed class GlobalInterceptorOrderingTests
         await Assert.That(interceptors!).Count().IsEqualTo(3);
 
         var message = new ProducerMessage<string, string> { Topic = "test", Key = "key", Value = "value" };
-        foreach (var interceptor in interceptors)
+        foreach (var interceptor in interceptors!)
         {
             message = interceptor.OnSend(message);
         }
@@ -218,7 +218,7 @@ public sealed class GlobalInterceptorOrderingTests
 
         // Simulate interceptor invocation
         var result = default(ConsumeResult<string, string>);
-        foreach (var interceptor in interceptors)
+        foreach (var interceptor in interceptors!)
         {
             result = interceptor.OnConsume(result);
         }
@@ -255,7 +255,7 @@ public sealed class GlobalInterceptorOrderingTests
         await Assert.That(interceptors!).Count().IsEqualTo(2);
 
         var result = default(ConsumeResult<string, string>);
-        foreach (var interceptor in interceptors)
+        foreach (var interceptor in interceptors!)
         {
             result = interceptor.OnConsume(result);
         }
@@ -295,7 +295,7 @@ public sealed class GlobalInterceptorOrderingTests
         await Assert.That(interceptors!).Count().IsEqualTo(2);
 
         var result = default(ConsumeResult<string, string>);
-        foreach (var interceptor in interceptors)
+        foreach (var interceptor in interceptors!)
         {
             result = interceptor.OnConsume(result);
         }

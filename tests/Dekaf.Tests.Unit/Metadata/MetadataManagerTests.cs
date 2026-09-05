@@ -1275,7 +1275,7 @@ public class MetadataManagerTests
         InvokeStartBackgroundRefresh(manager);
 
         var backgroundTask = GetInstanceField<Task?>(manager, "_backgroundRefreshTask");
-        await Assert.That(backgroundTask).IsNotNull();
+        await Assert.That((object?)backgroundTask).IsNotNull();
         await Assert.That(backgroundTask!.IsCompleted).IsFalse();
         await manager.DisposeAsync();
     }
