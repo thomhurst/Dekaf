@@ -1,3 +1,4 @@
+using System.Reflection;
 using Dekaf.Metadata;
 using Dekaf.Networking;
 using Dekaf.Producer;
@@ -291,5 +292,180 @@ public class AppLimitedLingerBypassTests
             await accumulator.DisposeAsync();
             await pool.DisposeAsync();
         }
+    }
+
+    // ── SealedAsSoleDemand: set only by the bypass seal, cleared across pooled reuse ──
+    //
+    // BrokerSender skips its wave-coalesce spin for a single-batch wave carrying the flag,
+    // so the flag must be a faithful record of the bypass proof: every other seal path
+    // (zero-linger, flush, bulk scope) must leave it false, and neither pooled type
+    // (PartitionBatch, ReadyBatch) may carry it into its next lifecycle.
+
+    [Test]
+    public async Task SoleAwaitedProduce_SealsBatchAsSoleDemand()
+    {
+        var accumulator = new RecordAccumulator(CreateOptions(lingerMs: 5_000));
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
+
+        try
+        {
+            AppendAwaited(accumulator, pool);
+
+            var batch = DrainSealedBatch(accumulator);
+            await Assert.That(batch.SealedAsSoleDemand).IsTrue();
+            LeakGateHarness.RetireBatch(accumulator, batch, offset: 0);
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+            await pool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task ZeroLingerSoleAwaitedProduce_IsNotSealedAsSoleDemand()
+    {
+        // LingerMs == 0 seals on the zero-linger path, which never evaluates the app-limited
+        // gate — the sender keeps its (75 µs) sibling wait for that shape.
+        var accumulator = new RecordAccumulator(CreateOptions(lingerMs: 0));
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
+
+        try
+        {
+            AppendAwaited(accumulator, pool);
+            await Assert.That(accumulator.UnsealedBatchCount).IsEqualTo(0);
+
+            var batch = DrainSealedBatch(accumulator);
+            await Assert.That(batch.SealedAsSoleDemand).IsFalse();
+            LeakGateHarness.RetireBatch(accumulator, batch, offset: 0);
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+            await pool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task FlushSealOfFireAndForgetBatch_IsNotSealedAsSoleDemand()
+    {
+        var accumulator = new RecordAccumulator(CreateOptions());
+
+        try
+        {
+            await AccumulatorTestHelpers.AppendNullRecordAsync(accumulator, Topic);
+            await AccumulatorTestHelpers.SealAllAsync(accumulator);
+
+            var batch = DrainSealedBatch(accumulator);
+            await Assert.That(batch.SealedAsSoleDemand).IsFalse();
+            LeakGateHarness.RetireBatch(accumulator, batch, offset: 0);
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task SoleDemandFlag_DoesNotSurvivePooledBatchReuse()
+    {
+        var accumulator = new RecordAccumulator(CreateOptions());
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
+
+        try
+        {
+            // Cycle 1: the bypass seals and flags the batch; retiring it returns both the
+            // PartitionBatch and the ReadyBatch to their pools with the flag still set.
+            AppendAwaited(accumulator, pool);
+            var flagged = DrainSealedBatch(accumulator);
+            await Assert.That(flagged.SealedAsSoleDemand).IsTrue();
+            LeakGateHarness.RetireBatch(accumulator, flagged, offset: 0);
+
+            // Cycle 2: a bulk-scope append re-rents the pooled batch and the flush sweep seals
+            // it without any sole-demand proof — the recycled objects must read false.
+            using (accumulator.EnterBulkProduceScope())
+            {
+                AppendAwaited(accumulator, pool);
+                await Assert.That(accumulator.UnsealedBatchCount).IsEqualTo(1);
+                await AccumulatorTestHelpers.SealAllAsync(accumulator);
+            }
+
+            var recycled = DrainSealedBatch(accumulator);
+            await Assert.That(recycled.SealedAsSoleDemand).IsFalse();
+            LeakGateHarness.RetireBatch(accumulator, recycled, offset: 1);
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+            await pool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task SoleDemandFlag_IsClearedWhenBatchIsReenqueuedForRetry()
+    {
+        // The proof only covers the first send attempt: once a batch is marked for retry,
+        // backoff has given other callers time to enqueue siblings, so the sender must spin
+        // for them again on the retry wave.
+        var accumulator = new RecordAccumulator(CreateOptions(lingerMs: 5_000));
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
+
+        try
+        {
+            AppendAwaited(accumulator, pool);
+            var batch = DrainSealedBatch(accumulator);
+            await Assert.That(batch.SealedAsSoleDemand).IsTrue();
+
+            batch.Reenqueued(nowMs: 0);
+
+            await Assert.That(batch.IsRetry).IsTrue();
+            await Assert.That(batch.SealedAsSoleDemand).IsFalse();
+            LeakGateHarness.RetireBatch(accumulator, batch, offset: 0);
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+            await pool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task SoleDemandFlag_IsClearedWhenBatchIsPreparedForLoopExitRedelivery()
+    {
+        // The sender's loop-exit redelivery is the other retry-marking site it owns outright
+        // (HandleRetriableBatch clears the flag on the same line as IsRetry but needs a live
+        // sender to reach). It is static and touches only the batch, so it is driven directly.
+        var prepare = typeof(BrokerSender).GetMethod(
+            "PrepareLoopExitRedelivery",
+            BindingFlags.Static | BindingFlags.NonPublic)!;
+        var accumulator = new RecordAccumulator(CreateOptions(lingerMs: 5_000));
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
+
+        try
+        {
+            AppendAwaited(accumulator, pool);
+            var batch = DrainSealedBatch(accumulator);
+            await Assert.That(batch.SealedAsSoleDemand).IsTrue();
+
+            var prepared = (bool)prepare.Invoke(null, [batch, batch.Generation])!;
+
+            await Assert.That(prepared).IsTrue();
+            await Assert.That(batch.IsRetry).IsTrue();
+            await Assert.That(batch.SealedAsSoleDemand).IsFalse();
+            LeakGateHarness.RetireBatch(accumulator, batch, offset: 0);
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+            await pool.DisposeAsync();
+        }
+    }
+
+    private static ReadyBatch DrainSealedBatch(RecordAccumulator accumulator)
+    {
+        if (!accumulator.TryDrainBatch(new TopicPartition(Topic, 0), out var batch))
+            throw new InvalidOperationException("Expected a sealed batch in the partition deque.");
+
+        return batch;
     }
 }

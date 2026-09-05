@@ -1340,6 +1340,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // conservative request budget across batches from separate drain passes.
         var coalescedRequestBudgetUsed = 0L;
         var waveCoalesceBounds = SelectWaveCoalesceBounds(_options.LingerMs);
+        var isZeroLinger = _options.LingerMs == 0;
         var waveCoalesceMaxTicks = MicrosecondsToStopwatchTicks(waveCoalesceBounds.MaximumMicroseconds);
         var waveCoalesceQuietTicks = MicrosecondsToStopwatchTicks(waveCoalesceBounds.QuietMicroseconds);
         var waveCoalesceArmed = true;
@@ -1647,10 +1648,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     && coalescedPartitions.Count < _knownPartitions.Count
                     && carryOver.Count == 0
                     && waveCoalesceGate.ShouldSpin(Stopwatch.GetTimestamp())
-                    && ShouldMicroLinger(
-                        coalescedBatches,
-                        coalescedCount,
-                        _options.TransactionalId is not null))
+                    && (isZeroLinger
+                        ? ShouldMicroLingerAtZeroLinger(
+                            coalescedBatches, coalescedCount, _options.TransactionalId is not null)
+                        : ShouldMicroLinger(
+                            coalescedBatches, coalescedCount, _options.TransactionalId is not null)))
                 {
                     waveCoalesceArmed = false;
                     var coalescedCountBeforeSpin = coalescedCount;
@@ -2523,10 +2525,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     }
 
     /// <summary>
-    /// Serial transactional ProduceAsync traffic cannot enqueue another record until its sole
-    /// completion resolves, so spinning for a co-temporal batch can never improve coalescing.
+    /// The legacy zero-linger decision. Nontransactional traffic returns before touching
+    /// batch state; zero-linger seals never carry a sole-demand proof.
     /// </summary>
-    internal static bool ShouldMicroLinger(
+    internal static bool ShouldMicroLingerAtZeroLinger(
         ReadyBatch[] coalescedBatches,
         int coalescedCount,
         bool isTransactional)
@@ -2536,6 +2538,30 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
         var batch = coalescedBatches[0];
         return batch.RecordCount != 1 || batch.CompletionSourcesCount != 1;
+    }
+
+    /// <summary>
+    /// Whether a positive-linger single-batch wave should spin for siblings. Two shapes
+    /// prove the spin can never improve coalescing because the only producer is awaiting the batch in hand:
+    /// a batch the accumulator sealed as the producer's sole demand (#2510 bypass,
+    /// <see cref="ReadyBatch.SealedAsSoleDemand"/>), and serial transactional ProduceAsync
+    /// traffic, which cannot enqueue another record until its sole completion resolves.
+    /// Skipping here also keeps the wave out of <see cref="WaveCoalesceGate"/> accounting,
+    /// so a skipped wave is counted neither fruitless nor fruitful.
+    /// </summary>
+    internal static bool ShouldMicroLinger(
+        ReadyBatch[] coalescedBatches,
+        int coalescedCount,
+        bool isTransactional)
+    {
+        if (coalescedCount != 1)
+            return true;
+
+        var batch = coalescedBatches[0];
+        if (batch.SealedAsSoleDemand)
+            return !batch.HasPendingSoleDemand;
+
+        return !isTransactional || batch.RecordCount != 1 || batch.CompletionSourcesCount != 1;
     }
 
     /// <summary>
@@ -3796,6 +3822,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // in forward order, each response's retry must go AFTER earlier responses'
         // retries for the same partition to preserve FIFO ordering.
         batch.IsRetry = true;
+        // The sole-demand proof held at seal time; by the retry, backoff has given other
+        // callers time to enqueue siblings, so the sender must spin for them again.
+        batch.SealedAsSoleDemand = false;
         batch.AppendDiag('H'); // HandleRetriableBatch → carry-over
         carryOver.AddAfterRetries(new BatchReference(batch, generation));
     }
@@ -5223,6 +5252,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 return false;
 
             batch.IsRetry = true;
+            batch.SealedAsSoleDemand = false;
             batch.AppendDiag('Y');
             return batch.IsCurrentIncarnation(expectedGeneration);
         }

@@ -27,6 +27,12 @@ public sealed class PooledValueTaskSource<T> : IValueTaskSource<T>
     private CancellationToken _registeredCancellationToken;
 #endif
     private int _hasCompleted; // 0 = not completed, 1 = completed
+    // Never reset on pool return: a batch may still be delivering after its cancelled
+    // caller has consumed the result and rented this source for a different message.
+    private long _cancellationVersion;
+
+    internal long CancellationVersion => Volatile.Read(ref _cancellationVersion);
+    internal bool IsPending => Volatile.Read(ref _hasCompleted) == 0;
 
     /// <summary>
     /// Gets a <see cref="ValueTask{T}"/> bound to this source.
@@ -140,6 +146,7 @@ public sealed class PooledValueTaskSource<T> : IValueTaskSource<T>
             return false;
         }
 
+        Interlocked.Increment(ref _cancellationVersion);
         _core.SetException(new OperationCanceledException(cancellationToken));
         return true;
     }
