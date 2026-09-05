@@ -396,7 +396,7 @@ Soft target for per-broker queueing latency (append to broker acknowledgement):
 .WithDeliveryLatencyTarget(TimeSpan.Zero)                 // disable the bound
 ```
 
-Default: 10ms. Before a broker's first successful acknowledgement, the producer admits one configured batch per current connection. This prevents an unsampled startup burst from filling the full pipeline. The adaptive controller then starts from a wider request window and probes up and down for the smallest whole-request window that preserves acknowledged goodput without increasing controllable queueing delay. `Acks.None` keeps the normal controller window because no acknowledgement can end the startup phase. When a broker reaches its budget, produce calls block exactly like `BufferMemory` exhaustion (subject to `WithMaxBlock` and cancellation). Raise the target if you prefer deeper buffering over latency; set `TimeSpan.Zero` to disable the bound.
+Default: 10ms. The target is end to end, so the configured `WithLinger` delay counts against it: the controller governs the remainder (target minus linger, never below half the target) as controllable queueing latency. With the default 10ms target and a 5ms linger, standing per-broker queueing is steered toward 5ms. Before a broker's first successful acknowledgement, the producer admits one configured batch per current connection. This prevents an unsampled startup burst from filling the full pipeline. The adaptive controller then starts from a wider request window and probes up and down for the smallest whole-request window that preserves acknowledged goodput without increasing controllable queueing delay. `Acks.None` keeps the normal controller window because no acknowledgement can end the startup phase. When a broker reaches its budget, produce calls block exactly like `BufferMemory` exhaustion (subject to `WithMaxBlock` and cancellation). Raise the target if you prefer deeper buffering over latency; set `TimeSpan.Zero` to disable the bound.
 
 ### WithSocketSendBufferBytes / WithSocketReceiveBufferBytes
 
@@ -448,7 +448,7 @@ Enable logging:
 | `WithoutAdaptiveConnections` | - | Disable adaptive scaling |
 | `WithBufferMemory` | auto-tuned | Max buffer for unsent messages |
 | `WithBufferMemoryAllocationStrategy` | Full | Full arena or pooled incremental chunks |
-| `WithDeliveryLatencyTarget` | 10ms | Per-broker queueing latency target; `TimeSpan.Zero` disables |
+| `WithDeliveryLatencyTarget` | 10ms | Per-broker delivery latency target (append to ack, linger counts against it); `TimeSpan.Zero` disables |
 | `WithMaxBlock` | 60000ms | Max time produce calls wait for metadata or buffer space |
 | `WithDeliveryTimeout` | 120000ms | Max time for delivery success or failure |
 | `WithRequestTimeout` | 30000ms | Per-request timeout |

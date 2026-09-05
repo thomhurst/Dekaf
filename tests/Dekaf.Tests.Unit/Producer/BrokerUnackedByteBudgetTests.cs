@@ -23,6 +23,75 @@ public sealed class BrokerUnackedByteBudgetTests
     }
 
     [Test]
+    [Arguments(0.010, 0.000, 0.010)]
+    [Arguments(0.010, 0.005, 0.005)]
+    [Arguments(0.010, 0.002, 0.008)]
+    [Arguments(0.010, 0.010, 0.005)]
+    [Arguments(0.010, 0.100, 0.005)]
+    [Arguments(0.010, -0.001, 0.010)]
+    [Arguments(0.000, 0.005, 0.000)]
+    public async Task GovernedTarget_DeductsConfiguredLingerButKeepsHalfTheTarget(
+        double targetSeconds,
+        double lingerSeconds,
+        double expectedSeconds)
+    {
+        var governed = BrokerUnackedByteBudget.ComputeGovernedTargetSeconds(
+            targetSeconds,
+            lingerSeconds);
+
+        await Assert.That(governed).IsEqualTo(expectedSeconds).Within(1e-12);
+    }
+
+    [Test]
+    public async Task GovernedTarget_BudgetPassesLingerDeductedTargetToController()
+    {
+        var withoutLinger = new BrokerUnackedByteBudget(
+            targetSeconds: 0.010,
+            floorBytes: 1,
+            initialCapBytes: 10_000,
+            initialRequestBytes: 100);
+        var withLinger = new BrokerUnackedByteBudget(
+            targetSeconds: 0.010,
+            floorBytes: 1,
+            initialCapBytes: 10_000,
+            lingerSeconds: 0.005,
+            initialRequestBytes: 100);
+
+        await Assert.That(withoutLinger.GovernedTargetDelayTicks).IsEqualTo(Seconds(0.010));
+        await Assert.That(withLinger.GovernedTargetDelayTicks).IsEqualTo(Seconds(0.005));
+    }
+
+    [Test]
+    public async Task GovernedTarget_LingerDeductionEnablesDescentBiasAtSameGovernedDelay()
+    {
+        // 7ms of controllable delay: on target against the full 10ms budget, over target once
+        // a 5ms linger leaves only 5ms for queueing. Same delay samples, different verdicts.
+        var full = new BrokerWindowController(
+            targetSeconds: BrokerUnackedByteBudget.ComputeGovernedTargetSeconds(0.010, 0),
+            floorBytes: 1,
+            capBytes: 10_000,
+            initialRequestBytes: 100,
+            latencyGovernorEnabled: true);
+        var deducted = new BrokerWindowController(
+            targetSeconds: BrokerUnackedByteBudget.ComputeGovernedTargetSeconds(0.010, 0.005),
+            floorBytes: 1,
+            capBytes: 10_000,
+            initialRequestBytes: 100,
+            latencyGovernorEnabled: true);
+
+        var now = T0;
+        var admissionBlocks = 0L;
+        for (var i = 0; i < 64; i++)
+        {
+            _ = DriveControllerEpoch(full, ref now, ref admissionBlocks, sealToSendSeconds: 0.007);
+            _ = DriveControllerEpoch(deducted, ref now, ref admissionBlocks, sealToSendSeconds: 0.007);
+        }
+
+        await Assert.That(full.DelayOverTargetForTest).IsFalse();
+        await Assert.That(deducted.DelayOverTargetForTest).IsTrue();
+    }
+
+    [Test]
     public async Task ColdStartAdmission_UsesOneRequestWaveUntilFirstAcknowledgement()
     {
         var budget = CreateColdStartBudget();

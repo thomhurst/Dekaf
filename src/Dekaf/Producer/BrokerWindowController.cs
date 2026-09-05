@@ -212,6 +212,8 @@ internal sealed class BrokerWindowController
     internal long MaximumGoodputBytesPerSecond => (long)_maximumGoodputBytesPerSecond;
     internal long GovernedDelayEwmaTicks => (long)GovernedDelayEwma;
     internal long RequestQuantumBytes => _requestQuantumBytes;
+    internal long TargetDelayTicks => _targetDelayTicks;
+    internal bool DelayOverTargetForTest => DelayOverTarget;
     internal double WindowScale => _capBytes == 0 ? 1 : (double)_windowBytes / _capBytes;
     internal long CapacityProbeSuccessCount { get; private set; }
     internal long CapacityProbeFailureCount { get; private set; }

@@ -99,7 +99,6 @@ internal sealed class BrokerUnackedByteBudget
         long initialRequestBytes = 0,
         long? coldStartBudgetBytes = null)
     {
-        _ = lingerSeconds;
         var floor = Math.Max(1, floorBytes);
         _floorBytes = floor;
         var cap = Math.Max(floor, initialCapBytes);
@@ -110,7 +109,7 @@ internal sealed class BrokerUnackedByteBudget
         // override, acknowledgements exist to pace the slow start) plus a positive latency
         // target: with no target there is no delay budget for the descent bias to enforce.
         _controller = new BrokerWindowController(
-            targetSeconds,
+            ComputeGovernedTargetSeconds(targetSeconds, lingerSeconds),
             floor,
             cap,
             initialRequestBytes,
@@ -129,6 +128,28 @@ internal sealed class BrokerUnackedByteBudget
             _probeEvents = new Queue<BrokerBudgetProbeEvent>();
         }
     }
+
+    /// <summary>
+    /// Converts the caller's end-to-end delivery-latency target into the queueing budget the
+    /// window controller governs. Configured linger is the caller's chosen batching delay and
+    /// is excluded from the governed delay sample, so it must also leave the target: a 10 ms
+    /// target with 5 ms linger leaves 5 ms for controllable queueing. Otherwise the controller
+    /// reports "on target" while callers observe target-plus-linger and no descent bias runs
+    /// (weekly run 33948814595: three-broker windows parked at the eight-quantum floor with
+    /// governed delay 7-11 ms against a 10 ms target while delivered p50 was 10-13.6 ms).
+    /// The budget never drops below half the target, so a linger at or beyond the target
+    /// still leaves the governor a positive delay budget instead of a zero or negative one.
+    /// </summary>
+    internal static double ComputeGovernedTargetSeconds(double targetSeconds, double lingerSeconds)
+    {
+        if (targetSeconds <= 0)
+            return targetSeconds;
+
+        var linger = Math.Max(0, lingerSeconds);
+        return Math.Max(targetSeconds - linger, targetSeconds / 2);
+    }
+
+    internal long GovernedTargetDelayTicks => _controller.TargetDelayTicks;
 
     internal static long ComputeCap(int batchSize, int connectionCount) =>
         ComputeBudget(batchSize, connectionCount, CapBatchMultiplier);
