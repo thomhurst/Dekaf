@@ -105,6 +105,67 @@ class StressAbaComparisonTests(unittest.TestCase):
         self.assertEqual("inconclusive", throughput["status"])
         self.assertAlmostEqual(20.0, throughput["controlDriftPercent"])
 
+    def test_sub_byte_allocation_control_drift_is_not_inconclusive(self):
+        # Runs 33961873612 (0.527 / 0.542 / 0.620 B/msg) and 33966278396
+        # (0.866 / 0.649 / 0.619 B/msg): 16-33% relative control drift at sub-byte scale on
+        # a 0 B/msg hot path ruled otherwise-passing comparisons inconclusive.
+        for baseline_a, candidate, baseline_a2 in (
+            (0.527, 0.542, 0.620),
+            (0.866, 0.649, 0.619),
+        ):
+            with self.subTest(baseline_a=baseline_a, candidate=candidate):
+                comparison = compare(
+                    result(allocation=baseline_a),
+                    result(allocation=candidate),
+                    result(allocation=baseline_a2),
+                )
+
+                self.assertEqual("pass", comparison["verdict"])
+                alloc = next(
+                    metric for metric in comparison["metrics"] if metric["key"] == "alloc"
+                )
+                self.assertEqual("pass", alloc["status"])
+                self.assertGreater(alloc["controlDriftPercent"], 10.0)
+                self.assertEqual(1.0, alloc["noiseFloor"])
+
+    def test_sub_byte_allocation_candidate_delta_is_not_a_regression(self):
+        # +50% relative but +0.3 B/msg absolute: below what the metric can resolve.
+        comparison = compare(
+            result(allocation=0.6), result(allocation=0.9), result(allocation=0.6)
+        )
+
+        self.assertEqual("pass", comparison["verdict"])
+
+    def test_allocation_regression_above_noise_floor_still_rejected(self):
+        # +2 B/msg above both controls is a real per-message allocation, floor or not.
+        comparison = compare(
+            result(allocation=0.6), result(allocation=2.7), result(allocation=0.6)
+        )
+
+        self.assertEqual("regression", comparison["verdict"])
+        alloc = next(
+            metric for metric in comparison["metrics"] if metric["key"] == "alloc"
+        )
+        self.assertEqual("regression", alloc["status"])
+
+    def test_allocation_percentage_gates_unchanged_at_consumer_scale(self):
+        # ~2 KB/msg string consumers: 4% over the control mean is 80 B/msg, far above the
+        # floor, so the percentage gates decide exactly as before.
+        comparison = compare(
+            result(allocation=2024.0),
+            result(allocation=2105.0),
+            result(allocation=2024.0),
+        )
+
+        self.assertEqual("regression", comparison["verdict"])
+        noisy = compare(
+            result(allocation=1900.0),
+            result(allocation=2000.0),
+            result(allocation=2150.0),
+        )
+        alloc = next(metric for metric in noisy["metrics"] if metric["key"] == "alloc")
+        self.assertEqual("inconclusive", alloc["status"])
+
     def test_candidate_beating_both_noisy_controls_passes(self):
         # Run 29525842754: candidate p99 (14.85ms) was better than both controls
         # (17.25 / 15.25ms), yet 12.3% control drift ruled the metric inconclusive.
