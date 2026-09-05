@@ -48,6 +48,11 @@ on:
         description: 'Enable Dekaf consumer fetch diagnostics (debug runs only; adds Dekaf-only overhead to the measured window)'
         required: false
         default: 'false'
+      adaptive_connections:
+        description: 'Leave Dekaf producer adaptive connection scaling at the library default instead of pinning one connection (results labelled "Dekaf (adaptive)"; measurement only, never published)'
+        required: false
+        type: boolean
+        default: false
       # Keep this choice input below duration_minutes: the options-sync test in
       # .github/scripts/test_stress_trend.py slices the workflow text from the
       # first 'options:' to 'duration_minutes:' to read the lane list.
@@ -479,6 +484,9 @@ jobs:
           EXTRA_ARGS=()
           if [ "${{ github.event.inputs.consumer_fetch_diagnostics }}" = "true" ]; then
             EXTRA_ARGS+=(--consumer-fetch-diagnostics)
+          fi
+          if [ "${{ github.event.inputs.adaptive_connections }}" = "true" ]; then
+            EXTRA_ARGS+=(--adaptive-connections)
           fi
 
           if [ -n "$BASELINE_SHA" ]; then
