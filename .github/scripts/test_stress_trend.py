@@ -1956,6 +1956,10 @@ class StressTrendTests(unittest.TestCase):
             selector,
         )
         self.assertIn(
+            '[ -n "$BASELINE_SHA" ] && [ "$ADAPTIVE_CONNECTIONS" = "true" ]',
+            selector,
+        )
+        self.assertIn(
             'ADAPTIVE_CONNECTIONS: ${{ github.event.inputs.adaptive_connections }}',
             workflow,
         )

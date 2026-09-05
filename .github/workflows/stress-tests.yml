@@ -206,6 +206,10 @@ jobs:
             echo "::error::full_run cannot enable adaptive_connections because relabelling every producer result 'Dekaf (adaptive)' removes the Dekaf group from the published comparison and silently blanks the headline rows."
             exit 1
           fi
+          if [ -n "$BASELINE_SHA" ] && [ "$ADAPTIVE_CONNECTIONS" = "true" ]; then
+            echo "::error::baseline_sha cannot be combined with adaptive_connections: the flag is forwarded to the baseline checkouts too, a pre-#3014 baseline rejects --adaptive-connections as an unknown argument, and a pinned-versus-adaptive pairing would not be a like-for-like A-B-A anyway."
+            exit 1
+          fi
 
           profile_mode="${PROFILE_MODE:-off}"
           case "$profile_mode" in
