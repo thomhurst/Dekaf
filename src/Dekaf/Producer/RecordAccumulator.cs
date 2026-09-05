@@ -182,7 +182,7 @@ internal struct PartitionSpinLock
 internal ref struct PartitionLockGuard
 {
     private ref PartitionSpinLock _lock;
-    private bool _taken;
+    private readonly bool _taken;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public PartitionLockGuard(ref PartitionSpinLock spinLock)
@@ -1557,6 +1557,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 #if NETSTANDARD2_0
         public PartitionSpinLock Lock = new(enableThreadOwnerTracking: false);
 #else
+        // Deliberately not readonly: the guard takes it by ref and the struct mutates its
+        // state; a readonly field would hand the guard a defensive copy and void the lock.
         public PartitionSpinLock Lock;
 #endif
 
@@ -2304,7 +2306,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         Interlocked.Add(ref _bufferedBytes, splitBytes);
 
         var pd = GetOrCreateDeque(splitBatches[0].TopicPartition);
-        using (var guard = new PartitionLockGuard(ref pd.Lock))
+        using (new PartitionLockGuard(ref pd.Lock))
         {
             for (var i = splitBatches.Count - 1; i >= 0; i--)
             {
@@ -6406,7 +6408,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         BrokerUnackedByteBudget? blockedBudget = null;
         try
         {
-            using (var guard = new PartitionLockGuard(ref partitionDeque.Lock))
+            using (new PartitionLockGuard(ref partitionDeque.Lock))
             {
                 var currentBatch = partitionDeque.CurrentBatch;
                 var budget = GetCachedAdmissionBudget(partitionDeque, topic, partition);
@@ -6545,7 +6547,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         int partition,
         BrokerUnackedByteBudget budget)
     {
-        using (var guard = new PartitionLockGuard(ref partitionDeque.Lock))
+        using (new PartitionLockGuard(ref partitionDeque.Lock))
         {
             if (partitionDeque.CurrentBatch is null
                 || Volatile.Read(ref partitionDeque.AdmissionFlushRequested) != 0

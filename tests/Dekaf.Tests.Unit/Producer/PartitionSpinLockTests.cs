@@ -55,7 +55,7 @@ public sealed class PartitionSpinLockTests
         holder.Lock.Enter(ref taken);
         await Assert.That(taken).IsTrue();
 
-        var waiterEntered = new ManualResetEventSlim();
+        using var waiterEntered = new ManualResetEventSlim();
         var waiter = new Thread(() =>
         {
             var waiterTaken = false;
