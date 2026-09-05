@@ -909,7 +909,7 @@ public sealed class InMemoryConsumerFaultTests
         _ = await Assert.ThrowsAsync<ObjectDisposedException>(() =>
             consumer.ConsumeOneAsync(TimeSpan.Zero).AsTask());
 
-        await Assert.That(closeTask).IsNotNull();
+        await Assert.That((object?)closeTask).IsNotNull();
         await closeTask!;
         await Assert.That(cluster.FaultPlan.Count).IsEqualTo(0);
     }
@@ -2058,7 +2058,7 @@ public sealed class InMemoryConsumerFaultTests
         {
             await Assert.That(consume.IsCompleted).IsTrue();
             _ = await Assert.ThrowsAsync<ObjectDisposedException>(() => consume);
-            await Assert.That(closeTask).IsNotNull();
+            await Assert.That((object?)closeTask).IsNotNull();
             await closeTask!;
         }
         finally
@@ -2715,7 +2715,7 @@ public sealed class InMemoryConsumerFaultTests
 
         _ = Assert.Throws<ObjectDisposedException>(store);
 
-        await Assert.That(closeTask).IsNotNull();
+        await Assert.That((object?)closeTask).IsNotNull();
         await closeTask!;
         await Assert.That(cluster.FaultPlan.Count).IsEqualTo(overload == "Single" ? 0 : 1);
     }
@@ -2852,7 +2852,7 @@ public sealed class InMemoryConsumerFaultTests
 
         _ = Assert.Throws<ObjectDisposedException>(subscribe);
 
-        await Assert.That(closeTask).IsNotNull();
+        await Assert.That((object?)closeTask).IsNotNull();
         await closeTask!;
         await Assert.That(consumer.Assignment).IsEmpty();
         await using var replacement = CreateConsumer(cluster);

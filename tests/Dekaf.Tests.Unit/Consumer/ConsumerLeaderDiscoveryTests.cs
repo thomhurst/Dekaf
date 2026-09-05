@@ -277,7 +277,7 @@ public sealed class ConsumerLeaderDiscoveryTests
         {
             await Assert.That(pendingItems).IsNotNull();
             await Assert.That(pendingItems!).Count().IsEqualTo(1);
-            await Assert.That(pendingItems[0].TopicPartition).IsEqualTo(new TopicPartition(Topic, 1));
+            await Assert.That(pendingItems![0].TopicPartition).IsEqualTo(new TopicPartition(Topic, 1));
         }
         finally
         {
