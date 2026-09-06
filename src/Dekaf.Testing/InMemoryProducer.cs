@@ -251,14 +251,33 @@ public sealed class InMemoryProducer<TKey, TValue> :
     {
         ArgumentNullException.ThrowIfNull(deliveryHandler);
 
+        RecordMetadata metadata;
         try
         {
-            var metadata = await ProduceAsync(message).ConfigureAwait(false);
-            deliveryHandler(metadata, null);
+            metadata = await ProduceAsync(message).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
-            deliveryHandler(default, ex);
+            InvokeDeliveryHandler(deliveryHandler, default, ex);
+            return;
+        }
+
+        InvokeDeliveryHandler(deliveryHandler, metadata, null);
+    }
+
+    private static void InvokeDeliveryHandler(
+        Action<RecordMetadata, Exception?> deliveryHandler,
+        RecordMetadata metadata,
+        Exception? deliveryError)
+    {
+        try
+        {
+            deliveryHandler(metadata, deliveryError);
+        }
+        catch
+        {
+            // Match the production producer: callback exceptions do not change delivery
+            // outcomes or escape to the sender. Handlers own their exception handling.
         }
     }
 
