@@ -17,6 +17,11 @@ public sealed class ControllerBootstrapIntegrationTests(ControllerOnlyKafkaConta
 
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         var cluster = await admin.DescribeClusterAsync(timeout.Token).ConfigureAwait(false);
+        var live = await admin.DescribeClusterAsync(new DescribeClusterOptions(), timeout.Token).ConfigureAwait(false);
+        await Assert.That(live.EndpointType).IsEqualTo(Dekaf.Protocol.Messages.DescribeClusterEndpointType.Controller);
+        await Assert.That(live.Nodes.Single().IsFenced).IsNull();
+        await Assert.ThrowsAsync<NotSupportedException>(async () =>
+            await admin.DescribeClusterAsync(new DescribeClusterOptions { IncludeFencedBrokers = true }, timeout.Token));
         var quorum = await admin.DescribeMetadataQuorumAsync(timeout.Token).ConfigureAwait(false);
         var features = await admin.DescribeFeaturesAsync(timeout.Token).ConfigureAwait(false);
 

@@ -79,6 +79,7 @@ const sidebars = {
       type: 'category',
       label: 'Operations & Administration',
       items: [
+        'admin/cluster-discovery',
         'observability',
         'admin/topic-identifiers',
         'admin/transaction-remediation',
