@@ -103,7 +103,8 @@ public sealed class AdminClientFeatureTests
     public async Task DescribeFeaturesAsync_ExplicitNode_UsesDestinationCapabilities()
     {
         var (admin, first, second) = CreateAdmin(updateFeaturesVersion: 1);
-        var result = await ((IAdminClient)admin).DescribeFeaturesAsync(new DescribeFeaturesOptions { NodeId = 2 });
+        IAdminClient client = admin;
+        var result = await client.DescribeFeaturesAsync(new DescribeFeaturesOptions { NodeId = 2 });
 
         await Assert.That(result.SupportedFeatures["metadata.version"])
             .IsEqualTo(new FeatureVersionRange(7, 20));
@@ -120,12 +121,13 @@ public sealed class AdminClientFeatureTests
     public async Task DescribeFeaturesAsync_UnknownNode_DoesNotFallBack()
     {
         var (admin, first, second) = CreateAdmin(updateFeaturesVersion: 1);
+        IAdminClient client = admin;
         await admin.DescribeClusterAsync();
         first.ClearReceivedCalls();
         second.ClearReceivedCalls();
 
         var exception = await Assert.ThrowsAsync<KafkaException>(async () =>
-            await ((IAdminClient)admin).DescribeFeaturesAsync(new DescribeFeaturesOptions { NodeId = 99 }));
+            await client.DescribeFeaturesAsync(new DescribeFeaturesOptions { NodeId = 99 }));
 
         await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.BrokerNotAvailable);
         await first.DidNotReceiveWithAnyArgs().SendAsync<ApiVersionsRequest, ApiVersionsResponse>(default!, default, default);
@@ -136,8 +138,9 @@ public sealed class AdminClientFeatureTests
     public async Task DescribeFeaturesAsync_InvalidNode_RejectsBeforeInitialization()
     {
         var (admin, first, _) = CreateAdmin(updateFeaturesVersion: 1);
+        IAdminClient client = admin;
         await Assert.ThrowsAsync<ArgumentOutOfRangeException>(async () =>
-            await ((IAdminClient)admin).DescribeFeaturesAsync(new DescribeFeaturesOptions { NodeId = -1 }));
+            await client.DescribeFeaturesAsync(new DescribeFeaturesOptions { NodeId = -1 }));
         await first.DidNotReceiveWithAnyArgs().SendAsync<MetadataRequest, MetadataResponse>(default!, default, default);
     }
 
