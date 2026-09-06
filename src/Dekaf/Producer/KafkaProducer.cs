@@ -5693,62 +5693,88 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 return;
             }
 
-            // Retry with backoff for retriable errors (e.g. CoordinatorLoadInProgress during broker startup)
+            var startedAt = Stopwatch.GetTimestamp();
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutCts.CancelAfter(_options.MaxBlockMs);
+            var initializationToken = timeoutCts.Token;
+            Exception? lastFailure = null;
             var consecutiveFailures = 0;
 
-            while (true)
+            try
             {
-                cancellationToken.ThrowIfCancellationRequested();
-
-                // For non-transactional idempotent producers, send to any broker (no coordinator needed)
-                var brokers = _metadataManager.Metadata.GetBrokers();
-                if (brokers.Count == 0)
+                while (true)
                 {
-                    throw new InvalidOperationException("No brokers available for idempotent producer initialization");
+                    initializationToken.ThrowIfCancellationRequested();
+
+                    // Non-transactional IDs can come from any broker. Try every known broker
+                    // before backing off, and pick up metadata changes on the next round.
+                    var brokers = _metadataManager.Metadata.GetBrokers();
+                    if (brokers.Count == 0)
+                    {
+                        throw new InvalidOperationException("No brokers available for idempotent producer initialization");
+                    }
+
+                    for (var brokerIndex = 0; brokerIndex < brokers.Count; brokerIndex++)
+                    {
+                        initializationToken.ThrowIfCancellationRequested();
+                        var brokerId = brokers[brokerIndex].NodeId;
+                        try
+                        {
+                            var request = new InitProducerIdRequest
+                            {
+                                TransactionalId = null,
+                                TransactionTimeoutMs = -1,
+                                ProducerId = _producerId,
+                                ProducerEpoch = _producerEpoch
+                            };
+
+                            var response = await SendWithConnectionLeaseAsync<InitProducerIdRequest, InitProducerIdResponse>(
+                                    brokerId,
+                                    request,
+                                    initializationToken)
+                                .ConfigureAwait(false);
+                            initializationToken.ThrowIfCancellationRequested();
+
+                            if (response.ErrorCode != ErrorCode.None)
+                            {
+                                throw KafkaException.FromErrorCode(response.ErrorCode,
+                                    $"Failed to initialize idempotent producer: {response.ErrorCode}");
+                            }
+
+                            _producerId = response.ProducerId;
+                            _producerEpoch = response.ProducerEpoch;
+
+                            // Wire the producer ID/epoch into the accumulator for RecordBatch headers.
+                            _accumulator.ProducerId = _producerId;
+                            _accumulator.ProducerEpoch = _producerEpoch;
+                            _idempotentInitialized = true;
+
+                            LogIdempotentProducerInitialized(_producerId, _producerEpoch);
+                            return;
+                        }
+                        catch (Exception ex) when (!initializationToken.IsCancellationRequested
+                            && RetryHelper.IsRetriableBrokerFailure(ex))
+                        {
+                            lastFailure = ex;
+                            LogIdempotentInitializationBrokerFailed(ex, brokerId);
+                        }
+                    }
+
+                    var retryDelayMs = ExponentialRetryBackoff.CalculateDelayMilliseconds(
+                        _options.RetryBackoffMs,
+                        _options.RetryBackoffMaxMs,
+                        ++consecutiveFailures);
+                    await Task.Delay(retryDelayMs, initializationToken).ConfigureAwait(false);
                 }
-
-                var request = new InitProducerIdRequest
-                {
-                    TransactionalId = null,
-                    TransactionTimeoutMs = -1,
-                    ProducerId = _producerId,
-                    ProducerEpoch = _producerEpoch
-                };
-
-                var response = await SendWithConnectionLeaseAsync<InitProducerIdRequest, InitProducerIdResponse>(
-                        brokers[0].NodeId,
-                        request,
-                        cancellationToken)
-                    .ConfigureAwait(false);
-
-                if (response.ErrorCode == ErrorCode.None)
-                {
-                    _producerId = response.ProducerId;
-                    _producerEpoch = response.ProducerEpoch;
-
-                    // Wire the producer ID/epoch into the accumulator for RecordBatch headers
-                    _accumulator.ProducerId = _producerId;
-                    _accumulator.ProducerEpoch = _producerEpoch;
-
-                    _idempotentInitialized = true;
-
-                    LogIdempotentProducerInitialized(_producerId, _producerEpoch);
-                    return;
-                }
-
-                if (!response.ErrorCode.IsRetriable())
-                {
-                    throw KafkaException.FromErrorCode(response.ErrorCode,
-                        $"Failed to initialize idempotent producer: {response.ErrorCode}");
-                }
-
-                var retryDelayMs = ExponentialRetryBackoff.CalculateDelayMilliseconds(
-                    _options.RetryBackoffMs,
-                    _options.RetryBackoffMaxMs,
-                    ++consecutiveFailures);
-                LogInitProducerIdRetriable(response.ErrorCode, retryDelayMs);
-
-                await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested && timeoutCts.IsCancellationRequested)
+            {
+                throw new KafkaTimeoutException(
+                    TimeoutKind.Api,
+                    Stopwatch.GetElapsedTime(startedAt),
+                    TimeSpan.FromMilliseconds(_options.MaxBlockMs),
+                    $"InitProducerId failed to initialize the idempotent producer within MaxBlockMs ({_options.MaxBlockMs}ms).",
+                    lastFailure ?? ex);
             }
         }
         finally
@@ -6713,8 +6739,8 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     [LoggerMessage(Level = LogLevel.Debug, Message = "Initialized idempotent producer: ProducerId={ProducerId}, Epoch={Epoch}")]
     private partial void LogIdempotentProducerInitialized(long producerId, short epoch);
 
-    [LoggerMessage(Level = LogLevel.Debug, Message = "InitProducerId returned retriable error {ErrorCode}, retrying in {DelayMs}ms")]
-    private partial void LogInitProducerIdRetriable(ErrorCode errorCode, int delayMs);
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Idempotent InitProducerId failed on broker {BrokerId}; trying remaining brokers before retrying")]
+    private partial void LogIdempotentInitializationBrokerFailed(Exception exception, int brokerId);
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Bumped producer epoch: ProducerId={ProducerId}, Epoch={Epoch}")]
     private partial void LogProducerEpochBumped(long producerId, short epoch);

@@ -1,3 +1,4 @@
+using Dekaf.Errors;
 using Dekaf.Metadata;
 using Dekaf.Networking;
 
@@ -103,15 +104,27 @@ internal static class RetryHelper
         }
     }
 
+    /// <summary>
+    /// Classifies a direct broker-operation failure for failover. Fatal exceptions and
+    /// cancellation are not retried, even when they wrap a transient transport failure.
+    /// Callers must separately check their cancellation token and remaining retry budget.
+    /// </summary>
+    internal static bool IsRetriableBrokerFailure(Exception exception) =>
+        exception is KafkaTimeoutException
+            or KafkaException { IsRetriable: true }
+            or IOException
+            or System.Net.Sockets.SocketException
+            or TimeoutException
+            or DnsResolutionException;
+
     internal static bool IsRetriableRequestFailure(Exception exception)
     {
+        // Request retries respect the outer Kafka error, including terminal operation
+        // deadlines. Broker failover can retry a KafkaTimeoutException within its own budget.
         if (exception is KafkaException kafkaException)
             return kafkaException.IsRetriable;
 
-        if (exception is IOException
-            or System.Net.Sockets.SocketException
-            or TimeoutException
-            or DnsResolutionException)
+        if (IsRetriableBrokerFailure(exception))
             return true;
 
         if (exception is AggregateException aggregateException)
