@@ -120,9 +120,10 @@ public sealed class IdempotentInitializationTests
         await using var harness = new Harness();
         harness.Send = (_, _) => ValueTask.FromResult(new InitProducerIdResponse { ErrorCode = errorCode });
 
-        var exception = await CaptureAsync(() => harness.Producer.InitializeAsync(cancellationToken));
+        var exception = await Assert.That(async () => await harness.Producer.InitializeAsync(cancellationToken))
+            .Throws<KafkaException>();
 
-        await Assert.That(((KafkaException)exception).ErrorCode).IsEqualTo(errorCode);
+        await Assert.That(exception!.ErrorCode).IsEqualTo(errorCode);
         await Assert.That(harness.Requests.Count).IsEqualTo(1);
         await Assert.That(harness.Producer.RecordAccumulator.ProducerId).IsEqualTo(-1L);
     }
@@ -138,7 +139,8 @@ public sealed class IdempotentInitializationTests
         await using var harness = new Harness();
         harness.Connect = (_, _) => ValueTask.FromException<IKafkaConnection>(failure);
 
-        var exception = await CaptureAsync(() => harness.Producer.InitializeAsync(cancellationToken));
+        var exception = await Assert.That(async () => await harness.Producer.InitializeAsync(cancellationToken))
+            .Throws<Exception>();
 
         await Assert.That(ReferenceEquals(exception, failure)).IsTrue();
         await Assert.That(harness.ConnectionAttempts.Count).IsEqualTo(1);
@@ -158,14 +160,15 @@ public sealed class IdempotentInitializationTests
         harness.Connect = (id, _) => ValueTask.FromException<IKafkaConnection>(
             id == harness.BrokerIds[0] ? firstFailure : lastFailure);
 
-        var exception = (KafkaTimeoutException)await CaptureAsync(() => harness.Producer.InitializeAsync(cancellationToken));
+        var exception = await Assert.That(async () => await harness.Producer.InitializeAsync(cancellationToken))
+            .Throws<KafkaTimeoutException>();
 
-        await Assert.That(exception.Configured).IsEqualTo(TimeSpan.FromMilliseconds(1000));
-        await Assert.That(exception.TimeoutKind).IsEqualTo(TimeoutKind.Api);
-        await Assert.That(exception.Elapsed).IsLessThan(TimeSpan.FromSeconds(5));
-        await Assert.That(exception.Message).Contains("InitProducerId");
-        await Assert.That(ReferenceEquals(exception.InnerException, lastFailure)).IsTrue();
-        await Assert.That(ReferenceEquals(exception.InnerException!.InnerException, firstFailure)).IsTrue();
+        await Assert.That(exception!.Configured).IsEqualTo(TimeSpan.FromMilliseconds(1000));
+        await Assert.That(exception!.TimeoutKind).IsEqualTo(TimeoutKind.Api);
+        await Assert.That(exception!.Elapsed).IsLessThan(TimeSpan.FromSeconds(5));
+        await Assert.That(exception!.Message).Contains("InitProducerId");
+        await Assert.That(ReferenceEquals(exception!.InnerException, lastFailure)).IsTrue();
+        await Assert.That(ReferenceEquals(exception!.InnerException!.InnerException, firstFailure)).IsTrue();
         await Assert.That(harness.ConnectionAttempts.ToArray()).IsEquivalentTo(harness.BrokerIds);
     }
 
@@ -175,10 +178,11 @@ public sealed class IdempotentInitializationTests
         await using var harness = new Harness(maxBlockMs: 1000, retryBackoffMs: 10_000);
         harness.Send = (_, _) => ValueTask.FromResult(new InitProducerIdResponse { ErrorCode = ErrorCode.CoordinatorLoadInProgress });
 
-        var exception = (KafkaTimeoutException)await CaptureAsync(() => harness.Producer.InitializeAsync(cancellationToken));
+        var exception = await Assert.That(async () => await harness.Producer.InitializeAsync(cancellationToken))
+            .Throws<KafkaTimeoutException>();
 
-        await Assert.That(((KafkaException)exception.InnerException!).ErrorCode).IsEqualTo(ErrorCode.CoordinatorLoadInProgress);
-        await Assert.That(exception.Elapsed).IsLessThan(TimeSpan.FromSeconds(5));
+        await Assert.That(((KafkaException)exception!.InnerException!).ErrorCode).IsEqualTo(ErrorCode.CoordinatorLoadInProgress);
+        await Assert.That(exception!.Elapsed).IsLessThan(TimeSpan.FromSeconds(5));
         await Assert.That(harness.Requests.Count).IsEqualTo(2);
     }
 
@@ -263,9 +267,10 @@ public sealed class IdempotentInitializationTests
                 return Success();
             };
 
-        var exception = (KafkaTimeoutException)await CaptureAsync(() => harness.Producer.InitializeAsync(cancellationToken));
+        var exception = await Assert.That(async () => await harness.Producer.InitializeAsync(cancellationToken))
+            .Throws<KafkaTimeoutException>();
 
-        await Assert.That(exception.Elapsed).IsLessThan(TimeSpan.FromSeconds(5));
+        await Assert.That(exception!.Elapsed).IsLessThan(TimeSpan.FromSeconds(5));
         await Assert.That(harness.ConnectionAttempts.Count).IsEqualTo(1);
     }
 
@@ -369,19 +374,6 @@ public sealed class IdempotentInitializationTests
         ProducerId = 1234,
         ProducerEpoch = 7
     };
-
-    private static async Task<Exception> CaptureAsync(Func<ValueTask> action)
-    {
-        try
-        {
-            await action();
-        }
-        catch (Exception exception)
-        {
-            return exception;
-        }
-        throw new InvalidOperationException("Expected initialization to fail.");
-    }
 
     private sealed class Harness : IAsyncDisposable
     {
