@@ -8,7 +8,7 @@ import ComparisonChart, {ComparisonChartGrid} from '@site/src/components/Compari
 
 Long-running stress tests comparing sustained performance between Dekaf and Confluent.Kafka under real-world load.
 
-**Last Updated:** 2026-09-05 07:20 UTC
+**Last Updated:** 2026-09-06 03:46 UTC
 
 :::info
 The paired Dekaf vs Confluent comparison runs weekly (Sunday 2 AM UTC) and updates this page. 
@@ -26,7 +26,7 @@ Each row is a like-for-like comparison: both clients run the same sustained work
   title="Sustained throughput"
   metric="Paired same-VM stress run"
   description="Broker-confirmed messages per second for the same workload."
-  items={[{"label": "Produce — fire-and-forget", "dekaf": 1567107.4843, "confluent": 1404612.2708, "dekafDisplay": "1.57M msg/s (1.1×)", "confluentDisplay": "1.40M msg/s"}, {"label": "Produce — fire-and-forget (3 brokers)", "dekaf": 1234552.1528, "confluent": 916032.0956, "dekafDisplay": "1.23M msg/s (1.3×)", "confluentDisplay": "916.03K msg/s"}, {"label": "Produce — acks=all", "dekaf": 1549013.739, "confluent": 1364161.6092, "dekafDisplay": "1.55M msg/s (1.1×)", "confluentDisplay": "1.36M msg/s"}, {"label": "Produce — acks=all (3 brokers)", "dekaf": 1053174.7016, "confluent": 792172.2864, "dekafDisplay": "1.05M msg/s (1.3×)", "confluentDisplay": "792.17K msg/s"}, {"label": "Produce — fire-and-forget, idempotent", "dekaf": 1557585.933, "confluent": 1360148.0288, "dekafDisplay": "1.56M msg/s (1.1×)", "confluentDisplay": "1.36M msg/s"}, {"label": "Produce — fire-and-forget, idempotent (3 brokers)", "dekaf": 1151290.0665, "confluent": 915729.8428, "dekafDisplay": "1.15M msg/s (1.3×)", "confluentDisplay": "915.73K msg/s"}, {"label": "Produce + consume round-trip", "dekaf": 2905720.557, "confluent": 1659285.2411, "dekafDisplay": "2.91M msg/s (1.8×)", "confluentDisplay": "1.66M msg/s"}, {"label": "Produce — transactional (exactly-once) (3 brokers)", "dekaf": 1058.0189, "confluent": 165.9586, "dekafDisplay": "1.06K msg/s (6.4×)", "confluentDisplay": "166 msg/s"}, {"label": "Consume — messages", "dekaf": 1716852.7295, "confluent": 1343318.539, "dekafDisplay": "1.72M msg/s (1.3×)", "confluentDisplay": "1.34M msg/s"}]}
+  items={[{"label": "Produce — fire-and-forget", "dekaf": 1446138.8705, "confluent": 995249.0614, "dekafDisplay": "1.45M msg/s (1.5×)", "confluentDisplay": "995.25K msg/s"}, {"label": "Produce — fire-and-forget (3 brokers)", "dekaf": 1165880.6401, "confluent": 713583.9356, "dekafDisplay": "1.17M msg/s (1.6×)", "confluentDisplay": "713.58K msg/s"}, {"label": "Produce — acks=all", "dekaf": 1540522.8053, "confluent": 1228208.2808, "dekafDisplay": "1.54M msg/s (1.3×)", "confluentDisplay": "1.23M msg/s"}, {"label": "Produce — acks=all (3 brokers)", "dekaf": 1129651.0193, "confluent": 751175.5399, "dekafDisplay": "1.13M msg/s (1.5×)", "confluentDisplay": "751.18K msg/s"}, {"label": "Produce — fire-and-forget, idempotent", "dekaf": 1490271.3056, "confluent": 1263552.2071, "dekafDisplay": "1.49M msg/s (1.2×)", "confluentDisplay": "1.26M msg/s"}, {"label": "Produce — fire-and-forget, idempotent (3 brokers)", "dekaf": 1116744.3479, "confluent": 803597.2977, "dekafDisplay": "1.12M msg/s (1.4×)", "confluentDisplay": "803.60K msg/s"}, {"label": "Produce + consume round-trip", "dekaf": 2625535.2359, "confluent": 1641424.1751, "dekafDisplay": "2.63M msg/s (1.6×)", "confluentDisplay": "1.64M msg/s"}, {"label": "Produce — transactional (exactly-once) (3 brokers)", "dekaf": 1192.6812, "confluent": 168.9303, "dekafDisplay": "1.19K msg/s (7.1×)", "confluentDisplay": "169 msg/s"}, {"label": "Consume — messages", "dekaf": 1751562.9882, "confluent": 1329577.4878, "dekafDisplay": "1.75M msg/s (1.3×)", "confluentDisplay": "1.33M msg/s"}]}
 />
 
 <ComparisonChart
@@ -34,25 +34,25 @@ Each row is a like-for-like comparison: both clients run the same sustained work
   metric="Median client CPU time"
   description="CPU time needed to deliver one message; shorter bars are better."
   better="lower"
-  items={[{"label": "Produce — fire-and-forget", "dekaf": 0.7231, "confluent": 1.2835, "dekafDisplay": "0.72 μs/msg (1.8× less)", "confluentDisplay": "1.28 μs/msg"}, {"label": "Produce — fire-and-forget (3 brokers)", "dekaf": 0.9518, "confluent": 1.6489, "dekafDisplay": "0.95 μs/msg (1.7× less)", "confluentDisplay": "1.65 μs/msg"}, {"label": "Produce — acks=all", "dekaf": 0.7147, "confluent": 1.2829, "dekafDisplay": "0.71 μs/msg (1.8× less)", "confluentDisplay": "1.28 μs/msg"}, {"label": "Produce — acks=all (3 brokers)", "dekaf": 0.9783, "confluent": 1.9572, "dekafDisplay": "0.98 μs/msg (2.0× less)", "confluentDisplay": "1.96 μs/msg"}, {"label": "Produce — fire-and-forget, idempotent", "dekaf": 0.7141, "confluent": 1.2878, "dekafDisplay": "0.71 μs/msg (1.8× less)", "confluentDisplay": "1.29 μs/msg"}, {"label": "Produce — fire-and-forget, idempotent (3 brokers)", "dekaf": 0.9066, "confluent": 1.7114, "dekafDisplay": "0.91 μs/msg (1.9× less)", "confluentDisplay": "1.71 μs/msg"}, {"label": "Produce + consume round-trip", "dekaf": 0.8253, "confluent": 1.8565, "dekafDisplay": "0.83 μs/msg (2.2× less)", "confluentDisplay": "1.86 μs/msg"}, {"label": "Produce — transactional (exactly-once) (3 brokers)", "dekaf": 231.2831, "confluent": 296.9715, "dekafDisplay": "231.28 μs/msg (1.3× less)", "confluentDisplay": "296.97 μs/msg"}, {"label": "Consume — messages", "dekaf": 0.7658, "confluent": 1.1242, "dekafDisplay": "0.77 μs/msg (1.5× less)", "confluentDisplay": "1.12 μs/msg"}]}
+  items={[{"label": "Produce — fire-and-forget", "dekaf": 0.7192, "confluent": 1.7187, "dekafDisplay": "0.72 μs/msg (2.4× less)", "confluentDisplay": "1.72 μs/msg"}, {"label": "Produce — fire-and-forget (3 brokers)", "dekaf": 1.0677, "confluent": 2.1089, "dekafDisplay": "1.07 μs/msg (2.0× less)", "confluentDisplay": "2.11 μs/msg"}, {"label": "Produce — acks=all", "dekaf": 0.7012, "confluent": 1.4167, "dekafDisplay": "0.70 μs/msg (2.0× less)", "confluentDisplay": "1.42 μs/msg"}, {"label": "Produce — acks=all (3 brokers)", "dekaf": 0.9477, "confluent": 2.0505, "dekafDisplay": "0.95 μs/msg (2.2× less)", "confluentDisplay": "2.05 μs/msg"}, {"label": "Produce — fire-and-forget, idempotent", "dekaf": 0.6893, "confluent": 1.4075, "dekafDisplay": "0.69 μs/msg (2.0× less)", "confluentDisplay": "1.41 μs/msg"}, {"label": "Produce — fire-and-forget, idempotent (3 brokers)", "dekaf": 0.8781, "confluent": 1.9703, "dekafDisplay": "0.88 μs/msg (2.2× less)", "confluentDisplay": "1.97 μs/msg"}, {"label": "Produce + consume round-trip", "dekaf": 0.8811, "confluent": 1.8544, "dekafDisplay": "0.88 μs/msg (2.1× less)", "confluentDisplay": "1.85 μs/msg"}, {"label": "Produce — transactional (exactly-once) (3 brokers)", "dekaf": 228.8411, "confluent": 258.8247, "dekafDisplay": "228.84 μs/msg (1.1× less)", "confluentDisplay": "258.82 μs/msg"}, {"label": "Consume — messages", "dekaf": 0.7576, "confluent": 1.1353, "dekafDisplay": "0.76 μs/msg (1.5× less)", "confluentDisplay": "1.14 μs/msg"}]}
 />
 
 </ComparisonChartGrid>
 
 | Scenario | Dekaf | Confluent | Throughput | CPU per message |
 |---|--:|--:|---|---|
-| Produce — fire-and-forget | 1,567,107 msg/s | 1,404,612 msg/s | 1.1× faster | 1.8× less |
-| Produce — fire-and-forget (3 brokers) | 1,234,552 msg/s | 916,032 msg/s | 1.3× faster | 1.7× less |
-| Produce — acks=all | 1,549,014 msg/s | 1,364,162 msg/s | 1.1× faster | 1.8× less |
-| Produce — acks=all (3 brokers) | 1,053,175 msg/s | 792,172 msg/s | 1.3× faster | 2.0× less |
-| Produce — fire-and-forget, idempotent | 1,557,586 msg/s | 1,360,148 msg/s | 1.1× faster | 1.8× less |
-| Produce — fire-and-forget, idempotent (3 brokers) | 1,151,290 msg/s | 915,730 msg/s | 1.3× faster | 1.9× less |
-| Produce + consume round-trip | 2,905,721 msg/s | 1,659,285 msg/s | 1.8× faster | 2.2× less |
-| Produce — transactional (exactly-once) (3 brokers) | 1,058 msg/s | 166 msg/s | 6.4× faster | 1.3× less |
-| Consume — messages | 1,716,853 msg/s | 1,343,319 msg/s | 1.3× faster | 1.5× less |
-| Consume — batches | 2,024,285 msg/s | — | — | — |
-| Consume — raw bytes | 3,832,148 msg/s | — | — | — |
-| Consume — raw byte batches | 4,019,487 msg/s | — | — | — |
+| Produce — fire-and-forget | 1,446,139 msg/s | 995,249 msg/s | 1.5× faster | 2.4× less |
+| Produce — fire-and-forget (3 brokers) | 1,165,881 msg/s | 713,584 msg/s | 1.6× faster | 2.0× less |
+| Produce — acks=all | 1,540,523 msg/s | 1,228,208 msg/s | 1.3× faster | 2.0× less |
+| Produce — acks=all (3 brokers) | 1,129,651 msg/s | 751,176 msg/s | 1.5× faster | 2.2× less |
+| Produce — fire-and-forget, idempotent | 1,490,271 msg/s | 1,263,552 msg/s | 1.2× faster | 2.0× less |
+| Produce — fire-and-forget, idempotent (3 brokers) | 1,116,744 msg/s | 803,597 msg/s | 1.4× faster | 2.2× less |
+| Produce + consume round-trip | 2,625,535 msg/s | 1,641,424 msg/s | 1.6× faster | 2.1× less |
+| Produce — transactional (exactly-once) (3 brokers) | 1,193 msg/s | 169 msg/s | 7.1× faster | 1.1× less |
+| Consume — messages | 1,751,563 msg/s | 1,329,577 msg/s | 1.3× faster | 1.5× less |
+| Consume — batches | 1,732,327 msg/s | — | — | — |
+| Consume — raw bytes | 3,741,807 msg/s | — | — | — |
+| Consume — raw byte batches | 4,094,242 msg/s | — | — | — |
 
 *"On par" means within ±5% — differences that small are run-to-run noise. "CPU per message" compares the client CPU cost of delivering one message; "less" means Dekaf needs less CPU. Rows showing "—" have no Confluent counterpart in this run (for example, batch and raw consume APIs that librdkafka does not expose). The full per-run data is below.*
 
@@ -67,18 +67,19 @@ Each section holds the measured per-run data behind the summary: repeated same-V
 
 | Client | Samples | Geomean comparison msg/s | Sample range | Median CPU μs/msg | Comparison Ratio |
 |--------|--------:|--------------------------:|--------------|------------------:|-----------------:|
-| Dekaf | 2 | 1,567,107 | 1,564,169–1,570,052 | 0.72 | 1.12x |
-| Confluent | 2 | 1,404,612 | 1,383,881–1,425,654 | 1.28 | 1.00x |
+| Dekaf | 2 | 1,446,139 | 1,395,659–1,498,445 | 0.72 | 1.45x |
+| Confluent | 2 | 995,249 | 917,674–1,079,382 | 1.72 | 1.00x |
 
 *The aggregate uses the geometric mean across balanced same-VM samples run in both `dekaf-first` and `confluent-first` order. Raw ordered samples remain below.*
 
 | Client | CPU μs/msg | CPU μs/request | Messages/sec | Median msg/s | Drift | Slope %/min | MB/sec | Accepted msg/s | Errors | Standing cores |
 |--------|------------|----------------|--------------|--------------|-------|-------------|--------|----------------|--------|----------------|
-| Dekaf (3conn) | 0.59 | 604.82 | 2,958,212 | 2,964,629 | +3.3% | +0.31% | 2821.17 | 2,958,212 | 0 | 1.75 |
-| Dekaf (dekaf-first) | 0.72 | 735.03 | 1,566,078 | 1,570,052 | -0.3% | -0.02% | 1493.53 | 1,566,078 | 0 | 1.12 |
-| Dekaf (confluent-first) | 0.73 | 749.63 | 1,554,934 | 1,564,169 | +0.4% | +0.06% | 1482.90 | 1,554,934 | 0 | 1.14 |
-| Confluent (confluent-first) | 1.27 | - | 1,414,503 | 1,425,654 | +1.6% | +0.13% | 1348.98 | 1,414,503 | 0 | 1.80 |
-| Confluent (dekaf-first) | 1.30 | - | 1,366,667 | 1,383,881 | +2.4% | +0.29% | 1303.35 | 1,366,667 | 0 | 1.77 |
+| Dekaf (3conn) | 0.62 | 629.06 | 2,653,207 | 2,746,307 | +16.7% | +1.80% | 2530.30 | 2,653,207 | 0 | 1.65 |
+| Dekaf (adaptive) | 0.65 | 645.15 | 2,327,972 | 2,309,915 | +14.2% | +1.66% | 2220.13 | 2,327,972 | 0 | 1.51 |
+| Dekaf (confluent-first) | 0.69 | 679.68 | 1,487,235 | 1,498,445 | -0.4% | -0.06% | 1418.34 | 1,487,235 | 0 | 1.03 |
+| Dekaf (dekaf-first) | 0.75 | 736.54 | 1,394,493 | 1,395,659 | -8.8% | -0.64% | 1329.89 | 1,394,493 | 0 | 1.04 |
+| Confluent (dekaf-first) | 1.64 | - | 1,027,057 | 1,079,382 | -4.1% | -0.68% | 979.48 | 1,027,057 | 0 | 1.68 |
+| Confluent (confluent-first) | 1.80 | - | 954,617 | 917,674 | +23.4% | +2.35% | 910.39 | 954,617 | 0 | 1.72 |
 
 *Median msg/s is the median sampled client-side throughput interval; it shows steady-state throughput without letting a short late-run stall dominate the whole-run average.*
 
@@ -95,9 +96,10 @@ Each section holds the measured per-run data behind the summary: repeated same-V
 
 | Client | CPU μs/msg | CPU μs/request | Messages/sec | Median msg/s | Drift | Slope %/min | MB/sec | Accepted msg/s | Errors | Standing cores |
 |--------|------------|----------------|--------------|--------------|-------|-------------|--------|----------------|--------|----------------|
-| Dekaf (3conn) | 0.86 | 844.79 | 1,510,854 | 1,512,454 | +1.6% | +0.17% | 1440.86 | 1,510,854 | 0 | 1.30 |
-| Dekaf | 0.95 | 918.84 | 1,231,710 | 1,234,552 | -1.0% | -0.09% | 1174.65 | 1,231,710 | 0 | 1.17 |
-| Confluent | 1.65 | - | 913,865 | 916,032 | +2.5% | +0.26% | 871.53 | 913,865 | 0 | 1.51 |
+| Dekaf (adaptive) | 1.01 | 946.53 | 1,251,558 | 1,211,244 | +17.1% | +1.69% | 1193.58 | 1,251,558 | 0 | 1.27 |
+| Dekaf (3conn) | 1.04 | 957.63 | 1,229,414 | 1,188,344 | -19.2% | -1.73% | 1172.46 | 1,229,414 | 0 | 1.27 |
+| Dekaf | 1.07 | 1019.22 | 1,151,570 | 1,165,881 | +5.8% | +0.59% | 1098.22 | 1,151,570 | 0 | 1.23 |
+| Confluent | 2.11 | - | 723,211 | 713,584 | -9.1% | -0.72% | 689.71 | 723,211 | 0 | 1.53 |
 
 *Median msg/s is the median sampled client-side throughput interval; it shows steady-state throughput without letting a short late-run stall dominate the whole-run average.*
 
@@ -116,17 +118,17 @@ Each section holds the measured per-run data behind the summary: repeated same-V
 
 | Client | Samples | Geomean comparison msg/s | Sample range | Median CPU μs/msg | Comparison Ratio |
 |--------|--------:|--------------------------:|--------------|------------------:|-----------------:|
-| Dekaf | 2 | 1,549,014 | 1,536,949–1,561,174 | 0.71 | 1.14x |
-| Confluent | 2 | 1,364,162 | 1,361,169–1,367,161 | 1.28 | 1.00x |
+| Dekaf | 2 | 1,540,523 | 1,515,172–1,566,298 | 0.70 | 1.25x |
+| Confluent | 2 | 1,228,208 | 1,153,504–1,307,751 | 1.42 | 1.00x |
 
 *The aggregate uses the geometric mean across balanced same-VM samples run in both `dekaf-first` and `confluent-first` order. Raw ordered samples remain below.*
 
 | Client | CPU μs/msg | CPU μs/request | Messages/sec | Median msg/s | Drift | Slope %/min | MB/sec | Accepted msg/s | Errors | Standing cores |
 |--------|------------|----------------|--------------|--------------|-------|-------------|--------|----------------|--------|----------------|
-| Dekaf (confluent-first) | 0.73 | 747.84 | 1,550,364 | 1,561,174 | +1.0% | +0.10% | 1478.54 | 1,550,364 | 0 | 1.13 |
-| Dekaf (dekaf-first) | 0.70 | 713.24 | 1,523,370 | 1,536,949 | +0.1% | +0.02% | 1452.80 | 1,523,370 | 0 | 1.06 |
-| Confluent (confluent-first) | 1.30 | - | 1,358,817 | 1,367,161 | +2.2% | +0.21% | 1295.87 | 1,358,817 | 0 | 1.76 |
-| Confluent (dekaf-first) | 1.27 | - | 1,352,259 | 1,361,169 | +0.1% | +0.04% | 1289.61 | 1,352,259 | 0 | 1.72 |
+| Dekaf (confluent-first) | 0.70 | 714.82 | 1,557,326 | 1,566,298 | -1.1% | -0.11% | 1485.18 | 1,557,326 | 0 | 1.09 |
+| Dekaf (dekaf-first) | 0.70 | 709.76 | 1,486,940 | 1,515,172 | -6.5% | -0.58% | 1418.06 | 1,486,940 | 0 | 1.04 |
+| Confluent (confluent-first) | 1.37 | - | 1,288,518 | 1,307,751 | -3.5% | -0.27% | 1228.83 | 1,288,518 | 0 | 1.77 |
+| Confluent (dekaf-first) | 1.46 | - | 1,161,401 | 1,153,504 | +9.4% | +0.94% | 1107.60 | 1,161,401 | 0 | 1.70 |
 
 *Median msg/s is the median sampled client-side throughput interval; it shows steady-state throughput without letting a short late-run stall dominate the whole-run average.*
 
@@ -143,8 +145,8 @@ Each section holds the measured per-run data behind the summary: repeated same-V
 
 | Client | CPU μs/msg | CPU μs/request | Messages/sec | Median msg/s | Drift | Slope %/min | MB/sec | Accepted msg/s | Errors | Standing cores |
 |--------|------------|----------------|--------------|--------------|-------|-------------|--------|----------------|--------|----------------|
-| Dekaf | 0.98 | 978.54 | 1,048,452 | 1,053,175 | -0.5% | -0.04% | 999.88 | 1,048,452 | 0 | 1.03 |
-| Confluent | 1.96 | - | 791,050 | 792,172 | +2.5% | +0.32% | 754.40 | 791,050 | 0 | 1.55 |
+| Dekaf | 0.95 | 937.60 | 1,117,845 | 1,129,651 | +7.7% | +0.60% | 1066.06 | 1,117,845 | 0 | 1.06 |
+| Confluent | 2.05 | - | 751,552 | 751,176 | +25.0% | +2.03% | 716.74 | 751,552 | 0 | 1.54 |
 
 *Median msg/s is the median sampled client-side throughput interval; it shows steady-state throughput without letting a short late-run stall dominate the whole-run average.*
 
@@ -163,18 +165,19 @@ Each section holds the measured per-run data behind the summary: repeated same-V
 
 | Client | Samples | Geomean comparison msg/s | Sample range | Median CPU μs/msg | Comparison Ratio |
 |--------|--------:|--------------------------:|--------------|------------------:|-----------------:|
-| Dekaf | 2 | 1,557,586 | 1,550,596–1,564,607 | 0.71 | 1.15x |
-| Confluent | 2 | 1,360,148 | 1,323,748–1,397,549 | 1.29 | 1.00x |
+| Dekaf | 2 | 1,490,271 | 1,459,918–1,521,256 | 0.69 | 1.18x |
+| Confluent | 2 | 1,263,552 | 1,233,956–1,293,858 | 1.41 | 1.00x |
 
 *The aggregate uses the geometric mean across balanced same-VM samples run in both `dekaf-first` and `confluent-first` order. Raw ordered samples remain below.*
 
 | Client | CPU μs/msg | CPU μs/request | Messages/sec | Median msg/s | Drift | Slope %/min | MB/sec | Accepted msg/s | Errors | Standing cores |
 |--------|------------|----------------|--------------|--------------|-------|-------------|--------|----------------|--------|----------------|
-| Dekaf (3conn) | 0.61 | 618.04 | 2,586,218 | 2,608,776 | +0.6% | +0.06% | 2466.41 | 2,586,218 | 0 | 1.59 |
-| Dekaf (confluent-first) | 0.72 | 738.90 | 1,554,777 | 1,564,607 | -0.1% | -0.00% | 1482.75 | 1,554,777 | 0 | 1.12 |
-| Dekaf (dekaf-first) | 0.71 | 717.35 | 1,542,240 | 1,550,596 | -1.2% | -0.11% | 1470.79 | 1,542,240 | 0 | 1.09 |
-| Confluent (confluent-first) | 1.27 | - | 1,387,018 | 1,397,549 | +2.2% | +0.20% | 1322.76 | 1,387,018 | 0 | 1.76 |
-| Confluent (dekaf-first) | 1.31 | - | 1,315,950 | 1,323,748 | -3.3% | -0.24% | 1254.99 | 1,315,950 | 0 | 1.72 |
+| Dekaf (adaptive) | 0.61 | 611.45 | 2,425,532 | 2,479,418 | +11.5% | +1.13% | 2313.17 | 2,425,532 | 0 | 1.48 |
+| Dekaf (3conn) | 0.60 | 587.96 | 2,274,289 | 2,280,285 | -4.5% | -0.39% | 2168.93 | 2,274,289 | 0 | 1.36 |
+| Dekaf (confluent-first) | 0.70 | 704.59 | 1,508,119 | 1,521,256 | -1.3% | -0.12% | 1438.25 | 1,508,119 | 0 | 1.06 |
+| Dekaf (dekaf-first) | 0.68 | 658.45 | 1,452,680 | 1,459,918 | +0.9% | +0.08% | 1385.38 | 1,452,680 | 0 | 0.99 |
+| Confluent (dekaf-first) | 1.40 | - | 1,222,768 | 1,293,858 | +2.1% | -0.08% | 1166.12 | 1,222,768 | 0 | 1.71 |
+| Confluent (confluent-first) | 1.42 | - | 1,211,858 | 1,233,956 | +0.2% | -0.02% | 1155.72 | 1,211,858 | 0 | 1.72 |
 
 *Median msg/s is the median sampled client-side throughput interval; it shows steady-state throughput without letting a short late-run stall dominate the whole-run average.*
 
@@ -191,9 +194,10 @@ Each section holds the measured per-run data behind the summary: repeated same-V
 
 | Client | CPU μs/msg | CPU μs/request | Messages/sec | Median msg/s | Drift | Slope %/min | MB/sec | Accepted msg/s | Errors | Standing cores |
 |--------|------------|----------------|--------------|--------------|-------|-------------|--------|----------------|--------|----------------|
-| Dekaf (3conn) | 0.86 | 865.79 | 1,309,378 | 1,321,287 | +1.0% | +0.13% | 1248.72 | 1,309,378 | 0 | 1.12 |
-| Dekaf | 0.91 | 917.66 | 1,142,257 | 1,151,290 | -3.2% | -0.37% | 1089.34 | 1,142,257 | 0 | 1.04 |
-| Confluent | 1.71 | - | 912,357 | 915,730 | +1.7% | +0.13% | 870.09 | 912,357 | 0 | 1.56 |
+| Dekaf (adaptive) | 0.82 | 815.42 | 1,244,391 | 1,255,058 | -1.7% | -0.09% | 1186.74 | 1,244,391 | 0 | 1.02 |
+| Dekaf (3conn) | 0.83 | 817.60 | 1,239,171 | 1,250,776 | -0.6% | -0.06% | 1181.77 | 1,239,171 | 0 | 1.02 |
+| Dekaf | 0.88 | 864.89 | 1,110,101 | 1,116,744 | +0.9% | +0.09% | 1058.67 | 1,110,101 | 0 | 0.97 |
+| Confluent | 1.97 | - | 800,917 | 803,597 | +4.5% | +0.41% | 763.81 | 800,917 | 0 | 1.58 |
 
 *Median msg/s is the median sampled client-side throughput interval; it shows steady-state throughput without letting a short late-run stall dominate the whole-run average.*
 
@@ -210,8 +214,8 @@ Each section holds the measured per-run data behind the summary: repeated same-V
 
 | Client | CPU μs/msg | CPU μs/request | Messages/sec | Median msg/s | Drift | Slope %/min | MB/sec | Accepted msg/s | Errors | Standing cores |
 |--------|------------|----------------|--------------|--------------|-------|-------------|--------|----------------|--------|----------------|
-| Dekaf | 0.83 | 2942.00 | 1,488,541 | 2,905,721 | +62.1% | +711.26% | 181.71 | 1,488,541 | 0 | 1.23 |
-| Confluent | 1.86 | - | 129,085 | 1,659,285 | +15.9% | +137.56% | 15.76 | 129,085 | 0 | 0.24 |
+| Dekaf | 0.88 | 3066.00 | 1,466,307 | 2,625,535 | +59.2% | +571.55% | 178.99 | 1,466,307 | 0 | 1.29 |
+| Confluent | 1.85 | - | 127,287 | 1,641,424 | +10.5% | +107.74% | 15.54 | 127,287 | 0 | 0.24 |
 
 *Median msg/s is the median sampled client-side throughput interval; it shows steady-state throughput without letting a short late-run stall dominate the whole-run average.*
 
@@ -235,8 +239,8 @@ Each section holds the measured per-run data behind the summary: repeated same-V
 
 | Client | CPU μs/msg | CPU μs/request | Messages/sec | Median msg/s | Drift | Slope %/min | MB/sec | Accepted msg/s | Errors | Standing cores |
 |--------|------------|----------------|--------------|--------------|-------|-------------|--------|----------------|--------|----------------|
-| Dekaf | 231.28 | 231.28 | 793 | 1,058 | +1.4% | +0.12% | 0.76 | 1,057 | 0 | 0.24 |
-| Confluent | 296.97 | - | 124 | 166 | +4.4% | +0.45% | 0.12 | 165 | 0 | 0.05 |
+| Dekaf | 228.84 | 228.84 | 889 | 1,193 | +0.8% | +0.09% | 0.85 | 1,185 | 0 | 0.27 |
+| Confluent | 258.82 | - | 126 | 169 | +10.1% | +0.94% | 0.12 | 168 | 0 | 0.04 |
 
 *Median msg/s is the median sampled client-side throughput interval; it shows steady-state throughput without letting a short late-run stall dominate the whole-run average.*
 
@@ -252,16 +256,16 @@ Each section holds the measured per-run data behind the summary: repeated same-V
 
 | Client | Accepted | Committed | Aborted | Delivered | Duplicates | Shortfall | Aborted leaks | Unexpected | Missing sentinels | Status |
 |--------|----------|-----------|---------|-----------|------------|-----------|---------------|------------|-------------------|--------|
-| Confluent | 148,200 | 111,200 | 37,000 | 111,200 | 0 | 0 | 0 | 0 | 0 | PASS |
-| Dekaf | 951,300 | 713,500 | 237,800 | 713,500 | 0 | 0 | 0 | 0 | 0 | PASS |
+| Confluent | 151,100 | 113,400 | 37,700 | 113,400 | 0 | 0 | 0 | 0 | 0 | PASS |
+| Dekaf | 1,066,700 | 800,100 | 266,600 | 800,100 | 0 | 0 | 0 | 0 | 0 | PASS |
 
 <details>
 <summary>Consumer (15 minutes, 1000B messages, 16,384B seed batches)</summary>
 
 | Client | CPU μs/msg | CPU μs/request | Messages/sec | Median msg/s | Drift | Slope %/min | MB/sec | Accepted msg/s | Errors | Standing cores |
 |--------|------------|----------------|--------------|--------------|-------|-------------|--------|----------------|--------|----------------|
-| Dekaf | 0.77 | - | 1,717,043 | 1,716,853 | -2.4% | -0.19% | 1637.50 | - | 0 | 1.31 |
-| Confluent | 1.12 | - | 1,319,592 | 1,343,319 | +1.8% | +0.20% | 1258.46 | - | 0 | 1.48 |
+| Dekaf | 0.76 | - | 1,744,457 | 1,751,563 | -1.1% | -0.10% | 1663.64 | - | 0 | 1.32 |
+| Confluent | 1.14 | - | 1,302,386 | 1,329,577 | +5.9% | +0.59% | 1242.05 | - | 0 | 1.48 |
 
 *Median msg/s is the median sampled client-side throughput interval; it shows steady-state throughput without letting a short late-run stall dominate the whole-run average.*
 
@@ -276,7 +280,7 @@ Each section holds the measured per-run data behind the summary: repeated same-V
 
 | Client | CPU μs/msg | CPU μs/request | Messages/sec | Median msg/s | Drift | Slope %/min | MB/sec | Accepted msg/s | Errors | Standing cores |
 |--------|------------|----------------|--------------|--------------|-------|-------------|--------|----------------|--------|----------------|
-| Dekaf | 0.71 | - | 1,958,130 | 2,024,285 | -3.4% | -0.31% | 1867.42 | - | 0 | 1.39 |
+| Dekaf | 0.78 | - | 1,740,015 | 1,732,327 | -6.8% | -0.67% | 1659.41 | - | 0 | 1.36 |
 
 *Median msg/s is the median sampled client-side throughput interval; it shows steady-state throughput without letting a short late-run stall dominate the whole-run average.*
 
@@ -291,7 +295,7 @@ Each section holds the measured per-run data behind the summary: repeated same-V
 
 | Client | CPU μs/msg | CPU μs/request | Messages/sec | Median msg/s | Drift | Slope %/min | MB/sec | Accepted msg/s | Errors | Standing cores |
 |--------|------------|----------------|--------------|--------------|-------|-------------|--------|----------------|--------|----------------|
-| Dekaf | 0.41 | - | 3,816,612 | 3,832,148 | +1.6% | +0.13% | 3639.80 | - | 0 | 1.57 |
+| Dekaf | 0.42 | - | 3,718,641 | 3,741,807 | +2.6% | +0.25% | 3546.37 | - | 0 | 1.57 |
 
 *Median msg/s is the median sampled client-side throughput interval; it shows steady-state throughput without letting a short late-run stall dominate the whole-run average.*
 
@@ -306,7 +310,7 @@ Each section holds the measured per-run data behind the summary: repeated same-V
 
 | Client | CPU μs/msg | CPU μs/request | Messages/sec | Median msg/s | Drift | Slope %/min | MB/sec | Accepted msg/s | Errors | Standing cores |
 |--------|------------|----------------|--------------|--------------|-------|-------------|--------|----------------|--------|----------------|
-| Dekaf | 0.36 | - | 4,072,526 | 4,019,487 | -3.6% | -0.38% | 3883.86 | - | 0 | 1.46 |
+| Dekaf | 0.34 | - | 4,168,381 | 4,094,242 | +0.6% | +0.14% | 3975.28 | - | 0 | 1.44 |
 
 *Median msg/s is the median sampled client-side throughput interval; it shows steady-state throughput without letting a short late-run stall dominate the whole-run average.*
 
@@ -321,37 +325,41 @@ Each section holds the measured per-run data behind the summary: repeated same-V
 
 | Client | Scenario | Gen0 | Gen1 | Gen2 | Total Allocated | Alloc/msg |
 |--------|----------|------|------|------|-----------------|-----------|
-| Confluent | Consumer | 23319 | 101 | 1 | 2698.80 GB | 2.38 KB |
-| Confluent | Producer (Fire-and-Forget) | 302984 | 1 | 1 | 1527.72 GB | 1.26 KB |
-| Confluent | Producer (Fire-and-Forget) | 310914 | 23 | 1 | 1476.12 GB | 1.26 KB |
-| Confluent | Producer (Fire-and-Forget), 3 Brokers | 195311 | 0 | 0 | 987.01 GB | 1.26 KB |
-| Confluent | Producer (Acks All) | 261324 | 1 | 1 | 1467.58 GB | 1.26 KB |
-| Confluent | Producer (Acks All) | 307220 | 12 | 1 | 1460.53 GB | 1.26 KB |
-| Confluent | Producer (Acks All), 3 Brokers | 167386 | 1 | 1 | 854.37 GB | 1.26 KB |
-| Confluent | Producer (Fire-and-Forget, Idempotent) | 296954 | 16 | 1 | 1421.37 GB | 1.26 KB |
-| Confluent | Producer (Fire-and-Forget, Idempotent) | 283680 | 1 | 1 | 1497.99 GB | 1.26 KB |
-| Confluent | Producer (Fire-and-Forget, Idempotent), 3 Brokers | 207425 | 0 | 0 | 985.40 GB | 1.26 KB |
-| Confluent | Producer → Consumer Round-Trip Steady State | 6644 | 2 | 2 | 16.74 GB | 908 B |
-| Confluent | Producer (Transactional EOS), 3 Brokers | 102 | 1 | 0 | 304.00 MB | 2.10 KB |
-| Dekaf | Consumer | 25690 | 54 | 3 | 2913.54 GB | 1.98 KB |
-| Dekaf | Consumer (Batch) | 87259 | 6 | 2 | 3323.04 GB | 1.98 KB |
-| Dekaf | Consumer (Raw Bytes) | 4 | 2 | 1 | 470.29 MB | 0 B |
-| Dekaf | Consumer (Raw Batch) | 19 | 4 | 2 | 1002.62 MB | 0 B |
-| Dekaf | Producer (Fire-and-Forget) | 226 | 2 | 1 | 170.64 MB | 0 B |
-| Dekaf | Producer (Fire-and-Forget) | 218 | 3 | 2 | 822.65 MB | 1 B |
-| Dekaf | Producer (Fire-and-Forget), 3 Brokers | 164 | 3 | 2 | 141.67 MB | 0 B |
-| Dekaf | Producer (Acks All) | 233 | 3 | 2 | 166.99 MB | 0 B |
-| Dekaf | Producer (Acks All) | 213 | 3 | 2 | 855.36 MB | 1 B |
-| Dekaf | Producer (Acks All), 3 Brokers | 126 | 3 | 2 | 148.99 MB | 0 B |
-| Dekaf | Producer (Fire-and-Forget, Idempotent) | 213 | 3 | 2 | 794.44 MB | 1 B |
-| Dekaf | Producer (Fire-and-Forget, Idempotent) | 218 | 3 | 2 | 104.68 MB | 0 B |
-| Dekaf | Producer (Fire-and-Forget, Idempotent), 3 Brokers | 150 | 3 | 2 | 128.13 MB | 0 B |
-| Dekaf | Producer → Consumer Round-Trip Steady State | 1127 | 3 | 1 | 2.81 GB | 153 B |
-| Dekaf | Producer (Transactional EOS), 3 Brokers | 79 | 1 | 1 | 186.66 MB | 206 B |
-| Dekaf (3conn) | Producer (Fire-and-Forget) | 462 | 13 | 3 | 1.38 GB | 1 B |
-| Dekaf (3conn) | Producer (Fire-and-Forget), 3 Brokers | 205 | 3 | 2 | 818.64 MB | 1 B |
-| Dekaf (3conn) | Producer (Fire-and-Forget, Idempotent) | 390 | 7 | 2 | 1.25 GB | 1 B |
-| Dekaf (3conn) | Producer (Fire-and-Forget, Idempotent), 3 Brokers | 155 | 3 | 2 | 688.47 MB | 1 B |
+| Confluent | Consumer | 23021 | 93 | 1 | 2663.62 GB | 2.38 KB |
+| Confluent | Producer (Fire-and-Forget) | 231796 | 35 | 1 | 1109.33 GB | 1.26 KB |
+| Confluent | Producer (Fire-and-Forget) | 192267 | 1 | 1 | 1031.03 GB | 1.26 KB |
+| Confluent | Producer (Fire-and-Forget), 3 Brokers | 149622 | 0 | 0 | 781.11 GB | 1.26 KB |
+| Confluent | Producer (Acks All) | 260614 | 36 | 1 | 1254.39 GB | 1.26 KB |
+| Confluent | Producer (Acks All) | 282816 | 1 | 1 | 1391.65 GB | 1.26 KB |
+| Confluent | Producer (Acks All), 3 Brokers | 165567 | 1 | 1 | 811.72 GB | 1.26 KB |
+| Confluent | Producer (Fire-and-Forget, Idempotent) | 267165 | 1 | 1 | 1308.82 GB | 1.26 KB |
+| Confluent | Producer (Fire-and-Forget, Idempotent) | 270404 | 44 | 1 | 1320.72 GB | 1.26 KB |
+| Confluent | Producer (Fire-and-Forget, Idempotent), 3 Brokers | 174194 | 0 | 0 | 865.04 GB | 1.26 KB |
+| Confluent | Producer → Consumer Round-Trip Steady State | 6915 | 0 | 0 | 17.56 GB | 953 B |
+| Confluent | Producer (Transactional EOS), 3 Brokers | 104 | 1 | 0 | 309.75 MB | 2.10 KB |
+| Dekaf | Consumer | 26079 | 72 | 4 | 2959.98 GB | 1.98 KB |
+| Dekaf | Consumer (Batch) | 25986 | 5 | 2 | 2952.68 GB | 1.98 KB |
+| Dekaf | Consumer (Raw Bytes) | 5 | 2 | 1 | 492.08 MB | 0 B |
+| Dekaf | Consumer (Raw Batch) | 9 | 2 | 1 | 989.48 MB | 0 B |
+| Dekaf | Producer (Fire-and-Forget) | 225 | 4 | 2 | 788.32 MB | 1 B |
+| Dekaf | Producer (Fire-and-Forget) | 222 | 3 | 2 | 192.89 MB | 0 B |
+| Dekaf | Producer (Fire-and-Forget), 3 Brokers | 145 | 3 | 2 | 150.72 MB | 0 B |
+| Dekaf | Producer (Acks All) | 224 | 3 | 1 | 791.56 MB | 1 B |
+| Dekaf | Producer (Acks All) | 227 | 2 | 1 | 164.98 MB | 0 B |
+| Dekaf | Producer (Acks All), 3 Brokers | 132 | 3 | 2 | 232.53 MB | 0 B |
+| Dekaf | Producer (Fire-and-Forget, Idempotent) | 207 | 2 | 1 | 152.70 MB | 0 B |
+| Dekaf | Producer (Fire-and-Forget, Idempotent) | 203 | 3 | 2 | 755.63 MB | 1 B |
+| Dekaf | Producer (Fire-and-Forget, Idempotent), 3 Brokers | 151 | 3 | 2 | 135.65 MB | 0 B |
+| Dekaf | Producer → Consumer Round-Trip Steady State | 1071 | 3 | 1 | 2.81 GB | 153 B |
+| Dekaf | Producer (Transactional EOS), 3 Brokers | 84 | 1 | 1 | 175.07 MB | 172 B |
+| Dekaf (3conn) | Producer (Fire-and-Forget) | 327 | 3 | 1 | 1.27 GB | 1 B |
+| Dekaf (3conn) | Producer (Fire-and-Forget), 3 Brokers | 188 | 5 | 2 | 737.70 MB | 1 B |
+| Dekaf (3conn) | Producer (Fire-and-Forget, Idempotent) | 276 | 2 | 1 | 1.14 GB | 1 B |
+| Dekaf (3conn) | Producer (Fire-and-Forget, Idempotent), 3 Brokers | 157 | 3 | 2 | 670.81 MB | 1 B |
+| Dekaf (adaptive) | Producer (Fire-and-Forget) | 307 | 3 | 2 | 1.13 GB | 1 B |
+| Dekaf (adaptive) | Producer (Fire-and-Forget), 3 Brokers | 170 | 5 | 3 | 723.16 MB | 1 B |
+| Dekaf (adaptive) | Producer (Fire-and-Forget, Idempotent) | 315 | 3 | 2 | 1.17 GB | 1 B |
+| Dekaf (adaptive) | Producer (Fire-and-Forget, Idempotent), 3 Brokers | 148 | 3 | 2 | 675.10 MB | 1 B |
 
 *Confluent.Kafka uses native librdkafka; .NET GC allocation counters exclude unmanaged allocations.*
 
@@ -375,6 +383,7 @@ Stress tests measure sustained performance over extended periods against real Ka
 - **Backpressure Parity**: both producers are bounded to the same 512 MB local buffer (Dekaf BufferMemory, librdkafka queue.buffering.max) and block on a full buffer, so neither client can absorb an unbounded backlog into RAM
 - **Consumer Loop Replay**: Consumer tests re-read a pre-seeded topic (seek to beginning when drained) instead of racing a live feeder, so the consumer itself is measured; table headings report the 16KB seed batch size because it amplifies per-batch costs relative to well-batched workloads
 - **Delivery Latency Sampling**: 1 in 1000 produced messages is awaited end-to-end to record true broker round-trip latency
+- **Adaptive-Connections Row**: the four paired fire-and-forget/idempotent producer lanes also run one Dekaf pass with the library default (adaptive connection scaling enabled, one connection to start), labelled `Dekaf (adaptive)`; like the 3-connection control it is excluded from the headline comparison, which stays pinned to one connection to match Confluent
 - **Round-Trip Correctness**: Bounded sequenced payloads are consumed back and checked for corruption, wrong partitions, gaps, duplicates, and reordering
 - **Round-Trip CPU Scope**: CPU time covers both bulk production and consumer validation; it is not a producer-only metric
 - **Round-Trip Alloc Scope**: the GC/alloc window likewise spans production plus consume-side validation; values are deliberately consumed as byte[] on both clients for parity, so each consumed payload is materialized as a fresh array (~152 B at 128 B messages) — the expected allocation floor for this lane, not a leak
