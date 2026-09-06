@@ -43,13 +43,13 @@ public class BinaryKeyDispatchBenchmarks
         return result;
     }
 
-    private static async Task DispatchAsync<TKey>(ConsumeResult<TKey, string>[] records)
+    internal static async Task DispatchAsync<TKey>(ConsumeResult<TKey, string>[] records)
     {
-        var lane = new PartitionLane<TKey, string>(new TopicPartition("topic", 0), RecordCount,
+        var lane = new PartitionLane<TKey, string>(new TopicPartition("topic", 0), records.Length,
             static (_, _) => ValueTask.CompletedTask, static _ => { }, static (_, error) => throw error);
         var context = new PartitionProcessorContext<TKey, string>(lane);
         var releaseFirst = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var dispatcher = new KeyOrderedPartitionDispatcher<TKey, string>(context, 1, 1, RecordCount,
+        var dispatcher = new KeyOrderedPartitionDispatcher<TKey, string>(context, 1, 1, records.Length,
             async (batch, _) =>
             {
                 if (batch[0].Offset == 0)
@@ -62,5 +62,48 @@ public class BinaryKeyDispatchBenchmarks
         var running = dispatcher.RunAsync(CancellationToken.None);
         releaseFirst.SetResult();
         await running.ConfigureAwait(false);
+    }
+}
+
+/// <summary>
+/// Keeps lane cardinality identical before/after content equality, exposing the cost
+/// of hashing large keys without the repeated-key workload's lane-coalescing benefit.
+/// </summary>
+[MemoryDiagnoser]
+public class DistinctBinaryKeyDispatchBenchmarks
+{
+    private const int RecordCount = 128;
+    private ConsumeResult<byte[], string>[] _binary = null!;
+    private ConsumeResult<ReadOnlyMemory<byte>, string>[] _memory = null!;
+
+    [Params(8, 1024, 65536)]
+    public int KeySize { get; set; }
+
+    [GlobalSetup]
+    public void Setup()
+    {
+        _binary = CreateRecords(Serializers.ByteArray);
+        _memory = CreateRecords(Serializers.RawBytes);
+    }
+
+    [Benchmark(OperationsPerInvoke = RecordCount)]
+    public Task ByteArray() => BinaryKeyDispatchBenchmarks.DispatchAsync(_binary);
+
+    [Benchmark(OperationsPerInvoke = RecordCount)]
+    public Task RawMemory() => BinaryKeyDispatchBenchmarks.DispatchAsync(_memory);
+
+    private ConsumeResult<TKey, string>[] CreateRecords<TKey>(IDeserializer<TKey> deserializer)
+    {
+        var result = new ConsumeResult<TKey, string>[RecordCount];
+        for (var index = 0; index < result.Length; index++)
+        {
+            var key = new byte[KeySize];
+            key.AsSpan().Fill(0x61);
+            System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(key.AsSpan(KeySize - sizeof(int)), index);
+            result[index] = new ConsumeResult<TKey, string>("topic", 0, index,
+                key, false, default, false, null, 0,
+                TimestampType.CreateTime, null, deserializer, Serializers.String);
+        }
+        return result;
     }
 }

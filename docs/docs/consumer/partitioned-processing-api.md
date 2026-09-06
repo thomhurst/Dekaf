@@ -162,17 +162,21 @@ keys share a lane; null reference keys share a separate lane. Other key types us
 These binary defaults apply when `TKey` is one of the listed types; wrapper or
 polymorphic key types can supply a comparer.
 
-For custom key types, supply an `IEqualityComparer<TKey>` to either handler overload:
+For custom key equality, supply an `IEqualityComparer<TKey>` to either handler
+overload. For example, a string-keyed consumer can group case-insensitive keys:
 
 ```csharp
 await consumer.RunPartitionedAsync(
-    HandleRecordAsync,
+    async (partition, message, ct) =>
+    {
+        await HandleOrderAsync(message.Key, message.Value, ct);
+    },
     new PartitionedProcessingOptions
     {
         Ordering = PartitionedProcessingOrder.Key,
         MaxConcurrentHandlersPerPartition = 8
     },
-    CustomerKeyComparer.Instance,
+    StringComparer.OrdinalIgnoreCase,
     stoppingToken);
 ```
 

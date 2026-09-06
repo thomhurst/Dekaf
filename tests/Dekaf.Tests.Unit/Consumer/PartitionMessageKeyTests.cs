@@ -87,7 +87,10 @@ public sealed class PartitionMessageKeyTests
             releaseFirst.TrySetResult();
             await timeout.CancelAsync();
             try { await running; }
-            catch (OperationCanceledException) when (timeout.IsCancellationRequested) { }
+            catch (OperationCanceledException) when (timeout.IsCancellationRequested)
+            {
+                await Assert.That(running.IsCanceled).IsTrue();
+            }
         }
     }
 

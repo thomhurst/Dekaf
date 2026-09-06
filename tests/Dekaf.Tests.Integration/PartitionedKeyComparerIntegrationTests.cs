@@ -76,19 +76,13 @@ public sealed class PartitionedKeyComparerIntegrationTests(KafkaTestContainer ka
 
         PartitionRecordProcessor<TKey, string> recordHandler = (_, record, token) => Handle(record, token);
         PartitionBatchProcessor<TKey, string> batchHandler = (_, records, token) => Handle(records[0], token);
-        ValueTask processing;
-        if (batches)
+        var processing = (batches, comparer) switch
         {
-            processing = comparer is null
-                ? consumer.RunPartitionedBatchesAsync(batchHandler, options, timeout.Token)
-                : consumer.RunPartitionedBatchesAsync(batchHandler, options, comparer, timeout.Token);
-        }
-        else
-        {
-            processing = comparer is null
-                ? consumer.RunPartitionedAsync(recordHandler, options, timeout.Token)
-                : consumer.RunPartitionedAsync(recordHandler, options, comparer, timeout.Token);
-        }
+            (true, null) => consumer.RunPartitionedBatchesAsync(batchHandler, options, timeout.Token),
+            (true, { } keyComparer) => consumer.RunPartitionedBatchesAsync(batchHandler, options, keyComparer, timeout.Token),
+            (false, null) => consumer.RunPartitionedAsync(recordHandler, options, timeout.Token),
+            (false, { } keyComparer) => consumer.RunPartitionedAsync(recordHandler, options, keyComparer, timeout.Token)
+        };
         var running = processing.AsTask();
         try
         {
@@ -103,7 +97,10 @@ public sealed class PartitionedKeyComparerIntegrationTests(KafkaTestContainer ka
             releaseFirst.TrySetResult();
             await timeout.CancelAsync();
             try { await running; }
-            catch (OperationCanceledException) when (timeout.IsCancellationRequested) { }
+            catch (OperationCanceledException) when (timeout.IsCancellationRequested)
+            {
+                await Assert.That(running.IsCanceled).IsTrue();
+            }
         }
     }
 
