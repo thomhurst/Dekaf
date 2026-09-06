@@ -3596,12 +3596,14 @@ public sealed partial class KafkaConnection :
             SaslMechanism.ScramSha256,
             username ?? throw new InvalidOperationException("SASL username not configured"),
             password ?? throw new InvalidOperationException("SASL password not configured"),
-            _options.SaslScramTokenAuth),
+            _options.SaslScramTokenAuth,
+            _options.SaslScramMaxIterations),
         SaslMechanism.ScramSha512 => new ScramAuthenticator(
             SaslMechanism.ScramSha512,
             username ?? throw new InvalidOperationException("SASL username not configured"),
             password ?? throw new InvalidOperationException("SASL password not configured"),
-            _options.SaslScramTokenAuth),
+            _options.SaslScramTokenAuth,
+            _options.SaslScramMaxIterations),
         SaslMechanism.Gssapi => new GssapiAuthenticator(
             _options.GssapiConfig ?? throw new InvalidOperationException("GSSAPI configuration not provided"),
             _resolvedTargetHost ?? _host),
@@ -4392,6 +4394,23 @@ public sealed class ConnectionOptions
     /// Whether SCRAM authentication uses Kafka delegation token credentials.
     /// </summary>
     public bool SaslScramTokenAuth { get; init; }
+
+    private int _saslScramMaxIterations = ScramAuthenticator.DefaultMaxIterations;
+
+    /// <summary>
+    /// Maximum server-requested SCRAM PBKDF2 iterations. Defaults to 1,000,000.
+    /// Must be positive; raise deliberately when a broker uses a higher count.
+    /// Applies to both password and delegation-token SCRAM authentication.
+    /// </summary>
+    public int SaslScramMaxIterations
+    {
+        get => _saslScramMaxIterations;
+        init
+        {
+            ArgumentOutOfRangeException.ThrowIfLessThan(value, 1);
+            _saslScramMaxIterations = value;
+        }
+    }
 
     /// <summary>
     /// GSSAPI (Kerberos) configuration. Required when SaslMechanism is Gssapi.

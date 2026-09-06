@@ -59,6 +59,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     private string? _saslPassword;
     private Func<CancellationToken, ValueTask<SaslCredentials>>? _saslCredentialProvider;
     private bool _saslScramTokenAuth;
+    private int _saslScramMaxIterations = ScramAuthenticator.DefaultMaxIterations;
     private GssapiConfig? _gssapiConfig;
     private OAuthBearerConfig? _oauthConfig;
     private Func<CancellationToken, ValueTask<OAuthBearerToken>>? _oauthTokenProvider;
@@ -664,6 +665,16 @@ public sealed class ProducerBuilder<TKey, TValue>
         _saslPassword = password;
         _saslCredentialProvider = null;
         _saslScramTokenAuth = false;
+        return this;
+    }
+
+    /// <summary>Sets the maximum server-requested SCRAM PBKDF2 iteration count.</summary>
+    /// <param name="maxIterations">Positive limit; the default is 1,000,000.</param>
+    public ProducerBuilder<TKey, TValue> WithSaslScramMaxIterations(int maxIterations)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxIterations, 1);
+        _saslScramMaxIterations = maxIterations;
         return this;
     }
 
@@ -1482,6 +1493,7 @@ public sealed class ProducerBuilder<TKey, TValue>
             UsesClientOwnedDynamicSaslCredentials =
                 _clientInfrastructure?.UsesDynamicSaslCredentials == true,
             SaslScramTokenAuth = _saslScramTokenAuth,
+            SaslScramMaxIterations = _saslScramMaxIterations,
             GssapiConfig = _gssapiConfig,
             OAuthBearerConfig = _oauthConfig,
             OAuthBearerTokenProvider = _oauthTokenProvider,
@@ -1659,6 +1671,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private string? _saslPassword;
     private Func<CancellationToken, ValueTask<SaslCredentials>>? _saslCredentialProvider;
     private bool _saslScramTokenAuth;
+    private int _saslScramMaxIterations = ScramAuthenticator.DefaultMaxIterations;
     private GssapiConfig? _gssapiConfig;
     private OAuthBearerConfig? _oauthConfig;
     private Func<CancellationToken, ValueTask<OAuthBearerToken>>? _oauthTokenProvider;
@@ -2247,6 +2260,16 @@ public sealed class ConsumerBuilder<TKey, TValue>
         _saslPassword = password;
         _saslCredentialProvider = null;
         _saslScramTokenAuth = false;
+        return this;
+    }
+
+    /// <summary>Sets the maximum server-requested SCRAM PBKDF2 iteration count.</summary>
+    /// <param name="maxIterations">Positive limit; the default is 1,000,000.</param>
+    public ConsumerBuilder<TKey, TValue> WithSaslScramMaxIterations(int maxIterations)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxIterations, 1);
+        _saslScramMaxIterations = maxIterations;
         return this;
     }
 
@@ -3285,6 +3308,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
             SaslPassword = _saslPassword,
             SaslCredentialProvider = _saslCredentialProvider,
             SaslScramTokenAuth = _saslScramTokenAuth,
+            SaslScramMaxIterations = _saslScramMaxIterations,
             GssapiConfig = _gssapiConfig,
             OAuthBearerConfig = _oauthConfig,
             OAuthBearerTokenProvider = _oauthTokenProvider,
@@ -3441,6 +3465,7 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
     private string? _saslPassword;
     private Func<CancellationToken, ValueTask<SaslCredentials>>? _saslCredentialProvider;
     private bool _saslScramTokenAuth;
+    private int _saslScramMaxIterations = ScramAuthenticator.DefaultMaxIterations;
     private GssapiConfig? _gssapiConfig;
     private OAuthBearerConfig? _oauthConfig;
     private Func<CancellationToken, ValueTask<OAuthBearerToken>>? _oauthTokenProvider;
@@ -3794,6 +3819,16 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
         return this;
     }
 
+    /// <summary>Sets the maximum server-requested SCRAM PBKDF2 iteration count.</summary>
+    /// <param name="maxIterations">Positive limit; the default is 1,000,000.</param>
+    public ShareConsumerBuilder<TKey, TValue> WithSaslScramMaxIterations(int maxIterations)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxIterations, 1);
+        _saslScramMaxIterations = maxIterations;
+        return this;
+    }
+
     public ShareConsumerBuilder<TKey, TValue> WithSaslScram256(
         Func<CancellationToken, ValueTask<SaslCredentials>> credentialProvider)
     {
@@ -4121,6 +4156,7 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
             SaslPassword = _saslPassword,
             SaslCredentialProvider = _saslCredentialProvider,
             SaslScramTokenAuth = _saslScramTokenAuth,
+            SaslScramMaxIterations = _saslScramMaxIterations,
             GssapiConfig = _gssapiConfig,
             OAuthBearerConfig = _oauthConfig,
             OAuthBearerTokenProvider = _oauthTokenProvider,

@@ -625,3 +625,21 @@ Dekaf.Admin.NewPartitions.ReplicaAssignments.init -> void
 Dekaf.Admin.NewPartitions.TotalCount.get -> int
 Dekaf.Admin.NewPartitions.TotalCount.init -> void
 static Dekaf.Admin.AdminClientPartitionExpansionExtensions.CreatePartitionsAsync(this Dekaf.Admin.IAdminClient! adminClient, System.Collections.Generic.IReadOnlyDictionary<string!, Dekaf.Admin.NewPartitions!>! newPartitions, Dekaf.Admin.CreatePartitionsOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+
+Dekaf.Admin.AdminClientOptions.SaslScramMaxIterations.get -> int
+Dekaf.Admin.AdminClientOptions.SaslScramMaxIterations.init -> void
+Dekaf.Consumer.ConsumerOptions.SaslScramMaxIterations.get -> int
+Dekaf.Consumer.ConsumerOptions.SaslScramMaxIterations.init -> void
+Dekaf.Networking.ConnectionOptions.SaslScramMaxIterations.get -> int
+Dekaf.Networking.ConnectionOptions.SaslScramMaxIterations.init -> void
+Dekaf.Producer.ProducerOptions.SaslScramMaxIterations.get -> int
+Dekaf.Producer.ProducerOptions.SaslScramMaxIterations.init -> void
+Dekaf.ShareConsumer.ShareConsumerOptions.SaslScramMaxIterations.get -> int
+Dekaf.ShareConsumer.ShareConsumerOptions.SaslScramMaxIterations.init -> void
+Dekaf.Admin.AdminClientBuilder.WithSaslScramMaxIterations(int maxIterations) -> Dekaf.Admin.AdminClientBuilder!
+Dekaf.ConsumerBuilder<TKey, TValue>.WithSaslScramMaxIterations(int maxIterations) -> Dekaf.ConsumerBuilder<TKey, TValue>!
+Dekaf.KafkaClientBuilder.WithSaslScramMaxIterations(int maxIterations) -> Dekaf.KafkaClientBuilder!
+Dekaf.ProducerBuilder<TKey, TValue>.WithSaslScramMaxIterations(int maxIterations) -> Dekaf.ProducerBuilder<TKey, TValue>!
+Dekaf.ShareConsumerBuilder<TKey, TValue>.WithSaslScramMaxIterations(int maxIterations) -> Dekaf.ShareConsumerBuilder<TKey, TValue>!
+const Dekaf.Security.Sasl.ScramAuthenticator.DefaultMaxIterations = 1000000 -> int
+Dekaf.Security.Sasl.ScramAuthenticator.ScramAuthenticator(Dekaf.Security.Sasl.SaslMechanism mechanism, string! username, string! password, bool tokenAuth, int maxIterations) -> void

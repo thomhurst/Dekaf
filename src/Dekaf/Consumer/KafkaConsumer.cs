@@ -1660,6 +1660,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 SaslPassword = options.SaslPassword,
                 SaslCredentialProvider = options.SaslCredentialProvider,
                 SaslScramTokenAuth = options.SaslScramTokenAuth,
+                SaslScramMaxIterations = options.SaslScramMaxIterations,
                 GssapiConfig = options.GssapiConfig,
                 OAuthBearerConfig = options.OAuthBearerConfig,
                 OAuthBearerTokenProvider = options.OAuthBearerTokenProvider,

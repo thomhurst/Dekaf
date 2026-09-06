@@ -17,6 +17,34 @@ namespace Dekaf.Tests.Integration.Security;
 [ClassDataSource<SaslKafkaContainer>(Shared = SharedType.PerTestSession)]
 public class SaslAuthenticationTests(SaslKafkaContainer saslKafka)
 {
+    [Test]
+    [Arguments(false, 4096)]
+    [Arguments(true, 4096)]
+    [Arguments(false, 4095)]
+    [Arguments(true, 4095)]
+    public async Task ScramIterationLimit_AcceptsBrokerAtLimitAndRejectsAbove(bool sha512, int limit)
+    {
+        var builder = Kafka.CreateAdminClient()
+            .WithBootstrapServers(saslKafka.BootstrapServers)
+            .WithSaslScramMaxIterations(limit);
+        if (sha512)
+            builder.WithSaslScramSha512(SaslKafkaContainer.SaslUsername, SaslKafkaContainer.SaslPassword);
+        else
+            builder.WithSaslScramSha256(SaslKafkaContainer.SaslUsername, SaslKafkaContainer.SaslPassword);
+        await using var admin = builder.Build();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        if (limit == 4096)
+        {
+            var topics = await admin.ListTopicsAsync(cancellationToken: timeout.Token);
+            await Assert.That(topics).IsNotNull();
+        }
+        else
+        {
+            await Assert.That(async () => await admin.ListTopicsAsync(cancellationToken: timeout.Token))
+                .Throws<AuthenticationException>().WithMessageContaining("SaslScramMaxIterations");
+        }
+    }
+
     // ==========================================
     // SASL/PLAIN Tests
     // ==========================================

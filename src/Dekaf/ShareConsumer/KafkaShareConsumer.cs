@@ -108,6 +108,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                 SaslPassword = options.SaslPassword,
                 SaslCredentialProvider = options.SaslCredentialProvider,
                 SaslScramTokenAuth = options.SaslScramTokenAuth,
+                SaslScramMaxIterations = options.SaslScramMaxIterations,
                 GssapiConfig = options.GssapiConfig,
                 OAuthBearerConfig = options.OAuthBearerConfig,
                 OAuthBearerTokenProvider = options.OAuthBearerTokenProvider,

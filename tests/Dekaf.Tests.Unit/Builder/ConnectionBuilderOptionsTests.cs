@@ -11,6 +11,69 @@ namespace Dekaf.Tests.Unit.Builder;
 public sealed class ConnectionBuilderOptionsTests
 {
     [Test]
+    public async Task Builders_WithScramIterationLimit_ConfigureEveryConnectionPool()
+    {
+        await using var producer = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("localhost:9092").WithSaslScramMaxIterations(8192).Build();
+        await using var consumer = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092").WithGroupId("group")
+            .WithSaslScramMaxIterations(8192).Build();
+        await using var share = Kafka.CreateShareConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092").WithGroupId("group")
+            .WithSaslScramMaxIterations(8192).Build();
+        await using var admin = Kafka.CreateAdminClient()
+            .WithBootstrapServers("localhost:9092").WithSaslScramMaxIterations(8192).Build();
+        await using var client = Kafka.Connect("localhost:9092", builder => builder.WithSaslScramMaxIterations(8192));
+        await using var sharedProducer = client.CreateProducer<string, string>().Build();
+
+        foreach (var instance in new object[] { producer, consumer, share, admin, sharedProducer })
+            await Assert.That(GetConnectionOptions(instance).SaslScramMaxIterations).IsEqualTo(8192);
+
+        await Assert.That(() => client.CreateProducer<string, string>().WithSaslScramMaxIterations(4096))
+            .Throws<InvalidOperationException>();
+        await Assert.That(() => client.CreateConsumer<string, string>().WithSaslScramMaxIterations(4096))
+            .Throws<InvalidOperationException>();
+    }
+
+    [Test]
+    [Arguments(0)]
+    [Arguments(-1)]
+    public async Task Builders_WithInvalidScramIterationLimit_RejectImmediately(int limit)
+    {
+        await Assert.That(() => Kafka.CreateProducer<string, string>().WithSaslScramMaxIterations(limit))
+            .Throws<ArgumentOutOfRangeException>();
+        await Assert.That(() => Kafka.CreateConsumer<string, string>().WithSaslScramMaxIterations(limit))
+            .Throws<ArgumentOutOfRangeException>();
+        await Assert.That(() => Kafka.CreateShareConsumer<string, string>().WithSaslScramMaxIterations(limit))
+            .Throws<ArgumentOutOfRangeException>();
+        await Assert.That(() => Kafka.CreateAdminClient().WithSaslScramMaxIterations(limit))
+            .Throws<ArgumentOutOfRangeException>();
+        await Assert.That(() => new KafkaClientBuilder().WithSaslScramMaxIterations(limit))
+            .Throws<ArgumentOutOfRangeException>();
+    }
+
+    [Test]
+    public async Task Options_ScramIterationLimit_DefaultsToOneMillionAndRejectsZero()
+    {
+        object[] defaults =
+        [
+            new ProducerOptions { BootstrapServers = ["localhost:9092"] },
+            new ConsumerOptions { BootstrapServers = ["localhost:9092"] },
+            new Dekaf.ShareConsumer.ShareConsumerOptions { BootstrapServers = ["localhost:9092"], GroupId = "group" },
+            new AdminClientOptions { BootstrapServers = ["localhost:9092"] },
+            new ConnectionOptions()
+        ];
+        foreach (var options in defaults)
+        {
+            var property = options.GetType().GetProperty("SaslScramMaxIterations")!;
+            await Assert.That((int)property.GetValue(options)!).IsEqualTo(1_000_000);
+            // Reflection is needed to exercise the same init-only option contract across all types.
+            await Assert.That(() => property.SetValue(options, 0)).Throws<TargetInvocationException>()
+                .WithInnerException<ArgumentOutOfRangeException>();
+        }
+    }
+
+    [Test]
     public async Task ProducerBuilder_WithConnectionOptions_ConfiguresConnectionPool()
     {
         RemoteCertificateValidationCallback callback = (_, _, _, errors) => errors == SslPolicyErrors.None;
