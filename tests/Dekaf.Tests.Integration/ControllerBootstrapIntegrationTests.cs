@@ -24,6 +24,10 @@ public sealed class ControllerBootstrapIntegrationTests(ControllerOnlyKafkaConta
             await admin.DescribeClusterAsync(new DescribeClusterOptions { IncludeFencedBrokers = true }, timeout.Token));
         var quorum = await admin.DescribeMetadataQuorumAsync(timeout.Token).ConfigureAwait(false);
         var features = await admin.DescribeFeaturesAsync(timeout.Token).ConfigureAwait(false);
+        var selectedFeatures = await admin.DescribeFeaturesAsync(
+            new DescribeFeaturesOptions { NodeId = cluster.ControllerId }, timeout.Token);
+        await Assert.That(selectedFeatures.SupportedFeatures).IsEquivalentTo(features.SupportedFeatures);
+        await Assert.That(selectedFeatures.FinalizedFeaturesEpoch).IsGreaterThanOrEqualTo(0);
 
         await Assert.That(cluster.ControllerId).IsEqualTo(1);
         await Assert.That(cluster.Nodes.Select(static node => node.NodeId)).IsEquivalentTo([1]);

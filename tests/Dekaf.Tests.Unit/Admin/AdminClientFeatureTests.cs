@@ -11,6 +11,145 @@ namespace Dekaf.Tests.Unit.Admin;
 public sealed class AdminClientFeatureTests
 {
     [Test]
+    public async Task DescribeFeaturesAsync_DefaultLiteralAndEmptyOptions_PreserveDefaultSelection()
+    {
+        var (admin, _, second) = CreateAdmin(updateFeaturesVersion: 1);
+        var original = await admin.DescribeFeaturesAsync(default);
+        var optionsResult = await admin.DescribeFeaturesAsync(new DescribeFeaturesOptions());
+        await Assert.That(optionsResult.SupportedFeatures).IsEquivalentTo(original.SupportedFeatures);
+        await Assert.That(optionsResult.FinalizedFeatures).IsEquivalentTo(original.FinalizedFeatures);
+        await second.DidNotReceiveWithAnyArgs().SendAsync<ApiVersionsRequest, ApiVersionsResponse>(default!, default, default);
+    }
+
+    [Test]
+    [Arguments(-1)]
+    [Arguments(0)]
+    public async Task DescribeFeaturesAsync_InvalidOrExpiredTimeout_DoesNotInitialize(int timeoutMs)
+    {
+        var (admin, first, _) = CreateAdmin(updateFeaturesVersion: 1);
+        if (timeoutMs < 0)
+            await Assert.ThrowsAsync<ArgumentOutOfRangeException>(async () =>
+                await admin.DescribeFeaturesAsync(new DescribeFeaturesOptions { TimeoutMs = timeoutMs }));
+        else
+            await Assert.ThrowsAsync<TimeoutException>(async () =>
+                await admin.DescribeFeaturesAsync(new DescribeFeaturesOptions { TimeoutMs = timeoutMs }));
+        await first.DidNotReceiveWithAnyArgs().SendAsync<MetadataRequest, MetadataResponse>(default!, default, default);
+    }
+
+    [Test]
+    public async Task DescribeFeaturesAsync_PreCancelled_DoesNotInitialize()
+    {
+        var (admin, first, _) = CreateAdmin(updateFeaturesVersion: 1);
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        await Assert.ThrowsAsync<OperationCanceledException>(async () =>
+            await admin.DescribeFeaturesAsync(new DescribeFeaturesOptions { NodeId = 2 }, cancellation.Token));
+        await first.DidNotReceiveWithAnyArgs().SendAsync<MetadataRequest, MetadataResponse>(default!, default, default);
+    }
+
+    [Test]
+    public async Task DescribeFeaturesAsync_FailedExplicitNode_NeverQueriesAnotherNode()
+    {
+        var (admin, first, second) = CreateAdmin(updateFeaturesVersion: 1);
+        await admin.DescribeClusterAsync();
+        first.ClearReceivedCalls();
+        second.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
+            Arg.Any<ApiVersionsRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromException<ApiVersionsResponse>(new KafkaException(ErrorCode.MismatchedEndpointType, "wrong endpoint")));
+
+        var exception = await Assert.ThrowsAsync<KafkaException>(async () =>
+            await admin.DescribeFeaturesAsync(new DescribeFeaturesOptions { NodeId = 2 }));
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.MismatchedEndpointType);
+        await first.DidNotReceiveWithAnyArgs().SendAsync<ApiVersionsRequest, ApiVersionsResponse>(default!, default, default);
+    }
+
+    [Test]
+    [Arguments(true)]
+    [Arguments(false)]
+    public async Task DescribeFeaturesAsync_BlockedNode_ObservesCancellationAndTimeout(bool callerCancels)
+    {
+        var (admin, first, second) = CreateAdmin(updateFeaturesVersion: 1);
+        await admin.DescribeClusterAsync();
+        first.ClearReceivedCalls();
+        using var cancellation = new CancellationTokenSource();
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        second.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
+            Arg.Any<ApiVersionsRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
+            .Returns(call => WaitForCancellationAsync(started, call.Arg<CancellationToken>()));
+        var operation = admin.DescribeFeaturesAsync(
+            new DescribeFeaturesOptions { NodeId = 2, TimeoutMs = callerCancels ? 30_000 : 200 }, cancellation.Token).AsTask();
+        await started.Task;
+        if (callerCancels)
+        {
+            cancellation.Cancel();
+            await Assert.ThrowsAsync<OperationCanceledException>(async () => await operation);
+        }
+        else
+        {
+            await Assert.ThrowsAsync<TimeoutException>(async () => await operation);
+        }
+        await first.DidNotReceiveWithAnyArgs().SendAsync<ApiVersionsRequest, ApiVersionsResponse>(default!, default, default);
+    }
+
+    private static async ValueTask<ApiVersionsResponse> WaitForCancellationAsync(
+        TaskCompletionSource started, CancellationToken cancellationToken)
+    {
+        started.SetResult();
+        await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+        throw new InvalidOperationException("Expected cancellation");
+    }
+
+    [Test]
+    public async Task DescribeFeaturesAsync_ExplicitNode_UsesDestinationCapabilities()
+    {
+        var (admin, first, second) = CreateAdmin(updateFeaturesVersion: 1);
+        var result = await ((IAdminClient)admin).DescribeFeaturesAsync(new DescribeFeaturesOptions { NodeId = 2 });
+
+        await Assert.That(result.SupportedFeatures["metadata.version"])
+            .IsEqualTo(new FeatureVersionRange(7, 20));
+        await Assert.That(result.FinalizedFeaturesEpoch).IsEqualTo(42L);
+        await second.Received(1).SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
+            Arg.Is<ApiVersionsRequest>(request => request.NodeId == 2 && request.ClusterId == "test-cluster"),
+            5, Arg.Any<CancellationToken>());
+        // The first connection is used only for metadata initialization, not the feature query.
+        await first.DidNotReceive().SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
+            Arg.Any<ApiVersionsRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task DescribeFeaturesAsync_UnknownNode_DoesNotFallBack()
+    {
+        var (admin, first, second) = CreateAdmin(updateFeaturesVersion: 1);
+        await admin.DescribeClusterAsync();
+        first.ClearReceivedCalls();
+        second.ClearReceivedCalls();
+
+        var exception = await Assert.ThrowsAsync<KafkaException>(async () =>
+            await ((IAdminClient)admin).DescribeFeaturesAsync(new DescribeFeaturesOptions { NodeId = 99 }));
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.BrokerNotAvailable);
+        await first.DidNotReceiveWithAnyArgs().SendAsync<ApiVersionsRequest, ApiVersionsResponse>(default!, default, default);
+        await second.DidNotReceiveWithAnyArgs().SendAsync<ApiVersionsRequest, ApiVersionsResponse>(default!, default, default);
+    }
+
+    [Test]
+    public async Task DescribeFeaturesAsync_InvalidNode_RejectsBeforeInitialization()
+    {
+        var (admin, first, _) = CreateAdmin(updateFeaturesVersion: 1);
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(async () =>
+            await ((IAdminClient)admin).DescribeFeaturesAsync(new DescribeFeaturesOptions { NodeId = -1 }));
+        await first.DidNotReceiveWithAnyArgs().SendAsync<MetadataRequest, MetadataResponse>(default!, default, default);
+    }
+
+    [Test]
+    public async Task DescribeFeaturesAsync_LegacyImplementation_RejectsUnsupportedCapability()
+    {
+        var admin = Substitute.For<IAdminClient>();
+        await Assert.ThrowsAsync<NotSupportedException>(async () =>
+            await admin.DescribeFeaturesAsync(new DescribeFeaturesOptions { NodeId = 2 }));
+    }
+
+    [Test]
     public async Task DescribeFeaturesAsync_MapsConnectionCapabilitySnapshot()
     {
         var (admin, connection, _) = CreateAdmin(updateFeaturesVersion: 1);
@@ -205,7 +344,16 @@ public sealed class AdminClientFeatureTests
             FinalizedFeatures = [new FinalizedFeature("metadata.version", 17, 7)]
         };
         var first = CreateConnection(1, apiVersions);
-        var second = CreateConnection(2, apiVersions);
+        var secondApiVersions = new ApiVersionsResponse
+        {
+            ErrorCode = ErrorCode.None,
+            ApiKeys = [new ApiVersion(ApiKey.ApiVersions, 0, 5), new ApiVersion(ApiKey.Metadata, 9, 13),
+                new ApiVersion(ApiKey.UpdateFeatures, 0, updateFeaturesVersion)],
+            SupportedFeatures = [new SupportedFeature("metadata.version", 7, 20)],
+            FinalizedFeaturesEpoch = 41,
+            FinalizedFeatures = [new FinalizedFeature("metadata.version", 16, 7)]
+        };
+        var second = CreateConnection(2, secondApiVersions);
         var metadataCalls = 0;
         first.SendAsync<MetadataRequest, MetadataResponse>(
                 Arg.Any<MetadataRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
@@ -215,12 +363,14 @@ public sealed class AdminClientFeatureTests
                 Arg.Any<MetadataRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
             .Returns(ValueTask.FromResult(CreateMetadataResponse(2)));
 
+        IKafkaConnection firstEndpoint = new CapabilityConnection(first, apiVersions);
+        IKafkaConnection secondEndpoint = new CapabilityConnection(second, secondApiVersions);
         var pool = Substitute.For<IConnectionPool>();
         pool.GetConnectionAsync(Arg.Any<int>(), Arg.Any<CancellationToken>())
             .Returns(callInfo => ValueTask.FromResult(
-                callInfo.Arg<int>() == 2 ? second : first));
+                callInfo.Arg<int>() == 2 ? secondEndpoint : firstEndpoint));
         pool.GetConnectionAsync(Arg.Any<string>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
-            .Returns(ValueTask.FromResult(first));
+            .Returns(ValueTask.FromResult(firstEndpoint));
 
         var metadataManager = new MetadataManager(pool, ["localhost:9092"]);
         var admin = new AdminClient(
@@ -261,4 +411,50 @@ public sealed class AdminClientFeatureTests
         ControllerId = controllerId,
         Topics = []
     };
+
+    private sealed class CapabilityConnection(IKafkaConnection inner, ApiVersionsResponse response)
+        : IKafkaConnection, IKafkaCapabilityProvider
+    {
+        public int BrokerId => inner.BrokerId;
+        public string Host => inner.Host;
+        public int Port => inner.Port;
+        public bool IsConnected => inner.IsConnected;
+        public KafkaConnectionCapabilities Capabilities { get; } = KafkaConnectionCapabilities.Create(response);
+        public ValueTask<TResponse> SendAsync<TRequest, TResponse>(
+            TRequest request, short apiVersion, CancellationToken cancellationToken = default)
+            where TRequest : IKafkaRequest<TResponse>
+            where TResponse : IKafkaResponse => inner.SendAsync<TRequest, TResponse>(request, apiVersion, cancellationToken);
+
+        public ValueTask SendFireAndForgetAsync<TRequest, TResponse>(
+            TRequest request,
+            short apiVersion,
+            CancellationToken cancellationToken = default)
+            where TRequest : IKafkaRequest<TResponse>
+            where TResponse : IKafkaResponse => throw new NotSupportedException();
+
+        public Task<TResponse> SendPipelinedAsync<TRequest, TResponse>(
+            TRequest request,
+            short apiVersion,
+            CancellationToken cancellationToken = default)
+            where TRequest : IKafkaRequest<TResponse>
+            where TResponse : IKafkaResponse => throw new NotSupportedException();
+
+        public ValueTask SendFireAndForgetWithCallerTimeoutAsync<TRequest, TResponse>(
+            TRequest request,
+            short apiVersion,
+            CancellationToken cancellationToken = default)
+            where TRequest : IKafkaRequest<TResponse>
+            where TResponse : IKafkaResponse => throw new NotSupportedException();
+
+        public Task<TResponse> SendPipelinedWithCallerTimeoutAsync<TRequest, TResponse>(
+            TRequest request,
+            short apiVersion,
+            CancellationToken cancellationToken = default)
+            where TRequest : IKafkaRequest<TResponse>
+            where TResponse : IKafkaResponse => throw new NotSupportedException();
+
+        public ValueTask ConnectAsync(CancellationToken cancellationToken = default) => ValueTask.CompletedTask;
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
 }
