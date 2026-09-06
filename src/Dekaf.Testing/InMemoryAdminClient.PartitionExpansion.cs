@@ -1,5 +1,4 @@
 using Dekaf.Admin;
-using Dekaf.Protocol.Messages;
 
 namespace Dekaf.Testing;
 
@@ -18,19 +17,7 @@ public sealed partial class InMemoryAdminClient : IPartitionExpansionAdminClient
         ArgumentOutOfRangeException.ThrowIfNegative(timeoutMs);
 
         // Validate and snapshot the whole batch before faults can suspend or mutations begin.
-        var topics = new List<CreatePartitionsTopic>(newPartitions.Count);
-        foreach (var pair in newPartitions)
-        {
-            ArgumentException.ThrowIfNullOrWhiteSpace(pair.Key);
-            ArgumentNullException.ThrowIfNull(pair.Value);
-            ArgumentOutOfRangeException.ThrowIfLessThan(pair.Value.TotalCount, 1);
-            topics.Add(new CreatePartitionsTopic
-            {
-                Name = pair.Key,
-                Count = pair.Value.TotalCount,
-                Assignments = AdminClient.CopyPartitionAssignments(pair.Value, nameof(newPartitions))
-            });
-        }
+        var topics = AdminClient.BuildPartitionExpansionTopics(newPartitions);
 
         if (topics.Count == 0)
             await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);

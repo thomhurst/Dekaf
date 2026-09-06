@@ -16,6 +16,14 @@ public sealed partial class AdminClient
         ArgumentOutOfRangeException.ThrowIfNegative(timeoutMs);
 
         // Snapshot caller-owned collections before any await so retries preserve replica order.
+        var topics = BuildPartitionExpansionTopics(newPartitions);
+
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+        await CreatePartitionsCoreAsync(topics, timeoutMs, options?.ValidateOnly ?? false, cancellationToken).ConfigureAwait(false);
+    }
+
+    internal static List<CreatePartitionsTopic> BuildPartitionExpansionTopics(IReadOnlyDictionary<string, NewPartitions> newPartitions)
+    {
         var topics = new List<CreatePartitionsTopic>(newPartitions.Count);
         foreach (var pair in newPartitions)
         {
@@ -30,11 +38,10 @@ public sealed partial class AdminClient
             });
         }
 
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
-        await CreatePartitionsCoreAsync(topics, timeoutMs, options?.ValidateOnly ?? false, cancellationToken).ConfigureAwait(false);
+        return topics;
     }
 
-    internal static CreatePartitionsAssignment[]? CopyPartitionAssignments(NewPartitions partitions, string parameterName)
+    private static CreatePartitionsAssignment[]? CopyPartitionAssignments(NewPartitions partitions, string parameterName)
     {
         var assignments = partitions.ReplicaAssignments;
         if (assignments is null)
