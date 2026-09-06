@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Sockets;
 
@@ -9,7 +8,10 @@ internal sealed class ClientDnsEndpointResolver
     public static ClientDnsEndpointResolver Default { get; } = new(new SystemDnsLookup());
 
     private readonly IDnsLookup _dnsLookup;
-    private readonly ConcurrentDictionary<EndpointCacheKey, IPAddress> _lastSuccessfulAddresses = new();
+    // Preferences are connection-time hints, not cached DNS results. Four entries per bucket
+    // bound retained hosts and lookup work; reused slots avoid allocations during steady churn.
+    private const int PreferenceBucketCount = 256;
+    private readonly PreferenceBucket?[] _successfulPreferences = new PreferenceBucket?[PreferenceBucketCount];
 
     public ClientDnsEndpointResolver(IDnsLookup dnsLookup)
     {
@@ -39,17 +41,40 @@ internal sealed class ClientDnsEndpointResolver
             addresses = await _dnsLookup.GetHostAddressesAsync(host, cancellationToken).ConfigureAwait(false);
         }
 
-        var endpoints = addresses
-            .Where(IsSupportedAddress)
-            .Distinct()
-            .Select(ipAddress => new ClientDnsEndpoint(ipAddress, port, targetHost))
-            .ToArray();
-
-        if (endpoints.Length == 0)
+        if (addresses.Length == 0)
             return [];
 
+        if (addresses.Length == 1)
+            return IsSupportedAddress(addresses[0]) ? [new ClientDnsEndpoint(addresses[0], port, targetHost)] : [];
+
+        var seen = new HashSet<IPAddress>();
+        for (var index = 0; index < addresses.Length; index++)
+        {
+            var candidate = addresses[index];
+            if (IsSupportedAddress(candidate))
+                seen.Add(candidate);
+        }
+        if (seen.Count == 0)
+            return [];
+
+        // Size by unique supported addresses, then retain their original DNS order.
+        var endpoints = new ClientDnsEndpoint[seen.Count];
+        var count = 0;
+        for (var index = 0; index < addresses.Length; index++)
+        {
+            var candidate = addresses[index];
+            if (IsSupportedAddress(candidate) && seen.Remove(candidate))
+            {
+                endpoints[count++] = new ClientDnsEndpoint(candidate, port, targetHost);
+                if (count == endpoints.Length)
+                    break;
+            }
+        }
+
         var key = new EndpointCacheKey(host, port, lookup);
-        if (_lastSuccessfulAddresses.TryGetValue(key, out var lastSuccessful))
+        var hash = key.GetHashCode();
+        var bucket = Volatile.Read(ref _successfulPreferences[hash & (PreferenceBucketCount - 1)]);
+        if (bucket?.GetAddress(key, hash) is { } lastSuccessful)
             MoveAddressToFront(endpoints, lastSuccessful);
 
         return endpoints;
@@ -57,7 +82,16 @@ internal sealed class ClientDnsEndpointResolver
 
     public void MarkSuccessful(string host, int port, ClientDnsLookup lookup, IPAddress address)
     {
-        _lastSuccessfulAddresses[new EndpointCacheKey(host, port, lookup)] = address;
+        var key = new EndpointCacheKey(host, port, lookup);
+        var hash = key.GetHashCode();
+        var index = hash & (PreferenceBucketCount - 1);
+        var bucket = Volatile.Read(ref _successfulPreferences[index]);
+        if (bucket is null)
+        {
+            var created = new PreferenceBucket();
+            bucket = Interlocked.CompareExchange(ref _successfulPreferences[index], created, null) ?? created;
+        }
+        bucket.SetAddress(key, hash, address);
     }
 
     private static bool IsSupportedAddress(IPAddress address)
@@ -68,16 +102,67 @@ internal sealed class ClientDnsEndpointResolver
 
     private static void MoveAddressToFront(ClientDnsEndpoint[] endpoints, IPAddress address)
     {
-        var index = Array.FindIndex(endpoints, endpoint => endpoint.Address.Equals(address));
-        if (index <= 0)
-            return;
+        for (var index = 0; index < endpoints.Length; index++)
+        {
+            if (!endpoints[index].Address.Equals(address))
+                continue;
 
-        var selected = endpoints[index];
-        Array.Copy(endpoints, 0, endpoints, 1, index);
-        endpoints[0] = selected;
+            if (index > 0)
+            {
+                var selected = endpoints[index];
+                Array.Copy(endpoints, 0, endpoints, 1, index);
+                endpoints[0] = selected;
+            }
+            return;
+        }
     }
 
     private readonly record struct EndpointCacheKey(string Host, int Port, ClientDnsLookup Lookup);
+
+    private sealed class PreferenceBucket
+    {
+        private readonly PreferenceEntry[] _entries = new PreferenceEntry[4];
+        private int _count;
+        private int _next;
+
+        public IPAddress? GetAddress(EndpointCacheKey key, int hash)
+        {
+            // DNS preferences are consulted only while establishing connections. A bucket lock
+            // keeps a reused slot's endpoint key and address coherent for concurrent clients.
+            lock (this)
+            {
+                for (var index = 0; index < _count; index++)
+                {
+                    if (_entries[index].Hash == hash && _entries[index].Key == key)
+                        return _entries[index].Address;
+                }
+                return null;
+            }
+        }
+
+        public void SetAddress(EndpointCacheKey key, int hash, IPAddress address)
+        {
+            lock (this)
+            {
+                for (var index = 0; index < _count; index++)
+                {
+                    if (_entries[index].Hash == hash && _entries[index].Key == key)
+                    {
+                        _entries[index] = new PreferenceEntry(hash, key, address);
+                        return;
+                    }
+                }
+
+                // FIFO within the bucket: updating a preference does not consume another slot.
+                _entries[_next] = new PreferenceEntry(hash, key, address);
+                _next = (_next + 1) & 3;
+                if (_count < _entries.Length)
+                    _count++;
+            }
+        }
+    }
+
+    private readonly record struct PreferenceEntry(int Hash, EndpointCacheKey Key, IPAddress Address);
 }
 
 internal readonly record struct ClientDnsEndpoint(IPAddress Address, int Port, string TargetHost);
