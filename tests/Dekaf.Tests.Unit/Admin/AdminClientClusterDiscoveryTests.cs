@@ -18,7 +18,7 @@ public sealed class AdminClientClusterDiscoveryTests
     {
         var (admin, connection, pool, metadata) = CreateAdmin();
         await using var client = admin;
-        var result = await ((IAdminClient)client).DescribeClusterAsync(
+        var result = await client.DescribeClusterAsync(
             new DescribeClusterOptions { IncludeFencedBrokers = includeFenced });
 
         await Assert.That(result.ClusterId).IsEqualTo("cluster");

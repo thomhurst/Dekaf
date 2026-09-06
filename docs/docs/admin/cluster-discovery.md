@@ -34,3 +34,5 @@ Fenced brokers remain registered with the cluster but are unavailable for normal
 The existing `DescribeClusterAsync(cancellationToken)` overload retains its metadata-cache semantics and result type. The new overload always makes a live request and returns a separate administrative snapshot. Pass a cancellation token to bound initialization, retries, and the request.
 
 Custom `IAdminClient` implementations remain compatible. They can opt into `IClusterDiscoveryAdminClient`; otherwise the extension method throws `NotSupportedException`.
+
+`Dekaf.Testing.InMemoryAdminClient` implements this capability with its single in-memory broker. Both option values return that broker with `IsFenced = false`; the in-memory cluster does not simulate fencing. Discovery observes the configured admin fault plan and cancellation, and leaves routing metadata unchanged.
