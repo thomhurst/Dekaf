@@ -16,11 +16,16 @@ namespace Dekaf.Tests.Unit.Producer;
 public sealed class IdempotentInitializationTests
 {
     [Test]
-    public async Task InitializeAsync_ConnectionRefused_TriesNextBroker(CancellationToken cancellationToken)
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task InitializeAsync_ConnectionFailure_TriesNextBroker(bool dnsFailure, CancellationToken cancellationToken)
     {
         await using var harness = new Harness();
+        Exception failure = dnsFailure
+            ? new DnsResolutionException("offline-broker", 9092, new SocketException((int)SocketError.HostNotFound))
+            : new SocketException((int)SocketError.ConnectionRefused);
         harness.Connect = (id, _) => id == harness.BrokerIds[0]
-            ? ValueTask.FromException<IKafkaConnection>(new SocketException((int)SocketError.ConnectionRefused))
+            ? ValueTask.FromException<IKafkaConnection>(failure)
             : ValueTask.FromResult(harness.Connections[id]);
 
         await harness.Producer.InitializeAsync(cancellationToken);
@@ -140,11 +145,16 @@ public sealed class IdempotentInitializationTests
     }
 
     [Test]
-    public async Task InitializeAsync_AllBrokersUnavailable_TimeoutPreservesLastTransportFailure(CancellationToken cancellationToken)
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task InitializeAsync_AllBrokersUnavailable_TimeoutPreservesLastTransportFailure(
+        bool dnsFailure, CancellationToken cancellationToken)
     {
         await using var harness = new Harness(maxBlockMs: 1000, retryBackoffMs: 10_000);
         var firstFailure = new SocketException((int)SocketError.ConnectionRefused);
-        var lastFailure = new IOException("Last broker disconnected", firstFailure);
+        Exception lastFailure = dnsFailure
+            ? new DnsResolutionException("last-broker", 9093, firstFailure)
+            : new IOException("Last broker disconnected", firstFailure);
         harness.Connect = (id, _) => ValueTask.FromException<IKafkaConnection>(
             id == harness.BrokerIds[0] ? firstFailure : lastFailure);
 
@@ -155,6 +165,7 @@ public sealed class IdempotentInitializationTests
         await Assert.That(exception.Elapsed).IsLessThan(TimeSpan.FromSeconds(5));
         await Assert.That(exception.Message).Contains("InitProducerId");
         await Assert.That(ReferenceEquals(exception.InnerException, lastFailure)).IsTrue();
+        await Assert.That(ReferenceEquals(exception.InnerException!.InnerException, firstFailure)).IsTrue();
         await Assert.That(harness.ConnectionAttempts.ToArray()).IsEquivalentTo(harness.BrokerIds);
     }
 

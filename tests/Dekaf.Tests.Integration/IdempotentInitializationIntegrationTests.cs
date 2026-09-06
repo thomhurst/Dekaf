@@ -1,3 +1,5 @@
+using System.Net;
+using System.Net.Sockets;
 using Dekaf.Internal;
 using Dekaf.Metadata;
 using Dekaf.Networking;
@@ -13,14 +15,23 @@ namespace Dekaf.Tests.Integration;
 public sealed class IdempotentInitializationIntegrationTests(RackAwareKafkaContainer kafka)
 {
     [Test]
+    [Arguments(0)] // TCP connection failure.
+    [Arguments(1)] // DNS resolver throws.
+    [Arguments(2)] // DNS resolver returns no addresses.
     [Timeout(180_000)]
-    public async Task InitializeAsync_FirstKnownBrokerOffline_ObtainsIdAndProduces(CancellationToken cancellationToken)
+    public async Task InitializeAsync_FirstKnownBrokerOffline_ObtainsIdAndProduces(
+        int dnsFailureMode, CancellationToken cancellationToken)
     {
         var topic = await kafka.CreateReplicatedTopicAsync();
         var bootstrapServers = kafka.BootstrapServers.Split(',');
         await using var pool = new ConnectionPool(
             "idempotent-init-failover",
-            new ConnectionOptions { ConnectionTimeout = TimeSpan.FromSeconds(2), RequestTimeout = TimeSpan.FromSeconds(5) },
+            new ConnectionOptions
+            {
+                ConnectionTimeout = TimeSpan.FromSeconds(2),
+                RequestTimeout = TimeSpan.FromSeconds(5),
+                DnsResolver = new ClientDnsEndpointResolver(new FailingDnsLookup(returnEmptyAddresses: dnsFailureMode == 2))
+            },
             GlobalTestSetup.GetLoggerFactory());
         await using var metadata = new MetadataManager(pool, bootstrapServers,
             options: new MetadataOptions { EnableBackgroundRefresh = false });
@@ -34,6 +45,10 @@ public sealed class IdempotentInitializationIntegrationTests(RackAwareKafkaConta
         {
             await kafka.StopBrokerAsync(firstBroker.NodeId, cancellationToken);
             await pool.CloseAllAsync();
+            // Numeric addresses bypass DNS. Override only the stopped broker's endpoint
+            // to exercise real connection-layer wrapping of resolver errors/empty results.
+            if (dnsFailureMode != 0)
+                pool.RegisterBroker(firstBroker.NodeId, "offline-broker.invalid", firstBroker.Port);
             if (previousLeader == firstBroker.NodeId)
                 await kafka.WaitForPartitionLeaderChangeAsync(topic, previousLeader, cancellationToken);
 
@@ -73,5 +88,16 @@ public sealed class IdempotentInitializationIntegrationTests(RackAwareKafkaConta
             await kafka.StartBrokerAsync(firstBroker.NodeId, CancellationToken.None);
             await kafka.WaitForInSyncReplicasAsync(topic, 3, CancellationToken.None);
         }
+    }
+
+    private sealed class FailingDnsLookup(bool returnEmptyAddresses) : IDnsLookup
+    {
+        public ValueTask<IPAddress[]> GetHostAddressesAsync(string host, CancellationToken cancellationToken)
+            => returnEmptyAddresses
+                ? ValueTask.FromResult<IPAddress[]>([])
+                : ValueTask.FromException<IPAddress[]>(new SocketException((int)SocketError.HostNotFound));
+
+        public ValueTask<IPHostEntry> GetHostEntryAsync(string host, CancellationToken cancellationToken)
+            => ValueTask.FromException<IPHostEntry>(new SocketException((int)SocketError.HostNotFound));
     }
 }
