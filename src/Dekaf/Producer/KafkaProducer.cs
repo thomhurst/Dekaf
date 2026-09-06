@@ -5753,8 +5753,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                             return;
                         }
                         catch (Exception ex) when (!initializationToken.IsCancellationRequested
-                            && ex is System.Net.Sockets.SocketException or IOException or TimeoutException
-                                or KafkaTimeoutException or DnsResolutionException or KafkaException { IsRetriable: true })
+                            && RetryHelper.IsRetriableBrokerFailure(ex))
                         {
                             lastFailure = ex;
                             LogIdempotentInitializationBrokerFailed(ex, brokerId);
