@@ -478,6 +478,26 @@ public class HealthCheckTests
         var result = await healthCheck.CheckHealthAsync(CreateContext());
 
         await Assert.That(result.Status).IsEqualTo(HealthStatus.Healthy);
+        await Assert.That(result.Description).IsEqualTo(
+            "Producer queue drained. Delivery outcomes and broker connectivity are not checked.");
+    }
+
+    [Test]
+    public async Task ProducerHealthCheck_FlushRecovers_DoesNotLatchFailure()
+    {
+        var producer = Substitute.For<IKafkaProducer<string, string>>();
+        producer.FlushAsync(Arg.Any<CancellationToken>()).Returns(
+            _ => ValueTask.FromException(new InvalidOperationException("flush failed")),
+            _ => ValueTask.CompletedTask);
+        var healthCheck = new DekafProducerHealthCheck<string, string>(
+            producer, new DekafProducerHealthCheckOptions());
+
+        var failed = await healthCheck.CheckHealthAsync(CreateContext());
+        var recovered = await healthCheck.CheckHealthAsync(CreateContext());
+
+        await Assert.That(failed.Status).IsEqualTo(HealthStatus.Unhealthy);
+        await Assert.That(recovered.Status).IsEqualTo(HealthStatus.Healthy);
+        await Assert.That(recovered.Exception).IsNull();
     }
 
     [Test]

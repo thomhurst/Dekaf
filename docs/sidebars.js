@@ -80,6 +80,7 @@ const sidebars = {
       label: 'Operations & Administration',
       items: [
         'observability',
+        'health-checks',
         'admin/topic-identifiers',
         'admin/transaction-remediation',
         'admin/replica-log-directories',
