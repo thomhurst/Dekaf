@@ -1,1 +1,6 @@
 #nullable enable
+override Dekaf.Outbox.OutboxRelayService.Dispose() -> void
+Dekaf.Outbox.IOutboxLeaseRenewalStore
+Dekaf.Outbox.IOutboxLeaseRenewalStore.RenewBucketLeasesAsync(Dekaf.Outbox.OutboxLeaseRequest! request, System.Collections.Generic.IReadOnlyList<int>! buckets, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<bool>
+Dekaf.Outbox.OutboxRelayOptions.MaxPublishDuration.get -> System.TimeSpan?
+Dekaf.Outbox.OutboxRelayOptions.MaxPublishDuration.init -> void

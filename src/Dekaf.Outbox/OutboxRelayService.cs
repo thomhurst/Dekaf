@@ -27,6 +27,7 @@ public sealed partial class OutboxRelayService : BackgroundService
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<OutboxRelayService> _logger;
     private readonly OutboxLeaseRequest _leaseRequest;
+    private readonly IOutboxLeaseRenewalStore? _renewalStore;
 
     private IReadOnlyList<int> _ownedBuckets = [];
     private long _leaseTimestamp;
@@ -43,6 +44,14 @@ public sealed partial class OutboxRelayService : BackgroundService
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(logger);
         options.Validate();
+        _renewalStore = store as IOutboxLeaseRenewalStore;
+        if (_renewalStore is null && options.MaxPublishDuration is null)
+        {
+            throw new OutboxMisconfigurationException(
+                "The outbox store must implement IOutboxLeaseRenewalStore or configure MaxPublishDuration " +
+                "as a bound for the entire publisher call, including all rows, backpressure and delivery attempts. " +
+                "One record's producer delivery timeout is not a whole-batch bound.");
+        }
 
         _store = store;
         _publisher = publisher;
@@ -162,12 +171,15 @@ public sealed partial class OutboxRelayService : BackgroundService
             if (cancellationToken.IsCancellationRequested)
                 break;
 
-            if (LeaseAge() >= _options.LeaseDuration)
+            if (_ownedBuckets.Count == 0 || LeaseAge() >= _options.LeaseDuration)
             {
                 // Lease may have expired mid-cycle; stop publishing until re-acquired.
                 ResetLeaseState();
                 break;
             }
+
+            if (_renewalStore is null && !OwnsBucket(pendingBuckets[i]))
+                continue;
 
             var bucketResult = await DrainBucketAsync(pendingBuckets[i], cancellationToken).ConfigureAwait(false);
             publishedAny |= bucketResult.PublishedAny;
@@ -189,9 +201,9 @@ public sealed partial class OutboxRelayService : BackgroundService
     /// </summary>
     private bool RenewalDue => _leaseTimestamp == 0 || LeaseAge() >= _options.LeaseRenewInterval;
 
-    private async Task RefreshLeasesIfDueAsync(CancellationToken cancellationToken)
+    private async Task RefreshLeasesIfDueAsync(CancellationToken cancellationToken, bool force = false)
     {
-        if (!RenewalDue)
+        if (!force && !RenewalDue)
             return;
 
         // Captured before the store call: the database computes lease expiry when the call
@@ -223,11 +235,8 @@ public sealed partial class OutboxRelayService : BackgroundService
             // A long backlog must not outlive the lease from inside this loop: stop as soon
             // as renewal is due so the next cycle renews before the lease can expire and a
             // peer relay could claim the bucket (which would break single-writer ordering).
-            // The first batch is always allowed: a slow-but-successful acquisition can
-            // return a lease that is already renewal-due (its age is measured from before
-            // the call, deliberately), and yielding before any work would leave the relay
-            // renewing forever without publishing. The cycle-level expiry check still gates
-            // truly dead leases.
+            // Fetch the first batch even after a slow acquisition. PreparePublishLeaseAsync
+            // then renews or reserves its whole-call budget before publishing begins.
             if (!firstBatch && RenewalDue)
                 break;
 
@@ -248,8 +257,60 @@ public sealed partial class OutboxRelayService : BackgroundService
 
             firstBatch = false;
 
-            var result = await _publisher.PublishAsync(batch, _options.MessageIdHeaderName, cancellationToken)
-                .ConfigureAwait(false);
+            if (!await PreparePublishLeaseAsync(bucket, cancellationToken).ConfigureAwait(false))
+                return new CycleResult(publishedAny, HadError: true);
+
+            var publishStarted = _options.MaxPublishDuration.HasValue ? _timeProvider.GetTimestamp() : 0;
+            var publish = _publisher.PublishAsync(batch, _options.MessageIdHeaderName, cancellationToken);
+            OutboxPublishResult result;
+            Exception? renewalError = null;
+            if (_renewalStore is not null && !publish.IsCompletedSuccessfully)
+            {
+                var publishTask = publish.AsTask();
+                try
+                {
+                    while (!publishTask.IsCompleted)
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        var remaining = _options.LeaseDuration - LeaseAge();
+                        if (remaining <= TimeSpan.Zero)
+                            throw new InvalidOperationException("The outbox lease expired during publishing.");
+
+                        var nextRenewal = GetRenewalDelay(remaining, cancellationToken);
+                        if (await Task.WhenAny(publishTask, nextRenewal).ConfigureAwait(false) == publishTask)
+                            break;
+
+                        await nextRenewal.ConfigureAwait(false);
+                        CancelRenewalDelay();
+                        if (!await RenewOwnedLeasesAsync(cancellationToken).ConfigureAwait(false))
+                            throw new InvalidOperationException("The outbox no longer owns all publishing leases.");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    // Store/timer failures must not bypass observation of the in-flight
+                    // publisher below. Preserve the error and retain rows after it finishes.
+                    renewalError = ex;
+                    ResetLeaseState();
+                }
+
+                // Always observe publishing before another cycle, including after lease
+                // loss. Cancellation cannot retract an already-appended Kafka record.
+                result = await publishTask.ConfigureAwait(false);
+            }
+            else
+            {
+                result = await publish.ConfigureAwait(false);
+            }
+
+            // Cooperative shutdown retains rows for at-least-once replay instead of
+            // misclassifying the elapsed publish budget as a fatal configuration error.
+            cancellationToken.ThrowIfCancellationRequested();
+            ValidatePublishDuration(publishStarted);
+            if (renewalError is OutboxMisconfigurationException misconfiguration)
+                throw misconfiguration;
+            if (renewalError is not null || LeaseAge() >= _options.LeaseDuration)
+                result = LostPublishLease(renewalError);
 
             if (result.AckedCount > 0)
             {

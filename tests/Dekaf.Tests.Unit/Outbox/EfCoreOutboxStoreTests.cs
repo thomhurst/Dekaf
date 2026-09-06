@@ -12,6 +12,38 @@ public class EfCoreOutboxStoreTests
     private static readonly int[] AllBuckets = [0, 1, 2, 3];
     private static readonly int[] BucketsZeroAndTwo = [0, 2];
 
+    [Test]
+    public async Task ActivePublishRenewal_DoesNotReleaseBucketsToNewPeer()
+    {
+        using var db = new SqliteOutboxDatabase();
+        var store = db.CreateStore();
+        var request = Request("relay-a");
+        var owned = await store.AcquireBucketLeasesAsync(request);
+        await store.AcquireBucketLeasesAsync(Request("relay-b"));
+        db.Time.Advance(TimeSpan.FromSeconds(20));
+        var renewed = await ((IOutboxLeaseRenewalStore)store).RenewBucketLeasesAsync(request, owned);
+        await Assert.That(renewed).IsTrue();
+        db.Time.Advance(TimeSpan.FromSeconds(20));
+        await Assert.That(await store.AcquireBucketLeasesAsync(Request("relay-b"))).IsEmpty();
+        // Fair-share changes resume only between publish calls.
+        await Assert.That((await store.AcquireBucketLeasesAsync(request)).Count).IsEqualTo(2);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task ActivePublishRenewal_DoesNotResurrectExpiredOrStolenLease(bool takeover)
+    {
+        using var db = new SqliteOutboxDatabase();
+        var store = db.CreateStore();
+        var request = Request("relay-a");
+        var owned = await store.AcquireBucketLeasesAsync(request);
+        db.Time.Advance(TimeSpan.FromSeconds(61));
+        if (takeover)
+            await store.AcquireBucketLeasesAsync(Request("relay-b"));
+        await Assert.That(await ((IOutboxLeaseRenewalStore)store).RenewBucketLeasesAsync(request, owned)).IsFalse();
+    }
+
     private static OutboxLeaseRequest Request(string relayId, int bucketCount = 4) => new()
     {
         RelayId = relayId,

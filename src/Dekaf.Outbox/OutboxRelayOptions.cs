@@ -54,8 +54,23 @@ public sealed class OutboxRelayOptions
 
     /// <summary>
     /// How often leases are renewed. Must be comfortably below <see cref="LeaseDuration"/>.
+    /// Stores implementing IOutboxLeaseRenewalStore also renew while publication is pending.
     /// </summary>
     public TimeSpan LeaseRenewInterval { get; init; } = TimeSpan.FromSeconds(10);
+
+    /// <summary>
+    /// Conservative bound for an entire PublishAsync call, including submission of every
+    /// row, backpressure and all delivery attempts. Required when the store does not implement
+    /// <see cref="IOutboxLeaseRenewalStore"/>. A single record's delivery timeout is not this bound.
+    /// </summary>
+    /// <remarks>
+    /// This is a publisher timing contract, not a cancellation timeout. The relay reserves
+    /// this much remaining lease time plus a renewal interval after fetching and stops if
+    /// the publisher exceeds it.
+    /// Cancellation cannot fence records already appended to Kafka. Null uses in-flight
+    /// renewal and requires a store supporting that capability.
+    /// </remarks>
+    public TimeSpan? MaxPublishDuration { get; init; }
 
     /// <summary>
     /// Header name stamped with <see cref="OutboxMessage.MessageId"/> on every published
@@ -95,6 +110,16 @@ public sealed class OutboxRelayOptions
         {
             throw new ArgumentException(
                 "LeaseRenewInterval must be less than LeaseDuration, otherwise leases expire between renewals.");
+        }
+
+        if (MaxPublishDuration is { } publishDuration)
+        {
+            ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(publishDuration, TimeSpan.Zero);
+            if (publishDuration >= LeaseDuration - LeaseRenewInterval)
+            {
+                throw new ArgumentException(
+                    "MaxPublishDuration plus LeaseRenewInterval must be less than LeaseDuration.");
+            }
         }
     }
 }

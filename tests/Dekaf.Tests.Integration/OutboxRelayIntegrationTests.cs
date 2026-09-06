@@ -19,7 +19,9 @@ public class OutboxRelayIntegrationTests(KafkaTestContainer kafka) : KafkaIntegr
     private const int BucketCount = 4;
 
     [Test]
-    public async Task Relay_PublishesEnqueuedRowsInOrder_AndEmptiesTable()
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Relay_PublishesEnqueuedRowsInOrder_AndEmptiesTable(bool holdForRenewal)
     {
         var topic = $"outbox-relay-{Guid.NewGuid():N}";
         await KafkaContainer.CreateTopicAsync(topic, partitions: 2);
@@ -45,7 +47,7 @@ public class OutboxRelayIntegrationTests(KafkaTestContainer kafka) : KafkaIntegr
             .Options;
         try
         {
-            await RunRelayScenarioAsync(topic, contextOptions);
+            await RunRelayScenarioAsync(topic, contextOptions, holdForRenewal);
         }
         finally
         {
@@ -55,7 +57,8 @@ public class OutboxRelayIntegrationTests(KafkaTestContainer kafka) : KafkaIntegr
 
     private async Task RunRelayScenarioAsync(
         string topic,
-        DbContextOptions<OutboxContext> contextOptions)
+        DbContextOptions<OutboxContext> contextOptions,
+        bool holdForRenewal)
     {
         await using (var context = new OutboxContext(contextOptions))
         {
@@ -74,19 +77,24 @@ public class OutboxRelayIntegrationTests(KafkaTestContainer kafka) : KafkaIntegr
             await context.SaveChangesAsync();
         }
 
-        var store = new EfCoreOutboxStore<OutboxContext>(new ContextFactory(contextOptions));
+        var store = new ObservedRenewalStore(
+            new EfCoreOutboxStore<OutboxContext>(new ContextFactory(contextOptions)));
         var producer = Kafka.CreateProducer<byte[]?, byte[]?>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("outbox-relay-integration")
             .WithAcks(Acks.All)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .Build();
-        await using var publisher = new DekafOutboxPublisher(producer);
+        await using var producerPublisher = new DekafOutboxPublisher(producer);
+        IOutboxPublisher publisher = holdForRenewal
+            ? new HoldingPublisher(producerPublisher, store.RenewalObserved.Task)
+            : producerPublisher;
 
         var relayOptions = new OutboxRelayOptions
         {
             BucketCount = BucketCount,
             PollInterval = TimeSpan.FromMilliseconds(50),
+            LeaseRenewInterval = holdForRenewal ? TimeSpan.FromSeconds(1) : TimeSpan.FromSeconds(10),
             RelayId = "integration-relay"
         };
 
@@ -120,6 +128,11 @@ public class OutboxRelayIntegrationTests(KafkaTestContainer kafka) : KafkaIntegr
             }
 
             await Assert.That(messages.Count).IsEqualTo(5);
+            if (holdForRenewal)
+            {
+                await store.RenewalObserved.Task.WaitAsync(TimeSpan.FromSeconds(30));
+                await Assert.That(store.PeerBuckets).IsEmpty();
+            }
             for (var i = 0; i < 5; i++)
             {
                 await Assert.That(messages[i].Key).IsEqualTo("order-1");
@@ -140,6 +153,51 @@ public class OutboxRelayIntegrationTests(KafkaTestContainer kafka) : KafkaIntegr
         finally
         {
             await relay.StopAsync(CancellationToken.None);
+        }
+    }
+
+    private sealed class HoldingPublisher(IOutboxPublisher inner, Task release) : IOutboxPublisher
+    {
+        public ValueTask InitializeAsync(CancellationToken cancellationToken = default) => inner.InitializeAsync(cancellationToken);
+        public async ValueTask<OutboxPublishResult> PublishAsync(IReadOnlyList<OutboxMessage> messages,
+            string messageIdHeaderName, CancellationToken cancellationToken = default)
+        {
+            var result = await inner.PublishAsync(messages, messageIdHeaderName, cancellationToken);
+            // Hold the complete publish call open until a real database renewal and peer probe finish.
+            await release.WaitAsync(cancellationToken);
+            return result;
+        }
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+
+    private sealed class ObservedRenewalStore(EfCoreOutboxStore<OutboxContext> inner)
+        : IOutboxStore, IOutboxLeaseRenewalStore
+    {
+        internal TaskCompletionSource RenewalObserved { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal IReadOnlyList<int> PeerBuckets { get; private set; } = [];
+        public ValueTask<IReadOnlyList<int>> AcquireBucketLeasesAsync(OutboxLeaseRequest request,
+            CancellationToken cancellationToken = default) => inner.AcquireBucketLeasesAsync(request, cancellationToken);
+        public ValueTask<IReadOnlyList<int>> GetBucketsWithPendingAsync(IReadOnlyList<int> buckets,
+            CancellationToken cancellationToken = default) => inner.GetBucketsWithPendingAsync(buckets, cancellationToken);
+        public ValueTask<IReadOnlyList<OutboxMessage>> GetNextBatchAsync(int bucket, int maxCount,
+            CancellationToken cancellationToken = default) => inner.GetNextBatchAsync(bucket, maxCount, cancellationToken);
+        public ValueTask MarkPublishedAsync(int bucket, IReadOnlyList<OutboxMessage> publishedMessages,
+            CancellationToken cancellationToken = default) => inner.MarkPublishedAsync(bucket, publishedMessages, cancellationToken);
+
+        public async ValueTask<bool> RenewBucketLeasesAsync(OutboxLeaseRequest request, IReadOnlyList<int> buckets,
+            CancellationToken cancellationToken = default)
+        {
+            var renewed = await inner.RenewBucketLeasesAsync(request, buckets, cancellationToken);
+            if (renewed && !RenewalObserved.Task.IsCompleted)
+            {
+                PeerBuckets = await inner.AcquireBucketLeasesAsync(new OutboxLeaseRequest
+                {
+                    RelayId = "peer-relay", BucketCount = request.BucketCount, LeaseDuration = request.LeaseDuration
+                }, cancellationToken);
+                RenewalObserved.SetResult();
+            }
+            return renewed;
         }
     }
 
