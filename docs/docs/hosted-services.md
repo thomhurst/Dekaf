@@ -236,6 +236,21 @@ public sealed class OrderProcessorService : KafkaConsumerService<string, Order>
 
 When you supply a DLQ callback to `AddConsumerService`, it passes the registered `DeadLetterOptions` into your constructor directly (see [Dead Letter Queues](consumer/dead-letter-queues.md#enabling-the-dlq)). The options are registered keyed per consumer registration — never as a plain singleton — so one consumer's DLQ settings cannot leak into another service. If you wire the hosted service manually with `AddHostedService`, resolve them with `[FromKeyedServices(typeof(IKafkaConsumer<TKey, TValue>))]` (or your service key).
 
+### Exponential retry delays
+
+`ExponentialBackoffRetryPolicy` calculates `min(BaseDelay * 2^(attempt - 1), MaxDelay)`
+using one-based retry attempts. With `Jitter = false`, the delay stays capped even
+at very large attempt numbers. The default `Jitter = true` multiplies the capped
+delay by a random factor from 0.5 up to 1.5, then caps it again at `MaxDelay`.
+Delays are truncated to whole ticks.
+
+`BaseDelay`, `MaxDelay`, and `MaxAttempts` must be nonnegative; assigning a negative
+value throws `ArgumentOutOfRangeException`. A zero base or maximum delay means
+immediate retries, and `MaxAttempts = 0` disables retries. `BaseDelay` may exceed
+`MaxDelay`; the maximum still applies to the first retry. Calling `GetNextDelay`
+with an attempt less than one throws `ArgumentOutOfRangeException`; attempts
+greater than `MaxAttempts` return `null` to stop retrying.
+
 ## Shutdown Behavior
 
 `KafkaConsumerServiceOptions` (fifth constructor parameter) controls shutdown:
