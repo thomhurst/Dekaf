@@ -13,6 +13,7 @@ namespace Dekaf.Tests.Integration;
 public sealed class MalformedTraceContextConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
+    [SkipWhenNativeAot("Confluent.Kafka native delegate binding requires runtime reflection.")]
     [Arguments(false)]
     [Arguments(true)]
     public async Task InvalidTracingHeaders_DoNotInterruptDelivery(bool streaming)
