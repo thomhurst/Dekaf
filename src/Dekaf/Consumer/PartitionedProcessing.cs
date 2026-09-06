@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Runtime.ExceptionServices;
 using System.Threading.Channels;
+using Dekaf.Internal;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 #if NETSTANDARD2_0
@@ -624,6 +625,9 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
     private readonly ConcurrentDictionary<Task, byte> _ignoreRestartTasks = [];
     private readonly List<TopicPartition> _partitionsToStop = [];
     private readonly Channel<RuntimeCommand<TKey, TValue>> _commands;
+    private AsyncAutoResetSignal? _capacitySignal;
+    private AsyncAutoResetSignal? _stopSignal;
+    private Queue<RuntimeCommand<TKey, TValue>>? _deferredCommands;
     private readonly CancellationTokenSource _failureCancellation = new();
     private readonly CancellationTokenSource _restartCancellation = new();
     private readonly object _failureGate = new();
@@ -768,6 +772,7 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
                 await StopScheduledRestartsAsync().ConfigureAwait(false);
                 _commands.Writer.TryComplete();
                 CompletePendingCommands();
+                _capacitySignal?.Dispose();
             }
         }
 
@@ -800,7 +805,7 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
     {
         var partitionArray = partitions as TopicPartition[] ?? partitions.ToArray();
         if (partitionArray.Length > 0)
-            _commands.Writer.TryWrite(RuntimeCommand<TKey, TValue>.AssignPartitions(partitionArray));
+            TryQueueCommand(RuntimeCommand<TKey, TValue>.AssignPartitions(partitionArray));
     }
 
     private void QueueStoppedPartitions(
@@ -809,7 +814,7 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
     {
         var partitionArray = partitions as TopicPartition[] ?? partitions.ToArray();
         if (partitionArray.Length > 0)
-            _commands.Writer.TryWrite(RuntimeCommand<TKey, TValue>.StopPartitions(partitionArray, stopReason));
+            TryQueueCommand(RuntimeCommand<TKey, TValue>.StopPartitions(partitionArray, stopReason));
     }
 
     private sealed class RuntimeRebalanceListener(
@@ -853,7 +858,7 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
         var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var command = RuntimeCommand<TKey, TValue>.Commit(lane, completion, cancellationToken);
 
-        if (!_commands.Writer.TryWrite(command))
+        if (!TryQueueCommand(command))
         {
             var exception = new InvalidOperationException("Partitioned processing runtime is not accepting commit requests.");
             return new ValueTask(Task.FromException(exception));
@@ -911,29 +916,63 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
         _partitionsToStop.Clear();
     }
 
-    private async ValueTask RouteBatchAsync(
+    private ValueTask RouteBatchAsync(
         ConsumeBatch<TKey, TValue> batch,
         CancellationToken cancellationToken)
     {
         var partition = batch.TopicPartition;
         if (!_lanes.TryGetValue(partition, out var lane))
-            return;
+            return default;
 
-        foreach (var result in batch)
+        var records = batch.GetEnumerator();
+        while (records.MoveNext())
         {
-            while (!lane.TryEnqueue(result))
+            if (!lane.TryEnqueue(records.Current))
+                return RouteBackpressuredBatchAsync(records, lane, cancellationToken);
+
+            PauseIfNeeded(lane);
+        }
+
+        return default;
+    }
+
+    private async ValueTask RouteBackpressuredBatchAsync(
+        ConsumeBatch<TKey, TValue>.Enumerator records,
+        PartitionLane<TKey, TValue> lane,
+        CancellationToken cancellationToken)
+    {
+        var signal = _capacitySignal;
+        if (signal is null)
+        {
+            signal = new AsyncAutoResetSignal();
+            signal.RegisterShutdownToken(cancellationToken);
+            Volatile.Write(ref _capacitySignal, signal);
+        }
+
+        // Continue from the rejected record in one async state machine per batch.
+        // Publishing the signal before retrying closes the capacity/command race.
+        do
+        {
+            while (!lane.TryEnqueue(records.Current))
             {
                 PauseIfNeeded(lane);
-                var canWrite = await lane.WaitToWriteAsync(cancellationToken).ConfigureAwait(false);
                 await DrainCommandsAsync(cancellationToken).ConfigureAwait(false);
                 ThrowIfFailed();
 
-                if (!canWrite || !_lanes.TryGetValue(partition, out lane))
+                if (lane.IsCompleted
+                    || !_lanes.TryGetValue(lane.TopicPartition, out var currentLane)
+                    || !ReferenceEquals(currentLane, lane))
                     return;
+
+                if (lane.TryEnqueue(records.Current))
+                    break;
+
+                await signal.WaitAsync(Timeout.Infinite).ConfigureAwait(false);
             }
 
             PauseIfNeeded(lane);
         }
+        while (records.MoveNext());
     }
 
     private void StartLane(TopicPartition partition)
@@ -988,9 +1027,22 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
     private void OnLaneCapacityAvailable(PartitionLane<TKey, TValue> lane)
     {
         if (_options.BackpressureMode != PartitionBackpressureMode.PauseResume)
+        {
+            Volatile.Read(ref _capacitySignal)?.Signal();
             return;
+        }
 
-        _commands.Writer.TryWrite(RuntimeCommand<TKey, TValue>.Resume(lane));
+        TryQueueCommand(RuntimeCommand<TKey, TValue>.Resume(lane));
+    }
+
+    private bool TryQueueCommand(RuntimeCommand<TKey, TValue> command)
+    {
+        if (!_commands.Writer.TryWrite(command))
+            return false;
+
+        Volatile.Read(ref _capacitySignal)?.Signal();
+        Volatile.Read(ref _stopSignal)?.Signal();
+        return true;
     }
 
     private void OnLaneFailed(PartitionLane<TKey, TValue> lane, Exception exception)
@@ -1005,12 +1057,12 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
             return;
         }
 
-        _commands.Writer.TryWrite(RuntimeCommand<TKey, TValue>.StopFailed(lane, exception));
+        TryQueueCommand(RuntimeCommand<TKey, TValue>.StopFailed(lane, exception));
     }
 
     private async ValueTask DrainCommandsAsync(CancellationToken cancellationToken)
     {
-        while (_commands.Reader.TryRead(out var command))
+        while (TryReadCommand(out var command))
         {
             switch (command.Kind)
             {
@@ -1044,6 +1096,17 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
                     break;
             }
         }
+    }
+
+    private bool TryReadCommand(out RuntimeCommand<TKey, TValue> command)
+    {
+        if (_deferredCommands is { Count: > 0 })
+        {
+            command = _deferredCommands.Dequeue();
+            return true;
+        }
+
+        return _commands.Reader.TryRead(out command);
     }
 
     private async ValueTask CompleteCommitCommandAsync(
@@ -1156,7 +1219,7 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
         TimeSpan delay)
     {
         await Task.Delay(delay, _restartCancellation.Token).ConfigureAwait(false);
-        _commands.Writer.TryWrite(RuntimeCommand<TKey, TValue>.RestartLane(partition));
+        TryQueueCommand(RuntimeCommand<TKey, TValue>.RestartLane(partition));
     }
 
     private void CompleteIgnoreRestartTask(Task task)
@@ -1179,11 +1242,13 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
         bool commitProcessed,
         CancellationToken cancellationToken)
     {
-        var exception = await lane.StopAsync(
-            reason is PartitionStopReason.Failure or PartitionStopReason.Lost
-                ? PartitionStopPolicy.Cancel
-                : _options.StopPolicy,
-            _options.StopTimeout).ConfigureAwait(false);
+        var policy = reason is PartitionStopReason.Failure or PartitionStopReason.Lost
+            ? PartitionStopPolicy.Cancel
+            : _options.StopPolicy;
+        var stopping = lane.StopAsync(policy, _options.StopTimeout);
+        var exception = policy == PartitionStopPolicy.Drain && !stopping.IsCompleted
+            ? await DrainHandlerCommitsAsync(stopping.AsTask(), cancellationToken).ConfigureAwait(false)
+            : await stopping.ConfigureAwait(false);
 
         if (commitProcessed)
             await CommitLaneAsync(lane, cancellationToken).ConfigureAwait(false);
@@ -1193,6 +1258,48 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
         {
             CaptureFailure(exception);
             _failureCancellation.Cancel();
+        }
+    }
+
+    private async ValueTask<Exception?> DrainHandlerCommitsAsync(
+        Task<Exception?> stopping,
+        CancellationToken cancellationToken)
+    {
+        using var signal = new AsyncAutoResetSignal();
+        using var commitCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        if (_options.StopTimeout != Timeout.InfiniteTimeSpan)
+            commitCancellation.CancelAfter(_options.StopTimeout);
+
+        Volatile.Write(ref _stopSignal, signal);
+        _ = stopping.ContinueWith(static (_, state) => ((AsyncAutoResetSignal)state!).Signal(),
+            signal, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+        try
+        {
+            while (!stopping.IsCompleted)
+            {
+                while (!stopping.IsCompleted && _commands.Reader.TryRead(out var command))
+                {
+                    if (command.Kind == RuntimeCommandKind.Commit)
+                    {
+                        await CompleteCommitCommandAsync(command, commitCancellation.Token).ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        // Preserve control-command order without starting replacement
+                        // lanes or recursively stopping partitions during this drain.
+                        (_deferredCommands ??= new Queue<RuntimeCommand<TKey, TValue>>()).Enqueue(command);
+                    }
+                }
+
+                if (!stopping.IsCompleted)
+                    await signal.WaitAsync(Timeout.Infinite).ConfigureAwait(false);
+            }
+
+            return await stopping.ConfigureAwait(false);
+        }
+        finally
+        {
+            Volatile.Write(ref _stopSignal, null);
         }
     }
 
@@ -1364,7 +1471,7 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
 
     private void CompletePendingCommands()
     {
-        while (_commands.Reader.TryRead(out var command))
+        while (TryReadCommand(out var command))
         {
             if (command.Kind == RuntimeCommandKind.Commit)
                 command.Completion!.TrySetCanceled();
@@ -1455,6 +1562,8 @@ internal sealed class PartitionLane<TKey, TValue>
     public TopicPartition TopicPartition { get; }
 
     public CancellationToken StoppingToken => _stopping.Token;
+
+    public bool IsCompleted => Volatile.Read(ref _completed) != 0;
 
     public IAsyncEnumerable<ConsumeResult<TKey, TValue>> Messages => ReadMessagesAsync(_stopping.Token);
 
