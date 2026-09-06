@@ -29,7 +29,8 @@
     <PackageReference Include="Microsoft.CodeAnalysis.PublicApiAnalyzers"
                       PrivateAssets="all"
                       IncludeAssets="runtime; build; native; contentfiles; analyzers; buildtransitive" />
-    <!-- Compiler/polyfill implementation details differ by TFM; nullability remains enforced by PublicApiAnalyzers. -->
+    <!-- Compiler/polyfill implementation metadata is not an API contract (including auto vs explicit accessors).
+         Nullability remains enforced by PublicApiAnalyzers. -->
     <ApiCompatExcludeAttributesFile Include="$(MSBuildThisFileDirectory)ApiCompatExcludedAttributes.txt" />
   </ItemGroup>
 
