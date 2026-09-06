@@ -182,6 +182,103 @@ public sealed class SchemaRegistryAuthenticationTests
         await Assert.That(authorization?.Parameter).IsEqualTo("oidc-token");
     }
 
+    [Test]
+    [Arguments(300, 120, 2)]
+    [Arguments(300, 600, 1)]
+    [Arguments(null, 120, 1)]
+    [Arguments(null, 30, 2)]
+    [Arguments(10, 30, 1)]
+    [Arguments(10, 0, 2)]
+    public async Task Client_OAuthConfig_HonorsProviderRefreshBuffer(
+        int? refreshBufferSeconds, int expiresInSeconds, int expectedTokenRequests)
+    {
+        var config = new OAuthBearerConfig
+        {
+            TokenEndpointUrl = "https://auth.local/token",
+            ClientId = "schema-registry-client",
+            ClientSecret = "secret",
+            TokenRefreshBufferSeconds = refreshBufferSeconds ?? NewOAuthConfig().TokenRefreshBufferSeconds
+        };
+        using var tokenEndpoint = new TokenEndpointHandler(expiresInSeconds);
+        using var tokenHttpClient = new HttpClient(tokenEndpoint);
+        using var tokenProvider = new OAuthBearerTokenProvider(config, tokenHttpClient);
+        var registry = new CapturingSchemaRegistryHandler();
+        using var client = new SchemaRegistryClient(
+            new SchemaRegistryConfig { Url = "http://schema-registry.local", OAuthBearerConfig = config },
+            registry,
+            oauthBearerTokenProviderFactory: _ => tokenProvider.GetTokenAsync);
+
+        _ = await client.GetAllSubjectsAsync();
+        _ = await client.GetAllSubjectsAsync();
+
+        await Assert.That(tokenEndpoint.RequestCount).IsEqualTo(expectedTokenRequests);
+        await Assert.That(registry.AuthorizationHeaders.Count).IsEqualTo(2);
+        await Assert.That(registry.AuthorizationHeaders[0]?.Parameter).IsEqualTo("token-1");
+        await Assert.That(registry.AuthorizationHeaders[1]?.Parameter).IsEqualTo($"token-{expectedTokenRequests}");
+    }
+
+    [Test]
+    [Arguments(false, false)]
+    [Arguments(true, false)]
+    [Arguments(false, true)]
+    [Arguments(true, true)]
+    public async Task Client_WaitsForOAuthToken_AndObservesCancellation(bool configuredProvider, bool cancel)
+    {
+        var pendingToken = new TaskCompletionSource<OAuthBearerToken>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var requested = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var cancellation = new CancellationTokenSource();
+        ValueTask<OAuthBearerToken> GetToken(CancellationToken token)
+        {
+            requested.SetResult();
+            return new(pendingToken.Task.WaitAsync(token));
+        }
+
+        var registry = new CapturingSchemaRegistryHandler();
+        using var client = new SchemaRegistryClient(new SchemaRegistryConfig
+        {
+            Url = "http://schema-registry.local",
+            OAuthBearerConfig = configuredProvider ? NewOAuthConfig() : null,
+            OAuthBearerTokenProvider = configuredProvider ? null : GetToken
+        }, registry, oauthBearerTokenProviderFactory: _ => GetToken);
+
+        var request = client.GetAllSubjectsAsync(cancellation.Token);
+        await requested.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        await Assert.That(request.IsCompleted).IsFalse();
+        await Assert.That(registry.AuthorizationHeaders).IsEmpty();
+
+        if (cancel)
+        {
+            await cancellation.CancelAsync();
+            await Assert.ThrowsAsync<OperationCanceledException>(async () => await request);
+            await Assert.That(registry.AuthorizationHeaders).IsEmpty();
+        }
+        else
+        {
+            pendingToken.SetResult(NewToken("ready-token"));
+            _ = await request;
+            await Assert.That(registry.AuthorizationHeaders[0]?.Parameter).IsEqualTo("ready-token");
+        }
+    }
+
+    private sealed class TokenEndpointHandler(int expiresInSeconds) : HttpMessageHandler
+    {
+        public int RequestCount { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            RequestCount++;
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(System.Text.Json.JsonSerializer.Serialize(new
+                {
+                    access_token = $"token-{RequestCount}",
+                    token_type = "Bearer",
+                    expires_in = expiresInSeconds
+                }))
+            });
+        }
+    }
+
     private static OAuthBearerToken NewToken(string tokenValue) => new()
     {
         TokenValue = tokenValue,

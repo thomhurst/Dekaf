@@ -8,6 +8,7 @@ internal sealed class SchemaRegistryAuthenticationHandler : DelegatingHandler
 {
     private readonly AuthenticationHeaderValue? _staticAuthorization;
     private readonly OAuthBearerAuthenticator? _oauthAuthenticator;
+    private readonly Func<CancellationToken, ValueTask<OAuthBearerToken>>? _configuredTokenProvider;
     private readonly OAuthBearerTokenProvider? _ownedTokenProvider;
 
     internal SchemaRegistryAuthenticationHandler(
@@ -26,18 +27,17 @@ internal sealed class SchemaRegistryAuthenticationHandler : DelegatingHandler
         }
         else if (config.OAuthBearerConfig is not null)
         {
-            Func<CancellationToken, ValueTask<OAuthBearerToken>> tokenProvider;
+            // The configured provider owns caching and its refresh window. An authenticator's
+            // separate fixed window would hide an earlier configured refresh deadline.
             if (oauthBearerTokenProviderFactory is not null)
             {
-                tokenProvider = oauthBearerTokenProviderFactory(config.OAuthBearerConfig);
+                _configuredTokenProvider = oauthBearerTokenProviderFactory(config.OAuthBearerConfig);
             }
             else
             {
                 _ownedTokenProvider = new OAuthBearerTokenProvider(config.OAuthBearerConfig);
-                tokenProvider = _ownedTokenProvider.GetTokenAsync;
+                _configuredTokenProvider = _ownedTokenProvider.GetTokenAsync;
             }
-
-            _oauthAuthenticator = new OAuthBearerAuthenticator(tokenProvider);
         }
         else if (!string.IsNullOrEmpty(config.BasicAuthUserInfo))
         {
@@ -46,20 +46,35 @@ internal sealed class SchemaRegistryAuthenticationHandler : DelegatingHandler
         }
     }
 
-    protected override async Task<HttpResponseMessage> SendAsync(
+    protected override Task<HttpResponseMessage> SendAsync(
         HttpRequestMessage request,
         CancellationToken cancellationToken)
     {
-        if (_oauthAuthenticator is not null)
+        if (_oauthAuthenticator is not null || _configuredTokenProvider is not null)
         {
-            var token = await _oauthAuthenticator.GetTokenAsync(cancellationToken).ConfigureAwait(false);
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.TokenValue);
+            var token = _oauthAuthenticator is not null
+                ? _oauthAuthenticator.GetTokenAsync(cancellationToken)
+                : _configuredTokenProvider!(cancellationToken);
+            if (!token.IsCompletedSuccessfully)
+                return SendWithTokenAsync(request, token, cancellationToken);
+
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.Result.TokenValue);
         }
         else if (_staticAuthorization is not null)
         {
             request.Headers.Authorization = _staticAuthorization;
         }
 
+        return base.SendAsync(request, cancellationToken);
+    }
+
+    private async Task<HttpResponseMessage> SendWithTokenAsync(
+        HttpRequestMessage request,
+        ValueTask<OAuthBearerToken> pendingToken,
+        CancellationToken cancellationToken)
+    {
+        var token = await pendingToken.ConfigureAwait(false);
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.TokenValue);
         return await base.SendAsync(request, cancellationToken).ConfigureAwait(false);
     }
 
