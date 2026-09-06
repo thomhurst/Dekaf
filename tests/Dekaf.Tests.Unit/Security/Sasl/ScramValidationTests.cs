@@ -73,10 +73,10 @@ public class ScramValidationTests
     [Arguments(SaslMechanism.ScramSha512, true)]
     public async Task ValidExchange_VerifiesBothProofsAndIgnoresOptionalExtensions(SaslMechanism mechanism, bool tokenAuth)
     {
-        var exchange = new Exchange(mechanism, tokenAuth, firstExtensions: ",x=δ,X=other");
+        var exchange = new Exchange(mechanism, tokenAuth, firstExtensions: ",x=δ漢🙂=other,X=other");
         await Assert.That(exchange.ClientProof).IsEquivalentTo(exchange.ExpectedClientProof);
         await Assert.That(exchange.ClientFirst.Contains(",tokenauth=true", StringComparison.Ordinal)).IsEqualTo(tokenAuth);
-        var result = exchange.Authenticator.EvaluateChallenge(Encoding.UTF8.GetBytes($"v={exchange.Signature},y=ignored"));
+        var result = exchange.Authenticator.EvaluateChallenge(Encoding.UTF8.GetBytes($"v={exchange.Signature},y=δ漢🙂=ignored"));
         await Assert.That(result).IsNull();
         await Assert.That(exchange.Authenticator.IsComplete).IsTrue();
     }
@@ -223,6 +223,43 @@ public class ScramValidationTests
         await Assert.That(exchange.Authenticator.IsComplete).IsTrue();
     }
 
+    [Test]
+    [Arguments(SaslMechanism.ScramSha256)]
+    [Arguments(SaslMechanism.ScramSha512)]
+    public async Task InvalidUtf8_BeforeInitialResponse_PreservesInitialState(SaslMechanism mechanism)
+    {
+        var authenticator = new ScramAuthenticator(mechanism, "test-user", "test-password");
+        await Assert.That(() => authenticator.EvaluateChallenge([0xff]))
+            .Throws<InvalidOperationException>().WithMessageContaining("Initial");
+        await Assert.That(authenticator.GetInitialResponse()).IsNotEmpty();
+        await Assert.That(authenticator.IsComplete).IsFalse();
+    }
+
+    [Test]
+    [Arguments(SaslMechanism.ScramSha256)]
+    [Arguments(SaslMechanism.ScramSha512)]
+    public async Task InvalidUtf8_AfterCompletion_PreservesCompleteState(SaslMechanism mechanism)
+    {
+        var exchange = new Exchange(mechanism);
+        exchange.Authenticator.EvaluateChallenge(Encoding.UTF8.GetBytes($"v={exchange.Signature}"));
+        await Assert.That(exchange.Authenticator.IsComplete).IsTrue();
+        await Assert.That(() => exchange.Authenticator.EvaluateChallenge([0xff]))
+            .Throws<InvalidOperationException>().WithMessageContaining("Complete");
+        await Assert.That(exchange.Authenticator.IsComplete).IsTrue();
+    }
+
+    [Test]
+    [Arguments(SaslMechanism.ScramSha256)]
+    [Arguments(SaslMechanism.ScramSha512)]
+    public async Task InvalidUtf8_AfterFailure_PreservesFailedState(SaslMechanism mechanism)
+    {
+        var authenticator = new ScramAuthenticator(mechanism, "test-user", "test-password");
+        authenticator.GetInitialResponse();
+        await Assert.That(() => authenticator.EvaluateChallenge([0xff])).Throws<AuthenticationException>();
+        await Assert.That(() => authenticator.EvaluateChallenge([0xff]))
+            .Throws<InvalidOperationException>().WithMessageContaining("Failed");
+        await Assert.That(authenticator.IsComplete).IsFalse();
+    }
     private sealed class Exchange
     {
         public ScramAuthenticator Authenticator { get; }

@@ -119,12 +119,10 @@ public sealed partial class ScramAuthenticator : ISaslAuthenticator
         ArgumentNullException.ThrowIfNull(challenge);
         try
         {
-            var challengeStr = ChallengeEncoding.GetString(challenge);
-
             return _state switch
             {
-                ScramState.ClientFirstSent => HandleServerFirst(challengeStr),
-                ScramState.ClientFinalSent => HandleServerFinal(challengeStr),
+                ScramState.ClientFirstSent => HandleServerFirst(ChallengeEncoding.GetString(challenge)),
+                ScramState.ClientFinalSent => HandleServerFinal(ChallengeEncoding.GetString(challenge)),
                 _ => throw new InvalidOperationException($"Unexpected state: {_state}")
             };
         }
