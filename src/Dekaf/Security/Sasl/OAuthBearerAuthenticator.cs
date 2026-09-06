@@ -135,18 +135,12 @@ public sealed class OAuthBearerAuthenticator : ISaslAuthenticator
     /// <inheritdoc />
     public byte[]? EvaluateChallenge(byte[] challenge)
     {
-        // OAUTHBEARER is a single-round mechanism
-        // If we receive a challenge, it's an error response from the server
-        // The error will be in JSON format as per RFC 7628
+        // Successful OAUTHBEARER authentication has no further challenge data.
+        // RFC 7628 errors use JSON, but malformed or unexpected nonempty replies must also fail.
         if (challenge.Length > 0)
         {
             var errorResponse = Encoding.UTF8.GetString(challenge);
-
-            // If the response starts with '{', it's a JSON error
-            if (errorResponse.StartsWith('{'))
-            {
-                throw new AuthenticationException($"OAUTHBEARER authentication failed: {errorResponse}");
-            }
+            throw new AuthenticationException($"OAUTHBEARER authentication failed: {errorResponse}");
         }
 
         _complete = true;
