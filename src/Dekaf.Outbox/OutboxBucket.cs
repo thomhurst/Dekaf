@@ -6,7 +6,8 @@ namespace Dekaf.Outbox;
 /// <summary>
 /// Maps record keys to ordering buckets. The mapping is deterministic and stable across
 /// processes and machines, so every writer assigns a given key to the same bucket and the
-/// single relay owning that bucket preserves the key's enqueue order.
+/// single relay owning that bucket submits rows in enqueue order. This does not guarantee
+/// consumer-observed order across partial publish failures.
 /// </summary>
 public static class OutboxBucket
 {

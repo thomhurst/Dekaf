@@ -20,13 +20,13 @@ Dekaf ships this as two packages:
 
 ## Ordering
 
-Records that share a key must arrive in enqueue order. The outbox preserves this with **buckets**:
+The outbox uses **buckets** to serialize submission and database acknowledgement accounting for records sharing a key. This is not an unconditional consumer-observed ordering guarantee across partial failures:
 
-- Each row's key is hashed to one of N buckets (default 8) at enqueue time. Rows with an explicit partition override are bucketed by that partition instead, so records pinned to one Kafka partition keep their enqueue order too.
-- Each bucket is leased to exactly **one relay instance** at a time, and that relay publishes the bucket's rows in insertion order.
+- Each row's key is hashed to one of N buckets (default 8) at enqueue time. Rows with an explicit partition override are bucketed by that partition instead, so records pinned to one Kafka partition share the same submission sequence.
+- Each bucket is leased to exactly **one relay instance** at a time, and that relay submits the bucket's rows in insertion order.
 - After a partial publish failure, only the **contiguous acknowledged prefix** of a batch is removed — rows are never marked out of order.
 
-Running multiple service instances is safe: relays register heartbeats and divide the buckets fairly among themselves, taking over expired leases when an instance dies. A relay that stalls past its lease may cause **duplicates** (another relay republishes rows it had not yet marked), never loss. During such a takeover the duplicate copies from the old and new owner can interleave on the topic, so a consumer that does **not** deduplicate on the message-id header may briefly observe an older copy after a newer row for the same key — there is no broker-side fencing of an in-flight stale publish short of Kafka transactions. Deduplicating consumers are unaffected.
+Running multiple service instances is safe: relays register heartbeats and divide the buckets fairly among themselves, taking over expired leases when an instance dies. A relay that stalls past its lease may cause **duplicates** (another relay republishes rows it had not yet marked), never loss. During such a takeover the duplicate copies from the old and new owner can interleave on the topic, so a consumer that does **not** deduplicate on the message-id header may briefly observe an older copy after a newer row for the same key — there is no broker-side fencing of an in-flight stale publish short of Kafka transactions. Message-id deduplication removes repeated copies; it does not repair a first delivery that arrives after a later row.
 
 One boundary shared by every identity-ordered outbox (not specific to Dekaf): **"enqueue order" means commit order for a key, and only writers that serialize their writes to a key have one.** If two uncoordinated transactions enqueue for the same key concurrently, the database can hand the earlier transaction a lower id while the later one commits first — the relay may then publish the higher id before the lower one exists to read. In practice this doesn't bite, because aggregates written under any concurrency control (optimistic rowversion, `UPDATE ... WHERE version = @n`, a unique constraint) serialize their commits and therefore their ids; two truly uncoordinated concurrent writes to one aggregate have no defined order at the business level either. If you have keys written concurrently without any such control, that's the thing to fix.
 
@@ -35,6 +35,16 @@ Lease expiry is compared against timestamps written by the relay hosts themselve
 :::warning
 `BucketCount` must be identical across every writer and relay sharing an outbox table. Changing it requires draining the table and deleting the lease rows first. If the store finds rows in buckets the relay can never claim (a writer configured with a larger count), it throws `OutboxMisconfigurationException` and the relay **faults instead of retrying** — under the default host behavior the application stops, turning the silent-loss misconfiguration into an unmissable failure.
 :::
+
+### Partial failures and consumer order
+
+The default `DekafOutboxPublisher` starts all produce operations in a batch before awaiting their results. An earlier row can fail locally (for example, exceeding the producer's request-size limit) or be permanently rejected by the broker (`MESSAGE_TOO_LARGE`), while later rows on the same key and partition succeed. Idempotence does not make these separate produce operations atomic.
+
+A concrete Kafka-tested example uses rows **1, 2, 3**, all sharing one key and partition. Row 1 is too large; Kafka accepts rows 2 and 3. The acknowledged prefix is empty, so all three database rows remain pending. After repairing row 1's payload while preserving its message ID, retrying the batch yields consumer order **2, 3, 1, 2, 3**. Deduplicating by `x-outbox-message-id` leaves **2, 3, 1**, not enqueue order. This occurs with the real default publisher and its enforced idempotent producer, without a custom publisher or mocked delivery results.
+
+The contract is **ordered submission, front-to-back deletion, and at-least-once delivery**. When all rows succeed, records on a partition retain submission order. Transient retries of an admitted idempotent batch retain producer sequencing, but a permanently rejected or locally unappended row has no earlier delivery for deduplication to preserve. Applications requiring strict business ordering across such failures need an application sequence with consumer-side gap handling or a publisher protocol that prevents later records becoming visible before earlier ones succeed. A custom `IOutboxPublisher` must state and test its own ordering guarantees; returning a contiguous prefix alone is insufficient.
+
+The built-in publisher retains concurrent sends so Kafka can batch records. It does not wait for one broker round trip per outbox row.
 
 ## Setup
 
@@ -70,7 +80,7 @@ builder.Services.AddDekafOutboxRelay(
     producer => producer.WithBootstrapServers("localhost:9092"));
 ```
 
-The relay **enforces** `Acks.All`, idempotence, and a key-respecting partitioner (`Murmur2RandomPartitioner`) on its producer after your `configureProducer` delegate runs — durable acks and sequencing are what make contiguous-prefix accounting sound, and per-key ordering only survives if equal keys map to one partition, so none of them can be downgraded there (any partitioner set in the delegate is overridden). Murmur2-random rather than the stock default because the default sticky-rotates zero-length keys, while the outbox treats an empty serialized key as a real key with an ordering requirement; placement for non-empty keys is identical. If you genuinely need different producer semantics, register your own `IOutboxPublisher` instead (the deliberate opt-out).
+The relay **enforces** `Acks.All`, idempotence, and a key-respecting partitioner (`Murmur2RandomPartitioner`) on its producer after your `configureProducer` delegate runs — durable acks make prefix deletion safe, idempotence sequences admitted batches, and the partitioner maps equal keys to one partition, so none of them can be downgraded there (any partitioner set in the delegate is overridden). Murmur2-random rather than the stock default because the default sticky-rotates zero-length keys, while the outbox treats an empty serialized key as a real key with an ordering requirement; placement for non-empty keys is identical. These settings do not prevent consumer-visible reordering after partial publish failures. If you need different producer semantics, register your own `IOutboxPublisher` instead (the deliberate opt-out).
 
 ## Database Schema
 
@@ -80,7 +90,7 @@ The relay **enforces** `Acks.All`, idempotence, and a key-respecting partitioner
 
 | Column | Type (portable) | Constraints |
 |---|---|---|
-| `Id` | 64-bit integer | Primary key, auto-increment. Publish order within a bucket. |
+| `Id` | 64-bit integer | Primary key, auto-increment. Submission order within a bucket. |
 | `MessageId` | GUID/UUID | Required. Stable dedup id, stamped as the `x-outbox-message-id` header. |
 | `Bucket` | 32-bit integer | Required. Ordering bucket. |
 | `Topic` | string(249) | Required. |

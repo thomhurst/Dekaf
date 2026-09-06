@@ -21,7 +21,7 @@ public class OutboxMessage
 {
     /// <summary>
     /// Ordering value used by relational stores (typically a database identity column):
-    /// unique and ascending within the outbox table, determining publish order within a
+    /// unique and ascending within the outbox table, determining submission order within a
     /// bucket. Stores that maintain enqueue order by other means (a time-ordered document
     /// id, a sequence field on a subclass) may leave this zero - the relay never reads it.
     /// </summary>
@@ -36,7 +36,8 @@ public class OutboxMessage
     /// <summary>
     /// Ordering bucket computed from the record key via <see cref="OutboxBucket.Compute(byte[], Guid, int)"/>.
     /// Each bucket has a single publishing relay at any time, so records that share a key
-    /// (and therefore a bucket) are published in enqueue order.
+    /// (and therefore a bucket) are submitted in enqueue order. Partial failures can change
+    /// consumer-observed order when retained rows are retried.
     /// </summary>
     public required int Bucket { get; init; }
 

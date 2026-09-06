@@ -12,9 +12,10 @@ namespace Dekaf.Outbox;
 /// acknowledgment, so a crash at any point republishes rather than loses. Consumers that
 /// need effective exactly-once should deduplicate on the
 /// <see cref="OutboxRelayOptions.MessageIdHeaderName"/> header.</para>
-/// <para><b>Ordering:</b> within a bucket, rows publish in ascending id order and are only
-/// ever marked front-to-back (contiguous acknowledged prefix), so records sharing a key keep
-/// their enqueue order across retries.</para>
+/// <para><b>Ordering:</b> within a bucket, rows are submitted in ascending id order and are
+/// marked front-to-back (contiguous acknowledged prefix). Later rows may already be delivered
+/// when an earlier row fails. Retrying the retained rows can reorder consumer-observed first
+/// deliveries; message-id deduplication removes duplicates but does not restore order.</para>
 /// <para>The service does not own the publisher or store; their lifetimes belong to the
 /// dependency injection container (or whoever constructed them).</para>
 /// </remarks>

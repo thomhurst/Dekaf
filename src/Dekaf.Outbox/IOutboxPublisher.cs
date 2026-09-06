@@ -12,14 +12,16 @@ public interface IOutboxPublisher : IAsyncDisposable
     ValueTask InitializeAsync(CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Publishes the batch in order and waits for broker acknowledgment of every record.
+    /// Submits the batch in order and waits for the outcome of every started record.
     /// </summary>
     /// <remarks>
     /// The result's <see cref="OutboxPublishResult.AckedCount"/> is the length of the
     /// contiguous acknowledged prefix: the first failed record stops the count even if later
     /// records were acknowledged. The relay marks exactly that prefix as published, so a
-    /// bucket's rows are only ever removed front-to-back and publish order is preserved
-    /// across retries.
+    /// bucket's rows are only ever removed front-to-back. This does not guarantee consumer
+    /// order across partial failures: if row 1 fails while row 2 succeeds, retrying both can
+    /// deliver 2, 1, 2. Message-id deduplication still leaves 2, 1. Implementations promising
+    /// stronger ordering must prevent later rows becoming visible before earlier rows succeed.
     /// </remarks>
     /// <param name="messages">The rows to publish, in ascending id order.</param>
     /// <param name="messageIdHeaderName">Header name to stamp with each row's message id.</param>

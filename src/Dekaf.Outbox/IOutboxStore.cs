@@ -7,8 +7,11 @@ namespace Dekaf.Outbox;
 /// <remarks>
 /// <para><b>Concurrency model:</b> the store never locks individual rows. Bucket leases are
 /// the only concurrency control - a relay may read and publish a bucket's rows only while it
-/// holds that bucket's lease, so each bucket has a single writer and per-key ordering is
-/// preserved. A relay that pauses past its lease expiry may double-publish rows another relay
+/// holds that bucket's lease, so each bucket has a single lease owner submitting rows in
+/// enqueue order. Ordered submission and contiguous-prefix deletion do not guarantee
+/// consumer-observed order after partial publish failures: a later row can become visible
+/// before an earlier failed row succeeds, even after message-id deduplication.
+/// A relay that pauses past its lease expiry may double-publish rows another relay
 /// picked up; that is the documented at-least-once duplicate window, never message loss.</para>
 /// <para><b>Storage-agnostic by design:</b> nothing in this contract requires a relational
 /// database. Leases need only an atomic conditional write (SQL guarded UPDATE, MongoDB

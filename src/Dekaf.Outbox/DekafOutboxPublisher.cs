@@ -5,8 +5,9 @@ namespace Dekaf.Outbox;
 
 /// <summary>
 /// Default <see cref="IOutboxPublisher"/> backed by a Dekaf byte-array producer. The producer
-/// should keep idempotence enabled (the Dekaf default) so broker-side retries cannot reorder
-/// records within a partition, which keeps the relay's contiguous-prefix accounting sound.
+/// should keep idempotence enabled (the Dekaf default) for retries of admitted batches.
+/// Partial failures can still let later rows arrive before a failed row is retried; message-id
+/// deduplication does not restore enqueue order in that case.
 /// </summary>
 public sealed class DekafOutboxPublisher : IOutboxPublisher
 {
@@ -45,11 +46,10 @@ public sealed class DekafOutboxPublisher : IOutboxPublisher
         // producer contract that ValueTasks must not be stored; the Task allocations are
         // relay-side, per-batch-attempt cost.
         //
-        // Firing the whole batch is order-safe: the producer keeps per-partition FIFO from
-        // pending-append through idempotent sequencing, so a broker-side failure of record
-        // N also fails every later record on that partition (no gap can be acked) and the
-        // contiguous-prefix accounting below stays truthful. Publishing one-record-at-a-time
-        // would defeat batching entirely (one linger + round trip per row).
+        // Later rows can succeed even when an earlier row is rejected locally or by Kafka.
+        // Prefix accounting keeps those rows for retry; it cannot undo their delivery or
+        // restore consumer-observed order, even after message-id deduplication.
+        // Concurrent sends preserve batching (rather than one round trip per row).
         // The per-row Headers, id buffer, ProducerMessage, and Task allocations below are
         // accepted: the relay is not the Kafka client's hot path, and the header value
         // cannot be pooled - a produce cancelled after append keeps delivering in the
