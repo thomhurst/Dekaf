@@ -14,7 +14,6 @@ permissions:
   contents: read
 
 env:
-  DOTNET_VERSION: '10.0.x'
   DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
   DOTNET_CLI_TELEMETRY_OPTOUT: true
   ContinuousIntegrationBuild: true
@@ -58,8 +57,7 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
-          dotnet-version: ${{ env.DOTNET_VERSION }}
-          dotnet-quality: 'preview'
+          global-json-file: global.json
 
       - name: Build
         run: dotnet build --configuration Release
@@ -94,8 +92,7 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
-          dotnet-version: ${{ env.DOTNET_VERSION }}
-          dotnet-quality: 'preview'
+          global-json-file: global.json
 
       # Broker and benchmark process are pinned to disjoint cores (0-1 vs 2-3 on the
       # 4-vCPU runner) so scheduler interference between them stops randomizing the
@@ -171,8 +168,7 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
-          dotnet-version: ${{ env.DOTNET_VERSION }}
-          dotnet-quality: 'preview'
+          global-json-file: global.json
 
       - name: Build
         run: dotnet build --configuration Release

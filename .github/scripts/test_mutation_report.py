@@ -110,7 +110,12 @@ class MutationReportTests(unittest.TestCase):
         workflow_path = Path(__file__).parents[1] / "workflows" / "mutation-tests.yml"
         workflow = workflow_path.read_text(encoding="utf-8")
 
-        self.assertIn("dotnet-version: |\n            8.0.x\n            10.0.x", workflow)
+        self.assertIn("global-json-file: global.json", workflow)
+        self.assertIn("dotnet-version: '8.0.x'", workflow)
+        sdk_config = json.loads((Path(__file__).parents[2] / "global.json").read_text(encoding="utf-8"))
+        self.assertTrue(sdk_config["sdk"]["version"].startswith("10."))
+        self.assertFalse(sdk_config["sdk"]["allowPrerelease"])
+        self.assertEqual("Microsoft.Testing.Platform", sdk_config["test"]["runner"])
 
     def test_producer_mutation_host_presizes_thread_pool(self):
         project_path = (
