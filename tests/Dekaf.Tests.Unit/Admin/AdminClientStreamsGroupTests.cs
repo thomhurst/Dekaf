@@ -47,7 +47,7 @@ public sealed class AdminClientStreamsGroupTests
             States = ["Stable"]
         });
 
-        await Assert.That(result.Select(g => g.GroupId)).IsEquivalentTo(["streams-a", "streams-b"]);
+        await Assert.That(result.Select(g => g.GroupId)).IsEquivalentTo(["streams-a"]);
         await connections[1].Received(1).SendAsync<ListGroupsRequest, ListGroupsResponse>(
             Arg.Is<ListGroupsRequest>(r =>
                 r != null && r.StatesFilter!.Count == 1 &&

@@ -157,11 +157,9 @@ public sealed class InMemoryKafkaClusterTests
         cluster.CreateTopic("input");
         IAdminClient admin = new InMemoryAdminClient(cluster);
         const string groupId = "empty-streams";
-        await using var consumer = new InMemoryConsumer<string, string>(
-            cluster,
-            new InMemoryConsumerOptions { GroupId = groupId });
-        consumer.Subscribe("input");
-        consumer.Unsubscribe();
+        var partition = new TopicPartition("input", 0);
+        await admin.AlterStreamsGroupOffsetsAsync(groupId, [new TopicPartitionOffset("input", 0, 0)]);
+        await admin.DeleteStreamsGroupOffsetsAsync(groupId, [partition]);
 
         var groupsBeforeDeletion = await admin.ListStreamsGroupsAsync();
         var deletedGroups = await admin.DeleteStreamsGroupsAsync([groupId]);

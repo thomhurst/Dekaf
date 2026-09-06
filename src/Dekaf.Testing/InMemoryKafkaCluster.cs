@@ -18,7 +18,7 @@ internal readonly record struct InMemoryShareGroupListing(
 /// <summary>
 /// Shared in-memory topic, partition, offset, and group-offset store.
 /// </summary>
-public sealed class InMemoryKafkaCluster
+public sealed partial class InMemoryKafkaCluster
 {
     private readonly object _gate = new();
     private readonly Dictionary<string, TopicState> _topics = new(StringComparer.Ordinal);
@@ -1361,6 +1361,8 @@ public sealed class InMemoryKafkaCluster
                 groupOffsets[partition] = offset;
                 results[partition] = ErrorCode.None;
             }
+            if (groupOffsets is not null)
+                (_streamsGroupIds ??= new HashSet<string>(StringComparer.Ordinal)).Add(groupId);
             return results;
         }
     }
@@ -1748,7 +1750,8 @@ public sealed class InMemoryKafkaCluster
     {
         var existed = _consumerGroupOffsets.Remove(groupId);
         var hadGeneration = _consumerGroupGenerations.TryRemove(groupId, out _);
-        return hadGeneration || existed;
+        var hadStreamsType = _streamsGroupIds?.Remove(groupId) == true;
+        return hadGeneration || existed || hadStreamsType;
     }
 
     private Dictionary<long, ShareGroupMemberRegistration>? GetShareLeasePartition(

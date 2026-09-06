@@ -339,25 +339,10 @@ public sealed partial class InMemoryAdminClient :
         return result;
     }
 
-    public async ValueTask<IReadOnlyList<GroupListing>> ListConsumerGroupsAsync(
+    public ValueTask<IReadOnlyList<GroupListing>> ListConsumerGroupsAsync(
         ListConsumerGroupsOptions? options = null,
-        CancellationToken cancellationToken = default)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        ThrowIfDisposed();
-        await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
-
-        IReadOnlyList<GroupListing> result = _cluster.ListGroups()
-            .Select(groupId => new GroupListing
-            {
-                GroupId = groupId,
-                ProtocolType = "consumer",
-                State = "Stable"
-            })
-            .ToArray();
-
-        return result;
-    }
+        CancellationToken cancellationToken = default) =>
+        ListGroupsCoreAsync(options?.States, ConsumerGroupTypes, ConsumerProtocolTypes, cancellationToken);
 
     public async ValueTask DeleteConsumerGroupsAsync(
         IEnumerable<string> groupIds,
@@ -1394,25 +1379,10 @@ public sealed partial class InMemoryAdminClient :
         return result;
     }
 
-    public async ValueTask<IReadOnlyList<GroupListing>> ListStreamsGroupsAsync(
+    public ValueTask<IReadOnlyList<GroupListing>> ListStreamsGroupsAsync(
         ListStreamsGroupsOptions? options = null,
-        CancellationToken cancellationToken = default)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        ThrowIfDisposed();
-        await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
-
-        IReadOnlyList<GroupListing> result = _cluster.ListGroups()
-            .Select(groupId => new GroupListing
-            {
-                GroupId = groupId,
-                ProtocolType = "streams",
-                State = "Stable"
-            })
-            .ToArray();
-
-        return result;
-    }
+        CancellationToken cancellationToken = default) =>
+        ListGroupsCoreAsync(options?.States, StreamsGroupTypes, null, cancellationToken);
 
     public async ValueTask<IReadOnlyDictionary<string, ShareGroupDescription>> DescribeShareGroupsAsync(
         IEnumerable<string> groupIds,
@@ -1447,35 +1417,10 @@ public sealed partial class InMemoryAdminClient :
         return result;
     }
 
-    public async ValueTask<IReadOnlyList<GroupListing>> ListShareGroupsAsync(
+    public ValueTask<IReadOnlyList<GroupListing>> ListShareGroupsAsync(
         ListShareGroupsOptions? options = null,
-        CancellationToken cancellationToken = default)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        ThrowIfDisposed();
-        await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
-
-        var groups = _cluster.ListShareGroups();
-        var result = new List<GroupListing>(groups.Count);
-        foreach (var group in groups)
-        {
-            var state = group.HasActiveMembers ? "Stable" : "Empty";
-            if (options?.States is { Count: > 0 } states &&
-                !states.Contains(state, StringComparer.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
-            result.Add(new GroupListing
-            {
-                GroupId = group.GroupId,
-                ProtocolType = "share",
-                State = state
-            });
-        }
-
-        return result;
-    }
+        CancellationToken cancellationToken = default) =>
+        ListGroupsCoreAsync(options?.States, ShareGroupTypes, null, cancellationToken);
 
     public async ValueTask<IReadOnlyDictionary<string, DeleteShareGroupResult>> DeleteShareGroupsAsync(
         IEnumerable<string> groupIds,

@@ -740,13 +740,15 @@ public sealed class FeatureUpdateResultInfo
 }
 
 /// <summary>
-/// Consumer group listing.
+/// Group listing, including its coordination type and application protocol.
 /// </summary>
 public sealed class GroupListing
 {
     public required string GroupId { get; init; }
     public string? ProtocolType { get; init; }
     public string? State { get; init; }
+    /// <summary>Broker-reported type, preserved verbatim, including unknown future values. Null when the broker's ListGroups version predates v5.</summary>
+    public string? GroupType { get; init; }
 }
 
 /// <summary>

@@ -104,3 +104,4 @@ Dekaf.Testing.KafkaFaultScope.KafkaFaultScope(Dekaf.Testing.KafkaFaultOperation 
 Dekaf.Testing.KafkaFaultScope.Operation.get -> Dekaf.Testing.KafkaFaultOperation
 Dekaf.Testing.KafkaFaultScope.Partition.get -> int?
 Dekaf.Testing.KafkaFaultScope.Topic.get -> string?
+Dekaf.Testing.InMemoryAdminClient.ListGroupsAsync(Dekaf.Admin.ListGroupsOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyList<Dekaf.Admin.GroupListing!>!>
