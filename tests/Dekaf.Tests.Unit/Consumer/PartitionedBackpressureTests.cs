@@ -208,7 +208,7 @@ public sealed class PartitionedBackpressureTests
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         var running = consumer.RunPartitionedAsync(async (context, token) =>
         {
-            await foreach (var record in context.Messages.WithCancellation(token))
+            await foreach (var _ in context.Messages.WithCancellation(token))
             {
                 await consumer.ThirdRecordRead.Task.WaitAsync(token);
                 return;
@@ -253,7 +253,7 @@ public sealed class PartitionedBackpressureTests
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         var running = consumer.RunPartitionedAsync(async (context, token) =>
         {
-            await foreach (var record in context.Messages.WithCancellation(token))
+            await foreach (var _ in context.Messages.WithCancellation(token))
             {
                 await trigger.Task.WaitAsync(token);
                 throw failure;
