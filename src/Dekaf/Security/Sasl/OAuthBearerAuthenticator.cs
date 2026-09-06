@@ -12,6 +12,8 @@ public sealed class OAuthBearerAuthenticator : ISaslAuthenticator
     private readonly Func<CancellationToken, ValueTask<OAuthBearerToken>> _tokenProvider;
     private readonly object _tokenLock = new();
     private OAuthBearerToken? _currentToken;
+    private bool _refreshInProgress;
+    private TaskCompletionSource<bool>? _refreshWaiters;
     private bool _complete;
 
     /// <summary>
@@ -43,24 +45,93 @@ public sealed class OAuthBearerAuthenticator : ISaslAuthenticator
     /// <summary>
     /// Gets the current token, fetching a new one if needed.
     /// </summary>
-    public async ValueTask<OAuthBearerToken> GetTokenAsync(CancellationToken cancellationToken = default)
+    /// <remarks>
+    /// Refreshes are serialized per authenticator. Waiting callers recheck the cache after
+    /// the active refresh completes. Cancelling a waiter does not cancel the active provider;
+    /// the caller performing the refresh supplies its cancellation token to the provider.
+    /// A failed or cancelled refresh releases waiting callers to retry with their own tokens.
+    /// </remarks>
+    public ValueTask<OAuthBearerToken> GetTokenAsync(CancellationToken cancellationToken = default)
     {
-        OAuthBearerToken? cachedToken;
+        var cachedToken = Volatile.Read(ref _currentToken);
+        return cachedToken is not null && !cachedToken.IsExpired(bufferSeconds: 60)
+            ? new ValueTask<OAuthBearerToken>(cachedToken)
+            : RefreshTokenAsync(cachedToken, cancellationToken);
+    }
+
+    private ValueTask<OAuthBearerToken> RefreshTokenAsync(OAuthBearerToken? observedToken, CancellationToken cancellationToken)
+    {
+        if (cancellationToken.IsCancellationRequested)
+            return new ValueTask<OAuthBearerToken>(Task.FromCanceled<OAuthBearerToken>(cancellationToken));
+
+        Task? refreshCompleted = null;
         lock (_tokenLock)
         {
-            cachedToken = _currentToken;
+            var cachedToken = _currentToken;
+            // Only a replacement token can invalidate the caller's expired-cache observation.
+            if (!ReferenceEquals(cachedToken, observedToken) && cachedToken is not null && !cachedToken.IsExpired(bufferSeconds: 60))
+                return new ValueTask<OAuthBearerToken>(cachedToken);
+
+            if (_refreshInProgress)
+                refreshCompleted = (_refreshWaiters ??= new(TaskCreationOptions.RunContinuationsAsynchronously)).Task;
+            else
+                _refreshInProgress = true;
         }
 
-        if (cachedToken is null || cachedToken.IsExpired(bufferSeconds: 60))
+        if (refreshCompleted is not null)
+            return WaitForRefreshAsync(refreshCompleted, cancellationToken);
+
+        // Invoke user code outside the lock; only genuinely overlapping callers need a signal.
+        try
         {
-            var newToken = await _tokenProvider(cancellationToken).ConfigureAwait(false);
-            lock (_tokenLock)
+            var pendingToken = _tokenProvider(cancellationToken);
+            if (pendingToken.IsCompletedSuccessfully)
             {
-                _currentToken = newToken;
-                cachedToken = newToken;
+                var token = pendingToken.GetAwaiter().GetResult();
+                CompleteRefresh(token);
+                return new ValueTask<OAuthBearerToken>(token);
             }
+            return AwaitTokenAsync(pendingToken);
         }
-        return cachedToken;
+        catch (Exception exception)
+        {
+            // Await preserves cancellation semantics for a provider that throws synchronously.
+            return AwaitTokenAsync(new ValueTask<OAuthBearerToken>(Task.FromException<OAuthBearerToken>(exception)));
+        }
+    }
+
+    private async ValueTask<OAuthBearerToken> AwaitTokenAsync(ValueTask<OAuthBearerToken> pendingToken)
+    {
+        OAuthBearerToken? token = null;
+        try
+        {
+            token = await pendingToken.ConfigureAwait(false);
+            return token;
+        }
+        finally
+        {
+            CompleteRefresh(token);
+        }
+    }
+
+    private async ValueTask<OAuthBearerToken> WaitForRefreshAsync(Task refreshCompleted, CancellationToken cancellationToken)
+    {
+        await refreshCompleted.WaitAsync(cancellationToken).ConfigureAwait(false);
+        return await GetTokenAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private void CompleteRefresh(OAuthBearerToken? token)
+    {
+        TaskCompletionSource<bool>? waiters;
+        lock (_tokenLock)
+        {
+            if (token is not null)
+                Volatile.Write(ref _currentToken, token);
+            _refreshInProgress = false;
+            waiters = _refreshWaiters;
+            _refreshWaiters = null;
+        }
+        waiters?.TrySetResult(true);
     }
 
     /// <inheritdoc />
