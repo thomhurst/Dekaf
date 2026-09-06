@@ -37,11 +37,11 @@ public sealed class ProducerHealthCheckIntegrationTests(ProducerHealthKafkaConta
 
         // A broker-rejected batch has left the real accumulator despite failed delivery.
         var drainedAfterFailure = await health.CheckHealthAsync(new HealthCheckContext());
-        await AssertDrainageOnlyAsync(drainedAfterFailure);
+        await AssertFlushCheckpointAsync(drainedAfterFailure);
 
         var delivered = await producer.ProduceAsync(topic, "key", "accepted");
         await Assert.That(delivered.Offset).IsEqualTo(0L);
-        await AssertDrainageOnlyAsync(await health.CheckHealthAsync(new HealthCheckContext()));
+        await AssertFlushCheckpointAsync(await health.CheckHealthAsync(new HealthCheckContext()));
     }
 
     [Test]
@@ -55,7 +55,7 @@ public sealed class ProducerHealthCheckIntegrationTests(ProducerHealthKafkaConta
         var delivered = await delivery;
 
         await Assert.That(delivered.Offset).IsEqualTo(0L);
-        await AssertDrainageOnlyAsync(drained);
+        await AssertFlushCheckpointAsync(drained);
     }
 
     [Test]
@@ -70,7 +70,7 @@ public sealed class ProducerHealthCheckIntegrationTests(ProducerHealthKafkaConta
         await kafka.SetPausedAsync(true);
         try
         {
-            await AssertDrainageOnlyAsync(await CreateHealthCheck(producer)
+            await AssertFlushCheckpointAsync(await CreateHealthCheck(producer)
                 .CheckHealthAsync(new HealthCheckContext()));
             var brokerResult = await connectivity.CheckHealthAsync(new HealthCheckContext());
             await Assert.That(brokerResult.Status).IsEqualTo(HealthStatus.Unhealthy);
@@ -95,11 +95,11 @@ public sealed class ProducerHealthCheckIntegrationTests(ProducerHealthKafkaConta
     private static DekafProducerHealthCheck<string, string> CreateHealthCheck(IKafkaProducer<string, string> producer) =>
         new(producer, new DekafProducerHealthCheckOptions());
 
-    private static async Task AssertDrainageOnlyAsync(HealthCheckResult result)
+    private static async Task AssertFlushCheckpointAsync(HealthCheckResult result)
     {
         await Assert.That(result.Status).IsEqualTo(HealthStatus.Healthy);
         await Assert.That(result.Description).IsEqualTo(
-            "Producer queue drained. Delivery outcomes and broker connectivity are not checked.");
+            "Producer flush checkpoint completed. Delivery outcomes and broker connectivity are not checked.");
     }
 }
 

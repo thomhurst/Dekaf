@@ -4,16 +4,18 @@ using Microsoft.Extensions.Diagnostics.HealthChecks;
 namespace Dekaf.Extensions.HealthChecks;
 
 /// <summary>
-/// Health check that waits for the producer queue to drain.
+/// Health check that waits for a producer flush checkpoint to complete.
 /// Reports <see cref="HealthStatus.Healthy"/> when the flush completes,
 /// and <see cref="HealthStatus.Unhealthy"/> when the flush throws or times out.
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>Scope:</b> Queue drainage does not establish successful delivery. Failed delivery
+/// <b>Scope:</b> Flush completion does not establish successful delivery. Failed delivery
 /// attempts also leave the queue. Observe produce results or delivery callbacks for those failures;
 /// this check does not retain or evaluate delivery history.
 /// </para>
+/// <para>Concurrent production can leave newer messages queued after the flush checkpoint
+/// completes. Healthy does not assert that the current queue is empty.</para>
 /// <para>
 /// <see cref="IKafkaProducer{TKey, TValue}.FlushAsync"/> returns immediately when no messages are pending,
 /// even if all brokers are offline. This means the check will report <see cref="HealthStatus.Healthy"/>
@@ -59,7 +61,7 @@ public sealed class DekafProducerHealthCheck<TKey, TValue> : IHealthCheck
             await _producer.FlushAsync(timeoutCts.Token).ConfigureAwait(false);
 
             return HealthCheckResult.Healthy(
-                "Producer queue drained. Delivery outcomes and broker connectivity are not checked.");
+                "Producer flush checkpoint completed. Delivery outcomes and broker connectivity are not checked.");
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
@@ -69,7 +71,7 @@ public sealed class DekafProducerHealthCheck<TKey, TValue> : IHealthCheck
         catch (Exception ex)
         {
             return HealthCheckResult.Unhealthy(
-                "Producer queue drainage check failed.",
+                "Producer flush checkpoint check failed.",
                 exception: ex);
         }
     }

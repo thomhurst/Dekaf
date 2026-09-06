@@ -175,12 +175,13 @@ public interface IKafkaProducer<TKey, TValue> : IInitializableKafkaClient, IAsyn
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Waits for pending delivery attempts to leave the producer queue.
+    /// Waits for delivery attempts captured by a flush checkpoint to complete.
     /// </summary>
     /// <remarks>
     /// Failed delivery attempts also complete a flush. Observe produce results or delivery
     /// callbacks to determine delivery success. An empty queue completes immediately without
-    /// checking broker connectivity.
+    /// checking broker connectivity. Concurrent production can leave newer messages queued
+    /// after this checkpoint completes; completion does not assert that the current queue is empty.
     /// </remarks>
     ValueTask FlushAsync(CancellationToken cancellationToken = default);
 

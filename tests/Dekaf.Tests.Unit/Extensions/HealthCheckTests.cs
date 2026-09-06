@@ -479,7 +479,7 @@ public class HealthCheckTests
 
         await Assert.That(result.Status).IsEqualTo(HealthStatus.Healthy);
         await Assert.That(result.Description).IsEqualTo(
-            "Producer queue drained. Delivery outcomes and broker connectivity are not checked.");
+            "Producer flush checkpoint completed. Delivery outcomes and broker connectivity are not checked.");
     }
 
     [Test]
