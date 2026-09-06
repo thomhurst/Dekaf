@@ -235,6 +235,45 @@ public sealed class AdminClientAlterConsumerGroupOffsetsTests
             Arg.Any<CancellationToken>());
     }
 
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task ListConsumerGroupOffsetsAsync_RejectsErrorsInsteadOfOmittingOffsets(bool topLevel)
+    {
+        const string groupId = "test-group";
+        var connection = CreateConnection(groupId);
+        connection.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
+                Arg.Any<OffsetFetchRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(new OffsetFetchResponse
+            {
+                ErrorCode = topLevel ? ErrorCode.GroupAuthorizationFailed : ErrorCode.None,
+                Topics =
+                [
+                    new OffsetFetchResponseTopic
+                    {
+                        Name = "test-topic",
+                        Partitions =
+                        [
+                            new OffsetFetchResponsePartition
+                            {
+                                PartitionIndex = 0,
+                                CommittedOffset = -1,
+                                ErrorCode = topLevel ? ErrorCode.None : ErrorCode.TopicAuthorizationFailed
+                            }
+                        ]
+                    }
+                ]
+            }));
+        var pool = CreatePool(connection);
+        var metadata = CreateMetadataManager(pool, "test-topic", TopicId);
+        metadata.SetApiVersion(ApiKey.OffsetFetch, 6, 7);
+        await using var admin = new AdminClient(
+            new AdminClientOptions { BootstrapServers = ["localhost:9092"] }, pool, metadata);
+
+        await Assert.That(async () => await admin.ListConsumerGroupOffsetsAsync(groupId))
+            .Throws<Dekaf.Errors.GroupException>();
+    }
+
     private static IKafkaConnection CreateConnection(string groupId)
     {
         var connection = Substitute.For<IKafkaConnection>();

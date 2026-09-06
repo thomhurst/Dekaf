@@ -643,3 +643,32 @@ Dekaf.ProducerBuilder<TKey, TValue>.WithSaslScramMaxIterations(int maxIterations
 Dekaf.ShareConsumerBuilder<TKey, TValue>.WithSaslScramMaxIterations(int maxIterations) -> Dekaf.ShareConsumerBuilder<TKey, TValue>!
 const Dekaf.Security.Sasl.ScramAuthenticator.DefaultMaxIterations = 1000000 -> int
 Dekaf.Security.Sasl.ScramAuthenticator.ScramAuthenticator(Dekaf.Security.Sasl.SaslMechanism mechanism, string! username, string! password, bool tokenAuth, int maxIterations) -> void
+Dekaf.Admin.ListConsumerGroupOffsetsSpec
+Dekaf.Admin.ListConsumerGroupOffsetsSpec.ListConsumerGroupOffsetsSpec() -> void
+Dekaf.Admin.ListConsumerGroupOffsetsSpec.TopicPartitions.get -> System.Collections.Generic.IReadOnlyList<Dekaf.TopicPartition>?
+Dekaf.Admin.ListConsumerGroupOffsetsSpec.TopicPartitions.init -> void
+Dekaf.Admin.ListConsumerGroupOffsetsOptions
+Dekaf.Admin.ListConsumerGroupOffsetsOptions.ListConsumerGroupOffsetsOptions() -> void
+Dekaf.Admin.ListConsumerGroupOffsetsOptions.RequireStable.get -> bool
+Dekaf.Admin.ListConsumerGroupOffsetsOptions.RequireStable.init -> void
+Dekaf.Admin.ListConsumerGroupOffsetsOptions.TimeoutMs.get -> int
+Dekaf.Admin.ListConsumerGroupOffsetsOptions.TimeoutMs.init -> void
+Dekaf.Admin.ConsumerGroupOffsetsResult
+Dekaf.Admin.ConsumerGroupOffsetsResult.ConsumerGroupOffsetsResult() -> void
+Dekaf.Admin.ConsumerGroupOffsetsResult.GroupId.get -> string!
+Dekaf.Admin.ConsumerGroupOffsetsResult.GroupId.init -> void
+Dekaf.Admin.ConsumerGroupOffsetsResult.ErrorCode.get -> Dekaf.Protocol.ErrorCode
+Dekaf.Admin.ConsumerGroupOffsetsResult.ErrorCode.init -> void
+Dekaf.Admin.ConsumerGroupOffsetsResult.Offsets.get -> System.Collections.Generic.IReadOnlyDictionary<Dekaf.TopicPartition, Dekaf.Admin.ConsumerGroupOffsetResult!>!
+Dekaf.Admin.ConsumerGroupOffsetsResult.Offsets.init -> void
+Dekaf.Admin.ConsumerGroupOffsetResult
+Dekaf.Admin.ConsumerGroupOffsetResult.ConsumerGroupOffsetResult() -> void
+Dekaf.Admin.ConsumerGroupOffsetResult.Offset.get -> Dekaf.TopicPartitionOffset?
+Dekaf.Admin.ConsumerGroupOffsetResult.Offset.init -> void
+Dekaf.Admin.ConsumerGroupOffsetResult.ErrorCode.get -> Dekaf.Protocol.ErrorCode
+Dekaf.Admin.ConsumerGroupOffsetResult.ErrorCode.init -> void
+Dekaf.Admin.IConsumerGroupOffsetQueryAdminClient
+Dekaf.Admin.AdminClientConsumerGroupOffsetQueryExtensions
+Dekaf.Admin.AdminClient.ListConsumerGroupOffsetsAsync(System.Collections.Generic.IReadOnlyDictionary<string!, Dekaf.Admin.ListConsumerGroupOffsetsSpec!>! groupSpecs, Dekaf.Admin.ListConsumerGroupOffsetsOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<string!, Dekaf.Admin.ConsumerGroupOffsetsResult!>!>
+Dekaf.Admin.IConsumerGroupOffsetQueryAdminClient.ListConsumerGroupOffsetsAsync(System.Collections.Generic.IReadOnlyDictionary<string!, Dekaf.Admin.ListConsumerGroupOffsetsSpec!>! groupSpecs, Dekaf.Admin.ListConsumerGroupOffsetsOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<string!, Dekaf.Admin.ConsumerGroupOffsetsResult!>!>
+static Dekaf.Admin.AdminClientConsumerGroupOffsetQueryExtensions.ListConsumerGroupOffsetsAsync(this Dekaf.Admin.IAdminClient! adminClient, System.Collections.Generic.IReadOnlyDictionary<string!, Dekaf.Admin.ListConsumerGroupOffsetsSpec!>! groupSpecs, Dekaf.Admin.ListConsumerGroupOffsetsOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<string!, Dekaf.Admin.ConsumerGroupOffsetsResult!>!>
