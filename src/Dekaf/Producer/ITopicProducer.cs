@@ -99,7 +99,7 @@ public interface ITopicProducer<TKey, TValue> : IAsyncDisposable
     /// On the hot path (buffer has space), the returned <see cref="ValueTask"/> completes synchronously
     /// with zero allocation.</para>
     ///
-    /// <para>To ensure all messages are delivered, call <see cref="FlushAsync"/> before disposing.</para>
+    /// <para>To wait for pending delivery attempts to finish, call <see cref="FlushAsync"/> before disposing.</para>
     /// </remarks>
     /// <param name="key">The message key (can be null).</param>
     /// <param name="value">The message value.</param>
@@ -150,8 +150,15 @@ public interface ITopicProducer<TKey, TValue> : IAsyncDisposable
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Flushes any pending messages.
+    /// Waits for delivery attempts captured by a flush checkpoint to complete.
     /// </summary>
+    /// <remarks>
+    /// Failed delivery attempts also complete a flush. Observe produce results or delivery
+    /// callbacks to determine delivery success. An empty queue completes immediately without
+    /// checking broker connectivity. Concurrent production can leave newer messages queued
+    /// after this checkpoint completes; completion does not assert that the current queue is empty.
+    /// This flushes the shared underlying producer, including messages for other bound topics.
+    /// </remarks>
     /// <param name="cancellationToken">Cancellation token.</param>
     ValueTask FlushAsync(CancellationToken cancellationToken = default);
 }
