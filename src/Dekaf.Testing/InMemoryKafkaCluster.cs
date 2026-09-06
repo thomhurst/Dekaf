@@ -1463,6 +1463,36 @@ public sealed class InMemoryKafkaCluster
         }
     }
 
+    internal void CreatePartitions(CreatePartitionsTopic expansion, bool validateOnly)
+    {
+        lock (_gate)
+        {
+            // Validation must never auto-create a missing topic, including with AutoCreateTopics enabled.
+            if (!_topics.TryGetValue(expansion.Name, out var topic))
+                throw new KafkaException(ErrorCode.UnknownTopicOrPartition, $"Topic '{expansion.Name}' does not exist.");
+            if (expansion.Count <= topic.Partitions.Count)
+                throw new KafkaException(ErrorCode.InvalidPartitions, "The total partition count must increase.");
+
+            if (expansion.Assignments is { } assignments)
+            {
+                if (assignments.Count != expansion.Count - topic.Partitions.Count)
+                    throw new KafkaException(ErrorCode.InvalidReplicaAssignment, "Assignments must describe every additional partition.");
+                foreach (var assignment in assignments)
+                {
+                    // In-memory metadata models one broker, with replication factor one.
+                    if (assignment.BrokerIds.Count != 1 || assignment.BrokerIds[0] != 0)
+                        throw new KafkaException(ErrorCode.InvalidReplicaAssignment, "The in-memory cluster supports only replica broker 0.");
+                }
+            }
+
+            if (!validateOnly)
+            {
+                while (topic.Partitions.Count < expansion.Count)
+                    topic.Partitions.Add(new PartitionState());
+            }
+        }
+    }
+
     internal IReadOnlyDictionary<string, TopicDescription> DescribeTopics(IEnumerable<string> topicNames)
     {
         lock (_gate)

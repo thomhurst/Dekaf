@@ -83,6 +83,7 @@ const sidebars = {
         'observability',
         'health-checks',
         'admin/topic-identifiers',
+        'admin/partition-expansion',
         'admin/transaction-remediation',
         'admin/replica-log-directories',
         'admin/streams-group-management',

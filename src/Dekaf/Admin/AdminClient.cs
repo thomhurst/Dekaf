@@ -28,6 +28,7 @@ public sealed partial class AdminClient :
     IStreamsGroupManagementAdminClient,
     ITransactionRemediationAdminClient,
     IShareGroupDeletionAdminClient,
+    IPartitionExpansionAdminClient,
     IKafkaClientInstanceIdentity,
     IKafkaClientStatusProvider
 {
@@ -490,18 +491,39 @@ public sealed partial class AdminClient :
             $"Topic(s) {string.Join(", ", topicNames)} did not have all partition leaders elected after {leaderWaitRetries} attempts");
     }
 
-    private async ValueTask<bool> TopicHasAtLeastPartitionCountAsync(
-        string topicName,
-        int partitionCount,
+    private async ValueTask<bool> TopicMatchesPartitionExpansionAsync(
+        CreatePartitionsTopic requested,
         CancellationToken cancellationToken)
     {
         await _metadataManager.RefreshMetadataAsync(
-            [topicName],
+            [requested.Name],
             forceRefresh: true,
             cancellationToken: cancellationToken).ConfigureAwait(false);
 
-        var topic = _metadataManager.Metadata.GetTopic(topicName);
-        return topic is { ErrorCode: Protocol.ErrorCode.None } && topic.PartitionCount >= partitionCount;
+        var topic = _metadataManager.Metadata.GetTopic(requested.Name);
+        if (topic is not { ErrorCode: Protocol.ErrorCode.None } || topic.PartitionCount < requested.Count)
+            return false;
+        if (requested.Assignments is not { } assignments)
+            return true;
+
+        var firstNewPartition = requested.Count - assignments.Count;
+        var matched = 0;
+        foreach (var partition in topic.Partitions)
+        {
+            var assignmentIndex = partition.PartitionIndex - firstNewPartition;
+            if (assignmentIndex < 0 || assignmentIndex >= assignments.Count)
+                continue;
+            var expected = assignments[assignmentIndex].BrokerIds;
+            if (partition.ErrorCode != Protocol.ErrorCode.None || partition.ReplicaNodes.Count != expected.Count)
+                return false;
+            for (var index = 0; index < expected.Count; index++)
+            {
+                if (partition.ReplicaNodes[index] != expected[index])
+                    return false;
+            }
+            matched++;
+        }
+        return matched == assignments.Count;
     }
 
     public async ValueTask DeleteTopicsAsync(
@@ -2316,9 +2338,18 @@ public sealed partial class AdminClient :
             Name = kvp.Key,
             Count = kvp.Value
         }).ToList();
+        await CreatePartitionsCoreAsync(topics, 30000, false, cancellationToken).ConfigureAwait(false);
+    }
+
+    private ValueTask CreatePartitionsCoreAsync(
+        IReadOnlyList<CreatePartitionsTopic> topics,
+        int timeoutMs,
+        bool validateOnly,
+        CancellationToken cancellationToken)
+    {
         var createPartitionsMayHaveApplied = false;
 
-        await WithRetryAsync(async () =>
+        return WithRetryAsync(async () =>
         {
             var isRetryAttempt = createPartitionsMayHaveApplied;
             using var controllerLease = await LeaseControllerAsync(Protocol.ApiKey.CreatePartitions, cancellationToken).ConfigureAwait(false);
@@ -2326,7 +2357,9 @@ public sealed partial class AdminClient :
 
             var request = new CreatePartitionsRequest
             {
-                Topics = topics
+                Topics = topics,
+                TimeoutMs = timeoutMs,
+                ValidateOnly = validateOnly
             };
 
             var apiVersion = _metadataManager.GetNegotiatedApiVersion(
@@ -2345,7 +2378,7 @@ public sealed partial class AdminClient :
             }
             catch
             {
-                createPartitionsMayHaveApplied = true;
+                createPartitionsMayHaveApplied = !validateOnly;
                 throw;
             }
 
@@ -2355,19 +2388,23 @@ public sealed partial class AdminClient :
                 {
                     if (isRetryAttempt &&
                         topicResult.ErrorCode == Protocol.ErrorCode.InvalidPartitions &&
-                        await TopicHasAtLeastPartitionCountAsync(
-                            topicResult.Name,
-                            newPartitionCounts[topicResult.Name],
+                        await TopicMatchesPartitionExpansionAsync(
+                            GetRequestedPartitionExpansion(topics, topicResult.Name),
                             cancellationToken).ConfigureAwait(false))
                     {
+                        // Retain metadata-confirmed success if a later sibling forces another retry.
+                        topics = ExcludeConfirmedPartitionExpansions(topics, response.Results, topicResult.Name);
                         continue;
                     }
 
+                    // A sibling topic can already have succeeded, even when this result appears first.
+                    // Preserve every confirmed success before retrying the remaining request.
+                    topics = ExcludeConfirmedPartitionExpansions(topics, response.Results);
                     throw new KafkaException(topicResult.ErrorCode,
                         $"CreatePartitions failed for topic '{topicResult.Name}': {topicResult.ErrorMessage ?? topicResult.ErrorCode.ToString()}");
                 }
             }
-        }, cancellationToken).ConfigureAwait(false);
+        }, cancellationToken);
     }
 
     public async ValueTask AlterPartitionReassignmentsAsync(

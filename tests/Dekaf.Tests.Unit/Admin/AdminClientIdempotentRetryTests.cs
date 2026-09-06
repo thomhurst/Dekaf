@@ -421,7 +421,7 @@ public sealed class AdminClientIdempotentRetryTests
         ]
     };
 
-    private static (AdminClient Admin, IKafkaConnection Connection) CreateAdminWithMockConnection(
+    internal static (AdminClient Admin, IKafkaConnection Connection) CreateAdminWithMockConnection(
         params ApiKey[] extraApiKeys)
     {
         var connection = Substitute.For<IKafkaConnection>();
