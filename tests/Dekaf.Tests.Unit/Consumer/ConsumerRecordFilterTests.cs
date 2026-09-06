@@ -10,7 +10,8 @@ namespace Dekaf.Tests.Unit.Consumer;
 public sealed class ConsumerRecordFilterTests
 {
     [Test]
-    public async Task ConsumeOneAsync_FilterSkipsRejectedRecordBeforeDeserialization()
+    [Timeout(30_000)]
+    public async Task ConsumeOneAsync_FilterSkipsRejectedRecordBeforeDeserialization(CancellationToken testTimeout)
     {
         var fetch = CreatePendingFetchData(
             CreateRecord(0, "reject", "one", new Header("route", "drop"u8.ToArray())),
@@ -20,7 +21,7 @@ public sealed class ConsumerRecordFilterTests
         var valueDeserializer = new CountingStringDeserializer();
         await using var consumer = CreateConsumer(fetch, filter, keyDeserializer, valueDeserializer);
 
-        var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1));
+        var result = await consumer.ConsumeOneAsync(Timeout.InfiniteTimeSpan, testTimeout);
 
         await Assert.That(result).IsNotNull();
         await Assert.That(result!.Value.Offset).IsEqualTo(1L);
@@ -31,7 +32,8 @@ public sealed class ConsumerRecordFilterTests
     }
 
     [Test]
-    public async Task ConsumeOneAsync_FilterYieldsToPollAfterRejectedRecordInterval()
+    [Timeout(30_000)]
+    public async Task ConsumeOneAsync_FilterYieldsToPollAfterRejectedRecordInterval(CancellationToken testTimeout)
     {
         var filter = new HeaderValueFilter("route", "keep"u8.ToArray());
         await using var consumer = CreateConsumer(
@@ -40,7 +42,7 @@ public sealed class ConsumerRecordFilterTests
             Serializers.String,
             Serializers.String);
 
-        var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1));
+        var result = await consumer.ConsumeOneAsync(Timeout.InfiniteTimeSpan, testTimeout);
 
         await Assert.That(result).IsNotNull();
         await Assert.That(result!.Value.Offset).IsEqualTo(65L);
@@ -49,7 +51,8 @@ public sealed class ConsumerRecordFilterTests
     }
 
     [Test]
-    public async Task ConsumeOneAsync_AsyncDeserializerFilterYieldsToPollAfterRejectedRecordInterval()
+    [Timeout(30_000)]
+    public async Task ConsumeOneAsync_AsyncDeserializerFilterYieldsToPollAfterRejectedRecordInterval(CancellationToken testTimeout)
     {
         var filter = new HeaderValueFilter("route", "keep"u8.ToArray());
         var valueDeserializer = new CountingAsyncStringDeserializer();
@@ -60,7 +63,7 @@ public sealed class ConsumerRecordFilterTests
             Serializers.String,
             valueDeserializer);
 
-        var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1));
+        var result = await consumer.ConsumeOneAsync(Timeout.InfiniteTimeSpan, testTimeout);
 
         await Assert.That(result).IsNotNull();
         await Assert.That(result!.Value.Offset).IsEqualTo(65L);
@@ -70,9 +73,10 @@ public sealed class ConsumerRecordFilterTests
     }
 
     [Test]
-    public async Task ConsumeOneAsync_FilterObservesCancellationBetweenRejectedRecords()
+    [Timeout(30_000)]
+    public async Task ConsumeOneAsync_FilterObservesCancellationBetweenRejectedRecords(CancellationToken testTimeout)
     {
-        using var cancellation = new CancellationTokenSource();
+        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(testTimeout);
         var filter = new CancellingFilter(cancellation);
         await using var consumer = CreateConsumer(
             CreatePollRefreshRecords(),
@@ -81,7 +85,7 @@ public sealed class ConsumerRecordFilterTests
             Serializers.String);
 
         await Assert.That(async () =>
-                await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1), cancellation.Token))
+                await consumer.ConsumeOneAsync(Timeout.InfiniteTimeSpan, cancellation.Token))
             .Throws<OperationCanceledException>();
 
         await Assert.That(filter.CallCount).IsEqualTo(1);
@@ -104,9 +108,10 @@ public sealed class ConsumerRecordFilterTests
     }
 
     [Test]
-    public async Task ConsumeOneAsync_AsyncDeserializerFilterObservesCancellationBetweenRejectedRecords()
+    [Timeout(30_000)]
+    public async Task ConsumeOneAsync_AsyncDeserializerFilterObservesCancellationBetweenRejectedRecords(CancellationToken testTimeout)
     {
-        using var cancellation = new CancellationTokenSource();
+        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(testTimeout);
         var filter = new CancellingFilter(cancellation);
         await using var consumer = CreateConsumer(
             CreatePollRefreshRecords(),
@@ -116,7 +121,7 @@ public sealed class ConsumerRecordFilterTests
             new CountingAsyncStringDeserializer());
 
         await Assert.That(async () =>
-                await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1), cancellation.Token))
+                await consumer.ConsumeOneAsync(Timeout.InfiniteTimeSpan, cancellation.Token))
             .Throws<OperationCanceledException>();
 
         await Assert.That(filter.CallCount).IsEqualTo(1);
@@ -184,9 +189,10 @@ public sealed class ConsumerRecordFilterTests
     }
 
     [Test]
-    public async Task ConsumeOneAsync_FilterCancellationPreventsAcceptedAsyncDeserialization()
+    [Timeout(30_000)]
+    public async Task ConsumeOneAsync_FilterCancellationPreventsAcceptedAsyncDeserialization(CancellationToken testTimeout)
     {
-        using var cancellation = new CancellationTokenSource();
+        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(testTimeout);
         var filter = new CancellingFilter(cancellation, shouldDeserialize: true);
         var valueDeserializer = new CountingAsyncStringDeserializer();
         await using var consumer = CreateConsumer(
@@ -197,16 +203,17 @@ public sealed class ConsumerRecordFilterTests
             valueDeserializer);
 
         await Assert.That(async () =>
-                await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1), cancellation.Token))
+                await consumer.ConsumeOneAsync(Timeout.InfiniteTimeSpan, cancellation.Token))
             .Throws<OperationCanceledException>();
 
         await Assert.That(valueDeserializer.Count).IsEqualTo(0);
     }
 
     [Test]
-    public async Task ConsumeOneAsync_FilterCancellationPreventsAcceptedRecordDeserialization()
+    [Timeout(30_000)]
+    public async Task ConsumeOneAsync_FilterCancellationPreventsAcceptedRecordDeserialization(CancellationToken testTimeout)
     {
-        using var cancellation = new CancellationTokenSource();
+        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(testTimeout);
         var filter = new CancellingFilter(cancellation, shouldDeserialize: true);
         var keyDeserializer = new CountingStringDeserializer();
         var valueDeserializer = new CountingStringDeserializer();
@@ -217,7 +224,7 @@ public sealed class ConsumerRecordFilterTests
             valueDeserializer);
 
         await Assert.That(async () =>
-                await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1), cancellation.Token))
+                await consumer.ConsumeOneAsync(Timeout.InfiniteTimeSpan, cancellation.Token))
             .Throws<OperationCanceledException>();
 
         await Assert.That(keyDeserializer.Count).IsEqualTo(0);
@@ -250,7 +257,8 @@ public sealed class ConsumerRecordFilterTests
     }
 
     [Test]
-    public async Task ConsumeOneAsync_FilterRunsBeforeAsyncDeserializer()
+    [Timeout(30_000)]
+    public async Task ConsumeOneAsync_FilterRunsBeforeAsyncDeserializer(CancellationToken testTimeout)
     {
         var fetch = CreatePendingFetchData(
             CreateRecord(0, "reject", "one", new Header("route", "drop"u8.ToArray())),
@@ -264,7 +272,7 @@ public sealed class ConsumerRecordFilterTests
             Serializers.String,
             valueDeserializer);
 
-        var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1));
+        var result = await consumer.ConsumeOneAsync(Timeout.InfiniteTimeSpan, testTimeout);
 
         await Assert.That(result).IsNotNull();
         await Assert.That(result!.Value.Value).IsEqualTo("two");
@@ -272,7 +280,8 @@ public sealed class ConsumerRecordFilterTests
     }
 
     [Test]
-    public async Task ConsumeOneAsync_HeaderRouterReceivesPooledRecordHeaders()
+    [Timeout(30_000)]
+    public async Task ConsumeOneAsync_HeaderRouterReceivesPooledRecordHeaders(CancellationToken testTimeout)
     {
         var fetch = CreatePendingFetchData(
             CreateRecord(0, "key", "payload", new Header("event-type", "created"u8.ToArray())));
@@ -282,14 +291,15 @@ public sealed class ConsumerRecordFilterTests
             new HeaderDeserializerRoute<string>("created"u8.ToArray(), new PrefixDeserializer("created")));
         await using var consumer = CreateConsumer(fetch, null, Serializers.String, router);
 
-        var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1));
+        var result = await consumer.ConsumeOneAsync(Timeout.InfiniteTimeSpan, testTimeout);
 
         await Assert.That(result).IsNotNull();
         await Assert.That(result!.Value.Value).IsEqualTo("created:payload");
     }
 
     [Test]
-    public async Task ConsumeOneAsync_NestedHeaderRoutersReuseParsedLookup()
+    [Timeout(30_000)]
+    public async Task ConsumeOneAsync_NestedHeaderRoutersReuseParsedLookup(CancellationToken testTimeout)
     {
         var fetch = CreatePendingFetchData(
             CreateRecord(
@@ -310,7 +320,7 @@ public sealed class ConsumerRecordFilterTests
             new HeaderDeserializerRoute<string>("domain"u8.ToArray(), inner));
         await using var consumer = CreateConsumer(fetch, null, Serializers.String, outer);
 
-        var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1));
+        var result = await consumer.ConsumeOneAsync(Timeout.InfiniteTimeSpan, testTimeout);
 
         await Assert.That(result).IsNotNull();
         await Assert.That(result!.Value.Value).IsEqualTo("created:payload");
@@ -518,7 +528,8 @@ public sealed class ConsumerRecordFilterTests
     }
 
     [Test]
-    public async Task ConsumeOneAsync_FilterExceptionPropagatesWithoutAdvancingPosition()
+    [Timeout(30_000)]
+    public async Task ConsumeOneAsync_FilterExceptionPropagatesWithoutAdvancingPosition(CancellationToken testTimeout)
     {
         var fetch = CreatePendingFetchData(CreateRecord(0, "key", "value"));
         var topicPartition = fetch.TopicPartition;
@@ -530,7 +541,7 @@ public sealed class ConsumerRecordFilterTests
             Serializers.String);
 
         var actual = (await Assert.That(async () =>
-                await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1)))
+                await consumer.ConsumeOneAsync(Timeout.InfiniteTimeSpan, testTimeout))
             .Throws<InvalidOperationException>())!;
 
         await Assert.That(actual).IsSameReferenceAs(expected);
