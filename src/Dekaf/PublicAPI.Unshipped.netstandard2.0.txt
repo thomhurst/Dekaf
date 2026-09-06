@@ -598,3 +598,13 @@ Dekaf.Admin.DescribeClusterOptions.IncludeFencedBrokers.init -> void
 Dekaf.Admin.IClusterDiscoveryAdminClient
 Dekaf.Admin.IClusterDiscoveryAdminClient.DescribeClusterAsync(Dekaf.Admin.DescribeClusterOptions! options, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.Admin.ClusterDescriptionSnapshot!>
 static Dekaf.Admin.AdminClientClusterDiscoveryExtensions.DescribeClusterAsync(this Dekaf.Admin.IAdminClient! adminClient, Dekaf.Admin.DescribeClusterOptions! options, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.Admin.ClusterDescriptionSnapshot!>
+Dekaf.Admin.AdminClientNodeFeatureExtensions
+Dekaf.Admin.DescribeFeaturesOptions
+Dekaf.Admin.DescribeFeaturesOptions.DescribeFeaturesOptions() -> void
+Dekaf.Admin.DescribeFeaturesOptions.NodeId.get -> int?
+Dekaf.Admin.DescribeFeaturesOptions.NodeId.init -> void
+Dekaf.Admin.DescribeFeaturesOptions.TimeoutMs.get -> int?
+Dekaf.Admin.DescribeFeaturesOptions.TimeoutMs.init -> void
+Dekaf.Admin.INodeFeatureAdminClient
+Dekaf.Admin.INodeFeatureAdminClient.DescribeFeaturesAsync(Dekaf.Admin.DescribeFeaturesOptions! options, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.Admin.FeatureMetadata!>
+static Dekaf.Admin.AdminClientNodeFeatureExtensions.DescribeFeaturesAsync(this Dekaf.Admin.IAdminClient! adminClient, Dekaf.Admin.DescribeFeaturesOptions! options, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.Admin.FeatureMetadata!>

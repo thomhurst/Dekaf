@@ -1127,6 +1127,21 @@ public class AdminClientTests(KafkaTestContainer kafka) : KafkaIntegrationTest(k
     }
 
     [Test]
+    public async Task DescribeFeaturesAsync_QueriesEachBrokerAndRejectsUnknownNode()
+    {
+        await using var admin = CreateAdminClient();
+        var cluster = await admin.DescribeClusterAsync();
+        foreach (var node in cluster.Nodes)
+        {
+            var features = await admin.DescribeFeaturesAsync(new DescribeFeaturesOptions { NodeId = node.NodeId });
+            await Assert.That(features.SupportedFeatures).ContainsKey("metadata.version");
+            await Assert.That(features.FinalizedFeaturesEpoch).IsGreaterThanOrEqualTo(0);
+        }
+        await Assert.ThrowsAsync<KafkaException>(async () =>
+            await admin.DescribeFeaturesAsync(new DescribeFeaturesOptions { NodeId = int.MaxValue }));
+    }
+
+    [Test]
     [SupportsKafka(270)]
     public async Task UpdateFeaturesAsync_ValidateOnlyEmptyUpdateSucceeds()
     {

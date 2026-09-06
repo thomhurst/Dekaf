@@ -34,6 +34,47 @@ public sealed class AdminClientControllerBootstrapTests
     }
 
     [Test]
+    [Arguments(1)]
+    [Arguments(2)]
+    public async Task DescribeFeaturesAsync_SelectedController_UsesItsIdentity(int nodeId)
+    {
+        await using var context = new ControllerAdminContext();
+        var target = nodeId == 1 ? context.OtherController : context.ActiveController;
+        var other = nodeId == 1 ? context.ActiveController : context.OtherController;
+        var response = new ApiVersionsResponse
+        {
+            ErrorCode = ErrorCode.None,
+            ApiKeys = [new ApiVersion(ApiKey.ApiVersions, 0, 5)],
+            SupportedFeatures = [new SupportedFeature("metadata.version", 7, (short)(19 + nodeId))],
+            FinalizedFeaturesEpoch = 42,
+            FinalizedFeatures = [new FinalizedFeature("metadata.version", 17, 17)]
+        };
+        target.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
+            Arg.Any<ApiVersionsRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(response));
+
+        var result = await context.Client.DescribeFeaturesAsync(new DescribeFeaturesOptions { NodeId = nodeId });
+
+        await Assert.That(result.FinalizedFeaturesEpoch).IsEqualTo(42L);
+        await Assert.That(result.SupportedFeatures["metadata.version"].MaxVersion).IsEqualTo((short)(19 + nodeId));
+        await target.Received(1).SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
+            Arg.Is<ApiVersionsRequest>(request => request.NodeId == nodeId && request.ClusterId == "cluster-a"),
+            5, Arg.Any<CancellationToken>());
+        await other.DidNotReceiveWithAnyArgs().SendAsync<ApiVersionsRequest, ApiVersionsResponse>(default!, default, default);
+    }
+
+    [Test]
+    public async Task DescribeFeaturesAsync_UnknownController_DoesNotQueryActiveController()
+    {
+        await using var context = new ControllerAdminContext();
+        var exception = await Assert.ThrowsAsync<KafkaException>(async () =>
+            await context.Client.DescribeFeaturesAsync(new DescribeFeaturesOptions { NodeId = 99 }));
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.UnknownControllerId);
+        await context.ActiveController.DidNotReceiveWithAnyArgs()
+            .SendAsync<ApiVersionsRequest, ApiVersionsResponse>(default!, default, default);
+    }
+
+    [Test]
     public async Task DescribeClusterAsync_DiscoversControllersWithoutRegisteringBrokers()
     {
         await using var context = new ControllerAdminContext();
@@ -541,6 +582,7 @@ public sealed class AdminClientControllerBootstrapTests
 
             _metadataManager = new MetadataManager(Pool, []);
             _metadataManager.SetApiVersion(ApiKey.DescribeCluster, 1, 2);
+            _metadataManager.SetApiVersion(ApiKey.ApiVersions, 0, 5);
             _metadataManager.SetApiVersion(ApiKey.DescribeQuorum, 0, 2);
             _metadataManager.SetApiVersion(ApiKey.CreateTopics, 0, 7);
             _metadataManager.SetApiVersion(ApiKey.DescribeConfigs, 4, 4);

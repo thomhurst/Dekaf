@@ -23,6 +23,7 @@ namespace Dekaf.Admin;
 public sealed partial class AdminClient :
     IAdminClient,
     IReplicaLogDirAdminClient,
+    INodeFeatureAdminClient,
     ITopicIdAdminClient,
     IStreamsGroupManagementAdminClient,
     ITransactionRemediationAdminClient,
@@ -936,57 +937,70 @@ public sealed partial class AdminClient :
                 ? await LeaseAnyBrokerConnectionAsync(cancellationToken).ConfigureAwait(false)
                 : await LeaseControllerAsync(Protocol.ApiKey.ApiVersions, cancellationToken).ConfigureAwait(false);
             var connection = connectionLease.Connection;
-            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+            var request = CreateFeatureRequest(
                 connection,
-                Protocol.ApiKey.ApiVersions,
-                ApiVersionsRequest.LowestSupportedVersion,
-                ApiVersionsRequest.HighestSupportedVersion);
+                _controllerMetadataManager?.Snapshot.ActiveControllerId ?? connection.BrokerId,
+                out var apiVersion);
             var response = await connection.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
-                new ApiVersionsRequest
-                {
-                    ClientSoftwareName = "dekaf",
-                    ClientSoftwareVersion = typeof(AdminClient).Assembly.GetName().Version?.ToString() ?? "0.0.0",
-                    ClusterId = apiVersion >= 5
-                        ? _controllerMetadataManager?.Snapshot.ClusterId ?? _metadataManager.Metadata.ClusterId
-                        : null,
-                    NodeId = apiVersion >= 5
-                        ? _controllerMetadataManager?.Snapshot.ActiveControllerId ?? connection.BrokerId
-                        : -1
-                },
-                apiVersion,
-                cancellationToken).ConfigureAwait(false);
-            if (response.ErrorCode != Protocol.ErrorCode.None)
-            {
-                throw KafkaException.FromErrorCode(
-                    response.ErrorCode,
-                    $"DescribeFeatures failed: {response.ErrorCode}");
-            }
-
-            var capabilities = KafkaConnectionCapabilities.Create(response);
-            _metadataManager.ObserveClusterCapabilities(
-                _metadataManager.Metadata.ClusterId,
-                capabilities);
-            _metadataManager.GetClusterFinalizedFeatureMetadata(
-                out var finalizedFeaturesEpoch,
-                out var finalizedFeatureData);
-
-            return new FeatureMetadata
-            {
-                FinalizedFeaturesEpoch = finalizedFeaturesEpoch,
-                SupportedFeatures = capabilities.SupportedFeatures.ToDictionary(
-                    static feature => feature.Key,
-                    static feature => new FeatureVersionRange(
-                        feature.Value.MinVersion,
-                        feature.Value.MaxVersion),
-                    StringComparer.Ordinal),
-                FinalizedFeatures = finalizedFeatureData.ToDictionary(
-                    static feature => feature.Key,
-                    static feature => new FeatureVersionRange(
-                        feature.Value.MinVersion,
-                        feature.Value.MaxVersion),
-                    StringComparer.Ordinal)
-            };
+                request, apiVersion, cancellationToken).ConfigureAwait(false);
+            return MapFeatureResponse(response);
         }, cancellationToken).ConfigureAwait(false);
+    }
+
+    private ApiVersionsRequest CreateFeatureRequest(
+        IKafkaConnection connection,
+        int nodeId,
+        out short apiVersion)
+    {
+        apiVersion = _metadataManager.GetNegotiatedApiVersion(
+            connection,
+            Protocol.ApiKey.ApiVersions,
+            ApiVersionsRequest.LowestSupportedVersion,
+            ApiVersionsRequest.HighestSupportedVersion);
+        return new ApiVersionsRequest
+        {
+            ClientSoftwareName = "dekaf",
+            ClientSoftwareVersion = typeof(AdminClient).Assembly.GetName().Version?.ToString() ?? "0.0.0",
+            ClusterId = apiVersion >= 5
+                ? _controllerMetadataManager?.Snapshot.ClusterId ?? _metadataManager.Metadata.ClusterId
+                : null,
+            NodeId = apiVersion >= 5 ? nodeId : -1
+        };
+    }
+
+    private FeatureMetadata MapFeatureResponse(ApiVersionsResponse response)
+    {
+        if (response.ErrorCode != Protocol.ErrorCode.None)
+        {
+            throw KafkaException.FromErrorCode(
+                response.ErrorCode,
+                $"DescribeFeatures failed: {response.ErrorCode}");
+        }
+
+        var capabilities = KafkaConnectionCapabilities.Create(response);
+        _metadataManager.ObserveClusterCapabilities(
+            _controllerMetadataManager?.Snapshot.ClusterId ?? _metadataManager.Metadata.ClusterId,
+            capabilities);
+        _metadataManager.GetClusterFinalizedFeatureMetadata(
+            out var finalizedFeaturesEpoch,
+            out var finalizedFeatureData);
+
+        return new FeatureMetadata
+        {
+            FinalizedFeaturesEpoch = finalizedFeaturesEpoch,
+            SupportedFeatures = capabilities.SupportedFeatures.ToDictionary(
+                static feature => feature.Key,
+                static feature => new FeatureVersionRange(
+                    feature.Value.MinVersion,
+                    feature.Value.MaxVersion),
+                StringComparer.Ordinal),
+            FinalizedFeatures = finalizedFeatureData.ToDictionary(
+                static feature => feature.Key,
+                static feature => new FeatureVersionRange(
+                    feature.Value.MinVersion,
+                    feature.Value.MaxVersion),
+                StringComparer.Ordinal)
+        };
     }
 
     public async ValueTask<IReadOnlyDictionary<string, FeatureUpdateResultInfo>> UpdateFeaturesAsync(
