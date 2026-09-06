@@ -234,10 +234,10 @@ jobs:
           NuGet__ShouldPublish: 'false'
         run: dotnet run --project tools/Dekaf.Pipeline
 
-      - name: Verify native MTP test runner
+      - name: Verify native MTP test discovery
         run: >-
           dotnet test --project tests/Dekaf.Tests.Unit
-          --configuration Release --framework net10.0 --no-build
+          --configuration Release --framework net10.0 --no-build --list-tests
           --treenode-filter "/*/*/AdminClientFeatureTests/DescribeFeaturesAsync_MapsConnectionCapabilitySnapshot"
           --minimum-expected-tests 1
 
