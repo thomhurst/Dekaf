@@ -461,6 +461,31 @@ var config = new SchemaRegistryConfig
 using var schemaRegistry = new SchemaRegistryClient(config);
 ```
 
+### Deleting and restoring subjects
+
+After `SchemaRegistryClient.DeleteSubjectAsync` receives a successful HTTP response,
+it removes that subject's cached registrations, including both normalization settings,
+and subject-qualified schema lookups, including formatted results. A later
+`RegisterSchemaAsync` reaches the registry again. Re-registering through POST is how
+[Confluent restores a soft-deleted subject](https://docs.confluent.io/platform/current/schema-registry/schema-deletion-guidelines.html#recovering-a-soft-deleted-schema).
+Hard deletion requires soft deletion first.
+
+Earlier in-flight requests may still return their original results to their callers,
+but cannot repopulate the deleted subject's cache entries. Requests and cache entries
+for unrelated subjects remain valid. Tracking lasts only for active requests, including
+cleanup when requests fail or are cancelled. A lookup that explicitly includes deleted
+versions does not populate the active subject lookup cache.
+
+Global integer-ID and GUID caches retain resolved schema definitions, which may be
+shared by other subjects or needed to decode existing records. This also applies after
+hard deletion: a cached definition is not proof that the registry still stores it or
+that a subject is registered. Other client instances and serializer caches are independent.
+
+An unsuccessful HTTP deletion leaves local caches unchanged. Once HTTP success confirms
+deletion, invalidation remains in effect even if reading the response body later fails
+or is cancelled. Concurrent registry operations are not a transaction; coordinate
+deletion and registration in the application when their ordering matters.
+
 ### HTTP pipeline customization
 
 `SchemaRegistryClient` accepts a caller-owned `HttpMessageHandler`, or a handler factory whose

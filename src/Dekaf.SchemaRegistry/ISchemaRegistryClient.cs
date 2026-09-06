@@ -241,6 +241,14 @@ public interface ISchemaRegistryClient : IDisposable
     /// <param name="permanent">If true, permanently delete (hard delete).</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>List of deleted version numbers.</returns>
+    /// <remarks>
+    /// <see cref="SchemaRegistryClient"/> invalidates local registration and subject-qualified
+    /// lookup entries after a successful HTTP deletion response. Earlier in-flight responses
+    /// cannot restore those entries. Unrelated subjects and cached schema definitions identified
+    /// by global ID or GUID are retained; cached definitions do not prove registry membership.
+    /// A failed HTTP deletion leaves caches unchanged. A successful response invalidates caches
+    /// even if its body cannot subsequently be read. Other clients and serializer caches are independent.
+    /// </remarks>
     Task<IReadOnlyList<int>> DeleteSubjectAsync(string subject, bool permanent = false, CancellationToken cancellationToken = default);
 
     /// <summary>

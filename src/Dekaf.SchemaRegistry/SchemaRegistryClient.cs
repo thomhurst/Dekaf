@@ -16,7 +16,7 @@ namespace Dekaf.SchemaRegistry;
 /// <summary>
 /// HTTP client for Confluent Schema Registry.
 /// </summary>
-public sealed class SchemaRegistryClient : IFormattedSchemaRegistryClient, ISchemaRegistryCache
+public sealed partial class SchemaRegistryClient : IFormattedSchemaRegistryClient, ISchemaRegistryCache
 {
     private const string AcceptUnknownPropertiesHeader = "Confluent-Accept-Unknown-Properties";
     private static readonly TimeSpan PooledConnectionLifetime = TimeSpan.FromMinutes(2);
@@ -493,6 +493,7 @@ public sealed class SchemaRegistryClient : IFormattedSchemaRegistryClient, ISche
         if (_idBySchemaCache.TryGetValue(cacheKey, out var cachedId))
             return cachedId;
 
+        using var cacheRequest = BeginSubjectCacheRequest(subject);
         var request = CreateRegisterSchemaRequest(schema);
 
         using var response = await PostAsJsonWithFailoverAsync(
@@ -514,7 +515,8 @@ public sealed class SchemaRegistryClient : IFormattedSchemaRegistryClient, ISche
             subject,
             schema,
             effectiveNormalize,
-            schemaGuid: effectiveNormalize ? null : schemaGuid);
+            schemaGuid: effectiveNormalize ? null : schemaGuid,
+            subjectCacheGeneration: cacheRequest.Generation);
 
         return id;
     }
@@ -604,6 +606,7 @@ public sealed class SchemaRegistryClient : IFormattedSchemaRegistryClient, ISche
         if (_schemaBySubjectAndIdCache.TryGetValue(key, out var cached))
             return cached;
 
+        using var cacheRequest = BeginSubjectCacheRequest(subject);
         using var response = await GetWithFailoverAsync(
             WithQuery(
                 $"schemas/ids/{id.ToString(CultureInfo.InvariantCulture)}",
@@ -619,7 +622,7 @@ public sealed class SchemaRegistryClient : IFormattedSchemaRegistryClient, ISche
             throw new SchemaRegistryException((int)response.StatusCode, "Schema Registry returned an empty schema response");
 
         var schema = CreateSchema(result);
-        CacheSubjectSchema(id, subject, format, schema);
+        CacheSubjectSchema(id, subject, format, schema, cacheRequest.Generation);
         return schema;
     }
 
@@ -660,6 +663,9 @@ public sealed class SchemaRegistryClient : IFormattedSchemaRegistryClient, ISche
         CancellationToken cancellationToken = default)
     {
         format = NormalizeFormat(format);
+        using var cacheRequest = format is not null && ignoreDeletedSchemas
+            ? BeginSubjectCacheRequest(subject)
+            : default;
         using var response = await GetWithFailoverAsync(
             WithQuery(
                 $"subjects/{Uri.EscapeDataString(subject)}/versions/{Uri.EscapeDataString(version)}",
@@ -683,7 +689,9 @@ public sealed class SchemaRegistryClient : IFormattedSchemaRegistryClient, ISche
         }
         else
         {
-            CacheSubjectSchema(result.Id, subject, format, schema);
+            // A deleted-inclusive lookup does not prove active subject membership.
+            if (ignoreDeletedSchemas)
+                CacheSubjectSchema(result.Id, subject, format, schema, cacheRequest.Generation);
             if (schemaGuid is { } guid)
                 CacheGuidSchema(guid, format, schema);
         }
@@ -706,6 +714,7 @@ public sealed class SchemaRegistryClient : IFormattedSchemaRegistryClient, ISche
         CancellationToken cancellationToken = default)
     {
         var effectiveNormalize = normalize || _config.NormalizeSchemas;
+        using var cacheRequest = ignoreDeletedSchemas ? BeginSubjectCacheRequest(subject) : default;
         var request = CreateRegisterSchemaRequest(schema);
         var path = WithQuery(
             $"subjects/{Uri.EscapeDataString(subject)}",
@@ -734,7 +743,8 @@ public sealed class SchemaRegistryClient : IFormattedSchemaRegistryClient, ISche
             schema,
             effectiveNormalize,
             schemaById: registeredSchema,
-            schemaGuid: schemaGuid);
+            schemaGuid: schemaGuid,
+            subjectCacheGeneration: cacheRequest.Generation);
 
         return new RegisteredSchema
         {
@@ -763,6 +773,7 @@ public sealed class SchemaRegistryClient : IFormattedSchemaRegistryClient, ISche
         if (_idBySchemaCache.TryGetValue(cacheKey, out var cachedId))
             return cachedId;
 
+        using var cacheRequest = BeginSubjectCacheRequest(subject);
         // Try to get existing schema first
         var request = CreateRegisterSchemaRequest(schema);
 
@@ -797,7 +808,8 @@ public sealed class SchemaRegistryClient : IFormattedSchemaRegistryClient, ISche
             schema,
             effectiveNormalize,
             schemaById: registeredSchema,
-            schemaGuid: schemaGuid);
+            schemaGuid: schemaGuid,
+            subjectCacheGeneration: cacheRequest.Generation);
 
         return result.Id;
     }
@@ -808,7 +820,8 @@ public sealed class SchemaRegistryClient : IFormattedSchemaRegistryClient, ISche
         Schema schema,
         bool normalize = false,
         Schema? schemaById = null,
-        Guid? schemaGuid = null)
+        Guid? schemaGuid = null,
+        long? subjectCacheGeneration = null)
     {
         if (_maxCachedSchemas == 0)
             return;
@@ -821,7 +834,7 @@ public sealed class SchemaRegistryClient : IFormattedSchemaRegistryClient, ISche
                 _schemaByIdCache[id] = schemaById;
             else
                 _schemaByIdCache.TryAdd(id, schema);
-            if (subject is not null)
+            if (subject is not null && IsSubjectCacheRequestCurrent(subject, subjectCacheGeneration))
             {
                 _idBySchemaCache.TryAdd((subject, schema, normalize), id);
             }
@@ -830,13 +843,16 @@ public sealed class SchemaRegistryClient : IFormattedSchemaRegistryClient, ISche
         }
     }
 
-    private void CacheSubjectSchema(int id, string subject, string? format, Schema schema)
+    private void CacheSubjectSchema(int id, string subject, string? format, Schema schema, long cacheGeneration)
     {
         if (_maxCachedSchemas == 0)
             return;
 
         lock (_cacheLock)
         {
+            if (!IsSubjectCacheRequestCurrent(subject, cacheGeneration))
+                return;
+
             ClearCachesIfFull();
 
             _schemaBySubjectAndIdCache[(id, subject, NormalizeFormat(format))] = schema;
@@ -992,6 +1008,8 @@ public sealed class SchemaRegistryClient : IFormattedSchemaRegistryClient, ISche
         using var response = await DeleteWithFailoverAsync(url, cancellationToken).ConfigureAwait(false);
         await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
 
+        // HTTP success confirms deletion even if reading its response body subsequently fails.
+        InvalidateSubjectCaches(subject);
         return await response.Content.ReadFromJsonAsync<List<int>>(
             SchemaRegistryJsonContext.Default.ListInt32, cancellationToken).ConfigureAwait(false) ?? [];
     }
