@@ -94,15 +94,18 @@ public sealed class AdminClientPartitionExpansionTests
                 throw new InvalidOperationException("Incorrect assignment count");
             if (explicitAssignments)
             {
-                foreach (var expected in new[] { new[] { 3, 1 }, new[] { 1, 3 } })
-                {
-                    if (reader.ReadUnsignedVarInt() != 3 || reader.ReadInt32() != expected[0] || reader.ReadInt32() != expected[1] || reader.ReadUnsignedVarInt() != 0)
-                        throw new InvalidOperationException("Incorrect replica order");
-                }
+                VerifyReplicaAssignment(ref reader, 3, 1);
+                VerifyReplicaAssignment(ref reader, 1, 3);
             }
             if (reader.ReadUnsignedVarInt() != 0 || reader.ReadInt32() != 1234 || !reader.ReadBoolean() || reader.ReadUnsignedVarInt() != 0 || reader.Remaining != 0)
                 throw new InvalidOperationException("Incorrect options encoding");
         }
+    }
+
+    private static void VerifyReplicaAssignment(ref KafkaProtocolReader reader, int firstBroker, int secondBroker)
+    {
+        if (reader.ReadUnsignedVarInt() != 3 || reader.ReadInt32() != firstBroker || reader.ReadInt32() != secondBroker || reader.ReadUnsignedVarInt() != 0)
+            throw new InvalidOperationException("Incorrect replica order");
     }
 
     [Test]
