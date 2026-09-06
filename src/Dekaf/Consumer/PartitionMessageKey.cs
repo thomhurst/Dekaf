@@ -62,6 +62,9 @@ internal static class PartitionMessageKeyComparer<TKey>
                 : null;
 }
 
+// Full-content hashing/equality costs O(key length) per dispatch lookup. The large,
+// distinct-key regression in #3048 remains a performance gate; selecting this comparer
+// once per dispatcher does not amortize its per-record byte scans.
 internal sealed class BinaryPartitionMessageKeyComparer<TKey> : IEqualityComparer<PartitionMessageKey<TKey>>
 {
     public bool Equals(PartitionMessageKey<TKey> x, PartitionMessageKey<TKey> y)

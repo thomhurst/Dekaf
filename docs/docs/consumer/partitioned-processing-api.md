@@ -162,6 +162,12 @@ keys share a lane; null reference keys share a separate lane. Other key types us
 These binary defaults apply when `TKey` is one of the listed types; wrapper or
 polymorphic key types can supply a comparer.
 
+Default binary hashing reads the entire key on each dictionary lookup; equality
+can compare those bytes again. Dispatch CPU cost therefore grows with key length,
+including for mostly distinct keys. For large keys, consider deserializing a compact
+application identity and supplying a comparer that preserves the required equality.
+A hash alone does not establish identity: collisions must still be distinguished.
+
 For custom key equality, supply an `IEqualityComparer<TKey>` to either handler
 overload. For example, a string-keyed consumer can group case-insensitive keys:
 
