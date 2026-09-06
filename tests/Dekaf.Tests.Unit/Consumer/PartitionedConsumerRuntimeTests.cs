@@ -1201,7 +1201,7 @@ public sealed class PartitionedConsumerRuntimeTests
             valueDeserializer: null);
     }
 
-    private sealed class TestConsumer :
+    internal class TestConsumer :
         IKafkaConsumer<string, string>,
         IConsumerPositions,
         IConsumerPartitions,
@@ -1368,7 +1368,7 @@ public sealed class PartitionedConsumerRuntimeTests
             }
         }
 
-        public async IAsyncEnumerable<ConsumeBatch<string, string>> ConsumeBatchAsync(
+        public virtual async IAsyncEnumerable<ConsumeBatch<string, string>> ConsumeBatchAsync(
             [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
             Interlocked.Increment(ref _consumeBatchCalls);

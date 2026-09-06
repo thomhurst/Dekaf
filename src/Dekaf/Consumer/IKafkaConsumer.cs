@@ -553,6 +553,16 @@ public readonly struct ConsumeResult<TKey, TValue>
     private readonly PendingFetchData? _headerOwner;
     private readonly int _headerGeneration;
 
+    // The fetch owns both the raw deserializer input and lazy headers. Reuse its existing
+    // reference instead of enlarging every result or allocating a per-record lease.
+    internal PendingFetchData? RetainStorage()
+    {
+        _headerOwner?.RetainForProcessing();
+        return _headerOwner;
+    }
+
+    internal void ReleaseStorage() => _headerOwner?.ReleaseAfterProcessing();
+
     /// <summary>
     /// Creates a new ConsumeResult with eager deserialization.
     /// Deserializes key and value immediately to avoid storing deserializer references in the struct.
