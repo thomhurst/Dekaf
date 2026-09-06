@@ -16,79 +16,10 @@ public sealed partial class InMemoryAdminClient
         ThrowIfDisposed();
         var opts = options ?? new ListStreamsGroupOffsetsOptions();
         ArgumentOutOfRangeException.ThrowIfNegative(opts.TimeoutMs);
-
-        var validatedSpecs = new (string GroupId, TopicPartition[]? Partitions)[groupSpecs.Count];
-        var specIndex = 0;
-        foreach (var (groupId, spec) in groupSpecs)
-        {
-            ArgumentException.ThrowIfNullOrWhiteSpace(groupId);
-            ArgumentNullException.ThrowIfNull(spec);
-
-            var partitions = spec.TopicPartitions?.ToArray();
-            if (partitions is not null)
-            {
-                var uniquePartitions = new HashSet<TopicPartition>();
-                foreach (var partition in partitions)
-                {
-                    ValidateTopicPartition(partition);
-                    if (!uniquePartitions.Add(partition))
-                        throw new ArgumentException($"Partition '{partition.Topic}-{partition.Partition}' is duplicated.", nameof(groupSpecs));
-                }
-            }
-
-            validatedSpecs[specIndex++] = (groupId, partitions);
-        }
-
-        return await ExecuteWithTimeoutAsync(async operationToken =>
-        {
-            var results = new Dictionary<string, StreamsGroupOffsetsResult>(groupSpecs.Count, StringComparer.Ordinal);
-            if (validatedSpecs.Length == 0)
-                await ApplyAdminFaultAsync(operationToken).ConfigureAwait(false);
-            foreach (var (groupId, selectedPartitions) in validatedSpecs)
-            {
-                if (selectedPartitions is { Length: > 0 })
-                {
-                    foreach (var partition in selectedPartitions)
-                    {
-                        await ApplyAdminFaultAsync(
-                            operationToken,
-                            partition.Topic,
-                            partition.Partition,
-                            groupId).ConfigureAwait(false);
-                    }
-                }
-                else
-                {
-                    await ApplyAdminFaultAsync(operationToken, groupId: groupId).ConfigureAwait(false);
-                }
-
-                var storedOffsets = _cluster.GetGroupOffsetDetails(groupId);
-                var partitions = selectedPartitions ?? storedOffsets.Keys.ToArray();
-                var offsets = new Dictionary<TopicPartition, StreamsGroupOffsetDescription>(partitions.Length);
-                foreach (var partition in partitions)
-                {
-                    var hasOffset = storedOffsets.TryGetValue(partition, out var storedOffset);
-                    var errorCode = _cluster.GetTopicPartitionError(partition);
-                    offsets[partition] = new StreamsGroupOffsetDescription
-                    {
-                        TopicPartition = partition,
-                        Offset = hasOffset ? storedOffset.Offset : -1,
-                        LeaderEpoch = hasOffset ? storedOffset.LeaderEpoch : -1,
-                        Metadata = hasOffset ? storedOffset.Metadata : null,
-                        ErrorCode = errorCode
-                    };
-                }
-
-                results.Add(groupId, new StreamsGroupOffsetsResult
-                {
-                    GroupId = groupId,
-                    ErrorCode = ErrorCode.None,
-                    Offsets = offsets
-                });
-            }
-
-            return results;
-        }, opts.TimeoutMs, nameof(ListStreamsGroupOffsetsAsync), cancellationToken).ConfigureAwait(false);
+        var requests = ValidateGroupOffsetQueries(groupSpecs, static spec => spec.TopicPartitions);
+        return await ExecuteWithTimeoutAsync(
+            token => ReadGroupOffsetSnapshotsAsync(requests, opts.RequireStable, token),
+            opts.TimeoutMs, nameof(ListStreamsGroupOffsetsAsync), cancellationToken).ConfigureAwait(false);
     }
 
     public async ValueTask<IReadOnlyDictionary<TopicPartition, StreamsGroupOffsetOperationResult>> AlterStreamsGroupOffsetsAsync(

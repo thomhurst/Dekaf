@@ -27,7 +27,8 @@ public sealed class AdminClientConsumerGroupOffsetQueriesTests
             .Returns(call => ValueTask.FromResult(Response(call.ArgAt<OffsetFetchRequest>(0), version,
                 [Partition(0, 42), Partition(1, -1), Partition(2, 123, ErrorCode.TopicAuthorizationFailed)])));
 
-        var results = await ((IAdminClient)admin).ListConsumerGroupOffsetsAsync(Specs(0, 1, 2));
+        IAdminClient client = admin;
+        var results = await client.ListConsumerGroupOffsetsAsync(Specs(0, 1, 2));
         var group = results[Group];
         var checkpoint = group.Offsets[new(Topic, 0)].Offset!.Value;
         await Assert.That(group.ErrorCode).IsEqualTo(ErrorCode.None);
@@ -50,7 +51,7 @@ public sealed class AdminClientConsumerGroupOffsetQueriesTests
         var (admin, connection, _) = CreateQueryAdmin(maximum);
         await using var owned = admin;
         SetupFindCoordinator(connection);
-        var negotiated = (short)Math.Min(maximum, (short)9);
+        var negotiated = Math.Min(maximum, (short)9);
         connection.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(Arg.Any<OffsetFetchRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
             .Returns(call => ValueTask.FromResult(Response(call.ArgAt<OffsetFetchRequest>(0), negotiated, [Partition(0, 42)])));
         var results = await admin.ListConsumerGroupOffsetsAsync(new Dictionary<string, ListConsumerGroupOffsetsSpec>

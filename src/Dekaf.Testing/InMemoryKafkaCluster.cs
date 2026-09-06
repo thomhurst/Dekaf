@@ -40,6 +40,8 @@ public sealed partial class InMemoryKafkaCluster
     private long _nextConsumerGroupRegistrationId;
     private TimeSpan _produceLatency;
     private int _nextConsumerGroupGeneration;
+    private Dictionary<InMemoryTransactionMarker, Dictionary<string, InMemoryPendingGroupOffsets>>? _pendingConsumerGroupOffsets;
+    private TaskCompletionSource? _groupOffsetsChanged;
 
     public InMemoryKafkaCluster()
         : this(new InMemoryKafkaClusterOptions(), new KafkaFaultPlan())
@@ -331,10 +333,7 @@ public sealed partial class InMemoryKafkaCluster
     internal void CompleteTransaction(
         InMemoryTransactionMarker transactionMarker,
         bool committed,
-        IEnumerable<(
-            string GroupId,
-            IReadOnlyList<ConsumerGroupMetadata> MetadataSnapshots,
-            IReadOnlyList<TopicPartitionOffset> Offsets)> pendingOffsets,
+        Dictionary<string, InMemoryPendingGroupOffsets> pendingOffsets,
         PreparedTransactionState preparedState,
         IInMemoryPreparedTransaction transaction)
     {
@@ -343,6 +342,7 @@ public sealed partial class InMemoryKafkaCluster
         ArgumentNullException.ThrowIfNull(transaction);
 
         TaskCompletionSource signal;
+        TaskCompletionSource? offsetsSignal;
         lock (_gate)
         {
             if (transactionMarker.State != InMemoryTransactionState.Ongoing)
@@ -350,14 +350,21 @@ public sealed partial class InMemoryKafkaCluster
 
             if (committed)
             {
-                foreach (var (groupId, metadataSnapshots, _) in pendingOffsets)
+                foreach (var (groupId, pending) in pendingOffsets)
                 {
-                    for (var i = 0; i < metadataSnapshots.Count; i++)
-                        ValidateConsumerGroupMetadataUnderLock(groupId, metadataSnapshots[i]);
+                    for (var i = 0; i < pending.MetadataSnapshots.Count; i++)
+                        ValidateConsumerGroupMetadataUnderLock(groupId, pending.MetadataSnapshots[i]);
                 }
 
-                foreach (var (groupId, _, offsets) in pendingOffsets)
-                    CommitOffsetsUnderLock(groupId, offsets);
+                foreach (var (groupId, pending) in pendingOffsets)
+                {
+                    var groupOffsets = GetOrCreateConsumerGroupOffsetsUnderLock(groupId);
+                    for (var i = 0; i < pending.Offsets.Count; i++)
+                    {
+                        var offset = pending.Offsets[i];
+                        groupOffsets[new TopicPartition(offset.Topic, offset.Partition)] = offset;
+                    }
+                }
             }
 
             transactionMarker.State = committed
@@ -377,10 +384,15 @@ public sealed partial class InMemoryKafkaCluster
                 _preparedTransactions.Remove(preparedState);
             }
 
+            var offsetsCompleted = _pendingConsumerGroupOffsets?.Remove(transactionMarker) == true;
+            offsetsSignal = offsetsCompleted ? _groupOffsetsChanged : null;
+            if (offsetsCompleted)
+                _groupOffsetsChanged = null;
             signal = _recordsChanged;
         }
 
         signal.TrySetResult();
+        offsetsSignal?.TrySetResult();
     }
 
     internal ValueTask<RecordMetadata> AppendAsync(
@@ -1173,7 +1185,7 @@ public sealed partial class InMemoryKafkaCluster
         }
     }
 
-    internal IReadOnlyDictionary<TopicPartition, TopicPartitionOffset> GetGroupOffsetDetails(string groupId)
+    internal Dictionary<TopicPartition, TopicPartitionOffset> GetGroupOffsetDetails(string groupId)
     {
         lock (_gate)
         {
