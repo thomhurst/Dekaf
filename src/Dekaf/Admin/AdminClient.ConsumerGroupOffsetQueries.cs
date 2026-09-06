@@ -49,10 +49,11 @@ public sealed partial class AdminClient : IConsumerGroupOffsetQueryAdminClient
             IReadOnlyDictionary<string, StreamsGroupOffsetsResult> fetched;
             try
             {
-                fetched = await ListStreamsGroupOffsetsCoreAsync(pending, requireStable, cancellationToken).ConfigureAwait(false);
+                fetched = await ListStreamsGroupOffsetsCoreAsync(
+                    pending, requireStable, cancellationToken, deferUnstableOffsets: requireStable).ConfigureAwait(false);
             }
             catch (Exception exception) when (cancellationToken.IsCancellationRequested &&
-                (Retry.RetryHelper.IsRetriableRequestFailure(exception) || exception is InvalidOperationException and not ObjectDisposedException))
+                Retry.RetryHelper.IsRetriableRequestFailure(exception))
             {
                 // Cancellation may race the final retriable broker response. Preserve the
                 // caller's deadline/cancellation outcome instead of leaking that response.

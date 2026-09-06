@@ -15,6 +15,69 @@ public sealed class AdminClientConsumerGroupOffsetQueriesTests
     private static readonly Guid TopicId = Guid.Parse("00112233-4455-6677-8899-aabbccddeeff");
 
     [Test]
+    [Arguments((short)7, false)]
+    [Arguments((short)7, true)]
+    [Arguments((short)9, false)]
+    [Arguments((short)9, true)]
+    public async Task RequireStable_DoesNotRefreshMetadataForPendingTransaction(short version, bool groupError)
+    {
+        var (admin, connection, _) = CreateQueryAdmin(version);
+        await using var owned = admin;
+        SetupFindCoordinator(connection);
+        var requests = 0;
+        var retryRefreshes = 0;
+        connection.SendAsync<MetadataRequest, MetadataResponse>(Arg.Any<MetadataRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                if (requests != 0)
+                    retryRefreshes++;
+                return ValueTask.FromResult(MetadataResponseFor((Topic, TopicId)));
+            });
+        connection.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(Arg.Any<OffsetFetchRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                var error = ++requests == 1 ? ErrorCode.UnstableOffsetCommit : ErrorCode.None;
+                var response = Response(call.ArgAt<OffsetFetchRequest>(0), version,
+                    [Partition(0, 42, groupError ? ErrorCode.None : error)]);
+                if (groupError)
+                    response = version < 8
+                        ? new OffsetFetchResponse { ErrorCode = error, Topics = response.Topics }
+                        : new OffsetFetchResponse
+                        {
+                            Groups = [new OffsetFetchResponseGroup
+                            {
+                                GroupId = Group, ErrorCode = error, Topics = response.Groups![0].Topics
+                            }]
+                        };
+                return ValueTask.FromResult(response);
+            });
+
+        var results = await admin.ListConsumerGroupOffsetsAsync(Specs(0), new() { RequireStable = true });
+        await Assert.That(results[Group].Offsets[new(Topic, 0)].Offset!.Value.Offset).IsEqualTo(42);
+        await Assert.That(requests).IsEqualTo(2);
+        await Assert.That(retryRefreshes).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task Query_CancellationDoesNotHideUnrelatedInvalidOperation()
+    {
+        var (admin, connection, _) = CreateQueryAdmin(9);
+        await using var owned = admin;
+        SetupFindCoordinator(connection);
+        using var cancellation = new CancellationTokenSource();
+        var failure = new InvalidOperationException("Unrelated operation invariant failed");
+        connection.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(Arg.Any<OffsetFetchRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                cancellation.Cancel();
+                return ValueTask.FromException<OffsetFetchResponse>(failure);
+            });
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            admin.ListConsumerGroupOffsetsAsync(Specs(0), cancellationToken: cancellation.Token).AsTask());
+        await Assert.That(exception).IsSameReferenceAs(failure);
+    }
+
+    [Test]
     [Arguments((short)6)]
     [Arguments((short)8)]
     [Arguments((short)10)]
@@ -236,7 +299,7 @@ public sealed class AdminClientConsumerGroupOffsetQueriesTests
         SetupFindCoordinator(connection);
         using var cancellation = new CancellationTokenSource();
         connection.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(Arg.Any<OffsetFetchRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
-            .Returns(call => ValueTask.FromResult(Response(call.ArgAt<OffsetFetchRequest>(0), 9, [Partition(0, -1, ErrorCode.UnstableOffsetCommit)])));
+            .Returns(call => ValueTask.FromResult(Response(call.ArgAt<OffsetFetchRequest>(0), 9, [Partition(0, -1, ErrorCode.NotCoordinator)])));
         connection.SendAsync<MetadataRequest, MetadataResponse>(Arg.Any<MetadataRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
             .Returns(_ =>
             {

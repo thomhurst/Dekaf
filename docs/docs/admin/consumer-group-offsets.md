@@ -45,4 +45,6 @@ The original `ListConsumerGroupOffsetsAsync(string groupId, CancellationToken)` 
 
 `TimeoutMs` covers initialization, coordinator discovery, network operations, and all stability retries together. Expiry throws `KafkaTimeoutException`; caller cancellation throws `OperationCanceledException`. Completed groups are retained while pending groups are retried. Normal transient coordinator or partition failures still use bounded request retries and retain their final error codes in the result.
 
+Pending transactional offsets use the stability polling interval without refreshing metadata or consuming the coordinator retry budget. Coordinator movement and transport failures still use normal bounded recovery.
+
 `Dekaf.Testing.InMemoryAdminClient`, including the `IAdminClient` registered by `AddDekafInMemory`, supports the rich overload. It preserves checkpoint metadata, leader epochs, absent commits, and partition errors. Both consumer and Streams offset queries honor `RequireStable`: selected partitions wait for all staged transactional offsets to commit or abort, within one timeout/cancellation budget. Fetch-all queries wait for pending offsets anywhere in the group; empty selections return immediately.
