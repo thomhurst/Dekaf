@@ -18,7 +18,9 @@ public sealed class OAuthBearerRefreshConcurrencyTests
         var older = Token("older", 120);
         var newer = Token("newer", 3600);
 
-        // Reproduce reverse completion without allowing an uncompleted task to escape on failure.
+        // Before the fix both provider calls start, so these responses reproduce reverse completion.
+        // With serialized refreshes the second response is intentionally unused: preventing that
+        // second invocation is the regression assertion. Complete both sources for either outcome.
         secondResponse.SetResult(newer);
         firstResponse.SetResult(older);
         var results = await Task.WhenAll(first, second).WaitAsync(TimeSpan.FromSeconds(10));
