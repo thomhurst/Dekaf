@@ -17,10 +17,9 @@ public sealed partial class OutboxRelayService
 
     private void CancelRenewalDelay()
     {
-        var cancellation = Interlocked.Exchange(ref _renewalDelayCancellation, null);
-        cancellation?.Cancel();
-        cancellation?.Dispose();
+        using var cancellation = Interlocked.Exchange(ref _renewalDelayCancellation, null);
         _renewalDelay = null;
+        cancellation?.Cancel();
     }
 
     private Task GetRenewalDelay(TimeSpan remaining, CancellationToken cancellationToken)

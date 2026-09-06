@@ -9,6 +9,21 @@ public sealed class OutboxLeaseRenewalTests
     private static readonly TimeSpan SignalTimeout = TimeSpan.FromSeconds(30);
 
     [Test]
+    public async Task Dispose_ThrowingRenewalCancellation_StillDisposesSource()
+    {
+        var time = new ManualLeaseTimeProvider();
+        using var relay = CreateRelay(new RenewableStore(time), new Publisher(), time);
+        using var cancellation = new CancellationTokenSource();
+        using var registration = cancellation.Token.Register(static () => throw new InvalidOperationException("callback failed"));
+        // Inject a failing callback into the privately owned source without exposing test-only API.
+        typeof(OutboxRelayService).GetField("_renewalDelayCancellation",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.SetValue(relay, cancellation);
+
+        await Assert.That(() => relay.Dispose()).Throws<AggregateException>();
+        await Assert.That(() => cancellation.Token).Throws<ObjectDisposedException>();
+    }
+
+    [Test]
     public async Task SlowPublish_RenewsBeyondOriginalExpiry_PeerCannotTakeOver()
     {
         var time = new ManualLeaseTimeProvider();

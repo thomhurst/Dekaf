@@ -288,6 +288,8 @@ public sealed partial class OutboxRelayService : BackgroundService
                 }
                 catch (Exception ex)
                 {
+                    // Store/timer failures must not bypass observation of the in-flight
+                    // publisher below. Preserve the error and retain rows after it finishes.
                     renewalError = ex;
                     ResetLeaseState();
                 }

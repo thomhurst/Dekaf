@@ -34,8 +34,9 @@ internal sealed class ManualLeaseTimeProvider : TimeProvider
         lock (_gate)
         {
             Interlocked.Add(ref _ticks, elapsed.Ticks);
-            foreach (var timer in _timers)
+            for (var index = 0; index < _timers.Count; index++)
             {
+                var timer = _timers[index];
                 if (timer.Due > _ticks)
                     continue;
                 timer.Due = timer.Period > TimeSpan.Zero ? _ticks + timer.Period.Ticks : long.MaxValue;
