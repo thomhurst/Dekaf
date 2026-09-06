@@ -105,6 +105,7 @@ public sealed class PartitionedRecordLifetimeIntegrationTests(KafkaTestContainer
             }
             catch (OperationCanceledException) when (stop.IsCancellationRequested)
             {
+                await Assert.That(run.IsCanceled).IsTrue();
             }
         }
     }

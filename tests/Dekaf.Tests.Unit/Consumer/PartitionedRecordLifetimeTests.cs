@@ -15,31 +15,45 @@ public sealed class PartitionedRecordLifetimeTests
     {
         var acceptedMemory = new ReusedMemory();
         var rejectedMemory = new ReusedMemory();
-        var acceptedPending = CreatePending(acceptedMemory);
-        var rejectedPending = CreatePending(rejectedMemory);
-        var acceptedBatch = new ConsumeBatch<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>>(
-            acceptedPending, Serializers.RawBytes, Serializers.RawBytes);
-        var rejectedBatch = new ConsumeBatch<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>>(
-            rejectedPending, Serializers.RawBytes, Serializers.RawBytes);
-        var accepted = acceptedBatch.GetEnumerator();
-        var rejected = rejectedBatch.GetEnumerator();
-        accepted.MoveNext();
-        rejected.MoveNext();
         var lane = new PartitionLane<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>>(
             new TopicPartition("lifetime", 0), 1, static (_, _) => default, static _ => { }, static (_, _) => { });
+        try
+        {
+            ConsumeResult<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>> accepted;
+            using (var acceptedPending = CreatePending(acceptedMemory))
+            {
+                using (var rejectedPending = CreatePending(rejectedMemory))
+                {
+                    var acceptedBatch = new ConsumeBatch<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>>(
+                        acceptedPending, Serializers.RawBytes, Serializers.RawBytes);
+                    var rejectedBatch = new ConsumeBatch<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>>(
+                        rejectedPending, Serializers.RawBytes, Serializers.RawBytes);
+                    var acceptedRecords = acceptedBatch.GetEnumerator();
+                    var rejectedRecords = rejectedBatch.GetEnumerator();
+                    acceptedRecords.MoveNext();
+                    rejectedRecords.MoveNext();
+                    accepted = acceptedRecords.Current;
 
-        await Assert.That(lane.TryEnqueue(accepted.Current)).IsTrue();
-        for (var attempt = 0; attempt < 256; attempt++)
-            await Assert.That(lane.TryEnqueue(rejected.Current)).IsFalse();
-        rejectedPending.Dispose();
-        await Assert.That(rejectedMemory.DisposeCount).IsEqualTo(1);
-        acceptedPending.Dispose();
-        await Assert.That(acceptedMemory.DisposeCount).IsEqualTo(0);
-        await lane.StopAsync(PartitionStopPolicy.Cancel, TimeSpan.FromSeconds(1));
-        await Assert.That(lane.TryEnqueue(accepted.Current)).IsFalse();
-        await Assert.That(lane.TryReadMessage(out var message)).IsTrue();
-        message.ReleaseStorage();
-        await Assert.That(acceptedMemory.DisposeCount).IsEqualTo(1);
+                    await Assert.That(lane.TryEnqueue(accepted)).IsTrue();
+                    for (var attempt = 0; attempt < 256; attempt++)
+                        await Assert.That(lane.TryEnqueue(rejectedRecords.Current)).IsFalse();
+                }
+                await Assert.That(rejectedMemory.DisposeCount).IsEqualTo(1);
+            }
+            await Assert.That(acceptedMemory.DisposeCount).IsEqualTo(0);
+            await lane.StopAsync(PartitionStopPolicy.Cancel, TimeSpan.FromSeconds(1));
+            await Assert.That(lane.TryEnqueue(accepted)).IsFalse();
+            var dequeued = lane.TryReadMessage(out var message);
+            if (dequeued)
+                message.ReleaseStorage();
+            await Assert.That(dequeued).IsTrue();
+            await Assert.That(acceptedMemory.DisposeCount).IsEqualTo(1);
+        }
+        finally
+        {
+            while (lane.TryReadMessage(out var remaining))
+                remaining.ReleaseStorage();
+        }
     }
 
     [Test]
@@ -306,6 +320,7 @@ public sealed class PartitionedRecordLifetimeTests
             }
             catch (OperationCanceledException) when (stop.IsCancellationRequested)
             {
+                await Assert.That(run.IsCanceled).IsTrue();
             }
         }
     }
