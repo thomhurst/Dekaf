@@ -168,7 +168,12 @@ public sealed partial class ScramAuthenticator : ISaslAuthenticator
         // Build client-final-message-without-proof
         // channel-binding: c=biws (base64 of "n,,")
         var channelBinding = "biws"; // base64("n,,")
+#if NET8_0_OR_GREATER
+        var clientFinalMessageWithoutProof = $"c={channelBinding},r={serverNonce}";
+#else
+        // The netstandard2.0 interpolation fallback cannot format a ref struct directly.
         var clientFinalMessageWithoutProof = $"c={channelBinding},r={serverNonce.ToString()}";
+#endif
 
         // Build auth message
         _authMessage = $"{_clientFirstMessageBare},{serverFirstMessage},{clientFinalMessageWithoutProof}";
