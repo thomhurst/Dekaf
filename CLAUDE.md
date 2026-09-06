@@ -1,458 +1,61 @@
 # Dekaf Development Guide
 
-Dekaf is a high-performance, pure C# Apache Kafka client library for .NET 10+. The project goal is "Taking the Java out of Kafka" - a native, zero-allocation implementation without interop overhead or JVM dependencies.
+Dekaf is a high-performance, pure C# Apache Kafka client. Performance is the product: improve throughput, latency, CPU, and allocations together.
 
-## Prime Directive: Performance Is the Product
+## Performance requirements
 
-Dekaf's reason to exist is to beat every other Kafka client — including Confluent.Kafka — on throughput, latency, CPU, and allocations, **simultaneously**. There is no "fast enough". These principles bind every agent and every change, and override convenience, style preference, and refactoring taste:
+- Changes to `src/` require benchmark or stress evidence appropriate to the affected path. Hot-path changes require before/after `[MemoryDiagnoser]` results in the PR, with `0 B` per message. Identify known cold-path noise explicitly (for example, the drainer-behind path in AccumulatorAppend benchmarks).
+- Protected metrics are throughput, p50/p99/max latency, CPU per message, allocations, and stability. Do not trade one for another without explicit maintainer approval, including for refactoring or review feedback.
+- Hot paths include serialization, batch append/drain, channel writes, per-message produce/consume, and receive/parse loops. Keep per-message fast paths synchronous with `ValueTask`; amortize necessary work per batch, connection, or epoch.
+- Hot paths must avoid LINQ, capturing lambdas, uncached delegates, boxing, string formatting, allocating collection conversions/iterators, interface-enumerator allocations, per-message async state machines, `Task.Run`, thread-pool hops, locks, exceptions as control flow, and O(n) scans or cleanup loops. Prefer spans, pooled buffers, static callbacks with explicit state, channels, and `Interlocked` as appropriate.
+- Distinguish per-message allocations from acceptable amortized per-batch costs. Remove completed operations from tracking collections and coordinate disposal of in-flight work, observing failures.
 
-- **Guilty until proven fast.** Any change touching `src/` is presumed to regress performance until benchmark or stress evidence shows otherwise. "It looks harmless" is not evidence; measurement is.
-- **Zero allocation in hot paths is a correctness requirement, not a goal.** A single per-message heap allocation in serialization, produce, or consume paths is a bug on par with data loss: block the change, eliminate the allocation, and prove it with `[MemoryDiagnoser]`.
-- **Protected metrics are never traded without explicit maintainer approval.** Throughput, p50/p99/max latency, CPU per message, allocations, and stability are all protected (Rule 8). An unapproved throughput-for-latency (or any similar) trade is a rejection, not an improvement.
-- **Measure, never assume.** Hot-path changes require before/after benchmark numbers posted in the PR. No numbers means not mergeable.
-- **Convenience never wins in `src/`.** Readability refactors, "simplifications", or modern-idiom rewrites that add allocations, virtual dispatch, boxing, or async overhead to hot paths are regressions and must be rejected — including when proposed by `/simplify` or a reviewer. Push back with the performance rationale instead of complying.
+## Library conventions and contracts
 
-## Critical Rules
+- Use nullable reference types, init-only options, fluent builders, and existing modern C# conventions. Public APIs expose interfaces; implementations are internal or sealed.
+- All awaits in `src/` use `ConfigureAwait(false)`; tests do not require it. Do not block on tasks with `.Result` or `.Wait()`.
+- Kafka-specific exceptions derive from `KafkaException`; use `IsRetriable` for retry decisions.
+- Producer `BufferMemory` limits apply to every append path, including the arena fast path. Exhaustion backpressures `ProduceAsync` until space is available.
+- `ProduceAsync` cancellation before append prevents delivery, including during metadata lookup, channel writes, and memory reservation. After append, cancellation stops the caller's wait while delivery continues.
+- `FlushAsync` cancellation stops waiting while batches continue sending. `FireAsync` has no cancellation-token overload; use `FlushAsync(cancellationToken)` for cancellable delivery waiting.
 
-1. **Zero-Allocation in Hot Paths (HARD GATE)**: Protocol serialization, message production, and consumption paths must not allocate on the heap — zero bytes per message, verified, not aspirational. Use `ref struct`, `Span<T>`, `IBufferWriter<byte>`, `ArrayPool<T>`, pooled buffers, and synchronous `ValueTask` fast paths. Every hot-path change requires a before/after `[MemoryDiagnoser]` benchmark run with numbers posted in the PR, and the Allocated column for hot-path benchmarks must stay `0 B` (known, explicitly-identified cold-path noise such as the stochastic drainer-behind path in AccumulatorAppend benchmarks is the only exception). See "Banned Constructs in Hot Paths" below.
+## Build and test
 
-2. **Modern C# Features Required**: Use nullable reference types, `init` properties, pattern matching, and C# 13 features. Never use older patterns when modern alternatives exist.
+`global.json` is the source of truth for SDK selection and Microsoft.Testing.Platform (MTP). Install the .NET 8 runtime when running the net8.0 tests.
 
-3. **Comprehensive Testing**: All features require unit tests (TUnit). Integration tests with Testcontainers.Kafka are required for client behavior changes. Performance-critical code requires benchmark tests.
-
-4. **ConfigureAwait(false) in Library Code**: This is a library. All `await` calls in `src/` must use `ConfigureAwait(false)` to avoid deadlocks in consumer applications. Test projects (`tests/`) do **not** need `ConfigureAwait(false)` since they are not library code.
-
-5. **Interface-First Design**: Public APIs expose interfaces (`IKafkaProducer<TKey, TValue>`, `IKafkaConsumer<TKey, TValue>`). Implementations are internal or sealed.
-
-6. **Code Cleanup Before PRs**: Before creating any pull request, and after finishing implementation work, run `/simplify` to review the final code for reuse, quality, and efficiency. This ensures code is clean, simple, and production-ready before review.
-
-7. **Minimize Stress-Test Scope**: When a PR, change, or performance improvement can be validated with one stress lane, run only that `lane`. Manual dispatches run **Dekaf only by default** — there is no client input — and default to `dispatch_shape=cheap` (one sample, no 3-connection pass; one measured duration total); use `cheap-with-3conn` when you need the Dekaf 3-connection control group, and `lane-default` for the lane's full shape (extra samples + 3conn where defined, still Dekaf-only). For final duration-based producer acceptance, set `baseline_sha` to the exact immediately preceding product SHA: the selected lane runs baseline → candidate → baseline on one VM, triples the measured duration, and blocks unless the Pareto comparison reports `PASS`; `REGRESSION` rejects the candidate and the first `INCONCLUSIVE` result permits one automatic exact repeat. If that repeat is also inconclusive, stop and synthesize every same-SHA paired run: identify control noise, improve the experimental design, test a new causal candidate, or obtain explicit maintainer direction. Never dispatch another identical paid run after two consecutive inconclusive results without explicit maintainer approval. The paired Dekaf-vs-Confluent comparison and docs/history publishing happen on the weekly scheduled run (Sunday 2 AM UTC) or an explicit manual `full_run=true`; that override forces `lane=all` and the full paired shape, publishes docs/history, runs the regression gate, and consumes all 12 paid lane jobs. Without `full_run`, manual `lane=all` remains a Dekaf-only sweep that does not publish. Confluent's numbers don't change with Dekaf code — pull the baseline from the latest scheduled run's summary/artifacts or docs history; if a scheduled publish run failed, re-run that workflow run or explicitly dispatch `full_run`. Keep `duration_minutes` short: lanes run the duration once per sample, so a 30-minute dispatch burns hours of paid runner time per lane on the scheduled paired shape. Use the 15-minute default or less for perf/regression validation; reserve 30+ minutes for hypotheses that depend on elapsed time (memory leaks, late-run collapse, steady-state drift).
-
-8. **Performance Iterations Must Be Pareto-Safe**: Before accepting a performance candidate or spending on its next stress gate, compare it against the immediately preceding exact-configuration run, the last accepted baseline, and every available within-run comparator or control. Record the commit SHA, run URL, lane, dispatch shape, duration, profiling mode, absolute metrics, and deltas for throughput, latency percentiles/max, CPU, allocations, and stability. A candidate must satisfy the issue's acceptance gates without materially regressing any previously protected metric; an unapproved throughput-for-latency (or similar) trade is a rejection, not an improvement. Compare like-for-like configurations. When different runners make a cross-run delta ambiguous, use a same-run pair/control, repeat the candidate once, or quantify it against historical variance before deciding. Repeated control noise is itself data: do not average an inconclusive metric into a pass or relabel the formal verdict, but after two inconclusive paired results stop repeating blindly and present the complete evidence for an experimental-design change or explicit maintainer decision. Post the full comparison and decision before another paid run or merge.
-
-## Important Warnings
-
-- **Test Projects Require Docker**: Integration tests use Testcontainers.Kafka. Ensure Docker is running before executing integration tests.
-- **Broker Version Is Env-Driven**: `KafkaIntegrationTest`-derived tests run against a single Kafka broker whose image tag comes from `KAFKA_TEST_IMAGE_TAG` (default `4.3.1`). PR CI tests only the current release; the full 4.0.2/4.1.2/4.2.1/4.3.1 sweep runs as the NuGet release gate (`workflow_dispatch` with `publish_nuget=true`), which must pass before packages are pushed. To test an older broker locally, set the env var before running the integration exe.
-- **Benchmarks Compare Against Confluent.Kafka**: Producer/Consumer benchmarks spin up real Kafka instances. Memory/Serialization benchmarks run without Docker.
-- **Protocol Code Uses Unsafe**: The `Dekaf.Protocol` namespace uses unsafe code for performance. Changes here require extra scrutiny.
-- **BufferMemory Enforces Strict Limits**: Producer `BufferMemory` setting enforces limits across all append paths (both slow path and arena fast path) to prevent unbounded growth. Exceeding this limit blocks `ProduceAsync` until space is available via backpressure.
-
-## Performance and Correctness Guidelines
-
-### Deadlock Prevention
-
-**Always consider deadlock potential when adding synchronization:**
-
-- **ConfigureAwait(false) is mandatory** - Missing it causes deadlocks in consumer applications with synchronization contexts
-- **Never block async code** - Don't use `.Result` or `.Wait()` on Tasks in library code
-- **Channel-based patterns** - Prefer channels over locks for coordination between threads
-- **Disposal coordination** - Use `CancellationTokenSource` and `ManualResetEventSlim` for prompt shutdown signaling
-
-**Hot path discipline:**
-- Methods marked `[MethodImpl(MethodImplOptions.AggressiveInlining)]` are performance-critical
-- **NEVER add O(n) operations to hot paths** - This includes dictionary enumeration, collection scans, or cleanup loops
-- Hot path = message serialization, batch append/drain, channel writes, per-message produce/consume, receive/parse loops
-- If a 10-minute test hang occurs, suspect O(n) operations on hot path
-
-### Banned Constructs in Hot Paths
-
-The following are **forbidden** in any hot path (serialization, batch append/drain, channel writes, per-message produce/consume, receive/parse loops). Finding one in a diff is a blocking defect; finding one in existing code is a bug to file or fix:
-
-- **LINQ operators** of any kind — enumerator + delegate allocations per call
-- **Capturing lambdas/closures and non-cached delegates** — use `static` lambdas with explicit state parameters, or cached delegate fields
-- **Boxing** — struct-through-interface calls without generic constraints, non-specialized enum dictionary keys, value types passed to `object`/interpolation
-- **String concatenation, interpolation, `ToString()`, `string.Format`** per message
-- **`params` arrays, `ToArray()`/`ToList()`, iterator methods (`yield return`)**
-- **Enumerator allocations** — `foreach` over interface-typed collections (`IEnumerable<T>`, `IList<T>`); iterate concrete types or use indexed loops
-- **`async`/`await` state machines on the per-message fast path** — provide a synchronous `ValueTask` completion path; a state machine may exist only on the genuinely-async slow path
-- **`Task` where `ValueTask` fits; `Task.Run` or thread-pool hops per message**
-- **Exceptions as control flow**
-- **Locks per message** (`lock`, `SemaphoreSlim`, `Monitor`) — use channels, `Interlocked`, or lock-free structures
-- **O(n) scans, dictionary enumeration, cleanup loops** — already fatal; causes 10-minute CI hangs
-
-If a banned construct seems unavoidable, the operation is not hot-path-eligible: amortize it per-batch, per-connection, or per-epoch, or redesign the data flow. Per-batch is ~1000x cheaper than per-message — move the cost there.
-
-### Memory Leak Prevention
-
-**Track resource lifecycles carefully:**
-
-- **Auto-cleanup for long-running resources** - Use `ContinueWith` or background threads to clean up completed tasks/references
-- **Per-batch vs per-message matters** - 1000x difference in allocation cost. Batches contain ~1000 messages.
-- **ConcurrentDictionary growth** - Dictionaries tracking async operations must remove completed entries to prevent unbounded growth
-- **Unobserved task exceptions** - Always observe task exceptions via `await`, `ContinueWith`, or `TaskScheduler.UnobservedTaskException`
-
-**Example - Proper task tracking with auto-cleanup:**
-```csharp
-// GOOD: Auto-removes when complete (one allocation per batch, not per message)
-private void TrackDeliveryTask(ReadyBatch readyBatch)
-{
-    var task = readyBatch.DeliveryTask;
-    _inFlightDeliveryTasks.TryAdd(task, 0);
-
-    if (!task.IsCompleted)
-    {
-        _ = task.ContinueWith(static (t, state) =>
-        {
-            var dict = (ConcurrentDictionary<Task, byte>)state!;
-            dict.TryRemove(t, out _);
-        }, _inFlightDeliveryTasks,
-        CancellationToken.None,
-        TaskContinuationOptions.ExecuteSynchronously,
-        TaskScheduler.Default);
-    }
-}
-
-// BAD: Memory leak - completed tasks never removed
-private void TrackDeliveryTask(ReadyBatch readyBatch)
-{
-    _inFlightDeliveryTasks.TryAdd(readyBatch.DeliveryTask, 0);
-    // No cleanup = unbounded growth in long-running apps
-}
-```
-
-### Allocation Cost Analysis
-
-**Understand per-message vs per-batch costs:**
-
-- **Per-message allocations** are expensive at high throughput (millions/sec)
-- **Per-batch allocations** are acceptable - amortized over ~1000 messages
-- Batch = 1MB default = ~1000 messages at 1KB each
-- 100 bytes per batch = 0.1 bytes per message amortized
-
-**When reviewing allocation-related changes:**
-- Ask: "Is this per message or per batch?"
-- Per-batch allocations (even 100s of bytes) are usually acceptable
-- Per-message allocations in hot path must be zero
-
-### Testing Implications
-
-**CI test hangs indicate serious problems:**
-- 10-minute timeout = hot path performance issue or deadlock
-- Check for O(n) operations added to hot paths
-- Check for missing `ConfigureAwait(false)`
-- Check for blocking on async operations
-
-**Unobserved task exceptions in CI:**
-- Indicates background tasks not properly awaited during disposal
-- `DisposeAsync()` must wait for all in-flight work with `try-catch` to observe exceptions
-- Use `ConcurrentDictionary<Task, byte>` to track all async operations that need coordinated disposal
-
-**Flaky tests indicate real bugs — never just re-run:**
-- A flaky test is a test that fails intermittently. This always indicates a real bug — either in the code under test or in the test itself.
-- **Never re-run a failed CI job** hoping it passes. Instead, investigate and fix the root cause.
-- Common root causes: timing dependencies (`Task.Delay` for synchronization), thread pool starvation on slow CI runners, missing `ConfigureAwait(false)`, shared mutable state between parallel tests, hand-coded binary data that drifts from library encoding.
-- Fix timing-dependent tests by using deterministic synchronization (e.g., `TaskCompletionSource`, `ValueTask.IsCompleted` checks) instead of arbitrary delays.
-- Fix encoding-dependent tests by using the actual library to serialize data rather than hand-coding binary payloads.
-
-## Project Structure
-
-```
-src/
-  Dekaf/                    # Core client library
-    Protocol/               # Kafka wire protocol (ref structs, zero-allocation)
-    Producer/               # Producer implementation (channel-based workers)
-    Consumer/               # Consumer implementation
-    Networking/             # Connection pool, multiplexed I/O
-    Serialization/          # ISerializer<T>/IDeserializer<T> interfaces
-  Dekaf.Compression.*/      # Pluggable compression codecs (Lz4, Snappy, Zstd)
-  Dekaf.Serialization.Json/ # JSON serialization
-  Dekaf.Extensions.*/       # DI and Hosting integrations
-  Dekaf.SchemaRegistry/     # Confluent Schema Registry base
-  Dekaf.SchemaRegistry.Avro/     # Avro serialization with Schema Registry
-  Dekaf.SchemaRegistry.Protobuf/ # Protobuf serialization with Schema Registry
-tests/
-  Dekaf.Tests.Unit/         # Unit tests (TUnit)
-  Dekaf.Tests.Integration/  # Integration tests (TUnit + Testcontainers)
-tools/
-  Dekaf.Benchmarks/         # BenchmarkDotNet benchmarks
-  Dekaf.StressTests/        # Long-running stress tests
-```
-
-## Build Commands
-
-The root `global.json` selects stable .NET SDK 10.0.400 or a later 10.0.4xx patch (`latestPatch`, previews disabled), and selects Microsoft.Testing.Platform (MTP). CI installs from that same file. SDK selection does not change the net8.0/net10.0 target frameworks; install the .NET 8 runtime as well to run net8.0 tests. Run `dotnet --version` from the repository root or a project directory to check selection.
-
-```bash
-# Restore and build
+```powershell
 dotnet build
-
-# Run a focused TUnit test through the native MTP dotnet test runner
-# Use --project (not a positional project path), and pass test options directly (no extra --).
-dotnet test --project tests/Dekaf.Tests.Unit --configuration Release --framework net10.0 \
-  --treenode-filter "/*/*/AdminClientFeatureTests/DescribeFeaturesAsync_MapsConnectionCapabilitySnapshot"
-
-# Direct executables remain supported (also for net8.0 after building that target).
-# Run unit tests
-dotnet build tests/Dekaf.Tests.Unit --configuration Release
-./tests/Dekaf.Tests.Unit/bin/Release/net10.0/Dekaf.Tests.Unit
-
-# Run integration tests (requires Docker)
-dotnet build tests/Dekaf.Tests.Integration --configuration Release
-./tests/Dekaf.Tests.Integration/bin/Release/net10.0/Dekaf.Tests.Integration
-
-# Run benchmarks
+dotnet test --project tests/Dekaf.Tests.Unit --configuration Release --framework net10.0
+dotnet test --project tests/Dekaf.Tests.Integration --configuration Release --framework net10.0
 dotnet run --project tools/Dekaf.Benchmarks --configuration Release -- --filter "*Memory*"
-
-# Run stress tests (requires Docker)
-dotnet run --project tools/Dekaf.StressTests --configuration Release -- \
-  --duration 15 \
-  --message-size 1000 \
-  --scenario all \
-  --client all
 ```
 
-### Test Filtering (TUnit)
+- TUnit uses `--treenode-filter "/*/*/ClassName/TestName"` with `/<Assembly>/<Namespace>/<Class>/<Test>` segments. With MTP, use `--project` and pass test options directly, without an extra `--` or VSTest's `--filter`.
+- Wildcards and segment-local OR are supported: `/*/*/(ClassA|ClassB)/*`. Use separate commands for different path shapes. Built test executables also accept these options.
+- Features require TUnit unit tests; client behavior changes require integration tests; performance-critical changes require benchmarks.
+- Integration tests require Docker/Testcontainers.Kafka. `KafkaIntegrationTest` uses `KAFKA_TEST_IMAGE_TAG`; consult its fixture and CI for the current default and release-gate version matrix. The full broker-version matrix must pass before NuGet publishing.
+- Producer/consumer benchmarks require Kafka; memory/serialization benchmarks do not require Docker.
+- Investigate intermittent test failures instead of rerunning CI to obtain green. Use deterministic synchronization for timing-dependent tests and library serializers for protocol fixtures.
+- Review final changes for reuse, quality, and efficiency before opening a PR (`/simplify` when available). Preserve the performance requirements above.
+- Create ready-for-review PRs unless the user explicitly requests a draft.
 
-Both direct test executables and `dotnet test --project <project>` use `--treenode-filter` with the syntax `/<Assembly>/<Namespace>/<Class>/<Test>`. Use `*` as wildcard.
+## Stress testing and performance acceptance
 
-```bash
-# Run all tests in a specific class
-./Dekaf.Tests.Unit --treenode-filter /*/*/SerializerTests/*
+Read `.github/workflows/stress-tests.yml` for supported lanes and inputs before dispatching.
 
-# Run a specific test by name
-./Dekaf.Tests.Unit --treenode-filter /*/*/*/StringSerializer_RoundTrip_PreservesValue
+- Select one lane when it can validate the change. Manual runs default to Dekaf-only, `dispatch_shape=cheap` (one sample, no 3-connection control). Use `cheap-with-3conn` for that control or `lane-default` for the lane's full sampling shape.
+- Use `duration_minutes=15` or less for routine validation. Reserve 30+ minutes for elapsed-time hypotheses such as leaks or late-run collapse. Duration applies per sample, not per workflow.
+- Final duration-based producer acceptance requires `baseline_sha` set to the immediately preceding exact product SHA. This runs baseline → candidate → baseline on one VM and triples measured duration. Accept only the formal Pareto `PASS`; reject `REGRESSION`.
+- The first `INCONCLUSIVE` permits one automatic exact repeat. After a second, synthesize all same-SHA paired evidence and identify control noise, improve the experiment, test a new causal candidate, or obtain maintainer direction. No further identical paid run without explicit maintainer approval; never average away uncertainty or relabel the verdict.
+- Before accepting a candidate or funding its next stress gate, compare like-for-like against the immediately preceding exact-configuration run, last accepted baseline, and all within-run controls. Record SHA, run URL, lane, dispatch shape, duration, profiling mode, absolute protected metrics, deltas, and acceptance decision before another paid run or merge. Resolve ambiguous cross-run differences with controls, one repeat, or quantified historical variance.
+- Scheduled runs (Sunday 02:00 UTC) provide paired Dekaf/Confluent baselines and publish docs/history. Manual `full_run=true` forces all 12 paid lanes and the paired publishing shape. Manual `lane=all` alone stays Dekaf-only and does not publish. Reuse scheduled Confluent results; recover a failed scheduled publish by rerunning that workflow or explicitly selecting `full_run`.
 
-# Run tests matching a pattern
-./Dekaf.Tests.Unit --treenode-filter /*/*/Producer*/*
-```
+## Repository map
 
-**Operators:**
-- `=` exact match: `/*/*/*[Category=Unit]`
-- `!=` exclude: `/*/*/*[Category!=Slow]`
-- `&` AND: `/*/*/*[Category=Unit]&[Priority=High]`
-- `|` OR within one path segment: `/*/*/(ClassA|ClassB)/*`. Do not wrap complete paths in parentheses; run separate commands when combining different path shapes.
+- `src/Dekaf/`: core client; `Protocol/` contains unsafe, allocation-sensitive reader/writer ref structs; `Networking/` uses pipelines and multiplexed connections; `Producer/`, `Consumer/`, and `Serialization/` implement the main paths.
+- `src/Dekaf.Compression.*/`, `Dekaf.Serialization.Json/`, `Dekaf.Extensions.*/`, and `Dekaf.SchemaRegistry*/`: optional integrations.
+- `tests/Dekaf.Tests.Unit/`, `tests/Dekaf.Tests.Integration/`: TUnit suites.
+- `tools/Dekaf.Benchmarks/`, `tools/Dekaf.StressTests/`: performance validation.
+- `tools/profile-stress-test.sh`, `tools/Dekaf.TraceAnalyzer/`: phased trace capture and analysis.
 
-**Common mistakes to avoid:**
-- Do NOT use `--filter` (that's for VSTest, not Microsoft.Testing.Platform)
-- Do NOT use `dotnet test --filter` syntax like `FullyQualifiedName~Pattern`
-- The path segments are `/<Assembly>/<Namespace>/<Class>/<Test>` - use `*` to skip segments
-
-## Code Principles
-
-### Zero-Allocation Protocol Code
-
-```csharp
-// CORRECT: ref struct with IBufferWriter<byte>
-public ref struct KafkaProtocolWriter
-{
-    private readonly IBufferWriter<byte> _output;
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public void WriteInt32(int value)
-    {
-        var span = _output.GetSpan(4);
-        BinaryPrimitives.WriteInt32BigEndian(span, value);
-        _output.Advance(4);
-    }
-}
-
-// WRONG: Allocating arrays
-public void WriteInt32(int value)
-{
-    var bytes = BitConverter.GetBytes(value);  // ALLOCATION!
-    Array.Reverse(bytes);                       // ALLOCATION!
-    _stream.Write(bytes);
-}
-```
-
-### Async Patterns
-
-```csharp
-// CORRECT: ValueTask for potentially-synchronous operations
-public async ValueTask<ProduceResult> ProduceAsync(Message<TKey, TValue> message,
-    CancellationToken cancellationToken = default)
-{
-    // ...
-    await _channel.Writer.WriteAsync(workItem, cancellationToken).ConfigureAwait(false);
-    return await workItem.CompletionSource.Task.ConfigureAwait(false);
-}
-
-// WRONG: Missing ConfigureAwait
-await _channel.Writer.WriteAsync(workItem, cancellationToken);
-```
-
-### Producer Cancellation Semantics
-
-**ProduceAsync:** Cancellation works at ALL phases, but with different effects:
-
-**Before message is appended (prevents delivery):**
-- ✅ Entry point: Token checked immediately
-- ✅ Metadata lookup: Network operations respect cancellation
-- ✅ Channel write (slow path): Can be cancelled before worker processes
-- ✅ Memory reservation: Blocking on BufferMemory respects cancellation
-
-**After message is appended (stops wait, delivery continues):**
-- ✅ Caller's await throws `OperationCanceledException`
-- ✅ Message delivery continues in background (no data loss)
-- ✅ Allows callers to implement timeouts without blocking indefinitely
-
-**FlushAsync:** Can be cancelled throughout the wait. Cancelling stops the caller from waiting, but batches continue sending in background.
-
-**FireAsync (Fire-and-Forget):** Never uses cancellation tokens; no overload accepts one. Use `FlushAsync(cancellationToken)` if you need cancellable waiting for delivery.
-
-```csharp
-// CORRECT: Cancellation before append - message NOT sent
-using var cts = new CancellationTokenSource();
-cts.Cancel(); // Cancel immediately
-await producer.ProduceAsync(message, cts.Token).ConfigureAwait(false); // Throws OperationCanceledException
-
-// CORRECT: Cancellation after append - stops wait but message IS delivered
-var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5)); // 5-second timeout
-try
-{
-    var metadata = await producer.ProduceAsync(message, cts.Token).ConfigureAwait(false);
-    // Success - got delivery confirmation within 5s
-}
-catch (OperationCanceledException)
-{
-    // Timeout - but message will still be delivered to Kafka in background
-    // This is useful for scenarios where you want to "fire and forget with best-effort wait"
-}
-
-// CORRECT: FlushAsync cancellation
-await producer.FlushAsync(cts.Token).ConfigureAwait(false); // Can cancel wait, batches continue sending
-```
-
-### Thread-Safety with Channels
-
-```csharp
-// CORRECT: Channel-based work distribution (lock-free)
-private readonly Channel<ProduceWorkItem<TKey, TValue>> _channel =
-    Channel.CreateUnbounded<ProduceWorkItem<TKey, TValue>>();
-
-// WRONG: Locks in hot paths
-lock (_lock)
-{
-    _pendingWork.Add(workItem);
-}
-```
-
-### Builder Pattern for Configuration
-
-```csharp
-// CORRECT: Fluent builder
-using Dekaf;
-
-var producer = Kafka.CreateProducer<string, string>()
-    .WithBootstrapServers("localhost:9092")
-    .WithClientId("my-producer")
-    .WithAcks(Acks.All)
-    .Build();
-
-// Options classes use init-only properties
-public sealed class ProducerOptions
-{
-    public required string BootstrapServers { get; init; }
-    public Acks Acks { get; init; } = Acks.Leader;
-}
-```
-
-### Error Handling
-
-All Kafka-specific exceptions inherit from `KafkaException`:
-- `ProduceException` - Production failures with topic/partition context
-- `ConsumeException` - Consumption failures
-- `GroupException` - Consumer group coordination errors
-- `AuthenticationException` / `AuthorizationException` - Security failures
-
-Use the `IsRetriable` property to determine if an operation can be retried.
-
-## Testing Patterns
-
-### Unit Tests (TUnit)
-
-```csharp
-public class SerializerTests
-{
-    [Test]
-    public async Task StringSerializer_RoundTrip_PreservesValue()
-    {
-        var serializer = Serializers.String;
-        var buffer = new ArrayBufferWriter<byte>();
-
-        serializer.Serialize("test", buffer);
-        var result = Serializers.String.Deserialize(buffer.WrittenSpan);
-
-        await Assert.That(result).IsEqualTo("test");
-    }
-}
-```
-
-### Integration Tests (Testcontainers)
-
-```csharp
-using Dekaf;
-
-[ClassDataSource<KafkaContainerDataSource>]
-public class ProducerTests(KafkaContainer kafka)
-{
-    [Test]
-    public async Task Producer_SendMessage_Succeeds()
-    {
-        await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.GetBootstrapAddress())
-            .Build();
-
-        var result = await producer.ProduceAsync("test-topic", "key", "value");
-
-        await Assert.That(result.Offset).IsGreaterThanOrEqualTo(0);
-    }
-}
-```
-
-### Benchmarks
-
-```csharp
-[MemoryDiagnoser]
-public class MemoryBenchmarks
-{
-    [Benchmark]
-    public void WriteThousandInt32s()
-    {
-        var buffer = new ArrayBufferWriter<byte>();
-        var writer = new KafkaProtocolWriter(buffer);
-
-        for (int i = 0; i < 1000; i++)
-            writer.WriteInt32(i);
-    }
-}
-```
-
-## Decision Framework
-
-When making changes, ask:
-
-1. **Does it allocate?** Hot paths must be allocation-free. Use `[MemoryDiagnoser]` benchmarks to verify.
-2. **Is it thread-safe?** Producer/Consumer are used concurrently. Prefer channels and concurrent collections over locks.
-3. **Does it have tests?** Unit tests for logic, integration tests for Kafka behavior, benchmarks for performance.
-4. **Does it use modern C#?** Nullable reference types, pattern matching, init properties, records where appropriate.
-5. **Is the API consistent?** Follow existing patterns: builders for configuration, interfaces for contracts, sealed classes for implementations.
-
-When any of these answers conflicts with performance, performance wins. If a requested change (review feedback, simplification, new feature shape) cannot be implemented without regressing a protected metric or allocating in a hot path, do not implement it as asked — state the performance cost with numbers and propose the fast alternative.
-
-## Architecture Notes
-
-### Networking Layer
-
-- Uses `System.IO.Pipelines` for high-performance I/O
-- `MultiplexedConnection` handles concurrent requests over single TCP connection
-- `ConnectionPool` manages connections per broker with `ConcurrentDictionary`
-
-### Protocol Layer
-
-- `KafkaProtocolWriter` / `KafkaProtocolReader` are ref structs for zero-allocation
-- All protocol messages implement `IKafkaRequest` / `IKafkaResponse`
-- Version negotiation happens during connection establishment
-
-### Serialization
-
-- Built-in serializers: `Serializers.String`, `Serializers.Int32`, `Serializers.Bytes`, etc.
-- Custom serializers implement `ISerializer<T>` / `IDeserializer<T>`
-- Schema Registry integration available via `Dekaf.SchemaRegistry`
-
-### Compression
-
-- Pluggable via `ICompressionCodec` interface
-- Register codecs: `CompressionCodecRegistry.Register(new ZstdCodec())`
-- Batch-level compression for efficiency
+Keep agent instructions focused on non-obvious project requirements. Prefer links to maintained code or workflows over duplicated tutorials, examples, and inventories.
