@@ -10,6 +10,42 @@ namespace Dekaf.Tests.Unit.Admin;
 public sealed class AdminClientPartitionExpansionTests
 {
     [Test]
+    [Arguments(false, false)]
+    [Arguments(false, true)]
+    [Arguments(true, false)]
+    [Arguments(true, true)]
+    public async Task PartialSuccess_RetriesOnlyUnconfirmedTopics(bool successFirst, bool typed)
+    {
+        var (admin, connection) = AdminClientIdempotentRetryTests.CreateAdminWithMockConnection(ApiKey.CreatePartitions);
+        await using var client = admin;
+        var calls = 0;
+        connection.SendAsync<CreatePartitionsRequest, CreatePartitionsResponse>(Arg.Any<CreatePartitionsRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                var request = call.Arg<CreatePartitionsRequest>();
+                if (++calls == 1)
+                {
+                    var success = new CreatePartitionsResponseResult { Name = "applied", ErrorCode = ErrorCode.None };
+                    var retry = new CreatePartitionsResponseResult { Name = "retry-topic", ErrorCode = ErrorCode.NotController };
+                    return ValueTask.FromResult(new CreatePartitionsResponse { Results = successFirst ? [success, retry] : [retry, success] });
+                }
+                if (request.Topics.Count != 1 || request.Topics[0].Name != "retry-topic")
+                    throw new InvalidOperationException("A confirmed topic was sent again.");
+                return ValueTask.FromResult(new CreatePartitionsResponse { Results = [new() { Name = "retry-topic" }] });
+            });
+
+        if (typed)
+            await admin.CreatePartitionsAsync(new Dictionary<string, NewPartitions>
+            {
+                ["applied"] = new() { TotalCount = 3 }, ["retry-topic"] = new() { TotalCount = 3 }
+            });
+        else
+            await admin.CreatePartitionsAsync(new Dictionary<string, int> { ["applied"] = 3, ["retry-topic"] = 3 });
+
+        await Assert.That(calls).IsEqualTo(2);
+    }
+
+    [Test]
     [Arguments(false)]
     [Arguments(true)]
     public async Task CreatePartitions_PropagatesOptionsAndOrderedAssignments(bool explicitAssignments)
@@ -109,8 +145,9 @@ public sealed class AdminClientPartitionExpansionTests
             0 => [], 1 => [[]], 2 => [[1, 1]], 3 => [[-1]],
             4 => [[1], [1, 2]], 5 => [null!], _ => [[1], [1], [1], [1], [1]]
         };
-        await Assert.ThrowsAsync<ArgumentException>(async () => await admin.CreatePartitionsAsync(
+        var error = await Assert.ThrowsAsync<ArgumentException>(async () => await admin.CreatePartitionsAsync(
             new Dictionary<string, NewPartitions> { ["retry-topic"] = new() { TotalCount = 5, ReplicaAssignments = assignments } }));
+        await Assert.That(error!.ParamName).IsEqualTo("newPartitions");
         await connection.DidNotReceive().SendAsync<CreatePartitionsRequest, CreatePartitionsResponse>(Arg.Any<CreatePartitionsRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>());
     }
 

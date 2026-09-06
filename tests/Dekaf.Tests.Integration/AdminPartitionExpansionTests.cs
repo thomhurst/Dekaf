@@ -1,5 +1,6 @@
 using Dekaf.Admin;
 using Dekaf.Errors;
+using Dekaf.Protocol;
 
 namespace Dekaf.Tests.Integration;
 
@@ -41,9 +42,11 @@ public class AdminPartitionExpansionTests(KafkaTestContainer kafka) : KafkaInteg
         await using var admin = new AdminClientBuilder().WithBootstrapServers(KafkaContainer.BootstrapServers).Build();
         var before = (await admin.DescribeTopicsAsync([topic]))[topic];
         var broker = before.Partitions[0].ReplicaNodes[0];
-        await Assert.ThrowsAsync<KafkaException>(async () => await admin.CreatePartitionsAsync(
+        // The assignment shape is valid locally; only the controller knows how many partitions already exist.
+        var error = await Assert.ThrowsAsync<KafkaException>(async () => await admin.CreatePartitionsAsync(
             new Dictionary<string, NewPartitions> { [topic] = new() { TotalCount = 3, ReplicaAssignments = [[broker]] } },
             new CreatePartitionsOptions { ValidateOnly = true }));
+        await Assert.That(error!.ErrorCode).IsEqualTo(ErrorCode.InvalidReplicaAssignment);
         await Assert.That((await admin.DescribeTopicsAsync([topic]))[topic].Partitions.Count).IsEqualTo(1);
     }
 }

@@ -26,7 +26,7 @@ public sealed partial class AdminClient
             {
                 Name = pair.Key,
                 Count = pair.Value.TotalCount,
-                Assignments = CopyPartitionAssignments(pair.Value)
+                Assignments = CopyPartitionAssignments(pair.Value, nameof(newPartitions))
             });
         }
 
@@ -34,14 +34,14 @@ public sealed partial class AdminClient
         await CreatePartitionsCoreAsync(topics, timeoutMs, options?.ValidateOnly ?? false, cancellationToken).ConfigureAwait(false);
     }
 
-    private static CreatePartitionsAssignment[]? CopyPartitionAssignments(NewPartitions partitions)
+    private static CreatePartitionsAssignment[]? CopyPartitionAssignments(NewPartitions partitions, string parameterName)
     {
         var assignments = partitions.ReplicaAssignments;
         if (assignments is null)
             return null;
 
         if (assignments.Count == 0 || assignments.Count >= partitions.TotalCount)
-            throw new ArgumentException("Assignments must describe only the additional partitions of an existing topic.", nameof(partitions));
+            throw new ArgumentException("Assignments must describe only the additional partitions of an existing topic.", parameterName);
 
         var result = new CreatePartitionsAssignment[assignments.Count];
         var replicationFactor = 0;
@@ -49,7 +49,7 @@ public sealed partial class AdminClient
         {
             var replicas = assignments[index];
             if (replicas is null || replicas.Count == 0 || (index > 0 && replicas.Count != replicationFactor))
-                throw new ArgumentException("Each assignment must contain the same nonzero number of replicas.", nameof(partitions));
+                throw new ArgumentException("Each assignment must contain the same nonzero number of replicas.", parameterName);
 
             replicationFactor = replicas.Count;
             var brokerIds = new int[replicas.Count];
@@ -58,7 +58,7 @@ public sealed partial class AdminClient
             {
                 var brokerId = replicas[replica];
                 if (brokerId < 0 || !seen.Add(brokerId))
-                    throw new ArgumentException("Replica broker IDs must be nonnegative and unique within a partition.", nameof(partitions));
+                    throw new ArgumentException("Replica broker IDs must be nonnegative and unique within a partition.", parameterName);
                 brokerIds[replica] = brokerId;
             }
             result[index] = new CreatePartitionsAssignment { BrokerIds = brokerIds };
@@ -75,5 +75,28 @@ public sealed partial class AdminClient
                 return topics[index];
         }
         throw new InvalidOperationException($"Unexpected CreatePartitions response topic '{name}'.");
+    }
+
+    private static IReadOnlyList<CreatePartitionsTopic> ExcludeConfirmedPartitionExpansions(
+        IReadOnlyList<CreatePartitionsTopic> topics,
+        IReadOnlyList<CreatePartitionsResponseResult> results)
+    {
+        // Only allocate on a partial failure, outside the successful admin request path.
+        HashSet<string>? confirmed = null;
+        foreach (var result in results)
+        {
+            if (result.ErrorCode == Protocol.ErrorCode.None)
+                (confirmed ??= new(StringComparer.Ordinal)).Add(result.Name);
+        }
+        if (confirmed is null)
+            return topics;
+
+        var remaining = new List<CreatePartitionsTopic>(topics.Count);
+        foreach (var topic in topics)
+        {
+            if (!confirmed.Contains(topic.Name))
+                remaining.Add(topic);
+        }
+        return remaining;
     }
 }

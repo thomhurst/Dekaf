@@ -2395,6 +2395,9 @@ public sealed partial class AdminClient :
                         continue;
                     }
 
+                    // A sibling topic can already have succeeded, even when this result appears first.
+                    // Preserve every confirmed success before retrying the remaining request.
+                    topics = ExcludeConfirmedPartitionExpansions(topics, response.Results);
                     throw new KafkaException(topicResult.ErrorCode,
                         $"CreatePartitions failed for topic '{topicResult.Name}': {topicResult.ErrorMessage ?? topicResult.ErrorCode.ToString()}");
                 }
