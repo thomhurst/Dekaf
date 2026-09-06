@@ -26,7 +26,7 @@ var results = await admin.ListConsumerGroupOffsetsAsync(
         RequireStable = true,
         TimeoutMs = 30_000
     },
-    cancellationToken);
+    cancellationToken: default);
 ```
 
 `TopicPartitions = null` fetches all committed partitions. An empty selection fetches none. Duplicate or invalid partitions are rejected before the query runs. Groups sharing a coordinator are batched when that coordinator supports multi-group OffsetFetch; older destinations receive individual requests. Each destination's capabilities determine the request version.

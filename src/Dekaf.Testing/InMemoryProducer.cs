@@ -1129,7 +1129,7 @@ public sealed class InMemoryProducer<TKey, TValue> :
                             : KafkaFaultOperation.AbortTransaction),
                     cancellationToken).ConfigureAwait(false);
 
-                Complete(committed);
+                Complete(committed, recoveryContext);
             }
             catch (FatalTransactionException exception)
             {
@@ -1161,11 +1161,12 @@ public sealed class InMemoryProducer<TKey, TValue> :
             }
         }
 
-        private void Complete(bool committed)
+        private void Complete(bool committed, IInMemoryTransactionRecoveryContext? recoveryContext = null)
         {
+            FatalTransactionException? failure;
             lock (_pendingOffsetsGate)
             {
-                _producer._cluster.CompleteTransaction(
+                failure = _producer._cluster.CompleteTransaction(
                     TransactionMarker,
                     committed,
                     _pendingOffsets,
@@ -1174,7 +1175,11 @@ public sealed class InMemoryProducer<TKey, TValue> :
                 _pendingOffsets.Clear();
             }
 
+            if (failure is not null)
+                failure = (recoveryContext ?? _producer).CaptureFatalTransactionException(failure);
             _producer.CompleteTransaction(this);
+            if (failure is not null)
+                throw failure;
         }
 
         private void EnterMutation(string operation)
@@ -1324,6 +1329,9 @@ public sealed class InMemoryProducer<TKey, TValue> :
             TaskCompletionSource? completion;
             lock (_completionGate)
             {
+                // Local metadata rejection already aborted and published completion.
+                if (GetState(Volatile.Read(ref _lifecycle)) == TransactionLifecycleState.Completed)
+                    return;
                 Volatile.Write(ref _lifecycle, Pack(state));
                 completion = _completionAttempt;
                 _completionAttempt = null;

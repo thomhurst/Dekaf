@@ -149,12 +149,16 @@ public sealed partial class InMemoryAdminClient : IConsumerGroupOffsetQueryAdmin
     }
 
     private StreamsGroupOffsetDescription CreateGroupOffsetDescription(TopicPartition partition, bool hasOffset, TopicPartitionOffset offset)
-        => new()
+    {
+        var errorCode = _cluster.GetTopicPartitionError(partition);
+        var hasCheckpoint = hasOffset && errorCode == ErrorCode.None;
+        return new()
         {
             TopicPartition = partition,
-            Offset = hasOffset ? offset.Offset : -1,
-            LeaderEpoch = hasOffset ? offset.LeaderEpoch : -1,
-            Metadata = hasOffset ? offset.Metadata : null,
-            ErrorCode = _cluster.GetTopicPartitionError(partition)
+            Offset = hasCheckpoint ? offset.Offset : -1,
+            LeaderEpoch = hasCheckpoint ? offset.LeaderEpoch : -1,
+            Metadata = hasCheckpoint ? offset.Metadata : null,
+            ErrorCode = errorCode
         };
+    }
 }

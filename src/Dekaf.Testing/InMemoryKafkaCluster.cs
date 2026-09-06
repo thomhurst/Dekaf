@@ -330,7 +330,7 @@ public sealed partial class InMemoryKafkaCluster
             return _preparedTransactions.GetValueOrDefault(state);
     }
 
-    internal void CompleteTransaction(
+    internal FatalTransactionException? CompleteTransaction(
         InMemoryTransactionMarker transactionMarker,
         bool committed,
         Dictionary<string, InMemoryPendingGroupOffsets> pendingOffsets,
@@ -343,6 +343,7 @@ public sealed partial class InMemoryKafkaCluster
 
         TaskCompletionSource signal;
         TaskCompletionSource? offsetsSignal;
+        FatalTransactionException? failure = null;
         lock (_gate)
         {
             if (transactionMarker.State != InMemoryTransactionState.Ongoing)
@@ -353,9 +354,20 @@ public sealed partial class InMemoryKafkaCluster
                 foreach (var (groupId, pending) in pendingOffsets)
                 {
                     for (var i = 0; i < pending.MetadataSnapshots.Count; i++)
-                        ValidateConsumerGroupMetadataUnderLock(groupId, pending.MetadataSnapshots[i]);
+                    {
+                        failure = ValidateConsumerGroupMetadataUnderLock(groupId, pending.MetadataSnapshots[i]);
+                        if (failure is not null)
+                            break;
+                    }
+                    if (failure is not null)
+                        break;
                 }
 
+                committed = failure is null;
+            }
+
+            if (committed)
+            {
                 foreach (var (groupId, pending) in pendingOffsets)
                 {
                     var groupOffsets = GetOrCreateConsumerGroupOffsetsUnderLock(groupId);
@@ -393,6 +405,7 @@ public sealed partial class InMemoryKafkaCluster
 
         signal.TrySetResult();
         offsetsSignal?.TrySetResult();
+        return failure;
     }
 
     internal ValueTask<RecordMetadata> AppendAsync(
@@ -1634,22 +1647,23 @@ public sealed partial class InMemoryKafkaCluster
         record.Transaction is not { } transaction ||
         transaction.State == InMemoryTransactionState.Committed;
 
-    private void ValidateConsumerGroupMetadataUnderLock(
+    private FatalTransactionException? ValidateConsumerGroupMetadataUnderLock(
         string groupId,
         ConsumerGroupMetadata? metadata)
     {
         if (metadata is null)
-            return;
+            return null;
 
         var generation = _consumerGroupGenerations.GetValueOrDefault(groupId);
         if (generation != metadata.GenerationId ||
             !_consumerGroupMembers.TryGetValue(groupId, out var members) ||
             !members.ContainsKey(metadata.MemberId))
         {
-            throw new FatalTransactionException(
+            return new FatalTransactionException(
                 ErrorCode.IllegalGeneration,
                 $"Consumer group metadata for '{groupId}' is no longer current.");
         }
+        return null;
     }
 
     private Dictionary<string, HashSet<TopicPartition>> BuildConsumerGroupAssignments(string groupId)

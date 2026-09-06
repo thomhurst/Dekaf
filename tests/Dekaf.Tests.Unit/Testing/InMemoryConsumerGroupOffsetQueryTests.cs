@@ -9,6 +9,72 @@ namespace Dekaf.Tests.Unit.Testing;
 public sealed class InMemoryConsumerGroupOffsetQueryTests
 {
     [Test]
+    [Arguments(false, false)]
+    [Arguments(true, false)]
+    [Arguments(true, true)]
+    public async Task StaleMetadata_AbortsTransactionAndReleasesStableQuery(bool prepared, bool recoverWithReplacement)
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("orders");
+        await using var admin = new InMemoryAdminClient(cluster);
+        await admin.AlterConsumerGroupOffsetsAsync("group", [new("orders", 0, 7)]);
+        await using var consumer = new InMemoryConsumer<string, string>(cluster,
+            new InMemoryConsumerOptions { GroupId = "group" });
+        consumer.Subscribe("orders");
+        await using var producer = new InMemoryProducer<string, string>(cluster);
+        await using var transaction = producer.BeginTransaction();
+        await transaction.SendOffsetsToTransactionAsync([new("orders", 0, 19)], consumer.ConsumerGroupMetadata!);
+        var state = prepared ? await transaction.PrepareAsync() : default;
+        await using var recoveryProducer = new InMemoryProducer<string, string>(cluster);
+        await recoveryProducer.InitTransactionsAsync(keepPreparedTransaction: true);
+        var completionProducer = recoverWithReplacement ? recoveryProducer : producer;
+        await using var replacement = new InMemoryConsumer<string, string>(cluster,
+            new InMemoryConsumerOptions { GroupId = "group" });
+        replacement.Subscribe("orders");
+        var pending = admin.ListConsumerGroupOffsetsAsync(Query("group"), new() { RequireStable = true });
+        await Assert.That(pending.IsCompleted).IsFalse();
+        Exception? publicationFailure = null;
+        producer.TransactionCompletionPublishedTestHook = () =>
+        {
+            try
+            {
+                completionProducer.BeginTransaction();
+            }
+            catch (Exception exception)
+            {
+                publicationFailure = exception;
+            }
+        };
+
+        var failure = await Assert.ThrowsAsync<FatalTransactionException>(() => prepared
+            ? completionProducer.CompletePreparedTransactionAsync(state, true).AsTask()
+            : transaction.CommitAsync().AsTask());
+
+        await Assert.That(failure!.ErrorCode).IsEqualTo(ErrorCode.IllegalGeneration);
+        await Assert.That(publicationFailure).IsSameReferenceAs(failure);
+        await Assert.That(cluster.TryGetStableGroupOffsetDetails("group", null, out _, out _)).IsTrue();
+        await Assert.That((await pending)["group"].Offsets[new("orders", 0)].Offset!.Value.Offset).IsEqualTo(7);
+        await Assert.That(() => completionProducer.BeginTransaction()).Throws<FatalTransactionException>();
+    }
+
+    [Test]
+    public async Task StreamsQuery_DeletedTopicHidesStoredCheckpoint()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("orders");
+        await using var admin = new InMemoryAdminClient(cluster);
+        await admin.AlterConsumerGroupOffsetsAsync("group", [new("orders", 0, 17, 9) { Metadata = "old" }]);
+        cluster.DeleteTopic("orders");
+        var results = await admin.ListStreamsGroupOffsetsAsync(
+            new Dictionary<string, ListStreamsGroupOffsetsSpec> { ["group"] = new() });
+        var offset = results["group"].Offsets[new("orders", 0)];
+        await Assert.That(offset.ErrorCode).IsEqualTo(ErrorCode.UnknownTopicId);
+        await Assert.That(offset.Offset).IsEqualTo(-1);
+        await Assert.That(offset.LeaderEpoch).IsEqualTo(-1);
+        await Assert.That(offset.Metadata).IsNull();
+    }
+
+    [Test]
     [Arguments(true)]
     [Arguments(false)]
     public async Task RequireStable_WaitsForCommitOrAbort(bool commit)

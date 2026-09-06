@@ -274,6 +274,36 @@ public sealed class AdminClientAlterConsumerGroupOffsetsTests
             .Throws<Dekaf.Errors.GroupException>();
     }
 
+    [Test]
+    [Arguments((short)8, false)]
+    [Arguments((short)8, true)]
+    [Arguments((short)9, false)]
+    [Arguments((short)9, true)]
+    public async Task ListConsumerGroupOffsetsAsync_MultiGroupResponseRejectsErrorOrMissingGroup(short version, bool missing)
+    {
+        const string groupId = "test-group";
+        var connection = CreateConnection(groupId);
+        connection.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
+                Arg.Any<OffsetFetchRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(new OffsetFetchResponse
+            {
+                Groups = [new OffsetFetchResponseGroup
+                {
+                    GroupId = missing ? "another-group" : groupId,
+                    ErrorCode = missing ? ErrorCode.None : ErrorCode.GroupAuthorizationFailed,
+                    Topics = []
+                }]
+            }));
+        var pool = CreatePool(connection);
+        var metadata = CreateMetadataManager(pool, "test-topic", TopicId);
+        metadata.SetApiVersion(ApiKey.OffsetFetch, 6, version);
+        await using var admin = new AdminClient(
+            new AdminClientOptions { BootstrapServers = ["localhost:9092"] }, pool, metadata);
+
+        await Assert.That(async () => await admin.ListConsumerGroupOffsetsAsync(groupId))
+            .Throws<Dekaf.Errors.GroupException>();
+    }
+
     private static IKafkaConnection CreateConnection(string groupId)
     {
         var connection = Substitute.For<IKafkaConnection>();
