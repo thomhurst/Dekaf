@@ -631,7 +631,7 @@ public sealed class SchemaRegistryMigrationTests
         var plans = typeof(SchemaRegistryMigrationRunner).GetField(
             "_plans", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(runner)!;
         await Assert.That(registry.LatestCount).IsEqualTo(100);
-        await Assert.That(SchemaResolutionCacheLifetimeTests.BookkeepingCount(plans)).IsEqualTo(1);
+        await Assert.That(SchemaResolutionCacheLifetimeTests.BookkeepingCount(plans)).IsEqualTo(ttlSeconds == 0 ? 0 : 1);
     }
 
     [Test]

@@ -284,22 +284,24 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
         for (var index = 0; index < 32; index++)
             await Assert.That(deserializer.Deserialize(wire, CreateContext(topic))).IsEqualTo("payload|v2");
 
+#if !NATIVEAOT
+        // NativeAOT retains the migration/payload checks above; private layout inspection is JIT-only.
         var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
         var runner = deserializer.GetType().GetField("_migrationRunner", flags)!.GetValue(deserializer)!;
         var plans = runner.GetType().GetField("_plans", flags)!.GetValue(runner)!;
-        var queue = plans.GetType().GetField("_evictionQueue", flags);
-        if (queue is not null)
+        var oldest = (int)plans.GetType().GetField("_oldestEntry", flags)!.GetValue(plans)!;
+        if (latestCacheTtlSecs == 0)
         {
-            await Assert.That(((System.Collections.ICollection)queue.GetValue(plans)!).Count).IsEqualTo(1);
+            await Assert.That(oldest).IsEqualTo(-1);
         }
         else
         {
-            var oldest = (int)plans.GetType().GetField("_oldestEntry", flags)!.GetValue(plans)!;
             var nodes = (Array)plans.GetType().GetField("_evictionNodes", flags)!.GetValue(plans)!;
             await Assert.That(oldest).IsGreaterThanOrEqualTo(0);
             var node = nodes.GetValue(oldest)!;
             await Assert.That((int)node.GetType().GetField("Next", flags)!.GetValue(node)!).IsEqualTo(-1);
         }
+#endif
     }
 
     [Test]

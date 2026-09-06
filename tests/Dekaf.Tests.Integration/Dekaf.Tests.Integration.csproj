@@ -6,6 +6,7 @@
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(PublishAot)' == 'true'">
+    <DefineConstants>$(DefineConstants);NATIVEAOT</DefineConstants>
     <!-- Full integration publish roots tests that intentionally exercise reflection-based APIs. -->
     <WarningsNotAsErrors>$(WarningsNotAsErrors);IL2026;IL2104;IL3050;IL3053</WarningsNotAsErrors>
   </PropertyGroup>

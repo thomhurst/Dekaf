@@ -17,20 +17,27 @@ internal sealed class SchemaResolutionCache<TValue>
     private int _newestEntry = -1;
     private int _freeEntry = -1;
     private readonly int _maxCachedEntries;
+    private readonly bool _cacheCompletedResolutions;
     private int _cacheCount;
 
     internal SchemaResolutionCache(int maxCachedEntries = SubjectSchemaIdCache.MaxCachedEntries)
+        : this(maxCachedEntries, cacheCompletedResolutions: true)
+    {
+    }
+
+    internal SchemaResolutionCache(int maxCachedEntries, bool cacheCompletedResolutions)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxCachedEntries);
         _maxCachedEntries = maxCachedEntries;
+        _cacheCompletedResolutions = cacheCompletedResolutions;
         // Mutations already serialize below; extra dictionary write stripes add no concurrency.
         _cache = new ConcurrentDictionary<SchemaResolutionKey, TValue>(
             concurrencyLevel: 1, capacity: Math.Min(maxCachedEntries, 31), SchemaResolutionKeyComparer.Instance);
         // Avoid repeated small-table growth while keeping sparse, large-capacity caches cheap.
-        var initialCapacity = Math.Min(maxCachedEntries, 16);
+        var initialCapacity = cacheCompletedResolutions ? Math.Min(maxCachedEntries, 16) : 0;
         _evictionEntries = new Dictionary<SchemaResolutionKey, int>(
             initialCapacity, SchemaResolutionKeyComparer.Instance);
-        _evictionNodes = new EvictionNode[initialCapacity];
+        _evictionNodes = initialCapacity == 0 ? [] : new EvictionNode[initialCapacity];
     }
 
     internal int CachedEntryCount => Volatile.Read(ref _cacheCount);
@@ -41,6 +48,9 @@ internal sealed class SchemaResolutionCache<TValue>
 
     internal bool TryRemove(string subject, Schema schema, TValue value)
     {
+        if (!_cacheCompletedResolutions)
+            return false;
+
         var entry = new KeyValuePair<SchemaResolutionKey, TValue>(
             new SchemaResolutionKey(subject, schema, default),
             value);
@@ -161,6 +171,9 @@ internal sealed class SchemaResolutionCache<TValue>
 
     private void CacheSuccessfulResolution(SchemaResolutionKey key, TValue value)
     {
+        if (!_cacheCompletedResolutions)
+            return;
+
         lock (_mutationLock)
         {
             if (!_cache.TryAdd(key, value))

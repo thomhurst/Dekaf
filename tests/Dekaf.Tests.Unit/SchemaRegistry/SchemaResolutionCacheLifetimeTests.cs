@@ -1,4 +1,3 @@
-using System.Collections;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using Dekaf.SchemaRegistry;
@@ -7,6 +6,36 @@ namespace Dekaf.Tests.Unit.SchemaRegistry;
 
 public class SchemaResolutionCacheLifetimeTests
 {
+    [Test]
+    public async Task CompletedCachingDisabled_CoalescesPendingWorkWithoutRetainingResults()
+    {
+        var cache = new SchemaResolutionCache<object>(4, cacheCompletedResolutions: false);
+        var schema = new Schema { SchemaString = "{}", SchemaType = SchemaType.Json };
+        var release = new TaskCompletionSource<object>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var calls = 0;
+        Task<object> ResolvePending(int _, string subject, Schema requested)
+        {
+            Interlocked.Increment(ref calls);
+            return release.Task;
+        }
+
+        var first = cache.ResolveAsync("subject", schema, 0, ResolvePending, CancellationToken.None);
+        var second = cache.ResolveAsync("subject", schema, 0, ResolvePending, CancellationToken.None);
+        await Assert.That(calls).IsEqualTo(1);
+        var value = new object();
+        release.SetResult(value);
+        await Assert.That(ReferenceEquals(await first, value)).IsTrue();
+        await Assert.That(ReferenceEquals(await second, value)).IsTrue();
+        var next = await Resolve(cache, "subject", schema);
+
+        await Assert.That(ReferenceEquals(next, value)).IsFalse();
+        await Assert.That(cache.TryGet("subject", schema, out _)).IsFalse();
+        await Assert.That(cache.TryRemove("subject", schema, next)).IsFalse();
+        await Assert.That(cache.CachedEntryCount).IsEqualTo(0);
+        await Assert.That(BookkeepingCount(cache)).IsEqualTo(0);
+        await Assert.That(PooledEntryCount(cache)).IsEqualTo(0);
+    }
+
     [Test]
     [Arguments(1)]
     [Arguments(3)]
@@ -109,10 +138,6 @@ public class SchemaResolutionCacheLifetimeTests
     internal static int BookkeepingCount(object cache)
     {
         var flags = BindingFlags.Instance | BindingFlags.NonPublic;
-        var queue = cache.GetType().GetField("_evictionQueue", flags);
-        if (queue is not null)
-            return ((ICollection)queue.GetValue(cache)!).Count;
-
         var nodes = (Array)cache.GetType().GetField("_evictionNodes", flags)!.GetValue(cache)!;
         var index = (int)cache.GetType().GetField("_oldestEntry", flags)!.GetValue(cache)!;
         var count = 0;
@@ -128,8 +153,8 @@ public class SchemaResolutionCacheLifetimeTests
 
     private static int PooledEntryCount(object cache)
     {
-        var field = cache.GetType().GetField("_allocatedEntryCount", BindingFlags.Instance | BindingFlags.NonPublic);
-        return field is null ? 0 : (int)field.GetValue(cache)! - BookkeepingCount(cache);
+        var field = cache.GetType().GetField("_allocatedEntryCount", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        return (int)field.GetValue(cache)! - BookkeepingCount(cache);
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
