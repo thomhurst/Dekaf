@@ -33,6 +33,13 @@ var consumer = new ConsumerBuilder<string, string>()
 
 DNS is resolved on every reconnect, so changes in broker DNS records are picked up without recreating the client.
 
+Successful-address preferences are shared process-wide and retain at most 1,024
+`(hostname, port, lookup mode)` entries. Entries are grouped into 256 buckets of
+four, with the oldest entry in a bucket replaced when that bucket fills. Repeated
+successes update an existing entry without adding another. After eviction, the
+next connection uses the current DNS order; all-address fallback still applies.
+A remembered address is preferred only while it remains in the latest DNS result.
+
 ## Bootstrap resolution deadline
 
 KIP-909 gives initial bootstrap DNS failures a separate retry budget. A transient host-not-found response does not consume the metadata initialization retry cap or timeout. Dekaf retries with the configured reconnect backoff until one bootstrap name resolves, cancellation/disposal occurs, or the bootstrap deadline expires.
