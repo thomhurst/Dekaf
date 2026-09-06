@@ -228,13 +228,16 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
     }
 
     [Test]
-    public async Task RegisteredMigrationRules_UseLatestVersion_ExecutesUpgradePath()
+    [Arguments(-1)]
+    [Arguments(0)]
+    public async Task RegisteredMigrationRules_UseLatestVersion_ExecutesUpgradePath(int latestCacheTtlSecs)
     {
         var topic = await testInfra.CreateTestTopicAsync();
         var subject = $"{topic}-value";
         using var registryClient = new SchemaRegistryClient(new SchemaRegistryConfig
         {
-            Url = testInfra.RegistryUrl
+            Url = testInfra.RegistryUrl,
+            LatestCacheTtlSecs = latestCacheTtlSecs
         });
         var v1 = new Schema
         {
@@ -277,6 +280,28 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
 
         await Assert.That(result).IsEqualTo("payload|v2");
         await Assert.That(calls).IsEquivalentTo(["Upgrade:MigrationV1->MigrationV2"]);
+
+        for (var index = 0; index < 32; index++)
+            await Assert.That(deserializer.Deserialize(wire, CreateContext(topic))).IsEqualTo("payload|v2");
+
+#if !NATIVEAOT
+        // NativeAOT retains the migration/payload checks above; private layout inspection is JIT-only.
+        var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+        var runner = deserializer.GetType().GetField("_migrationRunner", flags)!.GetValue(deserializer)!;
+        var plans = runner.GetType().GetField("_plans", flags)!.GetValue(runner)!;
+        var oldest = (int)plans.GetType().GetField("_oldestEntry", flags)!.GetValue(plans)!;
+        if (latestCacheTtlSecs == 0)
+        {
+            await Assert.That(oldest).IsEqualTo(-1);
+        }
+        else
+        {
+            var nodes = (Array)plans.GetType().GetField("_evictionNodes", flags)!.GetValue(plans)!;
+            await Assert.That(oldest).IsGreaterThanOrEqualTo(0);
+            var node = nodes.GetValue(oldest)!;
+            await Assert.That((int)node.GetType().GetField("Next", flags)!.GetValue(node)!).IsEqualTo(-1);
+        }
+#endif
     }
 
     [Test]

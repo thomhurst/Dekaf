@@ -13,7 +13,7 @@ internal sealed class SchemaRegistryMigrationRunner
     private readonly ISchemaRegistryClient _schemaRegistry;
     private readonly ISchemaRegistryRuleExecutor? _ruleExecutor;
     private readonly SchemaRegistryRuleExecutor? _schemaRuleExecutor;
-    private readonly SchemaResolutionCache<MigrationPlan> _plans = new();
+    private readonly SchemaResolutionCache<MigrationPlan> _plans;
     private readonly TimeSpan _timeout;
     private MigrationPlan? _lastPlan;
     private readonly long _latestCacheTtlMilliseconds;
@@ -36,6 +36,10 @@ internal sealed class SchemaRegistryMigrationRunner
         }
 
         _latestCacheTtlMilliseconds = (long)latestCacheTtlSecs * 1000;
+        // A zero TTL never reuses a completed plan. Coalesce pending resolutions only,
+        // avoiding cache publication/invalidation bookkeeping on every message.
+        _plans = new SchemaResolutionCache<MigrationPlan>(
+            SubjectSchemaIdCache.MaxCachedEntries, cacheCompletedResolutions: latestCacheTtlSecs != 0);
     }
 
     internal static (

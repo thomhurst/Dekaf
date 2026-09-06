@@ -5,35 +5,64 @@ namespace Dekaf.SchemaRegistry;
 
 internal sealed class SchemaResolutionCache<TValue>
 {
-    private readonly ConcurrentDictionary<SchemaResolutionKey, TValue> _cache =
-        new(SchemaResolutionKeyComparer.Instance);
+    private readonly ConcurrentDictionary<SchemaResolutionKey, TValue> _cache;
     private readonly ConcurrentDictionary<SchemaResolutionKey, Entry> _inFlight =
         new(SchemaResolutionKeyComparer.Instance);
-    private readonly ConcurrentQueue<KeyValuePair<SchemaResolutionKey, TValue>> _evictionQueue = new();
+    // Only completed-resolution mutations take this lock. Cached reads stay lock-free.
+    private readonly object _mutationLock = new();
+    private readonly Dictionary<SchemaResolutionKey, int> _evictionEntries;
+    private EvictionNode[] _evictionNodes;
+    private int _allocatedEntryCount;
+    private int _oldestEntry = -1;
+    private int _newestEntry = -1;
+    private int _freeEntry = -1;
     private readonly int _maxCachedEntries;
+    private readonly bool _cacheCompletedResolutions;
     private int _cacheCount;
 
     internal SchemaResolutionCache(int maxCachedEntries = SubjectSchemaIdCache.MaxCachedEntries)
+        : this(maxCachedEntries, cacheCompletedResolutions: true)
+    {
+    }
+
+    internal SchemaResolutionCache(int maxCachedEntries, bool cacheCompletedResolutions)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxCachedEntries);
         _maxCachedEntries = maxCachedEntries;
+        _cacheCompletedResolutions = cacheCompletedResolutions;
+        // Mutations already serialize below; extra dictionary write stripes add no concurrency.
+        _cache = new ConcurrentDictionary<SchemaResolutionKey, TValue>(
+            concurrencyLevel: 1, capacity: Math.Min(maxCachedEntries, 31), SchemaResolutionKeyComparer.Instance);
+        // Avoid repeated small-table growth while keeping sparse, large-capacity caches cheap.
+        var initialCapacity = cacheCompletedResolutions ? Math.Min(maxCachedEntries, 16) : 0;
+        _evictionEntries = new Dictionary<SchemaResolutionKey, int>(
+            initialCapacity, SchemaResolutionKeyComparer.Instance);
+        _evictionNodes = initialCapacity == 0 ? [] : new EvictionNode[initialCapacity];
     }
 
     internal int CachedEntryCount => Volatile.Read(ref _cacheCount);
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal bool TryGet(string subject, Schema schema, out TValue value) =>
         _cache.TryGetValue(new SchemaResolutionKey(subject, schema, default), out value!);
 
     internal bool TryRemove(string subject, Schema schema, TValue value)
     {
+        if (!_cacheCompletedResolutions)
+            return false;
+
         var entry = new KeyValuePair<SchemaResolutionKey, TValue>(
             new SchemaResolutionKey(subject, schema, default),
             value);
-        if (!((ICollection<KeyValuePair<SchemaResolutionKey, TValue>>)_cache).Remove(entry))
-            return false;
+        lock (_mutationLock)
+        {
+            if (!((ICollection<KeyValuePair<SchemaResolutionKey, TValue>>)_cache).Remove(entry))
+                return false;
 
-        Interlocked.Decrement(ref _cacheCount);
-        return true;
+            RemoveEvictionEntry(entry.Key);
+            Volatile.Write(ref _cacheCount, _cacheCount - 1);
+            return true;
+        }
     }
 
     internal ValueTask<TValue> ResolveAsync<TState>(
@@ -142,41 +171,77 @@ internal sealed class SchemaResolutionCache<TValue>
 
     private void CacheSuccessfulResolution(SchemaResolutionKey key, TValue value)
     {
-        if (!_cache.TryAdd(key, value))
+        if (!_cacheCompletedResolutions)
             return;
 
-        Interlocked.Increment(ref _cacheCount);
-        _evictionQueue.Enqueue(new KeyValuePair<SchemaResolutionKey, TValue>(key, value));
-        TrimOverflow();
+        lock (_mutationLock)
+        {
+            if (!_cache.TryAdd(key, value))
+                return;
+
+            if (_cacheCount == _maxCachedEntries)
+            {
+                var oldest = _evictionNodes[_oldestEntry].Key;
+                _cache.TryRemove(oldest, out _);
+                RemoveEvictionEntry(oldest);
+            }
+            else
+            {
+                Volatile.Write(ref _cacheCount, _cacheCount + 1);
+            }
+
+            int index;
+            if (_freeEntry >= 0)
+            {
+                index = _freeEntry;
+                _freeEntry = _evictionNodes[index].Next;
+            }
+            else
+            {
+                if (_allocatedEntryCount == _evictionNodes.Length)
+                {
+                    var newCapacity = _evictionNodes.Length <= _maxCachedEntries / 2
+                        ? _evictionNodes.Length * 2
+                        : _maxCachedEntries;
+                    Array.Resize(ref _evictionNodes, newCapacity);
+                }
+                index = _allocatedEntryCount++;
+            }
+
+            _evictionNodes[index] = new EvictionNode { Key = key, Previous = _newestEntry, Next = -1 };
+            if (_newestEntry >= 0)
+                _evictionNodes[_newestEntry].Next = index;
+            else
+                _oldestEntry = index;
+            _newestEntry = index;
+            _evictionEntries.Add(key, index);
+        }
     }
 
-    private void TrimOverflow()
+    private void RemoveEvictionEntry(SchemaResolutionKey key)
     {
-        while (true)
-        {
-            var count = Volatile.Read(ref _cacheCount);
-            if (count <= _maxCachedEntries)
-                return;
+        var removed = _evictionEntries.Remove(key, out var index);
+        System.Diagnostics.Debug.Assert(removed);
+        ref var node = ref _evictionNodes[index];
+        if (node.Previous >= 0)
+            _evictionNodes[node.Previous].Next = node.Next;
+        else
+            _oldestEntry = node.Next;
+        if (node.Next >= 0)
+            _evictionNodes[node.Next].Previous = node.Previous;
+        else
+            _newestEntry = node.Previous;
+        // Reuse bounded bookkeeping storage without retaining invalidated schemas or subjects.
+        node = default;
+        node.Next = _freeEntry;
+        _freeEntry = index;
+    }
 
-            if (Interlocked.CompareExchange(ref _cacheCount, count - 1, count) != count)
-                continue;
-
-            var removed = false;
-            while (_evictionQueue.TryDequeue(out var oldest))
-            {
-                if (((ICollection<KeyValuePair<SchemaResolutionKey, TValue>>)_cache).Remove(oldest))
-                {
-                    removed = true;
-                    break;
-                }
-            }
-
-            if (!removed)
-            {
-                Interlocked.Increment(ref _cacheCount);
-                return;
-            }
-        }
+    private struct EvictionNode
+    {
+        internal SchemaResolutionKey Key;
+        internal int Previous;
+        internal int Next;
     }
 
     private sealed class Entry
@@ -201,6 +266,9 @@ internal sealed class SchemaResolutionCache<TValue>
 
         private static Task<TValue> ObserveFault(Task<TValue> task)
         {
+            if (task.IsCompletedSuccessfully)
+                return task;
+
             _ = task.ContinueWith(
                 static completed => _ = completed.Exception,
                 CancellationToken.None,
