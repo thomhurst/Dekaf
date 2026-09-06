@@ -9,6 +9,23 @@ namespace Dekaf.Tests.Unit.Outbox;
 
 public class EfCoreOutboxStoreTests
 {
+    [Test]
+    public async Task PendingMetrics_ReportsEmptyAndNonemptyCountsWithoutChangingRows()
+    {
+        using var db = new SqliteOutboxDatabase();
+        var store = db.CreateStore();
+        var empty = await store.GetPendingMetricsAsync();
+        await Assert.That(empty!.PendingCount).IsEqualTo(0);
+        await Assert.That(empty.OldestCreatedAtUtc).IsNull();
+        await db.InsertRowsAsync(NewRow(0, "first"), NewRow(2, "second"));
+        var pending = await store.GetPendingMetricsAsync();
+        await Assert.That(pending!.PendingCount).IsEqualTo(2);
+        // Native SQLite DateTimeOffset mapping cannot compute a server-side minimum.
+        await Assert.That(pending.OldestCreatedAtUtc).IsNull();
+        await using var context = db.CreateContext();
+        await Assert.That(await context.Set<OutboxMessage>().CountAsync()).IsEqualTo(2);
+    }
+
     private static readonly int[] AllBuckets = [0, 1, 2, 3];
     private static readonly int[] BucketsZeroAndTwo = [0, 2];
 

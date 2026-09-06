@@ -4,3 +4,17 @@ Dekaf.Outbox.IOutboxLeaseRenewalStore
 Dekaf.Outbox.IOutboxLeaseRenewalStore.RenewBucketLeasesAsync(Dekaf.Outbox.OutboxLeaseRequest! request, System.Collections.Generic.IReadOnlyList<int>! buckets, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<bool>
 Dekaf.Outbox.OutboxRelayOptions.MaxPublishDuration.get -> System.TimeSpan?
 Dekaf.Outbox.OutboxRelayOptions.MaxPublishDuration.init -> void
+const Dekaf.Outbox.OutboxDiagnostics.MeterName = "Dekaf.Outbox" -> string!
+Dekaf.Outbox.IOutboxMetricsStore
+Dekaf.Outbox.IOutboxMetricsStore.GetPendingMetricsAsync(System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.Outbox.OutboxPendingMetrics?>
+Dekaf.Outbox.OutboxDiagnostics
+Dekaf.Outbox.OutboxPendingMetrics
+Dekaf.Outbox.OutboxPendingMetrics.OldestCreatedAtUtc.get -> System.DateTimeOffset?
+Dekaf.Outbox.OutboxPendingMetrics.OutboxPendingMetrics(long pendingCount, System.DateTimeOffset? oldestCreatedAtUtc) -> void
+Dekaf.Outbox.OutboxPendingMetrics.PendingCount.get -> long
+Dekaf.Outbox.OutboxRelayOptions.MetricsCollectionInterval.get -> System.TimeSpan
+Dekaf.Outbox.OutboxRelayOptions.MetricsCollectionInterval.init -> void
+Dekaf.Outbox.OutboxRelayOptions.MetricsCollectionTimeout.get -> System.TimeSpan
+Dekaf.Outbox.OutboxRelayOptions.MetricsCollectionTimeout.init -> void
+Dekaf.Outbox.OutboxRelayOptions.MetricsName.get -> string!
+Dekaf.Outbox.OutboxRelayOptions.MetricsName.init -> void

@@ -1,3 +1,4 @@
+using System.Diagnostics.Metrics;
 using Dekaf.Consumer;
 using Dekaf.Outbox;
 using Dekaf.Outbox.EntityFrameworkCore;
@@ -14,6 +15,7 @@ namespace Dekaf.Tests.Integration;
 /// a real broker by the relay and removed once acknowledged.
 /// </summary>
 [Category("MessagingPatterns")]
+[NotInParallel("MeterListener")]
 public class OutboxRelayIntegrationTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     private const int BucketCount = 4;
@@ -60,6 +62,25 @@ public class OutboxRelayIntegrationTests(KafkaTestContainer kafka) : KafkaIntegr
         DbContextOptions<OutboxContext> contextOptions,
         bool holdForRenewal)
     {
+        long acknowledged = 0;
+        using var listener = new MeterListener();
+        listener.InstrumentPublished = (instrument, meterListener) =>
+        {
+            if (instrument.Meter.Name == OutboxDiagnostics.MeterName)
+                meterListener.EnableMeasurementEvents(instrument);
+        };
+        listener.SetMeasurementEventCallback<long>((instrument, value, tags, _) =>
+        {
+            if (instrument.Name != "dekaf.outbox.publish.acknowledged")
+                return;
+            foreach (var tag in tags)
+            {
+                if (tag.Key == "outbox.name" && Equals(tag.Value, "outbox-integration"))
+                    Interlocked.Add(ref acknowledged, value);
+            }
+        });
+        listener.SetMeasurementEventCallback<double>(static (_, _, _, _) => { });
+        listener.Start();
         await using (var context = new OutboxContext(contextOptions))
         {
             await context.Database.EnsureCreatedAsync();
@@ -92,6 +113,7 @@ public class OutboxRelayIntegrationTests(KafkaTestContainer kafka) : KafkaIntegr
 
         var relayOptions = new OutboxRelayOptions
         {
+            MetricsName = "outbox-integration",
             BucketCount = BucketCount,
             PollInterval = TimeSpan.FromMilliseconds(50),
             LeaseRenewInterval = holdForRenewal ? TimeSpan.FromSeconds(1) : TimeSpan.FromSeconds(10),
@@ -149,6 +171,10 @@ public class OutboxRelayIntegrationTests(KafkaTestContainer kafka) : KafkaIntegr
                     return !context.Set<OutboxMessage>().Any();
                 },
                 TimeSpan.FromSeconds(30));
+            await store.MetricsObserved.Task.WaitAsync(TimeSpan.FromSeconds(30));
+            await Assert.That(Interlocked.Read(ref acknowledged)).IsEqualTo(5);
+            var pending = await store.GetPendingMetricsAsync();
+            await Assert.That(pending!.PendingCount).IsEqualTo(0);
         }
         finally
         {
@@ -172,8 +198,15 @@ public class OutboxRelayIntegrationTests(KafkaTestContainer kafka) : KafkaIntegr
     }
 
     private sealed class ObservedRenewalStore(EfCoreOutboxStore<OutboxContext> inner)
-        : IOutboxStore, IOutboxLeaseRenewalStore
+        : IOutboxStore, IOutboxLeaseRenewalStore, IOutboxMetricsStore
     {
+        internal TaskCompletionSource MetricsObserved { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public async ValueTask<OutboxPendingMetrics?> GetPendingMetricsAsync(CancellationToken cancellationToken = default)
+        {
+            var result = await inner.GetPendingMetricsAsync(cancellationToken);
+            MetricsObserved.TrySetResult();
+            return result;
+        }
         internal TaskCompletionSource RenewalObserved { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         internal IReadOnlyList<int> PeerBuckets { get; private set; } = [];
         public ValueTask<IReadOnlyList<int>> AcquireBucketLeasesAsync(OutboxLeaseRequest request,

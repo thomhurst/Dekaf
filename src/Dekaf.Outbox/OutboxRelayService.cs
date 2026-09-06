@@ -58,6 +58,8 @@ public sealed partial class OutboxRelayService : BackgroundService
         _options = options;
         _logger = logger;
         _timeProvider = timeProvider ?? TimeProvider.System;
+        _metrics = new OutboxMetricState(options.MetricsName, _timeProvider);
+        OutboxMetrics.Register(_metrics);
         _leaseRequest = new OutboxLeaseRequest
         {
             RelayId = options.RelayId,
@@ -66,7 +68,7 @@ public sealed partial class OutboxRelayService : BackgroundService
         };
     }
 
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    private async Task RunRelayAsync(CancellationToken stoppingToken)
     {
         // A broker that is briefly unreachable at process start must not fault the relay:
         // committed outbox rows are already waiting, so initialization retries with the
@@ -142,7 +144,7 @@ public sealed partial class OutboxRelayService : BackgroundService
         LogRelayStopped(_options.RelayId);
     }
 
-    private async Task<CycleResult> RunCycleAsync(CancellationToken cancellationToken)
+    private async Task<CycleResult> RunCycleCoreAsync(CancellationToken cancellationToken)
     {
         await RefreshLeasesIfDueAsync(cancellationToken).ConfigureAwait(false);
 
@@ -191,7 +193,10 @@ public sealed partial class OutboxRelayService : BackgroundService
 
     private void ResetLeaseState()
     {
+        if (_ownedBuckets.Count > 0 && LeaseAge() >= _options.LeaseDuration)
+            OutboxMetrics.Record(OutboxMetrics.LeaseExpirations, _metrics, 1);
         _ownedBuckets = [];
+        Volatile.Write(ref _metrics.OwnedBuckets, 0);
         _leaseTimestamp = 0;
     }
 
@@ -206,6 +211,10 @@ public sealed partial class OutboxRelayService : BackgroundService
         if (!force && !RenewalDue)
             return;
 
+        // Observe a stalled relay's expired set before reacquisition replaces its timestamp.
+        if (_ownedBuckets.Count > 0 && LeaseAge() >= _options.LeaseDuration)
+            ResetLeaseState();
+
         // Captured before the store call: the database computes lease expiry when the call
         // starts, so a slow acquisition must age the lease, not refresh it. Assigned only
         // after success so a failed call never counts as a renewal.
@@ -217,6 +226,7 @@ public sealed partial class OutboxRelayService : BackgroundService
             LogLeasesChanged(_options.RelayId, acquired.Count, _options.BucketCount);
 
         _ownedBuckets = acquired;
+        Volatile.Write(ref _metrics.OwnedBuckets, acquired.Count);
     }
 
     private TimeSpan LeaseAge() => _timeProvider.GetElapsedTime(_leaseTimestamp);
@@ -261,7 +271,7 @@ public sealed partial class OutboxRelayService : BackgroundService
                 return new CycleResult(publishedAny, HadError: true);
 
             var publishStarted = _options.MaxPublishDuration.HasValue ? _timeProvider.GetTimestamp() : 0;
-            var publish = _publisher.PublishAsync(batch, _options.MessageIdHeaderName, cancellationToken);
+            var publish = PublishAsync(batch, cancellationToken);
             OutboxPublishResult result;
             Exception? renewalError = null;
             if (_renewalStore is not null && !publish.IsCompletedSuccessfully)

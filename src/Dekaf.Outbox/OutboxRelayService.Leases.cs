@@ -13,6 +13,7 @@ public sealed partial class OutboxRelayService
     {
         base.Dispose();
         CancelRenewalDelay();
+        _metrics.Dispose();
     }
 
     private void CancelRenewalDelay()

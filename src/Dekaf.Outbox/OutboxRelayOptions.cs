@@ -86,6 +86,18 @@ public sealed class OutboxRelayOptions
     public string RelayId { get; init; } = $"{Environment.MachineName}-{Guid.NewGuid():N}";
 
     /// <summary>
+    /// Stable logical outbox name used in metric tags. Use distinct names for independent
+    /// stores in one process; never use message identifiers or generated relay identifiers.
+    /// </summary>
+    public string MetricsName { get; init; } = "outbox";
+
+    /// <summary>Minimum delay between store metric queries, measured after each query completes.</summary>
+    public TimeSpan MetricsCollectionInterval { get; init; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>Cancellation timeout for each optional store metric query.</summary>
+    public TimeSpan MetricsCollectionTimeout { get; init; } = TimeSpan.FromSeconds(5);
+
+    /// <summary>
     /// Validates option consistency. Called by the relay at startup.
     /// </summary>
     public void Validate()
@@ -98,6 +110,10 @@ public sealed class OutboxRelayOptions
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(LeaseRenewInterval, TimeSpan.Zero);
         ArgumentException.ThrowIfNullOrEmpty(MessageIdHeaderName);
         ArgumentException.ThrowIfNullOrEmpty(RelayId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(MetricsName);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(MetricsName.Length, 64);
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(MetricsCollectionInterval, TimeSpan.Zero);
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(MetricsCollectionTimeout, TimeSpan.Zero);
 
         if (RelayId.Length > MaxRelayIdLength)
         {
