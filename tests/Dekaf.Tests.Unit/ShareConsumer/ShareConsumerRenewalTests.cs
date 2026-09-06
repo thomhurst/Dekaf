@@ -901,13 +901,8 @@ public sealed class ShareConsumerRenewalTests
         PrepareForPoll(fixture.Consumer);
         TrackDeliveredRecord(fixture.Consumer, new TopicPartition("topic", 0), 42);
 
-        try
-        {
-            await fixture.Consumer.CloseAsync(cancellation.Token);
-        }
-        catch (OperationCanceledException)
-        {
-        }
+        // Close handles acknowledgement failures as best effort; unexpected exceptions must fail this test.
+        await fixture.Consumer.CloseAsync(cancellation.Token);
 
         var pending = FlushPendingAcknowledgements(fixture.Consumer);
         await Assert.That(pending[new TopicPartition("topic", 0)][0].AcknowledgeTypes[0])
@@ -915,18 +910,28 @@ public sealed class ShareConsumerRenewalTests
     }
 
     [Test]
-    public async Task Poll_PartialEnumeration_DoesNotTrackUnyieldedRecords()
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Poll_PartialEnumeration_DoesNotTrackUnyieldedRecords(bool requiresPreparation)
     {
         var connection = new CapturingConnection(ApiKey.ShareFetch, 2)
         {
             ShareFetchResponse = CreateFetchResponse(0, 42, recordCount: 2)
         };
-        await using var fixture = CreateFixture(connection, ShareAcknowledgementMode.Implicit);
+        var preparer = requiresPreparation ? new PausedDeserializerPreparer() : null;
+        await using var fixture = CreateFixture(connection, ShareAcknowledgementMode.Implicit, valueDeserializer: preparer);
         PrepareForPoll(fixture.Consumer);
         fixture.Consumer.Subscribe("topic");
         await using (var poll = fixture.Consumer.PollAsync().GetAsyncEnumerator())
         {
-            await Assert.That(await poll.MoveNextAsync()).IsTrue();
+            var moveNext = poll.MoveNextAsync();
+            if (preparer is not null)
+            {
+                await preparer.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+                await Assert.That(moveNext.IsCompleted).IsFalse();
+                preparer.Release.SetResult();
+            }
+            await Assert.That(await moveNext).IsTrue();
             await Assert.That(poll.Current.Offset).IsEqualTo(42);
         }
 
@@ -941,7 +946,8 @@ public sealed class ShareConsumerRenewalTests
         ShareAcknowledgementMode acknowledgementMode = ShareAcknowledgementMode.Explicit,
         int maxPollRecords = 500,
         CapturingConnection? secondConnection = null,
-        ShareAcknowledgementCommitCallback? acknowledgementCommitCallback = null)
+        ShareAcknowledgementCommitCallback? acknowledgementCommitCallback = null,
+        IDeserializer<string>? valueDeserializer = null)
     {
         var options = new ShareConsumerOptions
         {
@@ -997,11 +1003,34 @@ public sealed class ShareConsumerRenewalTests
         var consumer = new KafkaShareConsumer<string, string>(
             options,
             Substitute.For<IDeserializer<string>>(),
-            Substitute.For<IDeserializer<string>>(),
+            valueDeserializer ?? Substitute.For<IDeserializer<string>>(),
             pool,
             metadataManager);
         SetMemberId(consumer, "member-1");
         return new Fixture(consumer, metadataManager);
+    }
+
+    private sealed class PausedDeserializerPreparer : IDeserializer<string>, IAsyncDeserializerPreparer<string>
+    {
+        private bool _prepared;
+        public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context) =>
+            Serializers.String.Deserialize(data, context);
+
+        public bool TryDeserialize(ReadOnlyMemory<byte> data, SerializationContext context, out string value)
+        {
+            value = _prepared ? Deserialize(data, context) : string.Empty;
+            return _prepared;
+        }
+
+        public async ValueTask PrepareAsync(ReadOnlyMemory<byte> data, SerializationContext context, CancellationToken cancellationToken = default)
+        {
+            Entered.TrySetResult();
+            await Release.Task.WaitAsync(cancellationToken);
+            _prepared = true;
+        }
     }
 
     private static ShareFetchResponse CreateFetchResponse(int partition, long offset, int recordCount = 1)
