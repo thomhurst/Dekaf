@@ -36,6 +36,9 @@ public class PartitionedBackpressureBenchmarks
             MaxBufferedRecordsPerPartition = Capacity,
             CommitPolicy = PartitionCommitPolicy.UserManaged
         }, null);
+        // Bind the real routing/capacity paths without adding production visibility or
+        // a benchmark-only seam. Reflection stays in setup; private member renames fail
+        // here before measurement, so update these bindings when those members change.
         var runtimeType = _runtime.GetType();
         var capacityAvailable = runtimeType.GetMethod("OnLaneCapacityAvailable", BindingFlags.Instance | BindingFlags.NonPublic)!
             .CreateDelegate<Action<PartitionLane<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>>>>(_runtime);
