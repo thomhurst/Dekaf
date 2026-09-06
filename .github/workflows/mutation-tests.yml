@@ -55,9 +55,8 @@ jobs:
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           # Stryker 4.16 targets net8.0; the test projects build with the net10 SDK.
-          dotnet-version: |
-            8.0.x
-            10.0.x
+          global-json-file: global.json
+          dotnet-version: '8.0.x'
 
       - name: Restore local tools
         run: dotnet tool restore

@@ -22,7 +22,6 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  DOTNET_VERSION: '10.0.x'
   LIBFUZZER_DOTNET_VERSION: 'v2025.05.02.0904'
   LIBFUZZER_DOTNET_SHA256: 'c2c2a90d94c409a4af339a0d4f244e0442c5a5d249be0f1252ba07871f285958'
   MAX_INPUT_LENGTH: '1048576'
@@ -55,8 +54,7 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
-          dotnet-version: ${{ env.DOTNET_VERSION }}
-          dotnet-quality: 'preview'
+          global-json-file: global.json
 
       - name: Install pinned fuzzing tools
         shell: bash

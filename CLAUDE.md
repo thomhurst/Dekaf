@@ -171,10 +171,18 @@ tools/
 
 ## Build Commands
 
+The root `global.json` selects stable .NET SDK 10.0.400 or a later 10.0.4xx patch (`latestPatch`, previews disabled), and selects Microsoft.Testing.Platform (MTP). CI installs from that same file. SDK selection does not change the net8.0/net10.0 target frameworks; install the .NET 8 runtime as well to run net8.0 tests. Run `dotnet --version` from the repository root or a project directory to check selection.
+
 ```bash
 # Restore and build
 dotnet build
 
+# Run a focused TUnit test through the native MTP dotnet test runner
+# Use --project (not a positional project path), and pass test options directly (no extra --).
+dotnet test --project tests/Dekaf.Tests.Unit --configuration Release --framework net10.0 \
+  --treenode-filter "/*/*/AdminClientFeatureTests/DescribeFeaturesAsync_MapsConnectionCapabilitySnapshot"
+
+# Direct executables remain supported (also for net8.0 after building that target).
 # Run unit tests
 dotnet build tests/Dekaf.Tests.Unit --configuration Release
 ./tests/Dekaf.Tests.Unit/bin/Release/net10.0/Dekaf.Tests.Unit
@@ -196,7 +204,7 @@ dotnet run --project tools/Dekaf.StressTests --configuration Release -- \
 
 ### Test Filtering (TUnit)
 
-TUnit uses `--treenode-filter` with the syntax `/<Assembly>/<Namespace>/<Class>/<Test>`. Use `*` as wildcard.
+Both direct test executables and `dotnet test --project <project>` use `--treenode-filter` with the syntax `/<Assembly>/<Namespace>/<Class>/<Test>`. Use `*` as wildcard.
 
 ```bash
 # Run all tests in a specific class
