@@ -16,6 +16,7 @@ public class OutboxRelayServiceTests
         ErrorBackoff = TimeSpan.FromMilliseconds(1),
         LeaseDuration = TimeSpan.FromSeconds(60),
         LeaseRenewInterval = TimeSpan.FromSeconds(20),
+        MaxPublishDuration = TimeSpan.FromSeconds(5),
         RelayId = "test-relay"
     };
 

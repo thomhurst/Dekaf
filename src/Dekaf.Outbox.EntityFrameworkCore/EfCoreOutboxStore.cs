@@ -17,7 +17,7 @@ namespace Dekaf.Outbox.EntityFrameworkCore;
 /// a Kafka hot path, so EF/LINQ usage here is intentional and fine.</para>
 /// </remarks>
 /// <typeparam name="TContext">The application's context type containing the outbox model.</typeparam>
-public sealed class EfCoreOutboxStore<TContext> : IOutboxStore
+public sealed class EfCoreOutboxStore<TContext> : IOutboxStore, IOutboxLeaseRenewalStore
     where TContext : DbContext
 {
     /// <summary>
@@ -144,6 +144,36 @@ public sealed class EfCoreOutboxStore<TContext> : IOutboxStore
             .Select(m => m.Bucket)
             .Distinct()
             .ToListAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    public async ValueTask<bool> RenewBucketLeasesAsync(
+        OutboxLeaseRequest request,
+        IReadOnlyList<int> buckets,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(buckets);
+        if (buckets.Count == 0)
+            return true;
+
+        var context = await _contextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+        await using var contextDisposal = context.ConfigureAwait(false);
+        var now = _timeProvider.GetUtcNow();
+        var expiry = now + request.LeaseDuration;
+        var bucketArray = buckets as int[] ?? [.. buckets];
+        var renewed = await context.Set<OutboxLease>()
+            .Where(lease => lease.Owner == request.RelayId && lease.ExpiresAtUtc > now
+                && lease.Bucket >= 0 && lease.Bucket < request.BucketCount && bucketArray.Contains(lease.Bucket))
+            .ExecuteUpdateAsync(setters => setters.SetProperty(lease => lease.ExpiresAtUtc, expiry), cancellationToken)
+            .ConfigureAwait(false);
+        // Matching leases may already be extended after a partial mismatch. The relay
+        // drops its local ownership and reacquires valid buckets on the next cycle,
+        // rather than continuing publication on a partially renewed set.
+        if (renewed != buckets.Count)
+            return false;
+
+        await RecordHeartbeatAsync(context, request, now, cancellationToken).ConfigureAwait(false);
+        return true;
     }
 
     public async ValueTask<IReadOnlyList<OutboxMessage>> GetNextBatchAsync(

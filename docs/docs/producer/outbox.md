@@ -222,8 +222,9 @@ var messageId = outboxResult.Headers.FirstOrDefault(h => h.Key == "x-outbox-mess
 | `BucketCount` | 8 | Upper bound on relay parallelism. Must match across all writers and relays. |
 | `BatchSize` | 500 | Rows fetched and published per database round trip. |
 | `PollInterval` | 100 ms | Idle delay when no bucket had work. |
-| `LeaseDuration` | 30 s | Stalled-relay takeover time; also the duplicate window on takeover. Set it comfortably above the producer's delivery timeout: the relay yields for renewal between batches, so only a *single* batch publish outlasting the remaining lease can enter the takeover window, and a lease longer than the worst-case publish makes that unreachable. |
-| `LeaseRenewInterval` | 10 s | Must be comfortably below `LeaseDuration`. |
+| `LeaseDuration` | 30 s | Time until takeover after the last successful renewal. The EF store renews during slow publishes, so the default 120 s producer delivery timeout does not expire an otherwise healthy relay's lease. Longer leases tolerate longer store/process stalls but delay takeover. |
+| `LeaseRenewInterval` | 10 s | Renewal cadence, including pending publishes. Leave enough slack for database latency, scheduling pauses, and clock skew. |
+| `MaxPublishDuration` | `null` | Required only for stores without `IOutboxLeaseRenewalStore`. Bound the **entire** publish call, not one record's delivery timeout. The budget plus a renewal interval must fit inside `LeaseDuration`. |
 | `MessageIdHeaderName` | `x-outbox-message-id` | Dedup header stamped on every record. |
 
 Pass options at registration:
@@ -240,6 +241,29 @@ builder.Services.AddDekafOutboxRelay(
 ```
 
 ## Custom Stores (Relational, NoSQL, or Anything Else)
+
+### Lease timing and migration
+
+The EF store implements `IOutboxLeaseRenewalStore`. Its renewal atomically checks ownership and unexpired leases, extends them, and refreshes the relay heartbeat. It does **not** acquire or relinquish buckets while a publish is pending. Fair-share rebalancing resumes between publish calls. Store calls remain serialized: renewal runs alongside the publisher, never alongside another store operation from that relay.
+
+Custom stores should implement the same optional capability. Without it, registration must provide `MaxPublishDuration`; an unspecified bound now fails at startup with `OutboxMisconfigurationException`. For example, if measurement establishes that a custom publisher's whole batch completes within two minutes:
+
+```csharp
+var relayOptions = new OutboxRelayOptions
+{
+    MaxPublishDuration = TimeSpan.FromMinutes(2),
+    LeaseDuration = TimeSpan.FromMinutes(3),
+    LeaseRenewInterval = TimeSpan.FromSeconds(10)
+};
+```
+
+The relay measures lease age from **before** acquisition, then rechecks after the pending-bucket probe and batch fetch. Before a legacy-store publish, it reserves the full publish budget plus one renewal interval, renewing first if necessary. If acquisition latency still leaves too little time, it keeps the rows unpublished and logs the configuration problem. `BatchSize`, sequential submission, backpressure and delivery attempts all affect the whole-call bound. Raising a lease above one record's timeout alone does not establish safety.
+
+`MaxPublishDuration` is a timing contract, not a timeout that aborts Kafka delivery. Exceeding it faults the relay instead of repeatedly publishing under an invalid assumption. Custom publishers must yield during asynchronous waits, honor shutdown cancellation, and account for all work covered by their bound.
+
+Renewal cannot protect against a process pause or database outage longer than the remaining lease. After losing a lease during a pending publish, the relay observes the publisher's completion and retains the rows for takeover; it does not start another publish concurrently. Cancellation cannot retract records already appended to Kafka. Such records can still arrive after takeover, so consumer-side message-ID deduplication remains necessary.
+
+### Store contract
 
 `IOutboxStore` is a four-method contract (`AcquireBucketLeasesAsync`, `GetBucketsWithPendingAsync`, `GetNextBatchAsync`, `MarkPublishedAsync`) with **no relational assumptions** — implement it for Dapper, raw ADO.NET, MongoDB, DynamoDB, Cosmos DB, or any storage that offers the two primitives below. The relay engine (`Dekaf.Outbox`) never touches a database API; the EF Core package is just one store.
 
