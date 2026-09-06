@@ -1404,75 +1404,10 @@ public sealed partial class AdminClient :
         return result;
     }
 
-    public async ValueTask<IReadOnlyList<GroupListing>> ListConsumerGroupsAsync(
+    public ValueTask<IReadOnlyList<GroupListing>> ListConsumerGroupsAsync(
         ListConsumerGroupsOptions? options = null,
-        CancellationToken cancellationToken = default)
-    {
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
-
-        var opts = options ?? new ListConsumerGroupsOptions();
-
-        return await WithRetryAsync<IReadOnlyList<GroupListing>>(async () =>
-        {
-            var brokers = _metadataManager.Metadata.GetBrokers();
-            if (brokers.Count == 0)
-            {
-                throw new InvalidOperationException("No brokers available");
-            }
-
-            // Query all brokers since each only knows about groups it coordinates
-            var seenGroupIds = new HashSet<string>();
-            var result = new List<GroupListing>();
-
-            foreach (var broker in brokers)
-            {
-                using var connectionLease = await _connectionPool.LeaseConnectionAsync(broker.NodeId, cancellationToken).ConfigureAwait(false);
-                var connection = connectionLease.Connection;
-                var apiVersion = _metadataManager.GetNegotiatedApiVersion(
-                    connection,
-                    Protocol.ApiKey.ListGroups,
-                    ListGroupsRequest.LowestSupportedVersion,
-                    ListGroupsRequest.HighestSupportedVersion);
-                var request = new ListGroupsRequest
-                {
-                    StatesFilter = apiVersion >= 4 ? opts.States : null
-                };
-
-                var response = await connection.SendAsync<ListGroupsRequest, ListGroupsResponse>(
-                    request,
-                    apiVersion,
-                    cancellationToken).ConfigureAwait(false);
-
-                if (response.ErrorCode != Protocol.ErrorCode.None)
-                {
-                    throw new KafkaException(response.ErrorCode,
-                        $"ListConsumerGroups failed on broker {broker.NodeId}: {response.ErrorCode}");
-                }
-
-                foreach (var group in response.Groups)
-                {
-                    if (!seenGroupIds.Add(group.GroupId))
-                        continue;
-
-                    // Client-side state filtering if broker doesn't support v4+
-                    if (apiVersion < 4 && opts.States is { Count: > 0 } && group.GroupState is not null)
-                    {
-                        if (!opts.States.Contains(group.GroupState, StringComparer.OrdinalIgnoreCase))
-                            continue;
-                    }
-
-                    result.Add(new GroupListing
-                    {
-                        GroupId = group.GroupId,
-                        ProtocolType = group.ProtocolType,
-                        State = group.GroupState
-                    });
-                }
-            }
-
-            return result;
-        }, cancellationToken).ConfigureAwait(false);
-    }
+        CancellationToken cancellationToken = default) =>
+        ListGroupsCoreAsync(options?.States, ConsumerGroupTypes, ConsumerProtocolTypes, cancellationToken);
 
     public async ValueTask<ListTransactionsResult> ListTransactionsAsync(
         ListTransactionsOptions? options = null,
@@ -4658,82 +4593,10 @@ public sealed partial class AdminClient :
         }, cancellationToken).ConfigureAwait(false);
     }
 
-    public async ValueTask<IReadOnlyList<GroupListing>> ListStreamsGroupsAsync(
+    public ValueTask<IReadOnlyList<GroupListing>> ListStreamsGroupsAsync(
         ListStreamsGroupsOptions? options = null,
-        CancellationToken cancellationToken = default)
-    {
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
-
-        var opts = options ?? new ListStreamsGroupsOptions();
-
-        return await WithRetryAsync<IReadOnlyList<GroupListing>>(async () =>
-        {
-            var brokers = _metadataManager.Metadata.GetBrokers();
-            if (brokers.Count == 0)
-            {
-                throw new InvalidOperationException("No brokers available");
-            }
-
-            var responses = await Task.WhenAll(brokers.Select(async broker =>
-            {
-                using var connectionLease = await _connectionPool.LeaseConnectionAsync(broker.NodeId, cancellationToken).ConfigureAwait(false);
-                var connection = connectionLease.Connection;
-                var apiVersion = _metadataManager.GetNegotiatedApiVersion(
-                    connection,
-                    Protocol.ApiKey.ListGroups,
-                    ListGroupsRequest.LowestSupportedVersion,
-                    ListGroupsRequest.HighestSupportedVersion);
-                var request = new ListGroupsRequest
-                {
-                    StatesFilter = apiVersion >= 4 ? opts.States : null,
-                    TypesFilter = apiVersion >= 5 ? ["streams"] : null
-                };
-
-                var response = await connection.SendAsync<ListGroupsRequest, ListGroupsResponse>(
-                    request,
-                    apiVersion,
-                    cancellationToken).ConfigureAwait(false);
-
-                if (response.ErrorCode != Protocol.ErrorCode.None)
-                {
-                    throw new KafkaException(response.ErrorCode,
-                        $"ListStreamsGroups failed on broker {broker.NodeId}: {response.ErrorCode}");
-                }
-
-                return (Response: response, ApiVersion: apiVersion);
-            })).ConfigureAwait(false);
-
-            var seenGroupIds = new HashSet<string>();
-            var result = new List<GroupListing>();
-
-            foreach (var (response, apiVersion) in responses)
-            {
-                foreach (var group in response.Groups)
-                {
-                    if (apiVersion < 5 || !string.Equals(group.GroupType, "streams", StringComparison.OrdinalIgnoreCase))
-                        continue;
-
-                    if (!seenGroupIds.Add(group.GroupId))
-                        continue;
-
-                    if (apiVersion < 4 && opts.States is { Count: > 0 } && group.GroupState is not null)
-                    {
-                        if (!opts.States.Contains(group.GroupState, StringComparer.OrdinalIgnoreCase))
-                            continue;
-                    }
-
-                    result.Add(new GroupListing
-                    {
-                        GroupId = group.GroupId,
-                        ProtocolType = group.ProtocolType,
-                        State = group.GroupState
-                    });
-                }
-            }
-
-            return result;
-        }, cancellationToken).ConfigureAwait(false);
-    }
+        CancellationToken cancellationToken = default) =>
+        ListGroupsCoreAsync(options?.States, StreamsGroupTypes, null, cancellationToken);
 
     private static StreamsGroupDescription MapStreamsGroupDescription(StreamsGroupDescribeGroup group)
     {
@@ -4945,86 +4808,10 @@ public sealed partial class AdminClient :
         }, cancellationToken).ConfigureAwait(false);
     }
 
-    public async ValueTask<IReadOnlyList<GroupListing>> ListShareGroupsAsync(
+    public ValueTask<IReadOnlyList<GroupListing>> ListShareGroupsAsync(
         ListShareGroupsOptions? options = null,
-        CancellationToken cancellationToken = default)
-    {
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
-
-        var opts = options ?? new ListShareGroupsOptions();
-
-        return await WithRetryAsync<IReadOnlyList<GroupListing>>(async () =>
-        {
-            var brokers = _metadataManager.Metadata.GetBrokers();
-            if (brokers.Count == 0)
-            {
-                throw new InvalidOperationException("No brokers available");
-            }
-
-            // Fan out to all brokers in parallel
-            var responses = await Task.WhenAll(brokers.Select(async broker =>
-            {
-                using var connectionLease = await _connectionPool.LeaseConnectionAsync(broker.NodeId, cancellationToken).ConfigureAwait(false);
-                var connection = connectionLease.Connection;
-                var apiVersion = _metadataManager.GetNegotiatedApiVersion(
-                    connection,
-                    Protocol.ApiKey.ListGroups,
-                    ListGroupsRequest.LowestSupportedVersion,
-                    ListGroupsRequest.HighestSupportedVersion);
-                var request = new ListGroupsRequest
-                {
-                    StatesFilter = apiVersion >= 4 ? opts.States : null,
-                    TypesFilter = apiVersion >= 5 ? ["share"] : null
-                };
-
-                var response = await connection.SendAsync<ListGroupsRequest, ListGroupsResponse>(
-                    request,
-                    apiVersion,
-                    cancellationToken).ConfigureAwait(false);
-
-                if (response.ErrorCode != Protocol.ErrorCode.None)
-                {
-                    throw new KafkaException(response.ErrorCode,
-                        $"ListShareGroups failed on broker {broker.NodeId}: {response.ErrorCode}");
-                }
-
-                return (Response: response, ApiVersion: apiVersion);
-            })).ConfigureAwait(false);
-
-            // Merge and deduplicate results
-            var seenGroupIds = new HashSet<string>();
-            var result = new List<GroupListing>();
-
-            foreach (var (response, apiVersion) in responses)
-            {
-                foreach (var group in response.Groups)
-                {
-                    // Filter to share groups only (client-side for pre-v5 brokers)
-                    if (apiVersion < 5 && !string.Equals(group.GroupType, "share", StringComparison.OrdinalIgnoreCase))
-                        continue;
-
-                    if (!seenGroupIds.Add(group.GroupId))
-                        continue;
-
-                    // Client-side state filtering if broker doesn't support v4+
-                    if (apiVersion < 4 && opts.States is { Count: > 0 } && group.GroupState is not null)
-                    {
-                        if (!opts.States.Contains(group.GroupState, StringComparer.OrdinalIgnoreCase))
-                            continue;
-                    }
-
-                    result.Add(new GroupListing
-                    {
-                        GroupId = group.GroupId,
-                        ProtocolType = group.ProtocolType,
-                        State = group.GroupState
-                    });
-                }
-            }
-
-            return result;
-        }, cancellationToken).ConfigureAwait(false);
-    }
+        CancellationToken cancellationToken = default) =>
+        ListGroupsCoreAsync(options?.States, ShareGroupTypes, null, cancellationToken);
 
     public async ValueTask<IReadOnlyDictionary<string, DeleteShareGroupResult>> DeleteShareGroupsAsync(
         IEnumerable<string> groupIds,

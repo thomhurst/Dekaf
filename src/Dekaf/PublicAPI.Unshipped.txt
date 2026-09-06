@@ -1,0 +1,15 @@
+Dekaf.Admin.AdminClient.ListGroupsAsync(Dekaf.Admin.ListGroupsOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyList<Dekaf.Admin.GroupListing!>!>
+Dekaf.Admin.AdminClientGroupListingExtensions
+Dekaf.Admin.GroupListing.GroupType.get -> string?
+Dekaf.Admin.GroupListing.GroupType.init -> void
+Dekaf.Admin.IGroupListingAdminClient
+Dekaf.Admin.IGroupListingAdminClient.ListGroupsAsync(Dekaf.Admin.ListGroupsOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyList<Dekaf.Admin.GroupListing!>!>
+Dekaf.Admin.ListGroupsOptions
+Dekaf.Admin.ListGroupsOptions.ListGroupsOptions() -> void
+Dekaf.Admin.ListGroupsOptions.ProtocolTypes.get -> System.Collections.Generic.IReadOnlyList<string!>?
+Dekaf.Admin.ListGroupsOptions.ProtocolTypes.init -> void
+Dekaf.Admin.ListGroupsOptions.States.get -> System.Collections.Generic.IReadOnlyList<string!>?
+Dekaf.Admin.ListGroupsOptions.States.init -> void
+Dekaf.Admin.ListGroupsOptions.Types.get -> System.Collections.Generic.IReadOnlyList<string!>?
+Dekaf.Admin.ListGroupsOptions.Types.init -> void
+static Dekaf.Admin.AdminClientGroupListingExtensions.ListGroupsAsync(this Dekaf.Admin.IAdminClient! adminClient, Dekaf.Admin.ListGroupsOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyList<Dekaf.Admin.GroupListing!>!>
