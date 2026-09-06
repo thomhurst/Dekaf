@@ -568,3 +568,33 @@ Dekaf.ShareConsumer.ShareAcknowledgementCommitResult.TopicPartition.get -> Dekaf
 Dekaf.ShareConsumer.ShareConsumerOptions.AcknowledgementCommitCallback.get -> Dekaf.ShareConsumer.ShareAcknowledgementCommitCallback?
 Dekaf.ShareConsumer.ShareConsumerOptions.AcknowledgementCommitCallback.init -> void
 Dekaf.ShareConsumerBuilder<TKey, TValue>.WithAcknowledgementCommitCallback(Dekaf.ShareConsumer.ShareAcknowledgementCommitCallback! callback) -> Dekaf.ShareConsumerBuilder<TKey, TValue>!
+Dekaf.Admin.AdminClientClusterDiscoveryExtensions
+Dekaf.Admin.ClusterDescriptionSnapshot
+Dekaf.Admin.ClusterDescriptionSnapshot.ClusterDescriptionSnapshot() -> void
+Dekaf.Admin.ClusterDescriptionSnapshot.ClusterId.get -> string!
+Dekaf.Admin.ClusterDescriptionSnapshot.ClusterId.init -> void
+Dekaf.Admin.ClusterDescriptionSnapshot.ControllerId.get -> int
+Dekaf.Admin.ClusterDescriptionSnapshot.ControllerId.init -> void
+Dekaf.Admin.ClusterDescriptionSnapshot.EndpointType.get -> Dekaf.Protocol.Messages.DescribeClusterEndpointType
+Dekaf.Admin.ClusterDescriptionSnapshot.EndpointType.init -> void
+Dekaf.Admin.ClusterDescriptionSnapshot.Nodes.get -> System.Collections.Generic.IReadOnlyList<Dekaf.Admin.ClusterNodeDescription!>!
+Dekaf.Admin.ClusterDescriptionSnapshot.Nodes.init -> void
+Dekaf.Admin.ClusterNodeDescription
+Dekaf.Admin.ClusterNodeDescription.ClusterNodeDescription() -> void
+Dekaf.Admin.ClusterNodeDescription.Host.get -> string!
+Dekaf.Admin.ClusterNodeDescription.Host.init -> void
+Dekaf.Admin.ClusterNodeDescription.IsFenced.get -> bool?
+Dekaf.Admin.ClusterNodeDescription.IsFenced.init -> void
+Dekaf.Admin.ClusterNodeDescription.NodeId.get -> int
+Dekaf.Admin.ClusterNodeDescription.NodeId.init -> void
+Dekaf.Admin.ClusterNodeDescription.Port.get -> int
+Dekaf.Admin.ClusterNodeDescription.Port.init -> void
+Dekaf.Admin.ClusterNodeDescription.Rack.get -> string?
+Dekaf.Admin.ClusterNodeDescription.Rack.init -> void
+Dekaf.Admin.DescribeClusterOptions
+Dekaf.Admin.DescribeClusterOptions.DescribeClusterOptions() -> void
+Dekaf.Admin.DescribeClusterOptions.IncludeFencedBrokers.get -> bool
+Dekaf.Admin.DescribeClusterOptions.IncludeFencedBrokers.init -> void
+Dekaf.Admin.IClusterDiscoveryAdminClient
+Dekaf.Admin.IClusterDiscoveryAdminClient.DescribeClusterAsync(Dekaf.Admin.DescribeClusterOptions! options, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.Admin.ClusterDescriptionSnapshot!>
+static Dekaf.Admin.AdminClientClusterDiscoveryExtensions.DescribeClusterAsync(this Dekaf.Admin.IAdminClient! adminClient, Dekaf.Admin.DescribeClusterOptions! options, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.Admin.ClusterDescriptionSnapshot!>

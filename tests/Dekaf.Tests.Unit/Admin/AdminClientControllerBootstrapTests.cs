@@ -12,6 +12,28 @@ namespace Dekaf.Tests.Unit.Admin;
 public sealed class AdminClientControllerBootstrapTests
 {
     [Test]
+    public async Task DescribeClusterAsync_WithOptions_QueriesControllerAndLeavesFencingUnknown()
+    {
+        await using var context = new ControllerAdminContext();
+        var result = await context.Client.DescribeClusterAsync(new DescribeClusterOptions());
+        await Assert.That(result.EndpointType).IsEqualTo(DescribeClusterEndpointType.Controller);
+        await Assert.That(result.Nodes.Count).IsEqualTo(2);
+        await Assert.That(result.Nodes.All(node => node.IsFenced is null)).IsTrue();
+        await Assert.That(context.DiscoveryRequests).IsEqualTo(2);
+        await Assert.That(context.LastDiscoveryRequest!.EndpointType).IsEqualTo(DescribeClusterEndpointType.Controller);
+        await Assert.That(context.LastDiscoveryRequest.IncludeFencedBrokers).IsFalse();
+    }
+
+    [Test]
+    public async Task DescribeClusterAsync_FencedBrokersOnControllerBootstrap_RejectsBeforeDiscovery()
+    {
+        await using var context = new ControllerAdminContext();
+        await Assert.ThrowsAsync<NotSupportedException>(async () =>
+            await context.Client.DescribeClusterAsync(new DescribeClusterOptions { IncludeFencedBrokers = true }));
+        await Assert.That(context.DiscoveryRequests).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task DescribeClusterAsync_DiscoversControllersWithoutRegisteringBrokers()
     {
         await using var context = new ControllerAdminContext();
