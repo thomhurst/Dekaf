@@ -851,6 +851,91 @@ public sealed class ShareConsumerRenewalTests
         await Assert.That(connection.ShareAcknowledgeRequest).IsNotNull();
     }
 
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Close_ImplicitDelivery_ReleasesInsteadOfAccepting(bool dispose)
+    {
+        var connection = new CapturingConnection(ApiKey.ShareAcknowledge, 2);
+        await using var fixture = CreateFixture(connection, ShareAcknowledgementMode.Implicit);
+        PrepareForPoll(fixture.Consumer);
+        TrackDeliveredRecord(fixture.Consumer, new TopicPartition("topic", 0), 42);
+
+        if (dispose)
+            await fixture.Consumer.DisposeAsync();
+        else
+            await fixture.Consumer.CloseAsync();
+
+        var acknowledgement = connection.ShareAcknowledgeRequest!.Topics[0].Partitions[0].AcknowledgementBatches[0];
+        await Assert.That(acknowledgement.AcknowledgeTypes[0]).IsEqualTo((byte)AcknowledgeType.Release);
+    }
+
+    [Test]
+    [Arguments(AcknowledgeType.Accept)]
+    [Arguments(AcknowledgeType.Release)]
+    [Arguments(AcknowledgeType.Reject)]
+    [Arguments(AcknowledgeType.Renew)]
+    public async Task Close_ExplicitDisposition_PreservesSelectedOutcome(AcknowledgeType type)
+    {
+        var connection = new CapturingConnection(ApiKey.ShareAcknowledge, 2);
+        await using var fixture = CreateFixture(connection);
+        PrepareForPoll(fixture.Consumer);
+        fixture.Consumer.Acknowledge(CreateRecord(), type);
+
+        await fixture.Consumer.CloseAsync();
+
+        var acknowledgement = connection.ShareAcknowledgeRequest!.Topics[0].Partitions[0].AcknowledgementBatches[0];
+        await Assert.That(acknowledgement.AcknowledgeTypes[0]).IsEqualTo((byte)type);
+    }
+
+    [Test]
+    public async Task Close_CancelledAcknowledgement_NeverRequeuesImplicitAccept()
+    {
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        var connection = new CapturingConnection(ApiKey.ShareAcknowledge, 2)
+        {
+            OnSend = () => throw new OperationCanceledException(cancellation.Token)
+        };
+        await using var fixture = CreateFixture(connection, ShareAcknowledgementMode.Implicit);
+        PrepareForPoll(fixture.Consumer);
+        TrackDeliveredRecord(fixture.Consumer, new TopicPartition("topic", 0), 42);
+
+        try
+        {
+            await fixture.Consumer.CloseAsync(cancellation.Token);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+
+        var pending = FlushPendingAcknowledgements(fixture.Consumer);
+        await Assert.That(pending[new TopicPartition("topic", 0)][0].AcknowledgeTypes[0])
+            .IsEqualTo((byte)AcknowledgeType.Release);
+    }
+
+    [Test]
+    public async Task Poll_PartialEnumeration_DoesNotTrackUnyieldedRecords()
+    {
+        var connection = new CapturingConnection(ApiKey.ShareFetch, 2)
+        {
+            ShareFetchResponse = CreateFetchResponse(0, 42, recordCount: 2)
+        };
+        await using var fixture = CreateFixture(connection, ShareAcknowledgementMode.Implicit);
+        PrepareForPoll(fixture.Consumer);
+        fixture.Consumer.Subscribe("topic");
+        await using (var poll = fixture.Consumer.PollAsync().GetAsyncEnumerator())
+        {
+            await Assert.That(await poll.MoveNextAsync()).IsTrue();
+            await Assert.That(poll.Current.Offset).IsEqualTo(42);
+        }
+
+        var pending = FlushPendingAcknowledgements(fixture.Consumer);
+        var batch = pending[new TopicPartition("topic", 0)][0];
+        await Assert.That(batch.FirstOffset).IsEqualTo(42);
+        await Assert.That(batch.LastOffset).IsEqualTo(42);
+    }
+
     private static Fixture CreateFixture(
         CapturingConnection connection,
         ShareAcknowledgementMode acknowledgementMode = ShareAcknowledgementMode.Explicit,
@@ -919,13 +1004,13 @@ public sealed class ShareConsumerRenewalTests
         return new Fixture(consumer, metadataManager);
     }
 
-    private static ShareFetchResponse CreateFetchResponse(int partition, long offset)
+    private static ShareFetchResponse CreateFetchResponse(int partition, long offset, int recordCount = 1)
     {
         var buffer = new ArrayBufferWriter<byte>();
         using var batch = new RecordBatch
         {
             BaseOffset = offset,
-            Records = [new Record { IsKeyNull = true, Value = "new-value"u8.ToArray() }]
+            Records = Enumerable.Range(0, recordCount).Select(index => new Record { OffsetDelta = index, IsKeyNull = true, Value = "new-value"u8.ToArray() }).ToList()
         };
         batch.Write(buffer);
 
@@ -949,7 +1034,7 @@ public sealed class ShareConsumerRenewalTests
                                 new ShareFetchAcquiredRecords
                                 {
                                     FirstOffset = offset,
-                                    LastOffset = offset,
+                                    LastOffset = offset + recordCount - 1,
                                     DeliveryCount = 1
                                 }
                             ]

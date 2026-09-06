@@ -69,7 +69,7 @@ public interface IKafkaShareConsumer<TKey, TValue> : IInitializableKafkaClient, 
     /// <summary>
     /// Sets the acknowledgement type for a specific record. Renewal is supported only in
     /// explicit acknowledgement mode and requires ShareFetch/ShareAcknowledge v2.
-    /// In implicit acknowledgement mode, records default to <see cref="AcknowledgeType.Accept"/>.
+    /// In implicit mode, delivered records are accepted only when the next poll or commit submits them.
     /// <para>
     /// <b>Warning:</b> In implicit mode, call this before the next <see cref="PollAsync"/> or
     /// <see cref="CommitAsync"/> if you need to release or reject a record.
@@ -86,8 +86,14 @@ public interface IKafkaShareConsumer<TKey, TValue> : IInitializableKafkaClient, 
     ValueTask CommitAsync(CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Closes the share consumer: flushes pending acknowledgements, closes share sessions,
-    /// leaves the share group, and releases all resources.
+    /// Closes share sessions and leaves the group. Delivered records still awaiting implicit
+    /// acceptance are released, including when DisposeAsync runs after a processing exception.
+    /// Explicit Accept/Release/Reject dispositions and outcomes already submitted by poll/commit
+    /// are preserved. Pending Renew is attempted without accepting the record; closing the session
+    /// then releases remaining acquisition locks and stops renewal replay.
+    /// Shutdown is best-effort. If cancellation or a broker failure prevents release, remaining
+    /// locks expire on the broker. Call CommitAsync after successful processing if implicit records
+    /// must be accepted before closing; DisposeAsync additionally releases local resources.
     /// </summary>
     ValueTask CloseAsync(CancellationToken cancellationToken = default);
 }

@@ -535,19 +535,19 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                             if ((fetchedRecords?.Count ?? recordCount) >= _options.MaxPollRecords)
                                 break;
 
-                            // Track only records actually yielded to the consumer so implicit
-                            // acknowledgements do not include offsets truncated by MaxPollRecords.
-                            if (_options.AcknowledgementMode == ShareAcknowledgementMode.Implicit)
-                            {
-                                _ackTracker.TrackDeliveredRecords(tp, result.Offset, result.Offset);
-                            }
-
                             RemoveRenewedRecord(result.Topic, result.Partition, result.Offset);
 
                             if (fetchedRecords is not null)
                             {
                                 fetchedRecords.Add(result);
                                 continue;
+                            }
+
+                            // Track only records actually yielded to the consumer so implicit
+                            // acknowledgements do not include offsets truncated by MaxPollRecords.
+                            if (_options.AcknowledgementMode == ShareAcknowledgementMode.Implicit)
+                            {
+                                _ackTracker.TrackDeliveredRecords(tp, result.Offset, result.Offset);
                             }
 
                             recordCount++;
@@ -578,6 +578,12 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                 {
                     if (recordCount >= _options.MaxPollRecords)
                         break;
+
+                    if (_options.AcknowledgementMode == ShareAcknowledgementMode.Implicit)
+                    {
+                        var tp = new TopicPartition(fetchedRecord.Topic, fetchedRecord.Partition);
+                        _ackTracker.TrackDeliveredRecords(tp, fetchedRecord.Offset, fetchedRecord.Offset);
+                    }
 
                     recordCount++;
                     yield return fetchedRecord;
@@ -619,12 +625,12 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         await CommitCoreAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    private async ValueTask CommitCoreAsync(CancellationToken cancellationToken)
+    private async ValueTask CommitCoreAsync(CancellationToken cancellationToken, bool releaseImplicit = false)
     {
         if (!_ackTracker.HasPending)
             return;
 
-        var pendingAcks = _ackTracker.Flush();
+        var pendingAcks = _ackTracker.Flush(releaseImplicit);
         if (pendingAcks.Count == 0)
             return;
 
@@ -713,12 +719,14 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         LogClosingShareConsumer();
         ClearRenewedRecords();
 
-        // Step 1: Flush all pending acks as Accept via ShareAcknowledge
+        // Step 1: Release delivered records that have not reached a poll/commit boundary.
+        // Preserve explicit and previously submitted outcomes, including Renew. Closing
+        // the share sessions below releases any remaining acquisition locks.
         if (_ackTracker.HasPending)
         {
             try
             {
-                await CommitCoreAsync(cancellationToken).ConfigureAwait(false);
+                await CommitCoreAsync(cancellationToken, releaseImplicit: true).ConfigureAwait(false);
             }
             catch (Exception ex)
             {

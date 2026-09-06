@@ -205,7 +205,20 @@ Common builder options beyond the connection/TLS/SASL settings shared with other
 
 ## Shutdown
 
-`Unsubscribe`, `CloseAsync`, and `DisposeAsync` flush pending acknowledgements, leave the share group, and release any still-locked records back to the group (best effort) so other members can claim them without waiting for lock expiry:
+`CloseAsync` and `DisposeAsync` release delivered records that have not yet been
+implicitly acknowledged by the next poll or `CommitAsync`. This includes disposal
+when application processing throws and records left after partial enumeration.
+Records fetched or parsed but never yielded are not implicitly accepted; session
+closure releases their acquisition locks.
+
+Explicitly selected `Accept`, `Release` and `Reject` outcomes are preserved. Outcomes
+already submitted by a previous poll/commit remain selected even if their failed
+request is retried during close. A pending `Renew` is attempted as a renewal, never
+as acceptance; session closure then releases remaining locks and stops local replay.
+Shutdown is best-effort: if cancellation or broker failure prevents release, records
+remain available for redelivery after the broker's acquisition lock expires.
+
+`Unsubscribe` releases pending records and clears the subscription. To close:
 
 ```csharp
 await consumer.CloseAsync();
@@ -229,6 +242,16 @@ foreach (var (groupId, result) in results)
 The operation uses the group coordinator and Kafka's `DeleteGroups` API, matching Kafka 4.3's `deleteShareGroups` implementation. Active groups normally return `NonEmptyGroup`; close their consumers before deletion.
 
 Per-group results cover terminal error codes only. If a request keeps failing with a retriable error, the call throws after retries are exhausted and returns no results. Duplicate group IDs raise `ArgumentException` before any request is sent. Dekaf's built-in and in-memory admin clients expose deletion through `IShareGroupDeletionAdminClient`; the `IAdminClient` extension preserves the same call syntax for binary compatibility.
+
+## Migration note: implicit acknowledgement on shutdown
+
+Earlier versions treated outstanding implicit deliveries as `Accept` during close,
+which could acknowledge records whose application processing failed. Close and
+await-using disposal now release these deliveries. After successfully processing
+the final records, call `CommitAsync` before closing when they should be accepted,
+or explicitly call `Acknowledge(record, AcknowledgeType.Accept)` for each completed
+record. Do not commit from an unconditional `finally` block after failed processing.
+The in-memory share consumer follows the same provisional-delivery shutdown rule.
 
 ## Testing
 
