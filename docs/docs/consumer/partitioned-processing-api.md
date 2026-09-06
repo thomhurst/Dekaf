@@ -153,6 +153,45 @@ partition can run concurrently, but records with the same key are processed in
 offset order. Dekaf tracks offset gaps, so a later key cannot advance commits
 past an earlier unfinished record.
 
+Key equality applies to **deserialized keys within one partition**. By default,
+`byte[]`, `ReadOnlyMemory<byte>`, `Memory<byte>`, and `ArraySegment<byte>` keys
+compare their byte content, including slice boundaries. Equal bytes share a lane
+even when deserialization creates separate arrays or memory slices. Empty binary
+keys share a lane; null reference keys share a separate lane. Other key types use
+`EqualityComparer<TKey>.Default`, preserving ordinal string and value-type equality.
+These binary defaults apply when `TKey` is one of the listed types; wrapper or
+polymorphic key types can supply a comparer.
+
+For custom key types, supply an `IEqualityComparer<TKey>` to either handler overload:
+
+```csharp
+await consumer.RunPartitionedAsync(
+    HandleRecordAsync,
+    new PartitionedProcessingOptions
+    {
+        Ordering = PartitionedProcessingOrder.Key,
+        MaxConcurrentHandlersPerPartition = 8
+    },
+    CustomerKeyComparer.Instance,
+    stoppingToken);
+```
+
+The comparer must be thread-safe, give equal keys equal hash codes, and keep both
+equality and hash codes stable while a key's lane remains active. Do not mutate
+binary key bytes or fields used by the comparer during processing. Dekaf retains
+fetch storage backing a lane's representative key until that lane becomes idle;
+application-owned key storage must obey the same lifetime. Copy borrowed data if
+you keep it after processing completes.
+
+Choose equality that matches your application's serialized Kafka key identity.
+A custom comparer can deliberately group different wire keys (for example,
+case-insensitive strings), but cannot impose order across different partitions.
+Custom deserializers that transform or discard key information must provide an
+appropriate comparer when their default equality does not preserve that identity.
+Retain the identity fields in the deserialized key, or use a binary key type;
+a comparer cannot recover discarded wire data.
+Comparers do not receive null keys and are ignored for partition ordering.
+
 ### Batch handlers
 
 Use `RunPartitionedBatchesAsync` when your application works more efficiently
