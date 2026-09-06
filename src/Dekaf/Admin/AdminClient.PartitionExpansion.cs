@@ -34,7 +34,7 @@ public sealed partial class AdminClient
         await CreatePartitionsCoreAsync(topics, timeoutMs, options?.ValidateOnly ?? false, cancellationToken).ConfigureAwait(false);
     }
 
-    private static CreatePartitionsAssignment[]? CopyPartitionAssignments(NewPartitions partitions, string parameterName)
+    internal static CreatePartitionsAssignment[]? CopyPartitionAssignments(NewPartitions partitions, string parameterName)
     {
         var assignments = partitions.ReplicaAssignments;
         if (assignments is null)
@@ -79,10 +79,13 @@ public sealed partial class AdminClient
 
     private static IReadOnlyList<CreatePartitionsTopic> ExcludeConfirmedPartitionExpansions(
         IReadOnlyList<CreatePartitionsTopic> topics,
-        IReadOnlyList<CreatePartitionsResponseResult> results)
+        IReadOnlyList<CreatePartitionsResponseResult> results,
+        string? metadataConfirmedTopic = null)
     {
         // Only allocate on a partial failure, outside the successful admin request path.
         HashSet<string>? confirmed = null;
+        if (metadataConfirmedTopic is not null)
+            (confirmed = new(StringComparer.Ordinal)).Add(metadataConfirmedTopic);
         foreach (var result in results)
         {
             if (result.ErrorCode == Protocol.ErrorCode.None)

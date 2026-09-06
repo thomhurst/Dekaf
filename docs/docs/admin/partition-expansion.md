@@ -55,7 +55,9 @@ await admin.CreatePartitionsAsync(new Dictionary<string, int> { ["orders"] = 5 }
 ```
 
 Typed expansion is an optional `IPartitionExpansionAdminClient` capability implemented
-by the built-in `AdminClient`. Extensions expose it through `IAdminClient` without
+by the built-in `AdminClient` and `InMemoryAdminClient`. The in-memory client supports
+validation-only requests and explicit assignments to its single broker, ID `0`;
+other broker IDs are rejected. Extensions expose it through `IAdminClient` without
 adding required members to existing custom implementations. Clients without this
 capability throw `NotSupportedException` for the typed overload.
 

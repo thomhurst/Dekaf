@@ -2392,6 +2392,8 @@ public sealed partial class AdminClient :
                             GetRequestedPartitionExpansion(topics, topicResult.Name),
                             cancellationToken).ConfigureAwait(false))
                     {
+                        // Retain metadata-confirmed success if a later sibling forces another retry.
+                        topics = ExcludeConfirmedPartitionExpansions(topics, response.Results, topicResult.Name);
                         continue;
                     }
 

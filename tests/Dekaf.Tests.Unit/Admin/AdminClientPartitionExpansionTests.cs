@@ -10,6 +10,45 @@ namespace Dekaf.Tests.Unit.Admin;
 public sealed class AdminClientPartitionExpansionTests
 {
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task AmbiguousPartialSuccess_RetriesOnlyUnconfirmedTopics(bool typed)
+    {
+        var (admin, connection) = AdminClientIdempotentRetryTests.CreateAdminWithMockConnection(ApiKey.CreatePartitions);
+        await using var client = admin;
+        var calls = 0;
+        connection.SendAsync<CreatePartitionsRequest, CreatePartitionsResponse>(Arg.Any<CreatePartitionsRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                var request = call.Arg<CreatePartitionsRequest>();
+                if (++calls == 1)
+                    throw new KafkaException(ErrorCode.RequestTimedOut, "ambiguous timeout");
+                if (calls == 2)
+                    return ValueTask.FromResult(new CreatePartitionsResponse
+                    {
+                        Results =
+                        [
+                            new() { Name = "retry-topic", ErrorCode = ErrorCode.InvalidPartitions },
+                            new() { Name = "still-pending", ErrorCode = ErrorCode.NotController }
+                        ]
+                    });
+                if (request.Topics.Count != 1 || request.Topics[0].Name != "still-pending")
+                    throw new InvalidOperationException("A metadata-confirmed topic was sent again.");
+                return ValueTask.FromResult(new CreatePartitionsResponse { Results = [new() { Name = "still-pending" }] });
+            });
+
+        if (typed)
+            await admin.CreatePartitionsAsync(new Dictionary<string, NewPartitions>
+            {
+                ["retry-topic"] = new() { TotalCount = 3 }, ["still-pending"] = new() { TotalCount = 3 }
+            });
+        else
+            await admin.CreatePartitionsAsync(new Dictionary<string, int> { ["retry-topic"] = 3, ["still-pending"] = 3 });
+
+        await Assert.That(calls).IsEqualTo(3);
+    }
+
+    [Test]
     [Arguments(false, false)]
     [Arguments(false, true)]
     [Arguments(true, false)]
