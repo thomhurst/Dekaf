@@ -221,7 +221,7 @@ Both direct test executables and `dotnet test --project <project>` use `--treeno
 - `=` exact match: `/*/*/*[Category=Unit]`
 - `!=` exclude: `/*/*/*[Category!=Slow]`
 - `&` AND: `/*/*/*[Category=Unit]&[Priority=High]`
-- `|` OR (requires parentheses): `(/*/*/ClassA/*)|(/*/*/ClassB/*)`
+- `|` OR within one path segment: `/*/*/(ClassA|ClassB)/*`. Do not wrap complete paths in parentheses; run separate commands when combining different path shapes.
 
 **Common mistakes to avoid:**
 - Do NOT use `--filter` (that's for VSTest, not Microsoft.Testing.Platform)
