@@ -99,9 +99,7 @@ internal static class TraceContextPropagator
         return ExtractTraceContextSlow(headers);
     }
 
-#if NET10_0_OR_GREATER
     [SkipLocalsInit] // Every byte/character in the consumed stack slices is written first.
-#endif
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static unsafe ActivityContext? ExtractTraceContextSlow(IReadOnlyList<Header> headers)
     {
@@ -123,9 +121,6 @@ internal static class TraceContextPropagator
 
         if (traceparent is not { IsValueNull: false } parent)
             return null;
-
-        if (parent.DeferredValue is string text)
-            return ParseTraceparent(text.AsSpan(), tracestate);
 
         // Only the fixed prefix and its extension delimiter are understood. Avoid decoding
         // the whole UTF-8 header, including arbitrarily large unknown future-version fields.
@@ -154,9 +149,7 @@ internal static class TraceContextPropagator
     /// Parses a W3C traceparent header value into an <see cref="ActivityContext"/>.
     /// Format: {version}-{traceId}-{spanId}-{traceFlags}
     /// </summary>
-#if NET10_0_OR_GREATER
     [SkipLocalsInit] // IDs are consumed only after both decoders fill their entire destination.
-#endif
     private static ActivityContext? ParseTraceparent(ReadOnlySpan<char> span, Header? tracestate)
     {
         // Minimum length: "00-" + 32 (traceId) + "-" + 16 (spanId) + "-" + 2 (flags) = 55
