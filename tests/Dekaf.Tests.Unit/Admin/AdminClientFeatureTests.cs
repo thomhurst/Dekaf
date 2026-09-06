@@ -64,9 +64,11 @@ public sealed class AdminClientFeatureTests
     }
 
     [Test]
-    [Arguments(true)]
-    [Arguments(false)]
-    public async Task DescribeFeaturesAsync_BlockedNode_ObservesCancellationAndTimeout(bool callerCancels)
+    [Arguments(true, 2)]
+    [Arguments(false, 2)]
+    [Arguments(true, null)]
+    [Arguments(false, null)]
+    public async Task DescribeFeaturesAsync_BlockedNode_ObservesCancellationAndTimeout(bool callerCancels, int? nodeId)
     {
         var (admin, first, second) = CreateAdmin(updateFeaturesVersion: 1);
         await admin.DescribeClusterAsync();
@@ -76,9 +78,13 @@ public sealed class AdminClientFeatureTests
         second.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
             Arg.Any<ApiVersionsRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
             .Returns(call => WaitForCancellationAsync(started, call.Arg<CancellationToken>()));
+        if (nodeId is null)
+            first.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
+                Arg.Any<ApiVersionsRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
+                .Returns(call => WaitForCancellationAsync(started, call.Arg<CancellationToken>()));
         var operation = admin.DescribeFeaturesAsync(
-            new DescribeFeaturesOptions { NodeId = 2, TimeoutMs = callerCancels ? 30_000 : 200 }, cancellation.Token).AsTask();
-        await started.Task;
+            new DescribeFeaturesOptions { NodeId = nodeId, TimeoutMs = callerCancels ? 30_000 : 200 }, cancellation.Token).AsTask();
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(10));
         if (callerCancels)
         {
             cancellation.Cancel();
@@ -86,9 +92,11 @@ public sealed class AdminClientFeatureTests
         }
         else
         {
-            await Assert.ThrowsAsync<TimeoutException>(async () => await operation);
+            var exception = await Assert.ThrowsAsync<TimeoutException>(async () => await operation);
+            await Assert.That(exception!.Message).Contains(nodeId is null ? "(default)" : "node 2");
         }
-        await first.DidNotReceiveWithAnyArgs().SendAsync<ApiVersionsRequest, ApiVersionsResponse>(default!, default, default);
+        if (nodeId is not null)
+            await first.DidNotReceiveWithAnyArgs().SendAsync<ApiVersionsRequest, ApiVersionsResponse>(default!, default, default);
     }
 
     private static async ValueTask<ApiVersionsResponse> WaitForCancellationAsync(

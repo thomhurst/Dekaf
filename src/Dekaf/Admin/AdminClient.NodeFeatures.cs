@@ -41,7 +41,10 @@ public sealed partial class AdminClient
         }
         catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested && timeout.IsCancellationRequested)
         {
-            throw new TimeoutException($"DescribeFeatures timed out for node {options.NodeId} after {timeoutMs} ms.", ex);
+            var message = options.NodeId is { } nodeId
+                ? $"DescribeFeatures timed out for node {nodeId} after {timeoutMs} ms."
+                : $"DescribeFeatures timed out (default) after {timeoutMs} ms.";
+            throw new TimeoutException(message, ex);
         }
     }
 
