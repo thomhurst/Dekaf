@@ -10,7 +10,7 @@ using Dekaf.Serialization;
 namespace Dekaf.Benchmarks.Benchmarks.Unit;
 
 /// <summary>
-/// Broker-free cost benchmark for the sampled, no-producer-context consumer activity path.
+/// Broker-free cost benchmark for sampled consumer activities with and without producer context.
 /// Activity sampling intentionally creates a diagnostic span; the zero-listener consume path
 /// remains the zero-allocation hot-path gate.
 /// </summary>
@@ -22,10 +22,17 @@ public class ConsumerActivityHotPathBenchmarks
     private PendingFetchData _pending = null!;
     private ActivityListener _listener = null!;
     private StartConsumeActivity _startActivity = null!;
+    private Header[]? _headers;
+
+    [Params(false, true)]
+    public bool WithProducerContext { get; set; }
 
     [GlobalSetup]
     public void Setup()
     {
+        _headers = WithProducerContext
+            ? [new Header("traceparent", "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"u8.ToArray())]
+            : null;
         _listener = new ActivityListener
         {
             ShouldListenTo = static source =>
@@ -76,7 +83,7 @@ public class ConsumerActivityHotPathBenchmarks
         using var activity = _startActivity(
             _consumer,
             _pending,
-            headers: null,
+            headers: _headers,
             offset: 42,
             isTombstone: false,
             isProcessSpan: false);
