@@ -26,7 +26,11 @@ public class AdminPartitionExpansionTests(KafkaTestContainer kafka) : KafkaInteg
         await Assert.That(validated.Partitions[0].ReplicaNodes[0]).IsEqualTo(broker);
 
         await admin.CreatePartitionsAsync(expansion);
-        var applied = (await admin.DescribeTopicsAsync([topic]))[topic];
+        // Controller acknowledgement can precede propagation to broker metadata.
+        var applied = await WaitForConditionAsync(
+            async () => (await admin.DescribeTopicsAsync([topic]))[topic],
+            description => description.Partitions.Count == 3,
+            description: "expanded partition metadata");
         await Assert.That(applied.Partitions.Count).IsEqualTo(3);
         foreach (var partition in applied.Partitions)
         {
