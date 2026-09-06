@@ -7,7 +7,7 @@ namespace Dekaf.SchemaRegistry;
 internal sealed class SchemaRegistryAuthenticationHandler : DelegatingHandler
 {
     private readonly AuthenticationHeaderValue? _staticAuthorization;
-    private readonly OAuthBearerAuthenticator? _oauthAuthenticator;
+    private readonly OAuthBearerAuthenticator? _customTokenAuthenticator;
     private readonly Func<CancellationToken, ValueTask<OAuthBearerToken>>? _configuredTokenProvider;
     private readonly OAuthBearerTokenProvider? _ownedTokenProvider;
 
@@ -19,7 +19,7 @@ internal sealed class SchemaRegistryAuthenticationHandler : DelegatingHandler
     {
         if (config.OAuthBearerTokenProvider is not null)
         {
-            _oauthAuthenticator = new OAuthBearerAuthenticator(config.OAuthBearerTokenProvider);
+            _customTokenAuthenticator = new OAuthBearerAuthenticator(config.OAuthBearerTokenProvider);
         }
         else if (!string.IsNullOrEmpty(config.BearerAuthToken))
         {
@@ -50,10 +50,10 @@ internal sealed class SchemaRegistryAuthenticationHandler : DelegatingHandler
         HttpRequestMessage request,
         CancellationToken cancellationToken)
     {
-        if (_oauthAuthenticator is not null || _configuredTokenProvider is not null)
+        if (_customTokenAuthenticator is not null || _configuredTokenProvider is not null)
         {
-            var token = _oauthAuthenticator is not null
-                ? _oauthAuthenticator.GetTokenAsync(cancellationToken)
+            var token = _customTokenAuthenticator is not null
+                ? _customTokenAuthenticator.GetTokenAsync(cancellationToken)
                 : _configuredTokenProvider!(cancellationToken);
             if (!token.IsCompletedSuccessfully)
                 return SendWithTokenAsync(request, token, cancellationToken);
