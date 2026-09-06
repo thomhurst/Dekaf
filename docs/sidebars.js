@@ -81,6 +81,7 @@ const sidebars = {
       items: [
         'admin/cluster-discovery',
         'observability',
+        'health-checks',
         'admin/topic-identifiers',
         'admin/transaction-remediation',
         'admin/replica-log-directories',

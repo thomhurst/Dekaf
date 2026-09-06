@@ -81,7 +81,7 @@ public interface IKafkaProducer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     /// On the hot path (buffer has space), the returned <see cref="ValueTask"/> completes synchronously
     /// with zero allocation.</para>
     ///
-    /// <para>To ensure all messages are delivered, call <see cref="FlushAsync"/> before disposing the producer.</para>
+    /// <para>To wait for pending delivery attempts to finish, call <see cref="FlushAsync"/> before disposing the producer.</para>
     ///
     /// <para>Key and value are serialized into producer-owned buffers before the returned
     /// <see cref="ValueTask"/> completes, so callers may reuse or mutate input buffers
@@ -104,7 +104,7 @@ public interface IKafkaProducer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     /// On the hot path (buffer has space), the returned <see cref="ValueTask"/> completes synchronously
     /// with zero allocation.</para>
     ///
-    /// <para>To ensure all messages are delivered, call <see cref="FlushAsync"/> before disposing the producer.</para>
+    /// <para>To wait for pending delivery attempts to finish, call <see cref="FlushAsync"/> before disposing the producer.</para>
     ///
     /// <para>Key and value are serialized into producer-owned buffers before the returned
     /// <see cref="ValueTask"/> completes, so callers may reuse or mutate input buffers
@@ -175,8 +175,14 @@ public interface IKafkaProducer<TKey, TValue> : IInitializableKafkaClient, IAsyn
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Flushes any pending messages.
+    /// Waits for delivery attempts captured by a flush checkpoint to complete.
     /// </summary>
+    /// <remarks>
+    /// Failed delivery attempts also complete a flush. Observe produce results or delivery
+    /// callbacks to determine delivery success. An empty queue completes immediately without
+    /// checking broker connectivity. Concurrent production can leave newer messages queued
+    /// after this checkpoint completes; completion does not assert that the current queue is empty.
+    /// </remarks>
     ValueTask FlushAsync(CancellationToken cancellationToken = default);
 
     /// <summary>

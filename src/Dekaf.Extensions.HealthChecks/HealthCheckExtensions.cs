@@ -45,7 +45,9 @@ public static class HealthCheckExtensions
     }
 
     /// <summary>
-    /// Adds a health check that verifies producer connectivity by flushing pending messages.
+    /// Adds a health check that waits for a producer flush checkpoint to complete within its timeout.
+    /// Concurrent production can leave newer messages queued. Successful delivery and broker connectivity
+    /// are not evaluated. Use <see cref="DekafBrokerHealthCheck"/> for broker connectivity.
     /// The producer must be registered in the service collection as <see cref="IKafkaProducer{TKey, TValue}"/>.
     /// </summary>
     /// <typeparam name="TKey">The producer key type.</typeparam>
