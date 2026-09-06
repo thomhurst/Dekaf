@@ -604,6 +604,37 @@ public sealed class SchemaRegistryMigrationTests
     }
 
     [Test]
+    [Arguments(0)]
+    [Arguments(60)]
+    public async Task LatestPlanRefresh_DoesNotRetainExpiredBookkeeping(int ttlSeconds)
+    {
+        var registry = new MigrationRegistryClient { LatestCacheTtlSecs = ttlSeconds };
+        var schema = CreateSchema("v1");
+        var schemaId = registry.Register("orders-value", schema);
+        var runner = new SchemaRegistryMigrationRunner(registry, ruleExecutor: null, TimeSpan.FromSeconds(1));
+        var payload = "payload"u8.ToArray();
+        var lastPlanField = typeof(SchemaRegistryMigrationRunner).GetField(
+            "_lastPlan", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+        for (var index = 0; index < 100; index++)
+        {
+            runner.Transform(payload, schemaId, "orders-value", schema, SerializationContext, SchemaRegistryPayloadFormat.Json);
+            if (ttlSeconds != 0)
+            {
+                // Move the existing plan's timestamp past expiry without timing-dependent waits.
+                var plan = lastPlanField.GetValue(runner)!;
+                plan.GetType().GetField("<CreatedAtMilliseconds>k__BackingField",
+                        System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+                    .SetValue(plan, Environment.TickCount64 - ttlSeconds * 1_000L - 1);
+            }
+        }
+
+        var plans = typeof(SchemaRegistryMigrationRunner).GetField(
+            "_plans", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(runner)!;
+        await Assert.That(registry.LatestCount).IsEqualTo(100);
+        await Assert.That(SchemaResolutionCacheLifetimeTests.BookkeepingCount(plans)).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task DeletedVersionLookup_DefaultImplementation_FailsClosed()
     {
         ISchemaRegistryClient registry = new MockSchemaRegistryClient();
