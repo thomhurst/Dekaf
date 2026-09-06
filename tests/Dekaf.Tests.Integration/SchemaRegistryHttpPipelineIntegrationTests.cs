@@ -6,12 +6,41 @@ using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using Dekaf.SchemaRegistry;
+using Dekaf.Security.Sasl;
 
 namespace Dekaf.Tests.Integration;
 
 [ClassDataSource<KafkaWithSchemaRegistryContainer>(Shared = SharedType.PerTestSession)]
 public sealed class SchemaRegistryHttpPipelineIntegrationTests(KafkaWithSchemaRegistryContainer testInfra)
 {
+    [Test]
+    [Arguments(300, 2)]
+    [Arguments(60, 1)]
+    [Arguments(10, 1)]
+    public async Task OAuthConfig_UsesConfiguredRefreshWindow(int bufferSeconds, int expectedTokenRequests)
+    {
+        await using var endpoint = new LocalTokenEndpoint();
+        using var handler = new CapturingDelegatingHandler(new SocketsHttpHandler());
+        using var client = new SchemaRegistryClient(new SchemaRegistryConfig
+        {
+            Url = testInfra.RegistryUrl,
+            OAuthBearerConfig = new OAuthBearerConfig
+            {
+                TokenEndpointUrl = endpoint.Url,
+                ClientId = "schema-registry-client",
+                ClientSecret = "secret",
+                TokenRefreshBufferSeconds = bufferSeconds
+            }
+        }, handler);
+
+        _ = await client.GetAllSubjectsAsync();
+        await Assert.That(handler.Authorization).IsEqualTo("Bearer token-1");
+        _ = await client.GetAllSubjectsAsync();
+
+        await Assert.That(endpoint.RequestCount).IsEqualTo(expectedTokenRequests);
+        await Assert.That(handler.Authorization).IsEqualTo($"Bearer token-{expectedTokenRequests}");
+    }
+
     [Test]
     public async Task CustomDelegatingHandler_SeesVersionedDefaultUserAgent()
     {
@@ -29,13 +58,74 @@ public sealed class SchemaRegistryHttpPipelineIntegrationTests(KafkaWithSchemaRe
         : DelegatingHandler(innerHandler)
     {
         internal string? UserAgent { get; private set; }
+        internal string? Authorization { get; private set; }
 
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
             UserAgent = request.Headers.UserAgent.ToString();
+            Authorization = request.Headers.Authorization?.ToString();
             return base.SendAsync(request, cancellationToken);
+        }
+    }
+
+    private sealed class LocalTokenEndpoint : IAsyncDisposable
+    {
+        private readonly TcpListener _listener = new(IPAddress.Loopback, 0);
+        private readonly CancellationTokenSource _stopping = new();
+        private readonly Task _serving;
+        private int _requestCount;
+
+        public LocalTokenEndpoint()
+        {
+            _listener.Start();
+            Url = $"http://127.0.0.1:{((IPEndPoint)_listener.LocalEndpoint).Port}/token";
+            _serving = ServeAsync();
+        }
+
+        public string Url { get; }
+        public int RequestCount => Volatile.Read(ref _requestCount);
+
+        private async Task ServeAsync()
+        {
+            while (!_stopping.IsCancellationRequested)
+            {
+                using var connection = await _listener.AcceptTcpClientAsync(_stopping.Token);
+                await using var stream = connection.GetStream();
+                using var reader = new StreamReader(stream, Encoding.ASCII, leaveOpen: true);
+                var contentLength = 0;
+                while (await reader.ReadLineAsync(_stopping.Token) is { Length: > 0 } line)
+                {
+                    if (line.StartsWith("Content-Length:", StringComparison.OrdinalIgnoreCase))
+                        contentLength = int.Parse(line.AsSpan("Content-Length:".Length), System.Globalization.CultureInfo.InvariantCulture);
+                }
+                var body = new char[contentLength];
+                if (await reader.ReadBlockAsync(body.AsMemory(), _stopping.Token) != contentLength)
+                    throw new EndOfStreamException("Incomplete token request body.");
+                var count = Interlocked.Increment(ref _requestCount);
+                var json = $"{{\"access_token\":\"token-{count}\",\"expires_in\":120}}";
+                var response = Encoding.ASCII.GetBytes(
+                    $"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {json.Length}\r\nConnection: close\r\n\r\n{json}");
+                await stream.WriteAsync(response, _stopping.Token);
+            }
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            await _stopping.CancelAsync();
+            _listener.Stop();
+            try
+            {
+                await _serving;
+            }
+            catch (OperationCanceledException) when (_stopping.IsCancellationRequested)
+            {
+            }
+            finally
+            {
+                _stopping.Dispose();
+            }
         }
     }
 }
