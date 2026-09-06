@@ -212,6 +212,18 @@ var producer = await Kafka.CreateProducer<string, string>()
 
 Dekaf automatically refreshes tokens before they expire. The token provider is called whenever a new token is needed.
 
+Each `OAuthBearerAuthenticator` serializes its token refreshes. Concurrent callers
+wait for the active refresh, then reuse its cached token if it remains outside the
+60-second refresh buffer. This also applies to a shared Schema Registry client
+configured with a custom token provider. Separate authenticators do not share this
+gate, so a provider shared across clients must support concurrent calls.
+
+Cancelling a waiting caller stops only that caller's wait. The caller performing
+the refresh passes its token to the provider. If that refresh fails or is cancelled,
+the gate is released and another caller can retry; the failure is not cached.
+Providers must honor cancellation to bound their active work. Tokens returned
+inside the refresh buffer can trigger another refresh on the next call.
+
 ```csharp
 .WithOAuthBearer(async ct =>
 {
