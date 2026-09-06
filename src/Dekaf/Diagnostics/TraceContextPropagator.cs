@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
+using System.Text;
 using Dekaf.Serialization;
 
 namespace Dekaf.Diagnostics;
@@ -98,99 +99,107 @@ internal static class TraceContextPropagator
         return ExtractTraceContextSlow(headers);
     }
 
+    [SkipLocalsInit] // Every byte/character in the consumed stack slices is written first.
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private static ActivityContext? ExtractTraceContextSlow(IReadOnlyList<Header> headers)
+    private static unsafe ActivityContext? ExtractTraceContextSlow(IReadOnlyList<Header> headers)
     {
-        string? traceparent = null;
-        string? tracestate = null;
+        Header? traceparent = null;
+        Header? tracestate = null;
 
         for (var i = 0; i < headers.Count; i++)
         {
             var header = headers[i];
             if (header.Key == TraceparentHeader)
             {
-                traceparent = header.GetValueAsString();
+                traceparent = header;
             }
             else if (header.Key == TracestateHeader)
             {
-                tracestate = header.GetValueAsString();
+                tracestate = header;
             }
         }
 
-        if (traceparent is null)
+        if (traceparent is not { IsValueNull: false } parent)
             return null;
 
-        return ParseTraceparent(traceparent, tracestate);
+        // Only the fixed prefix and its extension delimiter are understood. Avoid decoding
+        // the whole UTF-8 header, including arbitrarily large unknown future-version fields.
+        Span<byte> deferred = stackalloc byte[TraceparentLength];
+        scoped ReadOnlySpan<byte> bytes = parent.RawValue.Span;
+        if (parent.DeferredValue is Activity activity)
+        {
+            WriteTraceparentUnchecked(activity, deferred);
+            bytes = deferred;
+        }
+
+        Span<char> prefix = stackalloc char[TraceparentLength + 1];
+        var length = Math.Min(bytes.Length, prefix.Length);
+        if (length < TraceparentLength)
+            return null;
+
+        // The pointer overload also supports netstandard2.0 without an intermediate array.
+        fixed (byte* source = bytes)
+        fixed (char* destination = prefix)
+            Encoding.ASCII.GetChars(source, length, destination, length);
+
+        return ParseTraceparent(prefix[..length], tracestate);
     }
 
     /// <summary>
     /// Parses a W3C traceparent header value into an <see cref="ActivityContext"/>.
     /// Format: {version}-{traceId}-{spanId}-{traceFlags}
     /// </summary>
-    private static ActivityContext? ParseTraceparent(string traceparent, string? tracestate)
+    [SkipLocalsInit] // IDs are consumed only after both decoders fill their entire destination.
+    private static ActivityContext? ParseTraceparent(ReadOnlySpan<char> span, Header? tracestate)
     {
         // Minimum length: "00-" + 32 (traceId) + "-" + 16 (spanId) + "-" + 2 (flags) = 55
-        if (traceparent.Length < 55)
+        if (span.Length < TraceparentLength)
             return null;
 
-        var span = traceparent.AsSpan();
-
-        // Skip version prefix "00-"
-        if (span[2] != '-')
+        if (span[2] != '-' || span[35] != '-' || span[52] != '-')
             return null;
 
-        var traceIdSpan = span.Slice(3, 32);
-        if (span[35] != '-')
+        if (!TryParseHexByte(span[..2], out var version) || version == 0xff)
             return null;
 
-        var spanIdSpan = span.Slice(36, 16);
-        if (span[52] != '-')
+        // Version 00 has exactly 55 characters. Higher versions may append opaque fields
+        // after a dash; W3C requires readers not to interpret those unknown fields.
+        if (span.Length > TraceparentLength && (version == 0 || span[TraceparentLength] != '-'))
             return null;
 
-        var flagsSpan = span.Slice(53, 2);
-
-        if (!TryParseTraceId(traceIdSpan, out var traceId))
+        if (!TryParseHexByte(span.Slice(53, 2), out var flags))
             return null;
 
-        if (!TryParseSpanId(spanIdSpan, out var spanId))
+        Span<byte> traceId = stackalloc byte[16];
+        Span<byte> spanId = stackalloc byte[8];
+        if (!TryDecodeIdentifier(span.Slice(3, 32), traceId) ||
+            !TryDecodeIdentifier(span.Slice(36, 16), spanId))
             return null;
 
-        if (!TryParseHexByte(flagsSpan, out var flags))
-            return null;
-
-        return new ActivityContext(traceId, spanId, (ActivityTraceFlags)flags, tracestate, isRemote: true);
+        // Validate and decode once before the platform APIs materialize their owned strings.
+        return new ActivityContext(
+            ActivityTraceId.CreateFromBytes(traceId),
+            ActivitySpanId.CreateFromBytes(spanId),
+            (ActivityTraceFlags)flags,
+            tracestate?.GetValueAsString(),
+            isRemote: true);
     }
 
-    private static bool TryParseTraceId(ReadOnlySpan<char> chars, out ActivityTraceId result)
+    private static bool TryDecodeIdentifier(ReadOnlySpan<char> chars, Span<byte> bytes)
     {
-        // Validate all characters are hex before calling CreateFromString
-        for (var i = 0; i < chars.Length; i++)
+        var nonzero = 0;
+        for (var i = 0; i < bytes.Length; i++)
         {
-            if (HexCharToNibble(chars[i]) < 0)
-            {
-                result = default;
+            var hi = HexCharToNibble(chars[i * 2]);
+            var lo = HexCharToNibble(chars[(i * 2) + 1]);
+            if ((hi | lo) < 0)
                 return false;
-            }
+
+            var value = (hi << 4) | lo;
+            bytes[i] = (byte)value;
+            nonzero |= value;
         }
-
-        result = ActivityTraceId.CreateFromString(chars);
-        return true;
-    }
-
-    private static bool TryParseSpanId(ReadOnlySpan<char> chars, out ActivitySpanId result)
-    {
-        // Validate all characters are hex before calling CreateFromString
-        for (var i = 0; i < chars.Length; i++)
-        {
-            if (HexCharToNibble(chars[i]) < 0)
-            {
-                result = default;
-                return false;
-            }
-        }
-
-        result = ActivitySpanId.CreateFromString(chars);
-        return true;
+        return nonzero != 0;
     }
 
     private static bool TryParseHexByte(ReadOnlySpan<char> hex, out byte result)
@@ -213,7 +222,6 @@ internal static class TraceContextPropagator
     {
         >= '0' and <= '9' => c - '0',
         >= 'a' and <= 'f' => c - 'a' + 10,
-        >= 'A' and <= 'F' => c - 'A' + 10,
         _ => -1
     };
 }

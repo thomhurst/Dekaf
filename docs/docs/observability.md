@@ -56,6 +56,11 @@ The two consume flavors match the span's actual lifetime. In the streaming `Cons
 
 Producer spans inject W3C `traceparent` (and `tracestate`) headers into the outgoing message. On the consumer side, the extracted producer context is attached as a **span link** rather than a parent — consumer spans start a new trace linked to the producing trace, per the OTel messaging conventions. Messages without a valid `traceparent` header produce an unlinked consumer span.
 
+Malformed trace context is ignored without interrupting record delivery. Extraction
+requires lowercase hexadecimal, nonzero trace/span IDs and a valid version/length;
+unknown future versions may append opaque fields after the standard prefix, as
+specified by [W3C Trace Context](https://www.w3.org/TR/trace-context/#versioning-of-traceparent).
+
 ### Span Attributes
 
 Both spans set `messaging.system = kafka` plus:
