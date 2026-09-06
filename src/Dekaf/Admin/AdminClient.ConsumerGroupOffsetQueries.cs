@@ -76,7 +76,9 @@ public sealed partial class AdminClient : IConsumerGroupOffsetQueryAdminClient
 
             // A transaction can outlive the normal request retry count. Keep its group
             // pending until the caller's total budget expires; completed groups stay complete.
-            await Task.Delay(Math.Max(1, _options.RetryBackoffMs), cancellationToken).ConfigureAwait(false);
+            var delayMs = Retry.ExponentialRetryBackoff.CalculateDelayMilliseconds(
+                _options.RetryBackoffMs, _options.RetryBackoffMaxMs, failureCount: 1);
+            await Task.Delay(delayMs, cancellationToken).ConfigureAwait(false);
             pending = unstable;
         }
 
