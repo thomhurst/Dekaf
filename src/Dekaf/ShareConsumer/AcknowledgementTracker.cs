@@ -11,14 +11,18 @@ namespace Dekaf.ShareConsumer;
 /// </summary>
 internal sealed class AcknowledgementTracker
 {
+    // Provisional delivery state, never sent on the wire. Requeued wire outcomes
+    // retain their actual type, so close cannot undo an already submitted Accept.
+    private const AcknowledgeType ImplicitDelivery = (AcknowledgeType)byte.MaxValue;
+
     private Dictionary<TopicPartition, PartitionAcknowledgements> _pendingAcks = new();
 
     /// <summary>
-    /// Tracks records delivered by a poll. All records default to Accept.
+    /// Tracks delivered records awaiting implicit acceptance by the next poll or commit.
     /// </summary>
     internal void TrackDeliveredRecords(TopicPartition tp, long firstOffset, long lastOffset)
     {
-        GetOrAddPartition(tp).TrackRange(firstOffset, lastOffset, AcknowledgeType.Accept);
+        GetOrAddPartition(tp).TrackRange(firstOffset, lastOffset, ImplicitDelivery);
     }
 
     /// <summary>
@@ -57,7 +61,7 @@ internal sealed class AcknowledgementTracker
     /// Atomically swaps the pending dictionary so no acks can be lost.
     /// </summary>
     /// <returns>Per-TopicPartition acknowledgement batches for the wire format.</returns>
-    internal Dictionary<TopicPartition, List<AcknowledgementBatchData>> Flush()
+    internal Dictionary<TopicPartition, List<AcknowledgementBatchData>> Flush(bool releaseImplicit = false)
     {
         // Swap to a fresh dictionary so any new acks after this point go into a fresh
         // bucket — avoids the per-partition TryRemove race of the snapshot-and-remove pattern.
@@ -68,7 +72,7 @@ internal sealed class AcknowledgementTracker
 
         foreach (var (tp, partitionAcks) in old)
         {
-            var batches = partitionAcks.BuildBatches();
+            var batches = partitionAcks.BuildBatches(releaseImplicit ? AcknowledgeType.Release : AcknowledgeType.Accept);
             if (batches.Count > 0)
             {
                 result[tp] = batches;
@@ -262,12 +266,12 @@ internal sealed class AcknowledgementTracker
             _explicitAcks[offset] = type;
         }
 
-        internal List<AcknowledgementBatchData> BuildBatches()
+        internal List<AcknowledgementBatchData> BuildBatches(AcknowledgeType implicitDisposition)
         {
             List<AcknowledgementBatchData> batches = [];
 
             foreach (var range in _ranges)
-                batches.Add(BuildRangeBatch(range));
+                batches.Add(BuildRangeBatch(range, implicitDisposition));
 
             if (_explicitAcks is not null)
                 AddStandaloneExplicitBatches(batches);
@@ -279,11 +283,13 @@ internal sealed class AcknowledgementTracker
             return MergeConsecutiveBatches(batches);
         }
 
-        private AcknowledgementBatchData BuildRangeBatch(AckRange range)
+        private AcknowledgementBatchData BuildRangeBatch(AckRange range, AcknowledgeType implicitDisposition)
         {
             var length = checked((int)(range.LastOffset - range.FirstOffset + 1));
             var acknowledgeTypes = new byte[length];
-            Array.Fill(acknowledgeTypes, (byte)range.AcknowledgeType);
+            Array.Fill(acknowledgeTypes, (byte)(range.AcknowledgeType == ImplicitDelivery
+                ? implicitDisposition
+                : range.AcknowledgeType));
 
             if (_explicitAcks is not null)
             {

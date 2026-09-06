@@ -12,6 +12,9 @@ public class ShareAcknowledgeCommitBenchmarks
     private const int BatchSize = 4096;
     private const int NonMatchingSelectorCount = 1024;
 
+    [Params(false, true)]
+    public bool ExplicitAcknowledgement { get; set; }
+
     private InMemoryKafkaCluster _matchingCluster = null!;
     private InMemoryKafkaCluster _nonMatchingCluster = null!;
     private InMemoryKafkaCluster _emptyCluster = null!;
@@ -106,7 +109,7 @@ public class ShareAcknowledgeCommitBenchmarks
         return consumer;
     }
 
-    private static void Prepare(
+    private void Prepare(
         InMemoryProducer<string, string> producer,
         InMemoryShareConsumer<string, string> consumer)
     {
@@ -121,7 +124,8 @@ public class ShareAcknowledgeCommitBenchmarks
                 if (!enumerator.MoveNextAsync().AsTask().GetAwaiter().GetResult())
                     throw new InvalidOperationException("Share poll ended before the benchmark batch was prepared.");
 
-                consumer.Acknowledge(enumerator.Current);
+                if (ExplicitAcknowledgement)
+                    consumer.Acknowledge(enumerator.Current);
             }
         }
         finally

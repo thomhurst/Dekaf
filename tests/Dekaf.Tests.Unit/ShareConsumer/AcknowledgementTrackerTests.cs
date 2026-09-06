@@ -5,6 +5,54 @@ namespace Dekaf.Tests.Unit.ShareConsumer;
 public class AcknowledgementTrackerTests
 {
     [Test]
+    public async Task CloseFlush_ReleasesImplicitAndPreservesExplicitOutcomes()
+    {
+        var tracker = new AcknowledgementTracker();
+        var partition = new TopicPartition("topic", 0);
+        tracker.TrackDeliveredRecords(partition, 0, 4);
+        tracker.Acknowledge(partition, 1, AcknowledgeType.Accept);
+        tracker.Acknowledge(partition, 2, AcknowledgeType.Release);
+        tracker.Acknowledge(partition, 3, AcknowledgeType.Reject);
+        tracker.Acknowledge(partition, 4, AcknowledgeType.Renew);
+
+        var types = tracker.Flush(releaseImplicit: true)[partition][0].AcknowledgeTypes;
+
+        byte[] expected = [2, 1, 2, 3, 4];
+        await Assert.That(types).IsEquivalentTo(expected);
+        await Assert.That(types[0]).IsEqualTo((byte)AcknowledgeType.Release);
+        await Assert.That(types[1]).IsEqualTo((byte)AcknowledgeType.Accept);
+    }
+
+    [Test]
+    public async Task CloseFlush_RetriedImplicitCommit_PreservesSubmittedAccept()
+    {
+        var tracker = new AcknowledgementTracker();
+        var partition = new TopicPartition("topic", 0);
+        tracker.TrackDeliveredRecords(partition, 0, 0);
+        var submitted = tracker.Flush();
+        tracker.RequeueAcks(submitted);
+        tracker.TrackDeliveredRecords(partition, 1, 1);
+
+        var types = tracker.Flush(releaseImplicit: true)[partition][0].AcknowledgeTypes;
+
+        await Assert.That(types[0]).IsEqualTo((byte)AcknowledgeType.Accept);
+        await Assert.That(types[1]).IsEqualTo((byte)AcknowledgeType.Release);
+    }
+
+    [Test]
+    public async Task CloseFlush_RetriedRelease_RemainsReleaseOnOrdinaryCommit()
+    {
+        var tracker = new AcknowledgementTracker();
+        var partition = new TopicPartition("topic", 0);
+        tracker.TrackDeliveredRecords(partition, 0, 0);
+        tracker.RequeueAcks(tracker.Flush(releaseImplicit: true));
+
+        var types = tracker.Flush()[partition][0].AcknowledgeTypes;
+
+        await Assert.That(types[0]).IsEqualTo((byte)AcknowledgeType.Release);
+    }
+
+    [Test]
     public async Task TrackDeliveredRecords_AllDefaultToAccept()
     {
         var tracker = new AcknowledgementTracker();

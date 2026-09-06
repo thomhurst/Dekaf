@@ -360,7 +360,10 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
                 EnsureCommitRecordCapacity(_pending.Count);
                 var recordCount = 0;
                 foreach (var record in _pending.Values)
+                {
+                    record.ResolveImplicitAcknowledgement(allowDisposed);
                     _commitRecords[recordCount++] = record;
+                }
 
                 try
                 {
@@ -403,7 +406,10 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
 
                 EnsureSnapshotCapacity(_pending.Count);
                 foreach (var pair in _pending)
+                {
+                    pair.Value.ResolveImplicitAcknowledgement(allowDisposed);
                     _commitSnapshot[snapshotCount++] = pair;
+                }
             }
 
             for (var index = 0; index < snapshotCount; index++)
@@ -1112,7 +1118,15 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
         public TopicPartition TopicPartition { get; }
         public long Offset { get; }
         public long NextOffset { get; }
-        public AcknowledgeType AcknowledgeType { get; set; } = AcknowledgeType.Accept;
+        // A provisional delivery is accepted by poll/commit, but released by close.
+        private const AcknowledgeType ImplicitDelivery = (AcknowledgeType)byte.MaxValue;
+        public AcknowledgeType AcknowledgeType { get; set; } = ImplicitDelivery;
+
+        public void ResolveImplicitAcknowledgement(bool closing)
+        {
+            if (AcknowledgeType == ImplicitDelivery)
+                AcknowledgeType = closing ? AcknowledgeType.Release : AcknowledgeType.Accept;
+        }
     }
 
     private sealed class PendingShareRecordComparer : IComparer<PendingShareRecord>
