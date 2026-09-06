@@ -80,7 +80,7 @@ builder.Services.AddDekafOutboxRelay(
     producer => producer.WithBootstrapServers("localhost:9092"));
 ```
 
-The relay **enforces** `Acks.All`, idempotence, and a key-respecting partitioner (`Murmur2RandomPartitioner`) on its producer after your `configureProducer` delegate runs — durable acks make prefix deletion safe, while sequencing orders admitted idempotent batches, and per-key ordering only survives if equal keys map to one partition, so none of them can be downgraded there (any partitioner set in the delegate is overridden). Murmur2-random rather than the stock default because the default sticky-rotates zero-length keys, while the outbox treats an empty serialized key as a real key with an ordering requirement; placement for non-empty keys is identical. If you genuinely need different producer semantics, register your own `IOutboxPublisher` instead (the deliberate opt-out).
+The relay **enforces** `Acks.All`, idempotence, and a key-respecting partitioner (`Murmur2RandomPartitioner`) on its producer after your `configureProducer` delegate runs — durable acks make prefix deletion safe, idempotence sequences admitted batches, and the partitioner maps equal keys to one partition, so none of them can be downgraded there (any partitioner set in the delegate is overridden). Murmur2-random rather than the stock default because the default sticky-rotates zero-length keys, while the outbox treats an empty serialized key as a real key with an ordering requirement; placement for non-empty keys is identical. These settings do not prevent consumer-visible reordering after partial publish failures. If you need different producer semantics, register your own `IOutboxPublisher` instead (the deliberate opt-out).
 
 ## Database Schema
 

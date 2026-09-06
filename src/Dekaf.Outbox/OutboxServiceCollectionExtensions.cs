@@ -18,8 +18,9 @@ public static class OutboxServiceCollectionExtensions
     /// <param name="services">The service collection.</param>
     /// <param name="configureProducer">Configures the relay's producer; at minimum set bootstrap
     /// servers. <see cref="Acks.All"/> and idempotence are enforced after this delegate runs -
-    /// the at-least-once and ordering guarantees depend on them, so they cannot be downgraded
-    /// here. Register a custom <see cref="IOutboxPublisher"/> to opt out deliberately.</param>
+    /// durable acknowledgement and sequencing of admitted batches depend on them, so they
+    /// cannot be downgraded here. Partial publish failures can still reorder consumer-visible
+    /// records. Register a custom <see cref="IOutboxPublisher"/> to opt out deliberately.</param>
     /// <param name="options">Relay options; defaults are production-reasonable.</param>
     public static IServiceCollection AddDekafOutboxRelay(
         this IServiceCollection services,
@@ -53,8 +54,9 @@ public static class OutboxServiceCollectionExtensions
         configureProducer(builder);
         // Applied after the caller's delegate so they cannot be downgraded: prefix
         // accounting is only truthful when every counted ack is durable (Acks.All) and
-        // per-partition sequencing holds (idempotence), and per-key ordering survives only
-        // when equal keys map to one partition. Murmur2RandomPartitioner rather than the
+        // admitted batches retain per-partition sequencing (idempotence), with equal keys
+        // mapped to one partition. Partial publish failures can still reorder visible rows.
+        // Murmur2RandomPartitioner rather than the
         // stock Default: Default sticky-rotates zero-length keys across partitions, but the
         // outbox treats an empty serialized key as a real key with an ordering requirement.
         // Placement for non-empty keys is identical (both are Kafka's Murmur2); null keys
