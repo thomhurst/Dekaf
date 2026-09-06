@@ -191,9 +191,17 @@ public sealed class IdempotentInitializationTests
     {
         await using var harness = new Harness(retryBackoffMs: 10_000);
         using var caller = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        harness.Send = (_, _) => ValueTask.FromResult(new InitProducerIdResponse { ErrorCode = ErrorCode.CoordinatorLoadInProgress });
+        var requestsObserved = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        harness.Send = (_, _) =>
+        {
+            if (harness.Requests.Count == 2)
+                requestsObserved.TrySetResult();
+
+            return ValueTask.FromResult(new InitProducerIdResponse { ErrorCode = ErrorCode.CoordinatorLoadInProgress });
+        };
 
         var initialization = harness.Producer.InitializeAsync(caller.Token).AsTask();
+        await requestsObserved.Task.WaitAsync(cancellationToken);
         await Assert.That(harness.Requests.Count).IsEqualTo(2);
         await Assert.That(initialization.IsCompleted).IsFalse();
         caller.Cancel();
