@@ -1101,6 +1101,7 @@ internal static class DekafOptionsBinding
             options.SaslCredentialProvider,
             builder.WithSaslOptions,
             builder.WithOAuthBearer);
+        builder.WithSaslScramMaxIterations(options.SaslScramMaxIterations);
         builder.WithSocketSendBufferBytes(options.SocketSendBufferBytes);
         builder.WithSocketReceiveBufferBytes(options.SocketReceiveBufferBytes);
         builder.WithValueTaskSourcePoolSize(options.ValueTaskSourcePoolSize);
@@ -1203,6 +1204,7 @@ internal static class DekafOptionsBinding
             options.SaslCredentialProvider,
             builder.WithSaslOptions,
             builder.WithOAuthBearer);
+        builder.WithSaslScramMaxIterations(options.SaslScramMaxIterations);
         if (options.ConsumerAwareRebalanceListener is not null)
             builder.WithRebalanceListener(options.ConsumerAwareRebalanceListener);
         else if (options.RebalanceListener is not null)
@@ -1282,6 +1284,7 @@ internal static class DekafOptionsBinding
                 options.SaslScramTokenAuth,
                 options.SaslCredentialProvider);
         }
+        builder.WithSaslScramMaxIterations(options.SaslScramMaxIterations);
 
         builder.WithMetadataRecoveryStrategy(options.MetadataRecoveryStrategy);
         builder.WithMetadataClusterCheck(options.MetadataClusterCheckEnabled);
@@ -1494,6 +1497,8 @@ internal static class DekafConfigurationBinding
         ApplyTls(configuration, () => builder.UseTls(), tlsConfig => builder.UseTls(tlsConfig));
         if (TryReadSasl(configuration, out var mechanism, out var username, out var password, out var gssapi, out var oauth, out var awsMskIam, out var saslScramTokenAuth))
             builder.WithSaslOptions(mechanism, username, password, gssapi, oauth, awsMskIam, saslScramTokenAuth: saslScramTokenAuth);
+        if (TryGetValue<int>(configuration, nameof(ProducerOptions.SaslScramMaxIterations), out var maxScramIterations))
+            builder.WithSaslScramMaxIterations(maxScramIterations);
         if (TryGetValue<int>(configuration, nameof(ProducerOptions.SocketSendBufferBytes), out var sendBuffer))
             builder.WithSocketSendBufferBytes(sendBuffer);
         if (TryGetValue<int>(configuration, nameof(ProducerOptions.SocketReceiveBufferBytes), out var receiveBuffer))
@@ -1624,6 +1629,8 @@ internal static class DekafConfigurationBinding
         ApplyTls(configuration, () => builder.UseTls(), tlsConfig => builder.UseTls(tlsConfig));
         if (TryReadSasl(configuration, out var mechanism, out var username, out var password, out var gssapi, out var oauth, out var awsMskIam, out var saslScramTokenAuth))
             builder.WithSaslOptions(mechanism, username, password, gssapi, oauth, awsMskIam, saslScramTokenAuth: saslScramTokenAuth);
+        if (TryGetValue<int>(configuration, nameof(ConsumerOptions.SaslScramMaxIterations), out var maxScramIterations))
+            builder.WithSaslScramMaxIterations(maxScramIterations);
         if (TryGetValue<bool>(configuration, nameof(ConsumerOptions.EnablePartitionEof), out var enablePartitionEof))
             builder.WithPartitionEof(enablePartitionEof);
         if (TryGetValue<int>(configuration, nameof(ConsumerOptions.SocketSendBufferBytes), out var sendBuffer))
@@ -1683,6 +1690,8 @@ internal static class DekafConfigurationBinding
         ApplyTls(configuration, () => builder.UseTls(), tlsConfig => builder.UseTls(tlsConfig));
         if (TryReadSasl(configuration, out var mechanism, out var username, out var password, out var gssapi, out var oauth, out var awsMskIam, out var saslScramTokenAuth))
             builder.WithSaslOptions(mechanism, username, password, gssapi, oauth, awsMskIam, saslScramTokenAuth: saslScramTokenAuth);
+        if (TryGetValue<int>(configuration, nameof(AdminClientOptions.SaslScramMaxIterations), out var maxScramIterations))
+            builder.WithSaslScramMaxIterations(maxScramIterations);
         if (TryGetValue<MetadataRecoveryStrategy>(configuration, nameof(AdminClientOptions.MetadataRecoveryStrategy), out var metadataRecoveryStrategy))
             builder.WithMetadataRecoveryStrategy(metadataRecoveryStrategy);
         if (TryGetValue<bool>(configuration, nameof(AdminClientOptions.MetadataClusterCheckEnabled), out var metadataClusterCheckEnabled))

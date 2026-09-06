@@ -83,6 +83,7 @@ public sealed partial class AdminClient :
                 SaslPassword = options.SaslPassword,
                 SaslCredentialProvider = options.SaslCredentialProvider,
                 SaslScramTokenAuth = options.SaslScramTokenAuth,
+                SaslScramMaxIterations = options.SaslScramMaxIterations,
                 GssapiConfig = options.GssapiConfig,
                 OAuthBearerConfig = options.OAuthBearerConfig,
                 OAuthBearerTokenProvider = options.OAuthBearerTokenProvider,
@@ -5955,6 +5956,23 @@ public sealed class AdminClientOptions
     public Func<CancellationToken, ValueTask<SaslCredentials>>? SaslCredentialProvider { get; init; }
     public bool SaslScramTokenAuth { get; init; }
 
+    private int _saslScramMaxIterations = ScramAuthenticator.DefaultMaxIterations;
+
+    /// <summary>
+    /// Maximum server-requested SCRAM PBKDF2 iterations. Defaults to 1,000,000.
+    /// Must be positive; raise deliberately when a broker uses a higher count.
+    /// Applies to both password and delegation-token SCRAM authentication.
+    /// </summary>
+    public int SaslScramMaxIterations
+    {
+        get => _saslScramMaxIterations;
+        init
+        {
+            ArgumentOutOfRangeException.ThrowIfLessThan(value, 1);
+            _saslScramMaxIterations = value;
+        }
+    }
+
     /// <summary>
     /// GSSAPI (Kerberos) configuration. Required when <see cref="SaslMechanism"/> is
     /// <see cref="SaslMechanism.Gssapi"/>.
@@ -6041,6 +6059,7 @@ public sealed class AdminClientBuilder
     private string? _saslPassword;
     private Func<CancellationToken, ValueTask<SaslCredentials>>? _saslCredentialProvider;
     private bool _saslScramTokenAuth;
+    private int _saslScramMaxIterations = ScramAuthenticator.DefaultMaxIterations;
     private GssapiConfig? _gssapiConfig;
     private OAuthBearerConfig? _oauthConfig;
     private Func<CancellationToken, ValueTask<OAuthBearerToken>>? _oauthTokenProvider;
@@ -6205,6 +6224,16 @@ public sealed class AdminClientBuilder
         _saslPassword = password;
         _saslCredentialProvider = null;
         _saslScramTokenAuth = false;
+        return this;
+    }
+
+    /// <summary>Sets the maximum server-requested SCRAM PBKDF2 iteration count.</summary>
+    /// <param name="maxIterations">Positive limit; the default is 1,000,000.</param>
+    public AdminClientBuilder WithSaslScramMaxIterations(int maxIterations)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxIterations, 1);
+        _saslScramMaxIterations = maxIterations;
         return this;
     }
 
@@ -6719,6 +6748,7 @@ public sealed class AdminClientBuilder
             SaslPassword = _saslPassword,
             SaslCredentialProvider = _saslCredentialProvider,
             SaslScramTokenAuth = _saslScramTokenAuth,
+            SaslScramMaxIterations = _saslScramMaxIterations,
             GssapiConfig = _gssapiConfig,
             OAuthBearerConfig = _oauthConfig,
             OAuthBearerTokenProvider = _oauthTokenProvider,

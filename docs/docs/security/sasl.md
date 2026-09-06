@@ -53,6 +53,23 @@ var producer = await Kafka.CreateProducer<string, string>()
     .BuildAsync();
 ```
 
+### Server iteration limit
+
+Dekaf rejects SCRAM challenges requesting more than **1,000,000 PBKDF2 iterations** before deriving the password key. This bounds server-requested authentication CPU work. Set a lower limit to match your broker credentials, or raise it deliberately for credentials configured above the default:
+
+```csharp
+var producer = await Kafka.CreateProducer<string, string>()
+    .WithBootstrapServers("kafka.example.com:9092")
+    .UseTls()
+    .WithSaslScramSha256("username", "password")
+    .WithSaslScramMaxIterations(8192)
+    .BuildAsync();
+```
+
+`WithSaslScramMaxIterations` is available on producer, consumer, share consumer, admin, and shared `KafkaClient` builders. Configure it on the shared client when connections are shared. Options objects and dependency injection configuration use `SaslScramMaxIterations`. The value must be positive; it limits both SCRAM hashes and delegation-token authentication, without changing the broker's iteration count.
+
+Malformed challenges, duplicate attributes, unsupported mandatory extensions, invalid encodings, and excessive iteration counts fail with `Dekaf.Errors.AuthenticationException`. Valid optional extensions are ignored, and server signatures use constant-time comparison. These checks follow the SCRAM message grammar and extension handling in [RFC 5802](https://datatracker.ietf.org/doc/html/rfc5802).
+
 ## SASL/GSSAPI (Kerberos)
 
 For Kerberos authentication:

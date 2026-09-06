@@ -8,14 +8,19 @@ namespace Dekaf.Security.Sasl;
 /// SASL SCRAM (Salted Challenge Response Authentication Mechanism) authenticator.
 /// Implements RFC 5802 for SCRAM-SHA-256 and SCRAM-SHA-512.
 /// </summary>
-public sealed class ScramAuthenticator : ISaslAuthenticator
+public sealed partial class ScramAuthenticator : ISaslAuthenticator
 {
+    /// <summary>Default upper bound on server-requested PBKDF2 iterations.</summary>
+    public const int DefaultMaxIterations = 1_000_000;
+
+    private static readonly Encoding ChallengeEncoding = new UTF8Encoding(false, true);
     private readonly string _username;
     private readonly string _password;
     private readonly HashAlgorithmName _hashAlgorithm;
     private readonly int _hashSize;
     private readonly string _mechanismName;
     private readonly bool _tokenAuth;
+    private readonly int _maxIterations;
 
     private string? _clientNonce;
     private string? _clientFirstMessageBare;
@@ -28,7 +33,8 @@ public sealed class ScramAuthenticator : ISaslAuthenticator
         Initial,
         ClientFirstSent,
         ClientFinalSent,
-        Complete
+        Complete,
+        Failed
     }
 
     /// <summary>
@@ -37,8 +43,22 @@ public sealed class ScramAuthenticator : ISaslAuthenticator
     /// <param name="mechanism">The SCRAM mechanism (ScramSha256 or ScramSha512).</param>
     /// <param name="username">The username.</param>
     /// <param name="password">The password.</param>
+    /// <param name="tokenAuth">Whether to authenticate with a Kafka delegation token.</param>
     public ScramAuthenticator(SaslMechanism mechanism, string username, string password, bool tokenAuth = false)
+        : this(mechanism, username, password, tokenAuth, DefaultMaxIterations)
     {
+    }
+
+    /// <summary>Creates a SCRAM authenticator with a bound on server-requested hashing work.</summary>
+    /// <param name="mechanism">The SCRAM mechanism.</param>
+    /// <param name="username">The username or delegation token ID.</param>
+    /// <param name="password">The password or delegation token HMAC.</param>
+    /// <param name="maxIterations">Maximum accepted positive PBKDF2 iteration count.</param>
+    /// <param name="tokenAuth">Whether to authenticate with a Kafka delegation token.</param>
+    public ScramAuthenticator(SaslMechanism mechanism, string username, string password, bool tokenAuth, int maxIterations)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxIterations, 1);
+        _maxIterations = maxIterations;
         if (mechanism != SaslMechanism.ScramSha256 && mechanism != SaslMechanism.ScramSha512)
         {
             throw new ArgumentException("Mechanism must be ScramSha256 or ScramSha512", nameof(mechanism));
@@ -96,42 +116,46 @@ public sealed class ScramAuthenticator : ISaslAuthenticator
     /// <inheritdoc />
     public byte[]? EvaluateChallenge(byte[] challenge)
     {
-        var challengeStr = Encoding.UTF8.GetString(challenge);
-
-        return _state switch
+        ArgumentNullException.ThrowIfNull(challenge);
+        try
         {
-            ScramState.ClientFirstSent => HandleServerFirst(challengeStr),
-            ScramState.ClientFinalSent => HandleServerFinal(challengeStr),
-            _ => throw new InvalidOperationException($"Unexpected state: {_state}")
-        };
+            return _state switch
+            {
+                ScramState.ClientFirstSent => HandleServerFirst(ChallengeEncoding.GetString(challenge)),
+                ScramState.ClientFinalSent => HandleServerFinal(ChallengeEncoding.GetString(challenge)),
+                _ => throw new InvalidOperationException($"Unexpected state: {_state}")
+            };
+        }
+        catch (DecoderFallbackException)
+        {
+            _state = ScramState.Failed;
+            throw new AuthenticationException("Invalid UTF-8 in SCRAM server message");
+        }
+        catch (AuthenticationException)
+        {
+            _state = ScramState.Failed;
+            throw;
+        }
     }
 
     private byte[] HandleServerFirst(string serverFirstMessage)
     {
         // Parse server-first-message: r=<nonce>,s=<salt>,i=<iteration-count>
-        var parts = ParseMessage(serverFirstMessage);
-
-        if (!parts.TryGetValue("r", out var serverNonce))
+        var parts = ParseMessage(serverFirstMessage.AsSpan(), serverFirst: true);
+        var serverNonce = parts.Nonce;
+        if (serverNonce.Length <= _clientNonce!.Length || !serverNonce.StartsWith(_clientNonce.AsSpan(), StringComparison.Ordinal))
         {
-            throw new AuthenticationException("Server nonce not found in server-first-message");
+            throw new AuthenticationException("Server nonce must extend the client nonce");
         }
 
-        if (!serverNonce.StartsWith(_clientNonce!, StringComparison.Ordinal))
+        for (var index = 0; index < serverNonce.Length; index++)
         {
-            throw new AuthenticationException("Server nonce does not start with client nonce");
+            if (serverNonce[index] is < '!' or > '~')
+                throw new AuthenticationException("Invalid characters in SCRAM server nonce");
         }
 
-        if (!parts.TryGetValue("s", out var saltBase64))
-        {
-            throw new AuthenticationException("Salt not found in server-first-message");
-        }
-
-        if (!parts.TryGetValue("i", out var iterationsStr) || !int.TryParse(iterationsStr, out var iterations))
-        {
-            throw new AuthenticationException("Iteration count not found or invalid in server-first-message");
-        }
-
-        var salt = Convert.FromBase64String(saltBase64);
+        var iterations = ParseIterationCount(parts.Iterations);
+        var salt = DecodeBase64(parts.Salt, "Invalid SCRAM salt encoding");
 
         // Compute salted password using PBKDF2
         _saltedPassword = Rfc2898DeriveBytes.Pbkdf2(
@@ -144,7 +168,12 @@ public sealed class ScramAuthenticator : ISaslAuthenticator
         // Build client-final-message-without-proof
         // channel-binding: c=biws (base64 of "n,,")
         var channelBinding = "biws"; // base64("n,,")
+#if NET8_0_OR_GREATER
         var clientFinalMessageWithoutProof = $"c={channelBinding},r={serverNonce}";
+#else
+        // The netstandard2.0 interpolation fallback cannot format a ref struct directly.
+        var clientFinalMessageWithoutProof = $"c={channelBinding},r={serverNonce.ToString()}";
+#endif
 
         // Build auth message
         _authMessage = $"{_clientFirstMessageBare},{serverFirstMessage},{clientFinalMessageWithoutProof}";
@@ -166,22 +195,22 @@ public sealed class ScramAuthenticator : ISaslAuthenticator
     private byte[]? HandleServerFinal(string serverFinalMessage)
     {
         // Parse server-final-message: v=<verifier> or e=<error>
-        var parts = ParseMessage(serverFinalMessage);
+        var parts = ParseMessage(serverFinalMessage.AsSpan(), serverFirst: false);
 
-        if (parts.TryGetValue("e", out var error))
+        if (!parts.Error.IsEmpty)
         {
-            throw new AuthenticationException($"SCRAM authentication failed: {error}");
+            // Unknown server errors are other-error, and arbitrary server text must not
+            // become a credential-bearing or multiline diagnostic.
+            throw new AuthenticationException($"SCRAM authentication failed: {GetServerError(parts.Error)}");
         }
 
-        if (!parts.TryGetValue("v", out var serverSignatureBase64))
-        {
-            throw new AuthenticationException("Server signature not found in server-final-message");
-        }
+        var actualServerSignature = DecodeBase64(parts.Verifier, "Invalid SCRAM server signature encoding");
+        if (actualServerSignature.Length != _hashSize)
+            throw new AuthenticationException("Invalid SCRAM server signature length");
 
         // Verify server signature
         var serverKey = Hmac(_saltedPassword!, "Server Key");
         var expectedServerSignature = Hmac(serverKey, _authMessage!);
-        var actualServerSignature = Convert.FromBase64String(serverSignatureBase64);
 
         if (!CryptographicOperations.FixedTimeEquals(expectedServerSignature, actualServerSignature))
         {
@@ -190,22 +219,6 @@ public sealed class ScramAuthenticator : ISaslAuthenticator
 
         _state = ScramState.Complete;
         return null;
-    }
-
-    private static Dictionary<string, string> ParseMessage(string message)
-    {
-        var result = new Dictionary<string, string>();
-        foreach (var part in message.Split(','))
-        {
-            var idx = part.IndexOf('=');
-            if (idx > 0)
-            {
-                var key = part[..idx];
-                var value = part[(idx + 1)..];
-                result[key] = value;
-            }
-        }
-        return result;
     }
 
     private static string GenerateNonce()

@@ -276,6 +276,7 @@ public sealed partial class ConnectionPool :
             SaslPassword = options.SaslPassword,
             SaslCredentialProvider = options.SaslCredentialProvider,
             SaslScramTokenAuth = options.SaslScramTokenAuth,
+            SaslScramMaxIterations = options.SaslScramMaxIterations,
             GssapiConfig = options.GssapiConfig,
             OAuthBearerTokenProvider = sharedProvider.GetTokenAsync,
             OAuthBearerToken = options.OAuthBearerToken,

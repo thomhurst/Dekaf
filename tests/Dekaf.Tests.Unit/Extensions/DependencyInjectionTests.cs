@@ -893,6 +893,7 @@ public class DependencyInjectionTests
             SaslUsername = "producer-user",
             SaslPassword = "producer-password",
             SaslScramTokenAuth = true,
+            SaslScramMaxIterations = 8192,
             SaslCredentialProvider = credentialProvider
         };
 
@@ -919,6 +920,7 @@ public class DependencyInjectionTests
         await Assert.That(boundOptions.SaslUsername).IsEqualTo("producer-user");
         await Assert.That(boundOptions.SaslPassword).IsEqualTo("producer-password");
         await Assert.That(boundOptions.SaslScramTokenAuth).IsTrue();
+        await Assert.That(boundOptions.SaslScramMaxIterations).IsEqualTo(8192);
         await Assert.That((object?)boundOptions.SaslCredentialProvider).IsSameReferenceAs(credentialProvider);
     }
 
@@ -1428,6 +1430,7 @@ public class DependencyInjectionTests
             SaslUsername = "consumer-user",
             SaslPassword = "consumer-password",
             SaslScramTokenAuth = true,
+            SaslScramMaxIterations = 8192,
             SaslCredentialProvider = credentialProvider
         };
 
@@ -1454,6 +1457,7 @@ public class DependencyInjectionTests
         await Assert.That(boundOptions.SaslUsername).IsEqualTo("consumer-user");
         await Assert.That(boundOptions.SaslPassword).IsEqualTo("consumer-password");
         await Assert.That(boundOptions.SaslScramTokenAuth).IsTrue();
+        await Assert.That(boundOptions.SaslScramMaxIterations).IsEqualTo(8192);
         await Assert.That((object?)boundOptions.SaslCredentialProvider).IsSameReferenceAs(credentialProvider);
     }
 
@@ -1557,6 +1561,7 @@ public class DependencyInjectionTests
             SaslUsername = "admin-user",
             SaslPassword = "admin-password",
             SaslScramTokenAuth = true,
+            SaslScramMaxIterations = 8192,
             SaslCredentialProvider = credentialProvider
         };
 
@@ -1579,6 +1584,7 @@ public class DependencyInjectionTests
         await Assert.That(boundOptions.SaslUsername).IsEqualTo("admin-user");
         await Assert.That(boundOptions.SaslPassword).IsEqualTo("admin-password");
         await Assert.That(boundOptions.SaslScramTokenAuth).IsTrue();
+        await Assert.That(boundOptions.SaslScramMaxIterations).IsEqualTo(8192);
         await Assert.That((object?)boundOptions.SaslCredentialProvider).IsSameReferenceAs(credentialProvider);
     }
 
@@ -1729,6 +1735,7 @@ public class DependencyInjectionTests
             ["Kafka:Producers:Orders:SaslUsername"] = "user",
             ["Kafka:Producers:Orders:SaslPassword"] = "password",
             ["Kafka:Producers:Orders:SaslScramTokenAuth"] = "true",
+            ["Kafka:Producers:Orders:SaslScramMaxIterations"] = "8192",
             ["Kafka:Producers:Orders:SocketSendBufferBytes"] = "1024",
             ["Kafka:Producers:Orders:SocketReceiveBufferBytes"] = "2048",
             ["Kafka:Producers:Orders:ValueTaskSourcePoolSize"] = "128",
@@ -1785,6 +1792,7 @@ public class DependencyInjectionTests
         await Assert.That(options.SaslUsername).IsEqualTo("user");
         await Assert.That(options.SaslPassword).IsEqualTo("password");
         await Assert.That(options.SaslScramTokenAuth).IsTrue();
+        await Assert.That(options.SaslScramMaxIterations).IsEqualTo(8192);
         await Assert.That(options.SocketSendBufferBytes).IsEqualTo(1024);
         await Assert.That(options.SocketReceiveBufferBytes).IsEqualTo(2048);
         await Assert.That(options.ValueTaskSourcePoolSize).IsEqualTo(128);
@@ -1971,6 +1979,7 @@ public class DependencyInjectionTests
             ["Kafka:Consumers:Orders:SaslUsername"] = "user",
             ["Kafka:Consumers:Orders:SaslPassword"] = "password",
             ["Kafka:Consumers:Orders:SaslScramTokenAuth"] = "true",
+            ["Kafka:Consumers:Orders:SaslScramMaxIterations"] = "8192",
             ["Kafka:Consumers:Orders:EnablePartitionEof"] = "true",
             ["Kafka:Consumers:Orders:SocketSendBufferBytes"] = "4096",
             ["Kafka:Consumers:Orders:SocketReceiveBufferBytes"] = "8192",
@@ -2036,6 +2045,7 @@ public class DependencyInjectionTests
         await Assert.That(options.SaslUsername).IsEqualTo("user");
         await Assert.That(options.SaslPassword).IsEqualTo("password");
         await Assert.That(options.SaslScramTokenAuth).IsTrue();
+        await Assert.That(options.SaslScramMaxIterations).IsEqualTo(8192);
         await Assert.That(options.EnablePartitionEof).IsTrue();
         await Assert.That(options.SocketSendBufferBytes).IsEqualTo(4096);
         await Assert.That(options.SocketReceiveBufferBytes).IsEqualTo(8192);
@@ -2167,6 +2177,7 @@ public class DependencyInjectionTests
             ["Kafka:Admin:SaslUsername"] = "admin",
             ["Kafka:Admin:SaslPassword"] = "secret",
             ["Kafka:Admin:SaslScramTokenAuth"] = "true",
+            ["Kafka:Admin:SaslScramMaxIterations"] = "8192",
             ["Kafka:Admin:MetadataRecoveryStrategy"] = "None",
             ["Kafka:Admin:MetadataClusterCheckEnabled"] = "false",
             ["Kafka:Admin:MetadataRecoveryRebootstrapTriggerMs"] = "120000",
@@ -2196,6 +2207,7 @@ public class DependencyInjectionTests
         await Assert.That(options.SaslUsername).IsEqualTo("admin");
         await Assert.That(options.SaslPassword).IsEqualTo("secret");
         await Assert.That(options.SaslScramTokenAuth).IsTrue();
+        await Assert.That(options.SaslScramMaxIterations).IsEqualTo(8192);
         await Assert.That(options.MetadataRecoveryStrategy).IsEqualTo(MetadataRecoveryStrategy.None);
         await Assert.That(options.MetadataClusterCheckEnabled).IsFalse();
         await Assert.That(options.MetadataRecoveryRebootstrapTriggerMs).IsEqualTo(120000);
