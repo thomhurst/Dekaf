@@ -127,8 +127,15 @@ public static class PartitionedConsumerExtensions
         {
             while (context.TryReadMessage(out var message))
             {
-                await processor(handlerContext, message, cancellationToken).ConfigureAwait(false);
-                context.MarkProcessed(message);
+                try
+                {
+                    await processor(handlerContext, message, cancellationToken).ConfigureAwait(false);
+                    context.MarkProcessed(message);
+                }
+                finally
+                {
+                    message.ReleaseStorage();
+                }
             }
         }
     }
@@ -152,10 +159,18 @@ public static class PartitionedConsumerExtensions
                 continue;
 
             var records = batch.ToArray();
-            await processor(handlerContext, records, cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await processor(handlerContext, records, cancellationToken).ConfigureAwait(false);
 
-            for (var i = 0; i < records.Length; i++)
-                context.MarkProcessed(records[i]);
+                for (var i = 0; i < records.Length; i++)
+                    context.MarkProcessed(records[i]);
+            }
+            finally
+            {
+                for (var i = 0; i < records.Length; i++)
+                    records[i].ReleaseStorage();
+            }
         }
     }
 
@@ -278,6 +293,10 @@ public sealed class PartitionProcessorContext<TKey, TValue>
     /// <summary>
     /// Gets the ordered message stream for this partition.
     /// </summary>
+    /// <remarks>
+    /// Borrowed key/value data and lazy headers remain valid until the enumerator advances
+    /// or is disposed. Copy borrowed data before retaining it beyond that boundary.
+    /// </remarks>
     public IAsyncEnumerable<ConsumeResult<TKey, TValue>> Messages => _lane.Messages;
 
     /// <summary>
@@ -1406,6 +1425,7 @@ internal sealed class PartitionLane<TKey, TValue>
     private readonly SortedSet<long> _completedOffsets = [];
     private readonly Dictionary<long, int> _leaderEpochs = [];
     private long? _nextOffsetToCommit;
+    private int _pendingOffsetInitialized;
     private long? _completedOffset;
     private long? _lastProcessedOffset;
     private int _lastCommittedLeaderEpoch = -1;
@@ -1474,6 +1494,14 @@ internal sealed class PartitionLane<TKey, TValue>
                 _failed(this, ex);
                 throw;
             }
+            finally
+            {
+                // A timed-out handler still owns its active records until it actually exits.
+                // StopAsync must not release these buffers while user code is running.
+                CompleteWriter();
+                while (_channel.Reader.TryRead(out var abandoned))
+                    abandoned.ReleaseStorage();
+            }
         });
     }
 
@@ -1482,8 +1510,12 @@ internal sealed class PartitionLane<TKey, TValue>
         if (Volatile.Read(ref _completed) != 0)
             return false;
 
+        result.RetainStorage();
         if (!_channel.Writer.TryWrite(result))
+        {
+            result.ReleaseStorage();
             return false;
+        }
 
         TrackPending(result);
         Interlocked.Increment(ref _bufferedCount);
@@ -1541,13 +1573,16 @@ internal sealed class PartitionLane<TKey, TValue>
 
     private void TrackPending(ConsumeResult<TKey, TValue> message)
     {
-        if (message.IsPartitionEof)
+        if (message.IsPartitionEof || Volatile.Read(ref _pendingOffsetInitialized) != 0)
             return;
 
         lock (_offsetGate)
         {
             if (!_nextOffsetToCommit.HasValue)
                 _nextOffsetToCommit = message.Offset;
+            // This lane never resets the pending offset. Subsequent records need no lock
+            // merely to rediscover that initialization has already happened.
+            Volatile.Write(ref _pendingOffsetInitialized, 1);
         }
     }
 
@@ -1644,7 +1679,16 @@ internal sealed class PartitionLane<TKey, TValue>
         while (await WaitToReadMessageAsync(cancellationToken).ConfigureAwait(false))
         {
             while (TryReadMessage(out var item))
-                yield return item;
+            {
+                try
+                {
+                    yield return item;
+                }
+                finally
+                {
+                    item.ReleaseStorage();
+                }
+            }
         }
     }
 
@@ -1703,8 +1747,16 @@ internal sealed class KeyOrderedPartitionDispatcher<TKey, TValue>
             {
                 while (_context.TryReadMessage(out var message))
                 {
-                    await _inFlight.WaitAsync(_processingCancellationToken).ConfigureAwait(false);
-                    Enqueue(message);
+                    try
+                    {
+                        await _inFlight.WaitAsync(_processingCancellationToken).ConfigureAwait(false);
+                        Enqueue(message);
+                    }
+                    catch
+                    {
+                        message.ReleaseStorage();
+                        throw;
+                    }
                     ThrowIfFailed();
                 }
             }
@@ -1716,8 +1768,21 @@ internal sealed class KeyOrderedPartitionDispatcher<TKey, TValue>
         }
         finally
         {
-            if (cancellationToken.IsCancellationRequested || _failure is not null)
+            try
+            {
+                if (!_tasks.IsEmpty)
+                    await linkedCancellation.CancelAsync().ConfigureAwait(false);
+            }
+            finally
+            {
                 await ObserveActiveLanesAsync().ConfigureAwait(false);
+
+                // Dispatch has stopped and every active handler has exited. Remaining key queues
+                // belong to failed/cancelled lanes and cannot be handed to user code anymore.
+                foreach (var lane in _lanes.Values)
+                    lane.ReleaseQueuedStorage();
+                _lanes.Clear();
+            }
         }
 
         ThrowIfFailed();
@@ -1735,6 +1800,7 @@ internal sealed class KeyOrderedPartitionDispatcher<TKey, TValue>
             {
                 lane = new KeyOrderedProcessingLane<TKey, TValue>(this, key);
                 _lanes.Add(key, lane);
+                lane.RetainKeyStorage(message);
             }
 
             shouldStart = lane.Enqueue(message);
@@ -1795,6 +1861,8 @@ internal sealed class KeyOrderedPartitionDispatcher<TKey, TValue>
         }
         finally
         {
+            for (var i = 0; i < batch.Count; i++)
+                batch[i].ReleaseStorage();
             _inFlight.Release(batch.Count);
         }
     }
@@ -1823,6 +1891,7 @@ internal sealed class KeyOrderedPartitionDispatcher<TKey, TValue>
                 && lane.IsIdle)
             {
                 _lanes.Remove(key);
+                lane.ReleaseKeyStorage();
             }
         }
     }
@@ -1880,13 +1949,15 @@ internal sealed class KeyOrderedProcessingLane<TKey, TValue>(
     KeyOrderedPartitionDispatcher<TKey, TValue> dispatcher,
     PartitionMessageKey<TKey> key)
 {
-    private readonly object _gate = new();
     private readonly Queue<ConsumeResult<TKey, TValue>> _queue = [];
+    // The dictionary key can borrow the first record's input. Keep it valid until removal,
+    // even after that record's handler returns while another same-key record is queued.
+    private PendingFetchData? _keyStorage;
     private bool _running;
 
     public bool Enqueue(ConsumeResult<TKey, TValue> message)
     {
-        lock (_gate)
+        lock (_queue)
         {
             _queue.Enqueue(message);
             if (_running)
@@ -1901,7 +1972,7 @@ internal sealed class KeyOrderedProcessingLane<TKey, TValue>(
     {
         get
         {
-            lock (_gate)
+            lock (_queue)
                 return !_running && _queue.Count == 0;
         }
     }
@@ -1914,7 +1985,7 @@ internal sealed class KeyOrderedProcessingLane<TKey, TValue>(
         {
             batch.Clear();
             var removeLane = false;
-            lock (_gate)
+            lock (_queue)
             {
                 while (batch.Count < dispatcher.MaxBatchSize && _queue.Count > 0)
                     batch.Add(_queue.Dequeue());
@@ -1932,10 +2003,20 @@ internal sealed class KeyOrderedProcessingLane<TKey, TValue>(
                 return;
             }
 
-            dispatcher.ProcessingCancellationToken.ThrowIfCancellationRequested();
             await dispatcher.ProcessBatchAsync(batch.ToArray()).ConfigureAwait(false);
         }
     }
+
+    internal void ReleaseQueuedStorage()
+    {
+        while (_queue.TryDequeue(out var message))
+            message.ReleaseStorage();
+        ReleaseKeyStorage();
+    }
+
+    internal void ReleaseKeyStorage() => Interlocked.Exchange(ref _keyStorage, null)?.ReleaseAfterProcessing();
+
+    internal void RetainKeyStorage(ConsumeResult<TKey, TValue> message) => _keyStorage = message.RetainStorage();
 }
 
 internal readonly struct PartitionMessageKey<TKey> : IEquatable<PartitionMessageKey<TKey>>

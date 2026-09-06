@@ -418,6 +418,14 @@ internal sealed class PendingFetchData : IDisposable
         public void Dispose() => owner.ReleaseReference();
     }
 
+    internal void RetainForProcessing()
+    {
+        Debug.Assert(Volatile.Read(ref _referenceCount) > 0);
+        Interlocked.Increment(ref _referenceCount);
+    }
+
+    internal void ReleaseAfterProcessing() => ReleaseReference();
+
     [MethodImpl(MethodImplOptions.NoInlining)]
     private string CreateActivityName()
     {
@@ -440,7 +448,7 @@ internal sealed class PendingFetchData : IDisposable
     internal int HeaderGeneration => Volatile.Read(ref _headerGeneration);
 
     internal bool IsHeaderGenerationActive(int generation) =>
-        Volatile.Read(ref _disposed) == 0 && Volatile.Read(ref _headerGeneration) == generation;
+        Volatile.Read(ref _referenceCount) > 0 && Volatile.Read(ref _headerGeneration) == generation;
 
     /// <summary>
     /// Gets the current record via direct array access, bypassing lazy record-list
@@ -831,13 +839,18 @@ internal sealed class PendingFetchData : IDisposable
         ReleaseReference();
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void ReleaseReference()
     {
         var remaining = Interlocked.Decrement(ref _referenceCount);
         Debug.Assert(remaining >= 0, "PendingFetchData reference count underflow.");
-        if (remaining != 0)
-            return;
+        if (remaining == 0)
+            ReleaseStorage();
+    }
 
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private void ReleaseStorage()
+    {
         // Dispose all batches to mark them as disposed.
         // Indexing avoids boxing/enumerator allocation from the IReadOnlyList<T> interface.
         var batches = _batches;

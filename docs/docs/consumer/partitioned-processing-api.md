@@ -57,6 +57,34 @@ Dekaf starts one processor invocation for each assigned `TopicPartition`. Each
 processor receives only the ordered stream for that partition. Processors for
 different partitions run concurrently.
 
+## Record Storage Lifetime
+
+Record and batch handlers can read raw keys, raw values, and lazy headers across
+asynchronous suspension until the handler returns. Dekaf retains the owning fetch
+storage while records are queued or being processed. For the long-lived partition
+processor's `Messages` stream, each record remains valid until the enumerator
+advances or is disposed. Copy borrowed data if it must outlive that boundary.
+
+Custom deserializers may return slices of their input: that fetch storage follows
+the same lifetime. A deserializer's own reusable scratch buffer is not fetch
+storage; return an owned value instead of exposing scratch memory that the next
+deserialization will overwrite.
+
+Retention ends after completion, failure, or cancellation. A handler that ignores
+cancellation retains its active storage until it actually exits, even when the
+runtime's stop timeout has elapsed. Revoke and lost-assignment cleanup use the same
+ownership rules. Key ordering also retains the input backing a dictionary key
+until its key lane is removed.
+
+`MaxBufferedRecordsPerPartition` bounds the partition queue, not retained bytes.
+Partition ordering additionally holds the active handler batch (one record for a
+record handler). Key ordering additionally holds at most that many dispatched
+records, one record waiting for a dispatch permit, and one retained key per active
+key lane. One borrowed record can pin an entire fetch response and its decompressed
+record storage. Budget those buffers separately from consumer prefetch; fetch-size
+settings and compression affect their byte cost. Slow handlers do not accumulate
+an unbounded history of completed fetches.
+
 ## Ordering And Parallelism
 
 The processor callback is long-lived. It starts when a partition is assigned and
