@@ -608,3 +608,20 @@ Dekaf.Admin.DescribeFeaturesOptions.TimeoutMs.init -> void
 Dekaf.Admin.INodeFeatureAdminClient
 Dekaf.Admin.INodeFeatureAdminClient.DescribeFeaturesAsync(Dekaf.Admin.DescribeFeaturesOptions! options, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.Admin.FeatureMetadata!>
 static Dekaf.Admin.AdminClientNodeFeatureExtensions.DescribeFeaturesAsync(this Dekaf.Admin.IAdminClient! adminClient, Dekaf.Admin.DescribeFeaturesOptions! options, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.Admin.FeatureMetadata!>
+Dekaf.Admin.AdminClient.CreatePartitionsAsync(System.Collections.Generic.IReadOnlyDictionary<string!, Dekaf.Admin.NewPartitions!>! newPartitions, Dekaf.Admin.CreatePartitionsOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Admin.AdminClientPartitionExpansionExtensions
+Dekaf.Admin.CreatePartitionsOptions
+Dekaf.Admin.CreatePartitionsOptions.CreatePartitionsOptions() -> void
+Dekaf.Admin.CreatePartitionsOptions.TimeoutMs.get -> int
+Dekaf.Admin.CreatePartitionsOptions.TimeoutMs.init -> void
+Dekaf.Admin.CreatePartitionsOptions.ValidateOnly.get -> bool
+Dekaf.Admin.CreatePartitionsOptions.ValidateOnly.init -> void
+Dekaf.Admin.IPartitionExpansionAdminClient
+Dekaf.Admin.IPartitionExpansionAdminClient.CreatePartitionsAsync(System.Collections.Generic.IReadOnlyDictionary<string!, Dekaf.Admin.NewPartitions!>! newPartitions, Dekaf.Admin.CreatePartitionsOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Admin.NewPartitions
+Dekaf.Admin.NewPartitions.NewPartitions() -> void
+Dekaf.Admin.NewPartitions.ReplicaAssignments.get -> System.Collections.Generic.IReadOnlyList<System.Collections.Generic.IReadOnlyList<int>!>?
+Dekaf.Admin.NewPartitions.ReplicaAssignments.init -> void
+Dekaf.Admin.NewPartitions.TotalCount.get -> int
+Dekaf.Admin.NewPartitions.TotalCount.init -> void
+static Dekaf.Admin.AdminClientPartitionExpansionExtensions.CreatePartitionsAsync(this Dekaf.Admin.IAdminClient! adminClient, System.Collections.Generic.IReadOnlyDictionary<string!, Dekaf.Admin.NewPartitions!>! newPartitions, Dekaf.Admin.CreatePartitionsOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
