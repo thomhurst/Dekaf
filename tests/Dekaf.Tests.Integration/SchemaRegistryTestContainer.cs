@@ -1,5 +1,7 @@
 using System.Collections.Concurrent;
 using System.Net.Sockets;
+using Dekaf.Admin;
+using Dekaf.Errors;
 using DotNet.Testcontainers.Builders;
 using DotNet.Testcontainers.Containers;
 using DotNet.Testcontainers.Networks;
@@ -93,9 +95,10 @@ public class KafkaWithSchemaRegistryContainer : IAsyncInitializer, IAsyncDisposa
         _bootstrapServers = _kafkaContainer.GetBootstrapAddress();
         Console.WriteLine($"[KafkaWithSchemaRegistry] Kafka started at {_bootstrapServers}");
 
-        // Verify Kafka is accepting connections before starting Schema Registry.
-        // Without this, Schema Registry may fail to connect to Kafka on startup.
-        await WaitForKafkaAsync().ConfigureAwait(false);
+        // Schema Registry can fail its initial Noop write if topic creation has completed
+        // but the _schemas partition is not serving leader requests yet.
+        using var readinessTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await PrepareSchemaStoreAsync(_bootstrapServers, readinessTimeout.Token).ConfigureAwait(false);
 
         Console.WriteLine("[KafkaWithSchemaRegistry] Starting Schema Registry container...");
 
@@ -120,6 +123,43 @@ public class KafkaWithSchemaRegistryContainer : IAsyncInitializer, IAsyncDisposa
         Console.WriteLine($"[KafkaWithSchemaRegistry] Schema Registry started at {_registryUrl}");
 
         await WaitForServicesAsync().ConfigureAwait(false);
+    }
+
+    internal static async Task PrepareSchemaStoreAsync(string bootstrapServers, CancellationToken cancellationToken)
+    {
+        await using var admin = Kafka.CreateAdminClient()
+            .WithBootstrapServers(bootstrapServers)
+            .Build();
+        await admin.CreateTopicsAsync(
+            [new NewTopic
+            {
+                Name = "_schemas",
+                NumPartitions = 1,
+                ReplicationFactor = 1,
+                Configs = new Dictionary<string, string> { ["cleanup.policy"] = "compact" }
+            }], cancellationToken: cancellationToken).ConfigureAwait(false);
+
+        var partition = new TopicPartition("_schemas", 0);
+        TopicPartitionOffsetSpec[] offsets = [new() { TopicPartition = partition, Spec = OffsetSpec.Latest }];
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                // Refresh routing before probing the partition's leader, rather than trusting
+                // TCP readiness or only the controller's CreateTopics acknowledgement.
+                await admin.DescribeTopicsAsync(["_schemas"], cancellationToken).ConfigureAwait(false);
+                var result = await admin.ListOffsetsAsync(offsets, cancellationToken: cancellationToken).ConfigureAwait(false);
+                if (result.TryGetValue(partition, out var offset) && offset.Offset >= 0)
+                    return;
+            }
+            catch (KafkaException exception) when (exception.IsRetriable)
+            {
+                Console.WriteLine($"[KafkaWithSchemaRegistry] Waiting for _schemas leader: {exception.Message}");
+            }
+
+            await Task.Delay(100, cancellationToken).ConfigureAwait(false);
+        }
     }
 
     private async Task WaitForKafkaAsync()
