@@ -115,17 +115,50 @@ public class OAuthBearerAuthenticatorTests
     }
 
     [Test]
-    public async Task EvaluateChallenge_WithJsonError_ThrowsAuthenticationException()
+    [Arguments("")]
+    [Arguments(" ")]
+    [Arguments("\r\n")]
+    [Arguments("\t \r\n")]
+    public async Task EvaluateChallenge_WithJsonError_ThrowsAuthenticationException(string prefix)
     {
         var token = CreateValidToken();
         var authenticator = new OAuthBearerAuthenticator(token);
         _ = authenticator.GetInitialResponse();
 
-        var errorChallenge = Encoding.UTF8.GetBytes("{\"status\":\"invalid_token\",\"scope\":\"required_scope\"}");
+        var errorChallenge = Encoding.UTF8.GetBytes(prefix + "{\"status\":\"invalid_token\",\"scope\":\"required_scope\"}");
 
         await Assert.That(() => authenticator.EvaluateChallenge(errorChallenge))
             .Throws<AuthenticationException>()
             .WithMessageContaining("invalid_token");
+        await Assert.That(authenticator.IsComplete).IsFalse();
+    }
+
+    [Test]
+    [Arguments("invalid response")]
+    [Arguments(" \r\n\t")]
+    [Arguments("{malformed")]
+    [Arguments("[]")]
+    [Arguments("null")]
+    [Arguments("\u0001")]
+    public async Task EvaluateChallenge_WithUnexpectedNonemptyResponse_DoesNotComplete(string response)
+    {
+        var authenticator = new OAuthBearerAuthenticator(CreateValidToken());
+        _ = authenticator.GetInitialResponse();
+
+        await Assert.That(() => authenticator.EvaluateChallenge(Encoding.UTF8.GetBytes(response)))
+            .Throws<AuthenticationException>();
+        await Assert.That(authenticator.IsComplete).IsFalse();
+    }
+
+    [Test]
+    public async Task EvaluateChallenge_WithInvalidUtf8_DoesNotComplete()
+    {
+        var authenticator = new OAuthBearerAuthenticator(CreateValidToken());
+        _ = authenticator.GetInitialResponse();
+
+        await Assert.That(() => authenticator.EvaluateChallenge([0xff, 0xfe]))
+            .Throws<AuthenticationException>();
+        await Assert.That(authenticator.IsComplete).IsFalse();
     }
 
     [Test]
