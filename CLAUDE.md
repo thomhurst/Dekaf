@@ -19,6 +19,10 @@ Dekaf is a high-performance, pure C# Apache Kafka client. Performance is the pro
 - `ProduceAsync` cancellation before append prevents delivery, including during metadata lookup, channel writes, and memory reservation. After append, cancellation stops the caller's wait while delivery continues.
 - `FlushAsync` cancellation stops waiting while batches continue sending. `FireAsync` has no cancellation-token overload; use `FlushAsync(cancellationToken)` for cancellable delivery waiting.
 
+## Local workload coordination
+
+All agents must acquire the shared Redis `performance` lock before local benchmarks, profiling, stress runs, builds, tests, restores, or other heavy work. Follow [the performance lock workflow](scripts/PerformanceLock.md) from the current shared checkout. Hold one reservation across the full baseline/candidate/control experiment; do not use `-Worktree` with this lock. Reading and editing can continue while another agent owns it.
+
 ## Build and test
 
 `global.json` is the source of truth for SDK selection and Microsoft.Testing.Platform (MTP). Install the .NET 8 runtime when running the net8.0 tests.
