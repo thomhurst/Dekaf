@@ -3328,7 +3328,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             _groupId,
             _memberId,
             _assignment,
-            out _consumerGroupRegistrationId);
+            out _consumerGroupRegistrationId, _options.GroupInstanceId);
     }
 
     private void UnregisterConsumerGroupMemberUnderLock()

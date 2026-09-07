@@ -196,12 +196,14 @@ public sealed partial class InMemoryKafkaCluster
         string groupId,
         string memberId,
         IEnumerable<TopicPartition> subscribedPartitions,
-        out long registrationId)
+        out long registrationId, string? groupInstanceId = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(groupId);
         ArgumentException.ThrowIfNullOrWhiteSpace(memberId);
         ArgumentNullException.ThrowIfNull(subscribedPartitions);
 
+        if (groupInstanceId is not null)
+            ArgumentException.ThrowIfNullOrWhiteSpace(groupInstanceId);
         var partitions = subscribedPartitions.Distinct().ToHashSet();
 
         lock (_gate)
@@ -213,7 +215,21 @@ public sealed partial class InMemoryKafkaCluster
             }
 
             registrationId = ++_nextConsumerGroupRegistrationId;
-            members[memberId] = new ConsumerGroupMemberState(registrationId, partitions);
+            if (groupInstanceId is not null)
+            {
+                string? previousMember = null;
+                foreach (var entry in members)
+                {
+                    if (entry.Value.GroupInstanceId == groupInstanceId)
+                    {
+                        previousMember = entry.Key;
+                        break;
+                    }
+                }
+                if (previousMember is not null)
+                    members.Remove(previousMember);
+            }
+            members[memberId] = new ConsumerGroupMemberState(registrationId, partitions, groupInstanceId);
             var generation = ++_nextConsumerGroupGeneration;
             _consumerGroupGenerations[groupId] = generation;
             return generation;
@@ -2079,7 +2095,7 @@ public sealed partial class InMemoryKafkaCluster
 
     private readonly record struct ConsumerGroupMemberState(
         long RegistrationId,
-        HashSet<TopicPartition> SubscribedPartitions);
+        HashSet<TopicPartition> SubscribedPartitions, string? GroupInstanceId);
 }
 
 internal sealed class ShareGroupMemberRegistration

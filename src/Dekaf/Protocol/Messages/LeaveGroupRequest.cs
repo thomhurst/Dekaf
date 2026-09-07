@@ -43,7 +43,7 @@ public sealed class LeaveGroupRequest : IKafkaRequest<LeaveGroupResponse>
 public sealed class LeaveGroupRequestMember
 {
     public string MemberId { get; init; } = string.Empty;
-    public required string GroupInstanceId { get; init; }
+    public required string? GroupInstanceId { get; init; }
     public string? Reason { get; init; }
 
     public void Write(ref KafkaProtocolWriter writer, short version)

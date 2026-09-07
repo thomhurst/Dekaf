@@ -1037,6 +1037,46 @@ public class AdminClientTests(KafkaTestContainer kafka) : KafkaIntegrationTest(k
         await Assert.That(result.Members[0].ErrorCode).IsEqualTo(ErrorCode.None);
     }
 
+    [Test]
+    [Arguments(false, false)]
+    [Arguments(false, true)]
+    [Arguments(true, false)]
+    [Arguments(true, true)]
+    public async Task RemoveMemberIdentities_EvictsDiscoveredOrExplicitMembers(bool removeAll, bool staticMember)
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync();
+        var groupId = $"admin-member-identity-{Guid.NewGuid():N}";
+        var instanceId = $"instance-{Guid.NewGuid():N}";
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers).BuildAsync();
+        await producer.ProduceAsync(new ProducerMessage<string, string> { Topic = topic, Key = "key", Value = "value" }, deadline.Token);
+        var builder = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers).WithGroupId(groupId)
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest);
+        if (staticMember)
+            builder.WithGroupInstanceId(instanceId);
+        await using var consumer = await builder.BuildAsync();
+        consumer.Subscribe(topic);
+        await Assert.That(await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), deadline.Token)).IsNotNull();
+        var memberId = consumer.MemberId;
+        await Assert.That(memberId).IsNotNull();
+        await using var admin = CreateAdminClient();
+        var result = await admin.RemoveMembersFromConsumerGroupAsync(groupId, new ConsumerGroupMemberRemovalOptions
+        {
+            RemoveAll = removeAll,
+            Members = removeAll ? [] :
+            [staticMember ? new ConsumerGroupMemberIdentity { GroupInstanceId = instanceId } : new ConsumerGroupMemberIdentity { MemberId = memberId }],
+            Reason = "integration identity removal"
+        }, deadline.Token);
+        await Assert.That(result.Succeeded).IsTrue();
+        await Assert.That(result.Members).Count().IsEqualTo(1);
+        if (staticMember)
+            await Assert.That(result.Members[0].GroupInstanceId).IsEqualTo(instanceId);
+        else
+            await Assert.That(result.Members[0].MemberId).IsEqualTo(memberId);
+    }
+
     #endregion
 
     #region Basic Admin Operations Tests

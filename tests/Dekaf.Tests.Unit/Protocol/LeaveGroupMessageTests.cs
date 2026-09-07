@@ -91,6 +91,41 @@ public sealed class LeaveGroupMessageTests
         await Assert.That(remaining).IsEqualTo(0);
     }
 
+    [Test]
+    [Arguments((short)3)]
+    [Arguments((short)4)]
+    [Arguments((short)5)]
+    public async Task DynamicMember_WritesNullInstanceId(short version)
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        new LeaveGroupRequestMember { MemberId = "dynamic", GroupInstanceId = null, Reason = "remove" }.Write(ref writer, version);
+        string? memberId;
+        string? instanceId;
+        string? reason = null;
+        long remaining;
+        {
+            var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+            if (version >= 4)
+            {
+                memberId = reader.ReadCompactString();
+                instanceId = reader.ReadCompactString();
+                if (version >= 5) reason = reader.ReadCompactString();
+                reader.SkipTaggedFields();
+            }
+            else
+            {
+                memberId = reader.ReadString();
+                instanceId = reader.ReadString();
+            }
+            remaining = reader.Remaining;
+        }
+        await Assert.That(memberId).IsEqualTo("dynamic");
+        await Assert.That(instanceId).IsNull();
+        await Assert.That(reason).IsEqualTo(version >= 5 ? "remove" : null);
+        await Assert.That(remaining).IsEqualTo(0);
+    }
+
     private static LeaveGroupRequest CreateRequest() => new()
     {
         GroupId = "orders",

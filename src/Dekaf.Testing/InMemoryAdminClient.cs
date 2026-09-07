@@ -391,21 +391,14 @@ public sealed partial class InMemoryAdminClient :
         ArgumentNullException.ThrowIfNull(members);
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
-        var memberList = members.ToArray();
-        await ApplyAdminFaultAsync(cancellationToken, groupId: groupId).ConfigureAwait(false);
-
-        var results = memberList.Select(member => new ConsumerGroupMemberRemovalResult
+        var identities = members.Select(static member => new ConsumerGroupMemberIdentity
         {
-            GroupInstanceId = member.GroupInstanceId,
-            MemberId = string.Empty,
-            ErrorCode = Protocol.ErrorCode.None
+            GroupInstanceId = member?.GroupInstanceId
         }).ToArray();
-
-        return new RemoveMembersFromConsumerGroupResult
-        {
-            GroupId = groupId,
-            Members = results
-        };
+        identities = AdminClient.ValidateMemberRemoval(new ConsumerGroupMemberRemovalOptions { Members = identities });
+        await ApplyAdminFaultAsync(cancellationToken, groupId: groupId).ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
+        return _cluster.RemoveConsumerGroupMembers(groupId, identities);
     }
 
     public async ValueTask<IReadOnlyDictionary<TopicPartition, long>> ListConsumerGroupOffsetsAsync(

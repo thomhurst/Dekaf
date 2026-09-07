@@ -52,4 +52,7 @@ public sealed class InMemoryConsumerOptions
     /// Member ID reported by the fake consumer.
     /// </summary>
     public string? MemberId { get; init; }
+
+    /// <summary>Optional static membership identity used by administrative member removal.</summary>
+    public string? GroupInstanceId { get; init; }
 }

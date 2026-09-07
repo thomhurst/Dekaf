@@ -8,7 +8,7 @@ using NSubstitute;
 
 namespace Dekaf.Tests.Unit.Admin;
 
-public sealed class AdminClientRemoveMembersTests
+public sealed partial class AdminClientRemoveMembersTests
 {
     private const string GroupId = "orders";
 
@@ -238,7 +238,7 @@ public sealed class AdminClientRemoveMembersTests
 
     private static (AdminClient Admin, IKafkaConnection Connection) CreateAdmin(
         short leaveGroupMinVersion,
-        short leaveGroupMaxVersion)
+        short leaveGroupMaxVersion, bool modern = false)
     {
         var connection = Substitute.For<IKafkaConnection>();
         connection.BrokerId.Returns(1);
@@ -257,6 +257,9 @@ public sealed class AdminClientRemoveMembersTests
         metadataManager.Metadata.Update(metadata);
         metadataManager.SetApiVersion(ApiKey.Metadata, 9, 13);
         metadataManager.SetApiVersion(ApiKey.FindCoordinator, 4, 5);
+        metadataManager.SetApiVersion(ApiKey.DescribeGroups, 5, 6);
+        if (modern)
+            metadataManager.SetApiVersion(ApiKey.ConsumerGroupDescribe, 0, 1);
         metadataManager.SetApiVersion(ApiKey.LeaveGroup, leaveGroupMinVersion, leaveGroupMaxVersion);
 
         connection.SendAsync<MetadataRequest, MetadataResponse>(
@@ -275,6 +278,8 @@ public sealed class AdminClientRemoveMembersTests
                 [
                     new ApiVersion(ApiKey.Metadata, 9, 13),
                     new ApiVersion(ApiKey.FindCoordinator, 4, 5),
+                    new ApiVersion(ApiKey.DescribeGroups, 5, 6),
+                    ..(modern ? new[] { new ApiVersion(ApiKey.ConsumerGroupDescribe, 0, 1) } : []),
                     new ApiVersion(ApiKey.LeaveGroup, leaveGroupMinVersion, leaveGroupMaxVersion)
                 ]
             }));
