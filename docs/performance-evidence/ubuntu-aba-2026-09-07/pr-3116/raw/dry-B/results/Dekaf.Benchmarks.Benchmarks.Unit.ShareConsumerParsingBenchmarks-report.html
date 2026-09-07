@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang='en'>
+<head>
+<meta charset='utf-8' />
+<title>Dekaf.Benchmarks.Benchmarks.Unit.ShareConsumerParsingBenchmarks-20260907-170407</title>
+
+<style type="text/css">
+	table { border-collapse: collapse; display: block; width: 100%; overflow: auto; }
+	td, th { padding: 6px 13px; border: 1px solid #ddd; text-align: right; }
+	tr { background-color: #fff; border-top: 1px solid #ccc; }
+	tr:nth-child(even) { background: #f8f8f8; }
+</style>
+</head>
+<body>
+<pre><code>
+BenchmarkDotNet v0.15.8, Linux Ubuntu 24.04.4 LTS (Noble Numbat)
+AMD EPYC 7763 2.45GHz, 1 CPU, 4 logical and 2 physical cores
+.NET SDK 10.0.400
+  [Host] : .NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+</code></pre>
+<pre><code>Job=DryB  OutlierMode=DontRemove  Toolchain=InProcessEmitToolchain  
+IterationCount=1  LaunchCount=1  RunStrategy=ColdStart  
+UnrollFactor=1  WarmupCount=1  
+</code></pre>
+
+<table>
+<thead><tr><th>Method                  </th><th>RecordCount</th><th>HeaderCount</th><th>Mean</th><th>Error</th><th>Allocated</th>
+</tr>
+</thead><tbody><tr><td>ParseSynchronousBatch</td><td>1024</td><td>0</td><td>618.2 &mu;s</td><td>NA</td><td>90448 B</td>
+</tr><tr><td>ParseWarmPreparedBatch</td><td>1024</td><td>0</td><td>489.2 &mu;s</td><td>NA</td><td>90328 B</td>
+</tr><tr><td>TraverseRetainedBatch</td><td>1024</td><td>0</td><td>227.9 &mu;s</td><td>NA</td><td>-</td>
+</tr><tr><td>ParseBorrowedSynchronousBatch</td><td>1024</td><td>0</td><td>1,099.4 &mu;s</td><td>NA</td><td>128 B</td>
+</tr><tr><td>ParseBorrowedWarmPreparedBatch</td><td>1024</td><td>0</td><td>457.6 &mu;s</td><td>NA</td><td>128 B</td>
+</tr><tr><td>ParseBorrowedColdPreparedBatch</td><td>1024</td><td>0</td><td>1,735.1 &mu;s</td><td>NA</td><td>4024 B</td>
+</tr><tr><td>ParseColdPreparedBatch</td><td>1024</td><td>0</td><td>493.9 &mu;s</td><td>NA</td><td>123808 B</td>
+</tr></tbody></table>
+</body>
+</html>

@@ -1,0 +1,207 @@
+// Validating benchmarks:
+// ***** BenchmarkRunner: Start   *****
+// ***** Found 4 benchmark(s) in total *****
+// ***** Building 1 exe(s) in Parallel: Start   *****
+// ***** Done, took 00:00:00 (0.19 sec)   *****
+// Found 4 benchmarks:
+//   PartitionedLifetimeBenchmarks.ProcessLifetime: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [Mode=KeyRecordsDistinct]
+//   PartitionedLifetimeBenchmarks.ProcessLifetime: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [Mode=KeyBatchesDistinct]
+//   PartitionedLifetimeBenchmarks.ProcessLifetime: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [Mode=KeyRecordsPaired]
+//   PartitionedLifetimeBenchmarks.ProcessLifetime: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [Mode=KeyBatchesPaired]
+
+// **************************
+// Benchmark: PartitionedLifetimeBenchmarks.ProcessLifetime: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [Mode=KeyRecordsDistinct]
+// *** Execute ***
+// Launch: 1 / 1
+// ! Failed to set up priority High for process System.Diagnostics.Process (dotnet). Make sure you have the right permissions. Message: Permission denied
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.15.8
+// Runtime=.NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v4
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX10v1,AVX512 BF16+FP16,AVX512 BITALG+VBMI2+VNNI+VPOPCNTDQ,AVX512 IFMA+VBMI,AVX512 F+BW+CD+DQ+VL,AVX2+BMI1+BMI2+F16C+FMA+LZCNT+MOVBE,AVX,SSE3+SSSE3+SSE4.1+SSE4.2+POPCNT,X86Base+SSE+SSE2,AES+PCLMUL,AvxVnni,SERIALIZE VectorSize=256
+// Job: Job-XVLBGX(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1)
+
+WorkloadActual   1: 262144 op, 194147059.00 ns, 740.6123 ns/op
+
+WorkloadResult   1: 262144 op, 194147059.00 ns, 740.6123 ns/op
+// GC:  2 0 0 243295560 262144
+// Threading:  0 0 262144
+
+
+Mean = 740.612 ns, StdErr = 0.000 ns (0.00%), N = 1, StdDev = 0.000 ns
+Min = 740.612 ns, Q1 = 740.612 ns, Median = 740.612 ns, Q3 = 740.612 ns, Max = 740.612 ns
+IQR = 0.000 ns, LowerFence = 740.612 ns, UpperFence = 740.612 ns
+ConfidenceInterval = [NaN ns; NaN ns] (CI 99.9%), Margin = NaN ns (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+
+// ** Remained 3 (75.0 %) benchmark(s) to run. Estimated finish 2026-09-07 17:03 (0h 0m from now) **
+// **************************
+// Benchmark: PartitionedLifetimeBenchmarks.ProcessLifetime: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [Mode=KeyBatchesDistinct]
+// *** Execute ***
+// Launch: 1 / 1
+// ! Failed to set up priority High for process System.Diagnostics.Process (dotnet). Make sure you have the right permissions. Message: Permission denied
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.15.8
+// Runtime=.NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v4
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX10v1,AVX512 BF16+FP16,AVX512 BITALG+VBMI2+VNNI+VPOPCNTDQ,AVX512 IFMA+VBMI,AVX512 F+BW+CD+DQ+VL,AVX2+BMI1+BMI2+F16C+FMA+LZCNT+MOVBE,AVX,SSE3+SSSE3+SSE4.1+SSE4.2+POPCNT,X86Base+SSE+SSE2,AES+PCLMUL,AvxVnni,SERIALIZE VectorSize=256
+// Job: Job-XVLBGX(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1)
+
+WorkloadActual   1: 262144 op, 203418200.00 ns, 775.9789 ns/op
+
+WorkloadResult   1: 262144 op, 203418200.00 ns, 775.9789 ns/op
+// GC:  7 0 0 589325640 262144
+// Threading:  0 0 262144
+
+
+Mean = 775.979 ns, StdErr = 0.000 ns (0.00%), N = 1, StdDev = 0.000 ns
+Min = 775.979 ns, Q1 = 775.979 ns, Median = 775.979 ns, Q3 = 775.979 ns, Max = 775.979 ns
+IQR = 0.000 ns, LowerFence = 775.979 ns, UpperFence = 775.979 ns
+ConfidenceInterval = [NaN ns; NaN ns] (CI 99.9%), Margin = NaN ns (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+
+// ** Remained 2 (50.0 %) benchmark(s) to run. Estimated finish 2026-09-07 17:03 (0h 0m from now) **
+// **************************
+// Benchmark: PartitionedLifetimeBenchmarks.ProcessLifetime: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [Mode=KeyRecordsPaired]
+// *** Execute ***
+// Launch: 1 / 1
+// ! Failed to set up priority High for process System.Diagnostics.Process (dotnet). Make sure you have the right permissions. Message: Permission denied
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.15.8
+// Runtime=.NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v4
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX10v1,AVX512 BF16+FP16,AVX512 BITALG+VBMI2+VNNI+VPOPCNTDQ,AVX512 IFMA+VBMI,AVX512 F+BW+CD+DQ+VL,AVX2+BMI1+BMI2+F16C+FMA+LZCNT+MOVBE,AVX,SSE3+SSSE3+SSE4.1+SSE4.2+POPCNT,X86Base+SSE+SSE2,AES+PCLMUL,AvxVnni,SERIALIZE VectorSize=256
+// Job: Job-XVLBGX(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1)
+
+WorkloadActual   1: 262144 op, 243580680.00 ns, 929.1866 ns/op
+
+WorkloadResult   1: 262144 op, 243580680.00 ns, 929.1866 ns/op
+// GC:  3 0 0 305161544 262144
+// Threading:  0 0 262144
+
+
+Mean = 929.187 ns, StdErr = 0.000 ns (0.00%), N = 1, StdDev = 0.000 ns
+Min = 929.187 ns, Q1 = 929.187 ns, Median = 929.187 ns, Q3 = 929.187 ns, Max = 929.187 ns
+IQR = 0.000 ns, LowerFence = 929.187 ns, UpperFence = 929.187 ns
+ConfidenceInterval = [NaN ns; NaN ns] (CI 99.9%), Margin = NaN ns (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+
+// ** Remained 1 (25.0 %) benchmark(s) to run. Estimated finish 2026-09-07 17:03 (0h 0m from now) **
+// **************************
+// Benchmark: PartitionedLifetimeBenchmarks.ProcessLifetime: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [Mode=KeyBatchesPaired]
+// *** Execute ***
+// Launch: 1 / 1
+// ! Failed to set up priority High for process System.Diagnostics.Process (dotnet). Make sure you have the right permissions. Message: Permission denied
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.15.8
+// Runtime=.NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v4
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX10v1,AVX512 BF16+FP16,AVX512 BITALG+VBMI2+VNNI+VPOPCNTDQ,AVX512 IFMA+VBMI,AVX512 F+BW+CD+DQ+VL,AVX2+BMI1+BMI2+F16C+FMA+LZCNT+MOVBE,AVX,SSE3+SSSE3+SSE4.1+SSE4.2+POPCNT,X86Base+SSE+SSE2,AES+PCLMUL,AvxVnni,SERIALIZE VectorSize=256
+// Job: Job-XVLBGX(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1)
+
+WorkloadActual   1: 262144 op, 261526664.00 ns, 997.6451 ns/op
+
+WorkloadResult   1: 262144 op, 261526664.00 ns, 997.6451 ns/op
+// GC:  7 0 0 639657288 262144
+// Threading:  0 0 262144
+
+
+Mean = 997.645 ns, StdErr = 0.000 ns (0.00%), N = 1, StdDev = 0.000 ns
+Min = 997.645 ns, Q1 = 997.645 ns, Median = 997.645 ns, Q3 = 997.645 ns, Max = 997.645 ns
+IQR = 0.000 ns, LowerFence = 997.645 ns, UpperFence = 997.645 ns
+ConfidenceInterval = [NaN ns; NaN ns] (CI 99.9%), Margin = NaN ns (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+
+// ** Remained 0 (0.0 %) benchmark(s) to run. Estimated finish 2026-09-07 17:03 (0h 0m from now) **
+// ***** BenchmarkRunner: Finish  *****
+
+// * Export *
+  home/runner/work/Dekaf/Dekaf/aba-results/dry-A/results/Dekaf.Benchmarks.PartitionedLifetimeBenchmarks-report.csv
+  home/runner/work/Dekaf/Dekaf/aba-results/dry-A/results/Dekaf.Benchmarks.PartitionedLifetimeBenchmarks-report-github.md
+  home/runner/work/Dekaf/Dekaf/aba-results/dry-A/results/Dekaf.Benchmarks.PartitionedLifetimeBenchmarks-report.html
+  home/runner/work/Dekaf/Dekaf/aba-results/dry-A/results/Dekaf.Benchmarks.PartitionedLifetimeBenchmarks-report-full.json
+
+// * Detailed results *
+PartitionedLifetimeBenchmarks.ProcessLifetime: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [Mode=KeyRecordsDistinct]
+Runtime = ; GC = 
+Mean = 740.612 ns, StdErr = 0.000 ns (0.00%), N = 1, StdDev = 0.000 ns
+Min = 740.612 ns, Q1 = 740.612 ns, Median = 740.612 ns, Q3 = 740.612 ns, Max = 740.612 ns
+IQR = 0.000 ns, LowerFence = 740.612 ns, UpperFence = 740.612 ns
+ConfidenceInterval = [NaN ns; NaN ns] (CI 99.9%), Margin = NaN ns (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+-------------------- Histogram --------------------
+[740.112 ns ; 741.112 ns) | @
+---------------------------------------------------
+
+PartitionedLifetimeBenchmarks.ProcessLifetime: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [Mode=KeyBatchesDistinct]
+Runtime = ; GC = 
+Mean = 775.979 ns, StdErr = 0.000 ns (0.00%), N = 1, StdDev = 0.000 ns
+Min = 775.979 ns, Q1 = 775.979 ns, Median = 775.979 ns, Q3 = 775.979 ns, Max = 775.979 ns
+IQR = 0.000 ns, LowerFence = 775.979 ns, UpperFence = 775.979 ns
+ConfidenceInterval = [NaN ns; NaN ns] (CI 99.9%), Margin = NaN ns (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+-------------------- Histogram --------------------
+[775.479 ns ; 776.479 ns) | @
+---------------------------------------------------
+
+PartitionedLifetimeBenchmarks.ProcessLifetime: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [Mode=KeyRecordsPaired]
+Runtime = ; GC = 
+Mean = 929.187 ns, StdErr = 0.000 ns (0.00%), N = 1, StdDev = 0.000 ns
+Min = 929.187 ns, Q1 = 929.187 ns, Median = 929.187 ns, Q3 = 929.187 ns, Max = 929.187 ns
+IQR = 0.000 ns, LowerFence = 929.187 ns, UpperFence = 929.187 ns
+ConfidenceInterval = [NaN ns; NaN ns] (CI 99.9%), Margin = NaN ns (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+-------------------- Histogram --------------------
+[928.687 ns ; 929.687 ns) | @
+---------------------------------------------------
+
+PartitionedLifetimeBenchmarks.ProcessLifetime: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [Mode=KeyBatchesPaired]
+Runtime = ; GC = 
+Mean = 997.645 ns, StdErr = 0.000 ns (0.00%), N = 1, StdDev = 0.000 ns
+Min = 997.645 ns, Q1 = 997.645 ns, Median = 997.645 ns, Q3 = 997.645 ns, Max = 997.645 ns
+IQR = 0.000 ns, LowerFence = 997.645 ns, UpperFence = 997.645 ns
+ConfidenceInterval = [NaN ns; NaN ns] (CI 99.9%), Margin = NaN ns (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+-------------------- Histogram --------------------
+[997.145 ns ; 998.145 ns) | @
+---------------------------------------------------
+
+// * Summary *
+
+BenchmarkDotNet v0.15.8, Linux Ubuntu 24.04.4 LTS (Noble Numbat)
+Intel Xeon 6973P-C 2.60GHz, 1 CPU, 4 logical and 2 physical cores
+.NET SDK 10.0.400
+  [Host] : .NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v4
+
+Job=DryA  OutlierMode=DontRemove  Toolchain=InProcessEmitToolchain  
+IterationCount=1  LaunchCount=1  RunStrategy=ColdStart  
+UnrollFactor=1  WarmupCount=1  
+
+| Method          | Mode               | Mean     | Error | Gen0   | Allocated |
+|---------------- |------------------- |---------:|------:|-------:|----------:|
+| ProcessLifetime | KeyRecordsDistinct | 740.6 ns |    NA | 0.0076 |     928 B |
+| ProcessLifetime | KeyBatchesDistinct | 776.0 ns |    NA | 0.0267 |    2248 B |
+| ProcessLifetime | KeyRecordsPaired   | 929.2 ns |    NA | 0.0114 |    1164 B |
+| ProcessLifetime | KeyBatchesPaired   | 997.6 ns |    NA | 0.0267 |    2440 B |
+
+// * Legends *
+  Mode      : Value of the 'Mode' parameter
+  Mean      : Arithmetic mean of all measurements
+  Error     : Half of 99.9% confidence interval
+  Gen0      : GC Generation 0 collects per 1000 operations
+  Allocated : Allocated memory per single operation (managed only, inclusive, 1KB = 1024B)
+  1 ns      : 1 Nanosecond (0.000000001 sec)
+
+// * Diagnostic Output - MemoryDiagnoser *
+
+
+// ***** BenchmarkRunner: End *****
+Run time: 00:00:02 (2.99 sec), executed benchmarks: 4
+
+Global total time: 00:00:03 (3.5 sec), executed benchmarks: 4
+// * Artifacts cleanup *
+Artifacts cleanup is finished

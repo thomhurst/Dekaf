@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang='en'>
+<head>
+<meta charset='utf-8' />
+<title>Dekaf.Benchmarks.PartitionedLifetimeBenchmarks-20260907-170359</title>
+
+<style type="text/css">
+	table { border-collapse: collapse; display: block; width: 100%; overflow: auto; }
+	td, th { padding: 6px 13px; border: 1px solid #ddd; text-align: right; }
+	tr { background-color: #fff; border-top: 1px solid #ccc; }
+	tr:nth-child(even) { background: #f8f8f8; }
+</style>
+</head>
+<body>
+<pre><code>
+BenchmarkDotNet v0.15.8, Linux Ubuntu 24.04.4 LTS (Noble Numbat)
+Intel Xeon 6973P-C 2.60GHz, 1 CPU, 4 logical and 2 physical cores
+.NET SDK 10.0.400
+  [Host] : .NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v4
+</code></pre>
+<pre><code>Job=A1  OutlierMode=DontRemove  Toolchain=InProcessEmitToolchain  
+IterationCount=25  IterationTime=250ms  WarmupCount=8  
+</code></pre>
+
+<table>
+<thead><tr><th>Method   </th><th>Mode        </th><th>Mean</th><th>Error</th><th>StdDev</th><th>Gen0</th><th>Allocated</th>
+</tr>
+</thead><tbody><tr><td>ProcessLifetime</td><td>KeyRecordsDistinct</td><td>735.7 ns</td><td>26.62 ns</td><td>35.53 ns</td><td>0.0076</td><td>928 B</td>
+</tr><tr><td>ProcessLifetime</td><td>KeyBatchesDistinct</td><td>768.9 ns</td><td>8.15 ns</td><td>10.87 ns</td><td>0.0267</td><td>2248 B</td>
+</tr><tr><td>ProcessLifetime</td><td>KeyRecordsPaired</td><td>933.7 ns</td><td>21.33 ns</td><td>28.48 ns</td><td>0.0114</td><td>1164 B</td>
+</tr><tr><td>ProcessLifetime</td><td>KeyBatchesPaired</td><td>1,030.0 ns</td><td>15.28 ns</td><td>20.39 ns</td><td>0.0267</td><td>2440 B</td>
+</tr></tbody></table>
+</body>
+</html>

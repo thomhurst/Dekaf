@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang='en'>
+<head>
+<meta charset='utf-8' />
+<title>Dekaf.Benchmarks.Benchmarks.Unit.ConsumerFollowerOffsetRetryBenchmarks-20260907-170518</title>
+
+<style type="text/css">
+	table { border-collapse: collapse; display: block; width: 100%; overflow: auto; }
+	td, th { padding: 6px 13px; border: 1px solid #ddd; text-align: right; }
+	tr { background-color: #fff; border-top: 1px solid #ccc; }
+	tr:nth-child(even) { background: #f8f8f8; }
+</style>
+</head>
+<body>
+<pre><code>
+BenchmarkDotNet v0.15.8, Linux Ubuntu 24.04.4 LTS (Noble Numbat)
+INTEL XEON PLATINUM 8573C 2.30GHz, 1 CPU, 4 logical and 2 physical cores
+.NET SDK 10.0.400
+  [Host] : .NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v4
+</code></pre>
+<pre><code>Job=B  OutlierMode=DontRemove  Toolchain=InProcessEmitToolchain  
+IterationCount=25  IterationTime=250ms  WarmupCount=8  
+</code></pre>
+
+<table>
+<thead><tr><th>Method       </th><th>Prefetch</th><th>Mean</th><th>Error</th><th>StdDev</th><th>Allocated</th>
+</tr>
+</thead><tbody><tr><td>SuccessfulFetch</td><td>False</td><td>1,186.2 ns</td><td>28.74 ns</td><td>38.37 ns</td><td>184 B</td>
+</tr><tr><td>FollowerError</td><td>False</td><td>1,204.3 ns</td><td>39.01 ns</td><td>52.08 ns</td><td>184 B</td>
+</tr><tr><td>LeaderError</td><td>False</td><td>1,444.3 ns</td><td>30.45 ns</td><td>40.65 ns</td><td>248 B</td>
+</tr><tr><td>ResponsePoolControl</td><td>False</td><td>154.5 ns</td><td>3.92 ns</td><td>5.23 ns</td><td>-</td>
+</tr><tr><td>SuccessfulFetch</td><td>True</td><td>1,248.4 ns</td><td>42.25 ns</td><td>56.40 ns</td><td>184 B</td>
+</tr><tr><td>FollowerError</td><td>True</td><td>1,201.8 ns</td><td>31.17 ns</td><td>41.62 ns</td><td>184 B</td>
+</tr><tr><td>LeaderError</td><td>True</td><td>1,473.3 ns</td><td>29.87 ns</td><td>39.87 ns</td><td>248 B</td>
+</tr><tr><td>ResponsePoolControl</td><td>True</td><td>157.6 ns</td><td>4.32 ns</td><td>5.77 ns</td><td>-</td>
+</tr></tbody></table>
+</body>
+</html>

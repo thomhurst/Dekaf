@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang='en'>
+<head>
+<meta charset='utf-8' />
+<title>BatchReadBench-20260907-170554</title>
+
+<style type="text/css">
+	table { border-collapse: collapse; display: block; width: 100%; overflow: auto; }
+	td, th { padding: 6px 13px; border: 1px solid #ddd; text-align: right; }
+	tr { background-color: #fff; border-top: 1px solid #ccc; }
+	tr:nth-child(even) { background: #f8f8f8; }
+</style>
+</head>
+<body>
+<pre><code>
+BenchmarkDotNet v0.15.8, Linux Ubuntu 24.04.4 LTS (Noble Numbat)
+AMD EPYC 9V74 2.60GHz, 1 CPU, 4 logical and 2 physical cores
+.NET SDK 10.0.400
+  [Host] : .NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+</code></pre>
+<pre><code>Job=B  OutlierMode=DontRemove  Toolchain=InProcessEmitToolchain  
+IterationCount=25  IterationTime=250ms  WarmupCount=8  
+</code></pre>
+
+<table>
+<thead><tr><th>Method</th><th>Mean</th><th>Error</th><th>StdDev</th><th>Allocated</th>
+</tr>
+</thead><tbody><tr><td>Typed</td><td>64.573 &mu;s</td><td>0.8144 &mu;s</td><td>1.0872 &mu;s</td><td>128 B</td>
+</tr><tr><td>TypedEpoch</td><td>64.172 &mu;s</td><td>0.2420 &mu;s</td><td>0.3231 &mu;s</td><td>128 B</td>
+</tr><tr><td>RawControl</td><td>7.403 &mu;s</td><td>0.0592 &mu;s</td><td>0.0791 &mu;s</td><td>72 B</td>
+</tr></tbody></table>
+</body>
+</html>

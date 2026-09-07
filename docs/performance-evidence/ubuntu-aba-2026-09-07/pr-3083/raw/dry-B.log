@@ -1,0 +1,376 @@
+// Validating benchmarks:
+// ***** BenchmarkRunner: Start   *****
+// ***** Found 7 benchmark(s) in total *****
+// ***** Building 1 exe(s) in Parallel: Start   *****
+// ***** Done, took 00:00:00 (0.07 sec)   *****
+// Found 4 benchmarks:
+//   BatchBoundBench.ConstructPollBatch: DryB(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [Batches=1]
+//   BatchBoundBench.ParseFetch: DryB(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [Batches=1]
+//   BatchBoundBench.ConstructPollBatch: DryB(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [Batches=128]
+//   BatchBoundBench.ParseFetch: DryB(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [Batches=128]
+
+// **************************
+// Benchmark: BatchBoundBench.ConstructPollBatch: DryB(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [Batches=1]
+// *** Execute ***
+// Launch: 1 / 1
+// ! Failed to set up priority High for process System.Diagnostics.Process (dotnet). Make sure you have the right permissions. Message: Permission denied
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.15.8
+// Runtime=.NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2+BMI1+BMI2+F16C+FMA+LZCNT+MOVBE,AVX,SSE3+SSSE3+SSE4.1+SSE4.2+POPCNT,X86Base+SSE+SSE2,AES+PCLMUL VectorSize=256
+// Job: Job-XVLBGX(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1)
+
+WorkloadActual   1: 1 op, 229910.00 ns, 229.9100 us/op
+
+WorkloadResult   1: 1 op, 229910.00 ns, 229.9100 us/op
+// GC:  0 0 0 128 1
+// Threading:  0 0 1
+
+
+Mean = 229.910 us, StdErr = 0.000 us (0.00%), N = 1, StdDev = 0.000 us
+Min = 229.910 us, Q1 = 229.910 us, Median = 229.910 us, Q3 = 229.910 us, Max = 229.910 us
+IQR = 0.000 us, LowerFence = 229.910 us, UpperFence = 229.910 us
+ConfidenceInterval = [NaN us; NaN us] (CI 99.9%), Margin = NaN us (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+
+// ** Remained 6 (85.7 %) benchmark(s) to run. Estimated finish 2026-09-07 17:03 (0h 0m from now) **
+// **************************
+// Benchmark: BatchBoundBench.ParseFetch: DryB(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [Batches=1]
+// *** Execute ***
+// Launch: 1 / 1
+// ! Failed to set up priority High for process System.Diagnostics.Process (dotnet). Make sure you have the right permissions. Message: Permission denied
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.15.8
+// Runtime=.NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2+BMI1+BMI2+F16C+FMA+LZCNT+MOVBE,AVX,SSE3+SSSE3+SSE4.1+SSE4.2+POPCNT,X86Base+SSE+SSE2,AES+PCLMUL VectorSize=256
+// Job: Job-XVLBGX(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1)
+
+WorkloadActual   1: 1 op, 185303.00 ns, 185.3030 us/op
+
+WorkloadResult   1: 1 op, 185303.00 ns, 185.3030 us/op
+// GC:  0 0 0 0 1
+// Threading:  0 0 1
+
+
+Mean = 185.303 us, StdErr = 0.000 us (0.00%), N = 1, StdDev = 0.000 us
+Min = 185.303 us, Q1 = 185.303 us, Median = 185.303 us, Q3 = 185.303 us, Max = 185.303 us
+IQR = 0.000 us, LowerFence = 185.303 us, UpperFence = 185.303 us
+ConfidenceInterval = [NaN us; NaN us] (CI 99.9%), Margin = NaN us (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+
+// ** Remained 5 (71.4 %) benchmark(s) to run. Estimated finish 2026-09-07 17:03 (0h 0m from now) **
+// **************************
+// Benchmark: BatchBoundBench.ConstructPollBatch: DryB(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [Batches=128]
+// *** Execute ***
+// Launch: 1 / 1
+// ! Failed to set up priority High for process System.Diagnostics.Process (dotnet). Make sure you have the right permissions. Message: Permission denied
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.15.8
+// Runtime=.NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2+BMI1+BMI2+F16C+FMA+LZCNT+MOVBE,AVX,SSE3+SSSE3+SSE4.1+SSE4.2+POPCNT,X86Base+SSE+SSE2,AES+PCLMUL VectorSize=256
+// Job: Job-XVLBGX(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1)
+
+WorkloadActual   1: 1 op, 206825.00 ns, 206.8250 us/op
+
+WorkloadResult   1: 1 op, 206825.00 ns, 206.8250 us/op
+// GC:  0 0 0 128 1
+// Threading:  0 0 1
+
+
+Mean = 206.825 us, StdErr = 0.000 us (0.00%), N = 1, StdDev = 0.000 us
+Min = 206.825 us, Q1 = 206.825 us, Median = 206.825 us, Q3 = 206.825 us, Max = 206.825 us
+IQR = 0.000 us, LowerFence = 206.825 us, UpperFence = 206.825 us
+ConfidenceInterval = [NaN us; NaN us] (CI 99.9%), Margin = NaN us (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+
+// ** Remained 4 (57.1 %) benchmark(s) to run. Estimated finish 2026-09-07 17:03 (0h 0m from now) **
+// **************************
+// Benchmark: BatchBoundBench.ParseFetch: DryB(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [Batches=128]
+// *** Execute ***
+// Launch: 1 / 1
+// ! Failed to set up priority High for process System.Diagnostics.Process (dotnet). Make sure you have the right permissions. Message: Permission denied
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.15.8
+// Runtime=.NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2+BMI1+BMI2+F16C+FMA+LZCNT+MOVBE,AVX,SSE3+SSSE3+SSE4.1+SSE4.2+POPCNT,X86Base+SSE+SSE2,AES+PCLMUL VectorSize=256
+// Job: Job-XVLBGX(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1)
+
+WorkloadActual   1: 1 op, 191173.00 ns, 191.1730 us/op
+
+WorkloadResult   1: 1 op, 191173.00 ns, 191.1730 us/op
+// GC:  0 0 0 0 1
+// Threading:  0 0 1
+
+
+Mean = 191.173 us, StdErr = 0.000 us (0.00%), N = 1, StdDev = 0.000 us
+Min = 191.173 us, Q1 = 191.173 us, Median = 191.173 us, Q3 = 191.173 us, Max = 191.173 us
+IQR = 0.000 us, LowerFence = 191.173 us, UpperFence = 191.173 us
+ConfidenceInterval = [NaN us; NaN us] (CI 99.9%), Margin = NaN us (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+
+// ** Remained 3 (42.9 %) benchmark(s) to run. Estimated finish 2026-09-07 17:03 (0h 0m from now) **
+// ***** BenchmarkRunner: Finish  *****
+
+// * Export *
+  home/runner/work/Dekaf/Dekaf/aba-results/dry-B/results/BatchBoundBench-report.csv
+  home/runner/work/Dekaf/Dekaf/aba-results/dry-B/results/BatchBoundBench-report-github.md
+  home/runner/work/Dekaf/Dekaf/aba-results/dry-B/results/BatchBoundBench-report.html
+  home/runner/work/Dekaf/Dekaf/aba-results/dry-B/results/BatchBoundBench-report-full.json
+
+// * Detailed results *
+BatchBoundBench.ConstructPollBatch: DryB(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [Batches=1]
+Runtime = ; GC = 
+Mean = 229.910 us, StdErr = 0.000 us (0.00%), N = 1, StdDev = 0.000 us
+Min = 229.910 us, Q1 = 229.910 us, Median = 229.910 us, Q3 = 229.910 us, Max = 229.910 us
+IQR = 0.000 us, LowerFence = 229.910 us, UpperFence = 229.910 us
+ConfidenceInterval = [NaN us; NaN us] (CI 99.9%), Margin = NaN us (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+-------------------- Histogram --------------------
+[229.910 us ; 229.911 us) | @
+---------------------------------------------------
+
+BatchBoundBench.ParseFetch: DryB(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [Batches=1]
+Runtime = ; GC = 
+Mean = 185.303 us, StdErr = 0.000 us (0.00%), N = 1, StdDev = 0.000 us
+Min = 185.303 us, Q1 = 185.303 us, Median = 185.303 us, Q3 = 185.303 us, Max = 185.303 us
+IQR = 0.000 us, LowerFence = 185.303 us, UpperFence = 185.303 us
+ConfidenceInterval = [NaN us; NaN us] (CI 99.9%), Margin = NaN us (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+-------------------- Histogram --------------------
+[185.303 us ; 185.304 us) | @
+---------------------------------------------------
+
+BatchBoundBench.ConstructPollBatch: DryB(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [Batches=128]
+Runtime = ; GC = 
+Mean = 206.825 us, StdErr = 0.000 us (0.00%), N = 1, StdDev = 0.000 us
+Min = 206.825 us, Q1 = 206.825 us, Median = 206.825 us, Q3 = 206.825 us, Max = 206.825 us
+IQR = 0.000 us, LowerFence = 206.825 us, UpperFence = 206.825 us
+ConfidenceInterval = [NaN us; NaN us] (CI 99.9%), Margin = NaN us (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+-------------------- Histogram --------------------
+[206.825 us ; 206.826 us) | @
+---------------------------------------------------
+
+BatchBoundBench.ParseFetch: DryB(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [Batches=128]
+Runtime = ; GC = 
+Mean = 191.173 us, StdErr = 0.000 us (0.00%), N = 1, StdDev = 0.000 us
+Min = 191.173 us, Q1 = 191.173 us, Median = 191.173 us, Q3 = 191.173 us, Max = 191.173 us
+IQR = 0.000 us, LowerFence = 191.173 us, UpperFence = 191.173 us
+ConfidenceInterval = [NaN us; NaN us] (CI 99.9%), Margin = NaN us (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+-------------------- Histogram --------------------
+[191.173 us ; 191.173 us) | @
+---------------------------------------------------
+
+// * Summary *
+
+BenchmarkDotNet v0.15.8, Linux Ubuntu 24.04.4 LTS (Noble Numbat)
+AMD EPYC 9V74 2.60GHz, 1 CPU, 4 logical and 2 physical cores
+.NET SDK 10.0.400
+  [Host] : .NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+
+Job=DryB  OutlierMode=DontRemove  Toolchain=InProcessEmitToolchain  
+IterationCount=1  LaunchCount=1  RunStrategy=ColdStart  
+UnrollFactor=1  WarmupCount=1  
+
+| Method             | Batches | Mean     | Error | Allocated |
+|------------------- |-------- |---------:|------:|----------:|
+| ConstructPollBatch | 1       | 229.9 us |    NA |     128 B |
+| ParseFetch         | 1       | 185.3 us |    NA |         - |
+| ConstructPollBatch | 128     | 206.8 us |    NA |     128 B |
+| ParseFetch         | 128     | 191.2 us |    NA |         - |
+
+// * Warnings *
+MinIterationTime
+  BatchBoundBench.ConstructPollBatch: DryB -> The minimum observed iteration time is 229.91us which is very small. It's recommended to increase it to at least 100ms using more operations.
+  BatchBoundBench.ParseFetch: DryB         -> The minimum observed iteration time is 185.303us which is very small. It's recommended to increase it to at least 100ms using more operations.
+  BatchBoundBench.ConstructPollBatch: DryB -> The minimum observed iteration time is 206.825us which is very small. It's recommended to increase it to at least 100ms using more operations.
+  BatchBoundBench.ParseFetch: DryB         -> The minimum observed iteration time is 191.173us which is very small. It's recommended to increase it to at least 100ms using more operations.
+
+// * Legends *
+  Batches   : Value of the 'Batches' parameter
+  Mean      : Arithmetic mean of all measurements
+  Error     : Half of 99.9% confidence interval
+  Allocated : Allocated memory per single operation (managed only, inclusive, 1KB = 1024B)
+  1 us      : 1 Microsecond (0.000001 sec)
+
+// * Diagnostic Output - MemoryDiagnoser *
+
+
+// ***** BenchmarkRunner: End *****
+Run time: 00:00:00 (0.23 sec), executed benchmarks: 4
+
+// Found 3 benchmarks:
+//   BatchReadBench.Typed: DryB(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1)
+//   BatchReadBench.TypedEpoch: DryB(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1)
+//   BatchReadBench.RawControl: DryB(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1)
+
+// **************************
+// Benchmark: BatchReadBench.Typed: DryB(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1)
+// *** Execute ***
+// Launch: 1 / 1
+// ! Failed to set up priority High for process System.Diagnostics.Process (dotnet). Make sure you have the right permissions. Message: Permission denied
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.15.8
+// Runtime=.NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2+BMI1+BMI2+F16C+FMA+LZCNT+MOVBE,AVX,SSE3+SSSE3+SSE4.1+SSE4.2+POPCNT,X86Base+SSE+SSE2,AES+PCLMUL VectorSize=256
+// Job: Job-XVLBGX(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1)
+
+WorkloadActual   1: 1 op, 283608.00 ns, 283.6080 us/op
+
+WorkloadResult   1: 1 op, 283608.00 ns, 283.6080 us/op
+// GC:  0 0 0 128 1
+// Threading:  0 0 1
+
+
+Mean = 283.608 us, StdErr = 0.000 us (0.00%), N = 1, StdDev = 0.000 us
+Min = 283.608 us, Q1 = 283.608 us, Median = 283.608 us, Q3 = 283.608 us, Max = 283.608 us
+IQR = 0.000 us, LowerFence = 283.608 us, UpperFence = 283.608 us
+ConfidenceInterval = [NaN us; NaN us] (CI 99.9%), Margin = NaN us (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+
+// ** Remained 2 (28.6 %) benchmark(s) to run. Estimated finish 2026-09-07 17:03 (0h 0m from now) **
+// **************************
+// Benchmark: BatchReadBench.TypedEpoch: DryB(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1)
+// *** Execute ***
+// Launch: 1 / 1
+// ! Failed to set up priority High for process System.Diagnostics.Process (dotnet). Make sure you have the right permissions. Message: Permission denied
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.15.8
+// Runtime=.NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2+BMI1+BMI2+F16C+FMA+LZCNT+MOVBE,AVX,SSE3+SSSE3+SSE4.1+SSE4.2+POPCNT,X86Base+SSE+SSE2,AES+PCLMUL VectorSize=256
+// Job: Job-XVLBGX(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1)
+
+WorkloadActual   1: 1 op, 279252.00 ns, 279.2520 us/op
+
+WorkloadResult   1: 1 op, 279252.00 ns, 279.2520 us/op
+// GC:  0 0 0 128 1
+// Threading:  0 0 1
+
+
+Mean = 279.252 us, StdErr = 0.000 us (0.00%), N = 1, StdDev = 0.000 us
+Min = 279.252 us, Q1 = 279.252 us, Median = 279.252 us, Q3 = 279.252 us, Max = 279.252 us
+IQR = 0.000 us, LowerFence = 279.252 us, UpperFence = 279.252 us
+ConfidenceInterval = [NaN us; NaN us] (CI 99.9%), Margin = NaN us (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+
+// ** Remained 1 (14.3 %) benchmark(s) to run. Estimated finish 2026-09-07 17:03 (0h 0m from now) **
+// **************************
+// Benchmark: BatchReadBench.RawControl: DryB(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1)
+// *** Execute ***
+// Launch: 1 / 1
+// ! Failed to set up priority High for process System.Diagnostics.Process (dotnet). Make sure you have the right permissions. Message: Permission denied
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.15.8
+// Runtime=.NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2+BMI1+BMI2+F16C+FMA+LZCNT+MOVBE,AVX,SSE3+SSSE3+SSE4.1+SSE4.2+POPCNT,X86Base+SSE+SSE2,AES+PCLMUL VectorSize=256
+// Job: Job-XVLBGX(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1)
+
+WorkloadActual   1: 1 op, 232823.00 ns, 232.8230 us/op
+
+WorkloadResult   1: 1 op, 232823.00 ns, 232.8230 us/op
+// GC:  0 0 0 72 1
+// Threading:  0 0 1
+
+
+Mean = 232.823 us, StdErr = 0.000 us (0.00%), N = 1, StdDev = 0.000 us
+Min = 232.823 us, Q1 = 232.823 us, Median = 232.823 us, Q3 = 232.823 us, Max = 232.823 us
+IQR = 0.000 us, LowerFence = 232.823 us, UpperFence = 232.823 us
+ConfidenceInterval = [NaN us; NaN us] (CI 99.9%), Margin = NaN us (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+
+// ** Remained 0 (0.0 %) benchmark(s) to run. Estimated finish 2026-09-07 17:03 (0h 0m from now) **
+// ***** BenchmarkRunner: Finish  *****
+
+// * Export *
+  home/runner/work/Dekaf/Dekaf/aba-results/dry-B/results/BatchReadBench-report.csv
+  home/runner/work/Dekaf/Dekaf/aba-results/dry-B/results/BatchReadBench-report-github.md
+  home/runner/work/Dekaf/Dekaf/aba-results/dry-B/results/BatchReadBench-report.html
+  home/runner/work/Dekaf/Dekaf/aba-results/dry-B/results/BatchReadBench-report-full.json
+
+// * Detailed results *
+BatchReadBench.Typed: DryB(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1)
+Runtime = ; GC = 
+Mean = 283.608 us, StdErr = 0.000 us (0.00%), N = 1, StdDev = 0.000 us
+Min = 283.608 us, Q1 = 283.608 us, Median = 283.608 us, Q3 = 283.608 us, Max = 283.608 us
+IQR = 0.000 us, LowerFence = 283.608 us, UpperFence = 283.608 us
+ConfidenceInterval = [NaN us; NaN us] (CI 99.9%), Margin = NaN us (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+-------------------- Histogram --------------------
+[283.608 us ; 283.608 us) | @
+---------------------------------------------------
+
+BatchReadBench.TypedEpoch: DryB(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1)
+Runtime = ; GC = 
+Mean = 279.252 us, StdErr = 0.000 us (0.00%), N = 1, StdDev = 0.000 us
+Min = 279.252 us, Q1 = 279.252 us, Median = 279.252 us, Q3 = 279.252 us, Max = 279.252 us
+IQR = 0.000 us, LowerFence = 279.252 us, UpperFence = 279.252 us
+ConfidenceInterval = [NaN us; NaN us] (CI 99.9%), Margin = NaN us (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+-------------------- Histogram --------------------
+[279.252 us ; 279.252 us) | @
+---------------------------------------------------
+
+BatchReadBench.RawControl: DryB(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1)
+Runtime = ; GC = 
+Mean = 232.823 us, StdErr = 0.000 us (0.00%), N = 1, StdDev = 0.000 us
+Min = 232.823 us, Q1 = 232.823 us, Median = 232.823 us, Q3 = 232.823 us, Max = 232.823 us
+IQR = 0.000 us, LowerFence = 232.823 us, UpperFence = 232.823 us
+ConfidenceInterval = [NaN us; NaN us] (CI 99.9%), Margin = NaN us (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+-------------------- Histogram --------------------
+[232.822 us ; 232.823 us) | @
+---------------------------------------------------
+
+// * Summary *
+
+BenchmarkDotNet v0.15.8, Linux Ubuntu 24.04.4 LTS (Noble Numbat)
+AMD EPYC 9V74 2.60GHz, 1 CPU, 4 logical and 2 physical cores
+.NET SDK 10.0.400
+  [Host] : .NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+
+Job=DryB  OutlierMode=DontRemove  Toolchain=InProcessEmitToolchain  
+IterationCount=1  LaunchCount=1  RunStrategy=ColdStart  
+UnrollFactor=1  WarmupCount=1  
+
+| Method     | Mean     | Error | Allocated |
+|----------- |---------:|------:|----------:|
+| Typed      | 283.6 us |    NA |     128 B |
+| TypedEpoch | 279.3 us |    NA |     128 B |
+| RawControl | 232.8 us |    NA |      72 B |
+
+// * Warnings *
+MinIterationTime
+  BatchReadBench.Typed: DryB      -> The minimum observed iteration time is 283.608us which is very small. It's recommended to increase it to at least 100ms using more operations.
+  BatchReadBench.TypedEpoch: DryB -> The minimum observed iteration time is 279.252us which is very small. It's recommended to increase it to at least 100ms using more operations.
+  BatchReadBench.RawControl: DryB -> The minimum observed iteration time is 232.823us which is very small. It's recommended to increase it to at least 100ms using more operations.
+
+// * Legends *
+  Mean      : Arithmetic mean of all measurements
+  Error     : Half of 99.9% confidence interval
+  Allocated : Allocated memory per single operation (managed only, inclusive, 1KB = 1024B)
+  1 us      : 1 Microsecond (0.000001 sec)
+
+// * Diagnostic Output - MemoryDiagnoser *
+
+
+// ***** BenchmarkRunner: End *****
+Run time: 00:00:00 (0.04 sec), executed benchmarks: 3
+
+Global total time: 00:00:00 (0.74 sec), executed benchmarks: 7
+// * Artifacts cleanup *
+Artifacts cleanup is finished

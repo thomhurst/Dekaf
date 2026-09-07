@@ -1,0 +1,80 @@
+[
+  {
+    "pr": 3082,
+    "branch": "issue-3048-binary-key-ordering",
+    "previous_head": "230a4e8f36e3ccfa0576707271f490c5a9c416f7",
+    "baseline": "a48fafe4121350da7ad83fcdd238f0f8039d6d59",
+    "candidate": "5492f3069a32c34bab5d8a1d8a001d0436d28086",
+    "workflow_branch": "perf/ubuntu-aba-20260907",
+    "run_id": 34145853504,
+    "run_url": "https://github.com/thomhurst/Dekaf/actions/runs/34145853504",
+    "start_comment_url": "https://github.com/thomhurst/Dekaf/pull/3082#issuecomment-5573735968"
+  },
+  {
+    "pr": 3083,
+    "branch": "issue-3047-offset-gaps",
+    "previous_head": "b5ec161fa32859d64ebbd8b8f021c490a438a2bc",
+    "baseline": "a48fafe4121350da7ad83fcdd238f0f8039d6d59",
+    "candidate": "0e327370e005254b8f268f6797970638b86a3fb4",
+    "workflow_branch": "perf/ubuntu-aba-20260907",
+    "run_id": 34145860025,
+    "run_url": "https://github.com/thomhurst/Dekaf/actions/runs/34145860025",
+    "start_comment_url": "https://github.com/thomhurst/Dekaf/pull/3083#issuecomment-5573736662"
+  },
+  {
+    "pr": 3085,
+    "branch": "issue-3041-outbox-metrics",
+    "previous_head": "a5e7222bb5b95a35170d146648e9a2b5c5d28bf6",
+    "baseline": "a48fafe4121350da7ad83fcdd238f0f8039d6d59",
+    "candidate": "3feaeaa1f544e7f2d308f9083d4e0134aeafcd0b",
+    "workflow_branch": "perf/ubuntu-aba-20260907",
+    "run_id": 34146134261,
+    "run_url": "https://github.com/thomhurst/Dekaf/actions/runs/34146134261",
+    "start_comment_url": "https://github.com/thomhurst/Dekaf/pull/3085#issuecomment-5573737380",
+    "initial_failed_run": "https://github.com/thomhurst/Dekaf/actions/runs/34145866589"
+  },
+  {
+    "pr": 3086,
+    "branch": "issue-3031-follower-offset-retry",
+    "previous_head": "881e4dccbf3a1576426129aaf13f2b1a027034dc",
+    "baseline": "a48fafe4121350da7ad83fcdd238f0f8039d6d59",
+    "candidate": "3d63058d67d273dbada8137558087bfdfbae5c92",
+    "workflow_branch": "perf/ubuntu-aba-20260907",
+    "run_id": 34145873466,
+    "run_url": "https://github.com/thomhurst/Dekaf/actions/runs/34145873466",
+    "start_comment_url": "https://github.com/thomhurst/Dekaf/pull/3086#issuecomment-5573738102"
+  },
+  {
+    "pr": 3109,
+    "branch": "issue-3101-drain-commits",
+    "previous_head": "6cf48371803569312afc489de538a6fb3abb8659",
+    "baseline": "a48fafe4121350da7ad83fcdd238f0f8039d6d59",
+    "candidate": "5446a4f35718f08496a846c7581160204717ea1a",
+    "workflow_branch": "perf/ubuntu-aba-20260907",
+    "run_id": 34145879464,
+    "run_url": "https://github.com/thomhurst/Dekaf/actions/runs/34145879464",
+    "start_comment_url": "https://github.com/thomhurst/Dekaf/pull/3109#issuecomment-5573738775"
+  },
+  {
+    "pr": 3116,
+    "branch": "issue-3103-share-batch-api",
+    "previous_head": "f489900975f88909848fd7b51cfbd23b65981cd8",
+    "baseline": "a48fafe4121350da7ad83fcdd238f0f8039d6d59",
+    "candidate": "677b93bc1aac9d70f474ada85117d99aa952734a",
+    "workflow_branch": "perf/ubuntu-aba-20260907",
+    "run_id": 34145885653,
+    "run_url": "https://github.com/thomhurst/Dekaf/actions/runs/34145885653",
+    "start_comment_url": "https://github.com/thomhurst/Dekaf/pull/3116#issuecomment-5573739484"
+  },
+  {
+    "pr": 3117,
+    "branch": "issue-3107-dispatch-allocations",
+    "previous_head": "e4a679abf0e8b5100e6beb1a1c81332df839a294",
+    "baseline": "a48fafe4121350da7ad83fcdd238f0f8039d6d59",
+    "candidate": "e9e6e3c1584c95c990755979672cf41de67f62c3",
+    "workflow_branch": "perf/ubuntu-aba-20260907",
+    "run_id": 34145891257,
+    "run_url": "https://github.com/thomhurst/Dekaf/actions/runs/34145891257",
+    "start_comment_url": "https://github.com/thomhurst/Dekaf/pull/3117#issuecomment-5573740229"
+  }
+]

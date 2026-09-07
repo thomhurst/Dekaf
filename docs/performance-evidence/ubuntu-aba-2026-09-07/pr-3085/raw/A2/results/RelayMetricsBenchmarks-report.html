@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang='en'>
+<head>
+<meta charset='utf-8' />
+<title>RelayMetricsBenchmarks-20260907-171438</title>
+
+<style type="text/css">
+	table { border-collapse: collapse; display: block; width: 100%; overflow: auto; }
+	td, th { padding: 6px 13px; border: 1px solid #ddd; text-align: right; }
+	tr { background-color: #fff; border-top: 1px solid #ccc; }
+	tr:nth-child(even) { background: #f8f8f8; }
+</style>
+</head>
+<body>
+<pre><code>
+BenchmarkDotNet v0.15.8, Linux Ubuntu 24.04.4 LTS (Noble Numbat)
+AMD EPYC 9V74 2.60GHz, 1 CPU, 4 logical and 2 physical cores
+.NET SDK 10.0.400
+  [Host] : .NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+</code></pre>
+<pre><code>Job=A2  OutlierMode=DontRemove  Toolchain=InProcessEmitToolchain  
+IterationCount=25  IterationTime=250ms  WarmupCount=8  
+</code></pre>
+
+<table>
+<thead><tr><th>Method    </th><th>Enabled</th><th>Mean</th><th>Error</th><th>StdDev</th><th>Median</th><th>Max </th><th>Gen0</th><th>Allocated</th>
+</tr>
+</thead><tbody><tr><td>SynchronousBatch</td><td>False</td><td>521.076 ns</td><td>1.1342 ns</td><td>1.5142 ns</td><td>520.675 ns</td><td>527.202 ns</td><td>0.0084</td><td>144 B</td>
+</tr><tr><td>PendingBatch</td><td>False</td><td>948.786 ns</td><td>3.9940 ns</td><td>5.3318 ns</td><td>947.910 ns</td><td>969.906 ns</td><td>0.0265</td><td>480 B</td>
+</tr><tr><td>PublisherControl</td><td>False</td><td>5.559 ns</td><td>0.0068 ns</td><td>0.0091 ns</td><td>5.558 ns</td><td>5.589 ns</td><td>-</td><td>-</td>
+</tr><tr><td>SynchronousBatch</td><td>True</td><td>517.182 ns</td><td>1.2267 ns</td><td>1.6376 ns</td><td>516.762 ns</td><td>524.047 ns</td><td>0.0083</td><td>144 B</td>
+</tr><tr><td>PendingBatch</td><td>True</td><td>959.202 ns</td><td>3.0806 ns</td><td>4.1125 ns</td><td>958.730 ns</td><td>971.803 ns</td><td>0.0270</td><td>480 B</td>
+</tr><tr><td>PublisherControl</td><td>True</td><td>5.559 ns</td><td>0.0072 ns</td><td>0.0096 ns</td><td>5.560 ns</td><td>5.592 ns</td><td>-</td><td>-</td>
+</tr></tbody></table>
+</body>
+</html>

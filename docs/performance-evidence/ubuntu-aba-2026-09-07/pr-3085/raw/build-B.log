@@ -1,0 +1,15 @@
+  Determining projects to restore...
+  Restored /home/runner/work/_temp/aba-3085/fixture-B/Dekaf.Benchmarks.csproj (in 536 ms).
+  Restored /home/runner/work/_temp/aba-3085/product-B/src/Dekaf.Outbox/Dekaf.Outbox.csproj (in 536 ms).
+  Restored /home/runner/work/_temp/aba-3085/product-B/src/Dekaf/Dekaf.csproj (in 544 ms).
+  Restored /home/runner/work/_temp/aba-3085/product-B/src/Dekaf.Abstractions/Dekaf.Abstractions.csproj (in 536 ms).
+  Dekaf.Abstractions -> /home/runner/work/_temp/aba-3085/product-B/src/Dekaf.Abstractions/bin/Release/net10.0/Dekaf.Abstractions.dll
+  Dekaf -> /home/runner/work/_temp/aba-3085/product-B/src/Dekaf/bin/Release/net10.0/Dekaf.dll
+  Dekaf.Outbox -> /home/runner/work/_temp/aba-3085/product-B/src/Dekaf.Outbox/bin/Release/net10.0/Dekaf.Outbox.dll
+  Dekaf.Benchmarks -> /home/runner/work/_temp/aba-3085/fixture-B/bin/Release/net10.0/Dekaf.Benchmarks.dll
+
+Build succeeded.
+    0 Warning(s)
+    0 Error(s)
+
+Time Elapsed 00:00:40.74

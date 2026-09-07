@@ -1,0 +1,337 @@
+// Validating benchmarks:
+// ***** BenchmarkRunner: Start   *****
+// ***** Found 7 benchmark(s) in total *****
+// ***** Building 1 exe(s) in Parallel: Start   *****
+// ***** Done, took 00:00:00 (0.07 sec)   *****
+// Found 7 benchmarks:
+//   ShareConsumerParsingBenchmarks.ParseSynchronousBatch: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [RecordCount=1024, HeaderCount=0]
+//   ShareConsumerParsingBenchmarks.ParseWarmPreparedBatch: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [RecordCount=1024, HeaderCount=0]
+//   ShareConsumerParsingBenchmarks.TraverseRetainedBatch: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [RecordCount=1024, HeaderCount=0]
+//   ShareConsumerParsingBenchmarks.ParseBorrowedSynchronousBatch: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [RecordCount=1024, HeaderCount=0]
+//   ShareConsumerParsingBenchmarks.ParseBorrowedWarmPreparedBatch: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [RecordCount=1024, HeaderCount=0]
+//   ShareConsumerParsingBenchmarks.ParseBorrowedColdPreparedBatch: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [RecordCount=1024, HeaderCount=0]
+//   ShareConsumerParsingBenchmarks.ParseColdPreparedBatch: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [RecordCount=1024, HeaderCount=0]
+
+// **************************
+// Benchmark: ShareConsumerParsingBenchmarks.ParseSynchronousBatch: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [RecordCount=1024, HeaderCount=0]
+// *** Execute ***
+// Launch: 1 / 1
+// ! Failed to set up priority High for process System.Diagnostics.Process (dotnet). Make sure you have the right permissions. Message: Permission denied
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.15.8
+// Runtime=.NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2+BMI1+BMI2+F16C+FMA+LZCNT+MOVBE,AVX,SSE3+SSSE3+SSE4.1+SSE4.2+POPCNT,X86Base+SSE+SSE2,AES+PCLMUL VectorSize=256
+// Job: Job-XVLBGX(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1)
+
+WorkloadActual   1: 1 op, 505309.00 ns, 505.3090 us/op
+
+WorkloadResult   1: 1 op, 505309.00 ns, 505.3090 us/op
+// GC:  0 0 0 90448 1
+// Threading:  0 0 1
+
+
+Mean = 505.309 μs, StdErr = 0.000 μs (0.00%), N = 1, StdDev = 0.000 μs
+Min = 505.309 μs, Q1 = 505.309 μs, Median = 505.309 μs, Q3 = 505.309 μs, Max = 505.309 μs
+IQR = 0.000 μs, LowerFence = 505.309 μs, UpperFence = 505.309 μs
+ConfidenceInterval = [NaN μs; NaN μs] (CI 99.9%), Margin = NaN μs (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+
+// ** Remained 6 (85.7 %) benchmark(s) to run. Estimated finish 2026-09-07 17:04 (0h 0m from now) **
+// **************************
+// Benchmark: ShareConsumerParsingBenchmarks.ParseWarmPreparedBatch: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [RecordCount=1024, HeaderCount=0]
+// *** Execute ***
+// Launch: 1 / 1
+// ! Failed to set up priority High for process System.Diagnostics.Process (dotnet). Make sure you have the right permissions. Message: Permission denied
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.15.8
+// Runtime=.NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2+BMI1+BMI2+F16C+FMA+LZCNT+MOVBE,AVX,SSE3+SSSE3+SSE4.1+SSE4.2+POPCNT,X86Base+SSE+SSE2,AES+PCLMUL VectorSize=256
+// Job: Job-XVLBGX(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1)
+
+WorkloadActual   1: 1 op, 442432.00 ns, 442.4320 us/op
+
+WorkloadResult   1: 1 op, 442432.00 ns, 442.4320 us/op
+// GC:  0 0 0 90328 1
+// Threading:  0 0 1
+
+
+Mean = 442.432 μs, StdErr = 0.000 μs (0.00%), N = 1, StdDev = 0.000 μs
+Min = 442.432 μs, Q1 = 442.432 μs, Median = 442.432 μs, Q3 = 442.432 μs, Max = 442.432 μs
+IQR = 0.000 μs, LowerFence = 442.432 μs, UpperFence = 442.432 μs
+ConfidenceInterval = [NaN μs; NaN μs] (CI 99.9%), Margin = NaN μs (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+
+// ** Remained 5 (71.4 %) benchmark(s) to run. Estimated finish 2026-09-07 17:04 (0h 0m from now) **
+// **************************
+// Benchmark: ShareConsumerParsingBenchmarks.TraverseRetainedBatch: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [RecordCount=1024, HeaderCount=0]
+// *** Execute ***
+// Launch: 1 / 1
+// ! Failed to set up priority High for process System.Diagnostics.Process (dotnet). Make sure you have the right permissions. Message: Permission denied
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.15.8
+// Runtime=.NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2+BMI1+BMI2+F16C+FMA+LZCNT+MOVBE,AVX,SSE3+SSSE3+SSE4.1+SSE4.2+POPCNT,X86Base+SSE+SSE2,AES+PCLMUL VectorSize=256
+// Job: Job-XVLBGX(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1)
+
+WorkloadActual   1: 1 op, 219142.00 ns, 219.1420 us/op
+
+WorkloadResult   1: 1 op, 219142.00 ns, 219.1420 us/op
+// GC:  0 0 0 0 1
+// Threading:  0 0 1
+
+
+Mean = 219.142 μs, StdErr = 0.000 μs (0.00%), N = 1, StdDev = 0.000 μs
+Min = 219.142 μs, Q1 = 219.142 μs, Median = 219.142 μs, Q3 = 219.142 μs, Max = 219.142 μs
+IQR = 0.000 μs, LowerFence = 219.142 μs, UpperFence = 219.142 μs
+ConfidenceInterval = [NaN μs; NaN μs] (CI 99.9%), Margin = NaN μs (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+
+// ** Remained 4 (57.1 %) benchmark(s) to run. Estimated finish 2026-09-07 17:04 (0h 0m from now) **
+// **************************
+// Benchmark: ShareConsumerParsingBenchmarks.ParseBorrowedSynchronousBatch: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [RecordCount=1024, HeaderCount=0]
+// *** Execute ***
+// Launch: 1 / 1
+// ! Failed to set up priority High for process System.Diagnostics.Process (dotnet). Make sure you have the right permissions. Message: Permission denied
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.15.8
+// Runtime=.NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2+BMI1+BMI2+F16C+FMA+LZCNT+MOVBE,AVX,SSE3+SSSE3+SSE4.1+SSE4.2+POPCNT,X86Base+SSE+SSE2,AES+PCLMUL VectorSize=256
+// Job: Job-XVLBGX(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1)
+
+WorkloadActual   1: 1 op, 1060553.00 ns, 1.0606 ms/op
+
+WorkloadResult   1: 1 op, 1060553.00 ns, 1.0606 ms/op
+// GC:  0 0 0 90448 1
+// Threading:  0 0 1
+
+
+Mean = 1.061 ms, StdErr = 0.000 ms (0.00%), N = 1, StdDev = 0.000 ms
+Min = 1.061 ms, Q1 = 1.061 ms, Median = 1.061 ms, Q3 = 1.061 ms, Max = 1.061 ms
+IQR = 0.000 ms, LowerFence = 1.061 ms, UpperFence = 1.061 ms
+ConfidenceInterval = [NaN ms; NaN ms] (CI 99.9%), Margin = NaN ms (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+
+// ** Remained 3 (42.9 %) benchmark(s) to run. Estimated finish 2026-09-07 17:04 (0h 0m from now) **
+// **************************
+// Benchmark: ShareConsumerParsingBenchmarks.ParseBorrowedWarmPreparedBatch: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [RecordCount=1024, HeaderCount=0]
+// *** Execute ***
+// Launch: 1 / 1
+// ! Failed to set up priority High for process System.Diagnostics.Process (dotnet). Make sure you have the right permissions. Message: Permission denied
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.15.8
+// Runtime=.NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2+BMI1+BMI2+F16C+FMA+LZCNT+MOVBE,AVX,SSE3+SSSE3+SSE4.1+SSE4.2+POPCNT,X86Base+SSE+SSE2,AES+PCLMUL VectorSize=256
+// Job: Job-XVLBGX(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1)
+
+WorkloadActual   1: 1 op, 481104.00 ns, 481.1040 us/op
+
+WorkloadResult   1: 1 op, 481104.00 ns, 481.1040 us/op
+// GC:  0 0 0 90328 1
+// Threading:  0 0 1
+
+
+Mean = 481.104 μs, StdErr = 0.000 μs (0.00%), N = 1, StdDev = 0.000 μs
+Min = 481.104 μs, Q1 = 481.104 μs, Median = 481.104 μs, Q3 = 481.104 μs, Max = 481.104 μs
+IQR = 0.000 μs, LowerFence = 481.104 μs, UpperFence = 481.104 μs
+ConfidenceInterval = [NaN μs; NaN μs] (CI 99.9%), Margin = NaN μs (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+
+// ** Remained 2 (28.6 %) benchmark(s) to run. Estimated finish 2026-09-07 17:04 (0h 0m from now) **
+// **************************
+// Benchmark: ShareConsumerParsingBenchmarks.ParseBorrowedColdPreparedBatch: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [RecordCount=1024, HeaderCount=0]
+// *** Execute ***
+// Launch: 1 / 1
+// ! Failed to set up priority High for process System.Diagnostics.Process (dotnet). Make sure you have the right permissions. Message: Permission denied
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.15.8
+// Runtime=.NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2+BMI1+BMI2+F16C+FMA+LZCNT+MOVBE,AVX,SSE3+SSSE3+SSE4.1+SSE4.2+POPCNT,X86Base+SSE+SSE2,AES+PCLMUL VectorSize=256
+// Job: Job-XVLBGX(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1)
+
+WorkloadActual   1: 1 op, 1386265.00 ns, 1.3863 ms/op
+
+WorkloadResult   1: 1 op, 1386265.00 ns, 1.3863 ms/op
+// GC:  0 0 0 90792 1
+// Threading:  1 0 1
+
+
+Mean = 1.386 ms, StdErr = 0.000 ms (0.00%), N = 1, StdDev = 0.000 ms
+Min = 1.386 ms, Q1 = 1.386 ms, Median = 1.386 ms, Q3 = 1.386 ms, Max = 1.386 ms
+IQR = 0.000 ms, LowerFence = 1.386 ms, UpperFence = 1.386 ms
+ConfidenceInterval = [NaN ms; NaN ms] (CI 99.9%), Margin = NaN ms (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+
+// ** Remained 1 (14.3 %) benchmark(s) to run. Estimated finish 2026-09-07 17:04 (0h 0m from now) **
+// **************************
+// Benchmark: ShareConsumerParsingBenchmarks.ParseColdPreparedBatch: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [RecordCount=1024, HeaderCount=0]
+// *** Execute ***
+// Launch: 1 / 1
+// ! Failed to set up priority High for process System.Diagnostics.Process (dotnet). Make sure you have the right permissions. Message: Permission denied
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.15.8
+// Runtime=.NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2+BMI1+BMI2+F16C+FMA+LZCNT+MOVBE,AVX,SSE3+SSSE3+SSE4.1+SSE4.2+POPCNT,X86Base+SSE+SSE2,AES+PCLMUL VectorSize=256
+// Job: Job-XVLBGX(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1)
+
+WorkloadActual   1: 1 op, 484490.00 ns, 484.4900 us/op
+
+WorkloadResult   1: 1 op, 484490.00 ns, 484.4900 us/op
+// GC:  0 0 0 90792 1
+// Threading:  1 0 1
+
+
+Mean = 484.490 μs, StdErr = 0.000 μs (0.00%), N = 1, StdDev = 0.000 μs
+Min = 484.490 μs, Q1 = 484.490 μs, Median = 484.490 μs, Q3 = 484.490 μs, Max = 484.490 μs
+IQR = 0.000 μs, LowerFence = 484.490 μs, UpperFence = 484.490 μs
+ConfidenceInterval = [NaN μs; NaN μs] (CI 99.9%), Margin = NaN μs (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+
+// ** Remained 0 (0.0 %) benchmark(s) to run. Estimated finish 2026-09-07 17:04 (0h 0m from now) **
+// ***** BenchmarkRunner: Finish  *****
+
+// * Export *
+  home/runner/work/Dekaf/Dekaf/aba-results/dry-A/results/Dekaf.Benchmarks.Benchmarks.Unit.ShareConsumerParsingBenchmarks-report.csv
+  home/runner/work/Dekaf/Dekaf/aba-results/dry-A/results/Dekaf.Benchmarks.Benchmarks.Unit.ShareConsumerParsingBenchmarks-report-github.md
+  home/runner/work/Dekaf/Dekaf/aba-results/dry-A/results/Dekaf.Benchmarks.Benchmarks.Unit.ShareConsumerParsingBenchmarks-report.html
+  home/runner/work/Dekaf/Dekaf/aba-results/dry-A/results/Dekaf.Benchmarks.Benchmarks.Unit.ShareConsumerParsingBenchmarks-report-full.json
+
+// * Detailed results *
+ShareConsumerParsingBenchmarks.ParseSynchronousBatch: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [RecordCount=1024, HeaderCount=0]
+Runtime = ; GC = 
+Mean = 505.309 μs, StdErr = 0.000 μs (0.00%), N = 1, StdDev = 0.000 μs
+Min = 505.309 μs, Q1 = 505.309 μs, Median = 505.309 μs, Q3 = 505.309 μs, Max = 505.309 μs
+IQR = 0.000 μs, LowerFence = 505.309 μs, UpperFence = 505.309 μs
+ConfidenceInterval = [NaN μs; NaN μs] (CI 99.9%), Margin = NaN μs (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+-------------------- Histogram --------------------
+[505.308 μs ; 505.310 μs) | @
+---------------------------------------------------
+
+ShareConsumerParsingBenchmarks.ParseWarmPreparedBatch: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [RecordCount=1024, HeaderCount=0]
+Runtime = ; GC = 
+Mean = 442.432 μs, StdErr = 0.000 μs (0.00%), N = 1, StdDev = 0.000 μs
+Min = 442.432 μs, Q1 = 442.432 μs, Median = 442.432 μs, Q3 = 442.432 μs, Max = 442.432 μs
+IQR = 0.000 μs, LowerFence = 442.432 μs, UpperFence = 442.432 μs
+ConfidenceInterval = [NaN μs; NaN μs] (CI 99.9%), Margin = NaN μs (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+-------------------- Histogram --------------------
+[442.432 μs ; 442.433 μs) | @
+---------------------------------------------------
+
+ShareConsumerParsingBenchmarks.TraverseRetainedBatch: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [RecordCount=1024, HeaderCount=0]
+Runtime = ; GC = 
+Mean = 219.142 μs, StdErr = 0.000 μs (0.00%), N = 1, StdDev = 0.000 μs
+Min = 219.142 μs, Q1 = 219.142 μs, Median = 219.142 μs, Q3 = 219.142 μs, Max = 219.142 μs
+IQR = 0.000 μs, LowerFence = 219.142 μs, UpperFence = 219.142 μs
+ConfidenceInterval = [NaN μs; NaN μs] (CI 99.9%), Margin = NaN μs (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+-------------------- Histogram --------------------
+[219.142 μs ; 219.143 μs) | @
+---------------------------------------------------
+
+ShareConsumerParsingBenchmarks.ParseBorrowedSynchronousBatch: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [RecordCount=1024, HeaderCount=0]
+Runtime = ; GC = 
+Mean = 1.061 ms, StdErr = 0.000 ms (0.00%), N = 1, StdDev = 0.000 ms
+Min = 1.061 ms, Q1 = 1.061 ms, Median = 1.061 ms, Q3 = 1.061 ms, Max = 1.061 ms
+IQR = 0.000 ms, LowerFence = 1.061 ms, UpperFence = 1.061 ms
+ConfidenceInterval = [NaN ms; NaN ms] (CI 99.9%), Margin = NaN ms (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+-------------------- Histogram --------------------
+[1.061 ms ; 1.061 ms) | @
+---------------------------------------------------
+
+ShareConsumerParsingBenchmarks.ParseBorrowedWarmPreparedBatch: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [RecordCount=1024, HeaderCount=0]
+Runtime = ; GC = 
+Mean = 481.104 μs, StdErr = 0.000 μs (0.00%), N = 1, StdDev = 0.000 μs
+Min = 481.104 μs, Q1 = 481.104 μs, Median = 481.104 μs, Q3 = 481.104 μs, Max = 481.104 μs
+IQR = 0.000 μs, LowerFence = 481.104 μs, UpperFence = 481.104 μs
+ConfidenceInterval = [NaN μs; NaN μs] (CI 99.9%), Margin = NaN μs (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+-------------------- Histogram --------------------
+[481.103 μs ; 481.104 μs) | @
+---------------------------------------------------
+
+ShareConsumerParsingBenchmarks.ParseBorrowedColdPreparedBatch: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [RecordCount=1024, HeaderCount=0]
+Runtime = ; GC = 
+Mean = 1.386 ms, StdErr = 0.000 ms (0.00%), N = 1, StdDev = 0.000 ms
+Min = 1.386 ms, Q1 = 1.386 ms, Median = 1.386 ms, Q3 = 1.386 ms, Max = 1.386 ms
+IQR = 0.000 ms, LowerFence = 1.386 ms, UpperFence = 1.386 ms
+ConfidenceInterval = [NaN ms; NaN ms] (CI 99.9%), Margin = NaN ms (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+-------------------- Histogram --------------------
+[1.386 ms ; 1.386 ms) | @
+---------------------------------------------------
+
+ShareConsumerParsingBenchmarks.ParseColdPreparedBatch: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [RecordCount=1024, HeaderCount=0]
+Runtime = ; GC = 
+Mean = 484.490 μs, StdErr = 0.000 μs (0.00%), N = 1, StdDev = 0.000 μs
+Min = 484.490 μs, Q1 = 484.490 μs, Median = 484.490 μs, Q3 = 484.490 μs, Max = 484.490 μs
+IQR = 0.000 μs, LowerFence = 484.490 μs, UpperFence = 484.490 μs
+ConfidenceInterval = [NaN μs; NaN μs] (CI 99.9%), Margin = NaN μs (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+-------------------- Histogram --------------------
+[484.490 μs ; 484.490 μs) | @
+---------------------------------------------------
+
+// * Summary *
+
+BenchmarkDotNet v0.15.8, Linux Ubuntu 24.04.4 LTS (Noble Numbat)
+AMD EPYC 7763 2.45GHz, 1 CPU, 4 logical and 2 physical cores
+.NET SDK 10.0.400
+  [Host] : .NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+
+Job=DryA  OutlierMode=DontRemove  Toolchain=InProcessEmitToolchain  
+IterationCount=1  LaunchCount=1  RunStrategy=ColdStart  
+UnrollFactor=1  WarmupCount=1  
+
+| Method                         | RecordCount | HeaderCount | Mean       | Error | Allocated |
+|------------------------------- |------------ |------------ |-----------:|------:|----------:|
+| ParseSynchronousBatch          | 1024        | 0           |   505.3 μs |    NA |   90448 B |
+| ParseWarmPreparedBatch         | 1024        | 0           |   442.4 μs |    NA |   90328 B |
+| TraverseRetainedBatch          | 1024        | 0           |   219.1 μs |    NA |         - |
+| ParseBorrowedSynchronousBatch  | 1024        | 0           | 1,060.6 μs |    NA |   90448 B |
+| ParseBorrowedWarmPreparedBatch | 1024        | 0           |   481.1 μs |    NA |   90328 B |
+| ParseBorrowedColdPreparedBatch | 1024        | 0           | 1,386.3 μs |    NA |   90792 B |
+| ParseColdPreparedBatch         | 1024        | 0           |   484.5 μs |    NA |   90792 B |
+
+// * Warnings *
+MinIterationTime
+  ShareConsumerParsingBenchmarks.ParseSynchronousBatch: DryA          -> The minimum observed iteration time is 505.309μs which is very small. It's recommended to increase it to at least 100ms using more operations.
+  ShareConsumerParsingBenchmarks.ParseWarmPreparedBatch: DryA         -> The minimum observed iteration time is 442.432μs which is very small. It's recommended to increase it to at least 100ms using more operations.
+  ShareConsumerParsingBenchmarks.TraverseRetainedBatch: DryA          -> The minimum observed iteration time is 219.142μs which is very small. It's recommended to increase it to at least 100ms using more operations.
+  ShareConsumerParsingBenchmarks.ParseBorrowedSynchronousBatch: DryA  -> The minimum observed iteration time is 1.061ms which is very small. It's recommended to increase it to at least 100ms using more operations.
+  ShareConsumerParsingBenchmarks.ParseBorrowedWarmPreparedBatch: DryA -> The minimum observed iteration time is 481.104μs which is very small. It's recommended to increase it to at least 100ms using more operations.
+  ShareConsumerParsingBenchmarks.ParseBorrowedColdPreparedBatch: DryA -> The minimum observed iteration time is 1.386ms which is very small. It's recommended to increase it to at least 100ms using more operations.
+  ShareConsumerParsingBenchmarks.ParseColdPreparedBatch: DryA         -> The minimum observed iteration time is 484.49μs which is very small. It's recommended to increase it to at least 100ms using more operations.
+
+// * Legends *
+  RecordCount : Value of the 'RecordCount' parameter
+  HeaderCount : Value of the 'HeaderCount' parameter
+  Mean        : Arithmetic mean of all measurements
+  Error       : Half of 99.9% confidence interval
+  Allocated   : Allocated memory per single operation (managed only, inclusive, 1KB = 1024B)
+  1 μs        : 1 Microsecond (0.000001 sec)
+
+// * Diagnostic Output - MemoryDiagnoser *
+
+
+// ***** BenchmarkRunner: End *****
+Run time: 00:00:00 (0.42 sec), executed benchmarks: 7
+
+Global total time: 00:00:00 (0.87 sec), executed benchmarks: 7
+// * Artifacts cleanup *
+Artifacts cleanup is finished

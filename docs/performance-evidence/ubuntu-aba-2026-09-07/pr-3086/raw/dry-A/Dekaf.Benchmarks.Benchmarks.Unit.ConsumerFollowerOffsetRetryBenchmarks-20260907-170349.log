@@ -1,0 +1,377 @@
+// Validating benchmarks:
+// ***** BenchmarkRunner: Start   *****
+// ***** Found 8 benchmark(s) in total *****
+// ***** Building 1 exe(s) in Parallel: Start   *****
+// ***** Done, took 00:00:00 (0.38 sec)   *****
+// Found 8 benchmarks:
+//   ConsumerFollowerOffsetRetryBenchmarks.SuccessfulFetch: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [Prefetch=False]
+//   ConsumerFollowerOffsetRetryBenchmarks.FollowerError: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [Prefetch=False]
+//   ConsumerFollowerOffsetRetryBenchmarks.LeaderError: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [Prefetch=False]
+//   ConsumerFollowerOffsetRetryBenchmarks.ResponsePoolControl: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [Prefetch=False]
+//   ConsumerFollowerOffsetRetryBenchmarks.SuccessfulFetch: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [Prefetch=True]
+//   ConsumerFollowerOffsetRetryBenchmarks.FollowerError: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [Prefetch=True]
+//   ConsumerFollowerOffsetRetryBenchmarks.LeaderError: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [Prefetch=True]
+//   ConsumerFollowerOffsetRetryBenchmarks.ResponsePoolControl: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [Prefetch=True]
+
+// **************************
+// Benchmark: ConsumerFollowerOffsetRetryBenchmarks.SuccessfulFetch: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [Prefetch=False]
+// *** Execute ***
+// Launch: 1 / 1
+// ! Failed to set up priority High for process System.Diagnostics.Process (dotnet). Make sure you have the right permissions. Message: Permission denied
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.15.8
+// Runtime=.NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v4
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX512 BITALG+VBMI2+VNNI+VPOPCNTDQ,AVX512 IFMA+VBMI,AVX512 F+BW+CD+DQ+VL,AVX2+BMI1+BMI2+F16C+FMA+LZCNT+MOVBE,AVX,SSE3+SSSE3+SSE4.1+SSE4.2+POPCNT,X86Base+SSE+SSE2,AES+PCLMUL,AvxVnni,SERIALIZE VectorSize=256
+// Job: Job-XVLBGX(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1)
+
+WorkloadActual   1: 1 op, 300284.00 ns, 300.2840 us/op
+
+WorkloadResult   1: 1 op, 300284.00 ns, 300.2840 us/op
+// GC:  0 0 0 184 1
+// Threading:  0 0 1
+
+
+Mean = 300.284 μs, StdErr = 0.000 μs (0.00%), N = 1, StdDev = 0.000 μs
+Min = 300.284 μs, Q1 = 300.284 μs, Median = 300.284 μs, Q3 = 300.284 μs, Max = 300.284 μs
+IQR = 0.000 μs, LowerFence = 300.284 μs, UpperFence = 300.284 μs
+ConfidenceInterval = [NaN μs; NaN μs] (CI 99.9%), Margin = NaN μs (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+
+// ** Remained 7 (87.5 %) benchmark(s) to run. Estimated finish 2026-09-07 17:03 (0h 0m from now) **
+// **************************
+// Benchmark: ConsumerFollowerOffsetRetryBenchmarks.FollowerError: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [Prefetch=False]
+// *** Execute ***
+// Launch: 1 / 1
+// ! Failed to set up priority High for process System.Diagnostics.Process (dotnet). Make sure you have the right permissions. Message: Permission denied
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.15.8
+// Runtime=.NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v4
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX512 BITALG+VBMI2+VNNI+VPOPCNTDQ,AVX512 IFMA+VBMI,AVX512 F+BW+CD+DQ+VL,AVX2+BMI1+BMI2+F16C+FMA+LZCNT+MOVBE,AVX,SSE3+SSSE3+SSE4.1+SSE4.2+POPCNT,X86Base+SSE+SSE2,AES+PCLMUL,AvxVnni,SERIALIZE VectorSize=256
+// Job: Job-XVLBGX(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1)
+
+WorkloadActual   1: 1 op, 373405.00 ns, 373.4050 us/op
+
+WorkloadResult   1: 1 op, 373405.00 ns, 373.4050 us/op
+// GC:  0 0 0 712 1
+// Threading:  0 0 1
+
+
+Mean = 373.405 μs, StdErr = 0.000 μs (0.00%), N = 1, StdDev = 0.000 μs
+Min = 373.405 μs, Q1 = 373.405 μs, Median = 373.405 μs, Q3 = 373.405 μs, Max = 373.405 μs
+IQR = 0.000 μs, LowerFence = 373.405 μs, UpperFence = 373.405 μs
+ConfidenceInterval = [NaN μs; NaN μs] (CI 99.9%), Margin = NaN μs (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+
+// ** Remained 6 (75.0 %) benchmark(s) to run. Estimated finish 2026-09-07 17:03 (0h 0m from now) **
+// **************************
+// Benchmark: ConsumerFollowerOffsetRetryBenchmarks.LeaderError: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [Prefetch=False]
+// *** Execute ***
+// Launch: 1 / 1
+// ! Failed to set up priority High for process System.Diagnostics.Process (dotnet). Make sure you have the right permissions. Message: Permission denied
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.15.8
+// Runtime=.NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v4
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX512 BITALG+VBMI2+VNNI+VPOPCNTDQ,AVX512 IFMA+VBMI,AVX512 F+BW+CD+DQ+VL,AVX2+BMI1+BMI2+F16C+FMA+LZCNT+MOVBE,AVX,SSE3+SSSE3+SSE4.1+SSE4.2+POPCNT,X86Base+SSE+SSE2,AES+PCLMUL,AvxVnni,SERIALIZE VectorSize=256
+// Job: Job-XVLBGX(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1)
+
+WorkloadActual   1: 1 op, 354833.00 ns, 354.8330 us/op
+
+WorkloadResult   1: 1 op, 354833.00 ns, 354.8330 us/op
+// GC:  0 0 0 712 1
+// Threading:  0 0 1
+
+
+Mean = 354.833 μs, StdErr = 0.000 μs (0.00%), N = 1, StdDev = 0.000 μs
+Min = 354.833 μs, Q1 = 354.833 μs, Median = 354.833 μs, Q3 = 354.833 μs, Max = 354.833 μs
+IQR = 0.000 μs, LowerFence = 354.833 μs, UpperFence = 354.833 μs
+ConfidenceInterval = [NaN μs; NaN μs] (CI 99.9%), Margin = NaN μs (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+
+// ** Remained 5 (62.5 %) benchmark(s) to run. Estimated finish 2026-09-07 17:03 (0h 0m from now) **
+// **************************
+// Benchmark: ConsumerFollowerOffsetRetryBenchmarks.ResponsePoolControl: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [Prefetch=False]
+// *** Execute ***
+// Launch: 1 / 1
+// ! Failed to set up priority High for process System.Diagnostics.Process (dotnet). Make sure you have the right permissions. Message: Permission denied
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.15.8
+// Runtime=.NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v4
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX512 BITALG+VBMI2+VNNI+VPOPCNTDQ,AVX512 IFMA+VBMI,AVX512 F+BW+CD+DQ+VL,AVX2+BMI1+BMI2+F16C+FMA+LZCNT+MOVBE,AVX,SSE3+SSSE3+SSE4.1+SSE4.2+POPCNT,X86Base+SSE+SSE2,AES+PCLMUL,AvxVnni,SERIALIZE VectorSize=256
+// Job: Job-XVLBGX(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1)
+
+WorkloadActual   1: 1 op, 306157.00 ns, 306.1570 us/op
+
+WorkloadResult   1: 1 op, 306157.00 ns, 306.1570 us/op
+// GC:  0 0 0 0 1
+// Threading:  0 0 1
+
+
+Mean = 306.157 μs, StdErr = 0.000 μs (0.00%), N = 1, StdDev = 0.000 μs
+Min = 306.157 μs, Q1 = 306.157 μs, Median = 306.157 μs, Q3 = 306.157 μs, Max = 306.157 μs
+IQR = 0.000 μs, LowerFence = 306.157 μs, UpperFence = 306.157 μs
+ConfidenceInterval = [NaN μs; NaN μs] (CI 99.9%), Margin = NaN μs (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+
+// ** Remained 4 (50.0 %) benchmark(s) to run. Estimated finish 2026-09-07 17:03 (0h 0m from now) **
+// **************************
+// Benchmark: ConsumerFollowerOffsetRetryBenchmarks.SuccessfulFetch: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [Prefetch=True]
+// *** Execute ***
+// Launch: 1 / 1
+// ! Failed to set up priority High for process System.Diagnostics.Process (dotnet). Make sure you have the right permissions. Message: Permission denied
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.15.8
+// Runtime=.NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v4
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX512 BITALG+VBMI2+VNNI+VPOPCNTDQ,AVX512 IFMA+VBMI,AVX512 F+BW+CD+DQ+VL,AVX2+BMI1+BMI2+F16C+FMA+LZCNT+MOVBE,AVX,SSE3+SSSE3+SSE4.1+SSE4.2+POPCNT,X86Base+SSE+SSE2,AES+PCLMUL,AvxVnni,SERIALIZE VectorSize=256
+// Job: Job-XVLBGX(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1)
+
+WorkloadActual   1: 1 op, 246438.00 ns, 246.4380 us/op
+
+WorkloadResult   1: 1 op, 246438.00 ns, 246.4380 us/op
+// GC:  0 0 0 184 1
+// Threading:  0 0 1
+
+
+Mean = 246.438 μs, StdErr = 0.000 μs (0.00%), N = 1, StdDev = 0.000 μs
+Min = 246.438 μs, Q1 = 246.438 μs, Median = 246.438 μs, Q3 = 246.438 μs, Max = 246.438 μs
+IQR = 0.000 μs, LowerFence = 246.438 μs, UpperFence = 246.438 μs
+ConfidenceInterval = [NaN μs; NaN μs] (CI 99.9%), Margin = NaN μs (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+
+// ** Remained 3 (37.5 %) benchmark(s) to run. Estimated finish 2026-09-07 17:03 (0h 0m from now) **
+// **************************
+// Benchmark: ConsumerFollowerOffsetRetryBenchmarks.FollowerError: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [Prefetch=True]
+// *** Execute ***
+// Launch: 1 / 1
+// ! Failed to set up priority High for process System.Diagnostics.Process (dotnet). Make sure you have the right permissions. Message: Permission denied
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.15.8
+// Runtime=.NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v4
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX512 BITALG+VBMI2+VNNI+VPOPCNTDQ,AVX512 IFMA+VBMI,AVX512 F+BW+CD+DQ+VL,AVX2+BMI1+BMI2+F16C+FMA+LZCNT+MOVBE,AVX,SSE3+SSSE3+SSE4.1+SSE4.2+POPCNT,X86Base+SSE+SSE2,AES+PCLMUL,AvxVnni,SERIALIZE VectorSize=256
+// Job: Job-XVLBGX(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1)
+
+WorkloadActual   1: 1 op, 270140.00 ns, 270.1400 us/op
+
+WorkloadResult   1: 1 op, 270140.00 ns, 270.1400 us/op
+// GC:  0 0 0 712 1
+// Threading:  0 0 1
+
+
+Mean = 270.140 μs, StdErr = 0.000 μs (0.00%), N = 1, StdDev = 0.000 μs
+Min = 270.140 μs, Q1 = 270.140 μs, Median = 270.140 μs, Q3 = 270.140 μs, Max = 270.140 μs
+IQR = 0.000 μs, LowerFence = 270.140 μs, UpperFence = 270.140 μs
+ConfidenceInterval = [NaN μs; NaN μs] (CI 99.9%), Margin = NaN μs (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+
+// ** Remained 2 (25.0 %) benchmark(s) to run. Estimated finish 2026-09-07 17:03 (0h 0m from now) **
+// **************************
+// Benchmark: ConsumerFollowerOffsetRetryBenchmarks.LeaderError: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [Prefetch=True]
+// *** Execute ***
+// Launch: 1 / 1
+// ! Failed to set up priority High for process System.Diagnostics.Process (dotnet). Make sure you have the right permissions. Message: Permission denied
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.15.8
+// Runtime=.NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v4
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX512 BITALG+VBMI2+VNNI+VPOPCNTDQ,AVX512 IFMA+VBMI,AVX512 F+BW+CD+DQ+VL,AVX2+BMI1+BMI2+F16C+FMA+LZCNT+MOVBE,AVX,SSE3+SSSE3+SSE4.1+SSE4.2+POPCNT,X86Base+SSE+SSE2,AES+PCLMUL,AvxVnni,SERIALIZE VectorSize=256
+// Job: Job-XVLBGX(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1)
+
+WorkloadActual   1: 1 op, 280477.00 ns, 280.4770 us/op
+
+WorkloadResult   1: 1 op, 280477.00 ns, 280.4770 us/op
+// GC:  0 0 0 712 1
+// Threading:  0 0 1
+
+
+Mean = 280.477 μs, StdErr = 0.000 μs (0.00%), N = 1, StdDev = 0.000 μs
+Min = 280.477 μs, Q1 = 280.477 μs, Median = 280.477 μs, Q3 = 280.477 μs, Max = 280.477 μs
+IQR = 0.000 μs, LowerFence = 280.477 μs, UpperFence = 280.477 μs
+ConfidenceInterval = [NaN μs; NaN μs] (CI 99.9%), Margin = NaN μs (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+
+// ** Remained 1 (12.5 %) benchmark(s) to run. Estimated finish 2026-09-07 17:03 (0h 0m from now) **
+// **************************
+// Benchmark: ConsumerFollowerOffsetRetryBenchmarks.ResponsePoolControl: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [Prefetch=True]
+// *** Execute ***
+// Launch: 1 / 1
+// ! Failed to set up priority High for process System.Diagnostics.Process (dotnet). Make sure you have the right permissions. Message: Permission denied
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.15.8
+// Runtime=.NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v4
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX512 BITALG+VBMI2+VNNI+VPOPCNTDQ,AVX512 IFMA+VBMI,AVX512 F+BW+CD+DQ+VL,AVX2+BMI1+BMI2+F16C+FMA+LZCNT+MOVBE,AVX,SSE3+SSSE3+SSE4.1+SSE4.2+POPCNT,X86Base+SSE+SSE2,AES+PCLMUL,AvxVnni,SERIALIZE VectorSize=256
+// Job: Job-XVLBGX(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1)
+
+WorkloadActual   1: 1 op, 182062.00 ns, 182.0620 us/op
+
+WorkloadResult   1: 1 op, 182062.00 ns, 182.0620 us/op
+// GC:  0 0 0 0 1
+// Threading:  0 0 1
+
+
+Mean = 182.062 μs, StdErr = 0.000 μs (0.00%), N = 1, StdDev = 0.000 μs
+Min = 182.062 μs, Q1 = 182.062 μs, Median = 182.062 μs, Q3 = 182.062 μs, Max = 182.062 μs
+IQR = 0.000 μs, LowerFence = 182.062 μs, UpperFence = 182.062 μs
+ConfidenceInterval = [NaN μs; NaN μs] (CI 99.9%), Margin = NaN μs (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+
+// ** Remained 0 (0.0 %) benchmark(s) to run. Estimated finish 2026-09-07 17:03 (0h 0m from now) **
+// ***** BenchmarkRunner: Finish  *****
+
+// * Export *
+  home/runner/work/Dekaf/Dekaf/aba-results/dry-A/results/Dekaf.Benchmarks.Benchmarks.Unit.ConsumerFollowerOffsetRetryBenchmarks-report.csv
+  home/runner/work/Dekaf/Dekaf/aba-results/dry-A/results/Dekaf.Benchmarks.Benchmarks.Unit.ConsumerFollowerOffsetRetryBenchmarks-report-github.md
+  home/runner/work/Dekaf/Dekaf/aba-results/dry-A/results/Dekaf.Benchmarks.Benchmarks.Unit.ConsumerFollowerOffsetRetryBenchmarks-report.html
+  home/runner/work/Dekaf/Dekaf/aba-results/dry-A/results/Dekaf.Benchmarks.Benchmarks.Unit.ConsumerFollowerOffsetRetryBenchmarks-report-full.json
+
+// * Detailed results *
+ConsumerFollowerOffsetRetryBenchmarks.SuccessfulFetch: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [Prefetch=False]
+Runtime = ; GC = 
+Mean = 300.284 μs, StdErr = 0.000 μs (0.00%), N = 1, StdDev = 0.000 μs
+Min = 300.284 μs, Q1 = 300.284 μs, Median = 300.284 μs, Q3 = 300.284 μs, Max = 300.284 μs
+IQR = 0.000 μs, LowerFence = 300.284 μs, UpperFence = 300.284 μs
+ConfidenceInterval = [NaN μs; NaN μs] (CI 99.9%), Margin = NaN μs (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+-------------------- Histogram --------------------
+[300.284 μs ; 300.284 μs) | @
+---------------------------------------------------
+
+ConsumerFollowerOffsetRetryBenchmarks.FollowerError: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [Prefetch=False]
+Runtime = ; GC = 
+Mean = 373.405 μs, StdErr = 0.000 μs (0.00%), N = 1, StdDev = 0.000 μs
+Min = 373.405 μs, Q1 = 373.405 μs, Median = 373.405 μs, Q3 = 373.405 μs, Max = 373.405 μs
+IQR = 0.000 μs, LowerFence = 373.405 μs, UpperFence = 373.405 μs
+ConfidenceInterval = [NaN μs; NaN μs] (CI 99.9%), Margin = NaN μs (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+-------------------- Histogram --------------------
+[373.404 μs ; 373.406 μs) | @
+---------------------------------------------------
+
+ConsumerFollowerOffsetRetryBenchmarks.LeaderError: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [Prefetch=False]
+Runtime = ; GC = 
+Mean = 354.833 μs, StdErr = 0.000 μs (0.00%), N = 1, StdDev = 0.000 μs
+Min = 354.833 μs, Q1 = 354.833 μs, Median = 354.833 μs, Q3 = 354.833 μs, Max = 354.833 μs
+IQR = 0.000 μs, LowerFence = 354.833 μs, UpperFence = 354.833 μs
+ConfidenceInterval = [NaN μs; NaN μs] (CI 99.9%), Margin = NaN μs (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+-------------------- Histogram --------------------
+[354.832 μs ; 354.834 μs) | @
+---------------------------------------------------
+
+ConsumerFollowerOffsetRetryBenchmarks.ResponsePoolControl: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [Prefetch=False]
+Runtime = ; GC = 
+Mean = 306.157 μs, StdErr = 0.000 μs (0.00%), N = 1, StdDev = 0.000 μs
+Min = 306.157 μs, Q1 = 306.157 μs, Median = 306.157 μs, Q3 = 306.157 μs, Max = 306.157 μs
+IQR = 0.000 μs, LowerFence = 306.157 μs, UpperFence = 306.157 μs
+ConfidenceInterval = [NaN μs; NaN μs] (CI 99.9%), Margin = NaN μs (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+-------------------- Histogram --------------------
+[306.156 μs ; 306.158 μs) | @
+---------------------------------------------------
+
+ConsumerFollowerOffsetRetryBenchmarks.SuccessfulFetch: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [Prefetch=True]
+Runtime = ; GC = 
+Mean = 246.438 μs, StdErr = 0.000 μs (0.00%), N = 1, StdDev = 0.000 μs
+Min = 246.438 μs, Q1 = 246.438 μs, Median = 246.438 μs, Q3 = 246.438 μs, Max = 246.438 μs
+IQR = 0.000 μs, LowerFence = 246.438 μs, UpperFence = 246.438 μs
+ConfidenceInterval = [NaN μs; NaN μs] (CI 99.9%), Margin = NaN μs (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+-------------------- Histogram --------------------
+[246.437 μs ; 246.438 μs) | @
+---------------------------------------------------
+
+ConsumerFollowerOffsetRetryBenchmarks.FollowerError: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [Prefetch=True]
+Runtime = ; GC = 
+Mean = 270.140 μs, StdErr = 0.000 μs (0.00%), N = 1, StdDev = 0.000 μs
+Min = 270.140 μs, Q1 = 270.140 μs, Median = 270.140 μs, Q3 = 270.140 μs, Max = 270.140 μs
+IQR = 0.000 μs, LowerFence = 270.140 μs, UpperFence = 270.140 μs
+ConfidenceInterval = [NaN μs; NaN μs] (CI 99.9%), Margin = NaN μs (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+-------------------- Histogram --------------------
+[270.139 μs ; 270.140 μs) | @
+---------------------------------------------------
+
+ConsumerFollowerOffsetRetryBenchmarks.LeaderError: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [Prefetch=True]
+Runtime = ; GC = 
+Mean = 280.477 μs, StdErr = 0.000 μs (0.00%), N = 1, StdDev = 0.000 μs
+Min = 280.477 μs, Q1 = 280.477 μs, Median = 280.477 μs, Q3 = 280.477 μs, Max = 280.477 μs
+IQR = 0.000 μs, LowerFence = 280.477 μs, UpperFence = 280.477 μs
+ConfidenceInterval = [NaN μs; NaN μs] (CI 99.9%), Margin = NaN μs (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+-------------------- Histogram --------------------
+[280.476 μs ; 280.478 μs) | @
+---------------------------------------------------
+
+ConsumerFollowerOffsetRetryBenchmarks.ResponsePoolControl: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [Prefetch=True]
+Runtime = ; GC = 
+Mean = 182.062 μs, StdErr = 0.000 μs (0.00%), N = 1, StdDev = 0.000 μs
+Min = 182.062 μs, Q1 = 182.062 μs, Median = 182.062 μs, Q3 = 182.062 μs, Max = 182.062 μs
+IQR = 0.000 μs, LowerFence = 182.062 μs, UpperFence = 182.062 μs
+ConfidenceInterval = [NaN μs; NaN μs] (CI 99.9%), Margin = NaN μs (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+-------------------- Histogram --------------------
+[182.061 μs ; 182.062 μs) | @
+---------------------------------------------------
+
+// * Summary *
+
+BenchmarkDotNet v0.15.8, Linux Ubuntu 24.04.4 LTS (Noble Numbat)
+INTEL XEON PLATINUM 8573C 2.30GHz, 1 CPU, 4 logical and 2 physical cores
+.NET SDK 10.0.400
+  [Host] : .NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v4
+
+Job=DryA  OutlierMode=DontRemove  Toolchain=InProcessEmitToolchain  
+IterationCount=1  LaunchCount=1  RunStrategy=ColdStart  
+UnrollFactor=1  WarmupCount=1  
+
+| Method              | Prefetch | Mean     | Error | Allocated |
+|-------------------- |--------- |---------:|------:|----------:|
+| SuccessfulFetch     | False    | 300.3 μs |    NA |     184 B |
+| FollowerError       | False    | 373.4 μs |    NA |     712 B |
+| LeaderError         | False    | 354.8 μs |    NA |     712 B |
+| ResponsePoolControl | False    | 306.2 μs |    NA |         - |
+| SuccessfulFetch     | True     | 246.4 μs |    NA |     184 B |
+| FollowerError       | True     | 270.1 μs |    NA |     712 B |
+| LeaderError         | True     | 280.5 μs |    NA |     712 B |
+| ResponsePoolControl | True     | 182.1 μs |    NA |         - |
+
+// * Warnings *
+MinIterationTime
+  ConsumerFollowerOffsetRetryBenchmarks.SuccessfulFetch: DryA     -> The minimum observed iteration time is 300.284μs which is very small. It's recommended to increase it to at least 100ms using more operations.
+  ConsumerFollowerOffsetRetryBenchmarks.FollowerError: DryA       -> The minimum observed iteration time is 373.405μs which is very small. It's recommended to increase it to at least 100ms using more operations.
+  ConsumerFollowerOffsetRetryBenchmarks.LeaderError: DryA         -> The minimum observed iteration time is 354.833μs which is very small. It's recommended to increase it to at least 100ms using more operations.
+  ConsumerFollowerOffsetRetryBenchmarks.ResponsePoolControl: DryA -> The minimum observed iteration time is 306.157μs which is very small. It's recommended to increase it to at least 100ms using more operations.
+  ConsumerFollowerOffsetRetryBenchmarks.SuccessfulFetch: DryA     -> The minimum observed iteration time is 246.438μs which is very small. It's recommended to increase it to at least 100ms using more operations.
+  ConsumerFollowerOffsetRetryBenchmarks.FollowerError: DryA       -> The minimum observed iteration time is 270.14μs which is very small. It's recommended to increase it to at least 100ms using more operations.
+  ConsumerFollowerOffsetRetryBenchmarks.LeaderError: DryA         -> The minimum observed iteration time is 280.477μs which is very small. It's recommended to increase it to at least 100ms using more operations.
+  ConsumerFollowerOffsetRetryBenchmarks.ResponsePoolControl: DryA -> The minimum observed iteration time is 182.062μs which is very small. It's recommended to increase it to at least 100ms using more operations.
+
+// * Legends *
+  Prefetch  : Value of the 'Prefetch' parameter
+  Mean      : Arithmetic mean of all measurements
+  Error     : Half of 99.9% confidence interval
+  Allocated : Allocated memory per single operation (managed only, inclusive, 1KB = 1024B)
+  1 μs      : 1 Microsecond (0.000001 sec)
+
+// * Diagnostic Output - MemoryDiagnoser *
+
+
+// ***** BenchmarkRunner: End *****
+Run time: 00:00:00 (0.51 sec), executed benchmarks: 8
+
+Global total time: 00:00:01 (1.42 sec), executed benchmarks: 8
+// * Artifacts cleanup *
+Artifacts cleanup is finished

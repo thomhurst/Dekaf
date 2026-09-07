@@ -1,0 +1,458 @@
+// Validating benchmarks:
+// ***** BenchmarkRunner: Start   *****
+// ***** Found 9 benchmark(s) in total *****
+// ***** Building 1 exe(s) in Parallel: Start   *****
+// ***** Done, took 00:00:00 (0.11 sec)   *****
+// Found 3 benchmarks:
+//   BinaryKeyDispatchBenchmarks.ByteArray: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1)
+//   BinaryKeyDispatchBenchmarks.RawMemory: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1)
+//   BinaryKeyDispatchBenchmarks.StringControl: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1)
+
+// **************************
+// Benchmark: BinaryKeyDispatchBenchmarks.ByteArray: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1)
+// *** Execute ***
+// Launch: 1 / 1
+// ! Failed to set up priority High for process System.Diagnostics.Process (dotnet). Make sure you have the right permissions. Message: Permission denied
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.15.8
+// Runtime=.NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2+BMI1+BMI2+F16C+FMA+LZCNT+MOVBE,AVX,SSE3+SSSE3+SSE4.1+SSE4.2+POPCNT,X86Base+SSE+SSE2,AES+PCLMUL VectorSize=256
+// Job: Job-XVLBGX(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1)
+
+WorkloadActual   1: 1024 op, 88021788.00 ns, 85.9588 us/op
+
+WorkloadResult   1: 1024 op, 88021788.00 ns, 85.9588 us/op
+// GC:  0 0 0 2265456 1024
+// Threading:  1024 0 1024
+
+
+Mean = 85.959 μs, StdErr = 0.000 μs (0.00%), N = 1, StdDev = 0.000 μs
+Min = 85.959 μs, Q1 = 85.959 μs, Median = 85.959 μs, Q3 = 85.959 μs, Max = 85.959 μs
+IQR = 0.000 μs, LowerFence = 85.959 μs, UpperFence = 85.959 μs
+ConfidenceInterval = [NaN μs; NaN μs] (CI 99.9%), Margin = NaN μs (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+
+// ** Remained 8 (88.9 %) benchmark(s) to run. Estimated finish 2026-09-07 17:03 (0h 0m from now) **
+// **************************
+// Benchmark: BinaryKeyDispatchBenchmarks.RawMemory: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1)
+// *** Execute ***
+// Launch: 1 / 1
+// ! Failed to set up priority High for process System.Diagnostics.Process (dotnet). Make sure you have the right permissions. Message: Permission denied
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.15.8
+// Runtime=.NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2+BMI1+BMI2+F16C+FMA+LZCNT+MOVBE,AVX,SSE3+SSSE3+SSE4.1+SSE4.2+POPCNT,X86Base+SSE+SSE2,AES+PCLMUL VectorSize=256
+// Job: Job-XVLBGX(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1)
+
+WorkloadActual   1: 1024 op, 59177269.00 ns, 57.7903 us/op
+
+WorkloadResult   1: 1024 op, 59177269.00 ns, 57.7903 us/op
+// GC:  0 0 0 2361776 1024
+// Threading:  1024 0 1024
+
+
+Mean = 57.790 μs, StdErr = 0.000 μs (0.00%), N = 1, StdDev = 0.000 μs
+Min = 57.790 μs, Q1 = 57.790 μs, Median = 57.790 μs, Q3 = 57.790 μs, Max = 57.790 μs
+IQR = 0.000 μs, LowerFence = 57.790 μs, UpperFence = 57.790 μs
+ConfidenceInterval = [NaN μs; NaN μs] (CI 99.9%), Margin = NaN μs (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+
+// ** Remained 7 (77.8 %) benchmark(s) to run. Estimated finish 2026-09-07 17:03 (0h 0m from now) **
+// **************************
+// Benchmark: BinaryKeyDispatchBenchmarks.StringControl: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1)
+// *** Execute ***
+// Launch: 1 / 1
+// ! Failed to set up priority High for process System.Diagnostics.Process (dotnet). Make sure you have the right permissions. Message: Permission denied
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.15.8
+// Runtime=.NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2+BMI1+BMI2+F16C+FMA+LZCNT+MOVBE,AVX,SSE3+SSSE3+SSE4.1+SSE4.2+POPCNT,X86Base+SSE+SSE2,AES+PCLMUL VectorSize=256
+// Job: Job-XVLBGX(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1)
+
+WorkloadActual   1: 1024 op, 1733349.00 ns, 1.6927 us/op
+
+WorkloadResult   1: 1024 op, 1733349.00 ns, 1.6927 us/op
+// GC:  0 0 0 569680 1024
+// Threading:  1 0 1024
+
+
+Mean = 1.693 μs, StdErr = 0.000 μs (0.00%), N = 1, StdDev = 0.000 μs
+Min = 1.693 μs, Q1 = 1.693 μs, Median = 1.693 μs, Q3 = 1.693 μs, Max = 1.693 μs
+IQR = 0.000 μs, LowerFence = 1.693 μs, UpperFence = 1.693 μs
+ConfidenceInterval = [NaN μs; NaN μs] (CI 99.9%), Margin = NaN μs (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+
+// ** Remained 6 (66.7 %) benchmark(s) to run. Estimated finish 2026-09-07 17:03 (0h 0m from now) **
+// ***** BenchmarkRunner: Finish  *****
+
+// * Export *
+  home/runner/work/Dekaf/Dekaf/aba-results/dry-A/results/Dekaf.Benchmarks.Benchmarks.Unit.BinaryKeyDispatchBenchmarks-report.csv
+  home/runner/work/Dekaf/Dekaf/aba-results/dry-A/results/Dekaf.Benchmarks.Benchmarks.Unit.BinaryKeyDispatchBenchmarks-report-github.md
+  home/runner/work/Dekaf/Dekaf/aba-results/dry-A/results/Dekaf.Benchmarks.Benchmarks.Unit.BinaryKeyDispatchBenchmarks-report.html
+  home/runner/work/Dekaf/Dekaf/aba-results/dry-A/results/Dekaf.Benchmarks.Benchmarks.Unit.BinaryKeyDispatchBenchmarks-report-full.json
+
+// * Detailed results *
+BinaryKeyDispatchBenchmarks.ByteArray: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1)
+Runtime = ; GC = 
+Mean = 85.959 μs, StdErr = 0.000 μs (0.00%), N = 1, StdDev = 0.000 μs
+Min = 85.959 μs, Q1 = 85.959 μs, Median = 85.959 μs, Q3 = 85.959 μs, Max = 85.959 μs
+IQR = 0.000 μs, LowerFence = 85.959 μs, UpperFence = 85.959 μs
+ConfidenceInterval = [NaN μs; NaN μs] (CI 99.9%), Margin = NaN μs (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+-------------------- Histogram --------------------
+[85.958 μs ; 85.959 μs) | @
+---------------------------------------------------
+
+BinaryKeyDispatchBenchmarks.RawMemory: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1)
+Runtime = ; GC = 
+Mean = 57.790 μs, StdErr = 0.000 μs (0.00%), N = 1, StdDev = 0.000 μs
+Min = 57.790 μs, Q1 = 57.790 μs, Median = 57.790 μs, Q3 = 57.790 μs, Max = 57.790 μs
+IQR = 0.000 μs, LowerFence = 57.790 μs, UpperFence = 57.790 μs
+ConfidenceInterval = [NaN μs; NaN μs] (CI 99.9%), Margin = NaN μs (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+-------------------- Histogram --------------------
+[57.790 μs ; 57.791 μs) | @
+---------------------------------------------------
+
+BinaryKeyDispatchBenchmarks.StringControl: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1)
+Runtime = ; GC = 
+Mean = 1.693 μs, StdErr = 0.000 μs (0.00%), N = 1, StdDev = 0.000 μs
+Min = 1.693 μs, Q1 = 1.693 μs, Median = 1.693 μs, Q3 = 1.693 μs, Max = 1.693 μs
+IQR = 0.000 μs, LowerFence = 1.693 μs, UpperFence = 1.693 μs
+ConfidenceInterval = [NaN μs; NaN μs] (CI 99.9%), Margin = NaN μs (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+-------------------- Histogram --------------------
+[1.692 μs ; 1.693 μs) | @
+---------------------------------------------------
+
+// * Summary *
+
+BenchmarkDotNet v0.15.8, Linux Ubuntu 24.04.4 LTS (Noble Numbat)
+AMD EPYC 9V74 2.60GHz, 1 CPU, 4 logical and 2 physical cores
+.NET SDK 10.0.400
+  [Host] : .NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+
+Job=DryA  OutlierMode=DontRemove  Toolchain=InProcessEmitToolchain  
+IterationCount=1  LaunchCount=1  RunStrategy=ColdStart  
+UnrollFactor=1  WarmupCount=1  
+
+| Method        | Mean      | Error | Allocated |
+|-------------- |----------:|------:|----------:|
+| ByteArray     | 85.959 μs |    NA |    2212 B |
+| RawMemory     | 57.790 μs |    NA |    2306 B |
+| StringControl |  1.693 μs |    NA |     556 B |
+
+// * Warnings *
+MinIterationTime
+  BinaryKeyDispatchBenchmarks.ByteArray: DryA     -> The minimum observed iteration time is 88.022ms which is very small. It's recommended to increase it to at least 100ms using more operations.
+  BinaryKeyDispatchBenchmarks.RawMemory: DryA     -> The minimum observed iteration time is 59.177ms which is very small. It's recommended to increase it to at least 100ms using more operations.
+  BinaryKeyDispatchBenchmarks.StringControl: DryA -> The minimum observed iteration time is 1.733ms which is very small. It's recommended to increase it to at least 100ms using more operations.
+
+// * Legends *
+  Mean      : Arithmetic mean of all measurements
+  Error     : Half of 99.9% confidence interval
+  Allocated : Allocated memory per single operation (managed only, inclusive, 1KB = 1024B)
+  1 μs      : 1 Microsecond (0.000001 sec)
+
+// * Diagnostic Output - MemoryDiagnoser *
+
+
+// ***** BenchmarkRunner: End *****
+Run time: 00:00:00 (0.41 sec), executed benchmarks: 3
+
+// Found 6 benchmarks:
+//   DistinctBinaryKeyDispatchBenchmarks.ByteArray: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [KeySize=8]
+//   DistinctBinaryKeyDispatchBenchmarks.RawMemory: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [KeySize=8]
+//   DistinctBinaryKeyDispatchBenchmarks.ByteArray: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [KeySize=1024]
+//   DistinctBinaryKeyDispatchBenchmarks.RawMemory: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [KeySize=1024]
+//   DistinctBinaryKeyDispatchBenchmarks.ByteArray: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [KeySize=65536]
+//   DistinctBinaryKeyDispatchBenchmarks.RawMemory: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [KeySize=65536]
+
+// **************************
+// Benchmark: DistinctBinaryKeyDispatchBenchmarks.ByteArray: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [KeySize=8]
+// *** Execute ***
+// Launch: 1 / 1
+// ! Failed to set up priority High for process System.Diagnostics.Process (dotnet). Make sure you have the right permissions. Message: Permission denied
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.15.8
+// Runtime=.NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2+BMI1+BMI2+F16C+FMA+LZCNT+MOVBE,AVX,SSE3+SSSE3+SSE4.1+SSE4.2+POPCNT,X86Base+SSE+SSE2,AES+PCLMUL VectorSize=256
+// Job: Job-XVLBGX(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1)
+
+WorkloadActual   1: 128 op, 979764.00 ns, 7.6544 us/op
+
+WorkloadResult   1: 128 op, 979764.00 ns, 7.6544 us/op
+// GC:  0 0 0 283232 128
+// Threading:  128 0 128
+
+
+Mean = 7.654 μs, StdErr = 0.000 μs (0.00%), N = 1, StdDev = 0.000 μs
+Min = 7.654 μs, Q1 = 7.654 μs, Median = 7.654 μs, Q3 = 7.654 μs, Max = 7.654 μs
+IQR = 0.000 μs, LowerFence = 7.654 μs, UpperFence = 7.654 μs
+ConfidenceInterval = [NaN μs; NaN μs] (CI 99.9%), Margin = NaN μs (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+
+// ** Remained 5 (55.6 %) benchmark(s) to run. Estimated finish 2026-09-07 17:03 (0h 0m from now) **
+// **************************
+// Benchmark: DistinctBinaryKeyDispatchBenchmarks.RawMemory: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [KeySize=8]
+// *** Execute ***
+// Launch: 1 / 1
+// ! Failed to set up priority High for process System.Diagnostics.Process (dotnet). Make sure you have the right permissions. Message: Permission denied
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.15.8
+// Runtime=.NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2+BMI1+BMI2+F16C+FMA+LZCNT+MOVBE,AVX,SSE3+SSSE3+SSE4.1+SSE4.2+POPCNT,X86Base+SSE+SSE2,AES+PCLMUL VectorSize=256
+// Job: Job-XVLBGX(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1)
+
+WorkloadActual   1: 128 op, 820354.00 ns, 6.4090 us/op
+
+WorkloadResult   1: 128 op, 820354.00 ns, 6.4090 us/op
+// GC:  0 0 0 295360 128
+// Threading:  128 0 128
+
+
+Mean = 6.409 μs, StdErr = 0.000 μs (0.00%), N = 1, StdDev = 0.000 μs
+Min = 6.409 μs, Q1 = 6.409 μs, Median = 6.409 μs, Q3 = 6.409 μs, Max = 6.409 μs
+IQR = 0.000 μs, LowerFence = 6.409 μs, UpperFence = 6.409 μs
+ConfidenceInterval = [NaN μs; NaN μs] (CI 99.9%), Margin = NaN μs (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+
+// ** Remained 4 (44.4 %) benchmark(s) to run. Estimated finish 2026-09-07 17:03 (0h 0m from now) **
+// **************************
+// Benchmark: DistinctBinaryKeyDispatchBenchmarks.ByteArray: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [KeySize=1024]
+// *** Execute ***
+// Launch: 1 / 1
+// ! Failed to set up priority High for process System.Diagnostics.Process (dotnet). Make sure you have the right permissions. Message: Permission denied
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.15.8
+// Runtime=.NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2+BMI1+BMI2+F16C+FMA+LZCNT+MOVBE,AVX,SSE3+SSSE3+SSE4.1+SSE4.2+POPCNT,X86Base+SSE+SSE2,AES+PCLMUL VectorSize=256
+// Job: Job-XVLBGX(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1)
+
+WorkloadActual   1: 128 op, 790690.00 ns, 6.1773 us/op
+
+WorkloadResult   1: 128 op, 790690.00 ns, 6.1773 us/op
+// GC:  0 0 0 283632 128
+// Threading:  128 0 128
+
+
+Mean = 6.177 μs, StdErr = 0.000 μs (0.00%), N = 1, StdDev = 0.000 μs
+Min = 6.177 μs, Q1 = 6.177 μs, Median = 6.177 μs, Q3 = 6.177 μs, Max = 6.177 μs
+IQR = 0.000 μs, LowerFence = 6.177 μs, UpperFence = 6.177 μs
+ConfidenceInterval = [NaN μs; NaN μs] (CI 99.9%), Margin = NaN μs (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+
+// ** Remained 3 (33.3 %) benchmark(s) to run. Estimated finish 2026-09-07 17:03 (0h 0m from now) **
+// **************************
+// Benchmark: DistinctBinaryKeyDispatchBenchmarks.RawMemory: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [KeySize=1024]
+// *** Execute ***
+// Launch: 1 / 1
+// ! Failed to set up priority High for process System.Diagnostics.Process (dotnet). Make sure you have the right permissions. Message: Permission denied
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.15.8
+// Runtime=.NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2+BMI1+BMI2+F16C+FMA+LZCNT+MOVBE,AVX,SSE3+SSSE3+SSE4.1+SSE4.2+POPCNT,X86Base+SSE+SSE2,AES+PCLMUL VectorSize=256
+// Job: Job-XVLBGX(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1)
+
+WorkloadActual   1: 128 op, 821296.00 ns, 6.4164 us/op
+
+WorkloadResult   1: 128 op, 821296.00 ns, 6.4164 us/op
+// GC:  0 0 0 295640 128
+// Threading:  128 0 128
+
+
+Mean = 6.416 μs, StdErr = 0.000 μs (0.00%), N = 1, StdDev = 0.000 μs
+Min = 6.416 μs, Q1 = 6.416 μs, Median = 6.416 μs, Q3 = 6.416 μs, Max = 6.416 μs
+IQR = 0.000 μs, LowerFence = 6.416 μs, UpperFence = 6.416 μs
+ConfidenceInterval = [NaN μs; NaN μs] (CI 99.9%), Margin = NaN μs (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+
+// ** Remained 2 (22.2 %) benchmark(s) to run. Estimated finish 2026-09-07 17:03 (0h 0m from now) **
+// **************************
+// Benchmark: DistinctBinaryKeyDispatchBenchmarks.ByteArray: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [KeySize=65536]
+// *** Execute ***
+// Launch: 1 / 1
+// ! Failed to set up priority High for process System.Diagnostics.Process (dotnet). Make sure you have the right permissions. Message: Permission denied
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.15.8
+// Runtime=.NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2+BMI1+BMI2+F16C+FMA+LZCNT+MOVBE,AVX,SSE3+SSSE3+SSE4.1+SSE4.2+POPCNT,X86Base+SSE+SSE2,AES+PCLMUL VectorSize=256
+// Job: Job-XVLBGX(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1)
+
+WorkloadActual   1: 128 op, 1090601.00 ns, 8.5203 us/op
+
+WorkloadResult   1: 128 op, 1090601.00 ns, 8.5203 us/op
+// GC:  0 0 0 283152 128
+// Threading:  128 0 128
+
+
+Mean = 8.520 μs, StdErr = 0.000 μs (0.00%), N = 1, StdDev = 0.000 μs
+Min = 8.520 μs, Q1 = 8.520 μs, Median = 8.520 μs, Q3 = 8.520 μs, Max = 8.520 μs
+IQR = 0.000 μs, LowerFence = 8.520 μs, UpperFence = 8.520 μs
+ConfidenceInterval = [NaN μs; NaN μs] (CI 99.9%), Margin = NaN μs (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+
+// ** Remained 1 (11.1 %) benchmark(s) to run. Estimated finish 2026-09-07 17:03 (0h 0m from now) **
+// **************************
+// Benchmark: DistinctBinaryKeyDispatchBenchmarks.RawMemory: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [KeySize=65536]
+// *** Execute ***
+// Launch: 1 / 1
+// ! Failed to set up priority High for process System.Diagnostics.Process (dotnet). Make sure you have the right permissions. Message: Permission denied
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.15.8
+// Runtime=.NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2+BMI1+BMI2+F16C+FMA+LZCNT+MOVBE,AVX,SSE3+SSSE3+SSE4.1+SSE4.2+POPCNT,X86Base+SSE+SSE2,AES+PCLMUL VectorSize=256
+// Job: Job-XVLBGX(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1)
+
+WorkloadActual   1: 128 op, 1101988.00 ns, 8.6093 us/op
+
+WorkloadResult   1: 128 op, 1101988.00 ns, 8.6093 us/op
+// GC:  0 0 0 295600 128
+// Threading:  128 0 128
+
+
+Mean = 8.609 μs, StdErr = 0.000 μs (0.00%), N = 1, StdDev = 0.000 μs
+Min = 8.609 μs, Q1 = 8.609 μs, Median = 8.609 μs, Q3 = 8.609 μs, Max = 8.609 μs
+IQR = 0.000 μs, LowerFence = 8.609 μs, UpperFence = 8.609 μs
+ConfidenceInterval = [NaN μs; NaN μs] (CI 99.9%), Margin = NaN μs (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+
+// ** Remained 0 (0.0 %) benchmark(s) to run. Estimated finish 2026-09-07 17:03 (0h 0m from now) **
+// ***** BenchmarkRunner: Finish  *****
+
+// * Export *
+  home/runner/work/Dekaf/Dekaf/aba-results/dry-A/results/Dekaf.Benchmarks.Benchmarks.Unit.DistinctBinaryKeyDispatchBenchmarks-report.csv
+  home/runner/work/Dekaf/Dekaf/aba-results/dry-A/results/Dekaf.Benchmarks.Benchmarks.Unit.DistinctBinaryKeyDispatchBenchmarks-report-github.md
+  home/runner/work/Dekaf/Dekaf/aba-results/dry-A/results/Dekaf.Benchmarks.Benchmarks.Unit.DistinctBinaryKeyDispatchBenchmarks-report.html
+  home/runner/work/Dekaf/Dekaf/aba-results/dry-A/results/Dekaf.Benchmarks.Benchmarks.Unit.DistinctBinaryKeyDispatchBenchmarks-report-full.json
+
+// * Detailed results *
+DistinctBinaryKeyDispatchBenchmarks.ByteArray: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [KeySize=8]
+Runtime = ; GC = 
+Mean = 7.654 μs, StdErr = 0.000 μs (0.00%), N = 1, StdDev = 0.000 μs
+Min = 7.654 μs, Q1 = 7.654 μs, Median = 7.654 μs, Q3 = 7.654 μs, Max = 7.654 μs
+IQR = 0.000 μs, LowerFence = 7.654 μs, UpperFence = 7.654 μs
+ConfidenceInterval = [NaN μs; NaN μs] (CI 99.9%), Margin = NaN μs (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+-------------------- Histogram --------------------
+[7.654 μs ; 7.655 μs) | @
+---------------------------------------------------
+
+DistinctBinaryKeyDispatchBenchmarks.RawMemory: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [KeySize=8]
+Runtime = ; GC = 
+Mean = 6.409 μs, StdErr = 0.000 μs (0.00%), N = 1, StdDev = 0.000 μs
+Min = 6.409 μs, Q1 = 6.409 μs, Median = 6.409 μs, Q3 = 6.409 μs, Max = 6.409 μs
+IQR = 0.000 μs, LowerFence = 6.409 μs, UpperFence = 6.409 μs
+ConfidenceInterval = [NaN μs; NaN μs] (CI 99.9%), Margin = NaN μs (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+-------------------- Histogram --------------------
+[6.409 μs ; 6.410 μs) | @
+---------------------------------------------------
+
+DistinctBinaryKeyDispatchBenchmarks.ByteArray: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [KeySize=1024]
+Runtime = ; GC = 
+Mean = 6.177 μs, StdErr = 0.000 μs (0.00%), N = 1, StdDev = 0.000 μs
+Min = 6.177 μs, Q1 = 6.177 μs, Median = 6.177 μs, Q3 = 6.177 μs, Max = 6.177 μs
+IQR = 0.000 μs, LowerFence = 6.177 μs, UpperFence = 6.177 μs
+ConfidenceInterval = [NaN μs; NaN μs] (CI 99.9%), Margin = NaN μs (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+-------------------- Histogram --------------------
+[6.177 μs ; 6.178 μs) | @
+---------------------------------------------------
+
+DistinctBinaryKeyDispatchBenchmarks.RawMemory: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [KeySize=1024]
+Runtime = ; GC = 
+Mean = 6.416 μs, StdErr = 0.000 μs (0.00%), N = 1, StdDev = 0.000 μs
+Min = 6.416 μs, Q1 = 6.416 μs, Median = 6.416 μs, Q3 = 6.416 μs, Max = 6.416 μs
+IQR = 0.000 μs, LowerFence = 6.416 μs, UpperFence = 6.416 μs
+ConfidenceInterval = [NaN μs; NaN μs] (CI 99.9%), Margin = NaN μs (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+-------------------- Histogram --------------------
+[6.416 μs ; 6.417 μs) | @
+---------------------------------------------------
+
+DistinctBinaryKeyDispatchBenchmarks.ByteArray: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [KeySize=65536]
+Runtime = ; GC = 
+Mean = 8.520 μs, StdErr = 0.000 μs (0.00%), N = 1, StdDev = 0.000 μs
+Min = 8.520 μs, Q1 = 8.520 μs, Median = 8.520 μs, Q3 = 8.520 μs, Max = 8.520 μs
+IQR = 0.000 μs, LowerFence = 8.520 μs, UpperFence = 8.520 μs
+ConfidenceInterval = [NaN μs; NaN μs] (CI 99.9%), Margin = NaN μs (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+-------------------- Histogram --------------------
+[8.520 μs ; 8.521 μs) | @
+---------------------------------------------------
+
+DistinctBinaryKeyDispatchBenchmarks.RawMemory: DryA(OutlierMode=DontRemove, Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [KeySize=65536]
+Runtime = ; GC = 
+Mean = 8.609 μs, StdErr = 0.000 μs (0.00%), N = 1, StdDev = 0.000 μs
+Min = 8.609 μs, Q1 = 8.609 μs, Median = 8.609 μs, Q3 = 8.609 μs, Max = 8.609 μs
+IQR = 0.000 μs, LowerFence = 8.609 μs, UpperFence = 8.609 μs
+ConfidenceInterval = [NaN μs; NaN μs] (CI 99.9%), Margin = NaN μs (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+-------------------- Histogram --------------------
+[8.609 μs ; 8.610 μs) | @
+---------------------------------------------------
+
+// * Summary *
+
+BenchmarkDotNet v0.15.8, Linux Ubuntu 24.04.4 LTS (Noble Numbat)
+AMD EPYC 9V74 2.60GHz, 1 CPU, 4 logical and 2 physical cores
+.NET SDK 10.0.400
+  [Host] : .NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+
+Job=DryA  OutlierMode=DontRemove  Toolchain=InProcessEmitToolchain  
+IterationCount=1  LaunchCount=1  RunStrategy=ColdStart  
+UnrollFactor=1  WarmupCount=1  
+
+| Method    | KeySize | Mean     | Error | Allocated |
+|---------- |-------- |---------:|------:|----------:|
+| ByteArray | 8       | 7.654 μs |    NA |   2.16 KB |
+| RawMemory | 8       | 6.409 μs |    NA |   2.25 KB |
+| ByteArray | 1024    | 6.177 μs |    NA |   2.16 KB |
+| RawMemory | 1024    | 6.416 μs |    NA |   2.26 KB |
+| ByteArray | 65536   | 8.520 μs |    NA |   2.16 KB |
+| RawMemory | 65536   | 8.609 μs |    NA |   2.25 KB |
+
+// * Warnings *
+MinIterationTime
+  DistinctBinaryKeyDispatchBenchmarks.ByteArray: DryA -> The minimum observed iteration time is 979.764μs which is very small. It's recommended to increase it to at least 100ms using more operations.
+  DistinctBinaryKeyDispatchBenchmarks.RawMemory: DryA -> The minimum observed iteration time is 820.354μs which is very small. It's recommended to increase it to at least 100ms using more operations.
+  DistinctBinaryKeyDispatchBenchmarks.ByteArray: DryA -> The minimum observed iteration time is 790.69μs which is very small. It's recommended to increase it to at least 100ms using more operations.
+  DistinctBinaryKeyDispatchBenchmarks.RawMemory: DryA -> The minimum observed iteration time is 821.296μs which is very small. It's recommended to increase it to at least 100ms using more operations.
+  DistinctBinaryKeyDispatchBenchmarks.ByteArray: DryA -> The minimum observed iteration time is 1.091ms which is very small. It's recommended to increase it to at least 100ms using more operations.
+  DistinctBinaryKeyDispatchBenchmarks.RawMemory: DryA -> The minimum observed iteration time is 1.102ms which is very small. It's recommended to increase it to at least 100ms using more operations.
+
+// * Legends *
+  KeySize   : Value of the 'KeySize' parameter
+  Mean      : Arithmetic mean of all measurements
+  Error     : Half of 99.9% confidence interval
+  Allocated : Allocated memory per single operation (managed only, inclusive, 1KB = 1024B)
+  1 μs      : 1 Microsecond (0.000001 sec)
+
+// * Diagnostic Output - MemoryDiagnoser *
+
+
+// ***** BenchmarkRunner: End *****
+Run time: 00:00:00 (0.1 sec), executed benchmarks: 6
+
+Global total time: 00:00:01 (1.06 sec), executed benchmarks: 9
+// * Artifacts cleanup *
+Artifacts cleanup is finished

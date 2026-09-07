@@ -1,0 +1,2 @@
+Preparing worktree (detached HEAD 5492f306)
+HEAD is now at 5492f306 perf(consumer): avoid duplicate binary-key hash on lane insertion

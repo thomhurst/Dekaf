@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang='en'>
+<head>
+<meta charset='utf-8' />
+<title>RelayMetricsBenchmarks-20260907-171254</title>
+
+<style type="text/css">
+	table { border-collapse: collapse; display: block; width: 100%; overflow: auto; }
+	td, th { padding: 6px 13px; border: 1px solid #ddd; text-align: right; }
+	tr { background-color: #fff; border-top: 1px solid #ccc; }
+	tr:nth-child(even) { background: #f8f8f8; }
+</style>
+</head>
+<body>
+<pre><code>
+BenchmarkDotNet v0.15.8, Linux Ubuntu 24.04.4 LTS (Noble Numbat)
+AMD EPYC 9V74 2.60GHz, 1 CPU, 4 logical and 2 physical cores
+.NET SDK 10.0.400
+  [Host] : .NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+</code></pre>
+<pre><code>Job=B  OutlierMode=DontRemove  Toolchain=InProcessEmitToolchain  
+IterationCount=25  IterationTime=250ms  WarmupCount=8  
+</code></pre>
+
+<table>
+<thead><tr><th>Method    </th><th>Enabled</th><th>Mean  </th><th>Error</th><th>StdDev</th><th>Median</th><th>Max   </th><th>Gen0</th><th>Allocated</th>
+</tr>
+</thead><tbody><tr><td>SynchronousBatch</td><td>False</td><td>538.134 ns</td><td>1.8900 ns</td><td>2.5231 ns</td><td>538.922 ns</td><td>541.337 ns</td><td>-</td><td>-</td>
+</tr><tr><td>PendingBatch</td><td>False</td><td>850.881 ns</td><td>1.0594 ns</td><td>1.4142 ns</td><td>850.735 ns</td><td>856.411 ns</td><td>-</td><td>-</td>
+</tr><tr><td>PublisherControl</td><td>False</td><td>5.582 ns</td><td>0.0621 ns</td><td>0.0829 ns</td><td>5.559 ns</td><td>5.963 ns</td><td>-</td><td>-</td>
+</tr><tr><td>SynchronousBatch</td><td>True</td><td>747.671 ns</td><td>1.2182 ns</td><td>1.6262 ns</td><td>747.231 ns</td><td>754.139 ns</td><td>-</td><td>-</td>
+</tr><tr><td>PendingBatch</td><td>True</td><td>1,398.296 ns</td><td>3.0786 ns</td><td>4.1099 ns</td><td>1,397.083 ns</td><td>1,413.394 ns</td><td>0.0056</td><td>176 B</td>
+</tr><tr><td>PublisherControl</td><td>True</td><td>5.536 ns</td><td>0.0144 ns</td><td>0.0192 ns</td><td>5.529 ns</td><td>5.599 ns</td><td>-</td><td>-</td>
+</tr></tbody></table>
+</body>
+</html>

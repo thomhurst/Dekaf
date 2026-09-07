@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang='en'>
+<head>
+<meta charset='utf-8' />
+<title>ActualPublisherBenchmarks-20260907-170343</title>
+
+<style type="text/css">
+	table { border-collapse: collapse; display: block; width: 100%; overflow: auto; }
+	td, th { padding: 6px 13px; border: 1px solid #ddd; text-align: right; }
+	tr { background-color: #fff; border-top: 1px solid #ccc; }
+	tr:nth-child(even) { background: #f8f8f8; }
+</style>
+</head>
+<body>
+<pre><code>
+BenchmarkDotNet v0.15.8, Linux Ubuntu 24.04.4 LTS (Noble Numbat)
+Intel Xeon 6973P-C 2.60GHz, 1 CPU, 4 logical and 2 physical cores
+.NET SDK 10.0.400
+  [Host] : .NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v4
+</code></pre>
+<pre><code>Job=DryA  OutlierMode=DontRemove  Toolchain=InProcessEmitToolchain  
+IterationCount=1  LaunchCount=1  RunStrategy=ColdStart  
+UnrollFactor=1  WarmupCount=1  
+</code></pre>
+
+<table>
+<thead><tr><th>Method    </th><th>Enabled</th><th>Mean </th><th>Error</th><th>Median</th><th>Max  </th><th>Allocated</th>
+</tr>
+</thead><tbody><tr><td>RelayBatch</td><td>False</td><td>21,173.5 &mu;s</td><td>NA</td><td>21,173.5 &mu;s</td><td>21,173.5 &mu;s</td><td>359.54 KB</td>
+</tr><tr><td>PublisherControl</td><td>False</td><td>988.7 &mu;s</td><td>NA</td><td>988.7 &mu;s</td><td>988.7 &mu;s</td><td>359.4 KB</td>
+</tr><tr><td>RelayBatch</td><td>True</td><td>366.1 &mu;s</td><td>NA</td><td>366.1 &mu;s</td><td>366.1 &mu;s</td><td>359.54 KB</td>
+</tr><tr><td>PublisherControl</td><td>True</td><td>698.7 &mu;s</td><td>NA</td><td>698.7 &mu;s</td><td>698.7 &mu;s</td><td>359.4 KB</td>
+</tr></tbody></table>
+</body>
+</html>

@@ -1,0 +1,159 @@
+    PID    PPID %CPU %MEM COMMAND
+      1       0  0.9  0.0 /sbin/init
+      2       0  0.0  0.0 [kthreadd]
+      3       2  0.0  0.0 [pool_workqueue_release]
+      4       2  0.0  0.0 [kworker/R-rcu_gp]
+      5       2  0.0  0.0 [kworker/R-sync_wq]
+      6       2  0.0  0.0 [kworker/R-kvfree_rcu_reclaim]
+      7       2  0.0  0.0 [kworker/R-slub_flushwq]
+      8       2  0.0  0.0 [kworker/R-netns]
+      9       2  0.0  0.0 [kworker/0:0-events]
+     10       2  0.0  0.0 [kworker/0:1-events]
+     11       2  0.0  0.0 [kworker/0:0H-events_highpri]
+     12       2  0.0  0.0 [kworker/u16:0-flush-259:0]
+     13       2  0.0  0.0 [kworker/R-mm_percpu_wq]
+     14       2  0.0  0.0 [ksoftirqd/0]
+     15       2  0.0  0.0 [rcu_sched]
+     16       2  0.0  0.0 [rcu_exp_par_gp_kthread_worker/0]
+     17       2  0.0  0.0 [rcu_exp_gp_kthread_worker]
+     18       2  0.0  0.0 [migration/0]
+     19       2  0.0  0.0 [idle_inject/0]
+     20       2  0.0  0.0 [cpuhp/0]
+     21       2  0.0  0.0 [cpuhp/2]
+     22       2  0.0  0.0 [idle_inject/2]
+     23       2  0.2  0.0 [migration/2]
+     24       2  0.0  0.0 [ksoftirqd/2]
+     25       2  0.0  0.0 [kworker/2:0-cgroup_offline]
+     26       2  0.0  0.0 [kworker/2:0H-events_highpri]
+     27       2  0.0  0.0 [cpuhp/1]
+     28       2  0.0  0.0 [idle_inject/1]
+     29       2  0.2  0.0 [migration/1]
+     30       2  0.0  0.0 [ksoftirqd/1]
+     31       2  0.0  0.0 [kworker/1:0-cgroup_free]
+     32       2  0.0  0.0 [kworker/1:0H-events_highpri]
+     33       2  0.0  0.0 [cpuhp/3]
+     34       2  0.0  0.0 [idle_inject/3]
+     35       2  0.3  0.0 [migration/3]
+     36       2  0.0  0.0 [ksoftirqd/3]
+     37       2  0.0  0.0 [kworker/3:0-cgroup_free]
+     38       2  0.0  0.0 [kworker/3:0H-events_highpri]
+     39       2  0.0  0.0 [kdevtmpfs]
+     40       2  0.0  0.0 [kworker/R-inet_frag_wq]
+     41       2  0.0  0.0 [rcu_tasks_rude_kthread]
+     42       2  0.0  0.0 [rcu_tasks_trace_kthread]
+     43       2  0.0  0.0 [kauditd]
+     44       2  0.0  0.0 [khungtaskd]
+     45       2  0.0  0.0 [oom_reaper]
+     46       2  0.0  0.0 [kworker/u16:1-events_unbound]
+     47       2  0.0  0.0 [kworker/u16:2-events_power_efficient]
+     48       2  0.0  0.0 [kworker/R-writeback]
+     49       2  0.0  0.0 [kcompactd0]
+     50       2  0.0  0.0 [ksmd]
+     51       2  0.0  0.0 [khugepaged]
+     52       2  0.0  0.0 [kworker/R-kblockd]
+     53       2  0.0  0.0 [kworker/R-blkcg_punt_bio]
+     54       2  0.0  0.0 [kworker/R-kintegrityd]
+     55       2  0.0  0.0 [irq/9-acpi]
+     56       2  0.0  0.0 [kworker/3:1-events]
+     57       2  0.0  0.0 [kworker/1:1-cgroup_offline]
+     58       2  0.0  0.0 [kworker/2:1-cgroup_offline]
+     59       2  0.0  0.0 [kworker/R-tpm_dev_wq]
+     60       2  0.0  0.0 [kworker/R-ata_sff]
+     61       2  0.0  0.0 [kworker/R-md]
+     62       2  0.0  0.0 [kworker/R-md_bitmap]
+     63       2  0.0  0.0 [kworker/R-edac-poller]
+     64       2  0.0  0.0 [kworker/R-hv_vmbus_con]
+     65       2  0.0  0.0 [kworker/R-hv_vmbus_rescind]
+     66       2  0.0  0.0 [kworker/R-hv_pri_chan]
+     67       2  0.0  0.0 [kworker/R-hv_sub_chan]
+     68       2  0.0  0.0 [kworker/R-devfreq_wq]
+     69       2  0.0  0.0 [watchdogd]
+     70       2  0.0  0.0 [kworker/R-quota_events_unbound]
+     71       2  0.0  0.0 [kworker/0:1H-kblockd]
+     72       2  0.0  0.0 [kswapd0]
+     73       2  0.0  0.0 [ecryptfs-kthread]
+     74       2  0.0  0.0 [kworker/R-kthrotld]
+     75       2  0.0  0.0 [kworker/R-nfit]
+     76       2  0.0  0.0 [scsi_eh_0]
+     77       2  0.0  0.0 [kworker/R-scsi_tmf_0]
+     78       2  0.0  0.0 [kworker/R-nvme-wq]
+     79       2  0.0  0.0 [kworker/R-nvme-reset-wq]
+     80       2  0.0  0.0 [kworker/R-nvme-delete-wq]
+     81       2  0.0  0.0 [kworker/R-nvme-auth-wq]
+     82       2  0.0  0.0 [kworker/u16:3-flush-259:0]
+     83       2  0.0  0.0 [kworker/0:2-events]
+     84       2  0.0  0.0 [kworker/u16:4-flush-259:0]
+     85       2  0.0  0.0 [kworker/u16:5-flush-259:0]
+     86       2  0.0  0.0 [kworker/u16:6-writeback]
+     87       2  0.0  0.0 [kworker/0:3-events]
+     88       2  0.0  0.0 [hv_balloon]
+     89       2  0.0  0.0 [kworker/R-mld]
+     90       2  0.0  0.0 [kworker/3:1H-kblockd]
+     91       2  0.0  0.0 [kworker/R-ipv6_addrconf]
+     92       2  0.0  0.0 [kworker/R-kstrp]
+     94       2  0.0  0.0 [kworker/u17:0]
+    105       2  0.0  0.0 [jbd2/nvme0n1p1-8]
+    106       2  0.0  0.0 [kworker/R-ext4-rsv-conversion]
+    107       2  0.0  0.0 [kworker/2:1H-kblockd]
+    108       2  0.0  0.0 [kworker/2:2-cgroup_release]
+    144       2  0.0  0.0 [kworker/1:1H-kblockd]
+    158       1  0.0  0.1 /usr/lib/systemd/systemd-journald
+    173       2  0.0  0.0 [kworker/1:2-events]
+    195       2  0.0  0.0 [kworker/2:3-cgroup_bpf_destroy]
+    196       2  0.0  0.0 [kworker/2:4-mm_percpu_wq]
+    197       2  0.0  0.0 [kworker/2:5-events]
+    206       2  0.0  0.0 [kworker/R-kmpathd]
+    207       2  0.0  0.0 [kworker/R-kmpath_handlerd]
+    215       2  0.0  0.0 [kworker/3:2-mm_percpu_wq]
+    220       2  0.0  0.0 [kworker/1:3-mm_percpu_wq]
+    224       1  0.0  0.2 /sbin/multipathd -d -s
+    230       1  0.0  0.0 /usr/lib/systemd/systemd-udevd
+    241       2  0.0  0.0 [psimon]
+    289       1  0.0  0.0 /usr/lib/linux-tools/6.17.0-1022-azure/hv_kvp_daemon -n
+    337       2  0.0  0.0 [jbd2/nvme0n1p16-8]
+    338       2  0.0  0.0 [kworker/R-ext4-rsv-conversion]
+    396       1  0.0  0.0 /usr/lib/systemd/systemd-resolved
+    423       2  0.0  0.0 [kworker/R-mana_per_port_queue_reset_wq]
+    452       2  0.0  0.0 [kworker/R-ib-comp-wq]
+    453       2  0.0  0.0 [kworker/R-ib-comp-unb-wq]
+    454       2  0.0  0.0 [kworker/R-ib_mcast]
+    455       2  0.0  0.0 [kworker/R-ib_nl_sa_wq]
+    456       2  0.0  0.0 [kworker/R-ib_mad1]
+    498       1  0.0  0.0 /usr/sbin/haveged --Foreground --verbose=1
+    640       1  0.0  0.0 /usr/lib/systemd/systemd-networkd
+    742       2  0.0  0.0 [ext4lazyinit]
+    761       1  0.0  0.0 @dbus-daemon --system --address=systemd: --nofork --nopidfile --systemd-activation --syslog-only
+    767       1  0.0  0.1 /usr/bin/python3 /usr/bin/networkd-dispatcher --run-startup-triggers
+    769       1  0.0  0.3 php-fpm: master process (/etc/php/8.3/fpm/php-fpm.conf)
+    775       1  0.0  0.0 /usr/lib/polkit-1/polkitd --no-debug
+    782       1  0.0  0.0 /usr/lib/systemd/systemd-logind
+    790       1  0.0  0.0 /usr/libexec/udisks2/udisksd
+    801       1  0.0  0.1 /usr/bin/python3 -u /usr/sbin/waagent -daemon
+    822       1  0.0  0.0 /usr/sbin/cron -f -P
+    848       1  0.0  0.0 /sbin/agetty -o -p -- \u --keep-baud 115200,57600,38400,9600 - vt220
+    859       1  0.0  0.0 /usr/sbin/rsyslogd -n -iNONE
+    861       1  0.0  0.2 /usr/bin/containerd
+    873       1  0.0  0.0 /sbin/agetty -o -p -- \u --noclear - linux
+    899       1  0.0  0.0 /usr/sbin/chronyd -F 1
+    906       1  0.0  0.0 /usr/sbin/ModemManager
+    908     899  0.0  0.0 /usr/sbin/chronyd -F 1
+    946       1  0.0  0.0 /usr/lib/systemd/systemd --user
+    982     946  0.0  0.0 (sd-pam)
+   1051       2  0.0  0.0 [kworker/u16:7-flush-259:0]
+   1052       2  0.0  0.0 [kworker/u16:8-flush-259:0]
+   1053       2  0.0  0.0 [kworker/u16:9-flush-259:0]
+   1054       2  0.0  0.0 [kworker/u16:10-flush-259:0]
+   1129       2  0.0  0.0 [kworker/R-tls-strp]
+   1139       1  0.0  0.4 /usr/bin/dockerd -H fd:// --containerd=/run/containerd/containerd.sock
+   1191     801  0.2  0.2 /usr/bin/python3 -u bin/WALinuxAgent-2.16.0.2-py3.12.egg -run-exthandlers
+   1206     769  0.0  0.1 php-fpm: pool www
+   1207     769  0.0  0.1 php-fpm: pool www
+   1828       2  0.0  0.0 [psimon]
+   1830       1  0.0  0.1 /opt/hca/hosted-compute-agent
+   1870    1830  0.0  0.0 sudo -n PROVJOBD_E2E=1 /tmp/provjobd1649983656
+   1872    1870  0.2  0.6 /tmp/provjobd1649983656
+   1885    1830  1.0  0.5 /home/runner/actions-runner/cached/2.337.0/bin/Runner.Listener run
+   1904    1885  2.2  1.0 /home/runner/actions-runner/cached/2.337.0/bin/Runner.Worker spawnclient 142 145
+   2308    1904  0.0  0.0 /usr/bin/bash -e /home/runner/work/_temp/3ea00aef-4940-4396-9fd4-821251fae658.sh
+   2309    2308  0.1  0.1 python3 .github/scripts/benchmark_aba.py --pr 3117 --baseline a48fafe4121350da7ad83fcdd238f0f8039d6d59 --candidate e9e6e3c1584c95c990755979672cf41de67f62c3 --artifacts /home/runner/work/Dekaf/Dekaf/aba-results
+   2626    2309  0.0  0.0 ps -eo pid,ppid,pcpu,pmem,args

@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang='en'>
+<head>
+<meta charset='utf-8' />
+<title>Dekaf.Benchmarks.Benchmarks.Unit.BinaryKeyDispatchBenchmarks-20260907-170516</title>
+
+<style type="text/css">
+	table { border-collapse: collapse; display: block; width: 100%; overflow: auto; }
+	td, th { padding: 6px 13px; border: 1px solid #ddd; text-align: right; }
+	tr { background-color: #fff; border-top: 1px solid #ccc; }
+	tr:nth-child(even) { background: #f8f8f8; }
+</style>
+</head>
+<body>
+<pre><code>
+BenchmarkDotNet v0.15.8, Linux Ubuntu 24.04.4 LTS (Noble Numbat)
+AMD EPYC 9V74 2.60GHz, 1 CPU, 4 logical and 2 physical cores
+.NET SDK 10.0.400
+  [Host] : .NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+</code></pre>
+<pre><code>Job=B  OutlierMode=DontRemove  Toolchain=InProcessEmitToolchain  
+IterationCount=25  IterationTime=250ms  WarmupCount=8  
+</code></pre>
+
+<table>
+<thead><tr><th>Method </th><th>Mean</th><th>Error</th><th>StdDev</th><th>Gen0</th><th>Gen1</th><th>Gen2</th><th>Allocated</th>
+</tr>
+</thead><tbody><tr><td>ByteArray</td><td>651.1 ns</td><td>9.21 ns</td><td>12.30 ns</td><td>0.0586</td><td>0.0586</td><td>0.0586</td><td>557 B</td>
+</tr><tr><td>RawMemory</td><td>546.7 ns</td><td>4.72 ns</td><td>6.30 ns</td><td>0.0629</td><td>0.0629</td><td>0.0629</td><td>597 B</td>
+</tr><tr><td>StringControl</td><td>657.5 ns</td><td>5.83 ns</td><td>7.78 ns</td><td>0.0585</td><td>0.0585</td><td>0.0585</td><td>557 B</td>
+</tr></tbody></table>
+</body>
+</html>

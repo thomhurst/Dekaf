@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang='en'>
+<head>
+<meta charset='utf-8' />
+<title>Dekaf.Benchmarks.Benchmarks.Unit.DistinctBinaryKeyDispatchBenchmarks-20260907-170715</title>
+
+<style type="text/css">
+	table { border-collapse: collapse; display: block; width: 100%; overflow: auto; }
+	td, th { padding: 6px 13px; border: 1px solid #ddd; text-align: right; }
+	tr { background-color: #fff; border-top: 1px solid #ccc; }
+	tr:nth-child(even) { background: #f8f8f8; }
+</style>
+</head>
+<body>
+<pre><code>
+BenchmarkDotNet v0.15.8, Linux Ubuntu 24.04.4 LTS (Noble Numbat)
+AMD EPYC 9V74 2.60GHz, 1 CPU, 4 logical and 2 physical cores
+.NET SDK 10.0.400
+  [Host] : .NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+</code></pre>
+<pre><code>Job=A2  OutlierMode=DontRemove  Toolchain=InProcessEmitToolchain  
+IterationCount=25  IterationTime=250ms  WarmupCount=8  
+</code></pre>
+
+<table>
+<thead><tr><th>Method</th><th>KeySize</th><th>Mean</th><th>Error</th><th>StdDev</th><th>Gen0</th><th>Gen1</th><th>Allocated</th>
+</tr>
+</thead><tbody><tr><td>ByteArray</td><td>8</td><td>2.681 &mu;s</td><td>0.0118 &mu;s</td><td>0.0158 &mu;s</td><td>0.1274</td><td>0.0425</td><td>2.13 KB</td>
+</tr><tr><td>RawMemory</td><td>8</td><td>2.615 &mu;s</td><td>0.0087 &mu;s</td><td>0.0116 &mu;s</td><td>0.1351</td><td>0.0416</td><td>2.22 KB</td>
+</tr><tr><td>ByteArray</td><td>1024</td><td>2.719 &mu;s</td><td>0.1207 &mu;s</td><td>0.1612 &mu;s</td><td>0.1247</td><td>0.0312</td><td>2.13 KB</td>
+</tr><tr><td>RawMemory</td><td>1024</td><td>2.642 &mu;s</td><td>0.0115 &mu;s</td><td>0.0154 &mu;s</td><td>0.1351</td><td>0.0416</td><td>2.22 KB</td>
+</tr><tr><td>ByteArray</td><td>65536</td><td>2.655 &mu;s</td><td>0.0135 &mu;s</td><td>0.0180 &mu;s</td><td>0.1274</td><td>0.0318</td><td>2.13 KB</td>
+</tr><tr><td>RawMemory</td><td>65536</td><td>2.613 &mu;s</td><td>0.0106 &mu;s</td><td>0.0142 &mu;s</td><td>0.1351</td><td>0.0416</td><td>2.22 KB</td>
+</tr></tbody></table>
+</body>
+</html>

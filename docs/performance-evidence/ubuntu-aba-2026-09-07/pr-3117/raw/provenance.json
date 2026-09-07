@@ -1,0 +1,53 @@
+{
+  "started_utc": "2026-09-07T17:02:51.484248+00:00",
+  "baseline_sha": "a48fafe4121350da7ad83fcdd238f0f8039d6d59",
+  "candidate_sha": "e9e6e3c1584c95c990755979672cf41de67f62c3",
+  "workflow_sha": "06aa795796080ce6879139ac2a253d4f0b4266ea",
+  "run_url": "https://github.com/thomhurst/Dekaf/actions/runs/34145891257",
+  "runner": "ubuntu-latest",
+  "image_os": "ubuntu24",
+  "image_version": "20260831.293.1",
+  "cpu_affinity": [
+    0
+  ],
+  "original_allowed_cpus": [
+    0,
+    1,
+    2,
+    3
+  ],
+  "phase_order": [
+    "A1",
+    "B",
+    "A2"
+  ],
+  "runtime_configuration": {
+    "DOTNET_TieredCompilation": "0"
+  },
+  "outliers": "DontRemove",
+  "scope": "Microbenchmark elapsed time and managed allocations; no full Pareto acceptance.",
+  "phases": [
+    {
+      "phase": "A1",
+      "product_sha": "a48fafe4121350da7ad83fcdd238f0f8039d6d59",
+      "started_utc": "2026-09-07T17:03:59.144975+00:00",
+      "completed_utc": "2026-09-07T17:04:34.550736+00:00",
+      "cases": 4
+    },
+    {
+      "phase": "B",
+      "product_sha": "e9e6e3c1584c95c990755979672cf41de67f62c3",
+      "started_utc": "2026-09-07T17:04:34.573768+00:00",
+      "completed_utc": "2026-09-07T17:05:08.327601+00:00",
+      "cases": 4
+    },
+    {
+      "phase": "A2",
+      "product_sha": "a48fafe4121350da7ad83fcdd238f0f8039d6d59",
+      "started_utc": "2026-09-07T17:05:08.349096+00:00",
+      "completed_utc": "2026-09-07T17:05:45.161573+00:00",
+      "cases": 4
+    }
+  ],
+  "completed_utc": "2026-09-07T17:05:45.164069+00:00"
+}
