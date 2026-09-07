@@ -629,5 +629,6 @@ jobs:
         with:
           name: admin-aba-${{ github.run_id }}-${{ github.run_attempt }}
           path: .artifacts/admin-aba/archive/
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 90
