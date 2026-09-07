@@ -208,7 +208,7 @@ using Dekaf.ShareConsumer;
 using Dekaf.Telemetry;
 
 long completed = 0;
-await using var consumer = Kafka.CreateShareConsumer<string, string>()
+await using var consumer = await Kafka.CreateShareConsumer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithGroupId("jobs")
     .RegisterMetricForSubscription(new ApplicationTelemetryMetric(
