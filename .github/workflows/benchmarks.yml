@@ -18,8 +18,14 @@ jobs:
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
         with:
           global-json-file: global.json
-      - name: Prepare, validate, then measure A1-B-A2
-        run: python3 .github/scripts/reservoir_aba.py
+      - name: Build both revisions and validate fixtures
+        run: python3 .github/scripts/reservoir_aba.py prepare
+      - name: A1 - baseline pools and producer
+        run: python3 .github/scripts/reservoir_aba.py A1
+      - name: B - Reservoir 1.7.0 pools and producer
+        run: python3 .github/scripts/reservoir_aba.py B
+      - name: A2 - baseline pools and producer
+        run: python3 .github/scripts/reservoir_aba.py A2
       - name: Compare stress metrics
         if: always()
         run: |
