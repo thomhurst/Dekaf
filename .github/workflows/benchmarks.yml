@@ -17,6 +17,11 @@ on:
         description: 'Administrative comparison: exact PR #3128 product SHA'
         required: false
         default: ''
+      admin_startup_diagnostic:
+        description: 'Candidate-only retry startup diagnosis (untraced/traced/untraced); never acceptance'
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -35,7 +40,7 @@ concurrency:
 
 jobs:
   select-pipeline:
-    if: inputs.admin_baseline_sha == ''
+    if: inputs.admin_baseline_sha == '' && !inputs.admin_startup_diagnostic
     name: Select Benchmark Pipeline
     runs-on: ubuntu-latest
     outputs:
@@ -563,7 +568,7 @@ jobs:
       - benchmark-summary
       - benchmark-history
       - publish-to-docs
-    if: always() && inputs.admin_baseline_sha == ''
+    if: always() && inputs.admin_baseline_sha == '' && !inputs.admin_startup_diagnostic
 
     steps:
       - name: Checkout
@@ -583,10 +588,10 @@ jobs:
 
 
   admin-aba:
-    name: Administrative exact-SHA A-B-A
-    if: github.event_name == 'workflow_dispatch' && inputs.admin_baseline_sha != ''
+    name: ${{ inputs.admin_startup_diagnostic && 'Administrative startup diagnostic' || 'Administrative exact-SHA A-B-A' }}
+    if: github.event_name == 'workflow_dispatch' && (inputs.admin_baseline_sha != '' || inputs.admin_startup_diagnostic)
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: ${{ inputs.admin_startup_diagnostic && 20 || 90 }}
     steps:
       - name: Checkout harness
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -599,11 +604,22 @@ jobs:
       - name: Validate evidence tooling
         run: python3 -m unittest discover -s tools/AdminDescriptionEvidence -p test_comparison.py
       - name: Build, validate and measure pinned products
+        if: ${{ !inputs.admin_startup_diagnostic }}
         env:
           BASELINE_SHA: ${{ inputs.admin_baseline_sha }}
           CANDIDATE_SHA: ${{ inputs.admin_candidate_sha }}
         run: >-
           python3 tools/AdminDescriptionEvidence/run_comparison.py
+          --baseline "$BASELINE_SHA"
+          --candidate "$CANDIDATE_SHA"
+          --output .artifacts/admin-aba
+      - name: Diagnose pinned candidate startup
+        if: inputs.admin_startup_diagnostic
+        env:
+          BASELINE_SHA: ${{ inputs.admin_baseline_sha }}
+          CANDIDATE_SHA: ${{ inputs.admin_candidate_sha }}
+        run: >-
+          python3 tools/AdminDescriptionEvidence/run_diagnostic.py
           --baseline "$BASELINE_SHA"
           --candidate "$CANDIDATE_SHA"
           --output .artifacts/admin-aba

@@ -20,6 +20,12 @@ BDN records host `BeforeActualRun`/`AfterActualRun` signals and the worker sampl
 
 The [120-second local warmup follow-up](results/extended-warmup-20260907.md) leaves recovery runtime transitions unresolved. It is not adopted as a passing warmup configuration; a targeted Ubuntu diagnosis remains necessary before another full acceptance campaign.
 
+## Targeted startup diagnosis
+
+Dispatch the existing benchmark workflow with `admin_startup_diagnostic=true` and the exact main/product pins to run only `retry:16` on one `ubuntu-latest` VM. This lane has a 20-minute job limit and never starts the normal benchmark publishing matrix, including when pins are omitted or invalid. It builds the pinned candidate and trace inspector, installs `dotnet-trace` 9.0.652701 locally with tool-only runtime roll-forward, then runs three fresh processes sequentially: untraced, traced, untraced. Every process uses the same complete-entry primer, 120-second elapsed workload warmup and 20-second measurement. Product JIT/PGO/GC settings remain unchanged. The two untraced processes expose observer effects; they are not baseline-product controls.
+
+Retain the exact product/harness sources, loaded application identities, tracer/inspector binaries and versions, all samples and time series, phase markers, raw EventPipe trace and parsed JIT/tier events. The inspector rejects lost events. Local `run_diagnostic.py --smoke` exercises the same capture/parse/archive flow with 0.2-second workload warmup and measurement. Neither mode performs BDN acceptance or grants a performance PASS. The summary always remains INCONCLUSIVE as product acceptance, regardless of whether individual processes show no JIT activity. Review Linux method-level activity before choosing any new full A1/B/A2 campaign; do not discard samples or relax protected-metric limits.
+
 ## Criteria declared before hosted measurement
 
 Correctness requires all expected results and zero unexpected exceptions, timeouts, or leftover asynchronous work. Candidate control throughput must be no more than 3% below **each** baseline; CPU/call no more than 3% higher; p50/p99/max latency no more than 5% higher; allocation/call must not increase beyond a 1-byte measurement allowance. A1/A2 control drift must meet those same bounds. All measurements and absolute deltas are retained even when inconclusive. BDN confidence bounds and per-second sample counts must be reported; overlapping bounds alone cannot prove equivalence.
