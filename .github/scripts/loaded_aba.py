@@ -49,16 +49,41 @@ def build(repository, workspace, artifacts, environment):
 def broker_start(artifacts, tag):
     command(['docker', 'run', '-d', '--name', 'aba-kafka', '--cpuset-cpus', '0',
              '-p', '9092:9092', '-e', 'KAFKA_HEAP_OPTS=-Xms1g -Xmx1g',
+             '-e', 'KAFKA_NODE_ID=1', '-e', 'KAFKA_PROCESS_ROLES=broker,controller',
+             '-e', 'KAFKA_CONTROLLER_QUORUM_VOTERS=1@localhost:9093',
+             '-e', 'KAFKA_CONTROLLER_LISTENER_NAMES=CONTROLLER',
+             '-e', 'KAFKA_LISTENERS=PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093',
+             '-e', 'KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://localhost:9092',
+             '-e', 'KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT',
+             '-e', 'KAFKA_INTER_BROKER_LISTENER_NAME=PLAINTEXT',
+             '-e', 'KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1',
+             '-e', 'KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1',
+             '-e', 'KAFKA_TRANSACTION_STATE_LOG_MIN_ISR=1',
              '-e', 'KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS=0', f'apache/kafka:{tag}'],
             artifacts / 'broker-start.log')
-    for _ in range(60):
-        result = subprocess.run(['docker', 'exec', 'aba-kafka', '/opt/kafka/bin/kafka-topics.sh',
-                                 '--bootstrap-server', 'localhost:9092', '--list'], capture_output=True)
-        if result.returncode == 0:
-            command(['docker', 'inspect', 'aba-kafka'], artifacts / 'broker-inspect.json')
-            return
-        time.sleep(2)
-    raise RuntimeError('Kafka readiness deadline exceeded')
+    try:
+        deadline = time.monotonic() + 120
+        with (artifacts / 'broker-readiness.log').open('w') as readiness:
+            while time.monotonic() < deadline:
+                state = json.loads(subprocess.check_output(
+                    ['docker', 'inspect', 'aba-kafka', '--format', '{{json .State}}']))
+                if not state['Running']:
+                    raise RuntimeError(f"Kafka exited during startup (exit {state['ExitCode']}); see broker.log")
+                try:
+                    result = subprocess.run(['docker', 'exec', 'aba-kafka', '/opt/kafka/bin/kafka-topics.sh',
+                                             '--bootstrap-server', 'localhost:9092', '--list'],
+                                            stdout=readiness, stderr=subprocess.STDOUT, timeout=10)
+                    if result.returncode == 0:
+                        command(['docker', 'inspect', 'aba-kafka'], artifacts / 'broker-inspect.json')
+                        return
+                except subprocess.TimeoutExpired:
+                    readiness.write('Readiness command exceeded 10 seconds.\n')
+                time.sleep(2)
+        raise RuntimeError('Kafka readiness deadline exceeded; see broker-readiness.log and broker.log')
+    except Exception:
+        command(['docker', 'inspect', 'aba-kafka'], artifacts / 'broker-inspect.json')
+        broker_stop(artifacts)
+        raise
 
 
 def broker_stop(artifacts):

@@ -2,10 +2,35 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
-from loaded_aba import comparison, validate_workload
+from unittest.mock import patch
+from loaded_aba import broker_start, comparison, validate_workload
 
 
 class LoadedEvidenceTests(unittest.TestCase):
+    def test_exited_broker_collects_diagnostics_and_stops_without_waiting_for_timeout(self):
+        with tempfile.TemporaryDirectory() as directory, \
+                patch('loaded_aba.command') as command, \
+                patch('loaded_aba.subprocess.check_output', return_value=b'{"Running": false, "ExitCode": 1}'), \
+                patch('loaded_aba.broker_stop') as stop, \
+                patch('loaded_aba.time.sleep') as sleep:
+            folder = Path(directory)
+            with self.assertRaisesRegex(RuntimeError, 'Kafka exited during startup'):
+                broker_start(folder, '4.3.1')
+            stop.assert_called_once_with(folder)
+            sleep.assert_not_called()
+            self.assertTrue(any(call.args[1] == folder / 'broker-inspect.json' for call in command.call_args_list))
+
+    def test_readiness_deadline_preserves_broker_diagnostics(self):
+        with tempfile.TemporaryDirectory() as directory, \
+                patch('loaded_aba.command') as command, \
+                patch('loaded_aba.time.monotonic', side_effect=[0, 121]), \
+                patch('loaded_aba.broker_stop') as stop:
+            folder = Path(directory)
+            with self.assertRaisesRegex(RuntimeError, 'Kafka readiness deadline exceeded'):
+                broker_start(folder, '4.3.1')
+            stop.assert_called_once_with(folder)
+            self.assertTrue(any(call.args[1] == folder / 'broker-inspect.json' for call in command.call_args_list))
+
     def test_missing_or_mismatched_controls_are_rejected(self):
         with self.assertRaises(ValueError):
             comparison({'A1': {}, 'B': {}}, [])

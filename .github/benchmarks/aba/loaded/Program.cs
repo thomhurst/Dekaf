@@ -56,6 +56,7 @@ internal sealed class Load
             BootstrapServers = ["localhost:9092"], LingerMs = 1
         }, Serializers.Int32, Serializers.ByteArray);
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(seconds + WarmupSeconds + 180));
+        await producer.InitializeAsync(deadline.Token);
         while (!File.Exists(Path.Combine(folder, "ready")))
             await Task.Delay(20, deadline.Token);
         var payload = new byte[256];
@@ -115,6 +116,7 @@ internal sealed class Load
             PrefetchPipelineDepth = mode == "fetch-depth-1" ? 1 : 3,
             FetchMaxWaitMs = 10, QueuedMinMessages = 1
         }, Serializers.Int32, new PayloadDeserializer());
+        await consumer.InitializeAsync(watchdog.Token);
         consumer.Assign(Enumerable.Range(0, Partitions).Select(p => new TopicPartition(topic, p)).ToArray());
         var options = new PartitionedProcessingOptions
         {
