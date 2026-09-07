@@ -74,26 +74,33 @@ public sealed class ClientTelemetryReceiverIntegrationTests(TelemetryReceiverKaf
     [Arguments(42.0)]
     [Arguments(84.0)]
     [Timeout(90_000)]
-    public async Task ShareConsumer_BrokerReceivesApplicationMetric(
+    public async Task ShareConsumer_BrokerReceivesBuiltInAndApplicationMetrics(
         double applicationValue, CancellationToken cancellationToken)
     {
         const string applicationName = "com.example.telemetry.share.depth";
+        const string builtinPrefix = "org.apache.kafka.consumer.share.";
+        const string recordsName = builtinPrefix + "fetch.manager.records.consumed.total";
+        const string acknowledgementsName = builtinPrefix + "fetch.manager.acknowledgements.send.total";
+        var topic = $"share-metrics-{Guid.NewGuid():N}";
+        var group = $"share-telemetry-{Guid.NewGuid():N}";
         var clientId = $"share-telemetry-receiver-{Guid.NewGuid():N}";
         await using var admin = kafka.CreateAdminClient();
         await admin.IncrementalAlterConfigsAsync(new Dictionary<ConfigResource, IReadOnlyList<ConfigAlter>>
         {
             [new ConfigResource { Type = ConfigResourceType.ClientMetrics, Name = clientId }] =
             [
-                ConfigAlter.Set("metrics", applicationName),
+                ConfigAlter.Set("metrics", $"{applicationName},{builtinPrefix}"),
                 ConfigAlter.Set("interval.ms", "1000"),
                 ConfigAlter.Set("match", $"client_id={clientId}")
             ]
         }, cancellationToken: cancellationToken);
 
+        await admin.CreateTopicsAsync([new NewTopic { Name = topic, NumPartitions = 1, ReplicationFactor = 1 }],
+            cancellationToken: cancellationToken);
         var consumer = await Kafka.CreateShareConsumer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId(clientId)
-            .WithGroupId($"share-telemetry-{Guid.NewGuid():N}")
+            .WithGroupId(group)
             .RegisterMetricForSubscription(new ApplicationTelemetryMetric(
                 applicationName, ApplicationTelemetryMetricKind.Gauge, () => applicationValue,
                 new Dictionary<string, string> { ["tenant"] = clientId }))
@@ -102,12 +109,42 @@ public sealed class ClientTelemetryReceiverIntegrationTests(TelemetryReceiverKaf
         {
             var identity = ((IKafkaClientInstanceIdentity)consumer).ClientInstanceId;
             await Assert.That(identity).IsNotNull();
+            consumer.Subscribe(topic);
+            await ShareConsumerTestHelper.PrimeShareConsumerAsync(consumer);
+            await using (var producer = await Kafka.CreateProducer<string, string>()
+                .WithBootstrapServers(kafka.BootstrapServers).BuildAsync(cancellationToken))
+            {
+                await producer.ProduceAsync(topic, "key", "value", cancellationToken);
+            }
+            await using (var poll = consumer.PollAsync(cancellationToken).GetAsyncEnumerator(cancellationToken))
+            {
+                await Assert.That(await poll.MoveNextAsync()).IsTrue();
+                await Assert.That(poll.Current.Value).IsEqualTo("value");
+                consumer.Acknowledge(poll.Current);
+            }
+            await consumer.CommitAsync(cancellationToken);
             var received = await kafka.WaitForPayloadAsync(clientId,
-                payload => !payload.IsTerminating && Decode(payload).Any(metric => metric.Name == applicationName),
+                payload => !payload.IsTerminating && Decode(payload).Any(metric => metric.Name == applicationName)
+                    && Decode(payload).Any(metric => metric.Name == recordsName && metric.Sum.DataPoints.Any(p => p.AsDouble > 0)),
                 cancellationToken);
+            // Delta subscriptions can place fetch and acknowledgement counters in different pushes.
+            _ = await kafka.WaitForPayloadAsync(clientId,
+                payload => !payload.IsTerminating && Decode(payload).Any(metric => metric.Name == applicationName)
+                    && Decode(payload).Any(metric => metric.Name == acknowledgementsName && metric.Sum.DataPoints.Any(p => p.AsDouble > 0)),
+                cancellationToken);
+            foreach (var name in new[] { builtinPrefix + "coordinator.heartbeat.total", builtinPrefix + "coordinator.rebalance.total" })
+            {
+                _ = await kafka.WaitForPayloadAsync(clientId,
+                    payload => Decode(payload).Any(metric => metric.Name == name && metric.Sum.DataPoints.Any(p => p.AsDouble > 0)),
+                    cancellationToken);
+            }
             await Assert.That(received.ClientInstanceId).IsEqualTo(identity!.Value);
             await Assert.That(received.ContentType).IsEqualTo("OTLP");
-            var application = Decode(received).Single(metric => metric.Name == applicationName);
+            var decoded = Decode(received);
+            await Assert.That(decoded.Any(metric => metric.Name == builtinPrefix + "coordinator.heartbeat.total")).IsTrue();
+            var resource = MetricsData.Parser.ParseFrom(received.Data).ResourceMetrics.Single().Resource;
+            await Assert.That(resource.Attributes.Single(a => a.Key == "group_id").Value.StringValue).IsEqualTo(group);
+            var application = decoded.Single(metric => metric.Name == applicationName);
             var point = application.Gauge.DataPoints.Single();
             await Assert.That(point.AsDouble).IsEqualTo(applicationValue);
             await Assert.That(point.Attributes.Single(attribute => attribute.Key == "tenant").Value.StringValue)

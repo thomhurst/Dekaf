@@ -26,6 +26,7 @@ namespace Dekaf.ShareConsumer;
 /// </summary>
 internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
 {
+    private readonly ShareConsumerTelemetryMetrics? _telemetryMetrics;
     private readonly ShareConsumerOptions _options;
     private readonly IConnectionPool _connectionPool;
     private readonly MetadataManager _metadataManager;
@@ -63,8 +64,10 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
         IConnectionPool connectionPool,
         MetadataManager metadataManager,
         ILogger? logger = null,
-        Func<int>? getConnectionCount = null)
+        Func<int>? getConnectionCount = null,
+        ShareConsumerTelemetryMetrics? telemetryMetrics = null)
     {
+        _telemetryMetrics = telemetryMetrics;
         _options = options;
         _connectionPool = connectionPool;
         _metadataManager = metadataManager;
@@ -296,6 +299,7 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
     private void ResetMemberState()
     {
         _memberId = null;
+        _telemetryMetrics?.SetMemberId(null);
         _memberEpoch = 0;
         _assignedPartitions = [];
         _state = CoordinatorState.Unjoined;
@@ -333,6 +337,7 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
         };
 
         ShareGroupHeartbeatResponse response;
+        var heartbeatStarted = -1L;
         try
         {
             var version = _metadataManager.GetNegotiatedApiVersion(
@@ -340,8 +345,10 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
                 ApiKey.ShareGroupHeartbeat,
                 ShareGroupHeartbeatRequest.LowestSupportedVersion,
                 ShareGroupHeartbeatRequest.HighestSupportedVersion);
+            heartbeatStarted = _telemetryMetrics?.BeginHeartbeat() ?? -1;
             response = await connection.SendAsync<ShareGroupHeartbeatRequest, ShareGroupHeartbeatResponse>(
                 request, version, cancellationToken).ConfigureAwait(false);
+            _telemetryMetrics?.EndHeartbeat(heartbeatStarted);
         }
         catch (Exception ex) when (
             ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
@@ -368,9 +375,11 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
 
         if (response.MemberId is not null)
             _memberId = response.MemberId;
+        _telemetryMetrics?.SetMemberId(_memberId);
 
         if (response.MemberEpoch != _memberEpoch)
         {
+            _telemetryMetrics?.RecordRebalance();
             LogMemberEpochUpdated(response.MemberEpoch);
             _memberEpoch = response.MemberEpoch;
         }

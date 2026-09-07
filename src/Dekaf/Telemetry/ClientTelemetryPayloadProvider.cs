@@ -67,6 +67,20 @@ internal sealed class ClientTelemetryPayloadProvider : IClientTelemetryPayloadPr
         var buffer = new ArrayBufferWriter<byte>();
         WriteMessage(buffer, 1, resourceMetrics =>
         {
+            if (snapshot.ResourceAttributes.Count != 0)
+            {
+                WriteMessage(resourceMetrics, 1, resource =>
+                {
+                    foreach (var attribute in snapshot.ResourceAttributes)
+                    {
+                        WriteMessage(resource, 1, keyValue =>
+                        {
+                            WriteString(keyValue, 1, attribute.Name);
+                            WriteMessage(keyValue, 2, value => WriteString(value, 1, attribute.Value));
+                        });
+                    }
+                });
+            }
             WriteMessage(resourceMetrics, 2, scopeMetrics =>
             {
                 foreach (var metric in snapshot.Metrics)

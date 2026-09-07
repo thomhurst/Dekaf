@@ -116,6 +116,7 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
             }
 
             Volatile.Write(ref _subscription, subscription);
+            _metricCollector?.ShareMetrics?.Configure(subscription.RequestedMetrics);
             var loopCts = new CancellationTokenSource();
             _loopCts = loopCts;
             Volatile.Write(ref _started, 1);
@@ -249,6 +250,7 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
                     if (refreshed is not null)
                     {
                         Volatile.Write(ref _subscription, refreshed);
+                        _metricCollector?.ShareMetrics?.Configure(refreshed.RequestedMetrics);
                     }
                 }
             }
@@ -529,6 +531,7 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
 
     private void Disable()
     {
+        _metricCollector?.ShareMetrics?.Configure([]);
         if (Interlocked.Exchange(ref _disabled, 1) == 0)
         {
             _loopCts?.Cancel();

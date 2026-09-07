@@ -4,7 +4,8 @@ option csharp_namespace = "Dekaf.Tests.Integration.Telemetry";
 
 // Wire-compatible subset of OpenTelemetry MetricsData. Unknown OTLP fields are preserved.
 message MetricsData { repeated ResourceMetrics resource_metrics = 1; }
-message ResourceMetrics { repeated ScopeMetrics scope_metrics = 2; }
+message ResourceMetrics { Resource resource = 1; repeated ScopeMetrics scope_metrics = 2; }
+message Resource { repeated KeyValue attributes = 1; }
 message ScopeMetrics { repeated Metric metrics = 2; }
 message Metric {
   string name = 1;

@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Globalization;
+using Dekaf.ShareConsumer;
 
 namespace Dekaf.Telemetry;
 
@@ -30,6 +31,7 @@ internal sealed record ClientTelemetryMetricSnapshot(
     bool DeltaTemporality,
     IReadOnlyList<ClientTelemetryMetric> Metrics)
 {
+    internal IReadOnlyList<ClientTelemetryMetricAttribute> ResourceAttributes { get; init; } = [];
     private static readonly IReadOnlyList<ClientTelemetryMetric> EmptyMetrics = [];
 
     public static ClientTelemetryMetricSnapshot Empty(bool deltaTemporality) =>
@@ -53,6 +55,7 @@ internal static class ClientTelemetryMetricNames
 
 internal sealed class ClientTelemetryMetricCollector
 {
+    internal ShareConsumerTelemetryMetrics? ShareMetrics { get; }
     private static readonly IReadOnlyList<ClientTelemetryMetricAttribute> EmptyAttributes = [];
 
     private readonly ConcurrentDictionary<int, NodeRequestLatency> _nodeRequestLatencies = new();
@@ -72,6 +75,8 @@ internal sealed class ClientTelemetryMetricCollector
 
     public ClientTelemetryMetricCollector(ClientTelemetryClientRole role)
     {
+        if (role == ClientTelemetryClientRole.ShareConsumer)
+            ShareMetrics = new ShareConsumerTelemetryMetrics();
         (_connectionCreationTotalName,
             _nodeRequestLatencyAvgName,
             _nodeRequestLatencyMaxName,
@@ -267,11 +272,15 @@ internal sealed class ClientTelemetryMetricCollector
             }
         }
 
+        ShareMetrics?.Collect(subscription, metrics);
         AddApplicationMetrics(subscription, requestedMetrics, metrics);
 
         return metrics.Count == 0
             ? ClientTelemetryMetricSnapshot.Empty(subscription.DeltaTemporality)
-            : new ClientTelemetryMetricSnapshot(subscription.DeltaTemporality, metrics);
+            : new ClientTelemetryMetricSnapshot(subscription.DeltaTemporality, metrics)
+            {
+                ResourceAttributes = ShareMetrics?.ResourceAttributes() ?? []
+            };
     }
 
     private void RecordRequestLatencyTicks(int brokerId, long elapsedTimestampTicks)

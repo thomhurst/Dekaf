@@ -13,7 +13,7 @@ using NSubstitute;
 
 namespace Dekaf.Tests.Unit.ShareConsumer;
 
-public sealed class ShareConsumerRenewalTests
+public sealed partial class ShareConsumerRenewalTests
 {
     private static readonly Guid TopicId = Guid.Parse("01234567-89ab-cdef-0123-456789abcdef");
 

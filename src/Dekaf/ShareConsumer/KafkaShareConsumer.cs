@@ -186,6 +186,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
 
         _compressionCodecs = CompressionCodecRegistry.Default;
         _telemetryMetricCollector = new ClientTelemetryMetricCollector(ClientTelemetryClientRole.ShareConsumer);
+        _telemetryMetricCollector.ShareMetrics!.ConfigureIdentity(options.GroupId, options.RackId);
         _telemetryMetricCollector.RegisterMetricsForSubscription(options.ApplicationMetrics);
         _telemetryManager = new ClientTelemetryManager(
             _connectionPool,
@@ -198,7 +199,8 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
             options,
             _connectionPool,
             _metadataManager,
-            loggerFactory?.CreateLogger<ShareConsumerCoordinator>());
+            loggerFactory?.CreateLogger<ShareConsumerCoordinator>(),
+            telemetryMetrics: _telemetryMetricCollector.ShareMetrics);
     }
 
     public StringSet Subscription => _subscriptionSnapshot;
@@ -288,316 +290,353 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
 
         while (!cancellationToken.IsCancellationRequested)
         {
-            if (_subscriptionSnapshot.Count == 0)
-                yield break;
-
-            // Ensure we're part of the share group
-            await _coordinator.EnsureActiveGroupAsync(_subscriptionSnapshot, cancellationToken)
-                .ConfigureAwait(false);
-            _assignmentSnapshot = _coordinator.Assignment;
-
-            var assignment = _assignmentSnapshot;
-            RemoveRenewedRecordsOutsideAssignment(assignment);
-            if (assignment.Count == 0)
-            {
-                // No partitions assigned (e.g. rebalance removed them while state is Stable).
-                // Delay to avoid a spin-loop — reuse FetchMaxWaitMs as the broker's natural
-                // back-pressure is absent when no fetch request is issued.
-                await Task.Delay(_options.FetchMaxWaitMs, cancellationToken).ConfigureAwait(false);
-                continue;
-            }
-
-            // Flush pending acks from previous poll as inline acknowledgements with the fetch
-            var pendingAcks = _ackTracker.HasPending ? _ackTracker.Flush() : null;
-
-            // Group assigned partitions by leader broker
-            var partitionsByBroker = GroupPartitionsByLeader(assignment);
-
-            // Send fetch requests to all brokers concurrently. Session epochs are per-broker
-            // and independent, so parallelism is safe. This avoids waiting for each broker's
-            // MaxWaitMs sequentially when partitions span multiple brokers.
-            var fetchTasks = new List<Task<ShareFetchBrokerResult>>(
-                partitionsByBroker.Count);
-            var sentAcknowledgementPartitionCount = 0;
-
-            foreach (var (brokerId, partitions) in partitionsByBroker)
-            {
-                var brokerAcks = SelectAcknowledgements(pendingAcks, partitions);
-                sentAcknowledgementPartitionCount += brokerAcks?.Count ?? 0;
-                fetchTasks.Add(SendShareFetchForBrokerAsync(
-                    brokerId,
-                    partitions,
-                    brokerAcks,
-                    cancellationToken));
-            }
-
+            var metrics = _telemetryMetricCollector.ShareMetrics!;
+            var pollStarted = metrics.BeginPoll();
+            long deliveryTicks = 0;
             try
             {
-                await Task.WhenAll(fetchTasks).ConfigureAwait(false);
-            }
-            catch (Exception ex)
-            {
-                // A broker task should normally return its failure in ShareFetchBrokerResult.
-                // Preserve every drained acknowledgement if an unexpected fault escapes.
-                RequeueAcknowledgements(pendingAcks);
-                InvokeAcknowledgementCommitCallback(pendingAcks, ex);
-                throw;
-            }
+                if (_subscriptionSnapshot.Count == 0)
+                    yield break;
 
-            // Process every response before yielding. Session epochs and inline
-            // acknowledgements must advance even when an earlier broker fills the poll budget.
-            var recordCount = 0;
-            List<ShareConsumeResult<TKey, TValue>>? fetchedRecords = _renewedRecords is null
-                ? null
-                : new List<ShareConsumeResult<TKey, TValue>>(_options.MaxPollRecords);
-            Exception? firstFetchError = null;
-            Dictionary<TopicPartition, Exception>? acknowledgementErrors = null;
-            if (pendingAcks is not null && sentAcknowledgementPartitionCount != pendingAcks.Count)
-            {
-                var unsentAcknowledgements = GetUnsentAcknowledgements(pendingAcks, fetchTasks);
-                RequeueAcknowledgements(unsentAcknowledgements);
-                AddAcknowledgementErrors(
-                    ref acknowledgementErrors,
-                    unsentAcknowledgements,
-                    KafkaException.FromErrorCode(
-                        ErrorCode.UnknownTopicOrPartition,
-                        "Inline ShareFetch acknowledgement could not resolve a partition leader."));
-            }
+                // Ensure we're part of the share group
+                await _coordinator.EnsureActiveGroupAsync(_subscriptionSnapshot, cancellationToken)
+                    .ConfigureAwait(false);
+                _assignmentSnapshot = _coordinator.Assignment;
 
-            foreach (var fetchTask in fetchTasks)
-            {
-                var (brokerId, version, response, sentAcks, error, acknowledgementError) = fetchTask.Result;
-
-                if (error is not null)
+                var assignment = _assignmentSnapshot;
+                RemoveRenewedRecordsOutsideAssignment(assignment);
+                if (assignment.Count == 0)
                 {
-                    RequeueAcknowledgements(sentAcks);
-                    AddAcknowledgementErrors(ref acknowledgementErrors, sentAcks, acknowledgementError ?? error);
-                    firstFetchError ??= error;
+                    // No partitions assigned (e.g. rebalance removed them while state is Stable).
+                    // Delay to avoid a spin-loop — reuse FetchMaxWaitMs as the broker's natural
+                    // back-pressure is absent when no fetch request is issued.
+                    await Task.Delay(_options.FetchMaxWaitMs, cancellationToken).ConfigureAwait(false);
                     continue;
                 }
 
-                if (response is null)
+                // Flush pending acks from previous poll as inline acknowledgements with the fetch
+                var pendingAcks = _ackTracker.HasPending ? _ackTracker.Flush() : null;
+
+                // Group assigned partitions by leader broker
+                var partitionsByBroker = GroupPartitionsByLeader(assignment);
+
+                // Send fetch requests to all brokers concurrently. Session epochs are per-broker
+                // and independent, so parallelism is safe. This avoids waiting for each broker's
+                // MaxWaitMs sequentially when partitions span multiple brokers.
+                var fetchTasks = new List<Task<ShareFetchBrokerResult>>(
+                    partitionsByBroker.Count);
+                var sentAcknowledgementPartitionCount = 0;
+
+                foreach (var (brokerId, partitions) in partitionsByBroker)
                 {
-                    RequeueAcknowledgements(sentAcks);
-                    if (acknowledgementError is not null)
-                        AddAcknowledgementErrors(ref acknowledgementErrors, sentAcks, acknowledgementError);
-                    continue;
+                    var brokerAcks = SelectAcknowledgements(pendingAcks, partitions);
+                    sentAcknowledgementPartitionCount += brokerAcks?.Count ?? 0;
+                    fetchTasks.Add(SendShareFetchForBrokerAsync(
+                        brokerId,
+                        partitions,
+                        brokerAcks,
+                        cancellationToken));
                 }
 
-                // Handle top-level errors
-                if (response.ErrorCode != ErrorCode.None)
+                try
                 {
-                    LogFetchTopLevelError(response.ErrorCode, response.ErrorMessage);
-                    if (response.ErrorCode == ErrorCode.ShareSessionNotFound ||
-                        response.ErrorCode == ErrorCode.InvalidShareSessionEpoch)
-                    {
-                        _sessionManager.ResetSession(brokerId);
-                        // Note: _ackTracker may still hold pending acks from the now-invalid session.
-                        // On next CommitAsync those acks will be sent with epoch 0 (new session).
-                        // Renewal records represent partition locks, not fetch-session membership.
-                        // Keep active records available for replay and pending Renew records ready
-                        // for activation after the new session accepts them.
-                    }
-                    RequeueAcknowledgements(sentAcks);
+                    await Task.WhenAll(fetchTasks).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    // A broker task should normally return its failure in ShareFetchBrokerResult.
+                    // Preserve every drained acknowledgement if an unexpected fault escapes.
+                    RequeueAcknowledgements(pendingAcks);
+                    InvokeAcknowledgementCommitCallback(pendingAcks, ex);
+                    throw;
+                }
+
+                // Process every response before yielding. Session epochs and inline
+                // acknowledgements must advance even when an earlier broker fills the poll budget.
+                var recordCount = 0;
+                List<ShareConsumeResult<TKey, TValue>>? fetchedRecords = _renewedRecords is null
+                    ? null
+                    : new List<ShareConsumeResult<TKey, TValue>>(_options.MaxPollRecords);
+                Exception? firstFetchError = null;
+                Dictionary<TopicPartition, Exception>? acknowledgementErrors = null;
+                if (pendingAcks is not null && sentAcknowledgementPartitionCount != pendingAcks.Count)
+                {
+                    var unsentAcknowledgements = GetUnsentAcknowledgements(pendingAcks, fetchTasks);
+                    RequeueAcknowledgements(unsentAcknowledgements);
                     AddAcknowledgementErrors(
                         ref acknowledgementErrors,
-                        sentAcks,
+                        unsentAcknowledgements,
                         KafkaException.FromErrorCode(
-                            response.ErrorCode,
-                            $"Inline ShareFetch acknowledgement failed for broker {brokerId}: " +
-                            $"{response.ErrorCode} - {response.ErrorMessage}"));
-                    continue;
+                            ErrorCode.UnknownTopicOrPartition,
+                            "Inline ShareFetch acknowledgement could not resolve a partition leader."));
                 }
 
-                // Advance the session epoch BEFORE yielding so that even if
-                // the caller breaks from the async enumerable (disposing the iterator),
-                // the epoch is already correct for a subsequent ShareAcknowledge/CommitAsync.
-                _sessionManager.IncrementEpoch(brokerId);
-                if (version >= 1)
-                    Volatile.Write(ref _acquisitionLockTimeoutMs, response.AcquisitionLockTimeoutMs);
-
-                var acknowledgementFailures = GetAcknowledgementFailures(response, sentAcks);
-                if (acknowledgementFailures is not null)
+                foreach (var fetchTask in fetchTasks)
                 {
-                    SplitAcknowledgements(
-                        sentAcks,
-                        acknowledgementFailures,
-                        out var successfulAcknowledgements,
-                        out var failedAcknowledgements);
-                    ApplySuccessfulAcknowledgements(successfulAcknowledgements);
-                    RequeueAcknowledgements(failedAcknowledgements);
-                    AddAcknowledgementErrors(
-                        ref acknowledgementErrors,
-                        acknowledgementFailures.Errors);
-                    LogInlineAcknowledgeFailed(brokerId, acknowledgementFailures.FirstError);
+                    var (brokerId, version, response, sentAcks, error, acknowledgementError) = fetchTask.Result;
+
+                    if (error is not null)
+                    {
+                        RequeueAcknowledgements(sentAcks);
+                        AddAcknowledgementErrors(ref acknowledgementErrors, sentAcks, acknowledgementError ?? error);
+                        firstFetchError ??= error;
+                        continue;
+                    }
+
+                    if (response is null)
+                    {
+                        RequeueAcknowledgements(sentAcks);
+                        if (acknowledgementError is not null)
+                            AddAcknowledgementErrors(ref acknowledgementErrors, sentAcks, acknowledgementError);
+                        continue;
+                    }
+
+                    // Handle top-level errors
+                    if (response.ErrorCode != ErrorCode.None)
+                    {
+                        LogFetchTopLevelError(response.ErrorCode, response.ErrorMessage);
+                        if (response.ErrorCode == ErrorCode.ShareSessionNotFound ||
+                            response.ErrorCode == ErrorCode.InvalidShareSessionEpoch)
+                        {
+                            _sessionManager.ResetSession(brokerId);
+                            // Note: _ackTracker may still hold pending acks from the now-invalid session.
+                            // On next CommitAsync those acks will be sent with epoch 0 (new session).
+                            // Renewal records represent partition locks, not fetch-session membership.
+                            // Keep active records available for replay and pending Renew records ready
+                            // for activation after the new session accepts them.
+                        }
+                        RequeueAcknowledgements(sentAcks);
+                        AddAcknowledgementErrors(
+                            ref acknowledgementErrors,
+                            sentAcks,
+                            KafkaException.FromErrorCode(
+                                response.ErrorCode,
+                                $"Inline ShareFetch acknowledgement failed for broker {brokerId}: " +
+                                $"{response.ErrorCode} - {response.ErrorMessage}"));
+                        continue;
+                    }
+
+                    // Advance the session epoch BEFORE yielding so that even if
+                    // the caller breaks from the async enumerable (disposing the iterator),
+                    // the epoch is already correct for a subsequent ShareAcknowledge/CommitAsync.
+                    _sessionManager.IncrementEpoch(brokerId);
+                    if (version >= 1)
+                        Volatile.Write(ref _acquisitionLockTimeoutMs, response.AcquisitionLockTimeoutMs);
+
+                    var acknowledgementFailures = GetAcknowledgementFailures(response, sentAcks);
+                    if (acknowledgementFailures is not null)
+                    {
+                        SplitAcknowledgements(
+                            sentAcks,
+                            acknowledgementFailures,
+                            out var successfulAcknowledgements,
+                            out var failedAcknowledgements);
+                        ApplySuccessfulAcknowledgements(successfulAcknowledgements);
+                        RequeueAcknowledgements(failedAcknowledgements);
+                        AddAcknowledgementErrors(
+                            ref acknowledgementErrors,
+                            acknowledgementFailures.Errors);
+                        LogInlineAcknowledgeFailed(brokerId, acknowledgementFailures.FirstError);
+                    }
+                    else
+                    {
+                        ApplySuccessfulAcknowledgements(sentAcks);
+                    }
                 }
-                else
+
+                InvokeAcknowledgementCommitCallback(pendingAcks, acknowledgementErrors);
+
+                if (firstFetchError is not null)
+                    System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(firstFetchError).Throw();
+
+                // Parse records only after all broker bookkeeping is complete. This second broker scan
+                // is per poll, not per message, and avoids buffering records when no renewal is active.
+                foreach (var fetchTask in fetchTasks)
                 {
-                    ApplySuccessfulAcknowledgements(sentAcks);
-                }
-            }
-
-            InvokeAcknowledgementCommitCallback(pendingAcks, acknowledgementErrors);
-
-            if (firstFetchError is not null)
-                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(firstFetchError).Throw();
-
-            // Parse records only after all broker bookkeeping is complete. This second broker scan
-            // is per poll, not per message, and avoids buffering records when no renewal is active.
-            foreach (var fetchTask in fetchTasks)
-            {
-                var (_, _, response, _, _, _) = fetchTask.Result;
-                if (response is null || response.ErrorCode != ErrorCode.None)
-                    continue;
-
-                // Process partition responses
-                foreach (var topicResponse in response.Responses)
-                {
-                    var topicInfo = _metadataManager.Metadata.GetTopic(topicResponse.TopicId);
-                    if (topicInfo is null)
+                    var (_, _, response, _, _, _) = fetchTask.Result;
+                    if (response is null || response.ErrorCode != ErrorCode.None)
                         continue;
 
-                    foreach (var partition in topicResponse.Partitions)
+                    using var responseMetrics = _telemetryMetricCollector.ShareMetrics!.MeasureFetchResponse();
+
+                    // Process partition responses
+                    foreach (var topicResponse in response.Responses)
                     {
-                        if (partition.ErrorCode != ErrorCode.None)
-                        {
-                            LogPartitionFetchError(topicInfo.Name, partition.PartitionIndex,
-                                partition.ErrorCode);
-                            continue;
-                        }
-
-                        if (partition.RecordBytes.IsEmpty || partition.AcquiredRecords.Count == 0)
+                        var topicInfo = _metadataManager.Metadata.GetTopic(topicResponse.TopicId);
+                        if (topicInfo is null)
                             continue;
 
-                        // Parse all records from this partition eagerly (KafkaProtocolReader is a
-                        // ref struct and cannot be preserved across yield boundaries)
-                        var remainingRecordCount = _options.MaxPollRecords -
-                            (fetchedRecords?.Count ?? recordCount);
-                        List<ShareConsumeResult<TKey, TValue>> parsed;
-                        if (!_hasDeserializerPreparers)
+                        foreach (var partition in topicResponse.Partitions)
                         {
-                            parsed = ParsePartitionRecords(
-                                topicInfo,
-                                partition,
-                                remainingRecordCount);
-                        }
-                        else
-                        {
-                            parsed = [];
-                            var parserState = new DeserializerPreparationParserState();
-                            var hasRetainedKey = false;
-                            TKey? retainedKey = default;
-                            long? previousPreparationOffset = null;
-                            var previousPreparationComponent = default(SerializationComponent);
-                            var preparationAttempts = 0;
+                            if (partition.ErrorCode != ErrorCode.None)
+                            {
+                                LogPartitionFetchError(topicInfo.Name, partition.PartitionIndex,
+                                    partition.ErrorCode);
+                                continue;
+                            }
+
+                            if (partition.RecordBytes.IsEmpty || partition.AcquiredRecords.Count == 0)
+                                continue;
+
+                            // Parse all records from this partition eagerly (KafkaProtocolReader is a
+                            // ref struct and cannot be preserved across yield boundaries)
+                            var remainingRecordCount = _options.MaxPollRecords -
+                                (fetchedRecords?.Count ?? recordCount);
+                            List<ShareConsumeResult<TKey, TValue>> parsed;
+                            if (!_hasDeserializerPreparers)
+                            {
+                                parsed = ParsePartitionRecords(
+                                    topicInfo,
+                                    partition,
+                                    remainingRecordCount);
+                            }
+                            else
+                            {
+                                parsed = [];
+                                var parserState = new DeserializerPreparationParserState();
+                                var hasRetainedKey = false;
+                                TKey? retainedKey = default;
+                                long? previousPreparationOffset = null;
+                                var previousPreparationComponent = default(SerializationComponent);
+                                var preparationAttempts = 0;
+                                try
+                                {
+                                    while (true)
+                                    {
+                                        var pendingPreparation = ParsePartitionRecordsWithPreparation(
+                                            topicInfo,
+                                            partition,
+                                            remainingRecordCount,
+                                            parsed,
+                                            ref parserState,
+                                            hasRetainedKey,
+                                            retainedKey);
+                                        if (pendingPreparation is null)
+                                            break;
+
+                                        if (previousPreparationOffset == pendingPreparation.Offset &&
+                                            previousPreparationComponent == pendingPreparation.Component)
+                                        {
+                                            if (preparationAttempts >= MaxDeserializerPreparationAttempts)
+                                            {
+                                                throw new InvalidOperationException(
+                                                    "Deserializer remained unprepared after PrepareAsync completed.");
+                                            }
+                                        }
+                                        else
+                                        {
+                                            previousPreparationOffset = pendingPreparation.Offset;
+                                            previousPreparationComponent = pendingPreparation.Component;
+                                            preparationAttempts = 0;
+                                        }
+
+                                        preparationAttempts++;
+                                        await PrepareDeserializerAsync(pendingPreparation, cancellationToken)
+                                            .ConfigureAwait(false);
+                                        hasRetainedKey = pendingPreparation.HasRetainedKey;
+                                        retainedKey = pendingPreparation.RetainedKey;
+                                    }
+                                }
+                                finally
+                                {
+                                    parserState.DisposeCurrentBatch();
+                                }
+                            }
+
+                            var tp = new TopicPartition(topicInfo.Name, partition.PartitionIndex);
+
+                            var deliveryStarted = pollStarted >= 0 ? metrics.Timestamp : 0;
                             try
                             {
-                                while (true)
+                                foreach (var result in parsed)
                                 {
-                                    var pendingPreparation = ParsePartitionRecordsWithPreparation(
-                                        topicInfo,
-                                        partition,
-                                        remainingRecordCount,
-                                        parsed,
-                                        ref parserState,
-                                        hasRetainedKey,
-                                        retainedKey);
-                                    if (pendingPreparation is null)
+                                    if ((fetchedRecords?.Count ?? recordCount) >= _options.MaxPollRecords)
                                         break;
 
-                                    if (previousPreparationOffset == pendingPreparation.Offset &&
-                                        previousPreparationComponent == pendingPreparation.Component)
+                                    RemoveRenewedRecord(result.Topic, result.Partition, result.Offset);
+
+                                    if (fetchedRecords is not null)
                                     {
-                                        if (preparationAttempts >= MaxDeserializerPreparationAttempts)
-                                        {
-                                            throw new InvalidOperationException(
-                                                "Deserializer remained unprepared after PrepareAsync completed.");
-                                        }
-                                    }
-                                    else
-                                    {
-                                        previousPreparationOffset = pendingPreparation.Offset;
-                                        previousPreparationComponent = pendingPreparation.Component;
-                                        preparationAttempts = 0;
+                                        fetchedRecords.Add(result);
+                                        continue;
                                     }
 
-                                    preparationAttempts++;
-                                    await PrepareDeserializerAsync(pendingPreparation, cancellationToken)
-                                        .ConfigureAwait(false);
-                                    hasRetainedKey = pendingPreparation.HasRetainedKey;
-                                    retainedKey = pendingPreparation.RetainedKey;
+                                    // Track only records actually yielded to the consumer so implicit
+                                    // acknowledgements do not include offsets truncated by MaxPollRecords.
+                                    if (_options.AcknowledgementMode == ShareAcknowledgementMode.Implicit)
+                                    {
+                                        _ackTracker.TrackDeliveredRecords(tp, result.Offset, result.Offset);
+                                    }
+
+                                    recordCount++;
+                                    yield return result;
                                 }
                             }
                             finally
                             {
-                                parserState.DisposeCurrentBatch();
+                                if (pollStarted >= 0) deliveryTicks += metrics.Timestamp - deliveryStarted;
                             }
                         }
+                    }
+                }
 
-                        var tp = new TopicPartition(topicInfo.Name, partition.PartitionIndex);
-
-                        foreach (var result in parsed)
+                var bufferedRecordCount = fetchedRecords?.Count ?? 0;
+                if (recordCount + bufferedRecordCount < _options.MaxPollRecords
+                    && _renewedRecords is { Count: > 0 })
+                {
+                    var renewedRecords = GetActiveRenewedRecords(
+                        assignment,
+                        _options.MaxPollRecords - recordCount - bufferedRecordCount);
+                    var deliveryStarted = pollStarted >= 0 ? metrics.Timestamp : 0;
+                    try
+                    {
+                        foreach (var renewedRecord in renewedRecords)
                         {
-                            if ((fetchedRecords?.Count ?? recordCount) >= _options.MaxPollRecords)
+                            Interlocked.Increment(ref _renewedRecordReplayCount);
+                            recordCount++;
+                            yield return renewedRecord;
+                        }
+                    }
+                    finally
+                    {
+                        if (pollStarted >= 0) deliveryTicks += metrics.Timestamp - deliveryStarted;
+                    }
+                }
+
+                if (fetchedRecords is not null)
+                {
+                    var deliveryStarted = pollStarted >= 0 ? metrics.Timestamp : 0;
+                    try
+                    {
+                        foreach (var fetchedRecord in fetchedRecords)
+                        {
+                            if (recordCount >= _options.MaxPollRecords)
                                 break;
 
-                            RemoveRenewedRecord(result.Topic, result.Partition, result.Offset);
-
-                            if (fetchedRecords is not null)
-                            {
-                                fetchedRecords.Add(result);
-                                continue;
-                            }
-
-                            // Track only records actually yielded to the consumer so implicit
-                            // acknowledgements do not include offsets truncated by MaxPollRecords.
                             if (_options.AcknowledgementMode == ShareAcknowledgementMode.Implicit)
                             {
-                                _ackTracker.TrackDeliveredRecords(tp, result.Offset, result.Offset);
+                                var tp = new TopicPartition(fetchedRecord.Topic, fetchedRecord.Partition);
+                                _ackTracker.TrackDeliveredRecords(tp, fetchedRecord.Offset, fetchedRecord.Offset);
                             }
 
                             recordCount++;
-                            yield return result;
+                            yield return fetchedRecord;
                         }
                     }
-                }
-            }
-
-            var bufferedRecordCount = fetchedRecords?.Count ?? 0;
-            if (recordCount + bufferedRecordCount < _options.MaxPollRecords
-                && _renewedRecords is { Count: > 0 })
-            {
-                var renewedRecords = GetActiveRenewedRecords(
-                    assignment,
-                    _options.MaxPollRecords - recordCount - bufferedRecordCount);
-                foreach (var renewedRecord in renewedRecords)
-                {
-                    Interlocked.Increment(ref _renewedRecordReplayCount);
-                    recordCount++;
-                    yield return renewedRecord;
-                }
-            }
-
-            if (fetchedRecords is not null)
-            {
-                foreach (var fetchedRecord in fetchedRecords)
-                {
-                    if (recordCount >= _options.MaxPollRecords)
-                        break;
-
-                    if (_options.AcknowledgementMode == ShareAcknowledgementMode.Implicit)
+                    finally
                     {
-                        var tp = new TopicPartition(fetchedRecord.Topic, fetchedRecord.Partition);
-                        _ackTracker.TrackDeliveredRecords(tp, fetchedRecord.Offset, fetchedRecord.Offset);
+                        if (pollStarted >= 0) deliveryTicks += metrics.Timestamp - deliveryStarted;
                     }
-
-                    recordCount++;
-                    yield return fetchedRecord;
                 }
-            }
 
-            // If this poll round returned nothing, the broker's MaxWaitMs already
-            // provided back-pressure. No additional client-side delay needed.
+                // If this poll round returned nothing, the broker's MaxWaitMs already
+                // provided back-pressure. No additional client-side delay needed.
+
+            }
+            finally
+            {
+                metrics.EndPoll(pollStarted, deliveryTicks);
+            }
         }
     }
 
@@ -929,9 +968,26 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                     IsRenewAck = isRenewAck,
                     Topics = BuildShareFetchTopics(partitions, brokerAcks, version)
                 };
-                var response = (ShareFetchResponse)await connection
-                    .SendAsync<ShareFetchRequest, ShareFetchResponse>(request, version, cancellationToken)
-                    .ConfigureAwait(false);
+                var metrics = _telemetryMetricCollector.ShareMetrics!;
+                var fetchStarted = metrics.BeginFetch();
+                var sentCount = fetchStarted >= 0 ? CountSentAcknowledgements(request) : 0;
+                metrics.RecordAcknowledgements(sentCount, 0);
+                ShareFetchResponse response;
+                try
+                {
+                    response = (ShareFetchResponse)await connection
+                        .SendAsync<ShareFetchRequest, ShareFetchResponse>(request, version, cancellationToken)
+                        .ConfigureAwait(false);
+                }
+                catch
+                {
+                    metrics.EndFetch(fetchStarted, -1);
+                    metrics.RecordAcknowledgements(0, sentCount);
+                    throw;
+                }
+                metrics.EndFetch(fetchStarted, response.ThrottleTimeMs);
+                if (sentCount != 0)
+                    metrics.RecordAcknowledgements(0, CountFailedAcknowledgements(response, brokerAcks!, sentCount));
 
                 if (attempt < RetryHelper.MaxRetries && response.ErrorCode.IsRetriable())
                 {
@@ -1091,10 +1147,24 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                     IsRenewAck = isRenewAck,
                     Topics = topics
                 };
-                var response = (ShareAcknowledgeResponse)await connection
-                    .SendAsync<ShareAcknowledgeRequest, ShareAcknowledgeResponse>(
-                        request, shareAckVersion, cancellationToken)
-                    .ConfigureAwait(false);
+                var metrics = _telemetryMetricCollector.ShareMetrics!;
+                var sentCount = metrics.Enabled ? CountSentAcknowledgements(request) : 0;
+                metrics.RecordAcknowledgements(sentCount, 0);
+                ShareAcknowledgeResponse response;
+                try
+                {
+                    response = (ShareAcknowledgeResponse)await connection
+                        .SendAsync<ShareAcknowledgeRequest, ShareAcknowledgeResponse>(
+                            request, shareAckVersion, cancellationToken)
+                        .ConfigureAwait(false);
+                }
+                catch
+                {
+                    metrics.RecordAcknowledgements(0, sentCount);
+                    throw;
+                }
+                if (sentCount != 0)
+                    metrics.RecordAcknowledgements(0, CountFailedAcknowledgements(response, pendingAcknowledgements, sentCount));
 
                 if (response.ErrorCode != ErrorCode.None)
                 {
@@ -1291,37 +1361,171 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         int maxRecords)
     {
         var results = new List<ShareConsumeResult<TKey, TValue>>();
-
-        var reader = new KafkaProtocolReader(partition.RecordBytes);
-        var acquiredRecordIndex = 0;
-        while (!reader.End && results.Count < maxRecords)
+        var metrics = _telemetryMetricCollector.ShareMetrics!;
+        var measuring = metrics.Enabled;
+        long metricBytes = 0;
+        try
         {
-            RecordBatch batch;
-            try
+
+            var reader = new KafkaProtocolReader(partition.RecordBytes);
+            var acquiredRecordIndex = 0;
+            while (!reader.End && results.Count < maxRecords)
             {
-                batch = RecordBatch.Read(ref reader, _compressionCodecs);
-            }
-            catch (InsufficientDataException)
-            {
-                break; // Partial batch
+                RecordBatch batch;
+                try
+                {
+                    batch = RecordBatch.Read(ref reader, _compressionCodecs);
+                }
+                catch (InsufficientDataException)
+                {
+                    break; // Partial batch
+                }
+
+                try
+                {
+                    batch.ConfigureHeaderRouting(_recordHeaderRoutingPlan);
+                    foreach (var record in batch.Records)
+                    {
+                        if (results.Count >= maxRecords)
+                            break;
+
+                        var offset = batch.BaseOffset + record.OffsetDelta;
+
+                        var deliveryCount = FindDeliveryCount(
+                            partition.AcquiredRecords,
+                            offset,
+                            ref acquiredRecordIndex);
+                        if (deliveryCount < 0)
+                            continue;
+
+                        t_serializationContext.Topic = topicInfo.Name;
+                        t_serializationContext.Component = SerializationComponent.Key;
+                        t_serializationContext.KeyData = ReadOnlyMemory<byte>.Empty;
+                        t_serializationContext.IsNull = record.IsKeyNull;
+                        var headerRouting = record.CreateHeaderRoutingLookup(
+                            _recordHeaderRoutingPlan);
+                        var materializedHeaders = _recordHeaderDeserializationHeaders;
+                        if (materializedHeaders is not null)
+                            headerRouting.CopyTo(materializedHeaders);
+                        t_serializationContext.Headers = headerRouting.KeyRequiresMaterializedHeaders
+                            ? materializedHeaders
+                            : null;
+                        var key = record.IsKeyNull
+                            ? default
+                            : RecordHeaderDeserializer.Deserialize(
+                                _keyDeserializer,
+                                record.Key,
+                                t_serializationContext,
+                                in headerRouting);
+
+                        t_serializationContext.Component = SerializationComponent.Value;
+                        t_serializationContext.KeyData = SerializationContext.NormalizeKeyData(
+                            record.Key,
+                            record.IsKeyNull);
+                        t_serializationContext.IsNull = record.IsValueNull;
+                        t_serializationContext.Headers = headerRouting.ValueRequiresMaterializedHeaders
+                            ? materializedHeaders
+                            : null;
+                        var value = record.IsValueNull
+                            ? default!
+                            : RecordHeaderDeserializer.Deserialize(
+                                _valueDeserializer,
+                                record.Value,
+                                t_serializationContext,
+                                in headerRouting);
+
+                        var headers = Array.Empty<Header>();
+                        if (record.Headers is not null && record.HeaderCount > 0)
+                        {
+                            headers = new Header[record.HeaderCount];
+                            Array.Copy(record.Headers, headers, record.HeaderCount);
+                        }
+
+                        results.Add(new ShareConsumeResult<TKey, TValue>
+                        {
+                            Topic = topicInfo.Name,
+                            Partition = partition.PartitionIndex,
+                            Offset = offset,
+                            Key = key,
+                            Value = value,
+                            Headers = headers,
+                            TimestampMs = batch.BaseTimestamp + record.TimestampDelta,
+                            DeliveryCount = deliveryCount
+                        });
+                        if (measuring) metricBytes += record.Length + Record.VarIntSize(record.Length);
+                    }
+                }
+                finally
+                {
+                    batch.DisposeAndReturnUnownedConsumerBatch();
+                }
             }
 
-            try
+            return results;
+
+        }
+        finally
+        {
+            if (measuring) metrics.RecordParsed(metricBytes, results.Count - 0);
+        }
+    }
+
+    // The caller preserves parserState across preparation awaits so each record batch is
+    // parsed and decompressed once even when several records require cold preparation.
+    internal PendingDeserializerPreparation? ParsePartitionRecordsWithPreparation(
+        TopicInfo topicInfo,
+        ShareFetchResponsePartition partition,
+        int maxRecords,
+        List<ShareConsumeResult<TKey, TValue>> results,
+        ref DeserializerPreparationParserState parserState,
+        bool hasRetainedKey,
+        TKey? retainedKey)
+    {
+        var metrics = _telemetryMetricCollector.ShareMetrics!;
+        var measuring = metrics.Enabled;
+        var initialCount = results.Count;
+        long metricBytes = 0;
+        try
+        {
+            while (results.Count < maxRecords)
             {
-                batch.ConfigureHeaderRouting(_recordHeaderRoutingPlan);
-                foreach (var record in batch.Records)
+                if (parserState.CurrentBatch is null)
                 {
-                    if (results.Count >= maxRecords)
+                    if (parserState.NextBatchByteOffset >= partition.RecordBytes.Length)
                         break;
 
+                    var reader = new KafkaProtocolReader(
+                        partition.RecordBytes[parserState.NextBatchByteOffset..]);
+                    try
+                    {
+                        parserState.CurrentBatch = RecordBatch.Read(ref reader, _compressionCodecs);
+                    }
+                    catch (InsufficientDataException)
+                    {
+                        break; // Partial batch
+                    }
+
+                    parserState.NextBatchByteOffset += checked((int)reader.Consumed);
+                    parserState.CurrentBatch.ConfigureHeaderRouting(_recordHeaderRoutingPlan);
+                    parserState.RecordIndex = 0;
+                }
+
+                var batch = parserState.CurrentBatch;
+                var records = batch.Records;
+                while (parserState.RecordIndex < records.Count && results.Count < maxRecords)
+                {
+                    var record = records[parserState.RecordIndex];
                     var offset = batch.BaseOffset + record.OffsetDelta;
 
                     var deliveryCount = FindDeliveryCount(
                         partition.AcquiredRecords,
                         offset,
-                        ref acquiredRecordIndex);
+                        ref parserState.AcquiredRecordIndex);
                     if (deliveryCount < 0)
+                    {
+                        parserState.RecordIndex++;
                         continue;
+                    }
 
                     t_serializationContext.Topic = topicInfo.Name;
                     t_serializationContext.Component = SerializationComponent.Key;
@@ -1335,13 +1539,40 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                     t_serializationContext.Headers = headerRouting.KeyRequiresMaterializedHeaders
                         ? materializedHeaders
                         : null;
-                    var key = record.IsKeyNull
-                        ? default
-                        : RecordHeaderDeserializer.Deserialize(
-                            _keyDeserializer,
-                            record.Key,
-                            t_serializationContext,
-                            in headerRouting);
+                    TKey? key = default;
+                    if (!record.IsKeyNull)
+                    {
+                        if (hasRetainedKey)
+                        {
+                            key = retainedKey;
+                        }
+                        else if (_keyDeserializerPreparer is { } keyPreparer)
+                        {
+                            if (!TryDeserializePrepared(
+                                    keyPreparer,
+                                    record.Key,
+                                    t_serializationContext,
+                                    in headerRouting,
+                                    out key))
+                            {
+                                return CreatePendingPreparation(
+                                    SerializationComponent.Key,
+                                    topicInfo.Name,
+                                    offset,
+                                    record,
+                                    retainedKey: default,
+                                    hasRetainedKey: false);
+                            }
+                        }
+                        else
+                        {
+                            key = RecordHeaderDeserializer.Deserialize(
+                                _keyDeserializer,
+                                record.Key,
+                                t_serializationContext,
+                                in headerRouting);
+                        }
+                    }
 
                     t_serializationContext.Component = SerializationComponent.Value;
                     t_serializationContext.KeyData = SerializationContext.NormalizeKeyData(
@@ -1351,13 +1582,37 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                     t_serializationContext.Headers = headerRouting.ValueRequiresMaterializedHeaders
                         ? materializedHeaders
                         : null;
-                    var value = record.IsValueNull
-                        ? default!
-                        : RecordHeaderDeserializer.Deserialize(
+                    TValue value;
+                    if (record.IsValueNull)
+                    {
+                        value = default!;
+                    }
+                    else if (_valueDeserializerPreparer is { } valuePreparer)
+                    {
+                        if (!TryDeserializePrepared(
+                                valuePreparer,
+                                record.Value,
+                                t_serializationContext,
+                                in headerRouting,
+                                out value))
+                        {
+                            return CreatePendingPreparation(
+                                SerializationComponent.Value,
+                                topicInfo.Name,
+                                offset,
+                                record,
+                                key,
+                                hasRetainedKey: !record.IsKeyNull);
+                        }
+                    }
+                    else
+                    {
+                        value = RecordHeaderDeserializer.Deserialize(
                             _valueDeserializer,
                             record.Value,
                             t_serializationContext,
                             in headerRouting);
+                    }
 
                     var headers = Array.Empty<Header>();
                     if (record.Headers is not null && record.HeaderCount > 0)
@@ -1377,183 +1632,23 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                         TimestampMs = batch.BaseTimestamp + record.TimestampDelta,
                         DeliveryCount = deliveryCount
                     });
-                }
-            }
-            finally
-            {
-                batch.DisposeAndReturnUnownedConsumerBatch();
-            }
-        }
-
-        return results;
-    }
-
-    // The caller preserves parserState across preparation awaits so each record batch is
-    // parsed and decompressed once even when several records require cold preparation.
-    internal PendingDeserializerPreparation? ParsePartitionRecordsWithPreparation(
-        TopicInfo topicInfo,
-        ShareFetchResponsePartition partition,
-        int maxRecords,
-        List<ShareConsumeResult<TKey, TValue>> results,
-        ref DeserializerPreparationParserState parserState,
-        bool hasRetainedKey,
-        TKey? retainedKey)
-    {
-        while (results.Count < maxRecords)
-        {
-            if (parserState.CurrentBatch is null)
-            {
-                if (parserState.NextBatchByteOffset >= partition.RecordBytes.Length)
-                    break;
-
-                var reader = new KafkaProtocolReader(
-                    partition.RecordBytes[parserState.NextBatchByteOffset..]);
-                try
-                {
-                    parserState.CurrentBatch = RecordBatch.Read(ref reader, _compressionCodecs);
-                }
-                catch (InsufficientDataException)
-                {
-                    break; // Partial batch
-                }
-
-                parserState.NextBatchByteOffset += checked((int)reader.Consumed);
-                parserState.CurrentBatch.ConfigureHeaderRouting(_recordHeaderRoutingPlan);
-                parserState.RecordIndex = 0;
-            }
-
-            var batch = parserState.CurrentBatch;
-            var records = batch.Records;
-            while (parserState.RecordIndex < records.Count && results.Count < maxRecords)
-            {
-                var record = records[parserState.RecordIndex];
-                var offset = batch.BaseOffset + record.OffsetDelta;
-
-                var deliveryCount = FindDeliveryCount(
-                    partition.AcquiredRecords,
-                    offset,
-                    ref parserState.AcquiredRecordIndex);
-                if (deliveryCount < 0)
-                {
+                    if (measuring) metricBytes += record.Length + Record.VarIntSize(record.Length);
                     parserState.RecordIndex++;
-                    continue;
+                    hasRetainedKey = false;
+                    retainedKey = default;
                 }
 
-                t_serializationContext.Topic = topicInfo.Name;
-                t_serializationContext.Component = SerializationComponent.Key;
-                t_serializationContext.KeyData = ReadOnlyMemory<byte>.Empty;
-                t_serializationContext.IsNull = record.IsKeyNull;
-                var headerRouting = record.CreateHeaderRoutingLookup(
-                    _recordHeaderRoutingPlan);
-                var materializedHeaders = _recordHeaderDeserializationHeaders;
-                if (materializedHeaders is not null)
-                    headerRouting.CopyTo(materializedHeaders);
-                t_serializationContext.Headers = headerRouting.KeyRequiresMaterializedHeaders
-                    ? materializedHeaders
-                    : null;
-                TKey? key = default;
-                if (!record.IsKeyNull)
-                {
-                    if (hasRetainedKey)
-                    {
-                        key = retainedKey;
-                    }
-                    else if (_keyDeserializerPreparer is { } keyPreparer)
-                    {
-                        if (!TryDeserializePrepared(
-                                keyPreparer,
-                                record.Key,
-                                t_serializationContext,
-                                in headerRouting,
-                                out key))
-                        {
-                            return CreatePendingPreparation(
-                                SerializationComponent.Key,
-                                topicInfo.Name,
-                                offset,
-                                record,
-                                retainedKey: default,
-                                hasRetainedKey: false);
-                        }
-                    }
-                    else
-                    {
-                        key = RecordHeaderDeserializer.Deserialize(
-                            _keyDeserializer,
-                            record.Key,
-                            t_serializationContext,
-                            in headerRouting);
-                    }
-                }
-
-                t_serializationContext.Component = SerializationComponent.Value;
-                t_serializationContext.KeyData = SerializationContext.NormalizeKeyData(
-                    record.Key,
-                    record.IsKeyNull);
-                t_serializationContext.IsNull = record.IsValueNull;
-                t_serializationContext.Headers = headerRouting.ValueRequiresMaterializedHeaders
-                    ? materializedHeaders
-                    : null;
-                TValue value;
-                if (record.IsValueNull)
-                {
-                    value = default!;
-                }
-                else if (_valueDeserializerPreparer is { } valuePreparer)
-                {
-                    if (!TryDeserializePrepared(
-                            valuePreparer,
-                            record.Value,
-                            t_serializationContext,
-                            in headerRouting,
-                            out value))
-                    {
-                        return CreatePendingPreparation(
-                            SerializationComponent.Value,
-                            topicInfo.Name,
-                            offset,
-                            record,
-                            key,
-                            hasRetainedKey: !record.IsKeyNull);
-                    }
-                }
-                else
-                {
-                    value = RecordHeaderDeserializer.Deserialize(
-                        _valueDeserializer,
-                        record.Value,
-                        t_serializationContext,
-                        in headerRouting);
-                }
-
-                var headers = Array.Empty<Header>();
-                if (record.Headers is not null && record.HeaderCount > 0)
-                {
-                    headers = new Header[record.HeaderCount];
-                    Array.Copy(record.Headers, headers, record.HeaderCount);
-                }
-
-                results.Add(new ShareConsumeResult<TKey, TValue>
-                {
-                    Topic = topicInfo.Name,
-                    Partition = partition.PartitionIndex,
-                    Offset = offset,
-                    Key = key,
-                    Value = value,
-                    Headers = headers,
-                    TimestampMs = batch.BaseTimestamp + record.TimestampDelta,
-                    DeliveryCount = deliveryCount
-                });
-                parserState.RecordIndex++;
-                hasRetainedKey = false;
-                retainedKey = default;
+                if (parserState.RecordIndex >= records.Count)
+                    parserState.DisposeCurrentBatch();
             }
 
-            if (parserState.RecordIndex >= records.Count)
-                parserState.DisposeCurrentBatch();
-        }
+            return null;
 
-        return null;
+        }
+        finally
+        {
+            if (measuring) metrics.RecordParsed(metricBytes, results.Count - initialCount);
+        }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
