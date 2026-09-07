@@ -1,5 +1,6 @@
 using System.Threading.Tasks.Sources;
 using Dekaf.Consumer;
+using Dekaf.Protocol;
 using Dekaf.Protocol.Records;
 using Dekaf.Serialization;
 
@@ -361,11 +362,180 @@ public sealed class PartitionedDispatchCoordinatorTests
         await Assert.That(dispatcher.LaneCount).IsEqualTo(0);
     }
 
+    [Test]
+    [Arguments(1)]
+    [Arguments(4)]
+    public async Task CancellationDuringReadyDispatch_DoesNotStartQueuedHandlers(int batchSize)
+    {
+        const int count = 16;
+        var lane = CreateLane(count);
+        for (var offset = 0; offset < count; offset++)
+            await Assert.That(lane.TryEnqueue(CreateRecord(offset, keyOverride: offset % 4))).IsTrue();
+        await lane.StopAsync(PartitionStopPolicy.Drain, Timeout.InfiniteTimeSpan);
+        using var cancellation = new CancellationTokenSource();
+        var first = new ObservedCompletion();
+        var calls = 0;
+        var completed = new List<long>();
+        var dispatcher = new KeyOrderedPartitionDispatcher<int, int>(
+            new PartitionProcessorContext<int, int>(lane), batchSize, 1, count,
+            (records, _) =>
+            {
+                calls++;
+                foreach (var record in records)
+                    completed.Add(record.Offset);
+                if (calls == 1)
+                    return first.Task;
+                // Cancel inside a synchronous handler while other keys are already
+                // ready. No handler may start after this invocation returns.
+                cancellation.Cancel();
+                return default;
+            }, automaticCompletion: true);
+
+        var processing = dispatcher.RunAsync(cancellation.Token).AsTask();
+        var initiallyStarted = calls;
+        var bufferedKeys = dispatcher.LaneCount;
+        first.Complete();
+        await Assert.ThrowsAsync<OperationCanceledException>(
+            async () => await processing.WaitAsync(TimeSpan.FromSeconds(10)));
+        await Assert.That(initiallyStarted).IsEqualTo(1);
+        await Assert.That(bufferedKeys).IsEqualTo(4);
+        await Assert.That(calls).IsEqualTo(2);
+        await Assert.That(completed.Count).IsEqualTo(1 + batchSize);
+        await Assert.That(first.Observed).IsEqualTo(1);
+        await Assert.That(dispatcher.LaneCount).IsEqualTo(0);
+        await Assert.That(lane.GetCommitOffset()).IsEqualTo(new TopicPartitionOffset("dispatch", 0, 2, 1));
+    }
+
+    [Test]
+    [Arguments(true)]
+    [Arguments(false)]
+    [Arguments(false, 1)]
+    [Arguments(false, 2)]
+    public async Task AwaiterSetupFailure_ReleasesWorkerAndPropagatesError(bool failStatus, int callbackMode = 0)
+    {
+        var lane = CreateLane(1);
+        await Assert.That(lane.TryEnqueue(CreateRecord(0))).IsTrue();
+        await lane.StopAsync(PartitionStopPolicy.Drain, Timeout.InfiniteTimeSpan);
+        var failure = new InvalidOperationException("awaiter setup failed");
+        var source = new ThrowingCompletion(failure, failStatus, callbackMode);
+        var dispatcher = new KeyOrderedPartitionDispatcher<int, int>(
+            new PartitionProcessorContext<int, int>(lane), 1, 1, 1,
+            (_, _) => new ValueTask(source, 0), automaticCompletion: true);
+        var processing = dispatcher.RunAsync(CancellationToken.None).AsTask();
+        var thrown = await Assert.ThrowsAsync<InvalidOperationException>(
+            async () => await processing.WaitAsync(TimeSpan.FromSeconds(2)));
+        await Assert.That(thrown).IsSameReferenceAs(failure);
+        source.CompleteLate();
+        await Assert.That(source.Observed).IsEqualTo(callbackMode == 1 ? 1 : 0);
+        await Assert.That(lane.GetCommitOffset()).IsNull();
+        await Assert.That(dispatcher.LaneCount).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task MutatedKeyMatchingAnotherLane_StopsBeforeDispatchingMoreRecords()
+    {
+        var keys = new[] { new MutableKey(0), new MutableKey(1), new MutableKey(2), new MutableKey(3) };
+        var lane = new PartitionLane<MutableKey, int>(new TopicPartition("dispatch", 0), 4,
+            static (_, _) => default, static _ => { }, static (_, _) => { });
+        var storage = new TrackedMemory[keys.Length];
+        for (var offset = 0; offset < keys.Length; offset++)
+        {
+            var memory = storage[offset] = new TrackedMemory();
+            var batch = new RecordBatch
+            {
+                BaseOffset = offset, LastOffsetDelta = 0,
+                Records = [new Record { Key = memory.Memory, Value = memory.Memory }]
+            };
+            using var pending = PendingFetchData.Create("dispatch", 0, [batch], memoryOwner: memory);
+            pending.EagerParseAll();
+            var records = new ConsumeBatch<MutableKey, int>(pending, new MutableKeyDeserializer(keys[offset]), Serializers.Int32).GetEnumerator();
+            await Assert.That(records.MoveNext()).IsTrue();
+            await Assert.That(lane.TryEnqueue(records.Current)).IsTrue();
+        }
+        await lane.StopAsync(PartitionStopPolicy.Drain, Timeout.InfiniteTimeSpan);
+        var first = new ObservedCompletion();
+        var second = new ObservedCompletion();
+        var handled = new List<long>();
+        var dispatcher = new KeyOrderedPartitionDispatcher<MutableKey, int>(
+            new PartitionProcessorContext<MutableKey, int>(lane), 1, 3, 4,
+            (records, _) =>
+            {
+                var offset = records[0].Offset;
+                handled.Add(offset);
+                if (offset == 0)
+                    return first.Task;
+                if (offset == 1)
+                    return second.Task;
+                if (offset == 2)
+                {
+                    keys[0].Value = keys[1].Value;
+                    first.Complete();
+                }
+                return default;
+            }, automaticCompletion: true);
+        var processing = dispatcher.RunAsync(CancellationToken.None).AsTask();
+        second.Complete();
+        var thrown = await Assert.ThrowsAsync<InvalidOperationException>(
+            async () => await processing.WaitAsync(TimeSpan.FromSeconds(2)));
+        await Assert.That(thrown!.Message).IsEqualTo("A partition key changed its hash code or equality while being processed.");
+        foreach (var memory in storage)
+            await Assert.That(memory.DisposeCount).IsEqualTo(1);
+        await Assert.That(handled).IsEquivalentTo(new long[] { 0, 1, 2 });
+        await Assert.That(first.Observed).IsEqualTo(1);
+        await Assert.That(second.Observed).IsEqualTo(1);
+        await Assert.That(dispatcher.LaneCount).IsEqualTo(0);
+    }
+
+    private sealed class TrackedMemory : IPooledMemory
+    {
+        public ReadOnlyMemory<byte> Memory { get; } = new byte[sizeof(int)];
+        internal int DisposeCount { get; private set; }
+        public void Dispose() => DisposeCount++;
+    }
+
+    private sealed class MutableKeyDeserializer(MutableKey key) : IDeserializer<MutableKey>
+    {
+        public MutableKey Deserialize(ReadOnlyMemory<byte> data, SerializationContext context) => key;
+    }
+
+    private sealed class MutableKey(int value)
+    {
+        internal int Value { get; set; } = value;
+        public override int GetHashCode() => Value;
+        public override bool Equals(object? obj) => obj is MutableKey other && other.Value == Value;
+    }
+
+    private sealed class ThrowingCompletion(Exception failure, bool failStatus, int callbackMode) : IValueTaskSource
+    {
+        private Action<object?>? _continuation;
+        private object? _state;
+        internal int Observed { get; private set; }
+        public void GetResult(short token)
+        {
+            Observed++;
+            throw failure;
+        }
+        public ValueTaskSourceStatus GetStatus(short token) => failStatus ? throw failure : ValueTaskSourceStatus.Pending;
+        public void OnCompleted(Action<object?> continuation, object? state, short token,
+            ValueTaskSourceOnCompletedFlags flags)
+        {
+            if (callbackMode == 1)
+                continuation(state);
+            else if (callbackMode == 2)
+            {
+                _continuation = continuation;
+                _state = state;
+            }
+            throw failure;
+        }
+        internal void CompleteLate() => _continuation?.Invoke(_state);
+    }
     private sealed class ThrowingHashKey(int value)
     {
         internal Exception? Failure { get; set; }
         internal int HashCode { get; set; } = value;
         public override int GetHashCode() => Failure is { } failure ? throw failure : HashCode;
+        public override bool Equals(object? obj) => ReferenceEquals(this, obj);
     }
 
     private sealed class ObservedCompletion : IValueTaskSource

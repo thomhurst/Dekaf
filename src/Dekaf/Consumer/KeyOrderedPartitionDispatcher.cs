@@ -29,6 +29,9 @@ internal sealed class KeyOrderedPartitionDispatcher<TKey, TValue>
     private AutomaticPartitionProgress? _progress;
     private CancellationToken _processingToken;
     private ExceptionDispatchInfo? _failure;
+#if !NETSTANDARD2_0
+    private List<KeyLane>? _orphanedLanes;
+#endif
     private int _inputReady;
     private bool _inputPending;
     private bool _inputCompleted;
@@ -165,6 +168,14 @@ internal sealed class KeyOrderedPartitionDispatcher<TKey, TValue>
             foreach (var lane in _lanes.Values)
                 lane?.ReleaseKey();
             _lanes.Clear();
+#if !NETSTANDARD2_0
+            if (_orphanedLanes is not null)
+            {
+                foreach (var lane in _orphanedLanes)
+                    lane.ReleaseKey();
+                _orphanedLanes.Clear();
+            }
+#endif
             Volatile.Write(ref _laneCount, 0);
             registration.Dispose();
             _signal.Dispose();
@@ -268,6 +279,7 @@ internal sealed class KeyOrderedPartitionDispatcher<TKey, TValue>
     {
         while (_failure is null && _activeWorkers < _maxWorkers && _readyLanes.TryDequeue(out var lane))
         {
+            _processingToken.ThrowIfCancellationRequested();
             var worker = _freeWorkers.Count != 0
                 ? _freeWorkers.Pop()
                 : new Worker(this, _batchSize);
@@ -280,10 +292,12 @@ internal sealed class KeyOrderedPartitionDispatcher<TKey, TValue>
             }
 
             _activeWorkers++;
-            ValueTask processing;
+            bool completed;
             try
             {
-                processing = _processor(worker.Batch, _processingToken);
+                var processing = _processor(worker.Batch, _processingToken);
+                worker.Awaiter = processing.ConfigureAwait(false).GetAwaiter();
+                completed = worker.Awaiter.IsCompleted;
             }
             catch (Exception exception)
             {
@@ -292,11 +306,10 @@ internal sealed class KeyOrderedPartitionDispatcher<TKey, TValue>
                 ReleaseWorker(worker, succeeded: false);
                 continue;
             }
-            worker.Awaiter = processing.ConfigureAwait(false).GetAwaiter();
-            if (worker.Awaiter.IsCompleted)
+            if (completed)
                 CompleteWorker(worker);
             else
-                worker.Awaiter.UnsafeOnCompleted(worker.Callback);
+                worker.Register();
         }
     }
 
@@ -373,8 +386,19 @@ internal sealed class KeyOrderedPartitionDispatcher<TKey, TValue>
         {
             // A mutable user key can make its dictionary entry unreachable.
             // Keep the lane owned until shutdown instead of pooling an alias.
-            if (!_lanes.Remove(lane.Key))
+#if NETSTANDARD2_0
+            if (!_lanes.TryGetValue(lane.Key, out var found) || !ReferenceEquals(found, lane) || !_lanes.Remove(lane.Key))
                 throw new InvalidOperationException("A partition key changed its hash code or equality while being processed.");
+#else
+            if (!_lanes.Remove(lane.Key, out var removed) || !ReferenceEquals(removed, lane))
+            {
+                // A mutated key may remove a different active lane. Keep its storage
+                // owned until every handler finishes, even though membership is gone.
+                if (removed is not null)
+                    (_orphanedLanes ??= new List<KeyLane>()).Add(removed);
+                throw new InvalidOperationException("A partition key changed its hash code or equality while being processed.");
+            }
+#endif
             lane.ReleaseKey();
             lane.Scheduled = false;
             lane.Tail = -1;
@@ -484,7 +508,8 @@ internal sealed class KeyOrderedPartitionDispatcher<TKey, TValue>
         private readonly KeyOrderedPartitionDispatcher<TKey, TValue> _dispatcher;
         internal readonly PartitionRecordBatch<TKey, TValue> Batch;
         internal int[] Indices;
-        internal readonly Action Callback;
+        private readonly Action _callback;
+        private int _completionPublished;
         internal ConfiguredValueTaskAwaitable.ConfiguredValueTaskAwaiter Awaiter;
         internal KeyLane? Lane;
         internal Worker? NextCompleted;
@@ -494,10 +519,32 @@ internal sealed class KeyOrderedPartitionDispatcher<TKey, TValue>
             _dispatcher = dispatcher;
             Batch = new PartitionRecordBatch<TKey, TValue>(batchSize);
             Indices = new int[Math.Min(batchSize, 16)];
-            Callback = Complete;
+            _callback = Complete;
         }
 
-        private void Complete() => _dispatcher.PublishCompletion(this);
+        internal void Register()
+        {
+            Volatile.Write(ref _completionPublished, 0);
+            try
+            {
+                Awaiter.UnsafeOnCompleted(_callback);
+            }
+            catch (Exception exception)
+            {
+                _dispatcher._failure ??= ExceptionDispatchInfo.Capture(exception);
+                // Registration may invoke its callback and then throw. Observe an
+                // already-published completion once; otherwise suppress late callbacks
+                // and release the worker whose awaiter could not be registered.
+                if (Interlocked.CompareExchange(ref _completionPublished, 1, 0) == 0)
+                    _dispatcher.ReleaseWorker(this, succeeded: false);
+            }
+        }
+
+        private void Complete()
+        {
+            if (Interlocked.CompareExchange(ref _completionPublished, 1, 0) == 0)
+                _dispatcher.PublishCompletion(this);
+        }
 
         internal void Add(ConsumeResult<TKey, TValue> record, int index)
         {
