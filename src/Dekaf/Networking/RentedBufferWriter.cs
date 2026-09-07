@@ -127,6 +127,9 @@ internal sealed class RentedBufferWriter : IBufferWriter<byte>, IDisposable
     {
         public RentedBufferWriter Create() => new();
 
+        // Dispose releases or transfers the byte array before returning this wrapper.
+        public void Destroy(RentedBufferWriter writer) { }
+
         public bool TryReset(RentedBufferWriter writer)
         {
             writer._written = 0;

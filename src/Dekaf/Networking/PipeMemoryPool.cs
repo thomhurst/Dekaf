@@ -200,6 +200,9 @@ internal sealed class PipeMemoryPool : MemoryPool<byte>
     {
         public PooledMemoryOwner Create() => new(owner);
 
+        // The byte array has already been returned before its owner enters this pool.
+        public void Destroy(PooledMemoryOwner item) { }
+
         public bool TryReset(PooledMemoryOwner item) => true;
     }
 }
