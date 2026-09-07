@@ -1604,40 +1604,79 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
     }
 
     [Test]
+    [Arguments(true)]
+    [Arguments(false)]
     [Timeout(120_000)]
-    public async Task SendLoopPressure_ScalesConnections_WhenCoalescingBacklogPersists(CancellationToken cancellationToken)
+    public async Task SendLoopPressure_ScalesConnections_WhenCoalescingBacklogPersists(
+        bool enableAdaptiveConnections, CancellationToken cancellationToken)
     {
         const int partitionCount = 8;
         const int batchCount = 512;
 
-        var options = CreateOptions(maxInFlight: 1);
+        var options = CreateOptions(maxInFlight: 1,
+            enableAdaptiveConnections: enableAdaptiveConnections, scaleCooldownMsOverride: 0);
         var accumulator = new RecordAccumulator(options);
         var vtPool = new ValueTaskSourcePool<RecordMetadata>();
+        var firstWriteStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFirstWrite = new TaskCompletionSource<Task<ProduceResponse>>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var allAcknowledged = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var connection = new TestKafkaConnection();
         var sendCount = 0;
+        var acknowledgedCount = 0;
         connection.SendProducePipelinedAfterWrite = () =>
         {
-            Interlocked.Increment(ref sendCount);
+            if (Interlocked.Increment(ref sendCount) == 1)
+            {
+                firstWriteStarted.TrySetResult();
+                return new ValueTask<Task<ProduceResponse>>(releaseFirstWrite.Task);
+            }
+
             return new ValueTask<Task<ProduceResponse>>(
                 Task.FromResult(CreateSuccessResponseForPartitions("test-topic", partitionCount)));
         };
 
         var (pool, scaleRequested) = CreateScaleTrackingPool(connection);
-
-        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) => { });
+        var sender = CreateSender(pool, options, accumulator, (_, _, _, count, error) =>
+        {
+            if (error is not null)
+                allAcknowledged.TrySetException(error);
+            else if (Interlocked.Add(ref acknowledgedCount, count) == batchCount)
+                allAcknowledged.TrySetResult();
+        });
 
         try
         {
-            for (var i = 0; i < batchCount; i++)
+            sender.Enqueue(CreateTestBatch(vtPool, "test-topic", partition: 0));
+            await firstWriteStarted.Task.WaitAsync(cancellationToken);
+
+            // Hold the first write until the entire backlog is queued. With maxInFlight=1,
+            // coalescing consumes at most four batches per pass, so 511 queued batches
+            // sustain more than the 100 pressure observations required for scaling.
+            for (var i = 1; i < batchCount; i++)
                 sender.Enqueue(CreateTestBatch(vtPool, "test-topic", i % partitionCount));
 
-            var targetCount = await scaleRequested.Task.WaitAsync(cancellationToken);
+            await Assert.That(Volatile.Read(ref sendCount)).IsEqualTo(1);
+            await Assert.That(scaleRequested.Task.IsCompleted).IsFalse();
+            releaseFirstWrite.SetResult(Task.FromResult(
+                CreateSuccessResponseForPartitions("test-topic", partitionCount)));
 
-            await Assert.That(targetCount).IsGreaterThan(1);
-            await Assert.That(Volatile.Read(ref sendCount)).IsGreaterThan(0);
+            await allAcknowledged.Task.WaitAsync(cancellationToken);
+            await Assert.That(Volatile.Read(ref acknowledgedCount)).IsEqualTo(batchCount);
+            if (enableAdaptiveConnections)
+            {
+                var targetCount = await scaleRequested.Task.WaitAsync(cancellationToken);
+                await Assert.That(targetCount).IsGreaterThan(1);
+            }
+            else
+            {
+                await Assert.That(scaleRequested.Task.IsCompleted).IsFalse();
+            }
         }
         finally
         {
+            releaseFirstWrite.TrySetResult(Task.FromResult(
+                CreateSuccessResponseForPartitions("test-topic", partitionCount)));
             await sender.DisposeAsync();
             await accumulator.DisposeAsync();
             await vtPool.DisposeAsync();
