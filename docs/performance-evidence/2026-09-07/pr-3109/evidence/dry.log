@@ -1,0 +1,193 @@
+// Validating benchmarks:
+// ***** BenchmarkRunner: Start   *****
+// ***** Found 3 benchmark(s) in total *****
+// ***** Building 2 exe(s) in Parallel: Start   *****
+// ***** Done, took 00:00:04 (4.68 sec)   *****
+// Found 3 benchmarks:
+//   PartitionedShutdownBenchmarks.DrainFullQueue: A_Published(OutlierMode=DontRemove, Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3109/published,/p:UseSharedCompilation=false, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1)
+//   PartitionedShutdownBenchmarks.DrainFullQueue: B_Candidate(OutlierMode=DontRemove, Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3109/candidate,/p:UseSharedCompilation=false, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1)
+//   PartitionedShutdownBenchmarks.DrainFullQueue: C_PublishedControl(OutlierMode=DontRemove, Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3109/published,/p:UseSharedCompilation=false, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1)
+
+Setup power plan (GUID: 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c FriendlyName: High performance)
+// **************************
+// Benchmark: PartitionedShutdownBenchmarks.DrainFullQueue: A_Published(OutlierMode=DontRemove, Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3109/published,/p:UseSharedCompilation=false, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1)
+// *** Execute ***
+// Launch: 1 / 1
+// Execute: dotnet Dekaf.Benchmarks-A_Published-1.dll --anonymousPipes 1432 1448 --benchmarkName Dekaf.Benchmarks.PartitionedShutdownBenchmarks.DrainFullQueue --job A_Published --benchmarkId 0 in C:\git\Dekaf-perf-improvements-20260907\pr-3109\comparison\bin\Release\net10.0\Dekaf.Benchmarks-A_Published-1\bin\Release\net10.0
+// BeforeAnythingElse
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.15.8
+// Runtime=.NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2+BMI1+BMI2+F16C+FMA+LZCNT+MOVBE,AVX,SSE3+SSSE3+SSE4.1+SSE4.2+POPCNT,X86Base+SSE+SSE2,AES+PCLMUL,AvxVnni,SERIALIZE VectorSize=256
+// Job: A_Published(OutlierMode=DontRemove, Affinity=100, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1)
+
+// BeforeActualRun
+WorkloadActual   1: 1 op, 62678400.00 ns, 62.6784 ms/op
+
+// AfterActualRun
+WorkloadResult   1: 1 op, 62678400.00 ns, 62.6784 ms/op
+// GC:  0 0 0 51720 1
+// Threading:  3 0 1
+
+// AfterAll
+// Benchmark Process 47132 has exited with code 0.
+
+Mean = 62.678 ms, StdErr = 0.000 ms (0.00%), N = 1, StdDev = 0.000 ms
+Min = 62.678 ms, Q1 = 62.678 ms, Median = 62.678 ms, Q3 = 62.678 ms, Max = 62.678 ms
+IQR = 0.000 ms, LowerFence = 62.678 ms, UpperFence = 62.678 ms
+ConfidenceInterval = [NaN ms; NaN ms] (CI 99.9%), Margin = NaN ms (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+
+// ** Remained 2 (66.7%) benchmark(s) to run. Estimated finish 2026-09-07 17:14 (0h 0m from now) **
+Setup power plan (GUID: 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c FriendlyName: High performance)
+// **************************
+// Benchmark: PartitionedShutdownBenchmarks.DrainFullQueue: B_Candidate(OutlierMode=DontRemove, Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3109/candidate,/p:UseSharedCompilation=false, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1)
+// *** Execute ***
+// Launch: 1 / 1
+// Execute: dotnet Dekaf.Benchmarks-B_Candidate-2.dll --anonymousPipes 1540 1488 --benchmarkName Dekaf.Benchmarks.PartitionedShutdownBenchmarks.DrainFullQueue --job B_Candidate --benchmarkId 0 in C:\git\Dekaf-perf-improvements-20260907\pr-3109\comparison\bin\Release\net10.0\Dekaf.Benchmarks-B_Candidate-2\bin\Release\net10.0
+// BeforeAnythingElse
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.15.8
+// Runtime=.NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2+BMI1+BMI2+F16C+FMA+LZCNT+MOVBE,AVX,SSE3+SSSE3+SSE4.1+SSE4.2+POPCNT,X86Base+SSE+SSE2,AES+PCLMUL,AvxVnni,SERIALIZE VectorSize=256
+// Job: B_Candidate(OutlierMode=DontRemove, Affinity=100, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1)
+
+// BeforeActualRun
+WorkloadActual   1: 1 op, 37558200.00 ns, 37.5582 ms/op
+
+// AfterActualRun
+WorkloadResult   1: 1 op, 37558200.00 ns, 37.5582 ms/op
+// GC:  0 0 0 51600 1
+// Threading:  3 0 1
+
+// AfterAll
+// Benchmark Process 27252 has exited with code 0.
+
+Mean = 37.558 ms, StdErr = 0.000 ms (0.00%), N = 1, StdDev = 0.000 ms
+Min = 37.558 ms, Q1 = 37.558 ms, Median = 37.558 ms, Q3 = 37.558 ms, Max = 37.558 ms
+IQR = 0.000 ms, LowerFence = 37.558 ms, UpperFence = 37.558 ms
+ConfidenceInterval = [NaN ms; NaN ms] (CI 99.9%), Margin = NaN ms (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+
+// ** Remained 1 (33.3%) benchmark(s) to run. Estimated finish 2026-09-07 17:14 (0h 0m from now) **
+Setup power plan (GUID: 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c FriendlyName: High performance)
+// **************************
+// Benchmark: PartitionedShutdownBenchmarks.DrainFullQueue: C_PublishedControl(OutlierMode=DontRemove, Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3109/published,/p:UseSharedCompilation=false, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1)
+// *** Execute ***
+// Launch: 1 / 1
+// Execute: dotnet Dekaf.Benchmarks-A_Published-1.dll --anonymousPipes 1576 1448 --benchmarkName Dekaf.Benchmarks.PartitionedShutdownBenchmarks.DrainFullQueue --job C_PublishedControl --benchmarkId 1 in C:\git\Dekaf-perf-improvements-20260907\pr-3109\comparison\bin\Release\net10.0\Dekaf.Benchmarks-A_Published-1\bin\Release\net10.0
+// BeforeAnythingElse
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.15.8
+// Runtime=.NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2+BMI1+BMI2+F16C+FMA+LZCNT+MOVBE,AVX,SSE3+SSSE3+SSE4.1+SSE4.2+POPCNT,X86Base+SSE+SSE2,AES+PCLMUL,AvxVnni,SERIALIZE VectorSize=256
+// Job: C_PublishedControl(OutlierMode=DontRemove, Affinity=100, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1)
+
+// BeforeActualRun
+WorkloadActual   1: 1 op, 42489900.00 ns, 42.4899 ms/op
+
+// AfterActualRun
+WorkloadResult   1: 1 op, 42489900.00 ns, 42.4899 ms/op
+// GC:  0 0 0 51720 1
+// Threading:  3 0 1
+
+// AfterAll
+// Benchmark Process 95160 has exited with code 0.
+
+Mean = 42.490 ms, StdErr = 0.000 ms (0.00%), N = 1, StdDev = 0.000 ms
+Min = 42.490 ms, Q1 = 42.490 ms, Median = 42.490 ms, Q3 = 42.490 ms, Max = 42.490 ms
+IQR = 0.000 ms, LowerFence = 42.490 ms, UpperFence = 42.490 ms
+ConfidenceInterval = [NaN ms; NaN ms] (CI 99.9%), Margin = NaN ms (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+
+// ** Remained 0 (0.0%) benchmark(s) to run. Estimated finish 2026-09-07 17:14 (0h 0m from now) **
+Successfully reverted power plan (GUID: 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c FriendlyName: High performance)
+// ***** BenchmarkRunner: Finish  *****
+
+// * Export *
+  C:\git\Dekaf-perf-improvements-20260907\pr-3109\dry\results\Dekaf.Benchmarks.PartitionedShutdownBenchmarks-report.csv
+  C:\git\Dekaf-perf-improvements-20260907\pr-3109\dry\results\Dekaf.Benchmarks.PartitionedShutdownBenchmarks-report-github.md
+  C:\git\Dekaf-perf-improvements-20260907\pr-3109\dry\results\Dekaf.Benchmarks.PartitionedShutdownBenchmarks-report.html
+  C:\git\Dekaf-perf-improvements-20260907\pr-3109\dry\results\Dekaf.Benchmarks.PartitionedShutdownBenchmarks-report-full.json
+
+// * Detailed results *
+PartitionedShutdownBenchmarks.DrainFullQueue: A_Published(OutlierMode=DontRemove, Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3109/published,/p:UseSharedCompilation=false, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1)
+Runtime = .NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3; GC = Concurrent Workstation
+Mean = 62.678 ms, StdErr = 0.000 ms (0.00%), N = 1, StdDev = 0.000 ms
+Min = 62.678 ms, Q1 = 62.678 ms, Median = 62.678 ms, Q3 = 62.678 ms, Max = 62.678 ms
+IQR = 0.000 ms, LowerFence = 62.678 ms, UpperFence = 62.678 ms
+ConfidenceInterval = [NaN ms; NaN ms] (CI 99.9%), Margin = NaN ms (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+-------------------- Histogram --------------------
+[62.678 ms ; 62.678 ms) | @
+---------------------------------------------------
+
+PartitionedShutdownBenchmarks.DrainFullQueue: B_Candidate(OutlierMode=DontRemove, Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3109/candidate,/p:UseSharedCompilation=false, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1)
+Runtime = .NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3; GC = Concurrent Workstation
+Mean = 37.558 ms, StdErr = 0.000 ms (0.00%), N = 1, StdDev = 0.000 ms
+Min = 37.558 ms, Q1 = 37.558 ms, Median = 37.558 ms, Q3 = 37.558 ms, Max = 37.558 ms
+IQR = 0.000 ms, LowerFence = 37.558 ms, UpperFence = 37.558 ms
+ConfidenceInterval = [NaN ms; NaN ms] (CI 99.9%), Margin = NaN ms (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+-------------------- Histogram --------------------
+[37.558 ms ; 37.558 ms) | @
+---------------------------------------------------
+
+PartitionedShutdownBenchmarks.DrainFullQueue: C_PublishedControl(OutlierMode=DontRemove, Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3109/published,/p:UseSharedCompilation=false, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1)
+Runtime = .NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3; GC = Concurrent Workstation
+Mean = 42.490 ms, StdErr = 0.000 ms (0.00%), N = 1, StdDev = 0.000 ms
+Min = 42.490 ms, Q1 = 42.490 ms, Median = 42.490 ms, Q3 = 42.490 ms, Max = 42.490 ms
+IQR = 0.000 ms, LowerFence = 42.490 ms, UpperFence = 42.490 ms
+ConfidenceInterval = [NaN ms; NaN ms] (CI 99.9%), Margin = NaN ms (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+-------------------- Histogram --------------------
+[42.490 ms ; 42.490 ms) | @
+---------------------------------------------------
+
+// * Summary *
+
+BenchmarkDotNet v0.15.8, Windows 11 (10.0.26200.9168/25H2/2025Update/HudsonValley2)
+12th Gen Intel Core i7-12700K 3.60GHz, 1 CPU, 20 logical and 12 physical cores
+.NET SDK 10.0.400
+  [Host]             : .NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+  A_Published        : .NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+  B_Candidate        : .NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+  C_PublishedControl : .NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+
+OutlierMode=DontRemove  Affinity=00000000000000000100  EnvironmentVariables=DOTNET_TieredCompilation=0  
+IterationCount=1  LaunchCount=1  RunStrategy=ColdStart  
+UnrollFactor=1  WarmupCount=1  
+
+| Method         | Job                | Arguments                                                                                                   | Mean     | Error | Allocated |
+|--------------- |------------------- |------------------------------------------------------------------------------------------------------------ |---------:|------:|----------:|
+| DrainFullQueue | A_Published        | /p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3109/published,/p:UseSharedCompilation=false | 62.68 ms |    NA |  50.51 KB |
+| DrainFullQueue | B_Candidate        | /p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3109/candidate,/p:UseSharedCompilation=false | 37.56 ms |    NA |  50.39 KB |
+| DrainFullQueue | C_PublishedControl | /p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3109/published,/p:UseSharedCompilation=false | 42.49 ms |    NA |  50.51 KB |
+
+// * Warnings *
+MinIterationTime
+  PartitionedShutdownBenchmarks.DrainFullQueue: A_Published        -> The minimum observed iteration time is 62.678ms which is very small. It's recommended to increase it to at least 100ms using more operations.
+  PartitionedShutdownBenchmarks.DrainFullQueue: B_Candidate        -> The minimum observed iteration time is 37.558ms which is very small. It's recommended to increase it to at least 100ms using more operations.
+  PartitionedShutdownBenchmarks.DrainFullQueue: C_PublishedControl -> The minimum observed iteration time is 42.49ms which is very small. It's recommended to increase it to at least 100ms using more operations.
+
+// * Legends *
+  Mean      : Arithmetic mean of all measurements
+  Error     : Half of 99.9% confidence interval
+  Allocated : Allocated memory per single operation (managed only, inclusive, 1KB = 1024B)
+  1 ms      : 1 Millisecond (0.001 sec)
+
+// * Diagnostic Output - MemoryDiagnoser *
+
+
+// ***** BenchmarkRunner: End *****
+Run time: 00:00:01 (1.38 sec), executed benchmarks: 3
+
+Global total time: 00:00:06 (6.43 sec), executed benchmarks: 3
+// * Artifacts cleanup *
+Artifacts cleanup is finished

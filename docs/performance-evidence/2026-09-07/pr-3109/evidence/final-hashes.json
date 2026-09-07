@@ -1,0 +1,17 @@
+[
+  {
+    "Algorithm": "SHA256",
+    "Hash": "BE47BC470EF48AEE0D34B146EA46B3319E1DD5C59F1A562D7085DD17A5F58C2E",
+    "Path": "C:\\git\\Dekaf-perf-improvements-20260907\\pr-3109\\candidate.patch"
+  },
+  {
+    "Algorithm": "SHA256",
+    "Hash": "C6F3F125BEF3A4BC6923F60D71F3003C3A37777A7BA83867653CA06C970EFBA9",
+    "Path": "C:\\git\\Dekaf-perf-improvements-20260907\\pr-3109\\candidate\\Dekaf.dll"
+  },
+  {
+    "Algorithm": "SHA256",
+    "Hash": "CF36C6654B5BCE5F2BA1B8DAC22E451D4CD9B87DBB21F9C949A14A13AF532EFB",
+    "Path": "C:\\git\\Dekaf-perf-improvements-20260907\\pr-3109\\published\\Dekaf.dll"
+  }
+]
