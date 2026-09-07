@@ -9,6 +9,52 @@ namespace Dekaf.Tests.Unit.Consumer;
 public sealed class PartitionedDispatchCoordinatorTests
 {
     [Test]
+    [Arguments(256, 4, 100, 64)]
+    [Arguments(400, 4, 100, 100)]
+    [Arguments(8, 3, 4, 2)]
+    [Arguments(8, 16, 10, 1)]
+    public async Task ConfiguredBatchBudget_AppliesDocumentedKeyOrderedCap(
+        int bufferedRecords, int concurrency, int requestedBatchSize, int expectedBatchSize)
+    {
+        var count = bufferedRecords + 1;
+        var lane = CreateLane(count);
+        for (var offset = 0; offset < count; offset++)
+            await Assert.That(lane.TryEnqueue(CreateRecord(offset, keyOverride: 0))).IsTrue();
+        await lane.StopAsync(PartitionStopPolicy.Drain, Timeout.InfiniteTimeSpan);
+        var releaseFirst = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var handled = 0;
+        var largestBatch = 0;
+        var dispatcher = new KeyOrderedPartitionDispatcher<int, int>(
+            new PartitionProcessorContext<int, int>(lane), requestedBatchSize, concurrency, bufferedRecords,
+            (records, _) =>
+            {
+                var first = handled == 0;
+                largestBatch = Math.Max(largestBatch, records.Count);
+                foreach (var record in records)
+                {
+                    if (record.Offset != handled++)
+                        throw new InvalidOperationException("Batch budgeting lost or reordered a record.");
+                }
+                // Let the coordinator buffer a full window behind the first handler,
+                // so the next invocation can reach the documented cap for this key.
+                return first ? new ValueTask(releaseFirst.Task) : default;
+            }, automaticCompletion: true);
+        var processing = dispatcher.RunAsync(CancellationToken.None).AsTask();
+        try
+        {
+            await Assert.That(handled).IsEqualTo(1);
+        }
+        finally
+        {
+            releaseFirst.TrySetResult();
+            await processing.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+        await Assert.That(handled).IsEqualTo(count);
+        await Assert.That(largestBatch).IsEqualTo(expectedBatchSize);
+        await Assert.That(lane.GetCommitOffset()).IsEqualTo(new TopicPartitionOffset("dispatch", 0, count, count - 1));
+    }
+
+    [Test]
     public async Task GrowingPendingAndBatchStorage_PreservesActiveRecordsAndOrder()
     {
         const int count = 257;

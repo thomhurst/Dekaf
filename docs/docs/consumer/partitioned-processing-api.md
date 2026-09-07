@@ -178,6 +178,7 @@ await consumer.RunPartitionedBatchesAsync(
     {
         Ordering = PartitionedProcessingOrder.Key,
         MaxConcurrentHandlersPerPartition = 4,
+        MaxBufferedRecordsPerPartition = 400,
         MaxHandlerBatchSize = 100
     },
     stoppingToken);
@@ -186,6 +187,16 @@ await consumer.RunPartitionedBatchesAsync(
 Batch handlers receive up to `MaxHandlerBatchSize` records. In key-ordered mode,
 each batch contains records for one key lane. Records in a handler or batch are
 marked processed only after the callback completes successfully.
+
+Key-ordered processing divides reusable batch storage across the configured
+workers. The effective worker count is the smaller of
+`MaxConcurrentHandlersPerPartition` and `MaxBufferedRecordsPerPartition`.
+The effective batch cap is the smaller of `MaxHandlerBatchSize` and
+`MaxBufferedRecordsPerPartition / effectiveWorkerCount`, using integer division.
+This cap applies even when fewer keys are active. With the default 256-record
+buffer and four workers, requesting 100-record batches gives a cap of 64. The
+example reserves 400 records to permit up to 100 per batch with four workers.
+A batch can still contain fewer records when its key has less work available.
 
 ## Commit Semantics
 

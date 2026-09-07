@@ -456,6 +456,16 @@ public sealed class PartitionedProcessingOptions
     /// <summary>
     /// Gets the maximum number of records passed to a batch handler invocation.
     /// </summary>
+    /// <remarks>
+    /// In key-ordered mode, the buffered-record budget is divided across the configured
+    /// workers. The effective worker count is the smaller of
+    /// <see cref="MaxConcurrentHandlersPerPartition"/> and <see cref="MaxBufferedRecordsPerPartition"/>.
+    /// Each batch is additionally capped at the buffered-record budget divided by that
+    /// worker count, rounded down. For example, a buffer of 256 records and four workers
+    /// cap batches at 64 records even when this property is 100. Increase the buffer to
+    /// at least 400 to permit 100-record batches with four workers. Batches can be smaller
+    /// when fewer records are available for their key.
+    /// </remarks>
     public int MaxHandlerBatchSize { get; init; } = 1;
 
     /// <summary>
