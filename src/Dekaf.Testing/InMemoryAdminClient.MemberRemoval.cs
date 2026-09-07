@@ -11,6 +11,7 @@ public sealed partial class InMemoryAdminClient : IConsumerGroupMemberRemovalAdm
         var members = AdminClient.ValidateMemberRemoval(options);
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
+        AdminClient.ThrowIfMemberRemovalDeadlineExpired(options);
         return ExecuteWithTimeoutAsync(async token =>
         {
             await ApplyAdminFaultAsync(token, groupId: groupId).ConfigureAwait(false);

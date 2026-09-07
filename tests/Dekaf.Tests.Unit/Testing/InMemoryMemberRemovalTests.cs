@@ -8,6 +8,26 @@ namespace Dekaf.Tests.Unit.Testing;
 public sealed class InMemoryMemberRemovalTests
 {
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task ZeroDeadline_PreservesMembership(bool removeAll)
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.RegisterConsumerGroupMember("group", "member", [], out _);
+        await using var concrete = new InMemoryAdminClient(cluster);
+        // Defeat the asynchronous timer deterministically: zero must expire before this hook.
+        concrete.ConfigureTimeoutSourceTestHook = static source => source.CancelAfter(Timeout.Infinite);
+        var exception = await Assert.That(async () => await ((IAdminClient)concrete).RemoveMembersFromConsumerGroupAsync("group",
+            new ConsumerGroupMemberRemovalOptions
+            {
+                RemoveAll = removeAll, TimeoutMs = 0,
+                Members = removeAll ? [] : [new ConsumerGroupMemberIdentity { MemberId = "member" }]
+            })).Throws<KafkaTimeoutException>();
+        await Assert.That(exception!.Configured).IsEqualTo(TimeSpan.Zero);
+        await Assert.That(cluster.SnapshotConsumerGroupMembers("group")).Count().IsEqualTo(1);
+    }
+
+    [Test]
     public async Task RemoveAll_EvictsStaticAndDynamicMembersButDoesNotBanRejoins()
     {
         var cluster = new InMemoryKafkaCluster();

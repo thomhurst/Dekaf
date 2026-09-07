@@ -2,6 +2,7 @@ using Dekaf.Errors;
 using Dekaf.Networking;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
+using Dekaf.Retry;
 
 namespace Dekaf.Admin;
 
@@ -13,9 +14,17 @@ public sealed partial class AdminClient : IConsumerGroupMemberRemovalAdminClient
         ArgumentException.ThrowIfNullOrWhiteSpace(groupId);
         var members = ValidateMemberRemoval(options);
         cancellationToken.ThrowIfCancellationRequested();
+        ThrowIfMemberRemovalDeadlineExpired(options);
         return ExecuteWithTimeoutAsync(
             token => RemoveGroupMembersCoreAsync(groupId, members, options, token),
             options.TimeoutMs, nameof(RemoveMembersFromConsumerGroupAsync), cancellationToken);
+    }
+
+    internal static void ThrowIfMemberRemovalDeadlineExpired(ConsumerGroupMemberRemovalOptions options)
+    {
+        if (options.TimeoutMs == 0)
+            throw new KafkaTimeoutException(TimeoutKind.Api, TimeSpan.Zero, TimeSpan.Zero,
+                "RemoveMembersFromConsumerGroupAsync timed out after 0 ms.");
     }
 
     internal static ConsumerGroupMemberIdentity[] ValidateMemberRemoval(ConsumerGroupMemberRemovalOptions options)
@@ -89,8 +98,21 @@ public sealed partial class AdminClient : IConsumerGroupMemberRemovalAdminClient
                     Reason = version >= 5 ? options.Reason : null
                 };
             }
-            var response = await connection.SendAsync<LeaveGroupRequest, LeaveGroupResponse>(
-                new LeaveGroupRequest { GroupId = groupId, Members = requestMembers }, version, cancellationToken).ConfigureAwait(false);
+            LeaveGroupResponse response;
+            try
+            {
+                response = await connection.SendAsync<LeaveGroupRequest, LeaveGroupResponse>(
+                    new LeaveGroupRequest { GroupId = groupId, Members = requestMembers }, version, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (RetryHelper.IsRetriableRequestFailure(exception)
+                && !cancellationToken.IsCancellationRequested)
+            {
+                // A lost response cannot prove which members were removed. Replaying a
+                // static selector could also evict a replacement that joined meanwhile.
+                throw new KafkaException((exception as KafkaException)?.ErrorCode ?? ErrorCode.NetworkException,
+                    "LeaveGroup outcome is unknown after a request failure. Inspect group membership before retrying removal.",
+                    isRetriable: false, exception);
+            }
             cancellationToken.ThrowIfCancellationRequested();
             if (response.ErrorCode != ErrorCode.None)
                 throw MemberRemovalError(groupId, response.ErrorCode);
