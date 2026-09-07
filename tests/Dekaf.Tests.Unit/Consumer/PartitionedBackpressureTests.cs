@@ -369,6 +369,128 @@ public sealed class PartitionedBackpressureTests
         }
     }
 
+    [Test]
+    [Arguments(PartitionBackpressureMode.AwaitCapacity)]
+    [Arguments(PartitionBackpressureMode.PauseResume)]
+    public async Task FullQueue_ShutdownBeforeCapacityWait_DrainsQueuedHandlerCommits(PartitionBackpressureMode mode)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        using var stop = new CancellationTokenSource();
+        using var commitQueued = new ManualResetEventSlim();
+        var releaseFirst = NewSignal();
+        var consumer = new FullBatchConsumer
+        {
+            BeforeThirdRecordReturns = () =>
+            {
+                // Hold the routing thread after decoding the rejected record, before
+                // its capacity wait. The handler queues its commit after shutdown.
+                stop.Cancel();
+                releaseFirst.TrySetResult();
+                commitQueued.Wait(timeout.Token);
+            }
+        };
+        consumer.SetAssignment(new TopicPartition("backpressure", 0));
+        var running = consumer.RunPartitionedAsync(async (context, token) =>
+        {
+            await foreach (var record in context.Messages.WithCancellation(token))
+            {
+                if (record.Offset == 0)
+                    await releaseFirst.Task.WaitAsync(token);
+                context.MarkProcessed(record);
+                var commit = context.CommitProcessedAsync(token);
+                commitQueued.Set();
+                await commit;
+            }
+        }, new PartitionedProcessingOptions
+        {
+            BackpressureMode = mode,
+            MaxBufferedRecordsPerPartition = 1,
+            CommitPolicy = PartitionCommitPolicy.UserManaged,
+            StopPolicy = PartitionStopPolicy.Drain,
+            StopTimeout = TimeSpan.FromSeconds(1)
+        }, stop.Token).AsTask();
+
+        try
+        {
+            await Assert.That(async () => await running.WaitAsync(timeout.Token))
+                .Throws<OperationCanceledException>();
+            await Assert.That(consumer.CommitCalls.Count).IsEqualTo(2);
+            await Assert.That(consumer.CommitCalls[0][0].Offset).IsEqualTo(1);
+            await Assert.That(consumer.CommitCalls[1][0].Offset).IsEqualTo(2);
+        }
+        finally
+        {
+            releaseFirst.TrySetResult();
+            await StopAsync(stop, running);
+        }
+    }
+
+    [Test]
+    [Arguments(PartitionBackpressureMode.AwaitCapacity, PartitionStopPolicy.Drain, false)]
+    [Arguments(PartitionBackpressureMode.PauseResume, PartitionStopPolicy.Drain, false)]
+    [Arguments(PartitionBackpressureMode.AwaitCapacity, PartitionStopPolicy.Drain, true)]
+    [Arguments(PartitionBackpressureMode.PauseResume, PartitionStopPolicy.Drain, true)]
+    [Arguments(PartitionBackpressureMode.AwaitCapacity, PartitionStopPolicy.Cancel, false)]
+    [Arguments(PartitionBackpressureMode.PauseResume, PartitionStopPolicy.Cancel, false)]
+    [Arguments(PartitionBackpressureMode.AwaitCapacity, PartitionStopPolicy.Drain, false, true)]
+    [Arguments(PartitionBackpressureMode.PauseResume, PartitionStopPolicy.Drain, false, true)]
+    public async Task FullQueue_ShutdownDuringCommit_RespectsDrainAndHandlerCancellation(
+        PartitionBackpressureMode mode, PartitionStopPolicy stopPolicy, bool cancelHandler, bool stallCommit = false)
+    {
+        var consumer = new FullBatchConsumer { CommitStarted = NewSignal(), ReleaseCommit = NewSignal() };
+        consumer.SetAssignment(new TopicPartition("backpressure", 0));
+        var releaseFirst = NewSignal();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        using var stop = new CancellationTokenSource();
+        using var handlerCancellation = new CancellationTokenSource();
+        var running = consumer.RunPartitionedAsync(async (context, token) =>
+        {
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(token, handlerCancellation.Token);
+            await foreach (var record in context.Messages.WithCancellation(token))
+            {
+                if (record.Offset == 0)
+                    await releaseFirst.Task.WaitAsync(token);
+                context.MarkProcessed(record);
+                await context.CommitProcessedAsync(linked.Token);
+            }
+        }, new PartitionedProcessingOptions
+        {
+            BackpressureMode = mode,
+            MaxBufferedRecordsPerPartition = 1,
+            CommitPolicy = PartitionCommitPolicy.UserManaged,
+            StopPolicy = stopPolicy,
+            StopTimeout = TimeSpan.FromSeconds(1)
+        }, stop.Token).AsTask();
+
+        try
+        {
+            await consumer.ThirdRecordRead.Task.WaitAsync(timeout.Token);
+            releaseFirst.TrySetResult();
+            await consumer.CommitStarted.Task.WaitAsync(timeout.Token);
+            await stop.CancelAsync();
+            if (cancelHandler)
+                await handlerCancellation.CancelAsync();
+            if (!stallCommit)
+                consumer.ReleaseCommit.TrySetResult();
+
+            await Assert.That(async () => await running.WaitAsync(timeout.Token))
+                .Throws<OperationCanceledException>();
+            var shouldDrain = stopPolicy == PartitionStopPolicy.Drain && !cancelHandler && !stallCommit;
+            await Assert.That(consumer.CommitCalls.Count).IsEqualTo(shouldDrain ? 2 : 0);
+            if (shouldDrain)
+            {
+                await Assert.That(consumer.CommitCalls[0][0].Offset).IsEqualTo(1);
+                await Assert.That(consumer.CommitCalls[1][0].Offset).IsEqualTo(2);
+            }
+        }
+        finally
+        {
+            releaseFirst.TrySetResult();
+            consumer.ReleaseCommit.TrySetResult();
+            await StopAsync(stop, running);
+        }
+    }
+
     private static async Task StopAsync(CancellationTokenSource timeout, Task running)
     {
         await timeout.CancelAsync();
@@ -383,6 +505,7 @@ public sealed class PartitionedBackpressureTests
 
     private sealed class FullBatchConsumer : PartitionedConsumerRuntimeTests.TestConsumer
     {
+        public Action? BeforeThirdRecordReturns { get; init; }
         public TaskCompletionSource ThirdRecordRead { get; } = NewSignal();
         public TaskCompletionSource BatchAdvanced { get; } = NewSignal();
 
@@ -402,18 +525,21 @@ public sealed class PartitionedBackpressureTests
                 }
             ]);
             yield return new ConsumeBatch<string, string>(pending, Serializers.String,
-                new ThirdRecordDeserializer(ThirdRecordRead));
+                new ThirdRecordDeserializer(ThirdRecordRead, BeforeThirdRecordReturns));
             BatchAdvanced.TrySetResult();
             await NewSignal().Task.WaitAsync(cancellationToken);
         }
     }
 
-    private sealed class ThirdRecordDeserializer(TaskCompletionSource thirdRecordRead) : IDeserializer<string>
+    private sealed class ThirdRecordDeserializer(TaskCompletionSource thirdRecordRead, Action? beforeReturn) : IDeserializer<string>
     {
         public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
         {
             if (data.Span.SequenceEqual("2"u8))
+            {
                 thirdRecordRead.TrySetResult();
+                beforeReturn?.Invoke();
+            }
             return Serializers.String.Deserialize(data, context);
         }
     }

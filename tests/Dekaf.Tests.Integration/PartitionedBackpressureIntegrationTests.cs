@@ -8,8 +8,10 @@ namespace Dekaf.Tests.Integration;
 public sealed class PartitionedBackpressureIntegrationTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
-    [Arguments(false)]
-    [Arguments(true)]
+    [Arguments(PartitionBackpressureMode.AwaitCapacity, false)]
+    [Arguments(PartitionBackpressureMode.PauseResume, false)]
+    [Arguments(PartitionBackpressureMode.AwaitCapacity, true)]
+    [Arguments(PartitionBackpressureMode.PauseResume, true)]
     public async Task AwaitCapacity_HandlerCommitsReachBrokerWhileFullOrDraining(bool shutdown)
     {
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 1);
@@ -20,6 +22,13 @@ public sealed class PartitionedBackpressureIntegrationTests(KafkaTestContainer k
         for (var offset = 0; offset < 3; offset++)
             await producer.ProduceAsync(topic, "key", offset.ToString(System.Globalization.CultureInfo.InvariantCulture));
 
+        var allowCommit = NewSignal();
+        var firstCommitted = NewSignal();
+        var releaseFirst = NewSignal();
+        var allCommitted = NewSignal();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        using var stop = new CancellationTokenSource();
+        using var commitQueued = new ManualResetEventSlim();
         var thirdRecordRead = NewSignal();
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
@@ -27,18 +36,19 @@ public sealed class PartitionedBackpressureIntegrationTests(KafkaTestContainer k
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
             .WithQueuedMinMessages(1)
-            .WithValueDeserializer(new ThirdRecordDeserializer(thirdRecordRead))
+            .WithValueDeserializer(new ThirdRecordDeserializer(thirdRecordRead, shutdown ? () =>
+            {
+                // Force shutdown after the rejected record is decoded and before routing
+                // can service the handler commit with the canceled input token.
+                stop.Cancel();
+                allowCommit.TrySetResult();
+                commitQueued.Wait(timeout.Token);
+            } : null))
             .BuildAsync();
         await using var admin = Kafka.CreateAdminClient()
             .WithBootstrapServers(KafkaContainer.BootstrapServers).Build();
         consumer.Subscribe(topic);
 
-        var allowCommit = NewSignal();
-        var firstCommitted = NewSignal();
-        var releaseFirst = NewSignal();
-        var allCommitted = NewSignal();
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(60));
-        using var stop = new CancellationTokenSource();
         var running = consumer.RunPartitionedAsync(async (context, token) =>
         {
             await foreach (var record in context.Messages.WithCancellation(token))
@@ -46,7 +56,9 @@ public sealed class PartitionedBackpressureIntegrationTests(KafkaTestContainer k
                 if (record.Offset == 0)
                     await allowCommit.Task.WaitAsync(token);
                 context.MarkProcessed(record);
-                await context.CommitProcessedAsync(token);
+                var committing = context.CommitProcessedAsync(token);
+                commitQueued.Set();
+                await committing;
                 if (record.Offset == 0)
                 {
                     firstCommitted.TrySetResult();
@@ -68,8 +80,6 @@ public sealed class PartitionedBackpressureIntegrationTests(KafkaTestContainer k
         try
         {
             await thirdRecordRead.Task.WaitAsync(timeout.Token);
-            if (shutdown)
-                await stop.CancelAsync();
             allowCommit.TrySetResult();
 
             if (shutdown)
@@ -107,12 +117,15 @@ public sealed class PartitionedBackpressureIntegrationTests(KafkaTestContainer k
 
     private static TaskCompletionSource NewSignal() => new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-    private sealed class ThirdRecordDeserializer(TaskCompletionSource thirdRecordRead) : IDeserializer<string>
+    private sealed class ThirdRecordDeserializer(TaskCompletionSource thirdRecordRead, Action? beforeReturn) : IDeserializer<string>
     {
         public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
         {
             if (data.Span.SequenceEqual("2"u8))
+            {
                 thirdRecordRead.TrySetResult();
+                beforeReturn?.Invoke();
+            }
             return Serializers.String.Deserialize(data, context);
         }
     }

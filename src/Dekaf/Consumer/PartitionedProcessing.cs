@@ -627,6 +627,7 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
     private readonly Channel<RuntimeCommand<TKey, TValue>> _commands;
     private AsyncAutoResetSignal? _capacitySignal;
     private AsyncAutoResetSignal? _stopSignal;
+    private CancellationTokenSource? _handlerCommitCancellation;
     private Queue<RuntimeCommand<TKey, TValue>>? _deferredCommands;
     private readonly CancellationTokenSource _failureCancellation = new();
     private readonly CancellationTokenSource _restartCancellation = new();
@@ -659,14 +660,17 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
         using var linkedCancellation = CancellationTokenSource.CreateLinkedTokenSource(
             cancellationToken,
             _failureCancellation.Token);
+        using var handlerCommitCancellation = new CancellationTokenSource();
+        _handlerCommitCancellation = handlerCommitCancellation;
+        using var shutdownRegistration = linkedCancellation.Token.UnsafeRegister(
+            static state => ((PartitionedConsumerRuntime<TKey, TValue>)state!).StopHandlerCommits(), this);
 
         try
         {
             await SyncAssignmentAsync(linkedCancellation.Token).ConfigureAwait(false);
-            using var consumeCancellation = CancellationTokenSource.CreateLinkedTokenSource(linkedCancellation.Token);
             var batchEnumerator = _consumer
-                .ConsumeBatchAsync(consumeCancellation.Token)
-                .GetAsyncEnumerator(consumeCancellation.Token);
+                .ConsumeBatchAsync(linkedCancellation.Token)
+                .GetAsyncEnumerator(linkedCancellation.Token);
             Task<bool>? pendingBatchMove = null;
             Task<bool>? pendingCommandWait = null;
 
@@ -746,7 +750,7 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
             }
             finally
             {
-                consumeCancellation.Cancel();
+                linkedCancellation.Cancel();
 
                 await ObserveAbandonedTaskAsync(pendingBatchMove).ConfigureAwait(false);
                 if (pendingCommandWait is { IsCompleted: true })
@@ -777,6 +781,16 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
         }
 
         ThrowIfFailed();
+    }
+
+    private void StopHandlerCommits()
+    {
+        // Runtime cancellation stops input immediately. A commit already being serviced
+        // keeps the same bounded grace period as draining the handler's queued input.
+        if (_failureCancellation.IsCancellationRequested || _options.StopPolicy == PartitionStopPolicy.Cancel)
+            _handlerCommitCancellation!.Cancel();
+        else if (_options.StopTimeout != Timeout.InfiniteTimeSpan)
+            _handlerCommitCancellation!.CancelAfter(_options.StopTimeout);
     }
 
     private static async ValueTask ObserveAbandonedTaskAsync(Task<bool>? task)
@@ -1062,6 +1076,7 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
 
     private async ValueTask DrainCommandsAsync(CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         while (TryReadCommand(out var command))
         {
             switch (command.Kind)
@@ -1073,7 +1088,7 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
                     break;
 
                 case RuntimeCommandKind.Commit:
-                    await CompleteCommitCommandAsync(command, cancellationToken).ConfigureAwait(false);
+                    await CompleteCommitCommandAsync(command, _handlerCommitCancellation!.Token).ConfigureAwait(false);
                     break;
 
                 case RuntimeCommandKind.StopFailed:
@@ -1096,6 +1111,7 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
                     break;
             }
         }
+        cancellationToken.ThrowIfCancellationRequested();
     }
 
     private bool TryReadCommand(out RuntimeCommand<TKey, TValue> command)
