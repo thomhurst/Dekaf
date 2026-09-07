@@ -1111,8 +1111,10 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
                         cancellationToken).ConfigureAwait(false);
                     break;
             }
+            // A cooperative commit may finish after input cancellation. Leave
+            // subsequent commands queued for shutdown instead of starting lanes.
+            cancellationToken.ThrowIfCancellationRequested();
         }
-        cancellationToken.ThrowIfCancellationRequested();
     }
 
     private bool TryReadCommand(out RuntimeCommand<TKey, TValue> command)

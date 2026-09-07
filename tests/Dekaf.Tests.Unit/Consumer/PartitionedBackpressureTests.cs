@@ -435,8 +435,11 @@ public sealed class PartitionedBackpressureTests
     [Arguments(PartitionBackpressureMode.PauseResume, PartitionStopPolicy.Cancel, false)]
     [Arguments(PartitionBackpressureMode.AwaitCapacity, PartitionStopPolicy.Drain, false, true)]
     [Arguments(PartitionBackpressureMode.PauseResume, PartitionStopPolicy.Drain, false, true)]
+    [Arguments(PartitionBackpressureMode.AwaitCapacity, PartitionStopPolicy.Drain, false, false, true)]
+    [Arguments(PartitionBackpressureMode.PauseResume, PartitionStopPolicy.Drain, false, false, true)]
     public async Task FullQueue_ShutdownDuringCommit_RespectsDrainAndHandlerCancellation(
-        PartitionBackpressureMode mode, PartitionStopPolicy stopPolicy, bool cancelHandler, bool stallCommit = false)
+        PartitionBackpressureMode mode, PartitionStopPolicy stopPolicy, bool cancelHandler,
+        bool stallCommit = false, bool queueAssignment = false)
     {
         var consumer = new FullBatchConsumer { CommitStarted = NewSignal(), ReleaseCommit = NewSignal() };
         consumer.SetAssignment(new TopicPartition("backpressure", 0));
@@ -444,8 +447,11 @@ public sealed class PartitionedBackpressureTests
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         using var stop = new CancellationTokenSource();
         using var handlerCancellation = new CancellationTokenSource();
+        var assignedProcessorStarts = 0;
         var running = consumer.RunPartitionedAsync(async (context, token) =>
         {
+            if (context.TopicPartition.Topic == "assigned-during-stop")
+                Interlocked.Increment(ref assignedProcessorStarts);
             using var linked = CancellationTokenSource.CreateLinkedTokenSource(token, handlerCancellation.Token);
             await foreach (var record in context.Messages.WithCancellation(token))
             {
@@ -468,6 +474,13 @@ public sealed class PartitionedBackpressureTests
             await consumer.ThirdRecordRead.Task.WaitAsync(timeout.Token);
             releaseFirst.TrySetResult();
             await consumer.CommitStarted.Task.WaitAsync(timeout.Token);
+            if (queueAssignment)
+            {
+                // Queue the control command behind the suspended commit, then
+                // cancel input before allowing that cooperative commit to finish.
+                consumer.AssignFromCoordinator(new TopicPartition("backpressure", 0),
+                    new TopicPartition("assigned-during-stop", 0));
+            }
             await stop.CancelAsync();
             if (cancelHandler)
                 await handlerCancellation.CancelAsync();
@@ -477,6 +490,7 @@ public sealed class PartitionedBackpressureTests
             await Assert.That(async () => await running.WaitAsync(timeout.Token))
                 .Throws<OperationCanceledException>();
             await Assert.That(running.IsCanceled).IsTrue();
+            await Assert.That(assignedProcessorStarts).IsEqualTo(0);
             var shouldDrain = stopPolicy == PartitionStopPolicy.Drain && !cancelHandler && !stallCommit;
             await Assert.That(consumer.CommitCalls.Count).IsEqualTo(shouldDrain ? 2 : 0);
             if (shouldDrain)
