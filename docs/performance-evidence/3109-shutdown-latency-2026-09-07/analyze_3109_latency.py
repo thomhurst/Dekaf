@@ -5,9 +5,10 @@ import json
 import math
 from pathlib import Path
 import statistics
+import sys
 
 root = Path(__file__).parent
-artifacts = next((root / 'artifacts-34149484062').iterdir())
+artifacts = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else next((root / 'artifacts-34149484062').iterdir())
 destination = root / 'latency-3109-analysis'
 destination.mkdir(exist_ok=True)
 

@@ -6,8 +6,9 @@ import sys
 
 root = Path(__file__).parent
 run_id = sys.argv[1]
-artifacts = next((root / f'artifacts-{run_id}').iterdir())
+artifacts = Path(sys.argv[2]).resolve() if len(sys.argv) > 2 else next((root / f'artifacts-{run_id}').iterdir())
 destination = root / 'latency-3109-analysis'
+destination.mkdir(exist_ok=True)
 
 
 def quantile(values, q):
