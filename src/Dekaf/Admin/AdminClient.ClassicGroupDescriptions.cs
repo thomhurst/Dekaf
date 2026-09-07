@@ -90,7 +90,7 @@ public sealed partial class AdminClient : IClassicGroupDescriptionAdminClient
                         {
                             if (!missing.Remove(group.GroupId))
                                 continue;
-                            if (group.ErrorCode.IsRetriable() || group.ErrorCode.RequiresMetadataRefresh())
+                            if (group.ErrorCode.IsRetriable())
                             {
                                 retryErrors[group.GroupId] = ClassicGroupError(group.GroupId, group.ErrorCode, group.ErrorMessage);
                                 retryFailure ??= new GroupException(group.ErrorCode,

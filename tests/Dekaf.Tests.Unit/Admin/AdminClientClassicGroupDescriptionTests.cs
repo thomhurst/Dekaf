@@ -90,6 +90,20 @@ public sealed class AdminClientClassicGroupDescriptionTests
     }
 
     [Test]
+    public async Task NonRetriableMetadataError_PreservesOtherGroupOutcomes()
+    {
+        var (admin, connection, _) = CreateAdmin();
+        await using var disposal = admin;
+        Respond(connection, Group("ok"), Group("unavailable", ErrorCode.BrokerNotAvailable));
+        var results = await admin.DescribeClassicGroupsAsync(["ok", "unavailable"]);
+        await Assert.That(results["ok"].Description).IsNotNull();
+        await Assert.That(results["unavailable"].ErrorCode).IsEqualTo(ErrorCode.BrokerNotAvailable);
+        await Assert.That(results["unavailable"].Description).IsNull();
+        await connection.Received(1).SendAsync<DescribeGroupsRequest, DescribeGroupsResponse>(
+            Arg.Any<DescribeGroupsRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>());
+    }
+
+    [Test]
     [Arguments(false)]
     [Arguments(true)]
     public async Task CoordinatorRetry_PreservesCompletedGroupsAndReportsExhaustion(bool exhaust)
