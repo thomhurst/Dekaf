@@ -38,6 +38,8 @@
 #   - skip locked worktrees (an agent session may still own them)
 #   - skip a branch/tip that has an OPEN PR (branch reused for active work)
 #   - PRESERVE tracked changes and untracked files outside known generated directories
+#     or recognized root-level logs/PR notes covered by .gitignore
+#   - preserve local commits not contained in the merged PR's recorded head
 #   - worktrees with NO merge evidence are kept and listed; opt in to reaping old
 #     clean ones with -StaleDays <n>
 #
@@ -45,6 +47,8 @@
 # call per unmatched leftover — a set that shrinks to near-zero after the first run).
 #
 # Usage:  pwsh scripts/Remove-MergedWorktrees.ps1 [-Repo owner/name] [-WhatIf] [-StaleDays n]
+# Known ignored workflow output is disposable, like build artifacts.
+# -WhatIf reports the same dirty-file blockers as a real sweep.
 # Exit:   0 always (a sweep failure must not break the loop; problems are logged)
 
 [CmdletBinding()]
@@ -71,24 +75,27 @@ try {
     # Authoritative merge signal: merged-PR head branches AND head tip SHAs (squash-safe).
     # --limit 1000 covers any realistic leftover window for the NAME tier; anything older
     # falls through to the per-commit association tier below.
-    $mergedNames = New-OrdinalStringMap
+    $mergedNames = [System.Collections.Generic.Dictionary[string, object]]::new([System.StringComparer]::Ordinal)
     $mergedOids = New-OrdinalStringMap
     $openNames = New-OrdinalStringMap
     $openOids = New-OrdinalStringMap
     $rawMerged = gh pr list @repoArgs --state merged --limit 1000 --json headRefName,headRefOid 2>$null
     if ($LASTEXITCODE -ne 0) { Warn "could not list merged PRs (exit $LASTEXITCODE) -- skipping sweep this round"; exit 0 }
     foreach ($p in (($rawMerged -join "`n") | ConvertFrom-Json)) {
-        if ($p.headRefName) { $mergedNames[$p.headRefName.Trim()] = $true }
+        if ($p.headRefName -and $p.headRefOid) {
+            $name = $p.headRefName.Trim()
+            if (-not $mergedNames.ContainsKey($name)) { $mergedNames[$name] = @() }
+            $mergedNames[$name] += $p.headRefOid.Trim()
+        }
         if ($p.headRefOid) { $mergedOids[$p.headRefOid.Trim()] = $true }
     }
 
     # Open-PR head branches/tips: never remove a worktree that is actively in review.
     $rawOpen = gh pr list @repoArgs --state open --limit 1000 --json headRefName,headRefOid 2>$null
-    if ($LASTEXITCODE -eq 0) {
-        foreach ($p in (($rawOpen -join "`n") | ConvertFrom-Json)) {
-            if ($p.headRefName) { $openNames[$p.headRefName.Trim()] = $true }
-            if ($p.headRefOid) { $openOids[$p.headRefOid.Trim()] = $true }
-        }
+    if ($LASTEXITCODE -ne 0) { Warn 'could not list open PRs -- skipping sweep this round'; exit 0 }
+    foreach ($p in (($rawOpen -join "`n") | ConvertFrom-Json)) {
+        if ($p.headRefName) { $openNames[$p.headRefName.Trim()] = $true }
+        if ($p.headRefOid) { $openOids[$p.headRefOid.Trim()] = $true }
     }
 
     # Repo slug for the per-commit association API (gh api takes no --repo flag).
@@ -125,20 +132,31 @@ try {
         if ($w.Locked) { Write-Host "sweep: skipping locked worktree (session may own it): $($w.Path)"; continue }
         if ($w.Branch -and $openNames.ContainsKey($w.Branch)) { continue }   # active open PR — keep
 
-        # Tier 1: worktree still sits on the merged PR's head branch.
-        $why = $null
-        if ($w.Branch -and $mergedNames.ContainsKey($w.Branch)) { $why = "merged PR head branch '$($w.Branch)'" }
-
-        $sha = $null
-        if (-not $why) {
-            $sha = git -C $w.Path rev-parse HEAD 2>$null
-            if ($LASTEXITCODE -ne 0) { $sha = $null }
-            if ($sha -and $openOids.ContainsKey($sha)) { continue }          # tip of an open PR — keep
-
-            # Tier 2: detached checkout sitting exactly on a merged PR's tip. A named
-            # branch expresses independent intent and cannot be identified by SHA alone.
-            if ($sha -and $w.Detached -and $mergedOids.ContainsKey($sha)) { $why = 'merged PR head tip SHA' }
+        $sha = git -C $w.Path rev-parse HEAD 2>$null
+        if ($LASTEXITCODE -ne 0 -or -not $sha) {
+            Write-Host "sweep: preserving unreadable worktree: $($w.Path)"
+            continue
         }
+        if ($openOids.ContainsKey($sha)) { continue }
+
+        # Tier 1: a merged branch name identifies the PR, but a reused branch or
+        # local commits after the merge must not be discarded.
+        $why = $null
+        if ($w.Branch -and $mergedNames.ContainsKey($w.Branch)) {
+            foreach ($mergedHead in $mergedNames[$w.Branch]) {
+                if (Test-WorktreeHeadMerged -Repo $mainRepo -Head $sha -MergedHead $mergedHead) {
+                    $why = "merged PR head branch '$($w.Branch)'"
+                    break
+                }
+            }
+            if (-not $why) {
+                Write-Host "sweep: preserving '$($w.Branch)' (local HEAD is not contained in a recorded merged PR head): $($w.Path)"
+                continue
+            }
+        }
+
+        # Tier 2: detached checkout sitting exactly on a merged PR's tip.
+        if (-not $why -and $w.Detached -and $mergedOids.ContainsKey($sha)) { $why = 'merged PR head tip SHA' }
 
         # Tier 3 (detached only): checkout of a commit already reachable from main —
         # A/B baselines and gate parents. A named branch never qualifies here; it needs
@@ -155,8 +173,13 @@ try {
             if ($LASTEXITCODE -eq 0 -and $assocRaw) {
                 $assoc = @(($assocRaw -join "`n") | ConvertFrom-Json)
                 if (@($assoc | Where-Object { $_.state -eq 'open' }).Count -gt 0) { continue }   # commit belongs to an open PR — keep
-                if (Test-WorktreeMatchesMergedPullRequest -Associations $assoc -Branch $w.Branch -Detached $w.Detached) {
-                    $why = 'merged PR via commit association'
+                foreach ($association in $assoc) {
+                    if (-not (Test-WorktreeMatchesMergedPullRequest -Associations @($association) -Branch $w.Branch -Detached $w.Detached)) { continue }
+                    if ($association.head.sha -and
+                        (Test-WorktreeHeadMerged -Repo $mainRepo -Head $sha -MergedHead $association.head.sha)) {
+                        $why = 'merged PR via commit association'
+                        break
+                    }
                 }
             }
         }
@@ -172,8 +195,8 @@ try {
 
         if (-not $why) { $unmatched += $w; continue }
 
-        if ($WhatIf) { Write-Host "sweep: WOULD remove $($w.Path) -- $why"; continue }
-        Remove-MergedWorktree -Repo $mainRepo -Worktree $w.Path -Label "($why)"
+        Remove-MergedWorktree -Repo $mainRepo -Worktree $w.Path -Label "($why)" -ExpectedHead $sha -WhatIf:$WhatIf
+        if ($WhatIf) { continue }
         if (-not (Test-Path -LiteralPath $w.Path)) {
             $removed++
             # Once the PR is merged the local branch has served its purpose; drop it so
@@ -234,7 +257,7 @@ try {
         }
     }
 
-    git -C $mainRepo worktree prune
+    if (-not $WhatIf) { git -C $mainRepo worktree prune }
     Write-Host "sweep: removed $removed merged worktree(s), $orphansRemoved orphaned dir(s)."
 }
 catch {

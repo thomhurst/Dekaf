@@ -6,6 +6,7 @@
 #   - PRESERVE a worktree with uncommitted tracked changes or untracked files outside
 #     known generated directories. Never force-discard possible work.
 #   - CLEAR untracked build artifacts (node_modules/bin/obj/etc.) — they are not work.
+#   - CLEAR root-level workflow output covered by the repository's .gitignore.
 #   - Long-path safe: git's own delete now works because core.longpaths=true is set
 #     system-wide; the `\\?\` extended-length Remove-Item is kept as a fallback for
 #     environments where that config is missing.
@@ -65,6 +66,13 @@ function Test-DisposableWorktreePath {
     if ($Path.StartsWith('"', [System.StringComparison]::Ordinal)) { return $false }
 
     $normalizedPath = $Path -replace '\\', '/'
+    # Keep these root-only patterns aligned with .gitignore. Ignore rules alone
+    # cannot authorize deleting arbitrary files: ignored source and secrets survive.
+    if (-not $normalizedPath.Contains('/') -and
+        ($normalizedPath -cmatch '\.(log|nettrace)$' -or
+         $normalizedPath -cmatch '(^|-)(pr-body|review-disposition|review-validation|rebase-validation|comment|issue)\.md$')) {
+        return $true
+    }
     foreach ($docsGeneratedDirectory in $script:DisposableWorktreeScopedDirectories) {
         if ($normalizedPath -ceq $docsGeneratedDirectory -or
             $normalizedPath.StartsWith("$docsGeneratedDirectory/", [System.StringComparison]::Ordinal)) {
@@ -96,16 +104,62 @@ function Test-WorktreeMatchesMergedPullRequest {
     return $false
 }
 
+function Test-WorktreeHeadMerged {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Repo,
+        [Parameter(Mandatory)][string]$Head,
+        [Parameter(Mandatory)][string]$MergedHead
+    )
+
+    if ($Head -ceq $MergedHead) { return $true }
+    git -C $Repo merge-base --is-ancestor $Head $MergedHead 2>$null
+    return $LASTEXITCODE -eq 0
+}
+
 function Remove-MergedWorktree {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Repo,       # a checkout that is NOT the one being removed (main)
         [Parameter(Mandatory)][string]$Worktree,   # path to remove
-        [string]$Label = ''                        # e.g. "#1234" for log lines
+        [string]$Label = '',                       # e.g. "#1234" for log lines
+        [string]$ExpectedHead,
+        [switch]$WhatIf
     )
 
     if (-not (Test-Path -LiteralPath $Worktree)) {
-        git -C $Repo worktree prune
+        if (-not $WhatIf) { git -C $Repo worktree prune }
+        return
+    }
+
+    $repoPath = (Resolve-Path -LiteralPath $Repo).Path.TrimEnd('\', '/')
+    $worktreePath = (Resolve-Path -LiteralPath $Worktree).Path.TrimEnd('\', '/')
+    $relativePath = [IO.Path]::GetRelativePath($repoPath, $worktreePath)
+    if ($relativePath -eq '.' -or (-not [IO.Path]::IsPathRooted($relativePath) -and
+        $relativePath -ne '..' -and -not $relativePath.StartsWith("..$([IO.Path]::DirectorySeparatorChar)"))) {
+        Write-Host "Preserving main or harness-managed worktree: $Worktree"
+        return
+    }
+    $topLevel = git -C $Worktree rev-parse --show-toplevel 2>$null
+    if ($LASTEXITCODE -ne 0 -or [IO.Path]::GetFullPath($topLevel) -ne $worktreePath) {
+        Write-Host "Preserving worktree $Label : $Worktree (could not verify repository path)"
+        return
+    }
+    $gitDirectory = git -C $Worktree rev-parse --absolute-git-dir 2>$null
+    if ($LASTEXITCODE -ne 0 -or (Test-Path -LiteralPath (Join-Path $gitDirectory 'locked'))) {
+        Write-Host "Preserving locked or unreadable worktree: $Worktree"
+        return
+    }
+    $commonDirectory = git -C $Worktree rev-parse --path-format=absolute --git-common-dir 2>$null
+    if ($LASTEXITCODE -ne 0) { return }
+    $repoCommonDirectory = git -C $Repo rev-parse --path-format=absolute --git-common-dir 2>$null
+    if ($LASTEXITCODE -ne 0 -or $commonDirectory -ne $repoCommonDirectory -or $gitDirectory -eq $commonDirectory) {
+        Write-Host "Preserving worktree from another repository or main checkout: $Worktree"
+        return
+    }
+    $head = git -C $Worktree rev-parse HEAD 2>$null
+    if ($LASTEXITCODE -ne 0 -or ($ExpectedHead -and $head -cne $ExpectedHead)) {
+        Write-Host "Preserving worktree $Label : $Worktree (HEAD changed during sweep)"
         return
     }
 
@@ -123,6 +177,12 @@ function Remove-MergedWorktree {
     })
     if ($work.Count -gt 0) {
         Write-Host "Preserving dirty worktree $Label : $Worktree (uncommitted work)"
+        foreach ($entry in $work) { Write-Host "  $entry" }
+        return
+    }
+
+    if ($WhatIf) {
+        Write-Host "sweep: WOULD remove $Worktree -- $Label"
         return
     }
 

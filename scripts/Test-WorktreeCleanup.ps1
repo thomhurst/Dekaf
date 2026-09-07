@@ -22,7 +22,9 @@ try {
     git -C $repo config user.name 'Worktree Cleanup Test'
     git -C $repo config user.email 'worktree-cleanup@example.invalid'
     Set-Content -LiteralPath (Join-Path $repo 'README.md') -Value '# fixture'
-    git -C $repo add README.md
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot '../.gitignore') -Destination (Join-Path $repo '.gitignore')
+    Add-Content -LiteralPath (Join-Path $repo '.gitignore') -Value "`n.env`nignored-source/"
+    git -C $repo add README.md .gitignore
     git -C $repo commit --quiet -m 'fixture'
 
     git -C $repo worktree add --quiet -b issue-123-fresh-source $sourceWorktree
@@ -44,6 +46,46 @@ try {
 
     Remove-MergedWorktree -Repo $repo -Worktree $artifactWorktree -Label 'artifact fixture'
     Assert-True (-not (Test-Path -LiteralPath $artifactWorktree)) 'Artifact-only worktree was not removed.'
+
+    $logWorktree = Join-Path $testRoot 'issue-125-logs'
+    git -C $repo worktree add --quiet -b issue-125-logs $logWorktree
+    $logPath = Join-Path $logWorktree 'test-run.log'
+    Set-Content -LiteralPath $logPath -Value 'retained validation evidence'
+    Set-Content -LiteralPath (Join-Path $logWorktree 'pr-body.md') -Value 'PR notes'
+    git -C $logWorktree check-ignore --quiet test-run.log
+    Assert-True ($LASTEXITCODE -eq 0) 'Root-level log was not ignored.'
+    git -C $logWorktree check-ignore --quiet pr-body.md
+    Assert-True ($LASTEXITCODE -eq 0) 'PR notes were not ignored.'
+    Remove-MergedWorktree -Repo $repo -Worktree $logWorktree -WhatIf
+    Assert-True (Test-Path -LiteralPath $logPath) 'Dry run removed a log.'
+    Remove-MergedWorktree -Repo $repo -Worktree $logWorktree
+    Assert-True (-not (Test-Path -LiteralPath $logWorktree)) 'Log-only worktree was not removed.'
+
+    $blockedWorktree = Join-Path $testRoot 'issue-126-ignored-source'
+    git -C $repo worktree add --quiet -b issue-126-ignored-source $blockedWorktree
+    Set-Content -LiteralPath (Join-Path $blockedWorktree '.env') -Value 'local settings'
+    New-Item -ItemType Directory -Path (Join-Path $blockedWorktree 'ignored-source') | Out-Null
+    Set-Content -LiteralPath (Join-Path $blockedWorktree 'ignored-source/Feature.cs') -Value 'source'
+    Remove-MergedWorktree -Repo $repo -Worktree $blockedWorktree
+    Assert-True (Test-Path -LiteralPath (Join-Path $blockedWorktree '.env')) 'Ignored local settings were removed.'
+    Assert-True (Test-Path -LiteralPath (Join-Path $blockedWorktree 'ignored-source/Feature.cs')) 'Ignored source was removed.'
+
+    $originalHead = git -C $repo rev-parse HEAD
+    Set-Content -LiteralPath (Join-Path $blockedWorktree 'README.md') -Value 'unpublished commit'
+    git -C $blockedWorktree commit -am 'unpublished' --quiet
+    $localHead = git -C $blockedWorktree rev-parse HEAD
+    Assert-True (-not (Test-WorktreeHeadMerged -Repo $repo -Head $localHead -MergedHead $originalHead)) 'Unpublished commit treated as merged.'
+    Assert-True (Test-WorktreeHeadMerged -Repo $repo -Head $originalHead -MergedHead $localHead) 'Earlier merged head was not recognized.'
+    Assert-True (Test-WorktreeHeadMerged -Repo $repo -Head $localHead -MergedHead $localHead) 'Exact merged head was not recognized.'
+
+    git -C $repo worktree lock $blockedWorktree
+    Remove-MergedWorktree -Repo $repo -Worktree $blockedWorktree
+    Assert-True (Test-Path -LiteralPath $blockedWorktree) 'Locked worktree was removed.'
+    git -C $repo worktree unlock $blockedWorktree
+    Remove-MergedWorktree -Repo $repo -Worktree $blockedWorktree -ExpectedHead $originalHead
+    Assert-True (Test-Path -LiteralPath $blockedWorktree) 'Worktree with changed HEAD was removed.'
+    Remove-MergedWorktree -Repo $repo -Worktree $repo
+    Assert-True (Test-Path -LiteralPath (Join-Path $repo '.git')) 'Main checkout was removed.'
 
     $mainAssociation = [pscustomobject]@{
         state = 'closed'
@@ -84,6 +126,14 @@ try {
     )) {
         Assert-True (-not (Test-DisposableWorktreePath -Path $sourcePath)) `
             "Docs-scoped generated directory was treated as disposable outside docs: $sourcePath"
+    }
+    foreach ($sourcePath in @('src/source.log', 'README.md', 'new-feature.md', 'src/NewFeature.cs', '"quoted.log"')) {
+        Assert-True (-not (Test-DisposableWorktreePath -Path $sourcePath)) "Unknown file was treated as workflow output: $sourcePath"
+    }
+    foreach ($outputPath in @('build.log', 'pressure.nettrace', 'pr-body.md', 'review-pr-body.md', 'sdk-review-disposition.md', 'review-validation.md', 'rebase-validation.md', 'ci-fix-comment.md', 'throttle-issue.md', '.artifacts/run.log')) {
+        Assert-True (Test-DisposableWorktreePath -Path $outputPath) "Workflow output was not recognized: $outputPath"
+        git -C $repo check-ignore --quiet -- $outputPath
+        Assert-True ($LASTEXITCODE -eq 0) "Disposable workflow output is missing from .gitignore: $outputPath"
     }
     foreach ($generatedPath in @(
         'BenchmarkDotNet.Artifacts/results/report.csv',
