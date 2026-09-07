@@ -8,6 +8,20 @@ namespace Dekaf.Tests.Unit.Testing;
 public sealed class InMemoryShareGroupOffsetQueryTests
 {
     [Test]
+    public async Task Query_ZeroDeadlineDoesNotConsumeFault()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        await using var admin = new InMemoryAdminClient(cluster);
+        admin.ConfigureTimeoutSourceTestHook = source => source.CancelAfter(Timeout.Infinite);
+        cluster.FaultPlan.Fail(new KafkaFaultScope(KafkaFaultOperation.Admin, groupId: "group"),
+            new InvalidOperationException("must remain queued"));
+        var specs = new Dictionary<string, ListShareGroupOffsetsSpec> { ["group"] = new() };
+        await Assert.That(async () => await admin.ListShareGroupOffsetsAsync(specs, new() { TimeoutMs = 0 }))
+            .Throws<KafkaTimeoutException>();
+        await Assert.That(async () => await admin.ListShareGroupOffsetsAsync(specs)).Throws<InvalidOperationException>();
+    }
+
+    [Test]
     public async Task Query_PreservesGroupPartitionAndEmptySelectionOutcomes()
     {
         var cluster = new InMemoryKafkaCluster();

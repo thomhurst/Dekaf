@@ -14,6 +14,16 @@ public sealed class AdminClientShareGroupOffsetQueriesTests
     private static readonly TopicPartition Partition = new("input", 0);
 
     [Test]
+    public async Task Query_ZeroDeadlinePreventsBrokerWork()
+    {
+        var (admin, connection) = CreateAdmin();
+        await using var owned = admin;
+        await Assert.That(async () => await admin.ListShareGroupOffsetsAsync(Specs("group"), new() { TimeoutMs = 0 }))
+            .Throws<KafkaTimeoutException>();
+        await Assert.That(connection.ReceivedCalls()).IsEmpty();
+    }
+
+    [Test]
     [Arguments((short)0)]
     [Arguments((short)1)]
     public async Task Query_BatchesGroupsAndPreservesPartitionDetails(short version)

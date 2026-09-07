@@ -31,7 +31,7 @@ Groups sharing a coordinator travel in one request. Both supported `DescribeShar
 
 Retriable group and transport failures use the normal bounded retry policy and rediscover affected coordinators. Completed groups retain their first successful or terminal result and are not queried again while another group retries. Exhausted failures remain group outcomes. Partition errors are returned for caller-directed retry; to retry them, build a new specification containing the failed partitions. These queries do not provide an atomic snapshot across groups or requests.
 
-`TimeoutMs` is one end-to-end budget covering initialization, discovery, sending, and retries. Cancellation throws `OperationCanceledException`; deadline expiry throws `KafkaTimeoutException`. Neither exception carries partial results. A cluster-wide initialization failure or unrelated local invariant failure can also throw before a result is available. This is a read-only operation.
+`TimeoutMs` is one end-to-end budget covering initialization, discovery, sending, and retries. Zero expires synchronously before any query starts. Cancellation throws `OperationCanceledException`; deadline expiry throws `KafkaTimeoutException`. Neither exception carries partial results. A cluster-wide initialization failure or unrelated local invariant failure can also throw before a result is available. This is a read-only operation.
 
 The API uses the additive `IShareGroupOffsetQueryAdminClient` capability and an `IAdminClient` extension. Custom admin implementations remain source-compatible; the extension throws `NotSupportedException` when the capability is absent.
 

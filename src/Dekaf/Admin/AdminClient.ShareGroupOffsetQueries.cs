@@ -23,6 +23,7 @@ public sealed partial class AdminClient : IShareGroupOffsetQueryAdminClient
         }
         var opts = options ?? new ListShareGroupOffsetsOptions();
         ArgumentOutOfRangeException.ThrowIfNegative(opts.TimeoutMs);
+        ThrowIfShareOffsetQueryDeadlineExpired(opts.TimeoutMs);
         return ExecuteWithTimeoutAsync(token => ListShareGroupOffsetsCoreAsync(requests, token),
             opts.TimeoutMs, nameof(ListShareGroupOffsetsAsync), cancellationToken);
     }
@@ -162,6 +163,13 @@ public sealed partial class AdminClient : IShareGroupOffsetQueryAdminClient
 
     private static ErrorCode ShareOffsetQueryErrorCode(Exception exception) =>
         exception is BrokerVersionException ? ErrorCode.UnsupportedVersion : GetRetryErrorCode(exception);
+
+    internal static void ThrowIfShareOffsetQueryDeadlineExpired(int timeoutMs)
+    {
+        if (timeoutMs == 0)
+            throw new KafkaTimeoutException(TimeoutKind.Api, TimeSpan.Zero, TimeSpan.Zero,
+                "ListShareGroupOffsetsAsync timed out before querying offsets.");
+    }
 
     internal static ShareGroupOffsetsResult ShareGroupOffsetsError(string groupId, ErrorCode errorCode, string? message = null) =>
         new() { GroupId = groupId, ErrorCode = errorCode, ErrorMessage = message, Offsets = new Dictionary<TopicPartition, ShareGroupOffsetDescription>() };

@@ -16,6 +16,7 @@ public sealed partial class InMemoryAdminClient : IShareGroupOffsetQueryAdminCli
         var requests = ValidateGroupOffsetQueries(groupSpecs, static spec => spec.TopicPartitions);
         var opts = options ?? new ListShareGroupOffsetsOptions();
         ArgumentOutOfRangeException.ThrowIfNegative(opts.TimeoutMs);
+        AdminClient.ThrowIfShareOffsetQueryDeadlineExpired(opts.TimeoutMs);
         return ExecuteWithTimeoutAsync<IReadOnlyDictionary<string, ShareGroupOffsetsResult>>(async token =>
         {
             var results = new Dictionary<string, ShareGroupOffsetsResult>(requests.Length, StringComparer.Ordinal);
