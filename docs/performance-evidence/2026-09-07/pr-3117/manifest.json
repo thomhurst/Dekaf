@@ -1,0 +1,317 @@
+[
+  {
+    "path": ".gitattributes",
+    "bytes": 141,
+    "sha256": "07ccb1f8f958f991d62df1b8d2e8f48a414ffc3ed06959013b4a62375868caa9"
+  },
+  {
+    "path": "evidence/build-server-shutdown.log",
+    "bytes": 160,
+    "sha256": "b8028200bc3b12a3210641024da80eb85dffe587d8192df519108d0a20cfe822"
+  },
+  {
+    "path": "evidence/build-v2.log",
+    "bytes": 417,
+    "sha256": "49b3ecad96b9b8bcfc1568d2053143d0e67914ccfef42bc15c1f482ab07f881d"
+  },
+  {
+    "path": "evidence/build.log",
+    "bytes": 605,
+    "sha256": "67c5ed156fb097a218dc71cf7cfcff2a70349845333ee45ce8db9a71112a41d3"
+  },
+  {
+    "path": "evidence/candidate-final.patch",
+    "bytes": 1999,
+    "sha256": "406382422131717e64b1bcaaaefdcaaa67783b763a8f80f4d6709088f3706f79"
+  },
+  {
+    "path": "evidence/clear-once-v2-rejected.patch",
+    "bytes": 2418,
+    "sha256": "60c00354cd1c374334982d2d4270e223061ef660879966d9ff93594965ec2283"
+  },
+  {
+    "path": "evidence/comparison/Comparison.sln.txt",
+    "bytes": 1747,
+    "sha256": "bd959db4f40382d2319886d741b8646df13385f9513924405dcbcd6ff5359930"
+  },
+  {
+    "path": "evidence/comparison/Dekaf.Benchmarks.csproj.txt",
+    "bytes": 853,
+    "sha256": "04ed9ead66ae79cafb8988d1dc48426a72d7082a5efed4256a12ca0fc0998b94"
+  },
+  {
+    "path": "evidence/comparison/PartitionedLifetimeBenchmarks.cs.txt",
+    "bytes": 11028,
+    "sha256": "3cbedd0b04e4dc72717f94630ff5bb10ebbcf9396452682fdb28a35b92f196e3"
+  },
+  {
+    "path": "evidence/comparison/Program.cs.txt",
+    "bytes": 1812,
+    "sha256": "dbc904f232e836eda0b230fbeebe275f78537a0da18a55a81df5cf921f8d0e05"
+  },
+  {
+    "path": "evidence/comparison-v2/Comparison.sln.txt",
+    "bytes": 1747,
+    "sha256": "bd959db4f40382d2319886d741b8646df13385f9513924405dcbcd6ff5359930"
+  },
+  {
+    "path": "evidence/comparison-v2/Dekaf.Benchmarks.csproj.txt",
+    "bytes": 853,
+    "sha256": "04ed9ead66ae79cafb8988d1dc48426a72d7082a5efed4256a12ca0fc0998b94"
+  },
+  {
+    "path": "evidence/comparison-v2/PartitionedLifetimeBenchmarks.cs.txt",
+    "bytes": 11028,
+    "sha256": "3cbedd0b04e4dc72717f94630ff5bb10ebbcf9396452682fdb28a35b92f196e3"
+  },
+  {
+    "path": "evidence/comparison-v2/Program.cs.txt",
+    "bytes": 1686,
+    "sha256": "305518e58f5bcb90f318ca7fe38b6f04b8140111d696cb6b7b23b2b7e2c5d0b2"
+  },
+  {
+    "path": "evidence/Directory.Build.props.txt",
+    "bytes": 356,
+    "sha256": "3b27186f264c1053e606f43e7c36dca23999ab6e62646a1dbf54df9f9bf41e86"
+  },
+  {
+    "path": "evidence/Directory.Packages.props.txt",
+    "bytes": 6087,
+    "sha256": "1dd4826457235db2bbb5907a2421b6f2a8edc09ce765df990070297086e3d84f"
+  },
+  {
+    "path": "evidence/dry-v2.log",
+    "bytes": 115474,
+    "sha256": "d5a843e1abff968153219a0cf83f51892fc2f64baa50d20bf0aa7fe2f8700cb9"
+  },
+  {
+    "path": "evidence/dry.log",
+    "bytes": 58572,
+    "sha256": "4c5646f2372166048c7ba68d21659f2be46c15ce4c9eda308f74d80a6e7e7afa"
+  },
+  {
+    "path": "evidence/final-hashes.json",
+    "bytes": 701,
+    "sha256": "15494dc292440f25d7e1f771796929c131179597148e46ffe2f3ec358c1e72ce"
+  },
+  {
+    "path": "evidence/fixture-build.log",
+    "bytes": 351,
+    "sha256": "320085b7c9ff304747e084b2c9a00d90067f826caa991b07d265374ad9889f79"
+  },
+  {
+    "path": "evidence/fixture-v2-build.log",
+    "bytes": 357,
+    "sha256": "dcfd7bf592a24210ab3f2cdbbd23fd2f65799ad2781137cc91f511795f73b9ad"
+  },
+  {
+    "path": "evidence/full/results/Dekaf.Benchmarks.PartitionedLifetimeBenchmarks-report-full.json",
+    "bytes": 508086,
+    "sha256": "77ad323356dcfe1d76545ce64c33c8a44af2e5278b5f6ef757ce55d0089a09b0"
+  },
+  {
+    "path": "evidence/full/results/Dekaf.Benchmarks.PartitionedLifetimeBenchmarks-report-github.md",
+    "bytes": 14163,
+    "sha256": "8467b3db8c6b2bb6554154f3714d251f5ca5791d4bcc51cfae6048fc2bc71317"
+  },
+  {
+    "path": "evidence/full/results/Dekaf.Benchmarks.PartitionedLifetimeBenchmarks-report.csv",
+    "bytes": 21087,
+    "sha256": "10c0d6663f3639df1e3a82efac169eac09f9d5e28e27524df142198b2377bda2"
+  },
+  {
+    "path": "evidence/full-completion.json",
+    "bytes": 86,
+    "sha256": "5acc3b53dad0fea81c0aae6614627024fa5be1873cc0767b3b30fa473be6b851"
+  },
+  {
+    "path": "evidence/full-start.json",
+    "bytes": 85,
+    "sha256": "d8a05651cd35fa9cc28ade3cad7e79c20e04e2963071a4bce53e5430684ec775"
+  },
+  {
+    "path": "evidence/full.log",
+    "bytes": 214737,
+    "sha256": "b4dd114e7462544d99fe6cca720ab876f89513f9d2bda9cfeac7e3c20590208c"
+  },
+  {
+    "path": "evidence/global.json",
+    "bytes": 179,
+    "sha256": "89df56e469fe3ebcd4afbf792fa982192af39e415c8c8f5b8068dce7163cc22d"
+  },
+  {
+    "path": "evidence/global.json.txt",
+    "bytes": 179,
+    "sha256": "89df56e469fe3ebcd4afbf792fa982192af39e415c8c8f5b8068dce7163cc22d"
+  },
+  {
+    "path": "evidence/integration-net10.log",
+    "bytes": 606,
+    "sha256": "254343afc8b128cc120e7a3b380490279eae2cf8ca010efd68a30f4721acb6c4"
+  },
+  {
+    "path": "evidence/pilot/results/Dekaf.Benchmarks.PartitionedLifetimeBenchmarks-report-full.json",
+    "bytes": 126253,
+    "sha256": "38312ce9d415ac4c3da9913b2a2ba45da1753ce81b7f083e8a6d11063b9737e7"
+  },
+  {
+    "path": "evidence/pilot/results/Dekaf.Benchmarks.PartitionedLifetimeBenchmarks-report-github.md",
+    "bytes": 6539,
+    "sha256": "f00a84cb5d1811ad7dd7484705524dc21bdfc2a5fd03f085e5ec24f3f17cf9c5"
+  },
+  {
+    "path": "evidence/pilot/results/Dekaf.Benchmarks.PartitionedLifetimeBenchmarks-report.csv",
+    "bytes": 9001,
+    "sha256": "17e4cfef7033aa0032ea69b9cc11e0c44c5ae65d7d0f23e24735001161c4c95e"
+  },
+  {
+    "path": "evidence/pilot.log",
+    "bytes": 70767,
+    "sha256": "5d77938565616996c8f321f45baa45125894d67d637364cd31822c446813f8f0"
+  },
+  {
+    "path": "evidence/product-hashes.json",
+    "bytes": 421,
+    "sha256": "407b118014e890d454dc23fb2a5e398fbff4f0e8d704ff77c47964cf6c2c2d29"
+  },
+  {
+    "path": "evidence/profile/results/Dekaf.Benchmarks.PartitionedLifetimeBenchmarks-report-full.json",
+    "bytes": 268069,
+    "sha256": "32c32b9524ec2239b01a6bfa99bd530d34dc4d347938eb8d513d67ca70abeb17"
+  },
+  {
+    "path": "evidence/profile/results/Dekaf.Benchmarks.PartitionedLifetimeBenchmarks-report-github.md",
+    "bytes": 14333,
+    "sha256": "031e73c7ea2c5c9d588047399d5b17efeb4549902ebbf183cec1f3f3c011bbeb"
+  },
+  {
+    "path": "evidence/profile/results/Dekaf.Benchmarks.PartitionedLifetimeBenchmarks-report.csv",
+    "bytes": 20694,
+    "sha256": "3213f5b00867f40dee524aa7c93c30addf618a8768c0b153d6bc13c679fbaded"
+  },
+  {
+    "path": "evidence/profile-completion.json",
+    "bytes": 86,
+    "sha256": "2e818ae7bd571494eb053eeb49724249bf7169ec985c181d122fa976218cc520"
+  },
+  {
+    "path": "evidence/profile-metrics.json",
+    "bytes": 14414,
+    "sha256": "018d961a0e32ada9c5938aa8162d70af58f1b7153f1be8c37c2c120d867525ad"
+  },
+  {
+    "path": "evidence/profile-v2/results/Dekaf.Benchmarks.PartitionedLifetimeBenchmarks-report-full.json",
+    "bytes": 191586,
+    "sha256": "0458d9a728be0a8fab97f1e101253cb25c5deeba41d12fd713dba56365666ccb"
+  },
+  {
+    "path": "evidence/profile-v2/results/Dekaf.Benchmarks.PartitionedLifetimeBenchmarks-report-github.md",
+    "bytes": 12099,
+    "sha256": "776ec11f061404b786d816467d090441d64a6b769c28daea742eaf4405c43584"
+  },
+  {
+    "path": "evidence/profile-v2/results/Dekaf.Benchmarks.PartitionedLifetimeBenchmarks-report.csv",
+    "bytes": 17651,
+    "sha256": "7fe057e248194d8015ab0698571fbdcc259c78f204bdb033d9e7aa438dfe5eb5"
+  },
+  {
+    "path": "evidence/profile-v2-completion.json",
+    "bytes": 86,
+    "sha256": "da24619d5c3d207abf01d7454e160b5b180b07b9ace409a6dc69df239ca95146"
+  },
+  {
+    "path": "evidence/profile-v2-metrics.json",
+    "bytes": 12347,
+    "sha256": "c6d922418a14ae7261126ce3109003c38513b1e71fd067b863ac18ed9c2f76a0"
+  },
+  {
+    "path": "evidence/profile-v2.log",
+    "bytes": 134867,
+    "sha256": "338905f0300ad91e1137936ab8e3ed58a32407e6708e5839ca35f20ae7ddf404"
+  },
+  {
+    "path": "evidence/profile.log",
+    "bytes": 167943,
+    "sha256": "489e3b80ab6704e35de700f19e1329c06c5fa6865fb882449c73662413017737"
+  },
+  {
+    "path": "evidence/provenance.json",
+    "bytes": 291,
+    "sha256": "03f5677223077a75e35ec00024e41009b1ad36210e9c139125829c64b35598f3"
+  },
+  {
+    "path": "evidence/single-probe-v1.patch",
+    "bytes": 1841,
+    "sha256": "d788074cb82741a7d5ef8bd5cf839c2758f855d5d57dcd84b841d584c5bb638b"
+  },
+  {
+    "path": "evidence/summary.json",
+    "bytes": 246624,
+    "sha256": "65614370834c9705cb391d845d45581d745b06f63584e0c232fcf7bac900cea8"
+  },
+  {
+    "path": "evidence/timing-v2/results/Dekaf.Benchmarks.PartitionedLifetimeBenchmarks-report-full.json",
+    "bytes": 350296,
+    "sha256": "515fc4357f06278695c4725bd32b06264033ff00958e313d289aff98b69f60d7"
+  },
+  {
+    "path": "evidence/timing-v2/results/Dekaf.Benchmarks.PartitionedLifetimeBenchmarks-report-github.md",
+    "bytes": 11996,
+    "sha256": "97eff9dd4fa23d127ccca1bb96635860f906d30a5983fc3be75c476246df2810"
+  },
+  {
+    "path": "evidence/timing-v2/results/Dekaf.Benchmarks.PartitionedLifetimeBenchmarks-report.csv",
+    "bytes": 17623,
+    "sha256": "11dd2677e56ef0ea8269e853801401717f09617adfa82e6eb0e571d9a92e7c74"
+  },
+  {
+    "path": "evidence/timing-v2-completion.json",
+    "bytes": 86,
+    "sha256": "b54f56f8598d65f5dd5d02430ebccc2072d90be99049fe0cb3340a8d05103b49"
+  },
+  {
+    "path": "evidence/timing-v2.log",
+    "bytes": 167561,
+    "sha256": "82426356b1ad5344072d5220a3f2bdfa98323bf8590e41aad1a5c5af899e4bf4"
+  },
+  {
+    "path": "evidence/unit-final-net10.0.log",
+    "bytes": 573,
+    "sha256": "7096aa1eb768ad6983e1869b6c3d9906b5a2a2bab693df8ddd86228843a6447b"
+  },
+  {
+    "path": "evidence/unit-final-net8.0.log",
+    "bytes": 568,
+    "sha256": "35a4587a6efb5a18684f4f55acafcc003358a6cb73e2842bb98dd0ae5fe25551"
+  },
+  {
+    "path": "evidence/unit-net10.0.log",
+    "bytes": 573,
+    "sha256": "71fe6b425dddf7c2e465076b6abc893fc4127c5e4fa767d110b02d6264bf4b4e"
+  },
+  {
+    "path": "evidence/unit-net8.0.log",
+    "bytes": 357,
+    "sha256": "31bde7ac3d2a8d000399114b774e6652334bf1c6b5365317fa4040365350cdbb"
+  },
+  {
+    "path": "evidence/v2-hash.json",
+    "bytes": 200,
+    "sha256": "5f5c16f118fbfa5f242c1c9ac9b6d89c2a62927a7023b5a750c6e5218a943c89"
+  },
+  {
+    "path": "measurement-report.md",
+    "bytes": 3442,
+    "sha256": "e82a0e6b8cebc212748166fd683d6c1f3dd4a0880d0e0cb66c43acab7520da48"
+  },
+  {
+    "path": "README.md",
+    "bytes": 2279,
+    "sha256": "fc27725b726eb2f0e63a78de725cb8e72445ee8de886d520383c33ce1300bd7c"
+  },
+  {
+    "path": "source-snapshot.json",
+    "bytes": 946,
+    "sha256": "804d3a0ada7291d87141ebc7ad2c65f2f893a64e49f3a1611e1163033c53c92f"
+  }
+]

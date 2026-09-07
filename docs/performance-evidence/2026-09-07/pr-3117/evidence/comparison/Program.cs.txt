@@ -1,0 +1,25 @@
+using BenchmarkDotNet.Configs;
+using BenchmarkDotNet.Jobs;
+using BenchmarkDotNet.Running;
+
+var root = "C:/git/Dekaf-perf-improvements-20260907/pr-3117";
+var dry = args.Contains("--dry");
+var full = args.Contains("--full");
+var profile = args.Contains("--profile");
+var arguments = args.Where(a => a is not ("--dry" or "--full" or "--profile")).ToArray();
+var artifactIndex = Array.IndexOf(arguments, "--artifacts");
+var samples = Path.Combine(arguments[artifactIndex + 1], "latency-samples");
+var basis = (dry ? Job.Dry : full ? Job.Default : Job.ShortRun)
+    .WithAffinity(new IntPtr(4)).WithEnvironmentVariable("DOTNET_TieredCompilation", "0")
+    .WithEnvironmentVariable("DEKAF_DISPATCH_PROFILE", profile ? "1" : "0")
+    .WithEnvironmentVariable("DEKAF_DISPATCH_SAMPLE_DIRECTORY", samples);
+var config = DefaultConfig.Instance.WithOptions(ConfigOptions.KeepBenchmarkFiles);
+var phases = full || profile
+    ? new[] { ("A_Accepted", "accepted"), ("B_Predecessor", "predecessor"), ("C_Published", "published"), ("D_Candidate", "candidate"), ("E_PublishedControl", "published"), ("F_PredecessorControl", "predecessor"), ("G_AcceptedControl", "accepted") }
+    : new[] { ("A_Published", "published"), ("B_Candidate", "candidate"), ("C_PublishedControl", "published") };
+foreach (var (name, directory) in phases)
+    config = config.AddJob(basis.WithId(name).WithEnvironmentVariable("DEKAF_DISPATCH_JOB", name)
+        .WithMsBuildArguments($"/p:ProductDirectory={root}/{directory}", "/p:UseSharedCompilation=false"));
+var summaries = BenchmarkSwitcher.FromAssembly(typeof(Program).Assembly).Run(arguments, config).ToArray();
+return summaries.Length == 0 || summaries.Any(s => s.HasCriticalValidationErrors || s.Reports.Length == 0
+    || s.Reports.Any(r => !r.Success || r.ResultStatistics is null)) ? 1 : 0;

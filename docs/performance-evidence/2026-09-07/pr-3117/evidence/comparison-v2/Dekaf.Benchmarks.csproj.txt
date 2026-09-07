@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <EnforceCodeStyleInBuild>false</EnforceCodeStyleInBuild>
+    <UseSharedCompilation>false</UseSharedCompilation>
+    <ProductDirectory Condition="'$(ProductDirectory)' == ''">C:/git/Dekaf-perf-improvements-20260907/pr-3117/published</ProductDirectory>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="BenchmarkDotNet" />
+    <PackageReference Include="Reservoir" />
+    <PackageReference Include="System.IO.Hashing" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
+    <Reference Include="Dekaf"><HintPath>$(ProductDirectory)/Dekaf.dll</HintPath></Reference>
+    <Reference Include="Dekaf.Abstractions"><HintPath>$(ProductDirectory)/Dekaf.Abstractions.dll</HintPath></Reference>
+  </ItemGroup>
+</Project>

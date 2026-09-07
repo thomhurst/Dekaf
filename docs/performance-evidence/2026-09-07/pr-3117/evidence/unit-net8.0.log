@@ -1,0 +1,2 @@
+C:\git\Dekaf-perf-improvements-20260907\pr-3117\source\src\Dekaf\Consumer\KeyOrderedPartitionDispatcher.cs(225,48): error CS0117: 'CollectionsMarshal' does not contain a definition for 'GetValueRefOrAddDefault' [C:\git\Dekaf-perf-improvements-20260907\pr-3117\source\src\Dekaf\Dekaf.csproj::TargetFramework=netstandard2.0]
+Build failed with exit code: 1.

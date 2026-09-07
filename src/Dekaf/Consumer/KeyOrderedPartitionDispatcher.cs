@@ -1,5 +1,6 @@
 using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
+using System.Runtime.InteropServices;
 using Dekaf.Internal;
 
 namespace Dekaf.Consumer;
@@ -162,7 +163,7 @@ internal sealed class KeyOrderedPartitionDispatcher<TKey, TValue>
             }
 
             foreach (var lane in _lanes.Values)
-                lane.ReleaseKey();
+                lane?.ReleaseKey();
             _lanes.Clear();
             Volatile.Write(ref _laneCount, 0);
             registration.Dispose();
@@ -219,6 +220,7 @@ internal sealed class KeyOrderedPartitionDispatcher<TKey, TValue>
             _lastReadEpoch = record.LeaderEpoch ?? -1;
         }
         var key = PartitionMessageKey<TKey>.From(record.Key);
+#if NETSTANDARD2_0
         if (!_lanes.TryGetValue(key, out var lane))
         {
             lane = _freeLanes.Count != 0 ? _freeLanes.Pop() : new KeyLane();
@@ -235,6 +237,20 @@ internal sealed class KeyOrderedPartitionDispatcher<TKey, TValue>
             }
             Volatile.Write(ref _laneCount, _lanes.Count);
         }
+#else
+        // The coordinator owns membership. Publish the lane before retaining its
+        // storage, so shutdown owns cleanup even if initialization fails.
+        ref var entry = ref CollectionsMarshal.GetValueRefOrAddDefault(_lanes, key, out _);
+        var lane = entry;
+        if (lane is null)
+        {
+            lane = _freeLanes.Count != 0 ? _freeLanes.Pop() : new KeyLane();
+            entry = lane;
+            lane.Key = key;
+            lane.KeyStorage = record.RetainStorage();
+            Volatile.Write(ref _laneCount, _lanes.Count);
+        }
+#endif
 
         if (lane.Head < 0)
             lane.Head = index;
