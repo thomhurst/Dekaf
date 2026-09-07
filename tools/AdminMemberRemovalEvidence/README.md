@@ -1,0 +1,33 @@
+# PR #3129 administrative performance experiment
+
+This auxiliary harness is separate from the product PR. One GitHub-hosted `ubuntu-latest` VM builds and validates pinned fresh-main A and exact PR head B, then measures A1, B, and the same A2 sequentially. The driver checks that B contains fresh main before timing and records later main movement. Identical fixture sources are copied into both products; the `CANDIDATE` symbol enables APIs absent on main. No product source is adapted.
+
+## Workloads and boundaries
+
+Equivalent-work controls cover legacy static removal of 1/32 members through a synchronous connection, and in-memory registration/unregistration cycles of 1/32 dynamic members subscribed to one partition. Each cycle ends with no registered members and the same retained group metadata. Both control method bodies and async state machines have no conditional compilation. The cached fixture dispatcher is chosen once during setup. The fake registration control exercises the changed member-state representation with identical externally observed work.
+
+Candidate-only cases cover explicit static and dynamic removal and mixed remove-all snapshots at 1/32 members; partial member outcomes; a confirmed coordinator error followed by one retry; an ambiguous lost response that must not replay; cancellation during send; synchronous zero-deadline rejection; and in-memory mixed removal, legacy static eviction, static replacement with stale-registration cleanup, and zero-deadline membership preservation. Unexpected outcomes or send counts fail validation. Ambiguous failure, cancellation and deadline cases count the expected terminal exception as one completed administrative attempt, separate from successful removals.
+
+The new options API is absent on A. The old in-memory removal returned success without eviction, while B actually evicts members. Those different behaviors cannot be compared as equivalent performance: fake eviction is B-only characterization. Fake cases include registration, the operation, correctness checks and necessary cleanup in their measurement boundary, allowing the same bounded state to be reused on every call. The replacement case verifies that stale registrations cannot remove replacements. Fake registration controls and fake eviction cases must not be compared as if they perform identical work.
+
+Real-client cases measure public administrative invocation through complete result observation, using prebuilt wire responses. Broker/network time and CPU are excluded. Real Kafka correctness is covered separately by integration CI. Producer/consumer message paths are unchanged; the new fake member-state work occurs during membership lifecycle operations. Message throughput/latency/allocation and sustained message delivery are therefore not applicable. The unit is one complete administrative operation or membership cycle, with member count stated explicitly. Allocated administrative results and existing fake lifecycle collections are not a per-message zero-allocation claim.
+
+Every fresh probe and BDN process warms its actual configured workload for **30 seconds**. Probes then measure **60 seconds** at closed-loop concurrency one: a new call starts only after the previous call completes. There is no offered-work queue or silently dropped call. BDN uses MemoryDiagnoser, one launch, 12 measured iterations with 500 ms nominal iteration time, and normal pilot/warmup after the explicit workload warmup. All phases use Release/net10.0, workstation GC, tiered compilation and dynamic PGO enabled, and no profiling agent.
+
+Probe histograms retain the exact Stopwatch tick count of every completed call, including maxima. One-second rows retain CPU, completions, latency distributions, GC, heap/RSS, JIT methods/time, and thread-pool threads/pending work. CPU and allocation scope is the whole probe, including histogram and counter bookkeeping; BDN independently characterizes allocations. Raw BDN measurements and runtime sampling through setup and measurement remain archived. No retrospective sample trimming or percentile averaging is allowed.
+
+## Criteria declared before hosted measurement
+
+Correctness requires expected outcomes, complete counts, and no leftover membership or asynchronous work. Candidate control throughput may fall at most 3% against **each** baseline; CPU/call may rise at most 3%; p50/p99/max latency at most 5%; allocation/call at most 1 byte. A1/A2 control drift must satisfy those same bounds. Preserve absolute metrics, deltas against both controls, confidence bounds and sample counts. Overlapping intervals do not establish equivalence.
+
+Material startup transitions in the last five warmup seconds or measured series, systematic CPU/latency drift, missing evidence or insufficient precision mean INCONCLUSIVE. Assess heap/RSS/GC for bounded behavior during the experiment; a short run cannot establish long-run leak absence. Candidate-only paths characterize correctness and costs, not a Pareto result against a nonexistent equivalent baseline.
+
+PASS requires every applicable control and startup/stability criterion. A confirmed protected-metric loss is REGRESSION. The driver emits a provisional assessment that is always INCONCLUSIVE until manual precision and runtime-series review; it cannot update a GitHub status or approve a merge. One exact repeat is the maximum automatic repeat after INCONCLUSIVE, followed by experiment changes or maintainer direction.
+
+This is the first hosted campaign for PR #3129. The earlier Windows correction comparison at 4317a675c used the preceding product, and remains an INCONCLUSIVE local diagnostic with missing protected metrics. There is no prior exact-configuration hosted run or accepted new-API baseline. This fresh-main campaign does not retroactively resolve that historical experiment.
+
+## Evidence retention
+
+Archive exact product/harness SHAs, source ZIPs, transplanted fixtures, build/validation logs, runner image/hardware, SDK/runtime, all probe histograms, BDN reports and runtime series. Every probe and BDN process records loaded managed assembly paths and SHA-256 hashes before warmup. The driver copies and verifies loaded assemblies, retaining generated BDN projects and binaries separately per phase before reuse. Missing product identity or hash mismatch fails the experiment. A complete SHA-256 archive inventory is uploaded.
+
+The reusable probe, sampler, BDN toolchain and retention driver derive from PR #3136 harness `4198e2f651a850182fe1c277b318efb8a7e7a6fd`, itself derived from PR #3128 harness `2675aabc4c176b61cf3f325b7a475cfa7fdd4764`. This branch replaces the fixtures and runs only fresh-main A/B/A; no unrelated predecessor experiment is carried over.
