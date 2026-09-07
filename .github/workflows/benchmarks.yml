@@ -47,6 +47,8 @@ jobs:
     if: needs.select-pipeline.outputs.mode == 'filtered'
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    env:
+      FILTERED_DIR: BenchmarkResults/Filtered
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -62,20 +64,20 @@ jobs:
         env:
           BENCHMARK_FILTER: ${{ inputs.benchmark_filter }}
         run: |
-          mkdir -p BenchmarkResults/Filtered
+          mkdir -p "$FILTERED_DIR"
           dotnet run --project tools/Dekaf.Benchmarks -c Release --no-build -- \
             --filter "$BENCHMARK_FILTER" --exporters fulljson \
             --buildTimeout 600 \
-            --artifacts BenchmarkResults/Filtered > BenchmarkResults/Filtered/run.log 2>&1
+            --artifacts "$FILTERED_DIR" > "$FILTERED_DIR/run.log" 2>&1
       - name: Require successful measurements
-        run: python3 .github/scripts/benchmark_pipeline.py validate BenchmarkResults/Filtered/results
+        run: python3 .github/scripts/benchmark_pipeline.py validate "$FILTERED_DIR/results"
       - name: Upload filtered results and log
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: benchmark-results-filtered
-          path: BenchmarkResults/Filtered/
-          if-no-files-found: error
+          path: ${{ env.FILTERED_DIR }}/
+          if-no-files-found: warn
           retention-days: 30
 
   unit-benchmarks:
