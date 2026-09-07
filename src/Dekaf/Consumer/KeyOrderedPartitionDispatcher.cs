@@ -419,7 +419,16 @@ internal sealed class KeyOrderedPartitionDispatcher<TKey, TValue>
         {
             var next = worker.NextCompleted;
             worker.NextCompleted = null;
-            CompleteWorker(worker);
+            try
+            {
+                CompleteWorker(worker);
+            }
+            catch (Exception exception)
+            {
+                // A key comparer can throw during lane removal. Its worker has
+                // completed, but every remaining detached callback still needs draining.
+                _failure ??= ExceptionDispatchInfo.Capture(exception);
+            }
             worker = next;
         }
     }

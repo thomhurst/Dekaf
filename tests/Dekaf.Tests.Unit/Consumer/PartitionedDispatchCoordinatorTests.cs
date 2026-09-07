@@ -1,3 +1,4 @@
+using System.Threading.Tasks.Sources;
 using Dekaf.Consumer;
 using Dekaf.Protocol.Records;
 using Dekaf.Serialization;
@@ -297,6 +298,78 @@ public sealed class PartitionedDispatchCoordinatorTests
         await Assert.That(dispatcher.LaneCount).IsEqualTo(0);
     }
 
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task CompletionCleanupFailure_ObservesEveryDetachedWorker(bool multipleFailures)
+    {
+        var failure = new InvalidOperationException("key cleanup failed");
+        var keys = new[] { new ThrowingHashKey(0), new ThrowingHashKey(1), new ThrowingHashKey(2) };
+        var lane = new PartitionLane<ThrowingHashKey, int>(
+            new TopicPartition("dispatch", 0), 3,
+            static (_, _) => default, static _ => { }, static (_, _) => { });
+        for (var offset = 0; offset < keys.Length; offset++)
+        {
+            var record = new ConsumeResult<ThrowingHashKey, int>("dispatch", 0, offset,
+                keys[offset], offset, null, 0, TimestampType.CreateTime, offset);
+            await Assert.That(lane.TryEnqueue(record)).IsTrue();
+        }
+        await lane.StopAsync(PartitionStopPolicy.Drain, Timeout.InfiniteTimeSpan);
+        var first = new ObservedCompletion();
+        var second = new ObservedCompletion();
+        var dispatcher = new KeyOrderedPartitionDispatcher<ThrowingHashKey, int>(
+            new PartitionProcessorContext<ThrowingHashKey, int>(lane), 1, 3, 3,
+            (records, _) =>
+            {
+                switch (records[0].Offset)
+                {
+                    case 0:
+                        return first.Task;
+                    case 1:
+                        return second.Task;
+                    default:
+                        // Both callbacks run inline while the coordinator is inside
+                        // this handler. The failing key is first in the detached stack.
+                        keys[0].Failure = failure;
+                        if (multipleFailures)
+                            keys[1].Failure = new InvalidOperationException("second key cleanup failed");
+                        second.Complete();
+                        first.Complete();
+                        return default;
+                }
+            }, automaticCompletion: true);
+
+        var processing = dispatcher.RunAsync(CancellationToken.None).AsTask();
+        var thrown = await Assert.ThrowsAsync<InvalidOperationException>(
+            async () => await processing.WaitAsync(TimeSpan.FromSeconds(5)));
+        await Assert.That(thrown).IsSameReferenceAs(failure);
+        await Assert.That(first.Observed).IsEqualTo(1);
+        await Assert.That(second.Observed).IsEqualTo(1);
+        await Assert.That(dispatcher.LaneCount).IsEqualTo(0);
+    }
+
+    private sealed class ThrowingHashKey(int value)
+    {
+        internal Exception? Failure { get; set; }
+        public override int GetHashCode() => Failure is { } failure ? throw failure : value;
+    }
+
+    private sealed class ObservedCompletion : IValueTaskSource
+    {
+        private ManualResetValueTaskSourceCore<bool> _source;
+        internal int Observed { get; private set; }
+        internal ValueTask Task => new(this, _source.Version);
+        internal void Complete() => _source.SetResult(true);
+        public void GetResult(short token)
+        {
+            _source.GetResult(token);
+            Observed++;
+        }
+        public ValueTaskSourceStatus GetStatus(short token) => _source.GetStatus(token);
+        public void OnCompleted(Action<object?> continuation, object? state, short token,
+            ValueTaskSourceOnCompletedFlags flags) =>
+            _source.OnCompleted(continuation, state, token, flags);
+    }
     private static PartitionLane<int, int> CreateLane(int capacity) => new(
         new TopicPartition("dispatch", 0), capacity,
         static (_, _) => default, static _ => { }, static (_, _) => { });
