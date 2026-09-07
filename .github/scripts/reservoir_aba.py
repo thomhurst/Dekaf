@@ -1,6 +1,7 @@
 """Task-scoped PR #3137 harness. Never merge this experimental branch."""
 import json
 import os
+import signal
 from pathlib import Path
 import subprocess
 import sys
@@ -155,13 +156,28 @@ for phase, product in [('A1', 'A'), ('B', 'B'), ('A2', 'A')]:
         else:
             raise RuntimeError('Broker did not become ready')
         env = dict(os.environ, KAFKA_BOOTSTRAP_SERVERS='localhost:9092')
-        run([str(ROOT / 'diagnostics/dotnet-counters'), 'collect', '--format', 'csv',
-             '--output', str(dest / 'runtime.csv'), '--refresh-interval', '1',
-             '--counters', 'System.Runtime', '--show-child-io', '--', 'taskset', '-c', client_cpus,
-             'dotnet', str(source / 'tools/Dekaf.StressTests/bin/Release/net10.0/Dekaf.StressTests.dll'),
-             '--duration', '5', '--message-size', '1000', '--scenario', 'producer', '--client', 'dekaf',
-             '--brokers', '1', '--connections-per-broker', '1', '--producer-delivery-diagnostics',
-             '--output', str(dest / 'stress')], dest / 'stress.log', cwd=source, env=env)
+        command = ['taskset', '-c', client_cpus, 'dotnet',
+                   str(source / 'tools/Dekaf.StressTests/bin/Release/net10.0/Dekaf.StressTests.dll'),
+                   '--duration', '5', '--message-size', '1000', '--scenario', 'producer', '--client', 'dekaf',
+                   '--brokers', '1', '--connections-per-broker', '1', '--producer-delivery-diagnostics',
+                   '--output', str(dest / 'stress')]
+        with (dest / 'stress.log').open('w') as log, (dest / 'counters.log').open('w') as counter_log:
+            producer = subprocess.Popen(command, cwd=source, env=env, stdout=log, stderr=subprocess.STDOUT)
+            counters = subprocess.Popen([
+                str(ROOT / 'diagnostics/dotnet-counters'), 'collect', '--format', 'csv',
+                '--output', str(dest / 'runtime.csv'), '--refresh-interval', '1',
+                '--counters', 'System.Runtime', '--process-id', str(producer.pid)],
+                stdout=counter_log, stderr=subprocess.STDOUT)
+            code = producer.wait()
+            try:
+                counters.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                counters.send_signal(signal.SIGINT)
+                counters.wait(timeout=30)
+            if code:
+                raise RuntimeError(f'{phase} producer exited with {code}; inspect stress.log')
+            if counters.returncode:
+                raise RuntimeError(f'{phase} counters exited with {counters.returncode}')
         run(['docker', 'inspect', 'kafka'], dest / 'broker-state.json')
     finally:
         run(['docker', 'logs', 'kafka'], dest / 'broker.log', check=False)
