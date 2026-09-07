@@ -96,6 +96,13 @@ def execute(args):
                     'duration_seconds_per_mode': 120, 'offered_messages_per_second': 50000,
                     'message_bytes': 256, 'partitions': 4, 'DOTNET_TieredCompilation': '1'},
                 'phases': []}
+    if args.pr == 3109:
+        metadata['loaded_configuration'] = {
+            'scope': 'Instrumented shutdown latency investigation', 'cpu_affinity': [2, 3],
+            'variants': {'startup': {'warmup_samples': 100}, 'warmed': {'warmup_seconds': 20, 'minimum_warmup_samples': 100}},
+            'measured_samples_per_phase_per_variant': 10000, 'records_per_sample': 1024,
+            'DOTNET_TieredCompilation': '1', 'instrumentation': 'stage timestamps, GC brackets, JIT and thread-pool counters',
+            'prior_correctness_run': 'https://github.com/thomhurst/Dekaf/actions/runs/34149484062'}
     (artifacts / 'provenance.json').write_text(json.dumps(metadata, indent=2))
     for name, command in {'cpu': ['lscpu'], 'runtime': ['dotnet', '--info'], 'os': ['uname', '-a']}.items():
         run(command, artifacts / f'{name}.txt')
@@ -178,7 +185,8 @@ def execute(args):
         if any(sha256(host.parent / name) != digest for name, digest in recorded.items()):
             raise ValueError('Prebuilt loaded inputs changed')
     loaded_aba.execute(args.pr, loaded_hosts, hosts, artifacts, loaded_environment)
-    loaded_aba.correctness(args.pr, workspace / 'product-B', artifacts, loaded_environment)
+    if args.pr != 3109:
+        loaded_aba.correctness(args.pr, workspace / 'product-B', artifacts, loaded_environment)
     metadata['completed_utc'] = now()
     (artifacts / 'provenance.json').write_text(json.dumps(metadata, indent=2))
 

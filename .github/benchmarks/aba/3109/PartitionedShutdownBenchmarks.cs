@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.Diagnostics;
 using BenchmarkDotNet.Attributes;
 using Dekaf;
 using Dekaf.Consumer;
@@ -17,10 +18,17 @@ public class PartitionedShutdownBenchmarks
     private Task<bool> _backpressure = null!;
     private int _processed;
 
+    public bool CaptureStages { get; set; }
+    public long ReleasedAt { get; private set; }
+    public long HandlerResumedAt { get; private set; }
+    public long HandlerCompletedAt { get; private set; }
+    public long StopReturnedAt { get; private set; }
+
     [IterationSetup]
     public void Setup()
     {
         _processed = 0;
+        ReleasedAt = HandlerResumedAt = HandlerCompletedAt = StopReturnedAt = 0;
         _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
         var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         _runtime = new(null!, static (_, _) => default, new PartitionedProcessingOptions
@@ -52,11 +60,13 @@ public class PartitionedShutdownBenchmarks
         {
             started.TrySetResult();
             await _release.Task.WaitAsync(token);
+            if (CaptureStages) HandlerResumedAt = Stopwatch.GetTimestamp();
             await foreach (var record in context.Messages.WithCancellation(token))
             {
                 if (record.Offset != _processed++) throw new InvalidOperationException("Record order changed.");
                 context.MarkProcessed(record);
             }
+            if (CaptureStages) HandlerCompletedAt = Stopwatch.GetTimestamp();
         });
         started.Task.WaitAsync(TimeSpan.FromSeconds(10)).GetAwaiter().GetResult();
     }
@@ -66,8 +76,10 @@ public class PartitionedShutdownBenchmarks
     {
         _startDeadline();
         var stopping = _stop();
+        if (CaptureStages) ReleasedAt = Stopwatch.GetTimestamp();
         _release.TrySetResult();
         await stopping;
+        if (CaptureStages) StopReturnedAt = Stopwatch.GetTimestamp();
         if (await _backpressure) throw new InvalidOperationException("Stopped queue accepted a writer.");
     }
 

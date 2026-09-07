@@ -1,5 +1,7 @@
 """Task-scoped consumer and shutdown evidence; never promotes a performance gate."""
 import json
+import csv
+from array import array
 import os
 from pathlib import Path
 import shutil
@@ -168,6 +170,27 @@ def comparison(phases, metrics):
     return {'measurement_status': 'COMPLETE', 'acceptance': 'NOT_EVALUATED', 'cases': rows}
 
 
+def validate_shutdown(folder, samples, warmup_seconds):
+    values = json.loads((folder / 'metrics.json').read_text())
+    if (values['Samples'] != samples or values['Completed'] != samples * 1024
+            or values['Failures'] or values['BacklogAtEnd']):
+        raise ValueError('Incomplete shutdown evidence')
+    if (values['WarmupSeconds'] != warmup_seconds or values['ActualWarmupSeconds'] < warmup_seconds
+            or values['WarmupSamples'] < 100):
+        raise ValueError('Declared warmup was not completed')
+    latencies = array('q')
+    latencies.frombytes((folder / 'latency-ticks.bin').read_bytes())
+    with (folder / 'stages.csv').open() as stream:
+        stages = list(csv.DictReader(stream))
+    if len(stages) != samples or len(latencies) != samples:
+        raise ValueError('Missing shutdown stage or latency samples')
+    for index, row in enumerate(stages):
+        times = [int(row[key]) for key in ('Start', 'Release', 'Resume', 'HandlerEnd', 'Return', 'End')]
+        if int(row['Sample']) != index + 1 or times != sorted(times) or times[-1] - times[0] != latencies[index]:
+            raise ValueError('Invalid shutdown stage sequence or elapsed time')
+    return values
+
+
 def validate(pr, hosts, benchmark_hosts, artifacts, environment):
     if pr == 3109:
         command(['taskset', '-c', '2,3', 'dotnet', str(benchmark_hosts['A']), '--shutdown-probe',
@@ -189,14 +212,14 @@ def validate(pr, hosts, benchmark_hosts, artifacts, environment):
 def execute(pr, hosts, benchmark_hosts, artifacts, environment):
     phases = {}
     if pr == 3109:
-        for phase, label in (('A1', 'A'), ('B', 'B'), ('A2', 'A')):
-            folder = artifacts / f'loaded-{phase}/shutdown-full-queue'
-            command(['taskset', '-c', '2,3', 'dotnet', str(benchmark_hosts[label]), '--shutdown-probe',
-                     str(folder), '10000'], artifacts / f'shutdown-{phase}.log', env=environment)
-            values = json.loads((folder / 'metrics.json').read_text())
-            if values['Samples'] != 10000 or values['Completed'] != 10240000 or values['Failures'] or values['BacklogAtEnd']:
-                raise ValueError('Incomplete shutdown evidence')
-            phases[phase] = {'shutdown-full-queue': values}
+        for variant, warmup_seconds in (('startup', 0), ('warmed', 20)):
+            for phase, label in (('A1', 'A'), ('B', 'B'), ('A2', 'A')):
+                folder = artifacts / f'loaded-{phase}/shutdown-{variant}'
+                print(f'Shutdown {variant} {phase}: warmup {warmup_seconds}s, 10000 samples', flush=True)
+                command(['taskset', '-c', '2,3', 'dotnet', str(benchmark_hosts[label]), '--shutdown-probe',
+                         str(folder), '10000'], artifacts / f'shutdown-{variant}-{phase}.log',
+                        env=dict(environment, ABA_SHUTDOWN_WARMUP_SECONDS=str(warmup_seconds)))
+                phases.setdefault(phase, {})[f'shutdown-{variant}'] = validate_shutdown(folder, 10000, warmup_seconds)
         metrics = ['LifecycleOperationsPerSecond', 'LifecycleCpuNsPerOperation', 'LifecycleAllocatedBytesPerOperation', 'P50Ns', 'P99Ns', 'MaxNs']
     else:
         for phase, label in (('A1', 'A'), ('B', 'B'), ('A2', 'A')):

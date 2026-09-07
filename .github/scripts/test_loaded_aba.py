@@ -1,12 +1,33 @@
 import json
+import struct
 from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
-from loaded_aba import broker_start, comparison, validate_workload
+from loaded_aba import broker_start, comparison, validate_shutdown, validate_workload
 
 
 class LoadedEvidenceTests(unittest.TestCase):
+    def test_shutdown_evidence_rejects_short_warmup_and_inconsistent_stage_timings(self):
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            metrics = {'Samples': 1, 'Completed': 1024, 'Failures': 0, 'BacklogAtEnd': 0,
+                       'WarmupSeconds': 20, 'ActualWarmupSeconds': 20.1, 'WarmupSamples': 1000}
+            (folder / 'metrics.json').write_text(json.dumps(metrics))
+            (folder / 'latency-ticks.bin').write_bytes(struct.pack('<q', 5))
+            header = 'Sample,Start,Release,Resume,HandlerEnd,Return,End\n'
+            (folder / 'stages.csv').write_text(header + '1,10,11,12,13,14,15\n')
+            validate_shutdown(folder, 1, 20)
+            metrics['ActualWarmupSeconds'] = 0.1
+            (folder / 'metrics.json').write_text(json.dumps(metrics))
+            with self.assertRaisesRegex(ValueError, 'warmup'):
+                validate_shutdown(folder, 1, 20)
+            metrics['ActualWarmupSeconds'] = 20.1
+            (folder / 'metrics.json').write_text(json.dumps(metrics))
+            (folder / 'stages.csv').write_text(header + '1,10,13,12,13,14,15\n')
+            with self.assertRaisesRegex(ValueError, 'stage sequence'):
+                validate_shutdown(folder, 1, 20)
+
     def test_exited_broker_collects_diagnostics_and_stops_without_waiting_for_timeout(self):
         with tempfile.TemporaryDirectory() as directory, \
                 patch('loaded_aba.command') as command, \
