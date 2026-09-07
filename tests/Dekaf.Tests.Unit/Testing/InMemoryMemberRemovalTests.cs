@@ -17,7 +17,7 @@ public sealed class InMemoryMemberRemovalTests
         await using var concrete = new InMemoryAdminClient(cluster);
         // Defeat the asynchronous timer deterministically: zero must expire before this hook.
         concrete.ConfigureTimeoutSourceTestHook = static source => source.CancelAfter(Timeout.Infinite);
-        var exception = await Assert.That(async () => await ((IAdminClient)concrete).RemoveMembersFromConsumerGroupAsync("group",
+        var exception = await Assert.That(async () => await concrete.RemoveMembersFromConsumerGroupAsync("group",
             new ConsumerGroupMemberRemovalOptions
             {
                 RemoveAll = removeAll, TimeoutMs = 0,
@@ -51,7 +51,7 @@ public sealed class InMemoryMemberRemovalTests
         cluster.RegisterConsumerGroupMember("group", "keep", [], out _);
         cluster.RegisterConsumerGroupMember("group", "remove", [], out _);
         await using var concrete = new InMemoryAdminClient(cluster);
-        var result = await ((IAdminClient)concrete).RemoveMembersFromConsumerGroupAsync("group", new ConsumerGroupMemberRemovalOptions
+        var result = await concrete.RemoveMembersFromConsumerGroupAsync("group", new ConsumerGroupMemberRemovalOptions
         {
             Members = [new ConsumerGroupMemberIdentity { MemberId = "remove" }, new ConsumerGroupMemberIdentity { MemberId = "missing" }]
         });

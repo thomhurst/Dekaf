@@ -18,7 +18,7 @@ public sealed partial class AdminClientRemoveMembersTests
     {
         var (admin, _) = CreateAdmin(3, 5);
         await using (admin)
-            await Assert.That(async () => await ((IAdminClient)admin).RemoveMembersFromConsumerGroupAsync(GroupId,
+            await Assert.That(async () => await admin.RemoveMembersFromConsumerGroupAsync(GroupId,
                 new ConsumerGroupMemberRemovalOptions
                 {
                     Members = [new ConsumerGroupMemberIdentity { GroupInstanceId = instanceId, MemberId = memberId }]
@@ -32,7 +32,7 @@ public sealed partial class AdminClientRemoveMembersTests
     {
         var (admin, _) = CreateAdmin(3, 5);
         await using (admin)
-            await Assert.That(async () => await ((IAdminClient)admin).RemoveMembersFromConsumerGroupAsync(GroupId,
+            await Assert.That(async () => await admin.RemoveMembersFromConsumerGroupAsync(GroupId,
                 new ConsumerGroupMemberRemovalOptions
                 {
                     RemoveAll = removeAll,
@@ -70,7 +70,7 @@ public sealed partial class AdminClientRemoveMembersTests
             }));
         await using (admin)
         {
-            var result = await ((IAdminClient)admin).RemoveMembersFromConsumerGroupAsync(GroupId,
+            var result = await admin.RemoveMembersFromConsumerGroupAsync(GroupId,
                 new ConsumerGroupMemberRemovalOptions
                 {
                     RemoveAll = removeAll, Reason = "operator request",
@@ -111,7 +111,7 @@ public sealed partial class AdminClientRemoveMembersTests
             });
         await using (admin)
         {
-            var result = await ((IAdminClient)admin).RemoveMembersFromConsumerGroupAsync(GroupId,
+            var result = await admin.RemoveMembersFromConsumerGroupAsync(GroupId,
                 new ConsumerGroupMemberRemovalOptions { RemoveAll = true });
             await Assert.That(result.Succeeded).IsTrue();
             await Assert.That(result.Members[0].MemberId).IsEqualTo("original");
@@ -130,7 +130,7 @@ public sealed partial class AdminClientRemoveMembersTests
         SetupMemberDiscovery(connection);
         await using (admin)
         {
-            var result = await ((IAdminClient)admin).RemoveMembersFromConsumerGroupAsync(GroupId,
+            var result = await admin.RemoveMembersFromConsumerGroupAsync(GroupId,
                 new ConsumerGroupMemberRemovalOptions { RemoveAll = true });
             await Assert.That(result.Members).IsEmpty();
         }
@@ -149,7 +149,7 @@ public sealed partial class AdminClientRemoveMembersTests
             .Returns(ValueTask.FromResult(new LeaveGroupResponse { ErrorCode = error, Members = [] }));
         await using (admin)
         {
-            var exception = await Assert.That(async () => await ((IAdminClient)admin).RemoveMembersFromConsumerGroupAsync(GroupId,
+            var exception = await Assert.That(async () => await admin.RemoveMembersFromConsumerGroupAsync(GroupId,
                 new ConsumerGroupMemberRemovalOptions { Members = [new ConsumerGroupMemberIdentity { MemberId = "member" }] }))
                 .Throws<GroupException>();
             await Assert.That(exception!.GroupId).IsEqualTo(GroupId);
@@ -175,7 +175,7 @@ public sealed partial class AdminClientRemoveMembersTests
         }
         await using (admin)
         {
-            var action = async () => await ((IAdminClient)admin).RemoveMembersFromConsumerGroupAsync(GroupId,
+            var action = async () => await admin.RemoveMembersFromConsumerGroupAsync(GroupId,
                 new ConsumerGroupMemberRemovalOptions { RemoveAll = true, TimeoutMs = callerCancellation ? 30000 : 20 }, cancellation.Token);
             if (callerCancellation)
                 await Assert.That(action).Throws<OperationCanceledException>();
@@ -192,7 +192,7 @@ public sealed partial class AdminClientRemoveMembersTests
         var (admin, connection) = CreateAdmin(0, 2);
         SetupCoordinator(connection);
         await using (admin)
-            await Assert.That(async () => await ((IAdminClient)admin).RemoveMembersFromConsumerGroupAsync(GroupId,
+            await Assert.That(async () => await admin.RemoveMembersFromConsumerGroupAsync(GroupId,
                 new ConsumerGroupMemberRemovalOptions { Members = [new ConsumerGroupMemberIdentity { MemberId = "member" }] }))
                 .Throws<BrokerVersionException>();
     }
@@ -214,7 +214,7 @@ public sealed partial class AdminClientRemoveMembersTests
             _ => new ConsumerGroupMemberRemovalOptions { Members = [identity], TimeoutMs = -1 }
         };
         await using (admin)
-            await Assert.That(async () => await ((IAdminClient)admin).RemoveMembersFromConsumerGroupAsync(GroupId, options))
+            await Assert.That(async () => await admin.RemoveMembersFromConsumerGroupAsync(GroupId, options))
                 .Throws<ArgumentException>();
     }
 
@@ -227,7 +227,7 @@ public sealed partial class AdminClientRemoveMembersTests
             .Returns(ValueTask.FromResult(new LeaveGroupResponse { ErrorCode = ErrorCode.None, Members = [] }));
         await using (admin)
         {
-            var result = await ((IAdminClient)admin).RemoveMembersFromConsumerGroupAsync(GroupId,
+            var result = await admin.RemoveMembersFromConsumerGroupAsync(GroupId,
                 new ConsumerGroupMemberRemovalOptions { Members = [new ConsumerGroupMemberIdentity { MemberId = "member" }] });
             await Assert.That(result.Members).Count().IsEqualTo(1);
             await Assert.That(result.Members[0].MemberId).IsEqualTo("member");
@@ -254,7 +254,7 @@ public sealed partial class AdminClientRemoveMembersTests
             }));
         await using (admin)
         {
-            var exception = await Assert.That(async () => await ((IAdminClient)admin).RemoveMembersFromConsumerGroupAsync(GroupId,
+            var exception = await Assert.That(async () => await admin.RemoveMembersFromConsumerGroupAsync(GroupId,
                 new ConsumerGroupMemberRemovalOptions { RemoveAll = true })).Throws<GroupException>();
             await Assert.That(exception!.ErrorCode).IsEqualTo(expected);
         }
@@ -290,7 +290,7 @@ public sealed partial class AdminClientRemoveMembersTests
             }));
         await using (admin)
         {
-            var result = await ((IAdminClient)admin).RemoveMembersFromConsumerGroupAsync(GroupId,
+            var result = await admin.RemoveMembersFromConsumerGroupAsync(GroupId,
                 new ConsumerGroupMemberRemovalOptions { RemoveAll = true });
             await Assert.That(result.Succeeded).IsTrue();
             await Assert.That(result.Members[0].MemberId).IsEqualTo("modern-member");

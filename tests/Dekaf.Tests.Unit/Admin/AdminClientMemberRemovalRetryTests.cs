@@ -20,7 +20,7 @@ public sealed partial class AdminClientRemoveMembersTests
             .Returns(ValueTask.FromResult(new LeaveGroupResponse { Members = [] }));
         await using (admin)
         {
-            var exception = await Assert.That(async () => await ((IAdminClient)admin).RemoveMembersFromConsumerGroupAsync(GroupId,
+            var exception = await Assert.That(async () => await admin.RemoveMembersFromConsumerGroupAsync(GroupId,
                 new ConsumerGroupMemberRemovalOptions
                 {
                     RemoveAll = removeAll, TimeoutMs = 0,
@@ -62,7 +62,7 @@ public sealed partial class AdminClientRemoveMembersTests
                 }));
         await using (admin)
         {
-            var exception = await Assert.That(async () => await ((IAdminClient)admin).RemoveMembersFromConsumerGroupAsync(GroupId,
+            var exception = await Assert.That(async () => await admin.RemoveMembersFromConsumerGroupAsync(GroupId,
                 new ConsumerGroupMemberRemovalOptions
                 {
                     RemoveAll = removeAll,
