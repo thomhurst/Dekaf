@@ -21,6 +21,7 @@ public class KeyOrderedDispatchBenchmarks
     private PartitionLane<int, int> _lane = null!;
     private int _written;
     private int _handled;
+    private int _largestBatch;
     private int _thread;
     private long _allocationStart;
     private long _allocationEnd;
@@ -49,6 +50,7 @@ public class KeyOrderedDispatchBenchmarks
             static state => ((HandlerGate)state!).Cancel(), _handlerGate);
         _written = 0;
         _handled = 0;
+        _largestBatch = 0;
         _thread = Environment.CurrentManagedThreadId;
         Array.Fill(_lastByKey, -1);
         _lane = new(new TopicPartition("key-dispatch", 0), Capacity,
@@ -66,12 +68,15 @@ public class KeyOrderedDispatchBenchmarks
             throw new InvalidOperationException("Dispatch lost records or committed incomplete progress.");
         if (SteadyAllocatedBytes != 0)
             throw new InvalidOperationException($"Steady dispatch allocated {SteadyAllocatedBytes} bytes.");
+        if (Pattern == KeyPattern.PendingPairs && _largestBatch != BatchSize)
+            throw new InvalidOperationException("Paired handlers did not exercise the configured batch size.");
         return _handled;
     }
 
     private ValueTask HandleBatch(IReadOnlyList<ConsumeResult<int, int>> records, CancellationToken token)
     {
         var key = records[0].Key;
+        _largestBatch = Math.Max(_largestBatch, records.Count);
         for (var index = 0; index < records.Count; index++)
         {
             var record = records[index];
@@ -106,7 +111,9 @@ public class KeyOrderedDispatchBenchmarks
         var key = Pattern switch
         {
             KeyPattern.Distinct => _written,
-            KeyPattern.PendingPairs => _written & 1,
+            // Hold the first key while more of its records queue, then let the
+            // second key release it. Alternating single records never builds batches.
+            KeyPattern.PendingPairs => (_written / (BatchSize * 2)) & 1,
             _ => 0
         };
         var record = new ConsumeResult<int, int>("key-dispatch", 0, _written++, key, 0,
@@ -117,7 +124,7 @@ public class KeyOrderedDispatchBenchmarks
 
     [GlobalCleanup]
     public void ReportSteadyAllocation() => Console.WriteLine(
-        $"STEADY_ALLOCATION pattern={Pattern} batchSize={BatchSize} records={RecordCount - Capacity * 2} bytes={SteadyAllocatedBytes}");
+        $"STEADY_ALLOCATION pattern={Pattern} batchSize={BatchSize} largestBatch={_largestBatch} records={RecordCount - Capacity * 2} bytes={SteadyAllocatedBytes}");
 
     public enum KeyPattern
     {
