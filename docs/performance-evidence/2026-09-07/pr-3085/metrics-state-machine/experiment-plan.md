@@ -1,0 +1,13 @@
+# Outbox metric state-machine diagnostic
+
+Declared before timing on 2026-09-07. Local Windows diagnostic only; no performance acceptance is inferred.
+
+- A1/A2: cfe18050a787998b659bc540df54aef09ad610bb, the preceding PR product rebased onto main 5df2f0d03607389384b5c1466e17812a9084fac9.
+- B: f93a46d0e11bb8b5bf95390c46e015f16c4745bb, cycle timing moved into the existing pooled state machine and measured publication using a pooled state machine.
+- One machine, sequential A1, B, A2. Four fresh processes per phase: synchronous/pending publisher crossed with metrics disabled/enabled. Each operation is a complete relay cycle acknowledging and deleting 500 rows. Fixtures copied unchanged from harness 06aa795796080ce6879139ac2a253d4f0b4266ea, .github/benchmarks/aba/3085/RelayMetricsBenchmarks.cs. Wrapper validates exact acknowledged/deleted counts; enabled metrics count the same rows. No Kafka/broker CPU is included in this focused fake-store/fake-publisher experiment.
+- Release .NET 10, SDK 10.0.400/runtime 10.0.11, BDN 0.15.8, InProcessEmit, affinity mask 4, tiered compilation disabled. Each workload runs for at least 20 elapsed seconds in its fresh process, then eight BDN warmup iterations and 15 measured 250-ms-target iterations. Outliers remain included. Warmup logs completed cycles and one-second JIT/thread-pool/CPU/GC/heap/RSS counters.
+- Both products and all four fixtures build and validate before any timing. All owned builds/tests/integration runs must be terminal before launching the campaign. No competing owned heavy work during measurement.
+- Diagnostic flags declared now: timing loss above 3% against both controls requires investigation; control drift above 3% makes timing inconclusive. These are diagnostic flags, not formal Pareto acceptance or a waiver of any applicable protected metric. The existing fresh-main disabled synchronous regression remains a blocker until new acceptance evidence resolves it.
+- Allocation expectations: disabled sync/pending and enabled sync remain 0 B per cycle; enabled pending falls from 176 B per cycle to 0 B. Record both MemoryDiagnoser output and thread-local 1,000-cycle probes; disclose harness/background overhead if present.
+- Missing acceptance evidence: new fresh-main hosted Ubuntu A1/B/A2, actual message p50/p99/max latency, client CPU per completed message, measured runtime time series, loaded error/recovery/shutdown performance and sustained stability. Warmup counters alone do not establish measured steady state. Local means do not substitute for completed-message throughput or message-latency percentiles.
+- No paid run, merge or tradeoff approval follows from local results. Retain all raw data and exact source/binaries outside removable worktrees before citing it.

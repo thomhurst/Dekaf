@@ -1,0 +1,98 @@
+[
+  {
+    "Phase": "A1",
+    "Mode": "sync-off",
+    "Allocated": 1296,
+    "Operations": 1035456,
+    "BytesPerCycle": 0,
+    "MeasurementOverhead": 1296
+  },
+  {
+    "Phase": "A1",
+    "Mode": "pending-off",
+    "Allocated": 1296,
+    "Operations": 598592,
+    "BytesPerCycle": 0,
+    "MeasurementOverhead": 1296
+  },
+  {
+    "Phase": "A1",
+    "Mode": "sync-on",
+    "Allocated": 1296,
+    "Operations": 637408,
+    "BytesPerCycle": 0,
+    "MeasurementOverhead": 1296
+  },
+  {
+    "Phase": "A1",
+    "Mode": "pending-on",
+    "Allocated": 63735824,
+    "Operations": 362128,
+    "BytesPerCycle": 176,
+    "MeasurementOverhead": 1296
+  },
+  {
+    "Phase": "B",
+    "Mode": "sync-off",
+    "Allocated": 1296,
+    "Operations": 1029536,
+    "BytesPerCycle": 0,
+    "MeasurementOverhead": 1296
+  },
+  {
+    "Phase": "B",
+    "Mode": "pending-off",
+    "Allocated": 1296,
+    "Operations": 558944,
+    "BytesPerCycle": 0,
+    "MeasurementOverhead": 1296
+  },
+  {
+    "Phase": "B",
+    "Mode": "sync-on",
+    "Allocated": 1296,
+    "Operations": 697744,
+    "BytesPerCycle": 0,
+    "MeasurementOverhead": 1296
+  },
+  {
+    "Phase": "B",
+    "Mode": "pending-on",
+    "Allocated": 1296,
+    "Operations": 436704,
+    "BytesPerCycle": 0,
+    "MeasurementOverhead": 1296
+  },
+  {
+    "Phase": "A2",
+    "Mode": "sync-off",
+    "Allocated": 1296,
+    "Operations": 1035296,
+    "BytesPerCycle": 0,
+    "MeasurementOverhead": 1296
+  },
+  {
+    "Phase": "A2",
+    "Mode": "pending-off",
+    "Allocated": 1296,
+    "Operations": 572112,
+    "BytesPerCycle": 0,
+    "MeasurementOverhead": 1296
+  },
+  {
+    "Phase": "A2",
+    "Mode": "sync-on",
+    "Allocated": 1296,
+    "Operations": 688848,
+    "BytesPerCycle": 0,
+    "MeasurementOverhead": 1296
+  },
+  {
+    "Phase": "A2",
+    "Mode": "pending-on",
+    "Allocated": 64605968,
+    "Operations": 367072,
+    "BytesPerCycle": 176,
+    "MeasurementOverhead": 1296
+  }
+]
