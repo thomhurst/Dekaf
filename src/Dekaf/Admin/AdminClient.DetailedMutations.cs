@@ -1,4 +1,5 @@
 using Dekaf.Errors;
+using Dekaf.Networking;
 using Dekaf.Protocol;
 using Dekaf.Retry;
 
@@ -31,9 +32,7 @@ public sealed partial class AdminClient
             {
                 token.ThrowIfCancellationRequested();
                 await EnsureInitializedAsync(token, protocol.Operation).ConfigureAwait(false);
-                if (_controllerMetadataManager is null && _metadataManager.Metadata.ControllerId < 0)
-                    throw new KafkaException(ErrorCode.BrokerNotAvailable, "No controller available.");
-                using var lease = await LeaseControllerAsync(protocol.ApiKey, token).ConfigureAwait(false);
+                using var lease = await LeaseDetailedControllerAsync(protocol.ApiKey, token).ConfigureAwait(false);
                 var version = _metadataManager.GetNegotiatedApiVersion(
                     lease.Connection, protocol.ApiKey, protocol.MinimumVersion, protocol.MaximumVersion);
                 var request = createRequest(pending, version);
@@ -44,9 +43,10 @@ public sealed partial class AdminClient
                 {
                     response = await lease.Connection.SendAsync<TRequest, TResponse>(request, version, token).ConfigureAwait(false);
                 }
-                catch (Exception exception) when (IsDetailedMutationFailure(exception))
+                catch (Exception exception) when (IsDetailedMutationFailure(exception) || exception is InvalidOperationException)
                 {
                     // SendAsync does not expose an authoritative "not sent" boundary.
+                    // Transport readiness guards also use InvalidOperationException.
                     // Do not replay an ambiguous mutation or reinterpret a later "exists" as success.
                     var failure = MutationFailure(exception, deadline, timeoutMs, protocol.Operation, cancellationToken);
                     foreach (var item in pending)
@@ -92,8 +92,21 @@ public sealed partial class AdminClient
         return results;
     }
 
+    private ValueTask<KafkaConnectionLease> LeaseDetailedControllerAsync(ApiKey apiKey, CancellationToken cancellationToken)
+    {
+        if (_controllerMetadataManager is { } controllerMetadataManager)
+            return controllerMetadataManager.LeaseActiveControllerAsync(apiKey, cancellationToken);
+
+        // Capture one identity for validation and leasing. Keep the existing convenience
+        // method's exception contract separate from detailed per-entity failure handling.
+        var controllerId = _metadataManager.Metadata.ControllerId;
+        if (controllerId < 0)
+            throw new KafkaException(ErrorCode.BrokerNotAvailable, "No controller available.");
+        return _connectionPool.LeaseConnectionAsync(controllerId, cancellationToken);
+    }
+
     internal static bool IsDetailedMutationFailure(Exception exception) => exception is
-        KafkaException or IOException or System.Net.Sockets.SocketException or TimeoutException or OperationCanceledException
+        KafkaException or IOException or System.Net.Sockets.SocketException or TimeoutException or OperationCanceledException or ObjectDisposedException
         || RetryHelper.IsRetriableRequestFailure(exception);
 
     internal static Exception MutationFailure(Exception exception, CancellationTokenSource deadline,

@@ -55,7 +55,12 @@ During execution, cancellation returns the results known so far: completed respo
 intact, unconfirmed sends become `Unknown`, and entities never sent become `NotAttempted`.
 Cancellation during retry backoff preserves the last confirmed rejection. `TimeoutMs` bounds
 discovery, sends and retries together; local deadline failures carry `KafkaTimeoutException`.
-Invalid arguments and programming/invariant failures still throw at the operation level.
+Invalid arguments and programming/invariant failures before dispatch or during response mapping
+still throw at the operation level. Connection disposal before dispatch is `NotAttempted`.
+During dispatch, disposal and `InvalidOperationException` are conservatively `Unknown`: the
+transport uses that exception type for connection-readiness failures as well as other faults,
+and a thrown exception does not provide a definitive broker response. The original exception
+remains available for diagnosis; these mutations are not automatically replayed.
 
 Success means broker acceptance. It does not wait for leader election, metadata propagation,
 replica movement, or physical topic removal. Use metadata or reassignment inspection when those
@@ -98,3 +103,7 @@ to that broker completes immediately; there is no asynchronous replica movement.
 absent reassignment returns `NoReassignmentInProgress`. Unsupported replica targets return
 `InvalidReplicaAssignment`. Creation, deletion, UUID matching and partition expansion inspect
 actual stored state; validate-only requests leave that state unchanged.
+
+The simulator applies each mutation directly and does not parse broker responses. Omitted or
+duplicate response entries are therefore covered by the real client's protocol-response fixtures,
+not by the simulator's per-entity mutation tests.

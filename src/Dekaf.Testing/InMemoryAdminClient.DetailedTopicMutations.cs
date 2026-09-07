@@ -2,6 +2,7 @@ using Dekaf.Admin;
 using Dekaf.Errors;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
+using Dekaf.Retry;
 
 namespace Dekaf.Testing;
 
@@ -119,7 +120,7 @@ public sealed partial class InMemoryAdminClient : IDetailedTopicMutationAdminCli
                             "The simulated mutation did not receive a definitive response.", failure);
                 }
                 results[identifier] = result;
-                if (!AdminMutationResult.IsSafeControllerRetry(result) || attempt >= 3 || token.IsCancellationRequested) break;
+                if (!AdminMutationResult.IsSafeControllerRetry(result) || attempt >= RetryHelper.MaxRetries || token.IsCancellationRequested) break;
                 try
                 {
                     await Task.Delay(1, token).ConfigureAwait(false);

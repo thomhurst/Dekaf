@@ -26,17 +26,20 @@ public sealed class AdminClientDetailedMutationTests
     }
 
     [Test]
-    [Arguments("create")]
-    [Arguments("delete")]
-    [Arguments("expand")]
-    public async Task ControllerMove_RetriesOnlyRejectedEntity(string operation)
+    [Arguments("create", ErrorCode.NotController)]
+    [Arguments("delete", ErrorCode.NotController)]
+    [Arguments("expand", ErrorCode.NotController)]
+    [Arguments("create", ErrorCode.ThrottlingQuotaExceeded)]
+    [Arguments("delete", ErrorCode.ThrottlingQuotaExceeded)]
+    [Arguments("expand", ErrorCode.ThrottlingQuotaExceeded)]
+    public async Task ConfirmedControllerRejection_RetriesOnlyRejectedEntity(string operation, ErrorCode rejection)
     {
         var (admin, connection) = CreateAdmin();
         await using var client = admin;
         var calls = 0;
         Setup(connection, operation, names =>
         {
-            if (++calls == 1) return [("good", ErrorCode.None, null), ("bad", ErrorCode.NotController, "moved")];
+            if (++calls == 1) return [("good", ErrorCode.None, null), ("bad", rejection, "rejected")];
             if (names.Length != 1 || names[0] != "bad") throw new InvalidOperationException("Confirmed mutation was replayed.");
             return [("bad", ErrorCode.None, null)];
         });
@@ -165,9 +168,73 @@ public sealed class AdminClientDetailedMutationTests
         var (admin, connection) = CreateAdmin();
         await using var client = admin;
         var failure = new InvalidOperationException("Invalid fixture invariant");
-        Setup(connection, "create", _ => throw failure);
-        var caught = await Assert.ThrowsAsync<InvalidOperationException>(() => Invoke(admin, "create").AsTask());
+        IEnumerable<NewTopic> InvalidInputSource()
+        {
+            yield return new() { Name = "good" };
+            throw failure;
+        }
+        var caught = await Assert.ThrowsAsync<InvalidOperationException>(() => admin.CreateTopicsDetailedAsync(InvalidInputSource()).AsTask());
         await Assert.That(caught).IsSameReferenceAs(failure);
+        await Assert.That(connection.ReceivedCalls()).IsEmpty();
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task RealConnectionLifecycleFailure_PreservesEarlierSuccess(bool disposed)
+    {
+        var (admin, connection) = CreateAdmin();
+        await using var client = admin;
+        await using var unavailable = new KafkaConnection("localhost", 9092);
+        if (disposed) await unavailable.DisposeAsync();
+        var calls = 0;
+        connection.SendAsync<CreateTopicsRequest, CreateTopicsResponse>(Arg.Any<CreateTopicsRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
+            .Returns(call => ++calls == 1
+                ? ValueTask.FromResult(new CreateTopicsResponse { Topics =
+                    [new() { Name = "good" }, new() { Name = "bad", ErrorCode = ErrorCode.NotController }] })
+                : unavailable.SendAsync<CreateTopicsRequest, CreateTopicsResponse>(call.Arg<CreateTopicsRequest>(), call.Arg<short>(), call.Arg<CancellationToken>()));
+        var results = await Invoke(admin, "create");
+        await Assert.That(calls).IsEqualTo(2);
+        await Assert.That(results["good"].IsSuccess).IsTrue();
+        await Assert.That(results["bad"].Outcome).IsEqualTo(AdminMutationOutcome.Unknown);
+        await Assert.That(results["bad"].ErrorCode).IsNull();
+        if (disposed) await Assert.That(results["bad"].Exception).IsTypeOf<ObjectDisposedException>();
+        else await Assert.That(results["bad"].Exception).IsTypeOf<InvalidOperationException>();
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task LeaseFailure_DistinguishesDisposalFromInvariant(bool disposed)
+    {
+        var (admin, connection) = CreateAdmin();
+        await using var client = admin;
+        Setup(connection, "create", names => names.Select(name => (name, ErrorCode.None, (string?)null)).ToArray());
+        await Invoke(admin, "create");
+        connection.ClearReceivedCalls();
+        var pool = (IConnectionPool)typeof(AdminClient)
+            .GetField("_connectionPool", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+            .GetValue(admin)!;
+        Exception failure = disposed ? new ObjectDisposedException(nameof(ConnectionPool))
+            : new InvalidOperationException("Invalid lease fixture invariant");
+        pool.GetConnectionAsync(Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns<ValueTask<IKafkaConnection>>(_ => throw failure);
+        if (disposed)
+        {
+            var results = await Invoke(admin, "create");
+            await Assert.That(results.Count).IsEqualTo(2);
+            foreach (var result in results.Values)
+            {
+                await Assert.That(result.Outcome).IsEqualTo(AdminMutationOutcome.NotAttempted);
+                await Assert.That(result.Exception).IsSameReferenceAs(failure);
+            }
+        }
+        else
+        {
+            var caught = await Assert.ThrowsAsync<InvalidOperationException>(() => Invoke(admin, "create").AsTask());
+            await Assert.That(caught).IsSameReferenceAs(failure);
+        }
+        await Assert.That(connection.ReceivedCalls()).IsEmpty();
     }
 
     [Test]

@@ -12,7 +12,7 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 [MemoryDiagnoser]
 public class AdminDetailedMutationBenchmarks
 {
-    [Params("create:1", "create:16", "mixed:16", "retry:16", "delete:16", "expand:16", "reassign:16", "reassign-retry:16", "wrapped:16")]
+    [Params("create:1", "create:16", "mixed:16", "retry:16", "delete:16", "expand:16", "reassign:16", "reassign-retry:16", "wrapped:16", "disconnected:16", "disposed:16")]
     public string Scenario { get; set; } = "create:16";
 
     private AdminClient _admin = null!;
@@ -79,7 +79,7 @@ public class AdminDetailedMutationBenchmarks
             if (results[_names[^1]].ErrorCode != ErrorCode.TopicAuthorizationFailed || !results[_names[0]].IsSuccess)
                 throw new InvalidOperationException("Mixed outcomes were not retained.");
         }
-        else if (_operation is "retry" or "wrapped" && _connection.CreateCalls != 2)
+        else if (_operation is "retry" or "wrapped" or "disconnected" or "disposed" && _connection.CreateCalls != 2)
             throw new InvalidOperationException("Expected one controller retry.");
         else if (_operation == "reassign-retry" && _connection.ReassignCalls != 3)
             throw new InvalidOperationException("Expected a partial rejection followed by a top-level rejection.");
@@ -96,12 +96,13 @@ public class AdminDetailedMutationBenchmarks
         foreach (var result in values)
         {
             if (result.IsSuccess) successes++;
-            else if (_operation == "wrapped" && result.Outcome == AdminMutationOutcome.Unknown && result.Exception is InvalidOperationException)
+            else if (_operation is "wrapped" or "disconnected" or "disposed"
+                && result.Outcome == AdminMutationOutcome.Unknown && result.Exception is InvalidOperationException)
                 continue;
             else if (_operation != "mixed" || result.ErrorCode != ErrorCode.TopicAuthorizationFailed)
                 throw new InvalidOperationException("Unexpected mutation outcome.");
         }
-        if (successes != count - (_operation is "mixed" or "wrapped" ? 1 : 0))
+        if (successes != count - (_operation is "mixed" or "wrapped" or "disconnected" or "disposed" ? 1 : 0))
             throw new InvalidOperationException("Incorrect successful mutation count.");
 
         // Actual elapsed workload warmup, independent of BDN's iteration calibration.
@@ -121,7 +122,7 @@ public class AdminDetailedMutationBenchmarks
         PrepareMutation();
         return _operation switch
         {
-            "create" or "mixed" or "retry" or "wrapped" => (await _admin.CreateTopicsDetailedAsync(_topics)).Count,
+            "create" or "mixed" or "retry" or "wrapped" or "disconnected" or "disposed" => (await _admin.CreateTopicsDetailedAsync(_topics)).Count,
             "delete" => (await _admin.DeleteTopicsDetailedAsync(_names)).Count,
             "expand" => (await _admin.CreatePartitionsDetailedAsync(_expansions)).Count,
             "reassign" or "reassign-retry" => (await _admin.AlterPartitionReassignmentsDetailedAsync(_reassignments)).Count,
@@ -131,8 +132,12 @@ public class AdminDetailedMutationBenchmarks
 
     private void PrepareMutation()
     {
-        _connection.RetryNext = _operation is "retry" or "wrapped";
-        _connection.WrappedFailure = _operation == "wrapped";
+        _connection.RetryNext = _operation is "retry" or "wrapped" or "disconnected" or "disposed";
+        _connection.Failure = _operation switch
+        {
+            "wrapped" or "disconnected" or "disposed" => _operation,
+            _ => null
+        };
         _connection.ReassignRetry = _operation == "reassign-retry";
         _connection.ReassignCalls = 0;
         _connection.CreateCalls = 0;
@@ -151,7 +156,7 @@ public class AdminDetailedMutationBenchmarks
     {
         public bool RetryNext { get; set; }
         public int CreateCalls { get; set; }
-        public bool WrappedFailure { get; set; }
+        public string? Failure { get; set; }
         public bool ReassignRetry { get; set; }
         public int ReassignCalls { get; set; }
         private readonly AlterPartitionReassignmentsResponse _partialReassignment = new()
@@ -185,8 +190,14 @@ public class AdminDetailedMutationBenchmarks
         private CreateTopicsResponse NextCreate(int count)
         {
             CreateCalls++;
-            if (WrappedFailure && !RetryNext)
-                throw new InvalidOperationException("Transport unavailable", new IOException("Response lost"));
+            if (!RetryNext && Failure is { } failure)
+                throw failure switch
+                {
+                    "wrapped" => new InvalidOperationException("Transport unavailable", new IOException("Response lost")),
+                    "disconnected" => new InvalidOperationException("Not connected"),
+                    "disposed" => new ObjectDisposedException(nameof(Connection)),
+                    _ => new InvalidOperationException("Unknown failure fixture.")
+                };
             if (!RetryNext) return count == create.Topics.Count ? create : retried;
             RetryNext = false;
             return retry;
