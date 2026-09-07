@@ -205,7 +205,52 @@ public sealed class AdminClientDetailedMutationTests
     [Test]
     [Arguments(false)]
     [Arguments(true)]
-    public async Task LeaseFailure_DistinguishesDisposalFromInvariant(bool disposed)
+    public async Task ControllerRegistrationGap_PreservesUnsentOrConfirmedOutcomes(bool afterResponse)
+    {
+        var (admin, connection) = CreateAdmin();
+        await using var client = admin;
+        await using var unregisteredPool = new ConnectionPool();
+        Setup(connection, "create", names => names.Select(name => (name, ErrorCode.None, (string?)null)).ToArray());
+        await Invoke(admin, "create");
+        var pool = (IConnectionPool)typeof(AdminClient)
+            .GetField("_connectionPool", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+            .GetValue(admin)!;
+        var unavailable = !afterResponse;
+        pool.GetConnectionAsync(Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(call => unavailable
+                ? unregisteredPool.GetConnectionAsync(call.Arg<int>(), call.Arg<CancellationToken>())
+                : ValueTask.FromResult(connection));
+        var sends = 0;
+        Setup(connection, "create", _ =>
+        {
+            sends++;
+            unavailable = true;
+            return [("good", ErrorCode.None, null), ("bad", ErrorCode.NotController, "moved")];
+        });
+
+        var results = await Invoke(admin, "create");
+        await Assert.That(sends).IsEqualTo(afterResponse ? 1 : 0);
+        if (afterResponse)
+        {
+            await Assert.That(results["good"].IsSuccess).IsTrue();
+            await Assert.That(results["bad"].Outcome).IsEqualTo(AdminMutationOutcome.Failed);
+            await Assert.That(results["bad"].ErrorCode).IsEqualTo(ErrorCode.NotController);
+        }
+        else
+        {
+            foreach (var result in results.Values)
+            {
+                await Assert.That(result.Outcome).IsEqualTo(AdminMutationOutcome.NotAttempted);
+                await Assert.That(result.Exception).IsTypeOf<InvalidOperationException>();
+                await Assert.That(result.Exception!.Message).Contains("Unknown broker ID:");
+            }
+        }
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task LeaseLifecycleFailure_ReturnsNotAttemptedAndRetainsOriginalException(bool disposed)
     {
         var (admin, connection) = CreateAdmin();
         await using var client = admin;
@@ -216,25 +261,37 @@ public sealed class AdminClientDetailedMutationTests
             .GetField("_connectionPool", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
             .GetValue(admin)!;
         Exception failure = disposed ? new ObjectDisposedException(nameof(ConnectionPool))
-            : new InvalidOperationException("Invalid lease fixture invariant");
+            : new InvalidOperationException("Unavailable lease fixture");
         pool.GetConnectionAsync(Arg.Any<int>(), Arg.Any<CancellationToken>())
             .Returns<ValueTask<IKafkaConnection>>(_ => throw failure);
-        if (disposed)
+        var results = await Invoke(admin, "create");
+        await Assert.That(results.Count).IsEqualTo(2);
+        foreach (var result in results.Values)
         {
-            var results = await Invoke(admin, "create");
-            await Assert.That(results.Count).IsEqualTo(2);
-            foreach (var result in results.Values)
-            {
-                await Assert.That(result.Outcome).IsEqualTo(AdminMutationOutcome.NotAttempted);
-                await Assert.That(result.Exception).IsSameReferenceAs(failure);
-            }
-        }
-        else
-        {
-            var caught = await Assert.ThrowsAsync<InvalidOperationException>(() => Invoke(admin, "create").AsTask());
-            await Assert.That(caught).IsSameReferenceAs(failure);
+            await Assert.That(result.Outcome).IsEqualTo(AdminMutationOutcome.NotAttempted);
+            await Assert.That(result.Exception).IsSameReferenceAs(failure);
         }
         await Assert.That(connection.ReceivedCalls()).IsEmpty();
+    }
+
+    [Test]
+    public async Task ResponseMappingInvariant_StillPropagates()
+    {
+        var (admin, connection) = CreateAdmin();
+        await using var client = admin;
+        var failure = new InvalidOperationException("Invalid response fixture invariant");
+        connection.SendAsync<CreateTopicsRequest, CreateTopicsResponse>(Arg.Any<CreateTopicsRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(new CreateTopicsResponse { Topics = new InvalidTopicResults(failure) }));
+        var caught = await Assert.ThrowsAsync<InvalidOperationException>(() => Invoke(admin, "create").AsTask());
+        await Assert.That(caught).IsSameReferenceAs(failure);
+    }
+
+    private sealed class InvalidTopicResults(InvalidOperationException failure) : IReadOnlyList<CreateTopicsResponseTopic>
+    {
+        public int Count => 1;
+        public CreateTopicsResponseTopic this[int index] => throw failure;
+        public IEnumerator<CreateTopicsResponseTopic> GetEnumerator() => throw failure;
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
     }
 
     [Test]

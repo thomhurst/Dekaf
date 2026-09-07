@@ -32,7 +32,20 @@ public sealed partial class AdminClient
             {
                 token.ThrowIfCancellationRequested();
                 await EnsureInitializedAsync(token, protocol.Operation).ConfigureAwait(false);
-                using var lease = await LeaseDetailedControllerAsync(protocol.ApiKey, token).ConfigureAwait(false);
+                KafkaConnectionLease acquiredLease;
+                try
+                {
+                    acquiredLease = await LeaseDetailedControllerAsync(protocol.ApiKey, token).ConfigureAwait(false);
+                }
+                catch (InvalidOperationException exception)
+                {
+                    // Metadata can expose a controller before the pool registers its ID.
+                    // Lease failures have not dispatched this mutation; retain prior outcomes.
+                    var failure = MutationFailure(exception, deadline, timeoutMs, protocol.Operation, cancellationToken);
+                    AddNotAttemptedMutations(items, getKey, results, failure);
+                    return;
+                }
+                using var lease = acquiredLease;
                 var version = _metadataManager.GetNegotiatedApiVersion(
                     lease.Connection, protocol.ApiKey, protocol.MinimumVersion, protocol.MaximumVersion);
                 var request = createRequest(pending, version);
@@ -80,16 +93,22 @@ public sealed partial class AdminClient
         catch (Exception exception) when (IsDetailedMutationFailure(exception))
         {
             var failure = MutationFailure(exception, deadline, timeoutMs, protocol.Operation, cancellationToken);
-            foreach (var item in items)
-            {
-                var key = getKey(item);
-                // Retain confirmed rejection even if discovery or cancellation prevents its retry.
-                if (!results.ContainsKey(key))
-                    results.Add(key, AdminMutationResult.Unconfirmed(
-                        AdminMutationOutcome.NotAttempted, "The operation stopped before this mutation was sent.", failure));
-            }
+            AddNotAttemptedMutations(items, getKey, results, failure);
         }
         return results;
+    }
+
+    private static void AddNotAttemptedMutations<TKey, TItem>(List<TItem> items, Func<TItem, TKey> getKey,
+        Dictionary<TKey, AdminMutationResult> results, Exception failure) where TKey : notnull
+    {
+        foreach (var item in items)
+        {
+            var key = getKey(item);
+            // Retain confirmed rejection even if discovery or cancellation prevents its retry.
+            if (!results.ContainsKey(key))
+                results.Add(key, AdminMutationResult.Unconfirmed(
+                    AdminMutationOutcome.NotAttempted, "The operation stopped before this mutation was sent.", failure));
+        }
     }
 
     private ValueTask<KafkaConnectionLease> LeaseDetailedControllerAsync(ApiKey apiKey, CancellationToken cancellationToken)

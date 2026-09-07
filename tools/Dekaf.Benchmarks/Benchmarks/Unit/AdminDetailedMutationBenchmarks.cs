@@ -12,7 +12,7 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 [MemoryDiagnoser]
 public class AdminDetailedMutationBenchmarks
 {
-    [Params("create:1", "create:16", "mixed:16", "retry:16", "delete:16", "expand:16", "reassign:16", "reassign-retry:16", "wrapped:16", "disconnected:16", "disposed:16")]
+    [Params("create:1", "create:16", "mixed:16", "retry:16", "delete:16", "expand:16", "reassign:16", "reassign-retry:16", "wrapped:16", "disconnected:16", "disposed:16", "unregistered:16")]
     public string Scenario { get; set; } = "create:16";
 
     private AdminClient _admin = null!;
@@ -83,6 +83,8 @@ public class AdminDetailedMutationBenchmarks
             throw new InvalidOperationException("Expected one controller retry.");
         else if (_operation == "reassign-retry" && _connection.ReassignCalls != 3)
             throw new InvalidOperationException("Expected a partial rejection followed by a top-level rejection.");
+        else if (_operation == "unregistered" && _connection.CreateCalls != 0)
+            throw new InvalidOperationException("An unregistered controller must not receive a mutation.");
 
         PrepareMutation();
         IEnumerable<AdminMutationResult> values = _operation switch
@@ -96,13 +98,18 @@ public class AdminDetailedMutationBenchmarks
         foreach (var result in values)
         {
             if (result.IsSuccess) successes++;
+            else if (_operation == "unregistered" && result.Outcome == AdminMutationOutcome.NotAttempted
+                && result.Exception is InvalidOperationException)
+                continue;
             else if (_operation is "wrapped" or "disconnected" or "disposed"
                 && result.Outcome == AdminMutationOutcome.Unknown && result.Exception is InvalidOperationException)
                 continue;
             else if (_operation != "mixed" || result.ErrorCode != ErrorCode.TopicAuthorizationFailed)
                 throw new InvalidOperationException("Unexpected mutation outcome.");
         }
-        if (successes != count - (_operation is "mixed" or "wrapped" or "disconnected" or "disposed" ? 1 : 0))
+        var expectedSuccesses = _operation == "unregistered" ? 0
+            : count - (_operation is "mixed" or "wrapped" or "disconnected" or "disposed" ? 1 : 0);
+        if (successes != expectedSuccesses)
             throw new InvalidOperationException("Incorrect successful mutation count.");
 
         // Actual elapsed workload warmup, independent of BDN's iteration calibration.
@@ -122,7 +129,7 @@ public class AdminDetailedMutationBenchmarks
         PrepareMutation();
         return _operation switch
         {
-            "create" or "mixed" or "retry" or "wrapped" or "disconnected" or "disposed" => (await _admin.CreateTopicsDetailedAsync(_topics)).Count,
+            "create" or "mixed" or "retry" or "wrapped" or "disconnected" or "disposed" or "unregistered" => (await _admin.CreateTopicsDetailedAsync(_topics)).Count,
             "delete" => (await _admin.DeleteTopicsDetailedAsync(_names)).Count,
             "expand" => (await _admin.CreatePartitionsDetailedAsync(_expansions)).Count,
             "reassign" or "reassign-retry" => (await _admin.AlterPartitionReassignmentsDetailedAsync(_reassignments)).Count,
@@ -132,6 +139,7 @@ public class AdminDetailedMutationBenchmarks
 
     private void PrepareMutation()
     {
+        _connection.Unregistered = _operation == "unregistered";
         _connection.RetryNext = _operation is "retry" or "wrapped" or "disconnected" or "disposed";
         _connection.Failure = _operation switch
         {
@@ -155,6 +163,7 @@ public class AdminDetailedMutationBenchmarks
         CreatePartitionsResponse expand, AlterPartitionReassignmentsResponse reassign) : IKafkaConnection
     {
         public bool RetryNext { get; set; }
+        public bool Unregistered { get; set; }
         public int CreateCalls { get; set; }
         public string? Failure { get; set; }
         public bool ReassignRetry { get; set; }
@@ -222,11 +231,12 @@ public class AdminDetailedMutationBenchmarks
             where TRequest : IKafkaRequest<TResponse> where TResponse : IKafkaResponse => throw new NotSupportedException();
     }
 
-    private sealed class Pool(IKafkaConnection connection) : IConnectionPool
+    private sealed class Pool(Connection connection) : IConnectionPool
     {
-        public ValueTask<IKafkaConnection> GetConnectionAsync(int brokerId, CancellationToken token = default) => ValueTask.FromResult(connection);
-        public ValueTask<IKafkaConnection> GetConnectionAsync(string host, int port, CancellationToken token = default) => ValueTask.FromResult(connection);
-        public ValueTask<IKafkaConnection> GetConnectionByIndexAsync(int brokerId, int index, CancellationToken token = default) => ValueTask.FromResult(connection);
+        public ValueTask<IKafkaConnection> GetConnectionAsync(int brokerId, CancellationToken token = default) =>
+            connection.Unregistered ? throw new InvalidOperationException("Unknown broker ID: fixture") : ValueTask.FromResult<IKafkaConnection>(connection);
+        public ValueTask<IKafkaConnection> GetConnectionAsync(string host, int port, CancellationToken token = default) => ValueTask.FromResult<IKafkaConnection>(connection);
+        public ValueTask<IKafkaConnection> GetConnectionByIndexAsync(int brokerId, int index, CancellationToken token = default) => ValueTask.FromResult<IKafkaConnection>(connection);
         public void RegisterBroker(int id, string host, int port) { }
         public ValueTask<int> ScaleConnectionGroupAsync(int id, int count, CancellationToken token = default) => ValueTask.FromResult(1);
         public ValueTask<IKafkaConnection?> ShrinkConnectionGroupAsync(int id, int count, CancellationToken token = default) => ValueTask.FromResult<IKafkaConnection?>(null);

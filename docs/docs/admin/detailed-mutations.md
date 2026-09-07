@@ -55,8 +55,11 @@ During execution, cancellation returns the results known so far: completed respo
 intact, unconfirmed sends become `Unknown`, and entities never sent become `NotAttempted`.
 Cancellation during retry backoff preserves the last confirmed rejection. `TimeoutMs` bounds
 discovery, sends and retries together; local deadline failures carry `KafkaTimeoutException`.
-Invalid arguments and programming/invariant failures before dispatch or during response mapping
-still throw at the operation level. Connection disposal before dispatch is `NotAttempted`.
+Invalid arguments and programming/invariant failures during input processing, request construction,
+or response mapping still throw at the operation level. Connection disposal before dispatch is
+`NotAttempted`. An `InvalidOperationException` from controller leasing also leaves unsent entities
+`NotAttempted`: metadata can identify a controller before the connection pool registers its broker
+ID. A previously confirmed success or rejection remains intact if leasing prevents a retry.
 During dispatch, disposal and `InvalidOperationException` are conservatively `Unknown`: the
 transport uses that exception type for connection-readiness failures as well as other faults,
 and a thrown exception does not provide a definitive broker response. The original exception
