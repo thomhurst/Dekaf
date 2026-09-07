@@ -146,51 +146,61 @@ public sealed partial class OutboxRelayService : BackgroundService
     }
 
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
-    private async ValueTask<CycleResult> RunCycleCoreAsync(CancellationToken cancellationToken)
+    private async ValueTask<CycleResult> RunCycleAsync(CancellationToken cancellationToken)
     {
-        await RefreshLeasesIfDueAsync(cancellationToken).ConfigureAwait(false);
-
-        if (_ownedBuckets.Count > 0 && LeaseAge() >= _options.LeaseDuration)
+        var measureDuration = OutboxMetrics.CycleDuration.Enabled;
+        var started = measureDuration ? _timeProvider.GetTimestamp() : 0;
+        try
         {
-            // The acquisition itself outlasted the lease: the rows the store wrote are
-            // already claimable by peers, so publishing would break single-writer ordering.
-            // Correct but must be loud - sustained store latency at this level otherwise
-            // stalls the relay silently. Treated as an error so ErrorBackoff paces retries.
-            LogLeaseExpiredBeforeAcquisitionReturned(_options.LeaseDuration);
-            ResetLeaseState();
-            return new CycleResult(PublishedAny: false, HadError: true);
-        }
+            await RefreshLeasesIfDueAsync(cancellationToken).ConfigureAwait(false);
 
-        if (_ownedBuckets.Count == 0)
-            return new CycleResult(PublishedAny: false, HadError: false);
-
-        // One probe instead of one query per owned bucket, so an idle relay is cheap.
-        var pendingBuckets = await _store.GetBucketsWithPendingAsync(_ownedBuckets, cancellationToken)
-            .ConfigureAwait(false);
-
-        var publishedAny = false;
-        var hadError = false;
-        for (var i = 0; i < pendingBuckets.Count; i++)
-        {
-            if (cancellationToken.IsCancellationRequested)
-                break;
-
-            if (_ownedBuckets.Count == 0 || LeaseAge() >= _options.LeaseDuration)
+            if (_ownedBuckets.Count > 0 && LeaseAge() >= _options.LeaseDuration)
             {
-                // Lease may have expired mid-cycle; stop publishing until re-acquired.
+                // The acquisition itself outlasted the lease: the rows the store wrote are
+                // already claimable by peers, so publishing would break single-writer ordering.
+                // Correct but must be loud - sustained store latency at this level otherwise
+                // stalls the relay silently. Treated as an error so ErrorBackoff paces retries.
+                LogLeaseExpiredBeforeAcquisitionReturned(_options.LeaseDuration);
                 ResetLeaseState();
-                break;
+                return new CycleResult(PublishedAny: false, HadError: true);
             }
 
-            if (_renewalStore is null && !OwnsBucket(pendingBuckets[i]))
-                continue;
+            if (_ownedBuckets.Count == 0)
+                return new CycleResult(PublishedAny: false, HadError: false);
 
-            var bucketResult = await DrainBucketAsync(pendingBuckets[i], cancellationToken).ConfigureAwait(false);
-            publishedAny |= bucketResult.PublishedAny;
-            hadError |= bucketResult.HadError;
+            // One probe instead of one query per owned bucket, so an idle relay is cheap.
+            var pendingBuckets = await _store.GetBucketsWithPendingAsync(_ownedBuckets, cancellationToken)
+                .ConfigureAwait(false);
+
+            var publishedAny = false;
+            var hadError = false;
+            for (var i = 0; i < pendingBuckets.Count; i++)
+            {
+                if (cancellationToken.IsCancellationRequested)
+                    break;
+
+                if (_ownedBuckets.Count == 0 || LeaseAge() >= _options.LeaseDuration)
+                {
+                    // Lease may have expired mid-cycle; stop publishing until re-acquired.
+                    ResetLeaseState();
+                    break;
+                }
+
+                if (_renewalStore is null && !OwnsBucket(pendingBuckets[i]))
+                    continue;
+
+                var bucketResult = await DrainBucketAsync(pendingBuckets[i], cancellationToken).ConfigureAwait(false);
+                publishedAny |= bucketResult.PublishedAny;
+                hadError |= bucketResult.HadError;
+            }
+
+            return new CycleResult(publishedAny, hadError);
         }
-
-        return new CycleResult(publishedAny, hadError);
+        finally
+        {
+            if (measureDuration)
+                OutboxMetrics.RecordDuration(OutboxMetrics.CycleDuration, _metrics, started);
+        }
     }
 
     private void ResetLeaseState()

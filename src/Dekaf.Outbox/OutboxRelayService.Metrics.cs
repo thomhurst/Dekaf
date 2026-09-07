@@ -83,41 +83,12 @@ public sealed partial class OutboxRelayService
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private ValueTask<CycleResult> RunCycleAsync(CancellationToken cancellationToken) =>
-        OutboxMetrics.CycleDuration.Enabled
-            ? MeasureCycleAsync(cancellationToken)
-            : RunCycleCoreAsync(cancellationToken);
-
-    private ValueTask<CycleResult> MeasureCycleAsync(CancellationToken cancellationToken)
-    {
-        var started = _timeProvider.GetTimestamp();
-        var cycle = RunCycleCoreAsync(cancellationToken);
-        if (!cycle.IsCompleted)
-            return AwaitMeasuredCycleAsync(cycle, started);
-
-        OutboxMetrics.RecordDuration(OutboxMetrics.CycleDuration, _metrics, started);
-        return cycle;
-    }
-
-    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
-    private async ValueTask<CycleResult> AwaitMeasuredCycleAsync(ValueTask<CycleResult> cycle, long started)
-    {
-        try
-        {
-            return await cycle.ConfigureAwait(false);
-        }
-        finally
-        {
-            OutboxMetrics.RecordDuration(OutboxMetrics.CycleDuration, _metrics, started);
-        }
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private ValueTask<OutboxPublishResult> PublishAsync(IReadOnlyList<OutboxMessage> batch,
         CancellationToken cancellationToken) => OutboxMetrics.PublishEnabled
         ? PublishMeasuredAsync(batch, cancellationToken)
         : _publisher.PublishAsync(batch, _options.MessageIdHeaderName, cancellationToken);
 
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
     private async ValueTask<OutboxPublishResult> PublishMeasuredAsync(IReadOnlyList<OutboxMessage> batch,
         CancellationToken cancellationToken)
     {
