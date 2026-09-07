@@ -1,4 +1,6 @@
 #nullable enable
+Dekaf.Testing.InMemoryShareConsumer<TKey, TValue>.RegisterMetricForSubscription(Dekaf.Telemetry.ApplicationTelemetryMetric! metric) -> void
+Dekaf.Testing.InMemoryShareConsumer<TKey, TValue>.UnregisterMetricFromSubscription(string! name) -> void
 Dekaf.Testing.InMemoryConsumer<TKey, TValue>.GetCurrentLag(Dekaf.TopicPartition partition) -> long?
 Dekaf.Testing.InMemoryConsumer<TKey, TValue>.QueryCurrentLagAsync(Dekaf.TopicPartition partition, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<long?>
 Dekaf.Testing.InMemoryAdminClient.DeleteTopicsAsync(System.Collections.Generic.IEnumerable<System.Guid>! topicIds, Dekaf.Admin.DeleteTopicsOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask

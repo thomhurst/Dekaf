@@ -1,13 +1,14 @@
 using System.Runtime.CompilerServices;
 using Dekaf.Serialization;
 using Dekaf.ShareConsumer;
+using Dekaf.Telemetry;
 
 namespace Dekaf.Testing;
 
 /// <summary>
 /// In-memory <see cref="IKafkaShareConsumer{TKey,TValue}"/> backed by an <see cref="InMemoryKafkaCluster"/>.
 /// </summary>
-public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TKey, TValue>
+public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TKey, TValue>, IApplicationTelemetryShareConsumer
 {
     private readonly object _gate = new();
     private readonly InMemoryKafkaCluster _cluster;
@@ -508,6 +509,24 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
                 Array.Clear(_commitRecords, 0, recordCount);
             }
         }
+    }
+
+    /// <summary>
+    /// Validates the registration without collecting or publishing telemetry.
+    /// </summary>
+    public void RegisterMetricForSubscription(ApplicationTelemetryMetric metric)
+    {
+        ArgumentNullException.ThrowIfNull(metric);
+        ThrowIfDisposed();
+    }
+
+    /// <summary>
+    /// Validates the metric name without collecting or publishing telemetry.
+    /// </summary>
+    public void UnregisterMetricFromSubscription(string name)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        ThrowIfDisposed();
     }
 
     public async ValueTask CloseAsync(CancellationToken cancellationToken = default)
