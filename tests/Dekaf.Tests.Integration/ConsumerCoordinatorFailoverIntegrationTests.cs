@@ -11,6 +11,9 @@ namespace Dekaf.Tests.Integration;
 [ClassDataSource<RackAwareKafkaContainer>(Shared = SharedType.PerTestSession)]
 public sealed class ConsumerCoordinatorFailoverIntegrationTests(RackAwareKafkaContainer kafka)
 {
+    private const int ClassicDiagnosticCapacity = 4096;
+    private readonly ConcurrentQueue<string> _classicDiagnostics = new();
+
     private const int PartitionCount = 6;
     private const int MessagesPerPartition = 20;
     private const int MessageCount = PartitionCount * MessagesPerPartition;
@@ -25,6 +28,13 @@ public sealed class ConsumerCoordinatorFailoverIntegrationTests(RackAwareKafkaCo
     /// was stuck on instead, and three of them still fit inside the test timeout.
     /// </summary>
     private static readonly TimeSpan ConvergenceTimeout = TimeSpan.FromSeconds(60);
+
+    [After(Test)]
+    public void PrintClassicDiagnostics()
+    {
+        if (!_classicDiagnostics.IsEmpty)
+            Console.WriteLine(string.Join(Environment.NewLine, _classicDiagnostics));
+    }
 
     [Test]
     [Timeout(240_000)]
@@ -478,7 +488,15 @@ public sealed class ConsumerCoordinatorFailoverIntegrationTests(RackAwareKafkaCo
             EnableAutoCommit = false,
             EnableAutoOffsetStore = false,
             SessionTimeoutMs = (int)SessionTimeout.TotalMilliseconds,
-            HeartbeatIntervalMs = 1_000
+            HeartbeatIntervalMs = 1_000,
+            // Keep native state changes for the next convergence failure. Native callbacks
+            // lack TUnit's execution context, so the owning test writes the bounded log later.
+            Debug = "cgrp,metadata,topic"
+        }).SetLogHandler((consumer, message) =>
+        {
+            _classicDiagnostics.Enqueue($"{DateTimeOffset.UtcNow:O} {message.Name} {message.Facility}: {message.Message}");
+            if (_classicDiagnostics.Count > ClassicDiagnosticCapacity)
+                _classicDiagnostics.TryDequeue(out _);
         });
         if (listener is not null)
         {
