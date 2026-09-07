@@ -81,6 +81,10 @@ Merge requires an open, ready-for-review PR; `MERGEABLE` and `CLEAN`; every appl
 
 Use current repository rules/instructions for approval requirements. Historical merges without approval do not prove approval is optional; inaccessible protection APIs do not prove no protection exists.
 
+Archive validation evidence when first citing it in a PR, outside every removable worktree. Use a durable directory alongside the shared checkout and `Dekaf-worktrees`, organized by PR number and measured SHA, or a durable uploaded artifact. Include raw benchmark/test reports, experiment inputs and hashes, fixture/probe sources, and loaded binaries needed to reproduce or reanalyze the evidence. Include both head-branch and detached review checkouts.
+
+Before invoking the merge wrapper, verify the archived file inventory and SHA-256 hashes against the originals, then update the PR with the durable location. `.artifacts`, `bin`, `TestResults`, and similar generated directories inside a worktree are disposable under [WorktreeCleanup.ps1](../../../scripts/WorktreeCleanup.ps1); another worker's merge or sweep can remove them. If archival fails, defer the merge and take another item. If evidence is already lost, correct its retention claim explicitly; a rerun is new evidence, not recovery of deleted results.
+
 ```powershell
 pwsh scripts/Merge-Pr.ps1 -Pr <N> -Worktree $worktree
 ```
