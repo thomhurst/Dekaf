@@ -8,7 +8,8 @@ internal enum ClientTelemetryClientRole
 {
     Producer,
     Consumer,
-    Admin
+    Admin,
+    ShareConsumer
 }
 
 internal enum ClientTelemetryMetricKind
@@ -89,7 +90,7 @@ internal sealed class ClientTelemetryMetricCollector
                 ClientTelemetryMetricNames.ConsumerNodeRequestLatencyMax,
                 ClientTelemetryMetricNames.ConsumerFetchThrottleTimeAvg,
                 ClientTelemetryMetricNames.ConsumerFetchThrottleTimeMax),
-            ClientTelemetryClientRole.Admin => (null, null, null, null, null),
+            ClientTelemetryClientRole.Admin or ClientTelemetryClientRole.ShareConsumer => (null, null, null, null, null),
             _ => throw new ArgumentOutOfRangeException(nameof(role), role, "Unsupported telemetry client role")
         };
     }

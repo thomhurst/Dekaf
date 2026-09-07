@@ -7,11 +7,13 @@ using Dekaf.Networking;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
 using Dekaf.Telemetry;
+using Dekaf.ShareConsumer;
+using Dekaf.Serialization;
 
 namespace Dekaf.Tests.Unit.Telemetry;
 
 [NotInParallel]
-public sealed class ClientTelemetryManagerTests
+public sealed partial class ClientTelemetryManagerTests
 {
     [Test]
     public async Task StartAsync_FetchesSubscriptionAndStoresIds()
@@ -413,7 +415,8 @@ public sealed class ClientTelemetryManagerTests
         public TelemetryTestContext(
             ClientTelemetryMetricCollector? metricCollector = null,
             CompressionCodecRegistry? compressionCodecs = null,
-            IClientTelemetryPayloadProvider? payloadProvider = null)
+            IClientTelemetryPayloadProvider? payloadProvider = null,
+            ShareConsumerOptions? shareConsumerOptions = null)
         {
             _pool = new TestConnectionPool();
             _metadataManager = new MetadataManager(_pool, ["localhost:9092"]);
@@ -435,19 +438,33 @@ public sealed class ClientTelemetryManagerTests
                 Topics = []
             });
 
-            Manager = new ClientTelemetryManager(
-                _pool,
-                _metadataManager,
-                metricCollector: metricCollector,
-                compressionCodecs: compressionCodecs,
-                payloadProvider: payloadProvider);
+            if (shareConsumerOptions is null)
+            {
+                Manager = new ClientTelemetryManager(
+                    _pool,
+                    _metadataManager,
+                    metricCollector: metricCollector,
+                    compressionCodecs: compressionCodecs,
+                    payloadProvider: payloadProvider);
+            }
+            else
+            {
+                ShareConsumer = new KafkaShareConsumer<string, string>(
+                    shareConsumerOptions, Serializers.String, Serializers.String, _pool, _metadataManager);
+                Manager = (ClientTelemetryManager)typeof(KafkaShareConsumer<string, string>)
+                    .GetField("_telemetryManager", BindingFlags.Instance | BindingFlags.NonPublic)!
+                    .GetValue(ShareConsumer)!;
+            }
         }
 
+        public KafkaShareConsumer<string, string>? ShareConsumer { get; }
         public ClientTelemetryManager Manager { get; }
         public TestKafkaConnection Connection => _pool.Connection;
 
         public async ValueTask DisposeAsync()
         {
+            if (ShareConsumer is not null)
+                await ShareConsumer.DisposeAsync();
             await Manager.DisposeAsync().ConfigureAwait(false);
             await _metadataManager.DisposeAsync().ConfigureAwait(false);
             await _pool.DisposeAsync().ConfigureAwait(false);

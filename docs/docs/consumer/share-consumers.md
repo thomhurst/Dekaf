@@ -199,6 +199,36 @@ Common builder options beyond the connection/TLS/SASL settings shared with other
 | `WithSessionTimeoutMs` | 45000 | Coordinator removes the member without a heartbeat within this window |
 | `WithHeartbeatIntervalMs` | 3000 | Initial heartbeat interval (broker may adjust) |
 
+## Application telemetry
+
+Share consumers can publish application counters and gauges through [broker-side telemetry](../observability#broker-side-telemetry-kip-714). Register metrics on the builder or on a running consumer:
+
+```csharp
+using System.Threading;
+using Dekaf.ShareConsumer;
+using Dekaf.Telemetry;
+
+long completed = 0;
+await using var consumer = await Kafka.CreateShareConsumer<string, string>()
+    .WithBootstrapServers("localhost:9092")
+    .WithGroupId("jobs")
+    .RegisterMetricForSubscription(new ApplicationTelemetryMetric(
+        "com.example.jobs.completed", ApplicationTelemetryMetricKind.Counter,
+        () => Interlocked.Read(ref completed)))
+    .BuildAsync();
+
+consumer.RegisterMetricForSubscription(new ApplicationTelemetryMetric(
+    "com.example.jobs.queue.depth", ApplicationTelemetryMetricKind.Gauge,
+    () => 42));
+consumer.UnregisterMetricFromSubscription("com.example.jobs.queue.depth");
+```
+
+The broker's client-metrics configuration selects metric name prefixes, collection interval, compression, and counter temporality. Supply a cumulative monotonic value for a counter; Dekaf computes deltas when requested. Observation callbacks run on the telemetry background loop, so keep them fast, non-blocking, and safe to call alongside application work. Metrics outside requested prefixes are not observed.
+
+Registering the same name replaces its previous metric and resets counter history. Removing a missing name does nothing. Builders snapshot registrations for each built consumer; `ShareConsumerOptions.ApplicationMetrics` also supplies initial registrations. Metric attributes are copied when the metric is created. Registration and removal after consumer disposal throw `ObjectDisposedException`.
+
+Runtime methods use the optional `IApplicationTelemetryShareConsumer` capability. Existing implementations of `IKafkaShareConsumer<TKey, TValue>` remain compatible; the extension methods throw `NotSupportedException` when that capability is absent. A supported broker receives the encoded application metrics under the client's assigned instance identity, including the final telemetry push during shutdown.
+
 ## Thread Safety
 
 `IKafkaShareConsumer<TKey, TValue>` is **not thread-safe**. Call `Subscribe`, `PollAsync`, `Acknowledge`, `CommitAsync`, and `Unsubscribe` from a single thread or with external synchronization. Run multiple consumer instances for parallelism — that is the point of share groups.

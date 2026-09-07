@@ -1,6 +1,7 @@
 using System.Net.Security;
 using Dekaf.Networking;
 using Dekaf.Retry;
+using Dekaf.Telemetry;
 using Dekaf.Security;
 using Dekaf.Security.Sasl;
 
@@ -13,6 +14,11 @@ namespace Dekaf.ShareConsumer;
 public sealed class ShareConsumerOptions
 {
     private TimeSpan? _connectionTimeoutMax;
+
+    /// <summary>Application metrics registered when the consumer is constructed.</summary>
+    /// <remarks>Registrations are snapshotted by the consumer. Only broker-requested prefixes are collected.</remarks>
+    public IReadOnlyList<ApplicationTelemetryMetric> ApplicationMetrics { get; init; } = [];
+
 
     /// <summary>
     /// Bootstrap servers (host:port,host:port).

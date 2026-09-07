@@ -13,3 +13,14 @@ Dekaf.Admin.ListGroupsOptions.States.init -> void
 Dekaf.Admin.ListGroupsOptions.Types.get -> System.Collections.Generic.IReadOnlyList<string!>?
 Dekaf.Admin.ListGroupsOptions.Types.init -> void
 static Dekaf.Admin.AdminClientGroupListingExtensions.ListGroupsAsync(this Dekaf.Admin.IAdminClient! adminClient, Dekaf.Admin.ListGroupsOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyList<Dekaf.Admin.GroupListing!>!>
+
+Dekaf.ShareConsumer.IApplicationTelemetryShareConsumer
+Dekaf.ShareConsumer.IApplicationTelemetryShareConsumer.RegisterMetricForSubscription(Dekaf.Telemetry.ApplicationTelemetryMetric! metric) -> void
+Dekaf.ShareConsumer.IApplicationTelemetryShareConsumer.UnregisterMetricFromSubscription(string! name) -> void
+Dekaf.ShareConsumer.ShareConsumerOptions.ApplicationMetrics.get -> System.Collections.Generic.IReadOnlyList<Dekaf.Telemetry.ApplicationTelemetryMetric!>!
+Dekaf.ShareConsumer.ShareConsumerOptions.ApplicationMetrics.init -> void
+Dekaf.ShareConsumer.ShareConsumerTelemetryExtensions
+Dekaf.ShareConsumerBuilder<TKey, TValue>.RegisterMetricForSubscription(Dekaf.Telemetry.ApplicationTelemetryMetric! metric) -> Dekaf.ShareConsumerBuilder<TKey, TValue>!
+Dekaf.ShareConsumerBuilder<TKey, TValue>.UnregisterMetricFromSubscription(string! name) -> Dekaf.ShareConsumerBuilder<TKey, TValue>!
+static Dekaf.ShareConsumer.ShareConsumerTelemetryExtensions.RegisterMetricForSubscription<TKey, TValue>(this Dekaf.ShareConsumer.IKafkaShareConsumer<TKey, TValue>! consumer, Dekaf.Telemetry.ApplicationTelemetryMetric! metric) -> void
+static Dekaf.ShareConsumer.ShareConsumerTelemetryExtensions.UnregisterMetricFromSubscription<TKey, TValue>(this Dekaf.ShareConsumer.IKafkaShareConsumer<TKey, TValue>! consumer, string! name) -> void
