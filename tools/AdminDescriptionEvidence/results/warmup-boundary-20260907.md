@@ -22,7 +22,7 @@ A further diagnostic inventory trace extends measurement to 20 seconds. It retai
 
 Residual activity still needs an assessment of its startup contribution and effect on protected metrics. No acceptance tolerance is widened, no measured sample is discarded, and no passing verdict follows from a clean individual trace. The complete-entry primer is a causal harness improvement, not a waiver of the runtime-activity, latency, CPU, allocation, or stability requirements. An extended elapsed warmup is a possible next causal experiment; a new hosted acceptance campaign remains deferred until the measurement design is justified.
 
-The related #3136 and #3129 hosted campaigns, runs `34161413446` and `34163715940`, were stopped because their shared probe used only 30-second warmup and no complete-entry primer. Their exact-head gates remain nonpassing, and partial artifacts are retained. They are incomplete experiments, not confirmed product regressions.
+The related #3136 and #3129 hosted campaigns, runs `34161413446` and `34163715940`, were stopped because their shared probe used only 30-second warmup and no complete-entry primer. Their retained configurations confirm renewed compilation: #3136 has 93–132 compilations in the first measured interval across 28 complete probes; #3129 has 97–127 across 14. Their exact-head gates remain nonpassing. [#3136 partial metrics and retention limits](https://github.com/thomhurst/Dekaf/pull/3136#issuecomment-5576172928) and [#3129 partial metrics and retention limits](https://github.com/thomhurst/Dekaf/pull/3129#issuecomment-5576173055) retain the failed experiment context. The #3136 legacy 32-group control also exceeds several candidate loss limits; improving the harness must not be assumed to remove that observed cost. These are incomplete, startup-affected experiments, not confirmed product regressions.
 
 ## Retained evidence and reproduction
 
@@ -36,3 +36,7 @@ dotnet tools/AdminJitTraceInspector/bin/Release/net10.0/AdminJitTraceInspector.d
 ```
 
 The checked-in inspector preserves JIT method names, signatures, IDs, threads, timestamps, tier payloads and phase markers. It rejects traces with lost events. Acceptance remains an unprofiled, same-VM `ubuntu-latest` A1/B/A2 campaign with exact product/harness pins, predeclared identical settings, and all protected metrics assessed against both controls.
+
+## Tooling validation
+
+Harness `b7aefef97cf7759ab5f7ddbd6546362863e4a3fe` passes all 14 A1/B/A2 BDN smoke configurations, both product builds, every fixture validation, complete-entry primer checks, and loaded-assembly identity verification. The smoke uses 0.2-second workload warmup/measurement and `Job.Dry`; it validates tooling only. All raw smoke evidence is retained at `C:/git/Dekaf-evidence/pr-3128/warmup-boundary/full-smoke/archive/`, with all 900 inventory entries independently SHA-256-verified after completion. Ten evaluator/integrity tests and actionlint pass. The following documentation-only update changes no measured harness code.
