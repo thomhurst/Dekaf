@@ -1,13 +1,20 @@
 // @ts-check
-import {themes as prismThemes} from 'prism-react-renderer';
-
+/** @type {import('prism-react-renderer').PrismTheme} */
 const dekafPrismTheme = {
-  ...prismThemes.dracula,
   plain: {
-    ...prismThemes.dracula.plain,
-    color: '#d3daf0',
-    backgroundColor: '#090e1a',
+    color: '#eee6fa',
+    backgroundColor: '#2a203c',
   },
+  styles: [
+    {types: ['comment', 'prolog', 'doctype', 'cdata'], style: {color: '#bcb0ce'}},
+    {types: ['keyword', 'builtin', 'constant', 'boolean'], style: {color: '#c5a7f9'}},
+    {types: ['function', 'class-name', 'attr-name'], style: {color: '#92b7e1'}},
+    {types: ['string', 'char', 'attr-value', 'number'], style: {color: '#edaa76'}},
+    {types: ['tag', 'selector', 'variable'], style: {color: '#d4c0f2'}},
+    {types: ['inserted'], style: {color: '#a6cbb4'}},
+    {types: ['deleted'], style: {color: '#eba1b5'}},
+    {types: ['changed'], style: {color: '#edaa76'}},
+  ],
 };
 
 /**
@@ -55,7 +62,17 @@ const config = {
     {
       tagName: 'link',
       attributes: {
+        rel: 'icon',
+        type: 'image/svg+xml',
+        sizes: 'any',
+        href: '/Dekaf/img/favicon.svg',
+      },
+    },
+    {
+      tagName: 'link',
+      attributes: {
         rel: 'apple-touch-icon',
+        sizes: '180x180',
         href: '/Dekaf/img/apple-touch-icon.png',
       },
     },
@@ -157,8 +174,8 @@ const config = {
         title: 'Dekaf',
         logo: {
           alt: 'Dekaf Logo',
-          src: 'img/logo-light.png',
-          srcDark: 'img/logo-dark.png',
+          src: 'img/logo.svg',
+          srcDark: 'img/logo-dark.svg',
         },
         items: [
           {
