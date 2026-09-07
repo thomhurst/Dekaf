@@ -32,8 +32,12 @@ public sealed class ConsumerCoordinatorFailoverIntegrationTests(RackAwareKafkaCo
     [After(Test)]
     public void PrintClassicDiagnostics()
     {
-        if (!_classicDiagnostics.IsEmpty)
-            Console.WriteLine(string.Join(Environment.NewLine, _classicDiagnostics));
+        var state = TestContext.Current?.Execution.Result?.State;
+        if (state is not (TestState.Failed or TestState.Timeout or TestState.Cancelled)
+            || _classicDiagnostics.IsEmpty)
+            return;
+
+        Console.WriteLine(string.Join(Environment.NewLine, _classicDiagnostics));
     }
 
     [Test]
@@ -495,6 +499,7 @@ public sealed class ConsumerCoordinatorFailoverIntegrationTests(RackAwareKafkaCo
         }).SetLogHandler((consumer, message) =>
         {
             _classicDiagnostics.Enqueue($"{DateTimeOffset.UtcNow:O} {message.Name} {message.Facility}: {message.Message}");
+            // Concurrent callbacks can briefly overshoot this target by the number of writers.
             if (_classicDiagnostics.Count > ClassicDiagnosticCapacity)
                 _classicDiagnostics.TryDequeue(out _);
         });
