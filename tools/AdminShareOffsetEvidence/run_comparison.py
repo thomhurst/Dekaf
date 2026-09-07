@@ -14,6 +14,7 @@ import sys
 
 CONTROLS = ['legacy:32', 'legacy:1', 'inventory:32']
 NEW_CASES = ['batch:32', 'batch:1', 'batch0:32', 'mixed:32', 'retry:32', 'cancel:1', 'deadline:1', 'inventory-batch:32']
+INCREMENTAL = ['batch:32', 'batch:1']
 LIMITS = {'CallsPerSecond': .03, 'CpuNsPerCall': .03, 'P50Ns': .05, 'P99Ns': .05, 'MaxNs': .05}
 
 
@@ -67,6 +68,21 @@ def validate_probe(path, minimum_seconds):
     return data
 
 
+def retain_loaded_binaries(manifest, original_root, archive_root):
+    rows = json.loads(manifest.read_text(encoding='utf-8-sig'))
+    if not rows or not any(Path(row['Path']).name == 'Dekaf.dll' for row in rows):
+        raise ValueError(f'{manifest}: loaded product identity missing')
+    for row in rows:
+        original = Path(row['Path']).resolve()
+        relative = original.relative_to(original_root.resolve())
+        target = archive_root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(original, target)
+        for path in [original, target]:
+            if hashlib.sha256(path.read_bytes()).hexdigest() != row['Sha256']:
+                raise ValueError(f'{manifest}: loaded binary hash mismatch: {path}')
+
+
 def compare(a1, b, a2):
     rows = []
     within_limits = True
@@ -93,9 +109,9 @@ def compare(a1, b, a2):
 def execute(args):
     source = Path(__file__).resolve().parent
     repository = Path(run(['git', 'rev-parse', '--show-toplevel'], source))
-    for revision in [args.baseline, args.candidate]:
+    for revision in [args.baseline, args.candidate, args.predecessor]:
         if not re.fullmatch('[0-9a-f]{40}', revision):
-            raise ValueError('Both product revisions must be exact lowercase SHA-1 commits')
+            raise ValueError('All product revisions must be exact lowercase SHA-1 commits')
     output = Path(args.output).resolve()
     if output.exists():
         raise ValueError('Output directory must be new; never overwrite an earlier experiment')
@@ -106,13 +122,16 @@ def execute(args):
     if main_now != args.baseline:
         raise ValueError(f'Fresh main moved to {main_now}; rebase/pin before acceptance')
     run(['git', 'merge-base', '--is-ancestor', args.baseline, args.candidate], repository)
-    metadata = dict(A=args.baseline, B=args.candidate, harness=run(['git', 'rev-parse', 'HEAD'], repository),
+    if run(['git', 'rev-parse', args.candidate + '^'], repository) != args.predecessor:
+        raise ValueError('Predecessor must be the immediately preceding product commit')
+    metadata = dict(A=args.baseline, B=args.candidate, P=args.predecessor, harness=run(['git', 'rev-parse', 'HEAD'], repository),
                     main_at_start=main_now, platform=platform.platform(), machine=platform.machine(),
                     image=os.environ.get('ImageOS'), image_version=os.environ.get('ImageVersion'),
                     github_run=os.environ.get('GITHUB_RUN_ID'), smoke=args.smoke,
                     warmup_seconds=.2 if args.smoke else 30, measured_seconds=.2 if args.smoke else 60,
                     runtime={'DOTNET_TieredCompilation':'1', 'DOTNET_TieredPGO':'1', 'DOTNET_gcServer':'0'},
-                    controls=CONTROLS, candidate_only=NEW_CASES)
+                    controls=CONTROLS, candidate_only=NEW_CASES, incremental=INCREMENTAL,
+                    phases=['A1', 'B', 'A2', 'P1', 'B2', 'P2'])
     save(archive / 'provenance.json', metadata)
     run(['dotnet', '--info'], repository, archive / 'dotnet-info.txt')
     if sys.platform.startswith('linux'):
@@ -126,7 +145,7 @@ def execute(args):
     created = []
     products = {}
     try:
-        for name, revision in [('A', args.baseline), ('B', args.candidate)]:
+        for name, revision in [('A', args.baseline), ('B', args.candidate), ('P', args.predecessor)]:
             checkout = work / name
             run(['git', 'worktree', 'add', '--detach', str(checkout), revision], repository)
             created.append(checkout)
@@ -139,7 +158,7 @@ def execute(args):
             for path in copied_sources:
                 shutil.copy2(path, project / path.name)
             (project / 'Revision.props').write_text(
-                f'<Project><PropertyGroup><Candidate>{str(name == "B").lower()}</Candidate></PropertyGroup></Project>', encoding='utf-8')
+                f'<Project><PropertyGroup><Candidate>{str(name != "A").lower()}</Candidate></PropertyGroup></Project>', encoding='utf-8')
             run(['dotnet','build',str(project / 'Runner.csproj'),'-c','Release','--disable-build-servers'], checkout, archive / f'build-{name}.log')
             binary = project / 'bin' / 'Release' / 'net10.0' / 'Dekaf.Benchmarks.dll'
             products[name] = (checkout, binary)
@@ -150,27 +169,38 @@ def execute(args):
         env.update(metadata['runtime'])
         env['ADMIN_EVIDENCE_WARMUP_SECONDS'] = str(metadata['warmup_seconds'])
         for name, (checkout, binary) in products.items():
-            for case in CONTROLS + (NEW_CASES if name == 'B' else []):
+            for case in (INCREMENTAL if name == 'P' else CONTROLS + (NEW_CASES if name == 'B' else [])):
                 destination = archive / 'validation' / name / case.replace(':','-')
                 run(['dotnet',str(binary),'probe',case,str(destination),'.2','.2'], checkout, destination / 'run.log', env)
                 validate_probe(destination / 'measured.json', .2)
         if os.environ.get('GITHUB_ACTIONS') == 'true':
             run(['dotnet','build-server','shutdown'], repository, archive / 'build-server-shutdown.log')
-        for phase, product in [('A1','A'), ('B','B'), ('A2','A')]:
+        for phase, product in [('A1','A'), ('B','B'), ('A2','A'), ('P1','P'), ('B2','B'), ('P2','P')]:
             checkout, binary = products[product]
-            cases = CONTROLS + (NEW_CASES if product == 'B' else [])
+            cases = INCREMENTAL if phase in ['P1', 'B2', 'P2'] else CONTROLS + (NEW_CASES if product == 'B' else [])
             for case in cases:
                 destination = archive / phase / case.replace(':','-')
                 run(['dotnet',str(binary),'probe',case,str(destination),str(metadata['warmup_seconds']),str(metadata['measured_seconds'])],
                     checkout, destination / 'probe.log', env)
                 validate_probe(destination / 'warmup.json', metadata['warmup_seconds'])
                 validate_probe(destination / 'measured.json', metadata['measured_seconds'])
+                retain_loaded_binaries(destination / 'binaries.json', binary.parent, archive / 'binaries' / product)
             env['ADMIN_EVIDENCE_CASES'] = ','.join(cases)
             env['ADMIN_EVIDENCE_WARMUP_DIRECTORY'] = str(archive / phase / 'bdn-runtime')
             bdn = ['dotnet',str(binary),'--filter','*AdminEvidenceBenchmark*','--exporters','fulljson',
                    '--artifacts',str(archive / phase / 'bdn')]
             bdn += ['--smoke-bdn'] if args.smoke else []
             run(bdn, binary.parent, archive / phase / 'bdn.log', env)
+            for generated in binary.parent.glob('Dekaf.Benchmarks-*'):
+                if generated.is_dir():
+                    target = archive / phase / 'bdn-binaries' / generated.name
+                    shutil.copytree(generated, target)
+                    verify_copied_tree(generated, target)
+            manifests = list((archive / phase / 'bdn-runtime').glob('binaries-*.json'))
+            if len(manifests) < len(cases):
+                raise ValueError(f'{phase}: loaded BDN binary identities missing')
+            for manifest in manifests:
+                retain_loaded_binaries(manifest, binary.parent, archive / phase / 'bdn-binaries')
             reports = list((archive / phase / 'bdn' / 'results').glob('*-full.json'))
             benchmarks = [benchmark for path in reports for benchmark in json.loads(path.read_text(encoding='utf-8-sig')).get('Benchmarks', [])]
             if len(benchmarks) != len(cases) or any(not b.get('Statistics') for b in benchmarks):
@@ -190,6 +220,11 @@ def execute(args):
             inputs = [json.loads((archive / phase / case.replace(':','-') / 'measured.json').read_text(encoding='utf-8-sig')) for phase in ['A1','B','A2']]
             summary[case] = compare(*inputs)
         save(archive / 'control-assessment.json', summary)
+        incremental = {}
+        for case in INCREMENTAL:
+            inputs = [json.loads((archive / phase / case.replace(':','-') / 'measured.json').read_text(encoding='utf-8-sig')) for phase in ['P1','B2','P2']]
+            incremental[case] = compare(*inputs)
+        save(archive / 'incremental-assessment.json', {'phase_labels': {'A1': 'P1', 'B': 'B2', 'A2': 'P2'}, 'cases': incremental})
     finally:
         try:
             metadata['main_at_end'] = run(['git','ls-remote','origin','refs/heads/main'], repository).split()[0]
@@ -212,6 +247,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--baseline', required=True)
     parser.add_argument('--candidate', required=True)
+    parser.add_argument('--predecessor', required=True)
     parser.add_argument('--output', required=True)
     parser.add_argument('--smoke', action='store_true')
     execute(parser.parse_args())

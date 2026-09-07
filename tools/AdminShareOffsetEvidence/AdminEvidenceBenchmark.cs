@@ -17,10 +17,11 @@ public class AdminEvidenceBenchmark
         _sampler = new RuntimeSampler();
         _fixture = new AdminFixture(Case);
         await _fixture.InitializeAsync();
+        var output = Environment.GetEnvironmentVariable("ADMIN_EVIDENCE_WARMUP_DIRECTORY") ?? Path.GetTempPath();
+        Probe.SaveLoadedBinaries(Path.Combine(output, $"binaries-{Case.Replace(':', '-')}-{Environment.ProcessId}.json"));
         var seconds = double.Parse(Environment.GetEnvironmentVariable("ADMIN_EVIDENCE_WARMUP_SECONDS") ?? "30",
             System.Globalization.CultureInfo.InvariantCulture);
         var warmup = await Probe.MeasureAsync(_fixture, seconds);
-        var output = Environment.GetEnvironmentVariable("ADMIN_EVIDENCE_WARMUP_DIRECTORY") ?? Path.GetTempPath();
         Probe.Save(Path.Combine(output, $"{Case.Replace(':', '-')}-{Environment.ProcessId}.json"), warmup);
         Console.WriteLine($"BDN workload warmup: {warmup.Seconds:F3}s; {warmup.Completed} completed calls; JIT methods {warmup.Start.JitMethods}/{warmup.End.JitMethods}");
     }

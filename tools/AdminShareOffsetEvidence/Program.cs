@@ -11,6 +11,7 @@ if (args.Length > 0 && args[0] == "probe")
     if (args.Length != 5) throw new ArgumentException("probe CASE OUTPUT WARMUP_SECONDS MEASURED_SECONDS");
     await using var fixture = new AdminFixture(args[1]);
     await fixture.InitializeAsync();
+    Probe.SaveLoadedBinaries(Path.Combine(args[2], "binaries.json"));
     var warmup = await Probe.MeasureAsync(fixture, double.Parse(args[3], System.Globalization.CultureInfo.InvariantCulture));
     var measured = await Probe.MeasureAsync(fixture, double.Parse(args[4], System.Globalization.CultureInfo.InvariantCulture));
     Probe.Save(Path.Combine(args[2], "warmup.json"), warmup);
@@ -25,5 +26,5 @@ var toolchain = new Toolchain("AdminEvidence", new EvidenceGenerator(), builtIn.
 var job = (smoke ? Job.Dry : Job.Default.WithIterationCount(12).WithIterationTime(TimeInterval.FromMilliseconds(500))
     .WithWarmupCount(6).WithLaunchCount(1)).WithToolchain(toolchain);
 var summaries = BenchmarkSwitcher.FromAssembly(typeof(AdminEvidenceBenchmark).Assembly)
-    .Run(args, DefaultConfig.Instance.AddJob(job));
+    .Run(args, DefaultConfig.Instance.AddJob(job).KeepBenchmarkFiles());
 return summaries.Any(summary => summary.HasCriticalValidationErrors || summary.Reports.Any(report => !report.Success)) ? 1 : 0;

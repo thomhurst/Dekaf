@@ -6,6 +6,19 @@ namespace Dekaf.Benchmarks;
 
 public static class Probe
 {
+    public static void SaveLoadedBinaries(string path)
+    {
+        var root = Path.GetFullPath(AppContext.BaseDirectory);
+        var binaries = AppDomain.CurrentDomain.GetAssemblies()
+            .Where(static assembly => !assembly.IsDynamic && !string.IsNullOrEmpty(assembly.Location))
+            .Select(static assembly => assembly.Location)
+            .Where(location => Path.GetFullPath(location).StartsWith(root, StringComparison.OrdinalIgnoreCase))
+            .Order(StringComparer.Ordinal)
+            .Select(location => new { Path = location, Sha256 = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(location))).ToLowerInvariant() })
+            .ToArray();
+        Save(path, binaries);
+    }
+
     public sealed record TickCount(long Ticks, long Count);
     public sealed record Snapshot(double Seconds, long Completed, long CpuTicks, long AllocatedBytes,
         long HeapBytes, long RssBytes, int Gen0, int Gen1, int Gen2, long JitMethods,

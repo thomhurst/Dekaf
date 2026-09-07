@@ -17,6 +17,10 @@ on:
         description: 'Administrative comparison: exact PR #3136 product SHA'
         required: false
         default: ''
+      admin_predecessor_sha:
+        description: 'Incremental comparison: exact immediately preceding product SHA'
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -602,10 +606,12 @@ jobs:
         env:
           BASELINE_SHA: ${{ inputs.admin_baseline_sha }}
           CANDIDATE_SHA: ${{ inputs.admin_candidate_sha }}
+          PREDECESSOR_SHA: ${{ inputs.admin_predecessor_sha }}
         run: >-
           python3 tools/AdminShareOffsetEvidence/run_comparison.py
           --baseline "$BASELINE_SHA"
           --candidate "$CANDIDATE_SHA"
+          --predecessor "$PREDECESSOR_SHA"
           --output .artifacts/admin-aba
       - name: Retain exact sources, binaries and every sample
         if: always()
