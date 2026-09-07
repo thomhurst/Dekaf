@@ -204,6 +204,7 @@ Common builder options beyond the connection/TLS/SASL settings shared with other
 Share consumers can publish application counters and gauges through [broker-side telemetry](../observability#broker-side-telemetry-kip-714). Register metrics on the builder or on a running consumer:
 
 ```csharp
+using System.Threading;
 using Dekaf.ShareConsumer;
 using Dekaf.Telemetry;
 
