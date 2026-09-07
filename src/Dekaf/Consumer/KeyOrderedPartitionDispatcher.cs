@@ -29,9 +29,6 @@ internal sealed class KeyOrderedPartitionDispatcher<TKey, TValue>
     private AutomaticPartitionProgress? _progress;
     private CancellationToken _processingToken;
     private ExceptionDispatchInfo? _failure;
-#if !NETSTANDARD2_0
-    private List<KeyLane>? _orphanedLanes;
-#endif
     private int _inputReady;
     private bool _inputPending;
     private bool _inputCompleted;
@@ -168,14 +165,13 @@ internal sealed class KeyOrderedPartitionDispatcher<TKey, TValue>
             foreach (var lane in _lanes.Values)
                 lane?.ReleaseKey();
             _lanes.Clear();
-#if !NETSTANDARD2_0
-            if (_orphanedLanes is not null)
+            if (_failure is not null)
             {
-                foreach (var lane in _orphanedLanes)
+                // A failed removal can displace another lane. No new dispatch starts
+                // after that failure, so the free stack also holds shutdown ownership.
+                foreach (var lane in _freeLanes)
                     lane.ReleaseKey();
-                _orphanedLanes.Clear();
             }
-#endif
             Volatile.Write(ref _laneCount, 0);
             registration.Dispose();
             _signal.Dispose();
@@ -395,7 +391,7 @@ internal sealed class KeyOrderedPartitionDispatcher<TKey, TValue>
                 // A mutated key may remove a different active lane. Keep its storage
                 // owned until every handler finishes, even though membership is gone.
                 if (removed is not null)
-                    (_orphanedLanes ??= new List<KeyLane>()).Add(removed);
+                    _freeLanes.Push(removed);
                 throw new InvalidOperationException("A partition key changed its hash code or equality while being processed.");
             }
 #endif
@@ -509,7 +505,6 @@ internal sealed class KeyOrderedPartitionDispatcher<TKey, TValue>
         internal readonly PartitionRecordBatch<TKey, TValue> Batch;
         internal int[] Indices;
         private readonly Action _callback;
-        private int _completionPublished;
         internal ConfiguredValueTaskAwaitable.ConfiguredValueTaskAwaiter Awaiter;
         internal KeyLane? Lane;
         internal Worker? NextCompleted;
@@ -524,7 +519,9 @@ internal sealed class KeyOrderedPartitionDispatcher<TKey, TValue>
 
         internal void Register()
         {
-            Volatile.Write(ref _completionPublished, 0);
+            // Self marks a registered worker whose callback has not claimed it.
+            // Publication replaces this sentinel with the normal completion link.
+            Volatile.Write(ref NextCompleted, this);
             try
             {
                 Awaiter.UnsafeOnCompleted(_callback);
@@ -535,14 +532,14 @@ internal sealed class KeyOrderedPartitionDispatcher<TKey, TValue>
                 // Registration may invoke its callback and then throw. Observe an
                 // already-published completion once; otherwise suppress late callbacks
                 // and release the worker whose awaiter could not be registered.
-                if (Interlocked.CompareExchange(ref _completionPublished, 1, 0) == 0)
+                if (Interlocked.CompareExchange(ref NextCompleted, null, this) == this)
                     _dispatcher.ReleaseWorker(this, succeeded: false);
             }
         }
 
         private void Complete()
         {
-            if (Interlocked.CompareExchange(ref _completionPublished, 1, 0) == 0)
+            if (Interlocked.CompareExchange(ref NextCompleted, null, this) == this)
                 _dispatcher.PublishCompletion(this);
         }
 
