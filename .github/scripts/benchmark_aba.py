@@ -21,7 +21,7 @@ SUITES = {
     3116: ['*RecordCount: 1024, HeaderCount: 0*'],
     3117: ['*Mode: KeyRecordsDistinct*', '*Mode: KeyBatchesDistinct*', '*Mode: KeyRecordsPaired*', '*Mode: KeyBatchesPaired*'],
 }
-EXPECTED_CASES = {3082: 9, 3083: 7, 3085: 8, 3086: 8, 3109: 1, 3116: 7, 3117: 4}
+EXPECTED_CASES = {3082: 9, 3083: 7, 3085: 10, 3086: 8, 3109: 1, 3116: 7, 3117: 4}
 
 def now():
     return datetime.now(timezone.utc).isoformat()
