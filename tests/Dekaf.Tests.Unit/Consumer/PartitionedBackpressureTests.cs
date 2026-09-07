@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Runtime.CompilerServices;
 using Dekaf.Consumer;
 using Dekaf.Protocol.Records;
@@ -548,6 +549,85 @@ public sealed class PartitionedBackpressureTests
             {
                 await Assert.That(running.IsFaulted).IsTrue();
             }
+        }
+    }
+
+    [Test]
+    [Arguments(PartitionCommitPolicy.UserManaged)]
+    [Arguments(PartitionCommitPolicy.CommitCompletedOnRevoke)]
+    public async Task ShutdownDeadline_CancelsEveryStalledLaneWithoutRenewingGrace(PartitionCommitPolicy commitPolicy)
+    {
+        const int laneCount = 3;
+        var consumer = new PartitionedConsumerRuntimeTests.TestConsumer { ReleaseCommit = NewSignal() };
+        consumer.SetAssignment(Enumerable.Range(0, laneCount)
+            .Select(partition => new TopicPartition("deadline", partition)).ToArray());
+        consumer.Enqueue(Enumerable.Range(0, laneCount)
+            .Select(partition => new ConsumeResult<string, string>(
+                topic: "deadline", partition: partition, offset: 0,
+                keyData: default, isKeyNull: true, valueData: default, isValueNull: true,
+                headers: null, timestampMs: 0, timestampType: TimestampType.NotAvailable,
+                leaderEpoch: null, keyDeserializer: null, valueDeserializer: null)).ToArray());
+        var started = NewSignal();
+        var cancelled = NewSignal();
+        var finished = NewSignal();
+        var release = NewSignal();
+        var startedCount = 0;
+        var cancelledCount = 0;
+        var finishedCount = 0;
+        using var watchdog = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        using var stop = new CancellationTokenSource();
+        var runtime = new PartitionedConsumerRuntime<string, string>(consumer, async (context, token) =>
+        {
+            using var registration = token.Register(() =>
+            {
+                if (Interlocked.Increment(ref cancelledCount) == laneCount)
+                    cancelled.TrySetResult();
+            });
+            try
+            {
+                await foreach (var record in context.Messages.WithCancellation(token))
+                {
+                    context.MarkProcessed(record);
+                    if (Interlocked.Increment(ref startedCount) == laneCount)
+                        started.TrySetResult();
+                    // Deliberately ignore cancellation until the test releases all handlers.
+                    await release.Task;
+                    break;
+                }
+            }
+            finally
+            {
+                if (Interlocked.Increment(ref finishedCount) == laneCount)
+                    finished.TrySetResult();
+            }
+        }, new PartitionedProcessingOptions
+        {
+            CommitPolicy = commitPolicy,
+            StopPolicy = PartitionStopPolicy.Drain,
+            StopTimeout = TimeSpan.FromSeconds(30)
+        }, logger: null);
+        var running = runtime.RunAsync(stop.Token).AsTask();
+        try
+        {
+            await started.Task.WaitAsync(watchdog.Token);
+            await stop.CancelAsync();
+            // Trigger the same source as the deadline timer without relying on elapsed-time margins.
+            var deadline = (CancellationTokenSource)typeof(PartitionedConsumerRuntime<string, string>)
+                .GetField("_shutdownCancellation", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .GetValue(runtime)!;
+            await deadline.CancelAsync();
+            await cancelled.Task.WaitAsync(watchdog.Token);
+            await Assert.That(async () => await running.WaitAsync(watchdog.Token)).Throws<OperationCanceledException>();
+            await Assert.That(consumer.CommitCalls).IsEmpty();
+        }
+        finally
+        {
+            release.TrySetResult();
+            consumer.ReleaseCommit.TrySetResult();
+            await stop.CancelAsync();
+            try { await running; }
+            catch (Exception exception) when (exception is TimeoutException or OperationCanceledException) { }
+            await finished.Task.WaitAsync(TimeSpan.FromSeconds(5));
         }
     }
 

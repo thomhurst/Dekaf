@@ -1262,19 +1262,25 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
         var policy = reason is PartitionStopReason.Failure or PartitionStopReason.Lost
             ? PartitionStopPolicy.Cancel
             : _options.StopPolicy;
-        var stopping = lane.StopAsync(policy, _options.StopTimeout);
+        var stopping = lane.StopAsync(policy, _options.StopTimeout,
+            reason == PartitionStopReason.Shutdown ? cancellationToken : CancellationToken.None);
         var exception = policy == PartitionStopPolicy.Drain && !stopping.IsCompleted
             ? await DrainHandlerCommitsAsync(stopping.AsTask(), cancellationToken).ConfigureAwait(false)
             : await stopping.ConfigureAwait(false);
 
-        if (commitProcessed)
-            await CommitLaneAsync(lane, cancellationToken).ConfigureAwait(false);
-
-        if (exception is not null
-            && (_options.ErrorPolicy == PartitionWorkerErrorPolicy.StopConsumer || exception is TimeoutException))
+        try
         {
-            CaptureFailure(exception);
-            _shutdownCancellation.Cancel();
+            if (commitProcessed)
+                await CommitLaneAsync(lane, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            if (exception is not null
+                && (_options.ErrorPolicy == PartitionWorkerErrorPolicy.StopConsumer || exception is TimeoutException))
+            {
+                CaptureFailure(exception);
+                _shutdownCancellation.Cancel();
+            }
         }
     }
 
@@ -1368,11 +1374,19 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
             foreach (var lane in _lanes.Values.ToArray())
             {
                 _lanes.Remove(lane.TopicPartition);
-                await StopLaneAsync(
-                    lane,
-                    PartitionStopReason.Shutdown,
-                    commitProcessed: ShouldCommitOnPartitionStop(),
-                    cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    await StopLaneAsync(
+                        lane,
+                        PartitionStopReason.Shutdown,
+                        commitProcessed: ShouldCommitOnPartitionStop(),
+                        cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException exception) when (cancellationToken.IsCancellationRequested)
+                {
+                    // A canceled final commit must not leave the remaining lanes running.
+                    CaptureFailure(exception);
+                }
             }
         }
         finally
@@ -1761,7 +1775,8 @@ internal sealed class PartitionLane<TKey, TValue>
 
     public async ValueTask<Exception?> StopAsync(
         PartitionStopPolicy stopPolicy,
-        TimeSpan timeout)
+        TimeSpan timeout,
+        CancellationToken cancellationToken = default)
     {
         CompleteWriter();
 
@@ -1773,18 +1788,12 @@ internal sealed class PartitionLane<TKey, TValue>
 
         try
         {
-            if (timeout == Timeout.InfiniteTimeSpan)
-            {
-                await _processorTask.ConfigureAwait(false);
-            }
-            else
-            {
-                await _processorTask.WaitAsync(timeout).ConfigureAwait(false);
-            }
+            await _processorTask.WaitAsync(timeout, cancellationToken).ConfigureAwait(false);
 
             return null;
         }
-        catch (TimeoutException)
+        catch (Exception exception) when (exception is TimeoutException
+            || exception is OperationCanceledException && cancellationToken.IsCancellationRequested)
         {
             await CancelAsync().ConfigureAwait(false);
             _ = _processorTask.ContinueWith(
