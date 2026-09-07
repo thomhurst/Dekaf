@@ -590,7 +590,7 @@ jobs:
     name: Administrative exact-SHA A-B-A
     if: github.event_name == 'workflow_dispatch' && inputs.admin_baseline_sha != ''
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 240
     steps:
       - name: Checkout harness
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

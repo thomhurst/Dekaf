@@ -18,8 +18,12 @@ public class AdminEvidenceBenchmark
         _fixture = new AdminFixture(Case);
         await _fixture.InitializeAsync();
         var output = Environment.GetEnvironmentVariable("ADMIN_EVIDENCE_WARMUP_DIRECTORY") ?? Path.GetTempPath();
+        Probe.Save(Path.Combine(output, $"clock-{Case.Replace(':', '-')}-{Environment.ProcessId}.json"),
+            new { _sampler.StartedTimestamp, StopwatchFrequency = System.Diagnostics.Stopwatch.Frequency,
+                ProcessId = Environment.ProcessId });
         Probe.SaveLoadedBinaries(Path.Combine(output, $"binaries-{Case.Replace(':', '-')}-{Environment.ProcessId}.json"));
-        var seconds = double.Parse(Environment.GetEnvironmentVariable("ADMIN_EVIDENCE_WARMUP_SECONDS") ?? "30",
+        await Probe.PrimeAsync(_fixture, Path.Combine(output, $"primer-{Case.Replace(':', '-')}-{Environment.ProcessId}.json"));
+        var seconds = double.Parse(Environment.GetEnvironmentVariable("ADMIN_EVIDENCE_WARMUP_SECONDS") ?? "120",
             System.Globalization.CultureInfo.InvariantCulture);
         var warmup = await Probe.MeasureAsync(_fixture, seconds);
         Probe.Save(Path.Combine(output, $"{Case.Replace(':', '-')}-{Environment.ProcessId}.json"), warmup);

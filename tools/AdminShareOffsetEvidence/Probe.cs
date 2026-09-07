@@ -28,6 +28,17 @@ public static class Probe
         double AllocatedBytesPerCall, double P50Ns, double P99Ns, double MaxNs, long StopwatchFrequency,
         Snapshot Start, Snapshot End, List<Interval> Intervals, List<TickCount> Latencies);
 
+    public static async Task PrimeAsync(AdminFixture fixture, string outputPath)
+    {
+        // Re-enter the complete measurement path so tiered entry stubs and the
+        // low-frequency sampler do not first optimize at the measurement boundary.
+        var segments = new List<Result>(128);
+        for (var index = 0; index < 128; index++)
+            segments.Add(await MeasureAsync(fixture, 0.05));
+        Save(Path.Combine(Path.GetDirectoryName(outputPath)!, "segments-" + Path.GetFileName(outputPath)), segments);
+        Save(outputPath, await MeasureAsync(fixture, 1));
+    }
+
     public static async Task<Result> MeasureAsync(AdminFixture fixture, double seconds)
     {
         if (seconds <= 0 || !double.IsFinite(seconds)) throw new ArgumentOutOfRangeException(nameof(seconds));
