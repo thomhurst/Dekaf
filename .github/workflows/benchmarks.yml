@@ -591,7 +591,7 @@ jobs:
     name: ${{ inputs.admin_startup_diagnostic && 'Administrative startup diagnostic' || 'Administrative exact-SHA A-B-A' }}
     if: github.event_name == 'workflow_dispatch' && (inputs.admin_baseline_sha != '' || inputs.admin_startup_diagnostic)
     runs-on: ubuntu-latest
-    timeout-minutes: ${{ inputs.admin_startup_diagnostic && 20 || 90 }}
+    timeout-minutes: ${{ inputs.admin_startup_diagnostic && 20 || 120 }}
     steps:
       - name: Checkout harness
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

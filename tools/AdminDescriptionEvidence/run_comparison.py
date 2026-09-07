@@ -159,7 +159,7 @@ def execute(args):
                     image=os.environ.get('ImageOS'), image_version=os.environ.get('ImageVersion'),
                     github_run=os.environ.get('GITHUB_RUN_ID'), smoke=args.smoke,
                     primer_segments=128, primer_segment_seconds=.05, primer_seconds=1,
-                    warmup_seconds=.2 if args.smoke else 60, measured_seconds=.2 if args.smoke else 60,
+                    warmup_seconds=.2 if args.smoke else 120, measured_seconds=.2 if args.smoke else 60,
                     bdn_outlier_mode='DontRemove', bdn_keep_files=True,
                     runtime={'DOTNET_TieredCompilation':'1', 'DOTNET_TieredPGO':'1', 'DOTNET_gcServer':'0'},
                     controls=CONTROLS, candidate_only=NEW_CASES)
