@@ -65,6 +65,7 @@ jobs:
           mkdir -p BenchmarkResults/Filtered
           dotnet run --project tools/Dekaf.Benchmarks -c Release --no-build -- \
             --filter "$BENCHMARK_FILTER" --exporters fulljson \
+            --buildTimeout 600 \
             --artifacts BenchmarkResults/Filtered > BenchmarkResults/Filtered/run.log 2>&1
       - name: Require successful measurements
         run: python3 .github/scripts/benchmark_pipeline.py validate BenchmarkResults/Filtered/results
