@@ -27,4 +27,3 @@ var job = (smoke ? Job.Dry : Job.Default.WithIterationCount(12).WithIterationTim
 var summaries = BenchmarkSwitcher.FromAssembly(typeof(AdminEvidenceBenchmark).Assembly)
     .Run(args, DefaultConfig.Instance.AddJob(job));
 return summaries.Any(summary => summary.HasCriticalValidationErrors || summary.Reports.Any(report => !report.Success)) ? 1 : 0;
-
