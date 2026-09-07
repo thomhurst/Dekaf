@@ -1,0 +1,74 @@
+{
+  "started_utc": "2026-09-07T18:23:34.757951+00:00",
+  "baseline_sha": "c212c575528e055fe628568e19fb521fc54b0ab9",
+  "candidate_sha": "36ba24db1203c6f464fd253b12c97109377fd28c",
+  "workflow_sha": "bf1e1bff71b508fa17de533668a1f2af9f740fcc",
+  "run_url": "https://github.com/thomhurst/Dekaf/actions/runs/34151392676",
+  "runner": "ubuntu-latest",
+  "image_os": "ubuntu24",
+  "image_version": "20260831.293.1",
+  "cpu_affinity": [
+    2
+  ],
+  "original_allowed_cpus": [
+    0,
+    1,
+    2,
+    3
+  ],
+  "phase_order": [
+    "A1",
+    "B",
+    "A2"
+  ],
+  "runtime_configuration": {
+    "DOTNET_TieredCompilation": "0"
+  },
+  "outliers": "DontRemove",
+  "scope": "Microbenchmarks plus scoped CPU/latency/allocation/stability evidence and candidate correctness tests. Human acceptance review required.",
+  "loaded_configuration": {
+    "scope": "Instrumented shutdown latency investigation",
+    "cpu_affinity": [
+      2,
+      3
+    ],
+    "variants": {
+      "startup": {
+        "warmup_samples": 100
+      },
+      "warmed": {
+        "warmup_seconds": 20,
+        "minimum_warmup_samples": 100
+      }
+    },
+    "measured_samples_per_phase_per_variant": 10000,
+    "records_per_sample": 1024,
+    "DOTNET_TieredCompilation": "1",
+    "instrumentation": "stage timestamps, GC brackets, JIT and thread-pool counters",
+    "prior_correctness_run": "https://github.com/thomhurst/Dekaf/actions/runs/34149484062"
+  },
+  "phases": [
+    {
+      "phase": "A1",
+      "product_sha": "c212c575528e055fe628568e19fb521fc54b0ab9",
+      "started_utc": "2026-09-07T18:25:03.554925+00:00",
+      "completed_utc": "2026-09-07T18:25:05.315263+00:00",
+      "cases": 1
+    },
+    {
+      "phase": "B",
+      "product_sha": "36ba24db1203c6f464fd253b12c97109377fd28c",
+      "started_utc": "2026-09-07T18:25:05.341650+00:00",
+      "completed_utc": "2026-09-07T18:25:07.096377+00:00",
+      "cases": 1
+    },
+    {
+      "phase": "A2",
+      "product_sha": "c212c575528e055fe628568e19fb521fc54b0ab9",
+      "started_utc": "2026-09-07T18:25:07.122573+00:00",
+      "completed_utc": "2026-09-07T18:25:08.888657+00:00",
+      "cases": 1
+    }
+  ],
+  "completed_utc": "2026-09-07T18:26:34.984105+00:00"
+}

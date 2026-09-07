@@ -1,0 +1,69 @@
+{
+  "started_utc": "2026-09-07T17:54:46.879064+00:00",
+  "baseline_sha": "c212c575528e055fe628568e19fb521fc54b0ab9",
+  "candidate_sha": "36ba24db1203c6f464fd253b12c97109377fd28c",
+  "workflow_sha": "723010dd69f0ba672fbaeb1fa9e82e119fa853de",
+  "run_url": "https://github.com/thomhurst/Dekaf/actions/runs/34149484062",
+  "runner": "ubuntu-latest",
+  "image_os": "ubuntu24",
+  "image_version": "20260831.293.1",
+  "cpu_affinity": [
+    2
+  ],
+  "original_allowed_cpus": [
+    0,
+    1,
+    2,
+    3
+  ],
+  "phase_order": [
+    "A1",
+    "B",
+    "A2"
+  ],
+  "runtime_configuration": {
+    "DOTNET_TieredCompilation": "0"
+  },
+  "outliers": "DontRemove",
+  "scope": "Microbenchmarks plus scoped CPU/latency/allocation/stability evidence and candidate correctness tests. Human acceptance review required.",
+  "loaded_configuration": {
+    "broker_cpu": 0,
+    "producer_cpu": 1,
+    "consumer_cpus": [
+      2,
+      3
+    ],
+    "producer_sha": "c212c575528e055fe628568e19fb521fc54b0ab9",
+    "broker": "apache/kafka:4.3.1",
+    "warmup_seconds": 20,
+    "duration_seconds_per_mode": 120,
+    "offered_messages_per_second": 50000,
+    "message_bytes": 256,
+    "partitions": 4,
+    "DOTNET_TieredCompilation": "1"
+  },
+  "phases": [
+    {
+      "phase": "A1",
+      "product_sha": "c212c575528e055fe628568e19fb521fc54b0ab9",
+      "started_utc": "2026-09-07T17:56:11.687617+00:00",
+      "completed_utc": "2026-09-07T17:56:13.461106+00:00",
+      "cases": 1
+    },
+    {
+      "phase": "B",
+      "product_sha": "36ba24db1203c6f464fd253b12c97109377fd28c",
+      "started_utc": "2026-09-07T17:56:13.487659+00:00",
+      "completed_utc": "2026-09-07T17:56:15.260295+00:00",
+      "cases": 1
+    },
+    {
+      "phase": "A2",
+      "product_sha": "c212c575528e055fe628568e19fb521fc54b0ab9",
+      "started_utc": "2026-09-07T17:56:15.286754+00:00",
+      "completed_utc": "2026-09-07T17:56:17.077715+00:00",
+      "cases": 1
+    }
+  ],
+  "completed_utc": "2026-09-07T17:59:24.437113+00:00"
+}

@@ -1,0 +1,296 @@
+{
+  "A1": {
+    "official": {
+      "samples": 10000,
+      "p50_ms": 0.212099,
+      "p95_ms": 1.031577,
+      "p99_ms": 1.609265,
+      "p999_ms": 1.777983,
+      "max_ms": 10.186681,
+      "over_1ms": 828,
+      "over_5ms": 1
+    },
+    "diagnostic_first_2000": {
+      "samples": 2000,
+      "p50_ms": 0.885351,
+      "p95_ms": 1.609265,
+      "p99_ms": 1.757303,
+      "p999_ms": 1.821786,
+      "max_ms": 10.186681,
+      "over_1ms": 828,
+      "over_5ms": 1
+    },
+    "diagnostic_last_8000": {
+      "samples": 8000,
+      "p50_ms": 0.200479,
+      "p95_ms": 0.266422,
+      "p99_ms": 0.326064,
+      "p999_ms": 0.35506,
+      "max_ms": 0.369865,
+      "over_1ms": 0,
+      "over_5ms": 0
+    },
+    "top_samples": [
+      {
+        "sample": 537,
+        "ms": 10.186681,
+        "block": 6
+      },
+      {
+        "sample": 518,
+        "ms": 1.822707,
+        "block": 6
+      },
+      {
+        "sample": 511,
+        "ms": 1.821786,
+        "block": 6
+      },
+      {
+        "sample": 525,
+        "ms": 1.803822,
+        "block": 6
+      },
+      {
+        "sample": 533,
+        "ms": 1.801908,
+        "block": 6
+      },
+      {
+        "sample": 516,
+        "ms": 1.797249,
+        "block": 6
+      },
+      {
+        "sample": 512,
+        "ms": 1.787802,
+        "block": 6
+      },
+      {
+        "sample": 528,
+        "ms": 1.782732,
+        "block": 6
+      },
+      {
+        "sample": 522,
+        "ms": 1.779185,
+        "block": 6
+      },
+      {
+        "sample": 513,
+        "ms": 1.779004,
+        "block": 6
+      },
+      {
+        "sample": 514,
+        "ms": 1.777983,
+        "block": 6
+      },
+      {
+        "sample": 521,
+        "ms": 1.773645,
+        "block": 6
+      }
+    ],
+    "gen2_first_observed": 6,
+    "gen2_last_observed": 315,
+    "allocated_bytes_between_observations": 2530275840,
+    "whole_lifecycle_seconds": 5.0492773
+  },
+  "B": {
+    "official": {
+      "samples": 10000,
+      "p50_ms": 0.206138,
+      "p95_ms": 0.843597,
+      "p99_ms": 1.068204,
+      "p999_ms": 1.462917,
+      "max_ms": 15.301584,
+      "over_1ms": 165,
+      "over_5ms": 1
+    },
+    "diagnostic_first_2000": {
+      "samples": 2000,
+      "p50_ms": 0.690203,
+      "p95_ms": 1.068204,
+      "p99_ms": 1.222273,
+      "p999_ms": 1.801475,
+      "max_ms": 15.301584,
+      "over_1ms": 165,
+      "over_5ms": 1
+    },
+    "diagnostic_last_8000": {
+      "samples": 8000,
+      "p50_ms": 0.192951,
+      "p95_ms": 0.266063,
+      "p99_ms": 0.327086,
+      "p999_ms": 0.345802,
+      "max_ms": 0.369366,
+      "over_1ms": 0,
+      "over_5ms": 0
+    },
+    "top_samples": [
+      {
+        "sample": 832,
+        "ms": 15.301584,
+        "block": 9
+      },
+      {
+        "sample": 506,
+        "ms": 1.822326,
+        "block": 6
+      },
+      {
+        "sample": 586,
+        "ms": 1.801475,
+        "block": 6
+      },
+      {
+        "sample": 589,
+        "ms": 1.660559,
+        "block": 6
+      },
+      {
+        "sample": 590,
+        "ms": 1.653165,
+        "block": 6
+      },
+      {
+        "sample": 588,
+        "ms": 1.65084,
+        "block": 6
+      },
+      {
+        "sample": 587,
+        "ms": 1.640131,
+        "block": 6
+      },
+      {
+        "sample": 510,
+        "ms": 1.528791,
+        "block": 6
+      },
+      {
+        "sample": 591,
+        "ms": 1.513613,
+        "block": 6
+      },
+      {
+        "sample": 598,
+        "ms": 1.468136,
+        "block": 6
+      },
+      {
+        "sample": 597,
+        "ms": 1.462917,
+        "block": 6
+      },
+      {
+        "sample": 509,
+        "ms": 1.42793,
+        "block": 6
+      }
+    ],
+    "gen2_first_observed": 6,
+    "gen2_last_observed": 315,
+    "allocated_bytes_between_observations": 2530220568,
+    "whole_lifecycle_seconds": 4.7425139
+  },
+  "A2": {
+    "official": {
+      "samples": 10000,
+      "p50_ms": 0.212851,
+      "p95_ms": 0.88035,
+      "p99_ms": 1.056795,
+      "p999_ms": 1.523822,
+      "max_ms": 14.590295,
+      "over_1ms": 179,
+      "over_5ms": 1
+    },
+    "diagnostic_first_2000": {
+      "samples": 2000,
+      "p50_ms": 0.61419,
+      "p95_ms": 1.056795,
+      "p99_ms": 1.322343,
+      "p999_ms": 1.839569,
+      "max_ms": 14.590295,
+      "over_1ms": 179,
+      "over_5ms": 1
+    },
+    "diagnostic_last_8000": {
+      "samples": 8000,
+      "p50_ms": 0.198877,
+      "p95_ms": 0.299725,
+      "p99_ms": 0.352594,
+      "p999_ms": 0.575034,
+      "max_ms": 0.808604,
+      "over_1ms": 0,
+      "over_5ms": 0
+    },
+    "top_samples": [
+      {
+        "sample": 938,
+        "ms": 14.590295,
+        "block": 10
+      },
+      {
+        "sample": 252,
+        "ms": 2.068095,
+        "block": 3
+      },
+      {
+        "sample": 410,
+        "ms": 1.839569,
+        "block": 5
+      },
+      {
+        "sample": 561,
+        "ms": 1.749208,
+        "block": 6
+      },
+      {
+        "sample": 562,
+        "ms": 1.705295,
+        "block": 6
+      },
+      {
+        "sample": 563,
+        "ms": 1.672343,
+        "block": 6
+      },
+      {
+        "sample": 565,
+        "ms": 1.614635,
+        "block": 6
+      },
+      {
+        "sample": 564,
+        "ms": 1.579448,
+        "block": 6
+      },
+      {
+        "sample": 489,
+        "ms": 1.567278,
+        "block": 5
+      },
+      {
+        "sample": 412,
+        "ms": 1.538599,
+        "block": 5
+      },
+      {
+        "sample": 411,
+        "ms": 1.523822,
+        "block": 5
+      },
+      {
+        "sample": 566,
+        "ms": 1.519295,
+        "block": 6
+      }
+    ],
+    "gen2_first_observed": 6,
+    "gen2_last_observed": 315,
+    "allocated_bytes_between_observations": 2530285224,
+    "whole_lifecycle_seconds": 5.2620819
+  }
+}

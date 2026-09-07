@@ -1,0 +1,110 @@
+{
+  "measurement_status": "COMPLETE",
+  "acceptance": "NOT_EVALUATED",
+  "cases": [
+    {
+      "mode": "shutdown-full-queue",
+      "A1": {
+        "Mode": "shutdown-full-queue",
+        "Samples": 10000,
+        "RecordsPerSample": 1024,
+        "Completed": 10240000,
+        "Failures": 0,
+        "BacklogAtEnd": 0,
+        "LifecycleOperationsPerSecond": 1980.4814443445205,
+        "LifecycleCpuNsPerOperation": 797999.5,
+        "LifecycleAllocatedBytesPerOperation": 255581.928,
+        "P50Ns": 212099,
+        "P99Ns": 1609265,
+        "MaxNs": 10186681,
+        "ElapsedSeconds": 5.0492773,
+        "StopwatchFrequency": 1000000000,
+        "Scope": "Stop latency: full 1024-record queue, request shutdown to completed drain and rejected writer. CPU/allocation/throughput: whole lifecycle including fixture setup, validation, and sampler. BDN separately measures stop-only allocations. Candidate unit/integration tests cover handler commits, stalled lanes, cancellation and broker offsets."
+      },
+      "B": {
+        "Mode": "shutdown-full-queue",
+        "Samples": 10000,
+        "RecordsPerSample": 1024,
+        "Completed": 10240000,
+        "Failures": 0,
+        "BacklogAtEnd": 0,
+        "LifecycleOperationsPerSecond": 2108.5863343489623,
+        "LifecycleCpuNsPerOperation": 759168.1,
+        "LifecycleAllocatedBytesPerOperation": 255578.2544,
+        "P50Ns": 206138,
+        "P99Ns": 1068204,
+        "MaxNs": 15301584,
+        "ElapsedSeconds": 4.7425139,
+        "StopwatchFrequency": 1000000000,
+        "Scope": "Stop latency: full 1024-record queue, request shutdown to completed drain and rejected writer. CPU/allocation/throughput: whole lifecycle including fixture setup, validation, and sampler. BDN separately measures stop-only allocations. Candidate unit/integration tests cover handler commits, stalled lanes, cancellation and broker offsets."
+      },
+      "A2": {
+        "Mode": "shutdown-full-queue",
+        "Samples": 10000,
+        "RecordsPerSample": 1024,
+        "Completed": 10240000,
+        "Failures": 0,
+        "BacklogAtEnd": 0,
+        "LifecycleOperationsPerSecond": 1900.388513527317,
+        "LifecycleCpuNsPerOperation": 827691.8,
+        "LifecycleAllocatedBytesPerOperation": 255585.6032,
+        "P50Ns": 212851,
+        "P99Ns": 1056795,
+        "MaxNs": 14590295,
+        "ElapsedSeconds": 5.2620819,
+        "StopwatchFrequency": 1000000000,
+        "Scope": "Stop latency: full 1024-record queue, request shutdown to completed drain and rejected writer. CPU/allocation/throughput: whole lifecycle including fixture setup, validation, and sampler. BDN separately measures stop-only allocations. Candidate unit/integration tests cover handler commits, stalled lanes, cancellation and broker offsets."
+      },
+      "deltas": {
+        "LifecycleOperationsPerSecond": {
+          "B_minus_A1": 128.1048900044418,
+          "B_minus_A2": 208.19782082164534,
+          "A2_minus_A1": -80.09293081720352,
+          "B_vs_A1_percent": 6.468371131184258,
+          "B_vs_A2_percent": 10.95553984565023,
+          "control_drift_percent": -4.044114174657764
+        },
+        "LifecycleCpuNsPerOperation": {
+          "B_minus_A1": -38831.40000000002,
+          "B_minus_A2": -68523.70000000007,
+          "A2_minus_A1": 29692.300000000047,
+          "B_vs_A1_percent": -4.866093274494531,
+          "B_vs_A2_percent": -8.278890765862378,
+          "control_drift_percent": 3.7208419303520923
+        },
+        "LifecycleAllocatedBytesPerOperation": {
+          "B_minus_A1": -3.6736000000091735,
+          "B_minus_A2": -7.3488000000070315,
+          "A2_minus_A1": 3.675199999997858,
+          "B_vs_A1_percent": -0.0014373473229301048,
+          "B_vs_A2_percent": -0.002875279322467339,
+          "control_drift_percent": 0.0014379733452862808
+        },
+        "P50Ns": {
+          "B_minus_A1": -5961,
+          "B_minus_A2": -6713,
+          "A2_minus_A1": 752,
+          "B_vs_A1_percent": -2.810480011692651,
+          "B_vs_A2_percent": -3.1538494063922617,
+          "control_drift_percent": 0.35455141231217624
+        },
+        "P99Ns": {
+          "B_minus_A1": -541061,
+          "B_minus_A2": 11409,
+          "A2_minus_A1": -552470,
+          "B_vs_A1_percent": -33.62162229340724,
+          "B_vs_A2_percent": 1.079584971541303,
+          "control_drift_percent": -34.33057948815142
+        },
+        "MaxNs": {
+          "B_minus_A1": 5114903,
+          "B_minus_A2": 711289,
+          "A2_minus_A1": 4403614,
+          "B_vs_A1_percent": 50.21167345870554,
+          "B_vs_A2_percent": 4.875083060349361,
+          "control_drift_percent": 43.22913419984389
+        }
+      }
+    }
+  ]
+}

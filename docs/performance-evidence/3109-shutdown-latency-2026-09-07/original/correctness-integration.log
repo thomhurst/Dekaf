@@ -1,0 +1,12 @@
+Running tests from /home/runner/work/_temp/aba-3109/product-B/tests/Dekaf.Tests.Integration/bin/Release/net10.0/Dekaf.Tests.Integration.dll (net10.0|x64)
+[m/home/runner/work/_temp/aba-3109/product-B/tests/Dekaf.Tests.Integration/bin/Release/net10.0/Dekaf.Tests.Integration.dll (net10.0|x64) [32mpassed[m [90m(12s 522ms)[m
+
+  In process file artifacts produced:
+    - /home/runner/work/_temp/aba-3109/product-B/TestResults/Dekaf.Tests.Integration-linux-net10.0-report.html
+
+[32mTest run summary: Passed!
+[m  total: 2
+  failed: 0
+[32m  succeeded: 2
+[m  skipped: 0
+  duration: 12s 769ms
