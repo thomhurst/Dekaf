@@ -42,7 +42,7 @@ public sealed partial class AdminClient
                     // Metadata can expose a controller before the pool registers its ID.
                     // Lease failures have not dispatched this mutation; retain prior outcomes.
                     var failure = MutationFailure(exception, deadline, timeoutMs, protocol.Operation, cancellationToken);
-                    AddNotAttemptedMutations(items, getKey, results, failure);
+                    AddNotAttemptedMutations(pending, getKey, results, failure);
                     return;
                 }
                 using var lease = acquiredLease;
