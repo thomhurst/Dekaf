@@ -301,7 +301,9 @@ public sealed class PartitionedDispatchCoordinatorTests
     [Test]
     [Arguments(false)]
     [Arguments(true)]
-    public async Task CompletionCleanupFailure_ObservesEveryDetachedWorker(bool multipleFailures)
+    [Arguments(false, true)]
+    [Arguments(true, true)]
+    public async Task CompletionCleanupFailure_ObservesEveryDetachedWorker(bool multipleFailures, bool changeHash = false)
     {
         var failure = new InvalidOperationException("key cleanup failed");
         var keys = new[] { new ThrowingHashKey(0), new ThrowingHashKey(1), new ThrowingHashKey(2) };
@@ -330,9 +332,17 @@ public sealed class PartitionedDispatchCoordinatorTests
                     default:
                         // Both callbacks run inline while the coordinator is inside
                         // this handler. The failing key is first in the detached stack.
-                        keys[0].Failure = failure;
+                        if (changeHash)
+                            keys[0].HashCode = 100;
+                        else
+                            keys[0].Failure = failure;
                         if (multipleFailures)
-                            keys[1].Failure = new InvalidOperationException("second key cleanup failed");
+                        {
+                            if (changeHash)
+                                keys[1].HashCode = 101;
+                            else
+                                keys[1].Failure = new InvalidOperationException("second key cleanup failed");
+                        }
                         second.Complete();
                         first.Complete();
                         return default;
@@ -342,7 +352,10 @@ public sealed class PartitionedDispatchCoordinatorTests
         var processing = dispatcher.RunAsync(CancellationToken.None).AsTask();
         var thrown = await Assert.ThrowsAsync<InvalidOperationException>(
             async () => await processing.WaitAsync(TimeSpan.FromSeconds(5)));
-        await Assert.That(thrown).IsSameReferenceAs(failure);
+        if (changeHash)
+            await Assert.That(thrown!.Message).IsEqualTo("A partition key changed its hash code or equality while being processed.");
+        else
+            await Assert.That(thrown).IsSameReferenceAs(failure);
         await Assert.That(first.Observed).IsEqualTo(1);
         await Assert.That(second.Observed).IsEqualTo(1);
         await Assert.That(dispatcher.LaneCount).IsEqualTo(0);
@@ -351,7 +364,8 @@ public sealed class PartitionedDispatchCoordinatorTests
     private sealed class ThrowingHashKey(int value)
     {
         internal Exception? Failure { get; set; }
-        public override int GetHashCode() => Failure is { } failure ? throw failure : value;
+        internal int HashCode { get; set; } = value;
+        public override int GetHashCode() => Failure is { } failure ? throw failure : HashCode;
     }
 
     private sealed class ObservedCompletion : IValueTaskSource

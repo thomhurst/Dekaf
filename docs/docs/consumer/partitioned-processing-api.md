@@ -80,6 +80,10 @@ runtime's stop timeout has elapsed. Revoke and lost-assignment cleanup use the s
 ownership rules. Key ordering also retains the input backing a dictionary key
 until its key lane is removed.
 
+For key ordering, keep each key's hash code and equality stable while records are
+queued or running. If cleanup cannot remove a key, dispatch fails and observes
+in-flight handlers before releasing retained storage.
+
 `MaxBufferedRecordsPerPartition` bounds the partition queue, not retained bytes.
 Partition ordering additionally holds the active handler batch (one record for a
 record handler). Key ordering additionally holds at most that many dispatched
