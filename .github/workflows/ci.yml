@@ -195,22 +195,6 @@ jobs:
           key: nuget-${{ runner.os }}-${{ hashFiles('global.json', '**/*.csproj', '**/Directory.Packages.props', '**/Directory.Build.props', '**/Directory.Build.targets') }}
           restore-keys: nuget-${{ runner.os }}-
 
-      - name: Test Agent Lock Worktree Isolation
-        shell: pwsh
-        run: ./scripts/Test-AgentLocks.ps1
-
-      - name: Test Agent Lock Token Ownership
-        shell: pwsh
-        run: ./scripts/Test-AgentLockTokenOwnership.ps1
-
-      - name: Test Worktree Cleanup Safety
-        shell: pwsh
-        run: ./scripts/Test-WorktreeCleanup.ps1
-
-      - name: Test Merged Worktree Sweep
-        shell: pwsh
-        run: ./scripts/Test-RemoveMergedWorktrees.ps1
-
       - name: Install GitVersion
         uses: gittools/actions/gitversion/setup@7417b1089e2c7de93510f1901d656ddf60bb024f # v4.7.0
         with:

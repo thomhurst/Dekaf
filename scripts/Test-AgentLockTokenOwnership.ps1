@@ -166,21 +166,26 @@ try {
     Assert-Result (Invoke-AgentLocks $prWorktree @('release', '-LockName', $crossVersionLock) -EnvironmentOwnerId $crossVersionOwner) 0 '' 'cross-version release from stale worktree'
     Assert-Result (Invoke-AgentLocks $repo @('status', '-LockName', $crossVersionLock) -EnvironmentOwnerId $crossVersionOwner) 0 'FREE' 'cross-version status after release'
 
+    $ownedWorktree = Join-Path $testRoot 'owned-worktree'
+    Invoke-Git -C $repo worktree add -b ownership-test $ownedWorktree HEAD
+
     # Owner A's token cache must remain private after Redis expiry and owner B reacquisition.
-    Assert-ExitZero (Invoke-AgentLocks $repo @('acquire', '-LockName', $ownershipLock) -EnvironmentOwnerId $ownerA) 'owner A acquire'
+    Assert-ExitZero (Invoke-AgentLocks $repo @('acquire', '-LockName', $ownershipLock, '-Worktree', $ownedWorktree) -EnvironmentOwnerId $ownerA) 'owner A acquire'
     Assert-Result (Invoke-AgentLocks $repo @('status', '-LockName', $ownershipLock) -EnvironmentOwnerId $ownerA) 0 'HELD-BY-ME' 'owner A status before expiry'
 
     Expire-TestLock $ownershipLock
 
-    Assert-ExitZero (Invoke-AgentLocks $repo @('acquire', '-LockName', $ownershipLock) -EnvironmentOwnerId $ownerB) 'owner B acquire'
+    Assert-ExitZero (Invoke-AgentLocks $repo @('acquire', '-LockName', $ownershipLock, '-Worktree', $ownedWorktree) -EnvironmentOwnerId $ownerB) 'owner B acquire'
     Assert-OwnerIdentityNotExposed $ownershipLock $ownerB
     Assert-Result (Invoke-AgentLocks $repo @('status', '-LockName', $ownershipLock) -EnvironmentOwnerId $ownerA) 0 'HELD' 'owner A status after reacquire'
     Assert-Result (Invoke-AgentLocks $repo @('renew', '-LockName', $ownershipLock) -EnvironmentOwnerId $ownerA) 4 'LOST' 'owner A renew after reacquire'
     Assert-Result (Invoke-AgentLocks $repo @('release', '-LockName', $ownershipLock) -EnvironmentOwnerId $ownerA) 5 'STALE' 'owner A release after reacquire'
 
+    if (-not (Test-Path -LiteralPath $ownedWorktree)) { throw 'Stale owner removed the new owner worktree.' }
     Assert-Result (Invoke-AgentLocks $repo @('status', '-LockName', $ownershipLock) -EnvironmentOwnerId $ownerB) 0 'HELD-BY-ME' 'owner B status after owner A attempts'
     Assert-Result (Invoke-AgentLocks $repo @('renew', '-LockName', $ownershipLock) -EnvironmentOwnerId $ownerB) 0 '' 'owner B renew'
-    Assert-Result (Invoke-AgentLocks $repo @('release', '-LockName', $ownershipLock) -EnvironmentOwnerId $ownerB) 0 '' 'owner B release'
+    Assert-ExitZero (Invoke-AgentLocks $repo @('release', '-LockName', $ownershipLock) -EnvironmentOwnerId $ownerB) 'owner B release'
+    if (Test-Path -LiteralPath $ownedWorktree) { throw 'Current owner did not remove its clean worktree.' }
     Assert-Result (Invoke-AgentLocks $repo @('status', '-LockName', $ownershipLock) -EnvironmentOwnerId $ownerB) 0 'FREE' 'owner B status after release'
 
     # CODEX_THREAD_ID must support short-lived pwsh calls and implicit issue-branch lock names.
@@ -194,7 +199,10 @@ try {
     Assert-ExitZero (Invoke-AgentLocks $prWorktree (@('acquire', '-LockName', $prWorktreeLock, '-Worktree', $prWorktree) + $parameterArgs) -EnvironmentOwnerId $ownerA -CodexThreadId $ownerB) 'parameter owner PR acquire'
     Assert-Result (Invoke-AgentLocks $prWorktree (@('status') + $parameterArgs) -EnvironmentOwnerId $ownerA -CodexThreadId $ownerB) 0 'HELD-BY-ME' 'parameter owner PR status'
     Assert-Result (Invoke-AgentLocks $prWorktree (@('renew') + $parameterArgs) -EnvironmentOwnerId $ownerA -CodexThreadId $ownerB) 0 '' 'parameter owner PR renew'
-    Assert-Result (Invoke-AgentLocks $prWorktree (@('release') + $parameterArgs) -EnvironmentOwnerId $ownerA -CodexThreadId $ownerB) 0 '' 'parameter owner PR release'
+    $release = Invoke-AgentLocks $prWorktree (@('release') + $parameterArgs) -EnvironmentOwnerId $ownerA -CodexThreadId $ownerB
+    if ($release.ExitCode -ne 0 -or $release.Output -notlike 'Preserving dirty worktree:*') {
+        throw "Expected release to preserve the untracked stale script: $($release.Output)"
+    }
 
     # Non-Codex callers must provide stable identity instead of falling back machine-wide.
     $missingIdentity = Invoke-AgentLocks $repo @('status', '-LockName', $missingIdentityLock)
