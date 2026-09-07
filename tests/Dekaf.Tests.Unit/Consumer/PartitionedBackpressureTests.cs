@@ -383,9 +383,8 @@ public sealed class PartitionedBackpressureTests
         {
             BeforeThirdRecordReturns = () =>
             {
-                // Hold the routing thread after decoding the rejected record, before
-                // its capacity wait. The handler queues its commit after shutdown.
-                stop.Cancel();
+                // Hold routing after decoding the rejected record, before its capacity
+                // wait. Let the handler start shutdown once its continuation is running.
                 releaseFirst.TrySetResult();
                 commitQueued.Wait(timeout.Token);
             }
@@ -396,7 +395,12 @@ public sealed class PartitionedBackpressureTests
             await foreach (var record in context.Messages.WithCancellation(token))
             {
                 if (record.Offset == 0)
+                {
                     await releaseFirst.Task.WaitAsync(token);
+                    // Do not spend the drain grace waiting for a ThreadPool worker
+                    // while routing is blocked. Commit queuing below is synchronous.
+                    stop.Cancel();
+                }
                 context.MarkProcessed(record);
                 var commit = context.CommitProcessedAsync(token);
                 commitQueued.Set();
