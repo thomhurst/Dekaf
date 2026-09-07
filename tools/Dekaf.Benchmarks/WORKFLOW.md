@@ -15,7 +15,7 @@ For example, run one cache lookup case from a branch containing the desired sour
 gh workflow run benchmarks.yml --ref my-branch -f 'benchmark_filter=*SchemaResolutionFiniteTtlBenchmarks<Int32>.LookupHit*'
 ```
 
-Download `benchmark-results-filtered` for the complete BDN log, full JSON measurements, and Markdown reports. A filter matching no cases fails. Any reported case without valid measurements also fails, even if the BDN process exits zero. The terminal gate requires the selected runner to succeed and all unselected jobs to remain skipped; partial results never enter full-suite history/docs.
+Download `benchmark-results-filtered` for the complete BDN log, full JSON measurements, and Markdown reports. A filter matching no cases fails. The benchmark executable returns a failure exit code for critical validation errors or unsuccessful BDN reports, including a later launch failing after earlier measurements succeeded. The workflow also rejects missing or invalid measurement reports. The terminal gate requires the selected runner to succeed and all unselected jobs to remain skipped; partial results never enter full-suite history/docs.
 
 Filtered runs use the normal Linux managed-memory benchmark configuration. They do not reproduce the full pipeline's separate Windows native-memory profiler or its explicitly pinned external Kafka broker. Client fixtures can start their own broker through the existing [KafkaTestEnvironment](Infrastructure/KafkaTestEnvironment.cs); network-free unit cases need none. Generated benchmark builds have a 600-second timeout because the project's dependency graph can exceed BenchmarkDotNet's 120-second default on hosted runners. The runner has a 90-minute ceiling, so prefer a small class or method filter.
 

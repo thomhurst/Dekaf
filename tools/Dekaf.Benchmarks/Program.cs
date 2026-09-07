@@ -47,5 +47,10 @@ if (BenchmarkJobSelection.GetExplicitJob(benchmarkArguments) is { } selectedJob)
 //   dotnet run -c Release -- --filter "*Producer*" --job Dry (override class jobs)
 //   dotnet run -c Release                          (run all benchmarks)
 
-BenchmarkSwitcher.FromAssembly(typeof(Program).Assembly)
+var summaries = BenchmarkSwitcher.FromAssembly(typeof(Program).Assembly)
     .Run(benchmarkArguments, config);
+
+// A later launch can fail after earlier launches produced valid statistics.
+// Preserve BDN's report status in the process exit code consumed by CI.
+return summaries.Any(summary => summary.HasCriticalValidationErrors
+    || summary.Reports.Any(report => !report.Success)) ? 1 : 0;
