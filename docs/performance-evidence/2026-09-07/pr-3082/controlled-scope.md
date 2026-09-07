@@ -1,6 +1,6 @@
 # Controlled benchmark scope
 
-The controlled run deliberately selects three scenarios, each under five jobs: baseline, published product, candidate, published control, and baseline control. It contains 15 measured cases. The two original generated reports retain their measured bytes and hashes.
+The controlled run deliberately selects three scenarios, each across five jobs: baseline, published product, candidate, published control, and baseline control. It contains 15 measured cases. The two original generated reports retain their measured bytes and hashes.
 
 | Original report | Included methods | Included parameter values | Measured cases |
 |---|---|---|---:|
