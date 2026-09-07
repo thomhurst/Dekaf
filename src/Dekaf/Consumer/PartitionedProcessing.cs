@@ -628,7 +628,7 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
     private AsyncAutoResetSignal? _capacitySignal;
     private AsyncAutoResetSignal? _stopSignal;
     private Queue<RuntimeCommand<TKey, TValue>>? _deferredCommands;
-    private readonly CancellationTokenSource _failureCancellation = new();
+    private readonly CancellationTokenSource _shutdownCancellation = new();
     private readonly CancellationTokenSource _restartCancellation = new();
     private readonly object _failureGate = new();
     private ExceptionDispatchInfo? _failure;
@@ -658,15 +658,16 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
         using var rebalanceRegistration = RegisterRebalanceListener();
         using var linkedCancellation = CancellationTokenSource.CreateLinkedTokenSource(
             cancellationToken,
-            _failureCancellation.Token);
+            _shutdownCancellation.Token);
+        using var shutdownRegistration = linkedCancellation.Token.UnsafeRegister(
+            static state => ((PartitionedConsumerRuntime<TKey, TValue>)state!).StopHandlerCommits(), this);
 
         try
         {
             await SyncAssignmentAsync(linkedCancellation.Token).ConfigureAwait(false);
-            using var consumeCancellation = CancellationTokenSource.CreateLinkedTokenSource(linkedCancellation.Token);
             var batchEnumerator = _consumer
-                .ConsumeBatchAsync(consumeCancellation.Token)
-                .GetAsyncEnumerator(consumeCancellation.Token);
+                .ConsumeBatchAsync(linkedCancellation.Token)
+                .GetAsyncEnumerator(linkedCancellation.Token);
             Task<bool>? pendingBatchMove = null;
             Task<bool>? pendingCommandWait = null;
 
@@ -746,7 +747,7 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
             }
             finally
             {
-                consumeCancellation.Cancel();
+                linkedCancellation.Cancel();
 
                 await ObserveAbandonedTaskAsync(pendingBatchMove).ConfigureAwait(false);
                 if (pendingCommandWait is { IsCompleted: true })
@@ -762,6 +763,7 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
         {
             try
             {
+                linkedCancellation.Cancel();
                 await StopAllBoundedAsync().ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (_failure is not null)
@@ -772,11 +774,24 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
                 await StopScheduledRestartsAsync().ConfigureAwait(false);
                 _commands.Writer.TryComplete();
                 CompletePendingCommands();
+                // Cancel releases the deadline timer while allowing a timed-out handler's
+                // eventual failure callback to signal this source without a disposal race.
+                _shutdownCancellation.Cancel();
                 _capacitySignal?.Dispose();
             }
         }
 
         ThrowIfFailed();
+    }
+
+    private void StopHandlerCommits()
+    {
+        // Runtime cancellation stops input immediately. A commit already being serviced
+        // keeps the same bounded grace period as draining the handler's queued input.
+        if (_shutdownCancellation.IsCancellationRequested || _options.StopPolicy == PartitionStopPolicy.Cancel)
+            _shutdownCancellation.Cancel();
+        else if (_options.StopTimeout != Timeout.InfiniteTimeSpan)
+            _shutdownCancellation.CancelAfter(_options.StopTimeout);
     }
 
     private static async ValueTask ObserveAbandonedTaskAsync(Task<bool>? task)
@@ -1053,7 +1068,7 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
                 lane.TopicPartition,
                 exception);
             CaptureFailure(exception);
-            _failureCancellation.Cancel();
+            _shutdownCancellation.Cancel();
             return;
         }
 
@@ -1062,6 +1077,7 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
 
     private async ValueTask DrainCommandsAsync(CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         while (TryReadCommand(out var command))
         {
             switch (command.Kind)
@@ -1073,7 +1089,10 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
                     break;
 
                 case RuntimeCommandKind.Commit:
-                    await CompleteCommitCommandAsync(command, cancellationToken).ConfigureAwait(false);
+                    await CompleteCommitCommandAsync(command, _shutdownCancellation.Token).ConfigureAwait(false);
+                    // A cooperative commit may finish after input cancellation.
+                    // Leave later commands queued for the dedicated shutdown drain.
+                    cancellationToken.ThrowIfCancellationRequested();
                     break;
 
                 case RuntimeCommandKind.StopFailed:
@@ -1096,6 +1115,7 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
                     break;
             }
         }
+        cancellationToken.ThrowIfCancellationRequested();
     }
 
     private bool TryReadCommand(out RuntimeCommand<TKey, TValue> command)
@@ -1162,7 +1182,7 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
             cancellationToken).ConfigureAwait(false);
 
         if (_options.ErrorPolicy == PartitionWorkerErrorPolicy.Ignore
-            && !_failureCancellation.IsCancellationRequested
+            && !_shutdownCancellation.IsCancellationRequested
             && _consumer.Partitions.Assignment.Contains(lane.TopicPartition)
             && !_lanes.ContainsKey(lane.TopicPartition))
         {
@@ -1186,7 +1206,7 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
     {
         _pendingIgnoreRestarts.Remove(partition);
 
-        if (_failureCancellation.IsCancellationRequested
+        if (_shutdownCancellation.IsCancellationRequested
             || !_consumer.Partitions.Assignment.Contains(partition)
             || _stoppedByFailure.Contains(partition)
             || _lanes.ContainsKey(partition))
@@ -1233,7 +1253,7 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
             ? task.Exception.InnerException!
             : task.Exception;
         CaptureFailure(exception);
-        _failureCancellation.Cancel();
+        _shutdownCancellation.Cancel();
     }
 
     private async ValueTask StopLaneAsync(
@@ -1245,19 +1265,25 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
         var policy = reason is PartitionStopReason.Failure or PartitionStopReason.Lost
             ? PartitionStopPolicy.Cancel
             : _options.StopPolicy;
-        var stopping = lane.StopAsync(policy, _options.StopTimeout);
+        var stopping = lane.StopAsync(policy, _options.StopTimeout,
+            reason == PartitionStopReason.Shutdown ? cancellationToken : CancellationToken.None);
         var exception = policy == PartitionStopPolicy.Drain && !stopping.IsCompleted
             ? await DrainHandlerCommitsAsync(stopping.AsTask(), cancellationToken).ConfigureAwait(false)
             : await stopping.ConfigureAwait(false);
 
-        if (commitProcessed)
-            await CommitLaneAsync(lane, cancellationToken).ConfigureAwait(false);
-
-        if (exception is not null
-            && (_options.ErrorPolicy == PartitionWorkerErrorPolicy.StopConsumer || exception is TimeoutException))
+        try
         {
-            CaptureFailure(exception);
-            _failureCancellation.Cancel();
+            if (commitProcessed)
+                await CommitLaneAsync(lane, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            if (exception is not null
+                && (_options.ErrorPolicy == PartitionWorkerErrorPolicy.StopConsumer || exception is TimeoutException))
+            {
+                CaptureFailure(exception);
+                _shutdownCancellation.Cancel();
+            }
         }
     }
 
@@ -1351,11 +1377,19 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
             foreach (var lane in _lanes.Values.ToArray())
             {
                 _lanes.Remove(lane.TopicPartition);
-                await StopLaneAsync(
-                    lane,
-                    PartitionStopReason.Shutdown,
-                    commitProcessed: ShouldCommitOnPartitionStop(),
-                    cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    await StopLaneAsync(
+                        lane,
+                        PartitionStopReason.Shutdown,
+                        commitProcessed: ShouldCommitOnPartitionStop(),
+                        cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException exception) when (cancellationToken.IsCancellationRequested)
+                {
+                    // A canceled final commit must not leave the remaining lanes running.
+                    CaptureFailure(exception);
+                }
             }
         }
         finally
@@ -1370,14 +1404,20 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
         }
     }
 
-    private async ValueTask StopAllBoundedAsync()
+    private ValueTask StopAllBoundedAsync()
     {
-        if (_options.StopTimeout == Timeout.InfiniteTimeSpan)
-        {
-            await StopAllAsync(CancellationToken.None).ConfigureAwait(false);
-            return;
-        }
+        // Share the shutdown deadline with a handler commit already in flight.
+        if (_options.StopPolicy == PartitionStopPolicy.Drain)
+            return StopAllAsync(_shutdownCancellation.Token);
 
+        if (_options.StopTimeout == Timeout.InfiniteTimeSpan)
+            return StopAllAsync(CancellationToken.None);
+
+        return StopAllWithTimeoutAsync();
+    }
+
+    private async ValueTask StopAllWithTimeoutAsync()
+    {
         using var stopCancellation = new CancellationTokenSource(_options.StopTimeout);
         await StopAllAsync(stopCancellation.Token).ConfigureAwait(false);
     }
@@ -1737,7 +1777,8 @@ internal sealed class PartitionLane<TKey, TValue>
 
     public async ValueTask<Exception?> StopAsync(
         PartitionStopPolicy stopPolicy,
-        TimeSpan timeout)
+        TimeSpan timeout,
+        CancellationToken cancellationToken = default)
     {
         CompleteWriter();
 
@@ -1749,18 +1790,12 @@ internal sealed class PartitionLane<TKey, TValue>
 
         try
         {
-            if (timeout == Timeout.InfiniteTimeSpan)
-            {
-                await _processorTask.ConfigureAwait(false);
-            }
-            else
-            {
-                await _processorTask.WaitAsync(timeout).ConfigureAwait(false);
-            }
+            await _processorTask.WaitAsync(timeout, cancellationToken).ConfigureAwait(false);
 
             return null;
         }
-        catch (TimeoutException)
+        catch (Exception exception) when (exception is TimeoutException
+            || exception is OperationCanceledException && cancellationToken.IsCancellationRequested)
         {
             await CancelAsync().ConfigureAwait(false);
             _ = _processorTask.ContinueWith(

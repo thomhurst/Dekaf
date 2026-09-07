@@ -1,0 +1,35 @@
+diff --git a/src/Dekaf/Consumer/PartitionedProcessing.cs b/src/Dekaf/Consumer/PartitionedProcessing.cs
+index f87fc457f..2a70c3fe4 100644
+--- a/src/Dekaf/Consumer/PartitionedProcessing.cs
++++ b/src/Dekaf/Consumer/PartitionedProcessing.cs
+@@ -1404,21 +1404,20 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
+         }
+     }
+ 
+-    private async ValueTask StopAllBoundedAsync()
++    private ValueTask StopAllBoundedAsync()
+     {
++        // Share the shutdown deadline with a handler commit already in flight.
+         if (_options.StopPolicy == PartitionStopPolicy.Drain)
+-        {
+-            // Share the shutdown deadline with a handler commit already in flight.
+-            await StopAllAsync(_shutdownCancellation.Token).ConfigureAwait(false);
+-            return;
+-        }
++            return StopAllAsync(_shutdownCancellation.Token);
+ 
+         if (_options.StopTimeout == Timeout.InfiniteTimeSpan)
+-        {
+-            await StopAllAsync(CancellationToken.None).ConfigureAwait(false);
+-            return;
+-        }
++            return StopAllAsync(CancellationToken.None);
++
++        return StopAllWithTimeoutAsync();
++    }
+ 
++    private async ValueTask StopAllWithTimeoutAsync()
++    {
+         using var stopCancellation = new CancellationTokenSource(_options.StopTimeout);
+         await StopAllAsync(stopCancellation.Token).ConfigureAwait(false);
+     }
