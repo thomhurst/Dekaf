@@ -766,6 +766,7 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
         {
             try
             {
+                linkedCancellation.Cancel();
                 await StopAllBoundedAsync().ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (_failure is not null)
@@ -1388,6 +1389,13 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
 
     private async ValueTask StopAllBoundedAsync()
     {
+        if (_options.StopPolicy == PartitionStopPolicy.Drain)
+        {
+            // Share the shutdown deadline with a handler commit already in flight.
+            await StopAllAsync(_handlerCommitCancellation!.Token).ConfigureAwait(false);
+            return;
+        }
+
         if (_options.StopTimeout == Timeout.InfiniteTimeSpan)
         {
             await StopAllAsync(CancellationToken.None).ConfigureAwait(false);

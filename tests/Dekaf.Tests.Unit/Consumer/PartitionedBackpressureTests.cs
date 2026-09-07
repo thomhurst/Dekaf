@@ -475,6 +475,7 @@ public sealed class PartitionedBackpressureTests
 
             await Assert.That(async () => await running.WaitAsync(timeout.Token))
                 .Throws<OperationCanceledException>();
+            await Assert.That(running.IsCanceled).IsTrue();
             var shouldDrain = stopPolicy == PartitionStopPolicy.Drain && !cancelHandler && !stallCommit;
             await Assert.That(consumer.CommitCalls.Count).IsEqualTo(shouldDrain ? 2 : 0);
             if (shouldDrain)

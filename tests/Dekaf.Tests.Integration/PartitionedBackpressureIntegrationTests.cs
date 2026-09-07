@@ -8,10 +8,8 @@ namespace Dekaf.Tests.Integration;
 public sealed class PartitionedBackpressureIntegrationTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
-    [Arguments(PartitionBackpressureMode.AwaitCapacity, false)]
-    [Arguments(PartitionBackpressureMode.PauseResume, false)]
-    [Arguments(PartitionBackpressureMode.AwaitCapacity, true)]
-    [Arguments(PartitionBackpressureMode.PauseResume, true)]
+    [Arguments(false)]
+    [Arguments(true)]
     public async Task AwaitCapacity_HandlerCommitsReachBrokerWhileFullOrDraining(bool shutdown)
     {
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 1);
