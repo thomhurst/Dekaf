@@ -12,7 +12,7 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 [MemoryDiagnoser]
 public class AdminDetailedMutationBenchmarks
 {
-    [Params("create:1", "create:16", "mixed:16", "retry:16", "delete:16", "expand:16", "reassign:16")]
+    [Params("create:1", "create:16", "mixed:16", "retry:16", "delete:16", "expand:16", "reassign:16", "reassign-retry:16", "wrapped:16")]
     public string Scenario { get; set; } = "create:16";
 
     private AdminClient _admin = null!;
@@ -79,24 +79,29 @@ public class AdminDetailedMutationBenchmarks
             if (results[_names[^1]].ErrorCode != ErrorCode.TopicAuthorizationFailed || !results[_names[0]].IsSuccess)
                 throw new InvalidOperationException("Mixed outcomes were not retained.");
         }
-        else if (_operation == "retry" && _connection.CreateCalls != 2)
+        else if (_operation is "retry" or "wrapped" && _connection.CreateCalls != 2)
             throw new InvalidOperationException("Expected one controller retry.");
+        else if (_operation == "reassign-retry" && _connection.ReassignCalls != 3)
+            throw new InvalidOperationException("Expected a partial rejection followed by a top-level rejection.");
 
+        PrepareMutation();
         IEnumerable<AdminMutationResult> values = _operation switch
         {
             "delete" => (await _admin.DeleteTopicsDetailedAsync(_names)).Values,
             "expand" => (await _admin.CreatePartitionsDetailedAsync(_expansions)).Values,
-            "reassign" => (await _admin.AlterPartitionReassignmentsDetailedAsync(_reassignments)).Values,
+            "reassign" or "reassign-retry" => (await _admin.AlterPartitionReassignmentsDetailedAsync(_reassignments)).Values,
             _ => (await _admin.CreateTopicsDetailedAsync(_topics)).Values
         };
         var successes = 0;
         foreach (var result in values)
         {
             if (result.IsSuccess) successes++;
+            else if (_operation == "wrapped" && result.Outcome == AdminMutationOutcome.Unknown && result.Exception is InvalidOperationException)
+                continue;
             else if (_operation != "mixed" || result.ErrorCode != ErrorCode.TopicAuthorizationFailed)
                 throw new InvalidOperationException("Unexpected mutation outcome.");
         }
-        if (successes != count - (_operation == "mixed" ? 1 : 0))
+        if (successes != count - (_operation is "mixed" or "wrapped" ? 1 : 0))
             throw new InvalidOperationException("Incorrect successful mutation count.");
 
         // Actual elapsed workload warmup, independent of BDN's iteration calibration.
@@ -113,16 +118,24 @@ public class AdminDetailedMutationBenchmarks
     [Benchmark]
     public async ValueTask<int> Mutate()
     {
-        _connection.RetryNext = _operation == "retry";
-        _connection.CreateCalls = 0;
+        PrepareMutation();
         return _operation switch
         {
-            "create" or "mixed" or "retry" => (await _admin.CreateTopicsDetailedAsync(_topics)).Count,
+            "create" or "mixed" or "retry" or "wrapped" => (await _admin.CreateTopicsDetailedAsync(_topics)).Count,
             "delete" => (await _admin.DeleteTopicsDetailedAsync(_names)).Count,
             "expand" => (await _admin.CreatePartitionsDetailedAsync(_expansions)).Count,
-            "reassign" => (await _admin.AlterPartitionReassignmentsDetailedAsync(_reassignments)).Count,
+            "reassign" or "reassign-retry" => (await _admin.AlterPartitionReassignmentsDetailedAsync(_reassignments)).Count,
             _ => throw new InvalidOperationException(Scenario)
         };
+    }
+
+    private void PrepareMutation()
+    {
+        _connection.RetryNext = _operation is "retry" or "wrapped";
+        _connection.WrappedFailure = _operation == "wrapped";
+        _connection.ReassignRetry = _operation == "reassign-retry";
+        _connection.ReassignCalls = 0;
+        _connection.CreateCalls = 0;
     }
 
     [GlobalCleanup]
@@ -138,6 +151,19 @@ public class AdminDetailedMutationBenchmarks
     {
         public bool RetryNext { get; set; }
         public int CreateCalls { get; set; }
+        public bool WrappedFailure { get; set; }
+        public bool ReassignRetry { get; set; }
+        public int ReassignCalls { get; set; }
+        private readonly AlterPartitionReassignmentsResponse _partialReassignment = new()
+        {
+            Responses = reassign.Responses.Select((topic, index) => new AlterPartitionReassignmentsResponseTopic
+            {
+                Name = topic.Name,
+                Partitions = [new() { PartitionIndex = 0, ErrorCode = index == reassign.Responses.Count - 1 ? ErrorCode.NotController : ErrorCode.None }]
+            }).ToArray()
+        };
+        private readonly AlterPartitionReassignmentsResponse _rejectedReassignment = new() { ErrorCode = ErrorCode.NotController, Responses = [] };
+        private readonly AlterPartitionReassignmentsResponse _retriedReassignment = new() { Responses = [reassign.Responses[^1]] };
         public int BrokerId => 1;
         public string Host => "localhost";
         public int Port => 9092;
@@ -151,7 +177,7 @@ public class AdminDetailedMutationBenchmarks
                 CreateTopicsRequest topics => NextCreate(topics.Topics.Count),
                 DeleteTopicsRequest => delete,
                 CreatePartitionsRequest => expand,
-                AlterPartitionReassignmentsRequest => reassign,
+                AlterPartitionReassignmentsRequest partitions => NextReassign(partitions.Topics.Count),
                 _ => throw new NotSupportedException(typeof(TRequest).Name)
             };
             return ValueTask.FromResult((TResponse)response);
@@ -159,9 +185,19 @@ public class AdminDetailedMutationBenchmarks
         private CreateTopicsResponse NextCreate(int count)
         {
             CreateCalls++;
+            if (WrappedFailure && !RetryNext)
+                throw new InvalidOperationException("Transport unavailable", new IOException("Response lost"));
             if (!RetryNext) return count == create.Topics.Count ? create : retried;
             RetryNext = false;
             return retry;
+        }
+        private AlterPartitionReassignmentsResponse NextReassign(int count)
+        {
+            ReassignCalls++;
+            if (!ReassignRetry) return reassign;
+            if (ReassignCalls == 1) return _partialReassignment;
+            if (count != 1) throw new InvalidOperationException("Confirmed reassignment was replayed.");
+            return ReassignCalls == 2 ? _rejectedReassignment : _retriedReassignment;
         }
         public ValueTask ConnectAsync(CancellationToken token = default) => ValueTask.CompletedTask;
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;

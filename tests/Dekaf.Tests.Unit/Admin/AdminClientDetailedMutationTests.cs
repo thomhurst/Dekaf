@@ -122,6 +122,74 @@ public sealed class AdminClientDetailedMutationTests
     }
 
     [Test]
+    public async Task RetryDiscoveryOutage_PreservesConfirmedResults()
+    {
+        var (admin, connection) = CreateAdmin();
+        await using var client = admin;
+        var calls = 0;
+        Setup(connection, "create", _ =>
+        {
+            calls++;
+            connection.SendAsync<MetadataRequest, MetadataResponse>(Arg.Any<MetadataRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
+                .Returns<ValueTask<MetadataResponse>>(_ => throw new System.Net.Sockets.SocketException((int)System.Net.Sockets.SocketError.HostNotFound));
+            return [("good", ErrorCode.None, null), ("bad", ErrorCode.NotController, "moved")];
+        });
+        var results = await Invoke(admin, "create");
+        await Assert.That(calls).IsEqualTo(4);
+        await Assert.That(results["good"].IsSuccess).IsTrue();
+        await Assert.That(results["bad"].Outcome).IsEqualTo(AdminMutationOutcome.Failed);
+        await Assert.That(results["bad"].ErrorCode).IsEqualTo(ErrorCode.NotController);
+        await Assert.That(results["bad"].ErrorMessage).IsEqualTo("moved");
+    }
+
+    [Test]
+    public async Task WrappedSendFailure_PreservesSuccessWithoutReplayingUnknownMutation()
+    {
+        var (admin, connection) = CreateAdmin();
+        await using var client = admin;
+        var failure = new InvalidOperationException("Transport unavailable", new IOException("response lost"));
+        var calls = 0;
+        Setup(connection, "create", _ => ++calls == 1
+            ? [("good", ErrorCode.None, null), ("bad", ErrorCode.NotController, "moved")]
+            : throw failure);
+        var results = await Invoke(admin, "create");
+        await Assert.That(calls).IsEqualTo(2);
+        await Assert.That(results["good"].IsSuccess).IsTrue();
+        await Assert.That(results["bad"].Outcome).IsEqualTo(AdminMutationOutcome.Unknown);
+        await Assert.That(results["bad"].Exception).IsSameReferenceAs(failure);
+    }
+
+    [Test]
+    public async Task UnrelatedInvariantFailure_StillPropagates()
+    {
+        var (admin, connection) = CreateAdmin();
+        await using var client = admin;
+        var failure = new InvalidOperationException("Invalid fixture invariant");
+        Setup(connection, "create", _ => throw failure);
+        var caught = await Assert.ThrowsAsync<InvalidOperationException>(() => Invoke(admin, "create").AsTask());
+        await Assert.That(caught).IsSameReferenceAs(failure);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task DeleteValidation_UsesPublicParameterNames(bool inMemory)
+    {
+        await using IAdminClient admin = inMemory
+            ? new Dekaf.Testing.InMemoryAdminClient(new Dekaf.Testing.InMemoryKafkaCluster())
+            : CreateAdmin().Item1;
+        var id = Guid.NewGuid();
+        var names = await Assert.ThrowsAsync<ArgumentException>(() => admin.DeleteTopicsDetailedAsync(["same", "same"]).AsTask());
+        var ids = await Assert.ThrowsAsync<ArgumentException>(() => admin.DeleteTopicsDetailedAsync([id, id]).AsTask());
+        var nullNames = await Assert.ThrowsAsync<ArgumentNullException>(() => admin.DeleteTopicsDetailedAsync((IEnumerable<string>)null!).AsTask());
+        var nullIds = await Assert.ThrowsAsync<ArgumentNullException>(() => admin.DeleteTopicsDetailedAsync((IEnumerable<Guid>)null!).AsTask());
+        await Assert.That(names!.ParamName).IsEqualTo("topicNames");
+        await Assert.That(ids!.ParamName).IsEqualTo("topicIds");
+        await Assert.That(nullNames!.ParamName).IsEqualTo("topicNames");
+        await Assert.That(nullIds!.ParamName).IsEqualTo("topicIds");
+    }
+
+    [Test]
     [Arguments(false)]
     [Arguments(true)]
     public async Task CancellationDuringSend_ReturnsUnknownWithCorrectCause(bool timeout)

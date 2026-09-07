@@ -22,7 +22,7 @@ public sealed partial class InMemoryAdminClient : IDetailedTopicMutationAdminCli
         IEnumerable<string> topicNames, DeleteTopicsOptions? options = null, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var names = AdminClient.SnapshotMutationKeys(topicNames, static name => ArgumentException.ThrowIfNullOrWhiteSpace(name));
+        var names = AdminClient.SnapshotMutationKeys(topicNames, nameof(topicNames), static name => ArgumentException.ThrowIfNullOrWhiteSpace(name, nameof(topicNames)));
         return ExecuteInMemoryMutationAsync(names, static name => name, static name => (name, null),
             name => _cluster.DeleteTopic(name) ? ErrorCode.None : ErrorCode.UnknownTopicOrPartition,
             options?.TimeoutMs ?? 30000, cancellationToken);
@@ -33,7 +33,7 @@ public sealed partial class InMemoryAdminClient : IDetailedTopicMutationAdminCli
         IEnumerable<Guid> topicIds, DeleteTopicsOptions? options = null, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var ids = AdminClient.SnapshotMutationKeys(topicIds, static id =>
+        var ids = AdminClient.SnapshotMutationKeys(topicIds, nameof(topicIds), static id =>
         {
             if (id == Guid.Empty) throw new ArgumentException("Topic IDs cannot contain the empty UUID.", nameof(topicIds));
         });

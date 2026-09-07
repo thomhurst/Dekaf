@@ -18,7 +18,7 @@ public sealed partial class AdminClient : IDetailedTopicMutationAdminClient
             new(ApiKey.CreateTopics, CreateTopicsRequest.LowestSupportedVersion, CreateTopicsRequest.HighestSupportedVersion, nameof(CreateTopicsAsync)),
             opts.TimeoutMs,
             (pending, _) => new() { Topics = pending, TimeoutMs = opts.TimeoutMs, ValidateOnly = opts.ValidateOnly },
-            static response => MapMutationResults(response.Topics, static item => item.Name,
+            static (_, response) => MapMutationResults(response.Topics, static item => item.Name,
                 static item => item.ErrorCode, static item => item.ErrorMessage), cancellationToken);
     }
 
@@ -29,7 +29,7 @@ public sealed partial class AdminClient : IDetailedTopicMutationAdminClient
         cancellationToken.ThrowIfCancellationRequested();
         var timeout = options?.TimeoutMs ?? 30000;
         ArgumentOutOfRangeException.ThrowIfNegative(timeout);
-        var names = SnapshotMutationKeys(topicNames, static name => ArgumentException.ThrowIfNullOrWhiteSpace(name));
+        var names = SnapshotMutationKeys(topicNames, nameof(topicNames), static name => ArgumentException.ThrowIfNullOrWhiteSpace(name, nameof(topicNames)));
         return ExecuteControllerMutationAsync<string, string, DeleteTopicsRequest, DeleteTopicsResponse>(
             names, static name => name,
             new(ApiKey.DeleteTopics, DeleteTopicsRequest.LowestSupportedVersion, DeleteTopicsRequest.HighestSupportedVersion, nameof(DeleteTopicsAsync)),
@@ -37,7 +37,7 @@ public sealed partial class AdminClient : IDetailedTopicMutationAdminClient
             (pending, version) => version >= 6
                 ? new() { Topics = pending.Select(static name => new DeleteTopicState { Name = name }).ToArray(), TimeoutMs = timeout }
                 : new() { TopicNames = pending, TimeoutMs = timeout },
-            static response => MapMutationResults(response.Responses, static item => item.Name ?? string.Empty,
+            static (_, response) => MapMutationResults(response.Responses, static item => item.Name ?? string.Empty,
                 static item => item.ErrorCode, static item => item.ErrorMessage), cancellationToken);
     }
 
@@ -48,7 +48,7 @@ public sealed partial class AdminClient : IDetailedTopicMutationAdminClient
         cancellationToken.ThrowIfCancellationRequested();
         var timeout = options?.TimeoutMs ?? 30000;
         ArgumentOutOfRangeException.ThrowIfNegative(timeout);
-        var ids = SnapshotMutationKeys(topicIds, static id =>
+        var ids = SnapshotMutationKeys(topicIds, nameof(topicIds), static id =>
         {
             if (id == Guid.Empty) throw new ArgumentException("Topic IDs cannot contain the empty UUID.", nameof(topicIds));
         });
@@ -57,7 +57,7 @@ public sealed partial class AdminClient : IDetailedTopicMutationAdminClient
             new(ApiKey.DeleteTopics, 6, DeleteTopicsRequest.HighestSupportedVersion, nameof(DeleteTopicsAsync)),
             timeout,
             (pending, _) => new() { Topics = pending.Select(static id => new DeleteTopicState { TopicId = id }).ToArray(), TimeoutMs = timeout },
-            static response => MapMutationResults(response.Responses, static item => item.TopicId,
+            static (_, response) => MapMutationResults(response.Responses, static item => item.TopicId,
                 static item => item.ErrorCode, static item => item.ErrorMessage), cancellationToken);
     }
 
@@ -88,7 +88,7 @@ public sealed partial class AdminClient : IDetailedTopicMutationAdminClient
             new(ApiKey.CreatePartitions, CreatePartitionsRequest.LowestSupportedVersion, CreatePartitionsRequest.HighestSupportedVersion, nameof(CreatePartitionsAsync)),
             opts.TimeoutMs,
             (pending, _) => new() { Topics = pending, TimeoutMs = opts.TimeoutMs, ValidateOnly = opts.ValidateOnly },
-            static response => MapMutationResults(response.Results, static item => item.Name,
+            static (_, response) => MapMutationResults(response.Results, static item => item.Name,
                 static item => item.ErrorCode, static item => item.ErrorMessage), cancellationToken);
     }
 
@@ -113,12 +113,12 @@ public sealed partial class AdminClient : IDetailedTopicMutationAdminClient
                 TimeoutMs = opts.TimeoutMs,
                 AllowReplicationFactorChange = opts.AllowReplicationFactorChange
             },
-            response =>
+            static (pending, response) =>
             {
                 var results = new Dictionary<TopicPartition, AdminMutationResult>();
                 if (response.ErrorCode != ErrorCode.None)
                 {
-                    foreach (var item in items)
+                    foreach (var item in pending)
                         results.Add(item.Key, AdminMutationResult.FromResponse(response.ErrorCode, response.ErrorMessage));
                     return results;
                 }
@@ -130,15 +130,15 @@ public sealed partial class AdminClient : IDetailedTopicMutationAdminClient
             }, cancellationToken);
     }
 
-    internal static List<TKey> SnapshotMutationKeys<TKey>(IEnumerable<TKey> keys, Action<TKey> validate) where TKey : notnull
+    internal static List<TKey> SnapshotMutationKeys<TKey>(IEnumerable<TKey> keys, string parameterName, Action<TKey> validate) where TKey : notnull
     {
-        ArgumentNullException.ThrowIfNull(keys);
+        ArgumentNullException.ThrowIfNull(keys, parameterName);
         var result = new List<TKey>();
         var seen = new HashSet<TKey>();
         foreach (var key in keys)
         {
             validate(key);
-            if (!seen.Add(key)) throw new ArgumentException("Mutation entities must be distinct.", nameof(keys));
+            if (!seen.Add(key)) throw new ArgumentException("Mutation entities must be distinct.", parameterName);
             result.Add(key);
         }
         return result;

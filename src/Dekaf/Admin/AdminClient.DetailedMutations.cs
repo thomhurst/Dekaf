@@ -1,5 +1,6 @@
 using Dekaf.Errors;
 using Dekaf.Protocol;
+using Dekaf.Retry;
 
 namespace Dekaf.Admin;
 
@@ -10,7 +11,7 @@ public sealed partial class AdminClient
     private async ValueTask<IReadOnlyDictionary<TKey, AdminMutationResult>> ExecuteControllerMutationAsync<TKey, TItem, TRequest, TResponse>(
         List<TItem> items, Func<TItem, TKey> getKey, MutationProtocol protocol, int timeoutMs,
         Func<List<TItem>, short, TRequest> createRequest,
-        Func<TResponse, Dictionary<TKey, AdminMutationResult>> readResponse,
+        Func<List<TItem>, TResponse, Dictionary<TKey, AdminMutationResult>> readResponse,
         CancellationToken cancellationToken)
         where TKey : notnull
         where TRequest : IKafkaRequest<TResponse>
@@ -54,7 +55,7 @@ public sealed partial class AdminClient
                     return;
                 }
 
-                var responseResults = readResponse(response);
+                var responseResults = readResponse(pending, response);
                 List<TItem>? retry = null;
                 KafkaException? retryFailure = null;
                 foreach (var item in pending)
@@ -92,7 +93,8 @@ public sealed partial class AdminClient
     }
 
     internal static bool IsDetailedMutationFailure(Exception exception) => exception is
-        KafkaException or IOException or System.Net.Sockets.SocketException or TimeoutException or OperationCanceledException;
+        KafkaException or IOException or System.Net.Sockets.SocketException or TimeoutException or OperationCanceledException
+        || RetryHelper.IsRetriableRequestFailure(exception);
 
     internal static Exception MutationFailure(Exception exception, CancellationTokenSource deadline,
         int timeoutMs, string operation, CancellationToken callerToken)
