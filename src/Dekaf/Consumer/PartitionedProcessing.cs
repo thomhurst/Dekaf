@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Runtime.ExceptionServices;
+using System.Runtime.InteropServices;
 using System.Threading.Channels;
 using Dekaf.Internal;
 using Microsoft.Extensions.Logging;
@@ -1995,7 +1996,7 @@ internal sealed class KeyOrderedPartitionDispatcher<TKey, TValue>
                 // Dispatch has stopped and every active handler has exited. Remaining key queues
                 // belong to failed/cancelled lanes and cannot be handed to user code anymore.
                 foreach (var lane in _lanes.Values)
-                    lane.ReleaseQueuedStorage();
+                    lane?.ReleaseQueuedStorage();
                 _lanes.Clear();
             }
         }
@@ -2011,12 +2012,25 @@ internal sealed class KeyOrderedPartitionDispatcher<TKey, TValue>
 
         lock (_gate)
         {
+#if NETSTANDARD2_0
             if (!_lanes.TryGetValue(key, out lane!))
             {
                 lane = new KeyOrderedProcessingLane<TKey, TValue>(this, key);
                 _lanes.Add(key, lane);
                 lane.RetainKeyStorage(message);
             }
+#else
+            // One probe avoids hashing a new binary key twice. The gate keeps
+            // dictionary entries stable while the new lane takes ownership.
+            ref var entry = ref CollectionsMarshal.GetValueRefOrAddDefault(_lanes, key, out _);
+            lane = entry!;
+            if (lane is null)
+            {
+                lane = new KeyOrderedProcessingLane<TKey, TValue>(this, key);
+                entry = lane;
+                lane.RetainKeyStorage(message);
+            }
+#endif
 
             shouldStart = lane.Enqueue(message);
         }

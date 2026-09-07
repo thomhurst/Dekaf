@@ -1,0 +1,13 @@
+using BenchmarkDotNet.Configs;
+using BenchmarkDotNet.Jobs;
+using BenchmarkDotNet.Running;
+using Perfolizer.Horology;
+var dry = args.Contains("--dry");
+var job = dry ? Job.Dry : Job.Default.WithWarmupCount(5).WithIterationCount(15).WithIterationTime(TimeInterval.FromMilliseconds(200));
+var root = "C:/git/Dekaf-perf-improvements-20260907/pr-3082";
+job = job.WithAffinity(new IntPtr(4)).WithEnvironmentVariable("DOTNET_TieredCompilation", "0");
+var config = DefaultConfig.Instance.WithOptions(ConfigOptions.KeepBenchmarkFiles);
+foreach (var (name, directory) in new[] { ("A_Baseline", "baseline"), ("B_Published", "published"), ("C_Candidate", "candidate"), ("D_PublishedControl", "published"), ("E_BaselineControl", "baseline") })
+    config = config.AddJob(job.WithId(name).WithMsBuildArguments($"/p:ProductDirectory={root}/{directory}", "/p:UseSharedCompilation=false"));
+var summaries = BenchmarkSwitcher.FromAssembly(typeof(Program).Assembly).Run(args.Where(a => a != "--dry").ToArray(), config).ToArray();
+return summaries.Length == 0 || summaries.Any(s => s.HasCriticalValidationErrors || s.Reports.Length == 0 || s.Reports.Any(r => !r.Success || r.ResultStatistics is null)) ? 1 : 0;
