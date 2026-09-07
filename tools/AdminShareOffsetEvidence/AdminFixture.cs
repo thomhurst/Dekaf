@@ -77,6 +77,7 @@ public sealed class AdminFixture : IAsyncDisposable
             await _inventory.AlterShareGroupOffsetsAsync(id, [new() { TopicPartition = _partition, StartOffset = 0 }]);
 #if CANDIDATE
         _specs = _ids.ToDictionary(id => id, _ => new ListShareGroupOffsetsSpec(), StringComparer.Ordinal);
+        if (_mode is "empty" or "empty0" or "inventory-empty") _specs.Clear();
 #endif
         _call = _mode switch
         {
@@ -100,7 +101,7 @@ public sealed class AdminFixture : IAsyncDisposable
             }
         }
 #if CANDIDATE
-        else if (_mode is not ("deadline" or "cancel"))
+        else if (_mode is not ("deadline" or "cancel" or "empty" or "empty0" or "inventory-empty"))
         {
             _connection.RetryNext = _mode == "retry";
             var results = _mode == "inventory-batch" ? await _inventory.ListShareGroupOffsetsAsync(_specs)
@@ -147,6 +148,13 @@ public sealed class AdminFixture : IAsyncDisposable
     {
         switch (_mode)
         {
+            case "empty":
+            case "empty0":
+                var beforeEmpty = _connection.Requests;
+                var empty = await _admin.ListShareGroupOffsetsAsync(_specs, _mode == "empty0" ? _zeroDeadline : null);
+                if (_connection.Requests != beforeEmpty) throw new InvalidOperationException("Empty query sent a request.");
+                return Observe(empty.Count);
+            case "inventory-empty": return Observe((await _inventory.ListShareGroupOffsetsAsync(_specs)).Count);
             case "batch":
             case "batch0":
             case "mixed":
@@ -184,7 +192,8 @@ public sealed class AdminFixture : IAsyncDisposable
 
     private int Observe(int completed)
     {
-        if (completed != _count) throw new InvalidOperationException("A requested group did not complete.");
+        var expected = _mode is "empty" or "empty0" or "inventory-empty" ? 0 : _count;
+        if (completed != expected) throw new InvalidOperationException("A requested group did not complete.");
         return completed;
     }
 

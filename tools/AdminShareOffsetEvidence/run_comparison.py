@@ -13,8 +13,8 @@ import subprocess
 import sys
 
 CONTROLS = ['legacy:32', 'legacy:1', 'inventory:32']
-NEW_CASES = ['batch:32', 'batch:1', 'batch0:32', 'mixed:32', 'retry:32', 'cancel:1', 'deadline:1', 'inventory-batch:32']
-INCREMENTAL = ['batch:32', 'batch:1']
+NEW_CASES = ['batch:32', 'batch:1', 'batch0:32', 'mixed:32', 'retry:32', 'cancel:1', 'deadline:1', 'inventory-batch:32', 'empty:1', 'empty0:1', 'inventory-empty:1']
+INCREMENTAL = ['batch:32', 'batch:1', 'empty:1', 'inventory-empty:1']
 LIMITS = {'CallsPerSecond': .03, 'CpuNsPerCall': .03, 'P50Ns': .05, 'P99Ns': .05, 'MaxNs': .05}
 
 
