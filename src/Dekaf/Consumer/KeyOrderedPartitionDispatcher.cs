@@ -358,7 +358,7 @@ internal sealed class KeyOrderedPartitionDispatcher<TKey, TValue>
             // A mutable user key can make its dictionary entry unreachable.
             // Keep the lane owned until shutdown instead of pooling an alias.
             if (!_lanes.Remove(lane.Key))
-                ThrowKeyChanged();
+                throw new InvalidOperationException("A partition key changed its hash code or equality while being processed.");
             lane.ReleaseKey();
             lane.Scheduled = false;
             lane.Tail = -1;
@@ -368,12 +368,6 @@ internal sealed class KeyOrderedPartitionDispatcher<TKey, TValue>
 
         if (frontierChanged)
             PublishCommit();
-    }
-
-    [MethodImpl(MethodImplOptions.NoInlining)]
-    private static void ThrowKeyChanged()
-    {
-        throw new InvalidOperationException("A partition key changed its hash code or equality while being processed.");
     }
 
     private void PublishCommit()
