@@ -1,0 +1,10 @@
+
+  In process file artifacts produced:
+    - C:\git\Dekaf-worktrees\pr-3117-improve\tests\Dekaf.Tests.Unit\bin\Release\net8.0\TestResults\Dekaf.Tests.Unit-windows-net8.0-report.html
+
+Test run summary: Passed! - C:\git\Dekaf-worktrees\pr-3117-improve\tests\Dekaf.Tests.Unit\bin\Release\net8.0\Dekaf.Tests.Unit.dll (net8.0|x64)
+  total: 72
+  failed: 0
+  succeeded: 72
+  skipped: 0
+  duration: 2s 074ms

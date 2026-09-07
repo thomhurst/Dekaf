@@ -1,0 +1,33 @@
+# Historical performance sources for PR #3117
+
+Current performance work uses [standard tooling](../../.github/benchmarks/STANDARD-TOOLS.md): BenchmarkDotNet for microbenchmarks and original exports, with dotnet-counters/dotnet-trace for separate profiling runs. BenchmarkDotNet controls warmup; verify elapsed workload warmup in its full JSON before claiming steady-state acceptance.
+
+Historical reports and raw measurements remain unchanged. Their source references describe the original experiments, not maintained tooling or current-head acceptance. The source snapshots and custom scripts are retained at [the original commit](https://github.com/thomhurst/Dekaf/tree/420499d621426a906d24a1f40917ebb97a0b21ad/docs/performance-evidence). Relative source references in those historical reports refer to that tree.
+## Source archive
+
+- [docs/performance-evidence/2026-09-07/pr-3117/evidence/Directory.Build.props.txt](https://github.com/thomhurst/Dekaf/blob/420499d621426a906d24a1f40917ebb97a0b21ad/docs/performance-evidence/2026-09-07/pr-3117/evidence/Directory.Build.props.txt)
+- [docs/performance-evidence/2026-09-07/pr-3117/evidence/Directory.Packages.props.txt](https://github.com/thomhurst/Dekaf/blob/420499d621426a906d24a1f40917ebb97a0b21ad/docs/performance-evidence/2026-09-07/pr-3117/evidence/Directory.Packages.props.txt)
+- [docs/performance-evidence/2026-09-07/pr-3117/evidence/comparison-v2/Comparison.sln.txt](https://github.com/thomhurst/Dekaf/blob/420499d621426a906d24a1f40917ebb97a0b21ad/docs/performance-evidence/2026-09-07/pr-3117/evidence/comparison-v2/Comparison.sln.txt)
+- [docs/performance-evidence/2026-09-07/pr-3117/evidence/comparison-v2/Dekaf.Benchmarks.csproj.txt](https://github.com/thomhurst/Dekaf/blob/420499d621426a906d24a1f40917ebb97a0b21ad/docs/performance-evidence/2026-09-07/pr-3117/evidence/comparison-v2/Dekaf.Benchmarks.csproj.txt)
+- [docs/performance-evidence/2026-09-07/pr-3117/evidence/comparison-v2/PartitionedLifetimeBenchmarks.cs.txt](https://github.com/thomhurst/Dekaf/blob/420499d621426a906d24a1f40917ebb97a0b21ad/docs/performance-evidence/2026-09-07/pr-3117/evidence/comparison-v2/PartitionedLifetimeBenchmarks.cs.txt)
+- [docs/performance-evidence/2026-09-07/pr-3117/evidence/comparison-v2/Program.cs.txt](https://github.com/thomhurst/Dekaf/blob/420499d621426a906d24a1f40917ebb97a0b21ad/docs/performance-evidence/2026-09-07/pr-3117/evidence/comparison-v2/Program.cs.txt)
+- [docs/performance-evidence/2026-09-07/pr-3117/evidence/comparison/Comparison.sln.txt](https://github.com/thomhurst/Dekaf/blob/420499d621426a906d24a1f40917ebb97a0b21ad/docs/performance-evidence/2026-09-07/pr-3117/evidence/comparison/Comparison.sln.txt)
+- [docs/performance-evidence/2026-09-07/pr-3117/evidence/comparison/Dekaf.Benchmarks.csproj.txt](https://github.com/thomhurst/Dekaf/blob/420499d621426a906d24a1f40917ebb97a0b21ad/docs/performance-evidence/2026-09-07/pr-3117/evidence/comparison/Dekaf.Benchmarks.csproj.txt)
+- [docs/performance-evidence/2026-09-07/pr-3117/evidence/comparison/PartitionedLifetimeBenchmarks.cs.txt](https://github.com/thomhurst/Dekaf/blob/420499d621426a906d24a1f40917ebb97a0b21ad/docs/performance-evidence/2026-09-07/pr-3117/evidence/comparison/PartitionedLifetimeBenchmarks.cs.txt)
+- [docs/performance-evidence/2026-09-07/pr-3117/evidence/comparison/Program.cs.txt](https://github.com/thomhurst/Dekaf/blob/420499d621426a906d24a1f40917ebb97a0b21ad/docs/performance-evidence/2026-09-07/pr-3117/evidence/comparison/Program.cs.txt)
+- [docs/performance-evidence/2026-09-07/pr-3117/permanent-dispatch-coverage/summarize-run.ps1](https://github.com/thomhurst/Dekaf/blob/420499d621426a906d24a1f40917ebb97a0b21ad/docs/performance-evidence/2026-09-07/pr-3117/permanent-dispatch-coverage/summarize-run.ps1)
+- [docs/performance-evidence/2026-09-07/pr-3117/permanent-dispatch-coverage/test-summarize-run.ps1](https://github.com/thomhurst/Dekaf/blob/420499d621426a906d24a1f40917ebb97a0b21ad/docs/performance-evidence/2026-09-07/pr-3117/permanent-dispatch-coverage/test-summarize-run.ps1)
+- [docs/performance-evidence/2026-09-09/pr-3117-pause/after/Dekaf.Benchmarks.csproj.txt](https://github.com/thomhurst/Dekaf/blob/420499d621426a906d24a1f40917ebb97a0b21ad/docs/performance-evidence/2026-09-09/pr-3117-pause/after/Dekaf.Benchmarks.csproj.txt)
+- [docs/performance-evidence/2026-09-09/pr-3117-pause/after/Directory.Packages.props.txt](https://github.com/thomhurst/Dekaf/blob/420499d621426a906d24a1f40917ebb97a0b21ad/docs/performance-evidence/2026-09-09/pr-3117-pause/after/Directory.Packages.props.txt)
+- [docs/performance-evidence/2026-09-09/pr-3117-pause/after/PausedFetchWakeBench.cs.txt](https://github.com/thomhurst/Dekaf/blob/420499d621426a906d24a1f40917ebb97a0b21ad/docs/performance-evidence/2026-09-09/pr-3117-pause/after/PausedFetchWakeBench.cs.txt)
+- [docs/performance-evidence/2026-09-09/pr-3117-pause/after/Program.cs.txt](https://github.com/thomhurst/Dekaf/blob/420499d621426a906d24a1f40917ebb97a0b21ad/docs/performance-evidence/2026-09-09/pr-3117-pause/after/Program.cs.txt)
+- [docs/performance-evidence/2026-09-09/pr-3117-pause/before/Dekaf.Benchmarks.csproj.txt](https://github.com/thomhurst/Dekaf/blob/420499d621426a906d24a1f40917ebb97a0b21ad/docs/performance-evidence/2026-09-09/pr-3117-pause/before/Dekaf.Benchmarks.csproj.txt)
+- [docs/performance-evidence/2026-09-09/pr-3117-pause/before/Directory.Packages.props.txt](https://github.com/thomhurst/Dekaf/blob/420499d621426a906d24a1f40917ebb97a0b21ad/docs/performance-evidence/2026-09-09/pr-3117-pause/before/Directory.Packages.props.txt)
+- [docs/performance-evidence/2026-09-09/pr-3117-pause/before/PausedFetchWakeBench.cs.txt](https://github.com/thomhurst/Dekaf/blob/420499d621426a906d24a1f40917ebb97a0b21ad/docs/performance-evidence/2026-09-09/pr-3117-pause/before/PausedFetchWakeBench.cs.txt)
+- [docs/performance-evidence/2026-09-09/pr-3117-pause/before/Program.cs.txt](https://github.com/thomhurst/Dekaf/blob/420499d621426a906d24a1f40917ebb97a0b21ad/docs/performance-evidence/2026-09-09/pr-3117-pause/before/Program.cs.txt)
+
+Benchmark setup retains correctness checks. Manual warmup loops and custom allocation reporting are excluded; use BenchmarkDotNet warmup and MemoryDiagnoser. Historical measurements do not automatically validate the changed fixture.
+
+## Cleanup validation
+
+Release net10.0 build passed. BenchmarkDotNet Dry completed 6 cases with correctness checks enabled; this is fixture validation, not performance acceptance. The unchanged main tree has two projects named Dekaf.Benchmarks.csproj. The shared .github project was temporarily excluded during local project discovery and restored after the smoke run; no project configuration changes are included.
