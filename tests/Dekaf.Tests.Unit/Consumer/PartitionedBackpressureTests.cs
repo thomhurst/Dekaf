@@ -492,6 +492,65 @@ public sealed class PartitionedBackpressureTests
         }
     }
 
+    [Test]
+    [Arguments(PartitionBackpressureMode.AwaitCapacity)]
+    [Arguments(PartitionBackpressureMode.PauseResume)]
+    public async Task ShutdownDuringCommit_ProcessorFailureCancelsDrainGrace(PartitionBackpressureMode mode)
+    {
+        var consumer = new FullBatchConsumer { CommitStarted = NewSignal(), ReleaseCommit = NewSignal() };
+        consumer.SetAssignment(new TopicPartition("backpressure", 0), new TopicPartition("failing", 0));
+        var releaseFirst = NewSignal();
+        var failOther = NewSignal();
+        var failure = new InvalidOperationException("failure during commit grace");
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        using var stop = new CancellationTokenSource();
+        var running = consumer.RunPartitionedAsync(async (context, token) =>
+        {
+            if (context.TopicPartition.Topic == "failing")
+            {
+                await failOther.Task.WaitAsync(token);
+                throw failure;
+            }
+            await foreach (var record in context.Messages.WithCancellation(token))
+            {
+                await releaseFirst.Task.WaitAsync(token);
+                context.MarkProcessed(record);
+                await context.CommitProcessedAsync(token);
+            }
+        }, new PartitionedProcessingOptions
+        {
+            BackpressureMode = mode,
+            MaxBufferedRecordsPerPartition = 1,
+            CommitPolicy = PartitionCommitPolicy.UserManaged,
+            StopPolicy = PartitionStopPolicy.Drain,
+            StopTimeout = TimeSpan.FromSeconds(30)
+        }, stop.Token).AsTask();
+
+        try
+        {
+            await consumer.ThirdRecordRead.Task.WaitAsync(timeout.Token);
+            releaseFirst.TrySetResult();
+            await consumer.CommitStarted.Task.WaitAsync(timeout.Token);
+            await stop.CancelAsync();
+            failOther.TrySetResult();
+            await Assert.That(async () => await running.WaitAsync(timeout.Token))
+                .Throws<InvalidOperationException>().WithMessage(failure.Message);
+            await Assert.That(consumer.CommitCalls).IsEmpty();
+        }
+        finally
+        {
+            releaseFirst.TrySetResult();
+            failOther.TrySetResult();
+            consumer.ReleaseCommit.TrySetResult();
+            await stop.CancelAsync();
+            try { await running; }
+            catch (InvalidOperationException exception) when (ReferenceEquals(exception, failure))
+            {
+                await Assert.That(running.IsFaulted).IsTrue();
+            }
+        }
+    }
+
     private static async Task StopAsync(CancellationTokenSource timeout, Task running)
     {
         await timeout.CancelAsync();
