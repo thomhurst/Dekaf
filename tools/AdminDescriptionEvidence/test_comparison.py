@@ -1,8 +1,9 @@
 import json
+import hashlib
 from pathlib import Path
 import tempfile
 import unittest
-from run_comparison import compare, validate_probe
+from run_comparison import compare, validate_probe, validate_primer_segments, retain_loaded_binaries
 
 class ComparisonTests(unittest.TestCase):
     def metrics(self):
@@ -63,5 +64,36 @@ class ComparisonTests(unittest.TestCase):
         data = self.data()
         data['Intervals'] = []
         with self.assertRaises(ValueError): self.validate(data)
+
+    def test_reentry_primer_requires_every_elapsed_segment(self):
+        with tempfile.TemporaryDirectory() as directory:
+            primer = Path(directory) / 'primer.json'
+            segments_path = primer.with_name('segments-primer.json')
+            segment = self.data()
+            segment['Seconds'] = .05
+            segments = [dict(segment) for _ in range(128)]
+            segments_path.write_text(json.dumps(segments), encoding='utf-8')
+            validate_primer_segments(primer)
+            segments_path.write_text(json.dumps(segments[:-1]), encoding='utf-8')
+            with self.assertRaises(ValueError): validate_primer_segments(primer)
+            segments[-1]['Seconds'] = .049
+            segments_path.write_text(json.dumps(segments), encoding='utf-8')
+            with self.assertRaises(ValueError): validate_primer_segments(primer)
+
+    def test_loaded_binary_identity_rejects_replaced_product(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            original = root / 'original'
+            original.mkdir()
+            product = original / 'Dekaf.dll'
+            product.write_bytes(b'observed loaded product')
+            manifest = root / 'binaries.json'
+            manifest.write_text(json.dumps([{'Path': str(product),
+                'Sha256': hashlib.sha256(product.read_bytes()).hexdigest()}]), encoding='utf-8')
+            retain_loaded_binaries(manifest, original, root / 'archive')
+            self.assertEqual(product.read_bytes(), (root / 'archive' / 'Dekaf.dll').read_bytes())
+            product.write_bytes(b'replaced product')
+            with self.assertRaises(ValueError):
+                retain_loaded_binaries(manifest, original, root / 'other-archive')
 
 if __name__ == '__main__': unittest.main()

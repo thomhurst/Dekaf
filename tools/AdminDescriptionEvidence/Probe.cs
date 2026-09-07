@@ -6,6 +6,19 @@ namespace Dekaf.Benchmarks;
 
 public static class Probe
 {
+    public static void SaveLoadedBinaries(string path)
+    {
+        var root = Path.GetFullPath(AppContext.BaseDirectory);
+        var binaries = AppDomain.CurrentDomain.GetAssemblies()
+            .Where(static assembly => !assembly.IsDynamic && !string.IsNullOrEmpty(assembly.Location))
+            .Select(static assembly => assembly.Location)
+            .Where(location => Path.GetFullPath(location).StartsWith(root, StringComparison.OrdinalIgnoreCase))
+            .Order(StringComparer.Ordinal)
+            .Select(location => new { Path = location, Sha256 = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(location))).ToLowerInvariant() })
+            .ToArray();
+        Save(path, binaries);
+    }
+
     public sealed record TickCount(long Ticks, long Count);
     public sealed record Snapshot(double Seconds, long Completed, long CpuTicks, long AllocatedBytes,
         long HeapBytes, long RssBytes, int Gen0, int Gen1, int Gen2, long JitMethods,
@@ -14,6 +27,17 @@ public static class Probe
     public sealed record Result(double Seconds, long Completed, double CallsPerSecond, double CpuNsPerCall,
         double AllocatedBytesPerCall, double P50Ns, double P99Ns, double MaxNs, long StopwatchFrequency,
         Snapshot Start, Snapshot End, List<Interval> Intervals, List<TickCount> Latencies);
+
+    public static async Task PrimeAsync(AdminFixture fixture, string outputPath)
+    {
+        // Re-enter the complete measurement path so tiered entry stubs and the
+        // low-frequency sampler do not first optimize at the measurement boundary.
+        var segments = new List<Result>(128);
+        for (var index = 0; index < 128; index++)
+            segments.Add(await MeasureAsync(fixture, 0.05));
+        Save(Path.Combine(Path.GetDirectoryName(outputPath)!, "segments-" + Path.GetFileName(outputPath)), segments);
+        Save(outputPath, await MeasureAsync(fixture, 1));
+    }
 
     public static async Task<Result> MeasureAsync(AdminFixture fixture, double seconds)
     {
