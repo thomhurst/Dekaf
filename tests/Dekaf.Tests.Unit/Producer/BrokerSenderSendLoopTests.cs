@@ -3922,7 +3922,8 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
         var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
         var throttleWaitStarted = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
         var releaseThrottleWait = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var timestamp = 0L;
+        // ReadyBatch creation uses Stopwatch timestamps; keep the frozen clock in that domain.
+        var timestamp = Stopwatch.GetTimestamp();
         var acknowledgements = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var acknowledgementCount = 0;
         var sender = CreateSender(
@@ -3963,7 +3964,7 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             await Assert.That(await throttleWaitStarted.Task).IsEqualTo(throttleTimeMs);
             await Assert.That(sendSignals[2].Task.IsCompleted).IsFalse();
 
-            Volatile.Write(ref timestamp, Stopwatch.Frequency);
+            Volatile.Write(ref timestamp, timestamp + Stopwatch.Frequency);
             releaseThrottleWait.SetResult();
 
             await sendSignals[2].Task.WaitAsync(cancellationToken);
@@ -4003,7 +4004,8 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
         var throttleWaitStarted = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
         var releaseThrottleWait = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var observedThrottleTimes = new List<int>();
-        var timestamp = 0L;
+        // ReadyBatch creation uses Stopwatch timestamps; keep the frozen clock in that domain.
+        var timestamp = Stopwatch.GetTimestamp();
         var acknowledgements = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var acknowledgementCount = 0;
 
@@ -4037,7 +4039,7 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             await Assert.That(requestedDelayMs).IsEqualTo(throttleTimeMs);
             await Assert.That(sendSignals[1].Task.IsCompleted).IsFalse();
 
-            Volatile.Write(ref timestamp, Stopwatch.Frequency);
+            Volatile.Write(ref timestamp, timestamp + Stopwatch.Frequency);
             releaseThrottleWait.SetResult();
 
             await sendSignals[1].Task.WaitAsync(cancellationToken);

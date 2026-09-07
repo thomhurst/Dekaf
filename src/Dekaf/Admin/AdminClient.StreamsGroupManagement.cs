@@ -131,7 +131,8 @@ public sealed partial class AdminClient
     private async ValueTask<IReadOnlyDictionary<string, StreamsGroupOffsetsResult>> ListStreamsGroupOffsetsCoreAsync(
         IReadOnlyDictionary<string, IReadOnlyList<TopicPartition>?> requests,
         bool requireStable,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool deferUnstableOffsets = false)
     {
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
         var results = new Dictionary<string, StreamsGroupOffsetsResult>(requests.Count, StringComparer.Ordinal);
@@ -220,6 +221,7 @@ public sealed partial class AdminClient
                                         retryErrors,
                                         retryResults,
                                         mappingRetryResults,
+                                        deferUnstableOffsets,
                                         cancellationToken).ConfigureAwait(false);
                                     retryFailure ??= failure;
                                 }
@@ -244,6 +246,7 @@ public sealed partial class AdminClient
                                 retryErrors,
                                 retryResults,
                                 mappingRetryResults,
+                                deferUnstableOffsets,
                                 cancellationToken).ConfigureAwait(false);
                             retryFailure ??= failure;
                         }
@@ -299,6 +302,7 @@ public sealed partial class AdminClient
         Dictionary<string, Protocol.ErrorCode> retryErrors,
         Dictionary<string, StreamsGroupOffsetsResult> retryResults,
         Dictionary<string, StreamsGroupOffsetsResult> mappingRetryResults,
+        bool deferUnstableOffsets,
         CancellationToken cancellationToken)
     {
         var topicMaps = new Dictionary<string, OffsetTopicIdRequestMap?>(groupIds.Count, StringComparer.Ordinal);
@@ -373,7 +377,8 @@ public sealed partial class AdminClient
                 mappingErrorsByGroup[groupId],
                 mappingFailuresByGroup[groupId],
                 results,
-                retryResults);
+                retryResults,
+                deferUnstableOffsets);
             if (failure is not null)
             {
                 retryErrors[groupId] = GetRetryErrorCode(failure);
@@ -409,7 +414,8 @@ public sealed partial class AdminClient
                 mappingErrorsByGroup[group.GroupId],
                 mappingFailuresByGroup[group.GroupId],
                 results,
-                retryResults);
+                retryResults,
+                deferUnstableOffsets);
             if (failure is not null)
             {
                 retryErrors[group.GroupId] = GetRetryErrorCode(failure);
@@ -468,9 +474,11 @@ public sealed partial class AdminClient
         IReadOnlyDictionary<TopicPartition, Protocol.ErrorCode>? mappingErrors,
         KafkaException? mappingFailure,
         Dictionary<string, StreamsGroupOffsetsResult> results,
-        Dictionary<string, StreamsGroupOffsetsResult> retryResults)
+        Dictionary<string, StreamsGroupOffsetsResult> retryResults,
+        bool deferUnstableOffsets)
     {
-        if (groupError.IsRetriable() || groupError.RequiresMetadataRefresh())
+        if ((!deferUnstableOffsets || groupError != Protocol.ErrorCode.UnstableOffsetCommit) &&
+            (groupError.IsRetriable() || groupError.RequiresMetadataRefresh()))
         {
             return new Errors.GroupException(
                 groupError,
@@ -545,7 +553,10 @@ public sealed partial class AdminClient
                     Metadata = partition.Metadata,
                     ErrorCode = partition.ErrorCode
                 };
-                if (partition.ErrorCode.IsRetriable() || partition.ErrorCode.RequiresMetadataRefresh())
+                // The consumer query's outer stability loop owns this condition. Keep
+                // ordinary coordinator, transport and metadata retries bounded here.
+                if ((!deferUnstableOffsets || partition.ErrorCode != Protocol.ErrorCode.UnstableOffsetCommit) &&
+                    (partition.ErrorCode.IsRetriable() || partition.ErrorCode.RequiresMetadataRefresh()))
                 {
                     retryFailure ??= new Errors.GroupException(
                         partition.ErrorCode,

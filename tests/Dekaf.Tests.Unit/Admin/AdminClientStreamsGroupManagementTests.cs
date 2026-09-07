@@ -1660,7 +1660,7 @@ public sealed class AdminClientStreamsGroupManagementTests
         throw new InvalidOperationException("Cancellation was not observed.");
     }
 
-    private static void SetupFindCoordinator(IKafkaConnection connection)
+    internal static void SetupFindCoordinator(IKafkaConnection connection)
     {
         connection.SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
                 Arg.Any<FindCoordinatorRequest>(),
@@ -1742,8 +1742,9 @@ public sealed class AdminClientStreamsGroupManagementTests
         return (admin, connection);
     }
 
-    private static (AdminClient Admin, IKafkaConnection Connection, IConnectionPool Pool) CreateAdminWithPool(
-        short offsetFetchMaxVersion = 10)
+    internal static (AdminClient Admin, IKafkaConnection Connection, IConnectionPool Pool) CreateAdminWithPool(
+        short offsetFetchMaxVersion = 10,
+        bool ownsResources = false)
     {
         var connection = Substitute.For<IKafkaConnection>();
         connection.BrokerId.Returns(1);
@@ -1791,10 +1792,11 @@ public sealed class AdminClientStreamsGroupManagementTests
                 RetryBackoffMaxMs = 1
             },
             pool,
-            metadataManager), connection, pool);
+            metadataManager,
+            ownsResources: ownsResources), connection, pool);
     }
 
-    private static MetadataResponse MetadataResponseFor(params (string Name, Guid Id)[] topics) => new()
+    internal static MetadataResponse MetadataResponseFor(params (string Name, Guid Id)[] topics) => new()
     {
         Brokers = [new BrokerMetadata { NodeId = 1, Host = "localhost", Port = 9092 }],
         ClusterId = "test-cluster",

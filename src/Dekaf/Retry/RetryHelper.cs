@@ -149,9 +149,11 @@ internal static class RetryHelper
             await metadataManager.RefreshMetadataAsync(cancellationToken).ConfigureAwait(false);
         }
         catch (InvalidOperationException ex) when (
-            ex is not ObjectDisposedException
-            && !cancellationToken.IsCancellationRequested)
+            ex is not ObjectDisposedException)
         {
+            // Convert only the metadata-refresh race. An unrelated operation invariant
+            // must still propagate even if its caller cancels concurrently.
+            cancellationToken.ThrowIfCancellationRequested();
             // Refresh is best-effort. Keep retrying the original operation so its typed
             // Kafka failure remains the final error when every broker is unavailable.
         }

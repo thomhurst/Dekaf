@@ -820,7 +820,7 @@ public sealed class InMemoryProducer<TKey, TValue> :
         private readonly InMemoryProducer<TKey, TValue> _producer;
         private readonly object _completionGate = new();
         private readonly object _pendingOffsetsGate = new();
-        private readonly Dictionary<string, PendingGroupOffsets> _pendingOffsets = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, InMemoryPendingGroupOffsets> _pendingOffsets = new(StringComparer.Ordinal);
         private TaskCompletionSource? _completionAttempt;
         private TaskCompletionSource? _mutationCompletion;
         private long _lifecycle;
@@ -1129,7 +1129,7 @@ public sealed class InMemoryProducer<TKey, TValue> :
                             : KafkaFaultOperation.AbortTransaction),
                     cancellationToken).ConfigureAwait(false);
 
-                Complete(committed);
+                Complete(committed, recoveryContext);
             }
             catch (FatalTransactionException exception)
             {
@@ -1149,16 +1149,6 @@ public sealed class InMemoryProducer<TKey, TValue> :
             }
         }
 
-        private PendingGroupOffsets GetOrAddPendingOffsets(string groupId)
-        {
-            if (_pendingOffsets.TryGetValue(groupId, out var pending))
-                return pending;
-
-            pending = new PendingGroupOffsets();
-            _pendingOffsets.Add(groupId, pending);
-            return pending;
-        }
-
         private void StageOffsets(
             string groupId,
             TopicPartitionOffset[] offsets,
@@ -1167,27 +1157,29 @@ public sealed class InMemoryProducer<TKey, TValue> :
             lock (_pendingOffsetsGate)
             {
                 EnsureMutationActive("Cannot send offsets to transaction");
-                var pending = GetOrAddPendingOffsets(groupId);
-                if (metadata is not null)
-                    pending.MetadataSnapshots.Add(metadata);
-                pending.Offsets.AddRange(offsets);
+                _producer._cluster.StageConsumerGroupOffsets(TransactionMarker, _pendingOffsets, groupId, offsets, metadata);
             }
         }
 
-        private void Complete(bool committed)
+        private void Complete(bool committed, IInMemoryTransactionRecoveryContext? recoveryContext = null)
         {
+            FatalTransactionException? failure;
             lock (_pendingOffsetsGate)
             {
-                _producer._cluster.CompleteTransaction(
+                failure = _producer._cluster.CompleteTransaction(
                     TransactionMarker,
                     committed,
-                    _pendingOffsets.Select(static item => CreatePendingOffsets(item)),
+                    _pendingOffsets,
                     PreparedState,
                     this);
                 _pendingOffsets.Clear();
             }
 
+            if (failure is not null)
+                failure = (recoveryContext ?? _producer).CaptureFatalTransactionException(failure);
             _producer.CompleteTransaction(this);
+            if (failure is not null)
+                throw failure;
         }
 
         private void EnterMutation(string operation)
@@ -1337,6 +1329,9 @@ public sealed class InMemoryProducer<TKey, TValue> :
             TaskCompletionSource? completion;
             lock (_completionGate)
             {
+                // Local metadata rejection already aborted and published completion.
+                if (GetState(Volatile.Read(ref _lifecycle)) == TransactionLifecycleState.Completed)
+                    return;
                 Volatile.Write(ref _lifecycle, Pack(state));
                 completion = _completionAttempt;
                 _completionAttempt = null;
@@ -1469,19 +1464,6 @@ public sealed class InMemoryProducer<TKey, TValue> :
 
         private static TransactionLifecycleState GetState(long lifecycle) =>
             (TransactionLifecycleState)(lifecycle >> 32);
-
-        private static (
-            string GroupId,
-            IReadOnlyList<ConsumerGroupMetadata> MetadataSnapshots,
-            IReadOnlyList<TopicPartitionOffset> Offsets) CreatePendingOffsets(
-                KeyValuePair<string, PendingGroupOffsets> item) =>
-            (item.Key, item.Value.MetadataSnapshots, item.Value.Offsets);
-
-        private sealed class PendingGroupOffsets
-        {
-            public List<TopicPartitionOffset> Offsets { get; } = [];
-            public List<ConsumerGroupMetadata> MetadataSnapshots { get; } = [];
-        }
 
         private enum TransactionLifecycleState : byte
         {

@@ -64,7 +64,7 @@ public sealed class PartitionedRecordLifetimeTests
     public async Task RawRecords_RemainValidAfterFetchAdvances(
         PartitionedProcessingOrder ordering, PartitionBackpressureMode backpressure)
     {
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        using var timeout = new CancellationTokenSource();
         var handlerStarted = NewSignal();
         var fetchAdvanced = NewSignal();
         var releaseHandler = NewSignal();
@@ -75,6 +75,8 @@ public sealed class PartitionedRecordLifetimeTests
         consumer.ConsumeBatchAsync(Arg.Any<CancellationToken>()).Returns(call =>
             Fetch(pending, handlerStarted, fetchAdvanced, call.Arg<CancellationToken>()));
 
+        // Start the operation budget after pooled storage and proxy setup.
+        timeout.CancelAfter(TimeSpan.FromSeconds(10));
         var run = consumer.RunPartitionedAsync(async (_, message, token) =>
         {
             handlerStarted.TrySetResult();
@@ -112,7 +114,7 @@ public sealed class PartitionedRecordLifetimeTests
     public async Task StringBatches_HeadersRemainValidAndStorageIsReleased(
         PartitionedProcessingOrder ordering, bool failHandler)
     {
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        using var timeout = new CancellationTokenSource();
         var handlerStarted = NewSignal();
         var fetchAdvanced = NewSignal();
         var releaseHandler = NewSignal();
@@ -124,6 +126,8 @@ public sealed class PartitionedRecordLifetimeTests
             FetchStrings(pending, handlerStarted, fetchAdvanced, call.Arg<CancellationToken>()));
         var failure = new InvalidOperationException("handler failure");
 
+        // Start the operation budget after pooled storage and proxy setup.
+        timeout.CancelAfter(TimeSpan.FromSeconds(10));
         var run = consumer.RunPartitionedBatchesAsync(async (_, messages, token) =>
         {
             handlerStarted.TrySetResult();
@@ -178,7 +182,7 @@ public sealed class PartitionedRecordLifetimeTests
     public async Task CancelledLane_ReleasesQueuedStorageAfterActiveHandlerExits(
         PartitionedProcessingOrder ordering, bool ignoreCancellation)
     {
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        using var timeout = new CancellationTokenSource();
         var handlerStarted = NewSignal();
         var fetchAdvanced = NewSignal();
         var cancellationObserved = NewSignal();
@@ -190,6 +194,8 @@ public sealed class PartitionedRecordLifetimeTests
         consumer.ConsumeBatchAsync(Arg.Any<CancellationToken>()).Returns(call =>
             Fetch(pending, handlerStarted, fetchAdvanced, call.Arg<CancellationToken>()));
 
+        // Start the operation budget after pooled storage and proxy setup.
+        timeout.CancelAfter(TimeSpan.FromSeconds(10));
         var run = consumer.RunPartitionedAsync(async (_, message, token) =>
         {
             using var registration = token.Register(() => cancellationObserved.TrySetResult());
@@ -235,7 +241,7 @@ public sealed class PartitionedRecordLifetimeTests
     [Test]
     public async Task PartitionStream_RetainsCurrentRecordUntilEnumeratorAdvances()
     {
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        using var timeout = new CancellationTokenSource();
         var handlerStarted = NewSignal();
         var fetchAdvanced = NewSignal();
         var releaseHandler = NewSignal();
@@ -246,6 +252,8 @@ public sealed class PartitionedRecordLifetimeTests
         consumer.ConsumeBatchAsync(Arg.Any<CancellationToken>()).Returns(call =>
             Fetch(pending, handlerStarted, fetchAdvanced, call.Arg<CancellationToken>()));
 
+        // Start the operation budget after pooled storage and proxy setup.
+        timeout.CancelAfter(TimeSpan.FromSeconds(10));
         var run = consumer.RunPartitionedAsync(async (context, token) =>
         {
             await foreach (var message in context.Messages.WithCancellation(token))
@@ -280,7 +288,7 @@ public sealed class PartitionedRecordLifetimeTests
     [Arguments(true)]
     public async Task Rebalance_ReleasesCancelledActiveAndQueuedStorage(bool lost)
     {
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        using var timeout = new CancellationTokenSource();
         using var stop = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token);
         var started = NewSignal();
         var advanced = NewSignal();
@@ -289,6 +297,8 @@ public sealed class PartitionedRecordLifetimeTests
         var partition = new TopicPartition("lifetime", 0);
         var consumer = new RebalanceConsumer(token => FetchStrings(pending, started, advanced, token, keepOpen: true));
         consumer.SetAssignment(partition);
+        // Start the operation budget after pooled storage and proxy setup.
+        timeout.CancelAfter(TimeSpan.FromSeconds(10));
         var run = consumer.RunPartitionedAsync(async (_, _, token) =>
         {
             started.TrySetResult();
@@ -343,11 +353,12 @@ public sealed class PartitionedRecordLifetimeTests
     [Test]
     public async Task BorrowedDictionaryKey_OutlivesFirstRecordWhileSameKeyIsActive()
     {
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        using var timeout = new CancellationTokenSource();
         var firstStarted = NewSignal();
         var firstRelease = NewSignal();
         var secondStarted = NewSignal();
         var secondRelease = NewSignal();
+        var sameKeyFound = NewSignal();
         var advanced = NewSignal();
         var firstMemory = new ReusedMemory();
         var secondMemory = new ReusedMemory();
@@ -361,14 +372,16 @@ public sealed class PartitionedRecordLifetimeTests
         {
             using (first)
             {
-                yield return new ConsumeBatch<BorrowedKey, ReadOnlyMemory<byte>>(first, new BorrowedKeyDeserializer(), Serializers.RawBytes);
+                yield return new ConsumeBatch<BorrowedKey, ReadOnlyMemory<byte>>(first, new BorrowedKeyDeserializer(sameKeyFound), Serializers.RawBytes);
                 await firstStarted.Task.WaitAsync(timeout.Token);
             }
             using (second)
-                yield return new ConsumeBatch<BorrowedKey, ReadOnlyMemory<byte>>(second, new BorrowedKeyDeserializer(), Serializers.RawBytes);
+                yield return new ConsumeBatch<BorrowedKey, ReadOnlyMemory<byte>>(second, new BorrowedKeyDeserializer(sameKeyFound), Serializers.RawBytes);
             advanced.TrySetResult();
         }
 
+        // Start the operation budget after pooled storage and proxy setup.
+        timeout.CancelAfter(TimeSpan.FromSeconds(10));
         var run = consumer.RunPartitionedAsync(async (_, message, token) =>
         {
             var started = message.Offset == 0 ? firstStarted : secondStarted;
@@ -386,6 +399,10 @@ public sealed class PartitionedRecordLifetimeTests
         try
         {
             await advanced.Task.WaitAsync(timeout.Token);
+            // Fetch advancement only proves routing into the partition queue. The
+            // key lookup runs under the dispatcher's gate, so idle removal cannot
+            // release the first key before the second record is enqueued there.
+            await sameKeyFound.Task.WaitAsync(timeout.Token);
             firstRelease.TrySetResult();
             await secondStarted.Task.WaitAsync(timeout.Token);
             await Assert.That(firstMemory.DisposeCount).IsEqualTo(0);
@@ -430,19 +447,25 @@ public sealed class PartitionedRecordLifetimeTests
     private static TaskCompletionSource NewSignal() => new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     // Public so NSubstitute can construct the generic consumer proxy for this test key.
-    public readonly struct BorrowedKey(ReadOnlyMemory<byte> bytes) : IEquatable<BorrowedKey>
+    public readonly struct BorrowedKey(ReadOnlyMemory<byte> bytes, TaskCompletionSource sameKeyFound) : IEquatable<BorrowedKey>
     {
         public ReadOnlyMemory<byte> Bytes => bytes;
-        public bool Equals(BorrowedKey other) => Bytes.Span.SequenceEqual(other.Bytes.Span);
+        public bool Equals(BorrowedKey other)
+        {
+            var equal = Bytes.Span.SequenceEqual(other.Bytes.Span);
+            if (equal)
+                sameKeyFound.TrySetResult();
+            return equal;
+        }
         public override bool Equals(object? obj) => obj is BorrowedKey other && Equals(other);
         public override int GetHashCode() => Bytes.IsEmpty ? 0 : Bytes.Span[0];
         public static bool operator ==(BorrowedKey left, BorrowedKey right) => left.Equals(right);
         public static bool operator !=(BorrowedKey left, BorrowedKey right) => !left.Equals(right);
     }
 
-    private sealed class BorrowedKeyDeserializer : IDeserializer<BorrowedKey>
+    private sealed class BorrowedKeyDeserializer(TaskCompletionSource sameKeyFound) : IDeserializer<BorrowedKey>
     {
-        public BorrowedKey Deserialize(ReadOnlyMemory<byte> data, SerializationContext context) => new(data);
+        public BorrowedKey Deserialize(ReadOnlyMemory<byte> data, SerializationContext context) => new(data, sameKeyFound);
     }
 
     private sealed class RebalanceConsumer(Func<CancellationToken, IAsyncEnumerable<ConsumeBatch<string, string>>> fetch)

@@ -2028,6 +2028,8 @@ public sealed partial class AdminClient :
         string groupId,
         CancellationToken cancellationToken = default)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(groupId);
+        cancellationToken.ThrowIfCancellationRequested();
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
 
         return await WithRetryAsync<IReadOnlyDictionary<TopicPartition, long>>(async () =>
@@ -2056,28 +2058,42 @@ public sealed partial class AdminClient :
 
             var result = new Dictionary<TopicPartition, long>();
 
+            if (response.ErrorCode != Protocol.ErrorCode.None)
+                throw ConsumerGroupOffsetQueryError(groupId, response.ErrorCode);
+
             // v8+ uses Groups array; v0-v7 uses flat Topics
             IReadOnlyList<OffsetFetchResponseTopic>? topics = response.Topics;
-            if (topics is null && response.Groups is { Count: > 0 })
+            if (apiVersion >= 8)
             {
-                var group = response.Groups[0];
-                if (group.ErrorCode != Protocol.ErrorCode.None)
+                OffsetFetchResponseGroup? matchedGroup = null;
+                var groups = response.Groups;
+                for (var index = 0; index < (groups?.Count ?? 0); index++)
                 {
-                    throw new Errors.GroupException(group.ErrorCode,
-                        $"ListConsumerGroupOffsets failed for group '{groupId}': {group.ErrorCode}")
+                    var group = groups![index];
+                    if (group.GroupId == groupId)
                     {
-                        GroupId = groupId
-                    };
+                        matchedGroup = group;
+                        break;
+                    }
                 }
-                topics = group.Topics;
+                if (matchedGroup is null)
+                    throw ConsumerGroupOffsetQueryError(groupId, Protocol.ErrorCode.UnknownServerError);
+                if (matchedGroup.ErrorCode != Protocol.ErrorCode.None)
+                    throw ConsumerGroupOffsetQueryError(groupId, matchedGroup.ErrorCode);
+                topics = matchedGroup.Topics;
             }
 
             if (topics is not null)
             {
-                foreach (var topic in topics)
+                for (var topicIndex = 0; topicIndex < topics.Count; topicIndex++)
                 {
-                    foreach (var partition in topic.Partitions)
+                    var topic = topics[topicIndex];
+                    var partitions = topic.Partitions;
+                    for (var partitionIndex = 0; partitionIndex < partitions.Count; partitionIndex++)
                     {
+                        var partition = partitions[partitionIndex];
+                        if (partition.ErrorCode != Protocol.ErrorCode.None)
+                            throw ConsumerGroupOffsetQueryError(groupId, partition.ErrorCode);
                         if (partition.CommittedOffset >= 0)
                         {
                             result[new TopicPartition(topic.Name, partition.PartitionIndex)] = partition.CommittedOffset;
