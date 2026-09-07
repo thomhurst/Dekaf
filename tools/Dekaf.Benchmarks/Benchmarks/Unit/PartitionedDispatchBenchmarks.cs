@@ -2,7 +2,6 @@ using System.Buffers.Binary;
 using System.Reflection;
 using BenchmarkDotNet.Attributes;
 using Dekaf.Consumer;
-using Dekaf.Protocol.Records;
 using Dekaf.Serialization;
 
 namespace Dekaf.Benchmarks.Benchmarks.Unit;
