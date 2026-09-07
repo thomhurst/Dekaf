@@ -68,6 +68,17 @@ public sealed class AdminGroupListingTests(KafkaTestContainer kafka) : KafkaInte
         await Assert.That(joined.ErrorCode).IsEqualTo(ErrorCode.None);
         try
         {
+            var descriptions = await admin.DescribeClassicGroupsAsync(
+                [prefix + "simple", prefix + "connect"],
+                new DescribeClassicGroupsOptions { IncludeAuthorizedOperations = true }, timeout.Token);
+            await Assert.That(descriptions[prefix + "simple"].ErrorCode).IsEqualTo(ErrorCode.None);
+            await Assert.That(descriptions[prefix + "simple"].Description!.ProtocolType).IsEqualTo("");
+            await Assert.That(descriptions[prefix + "simple"].Description!.Members).IsEmpty();
+            var connect = descriptions[prefix + "connect"];
+            await Assert.That(connect.ErrorCode).IsEqualTo(ErrorCode.None);
+            await Assert.That(connect.Description!.ProtocolType).IsEqualTo("connect");
+            await Assert.That(connect.Description.CoordinatorId).IsEqualTo(coordinator.NodeId);
+            await Assert.That(connect.Description.Members.All(static member => member.Assignment is null)).IsTrue();
             var all = (await admin.ListGroupsAsync(cancellationToken: timeout.Token))
                 .Where(group => group.GroupId.StartsWith(prefix, StringComparison.Ordinal)).ToArray();
             await Assert.That(all.Select(group => (group.GroupId[prefix.Length..], group.GroupType, group.ProtocolType)))
