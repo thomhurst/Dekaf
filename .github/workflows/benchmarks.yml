@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       benchmark_filter:
-        description: 'Benchmark filter (e.g., *Unit*, *Client*, *Producer*)'
+        description: 'One BDN glob for a filtered Linux run (e.g., *SerializerBenchmarks*); * runs the full publishing pipeline'
         required: false
         default: '*'
 
@@ -26,8 +26,61 @@ concurrency:
   cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
 jobs:
+  select-pipeline:
+    name: Select Benchmark Pipeline
+    runs-on: ubuntu-latest
+    outputs:
+      mode: ${{ steps.select.outputs.mode }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Select pipeline
+        id: select
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BENCHMARK_FILTER: ${{ inputs.benchmark_filter }}
+        run: python3 .github/scripts/benchmark_pipeline.py plan "$EVENT_NAME" "$BENCHMARK_FILTER" >> "$GITHUB_OUTPUT"
+
+  filtered-benchmarks:
+    name: Filtered Benchmarks (Linux)
+    needs: select-pipeline
+    if: needs.select-pipeline.outputs.mode == 'filtered'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Setup .NET
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+      - name: Build benchmark project
+        run: dotnet build tools/Dekaf.Benchmarks --configuration Release
+      - name: Run selected benchmarks
+        env:
+          BENCHMARK_FILTER: ${{ inputs.benchmark_filter }}
+        run: |
+          mkdir -p BenchmarkResults/Filtered
+          dotnet run --project tools/Dekaf.Benchmarks -c Release --no-build -- \
+            --filter "$BENCHMARK_FILTER" --exporters fulljson \
+            --artifacts BenchmarkResults/Filtered > BenchmarkResults/Filtered/run.log 2>&1
+      - name: Require successful measurements
+        run: python3 .github/scripts/benchmark_pipeline.py validate BenchmarkResults/Filtered/results
+      - name: Upload filtered results and log
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: benchmark-results-filtered
+          path: BenchmarkResults/Filtered/
+          if-no-files-found: error
+          retention-days: 30
+
   unit-benchmarks:
     name: Unit Benchmarks (${{ matrix.shard }})
+    needs: select-pipeline
+    if: needs.select-pipeline.outputs.mode == 'full'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -80,6 +133,8 @@ jobs:
 
   client-benchmarks:
     name: Client Benchmarks (Dekaf vs Confluent)
+    needs: select-pipeline
+    if: needs.select-pipeline.outputs.mode == 'full'
     runs-on: ubuntu-latest
     timeout-minutes: 90
 
@@ -140,6 +195,8 @@ jobs:
 
   client-benchmarks-native-memory:
     name: Client Benchmarks with Native Memory (Windows, ${{ matrix.shard }})
+    needs: select-pipeline
+    if: needs.select-pipeline.outputs.mode == 'full'
     runs-on: windows-latest
     timeout-minutes: 90
     strategy:
@@ -263,8 +320,8 @@ jobs:
   benchmark-summary:
     name: Generate Summary
     runs-on: ubuntu-latest
-    needs: [unit-benchmarks, client-benchmarks, client-benchmarks-native-memory]
-    if: always()
+    needs: [select-pipeline, unit-benchmarks, client-benchmarks, client-benchmarks-native-memory]
+    if: always() && needs.select-pipeline.outputs.mode == 'full'
 
     steps:
       - name: Download All Results
@@ -355,8 +412,8 @@ jobs:
   benchmark-history:
     name: Store Benchmark History
     runs-on: ubuntu-latest
-    needs: [unit-benchmarks, client-benchmarks]
-    if: github.ref == 'refs/heads/main'
+    needs: [select-pipeline, unit-benchmarks, client-benchmarks]
+    if: github.ref == 'refs/heads/main' && needs.select-pipeline.outputs.mode == 'full'
 
     permissions:
       contents: write
@@ -428,8 +485,8 @@ jobs:
   publish-to-docs:
     name: Publish Benchmarks to Documentation
     runs-on: ubuntu-latest
-    needs: [unit-benchmarks, client-benchmarks, benchmark-history]
-    if: github.ref == 'refs/heads/main'
+    needs: [select-pipeline, unit-benchmarks, client-benchmarks, benchmark-history]
+    if: github.ref == 'refs/heads/main' && needs.select-pipeline.outputs.mode == 'full'
 
     permissions:
       contents: write
@@ -486,6 +543,8 @@ jobs:
     name: Benchmark Gate
     runs-on: ubuntu-latest
     needs:
+      - select-pipeline
+      - filtered-benchmarks
       - unit-benchmarks
       - client-benchmarks
       - client-benchmarks-native-memory
@@ -495,36 +554,17 @@ jobs:
     if: always()
 
     steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Require completed benchmark pipeline
         env:
+          PIPELINE_MODE: ${{ needs.select-pipeline.outputs.mode }}
+          PLAN_RESULT: ${{ needs.select-pipeline.result }}
+          FILTERED_RESULT: ${{ needs.filtered-benchmarks.result }}
           UNIT_RESULT: ${{ needs.unit-benchmarks.result }}
           CLIENT_RESULT: ${{ needs.client-benchmarks.result }}
           NATIVE_RESULT: ${{ needs.client-benchmarks-native-memory.result }}
           SUMMARY_RESULT: ${{ needs.benchmark-summary.result }}
           HISTORY_RESULT: ${{ needs.benchmark-history.result }}
           DOCS_RESULT: ${{ needs.publish-to-docs.result }}
-        run: |
-          failed=0
-
-          check_result() {
-            local job_name="$1"
-            local result="$2"
-            if [[ "$result" != "success" ]]; then
-              echo "::error::$job_name concluded '$result'"
-              failed=1
-            fi
-          }
-
-          check_result "Unit Benchmarks" "$UNIT_RESULT"
-          check_result "Client Benchmarks" "$CLIENT_RESULT"
-          check_result "Client Native Memory Benchmarks" "$NATIVE_RESULT"
-          check_result "Benchmark Summary" "$SUMMARY_RESULT"
-
-          if [[ "$GITHUB_REF" == "refs/heads/main" ]]; then
-            check_result "Benchmark History" "$HISTORY_RESULT"
-            check_result "Benchmark Documentation" "$DOCS_RESULT"
-          fi
-
-          if [[ "$failed" -ne 0 ]]; then
-            exit 1
-          fi
+        run: python3 .github/scripts/benchmark_pipeline.py gate
