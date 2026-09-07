@@ -88,6 +88,7 @@ const sidebars = {
         'admin/replica-log-directories',
         'admin/streams-group-management',
         'admin/group-listing',
+        'admin/share-group-offset-queries',
       ],
     },
     {
