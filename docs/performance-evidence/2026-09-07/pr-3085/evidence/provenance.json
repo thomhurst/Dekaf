@@ -1,0 +1,7 @@
+{
+  "StartedUtc": "2026-09-07T14:41:48.8827224Z",
+  "Predecessor": "ac40c2a3c0e036a345c78aadb0f6a0d797e8f7e7",
+  "Baseline": "5ad5f2c9f587976aed918201703cf07cf37000ef",
+  "Configuration": "same fixture, separate hosts, affinity 4, TieredCompilation=0, 5 warmups/15 iterations/250ms",
+  "Candidate": "local ValueTask patch"
+}

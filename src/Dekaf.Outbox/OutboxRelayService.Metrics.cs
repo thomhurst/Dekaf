@@ -83,24 +83,24 @@ public sealed partial class OutboxRelayService
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private Task<CycleResult> RunCycleAsync(CancellationToken cancellationToken) =>
+    private ValueTask<CycleResult> RunCycleAsync(CancellationToken cancellationToken) =>
         OutboxMetrics.CycleDuration.Enabled
             ? MeasureCycleAsync(cancellationToken)
             : RunCycleCoreAsync(cancellationToken);
 
-    private Task<CycleResult> MeasureCycleAsync(CancellationToken cancellationToken)
+    private ValueTask<CycleResult> MeasureCycleAsync(CancellationToken cancellationToken)
     {
         var started = _timeProvider.GetTimestamp();
         var cycle = RunCycleCoreAsync(cancellationToken);
         if (!cycle.IsCompleted)
             return AwaitMeasuredCycleAsync(cycle, started);
 
-        // Preserve the existing completed task instead of allocating another result task.
         OutboxMetrics.RecordDuration(OutboxMetrics.CycleDuration, _metrics, started);
         return cycle;
     }
 
-    private async Task<CycleResult> AwaitMeasuredCycleAsync(Task<CycleResult> cycle, long started)
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
+    private async ValueTask<CycleResult> AwaitMeasuredCycleAsync(ValueTask<CycleResult> cycle, long started)
     {
         try
         {

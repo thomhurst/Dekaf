@@ -202,9 +202,20 @@ public partial class OutboxMetricTests
         string name, TimeProvider? time = null) =>
         new(store, publisher, Options(name), NullLogger<OutboxRelayService>.Instance, time);
 
-    private static Func<CancellationToken, Task> BindCycle(OutboxRelayService relay) =>
-        typeof(OutboxRelayService).GetMethod("RunCycleAsync", BindingFlags.Instance | BindingFlags.NonPublic)!
-            .CreateDelegate<Func<CancellationToken, Task>>(relay);
+    private static Func<CancellationToken, Task> BindCycle(OutboxRelayService relay)
+    {
+        var method = typeof(OutboxRelayService).GetMethod("RunCycleAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        return (Func<CancellationToken, Task>)typeof(OutboxMetricTests)
+            .GetMethod(nameof(BindValueTaskCycle), BindingFlags.Static | BindingFlags.NonPublic)!
+            .MakeGenericMethod(method.ReturnType.GenericTypeArguments[0])
+            .Invoke(null, [relay, method])!;
+    }
+
+    private static Func<CancellationToken, Task> BindValueTaskCycle<TResult>(OutboxRelayService relay, MethodInfo method)
+    {
+        var cycle = method.CreateDelegate<Func<CancellationToken, ValueTask<TResult>>>(relay);
+        return token => cycle(token).AsTask();
+    }
 
     private class MetricStore : IOutboxStore
     {

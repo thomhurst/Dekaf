@@ -1,0 +1,337 @@
+[
+  {
+    "path": ".gitattributes",
+    "bytes": 141,
+    "sha256": "07ccb1f8f958f991d62df1b8d2e8f48a414ffc3ed06959013b4a62375868caa9"
+  },
+  {
+    "path": "evidence/A-baseline/results/ActualPublisherBenchmarks-report-full.json",
+    "bytes": 38043,
+    "sha256": "9e53d78632e1a27158b1968dc38bc4bae885c3ec5deb14ca351bae0b426e6fb0"
+  },
+  {
+    "path": "evidence/A-baseline/results/ActualPublisherBenchmarks-report-github.md",
+    "bytes": 880,
+    "sha256": "5b03bb41e1907c94a333fdb02d9910b8f6179d26762cf4d522b74cc59f2417a2"
+  },
+  {
+    "path": "evidence/A-baseline/results/ActualPublisherBenchmarks-report.csv",
+    "bytes": 1576,
+    "sha256": "b9920317ed5ecfa8f63c6aa058047a14b1783f2904c39a8af2f97584c99d17b0"
+  },
+  {
+    "path": "evidence/A-baseline/results/RelayMetricsBenchmarks-report-full.json",
+    "bytes": 66932,
+    "sha256": "2d125a25d7aa1daa27bbb74cf38c43faae02779b4287790b772be476cf77781b"
+  },
+  {
+    "path": "evidence/A-baseline/results/RelayMetricsBenchmarks-report-github.md",
+    "bytes": 978,
+    "sha256": "a7b6cfa811e5f5a768d3fb2c9c8555bf7e0aa8fee039b7c979b4f1e35530ad75"
+  },
+  {
+    "path": "evidence/A-baseline/results/RelayMetricsBenchmarks-report.csv",
+    "bytes": 2001,
+    "sha256": "ce33cd897c0a39413bbbac8aeaf5b4eaa5cf9a4e11b9a7eb5d035e5e6b727982"
+  },
+  {
+    "path": "evidence/A-baseline-completion.json",
+    "bytes": 112,
+    "sha256": "67f4a68035d81e048bcb8ce26866fb2ed92f321f87058807e62be7aa06d5cd0b"
+  },
+  {
+    "path": "evidence/A-baseline-hashes.json",
+    "bytes": 663,
+    "sha256": "ec13b5096705ebad47655319d85ccd470e74c2607935a165be4d809135530cb0"
+  },
+  {
+    "path": "evidence/A-baseline-validate.log",
+    "bytes": 181,
+    "sha256": "91b8e51d922a0886f9cfb9e2c43ac42dc7131a280baf0aa1f89045ee947943fc"
+  },
+  {
+    "path": "evidence/A-baseline.log",
+    "bytes": 37094,
+    "sha256": "c2dc427f511fdb2db2d92a50eb4bafc8b0555cdd6374480c799d68b7fe047cc4"
+  },
+  {
+    "path": "evidence/B-published/results/ActualPublisherBenchmarks-report-full.json",
+    "bytes": 77408,
+    "sha256": "3842693456b5d9e10d4ec97885688397f9716f55d59dc4eeaa4491c217f025b9"
+  },
+  {
+    "path": "evidence/B-published/results/ActualPublisherBenchmarks-report-github.md",
+    "bytes": 1206,
+    "sha256": "9158b735eb4bb5a6a73546581cf61eb9c059dd1ed0d681084a0800762f8d51a6"
+  },
+  {
+    "path": "evidence/B-published/results/ActualPublisherBenchmarks-report.csv",
+    "bytes": 2491,
+    "sha256": "d9a155c4d50fa9c11cb6a21fe1fb64af41e1909f37659664e38407add3016888"
+  },
+  {
+    "path": "evidence/B-published/results/RelayMetricsBenchmarks-report-full.json",
+    "bytes": 128973,
+    "sha256": "68344a7c6a484964fbef3251386665e4aaf4cd53121baad5d2c04793c4c15f5d"
+  },
+  {
+    "path": "evidence/B-published/results/RelayMetricsBenchmarks-report-github.md",
+    "bytes": 1414,
+    "sha256": "ff9c27d6f14aab2d91501fbec2f26f727077bce710d7387c764ee0c46faae425"
+  },
+  {
+    "path": "evidence/B-published/results/RelayMetricsBenchmarks-report.csv",
+    "bytes": 3347,
+    "sha256": "ced3326d0e2a36c9e9624bf31a41a243fcbe655a866f7b75e122ff20a300642f"
+  },
+  {
+    "path": "evidence/B-published-completion.json",
+    "bytes": 113,
+    "sha256": "7368dba9daa4498f354bdc2444fcd4f548b925d27d58b1adf040e2dd908218f3"
+  },
+  {
+    "path": "evidence/B-published-hashes.json",
+    "bytes": 666,
+    "sha256": "0593940f8545972916db247f5f1d1542ed83a3315d6b8181fdd520933f8ce3ae"
+  },
+  {
+    "path": "evidence/B-published-validate.log",
+    "bytes": 360,
+    "sha256": "997b8e34c40bb87f14f5e31db30dee38e382880398547a11298819fc65cf8f79"
+  },
+  {
+    "path": "evidence/B-published.log",
+    "bytes": 70164,
+    "sha256": "6f4c1fb03cf5195d6bb7b0a5941c0e0e15ef591cada1a16b2031395b3aa7f43a"
+  },
+  {
+    "path": "evidence/build-server-shutdown.log",
+    "bytes": 160,
+    "sha256": "b8028200bc3b12a3210641024da80eb85dffe587d8192df519108d0a20cfe822"
+  },
+  {
+    "path": "evidence/build.log",
+    "bytes": 850,
+    "sha256": "58dbc17d23c77a43df86b1d6ae44b5459b91122b31662aecf2382e78307a993f"
+  },
+  {
+    "path": "evidence/C-candidate/results/ActualPublisherBenchmarks-report-full.json",
+    "bytes": 77752,
+    "sha256": "57510a45933e2de4ef53524dbecb1dff971571d19102bd33295448c5f2231481"
+  },
+  {
+    "path": "evidence/C-candidate/results/ActualPublisherBenchmarks-report-github.md",
+    "bytes": 1206,
+    "sha256": "90ac7119921613db6134b4dc7b585f5d502986da259a14b6751d42e6346e782a"
+  },
+  {
+    "path": "evidence/C-candidate/results/ActualPublisherBenchmarks-report.csv",
+    "bytes": 2489,
+    "sha256": "7b5c8717f387d4d711c52ed1d8621914eedec247c40e8bd187a26d42dee8a4dc"
+  },
+  {
+    "path": "evidence/C-candidate/results/RelayMetricsBenchmarks-report-full.json",
+    "bytes": 130213,
+    "sha256": "6351a9bbc749e14201be392611a38e3d621b39e0a2705196a2f1359c49989d7b"
+  },
+  {
+    "path": "evidence/C-candidate/results/RelayMetricsBenchmarks-report-github.md",
+    "bytes": 1406,
+    "sha256": "14537600fbabf8c92e589a69d39a65bd2515679b0eb9b8c6a84e07cb8acf64f0"
+  },
+  {
+    "path": "evidence/C-candidate/results/RelayMetricsBenchmarks-report.csv",
+    "bytes": 3340,
+    "sha256": "f9a2606ffeb9c060643a0cebedfd5a6d04e23bf200a70aebb90ab648078a019d"
+  },
+  {
+    "path": "evidence/C-candidate-completion.json",
+    "bytes": 113,
+    "sha256": "ff8769fa8a455141d77f6977878a6245a561da8b5f6c4687a63f4fb9f64829e6"
+  },
+  {
+    "path": "evidence/C-candidate-hashes.json",
+    "bytes": 666,
+    "sha256": "e46c2b4d38d0102a8c9e87224754679c9b04480acaa2cd86380a51d02095afc3"
+  },
+  {
+    "path": "evidence/C-candidate-validate.log",
+    "bytes": 360,
+    "sha256": "997b8e34c40bb87f14f5e31db30dee38e382880398547a11298819fc65cf8f79"
+  },
+  {
+    "path": "evidence/C-candidate.log",
+    "bytes": 70354,
+    "sha256": "84b2ba7257ba5d0e39337f82ee736c591b339fed31e245c52b5a3fdd0c14bc90"
+  },
+  {
+    "path": "evidence/candidate.patch",
+    "bytes": 5550,
+    "sha256": "8f91ee2b17cc0641bf14b3e600e49e196a721a9d70c9010fb1cfc3654f68e125"
+  },
+  {
+    "path": "evidence/D-published/results/ActualPublisherBenchmarks-report-full.json",
+    "bytes": 78791,
+    "sha256": "4ea27995be22e6032f19b25e1fa7d176505e3bced40fb9e567ca032befdf16ea"
+  },
+  {
+    "path": "evidence/D-published/results/ActualPublisherBenchmarks-report-github.md",
+    "bytes": 1206,
+    "sha256": "ca5f32e92ac7b903775e035d6166cf47d47d1d603b9b2ccaeae34f18555fffec"
+  },
+  {
+    "path": "evidence/D-published/results/ActualPublisherBenchmarks-report.csv",
+    "bytes": 2491,
+    "sha256": "98eed5e054bc12e28fff4b441245e12f4e433d9971b75bf5e04d130df03e175b"
+  },
+  {
+    "path": "evidence/D-published/results/RelayMetricsBenchmarks-report-full.json",
+    "bytes": 130645,
+    "sha256": "40206a098574c3db31558c634f96515987a59bcba3b99b98666b58b395e6d0b5"
+  },
+  {
+    "path": "evidence/D-published/results/RelayMetricsBenchmarks-report-github.md",
+    "bytes": 1398,
+    "sha256": "c60043136158f29c99b80a6fcb8fdbdc8f8acee0c187ae6633904606f72e4c01"
+  },
+  {
+    "path": "evidence/D-published/results/RelayMetricsBenchmarks-report.csv",
+    "bytes": 3345,
+    "sha256": "8e44f3709356f65219cfdd3068ed4bae057efff04840960a5a5a9bf6e6ed8768"
+  },
+  {
+    "path": "evidence/D-published-completion.json",
+    "bytes": 113,
+    "sha256": "7c894402cba89fd3de8b8f19301fa98fcae08cfe713f8f2e36d0dad6a4072d4b"
+  },
+  {
+    "path": "evidence/D-published-hashes.json",
+    "bytes": 666,
+    "sha256": "0593940f8545972916db247f5f1d1542ed83a3315d6b8181fdd520933f8ce3ae"
+  },
+  {
+    "path": "evidence/D-published-validate.log",
+    "bytes": 360,
+    "sha256": "997b8e34c40bb87f14f5e31db30dee38e382880398547a11298819fc65cf8f79"
+  },
+  {
+    "path": "evidence/D-published.log",
+    "bytes": 70599,
+    "sha256": "ff7a9cbd45aeca243fad6159e6680246c46d4af8d221d10e3fa5d2042f49ec23"
+  },
+  {
+    "path": "evidence/dry-A-baseline.log",
+    "bytes": 16629,
+    "sha256": "825e30e546fc3ce42b371eb62d61cc52fea36ad51395b13aafc81eef7c76bab6"
+  },
+  {
+    "path": "evidence/dry-B-published.log",
+    "bytes": 29684,
+    "sha256": "833bc21a39ef378f068517a7070a9cacc9a2032d70b0ec61bd378088a4f8c13a"
+  },
+  {
+    "path": "evidence/dry-C-candidate.log",
+    "bytes": 29682,
+    "sha256": "49c7af925a952cf8c9fa5f79389f3eaf221a327ef0844d4351f4aea380cabe58"
+  },
+  {
+    "path": "evidence/dry-D-published.log",
+    "bytes": 29647,
+    "sha256": "eb4c620f9e1e7cde1cd02768b1453d9d0a35014b369aa3f9005671cfcfdcd5b4"
+  },
+  {
+    "path": "evidence/dry-E-baseline.log",
+    "bytes": 16632,
+    "sha256": "f7e3fb11294a8f3081d98ec971b0aae1952502bf75778cb7fd7e8f620503d1b2"
+  },
+  {
+    "path": "evidence/E-baseline/results/ActualPublisherBenchmarks-report-full.json",
+    "bytes": 38150,
+    "sha256": "295046716e67cb379cc397f19e3553291c1d2d7710642c494fc55ba76bb8d3c6"
+  },
+  {
+    "path": "evidence/E-baseline/results/ActualPublisherBenchmarks-report-github.md",
+    "bytes": 880,
+    "sha256": "0a8281c817e72d87485e87019bec77a2dfcddafdce2211f794568dd814b898ec"
+  },
+  {
+    "path": "evidence/E-baseline/results/ActualPublisherBenchmarks-report.csv",
+    "bytes": 1576,
+    "sha256": "3b37a3834fb37dafb67072b2bed09d490a2db5e52557b52b125a2269b5980b53"
+  },
+  {
+    "path": "evidence/E-baseline/results/RelayMetricsBenchmarks-report-full.json",
+    "bytes": 64342,
+    "sha256": "53127bf2f00878cb36393047ba7ef70b2f16b4d5fe0b0aa8f79f3e9103c5d157"
+  },
+  {
+    "path": "evidence/E-baseline/results/RelayMetricsBenchmarks-report-github.md",
+    "bytes": 978,
+    "sha256": "27971dd6e8dcefdf8ee5ef2c775cfa86b5bcc220007671beb5ab8cbc3a60cb17"
+  },
+  {
+    "path": "evidence/E-baseline/results/RelayMetricsBenchmarks-report.csv",
+    "bytes": 2001,
+    "sha256": "0508c1abd08e72aef2fd1936b2eac382112b9a27875a8fbe77ffc4fef84414a8"
+  },
+  {
+    "path": "evidence/E-baseline-completion.json",
+    "bytes": 112,
+    "sha256": "b9f74973f3d66dd952cd58d4dce763a5ac719c6044b80a5dd21c89628ec37052"
+  },
+  {
+    "path": "evidence/E-baseline-hashes.json",
+    "bytes": 663,
+    "sha256": "ec13b5096705ebad47655319d85ccd470e74c2607935a165be4d809135530cb0"
+  },
+  {
+    "path": "evidence/E-baseline-validate.log",
+    "bytes": 181,
+    "sha256": "91b8e51d922a0886f9cfb9e2c43ac42dc7131a280baf0aa1f89045ee947943fc"
+  },
+  {
+    "path": "evidence/E-baseline.log",
+    "bytes": 36680,
+    "sha256": "245c8d190203a3576ea1a3871afc3ecf9a1fbe2a7907677ed67cf5750b040c5c"
+  },
+  {
+    "path": "evidence/integration-net10.log",
+    "bytes": 564,
+    "sha256": "9526dd2f0efe8ba70d42d7d4f3978ada464cf6419f21c039cba321ce6971dbaf"
+  },
+  {
+    "path": "evidence/provenance.json",
+    "bytes": 332,
+    "sha256": "987b5449171fbe60e459063866a4ec2732fed3f5657719cb2cf5b3c220bd3775"
+  },
+  {
+    "path": "evidence/summary.json",
+    "bytes": 88757,
+    "sha256": "0347d6ec78059bea54060c42c818bd5969602f6fe966a36e725f4c74e9633d2e"
+  },
+  {
+    "path": "evidence/unit-net10.log",
+    "bytes": 531,
+    "sha256": "724b496b1c6cd1c97a12befd02424a39542e49e16072e7be1c3350440b606b97"
+  },
+  {
+    "path": "evidence/unit-net8.log",
+    "bytes": 526,
+    "sha256": "641f4faf9c83c5fc6c1236d30cfb01fbcad8935287b89e02d73867bda42733e4"
+  },
+  {
+    "path": "measurement-report.md",
+    "bytes": 2769,
+    "sha256": "147ee4318b5584d6c4d62c32c5e6de90f662fe6020d2c3b19622a1ad431b4321"
+  },
+  {
+    "path": "README.md",
+    "bytes": 2212,
+    "sha256": "a4403f8365deafd91f9ba7ba13db6a4512611ebaa291c932ec23750714da0218"
+  },
+  {
+    "path": "source-snapshot.json",
+    "bytes": 1243,
+    "sha256": "4ef37755fe2e1e161c7dd3e3f33e73f4b721499cc703bafce49c2db3049dce9b"
+  }
+]

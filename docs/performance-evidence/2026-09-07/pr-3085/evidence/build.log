@@ -1,0 +1,13 @@
+  Determining projects to restore...
+  Restored C:\git\Dekaf-perf-improvements-20260907\pr-3085\source\src\Dekaf.Outbox\Dekaf.Outbox.csproj (in 641 ms).
+  Restored C:\git\Dekaf-perf-improvements-20260907\pr-3085\source\src\Dekaf.Abstractions\Dekaf.Abstractions.csproj (in 641 ms).
+  Restored C:\git\Dekaf-perf-improvements-20260907\pr-3085\source\src\Dekaf\Dekaf.csproj (in 661 ms).
+  Dekaf.Abstractions -> C:\git\Dekaf-perf-improvements-20260907\pr-3085\source\src\Dekaf.Abstractions\bin\Release\net10.0\Dekaf.Abstractions.dll
+  Dekaf -> C:\git\Dekaf-perf-improvements-20260907\pr-3085\source\src\Dekaf\bin\Release\net10.0\Dekaf.dll
+  Dekaf.Outbox -> C:\git\Dekaf-perf-improvements-20260907\pr-3085\source\src\Dekaf.Outbox\bin\Release\net10.0\Dekaf.Outbox.dll
+
+Build succeeded.
+    0 Warning(s)
+    0 Error(s)
+
+Time Elapsed 00:00:14.58

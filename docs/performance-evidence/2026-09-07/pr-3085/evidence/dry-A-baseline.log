@@ -1,0 +1,299 @@
+// Validating benchmarks:
+// ***** BenchmarkRunner: Start   *****
+// ***** Found 5 benchmark(s) in total *****
+// ***** Building 1 exe(s) in Parallel: Start   *****
+// ***** Done, took 00:00:00 (0.06 sec)   *****
+// Found 2 benchmarks:
+//   ActualPublisherBenchmarks.RelayBatch: Dry(Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [Enabled=False]
+//   ActualPublisherBenchmarks.PublisherControl: Dry(Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [Enabled=False]
+
+Setup power plan (GUID: 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c FriendlyName: High performance)
+// **************************
+// Benchmark: ActualPublisherBenchmarks.RelayBatch: Dry(Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [Enabled=False]
+// *** Execute ***
+// Launch: 1 / 1
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.15.8
+// Runtime=.NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2+BMI1+BMI2+F16C+FMA+LZCNT+MOVBE,AVX,SSE3+SSSE3+SSE4.1+SSE4.2+POPCNT,X86Base+SSE+SSE2,AES+PCLMUL,AvxVnni,SERIALIZE VectorSize=256
+// Job: Job-ZLOTRF(Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1)
+
+WorkloadActual   1: 1 op, 20261600.00 ns, 20.2616 ms/op
+
+WorkloadResult   1: 1 op, 20261600.00 ns, 20.2616 ms/op
+// GC:  0 0 0 368168 1
+// Threading:  0 0 1
+
+
+Mean = 20.262 ms, StdErr = 0.000 ms (0.00%), N = 1, StdDev = 0.000 ms
+Min = 20.262 ms, Q1 = 20.262 ms, Median = 20.262 ms, Q3 = 20.262 ms, Max = 20.262 ms
+IQR = 0.000 ms, LowerFence = 20.262 ms, UpperFence = 20.262 ms
+ConfidenceInterval = [NaN ms; NaN ms] (CI 99.9%), Margin = NaN ms (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+
+// ** Remained 4 (80.0%) benchmark(s) to run. Estimated finish 2026-09-07 15:41 (0h 0m from now) **
+Setup power plan (GUID: 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c FriendlyName: High performance)
+// **************************
+// Benchmark: ActualPublisherBenchmarks.PublisherControl: Dry(Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [Enabled=False]
+// *** Execute ***
+// Launch: 1 / 1
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.15.8
+// Runtime=.NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2+BMI1+BMI2+F16C+FMA+LZCNT+MOVBE,AVX,SSE3+SSSE3+SSE4.1+SSE4.2+POPCNT,X86Base+SSE+SSE2,AES+PCLMUL,AvxVnni,SERIALIZE VectorSize=256
+// Job: Job-ZLOTRF(Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1)
+
+WorkloadActual   1: 1 op, 820300.00 ns, 820.3000 us/op
+
+WorkloadResult   1: 1 op, 820300.00 ns, 820.3000 us/op
+// GC:  0 0 0 370376 1
+// Threading:  0 0 1
+
+
+Mean = 820.300 us, StdErr = 0.000 us (0.00%), N = 1, StdDev = 0.000 us
+Min = 820.300 us, Q1 = 820.300 us, Median = 820.300 us, Q3 = 820.300 us, Max = 820.300 us
+IQR = 0.000 us, LowerFence = 820.300 us, UpperFence = 820.300 us
+ConfidenceInterval = [NaN us; NaN us] (CI 99.9%), Margin = NaN us (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+
+// ** Remained 3 (60.0%) benchmark(s) to run. Estimated finish 2026-09-07 15:41 (0h 0m from now) **
+Successfully reverted power plan (GUID: 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c FriendlyName: High performance)
+// ***** BenchmarkRunner: Finish  *****
+
+// * Export *
+  dry-A-baseline\results\ActualPublisherBenchmarks-report.csv
+  dry-A-baseline\results\ActualPublisherBenchmarks-report-github.md
+  dry-A-baseline\results\ActualPublisherBenchmarks-report.html
+
+// * Detailed results *
+ActualPublisherBenchmarks.RelayBatch: Dry(Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [Enabled=False]
+Runtime = ; GC = 
+Mean = 20.262 ms, StdErr = 0.000 ms (0.00%), N = 1, StdDev = 0.000 ms
+Min = 20.262 ms, Q1 = 20.262 ms, Median = 20.262 ms, Q3 = 20.262 ms, Max = 20.262 ms
+IQR = 0.000 ms, LowerFence = 20.262 ms, UpperFence = 20.262 ms
+ConfidenceInterval = [NaN ms; NaN ms] (CI 99.9%), Margin = NaN ms (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+-------------------- Histogram --------------------
+[20.262 ms ; 20.262 ms) | @
+---------------------------------------------------
+
+ActualPublisherBenchmarks.PublisherControl: Dry(Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [Enabled=False]
+Runtime = ; GC = 
+Mean = 820.300 us, StdErr = 0.000 us (0.00%), N = 1, StdDev = 0.000 us
+Min = 820.300 us, Q1 = 820.300 us, Median = 820.300 us, Q3 = 820.300 us, Max = 820.300 us
+IQR = 0.000 us, LowerFence = 820.300 us, UpperFence = 820.300 us
+ConfidenceInterval = [NaN us; NaN us] (CI 99.9%), Margin = NaN us (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+-------------------- Histogram --------------------
+[820.299 us ; 820.301 us) | @
+---------------------------------------------------
+
+// * Summary *
+
+BenchmarkDotNet v0.15.8, Windows 11 (10.0.26200.9168/25H2/2025Update/HudsonValley2)
+12th Gen Intel Core i7-12700K 3.60GHz, 1 CPU, 20 logical and 12 physical cores
+.NET SDK 10.0.400
+  [Host] : .NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+
+Job=Dry  Toolchain=InProcessEmitToolchain  IterationCount=1  
+LaunchCount=1  RunStrategy=ColdStart  UnrollFactor=1  
+WarmupCount=1  
+
+| Method           | Enabled | Mean        | Error | Median      | Max         | Allocated |
+|----------------- |-------- |------------:|------:|------------:|------------:|----------:|
+| RelayBatch       | False   | 20,261.6 us |    NA | 20,261.6 us | 20,261.6 us | 359.54 KB |
+| PublisherControl | False   |    820.3 us |    NA |    820.3 us |    820.3 us |  361.7 KB |
+
+// * Warnings *
+MinIterationTime
+  ActualPublisherBenchmarks.RelayBatch: Dry       -> The minimum observed iteration time is 20.262ms which is very small. It's recommended to increase it to at least 100ms using more operations.
+  ActualPublisherBenchmarks.PublisherControl: Dry -> The minimum observed iteration time is 820.3us which is very small. It's recommended to increase it to at least 100ms using more operations.
+
+// * Legends *
+  Enabled   : Value of the 'Enabled' parameter
+  Mean      : Arithmetic mean of all measurements
+  Error     : Half of 99.9% confidence interval
+  Median    : Value separating the higher half of all measurements (50th percentile)
+  Max       : Maximum
+  Allocated : Allocated memory per single operation (managed only, inclusive, 1KB = 1024B)
+  1 us      : 1 Microsecond (0.000001 sec)
+
+// * Diagnostic Output - MemoryDiagnoser *
+
+
+// ***** BenchmarkRunner: End *****
+Run time: 00:00:00 (0.42 sec), executed benchmarks: 2
+
+// Found 3 benchmarks:
+//   RelayMetricsBenchmarks.SynchronousBatch: Dry(Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [Enabled=False]
+//   RelayMetricsBenchmarks.PendingBatch: Dry(Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [Enabled=False]
+//   RelayMetricsBenchmarks.PublisherControl: Dry(Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [Enabled=False]
+
+Setup power plan (GUID: 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c FriendlyName: High performance)
+// **************************
+// Benchmark: RelayMetricsBenchmarks.SynchronousBatch: Dry(Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [Enabled=False]
+// *** Execute ***
+// Launch: 1 / 1
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.15.8
+// Runtime=.NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2+BMI1+BMI2+F16C+FMA+LZCNT+MOVBE,AVX,SSE3+SSSE3+SSE4.1+SSE4.2+POPCNT,X86Base+SSE+SSE2,AES+PCLMUL,AvxVnni,SERIALIZE VectorSize=256
+// Job: Job-ZLOTRF(Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1)
+
+WorkloadActual   1: 1 op, 399500.00 ns, 399.5000 us/op
+
+WorkloadResult   1: 1 op, 399500.00 ns, 399.5000 us/op
+// GC:  0 0 0 3840 1
+// Threading:  0 0 1
+
+
+Mean = 399.500 us, StdErr = 0.000 us (0.00%), N = 1, StdDev = 0.000 us
+Min = 399.500 us, Q1 = 399.500 us, Median = 399.500 us, Q3 = 399.500 us, Max = 399.500 us
+IQR = 0.000 us, LowerFence = 399.500 us, UpperFence = 399.500 us
+ConfidenceInterval = [NaN us; NaN us] (CI 99.9%), Margin = NaN us (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+
+// ** Remained 2 (40.0%) benchmark(s) to run. Estimated finish 2026-09-07 15:41 (0h 0m from now) **
+Setup power plan (GUID: 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c FriendlyName: High performance)
+// **************************
+// Benchmark: RelayMetricsBenchmarks.PendingBatch: Dry(Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [Enabled=False]
+// *** Execute ***
+// Launch: 1 / 1
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.15.8
+// Runtime=.NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2+BMI1+BMI2+F16C+FMA+LZCNT+MOVBE,AVX,SSE3+SSSE3+SSE4.1+SSE4.2+POPCNT,X86Base+SSE+SSE2,AES+PCLMUL,AvxVnni,SERIALIZE VectorSize=256
+// Job: Job-ZLOTRF(Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1)
+
+WorkloadActual   1: 1 op, 6198500.00 ns, 6.1985 ms/op
+
+WorkloadResult   1: 1 op, 6198500.00 ns, 6.1985 ms/op
+// GC:  0 0 0 4176 1
+// Threading:  0 0 1
+
+
+Mean = 6.199 ms, StdErr = 0.000 ms (0.00%), N = 1, StdDev = 0.000 ms
+Min = 6.199 ms, Q1 = 6.199 ms, Median = 6.199 ms, Q3 = 6.199 ms, Max = 6.199 ms
+IQR = 0.000 ms, LowerFence = 6.199 ms, UpperFence = 6.199 ms
+ConfidenceInterval = [NaN ms; NaN ms] (CI 99.9%), Margin = NaN ms (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+
+// ** Remained 1 (20.0%) benchmark(s) to run. Estimated finish 2026-09-07 15:41 (0h 0m from now) **
+Setup power plan (GUID: 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c FriendlyName: High performance)
+// **************************
+// Benchmark: RelayMetricsBenchmarks.PublisherControl: Dry(Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [Enabled=False]
+// *** Execute ***
+// Launch: 1 / 1
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.15.8
+// Runtime=.NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2+BMI1+BMI2+F16C+FMA+LZCNT+MOVBE,AVX,SSE3+SSSE3+SSE4.1+SSE4.2+POPCNT,X86Base+SSE+SSE2,AES+PCLMUL,AvxVnni,SERIALIZE VectorSize=256
+// Job: Job-ZLOTRF(Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1)
+
+WorkloadActual   1: 1 op, 754000.00 ns, 754.0000 us/op
+
+WorkloadResult   1: 1 op, 754000.00 ns, 754.0000 us/op
+// GC:  0 0 0 0 1
+// Threading:  0 0 1
+
+
+Mean = 754.000 us, StdErr = 0.000 us (0.00%), N = 1, StdDev = 0.000 us
+Min = 754.000 us, Q1 = 754.000 us, Median = 754.000 us, Q3 = 754.000 us, Max = 754.000 us
+IQR = 0.000 us, LowerFence = 754.000 us, UpperFence = 754.000 us
+ConfidenceInterval = [NaN us; NaN us] (CI 99.9%), Margin = NaN us (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+
+// ** Remained 0 (0.0%) benchmark(s) to run. Estimated finish 2026-09-07 15:41 (0h 0m from now) **
+Successfully reverted power plan (GUID: 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c FriendlyName: High performance)
+// ***** BenchmarkRunner: Finish  *****
+
+// * Export *
+  dry-A-baseline\results\RelayMetricsBenchmarks-report.csv
+  dry-A-baseline\results\RelayMetricsBenchmarks-report-github.md
+  dry-A-baseline\results\RelayMetricsBenchmarks-report.html
+
+// * Detailed results *
+RelayMetricsBenchmarks.SynchronousBatch: Dry(Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [Enabled=False]
+Runtime = ; GC = 
+Mean = 399.500 us, StdErr = 0.000 us (0.00%), N = 1, StdDev = 0.000 us
+Min = 399.500 us, Q1 = 399.500 us, Median = 399.500 us, Q3 = 399.500 us, Max = 399.500 us
+IQR = 0.000 us, LowerFence = 399.500 us, UpperFence = 399.500 us
+ConfidenceInterval = [NaN us; NaN us] (CI 99.9%), Margin = NaN us (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+-------------------- Histogram --------------------
+[399.500 us ; 399.500 us) | @
+---------------------------------------------------
+
+RelayMetricsBenchmarks.PendingBatch: Dry(Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [Enabled=False]
+Runtime = ; GC = 
+Mean = 6.199 ms, StdErr = 0.000 ms (0.00%), N = 1, StdDev = 0.000 ms
+Min = 6.199 ms, Q1 = 6.199 ms, Median = 6.199 ms, Q3 = 6.199 ms, Max = 6.199 ms
+IQR = 0.000 ms, LowerFence = 6.199 ms, UpperFence = 6.199 ms
+ConfidenceInterval = [NaN ms; NaN ms] (CI 99.9%), Margin = NaN ms (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+-------------------- Histogram --------------------
+[6.198 ms ; 6.199 ms) | @
+---------------------------------------------------
+
+RelayMetricsBenchmarks.PublisherControl: Dry(Toolchain=InProcessEmitToolchain, IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [Enabled=False]
+Runtime = ; GC = 
+Mean = 754.000 us, StdErr = 0.000 us (0.00%), N = 1, StdDev = 0.000 us
+Min = 754.000 us, Q1 = 754.000 us, Median = 754.000 us, Q3 = 754.000 us, Max = 754.000 us
+IQR = 0.000 us, LowerFence = 754.000 us, UpperFence = 754.000 us
+ConfidenceInterval = [NaN us; NaN us] (CI 99.9%), Margin = NaN us (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+-------------------- Histogram --------------------
+[754.000 us ; 754.000 us) | @
+---------------------------------------------------
+
+// * Summary *
+
+BenchmarkDotNet v0.15.8, Windows 11 (10.0.26200.9168/25H2/2025Update/HudsonValley2)
+12th Gen Intel Core i7-12700K 3.60GHz, 1 CPU, 20 logical and 12 physical cores
+.NET SDK 10.0.400
+  [Host] : .NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+
+Job=Dry  Toolchain=InProcessEmitToolchain  IterationCount=1  
+LaunchCount=1  RunStrategy=ColdStart  UnrollFactor=1  
+WarmupCount=1  
+
+| Method           | Enabled | Mean       | Error | Median     | Max        | Allocated |
+|----------------- |-------- |-----------:|------:|-----------:|-----------:|----------:|
+| SynchronousBatch | False   |   399.5 us |    NA |   399.5 us |   399.5 us |    3840 B |
+| PendingBatch     | False   | 6,198.5 us |    NA | 6,198.5 us | 6,198.5 us |    4176 B |
+| PublisherControl | False   |   754.0 us |    NA |   754.0 us |   754.0 us |         - |
+
+// * Warnings *
+MinIterationTime
+  RelayMetricsBenchmarks.SynchronousBatch: Dry -> The minimum observed iteration time is 399.5us which is very small. It's recommended to increase it to at least 100ms using more operations.
+  RelayMetricsBenchmarks.PendingBatch: Dry     -> The minimum observed iteration time is 6.199ms which is very small. It's recommended to increase it to at least 100ms using more operations.
+  RelayMetricsBenchmarks.PublisherControl: Dry -> The minimum observed iteration time is 754us which is very small. It's recommended to increase it to at least 100ms using more operations.
+
+// * Legends *
+  Enabled   : Value of the 'Enabled' parameter
+  Mean      : Arithmetic mean of all measurements
+  Error     : Half of 99.9% confidence interval
+  Median    : Value separating the higher half of all measurements (50th percentile)
+  Max       : Maximum
+  Allocated : Allocated memory per single operation (managed only, inclusive, 1KB = 1024B)
+  1 us      : 1 Microsecond (0.000001 sec)
+
+// * Diagnostic Output - MemoryDiagnoser *
+
+
+// ***** BenchmarkRunner: End *****
+Run time: 00:00:00 (0.38 sec), executed benchmarks: 3
+
+Global total time: 00:00:01 (1.5 sec), executed benchmarks: 5
+// * Artifacts cleanup *
+Artifacts cleanup is finished

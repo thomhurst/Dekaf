@@ -1,0 +1,17 @@
+[
+  {
+    "Algorithm": "SHA256",
+    "Hash": "6A7BA478949D20C16E6E0888CDBF994A13E7D8CB885C31D83A318931E3C9F320",
+    "Path": "C:\\git\\Dekaf-perf-improvements-20260907\\pr-3085\\harness-published\\Dekaf.Outbox.dll"
+  },
+  {
+    "Algorithm": "SHA256",
+    "Hash": "78B87A6C0077ACDE05E76755AF658336F2B8030CF7276E80195940CD3BBE0DDC",
+    "Path": "C:\\git\\Dekaf-perf-improvements-20260907\\pr-3085\\harness-published\\Dekaf.dll"
+  },
+  {
+    "Algorithm": "SHA256",
+    "Hash": "32FD4493F0018D2BA533F4E642C74D90D9F8CF0F711DF7C0DA8E290CA5DCC71A",
+    "Path": "C:\\git\\Dekaf-perf-improvements-20260907\\pr-3085\\harness-published\\MetricBench.dll"
+  }
+]

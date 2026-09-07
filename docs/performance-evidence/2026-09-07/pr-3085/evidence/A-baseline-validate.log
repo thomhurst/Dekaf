@@ -1,0 +1,2 @@
+Validated Enabled=False: 500 synchronous + 500 pending rows acknowledged and deleted.
+Validated actual publisher Enabled=False: 500 rows relayed and 500 direct rows acknowledged.

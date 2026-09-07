@@ -1,0 +1,22 @@
+{
+  "pr": 3085,
+  "tested_parent_sha": "ac40c2a3c0e036a345c78aadb0f6a0d797e8f7e7",
+  "published_branch": "issue-3041-outbox-metrics",
+  "candidate_patch_sha256": "8f91ee2b17cc0641bf14b3e600e49e196a721a9d70c9010fb1cfc3654f68e125",
+  "source_changes": [
+    "src/Dekaf.Outbox/OutboxRelayService.Metrics.cs",
+    "src/Dekaf.Outbox/OutboxRelayService.cs",
+    "tests/Dekaf.Tests.Unit/Outbox/OutboxMetricOutcomeTests.cs"
+  ],
+  "source_blob_ids": {
+    "src/Dekaf.Outbox/OutboxRelayService.Metrics.cs": "a89a6e6cae8e92f941df06a4ef596bd7933f9a01",
+    "src/Dekaf.Outbox/OutboxRelayService.cs": "66881feaba2b266f167dc37e69301f8a0b4d291b",
+    "tests/Dekaf.Tests.Unit/Outbox/OutboxMetricOutcomeTests.cs": "db231612a288f74fa9f54afa245e2f54522ee0b4"
+  },
+  "measurement_provenance": "The candidate was measured as this exact uncommitted patch against tested_parent_sha. Publication adds a commit and evidence files; no product source changes were made after validation.",
+  "verdict": "INCONCLUSIVE",
+  "github_status_state": "failure",
+  "status_description": "INCONCLUSIVE: relay overhead improved; whole-publisher and protected-metric acceptance unresolved.",
+  "unit_cases_each_framework": 96,
+  "integration_cases_net10": 4
+}

@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
@@ -144,7 +145,8 @@ public sealed partial class OutboxRelayService : BackgroundService
         LogRelayStopped(_options.RelayId);
     }
 
-    private async Task<CycleResult> RunCycleCoreAsync(CancellationToken cancellationToken)
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
+    private async ValueTask<CycleResult> RunCycleCoreAsync(CancellationToken cancellationToken)
     {
         await RefreshLeasesIfDueAsync(cancellationToken).ConfigureAwait(false);
 
@@ -206,11 +208,11 @@ public sealed partial class OutboxRelayService : BackgroundService
     /// </summary>
     private bool RenewalDue => _leaseTimestamp == 0 || LeaseAge() >= _options.LeaseRenewInterval;
 
-    private async Task RefreshLeasesIfDueAsync(CancellationToken cancellationToken, bool force = false)
-    {
-        if (!force && !RenewalDue)
-            return;
+    private Task RefreshLeasesIfDueAsync(CancellationToken cancellationToken, bool force = false) =>
+        force || RenewalDue ? RefreshLeasesAsync(cancellationToken) : Task.CompletedTask;
 
+    private async Task RefreshLeasesAsync(CancellationToken cancellationToken)
+    {
         // Observe a stalled relay's expired set before reacquisition replaces its timestamp.
         if (_ownedBuckets.Count > 0 && LeaseAge() >= _options.LeaseDuration)
             ResetLeaseState();
@@ -235,7 +237,8 @@ public sealed partial class OutboxRelayService : BackgroundService
     /// Publishes batches for one bucket until it is empty, a publish fails, or the batch
     /// comes back partially filled.
     /// </summary>
-    private async Task<CycleResult> DrainBucketAsync(int bucket, CancellationToken cancellationToken)
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
+    private async ValueTask<CycleResult> DrainBucketAsync(int bucket, CancellationToken cancellationToken)
     {
         var publishedAny = false;
         var firstBatch = true;
