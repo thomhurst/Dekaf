@@ -79,4 +79,8 @@
               GrpcServices="None" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Update="TelemetryReceiver/**" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>
