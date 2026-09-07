@@ -8,6 +8,8 @@ Large binary-key dispatch improves approximately 15–20% in the fixed CPU/JIT c
 
 See [measurement-report.md](measurement-report.md) for before/candidate/control values, allocations, environment, limitations and the acceptance decision. It is an immutable report written before publication: references there to local-only patches or no push describe that earlier phase. This README records the later publication decision.
 
+The focused controlled reports cover only the repeated string control and distinct binary keys of 65,536 bytes. Read [controlled-scope.md](controlled-scope.md) for the exact methods, parameter selection, exclusions, and links to both original reports. These results do not characterize smaller binary keys or repeated binary-key dispatch in that configuration.
+
 The [evidence](evidence) directory contains raw BenchmarkDotNet JSON/CSV reports, per-iteration logs, fixture snapshots, product hashes and validation logs. Different configurations, failed fixture attempts and rejected experiments remain distinct. Fixture source/project/solution files use a `.txt` suffix to keep archived inputs out of repository builds; remove that suffix and adjust recorded absolute paths when reproducing. Original measured DLLs and raw profile latency streams remain in the local evidence archive; binaries are not committed. Any absent end-to-end metrics remain unknown.
 
 Local benchmark work used the shared performance reservation. This publication reuses that evidence and does not run concurrent benchmarks, change thresholds, merge the PR or dispatch paid stress workflows.

@@ -211,12 +211,17 @@
   },
   {
     "path": "README.md",
-    "bytes": 2241,
-    "sha256": "b960dc0394c7a126aaf5ef6de4bfb795ae8639e3719f71dbbbc1a36f8f1684e5"
+    "bytes": 2602,
+    "sha256": "7cc38650761f47d48e50c17b016504f417940442615b6d921c405820c4aa746f"
   },
   {
     "path": "source-snapshot.json",
     "bytes": 920,
     "sha256": "2491176d2b52cd8046d618182ba98d4cfc1adcf67cb576e9021d1762396fc803"
+  },
+  {
+    "path": "controlled-scope.md",
+    "bytes": 1954,
+    "sha256": "c39c22a28605f93e4d66b0b1e099b945772551608e876a4bdfda4e68a06a324a"
   }
 ]
