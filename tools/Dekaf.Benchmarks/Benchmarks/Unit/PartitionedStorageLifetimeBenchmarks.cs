@@ -10,6 +10,7 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 public class PartitionedStorageLifetimeBenchmarks
 {
     private PartitionLane<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>> _lane = null!;
+    private PartitionProcessorContext<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>> _context = null!;
     private PendingFetchData _pending = null!;
     private ConsumeResult<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>> _record;
     private readonly AutoResetEvent _start = new(false);
@@ -30,6 +31,7 @@ public class PartitionedStorageLifetimeBenchmarks
         _record = enumerator.Current;
         _lane = new PartitionLane<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>>(
             new TopicPartition("lifetime", 0), 1024, static (_, _) => default, static _ => { }, static (_, _) => { });
+        _context = new PartitionProcessorContext<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>>(_lane);
         _reader = new Thread(ReadConcurrent) { IsBackground = true };
         _reader.Start();
     }
@@ -70,8 +72,10 @@ public class PartitionedStorageLifetimeBenchmarks
     }
 
     [Benchmark]
-    public object CreateKeyLane() =>
-        new KeyOrderedProcessingLane<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>>(null!, default);
+    public object CreateKeyDispatcher() =>
+        new KeyOrderedPartitionDispatcher<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>>(
+            _context, maxBatchSize: 1, maxConcurrentHandlers: 1, maxBufferedRecords: 1024,
+            processor: static (_, _) => default);
 
     [Benchmark]
     public void FetchLifecycle()
