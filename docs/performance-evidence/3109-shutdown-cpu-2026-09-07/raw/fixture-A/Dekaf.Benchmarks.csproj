@@ -1,0 +1,4 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0</TargetFramework><Nullable>enable</Nullable><ImplicitUsings>enable</ImplicitUsings><LangVersion>preview</LangVersion><AssemblyName>Dekaf.Benchmarks</AssemblyName><ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally><DefineConstants>ABA_SHUTDOWN</DefineConstants><UseSharedCompilation>false</UseSharedCompilation></PropertyGroup>
+  <ItemGroup><FrameworkReference Include="Microsoft.AspNetCore.App" /><PackageReference Include="BenchmarkDotNet" /><ProjectReference Include="/home/runner/work/Dekaf/Dekaf/aba-results/work/product-A/src/Dekaf/Dekaf.csproj" /></ItemGroup>
+</Project>

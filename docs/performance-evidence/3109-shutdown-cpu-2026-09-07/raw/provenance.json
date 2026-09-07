@@ -1,0 +1,26 @@
+{
+  "baseline_sha": "f71303cb25c6568c454e9e88cf3ade3c91b6dc45",
+  "candidate_sha": "7316983bc4485ac1db34dc39c9cbdee38a56adcc",
+  "harness_sha": "c57dc8b18507c30f3de5b92a0ff606e8a6ec43b4",
+  "started_utc": "2026-09-07T18:50:21.901497+00:00",
+  "runner": "ubuntu-latest",
+  "phase_order": [
+    "A1",
+    "B",
+    "A2"
+  ],
+  "samples": 30000,
+  "warmup_seconds": 30,
+  "cpu_affinity": [
+    2,
+    3
+  ],
+  "runtime": {
+    "DOTNET_TieredCompilation": "1"
+  },
+  "run_id": "34153200991",
+  "image_version": "20260831.293.1",
+  "acceptance": "NOT_EVALUATED",
+  "scope": "CPU attribution, not full acceptance",
+  "completed_utc": "2026-09-07T18:53:44.874618+00:00"
+}
