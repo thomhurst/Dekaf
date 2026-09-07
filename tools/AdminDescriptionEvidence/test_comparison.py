@@ -3,7 +3,7 @@ import hashlib
 from pathlib import Path
 import tempfile
 import unittest
-from run_comparison import compare, validate_probe, validate_primer_segments, retain_loaded_binaries
+from run_comparison import compare, validate_probe, validate_primer_segments, retain_loaded_binaries, validate_bdn_phase
 
 class ComparisonTests(unittest.TestCase):
     def metrics(self):
@@ -95,5 +95,28 @@ class ComparisonTests(unittest.TestCase):
             product.write_bytes(b'replaced product')
             with self.assertRaises(ValueError):
                 retain_loaded_binaries(manifest, original, root / 'other-archive')
+
+    def test_bdn_boundaries_match_the_observed_worker_clock(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            warmup = root / 'inventory-16-42.json'
+            clock = dict(StartedTimestamp=1000, StopwatchFrequency=100, ProcessId=42)
+            warmup.with_name('clock-' + warmup.name).write_text(json.dumps(clock), encoding='utf-8')
+            runtime = [{'Seconds': value} for value in [0, 1, 2, 3, 4]]
+            warmup.with_name('runtime-' + warmup.name).write_text(json.dumps(runtime), encoding='utf-8')
+            signals = [dict(Signal=signal, Timestamp=timestamp, StopwatchFrequency=100, ProcessId=42)
+                       for signal, timestamp in [('BeforeActualRun', 1150), ('AfterActualRun', 1250)]]
+            path = root / 'signals-42.jsonl'
+            path.write_text('\n'.join(json.dumps(row) for row in signals), encoding='utf-8')
+            result = validate_bdn_phase(warmup)
+            self.assertEqual(result['actual_start_seconds'], 1.5)
+            self.assertEqual(len(result['overlapping_runtime_intervals']), 2)
+            signals[1]['ProcessId'] = 43
+            path.write_text('\n'.join(json.dumps(row) for row in signals), encoding='utf-8')
+            with self.assertRaises(ValueError): validate_bdn_phase(warmup)
+            signals[1]['ProcessId'] = 42
+            signals[1]['Timestamp'] = 1450
+            path.write_text('\n'.join(json.dumps(row) for row in signals), encoding='utf-8')
+            with self.assertRaises(ValueError): validate_bdn_phase(warmup)
 
 if __name__ == '__main__': unittest.main()

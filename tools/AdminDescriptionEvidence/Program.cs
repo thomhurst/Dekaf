@@ -33,5 +33,5 @@ var toolchain = new Toolchain("AdminEvidence", new EvidenceGenerator(), builtIn.
 var job = (smoke ? Job.Dry : Job.Default.WithIterationCount(12).WithIterationTime(TimeInterval.FromMilliseconds(500))
     .WithWarmupCount(6).WithLaunchCount(1)).WithOutlierMode(OutlierMode.DontRemove).WithToolchain(toolchain);
 var summaries = BenchmarkSwitcher.FromAssembly(typeof(AdminEvidenceBenchmark).Assembly)
-    .Run(args, DefaultConfig.Instance.AddJob(job));
+    .Run(args, DefaultConfig.Instance.AddJob(job).AddDiagnoser(new MeasurementPhaseDiagnoser()));
 return summaries.Any(summary => summary.HasCriticalValidationErrors || summary.Reports.Any(report => !report.Success)) ? 1 : 0;

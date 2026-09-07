@@ -92,6 +92,29 @@ def validate_primer_segments(primer_path):
         validate_probe(f'{path}[{index}]', .05, segment)
 
 
+def validate_bdn_phase(warmup):
+    clock = json.loads(warmup.with_name('clock-' + warmup.name).read_text(encoding='utf-8-sig'))
+    signal_path = warmup.parent / f"signals-{clock['ProcessId']}.jsonl"
+    signals = [json.loads(line) for line in signal_path.read_text(encoding='utf-8-sig').splitlines()]
+    if [row['Signal'] for row in signals] != ['BeforeActualRun', 'AfterActualRun']:
+        raise ValueError(f'{signal_path}: actual workload boundaries missing, repeated or out of order')
+    if any(row['StopwatchFrequency'] != clock['StopwatchFrequency'] or row['ProcessId'] != clock['ProcessId'] for row in signals):
+        raise ValueError(f'{signal_path}: runtime clock/process identity mismatch')
+    start, end = [(row['Timestamp'] - clock['StartedTimestamp']) / clock['StopwatchFrequency'] for row in signals]
+    if not 0 <= start < end:
+        raise ValueError(f'{signal_path}: invalid actual workload interval')
+    runtime = warmup.with_name('runtime-' + warmup.name)
+    rows = json.loads(runtime.read_text(encoding='utf-8-sig'))
+    if not rows or rows[0]['Seconds'] > start or rows[-1]['Seconds'] < end:
+        raise ValueError(f'{runtime}: runtime samples do not bracket the actual workload')
+    if any(first['Seconds'] >= second['Seconds'] for first, second in zip(rows, rows[1:])):
+        raise ValueError(f'{runtime}: runtime sample clock is not increasing')
+    overlapping = [{'Start': first, 'End': second} for first, second in zip(rows, rows[1:])
+                   if second['Seconds'] > start and first['Seconds'] < end]
+    return dict(actual_start_seconds=start, actual_end_seconds=end, overlapping_runtime_intervals=overlapping,
+                scope='Host signals bracket actual workload; one-second observer intervals may overlap adjacent stages. No per-iteration instrumentation.')
+
+
 def compare(a1, b, a2):
     rows = []
     within_limits = True
@@ -232,6 +255,7 @@ def execute(args):
                     runtime = warmup.with_name('runtime-' + warmup.name)
                     if not runtime.exists() or not json.loads(runtime.read_text(encoding='utf-8-sig')):
                         raise ValueError(f'{phase}/{case}: BDN runtime activity evidence missing')
+                    save(warmup.with_name('measured-runtime-' + warmup.name), validate_bdn_phase(warmup))
         summary = {}
         for case in CONTROLS:
             inputs = [json.loads((archive / phase / case.replace(':','-') / 'measured.json').read_text(encoding='utf-8-sig')) for phase in ['A1','B','A2']]
