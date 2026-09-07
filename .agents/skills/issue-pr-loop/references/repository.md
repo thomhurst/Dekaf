@@ -4,4 +4,4 @@ Read [CLAUDE.md](../../../../CLAUDE.md) for validation, public contracts, and pe
 
 - Docs-site changes require `npm run build --prefix docs`.
 - There is no Aspire AppHost. Integration tests use Docker/Testcontainers Kafka; stop only resources created for this work.
-- Before heavy local work, read the current shared checkout's [performance lock workflow](../../../../scripts/PerformanceLock.md). All agents reserve the same Redis `performance` lock for benchmarks, builds, tests, and other heavy jobs; acquire it after the item lock and release it first.
+- Run before/after benchmarks on the same GitHub Actions `ubuntu-latest` runner VM as required by [CLAUDE.md](../../../../CLAUDE.md#benchmark-execution). Local measurements are diagnostic only. No local Redis `performance` lock is required for heavy work; retain PR/issue ownership locks.

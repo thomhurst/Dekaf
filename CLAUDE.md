@@ -19,9 +19,11 @@ Dekaf is a high-performance, pure C# Apache Kafka client. Performance is the pro
 - `ProduceAsync` cancellation before append prevents delivery, including during metadata lookup, channel writes, and memory reservation. After append, cancellation stops the caller's wait while delivery continues.
 - `FlushAsync` cancellation stops waiting while batches continue sending. `FireAsync` has no cancellation-token overload; use `FlushAsync(cancellationToken)` for cancellable delivery waiting.
 
-## Local workload coordination
+## Benchmark execution
 
-All agents must acquire the shared Redis `performance` lock before local benchmarks, profiling, stress runs, builds, tests, restores, or other heavy work. Follow [the performance lock workflow](scripts/PerformanceLock.md) from the current shared checkout. Hold one reservation across the full baseline/candidate/control experiment; do not use `-Worktree` with this lock. Reading and editing can continue while another agent owns it.
+- Run before/after benchmarks on a GitHub-hosted Actions runner with `runs-on: ubuntu-latest` to avoid local machine noise. Measure the exact baseline and candidate SHAs sequentially in the same job on the same runner VM, using identical benchmark cases, SDK/runtime, Release configuration, and measurement settings. Keep other heavy work out of the measurement interval.
+- Read [the benchmark workflow](.github/workflows/benchmarks.yml) for supported inputs and artifact handling. A single-revision run is not before/after evidence; use a paired job for comparisons. Record both SHAs, runner image and hardware, SDK/runtime, settings, workflow run URL, raw reports, and metric deltas in the PR. Local measurements are diagnostic only and do not establish performance acceptance.
+- The local Redis `performance` lock is no longer required for benchmarks, profiling, stress runs, builds, tests, restores, or other heavy work. Keep PR/issue ownership locks and the stress acceptance rules below.
 
 ## Build and test
 
@@ -31,7 +33,6 @@ All agents must acquire the shared Redis `performance` lock before local benchma
 dotnet build
 dotnet test --project tests/Dekaf.Tests.Unit --configuration Release --framework net10.0
 dotnet test --project tests/Dekaf.Tests.Integration --configuration Release --framework net10.0
-dotnet run --project tools/Dekaf.Benchmarks --configuration Release -- --filter "*Memory*"
 ```
 
 - TUnit uses `--treenode-filter "/*/*/ClassName/TestName"` with `/<Assembly>/<Namespace>/<Class>/<Test>` segments. With MTP, use `--project` and pass test options directly, without an extra `--` or VSTest's `--filter`.
