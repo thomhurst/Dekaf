@@ -1,5 +1,5 @@
 name: PR A-B-A protected metrics (Ubuntu)
-run-name: 'Protected metrics A-B-A PR #${{ inputs.pr }} on ubuntu-latest'
+run-name: 'CPU attribution A-B-A PR #${{ inputs.pr }} on ubuntu-latest'
 on:
   workflow_dispatch:
     inputs:
@@ -47,7 +47,7 @@ jobs:
           BASELINE_SHA: ${{ inputs.baseline_sha }}
           CANDIDATE_SHA: ${{ inputs.candidate_sha }}
         run: |
-          python3 .github/scripts/benchmark_aba.py \
+          python3 .github/scripts/cpu_aba.py \
             --pr "$PR" --baseline "$BASELINE_SHA" --candidate "$CANDIDATE_SHA" \
             --artifacts "$GITHUB_WORKSPACE/aba-results"
       - name: Upload evidence, including failures
@@ -55,6 +55,8 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: aba-metrics-pr-${{ inputs.pr }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: aba-results/
+          path: |
+            aba-results/
+            !aba-results/work/**
           if-no-files-found: error
           retention-days: 30

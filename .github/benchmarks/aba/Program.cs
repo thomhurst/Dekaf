@@ -8,6 +8,11 @@ using Perfolizer.Horology;
 using Perfolizer.Mathematics.OutlierDetection;
 
 #if ABA_SHUTDOWN
+if (args.Length == 4 && args[0] == "--shutdown-cpu")
+{
+    await Dekaf.Benchmarks.ShutdownCpuProbe.Run(args[1], int.Parse(args[2]), int.Parse(args[3]));
+    return 0;
+}
 if (args.Length == 3 && args[0] == "--shutdown-probe")
 {
     await Dekaf.Benchmarks.ShutdownProbe.Run(args[1], int.Parse(args[2]));
