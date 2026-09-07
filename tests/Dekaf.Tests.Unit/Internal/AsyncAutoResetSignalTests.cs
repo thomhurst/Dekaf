@@ -5,6 +5,25 @@ namespace Dekaf.Tests.Unit.Internal;
 public class AsyncAutoResetSignalTests
 {
     [Test]
+    public async Task InlineContinuations_ResumeOnSignalingThreadAndRearm()
+    {
+        using var signal = new AsyncAutoResetSignal(inlineContinuations: true);
+        for (var index = 0; index < 100; index++)
+        {
+            var awaiter = signal.WaitAsync(Timeout.Infinite).ConfigureAwait(false).GetAwaiter();
+            var resumedOn = -1;
+            awaiter.UnsafeOnCompleted(() =>
+            {
+                awaiter.GetResult();
+                resumedOn = Environment.CurrentManagedThreadId;
+            });
+            var signalingThread = Environment.CurrentManagedThreadId;
+            signal.Signal();
+            await Assert.That(resumedOn).IsEqualTo(signalingThread);
+        }
+    }
+
+    [Test]
     public async Task InlineTimeoutContinuations_RearmAcrossTimeoutsAndSignals()
     {
         using var signal = new AsyncAutoResetSignal(inlineTimeoutContinuations: true);

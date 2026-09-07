@@ -123,6 +123,7 @@ public static class PartitionedConsumerExtensions
         CancellationToken cancellationToken)
     {
         var handlerContext = new PartitionRecordProcessorContext<TKey, TValue>(context);
+        var progress = context.EnableAutomaticCompletion();
 
         while (await context.WaitToReadMessageAsync(cancellationToken).ConfigureAwait(false))
         {
@@ -131,7 +132,11 @@ public static class PartitionedConsumerExtensions
                 try
                 {
                     await processor(handlerContext, message, cancellationToken).ConfigureAwait(false);
-                    context.MarkProcessed(message);
+                    if (!message.IsPartitionEof)
+                    {
+                        progress.MarkProcessed(message.Offset);
+                        progress.Publish(message.Offset + 1, message.LeaderEpoch ?? -1);
+                    }
                 }
                 finally
                 {
@@ -148,29 +153,51 @@ public static class PartitionedConsumerExtensions
         CancellationToken cancellationToken)
     {
         var handlerContext = new PartitionBatchProcessorContext<TKey, TValue>(context);
-        var batch = new List<ConsumeResult<TKey, TValue>>(options.MaxHandlerBatchSize);
+        var batch = new PartitionRecordBatch<TKey, TValue>(options.MaxHandlerBatchSize);
+        var progress = context.EnableAutomaticCompletion();
 
         while (await context.WaitToReadMessageAsync(cancellationToken).ConfigureAwait(false))
         {
-            batch.Clear();
-            while (batch.Count < options.MaxHandlerBatchSize && context.TryReadMessage(out var message))
-                batch.Add(message);
-
-            if (batch.Count == 0)
-                continue;
-
-            var records = batch.ToArray();
+            var records = batch;
             try
             {
+                while (batch.Count < options.MaxHandlerBatchSize && context.TryReadMessage(out var message))
+                {
+                    try
+                    {
+                        batch.Add(message);
+                    }
+                    catch
+                    {
+                        message.ReleaseStorage();
+                        throw;
+                    }
+                }
+
+                if (batch.Count == 0)
+                    continue;
+
                 await processor(handlerContext, records, cancellationToken).ConfigureAwait(false);
 
-                for (var i = 0; i < records.Length; i++)
-                    context.MarkProcessed(records[i]);
+                var completedOffset = -1L;
+                var leaderEpoch = -1;
+                for (var i = 0; i < records.Count; i++)
+                {
+                    if (!records[i].IsPartitionEof)
+                    {
+                        progress.MarkProcessed(records[i].Offset);
+                        completedOffset = records[i].Offset + 1;
+                        leaderEpoch = records[i].LeaderEpoch ?? -1;
+                    }
+                }
+                if (completedOffset >= 0)
+                    progress.Publish(completedOffset, leaderEpoch);
             }
             finally
             {
-                for (var i = 0; i < records.Length; i++)
+                for (var i = 0; i < records.Count; i++)
                     records[i].ReleaseStorage();
+                batch.Clear();
             }
         }
     }
@@ -187,12 +214,8 @@ public static class PartitionedConsumerExtensions
             maxBatchSize: 1,
             options.MaxConcurrentHandlersPerPartition,
             options.MaxBufferedRecordsPerPartition,
-            async (records, token) =>
-            {
-                var message = records[0];
-                await processor(handlerContext, message, token).ConfigureAwait(false);
-                context.MarkProcessed(message);
-            });
+            (records, token) => processor(handlerContext, records[0], token),
+            automaticCompletion: true);
 
         return dispatcher.RunAsync(cancellationToken);
     }
@@ -209,13 +232,8 @@ public static class PartitionedConsumerExtensions
             options.MaxHandlerBatchSize,
             options.MaxConcurrentHandlersPerPartition,
             options.MaxBufferedRecordsPerPartition,
-            async (records, token) =>
-            {
-                await processor(handlerContext, records, token).ConfigureAwait(false);
-
-                for (var i = 0; i < records.Count; i++)
-                    context.MarkProcessed(records[i]);
-            });
+            (records, token) => processor(handlerContext, records, token),
+            automaticCompletion: true);
 
         return dispatcher.RunAsync(cancellationToken);
     }
@@ -269,6 +287,10 @@ public delegate ValueTask PartitionRecordProcessor<TKey, TValue>(
 /// <summary>
 /// Processes a batch of consumed records from a partitioned runtime lane.
 /// </summary>
+/// <remarks>
+/// The batch view and borrowed record data remain valid until the handler completes.
+/// Copy records and any borrowed data before retaining them beyond that boundary.
+/// </remarks>
 public delegate ValueTask PartitionBatchProcessor<TKey, TValue>(
     PartitionBatchProcessorContext<TKey, TValue> context,
     IReadOnlyList<ConsumeResult<TKey, TValue>> messages,
@@ -335,6 +357,8 @@ public sealed class PartitionProcessorContext<TKey, TValue>
     {
         return _lane.TryReadMessage(out message);
     }
+
+    internal AutomaticPartitionProgress EnableAutomaticCompletion() => _lane.EnableAutomaticCompletion();
 }
 
 /// <summary>
@@ -1576,6 +1600,7 @@ internal sealed class PartitionLane<TKey, TValue>
     private long? _completedOffset;
     private long? _lastProcessedOffset;
     private int _lastCommittedLeaderEpoch = -1;
+    private AutomaticPartitionProgress? _automaticProgress;
 
     public PartitionLane(
         TopicPartition topicPartition,
@@ -1611,6 +1636,10 @@ internal sealed class PartitionLane<TKey, TValue>
     {
         get
         {
+            var automaticProgress = Volatile.Read(ref _automaticProgress);
+            if (automaticProgress is not null)
+                return automaticProgress.LastProcessedOffset;
+
             lock (_offsetGate)
                 return _lastProcessedOffset;
         }
@@ -1758,6 +1787,10 @@ internal sealed class PartitionLane<TKey, TValue>
 
     public TopicPartitionOffset? GetCommitOffset()
     {
+        var automaticProgress = Volatile.Read(ref _automaticProgress);
+        if (automaticProgress is not null)
+            return automaticProgress.GetCommitOffset();
+
         lock (_offsetGate)
         {
             return _completedOffset.HasValue
@@ -1768,6 +1801,13 @@ internal sealed class PartitionLane<TKey, TValue>
                     _lastCommittedLeaderEpoch)
                 : null;
         }
+    }
+
+    internal AutomaticPartitionProgress EnableAutomaticCompletion()
+    {
+        var progress = new AutomaticPartitionProgress(TopicPartition);
+        Volatile.Write(ref _automaticProgress, progress);
+        return progress;
     }
 
     public ValueTask CommitProcessedAsync(CancellationToken cancellationToken)
@@ -1847,320 +1887,6 @@ internal sealed class PartitionLane<TKey, TValue>
         if (!_stopping.IsCancellationRequested)
             await _stopping.CancelAsync().ConfigureAwait(false);
     }
-}
-
-internal sealed class KeyOrderedPartitionDispatcher<TKey, TValue>
-{
-    private readonly PartitionProcessorContext<TKey, TValue> _context;
-    private readonly int _maxBatchSize;
-    private readonly Func<IReadOnlyList<ConsumeResult<TKey, TValue>>, CancellationToken, ValueTask> _processor;
-    private readonly SemaphoreSlim _concurrency;
-    private readonly SemaphoreSlim _inFlight;
-    private readonly object _gate = new();
-    private readonly object _failureGate = new();
-    private readonly Dictionary<PartitionMessageKey<TKey>, KeyOrderedProcessingLane<TKey, TValue>> _lanes = [];
-    private readonly ConcurrentDictionary<Task, byte> _tasks = new();
-    private readonly CancellationTokenSource _failureCancellation = new();
-    private CancellationToken _processingCancellationToken;
-    private ExceptionDispatchInfo? _failure;
-
-    public KeyOrderedPartitionDispatcher(
-        PartitionProcessorContext<TKey, TValue> context,
-        int maxBatchSize,
-        int maxConcurrentHandlers,
-        int maxBufferedRecords,
-        Func<IReadOnlyList<ConsumeResult<TKey, TValue>>, CancellationToken, ValueTask> processor)
-    {
-        _context = context;
-        _maxBatchSize = maxBatchSize;
-        _processor = processor;
-        _concurrency = new SemaphoreSlim(maxConcurrentHandlers);
-        _inFlight = new SemaphoreSlim(maxBufferedRecords);
-    }
-
-    public async ValueTask RunAsync(CancellationToken cancellationToken)
-    {
-        using var linkedCancellation = CancellationTokenSource.CreateLinkedTokenSource(
-            cancellationToken,
-            _failureCancellation.Token);
-        _processingCancellationToken = linkedCancellation.Token;
-
-        try
-        {
-            while (await _context.WaitToReadMessageAsync(_processingCancellationToken).ConfigureAwait(false))
-            {
-                while (_context.TryReadMessage(out var message))
-                {
-                    try
-                    {
-                        await _inFlight.WaitAsync(_processingCancellationToken).ConfigureAwait(false);
-                        Enqueue(message);
-                    }
-                    catch
-                    {
-                        message.ReleaseStorage();
-                        throw;
-                    }
-                    ThrowIfFailed();
-                }
-            }
-
-            await WaitForActiveLanesAsync(cancellationToken).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) when (_failure is not null)
-        {
-        }
-        finally
-        {
-            try
-            {
-                if (!_tasks.IsEmpty)
-                    await linkedCancellation.CancelAsync().ConfigureAwait(false);
-            }
-            finally
-            {
-                await ObserveActiveLanesAsync().ConfigureAwait(false);
-
-                // Dispatch has stopped and every active handler has exited. Remaining key queues
-                // belong to failed/cancelled lanes and cannot be handed to user code anymore.
-                foreach (var lane in _lanes.Values)
-                    lane.ReleaseQueuedStorage();
-                _lanes.Clear();
-            }
-        }
-
-        ThrowIfFailed();
-    }
-
-    private void Enqueue(ConsumeResult<TKey, TValue> message)
-    {
-        var key = PartitionMessageKey<TKey>.From(message.Key);
-        KeyOrderedProcessingLane<TKey, TValue> lane;
-        bool shouldStart;
-
-        lock (_gate)
-        {
-            if (!_lanes.TryGetValue(key, out lane!))
-            {
-                lane = new KeyOrderedProcessingLane<TKey, TValue>(this, key);
-                _lanes.Add(key, lane);
-                lane.RetainKeyStorage(message);
-            }
-
-            shouldStart = lane.Enqueue(message);
-        }
-
-        if (shouldStart)
-            StartLane(lane);
-    }
-
-    private void StartLane(KeyOrderedProcessingLane<TKey, TValue> lane)
-    {
-        var task = lane.RunAsync().AsTask();
-        _tasks.TryAdd(task, 0);
-
-        _ = task.ContinueWith(
-            static (completedTask, state) =>
-            {
-                var dispatcher = (KeyOrderedPartitionDispatcher<TKey, TValue>)state!;
-                dispatcher.CompleteLaneTask(completedTask);
-            },
-            this,
-            CancellationToken.None,
-            TaskContinuationOptions.ExecuteSynchronously,
-            TaskScheduler.Default);
-    }
-
-    private void CompleteLaneTask(Task task)
-    {
-        _tasks.TryRemove(task, out _);
-
-        if (!task.IsFaulted || task.Exception is null)
-            return;
-
-        var exception = task.Exception.InnerExceptions.Count == 1
-            ? task.Exception.InnerException!
-            : task.Exception;
-        CaptureFailure(exception);
-    }
-
-    internal async ValueTask ProcessBatchAsync(IReadOnlyList<ConsumeResult<TKey, TValue>> batch)
-    {
-        try
-        {
-            await _concurrency.WaitAsync(_processingCancellationToken).ConfigureAwait(false);
-            try
-            {
-                await _processor(batch, _processingCancellationToken).ConfigureAwait(false);
-            }
-            finally
-            {
-                _concurrency.Release();
-            }
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException || !_processingCancellationToken.IsCancellationRequested)
-        {
-            CaptureFailure(ex);
-            throw;
-        }
-        finally
-        {
-            for (var i = 0; i < batch.Count; i++)
-                batch[i].ReleaseStorage();
-            _inFlight.Release(batch.Count);
-        }
-    }
-
-    internal int MaxBatchSize => _maxBatchSize;
-
-    internal CancellationToken ProcessingCancellationToken => _processingCancellationToken;
-
-    internal int LaneCount
-    {
-        get
-        {
-            lock (_gate)
-                return _lanes.Count;
-        }
-    }
-
-    internal void RemoveIdleLane(
-        PartitionMessageKey<TKey> key,
-        KeyOrderedProcessingLane<TKey, TValue> lane)
-    {
-        lock (_gate)
-        {
-            if (_lanes.TryGetValue(key, out var currentLane)
-                && ReferenceEquals(currentLane, lane)
-                && lane.IsIdle)
-            {
-                _lanes.Remove(key);
-                lane.ReleaseKeyStorage();
-            }
-        }
-    }
-
-    private async ValueTask WaitForActiveLanesAsync(CancellationToken cancellationToken)
-    {
-        while (true)
-        {
-            var tasks = _tasks.Keys.ToArray();
-            if (tasks.Length == 0)
-                return;
-
-            try
-            {
-                await Task.WhenAll(tasks).WaitAsync(cancellationToken).ConfigureAwait(false);
-            }
-            catch (Exception) when (_failure is not null)
-            {
-                return;
-            }
-        }
-    }
-
-    private async ValueTask ObserveActiveLanesAsync()
-    {
-        var tasks = _tasks.Keys.ToArray();
-        if (tasks.Length == 0)
-            return;
-
-        try
-        {
-            await Task.WhenAll(tasks).ConfigureAwait(false);
-        }
-        catch
-        {
-            // The original handler failure or cancellation is preserved by the dispatcher.
-        }
-    }
-
-    private void CaptureFailure(Exception exception)
-    {
-        lock (_failureGate)
-            _failure ??= ExceptionDispatchInfo.Capture(exception);
-
-        _failureCancellation.Cancel();
-    }
-
-    private void ThrowIfFailed()
-    {
-        _failure?.Throw();
-    }
-}
-
-internal sealed class KeyOrderedProcessingLane<TKey, TValue>(
-    KeyOrderedPartitionDispatcher<TKey, TValue> dispatcher,
-    PartitionMessageKey<TKey> key)
-{
-    private readonly Queue<ConsumeResult<TKey, TValue>> _queue = [];
-    // The dictionary key can borrow the first record's input. Keep it valid until removal,
-    // even after that record's handler returns while another same-key record is queued.
-    private PendingFetchData? _keyStorage;
-    private bool _running;
-
-    public bool Enqueue(ConsumeResult<TKey, TValue> message)
-    {
-        lock (_queue)
-        {
-            _queue.Enqueue(message);
-            if (_running)
-                return false;
-
-            _running = true;
-            return true;
-        }
-    }
-
-    internal bool IsIdle
-    {
-        get
-        {
-            lock (_queue)
-                return !_running && _queue.Count == 0;
-        }
-    }
-
-    public async ValueTask RunAsync()
-    {
-        var batch = new List<ConsumeResult<TKey, TValue>>(dispatcher.MaxBatchSize);
-
-        while (true)
-        {
-            batch.Clear();
-            var removeLane = false;
-            lock (_queue)
-            {
-                while (batch.Count < dispatcher.MaxBatchSize && _queue.Count > 0)
-                    batch.Add(_queue.Dequeue());
-
-                if (batch.Count == 0)
-                {
-                    _running = false;
-                    removeLane = true;
-                }
-            }
-
-            if (removeLane)
-            {
-                dispatcher.RemoveIdleLane(key, this);
-                return;
-            }
-
-            await dispatcher.ProcessBatchAsync(batch.ToArray()).ConfigureAwait(false);
-        }
-    }
-
-    internal void ReleaseQueuedStorage()
-    {
-        while (_queue.TryDequeue(out var message))
-            message.ReleaseStorage();
-        ReleaseKeyStorage();
-    }
-
-    internal void ReleaseKeyStorage() => Interlocked.Exchange(ref _keyStorage, null)?.ReleaseAfterProcessing();
-
-    internal void RetainKeyStorage(ConsumeResult<TKey, TValue> message) => _keyStorage = message.RetainStorage();
 }
 
 internal readonly struct PartitionMessageKey<TKey> : IEquatable<PartitionMessageKey<TKey>>

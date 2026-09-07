@@ -63,10 +63,10 @@ internal sealed class AsyncAutoResetSignal : IValueTaskSource<bool>,
     private int _shutdownRequested; // 0 = running, 1 = shutdown requested — terminal once set
     private CancellationToken _shutdownToken;
 
-    public AsyncAutoResetSignal(bool inlineTimeoutContinuations = false)
+    public AsyncAutoResetSignal(bool inlineTimeoutContinuations = false, bool inlineContinuations = false)
     {
         _inlineTimeoutContinuations = inlineTimeoutContinuations;
-        _core.RunContinuationsAsynchronously = !inlineTimeoutContinuations;
+        _core.RunContinuationsAsynchronously = !inlineTimeoutContinuations && !inlineContinuations;
         _timeoutCallback = static state =>
         {
             var self = (AsyncAutoResetSignal)state!;

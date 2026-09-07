@@ -65,6 +65,10 @@ storage while records are queued or being processed. For the long-lived partitio
 processor's `Messages` stream, each record remains valid until the enumerator
 advances or is disposed. Copy borrowed data if it must outlive that boundary.
 
+Batch handlers also borrow the `IReadOnlyList` view. Its storage is reused after the
+handler completes. Copy the records, along with any borrowed key/value/header data,
+before retaining a batch outside its handler.
+
 Custom deserializers may return slices of their input: that fetch storage follows
 the same lifetime. A deserializer's own reusable scratch buffer is not fetch
 storage; return an owned value instead of exposing scratch memory that the next
@@ -79,8 +83,10 @@ until its key lane is removed.
 `MaxBufferedRecordsPerPartition` bounds the partition queue, not retained bytes.
 Partition ordering additionally holds the active handler batch (one record for a
 record handler). Key ordering additionally holds at most that many dispatched
-records, one record waiting for a dispatch permit, and one retained key per active
-key lane. One borrowed record can pin an entire fetch response and its decompressed
+records and one retained key per active key lane. Completed records release their
+dispatch slots and fetch storage immediately, including behind an unfinished
+earlier record; commits still wait for that gap to close. One borrowed record can
+pin an entire fetch response and its decompressed
 record storage. Budget those buffers separately from consumer prefetch; fetch-size
 settings and compression affect their byte cost. Slow handlers do not accumulate
 an unbounded history of completed fetches.
