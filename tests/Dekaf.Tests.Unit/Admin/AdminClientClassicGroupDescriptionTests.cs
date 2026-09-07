@@ -250,6 +250,37 @@ public sealed class AdminClientClassicGroupDescriptionTests
         await Assert.That(description.Members[1].Assignment!).IsEquivalentTo([new TopicPartition("topic", 2)]);
     }
 
+    [Test]
+    [Arguments(true)]
+    [Arguments(false)]
+    public async Task NegativeAssignmentCount_RetainsBytesWithoutPublishingPartialAssignment(bool topicCount)
+    {
+        var (admin, connection, _) = CreateAdmin();
+        await using var disposal = admin;
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        writer.WriteInt16(0);
+        writer.WriteInt32(topicCount ? -1 : 2);
+        if (!topicCount)
+        {
+            writer.WriteString("valid");
+            writer.WriteInt32(1);
+            writer.WriteInt32(0);
+            writer.WriteString("invalid");
+            writer.WriteInt32(-1);
+        }
+        writer.WriteBytes([]);
+        var bytes = buffer.WrittenSpan.ToArray();
+        Respond(connection, new DescribeGroupsResponseGroup
+        {
+            GroupId = "group", GroupState = "Stable", ProtocolType = "consumer",
+            Members = [new() { MemberId = "member", MemberAssignment = bytes }]
+        });
+        var member = (await admin.DescribeClassicGroupsAsync(["group"]))["group"].Description!.Members.Single();
+        await Assert.That(member.Assignment).IsNull();
+        await Assert.That(member.AssignmentData.ToArray()).IsEquivalentTo(bytes);
+    }
+
     internal static byte[] AssignmentBytes()
     {
         var buffer = new ArrayBufferWriter<byte>();

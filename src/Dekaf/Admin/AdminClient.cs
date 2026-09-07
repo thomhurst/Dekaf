@@ -5598,12 +5598,16 @@ public sealed partial class AdminClient :
             _ = reader.ReadInt16(); // version
 
             var topicCount = reader.ReadInt32();
+            if (topicCount < 0)
+                return null;
             var assignments = new List<TopicPartition>();
 
             for (var i = 0; i < topicCount; i++)
             {
                 var topic = reader.ReadString() ?? string.Empty;
                 var partitionCount = reader.ReadInt32();
+                if (partitionCount < 0)
+                    return null;
                 for (var j = 0; j < partitionCount; j++)
                 {
                     var partition = reader.ReadInt32();

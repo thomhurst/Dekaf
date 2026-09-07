@@ -1322,6 +1322,9 @@ public sealed partial class InMemoryKafkaCluster
             if (_consumerGroupMembers.TryGetValue(groupId, out var members) && members.Count != 0)
                 return ErrorCode.NonEmptyGroup;
 
+            if (_classicGroupDescriptions?.TryGetValue(groupId, out var classic) == true && classic.Members.Count != 0)
+                return ErrorCode.NonEmptyGroup;
+
             return RemoveConsumerGroupUnderLock(groupId)
                 ? ErrorCode.None
                 : ErrorCode.GroupIdNotFound;
@@ -1777,7 +1780,8 @@ public sealed partial class InMemoryKafkaCluster
         var existed = _consumerGroupOffsets.Remove(groupId);
         var hadGeneration = _consumerGroupGenerations.TryRemove(groupId, out _);
         var hadStreamsType = _streamsGroupIds?.Remove(groupId) == true;
-        return hadGeneration || existed || hadStreamsType;
+        var hadClassicDescription = _classicGroupDescriptions?.Remove(groupId) == true;
+        return hadGeneration || existed || hadStreamsType || hadClassicDescription;
     }
 
     private Dictionary<long, ShareGroupMemberRegistration>? GetShareLeasePartition(

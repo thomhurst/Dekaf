@@ -47,6 +47,31 @@ public sealed class InMemoryClassicGroupDescriptionTests
     }
 
     [Test]
+    public async Task DeleteSeededEmptyGroup_RemovesDescriptionAndInventory()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        await using var admin = new InMemoryAdminClient(cluster);
+        cluster.SetClassicGroupDescription(new() { GroupId = "seeded", State = "Empty", ProtocolType = "consumer", Members = [] });
+        await admin.DeleteConsumerGroupsAsync(["seeded"]);
+        await Assert.That((await admin.DescribeClassicGroupsAsync(["seeded"]))["seeded"].ErrorCode).IsEqualTo(ErrorCode.GroupIdNotFound);
+        await Assert.That(await admin.ListGroupsAsync()).IsEmpty();
+    }
+
+    [Test]
+    public async Task DeleteSeededActiveGroup_PreservesMembersAndReportsNonEmpty()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        await using var admin = new InMemoryAdminClient(cluster);
+        cluster.SetClassicGroupDescription(new()
+        {
+            GroupId = "seeded", State = "Stable", ProtocolType = "consumer", Members = [new() { MemberId = "member" }]
+        });
+        var exception = await Assert.ThrowsAsync<GroupException>(() => admin.DeleteConsumerGroupsAsync(["seeded"]).AsTask());
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.NonEmptyGroup);
+        await Assert.That((await admin.DescribeClassicGroupsAsync(["seeded"]))["seeded"].Description!.Members.Count).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task OffsetOnlyGroup_HasEmptyClassicDescription()
     {
         var cluster = new InMemoryKafkaCluster();
