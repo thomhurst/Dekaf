@@ -43,3 +43,7 @@ All 24 coordinator cases pass on each of net10.0 and net8.0, including registrat
 ## Retention
 
 Before publication, raw logs, result files, exact loaded benchmark and unit-test binaries, generated BDN worker files, and source snapshots are copied outside every removable worktree to `C:/git/Dekaf-evidence/pr-3117/<published-evidence-head>/`, with an inventory verified against original SHA-256 hashes. The PR comment records that exact directory and file count. The superseded worker is already retained separately at `C:/git/Dekaf-evidence/pr-3117/review-followup/superseded-worker/` with 701 verified files. The published head adds only this evidence to the measured fixture revision.
+
+## Evidence-parser review follow-up
+
+The post-processing validator now requires the exact six `(Pattern, BatchSize)` combinations, verifies the observed largest batch for each case, and rejects mismatched or duplicate allocation-result lines. `test-summarize-run.ps1` checks the retained valid log plus six malformed variants. The previous parser incorrectly accepted duplicate cases, a 1-record largest batch for PendingPairs/16, a mismatched allocation label and duplicate allocation rows. All seven final scenarios pass, and the valid input produces exactly the previously published CSV. Raw measurements and product/fixture code are unchanged; no benchmark or product test was rerun for this evidence-only correction. Red/green parser inputs and outputs are retained outside removable worktrees at `C:/git/Dekaf-evidence/pr-3117/parser-review/`.

@@ -24,14 +24,24 @@ foreach ($line in Get-Content -LiteralPath $runLog) {
     elseif ($line -match '^WorkloadActual\s+\d+:') {
         $case.Samples++
     }
-    elseif ($line -match '^STEADY_ALLOCATION pattern=\w+ batchSize=\d+ largestBatch=(\d+) records=261888 bytes=(\d+)') {
-        $case.LargestBatch = [int]$Matches[1]
-        $case.SteadyBytes = [long]$Matches[2]
+    elseif ($line -match '^STEADY_ALLOCATION pattern=(\w+) batchSize=(\d+) largestBatch=(\d+) records=261888 bytes=(\d+)') {
+        if ($null -eq $case -or $case.Pattern -ne $Matches[1] -or $case.BatchSize -ne [int]$Matches[2] -or
+            $null -ne $case.SteadyBytes) {
+            throw "Unexpected or duplicate allocation result: $line"
+        }
+        $case.LargestBatch = [int]$Matches[3]
+        $case.SteadyBytes = [long]$Matches[4]
     }
 }
-if ($cases.Count -ne 6) { throw "Expected six cases, found $($cases.Count)." }
+$expectedCases = @('Repeated:1', 'Repeated:16', 'Distinct:1', 'Distinct:16', 'PendingPairs:1', 'PendingPairs:16')
+$actualCases = @($cases | ForEach-Object { "$($_.Pattern):$($_.BatchSize)" })
+if ((($actualCases | Sort-Object) -join ',') -ne (($expectedCases | Sort-Object) -join ',')) {
+    throw 'Unexpected benchmark cases.'
+}
 foreach ($case in $cases) {
-    if ($case.WarmupIterations -ne 30 -or $case.WarmupSeconds -lt 20 -or $case.Samples -ne 15 -or $null -eq $case.SteadyBytes -or $case.SteadyBytes -ne 0) {
+    $expectedLargestBatch = if ($case.Pattern -eq 'PendingPairs') { $case.BatchSize } else { 1 }
+    if ($case.WarmupIterations -ne 30 -or $case.WarmupSeconds -lt 20 -or $case.Samples -ne 15 -or
+        $null -eq $case.SteadyBytes -or $case.SteadyBytes -ne 0 -or $case.LargestBatch -ne $expectedLargestBatch) {
         throw "Incomplete diagnostic case: $($case | ConvertTo-Json -Compress)"
     }
 }
