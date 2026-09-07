@@ -3493,6 +3493,7 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
     private int _bootstrapResolveTimeoutMs = 120000;
     private IRetryPolicy? _retryPolicy;
     private readonly List<string> _topicsToSubscribe = [];
+    private readonly Dictionary<string, ApplicationTelemetryMetric> _applicationMetrics = new(StringComparer.Ordinal);
 
     public ShareConsumerBuilder()
     {
@@ -4063,6 +4064,22 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
         return this;
     }
 
+    /// <summary>Registers an application metric on built consumers. The same name replaces its previous registration.</summary>
+    public ShareConsumerBuilder<TKey, TValue> RegisterMetricForSubscription(ApplicationTelemetryMetric metric)
+    {
+        ArgumentNullException.ThrowIfNull(metric);
+        _applicationMetrics[metric.Name] = metric;
+        return this;
+    }
+
+    /// <summary>Removes an application metric from this builder. Missing names are ignored.</summary>
+    public ShareConsumerBuilder<TKey, TValue> UnregisterMetricFromSubscription(string name)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        _applicationMetrics.Remove(name);
+        return this;
+    }
+
     public ShareConsumerBuilder<TKey, TValue> WithRetryPolicy(IRetryPolicy retryPolicy)
     {
         _retryPolicy = retryPolicy;
@@ -4167,7 +4184,8 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
             ClientDnsLookup = _clientDnsLookup,
             MetadataClusterCheckEnabled = _metadataClusterCheckEnabled,
             BootstrapResolveTimeoutMs = _bootstrapResolveTimeoutMs,
-            RetryPolicy = _retryPolicy
+            RetryPolicy = _retryPolicy,
+            ApplicationMetrics = _applicationMetrics.Count > 0 ? _applicationMetrics.Values.ToArray() : []
         };
 
         var consumer = _clientInfrastructure is null

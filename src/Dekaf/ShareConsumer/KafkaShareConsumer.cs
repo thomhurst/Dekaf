@@ -28,6 +28,7 @@ namespace Dekaf.ShareConsumer;
 /// </summary>
 internal sealed partial class KafkaShareConsumer<TKey, TValue> :
     IKafkaShareConsumer<TKey, TValue>,
+    IApplicationTelemetryShareConsumer,
     IKafkaClientInstanceIdentity,
     IKafkaClientStatusProvider
 {
@@ -47,6 +48,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
     private readonly AcknowledgementTracker _ackTracker = new();
     private readonly CompressionCodecRegistry _compressionCodecs;
     private readonly ClientTelemetryManager _telemetryManager;
+    private readonly ClientTelemetryMetricCollector _telemetryMetricCollector;
     private readonly ILogger _logger;
     private readonly ShareAcknowledgementCommitCallback? _acknowledgementCommitCallback;
 
@@ -183,11 +185,14 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
             ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<KafkaShareConsumer<TKey, TValue>>.Instance;
 
         _compressionCodecs = CompressionCodecRegistry.Default;
+        _telemetryMetricCollector = new ClientTelemetryMetricCollector(ClientTelemetryClientRole.ShareConsumer);
+        _telemetryMetricCollector.RegisterMetricsForSubscription(options.ApplicationMetrics);
         _telemetryManager = new ClientTelemetryManager(
             _connectionPool,
             _metadataManager,
             loggerFactory?.CreateLogger<ClientTelemetryManager>(),
-            payloadProvider: EmptyClientTelemetryPayloadProvider.Instance);
+            metricCollector: _telemetryMetricCollector,
+            compressionCodecs: _compressionCodecs);
 
         _coordinator = new ShareConsumerCoordinator(
             options,

@@ -1,6 +1,7 @@
 using Dekaf.Admin;
 using Dekaf.Diagnostics;
 using Dekaf.Telemetry;
+using Dekaf.ShareConsumer;
 using Dekaf.Tests.Integration.Telemetry;
 
 namespace Dekaf.Tests.Integration;
@@ -66,6 +67,61 @@ public sealed class ClientTelemetryReceiverIntegrationTests(TelemetryReceiverKaf
         finally
         {
             await producer.DisposeAsync();
+        }
+    }
+
+    [Test]
+    [Arguments(42.0)]
+    [Arguments(84.0)]
+    [Timeout(90_000)]
+    public async Task ShareConsumer_BrokerReceivesApplicationMetric(
+        double applicationValue, CancellationToken cancellationToken)
+    {
+        const string applicationName = "com.example.telemetry.share.depth";
+        var clientId = $"share-telemetry-receiver-{Guid.NewGuid():N}";
+        await using var admin = kafka.CreateAdminClient();
+        await admin.IncrementalAlterConfigsAsync(new Dictionary<ConfigResource, IReadOnlyList<ConfigAlter>>
+        {
+            [new ConfigResource { Type = ConfigResourceType.ClientMetrics, Name = clientId }] =
+            [
+                ConfigAlter.Set("metrics", applicationName),
+                ConfigAlter.Set("interval.ms", "1000"),
+                ConfigAlter.Set("match", $"client_id={clientId}")
+            ]
+        }, cancellationToken: cancellationToken);
+
+        var consumer = await Kafka.CreateShareConsumer<string, string>()
+            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithClientId(clientId)
+            .WithGroupId($"share-telemetry-{Guid.NewGuid():N}")
+            .RegisterMetricForSubscription(new ApplicationTelemetryMetric(
+                applicationName, ApplicationTelemetryMetricKind.Gauge, () => applicationValue,
+                new Dictionary<string, string> { ["tenant"] = clientId }))
+            .BuildAsync(cancellationToken);
+        try
+        {
+            var identity = ((IKafkaClientInstanceIdentity)consumer).ClientInstanceId;
+            await Assert.That(identity).IsNotNull();
+            var received = await kafka.WaitForPayloadAsync(clientId,
+                payload => !payload.IsTerminating && Decode(payload).Any(metric => metric.Name == applicationName),
+                cancellationToken);
+            await Assert.That(received.ClientInstanceId).IsEqualTo(identity!.Value);
+            await Assert.That(received.ContentType).IsEqualTo("OTLP");
+            var application = Decode(received).Single(metric => metric.Name == applicationName);
+            var point = application.Gauge.DataPoints.Single();
+            await Assert.That(point.AsDouble).IsEqualTo(applicationValue);
+            await Assert.That(point.Attributes.Single(attribute => attribute.Key == "tenant").Value.StringValue)
+                .IsEqualTo(clientId);
+
+            await consumer.DisposeAsync();
+            var terminating = await kafka.WaitForPayloadAsync(clientId,
+                payload => payload.IsTerminating && Decode(payload).Any(metric => metric.Name == applicationName),
+                cancellationToken);
+            await Assert.That(terminating.ClientInstanceId).IsEqualTo(identity.Value);
+        }
+        finally
+        {
+            await consumer.DisposeAsync();
         }
     }
 
