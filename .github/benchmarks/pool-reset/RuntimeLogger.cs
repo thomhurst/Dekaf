@@ -1,13 +1,16 @@
 using System.Diagnostics;
 using System.Globalization;
 using BenchmarkDotNet.Loggers;
+using System.Diagnostics.Tracing;
+using System.Text.Json;
 
 // In-process BDN emits these lines after each workload interval. Sampling here
 // avoids an extra background thread and does not enter the timed operation.
 internal sealed class RuntimeLogger(string path) : ILogger, IDisposable
 {
+    private readonly CompilationLog _compilations = new();
     private readonly Process _process = Process.GetCurrentProcess();
-    private readonly Sample[] _samples = new Sample[256];
+    private readonly Sample[] _samples = new Sample[8192];
     private int _count;
 
     public string Id => nameof(RuntimeLogger);
@@ -36,6 +39,8 @@ internal sealed class RuntimeLogger(string path) : ILogger, IDisposable
 
     public void Dispose()
     {
+        _compilations.Save(path + ".jit.json");
+        _compilations.Dispose();
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         using var writer = new StreamWriter(path);
         writer.WriteLine("workload,timestamp,cpu_ms,jit_methods,jit_ms,threads,pending_work,gc0,gc1,gc2,allocated_bytes,heap_bytes,rss_bytes");
@@ -52,3 +57,41 @@ internal sealed class RuntimeLogger(string path) : ILogger, IDisposable
         long JitMethods, double JitMs, int Threads, long PendingWork, int Gc0, int Gc1, int Gc2,
         long AllocatedBytes, long HeapBytes, long RssBytes);
 }
+
+// Diagnostic attribution for the residual compilations at workload boundaries.
+// Events are retained rather than used to exclude samples or waive startup checks.
+internal sealed class CompilationLog : EventListener
+{
+    private readonly Compilation?[] _events = new Compilation?[65536];
+    private int _count;
+
+    protected override void OnEventSourceCreated(EventSource source)
+    {
+        if (source.Name == "Microsoft-Windows-DotNETRuntime")
+            EnableEvents(source, EventLevel.Verbose, (EventKeywords)0x10);
+    }
+
+    protected override void OnEventWritten(EventWrittenEventArgs args)
+    {
+        if (args.EventId != 145 || _events is null || args.Payload is null)
+            return;
+        var index = Interlocked.Increment(ref _count) - 1;
+        if (index >= _events.Length)
+            return;
+        _events[index] = new Compilation(Stopwatch.GetTimestamp(), args.Payload.ToArray());
+    }
+
+    internal void Save(string path)
+    {
+        File.WriteAllText(path, JsonSerializer.Serialize(new
+        {
+            frequency = Stopwatch.Frequency,
+            total_events = _count,
+            overflow = _count > _events.Length,
+            events = _events.Take(Math.Min(_count, _events.Length)).ToArray()
+        }));
+    }
+
+    private sealed record Compilation(long Timestamp, object?[] Payload);
+}
+

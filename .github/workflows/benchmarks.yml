@@ -9,7 +9,7 @@ on:
       suite:
         required: true
         type: choice
-        options: [micro, pool, admin, dispatch, outbox]
+        options: [micro, pool, admin, dispatch, outbox, pool-loaded]
       baseline_sha:
         required: true
         description: Exact baseline SHA
@@ -54,6 +54,12 @@ jobs:
           python3 .github/scripts/pool_reset_aba.py A1
           python3 .github/scripts/pool_reset_aba.py B
           python3 .github/scripts/pool_reset_aba.py A2
+      - name: Loaded pool comparison
+        if: inputs.suite == 'pool-loaded'
+        run: |
+          python3 -m unittest discover -s .github/benchmarks/pool-loaded/tests -p 'test_*.py'
+          dotnet test --project .github/benchmarks/pool-loaded/tests/IntervalLatency.Tests.csproj -c Release
+          python3 .github/scripts/pool_loaded_aba.py
       - name: Outbox cycle comparison
         if: inputs.suite == 'outbox'
         run: |
