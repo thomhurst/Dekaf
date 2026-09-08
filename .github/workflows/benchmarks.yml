@@ -9,7 +9,7 @@ on:
       suite:
         required: true
         type: choice
-        options: [micro, pool, admin, admin-pilot, dispatch, outbox, pool-loaded, pool-profile]
+        options: [micro, pool, admin, admin-pilot, dispatch, outbox, outbox-loaded, pool-loaded, pool-profile]
       baseline_sha:
         required: true
         description: Exact baseline SHA
@@ -68,6 +68,11 @@ jobs:
         run: |
           python3 -m unittest discover -s .github/scripts -p test_outbox_cycle_aba.py
           python3 .github/scripts/outbox_cycle_aba.py --baseline "$BASELINE_SHA" --candidate "$CANDIDATE_SHA" --artifacts "$GITHUB_WORKSPACE/aba-results"
+      - name: Loaded outbox comparison
+        if: inputs.suite == 'outbox-loaded'
+        run: |
+          python3 -m unittest discover -s .github/scripts -p test_outbox_loaded_aba.py
+          python3 .github/scripts/outbox_loaded_aba.py
       - name: Administrative direct-call comparison
         if: inputs.suite == 'admin' || inputs.suite == 'admin-pilot'
         env:

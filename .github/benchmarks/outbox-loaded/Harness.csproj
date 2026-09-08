@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <ServerGarbageCollection>true</ServerGarbageCollection>
+    <EnableNETAnalyzers>false</EnableNETAnalyzers>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <UseSharedCompilation>false</UseSharedCompilation>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(CandidateFixture)' == 'true'">
+    <DefineConstants>$(DefineConstants);CANDIDATE</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <ProjectReference Include="$(ProductProject)" />
+    <Compile Include="$(FixtureSource)/*.cs" />
+    <Compile Include="$(FixtureSource)/../CompilationLog.cs" />
+  </ItemGroup>
+</Project>
