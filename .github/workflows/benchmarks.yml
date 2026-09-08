@@ -9,7 +9,7 @@ on:
       suite:
         required: true
         type: choice
-        options: [micro, pool, admin]
+        options: [micro, pool, admin, dispatch]
       baseline_sha:
         required: true
         description: Exact baseline SHA
@@ -61,6 +61,11 @@ jobs:
           python3 -m unittest discover -s tools/AdminShareOffsetEvidence -p test_comparison.py
           python3 -m unittest discover -s tools/AdminMemberRemovalEvidence -p test_comparison.py
           python3 .github/scripts/admin_refresh.py
+      - name: Dispatch comparison with initialized coordinator
+        if: inputs.suite == 'dispatch'
+        run: |
+          python3 -m unittest discover -s .github/benchmarks/dispatch-aba -p 'test_*.py'
+          python3 .github/benchmarks/dispatch-aba/run.py --baseline "$BASELINE_SHA" --candidate "$CANDIDATE_SHA" --output "$GITHUB_WORKSPACE/evidence"
       - name: Record final main
         if: always()
         run: git ls-remote origin refs/heads/main > main-at-end.txt
