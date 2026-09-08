@@ -4,6 +4,8 @@
 
 Follow-up: the [immutable-host JIT attribution experiment](jit-attribution/README.md) identifies background compilation of runtime sampling and BenchmarkDotNet helpers overlapping timed workload. Its U1/T/U2 observer comparison leaves this acceptance verdict unchanged.
 
+The subsequent [sampler-primer experiment](sampler-primer/README.md) reduces overlapping compilation intervals from 33 to 2, but one still provably overlaps the benchmark clock. Its numerical observer screens and 0 B/op result do not clear startup or loaded acceptance requirements.
+
 ## Change and correctness
 
 When reservation cleanup throws during `PendingRequestPool.Return`, Reservoir destroys the failed request and decrements the retained count, but the exception skips the wrapper's increment. Moving that existing increment into `PoolPolicy.TryReset`, before cleanup, lets destruction balance both reset failure and capacity rejection. The exception and discard behavior remain unchanged; successful return gains no allocation, exception handler, or counter operation.

@@ -212,6 +212,7 @@ public class PendingRequestPoolTests
 
         pool.Return(sameRequest);
     }
+
     [Test]
     [Arguments(false)]
     [Arguments(true)]
@@ -336,5 +337,4 @@ public class PendingRequestPoolTests
             }
         }
     }
-
 }

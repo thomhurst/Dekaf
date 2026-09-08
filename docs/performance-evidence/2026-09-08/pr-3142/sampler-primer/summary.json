@@ -1,0 +1,24 @@
+{
+  "traceSeconds": 123.2130254,
+  "lost": 0,
+  "warmupWindows": 50,
+  "actualWindows": 25,
+  "actualOperations": 982482400,
+  "actualClockSeconds": 24.513312343,
+  "engineWindowSeconds": 24.51515561,
+  "wrapperExcessNsMin": 63258.000000953674,
+  "wrapperExcessNsMax": 85160.0000077486,
+  "jitStartsInside": 0,
+  "compilesOverlapping": 2,
+  "compilesInEnvelope": 4,
+  "unmatchedJitStarts": 0,
+  "unmatchedMethodLoads": 0,
+  "unmatchedJitStartsInside": 0,
+  "gcStartsInside": 0,
+  "gcStartsInEnvelope": 96,
+  "gcReasons": {
+    "Induced": 96
+  },
+  "suspensionsOverlapping": 0,
+  "unmatchedSuspensionEvents": 0
+}

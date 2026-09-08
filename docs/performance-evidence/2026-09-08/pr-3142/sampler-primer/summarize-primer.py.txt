@@ -1,0 +1,63 @@
+"""Validate primer series and immutable host bindings; quantify engine boundary uncertainty."""
+import argparse
+import csv
+import hashlib
+import json
+import re
+from pathlib import Path
+
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument("raw", type=Path)
+parser.add_argument("attribution", type=Path)
+parser.add_argument("output", type=Path)
+args = parser.parse_args()
+args.output.mkdir(parents=True, exist_ok=False)
+attribution = json.loads(args.attribution.read_text())
+boundaries = []
+for compilation in attribution["compilesInEnvelope"]:
+    for index in compilation["actualOverlapped"]:
+        window = next(w for w in attribution["windows"] if w["stage"] == "actual" and w["index"] == index)
+        load_offset = (compilation["loadMs"] - window["startMs"]) * 1000
+        excess = window["wrapperExcessNs"] / 1000
+        boundaries.append(dict(
+            method=compilation["method"], iteration=index,
+            compileStartBeforeWindowUs=(window["startMs"] - compilation["startMs"]) * 1000,
+            loadAfterWindowStartUs=load_offset, wrapperExcessUs=excess,
+            minimumOverlapBeyondBoundaryUs=max(0, load_offset - excess),
+            benchmarkThread=window["threadId"], compileThread=compilation["threadId"],
+        ))
+
+primer = {}
+for phase in ("U1", "T", "U2"):
+    directory = args.raw / phase
+    values = re.findall(r"PRIMER completed seconds=([\d.]+) callbacks=(\d+)", (directory / "host.log").read_text())
+    if len(values) != 1:
+        raise RuntimeError(f"Missing unique primer duration: {phase}")
+    with (directory / "bdn/sampler-primer.csv").open(newline="") as stream:
+        series = list(csv.DictReader(stream))
+    seconds, calls = float(values[0][0]), int(values[0][1])
+    if seconds < 20 or len(series) < 20 or int(series[-1]["callbacks"]) != calls:
+        raise RuntimeError(f"Incomplete primer: {phase}")
+    previous_time = previous_calls = 0
+    for row in series:
+        current_time, current_calls = float(row["seconds"]), int(row["callbacks"])
+        if current_time <= previous_time or current_calls <= previous_calls or current_calls % 3:
+            raise RuntimeError(f"Non-increasing primer samples: {phase}")
+        previous_time, previous_calls = current_time, current_calls
+    primer[phase] = dict(seconds=seconds, callbacks=calls, samples=len(series), first=series[0], last=series[-1])
+
+bindings = json.loads((args.raw / "fixture-bindings.json").read_text())
+changed = []
+for row in bindings:
+    for directory, key in (("original-host", "original"), ("host", "loaded")):
+        digest = hashlib.sha256((args.raw / directory / row["path"]).read_bytes()).hexdigest()
+        if digest != row[key]:
+            raise RuntimeError(f"Host hash mismatch: {directory}/{row['path']}")
+    if row["original"] != row["loaded"]:
+        changed.append(row["path"])
+if len(bindings) != 40 or set(changed) != {"Dekaf.Benchmarks.dll", "Dekaf.Benchmarks.pdb"}:
+    raise RuntimeError("Unexpected original/primed host changes")
+
+summary = dict(primer=primer, boundaries=boundaries, hostFiles=len(bindings), changedHostFiles=changed)
+(args.output / "primer-summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+print(json.dumps(summary, indent=2))
