@@ -1,4 +1,4 @@
-name: Pool sampler primer diagnostic
+name: Pool helper primer diagnostic
 on:
   workflow_dispatch:
 permissions:
@@ -34,7 +34,7 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
-          name: pool-sampler-primer
+          name: pool-helper-primer
           path: evidence/
           include-hidden-files: true
           retention-days: 90

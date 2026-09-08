@@ -9,6 +9,7 @@
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
     <Compile Include="Program.cs" />
     <Compile Include="RuntimeLogger.cs" />
+    <Compile Include="MeasurementPrimer.cs" />
     <PackageReference Include="BenchmarkDotNet" />
     <Reference Include="Dekaf"><HintPath>$(ArchivedHost)/Dekaf.dll</HintPath></Reference>
     <Reference Include="Reservoir"><HintPath>$(ArchivedHost)/Reservoir.dll</HintPath></Reference>

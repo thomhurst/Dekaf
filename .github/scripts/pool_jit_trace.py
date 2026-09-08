@@ -80,6 +80,14 @@ def execute(phase,traced=False,smoke=False):
         series = list(csv.DictReader(stream))
     if not series or int(series[-1]["callbacks"]) != int(primer[0][1]) or int(primer[0][1]) <= 0:
         raise RuntimeError("Incomplete sampler primer series")
+    helper = json.loads((dest / "bdn/helper-primer.json").read_text())
+    if helper["Seconds"] < (1 if smoke else 20) or helper["Completed"] <= 0:
+        raise RuntimeError("Incomplete elapsed helper primer")
+    if not helper["Samples"] or helper["Samples"][-1]["Completed"] != helper["Completed"]:
+        raise RuntimeError("Incomplete helper primer series")
+    bindings = json.loads((dest / "bdn/helper-bindings.json").read_text())
+    if len(bindings) != 4 or len({binding["ModuleId"] for binding in bindings}) != 1:
+        raise RuntimeError("Unexpected helper method bindings")
     with (dest / "bdn/runtime.csv").open(newline="") as stream:
         runtime = list(csv.DictReader(stream))
     if any("primer" in row["workload"] for row in runtime):
@@ -109,13 +117,18 @@ if sys.argv[1]=="prepare":
     shutil.copytree(FIXTURE,OUT/"inspector-source")
     shutil.copy2(__file__,OUT/"pool_jit_trace.py")
     manifest=dict(product="4479317a650ea51a2a2ecdc0ccf5a7de8fb51c7d",originalHarness="b26ffdc9070cc68ceaca07bf4193f334df6b2744",harness=subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip(),mainAtRun=subprocess.check_output(["git","ls-remote","origin","refs/heads/main"],text=True).strip(),imageVersion=os.getenv("ImageVersion"),imageOS=os.getenv("ImageOS"),settings={k:os.getenv(k) for k in ["DOTNET_TieredCompilation","DOTNET_TieredPGO","DOTNET_ReadyToRun"]})
-    manifest.update(fixtureIntervention="20-second real logger primer and 50 BDN workload warmups", plan=".github/benchmarks/pool-primer/PLAN.md")
+    manifest.update(fixtureIntervention="20-second logger primer, 20-second exact helper primer, and 50 BDN workload warmups", plan=".github/benchmarks/pool-primer/HELPER-PLAN.md")
     (OUT/"manifest.json").write_text(json.dumps(manifest,indent=2))
     run(["dotnet","tool","install","--tool-path",OUT/"trace-tool","dotnet-trace","--version","10.0.731102"],OUT/"trace-install.log")
     run(["dotnet","build",FIXTURE/"Inspector.csproj","-c","Release","--disable-build-servers","-p:UseSharedCompilation=false","-o",OUT/"inspector"],OUT/"inspector-build.log")
     prepare_primer()
     run(["dotnet","build-server","shutdown"],OUT/"build-server-shutdown.log")
     execute("smoke",True,True)
+    runtime = OUT / "runtime"
+    runtime.mkdir()
+    core = Path(json.loads((OUT / "smoke/bdn/helper-bindings.json").read_text())[0]["Location"])
+    shutil.copy2(core, runtime / core.name)
+    (OUT / "runtime-bindings.json").write_text(json.dumps(dict(location=str(core), sha256=hashlib.sha256(core.read_bytes()).hexdigest()), indent=2))
     run(["git","archive","--format=zip","--output="+str(OUT/"harness-source.zip"),"HEAD",".github/benchmarks/pool-jit",".github/benchmarks/pool-primer",".github/scripts/pool_jit_trace.py",".github/workflows/benchmarks.yml","global.json","Directory.Build.props","Directory.Packages.props"],OUT/"harness-archive.log")
 elif sys.argv[1] in ["U1","T","U2"]:execute(sys.argv[1],sys.argv[1]=="T")
 else:raise ValueError(sys.argv[1])

@@ -23,6 +23,7 @@ internal static class Program
             .Select(a => new { a.FullName, a.Location, Sha256 = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(a.Location))) })));
         using var runtime = new RuntimeLogger(Path.Combine(args[0], "runtime.csv"));
         runtime.Prime(TimeSpan.FromSeconds(Smoke ? 1 : 20), Path.Combine(args[0], "sampler-primer.csv"));
+        MeasurementPrimer.Run(TimeSpan.FromSeconds(Smoke ? 1 : 20), args[0]);
         var config = DefaultConfig.Instance.WithArtifactsPath(args[0]).AddLogger(runtime).AddExporter(JsonExporter.Full)
             .AddJob(Job.Default.WithToolchain(InProcessEmitToolchain.Instance).WithAffinity(new IntPtr(4))
                 .WithWarmupCount(Smoke ? 1 : 50).WithIterationCount(Smoke ? 1 : 25)
