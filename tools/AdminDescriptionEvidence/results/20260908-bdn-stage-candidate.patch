@@ -1,0 +1,109 @@
+--- /dev/null
++++ b/tools/AdminDescriptionEvidence/BenchmarkEnginePrimer.cs
+@@ -0,0 +1,66 @@
++using System.Reflection;
++using System.Diagnostics;
++using BenchmarkDotNet.Engines;
++using BenchmarkDotNet.Reports;
++using System.Runtime.CompilerServices;
++using BenchmarkDotNet.Running;
++
++namespace Dekaf.Benchmarks;
++
++// BDN 0.15.8 first enters this fixed-count stage after BeforeActualRun.
++// Prepare its two methods before elapsed workload warmup, outside measured work.
++internal static class BenchmarkEnginePrimer
++{
++    internal readonly record struct Result(double Seconds, long CallbackPairs, long FormattedMeasurements);
++
++    internal static Result Warm(AdminEvidenceBenchmark benchmark)
++    {
++        Prepare();
++        var setup = GetEmptyCallback(benchmark, "iterationSetupAction");
++        var cleanup = GetEmptyCallback(benchmark, "iterationCleanupAction");
++        var timer = Stopwatch.StartNew();
++        long iterations = 0;
++        do
++        {
++            InvokeEmptyCallbacks(setup, cleanup);
++            var measurement = new Measurement(0, IterationMode.Workload, IterationStage.Actual,
++                (int)(iterations % 1000) + 1, 100_000 + (iterations & 0xffff),
++                500_000_000.125 + (iterations & 0x3ff));
++            GC.KeepAlive(measurement.ToString());
++            iterations++;
++        } while (timer.Elapsed.TotalSeconds < 10);
++        return new Result(timer.Elapsed.TotalSeconds, iterations, iterations);
++    }
++
++    // Empty targets must execute while priming; OSR/PGO must not inline them away.
++    [MethodImpl(MethodImplOptions.NoInlining | MethodImplOptions.NoOptimization)]
++    private static void InvokeEmptyCallbacks(Action setup, Action cleanup)
++    {
++        setup();
++        cleanup();
++    }
++
++    private static Action GetEmptyCallback(AdminEvidenceBenchmark benchmark, string name)
++    {
++        var field = benchmark.GetType().GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)
++            ?? throw new InvalidOperationException($"Generated BDN callback is missing: {name}");
++        var callback = field.GetValue(benchmark) as Action
++            ?? throw new InvalidOperationException($"Generated BDN callback has an unexpected type: {name}");
++        var body = callback.Method.GetMethodBody()?.GetILAsByteArray();
++        if (body is not { Length: 1 } || body[0] != 0x2a)
++            throw new InvalidOperationException($"Only an empty generated BDN callback may be primed: {name}");
++        return callback;
++    }
++
++    internal static void Prepare()
++    {
++        var type = typeof(BenchmarkSwitcher).Assembly.GetType(
++            "BenchmarkDotNet.Engines.EngineActualStageSpecific", throwOnError: true)!;
++        foreach (var name in new[] { "GetMeasurementList", "GetShouldRunIteration" })
++        {
++            var method = type.GetMethod(name, BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.DeclaredOnly)
++                ?? throw new InvalidOperationException($"BDN engine method is missing: {name}");
++            RuntimeHelpers.PrepareMethod(method.MethodHandle);
++        }
++    }
++}
+--- a/tools/AdminDescriptionEvidence/AdminEvidenceBenchmark.cs
++++ b/tools/AdminDescriptionEvidence/AdminEvidenceBenchmark.cs
+@@ -21,6 +21,8 @@
+         Probe.Save(Path.Combine(output, $"clock-{Case.Replace(':', '-')}-{Environment.ProcessId}.json"),
+             new { _sampler.StartedTimestamp, StopwatchFrequency = System.Diagnostics.Stopwatch.Frequency,
+                 ProcessId = Environment.ProcessId });
++        var enginePrimer = BenchmarkEnginePrimer.Warm(this);
++        Probe.Save(Path.Combine(output, $"engine-primer-{Case.Replace(':', '-')}-{Environment.ProcessId}.json"), enginePrimer);
+         Probe.SaveLoadedBinaries(Path.Combine(output, $"binaries-{Case.Replace(':', '-')}-{Environment.ProcessId}.json"));
+         await Probe.PrimeAsync(_fixture, Path.Combine(output, $"primer-{Case.Replace(':', '-')}-{Environment.ProcessId}.json"));
+         var seconds = double.Parse(Environment.GetEnvironmentVariable("ADMIN_EVIDENCE_WARMUP_SECONDS") ?? "120",
+--- a/tools/AdminDescriptionEvidence/MeasurementPhaseDiagnoser.cs
++++ b/tools/AdminDescriptionEvidence/MeasurementPhaseDiagnoser.cs
+@@ -26,11 +26,15 @@
+     {
+         if (signal is not (HostSignal.BeforeActualRun or HostSignal.AfterActualRun)) return;
+         var timestamp = Stopwatch.GetTimestamp();
++        var utcClockBefore = Stopwatch.GetTimestamp();
++        var utcTimestamp = DateTime.UtcNow;
++        var utcClockAfter = Stopwatch.GetTimestamp();
+         var processId = parameters.Process.Id;
+         var output = Environment.GetEnvironmentVariable("ADMIN_EVIDENCE_WARMUP_DIRECTORY") ?? Path.GetTempPath();
+         Directory.CreateDirectory(output);
+         var row = new { Signal = signal.ToString(), Timestamp = timestamp,
+             StopwatchFrequency = Stopwatch.Frequency, ProcessId = processId,
++            UtcTimestamp = utcTimestamp, UtcClockBefore = utcClockBefore, UtcClockAfter = utcClockAfter,
+             Benchmark = parameters.BenchmarkCase.DisplayInfo };
+         File.AppendAllText(Path.Combine(output, $"signals-{processId}.jsonl"), JsonSerializer.Serialize(row) + Environment.NewLine);
+     }
+--- a/tools/AdminDescriptionEvidence/Program.cs
++++ b/tools/AdminDescriptionEvidence/Program.cs
+@@ -31,7 +31,7 @@
+ var builtIn = CsProjCoreToolchain.NetCoreApp10_0;
+ var toolchain = new Toolchain("AdminEvidence", new EvidenceGenerator(), builtIn.Builder, builtIn.Executor);
+ var job = (smoke ? Job.Dry : Job.Default.WithIterationCount(12).WithIterationTime(TimeInterval.FromMilliseconds(500))
+-    .WithWarmupCount(6).WithLaunchCount(1)).WithOutlierMode(OutlierMode.DontRemove).WithToolchain(toolchain);
++    .WithWarmupCount(50).WithLaunchCount(1)).WithOutlierMode(OutlierMode.DontRemove).WithToolchain(toolchain);
+ var summaries = BenchmarkSwitcher.FromAssembly(typeof(AdminEvidenceBenchmark).Assembly)
+     .Run(args, DefaultConfig.Instance.AddJob(job).AddDiagnoser(new MeasurementPhaseDiagnoser()));
+ return summaries.Any(summary => summary.HasCriticalValidationErrors || summary.Reports.Any(report => !report.Success)) ? 1 : 0;
