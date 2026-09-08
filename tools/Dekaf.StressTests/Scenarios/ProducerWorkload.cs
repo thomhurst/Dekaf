@@ -11,10 +11,11 @@ internal static class ProducerWorkload
     internal static Task<ProducerWorkloadResult> RunAsync(
         IKafkaProducer<string, string> producer, StressTestOptions options, string client, string scenario,
         ThroughputTracker throughput, LatencyTracker latency, TimeSpan duration,
-        bool awaitDelivery, CancellationToken cancellationToken) =>
+        bool awaitDelivery, CancellationToken cancellationToken, TimeSpan? drainTimeout = null) =>
         MeasureAsync(options, throughput, latency, duration, client, scenario,
             (ingress, delivery) => ProduceDekafAsync(producer, options, throughput, latency, awaitDelivery, ingress, delivery),
-            () => StressTestHelpers.FlushWithTimeoutAsync(producer, throughput), cancellationToken,
+            (timeout, token) => StressTestHelpers.FlushWithinDeadlineAsync(producer, throughput, timeout, token),
+            !awaitDelivery, drainTimeout ?? StressTestHelpers.OperationTimeout, cancellationToken,
             () => StressTestHelpers.CaptureProducerDeliveryDiagnostics(producer, options));
 
     // Separate overloads keep calls to each client direct inside the loop. Delegates below
@@ -65,11 +66,11 @@ internal static class ProducerWorkload
     internal static Task<ProducerWorkloadResult> RunAsync(
         ConfluentKafka.IProducer<string, string> producer, StressTestOptions options, string client, string scenario,
         ThroughputTracker throughput, LatencyTracker latency, TimeSpan duration,
-        bool awaitDelivery, CancellationToken cancellationToken) =>
+        bool awaitDelivery, CancellationToken cancellationToken, TimeSpan? drainTimeout = null) =>
         MeasureAsync(options, throughput, latency, duration, client, scenario,
             (ingress, delivery) => ProduceConfluentAsync(producer, options, throughput, latency, awaitDelivery, ingress, delivery),
-            () => { ConfluentStressTestHelpers.FlushWithTimeout(producer, throughput); return Task.CompletedTask; },
-            cancellationToken);
+            (timeout, _) => { ConfluentStressTestHelpers.FlushWithTimeout(producer, throughput, timeout); return Task.CompletedTask; },
+            !awaitDelivery, drainTimeout ?? StressTestHelpers.OperationTimeout, cancellationToken);
 
     private static async Task ProduceConfluentAsync(
         ConfluentKafka.IProducer<string, string> producer, StressTestOptions options,
@@ -118,7 +119,8 @@ internal static class ProducerWorkload
 
     private static async Task<ProducerWorkloadResult> MeasureAsync(
         StressTestOptions options, ThroughputTracker throughput, LatencyTracker latency, TimeSpan duration, string client, string scenario,
-        Func<CancellationToken, CancellationToken, Task> produce, Func<Task> drain, CancellationToken cancellationToken,
+        Func<CancellationToken, CancellationToken, Task> produce, Func<TimeSpan, CancellationToken, Task> drain,
+        bool flushAfterAdmission, TimeSpan drainTimeout, CancellationToken cancellationToken,
         Func<ProducerDeliveryDiagnosticsSnapshot?>? captureProducerDiagnostics = null)
     {
         if (throughput.Warmup is not null)
@@ -149,11 +151,33 @@ internal static class ProducerWorkload
                 // Canceling ProduceAsync here could hide a message already appended.
             }
             workloadSeconds = throughput.Elapsed.TotalSeconds;
-            delivery.CancelAfter(StressTestHelpers.OperationTimeout);
-            await drain().ConfigureAwait(false);
-            await producing.WaitAsync(delivery.Token).ConfigureAwait(false);
-            await latency.WaitForDeliverySamplesAsync().WaitAsync(delivery.Token).ConfigureAwait(false);
-            delivery.Token.ThrowIfCancellationRequested();
+            var drainStarted = Stopwatch.GetTimestamp();
+            delivery.CancelAfter(drainTimeout);
+            try
+            {
+                // The first flush can release buffer admission. A final FireAsync may
+                // append after it returns, so drain again once ingress has fully exited.
+                await FlushRemainingAsync().ConfigureAwait(false);
+                await producing.WaitAsync(delivery.Token).ConfigureAwait(false);
+                if (flushAfterAdmission)
+                    await FlushRemainingAsync().ConfigureAwait(false);
+                await latency.WaitForDeliverySamplesAsync().WaitAsync(delivery.Token).ConfigureAwait(false);
+                delivery.Token.ThrowIfCancellationRequested();
+            }
+            catch (OperationCanceledException) when (delivery.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+            {
+                // Preserve timeout counters and runtime samples in an explicitly failed
+                // result. Caller cancellation still propagates; it is not a drain timeout.
+                throughput.RecordError("DeliveryDrainTimeout", "Producer delivery drain exceeded its deadline", "Delivery drain");
+            }
+
+            Task FlushRemainingAsync()
+            {
+                var remaining = drainTimeout - Stopwatch.GetElapsedTime(drainStarted);
+                if (remaining <= TimeSpan.Zero) delivery.Cancel();
+                delivery.Token.ThrowIfCancellationRequested();
+                return drain(remaining, delivery.Token);
+            }
         }
         finally
         {

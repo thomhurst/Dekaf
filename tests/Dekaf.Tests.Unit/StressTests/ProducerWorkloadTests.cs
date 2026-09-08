@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Dekaf.Producer;
 using Dekaf.StressTests.Diagnostics;
 using Dekaf.StressTests.Metrics;
@@ -9,6 +10,140 @@ namespace Dekaf.Tests.Unit.StressTests;
 
 public sealed class ProducerWorkloadTests
 {
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task FinalFireAppend_IsDrainedOrReportsDeadlineBeforeMeasurementStops(bool drainExpires)
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "dekaf-workload-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        try
+        {
+            using var watchdog = new ProgressWatchdog(directory);
+            var options = new StressTestOptions
+            {
+                BootstrapServers = "unused:9092", Topic = "test", DurationMinutes = 1,
+                MessageSizeBytes = 1000, ProgressWatchdog = watchdog
+            };
+            var admission = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var firstFlush = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var finalFlush = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var finalDelivery = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var throughput = new ThroughputTracker();
+            var producer = Substitute.For<IKafkaProducer<string, string>>();
+            producer.ProduceAsync("test", Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+                .Returns(ValueTask.FromResult(default(RecordMetadata)));
+            producer.FireAsync("test", Arg.Any<string>(), Arg.Any<string>())
+                .Returns(_ => new ValueTask(admission.Task));
+            var flushes = 0;
+            producer.FlushAsync(Arg.Any<CancellationToken>()).Returns(_ =>
+            {
+                if (Interlocked.Increment(ref flushes) == 1)
+                {
+                    firstFlush.TrySetResult();
+                    return ValueTask.CompletedTask;
+                }
+                finalFlush.TrySetResult();
+                return new ValueTask(finalDelivery.Task);
+            });
+            var run = ProducerWorkload.RunAsync(producer, options, "Dekaf", "producer", throughput, new LatencyTracker(),
+                TimeSpan.FromMilliseconds(100), awaitDelivery: false, CancellationToken.None,
+                drainTimeout: TimeSpan.FromSeconds(drainExpires ? 1 : 5));
+            try
+            {
+                await firstFlush.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                admission.TrySetResult();
+                await finalFlush.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                await Assert.That(throughput.MessageCount).IsEqualTo(2);
+                await Assert.That(run.IsCompleted).IsFalse();
+                if (!drainExpires) finalDelivery.TrySetResult();
+                var result = await run.WaitAsync(TimeSpan.FromSeconds(5));
+                await Assert.That(flushes).IsEqualTo(2);
+                await Assert.That(result.Throughput.ErrorSamples.Any(sample => sample.ExceptionType == "DeliveryDrainTimeout")).IsEqualTo(drainExpires);
+                if (!drainExpires) await Assert.That(result.Throughput.TotalErrors).IsEqualTo(0);
+                await Assert.That(result.WorkloadSeconds).IsLessThan(result.Throughput.ElapsedSeconds);
+            }
+            finally
+            {
+                admission.TrySetResult();
+                finalDelivery.TrySetResult();
+                await run.WaitAsync(TimeSpan.FromSeconds(5));
+            }
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task DrainTimeout_ReturnsSerializableFailureWithRuntimeSamples(bool confluent)
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "dekaf-workload-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        try
+        {
+            using var watchdog = new ProgressWatchdog(directory);
+            var options = new StressTestOptions
+            {
+                BootstrapServers = "unused:9092", Topic = "test", DurationMinutes = 1,
+                MessageSizeBytes = 1000, ProgressWatchdog = watchdog
+            };
+            var throughput = new ThroughputTracker();
+            Task<ProducerWorkloadResult> run;
+            if (confluent)
+            {
+                var deliveryToken = CancellationToken.None;
+                var producer = Substitute.For<ConfluentKafka.IProducer<string, string>>();
+                producer.ProduceAsync("test", Arg.Any<ConfluentKafka.Message<string, string>>(), Arg.Any<CancellationToken>())
+                    .Returns(async call =>
+                    {
+                        deliveryToken = call.Arg<CancellationToken>();
+                        await Task.Delay(Timeout.InfiniteTimeSpan, deliveryToken);
+                        return new ConfluentKafka.DeliveryResult<string, string>();
+                    });
+                producer.Flush(Arg.Any<TimeSpan>()).Returns(_ =>
+                {
+                    throughput.TakeSample();
+                    if (!deliveryToken.WaitHandle.WaitOne(TimeSpan.FromSeconds(5)))
+                        throw new TimeoutException("The delivery deadline was not armed");
+                    return 1;
+                });
+                run = ProducerWorkload.RunAsync(producer, options, "Confluent", "producer-async", throughput, new LatencyTracker(),
+                    TimeSpan.FromMilliseconds(100), awaitDelivery: true, CancellationToken.None, drainTimeout: TimeSpan.FromMilliseconds(100));
+            }
+            else
+            {
+                var producer = Substitute.For<IKafkaProducer<string, string>>();
+                producer.ProduceAsync("test", Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+                    .Returns(call => new ValueTask<RecordMetadata>(WaitForCancellationAsync(call.Arg<CancellationToken>())));
+                producer.FlushAsync(Arg.Any<CancellationToken>()).Returns(call =>
+                {
+                    throughput.TakeSample();
+                    return new ValueTask(Task.Delay(Timeout.InfiniteTimeSpan, call.Arg<CancellationToken>()));
+                });
+                run = ProducerWorkload.RunAsync(producer, options, "Dekaf", "producer-async", throughput, new LatencyTracker(),
+                    TimeSpan.FromMilliseconds(100), awaitDelivery: true, CancellationToken.None, drainTimeout: TimeSpan.FromMilliseconds(100));
+            }
+            var result = await run.WaitAsync(TimeSpan.FromSeconds(5));
+            await Assert.That(result.Throughput.TotalErrors).IsGreaterThan(0);
+            await Assert.That(result.Throughput.ErrorSamples.Any(sample => sample.ExceptionType == "DeliveryDrainTimeout")).IsTrue();
+            if (confluent)
+                await Assert.That(result.Throughput.ErrorSamples.Any(sample => sample.ExceptionType == "FlushTimeout")).IsTrue();
+            var json = JsonSerializer.Serialize(result.Throughput, JsonSerializerOptions.Web);
+            using var document = JsonDocument.Parse(json);
+            await Assert.That(document.RootElement.GetProperty("runtimeEnd").ValueKind).IsEqualTo(JsonValueKind.Object);
+            await Assert.That(document.RootElement.GetProperty("intervalSamples").GetArrayLength()).IsGreaterThan(0);
+            await Assert.That(document.RootElement.GetProperty("totalErrors").GetInt64()).IsGreaterThan(0);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
     [Test]
     [Arguments(false)]
     [Arguments(true)]

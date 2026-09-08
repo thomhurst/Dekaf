@@ -298,23 +298,35 @@ internal static class StressTestHelpers
 
     /// <summary>
     /// Flushes the producer, recording a timeout as an error: a flush that cannot drain
-    /// in 30 seconds against a healthy broker means the producer is stuck, and any
+    /// within the configured timeout (30 seconds by default) means the producer is stuck, and any
     /// still-buffered messages will surface as undelivered loss.
     /// </summary>
-    internal static async Task FlushWithTimeoutAsync<TKey, TValue>(
+    internal static Task FlushWithTimeoutAsync<TKey, TValue>(
         IKafkaProducer<TKey, TValue> producer,
-        ThroughputTracker throughput)
+        ThroughputTracker throughput) =>
+        FlushWithinDeadlineAsync(producer, throughput, OperationTimeout, CancellationToken.None);
+
+    internal static async Task FlushWithinDeadlineAsync<TKey, TValue>(
+        IKafkaProducer<TKey, TValue> producer, ThroughputTracker throughput,
+        TimeSpan timeout, CancellationToken cancellationToken)
     {
+        var flushing = producer.FlushAsync(cancellationToken).AsTask();
         try
         {
-            await producer.FlushAsync(CancellationToken.None).AsTask()
-                .WaitAsync(OperationTimeout, CancellationToken.None).ConfigureAwait(false);
+            await flushing.WaitAsync(timeout, cancellationToken).ConfigureAwait(false);
         }
         catch (TimeoutException)
         {
-            var message = $"Flush did not complete within {OperationTimeout.TotalSeconds:N0} seconds";
+            var message = $"Flush did not complete within {timeout.TotalSeconds:N3} seconds";
             Console.WriteLine($"  Error: {message}");
             throughput.RecordError("FlushTimeout", message, "FlushAsync");
+        }
+        finally
+        {
+            // A broken producer may ignore cancellation and fault after the bounded wait.
+            if (!flushing.IsCompletedSuccessfully)
+                _ = flushing.ContinueWith(static task => _ = task.Exception, CancellationToken.None,
+                    TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
         }
     }
 

@@ -271,9 +271,10 @@ internal static class ConfluentStressTestHelpers
     /// </summary>
     internal static void FlushWithTimeout<TKey, TValue>(
         ConfluentKafka.IProducer<TKey, TValue> producer,
-        ThroughputTracker throughput)
+        ThroughputTracker throughput,
+        TimeSpan? timeout = null)
     {
-        var remaining = producer.Flush(StressTestHelpers.OperationTimeout);
+        var remaining = producer.Flush(timeout ?? StressTestHelpers.OperationTimeout);
         if (remaining > 0)
         {
             var message = $"Flush timed out with {remaining:N0} messages still queued";
