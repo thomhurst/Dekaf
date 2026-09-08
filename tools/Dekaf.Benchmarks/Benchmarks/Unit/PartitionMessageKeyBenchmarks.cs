@@ -19,31 +19,31 @@ public class PartitionMessageKeyBenchmarks
     private readonly byte[]? _nullBytes = null;
 
     [Benchmark]
-    public int ByteArray() => CompareAndHash(_bytes, _equalBytes);
+    public int ByteArray() => CompareAndHash(_bytes, _equalBytes, _nonNullWire);
 
     [Benchmark]
-    public int ReadOnlyMemory() => CompareAndHash<ReadOnlyMemory<byte>>(_bytes, _equalBytes);
+    public int ReadOnlyMemory() => CompareAndHash<ReadOnlyMemory<byte>>(_bytes, _equalBytes, _nonNullWire);
 
     [Benchmark]
-    public int Memory() => CompareAndHash<Memory<byte>>(_bytes, _equalBytes);
+    public int Memory() => CompareAndHash<Memory<byte>>(_bytes, _equalBytes, _nonNullWire);
 
     [Benchmark]
-    public int ArraySegment() => CompareAndHash(new ArraySegment<byte>(_bytes), new ArraySegment<byte>(_equalBytes));
+    public int ArraySegment() => CompareAndHash(new ArraySegment<byte>(_bytes), new ArraySegment<byte>(_equalBytes), _nonNullWire);
 
     [Benchmark]
-    public int String() => CompareAndHash(_text, _equalText);
+    public int String() => CompareAndHash(_text, _equalText, _nonNullWire);
 
     [Benchmark]
-    public int Int32() => CompareAndHash(_number, _number);
+    public int Int32() => CompareAndHash(_number, _number, _nonNullWire);
 
     [Benchmark]
-    public int NullableInt32() => CompareAndHash(_nullableNumber, _nullableNumber);
+    public int NullableInt32() => CompareAndHash(_nullableNumber, _nullableNumber, _nonNullWire);
 
     [Benchmark]
     public int CustomString()
     {
-        var key = PartitionMessageKey<string>.From(_text);
-        var other = PartitionMessageKey<string>.From(_equalText);
+        var key = PartitionMessageKey<string>.From(_text, _nonNullWire);
+        var other = PartitionMessageKey<string>.From(_equalText, _nonNullWire);
         return _customComparer.GetHashCode(key) ^ (_customComparer.Equals(key, other) ? 1 : 0);
     }
 
@@ -56,10 +56,10 @@ public class PartitionMessageKeyBenchmarks
         return comparer.GetHashCode(deserializedNull) ^ (comparer.Equals(wireNull, deserializedNull) ? 1 : 0);
     }
 
-    private static int CompareAndHash<TKey>(TKey first, TKey second)
+    private static int CompareAndHash<TKey>(TKey first, TKey second, bool isKeyNull)
     {
-        var key = PartitionMessageKey<TKey>.From(first);
-        var other = PartitionMessageKey<TKey>.From(second);
+        var key = PartitionMessageKey<TKey>.From(first, isKeyNull);
+        var other = PartitionMessageKey<TKey>.From(second, isKeyNull);
         var comparer = Comparers<TKey>.Instance;
         return comparer.GetHashCode(key) ^ (comparer.Equals(key, other) ? 1 : 0);
     }
