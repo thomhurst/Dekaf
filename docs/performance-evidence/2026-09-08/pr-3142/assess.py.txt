@@ -1,0 +1,45 @@
+"""Reassess downloaded hosted artifacts: python assess.py RAW_DIRECTORY OUTPUT_DIRECTORY."""
+from pathlib import Path
+import csv,hashlib,json,math,re,statistics,sys
+root=Path(sys.argv[1]);output=Path(sys.argv[2]);output.mkdir(parents=True,exist_ok=True)
+manifest=json.loads((root/"manifest.json").read_text())
+rows=json.loads((root/"host-bindings.json").read_text())
+for row in rows:
+    p=root/row["path"]
+    if p.stat().st_size!=row["bytes"] or hashlib.sha256(p.read_bytes()).hexdigest()!=row["sha256"]:
+        raise RuntimeError("Host binding mismatch: "+row["path"])
+phases={};samples=[];loaded=[]
+for phase in ["A1","B","A2"]:
+    data=json.loads(next((root/phase/"results").glob("*full.json")).read_text())["Benchmarks"][0]
+    stats=data["Statistics"];measurements=data["Measurements"]
+    def stage(name):return [m for m in measurements if m["IterationMode"]=="Workload" and m["IterationStage"]==name]
+    warm,actual,result=stage("Warmup"),stage("Actual"),stage("Result")
+    if len(warm)!=30 or len(actual)!=25 or len(result)!=25 or stats["N"]!=25:raise RuntimeError("Unexpected sample count")
+    values=[m["Nanoseconds"]/m["Operations"] for m in result]
+    if any(not math.isclose(x,y,abs_tol=1e-9) for x,y in zip(values,stats["OriginalValues"],strict=True)):raise RuntimeError("Results changed")
+    if not math.isclose(statistics.mean(values),stats["Mean"],abs_tol=1e-9):raise RuntimeError("Mean changed")
+    text=(root/(phase+".log")).read_text()
+    match=re.search(r"WARM completed seconds=([0-9.]+) calls=(\d+)",text)
+    seconds=float(match[1]);operations=int(match[2]);bdn_seconds=sum(m["Nanoseconds"] for m in warm)/1e9
+    if seconds<20 or bdn_seconds<20:raise RuntimeError("Elapsed workload warmup insufficient")
+    bindings=json.loads(text.splitlines()[0]);tag="B" if phase=="B" else "A"
+    for binding in bindings:
+        p=root/"hosts"/tag/Path(binding["Location"]).name
+        if hashlib.sha256(p.read_bytes()).hexdigest()!=binding["Sha256"].lower():raise RuntimeError("Loaded binding mismatch")
+        loaded.append(dict(phase=phase,**binding))
+    runtime=list(csv.DictReader((root/phase/"runtime.csv").open()))
+    actual_series=[r for r in runtime if r["workload"].startswith("WorkloadActual")]
+    warm_series=[r for r in runtime if r["workload"].startswith("WorkloadWarmup")]
+    if len(actual_series)!=25 or len(warm_series)!=30:raise RuntimeError("Runtime series incomplete")
+    first,last=warm_series[-1],actual_series[-1]
+    delta=lambda key:float(last[key])-float(first[key])
+    phases[phase]=dict(meanNs=stats["Mean"],standardErrorNs=stats["StandardError"],ciLowerNs=stats["ConfidenceInterval"]["Lower"],ciUpperNs=stats["ConfidenceInterval"]["Upper"],iterationMaximumNs=stats["Max"],samples=25,bytesPerOperation=data["Memory"]["BytesAllocatedPerOperation"],setupWarmSeconds=seconds,setupWarmOperations=operations,bdnWarmSeconds=bdn_seconds,bdnWarmOperations=sum(m["Operations"] for m in warm),actualSeconds=sum(m["Nanoseconds"] for m in actual)/1e9,actualOperations=sum(m["Operations"] for m in actual),boundaryJitMethods=delta("jit_methods"),interiorBoundaryJitMethods=int(last["jit_methods"])-int(actual_series[0]["jit_methods"]),boundaryCpuMs=delta("cpu_ms"),boundaryGc0=delta("gc0"),boundaryGc1=delta("gc1"),boundaryGc2=delta("gc2"),maximumThreads=max(int(r["threads"]) for r in runtime),maximumPendingWork=max(int(r["pending_work"]) for r in runtime),heapFirst=int(first["heap_bytes"]),heapLast=int(last["heap_bytes"]),rssFirst=int(first["rss_bytes"]),rssLast=int(last["rss_bytes"]))
+    for i,m in enumerate(result):samples.append(dict(phase=phase,index=i+1,operations=m["Operations"],resultNanoseconds=m["Nanoseconds"],resultNsPerOperation=values[i],actualNanoseconds=actual[i]["Nanoseconds"]))
+def delta(candidate,baseline):return (candidate/baseline-1)*100
+comparisons=dict(candidateVsA1Percent=delta(phases["B"]["meanNs"],phases["A1"]["meanNs"]),candidateVsA2Percent=delta(phases["B"]["meanNs"],phases["A2"]["meanNs"]),controlDriftPercent=delta(phases["A2"]["meanNs"],phases["A1"]["meanNs"]))
+result=dict(verdict="INCONCLUSIVE",reason="JIT activity persists across workload boundaries without method attribution; actual per-message latency, loaded CPU/completed throughput and sustained stability are missing.",manifest=manifest,verifiedHostFiles=len(rows),verifiedLoadedBindings=len(loaded),phases=phases,comparisons=comparisons)
+(output/"assessment.json").write_text(json.dumps(result,indent=2))
+(output/"loaded-bindings.json").write_text(json.dumps(loaded,indent=2))
+with (output/"samples.csv").open("w",newline="") as f:
+    writer=csv.DictWriter(f,fieldnames=list(samples[0]));writer.writeheader();writer.writerows(samples)
+print(json.dumps(result,indent=2))

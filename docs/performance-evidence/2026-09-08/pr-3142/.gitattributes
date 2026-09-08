@@ -1,0 +1,3 @@
+* -text whitespace=cr-at-eol
+# Preserve whitespace in original BenchmarkDotNet JSON reports.
+*-full.json whitespace=cr-at-eol,-blank-at-eol
