@@ -19,7 +19,7 @@ $leases = [Collections.Generic.List[object]]::new()
 
 function Assert([bool]$Condition, [string]$Message) { if (-not $Condition) { throw $Message } }
 function Invoke-TestGit {
-    & git.exe @args 2>&1 | Out-Null
+    & git @args 2>&1 | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "Git fixture command failed: $args" }
 }
 
@@ -117,9 +117,9 @@ function Remove-MergedWorktreeCore {
         Assert ((Get-Content -LiteralPath (Join-Path $repo 'change.txt')) -eq $scenario) 'Fixture merge did not complete'
         $shouldRemove = $scenario -in @('owner', 'unowned', 'unidentified')
         Assert ((Test-Path -LiteralPath $worktree) -ne $shouldRemove) "Wrong worktree retention for $scenario"
-        & git.exe -C $repo show-ref --verify --quiet "refs/heads/$branch"
+        & git -C $repo show-ref --verify --quiet "refs/heads/$branch"
         Assert (($LASTEXITCODE -eq 0) -ne $shouldRemove) "Wrong local branch retention for $scenario"
-        & git.exe -C $repo ls-remote --exit-code origin "refs/heads/$branch" 2>$null | Out-Null
+        & git -C $repo ls-remote --exit-code origin "refs/heads/$branch" 2>$null | Out-Null
         Assert (($LASTEXITCODE -eq 0) -ne $shouldRemove) "Wrong remote branch retention for $scenario"
         if ($claimed) {
             $state = & pwsh -NoProfile -File $AgentLocksScript status -LockName $lockName -OwnerId $leaseOwner

@@ -17,7 +17,7 @@ $keys = [Collections.Generic.List[string]]::new()
 
 function Assert([bool]$Condition, [string]$Message) { if (-not $Condition) { throw $Message } }
 function Invoke-TestGit {
-    & git.exe @args 2>&1 | Out-Null
+    & git @args 2>&1 | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "Git fixture command failed: $args" }
 }
 function Claim([string]$Key, [string]$Path) {
