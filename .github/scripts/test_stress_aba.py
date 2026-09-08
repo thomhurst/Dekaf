@@ -73,6 +73,81 @@ def result(
 
 
 class StressAbaComparisonTests(unittest.TestCase):
+    def test_unequal_sample_counts_cannot_decide_maximum_latency(self):
+        for second_candidate in (False, True):
+            for segment in range(4 if second_candidate else 3):
+                for maximum in (40, 50, 60):
+                    segments = [result(latency_count=20_000) for _ in range(4)]
+                    segments[1]["latency"]["maxUs"] = maximum * 1000
+                    segments[3]["latency"]["maxUs"] = maximum * 1000
+                    segments[segment]["latency"]["count"] = 20_001
+                    with self.subTest(second_candidate=second_candidate, segment=segment, maximum=maximum):
+                        comparison = compare(
+                            *segments[:3],
+                            candidate_b2_result=segments[3] if second_candidate else None,
+                        )
+                        self.assertEqual("inconclusive", comparison["verdict"])
+                        metric = next(item for item in comparison["metrics"] if item["key"] == "max")
+                        self.assertEqual("inconclusive", metric["status"])
+                        self.assertEqual(maximum, metric["candidateB"])
+                        self.assertIn("equal latency sample counts", metric["reason"])
+                        self.assertIn(metric["reason"], markdown(comparison, "a", "b"))
+
+    def test_unequal_sample_counts_preserve_other_regressions(self):
+        for candidate in (
+            result(latency_count=20_000, throughput=80),
+            result(latency_count=20_000, errors=1),
+            result(latency_count=20_000, delivered=999_999),
+        ):
+            with self.subTest(candidate=candidate):
+                comparison = compare(result(), candidate, result())
+                self.assertEqual("regression", comparison["verdict"])
+
+    def test_equal_sample_counts_keep_maximum_latency_gate(self):
+        for maximum, expected in ((40, "pass"), (50, "pass"), (60, "regression")):
+            with self.subTest(maximum=maximum):
+                comparison = compare(
+                    result(), result(maximum=maximum), result(),
+                    candidate_b2_result=result(maximum=maximum),
+                )
+                self.assertEqual(expected, comparison["verdict"])
+
+    def test_cli_retains_unequal_count_maxima_as_inconclusive(self):
+        for second_candidate in (False, True):
+            with self.subTest(second_candidate=second_candidate), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                for label in ("a", "b", "a2", "b2"):
+                    path = root / label
+                    path.mkdir()
+                    sample = result(maximum=60, latency_count=20_000) if label == "b" else result()
+                    (path / "stress-test-results.json").write_text(
+                        json.dumps({"results": [sample]}), encoding="utf-8"
+                    )
+                output = root / "comparison.json"
+                summary = root / "summary.md"
+                arguments = [
+                    "--baseline-a", str(root / "a"), "--candidate", str(root / "b"),
+                    "--baseline-a2", str(root / "a2"), "--baseline-sha", "a" * 40,
+                    "--candidate-sha", "b" * 40, "--output", str(output),
+                    "--summary", str(summary),
+                ]
+                if second_candidate:
+                    arguments.extend(["--candidate-b2", str(root / "b2")])
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    exit_code = main(arguments)
+                comparison = json.loads(output.read_text(encoding="utf-8"))
+                self.assertEqual(1, exit_code)
+                self.assertEqual("inconclusive", comparison["verdict"])
+                maximum = next(item for item in comparison["metrics"] if item["key"] == "max")
+                self.assertEqual((50, 60, 50), (
+                    maximum["baselineA"], maximum["candidateB"], maximum["baselineA2"],
+                ))
+                self.assertEqual(50 if second_candidate else None, maximum["candidateB2"])
+                for report in (stdout.getvalue(), summary.read_text(encoding="utf-8")):
+                    self.assertIn("Verdict: INCONCLUSIVE", report)
+                    self.assertIn(maximum["reason"], report)
+
     def test_zero_cpu_is_invalid_in_every_segment(self):
         for derived in (False, True):
             for segment in range(4):

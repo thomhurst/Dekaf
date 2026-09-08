@@ -349,6 +349,23 @@ def compare(
         for metric in METRICS
     ]
 
+    latency_sample_counts = {
+        "baselineA": baseline_a_result["latency"]["count"],
+        "candidateB": candidate_result["latency"]["count"],
+        "baselineA2": baseline_a2_result["latency"]["count"],
+        "candidateB2": None if candidate_b2_result is None else candidate_b2_result["latency"]["count"],
+    }
+    # Aggregate maxima have no distribution or uncertainty information. Unequal numbers
+    # of draws can inflate a maximum or conceal a loss, so neither verdict is supported.
+    # Keep every observed maximum; never trim samples to manufacture equal coverage.
+    if len({count for count in latency_sample_counts.values() if count is not None}) != 1:
+        maximum = next(item for item in metrics if item["key"] == "max")
+        maximum["status"] = "inconclusive"
+        maximum["reason"] = (
+            "Aggregate maximum comparison requires equal latency sample counts; "
+            "unequal counts require separate uncertainty analysis. All observed maxima are retained."
+        )
+
     candidate_failed = _errors(candidate_result) > 0 or _delivery_mismatch(candidate_result)
     if candidate_b2_result is not None:
         candidate_failed = candidate_failed or (
@@ -372,12 +389,7 @@ def compare(
         or (candidate_b2_result is not None and _delivery_mismatch(candidate_b2_result)),
         "candidateSegments": 1 if candidate_b2_result is None else 2,
         "minimumLatencySamples": MIN_LATENCY_SAMPLES,
-        "latencySampleCounts": {
-            "baselineA": baseline_a_result["latency"]["count"],
-            "candidateB": candidate_result["latency"]["count"],
-            "baselineA2": baseline_a2_result["latency"]["count"],
-            "candidateB2": None if candidate_b2_result is None else candidate_b2_result["latency"]["count"],
-        },
+        "latencySampleCounts": latency_sample_counts,
         "identity": list(_identity(candidate_result)),
         "metrics": metrics,
     }
@@ -406,6 +418,9 @@ def markdown(comparison, baseline_sha, candidate_sha):
         f"Each segment requires at least {MIN_LATENCY_SAMPLES} latency samples. This conservative "
         "screening floor does not establish tail precision or comparable sampling coverage; "
         "those still require the workload's sampling design and uncertainty analysis.",
+        "The aggregate maximum gate requires equal sample counts across all segments. "
+        "Unequal counts make that metric INCONCLUSIVE, even when its raw value improves. "
+        "Equal counts alone do not establish independent sampling or maximum precision.",
         "",
         f"Baseline: `{baseline_sha}` · Candidate: `{candidate_sha}`",
     ]
@@ -466,6 +481,9 @@ def markdown(comparison, baseline_sha, candidate_sha):
             cells.append(f"{item['candidateDriftPercent']:.2f}%")
         cells.append(item["status"])
         lines.append("| " + " | ".join(cells) + " |")
+    for item in comparison["metrics"]:
+        if item.get("reason"):
+            lines.extend(["", f"{item['label']}: {item['reason']}"])
     if comparison["candidateErrors"] or comparison["candidateDeliveryMismatch"]:
         lines.extend(
             [
