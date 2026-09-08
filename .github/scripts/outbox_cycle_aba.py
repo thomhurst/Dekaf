@@ -1,4 +1,4 @@
-"""Task-scoped four-case outbox comparison; never promotes the PR performance gate."""
+"""Task-scoped outbox comparison including renewal stores; never promotes the PR performance gate."""
 import argparse
 import csv
 from datetime import datetime, timezone
@@ -11,7 +11,8 @@ import re
 import shutil
 import subprocess
 
-MODES = ('sync-off', 'pending-off', 'sync-on', 'pending-on')
+MODES = ('sync-off', 'pending-off', 'sync-on', 'pending-on',
+         'renewal-sync-off', 'renewal-pending-off', 'renewal-sync-on', 'renewal-pending-on')
 PHASES = (('A1', 'A'), ('B', 'B'), ('A2', 'A'))
 
 

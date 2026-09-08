@@ -13,20 +13,25 @@ using Perfolizer.Mathematics.OutlierDetection;
 public static class Program
 {
     internal static bool Validate;
+    internal static bool RenewalStore;
     internal static readonly bool HasMetrics = typeof(Dekaf.Outbox.OutboxRelayOptions).GetProperty("MetricsName") is not null;
     public static int Main(string[] args)
     {
+        RenewalStore = args[0].StartsWith("renewal-", StringComparison.Ordinal);
+        if (RenewalStore) args[0] = args[0][8..];
         Validate = args[0] == "validate" || args.Contains("--smoke");
         if (args[0] == "validate")
         {
+            foreach (var renewal in new[] { false, true })
             foreach (var enabled in new[] { false, true })
             {
+                RenewalStore = renewal;
                 var sync = new SyncBench { Enabled = enabled };
                 sync.Setup(); sync.Workload().GetAwaiter().GetResult(); sync.Cleanup();
                 var pending = new PendingBench { Enabled = enabled };
                 pending.Setup(); pending.Workload().GetAwaiter().GetResult(); pending.Cleanup();
             }
-            Console.WriteLine("All four fixtures validated");
+            Console.WriteLine("All eight fixtures validated");
             return 0;
         }
         using var runtimeLog = new RuntimeLogger(Path.Combine(args[1], "runtime.csv"));

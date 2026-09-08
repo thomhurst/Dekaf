@@ -49,8 +49,8 @@ public class RelayMetricsBenchmarks
             _listener.SetMeasurementEventCallback<double>(static (_, _, _, _) => { });
             _listener.Start();
         }
-        _syncStore = new Store();
-        _pendingStore = new Store();
+        _syncStore = Program.RenewalStore ? new RenewingStore() : new Store();
+        _pendingStore = Program.RenewalStore ? new RenewingStore() : new Store();
         _syncPublisher = new Publisher();
         _pendingPublisher = new PendingPublisher();
         _syncRelay = CreateRelay(_syncStore, _syncPublisher);
@@ -116,7 +116,7 @@ public class RelayMetricsBenchmarks
         _listener?.Dispose();
     }
 
-    internal sealed class Store : IOutboxStore
+    internal class Store : IOutboxStore
     {
         private static readonly int[] Buckets = [0];
         internal readonly OutboxMessage[] Rows = Enumerable.Range(1, 500).Select(id => new OutboxMessage
@@ -137,6 +137,12 @@ public class RelayMetricsBenchmarks
             Deleted += messages.Count;
             return default;
         }
+    }
+
+    internal sealed class RenewingStore : Store, IOutboxLeaseRenewalStore
+    {
+        public ValueTask<bool> RenewBucketLeasesAsync(OutboxLeaseRequest request, IReadOnlyList<int> buckets,
+            CancellationToken cancellationToken = default) => new(true);
     }
 
     private sealed class Publisher : IOutboxPublisher
