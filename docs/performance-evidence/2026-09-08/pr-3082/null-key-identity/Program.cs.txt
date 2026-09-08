@@ -1,0 +1,103 @@
+using System.Diagnostics;
+using System.Runtime.CompilerServices;
+using BenchmarkDotNet.Attributes;
+using BenchmarkDotNet.Configs;
+using BenchmarkDotNet.Exporters.Json;
+using BenchmarkDotNet.Filters;
+using BenchmarkDotNet.Jobs;
+using BenchmarkDotNet.Running;
+using BenchmarkDotNet.Toolchains.InProcess.Emit;
+using Dekaf.Consumer;
+using Dekaf.Serialization;
+using Perfolizer.Horology;
+using Perfolizer.Mathematics.OutlierDetection;
+
+public static class Program
+{
+    internal static bool Smoke;
+    internal static string Case = "";
+    public static int Main(string[] args)
+    {
+        Case = args[0];
+        Smoke = args.Contains("--smoke");
+        using var runtime = new RuntimeLogger(Path.Combine(args[1], "runtime.csv"));
+        var config = DefaultConfig.Instance.WithArtifactsPath(args[1]).AddLogger(runtime)
+            .AddExporter(JsonExporter.Full)
+            .AddFilter(new SimpleFilter(test => test.Descriptor.WorkloadMethod.Name == Case))
+            .AddJob(Job.Default.WithToolchain(InProcessEmitToolchain.Instance).WithAffinity(new IntPtr(4))
+                .WithWarmupCount(Smoke ? 1 : 30).WithIterationCount(Smoke ? 1 : 25)
+                .WithIterationTime(TimeInterval.FromMilliseconds(1000)).WithOutlierMode(OutlierMode.DontRemove));
+        var summary = BenchmarkRunner.Run<NullKeyBenchmarks>(config);
+        return summary.HasCriticalValidationErrors || summary.Reports.Length != 1 || !summary.Reports[0].Success ? 1 : 0;
+    }
+}
+
+[MemoryDiagnoser]
+public class NullKeyBenchmarks
+{
+    private readonly byte[] _data = Enumerable.Range(0, 64).Select(static i => (byte)i).ToArray();
+    private int _sink;
+    private readonly IEqualityComparer<PartitionMessageKey<ReadOnlyMemory<byte>>> _comparer =
+        PartitionMessageKeyComparer<ReadOnlyMemory<byte>>.Default!;
+
+    [Benchmark]
+    public int ConstructAndHash()
+    {
+        var result = new ConsumeResult<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>>(
+            "topic", 0, 1, _data, false, _data, false, null, 0,
+            TimestampType.CreateTime, null, Serializers.RawBytes, Serializers.RawBytes);
+#if HAS_NULL_FLAG
+        var key = PartitionMessageKey<ReadOnlyMemory<byte>>.From(result.Key, result.IsKeyNull);
+#else
+        var key = PartitionMessageKey<ReadOnlyMemory<byte>>.From(result.Key);
+#endif
+        return _comparer.GetHashCode(key);
+    }
+
+    [Benchmark]
+    public ConsumeResult<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>> TypedConstruction()
+    {
+        var result = new ConsumeResult<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>>(
+            "topic", 0, 1, (ReadOnlyMemory<byte>)_data, (ReadOnlyMemory<byte>)_data, null,
+            0, TimestampType.CreateTime, null);
+        if (result.IsPartitionEof) throw new InvalidOperationException("Unexpected EOF");
+        return result;
+    }
+
+    [GlobalSetup]
+    public void Setup()
+    {
+        var result = TypedConstruction();
+        if (result.Offset != 1 || !result.Key.Span.SequenceEqual(_data) || !result.Value.Span.SequenceEqual(_data))
+            throw new InvalidOperationException("Construction correctness mismatch");
+        Console.WriteLine($"CORRECT hash={ConstructAndHash()} offset={result.Offset} eof={result.IsPartitionEof}");
+        Console.WriteLine($"SIZES reference={Unsafe.SizeOf<ConsumeResult<string,string>>()} scalar={Unsafe.SizeOf<ConsumeResult<int,int>>()} array={Unsafe.SizeOf<ConsumeResult<byte[],byte[]>>()} readonlyMemory={Unsafe.SizeOf<ConsumeResult<ReadOnlyMemory<byte>,ReadOnlyMemory<byte>>>()} memory={Unsafe.SizeOf<ConsumeResult<Memory<byte>,Memory<byte>>>()} segment={Unsafe.SizeOf<ConsumeResult<ArraySegment<byte>,ArraySegment<byte>>>()}");
+        using var process = Process.GetCurrentProcess();
+        var timer = Stopwatch.StartNew();
+        long operations = 0;
+        var next = 1d;
+        do
+        {
+            Invoke();
+            operations++;
+            if (!Program.Smoke && timer.Elapsed.TotalSeconds >= next)
+            {
+                process.Refresh();
+                Console.WriteLine($"WARM seconds={timer.Elapsed.TotalSeconds:F3} operations={operations} jit={System.Runtime.JitInfo.GetCompiledMethodCount()} threads={ThreadPool.ThreadCount} cpuMs={process.TotalProcessorTime.TotalMilliseconds:F3} gc0={GC.CollectionCount(0)} gc1={GC.CollectionCount(1)} gc2={GC.CollectionCount(2)} heap={GC.GetTotalMemory(false)} rss={process.WorkingSet64}");
+                next++;
+            }
+        } while (!Program.Smoke && timer.Elapsed.TotalSeconds < 20);
+        Console.WriteLine($"WARM completed seconds={timer.Elapsed.TotalSeconds:F3} operations={operations}");
+        var allocated = GC.GetAllocatedBytesForCurrentThread();
+        for (var i = 0; i < 1000; i++) Invoke();
+        Console.WriteLine($"RAW operations=1000 bytes={GC.GetAllocatedBytesForCurrentThread() - allocated}");
+    }
+
+    private void Invoke()
+    {
+        _sink = Program.Case == nameof(ConstructAndHash) ? ConstructAndHash() : (int)TypedConstruction().Offset;
+    }
+
+    [GlobalCleanup]
+    public void Cleanup() => Console.WriteLine($"SINK {_sink}");
+}

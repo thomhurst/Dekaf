@@ -1,0 +1,27 @@
+[
+  {
+    "path": "src/Dekaf.Testing/InMemoryConsumer.cs",
+    "sha256": "130CB39C7F3CD8800A37E67D26BA4760EA209B3B4C2F1476A4F7452624819B9A",
+    "git_blob": "86f5b685a5b9f4dc2b1cefe940158243cea36dd5"
+  },
+  {
+    "path": "src/Dekaf/Consumer/IKafkaConsumer.cs",
+    "sha256": "AD912741DCAF693F91FCDBE041246D072038F596BF19F2E98C73E078FDBC6788",
+    "git_blob": "09ed7e777a3ec64c3946bc897b35dc8b0de31c31"
+  },
+  {
+    "path": "src/Dekaf/Consumer/KafkaConsumer.cs",
+    "sha256": "96026D08AD3C7E9E98CF51BCBCE334EC105B8BE70DA23DB20E6D8310F697663D",
+    "git_blob": "806a0327bec1a6eabdd10b7b696da47204409aa9"
+  },
+  {
+    "path": "src/Dekaf/Consumer/PartitionMessageKey.cs",
+    "sha256": "580AC37A077F687EBFBD97C6703CA7E20CAD628354D06410546C39B322CCAC6C",
+    "git_blob": "b00f7a5dcfb2b4e49290de6e414a9a2ecd213ec3"
+  },
+  {
+    "path": "src/Dekaf/Consumer/PartitionedProcessing.cs",
+    "sha256": "45CEE9E7F48E98B46D8E3C5FD97F5F4B6644255156BED3B85E8EF081FEFD9A3C",
+    "git_blob": "1df102e88947beec44b1ab111ad3329864ec4ab8"
+  }
+]
