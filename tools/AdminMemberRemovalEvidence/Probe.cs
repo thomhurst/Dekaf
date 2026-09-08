@@ -75,6 +75,19 @@ public static class Probe
         var overflow = new Dictionary<long, long>();
         var intervals = intervalSets[phase];
         using var process = Process.GetCurrentProcess();
+        if (compilations is not null)
+        {
+            // Age retained observer storage before the continuous workload starts.
+            // Otherwise histogram allocation postpones the first Gen2/ArrayPool
+            // finalizer transition into collection, even with longer warmup.
+            PhaseEvents.Log.Phase("prepare-observer-heap");
+            compilations.Phase("prepare-observer-heap");
+            for (var generationPass = 0; generationPass < 2; generationPass++)
+            {
+                GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, blocking: true, compacting: true);
+                GC.WaitForPendingFinalizers();
+            }
+        }
         var started = Stopwatch.GetTimestamp();
         long completed = 0;
         if (compilations is not null)

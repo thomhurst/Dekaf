@@ -56,7 +56,8 @@ def execute():
     probe_prefix = ['taskset', '-c', str(cpu), 'dotnet']
     plan = dict(A=A, B=B, harness=subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
                 controls=controls, candidate_only=added, warmup_seconds=warmup_seconds, measured_seconds=60,
-                warmup_rationale='PR3129: cover observed Gen2/ArrayPool-trimming JIT at approximately 214 process seconds; assess all measured runtime transitions',
+                warmup_rationale='PR3129: 360 seconds continuous workload after observer heap preparation; assess all measured runtime transitions',
+                observer_preparation='PR3129: after histogram allocation, two blocking compacting full GCs with finalizer waits before workload warmup; no forced GC during warmup or measurement',
                 pilot=pilot, report_aggregation='all overflow sorting and aggregation deferred until both captures finish',
                 histograms='PR3129: value-type buckets with 65536 preallocated entries per interval; overflow invalidates' if PR == 3129 else 'reference buckets',
                 phase_transition='one continuous warmed call loop; no return/re-entry between warmup and measurement',
