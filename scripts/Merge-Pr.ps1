@@ -68,7 +68,7 @@ if (-not $Worktree) {
     Write-Host "No isolated worktree found for branch '$headRef' (nothing to remove)."
     git -C $mainRepo worktree prune
 } else {
-    Remove-MergedWorktree -Repo $mainRepo -Worktree $Worktree -Label "#${Pr}"
+    Remove-MergedWorktree -Repo $mainRepo -Worktree $Worktree -Label "#${Pr}" -AllowCurrentOwner
 
     # A dirty worktree is intentionally preserved. Its local and remote branches are
     # also preserved so uncommitted work retains an upstream recovery point.
