@@ -47,8 +47,11 @@ def execute():
         validator = original.validate_probe
         controls, added = original.CONTROLS, original.NEW_CASES
     environment = dict(os.environ, DOTNET_TieredCompilation='1', DOTNET_TieredPGO='1', DOTNET_gcServer='0')
+    cpu = max(os.sched_getaffinity(0))
+    probe_prefix = ['taskset', '-c', str(cpu), 'dotnet']
     plan = dict(A=A, B=B, harness=subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
                 controls=controls, candidate_only=added, warmup_seconds=180, measured_seconds=60,
+                cpu_affinity=[cpu], jit_attribution='CLR MethodJittingStarted; identical observer in all phases',
                 image=os.getenv('ImageOS'), image_version=os.getenv('ImageVersion'), run_id=os.getenv('GITHUB_RUN_ID'),
                 scope='Cached-transport completed administrative calls; no network/broker acceptance.',
                 verdict='INCONCLUSIVE: partial scope; assess all retained runtime and metric evidence')
@@ -67,6 +70,7 @@ def execute():
         for source in SOURCE.iterdir():
             if source.suffix in {'.cs', '.csproj'}:
                 shutil.copy2(source, fixture / source.name)
+        shutil.copy2(ROOT / '.github/benchmarks/CompilationLog.cs', fixture / 'CompilationLog.cs')
         run(['dotnet', 'build', str(fixture / 'Runner.csproj'), '-c', 'Release', '--disable-build-servers',
              '-p:Candidate=' + str(label == 'B').lower()], OUT / f'build-{label}.log', cwd=product)
         binary = fixture / 'bin/Release/net10.0/Dekaf.Benchmarks.dll'
@@ -77,7 +81,7 @@ def execute():
     for label, binary in hosts.items():
         for case in controls + (added if label == 'B' else []):
             destination = OUT / 'validation' / label / case.replace(':', '-')
-            run(['dotnet', str(binary), 'probe', case, str(destination), '.2', '.2'], destination / 'run.log', env=environment)
+            run(probe_prefix + [str(binary), 'probe', case, str(destination), '.2', '.2'], destination / 'run.log', env=environment)
             validator(destination / 'measured.json', .2)
             common.retain_loaded_binaries(destination / 'binaries.json', binary.parent, OUT / 'binaries' / label)
     observations = {}
@@ -86,14 +90,14 @@ def execute():
         for case in controls:
             destination = OUT / phase / case.replace(':', '-')
             binary = hosts[label]
-            run(['dotnet', str(binary), 'probe', case, str(destination), '180', '60'], destination / 'run.log', env=environment)
+            run(probe_prefix + [str(binary), 'probe', case, str(destination), '180', '60'], destination / 'run.log', env=environment)
             validator(destination / 'warmup.json', 180)
             observations[phase][case] = validator(destination / 'measured.json', 60)
             common.retain_loaded_binaries(destination / 'binaries.json', binary.parent, OUT / 'binaries' / label)
     save(OUT / 'comparison.json', {case: common.compare(*(observations[phase][case] for phase in ['A1', 'B', 'A2'])) for case in controls})
     for case in added:
         destination = OUT / 'candidate-only' / case.replace(':', '-')
-        run(['dotnet', str(hosts['B']), 'probe', case, str(destination), '180', '60'], destination / 'run.log', env=environment)
+        run(probe_prefix + [str(hosts['B']), 'probe', case, str(destination), '180', '60'], destination / 'run.log', env=environment)
         validator(destination / 'warmup.json', 180)
         validator(destination / 'measured.json', 60)
         common.retain_loaded_binaries(destination / 'binaries.json', hosts['B'].parent, OUT / 'binaries/B')

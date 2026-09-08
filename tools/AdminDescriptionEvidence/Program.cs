@@ -10,17 +10,23 @@ using Dekaf.Benchmarks;
 if (args.Length > 0 && args[0] == "probe")
 {
     if (args.Length != 5) throw new ArgumentException("probe CASE OUTPUT WARMUP_SECONDS MEASURED_SECONDS");
+    using var compilations = new CompilationLog(Path.Combine(args[2], "compilations.json"));
     PhaseEvents.Log.Phase("initialize");
+    compilations.Phase("initialize");
     await using var fixture = new AdminFixture(args[1]);
     await fixture.InitializeAsync();
     Probe.SaveLoadedBinaries(Path.Combine(args[2], "binaries.json"));
     PhaseEvents.Log.Phase("primer");
+    compilations.Phase("primer");
     await Probe.PrimeAsync(fixture, Path.Combine(args[2], "primer.json"));
     PhaseEvents.Log.Phase("warmup");
+    compilations.Phase("warmup");
     var warmup = await Probe.MeasureAsync(fixture, double.Parse(args[3], System.Globalization.CultureInfo.InvariantCulture));
     PhaseEvents.Log.Phase("measured");
+    compilations.Phase("measured");
     var measured = await Probe.MeasureAsync(fixture, double.Parse(args[4], System.Globalization.CultureInfo.InvariantCulture));
     PhaseEvents.Log.Phase("finalize");
+    compilations.Phase("finalize");
     Probe.Save(Path.Combine(args[2], "warmup.json"), warmup);
     Probe.Save(Path.Combine(args[2], "measured.json"), measured);
     Console.WriteLine($"{args[1]} warmup={warmup.Seconds:F3}s/{warmup.Completed} calls measured={measured.Seconds:F3}s/{measured.Completed} calls");
