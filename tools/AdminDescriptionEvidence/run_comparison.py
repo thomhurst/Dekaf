@@ -92,9 +92,32 @@ def validate_primer_segments(primer_path):
         validate_probe(f'{path}[{index}]', .05, segment)
 
 
+def validate_engine_primer(path):
+    data = json.loads(path.read_text(encoding='utf-8-sig'))
+    if not math.isfinite(data['Seconds']) or data['Seconds'] < 10:
+        raise ValueError(f'{path}: engine primer requires ten elapsed seconds')
+    if data['CallbackPairs'] <= 0 or data['FormattedMeasurements'] != data['CallbackPairs']:
+        raise ValueError(f'{path}: engine primer callback/formatting work is missing')
+    return data
+
+
+def validate_bdn_workload_warmup(benchmark, smoke=False):
+    warmups = [row for row in benchmark['Measurements']
+               if row['IterationMode'] == 'Workload' and row['IterationStage'] == 'Warmup']
+    if any(not math.isfinite(row['Nanoseconds']) or row['Nanoseconds'] <= 0 or row['Operations'] <= 0
+           for row in warmups):
+        raise ValueError('BDN workload warmup contains invalid duration or operation counts')
+    seconds = sum(row['Nanoseconds'] for row in warmups) / 1e9
+    completed = sum(row['Operations'] for row in warmups)
+    if not smoke and (len(warmups) != 50 or seconds < 20):
+        raise ValueError('BDN requires fifty workload warmups totaling at least twenty elapsed seconds')
+    return dict(seconds=seconds, completed=completed, iterations=len(warmups),
+                smoke=smoke, scope='Raw BDN Workload/Warmup measurements; smoke is not acceptance')
+
+
 def validate_bdn_phase(warmup):
     clock = json.loads(warmup.with_name('clock-' + warmup.name).read_text(encoding='utf-8-sig'))
-    signal_path = warmup.parent / f"signals-{clock['ProcessId']}.jsonl"
+    signal_path = warmup.with_name('signals-' + warmup.stem + '.jsonl')
     signals = [json.loads(line) for line in signal_path.read_text(encoding='utf-8-sig').splitlines()]
     if [row['Signal'] for row in signals] != ['BeforeActualRun', 'AfterActualRun']:
         raise ValueError(f'{signal_path}: actual workload boundaries missing, repeated or out of order')
@@ -160,6 +183,8 @@ def execute(args):
                     github_run=os.environ.get('GITHUB_RUN_ID'), smoke=args.smoke,
                     primer_segments=128, primer_segment_seconds=.05, primer_seconds=1,
                     warmup_seconds=.2 if args.smoke else 120, measured_seconds=.2 if args.smoke else 60,
+                    bdn_engine_primer_seconds=10, bdn_workload_warmup_iterations=None if args.smoke else 50,
+                    bdn_workload_warmup_minimum_seconds=0 if args.smoke else 20,
                     bdn_outlier_mode='DontRemove', bdn_keep_files=True,
                     runtime={'DOTNET_TieredCompilation':'1', 'DOTNET_TieredPGO':'1', 'DOTNET_gcServer':'0'},
                     controls=CONTROLS, candidate_only=NEW_CASES)
@@ -243,12 +268,17 @@ def execute(args):
             benchmarks = [benchmark for path in reports for benchmark in json.loads(path.read_text(encoding='utf-8-sig')).get('Benchmarks', [])]
             if len(benchmarks) != len(cases) or any(not b.get('Statistics') for b in benchmarks):
                 raise ValueError(f'{phase}: BDN did not measure every requested fixture')
+            if sorted(b['Parameters'] for b in benchmarks) != sorted('Case=' + case for case in cases):
+                raise ValueError(f'{phase}: BDN measured fixture identities differ from requested cases')
+            save(archive / phase / 'bdn-workload-warmup.json',
+                 {b['Parameters']: validate_bdn_workload_warmup(b, args.smoke) for b in benchmarks})
             for case in cases:
                 prefix = case.replace(':', '-')
                 warmups = list((archive / phase / 'bdn-runtime').glob(f'{prefix}-*.json'))
                 if not warmups:
                     raise ValueError(f'{phase}/{case}: BDN elapsed-workload warmup evidence missing')
                 for warmup in warmups:
+                    validate_engine_primer(warmup.with_name('engine-primer-' + warmup.name))
                     validate_probe(warmup, metadata['warmup_seconds'])
                     validate_probe(warmup.with_name('primer-' + warmup.name), metadata['primer_seconds'])
                     validate_primer_segments(warmup.with_name('primer-' + warmup.name))

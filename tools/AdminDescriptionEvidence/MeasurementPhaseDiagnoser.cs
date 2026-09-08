@@ -26,12 +26,18 @@ public sealed class MeasurementPhaseDiagnoser : IDiagnoser
     {
         if (signal is not (HostSignal.BeforeActualRun or HostSignal.AfterActualRun)) return;
         var timestamp = Stopwatch.GetTimestamp();
+        var utcClockBefore = Stopwatch.GetTimestamp();
+        var utcTimestamp = DateTime.UtcNow;
+        var utcClockAfter = Stopwatch.GetTimestamp();
         var processId = parameters.Process.Id;
+        var testCase = (string)parameters.BenchmarkCase.Parameters.Items.Single(parameter => parameter.Name == "Case").Value;
         var output = Environment.GetEnvironmentVariable("ADMIN_EVIDENCE_WARMUP_DIRECTORY") ?? Path.GetTempPath();
         Directory.CreateDirectory(output);
         var row = new { Signal = signal.ToString(), Timestamp = timestamp,
             StopwatchFrequency = Stopwatch.Frequency, ProcessId = processId,
+            UtcTimestamp = utcTimestamp, UtcClockBefore = utcClockBefore, UtcClockAfter = utcClockAfter,
             Benchmark = parameters.BenchmarkCase.DisplayInfo };
-        File.AppendAllText(Path.Combine(output, $"signals-{processId}.jsonl"), JsonSerializer.Serialize(row) + Environment.NewLine);
+        File.AppendAllText(Path.Combine(output, $"signals-{testCase.Replace(':', '-')}-{processId}.jsonl"),
+            JsonSerializer.Serialize(row) + Environment.NewLine);
     }
 }
