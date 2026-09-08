@@ -40,7 +40,7 @@ function gh {
 }
 
 try {
-    foreach ($scenario in @('owner', 'foreign-owner', 'unowned', 'unidentified', 'dirty-owner', 'renew-failure', 'status-failure')) {
+    foreach ($scenario in @('cleanup-failure', 'owner', 'foreign-owner', 'unowned', 'unidentified', 'dirty-owner', 'renew-failure', 'status-failure')) {
         $caseRoot = Join-Path $testRoot $scenario
         $repo = Join-Path $caseRoot 'repo'
         $remote = Join-Path $caseRoot 'remote.git'
@@ -55,6 +55,17 @@ try {
         Invoke-TestGit -C $repo config user.email 'merge-owner@example.invalid'
         Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Merge-Pr.ps1') -Destination (Join-Path $repo 'scripts/Merge-Pr.ps1')
         Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'WorktreeCleanup.ps1') -Destination (Join-Path $repo 'scripts/WorktreeCleanup.ps1')
+        if ($scenario -eq 'cleanup-failure') {
+            # Inject an inspection failure after ownership has been acquired. The
+            # real wrapper must report merge success, preserve branches and release
+            # its temporary lease even when the guarded filesystem operation throws.
+            Add-Content -LiteralPath (Join-Path $repo 'scripts/WorktreeCleanup.ps1') -Value @'
+function Remove-MergedWorktreeCore {
+    param($Repo, $Worktree, $Label, $ExpectedHead, $ExpectedLockName, [switch]$WhatIf)
+    throw 'Injected cleanup inspection failure'
+}
+'@
+        }
         Set-Content -LiteralPath (Join-Path $repo 'scripts/Assert-PrGreen.ps1') -Value 'exit 0'
         $quotedCanonical = $AgentLocksScript.Replace("'", "''")
         $proxy = "& '$quotedCanonical' @args`nexit `$LASTEXITCODE"
@@ -70,7 +81,7 @@ try {
         Invoke-TestGit -C $worktree commit -m change
         Invoke-TestGit -C $worktree push -u origin $branch
         $leaseOwner = if ($scenario -eq 'foreign-owner') { "foreign-$owner" } else { $owner }
-        $claimed = $scenario -notin @('unowned', 'unidentified')
+        $claimed = $scenario -notin @('unowned', 'unidentified', 'cleanup-failure')
         if ($claimed) {
             & pwsh -NoProfile -File $AgentLocksScript acquire -LockName $lockName -OwnerId $leaseOwner -Worktree $worktree *> $null
             Assert ($LASTEXITCODE -eq 0) 'Cannot acquire isolated merge lease'
@@ -120,6 +131,10 @@ try {
                 & pwsh -NoProfile -File $AgentLocksScript release -LockName $lockName -OwnerId "competitor-$owner" *> $null
             }
             Assert ($competingExit -eq 3) "Merge released ownership too soon for $scenario"
+        }
+        else {
+            $state = & pwsh -NoProfile -File $AgentLocksScript status -LockName $lockName -OwnerId $owner
+            Assert ($state -eq 'FREE') "Merge left its temporary lease behind for $scenario"
         }
         Write-Host "OK merge ownership scenario: $scenario"
     }

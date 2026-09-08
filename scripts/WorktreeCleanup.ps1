@@ -234,6 +234,9 @@ function Remove-MergedWorktree {
     try {
         Remove-MergedWorktreeCore @coreParameters -ExpectedLockName $lockName
     }
+    catch {
+        Write-Host "WARNING: worktree cleanup failed for $Label : $Worktree; any remaining checkout is preserved."
+    }
     finally {
         if (-not $WhatIf) {
             # No -Worktree was supplied on acquire: release only this temporary lease.
