@@ -1,0 +1,71 @@
+Running tests from C:\git\Dekaf-worktrees\pr-3082-deserialized-null\tests\Dekaf.Tests.Unit\bin\Release\net10.0\Dekaf.Tests.Unit.dll (net10.0|x64)
+failed DeserializedNull_NullableScalarRetainsSeparateIdentity (33ms)
+  [Test Failure] AssertionException: Expected to be 3
+but found 2
+
+at Assert.That(keys.Count).IsEqualTo(3)
+  from C:\git\Dekaf-worktrees\pr-3082-deserialized-null\tests\Dekaf.Tests.Unit\bin\Release\net10.0\Dekaf.Tests.Unit.dll (net10.0|x64)
+  TUnit.Engine.Exceptions.TestFailedException: [Test Failure] AssertionException: Expected to be 3
+  but found 2
+  
+  at Assert.That(keys.Count).IsEqualTo(3)
+    at Dekaf.Tests.Unit.Consumer.PartitionMessageKeyTests.DeserializedNull_NullableScalarRetainsSeparateIdentity() in C:\git\Dekaf-worktrees\pr-3082-deserialized-null\tests\Dekaf.Tests.Unit\Consumer\PartitionMessageKeyTests.cs:46
+       --- TUnit internals omitted (run with --detailed-stacktrace for full trace) ---
+failed DeserializedNull_IsDistinctFromWireNullAndEmptyBinaryKey (33ms)
+  [Test Failure] AssertionException: Expected to be 3
+but found 2
+
+at Assert.That(keys.Count).IsEqualTo(3)
+  from C:\git\Dekaf-worktrees\pr-3082-deserialized-null\tests\Dekaf.Tests.Unit\bin\Release\net10.0\Dekaf.Tests.Unit.dll (net10.0|x64)
+  TUnit.Engine.Exceptions.TestFailedException: [Test Failure] AssertionException: Expected to be 3
+  but found 2
+  
+  at Assert.That(keys.Count).IsEqualTo(3)
+    at Dekaf.Tests.Unit.Consumer.PartitionMessageKeyTests.DeserializedNull_IsDistinctFromWireNullAndEmptyBinaryKey() in C:\git\Dekaf-worktrees\pr-3082-deserialized-null\tests\Dekaf.Tests.Unit\Consumer\PartitionMessageKeyTests.cs:23
+       --- TUnit internals omitted (run with --detailed-stacktrace for full trace) ---
+failed CustomComparer_SeparatesBothNullKindsWithoutCallingUserCode (33ms)
+  [Test Failure] AssertionException: Expected to be 3
+but found 2
+
+at Assert.That(keys.Count).IsEqualTo(3)
+  from C:\git\Dekaf-worktrees\pr-3082-deserialized-null\tests\Dekaf.Tests.Unit\bin\Release\net10.0\Dekaf.Tests.Unit.dll (net10.0|x64)
+  TUnit.Engine.Exceptions.TestFailedException: [Test Failure] AssertionException: Expected to be 3
+  but found 2
+  
+  at Assert.That(keys.Count).IsEqualTo(3)
+    at Dekaf.Tests.Unit.Consumer.PartitionedKeyComparerTests.CustomComparer_SeparatesBothNullKindsWithoutCallingUserCode() in C:\git\Dekaf-worktrees\pr-3082-deserialized-null\tests\Dekaf.Tests.Unit\Consumer\PartitionedKeyComparerTests.cs:22
+       --- TUnit internals omitted (run with --detailed-stacktrace for full trace) ---
+failed WireNullAndDeserializedNullKeys_RunInSeparateLanes(0) (10s 010ms)
+  [Test Failure] TaskCanceledException: A task was canceled.
+  from C:\git\Dekaf-worktrees\pr-3082-deserialized-null\tests\Dekaf.Tests.Unit\bin\Release\net10.0\Dekaf.Tests.Unit.dll (net10.0|x64)
+  TUnit.Engine.Exceptions.TestFailedException: [Test Failure] TaskCanceledException: A task was canceled.
+    at Dekaf.Tests.Unit.Consumer.PartitionedNullKeyTests.VerifyAsync[TKey](IDeserializer`1 deserializer) in C:\git\Dekaf-worktrees\pr-3082-deserialized-null\tests\Dekaf.Tests.Unit\Consumer\PartitionedNullKeyTests.cs:69
+    at Dekaf.Tests.Unit.Consumer.PartitionedNullKeyTests.VerifyAsync[TKey](IDeserializer`1 deserializer) in C:\git\Dekaf-worktrees\pr-3082-deserialized-null\tests\Dekaf.Tests.Unit\Consumer\PartitionedNullKeyTests.cs:81
+       --- TUnit internals omitted (run with --detailed-stacktrace for full trace) ---
+failed WireNullAndDeserializedNullKeys_RunInSeparateLanes(1) (10s 010ms)
+  [Test Failure] TaskCanceledException: A task was canceled.
+  from C:\git\Dekaf-worktrees\pr-3082-deserialized-null\tests\Dekaf.Tests.Unit\bin\Release\net10.0\Dekaf.Tests.Unit.dll (net10.0|x64)
+  TUnit.Engine.Exceptions.TestFailedException: [Test Failure] TaskCanceledException: A task was canceled.
+    at Dekaf.Tests.Unit.Consumer.PartitionedNullKeyTests.VerifyAsync[TKey](IDeserializer`1 deserializer) in C:\git\Dekaf-worktrees\pr-3082-deserialized-null\tests\Dekaf.Tests.Unit\Consumer\PartitionedNullKeyTests.cs:69
+    at Dekaf.Tests.Unit.Consumer.PartitionedNullKeyTests.VerifyAsync[TKey](IDeserializer`1 deserializer) in C:\git\Dekaf-worktrees\pr-3082-deserialized-null\tests\Dekaf.Tests.Unit\Consumer\PartitionedNullKeyTests.cs:81
+       --- TUnit internals omitted (run with --detailed-stacktrace for full trace) ---
+failed WireNullAndDeserializedNullKeys_RunInSeparateLanes(2) (10s 012ms)
+  [Test Failure] TaskCanceledException: A task was canceled.
+  from C:\git\Dekaf-worktrees\pr-3082-deserialized-null\tests\Dekaf.Tests.Unit\bin\Release\net10.0\Dekaf.Tests.Unit.dll (net10.0|x64)
+  TUnit.Engine.Exceptions.TestFailedException: [Test Failure] TaskCanceledException: A task was canceled.
+    at Dekaf.Tests.Unit.Consumer.PartitionedNullKeyTests.VerifyAsync[TKey](IDeserializer`1 deserializer) in C:\git\Dekaf-worktrees\pr-3082-deserialized-null\tests\Dekaf.Tests.Unit\Consumer\PartitionedNullKeyTests.cs:69
+    at Dekaf.Tests.Unit.Consumer.PartitionedNullKeyTests.VerifyAsync[TKey](IDeserializer`1 deserializer) in C:\git\Dekaf-worktrees\pr-3082-deserialized-null\tests\Dekaf.Tests.Unit\Consumer\PartitionedNullKeyTests.cs:81
+       --- TUnit internals omitted (run with --detailed-stacktrace for full trace) ---
+C:\git\Dekaf-worktrees\pr-3082-deserialized-null\tests\Dekaf.Tests.Unit\bin\Release\net10.0\Dekaf.Tests.Unit.dll (net10.0|x64) failed with 6 error(s) (10s 636ms)
+Exit code: 2
+
+  In process file artifacts produced:
+    - C:\git\Dekaf-worktrees\pr-3082-deserialized-null\TestResults\Dekaf.Tests.Unit-windows-net10.0-report.html
+
+Test run summary: Failed!
+  total: 19
+  failed: 6
+  succeeded: 13
+  skipped: 0
+  duration: 12s 104ms
+Test run completed with non-success exit code: 2 (see: https://aka.ms/testingplatform/exitcodes)

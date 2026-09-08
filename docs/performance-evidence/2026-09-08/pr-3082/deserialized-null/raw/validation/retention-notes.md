@@ -1,0 +1,7 @@
+# Retained validation scope
+
+The original failing six-case test run retains its complete net10 test host, source patch and HTML report. Final validation retains complete unit hosts for net10/net8 and the final integration host, with loaded Dekaf.dll hashes checked against the final core builds. Initial passing command logs precede the final rebuild and are retained for chronology; intermediate passing HTML reports and each intermediate host revision are not claimed as retained. The final source and final passing hosts are the validation cited in the PR.
+
+Both microbenchmark experiments retain their complete original compiled A/B hosts. The constant-flag experiment stopped during A1 Memory; completed A1 ByteArray/ReadOnlyMemory raw output and the interrupted third case are retained without candidate comparison. The replacement runtime-flag experiment retains all 27 complete process results, 405 corrected samples, actual measurements, maxima, warmups, runtime series, original compiled host dependencies, fixture sources and loaded identities. No partial samples are transferred or discarded to obtain acceptance.
+
+Candidate core source is fa2c5b88b262a342d08a9f9315fdf4fd3047bd31. Fixture commit ea67f9b17b8b35b73f7ba7a7df62ca7a6356f3bc has the identical src tree. Standalone harness entry point/logger/driver/assessment sources are retained independently; the harness informational Git version identifies the working checkout and does not imply these task-local files were committed in that Git tree.

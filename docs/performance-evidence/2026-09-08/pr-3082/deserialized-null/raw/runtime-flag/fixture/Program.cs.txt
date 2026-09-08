@@ -1,0 +1,98 @@
+using System.Diagnostics;
+using System.Reflection;
+using System.Runtime.CompilerServices;
+using System.Security.Cryptography;
+using System.Text.Json;
+using BenchmarkDotNet.Attributes;
+using BenchmarkDotNet.Configs;
+using BenchmarkDotNet.Exporters.Json;
+using BenchmarkDotNet.Filters;
+using BenchmarkDotNet.Jobs;
+using BenchmarkDotNet.Running;
+using BenchmarkDotNet.Toolchains.InProcess.Emit;
+using Dekaf.Benchmarks.Benchmarks.Unit;
+using Dekaf.Consumer;
+using Perfolizer.Mathematics.OutlierDetection;
+
+namespace Dekaf.Benchmarks.Diagnostics;
+
+public static class Program
+{
+    internal static bool Smoke;
+    internal static bool DistinctNull;
+    internal static string Case = "";
+    internal static string Output = "";
+    public static int Main(string[] args)
+    {
+        if (args.Length != 4 || args[2] is not ("smoke" or "measure") || args[3] is not ("baseline" or "candidate"))
+            throw new ArgumentException("Usage: <case> <output> <smoke|measure> <baseline|candidate>");
+        Case = args[0];
+        if (typeof(PartitionMessageKeyBenchmarks).GetMethod(Case)?.GetCustomAttribute<BenchmarkAttribute>() is null)
+            throw new ArgumentException("Unknown benchmark case");
+        Output = Path.GetFullPath(args[1]);
+        Directory.CreateDirectory(Output);
+        Smoke = args[2] == "smoke";
+        DistinctNull = args[3] == "candidate";
+        var assemblies = new[] { typeof(Program).Assembly, typeof(PartitionMessageKey<int>).Assembly };
+        File.WriteAllText(Path.Combine(Output, "loaded.json"), JsonSerializer.Serialize(assemblies.Select(a => new
+        {
+            path = a.Location,
+            sha256 = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(a.Location))),
+            mvid = a.ManifestModule.ModuleVersionId,
+            version = a.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
+        })));
+        using var runtime = new RuntimeLogger(Path.Combine(Output, "runtime.csv"));
+        var invocations = Case is "Int32" or "NullableInt32" or "NullKinds" ? 67_108_864 : 16_777_216;
+        var config = DefaultConfig.Instance.WithArtifactsPath(Output).AddLogger(runtime)
+            .WithOptions(ConfigOptions.KeepBenchmarkFiles)
+            .AddExporter(JsonExporter.Full)
+            .AddFilter(new SimpleFilter(test => test.Descriptor.WorkloadMethod.Name == Case))
+            .AddJob(Job.Default.WithToolchain(InProcessEmitToolchain.Instance).WithAffinity(new IntPtr(4))
+                .WithWarmupCount(Smoke ? 1 : 10).WithIterationCount(Smoke ? 1 : 15)
+                .WithInvocationCount(Smoke ? 1024 : invocations).WithUnrollFactor(1)
+                .WithOutlierMode(OutlierMode.DontRemove));
+        var summary = BenchmarkRunner.Run<DiagnosticBenchmarks>(config);
+        return summary.HasCriticalValidationErrors || summary.Reports.Length != 1 || !summary.Reports[0].Success ? 1 : 0;
+    }
+}
+
+[MemoryDiagnoser]
+public class DiagnosticBenchmarks : PartitionMessageKeyBenchmarks
+{
+    private int _sink;
+
+    [GlobalSetup]
+    public void Setup()
+    {
+        if (NullKinds() != (Program.DistinctNull ? 0 : 1))
+            throw new InvalidOperationException("Unexpected null identity behavior");
+        var binary = unchecked((int)System.IO.Hashing.XxHash3.HashToUInt64(new byte[] { 1, 2, 3, 4, 5, 6, 7, 8 })) ^ 1;
+        var text = StringComparer.Ordinal.GetHashCode("partition-key") ^ 1;
+        if (ByteArray() != binary || ReadOnlyMemory() != binary || Memory() != binary || ArraySegment() != binary
+            || String() != text || CustomString() != text || Int32() != 43 || NullableInt32() != 43)
+            throw new InvalidOperationException("Normal key hash/equality correctness mismatch");
+        var invoke = typeof(PartitionMessageKeyBenchmarks).GetMethod(Program.Case)!
+            .CreateDelegate<Func<int>>(this);
+        Console.WriteLine($"SIZES string={Unsafe.SizeOf<PartitionMessageKey<string>>()} number={Unsafe.SizeOf<PartitionMessageKey<int>>()} nullable={Unsafe.SizeOf<PartitionMessageKey<int?>>()} array={Unsafe.SizeOf<PartitionMessageKey<byte[]>>()} raw={Unsafe.SizeOf<PartitionMessageKey<ReadOnlyMemory<byte>>>()} memory={Unsafe.SizeOf<PartitionMessageKey<Memory<byte>>>()} segment={Unsafe.SizeOf<PartitionMessageKey<ArraySegment<byte>>>()}");
+        using var process = Process.GetCurrentProcess();
+        var timer = Stopwatch.StartNew();
+        long operations = 0;
+        var next = 1d;
+        do
+        {
+            _sink ^= invoke();
+            operations++;
+            if (!Program.Smoke && timer.Elapsed.TotalSeconds >= next)
+            {
+                process.Refresh();
+                Console.WriteLine($"WARM seconds={timer.Elapsed.TotalSeconds:F6} operations={operations} jit={System.Runtime.JitInfo.GetCompiledMethodCount()} jitMs={System.Runtime.JitInfo.GetCompilationTime().TotalMilliseconds:F6} threads={ThreadPool.ThreadCount} pending={ThreadPool.PendingWorkItemCount} cpuMs={process.TotalProcessorTime.TotalMilliseconds:F6} gc0={GC.CollectionCount(0)} gc1={GC.CollectionCount(1)} gc2={GC.CollectionCount(2)} heap={GC.GetTotalMemory(false)} rss={process.WorkingSet64}");
+                next++;
+            }
+        } while (!Program.Smoke && timer.Elapsed.TotalSeconds < 20);
+        File.WriteAllText(Path.Combine(Program.Output, "warmup.json"), JsonSerializer.Serialize(new { seconds=timer.Elapsed.TotalSeconds, operations }));
+        var allocated = GC.GetAllocatedBytesForCurrentThread();
+        for (var i = 0; i < 1000; i++) _sink ^= invoke();
+        Console.WriteLine($"RAW operations=1000 bytes={GC.GetAllocatedBytesForCurrentThread() - allocated} sink={_sink}");
+    }
+}
+

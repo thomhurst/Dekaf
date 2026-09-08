@@ -1,0 +1,12 @@
+Running tests from C:\git\Dekaf-worktrees\pr-3082-deserialized-null\tests\Dekaf.Tests.Unit\bin\Release\net10.0\Dekaf.Tests.Unit.dll (net10.0|x64)
+C:\git\Dekaf-worktrees\pr-3082-deserialized-null\tests\Dekaf.Tests.Unit\bin\Release\net10.0\Dekaf.Tests.Unit.dll (net10.0|x64) passed (6s 148ms)
+
+  In process file artifacts produced:
+    - C:\git\Dekaf-worktrees\pr-3082-deserialized-null\TestResults\Dekaf.Tests.Unit-windows-net10.0-report.html
+
+Test run summary: Passed!
+  total: 1184
+  failed: 0
+  succeeded: 1184
+  skipped: 0
+  duration: 7s 827ms

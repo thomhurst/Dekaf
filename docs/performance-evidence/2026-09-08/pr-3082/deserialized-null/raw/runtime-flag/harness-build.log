@@ -1,0 +1,9 @@
+  Determining projects to restore...
+  Restored C:\git\Dekaf-worktrees\pr-3082-deserialized-null\.artifacts\deserialized-null\harness-v2\harness.csproj (in 221 ms).
+  harness -> C:\git\Dekaf-worktrees\pr-3082-deserialized-null\.artifacts\deserialized-null\harness-v2\bin\Release\net10.0\Dekaf.Benchmarks.dll
+
+Build succeeded.
+    0 Warning(s)
+    0 Error(s)
+
+Time Elapsed 00:00:02.54

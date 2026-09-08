@@ -1,0 +1,6 @@
+START A1 ByteArray
+DONE A1 ByteArray
+START A1 ReadOnlyMemory
+DONE A1 ReadOnlyMemory
+START A1 Memory
+Benchmark failed: A1/Memory: 4294967295

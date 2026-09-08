@@ -1,0 +1,18 @@
+[
+  {
+    "path": "tests/Dekaf.Tests.Unit/bin/Release/net10.0/Dekaf.dll",
+    "sha256": "78CAA051C11C4A556D334A33C25915F668C0CAE2CD312A21D8E39247A2E6609F"
+  },
+  {
+    "path": "tests/Dekaf.Tests.Integration/bin/Release/net10.0/Dekaf.dll",
+    "sha256": "78CAA051C11C4A556D334A33C25915F668C0CAE2CD312A21D8E39247A2E6609F"
+  },
+  {
+    "path": ".artifacts/deserialized-null/hosts/B/Dekaf.dll",
+    "sha256": "78CAA051C11C4A556D334A33C25915F668C0CAE2CD312A21D8E39247A2E6609F"
+  },
+  {
+    "path": "tests/Dekaf.Tests.Unit/bin/Release/net8.0/Dekaf.dll",
+    "sha256": "C2827A698C8B2188191AFDFE457AFD61900E96F175EC7F4A7D6121E8B9DC1864"
+  }
+]

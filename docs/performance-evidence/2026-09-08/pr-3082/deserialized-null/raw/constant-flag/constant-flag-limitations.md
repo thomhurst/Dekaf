@@ -1,0 +1,3 @@
+# Aborted constant-flag comparison
+
+A1 ByteArray and ReadOnlyMemory completed; A1 Memory was stopped before any candidate phase. The normal fixtures called From(value) with its default constant false, under-covering the runtime wire-null flag used by the dispatcher. All partial raw samples, original compiled hosts, source fixture, loaded manifests and the original predeclared plan remain retained. This is an incomplete, narrower diagnostic and supplies no candidate comparison or acceptance. The replacement runtime-flag experiment changes the fixture input path uniformly across all phases; no samples are transferred.

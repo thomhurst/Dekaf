@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>Dekaf.Benchmarks</AssemblyName>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="BenchmarkDotNet" /><PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="Dekaf"><HintPath>../baseline/Dekaf.dll</HintPath></Reference>
+    <Reference Include="System.IO.Hashing"><HintPath>../red-host/System.IO.Hashing.dll</HintPath></Reference>
+    <Compile Include="../../../tools/Dekaf.Benchmarks/Benchmarks/Unit/PartitionMessageKeyBenchmarks.cs" Link="PartitionMessageKeyBenchmarks.cs" />
+  </ItemGroup>
+</Project>
+

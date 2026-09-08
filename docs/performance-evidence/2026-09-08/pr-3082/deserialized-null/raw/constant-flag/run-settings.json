@@ -1,0 +1,20 @@
+{
+  "baseline": "766b9c605104906e4580c44a95392c94942c089b",
+  "candidate": "fa2c5b88b262a342d08a9f9315fdf4fd3047bd31",
+  "main": "5df2f0d03607389384b5c1466e17812a9084fac9",
+  "cases": [
+    "ByteArray",
+    "ReadOnlyMemory",
+    "Memory",
+    "ArraySegment",
+    "String",
+    "Int32",
+    "NullableInt32",
+    "CustomString",
+    "NullKinds"
+  ],
+  "tieredCompilation": 1,
+  "tieredPGO": 1,
+  "gcServer": 0,
+  "affinityMask": 4
+}

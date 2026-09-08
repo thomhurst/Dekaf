@@ -1,0 +1,162 @@
+diff --git a/tests/Dekaf.Tests.Unit/Consumer/PartitionMessageKeyTests.cs b/tests/Dekaf.Tests.Unit/Consumer/PartitionMessageKeyTests.cs
+index dee73c04e..ab8df066e 100644
+--- a/tests/Dekaf.Tests.Unit/Consumer/PartitionMessageKeyTests.cs
++++ b/tests/Dekaf.Tests.Unit/Consumer/PartitionMessageKeyTests.cs
+@@ -6,6 +6,51 @@ namespace Dekaf.Tests.Unit.Consumer;
+ 
+ public sealed class PartitionMessageKeyTests
+ {
++    [Test]
++    public async Task DeserializedNull_IsDistinctFromWireNullAndEmptyBinaryKey()
++    {
++        var comparer = GetComparer<byte[]>();
++        var wireNull = PartitionMessageKey<byte[]>.From(null, isKeyNull: true);
++        var deserializedNull = PartitionMessageKey<byte[]>.From(null, isKeyNull: false);
++        var empty = PartitionMessageKey<byte[]>.From([]);
++        var keys = new Dictionary<PartitionMessageKey<byte[]>, string>(comparer)
++        {
++            [wireNull] = "wire-null",
++            [deserializedNull] = "deserialized-null",
++            [empty] = "empty"
++        };
++
++        await Assert.That(keys.Count).IsEqualTo(3);
++        await Assert.That(keys[wireNull]).IsEqualTo("wire-null");
++        await Assert.That(keys[deserializedNull]).IsEqualTo("deserialized-null");
++        await Assert.That(keys[empty]).IsEqualTo("empty");
++        await Assert.That(comparer.Equals(wireNull, deserializedNull)).IsFalse();
++        await Assert.That(comparer.Equals(deserializedNull, wireNull)).IsFalse();
++        await Assert.That(comparer.Equals(deserializedNull, empty)).IsFalse();
++        await Assert.That(comparer.Equals(empty, deserializedNull)).IsFalse();
++    }
++
++    [Test]
++    public async Task DeserializedNull_NullableScalarRetainsSeparateIdentity()
++    {
++        var wireNull = PartitionMessageKey<int?>.From(null, isKeyNull: true);
++        var deserializedNull = PartitionMessageKey<int?>.From(null, isKeyNull: false);
++        var zero = PartitionMessageKey<int?>.From(0);
++        var keys = new Dictionary<PartitionMessageKey<int?>, string>
++        {
++            [wireNull] = "wire-null",
++            [deserializedNull] = "deserialized-null",
++            [zero] = "zero"
++        };
++
++        await Assert.That(keys.Count).IsEqualTo(3);
++        await Assert.That(keys[wireNull]).IsEqualTo("wire-null");
++        await Assert.That(keys[deserializedNull]).IsEqualTo("deserialized-null");
++        await Assert.That(keys[zero]).IsEqualTo("zero");
++        await Assert.That(wireNull.Equals(PartitionMessageKey<int?>.From(42, isKeyNull: true))).IsTrue();
++        await Assert.That(deserializedNull.Equals(PartitionMessageKey<int?>.From(null, isKeyNull: false))).IsTrue();
++    }
++
+     [Test]
+     public async Task BinaryKeys_CompareContentAcrossDifferentStorage()
+     {
+diff --git a/tests/Dekaf.Tests.Unit/Consumer/PartitionedKeyComparerTests.cs b/tests/Dekaf.Tests.Unit/Consumer/PartitionedKeyComparerTests.cs
+index 4805c75a9..d84408996 100644
+--- a/tests/Dekaf.Tests.Unit/Consumer/PartitionedKeyComparerTests.cs
++++ b/tests/Dekaf.Tests.Unit/Consumer/PartitionedKeyComparerTests.cs
+@@ -5,6 +5,30 @@ namespace Dekaf.Tests.Unit.Consumer;
+ 
+ public sealed class PartitionedKeyComparerTests
+ {
++    [Test]
++    public async Task CustomComparer_SeparatesBothNullKindsWithoutCallingUserCode()
++    {
++        var comparer = new CustomPartitionMessageKeyComparer<CustomerKey>(new NullRejectingComparer());
++        var wireNull = PartitionMessageKey<CustomerKey>.From(null, isKeyNull: true);
++        var deserializedNull = PartitionMessageKey<CustomerKey>.From(null, isKeyNull: false);
++        var value = PartitionMessageKey<CustomerKey>.From(new CustomerKey(1));
++        var keys = new Dictionary<PartitionMessageKey<CustomerKey>, string>(comparer)
++        {
++            [wireNull] = "wire-null",
++            [deserializedNull] = "deserialized-null",
++            [value] = "value"
++        };
++
++        await Assert.That(keys.Count).IsEqualTo(3);
++        await Assert.That(keys[wireNull]).IsEqualTo("wire-null");
++        await Assert.That(keys[deserializedNull]).IsEqualTo("deserialized-null");
++        await Assert.That(keys[PartitionMessageKey<CustomerKey>.From(new CustomerKey(1))]).IsEqualTo("value");
++        await Assert.That(comparer.Equals(wireNull, deserializedNull)).IsFalse();
++        await Assert.That(comparer.Equals(deserializedNull, wireNull)).IsFalse();
++        await Assert.That(comparer.Equals(value, deserializedNull)).IsFalse();
++        await Assert.That(comparer.Equals(deserializedNull, value)).IsFalse();
++    }
++
+     [Test]
+     public async Task CustomComparer_NullKeysNeverReachComparerOrMatchNonNull()
+     {
+@@ -52,4 +76,20 @@ public sealed class PartitionedKeyComparerTests
+         public bool Equals(CustomerKey? x, CustomerKey? y) => x!.Id == y!.Id;
+         public int GetHashCode(CustomerKey obj) => 0;
+     }
++
++    private sealed class NullRejectingComparer : IEqualityComparer<CustomerKey>
++    {
++        public bool Equals(CustomerKey? x, CustomerKey? y)
++        {
++            ArgumentNullException.ThrowIfNull(x);
++            ArgumentNullException.ThrowIfNull(y);
++            return x.Id == y.Id;
++        }
++
++        public int GetHashCode(CustomerKey obj)
++        {
++            ArgumentNullException.ThrowIfNull(obj);
++            return 0;
++        }
++    }
+ }
+diff --git a/tests/Dekaf.Tests.Unit/Consumer/PartitionedNullKeyTests.cs b/tests/Dekaf.Tests.Unit/Consumer/PartitionedNullKeyTests.cs
+index a550b59ef..639470c0d 100644
+--- a/tests/Dekaf.Tests.Unit/Consumer/PartitionedNullKeyTests.cs
++++ b/tests/Dekaf.Tests.Unit/Consumer/PartitionedNullKeyTests.cs
+@@ -19,6 +19,18 @@ public sealed class PartitionedNullKeyTests
+         _ => throw new ArgumentOutOfRangeException(nameof(keyKind))
+     };
+ 
++    [Test]
++    [Arguments(0)]
++    [Arguments(1)]
++    [Arguments(2)]
++    public Task WireNullAndDeserializedNullKeys_RunInSeparateLanes(int keyKind) => keyKind switch
++    {
++        0 => VerifyAsync(new BinaryDeserializer<byte[]?>(static _ => null)),
++        1 => VerifyAsync(new BinaryDeserializer<string?>(static _ => null)),
++        2 => VerifyAsync(new BinaryDeserializer<int?>(static _ => null)),
++        _ => throw new ArgumentOutOfRangeException(nameof(keyKind))
++    };
++
+     private static async Task VerifyAsync<TKey>(IDeserializer<TKey> deserializer)
+     {
+         var lane = new PartitionLane<TKey, string>(new TopicPartition("topic", 0), 8,
+@@ -27,7 +39,7 @@ public sealed class PartitionedNullKeyTests
+         var firstStarted = NewSignal();
+         var releaseFirst = NewSignal();
+         var secondNullStarted = NewSignal();
+-        var emptyStarted = NewSignal();
++        var nonNullWireStarted = NewSignal();
+         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+         var dispatcher = new KeyOrderedPartitionDispatcher<TKey, string>(context, 1, 2, 8,
+             async (records, token) =>
+@@ -42,7 +54,7 @@ public sealed class PartitionedNullKeyTests
+                         secondNullStarted.TrySetResult();
+                         break;
+                     case 2:
+-                        emptyStarted.TrySetResult();
++                        nonNullWireStarted.TrySetResult();
+                         break;
+                 }
+                 context.MarkProcessed(records[0]);
+@@ -54,7 +66,7 @@ public sealed class PartitionedNullKeyTests
+             await firstStarted.Task.WaitAsync(timeout.Token);
+             lane.TryEnqueue(Message(1, true, deserializer));
+             lane.TryEnqueue(Message(2, false, deserializer));
+-            await emptyStarted.Task.WaitAsync(timeout.Token);
++            await nonNullWireStarted.Task.WaitAsync(timeout.Token);
+             await Assert.That(secondNullStarted.Task.IsCompleted).IsFalse();
+             releaseFirst.TrySetResult();
+             await secondNullStarted.Task.WaitAsync(timeout.Token);

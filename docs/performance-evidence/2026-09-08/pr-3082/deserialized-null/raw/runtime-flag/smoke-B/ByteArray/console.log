@@ -1,0 +1,122 @@
+// Validating benchmarks:
+// ***** BenchmarkRunner: Start   *****
+// ***** Found 1 benchmark(s) in total *****
+// ***** Building 1 exe(s) in Parallel: Start   *****
+// ***** Done, took 00:00:00 (0.03 sec)   *****
+// Found 1 benchmarks:
+//   DiagnosticBenchmarks.ByteArray: Job-PSCTOV(OutlierMode=DontRemove, Affinity=00000000000000000100, Toolchain=InProcessEmitToolchain, InvocationCount=1024, IterationCount=1, UnrollFactor=1, WarmupCount=1)
+
+Setup power plan (GUID: 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c FriendlyName: High performance)
+// **************************
+// Benchmark: DiagnosticBenchmarks.ByteArray: Job-PSCTOV(OutlierMode=DontRemove, Affinity=00000000000000000100, Toolchain=InProcessEmitToolchain, InvocationCount=1024, IterationCount=1, UnrollFactor=1, WarmupCount=1)
+// *** Execute ***
+// Launch: 1 / 1
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.15.8
+// Runtime=.NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2+BMI1+BMI2+F16C+FMA+LZCNT+MOVBE,AVX,SSE3+SSSE3+SSE4.1+SSE4.2+POPCNT,X86Base+SSE+SSE2,AES+PCLMUL,AvxVnni,SERIALIZE VectorSize=256
+// Job: Job-PSCTOV(OutlierMode=DontRemove, Affinity=00000000000000000100, Toolchain=InProcessEmitToolchain, InvocationCount=1024, IterationCount=1, UnrollFactor=1, WarmupCount=1)
+
+SIZES string=16 number=8 nullable=12 array=16 raw=24 memory=24 segment=24
+RAW operations=1000 bytes=0 sink=371401366
+OverheadJitting  1: 1 op, 173700.00 ns, 173.7000 us/op
+WorkloadJitting  1: 1 op, 169700.00 ns, 169.7000 us/op
+
+OverheadWarmup   1: 1024 op, 2900.00 ns, 2.8320 ns/op
+OverheadWarmup   2: 1024 op, 1700.00 ns, 1.6602 ns/op
+OverheadWarmup   3: 1024 op, 1500.00 ns, 1.4648 ns/op
+OverheadWarmup   4: 1024 op, 1500.00 ns, 1.4648 ns/op
+OverheadWarmup   5: 1024 op, 1500.00 ns, 1.4648 ns/op
+OverheadWarmup   6: 1024 op, 1500.00 ns, 1.4648 ns/op
+OverheadWarmup   7: 1024 op, 1600.00 ns, 1.5625 ns/op
+
+OverheadActual   1: 1024 op, 1500.00 ns, 1.4648 ns/op
+OverheadActual   2: 1024 op, 1600.00 ns, 1.5625 ns/op
+OverheadActual   3: 1024 op, 1600.00 ns, 1.5625 ns/op
+OverheadActual   4: 1024 op, 1600.00 ns, 1.5625 ns/op
+OverheadActual   5: 1024 op, 1500.00 ns, 1.4648 ns/op
+OverheadActual   6: 1024 op, 1500.00 ns, 1.4648 ns/op
+OverheadActual   7: 1024 op, 1500.00 ns, 1.4648 ns/op
+OverheadActual   8: 1024 op, 1400.00 ns, 1.3672 ns/op
+OverheadActual   9: 1024 op, 1500.00 ns, 1.4648 ns/op
+OverheadActual  10: 1024 op, 1500.00 ns, 1.4648 ns/op
+OverheadActual  11: 1024 op, 1400.00 ns, 1.3672 ns/op
+OverheadActual  12: 1024 op, 1600.00 ns, 1.5625 ns/op
+OverheadActual  13: 1024 op, 1400.00 ns, 1.3672 ns/op
+OverheadActual  14: 1024 op, 1600.00 ns, 1.5625 ns/op
+OverheadActual  15: 1024 op, 1500.00 ns, 1.4648 ns/op
+OverheadActual  16: 1024 op, 1500.00 ns, 1.4648 ns/op
+
+WorkloadWarmup   1: 1024 op, 59400.00 ns, 58.0078 ns/op
+
+WorkloadActual   1: 1024 op, 60000.00 ns, 58.5938 ns/op
+
+WorkloadResult   1: 1024 op, 58500.00 ns, 57.1289 ns/op
+// GC:  0 0 0 0 1024
+// Threading:  0 0 1024
+
+
+Mean = 57.129 ns, StdErr = 0.000 ns (0.00%), N = 1, StdDev = 0.000 ns
+Min = 57.129 ns, Q1 = 57.129 ns, Median = 57.129 ns, Q3 = 57.129 ns, Max = 57.129 ns
+IQR = 0.000 ns, LowerFence = 57.129 ns, UpperFence = 57.129 ns
+ConfidenceInterval = [NaN ns; NaN ns] (CI 99.9%), Margin = NaN ns (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+
+// ** Remained 0 (0.0%) benchmark(s) to run. Estimated finish 2026-09-08 4:15 (0h 0m from now) **
+Successfully reverted power plan (GUID: 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c FriendlyName: High performance)
+// ***** BenchmarkRunner: Finish  *****
+
+// * Export *
+  .artifacts\deserialized-null\runtime-flag\smoke-B\ByteArray\results\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv
+  .artifacts\deserialized-null\runtime-flag\smoke-B\ByteArray\results\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md
+  .artifacts\deserialized-null\runtime-flag\smoke-B\ByteArray\results\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html
+  .artifacts\deserialized-null\runtime-flag\smoke-B\ByteArray\results\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json
+
+// * Detailed results *
+DiagnosticBenchmarks.ByteArray: Job-PSCTOV(OutlierMode=DontRemove, Affinity=00000000000000000100, Toolchain=InProcessEmitToolchain, InvocationCount=1024, IterationCount=1, UnrollFactor=1, WarmupCount=1)
+Runtime = ; GC = 
+Mean = 57.129 ns, StdErr = 0.000 ns (0.00%), N = 1, StdDev = 0.000 ns
+Min = 57.129 ns, Q1 = 57.129 ns, Median = 57.129 ns, Q3 = 57.129 ns, Max = 57.129 ns
+IQR = 0.000 ns, LowerFence = 57.129 ns, UpperFence = 57.129 ns
+ConfidenceInterval = [NaN ns; NaN ns] (CI 99.9%), Margin = NaN ns (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+-------------------- Histogram --------------------
+[56.629 ns ; 57.629 ns) | @
+---------------------------------------------------
+
+// * Summary *
+
+BenchmarkDotNet v0.15.8, Windows 11 (10.0.26200.9168/25H2/2025Update/HudsonValley2)
+12th Gen Intel Core i7-12700K 3.60GHz, 1 CPU, 20 logical and 12 physical cores
+.NET SDK 10.0.400
+  [Host] : .NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+
+OutlierMode=DontRemove  Affinity=00000000000000000100  Toolchain=InProcessEmitToolchain  
+InvocationCount=1024  IterationCount=1  UnrollFactor=1  
+WarmupCount=1  
+
+| Method    | Mean     | Error | Allocated |
+|---------- |---------:|------:|----------:|
+| ByteArray | 57.13 ns |    NA |         - |
+
+// * Warnings *
+MinIterationTime
+  DiagnosticBenchmarks.ByteArray: OutlierMode=DontRemove, Affinity=00000000000000000100, Toolchain=InProcessEmitToolchain, InvocationCount=1024, IterationCount=1, UnrollFactor=1, WarmupCount=1 -> The minimum observed iteration time is 60us which is very small. It's recommended to increase it to at least 100ms using more operations.
+
+// * Legends *
+  Mean      : Arithmetic mean of all measurements
+  Error     : Half of 99.9% confidence interval
+  Allocated : Allocated memory per single operation (managed only, inclusive, 1KB = 1024B)
+  1 ns      : 1 Nanosecond (0.000000001 sec)
+
+// * Diagnostic Output - MemoryDiagnoser *
+
+
+// ***** BenchmarkRunner: End *****
+Run time: 00:00:00 (0.33 sec), executed benchmarks: 1
+
+Global total time: 00:00:00 (0.86 sec), executed benchmarks: 1
+// * Artifacts cleanup *
+Artifacts cleanup is finished

@@ -1,0 +1,47 @@
+[
+  {
+    "phase": "A1",
+    "case": "ByteArray",
+    "start": "2026-09-08T03:10:02.752799+00:00",
+    "command": [
+      "dotnet",
+      "C:\\git\\Dekaf-worktrees\\pr-3082-deserialized-null\\.artifacts\\deserialized-null\\hosts\\A\\Dekaf.Benchmarks.dll",
+      "ByteArray",
+      "C:\\git\\Dekaf-worktrees\\pr-3082-deserialized-null\\.artifacts\\deserialized-null\\measure\\A1\\ByteArray",
+      "measure",
+      "baseline"
+    ],
+    "end": "2026-09-08T03:10:50.985968+00:00",
+    "exitCode": 0
+  },
+  {
+    "phase": "A1",
+    "case": "ReadOnlyMemory",
+    "start": "2026-09-08T03:10:50.987198+00:00",
+    "command": [
+      "dotnet",
+      "C:\\git\\Dekaf-worktrees\\pr-3082-deserialized-null\\.artifacts\\deserialized-null\\hosts\\A\\Dekaf.Benchmarks.dll",
+      "ReadOnlyMemory",
+      "C:\\git\\Dekaf-worktrees\\pr-3082-deserialized-null\\.artifacts\\deserialized-null\\measure\\A1\\ReadOnlyMemory",
+      "measure",
+      "baseline"
+    ],
+    "end": "2026-09-08T03:11:45.685132+00:00",
+    "exitCode": 0
+  },
+  {
+    "phase": "A1",
+    "case": "Memory",
+    "start": "2026-09-08T03:11:45.685964+00:00",
+    "command": [
+      "dotnet",
+      "C:\\git\\Dekaf-worktrees\\pr-3082-deserialized-null\\.artifacts\\deserialized-null\\hosts\\A\\Dekaf.Benchmarks.dll",
+      "Memory",
+      "C:\\git\\Dekaf-worktrees\\pr-3082-deserialized-null\\.artifacts\\deserialized-null\\measure\\A1\\Memory",
+      "measure",
+      "baseline"
+    ],
+    "end": "2026-09-08T03:12:21.478095+00:00",
+    "exitCode": 4294967295
+  }
+]

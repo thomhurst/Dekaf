@@ -1,0 +1,2798 @@
+[
+  {
+    "file": "runtime-flag\\assess.py",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\assess.py",
+    "sha256": "4f9383cdd2c7aec3f9f78f0456340fd17e1ebdac966cda807fe7a5c67d5db209",
+    "bytes": 8149
+  },
+  {
+    "file": "runtime-flag\\driver.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\driver.log",
+    "sha256": "29cfb4104efd477ae490e3b5082e2aaf140f4897c75deb1fa323b438c2fac3c4",
+    "bytes": 1086
+  },
+  {
+    "file": "runtime-flag\\experiment-plan.md",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\experiment-plan.md",
+    "sha256": "9f5fe15d393c199996dd663ee902983fd95ee86c4ce8c55d9489b23576cf44cb",
+    "bytes": 3148
+  },
+  {
+    "file": "runtime-flag\\gc-force-documentation.xml",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\gc-force-documentation.xml",
+    "sha256": "be92a9eec4ba14bf079205ef16d9d4ddc9da3325bfc046c7db2b3910623ad8ff",
+    "bytes": 439
+  },
+  {
+    "file": "runtime-flag\\harness-build-validated.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\harness-build-validated.log",
+    "sha256": "0c8e2a5f1f213572e71da0dc6ac2e74637180703731cc5e583de9fe2e1c281ed",
+    "bytes": 308
+  },
+  {
+    "file": "runtime-flag\\harness-build.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\harness-build.log",
+    "sha256": "bc45ea42d4dfdfe1d0e1a0423b7a43dee4fee7e5434e348500e724d626ae730e",
+    "bytes": 393
+  },
+  {
+    "file": "runtime-flag\\host-inventories.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\host-inventories.json",
+    "sha256": "b64f5b9f4373e6ac0de964d87c072ddfe0ddeea07cde9e93a49c6c6362a694ec",
+    "bytes": 8591
+  },
+  {
+    "file": "runtime-flag\\interpretation.md",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\interpretation.md",
+    "sha256": "ce854d0032fdd1a8828a3accf7505f5e91413a434e9ad592388a659adb3b234f",
+    "bytes": 2666
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\ArraySegment\\console.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\ArraySegment\\console.log",
+    "sha256": "43c899a406f92be1387b7f99cf1c560de59a2cf6a2174621c75e20597b9a8ee0",
+    "bytes": 12764
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\ArraySegment\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-041905.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\ArraySegment\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-041905.log",
+    "sha256": "d3ef0b21b7823f3d09ee740844064b9a8af93d5cd7689710474707ad63248e50",
+    "bytes": 9750
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\ArraySegment\\loaded.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\ArraySegment\\loaded.json",
+    "sha256": "27315a3794962b9926dfac6f4935063d0becbe0f0563e0753e76c39d98d6324d",
+    "bytes": 642
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\ArraySegment\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\ArraySegment\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "sha256": "3747701554ce3c66b388a2da4d25d3fe1f7ac22db2fc6d7426e17ba2ce1382ac",
+    "bytes": 23486
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\ArraySegment\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\ArraySegment\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "sha256": "d8fd209ca584500f001933de3e112bb3aed4b64df368d606b0a8a7b7cd880d8f",
+    "bytes": 641
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\ArraySegment\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\ArraySegment\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "sha256": "dff7367d27c945962fcb03856c3c3c5daa3941ff4f85cb87120d71cd11f0a7cb",
+    "bytes": 1046
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\ArraySegment\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\ArraySegment\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "sha256": "0e759e44e5312a3295d75f813c12f453bdfaed30b9bd2ab018ef80e5e0892775",
+    "bytes": 1201
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\ArraySegment\\runtime.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\ArraySegment\\runtime.csv",
+    "sha256": "86361f225ca18c027272a964953f6ae8998624008134bf5903f49d4b54c6fd8d",
+    "bytes": 3874
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\ArraySegment\\warmup.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\ArraySegment\\warmup.json",
+    "sha256": "dcfc08e683c3db76947d46c71db1cbee8f3da271d29648373f9d76dc32fc466a",
+    "bytes": 45
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\ByteArray\\console.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\ByteArray\\console.log",
+    "sha256": "b7c9de8b37181ddd332317abd6968e329c7bb621ae3d64591f41f6855fb3651a",
+    "bytes": 12192
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\ByteArray\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-041623.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\ByteArray\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-041623.log",
+    "sha256": "ba233ed07a771bc84c677a41c36c32f6152efe99b3dcee336991829300856b27",
+    "bytes": 9007
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\ByteArray\\loaded.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\ByteArray\\loaded.json",
+    "sha256": "27315a3794962b9926dfac6f4935063d0becbe0f0563e0753e76c39d98d6324d",
+    "bytes": 642
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\ByteArray\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\ByteArray\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "sha256": "24f638491252a29e305c05b9ebc2afb1d8bf0c8814c2748faf0fc05858ccd0e5",
+    "bytes": 21451
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\ByteArray\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\ByteArray\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "sha256": "92d2916f5f48686b107047c8781ade72ed3dcf4b9ed16ce9b5b7e0afee7c5ce0",
+    "bytes": 626
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\ByteArray\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\ByteArray\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "sha256": "021dc4bc6016a52e529189a4237420f42f5e9bf3289e178c8449a52ad28b5db6",
+    "bytes": 1041
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\ByteArray\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\ByteArray\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "sha256": "33cf37f5445824237a374cc88a246648c0c8961b4eaa8c9b0ce43644ba166cfe",
+    "bytes": 1196
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\ByteArray\\runtime.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\ByteArray\\runtime.csv",
+    "sha256": "0bb5b1b4edd10dafc39735355bad7019f14c3931c2a090447234fd996e016cc7",
+    "bytes": 3930
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\ByteArray\\warmup.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\ByteArray\\warmup.json",
+    "sha256": "30d7c93f7811f68392f49024055b466c7425a1c61d851ce1773cf552454d92ce",
+    "bytes": 45
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\CustomString\\console.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\CustomString\\console.log",
+    "sha256": "6fa299f6166185b7ea96958aa91fabf83deecafa5d4c0d83cff327a3e027acdd",
+    "bytes": 11851
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\CustomString\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-042218.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\CustomString\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-042218.log",
+    "sha256": "81583ca5a841001213c585e5e839c3309615f032bcc03ee5ef91302b703d1bf5",
+    "bytes": 8698
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\CustomString\\loaded.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\CustomString\\loaded.json",
+    "sha256": "27315a3794962b9926dfac6f4935063d0becbe0f0563e0753e76c39d98d6324d",
+    "bytes": 642
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\CustomString\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\CustomString\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "sha256": "67148c22ec6ff99ff25aabe1609aef02b7f3bf235c9995322bf034d83fb8d9d6",
+    "bytes": 21598
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\CustomString\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\CustomString\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "sha256": "7bbc0c8936ad0d0114c113c05d5a7ea6878ed34ccbbf63002781a3f2145049e0",
+    "bytes": 641
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\CustomString\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\CustomString\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "sha256": "86f6eab77df9157a739a58ff799fe217c97a286de4f9fed105ac3d51fa6d54b1",
+    "bytes": 1046
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\CustomString\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\CustomString\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "sha256": "a9d6255153b9c56b74f338b3ba57516c6aa5d1852d22ed2c8468ee4b2669805f",
+    "bytes": 1201
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\CustomString\\runtime.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\CustomString\\runtime.csv",
+    "sha256": "43a862de7ed910229e36139324c7846e98574bc9035d976b6b7036971badc75a",
+    "bytes": 3877
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\CustomString\\warmup.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\CustomString\\warmup.json",
+    "sha256": "870d77578b7df8e09fae1e75603f9cd4aaf7cbc081c0111a2dc10597fb50410b",
+    "bytes": 45
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\Int32\\console.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\Int32\\console.log",
+    "sha256": "71a940879326cd17741efe3dd0154836aef7f36bb985a135612163dcc5ca6cbc",
+    "bytes": 12111
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\Int32\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-042015.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\Int32\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-042015.log",
+    "sha256": "9844d0429d4f193395873691ea66e81fe64223d7522d320bf7dc821c9095cb67",
+    "bytes": 8954
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\Int32\\loaded.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\Int32\\loaded.json",
+    "sha256": "27315a3794962b9926dfac6f4935063d0becbe0f0563e0753e76c39d98d6324d",
+    "bytes": 642
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\Int32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\Int32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "sha256": "d387b11f03e3c755f6a2d1e49842ef7bc360442260b923c86c2c8597b13ded2e",
+    "bytes": 21404
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\Int32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\Int32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "sha256": "ece84978ec3a06e59a0a021c09cc7a7bad1ceb6a1d9119b79cbfc4d4902da38c",
+    "bytes": 617
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\Int32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\Int32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "sha256": "b8a5af22a388fee059dbb11eb5def4ef233a8966ce21973752e362fbc309420a",
+    "bytes": 1037
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\Int32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\Int32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "sha256": "6ed43d6104504ddf00b49f5476d0b279fe4d0bfb4d0a2afa2e331b3466243a11",
+    "bytes": 1192
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\Int32\\runtime.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\Int32\\runtime.csv",
+    "sha256": "1153bdf8aa460e0844f05531efe364f925befde7c2ed835fb512bf6789f7e736",
+    "bytes": 3930
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\Int32\\warmup.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\Int32\\warmup.json",
+    "sha256": "d6842f09771f456a5204f592ad906026b77eb38acb6f512d10c8c0714ec7a841",
+    "bytes": 45
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\Memory\\console.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\Memory\\console.log",
+    "sha256": "5ebf52ffcfe9211a581a966bc325ca9f2b0879cc07f3fa154733c45ed32eae0d",
+    "bytes": 12014
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\Memory\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-041804.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\Memory\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-041804.log",
+    "sha256": "b7b075881dfe7601e62269ec6a582ee51e5382652b512177b6427a70bfae307e",
+    "bytes": 9000
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\Memory\\loaded.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\Memory\\loaded.json",
+    "sha256": "27315a3794962b9926dfac6f4935063d0becbe0f0563e0753e76c39d98d6324d",
+    "bytes": 642
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\Memory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\Memory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "sha256": "fdd6feaf11b1666cb361e5085452751aee9ba9a844ff6c41b7906e717dbfc22a",
+    "bytes": 21382
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\Memory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\Memory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "sha256": "c5c20cc41486d9eaa2b84c7786726e4c5017d9c609a32cc168fa7b2903684295",
+    "bytes": 617
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\Memory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\Memory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "sha256": "05e208c1ecd07f74cf371a746440887ae57052f8657ff510166f5b413b13ed75",
+    "bytes": 1038
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\Memory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\Memory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "sha256": "bf9d95ebab7988e2872879aff125f4f8ca40959314dadf0e9752c7565e164559",
+    "bytes": 1193
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\Memory\\runtime.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\Memory\\runtime.csv",
+    "sha256": "a8f9a48d251e334d8e782dfcf19193f666781bead9e3bbfd303168aab17d9d9f",
+    "bytes": 3929
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\Memory\\warmup.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\Memory\\warmup.json",
+    "sha256": "8040717828c80e2291c82dc4f84814e7be123af9ba6d73b6f57160f77386b8c0",
+    "bytes": 45
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\NullableInt32\\console.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\NullableInt32\\console.log",
+    "sha256": "ecd15868ff68224781edbaad355c009f094670fee680ee0bd508d44c46bb02c2",
+    "bytes": 12385
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\NullableInt32\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-042113.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\NullableInt32\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-042113.log",
+    "sha256": "a63c31126ce3e9fbf0725f82394d847479d0f41b93ff2074756f08a675ede44b",
+    "bytes": 9359
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\NullableInt32\\loaded.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\NullableInt32\\loaded.json",
+    "sha256": "27315a3794962b9926dfac6f4935063d0becbe0f0563e0753e76c39d98d6324d",
+    "bytes": 642
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\NullableInt32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\NullableInt32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "sha256": "a4d22a11a623c4a01621e00c02d75036fee7d8052e5d56db2fc2b7b69e9dd435",
+    "bytes": 22125
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\NullableInt32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\NullableInt32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "sha256": "575fa31f88b4c7c9d5a46971c33988281399be3362b36d703603859fe2012eda",
+    "bytes": 674
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\NullableInt32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\NullableInt32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "sha256": "03d44fa44146ff3771c8c96ce414991fa0c6617723f42eb5579c6ca882d9273f",
+    "bytes": 1062
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\NullableInt32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\NullableInt32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "sha256": "b186b5662a3cb0493a7284bd71ce382f2a058a3009a1ddd29af4f6753d20a08c",
+    "bytes": 1234
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\NullableInt32\\runtime.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\NullableInt32\\runtime.csv",
+    "sha256": "60a61183fdcb7a13af36837567f4beee030a0c9288626786f23a22df32c76124",
+    "bytes": 3938
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\NullableInt32\\warmup.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\NullableInt32\\warmup.json",
+    "sha256": "8f297bf616653ef5b67c2e3efebb4d3b8d95bd4ecf317f448f9ba5513ff5f1e7",
+    "bytes": 45
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\NullKinds\\console.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\NullKinds\\console.log",
+    "sha256": "2215fc8722c3e6379a9a0b996a071f7bf3d50879353a46789d165a066396afa6",
+    "bytes": 12245
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\NullKinds\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-042244.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\NullKinds\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-042244.log",
+    "sha256": "181cb6492d3e53cde5303192ae81d4a18d8252a0ede15bfb58094ec49ac98a44",
+    "bytes": 9069
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\NullKinds\\loaded.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\NullKinds\\loaded.json",
+    "sha256": "27315a3794962b9926dfac6f4935063d0becbe0f0563e0753e76c39d98d6324d",
+    "bytes": 642
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\NullKinds\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\NullKinds\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "sha256": "78eed8bd63a946b11eb120cb35207192dcfc0713460bb7b555c4e90b1260fed6",
+    "bytes": 22095
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\NullKinds\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\NullKinds\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "sha256": "4713ef61b4350e34b83dd331c0839bac2ea713eb31e7b8a13f8c260aba15718d",
+    "bytes": 635
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\NullKinds\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\NullKinds\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "sha256": "a6aa2eb065ff60a13909e332f8fd599e0d437411dfad20c575d930d7a5a0e250",
+    "bytes": 1044
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\NullKinds\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\NullKinds\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "sha256": "409a6d193c4d69b35337ab1f533e8c87de1ed13a81756ba0b2fe09dc8396c475",
+    "bytes": 1199
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\NullKinds\\runtime.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\NullKinds\\runtime.csv",
+    "sha256": "1bd9b5d3d3295c1df77f39c42e426b35f42cbfe3c1685d14388256d1a4d621e1",
+    "bytes": 3883
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\NullKinds\\warmup.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\NullKinds\\warmup.json",
+    "sha256": "d542ed931e3a71ead815cd1bd06e8ee7410bafa7fb9bb3c2fa0e5979283d19b4",
+    "bytes": 44
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\ReadOnlyMemory\\console.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\ReadOnlyMemory\\console.log",
+    "sha256": "6d458c8744e899b7c5a1d149d89247126a4449da585de1c6fd390ac17346a400",
+    "bytes": 12376
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\ReadOnlyMemory\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-041710.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\ReadOnlyMemory\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-041710.log",
+    "sha256": "aa74da664ec6a647d33c511c2442c63823d8bd366ef7ff1aa58c1487bc6af7a9",
+    "bytes": 9350
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\ReadOnlyMemory\\loaded.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\ReadOnlyMemory\\loaded.json",
+    "sha256": "27315a3794962b9926dfac6f4935063d0becbe0f0563e0753e76c39d98d6324d",
+    "bytes": 642
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\ReadOnlyMemory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\ReadOnlyMemory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "sha256": "f9d95476aefb4cfd1abf79ccbeaaf2dd1f4485b745b166ad39cc2d2bb1d8bd9f",
+    "bytes": 22378
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\ReadOnlyMemory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\ReadOnlyMemory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "sha256": "d64e1bd876255121f3bf26813e5c6b52184d0e92cbf976c43eecbd3f559a3dd8",
+    "bytes": 641
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\ReadOnlyMemory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\ReadOnlyMemory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "sha256": "dda314a295d2f56ed5ee5db97c0803330ecc9925cd8a401e5c5fbb64d5448058",
+    "bytes": 1046
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\ReadOnlyMemory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\ReadOnlyMemory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "sha256": "6cf8e14a82811bc2043ebcdfbe1e1348be8ea8e5b61858e10777844ca5bcf9f5",
+    "bytes": 1203
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\ReadOnlyMemory\\runtime.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\ReadOnlyMemory\\runtime.csv",
+    "sha256": "df51ffeb125372bc248a37da253be6eaf500fa452f34115fc4e53d1943f9ee14",
+    "bytes": 3953
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\ReadOnlyMemory\\warmup.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\ReadOnlyMemory\\warmup.json",
+    "sha256": "9c9f02942eda4443c357b60cf5681aa35d17b1416df935d1e88259b223016229",
+    "bytes": 45
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\String\\console.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\String\\console.log",
+    "sha256": "ec96531b294c7bc246631236dba2988c6e3f6a22d0ccede459a5a3778f1925f0",
+    "bytes": 12096
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\String\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-041929.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\String\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-041929.log",
+    "sha256": "d72146d068d0e1269bdc5ac2d9a028b7c71ba98132fea17bcd9908777fe82252",
+    "bytes": 8934
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\String\\loaded.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\String\\loaded.json",
+    "sha256": "27315a3794962b9926dfac6f4935063d0becbe0f0563e0753e76c39d98d6324d",
+    "bytes": 642
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\String\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\String\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "sha256": "43d2296f80fb302345aaeda526adb97a697812dc5f2104d30245485d0e291083",
+    "bytes": 22328
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\String\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\String\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "sha256": "67c7a2dcf9a537347e8a14a47c7e5c08bf89bd14483e6aaaecdfc59b8c08b2d6",
+    "bytes": 617
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\String\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\String\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "sha256": "2bc33973d8636b256ea419615ea391bdd34acfec4de58fc70ae52b7a7f62a3a5",
+    "bytes": 1038
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\String\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\String\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "sha256": "dd76cb09ef66464e2be0ad889fd3185599e8d234ebd3ab22cd66577101413c2c",
+    "bytes": 1193
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\String\\runtime.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\String\\runtime.csv",
+    "sha256": "458abfd282ce113f30806c2ebc42639cc595b6fa8b8a85e1b9bc5db53108e40a",
+    "bytes": 3887
+  },
+  {
+    "file": "runtime-flag\\measure\\A1\\String\\warmup.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A1\\String\\warmup.json",
+    "sha256": "1a17bc1969106820d3e5cb484acfbb3ba505e3bea0270ad2118fb916a88230ca",
+    "bytes": 45
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\ArraySegment\\console.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\ArraySegment\\console.log",
+    "sha256": "d18a917392d544f93d1fe8809a47158dfa51250b1a7d4e1c32522413a5dc54c5",
+    "bytes": 12735
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\ArraySegment\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-043051.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\ArraySegment\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-043051.log",
+    "sha256": "c2c56983db27e89678b37f0c5e876093eaaef67f15cb79cbe99dbc915fc650c3",
+    "bytes": 9729
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\ArraySegment\\loaded.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\ArraySegment\\loaded.json",
+    "sha256": "27315a3794962b9926dfac6f4935063d0becbe0f0563e0753e76c39d98d6324d",
+    "bytes": 642
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\ArraySegment\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\ArraySegment\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "sha256": "45b48c959594b144a116b02fa9ac15f321eefe03dbc444bd172e69ffe9a07ef6",
+    "bytes": 21981
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\ArraySegment\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\ArraySegment\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "sha256": "33d733ca1c27674c8321b1e6032a0bdfdff3ee405cb69554cd54ad3c96de6561",
+    "bytes": 641
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\ArraySegment\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\ArraySegment\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "sha256": "8d61722a8fbc765b6eb31a552a56958c75fc5120aed28b6024aa26f85664c0ac",
+    "bytes": 1046
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\ArraySegment\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\ArraySegment\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "sha256": "9c74dfd7c17988d78d38fa48c8d0b7bbcc18e9df83e95c4791b4ac6771c684da",
+    "bytes": 1201
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\ArraySegment\\runtime.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\ArraySegment\\runtime.csv",
+    "sha256": "b68a55b64f6e02e38ac8cfb69a330e36f8033683f693d14c312f3e5f227e2cf9",
+    "bytes": 3832
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\ArraySegment\\warmup.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\ArraySegment\\warmup.json",
+    "sha256": "6adaac97392d4a8f3e4c7a2c4e18e27ccabf998bea409100652a6cb85b3261be",
+    "bytes": 45
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\ByteArray\\console.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\ByteArray\\console.log",
+    "sha256": "bbab3fd4bec8e5a322f4edc17fa3519413a9b61254110d8c41256a0cdd39f822",
+    "bytes": 12201
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\ByteArray\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-042836.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\ByteArray\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-042836.log",
+    "sha256": "3989c43ff5e5af37726e55f3bc104b3e625172e0d4e579d5005e15a88216cbdc",
+    "bytes": 9178
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\ByteArray\\loaded.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\ByteArray\\loaded.json",
+    "sha256": "27315a3794962b9926dfac6f4935063d0becbe0f0563e0753e76c39d98d6324d",
+    "bytes": 642
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\ByteArray\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\ByteArray\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "sha256": "e8f16e8230563bd92d7a2d3c3e6786d6cd351e2f6cecec0161fdae6b88fa85cc",
+    "bytes": 21347
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\ByteArray\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\ByteArray\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "sha256": "cd4f99ad908d6764055dc7b3b2e8e9b78a7c5850f629a5f4d80a6b346aa6b0d7",
+    "bytes": 659
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\ByteArray\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\ByteArray\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "sha256": "c82446cb8aa45b4615903a56b5b50b457074377771cf2477baa1ae25ef4dd420",
+    "bytes": 1057
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\ByteArray\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\ByteArray\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "sha256": "f53c4ac88c0363e0b1f877e4cfb4b05767dc44b548bdbeb7bddc60da4b7be6d4",
+    "bytes": 1228
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\ByteArray\\runtime.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\ByteArray\\runtime.csv",
+    "sha256": "45ce85b0d4043c095de58965135c56a45a888df5ef088c82ce038d8afe3a603e",
+    "bytes": 3866
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\ByteArray\\warmup.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\ByteArray\\warmup.json",
+    "sha256": "b59aab5f964e8127d6bfc6e1e6ea86683f69a68fd4b87f0d8fdd0119fd77cf26",
+    "bytes": 45
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\CustomString\\console.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\CustomString\\console.log",
+    "sha256": "21248ee09fb5f6b1e57df411052f5a8deabd4b11c1fb91dc5059ede76d472760",
+    "bytes": 11794
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\CustomString\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-043310.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\CustomString\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-043310.log",
+    "sha256": "f924d1f6efec6743961d0206b21f816473dd019d7911b0b4aba7fc5bda64cf50",
+    "bytes": 8607
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\CustomString\\loaded.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\CustomString\\loaded.json",
+    "sha256": "27315a3794962b9926dfac6f4935063d0becbe0f0563e0753e76c39d98d6324d",
+    "bytes": 642
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\CustomString\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\CustomString\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "sha256": "a2fa57d280446d155c6d0bd051728574fb5ec1b7b5a81216b3d0849cc297ace9",
+    "bytes": 21351
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\CustomString\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\CustomString\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "sha256": "d9f0b137bcdcc800b15c7e18e789bbb6a04e24248dd94fc7e667827f4a682fdc",
+    "bytes": 641
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\CustomString\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\CustomString\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "sha256": "741bdb0b9ff6dddec118c5bcfe9ef46ac07933682d7d171bd4fe4e7c44e97353",
+    "bytes": 1046
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\CustomString\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\CustomString\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "sha256": "1ea53346e8d306a8ae52a49ccba6a92852b91ede048bc6d0ce733d7234166099",
+    "bytes": 1201
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\CustomString\\runtime.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\CustomString\\runtime.csv",
+    "sha256": "f64b7e400349a1cc2ff813d27356efb20ca25e291d54c49b3acc952b6bb3c44e",
+    "bytes": 3889
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\CustomString\\warmup.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\CustomString\\warmup.json",
+    "sha256": "74ef851c7e0a93b5641c32ed4620738dd7d50d416a17a8c785d0f0e5870c8c04",
+    "bytes": 45
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\Int32\\console.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\Int32\\console.log",
+    "sha256": "fd1ab13911faa03f9418fade3cd926b21e05108fe15eff9a389f37b558149c34",
+    "bytes": 12225
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\Int32\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-043151.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\Int32\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-043151.log",
+    "sha256": "c8848f81a28b53e6634a0a83650ef62a26c6f05fd25bc4b944f382d418ee31a9",
+    "bytes": 9056
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\Int32\\loaded.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\Int32\\loaded.json",
+    "sha256": "27315a3794962b9926dfac6f4935063d0becbe0f0563e0753e76c39d98d6324d",
+    "bytes": 642
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\Int32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\Int32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "sha256": "f484504693b054aac41330a3e951413ace332e0e6c3372b20497e101f98a9dae",
+    "bytes": 21625
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\Int32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\Int32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "sha256": "e4abf205130abcc570f2f67c151fb666dc82a7e0c0476f1b006455a7816c6647",
+    "bytes": 626
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\Int32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\Int32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "sha256": "8fe8ad499872eb4f817db4f59929f14ca77779a2d0fb2a8b3725168f79fb15a3",
+    "bytes": 1040
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\Int32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\Int32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "sha256": "90cbecd869c28d5b2691c1b0838154e18e1b700564cc7807902443c3e24334d2",
+    "bytes": 1195
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\Int32\\runtime.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\Int32\\runtime.csv",
+    "sha256": "e0116b6b744d4a1b1ee8c3c10353135669576bb45d6d789a3181cfd9d1da9cc7",
+    "bytes": 3881
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\Int32\\warmup.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\Int32\\warmup.json",
+    "sha256": "1faf8b642d8dfd4de4d694249fadb89f69fe98b3760cdedf484f51b7b30c3d38",
+    "bytes": 45
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\Memory\\console.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\Memory\\console.log",
+    "sha256": "52bf3aa50e7bf2997ef62ed7637a4e309ba0723781c30ca3668ac4cf378d8383",
+    "bytes": 12542
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\Memory\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-043007.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\Memory\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-043007.log",
+    "sha256": "d244d1bfb9903779f66faf97cfb994f37a9bcb9cb8c868d02deb808eff21bfe7",
+    "bytes": 9547
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\Memory\\loaded.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\Memory\\loaded.json",
+    "sha256": "27315a3794962b9926dfac6f4935063d0becbe0f0563e0753e76c39d98d6324d",
+    "bytes": 642
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\Memory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\Memory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "sha256": "ab1fbecbf5ede89d5fdd0d53aef93f1382fe24f7a4c14b8ff2525d7c077392db",
+    "bytes": 21924
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\Memory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\Memory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "sha256": "3c97a2e5f9efa5fd4cd784053858f01dfc97a98fe10618ba9082f70ed267810b",
+    "bytes": 650
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\Memory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\Memory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "sha256": "0e9a2693098039188b08efe51b675f670eae0ddc972e3fbdd99c5db7bd8f2a96",
+    "bytes": 1054
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\Memory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\Memory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "sha256": "eb45d3bea92ad81a3fff3c46e8a1dedb09891e6c86b5ff92c45c1f847d4af402",
+    "bytes": 1225
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\Memory\\runtime.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\Memory\\runtime.csv",
+    "sha256": "2fce10dbfc6d111e7d1558d100e9b7893ae427ff544b6948f46c2479ac95e523",
+    "bytes": 3883
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\Memory\\warmup.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\Memory\\warmup.json",
+    "sha256": "9dbde286146f43d69af9786414ffd9bf66b07952ec28dbf62250c71933c78f9c",
+    "bytes": 45
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\NullableInt32\\console.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\NullableInt32\\console.log",
+    "sha256": "810e7359f66acb99fdb187244f497c1bf60cec5cd7b7102d70b7ceb8287050e5",
+    "bytes": 12061
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\NullableInt32\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-043230.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\NullableInt32\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-043230.log",
+    "sha256": "5edaec28f291d722b63b246929b3bdc1be911839b3051ecb9570bcee32d3e2ed",
+    "bytes": 8912
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\NullableInt32\\loaded.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\NullableInt32\\loaded.json",
+    "sha256": "27315a3794962b9926dfac6f4935063d0becbe0f0563e0753e76c39d98d6324d",
+    "bytes": 642
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\NullableInt32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\NullableInt32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "sha256": "241f87770baa9d4126fff57ffaa3d47737720309e86e6aa1f98e41158698cb31",
+    "bytes": 21430
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\NullableInt32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\NullableInt32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "sha256": "7069abd044a3de40cb4ae2c23dcce345e6dcf299cb4d618863300ffa889bc3b9",
+    "bytes": 647
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\NullableInt32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\NullableInt32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "sha256": "0184ee36486cf0d90e16e5919144e352095c25b9f687e81de911d91a07ab8a0c",
+    "bytes": 1048
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\NullableInt32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\NullableInt32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "sha256": "17274d144ae24007bf42c8d2dd28aed903ab702b89c586ad2685338731e3de5f",
+    "bytes": 1204
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\NullableInt32\\runtime.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\NullableInt32\\runtime.csv",
+    "sha256": "99cb34c88f4ed231f9e0e7511898d37d0dde931198efabf54408664ffb15b1c8",
+    "bytes": 3882
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\NullableInt32\\warmup.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\NullableInt32\\warmup.json",
+    "sha256": "c987a91a3df88588e3041206aa3d2d100c38824f895e3dbc25b93e6708652882",
+    "bytes": 45
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\NullKinds\\console.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\NullKinds\\console.log",
+    "sha256": "b2ae0c6a1ad46cb12ba8b95bc5af9bebe3796415388d5f30030562ac3f3dd0cb",
+    "bytes": 12363
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\NullKinds\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-043336.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\NullKinds\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-043336.log",
+    "sha256": "ca2a5b37aedebc47c9670b3d8fa621e34ad5a0ee63d9d11fbffbb6f4c5c33ef4",
+    "bytes": 9197
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\NullKinds\\loaded.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\NullKinds\\loaded.json",
+    "sha256": "27315a3794962b9926dfac6f4935063d0becbe0f0563e0753e76c39d98d6324d",
+    "bytes": 642
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\NullKinds\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\NullKinds\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "sha256": "1f518a50b1b1b13624bc2468e7fa95dcb42d9df243ff05694481307dbed61fb7",
+    "bytes": 22549
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\NullKinds\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\NullKinds\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "sha256": "50071d0a9de934dd13778af6afb8c75f24e16fd24fcc7e6530deb2d46895af66",
+    "bytes": 635
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\NullKinds\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\NullKinds\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "sha256": "9c59afb40433895dc7b8cfbd1014ce5204bfb79d0de435bf13b62e5d0b5012b2",
+    "bytes": 1044
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\NullKinds\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\NullKinds\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "sha256": "780abf9f04bf630f449e9ef5bbf2bc1b4973c8b98ae069ba5d57f61f6077b83d",
+    "bytes": 1199
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\NullKinds\\runtime.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\NullKinds\\runtime.csv",
+    "sha256": "fc51ab511858dbe5f7cf7eafe59fba4739a68dc102eed6bba465b83716a8c982",
+    "bytes": 3849
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\NullKinds\\warmup.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\NullKinds\\warmup.json",
+    "sha256": "8e358385826ce9856cb7af4860cf9cea6902642ff8d8dbe622a7d422a1b665c4",
+    "bytes": 45
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\ReadOnlyMemory\\console.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\ReadOnlyMemory\\console.log",
+    "sha256": "54972c342a0bd042f23b3af10da1f95240d1d5e3297dc4959553987d070e034e",
+    "bytes": 12641
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\ReadOnlyMemory\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-042916.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\ReadOnlyMemory\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-042916.log",
+    "sha256": "9e5b2c297828cc870b2c19f031deb6e870607d65f8aeed9d9b7c48eb42cbdc67",
+    "bytes": 9493
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\ReadOnlyMemory\\loaded.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\ReadOnlyMemory\\loaded.json",
+    "sha256": "27315a3794962b9926dfac6f4935063d0becbe0f0563e0753e76c39d98d6324d",
+    "bytes": 642
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\ReadOnlyMemory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\ReadOnlyMemory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "sha256": "16b851d34ab6a6cf69d69738ec4cd05597ac4d921479d8a570e3be8667b5e2e9",
+    "bytes": 21560
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\ReadOnlyMemory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\ReadOnlyMemory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "sha256": "d9438ff11988e763ba0c328f3ab47560cb8d0401bafb80ec4b34298408b512e0",
+    "bytes": 641
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\ReadOnlyMemory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\ReadOnlyMemory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "sha256": "426da34027cdba492a459e1c1ce5ceea7f21b76dea6d49b1175b0b0cbe1a54c5",
+    "bytes": 1046
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\ReadOnlyMemory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\ReadOnlyMemory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "sha256": "65f99e21c950b244d8cc0851b9d36744845873c9747d54ff74314b38009374e2",
+    "bytes": 1203
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\ReadOnlyMemory\\runtime.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\ReadOnlyMemory\\runtime.csv",
+    "sha256": "60e24fbf971f6a8ba741c76f57ec7c2fe2a27b2ac5145c6fb3aa8801ad4248f0",
+    "bytes": 3911
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\ReadOnlyMemory\\warmup.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\ReadOnlyMemory\\warmup.json",
+    "sha256": "3573ae6e4b5bd7877011e35a23dfd3fb58b3355e2671bfa4b6977abb5500d653",
+    "bytes": 45
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\String\\console.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\String\\console.log",
+    "sha256": "b60212cb6320ab4a86e2af9c59d2787254228434e878beef0d428c87b0bdf073",
+    "bytes": 12046
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\String\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-043115.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\String\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-043115.log",
+    "sha256": "e947d2c56cc7c859927c13f91431026023b12e252b09bf6721992baf498f91e3",
+    "bytes": 9032
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\String\\loaded.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\String\\loaded.json",
+    "sha256": "27315a3794962b9926dfac6f4935063d0becbe0f0563e0753e76c39d98d6324d",
+    "bytes": 642
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\String\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\String\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "sha256": "386a429466fb72fabeb5bdcd1dbe5534635252aa753f07011ac87f8de62fb1f2",
+    "bytes": 21431
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\String\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\String\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "sha256": "8052ea32777a134b82d70037cf3eaa034764285d9aadffabc6c44761e8f98333",
+    "bytes": 650
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\String\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\String\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "sha256": "fc72956bc687df6f2f3cb4f4218838091083ad1e1ac25b2d664f11d4571960e9",
+    "bytes": 1054
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\String\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\String\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "sha256": "ac5c09815f593105c786f05de1ec47eb25493542fec9feb3197f0cd7101ca396",
+    "bytes": 1225
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\String\\runtime.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\String\\runtime.csv",
+    "sha256": "09d25268e51604929fc5de354c34fbbf7774a908060deef0279fc26a063e12e8",
+    "bytes": 3881
+  },
+  {
+    "file": "runtime-flag\\measure\\A2\\String\\warmup.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\A2\\String\\warmup.json",
+    "sha256": "167d9dc927922efddcb139b665b31eea973fb1c3d484c3230434f1ef8e4616d2",
+    "bytes": 43
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\ArraySegment\\console.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\ArraySegment\\console.log",
+    "sha256": "be3c6450afe3feee858b83ae85bad8abcd3822565ea78eb6a335503c692a1b7f",
+    "bytes": 12488
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\ArraySegment\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-042516.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\ArraySegment\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-042516.log",
+    "sha256": "83f8d397a4b8683e7474c2a734b1a6306b1eb0bf44d6d606cf3ea98d646fd8fb",
+    "bytes": 9330
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\ArraySegment\\loaded.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\ArraySegment\\loaded.json",
+    "sha256": "66fce6cb5a1e89fbee9b56bd09780fa7102ca44dc4f292e64836bdaf5959963c",
+    "bytes": 642
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\ArraySegment\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\ArraySegment\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "sha256": "f08ae06cc97fee4a4e37d87417fcb048376e7ee7799436c71039153258756237",
+    "bytes": 22970
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\ArraySegment\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\ArraySegment\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "sha256": "5dbafdc40f64f73a38ebaf195fd9a93a1f8bbb41ab1ded347bb206b10da9c4bb",
+    "bytes": 641
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\ArraySegment\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\ArraySegment\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "sha256": "bf58dcdfa3ed54126e178e43aac8276b3f274dd580bd8e7ad5c1517463c8b63a",
+    "bytes": 1046
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\ArraySegment\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\ArraySegment\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "sha256": "6dff55f55775db4f9d052880144f28c732d458776bc9a1101300adad2e3d03b1",
+    "bytes": 1201
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\ArraySegment\\runtime.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\ArraySegment\\runtime.csv",
+    "sha256": "8883700e2ba85766d449415bf9c14fe90cc3e5fd8417f78e59626faaa54e7a40",
+    "bytes": 3857
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\ArraySegment\\warmup.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\ArraySegment\\warmup.json",
+    "sha256": "d72dbab111cddec33e9b99129304f27dc006bb51c7fab4326dfda593ee7de950",
+    "bytes": 45
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\ByteArray\\console.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\ByteArray\\console.log",
+    "sha256": "dbd44c682766d15488f188065a5da3b2c8cbdb4f22f03486c7103a4266ab26b5",
+    "bytes": 12311
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\ByteArray\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-042310.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\ByteArray\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-042310.log",
+    "sha256": "82c650f43f234bd464c44fa8b2a8e356f5df6221378879c166e759eaa55a38bb",
+    "bytes": 9146
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\ByteArray\\loaded.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\ByteArray\\loaded.json",
+    "sha256": "66fce6cb5a1e89fbee9b56bd09780fa7102ca44dc4f292e64836bdaf5959963c",
+    "bytes": 642
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\ByteArray\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\ByteArray\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "sha256": "002d0dfcd87435e56171c3672dd7fc99c9fa15fc20aac693a0c80e3a8f7529f0",
+    "bytes": 21369
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\ByteArray\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\ByteArray\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "sha256": "db3b24d3bcb268eccc7b8e69d6f0df64c08df3cb64ba3c34730d0abc2a352e6a",
+    "bytes": 659
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\ByteArray\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\ByteArray\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "sha256": "ba1901d4a46a7d2aa120363389e745547b485253179cd91a7d0c7ae7c5977333",
+    "bytes": 1057
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\ByteArray\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\ByteArray\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "sha256": "520190793295ba02ab3dea1ab2c28e73e77267fb3b4021278e31faa14646c2d1",
+    "bytes": 1228
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\ByteArray\\runtime.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\ByteArray\\runtime.csv",
+    "sha256": "3d33e8ebd68314900084f217db80046a24bd1138bf6bb803234dc29991ff024c",
+    "bytes": 3913
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\ByteArray\\warmup.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\ByteArray\\warmup.json",
+    "sha256": "5b6e15363ff4ab428d30b4a1d8ea7440fe3e843422e8168584e7a6ec2e73a89c",
+    "bytes": 45
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\CustomString\\console.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\CustomString\\console.log",
+    "sha256": "387c096f84113fc3a08c9e746b15fce0a00ebe14654b3bb8fa0774cdc86d49fd",
+    "bytes": 12068
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\CustomString\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-042743.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\CustomString\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-042743.log",
+    "sha256": "f134e7f08c099770f02f005db87a501f9daaa752bc00596b6f61d140c18902b4",
+    "bytes": 8911
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\CustomString\\loaded.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\CustomString\\loaded.json",
+    "sha256": "66fce6cb5a1e89fbee9b56bd09780fa7102ca44dc4f292e64836bdaf5959963c",
+    "bytes": 642
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\CustomString\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\CustomString\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "sha256": "1d4c30d7283ecf4c256931384671d186a3f2d6bc6ec58ec43b7b246f9222837d",
+    "bytes": 21205
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\CustomString\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\CustomString\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "sha256": "2e1dadf9d9d9091a4400b51bb1a29e8928f6e5e0f2e01dba17a9b323306ca6d3",
+    "bytes": 641
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\CustomString\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\CustomString\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "sha256": "51a30a5e6803224366878e208556969ac8fde4da09377c20470fabc96347b713",
+    "bytes": 1046
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\CustomString\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\CustomString\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "sha256": "8c5d111a0cabd1804ea6768c4dacdcaa4fe5446a0d7f53c595a8f70f5bc5889a",
+    "bytes": 1201
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\CustomString\\runtime.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\CustomString\\runtime.csv",
+    "sha256": "ff6a31f341c3ce4a61503b222045627faef45e733dbf666cb6b952beb6f4faba",
+    "bytes": 3864
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\CustomString\\warmup.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\CustomString\\warmup.json",
+    "sha256": "2e0ee2eb59d9b96ce1ae2a8e38c8dcde797ab55a1f7195b63a133d45d5978aa8",
+    "bytes": 45
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\Int32\\console.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\Int32\\console.log",
+    "sha256": "f52688bff51ee8aade8c3f5bc389ca3711affba2f785337fc67590592a86a268",
+    "bytes": 12344
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\Int32\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-042622.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\Int32\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-042622.log",
+    "sha256": "7f3c1e1a4730db012b3ff34559acee9eda35f35b374fd4d57a8f6a55644716a6",
+    "bytes": 9195
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\Int32\\loaded.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\Int32\\loaded.json",
+    "sha256": "66fce6cb5a1e89fbee9b56bd09780fa7102ca44dc4f292e64836bdaf5959963c",
+    "bytes": 642
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\Int32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\Int32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "sha256": "dc2d73f35364de66c23d9160b8cb4773027ed011bad0bde29c12cde2872a8d86",
+    "bytes": 22364
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\Int32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\Int32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "sha256": "39caad2bb4d4a605f2dd81fa911ccd44dbd5d7e6124f9d8d6999f4e86f01eda9",
+    "bytes": 626
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\Int32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\Int32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "sha256": "3367786d2050e1737063029fdfefb589e48beaecba1e1aae49d04fd1cc001c71",
+    "bytes": 1040
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\Int32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\Int32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "sha256": "45d020c0e9c19aeb0498f0ae2f43b72f4f556a59410f0343277f5c23a8aace80",
+    "bytes": 1195
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\Int32\\runtime.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\Int32\\runtime.csv",
+    "sha256": "4bba8bc0450966c855cfedf38856ba2ea99381466f4bb09db2d4df6fa9955f3b",
+    "bytes": 3861
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\Int32\\warmup.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\Int32\\warmup.json",
+    "sha256": "16a2caf0a7c1b548414f1b149fd8dfaa75780d898182262da694697fa69adfc6",
+    "bytes": 45
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\Memory\\console.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\Memory\\console.log",
+    "sha256": "015bfe2599fab803a0f9330188ef12b1274232ed0bd37eb3e9f39d90c1751ec1",
+    "bytes": 12681
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\Memory\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-042434.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\Memory\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-042434.log",
+    "sha256": "d0b022bd91488bc873c8552dab19b38d800763deffe15995f2424c9e314436fc",
+    "bytes": 9488
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\Memory\\loaded.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\Memory\\loaded.json",
+    "sha256": "66fce6cb5a1e89fbee9b56bd09780fa7102ca44dc4f292e64836bdaf5959963c",
+    "bytes": 642
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\Memory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\Memory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "sha256": "e0a588cf6a6d468dd14b7729bab5dc8ebd0766103af5294db810ce70a9931fe7",
+    "bytes": 21669
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\Memory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\Memory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "sha256": "20393f6f8b855964be4e8831b26032f7179e1f96d4844cbbecc1b4f185a163cf",
+    "bytes": 650
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\Memory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\Memory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "sha256": "d4b92c716f12225dec01a2ee3daf9111c84e32cc54b34a3447deaa9a2c6b073c",
+    "bytes": 1054
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\Memory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\Memory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "sha256": "c8b85b04ca7ee49ec357dc3a32d54221d5eb254cfd60ffd09305252ccdeb00be",
+    "bytes": 1225
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\Memory\\runtime.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\Memory\\runtime.csv",
+    "sha256": "1b5d8ed927aa140cf9a5c9b8a3124679334c16496a26410678f36c914e5f954a",
+    "bytes": 3915
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\Memory\\warmup.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\Memory\\warmup.json",
+    "sha256": "29fac789947f15584425f80e1ca7981e57da5d02c81f7fc900df668ce6df3815",
+    "bytes": 45
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\NullableInt32\\console.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\NullableInt32\\console.log",
+    "sha256": "eb63fd438b0be4ddcf2d094f3606f598945ba9c41f0f447d3c308a43799f5762",
+    "bytes": 12241
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\NullableInt32\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-042659.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\NullableInt32\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-042659.log",
+    "sha256": "18ef13a145f067f8394cce040dd50f22f7435e178a287fe315af1c2addcd95b5",
+    "bytes": 9071
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\NullableInt32\\loaded.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\NullableInt32\\loaded.json",
+    "sha256": "66fce6cb5a1e89fbee9b56bd09780fa7102ca44dc4f292e64836bdaf5959963c",
+    "bytes": 642
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\NullableInt32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\NullableInt32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "sha256": "b4af2e46b591f9167a355b1887bb7c0824cc03991941c767d5e7207c1d810629",
+    "bytes": 21500
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\NullableInt32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\NullableInt32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "sha256": "92569c3c9227072c77cdbd7b3cb608a8b61145b20d12bc0410546f095dda1447",
+    "bytes": 683
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\NullableInt32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\NullableInt32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "sha256": "d28d636ae6b07d5af1ffaa56f929e04d7ca67104567977ddd7e5b1ae9c7b810d",
+    "bytes": 1065
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\NullableInt32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\NullableInt32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "sha256": "d9623861d6a7b554afabb06af8ac79d8a49e5c17a8c937e7d1b48ea3a33b03d5",
+    "bytes": 1237
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\NullableInt32\\runtime.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\NullableInt32\\runtime.csv",
+    "sha256": "5011ebd61a08b66355d71d6070ce87d4b27de7d85cd50c17302ebe069df1d8ce",
+    "bytes": 3857
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\NullableInt32\\warmup.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\NullableInt32\\warmup.json",
+    "sha256": "3acb9fc8b7996c950f8c737342532a4feed8fb5709994e8afc06891319bfe85b",
+    "bytes": 45
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\NullKinds\\console.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\NullKinds\\console.log",
+    "sha256": "390309c6f253b672a42dac2a4429bdf087f71a13853f0883458337d0538d5c9c",
+    "bytes": 12062
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\NullKinds\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-042809.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\NullKinds\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-042809.log",
+    "sha256": "b6b39b71d6d78e808df8b79b7440f5c5c0c3e9aba789633c48bdafc8e55852d0",
+    "bytes": 9046
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\NullKinds\\loaded.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\NullKinds\\loaded.json",
+    "sha256": "66fce6cb5a1e89fbee9b56bd09780fa7102ca44dc4f292e64836bdaf5959963c",
+    "bytes": 642
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\NullKinds\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\NullKinds\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "sha256": "a1398178e234d607039d93fc2b31d9208203623c3b5af53d1710ef24ff973ffd",
+    "bytes": 21923
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\NullKinds\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\NullKinds\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "sha256": "6c97c95a462f8ac866a9be98f1fb133415376f7bddd76422cced6919f8880597",
+    "bytes": 635
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\NullKinds\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\NullKinds\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "sha256": "c38906f5bb53e31e4abbda899cf49fb13d86b23225515ee058de7f43118affc5",
+    "bytes": 1044
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\NullKinds\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\NullKinds\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "sha256": "65d40fdd3ad8308a46072dfe308d51471aca4957f90ba600771bc6acb947ca4a",
+    "bytes": 1199
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\NullKinds\\runtime.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\NullKinds\\runtime.csv",
+    "sha256": "a98bf027ab2da6f9fee4e4a7fb1895e323e2ff50c0749bef59bde51cf2119275",
+    "bytes": 3866
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\NullKinds\\warmup.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\NullKinds\\warmup.json",
+    "sha256": "2fa9ccde17f349a7c5db7921d680550187611dfcf1cc7bc73274e2951ef87dc7",
+    "bytes": 45
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\ReadOnlyMemory\\console.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\ReadOnlyMemory\\console.log",
+    "sha256": "4bb7db7892a77658960fa07ed21a5c18aaa0b0ffee584f4d301ab313a7ec98fb",
+    "bytes": 12810
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\ReadOnlyMemory\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-042354.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\ReadOnlyMemory\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-042354.log",
+    "sha256": "911a575063bd7ca96280aca24f220135d84588d0669ac93cae0d862837be7bd7",
+    "bytes": 9641
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\ReadOnlyMemory\\loaded.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\ReadOnlyMemory\\loaded.json",
+    "sha256": "66fce6cb5a1e89fbee9b56bd09780fa7102ca44dc4f292e64836bdaf5959963c",
+    "bytes": 642
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\ReadOnlyMemory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\ReadOnlyMemory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "sha256": "ef92faf98440679abbbf7abfca415a63466f92bd20986f100d175aeec7f68526",
+    "bytes": 21945
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\ReadOnlyMemory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\ReadOnlyMemory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "sha256": "32f8fbbf8f723d4322a22f8aa2b29038d748973386b1bbd6bb10c55315ece8ef",
+    "bytes": 674
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\ReadOnlyMemory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\ReadOnlyMemory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "sha256": "b77e828b561cfbb18e549b3645319661930b8be5e5898e476406605750261779",
+    "bytes": 1062
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\ReadOnlyMemory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\ReadOnlyMemory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "sha256": "e7bb39aaa70a0378caaa3baf1e5eea7c33d29f7591883539af9fd19459e13c10",
+    "bytes": 1235
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\ReadOnlyMemory\\runtime.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\ReadOnlyMemory\\runtime.csv",
+    "sha256": "452aeb53a460f6a8bdbbe5dfb483d73709b49091f39ba2dce8f0e286faf4990a",
+    "bytes": 3888
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\ReadOnlyMemory\\warmup.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\ReadOnlyMemory\\warmup.json",
+    "sha256": "df868eb5d3531a3c88f4ebfd6b899488d89b7e3489a1e67fa1f6a2f38458805a",
+    "bytes": 45
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\String\\console.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\String\\console.log",
+    "sha256": "2e2dd8f41f4ceb7d1c55e1579844200eb05b97053eb2383fc05b03c50b1b456b",
+    "bytes": 12231
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\String\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-042542.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\String\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-042542.log",
+    "sha256": "db7ccc116de50e672ae9abf4133388762fcab45eb428f2c6ebf3a1c2a648eb54",
+    "bytes": 9217
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\String\\loaded.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\String\\loaded.json",
+    "sha256": "66fce6cb5a1e89fbee9b56bd09780fa7102ca44dc4f292e64836bdaf5959963c",
+    "bytes": 642
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\String\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\String\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "sha256": "13bbcc25326df1f0d49d99ebaa857bc5cc8dbc306204bc720475616495a792a3",
+    "bytes": 21860
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\String\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\String\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "sha256": "bc9945e433186b500dfd092c202241b135ebd10bcd9dbf5729f14ffc44f6e524",
+    "bytes": 650
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\String\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\String\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "sha256": "381d2f4b6f8e6829b47ce750137f84a09f70f8c00f4c9fbfd6ae2f72c5f2931a",
+    "bytes": 1054
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\String\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\String\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "sha256": "4a76d224181122f5587035ef405f15548cd8b47ebef06354b6ad3e75fdc121c6",
+    "bytes": 1225
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\String\\runtime.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\String\\runtime.csv",
+    "sha256": "cb8cbeb6c42a22b0e25c02b7bae09f18d216cfadabbb5c6c51d4233e3dba977a",
+    "bytes": 3907
+  },
+  {
+    "file": "runtime-flag\\measure\\B\\String\\warmup.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\measure\\B\\String\\warmup.json",
+    "sha256": "35129836ab87ed7c024358bcaa5438e009f926a988c61f6ec4c237e4d5a80ba8",
+    "bytes": 45
+  },
+  {
+    "file": "runtime-flag\\phase-execution.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\phase-execution.json",
+    "sha256": "ee15922906336dc31035b28ad1c93025afb28953409eb3bc1525cc59cc2a4a93",
+    "bytes": 14700
+  },
+  {
+    "file": "runtime-flag\\run-settings.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\run-settings.json",
+    "sha256": "86c01d6a2d3f3f9cdafebf912aa71c2c3878d03f2d6ffe6da9c88839dab0832c",
+    "bytes": 449
+  },
+  {
+    "file": "runtime-flag\\run.py",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\run.py",
+    "sha256": "6fa9da78baa42a36dbb66d4d383dc88d0e269c07d0c253a5e7e2f66f2e0e1305",
+    "bytes": 2422
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\ArraySegment\\console.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\ArraySegment\\console.log",
+    "sha256": "6c03bb29d615e90232b8f76d5be07710b354df67a057b0a3e14dff5fa40b9e3c",
+    "bytes": 6484
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\ArraySegment\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-041524.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\ArraySegment\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-041524.log",
+    "sha256": "c97be15462878fc7a7a90390a703956a5ebc3017b767ab5953428d666411cb4e",
+    "bytes": 6366
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\ArraySegment\\loaded.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\ArraySegment\\loaded.json",
+    "sha256": "27315a3794962b9926dfac6f4935063d0becbe0f0563e0753e76c39d98d6324d",
+    "bytes": 642
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\ArraySegment\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\ArraySegment\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "sha256": "daad8ad699cebbcdb669d6ffba657b7911834a31ea91f39cd2cfbed57f0df795",
+    "bytes": 11735
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\ArraySegment\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\ArraySegment\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "sha256": "f047bd4e90e4c0bc6590410addc2ab1e10a4dfceece5bb355b60b9360c73ea21",
+    "bytes": 587
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\ArraySegment\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\ArraySegment\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "sha256": "ec9612f0c4ce69a1f343e32902c59493213f33ef2a472f8b83a6e1fc0e1e455b",
+    "bytes": 1016
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\ArraySegment\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\ArraySegment\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "sha256": "5b9a6059c89859b9ed2fd4c5c818c60b30a9eccd8c88918e65e142ccd677e4d5",
+    "bytes": 1155
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\ArraySegment\\runtime.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\ArraySegment\\runtime.csv",
+    "sha256": "40ec405866352fc0f655806f963927dbcac0acaf13736a74da706c102800226b",
+    "bytes": 518
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\ArraySegment\\warmup.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\ArraySegment\\warmup.json",
+    "sha256": "4d5083df6fed1a82de694f1f6cf9c24918ce448deb9c7efdd1036e3f2ac7159a",
+    "bytes": 34
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\ByteArray\\console.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\ByteArray\\console.log",
+    "sha256": "af446c29b6ed9229e327a2a41c128b0e619f9c5d6dabd7cce0db7853562f1f73",
+    "bytes": 6341
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\ByteArray\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-041521.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\ByteArray\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-041521.log",
+    "sha256": "22b1774e9d5efc9e2c71d730339483e0a06bd82470ac9fdcc46cb467c356992f",
+    "bytes": 6223
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\ByteArray\\loaded.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\ByteArray\\loaded.json",
+    "sha256": "27315a3794962b9926dfac6f4935063d0becbe0f0563e0753e76c39d98d6324d",
+    "bytes": 642
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\ByteArray\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\ByteArray\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "sha256": "5a2f1cca76fdc1392e843d25255b4943e0dc9f6fc4bfcb6d3c4979ce109ca4b6",
+    "bytes": 11237
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\ByteArray\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\ByteArray\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "sha256": "7b1d12b93f7c01c991ff6f3e9f961d456eda411e8efbb11837045995afda4ac4",
+    "bytes": 578
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\ByteArray\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\ByteArray\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "sha256": "194a863d538bfe644d76f52fff6d6ea5ab91693eeb4bc2a93f131abfb12ed989",
+    "bytes": 1013
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\ByteArray\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\ByteArray\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "sha256": "263833ae46d048db9ab3af3e1f22697c965ad6a98cb49ef7b7f06c989c7f0b1c",
+    "bytes": 1152
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\ByteArray\\runtime.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\ByteArray\\runtime.csv",
+    "sha256": "a68daf92cd61258c3682f4b697dceef0f43c7613f89a8293b481a1aa6692c38d",
+    "bytes": 519
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\ByteArray\\warmup.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\ByteArray\\warmup.json",
+    "sha256": "589373036d211407f8057851b33e2c3a82ef8f2acf8c139be9998b48f8360402",
+    "bytes": 34
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\CustomString\\console.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\CustomString\\console.log",
+    "sha256": "34906bb3d6b587cc78c7b60b9e93dcf7bb8b66a0138360ef5af6510ae69f5092",
+    "bytes": 6428
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\CustomString\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-041528.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\CustomString\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-041528.log",
+    "sha256": "4e08ed1779233eba4912cb101c028e10944bb1fbae865a67f74c3ee4d9d8375c",
+    "bytes": 6309
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\CustomString\\loaded.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\CustomString\\loaded.json",
+    "sha256": "27315a3794962b9926dfac6f4935063d0becbe0f0563e0753e76c39d98d6324d",
+    "bytes": 642
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\CustomString\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\CustomString\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "sha256": "c540ad2496be2182fbf45145ccd3e3f512efa19ad1104cc8c177be5b58228f30",
+    "bytes": 11511
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\CustomString\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\CustomString\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "sha256": "15cd020a33d85e216f1928d19cfa13dd8687a5eaf112b1bd687ae7f69e3bc705",
+    "bytes": 587
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\CustomString\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\CustomString\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "sha256": "1b49d6e6cfa6aa0bad4133294671f27c96b7ef970fc9d23df74d4319373b7acd",
+    "bytes": 1016
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\CustomString\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\CustomString\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "sha256": "e8d9b484a420f359cfb3b3fabb06b73330857ff3cd3d2a0d2ba2e3d3aabc15a0",
+    "bytes": 1155
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\CustomString\\runtime.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\CustomString\\runtime.csv",
+    "sha256": "87586b1b7886fb31577b25e7241d36fc099923de1e388e5b7345561a80232c68",
+    "bytes": 522
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\CustomString\\warmup.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\CustomString\\warmup.json",
+    "sha256": "9b450845fc65bdb3bf44128b4d768279029c9d11a46e27943f05186043dbdbda",
+    "bytes": 35
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\Int32\\console.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\Int32\\console.log",
+    "sha256": "6937f9ff1cc5d974031b9962f08585365a1b95c9bc2096e32f36935be97d1515",
+    "bytes": 6290
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\Int32\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-041526.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\Int32\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-041526.log",
+    "sha256": "a90707d55ec6e1cd6987402d588e6fef8aa5f50d3df9c3bb9a88032686fd53e0",
+    "bytes": 6179
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\Int32\\loaded.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\Int32\\loaded.json",
+    "sha256": "27315a3794962b9926dfac6f4935063d0becbe0f0563e0753e76c39d98d6324d",
+    "bytes": 642
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\Int32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\Int32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "sha256": "d1548e0f68f7fcdd267f799bfcd68e7f99285d545509b6fb1571b074b9b286b7",
+    "bytes": 11240
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\Int32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\Int32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "sha256": "8f2511e500bfeb1d572853f34689d18715c1848bcca59336b7d107226bc55754",
+    "bytes": 569
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\Int32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\Int32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "sha256": "18a2b18690762bc0120a0723b93f8ec73a42e6a310b630b6123087068b8f2c50",
+    "bytes": 1009
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\Int32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\Int32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "sha256": "0220485e892f1690859811def1a02bc9789d8bdd3067fb165bfab9a924d6b1de",
+    "bytes": 1148
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\Int32\\runtime.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\Int32\\runtime.csv",
+    "sha256": "cd00bf9cc859ec26c1c09ad3b83235c13dbff4c594d3a54140aae7bca86763fa",
+    "bytes": 516
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\Int32\\warmup.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\Int32\\warmup.json",
+    "sha256": "703ac7fb75c28d59af73381191eb725d2c7abe5d4309f0c2be176b9d5583d0a9",
+    "bytes": 32
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\Memory\\console.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\Memory\\console.log",
+    "sha256": "97087982f2d1990416f2d01992e03acccacab19eb46b72be82ac04a405ea2e19",
+    "bytes": 6309
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\Memory\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-041523.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\Memory\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-041523.log",
+    "sha256": "d9e75944f2996db265df7c1bfb518aa70dd879feaea24d7ec312cef7a99d9870",
+    "bytes": 6191
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\Memory\\loaded.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\Memory\\loaded.json",
+    "sha256": "27315a3794962b9926dfac6f4935063d0becbe0f0563e0753e76c39d98d6324d",
+    "bytes": 642
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\Memory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\Memory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "sha256": "835391e0cf3c87ed28ff597412579277f7d05685d9f883cb68a3d160de13ae7c",
+    "bytes": 11188
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\Memory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\Memory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "sha256": "69629c541926509b501ee37c6f723fa14a4d3aaf810d2ea3d7f8ac91017676a1",
+    "bytes": 569
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\Memory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\Memory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "sha256": "9254d3c9e07599eb81d3e977d7511f9cec68f75e155a9b333c1035c31979852c",
+    "bytes": 1010
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\Memory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\Memory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "sha256": "831d9a594bd38fc0f7b9fcaedc90fd65443dee75ab37cace047cf92ac73fbb0a",
+    "bytes": 1149
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\Memory\\runtime.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\Memory\\runtime.csv",
+    "sha256": "6ab8d99a85630dfdb421481df274a6f0f22c1135b48b8309cbd05efaa993e085",
+    "bytes": 518
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\Memory\\warmup.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\Memory\\warmup.json",
+    "sha256": "88c5fdabea99f6fcc7ab930b9ddea2f03f14d3973d5d750c87d3236cfeef7a25",
+    "bytes": 34
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\NullableInt32\\console.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\NullableInt32\\console.log",
+    "sha256": "9adba79d3244b0845527946ff2b6ecbb3b9dc1591533801234df239e7cfd92ef",
+    "bytes": 6433
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\NullableInt32\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-041527.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\NullableInt32\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-041527.log",
+    "sha256": "e9c86a1ed2c43a23700a4cc9c9f6277ab76d295d3aecfbc8b9bd9e716cf80a5c",
+    "bytes": 6322
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\NullableInt32\\loaded.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\NullableInt32\\loaded.json",
+    "sha256": "27315a3794962b9926dfac6f4935063d0becbe0f0563e0753e76c39d98d6324d",
+    "bytes": 642
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\NullableInt32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\NullableInt32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "sha256": "f6da9d4303159af733823761e847bb498e5140145a7034de24aef204d39e04d2",
+    "bytes": 11477
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\NullableInt32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\NullableInt32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "sha256": "37dd93ef964a6f3411ba712f11ca8b47e3e152663285c27640c5f6254d640d47",
+    "bytes": 590
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\NullableInt32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\NullableInt32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "sha256": "f293866b3bf5c25b5a36b636f538dea999acdcfbd2c841b2c6f1e0bc01a4ed07",
+    "bytes": 1017
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\NullableInt32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\NullableInt32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "sha256": "88f566be545b37ab56bf651fee4bc3006ed35dd8ecddfd9276656af9f25aed96",
+    "bytes": 1157
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\NullableInt32\\runtime.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\NullableInt32\\runtime.csv",
+    "sha256": "8739fa2588a358af7cbe6befde115a95239aee50552fd17f9853d779b996fc74",
+    "bytes": 518
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\NullableInt32\\warmup.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\NullableInt32\\warmup.json",
+    "sha256": "fbbdab81c59263aa27851cc3e0e5df562d6e66e3c6a2a2290566159c01277ece",
+    "bytes": 34
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\NullKinds\\console.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\NullKinds\\console.log",
+    "sha256": "d010ac0cb608380472c962dd13ce3032268ad92649f94d65fc40ccda1a78fd8b",
+    "bytes": 6333
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\NullKinds\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-041529.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\NullKinds\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-041529.log",
+    "sha256": "e2be67ebc2a080792376dad9cedcf285e7d42bcf3c68b2df3e59b17958a6535f",
+    "bytes": 6223
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\NullKinds\\loaded.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\NullKinds\\loaded.json",
+    "sha256": "27315a3794962b9926dfac6f4935063d0becbe0f0563e0753e76c39d98d6324d",
+    "bytes": 642
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\NullKinds\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\NullKinds\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "sha256": "dde41fad39203a639629059bb2140f81189c781b2a910fe93c1717cb75caf1a9",
+    "bytes": 11237
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\NullKinds\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\NullKinds\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "sha256": "9e6e9daabe7c0a61f98283f247f84a1167184f24a8127d20a7eb4059a368ee18",
+    "bytes": 578
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\NullKinds\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\NullKinds\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "sha256": "093e6ddb4da7d015766ddf313b8cb919916197500d2bed82efe5c3747b50511a",
+    "bytes": 1013
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\NullKinds\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\NullKinds\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "sha256": "40024c41690a07db7770ec4e47a3fa499b1cb21208dbc70cac7436a87bb12f61",
+    "bytes": 1152
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\NullKinds\\runtime.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\NullKinds\\runtime.csv",
+    "sha256": "9e1148522f4762c6907412b33a9e45795f81c2a7b4669d17c415d500dc18bccd",
+    "bytes": 517
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\NullKinds\\warmup.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\NullKinds\\warmup.json",
+    "sha256": "c5d0787634632620a1ad06a4fd96388f7cc1f39b6399ffde38f0379d775624a9",
+    "bytes": 34
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\ReadOnlyMemory\\console.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\ReadOnlyMemory\\console.log",
+    "sha256": "ac83c4150e7c953c7f2b368a68b34c6d7a979c3e9a9e94e4e226b83015b121ae",
+    "bytes": 6669
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\ReadOnlyMemory\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-041522.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\ReadOnlyMemory\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-041522.log",
+    "sha256": "2474659440614842e438ea003b8adcbf8f79da4e1ee8b7eb95719c9a824c9cf5",
+    "bytes": 6551
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\ReadOnlyMemory\\loaded.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\ReadOnlyMemory\\loaded.json",
+    "sha256": "27315a3794962b9926dfac6f4935063d0becbe0f0563e0753e76c39d98d6324d",
+    "bytes": 642
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\ReadOnlyMemory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\ReadOnlyMemory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "sha256": "8afbf6e7c88dda09b31330103b605d2928fec1bba53c44dc5a10309a47c54100",
+    "bytes": 12496
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\ReadOnlyMemory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\ReadOnlyMemory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "sha256": "80d2709bf3abcefc9d257c7569ccffa959fbd010dc7d0af17a8eeb98d27eb795",
+    "bytes": 593
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\ReadOnlyMemory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\ReadOnlyMemory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "sha256": "a9e5ba51c9d87edf0a30c2946d7643c2e093229d0b8abf480e4214ef1eea77a3",
+    "bytes": 1018
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\ReadOnlyMemory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\ReadOnlyMemory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "sha256": "482ed0871b4f38d0e410ee01e1730a711fb957bb717d83699c26a5af15555e14",
+    "bytes": 1159
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\ReadOnlyMemory\\runtime.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\ReadOnlyMemory\\runtime.csv",
+    "sha256": "cfdc57b44deb792263e6f460620f1b59672ebe817340ccad7a72a7e72153585d",
+    "bytes": 520
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\ReadOnlyMemory\\warmup.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\ReadOnlyMemory\\warmup.json",
+    "sha256": "bfcb6b389d78d75d6f26f7edc3c3ba8731ac6242e0e10b3261397d3e39e481fb",
+    "bytes": 35
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\String\\console.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\String\\console.log",
+    "sha256": "2e0a78a65b4f81f00f824c71210e4cac728dcab47e53dd96e986d6c450d5c0e5",
+    "bytes": 6473
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\String\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-041525.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\String\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-041525.log",
+    "sha256": "5cf97c30a3433040737ccd53ba78b40a048f8ba69039b3bac0c5c33c785ffc4b",
+    "bytes": 6353
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\String\\loaded.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\String\\loaded.json",
+    "sha256": "27315a3794962b9926dfac6f4935063d0becbe0f0563e0753e76c39d98d6324d",
+    "bytes": 642
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\String\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\String\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "sha256": "307b1e944eee32253854650bc48707e60c9658f286fdb574ac80c56535149aa5",
+    "bytes": 11976
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\String\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\String\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "sha256": "8a75ec4eef80be859ad14269d93cd42d421145ac31ca457183bdcd8f10bf81a1",
+    "bytes": 569
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\String\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\String\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "sha256": "62ba4c13c7d02c29ff73143c2a572d8973d18c0d2357661038283021230c9410",
+    "bytes": 1010
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\String\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\String\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "sha256": "a2565d431931c9f94d8b14b992b98518eeb38eddb307c73c7d5900af32f77ba6",
+    "bytes": 1149
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\String\\runtime.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\String\\runtime.csv",
+    "sha256": "821d0c7035cd05530ebc7759c08f8de44ee939bc77fb422f2bcdaa98970d1fa8",
+    "bytes": 520
+  },
+  {
+    "file": "runtime-flag\\smoke-A\\String\\warmup.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-A\\String\\warmup.json",
+    "sha256": "572bf3252b3cebad78488ab7b8b111d7d7fbf3be0e83889c1a08ea2f5e107ee4",
+    "bytes": 35
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\ArraySegment\\console.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\ArraySegment\\console.log",
+    "sha256": "80674636f93898e154fc96720666383431211ced663b35211467882d345fb599",
+    "bytes": 6374
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\ArraySegment\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-041534.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\ArraySegment\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-041534.log",
+    "sha256": "948c9b865cbd34471b221e4728856f51de715b97c105cb7ec50f62e561de6269",
+    "bytes": 6256
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\ArraySegment\\loaded.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\ArraySegment\\loaded.json",
+    "sha256": "66fce6cb5a1e89fbee9b56bd09780fa7102ca44dc4f292e64836bdaf5959963c",
+    "bytes": 642
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\ArraySegment\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\ArraySegment\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "sha256": "4794582469406b10e24dd3198cc10c7ed67d8a058273744c67ea73be632d8ac9",
+    "bytes": 11211
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\ArraySegment\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\ArraySegment\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "sha256": "d4d62a3311655e69ef298940c5bdd7c251bd4f84103fa086987ea98b42654ee3",
+    "bytes": 587
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\ArraySegment\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\ArraySegment\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "sha256": "c34d38c1225d5934601e6e6da734a0b652aacbcab6b18604391749733e00a9cb",
+    "bytes": 1016
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\ArraySegment\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\ArraySegment\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "sha256": "119cb8808696becb59817786cdcccf61985189ee6e8d18f8ae8cffc7ff9087bd",
+    "bytes": 1155
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\ArraySegment\\runtime.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\ArraySegment\\runtime.csv",
+    "sha256": "f917d94cc55da66a6b1db0b7f853510e2d4712c36c1b470f160501fe5fd790f9",
+    "bytes": 519
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\ArraySegment\\warmup.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\ArraySegment\\warmup.json",
+    "sha256": "685461fc08365f924fcc40270353f1a33abf153ce8259ba3a0fd6002c7cd552f",
+    "bytes": 35
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\ByteArray\\console.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\ByteArray\\console.log",
+    "sha256": "f816d0a7fbe5f35ce4092aef9cdb4b977f1307bb03617723e14b2499664d18c7",
+    "bytes": 6449
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\ByteArray\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-041531.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\ByteArray\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-041531.log",
+    "sha256": "a8bb3b2ebd9678f7c8fcc3e1489556b32bdb9bb1484ea3d47c59934e2c94e7b2",
+    "bytes": 6331
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\ByteArray\\loaded.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\ByteArray\\loaded.json",
+    "sha256": "66fce6cb5a1e89fbee9b56bd09780fa7102ca44dc4f292e64836bdaf5959963c",
+    "bytes": 642
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\ByteArray\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\ByteArray\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "sha256": "d34db3e12fe13ab43d9733a5510a88d072f46a49bb47122f946c1e339148a1fa",
+    "bytes": 11743
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\ByteArray\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\ByteArray\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "sha256": "98b086e3b961456562b64119492a682bfd8e8d94755db4a7f65bfd9a2a3663d8",
+    "bytes": 578
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\ByteArray\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\ByteArray\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "sha256": "f4412a83b94cfe6f858caad606530018e09dc9134751052608a96f5693a06019",
+    "bytes": 1013
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\ByteArray\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\ByteArray\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "sha256": "6d9d7965319c7f25e148eb31568b18d4f9d30b68f0ac9bd7e49c513f87c88d2c",
+    "bytes": 1152
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\ByteArray\\runtime.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\ByteArray\\runtime.csv",
+    "sha256": "6740f06eb3f78ba849651553cc76412306653f45630ca0017855fd68869decf9",
+    "bytes": 512
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\ByteArray\\warmup.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\ByteArray\\warmup.json",
+    "sha256": "fbb78d113bb520e9faba1e8da0f0608153720ece862f5a18c9d91937f39bec82",
+    "bytes": 34
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\CustomString\\console.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\CustomString\\console.log",
+    "sha256": "86bcd602c493aac4b6633a7fa49bedb479b579042c96c73af0b7fee2c491b3ca",
+    "bytes": 6485
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\CustomString\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-041538.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\CustomString\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-041538.log",
+    "sha256": "7fbca966d1882bf4b464ddd5233100b8ad926dafffd6fbf01eeb5370b35f1ce4",
+    "bytes": 6365
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\CustomString\\loaded.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\CustomString\\loaded.json",
+    "sha256": "66fce6cb5a1e89fbee9b56bd09780fa7102ca44dc4f292e64836bdaf5959963c",
+    "bytes": 642
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\CustomString\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\CustomString\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "sha256": "50ab508150a99f9589ab53011b88ba4480502d66e96fcd985a498d2944eaeb11",
+    "bytes": 11756
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\CustomString\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\CustomString\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "sha256": "e9e5ffa49de17ba3407d7e6852b17fbf39f420db9a9131775f48c98419a415ab",
+    "bytes": 587
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\CustomString\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\CustomString\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "sha256": "116ed24afe92be355084d703c5488c8754e78e1bd1403bf1184b5f54bbe223a4",
+    "bytes": 1016
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\CustomString\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\CustomString\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "sha256": "ade0c24693815ecfef13a600a2b245699aa71d049d7b288c3d4df972d40aee13",
+    "bytes": 1155
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\CustomString\\runtime.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\CustomString\\runtime.csv",
+    "sha256": "2fc80cb5a03107489726c801c7f709ba7222975598bbf6f558b787a90d6fff54",
+    "bytes": 517
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\CustomString\\warmup.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\CustomString\\warmup.json",
+    "sha256": "4b66851d59d8a7a34d768b01963c502a0ba1cde07d9774e94f351a820d41d820",
+    "bytes": 35
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\Int32\\console.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\Int32\\console.log",
+    "sha256": "4f87491df6d43bc8323a3f36f8293b9b30e8aa129bee179580ed6ce86b103f49",
+    "bytes": 6402
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\Int32\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-041536.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\Int32\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-041536.log",
+    "sha256": "ca440bf81471d2f3a43db276f659da0d21a6e2e8f134bc3eac40964437f486c8",
+    "bytes": 6291
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\Int32\\loaded.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\Int32\\loaded.json",
+    "sha256": "66fce6cb5a1e89fbee9b56bd09780fa7102ca44dc4f292e64836bdaf5959963c",
+    "bytes": 642
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\Int32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\Int32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "sha256": "8054e1a787508bb74a9fc75db84ca9ec279837ca0539c37daf104e08bbf4c20f",
+    "bytes": 11690
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\Int32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\Int32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "sha256": "6d4029e5ad5f89bab5e432ab9e14a8b0d30de54954300804c33937073db2e55b",
+    "bytes": 569
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\Int32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\Int32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "sha256": "ccf810d20e23b40190c2c72a0a4b79542457965cc0ec5d423e7c1318754ef8d7",
+    "bytes": 1009
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\Int32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\Int32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "sha256": "3703e3bc82f7c1db80aef0f36512a719afe2ba7ae972ca0513fa95a895c0c546",
+    "bytes": 1148
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\Int32\\runtime.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\Int32\\runtime.csv",
+    "sha256": "015d43671b2834d68df21efeb982a712153fe22c0100ecf28c7aede6d00f1a2e",
+    "bytes": 515
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\Int32\\warmup.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\Int32\\warmup.json",
+    "sha256": "b7a42e96fe45b49e5253c34ffb8b5d8eee74fee67a09ffac897327b7dc818d28",
+    "bytes": 34
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\Memory\\console.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\Memory\\console.log",
+    "sha256": "7154fc05efdf68292fe4f757dba6cfd0a4168848a6b7057583607066c1fa16f7",
+    "bytes": 6307
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\Memory\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-041533.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\Memory\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-041533.log",
+    "sha256": "8e2b5a4dd8c7db27a5d8f1381032f6fa8712c1f64558d2f3ce2bd551a48d0e6a",
+    "bytes": 6189
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\Memory\\loaded.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\Memory\\loaded.json",
+    "sha256": "66fce6cb5a1e89fbee9b56bd09780fa7102ca44dc4f292e64836bdaf5959963c",
+    "bytes": 642
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\Memory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\Memory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "sha256": "a0aa7c0eeb5ea14f169a894f26a1f5df6f5960ec5ee33ab0d811a5e97ccc0c76",
+    "bytes": 11149
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\Memory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\Memory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "sha256": "e81490a226b882d06f3f1290a648906166c3fc1163285c1ea99b11705b1d06cd",
+    "bytes": 569
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\Memory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\Memory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "sha256": "ea9241dc79ac0bf3c66e729aabd81e176871432b927900fce6a1be96098d5214",
+    "bytes": 1010
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\Memory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\Memory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "sha256": "8e4f5ab0997b26a74321cd3d44f2b111ab956718640cc6e1fbc96b9ee55a8d9c",
+    "bytes": 1149
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\Memory\\runtime.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\Memory\\runtime.csv",
+    "sha256": "5fd813821e7a9f708cff20a5b2cad80120cf12b816c0c6df6bfc265cb2be304c",
+    "bytes": 518
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\Memory\\warmup.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\Memory\\warmup.json",
+    "sha256": "ec5e6c320aa4dc83fe66265cdc5af9b1528ae83732fdf8a492d5226708412f3e",
+    "bytes": 35
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\NullableInt32\\console.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\NullableInt32\\console.log",
+    "sha256": "25e853039572bd7a5fba32dba0e449786b9f172fd15ba369d89907b1311c2966",
+    "bytes": 6432
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\NullableInt32\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-041537.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\NullableInt32\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-041537.log",
+    "sha256": "ac4d5e13c82d5ca78d95d968b635ac8b66fad86d711204362d54ad24f0e10441",
+    "bytes": 6321
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\NullableInt32\\loaded.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\NullableInt32\\loaded.json",
+    "sha256": "66fce6cb5a1e89fbee9b56bd09780fa7102ca44dc4f292e64836bdaf5959963c",
+    "bytes": 642
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\NullableInt32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\NullableInt32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "sha256": "a4913e05090e3a482977ad5f0a2ca163e93cf1b59c7a4a52817c4bb6c2f158e3",
+    "bytes": 11528
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\NullableInt32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\NullableInt32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "sha256": "a77d437977c03c38bd8bbbba5b8a0ccabf10b3fc20ec5986e418d772317eec6a",
+    "bytes": 590
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\NullableInt32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\NullableInt32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "sha256": "3bb8ccfe571e73e840f42ddd225fcbbdea4b3e297843dc42adeee689db64d2c5",
+    "bytes": 1017
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\NullableInt32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\NullableInt32\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "sha256": "e0b1063d63015093d13ea1bdf5afeb21895bc52b32b565e9ae6f99e7a60c1dbc",
+    "bytes": 1157
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\NullableInt32\\runtime.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\NullableInt32\\runtime.csv",
+    "sha256": "9f168dd87f6a2cc4eff7acce3b6f503a1fc412db9d8d345c79bf7cde8edffe05",
+    "bytes": 519
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\NullableInt32\\warmup.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\NullableInt32\\warmup.json",
+    "sha256": "7f309876f2f2ccc023d2860a23ba6e5a4aca80e155fdc7af6db8372008d8c78a",
+    "bytes": 34
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\NullKinds\\console.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\NullKinds\\console.log",
+    "sha256": "26263575e1df2b7e0c0946ad80785b48f81128d85e506faf370f6811bd8fab2a",
+    "bytes": 6607
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\NullKinds\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-041539.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\NullKinds\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-041539.log",
+    "sha256": "31a861153c2c2aa7fd426e78bb6bed0195050f61430a38f95db00f1500965527",
+    "bytes": 6497
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\NullKinds\\loaded.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\NullKinds\\loaded.json",
+    "sha256": "66fce6cb5a1e89fbee9b56bd09780fa7102ca44dc4f292e64836bdaf5959963c",
+    "bytes": 642
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\NullKinds\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\NullKinds\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "sha256": "d1739fcc5ca362801025affbd061ca896cd74def7eed9ad0d1fe4b8a9a744e36",
+    "bytes": 12457
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\NullKinds\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\NullKinds\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "sha256": "3556690f2c6f608b95c4a2889364e65e8d827696f5cda1419345b7cb6fbc294c",
+    "bytes": 578
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\NullKinds\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\NullKinds\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "sha256": "3d55889c31248cb850b83dd7c4900c9f8f196a64a76732059931cf1ab46b7afa",
+    "bytes": 1013
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\NullKinds\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\NullKinds\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "sha256": "53518c811f90f2447eb0139e396191e001b28cb163312fb2e979cf9900ed1f16",
+    "bytes": 1152
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\NullKinds\\runtime.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\NullKinds\\runtime.csv",
+    "sha256": "f287516cc8d72af7afbc8815b442fefd6529a3b1bbb8a2c541418460fd07acd4",
+    "bytes": 518
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\NullKinds\\warmup.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\NullKinds\\warmup.json",
+    "sha256": "7b99383f4413343555c1384d8deb1e9086dd4a100b3948a5d6ae15eb845a55f2",
+    "bytes": 34
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\ReadOnlyMemory\\console.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\ReadOnlyMemory\\console.log",
+    "sha256": "80229bca0ce02ae7213f181dad8f132f1073b65b56f8330c4cedd0d30f45701e",
+    "bytes": 6451
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\ReadOnlyMemory\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-041532.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\ReadOnlyMemory\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-041532.log",
+    "sha256": "5587d7a5de250c117e479311d397609eada91d5e5a3a823f8db052c86714df81",
+    "bytes": 6333
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\ReadOnlyMemory\\loaded.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\ReadOnlyMemory\\loaded.json",
+    "sha256": "66fce6cb5a1e89fbee9b56bd09780fa7102ca44dc4f292e64836bdaf5959963c",
+    "bytes": 642
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\ReadOnlyMemory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\ReadOnlyMemory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "sha256": "b10c1d560bf83329893085cc86f46b30417591cec9b831e5ec0fbc31d663462a",
+    "bytes": 11519
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\ReadOnlyMemory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\ReadOnlyMemory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "sha256": "26a413603aca31a7d53f69a9ad0ca6fff9aeca54ccb2ffadf5624d8bcb68777b",
+    "bytes": 593
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\ReadOnlyMemory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\ReadOnlyMemory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "sha256": "8b44e95ac90a6f190cf90798c5e619d51c3f593ee7078a1d74665779a26dc10d",
+    "bytes": 1018
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\ReadOnlyMemory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\ReadOnlyMemory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "sha256": "55898b8151e9e3d936f7d8dd4191ec1dc557ad28ebfde05deb871697673afa2d",
+    "bytes": 1159
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\ReadOnlyMemory\\runtime.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\ReadOnlyMemory\\runtime.csv",
+    "sha256": "0441784727fc2d57ae073077ac7fb84a049286707fe243bbf26a79e3a759ea32",
+    "bytes": 520
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\ReadOnlyMemory\\warmup.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\ReadOnlyMemory\\warmup.json",
+    "sha256": "b880c1b4ccde89c6f5545d95142b9bc05214878d0d796d186ffd601389f6b339",
+    "bytes": 34
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\String\\console.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\String\\console.log",
+    "sha256": "72d276f938310c5e67220efb535c5032a9e57e605cd8df93ed7b6c63a03180b2",
+    "bytes": 6417
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\String\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-041535.log",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\String\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-041535.log",
+    "sha256": "58394c69da9485c8c833cdfcab94eaea242c87a13fada21cc9c2b09172e7ac57",
+    "bytes": 6299
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\String\\loaded.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\String\\loaded.json",
+    "sha256": "66fce6cb5a1e89fbee9b56bd09780fa7102ca44dc4f292e64836bdaf5959963c",
+    "bytes": 642
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\String\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\String\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "sha256": "a4fbcc46371daea0793135f6edd8754fc61af722ced3780077ad0f18ad466091",
+    "bytes": 11711
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\String\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\String\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "sha256": "bd002d6a2d91b3c4393bd749ce970ec790769c8aabe485f3c60308d1b7d759b3",
+    "bytes": 569
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\String\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\String\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "sha256": "849c3fcf9fe403d8d9a975728c1aba3ed24d9f247ac0ebc732bc570cfbb00f9f",
+    "bytes": 1010
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\String\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\String\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "sha256": "c0c7fae65138fc14dd510e255f4c9d86546e36082952776ba1d1018933f1e8e4",
+    "bytes": 1149
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\String\\runtime.csv",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\String\\runtime.csv",
+    "sha256": "6c67b209e97d93e008201c97480e93f9022c9bfd006c1d8384c82a2b0a75759e",
+    "bytes": 518
+  },
+  {
+    "file": "runtime-flag\\smoke-B\\String\\warmup.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\smoke-B\\String\\warmup.json",
+    "sha256": "2f20159630bcc39e03cecb52cf7d92c313348e41b50767721b87c852e702080a",
+    "bytes": 32
+  },
+  {
+    "file": "runtime-flag\\summary.json",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\summary.json",
+    "sha256": "2942fd53ce2f07545cbc35446c4ac6856897bfad0d1b935a9421f8301418cc40",
+    "bytes": 170761
+  },
+  {
+    "file": "runtime-flag\\summary.md",
+    "source": ".artifacts\\deserialized-null\\runtime-flag\\summary.md",
+    "sha256": "62a43d2cd1eb7e1b574a8ff73ede94486ce58b1d168b8179c878a0c8a1f03e56",
+    "bytes": 3242
+  },
+  {
+    "file": "runtime-flag\\fixture\\Program.cs.txt",
+    "source": ".artifacts\\deserialized-null\\harness-v2\\Program.cs",
+    "sha256": "b47021397f5536a570015146619e831de0023783a3c4f0a904a140cf13359e07",
+    "bytes": 5757
+  },
+  {
+    "file": "runtime-flag\\fixture\\RuntimeLogger.cs.txt",
+    "source": ".artifacts\\deserialized-null\\harness-v2\\RuntimeLogger.cs",
+    "sha256": "e5898376808d3c85332a383b21a2f5a6f876cdf1f57c0b9e9331ab650e78f9fe",
+    "bytes": 2694
+  },
+  {
+    "file": "runtime-flag\\fixture\\harness.csproj.txt",
+    "source": ".artifacts\\deserialized-null\\harness-v2\\harness.csproj",
+    "sha256": "9a95d640b6ed02bec116154d0d545f7439d0f6184fc30439ddf830aac5d61541",
+    "bytes": 837
+  },
+  {
+    "file": "runtime-flag\\fixture\\PartitionMessageKeyBenchmarks.cs.txt",
+    "source": "tools\\Dekaf.Benchmarks\\Benchmarks\\Unit\\PartitionMessageKeyBenchmarks.cs",
+    "sha256": "cd2d2b433fe329e1f3adc44b94d5a82147fb2fe26031b99adebefcb87360dd05",
+    "bytes": 2988
+  },
+  {
+    "file": "constant-flag\\measure\\A1\\ByteArray\\console.log",
+    "source": ".artifacts\\deserialized-null\\measure\\A1\\ByteArray\\console.log",
+    "sha256": "a930fac90f9009c8bb4775841c8aac87a5accdf585507568a08fee49260a1259",
+    "bytes": 11568
+  },
+  {
+    "file": "constant-flag\\measure\\A1\\ByteArray\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-041002.log",
+    "source": ".artifacts\\deserialized-null\\measure\\A1\\ByteArray\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-041002.log",
+    "sha256": "a2fd3a29daa83c640f8e73394f7425fd962b61ca4c2123851f27a3eec5a399be",
+    "bytes": 8553
+  },
+  {
+    "file": "constant-flag\\measure\\A1\\ByteArray\\loaded.json",
+    "source": ".artifacts\\deserialized-null\\measure\\A1\\ByteArray\\loaded.json",
+    "sha256": "43745c4d91c24f750a02da4742cd9ac2e84b32f2b32f8f38208297f621c01410",
+    "bytes": 614
+  },
+  {
+    "file": "constant-flag\\measure\\A1\\ByteArray\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "source": ".artifacts\\deserialized-null\\measure\\A1\\ByteArray\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "sha256": "72a35c40acc5b76ec7e6af2f0d8fb965abc87d6f08c0df92744fbc3076718a8d",
+    "bytes": 21207
+  },
+  {
+    "file": "constant-flag\\measure\\A1\\ByteArray\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "source": ".artifacts\\deserialized-null\\measure\\A1\\ByteArray\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "sha256": "004aed16eed70f7faa49508d9e6ff1a0ec4ed4da10b4fc5e0756f5d599e7c852",
+    "bytes": 626
+  },
+  {
+    "file": "constant-flag\\measure\\A1\\ByteArray\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "source": ".artifacts\\deserialized-null\\measure\\A1\\ByteArray\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "sha256": "521d71f8edfb785309953685732fd637ac9fece41ceb3152f2cebbc64f092856",
+    "bytes": 1041
+  },
+  {
+    "file": "constant-flag\\measure\\A1\\ByteArray\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "source": ".artifacts\\deserialized-null\\measure\\A1\\ByteArray\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "sha256": "f5b9807f54e8273151e677a4bc34a5c4152dceea24a372a87d4e793bc35b17ad",
+    "bytes": 1196
+  },
+  {
+    "file": "constant-flag\\measure\\A1\\ByteArray\\runtime.csv",
+    "source": ".artifacts\\deserialized-null\\measure\\A1\\ByteArray\\runtime.csv",
+    "sha256": "dbfc00a89fd2bf8a164a4fa4f9447b1d4e41c901480877a7b88f5876aede5c4c",
+    "bytes": 3921
+  },
+  {
+    "file": "constant-flag\\measure\\A1\\ByteArray\\warmup.json",
+    "source": ".artifacts\\deserialized-null\\measure\\A1\\ByteArray\\warmup.json",
+    "sha256": "f793a1b2723abc7cf37a3ed7b9acb2613598c2c0acc87ae7b75a09f8943b6270",
+    "bytes": 45
+  },
+  {
+    "file": "constant-flag\\measure\\A1\\Memory\\console.log",
+    "source": ".artifacts\\deserialized-null\\measure\\A1\\Memory\\console.log",
+    "sha256": "cc000997380e75e77004a9ef7c20b84c7cb19a0c833e31e09c0498a8e96e5668",
+    "bytes": 6421
+  },
+  {
+    "file": "constant-flag\\measure\\A1\\Memory\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-041145.log",
+    "source": ".artifacts\\deserialized-null\\measure\\A1\\Memory\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-041145.log",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0
+  },
+  {
+    "file": "constant-flag\\measure\\A1\\Memory\\loaded.json",
+    "source": ".artifacts\\deserialized-null\\measure\\A1\\Memory\\loaded.json",
+    "sha256": "43745c4d91c24f750a02da4742cd9ac2e84b32f2b32f8f38208297f621c01410",
+    "bytes": 614
+  },
+  {
+    "file": "constant-flag\\measure\\A1\\Memory\\warmup.json",
+    "source": ".artifacts\\deserialized-null\\measure\\A1\\Memory\\warmup.json",
+    "sha256": "5c3dfc0f1d36d87a7d66cfa50930df0b683875591c0d5f2203db883c8ca240f0",
+    "bytes": 45
+  },
+  {
+    "file": "constant-flag\\measure\\A1\\ReadOnlyMemory\\console.log",
+    "source": ".artifacts\\deserialized-null\\measure\\A1\\ReadOnlyMemory\\console.log",
+    "sha256": "fed47ec1f3c3d42ea8996aece3ab3e8929ec922e2cc285ff2681e091cd8772a9",
+    "bytes": 12168
+  },
+  {
+    "file": "constant-flag\\measure\\A1\\ReadOnlyMemory\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-041051.log",
+    "source": ".artifacts\\deserialized-null\\measure\\A1\\ReadOnlyMemory\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-20260908-041051.log",
+    "sha256": "7fe8668ca0ef39e8f5a8aa2962c567557ec5f96ee2623e1b48a7c1528c9bf8fe",
+    "bytes": 8997
+  },
+  {
+    "file": "constant-flag\\measure\\A1\\ReadOnlyMemory\\loaded.json",
+    "source": ".artifacts\\deserialized-null\\measure\\A1\\ReadOnlyMemory\\loaded.json",
+    "sha256": "43745c4d91c24f750a02da4742cd9ac2e84b32f2b32f8f38208297f621c01410",
+    "bytes": 614
+  },
+  {
+    "file": "constant-flag\\measure\\A1\\ReadOnlyMemory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "source": ".artifacts\\deserialized-null\\measure\\A1\\ReadOnlyMemory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-full.json",
+    "sha256": "16a8984cec05d86d9374f78c252a67ed071ef307afb1d77bf5346c052a58a9ee",
+    "bytes": 21413
+  },
+  {
+    "file": "constant-flag\\measure\\A1\\ReadOnlyMemory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "source": ".artifacts\\deserialized-null\\measure\\A1\\ReadOnlyMemory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report-github.md",
+    "sha256": "b176a6acfa3aece72daa442abf9332c0468ea36539599acca8b956d85553bdba",
+    "bytes": 641
+  },
+  {
+    "file": "constant-flag\\measure\\A1\\ReadOnlyMemory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "source": ".artifacts\\deserialized-null\\measure\\A1\\ReadOnlyMemory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.csv",
+    "sha256": "ebb2a053d4e09d7f4bcbc3c485b9e91be8e7a6dfca84e56ee4fb76f6a2c77220",
+    "bytes": 1046
+  },
+  {
+    "file": "constant-flag\\measure\\A1\\ReadOnlyMemory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "source": ".artifacts\\deserialized-null\\measure\\A1\\ReadOnlyMemory\\results\\Dekaf.Benchmarks.Diagnostics.DiagnosticBenchmarks-report.html",
+    "sha256": "1c67c7c145fa0d61b3ee5d12e51d7b22b47ad561f969504c510b71ad1a63aae4",
+    "bytes": 1203
+  },
+  {
+    "file": "constant-flag\\measure\\A1\\ReadOnlyMemory\\runtime.csv",
+    "source": ".artifacts\\deserialized-null\\measure\\A1\\ReadOnlyMemory\\runtime.csv",
+    "sha256": "dd7a5c2733be66fefdbcef6f8bf7e32c62964b30024e9d1606ffb82ca1b652ab",
+    "bytes": 3942
+  },
+  {
+    "file": "constant-flag\\measure\\A1\\ReadOnlyMemory\\warmup.json",
+    "source": ".artifacts\\deserialized-null\\measure\\A1\\ReadOnlyMemory\\warmup.json",
+    "sha256": "147d7f3d3d069902e51c355e739a22e2dbd01a16e7cc9efaf088a6501160a37a",
+    "bytes": 45
+  },
+  {
+    "file": "constant-flag\\experiment-plan.md",
+    "source": ".artifacts\\deserialized-null\\experiment-plan.md",
+    "sha256": "26fdd3b51b1b3cd80f2fa79c73df84b84dabc0f29494313a3bacb936e513625f",
+    "bytes": 2705
+  },
+  {
+    "file": "constant-flag\\driver.log",
+    "source": ".artifacts\\deserialized-null\\driver.log",
+    "sha256": "738cc1abb06c93d1c623006f8ae380343e1dacd6cdbab6ba647c1123ab6d8db4",
+    "bytes": 146
+  },
+  {
+    "file": "constant-flag\\phase-execution.json",
+    "source": ".artifacts\\deserialized-null\\phase-execution.json",
+    "sha256": "8b381640fe0147d6209e453e271f236e61c01170986e3c43ce282c486fd0ef40",
+    "bytes": 1563
+  },
+  {
+    "file": "constant-flag\\host-inventories.json",
+    "source": ".artifacts\\deserialized-null\\host-inventories.json",
+    "sha256": "261e37b44b919a46f51f5691e2671f5b4cabbc45332395d6f11241efb85304a6",
+    "bytes": 8591
+  },
+  {
+    "file": "constant-flag\\run-settings.json",
+    "source": ".artifacts\\deserialized-null\\run-settings.json",
+    "sha256": "86c01d6a2d3f3f9cdafebf912aa71c2c3878d03f2d6ffe6da9c88839dab0832c",
+    "bytes": 449
+  },
+  {
+    "file": "constant-flag\\constant-flag-fixture.cs.txt",
+    "source": ".artifacts\\deserialized-null\\constant-flag-fixture.cs",
+    "sha256": "ca8ccd166a6a2fad5b92725f63a476eb67e19a0bb4c9cbfbb5ea99a7ad8b08aa",
+    "bytes": 2824
+  },
+  {
+    "file": "constant-flag\\constant-flag-limitations.md",
+    "source": ".artifacts\\deserialized-null\\constant-flag-limitations.md",
+    "sha256": "f45b873fe64ce17ee0c371847baf7165786556fff732a48bcea3e0305a5ee00e",
+    "bytes": 627
+  },
+  {
+    "file": "constant-flag\\fixture\\Program.cs.txt",
+    "source": ".artifacts\\deserialized-null\\harness\\Program.cs",
+    "sha256": "c63c4d42eb12aeb8749989a6dcf60881c2866a911f6690a7c1c1dedebfa48d79",
+    "bytes": 5241
+  },
+  {
+    "file": "constant-flag\\fixture\\RuntimeLogger.cs.txt",
+    "source": ".artifacts\\deserialized-null\\harness\\RuntimeLogger.cs",
+    "sha256": "e5898376808d3c85332a383b21a2f5a6f876cdf1f57c0b9e9331ab650e78f9fe",
+    "bytes": 2694
+  },
+  {
+    "file": "constant-flag\\fixture\\harness.csproj.txt",
+    "source": ".artifacts\\deserialized-null\\harness\\harness.csproj",
+    "sha256": "9a95d640b6ed02bec116154d0d545f7439d0f6184fc30439ddf830aac5d61541",
+    "bytes": 837
+  },
+  {
+    "file": "validation\\red-net10.log",
+    "source": ".artifacts\\deserialized-null\\red-net10.log",
+    "sha256": "3aa5b4a4bac19d7ac87e577460d97fb712b6e394748198066359452e6638b01e",
+    "bytes": 5814
+  },
+  {
+    "file": "validation\\red-report.html",
+    "source": ".artifacts\\deserialized-null\\red-report.html",
+    "sha256": "6d870807e29a01a6bd817f08ffcc153230e0789b8c2a4b60e3e7bd9823e3c12b",
+    "bytes": 156301
+  },
+  {
+    "file": "validation\\red-tests.patch",
+    "source": ".artifacts\\deserialized-null\\red-tests.patch",
+    "sha256": "47a848351c94c361ab04f7ab2433192d96b9072a03bc23ba1a444fce8c496f0f",
+    "bytes": 7859
+  },
+  {
+    "file": "validation\\final-core-build.log",
+    "source": ".artifacts\\deserialized-null\\final-core-build.log",
+    "sha256": "c568dfacd9f15d8df664e3046197dcfaee6bf30f4e258859b758dd58118438f6",
+    "bytes": 660
+  },
+  {
+    "file": "validation\\final-consumer-net10.0.log",
+    "source": ".artifacts\\deserialized-null\\final-consumer-net10.0.log",
+    "sha256": "ca247063af59b8c0df02e39befa1d1d80f3812606cb7bfd863230f1e980d997d",
+    "bytes": 559
+  },
+  {
+    "file": "validation\\final-consumer-net8.0.log",
+    "source": ".artifacts\\deserialized-null\\final-consumer-net8.0.log",
+    "sha256": "c9b0ffa5a5125c94d212c9e6e3435f0ce5cbeb2264cb473fa4f6944ba0086865",
+    "bytes": 554
+  },
+  {
+    "file": "validation\\final-integration-net10.log",
+    "source": ".artifacts\\deserialized-null\\final-integration-net10.log",
+    "sha256": "6a7e257da58c216e10187870189b3c6e00a19ed67a8d2027ab2ac07cde8f8cfa",
+    "bytes": 590
+  },
+  {
+    "file": "validation\\final-product-bindings.json",
+    "source": ".artifacts\\deserialized-null\\final-product-bindings.json",
+    "sha256": "278db685264880b0110f1c4c9836ae1962959786614e39dcfcfaad655274deee",
+    "bytes": 653
+  },
+  {
+    "file": "validation\\final-test-bindings.json",
+    "source": ".artifacts\\deserialized-null\\final-test-bindings.json",
+    "sha256": "d46ef4fb9c2873ad3ed1ad886920a20798d263cc6674ab287a118ccb5353c74c",
+    "bytes": 537
+  },
+  {
+    "file": "validation\\environment.json",
+    "source": ".artifacts\\deserialized-null\\environment.json",
+    "sha256": "a36ce0ccb236333e8204f5a3df0b267826982f1a32844ddcb15f9a6dfa63d14c",
+    "bytes": 4213
+  },
+  {
+    "file": "validation\\main-at-end.txt",
+    "source": ".artifacts\\deserialized-null\\main-at-end.txt",
+    "sha256": "e83103f7006b9dd21979b1b4322b1f92bbd1c37bd183157b99c86723b2d53073",
+    "bytes": 58
+  },
+  {
+    "file": "validation\\retention-notes.md",
+    "source": ".artifacts\\deserialized-null\\retention-notes.md",
+    "sha256": "884b94fdd27e5b7f26b47e5e912ce28253b553c2ec13d58919a39aa6ef6987df",
+    "bytes": 1522
+  }
+]
