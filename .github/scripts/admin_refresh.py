@@ -13,7 +13,7 @@ OUT = ROOT / 'evidence'
 PR = int(os.environ['PR'])
 A = os.environ['BASELINE_SHA']
 B = os.environ['CANDIDATE_SHA']
-PROJECTS = {3138: 'AdminMutationEvidence', 3136: 'AdminShareOffsetEvidence', 3129: 'AdminMemberRemovalEvidence'}
+PROJECTS = {3128: 'AdminDescriptionEvidence', 3138: 'AdminMutationEvidence', 3136: 'AdminShareOffsetEvidence', 3129: 'AdminMemberRemovalEvidence'}
 SOURCE = ROOT / 'tools' / PROJECTS[PR]
 
 
@@ -107,3 +107,4 @@ if __name__ == '__main__':
             save(OUT / 'inventory.json', [dict(path=str(p.relative_to(OUT)), bytes=p.stat().st_size,
                                               sha256=hashlib.sha256(p.read_bytes()).hexdigest())
                                           for p in OUT.rglob('*') if p.is_file() and p.name != 'inventory.json'])
+
