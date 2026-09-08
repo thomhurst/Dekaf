@@ -1,4 +1,4 @@
-"""Compare one stress candidate with bracketing exact-SHA baseline runs."""
+"""Screen aggregate stress metrics against bracketing exact-SHA baseline runs."""
 
 import argparse
 import json
@@ -50,7 +50,7 @@ METRICS = (
     # consumer lanes at ~2 KB/msg are unaffected because their 3% tolerance is ~60 B/msg.
     Metric("alloc", "Allocation", "B/msg", False, noise_floor=1.0),
     Metric("stability", "Steady/peak ratio", "ratio", True, floor=True),
-    Metric("max", "Latency max", "ms", False, gated=False),
+    Metric("max", "Latency max", "ms", False),
     Metric("averageRequest", "Average request", "KiB", True, gated=False),
 )
 
@@ -129,10 +129,10 @@ def _measurements(result):
     missing = [
         metric.label
         for metric in METRICS
-        if not _finite_number(measurements.get(metric.key))
+        if not _finite_number(measurements.get(metric.key)) or measurements[metric.key] < 0
     ]
     if missing:
-        raise ValueError(f"Missing finite metric(s): {', '.join(missing)}")
+        raise ValueError(f"Missing finite nonnegative metric(s): {', '.join(missing)}")
     return measurements
 
 
@@ -161,6 +161,24 @@ def _stability_breached(result):
     return _finite_number(ratio) and ratio < threshold
 
 
+def _percent_change(value, baseline):
+    # A nonzero value has no finite percentage change from zero. Keep it null in JSON
+    # and display n/a in Markdown; the gate uses absolute values, not this percentage.
+    if baseline == 0:
+        return 0.0 if value == 0 else None
+    return 100 * (value - baseline) / baseline
+
+
+def _drift_percent(first, second):
+    mean = (first + second) / 2
+    return 0.0 if mean == 0 else 100 * abs(second - first) / mean
+
+
+def _is_adverse(metric, candidate, control, tolerance_percent):
+    loss = control - candidate if metric.higher_is_better else candidate - control
+    return loss > metric.noise_floor and loss > control * tolerance_percent / 100
+
+
 def _metric_status(
     metric,
     baseline_a,
@@ -172,23 +190,12 @@ def _metric_status(
     candidate_b2=None,
 ):
     baseline_mean = (baseline_a + baseline_a2) / 2
-    if baseline_mean == 0:
-        raise ValueError(f"Baseline mean is zero for {metric.label}")
-
-    # With a second candidate segment the candidate value is the mean of both, the
-    # decisiveness overrides must hold for the weaker candidate sample, and candidate drift
-    # is gated exactly like control drift: two candidate samples that disagree by more than
-    # the cap cannot certify a bracketed delta any better than two disagreeing controls.
     candidate_samples = [candidate] if candidate_b2 is None else [candidate, candidate_b2]
     candidate_mean = sum(candidate_samples) / len(candidate_samples)
     candidate_drift_percent = (
-        0.0
-        if candidate_b2 is None or candidate_mean == 0
-        else 100 * abs(candidate_b2 - candidate) / abs(candidate_mean)
+        0.0 if candidate_b2 is None else _drift_percent(candidate, candidate_b2)
     )
-    candidate = candidate_mean
-    delta_percent = 100 * (candidate - baseline_mean) / baseline_mean
-    control_drift_percent = 100 * abs(baseline_a2 - baseline_a) / abs(baseline_mean)
+    control_drift_percent = _drift_percent(baseline_a, baseline_a2)
     control_spread = abs(baseline_a2 - baseline_a)
     noise_floor = metric.noise_floor
     if not metric.gated:
@@ -196,49 +203,28 @@ def _metric_status(
     elif metric.floor:
         status = floor_status
     else:
-        if metric.higher_is_better:
-            worse_than_both = max(candidate_samples) < min(baseline_a, baseline_a2) * (
-                1 - tolerance_percent / 100
-            ) and min(baseline_a, baseline_a2) - max(candidate_samples) > noise_floor
-            better_than_both = min(candidate_samples) >= max(baseline_a, baseline_a2)
-            adverse = delta_percent < -tolerance_percent and (
-                baseline_mean - candidate > noise_floor
-            )
-        else:
-            worse_than_both = min(candidate_samples) > max(baseline_a, baseline_a2) * (
-                1 + tolerance_percent / 100
-            ) and min(candidate_samples) - max(baseline_a, baseline_a2) > noise_floor
-            better_than_both = max(candidate_samples) <= min(baseline_a, baseline_a2)
-            adverse = delta_percent > tolerance_percent and (
-                candidate - baseline_mean > noise_floor
-            )
-        # A control spread inside the noise floor cannot make the comparison inconclusive:
-        # the controls agree to within what the metric can resolve.
+        # Means are descriptive only. Every candidate segment must meet the tolerance
+        # against each control; averaging cannot conceal a loss or conflicting samples.
+        adverse_pairs = [
+            _is_adverse(metric, sample, control, tolerance_percent)
+            for sample in candidate_samples
+            for control in (baseline_a, baseline_a2)
+        ]
         controls_disagree = (
             control_drift_percent > max_control_drift_percent
             and control_spread > noise_floor
         )
-
-        # Symmetric decisiveness overrides for noisy controls: a candidate worse than both
-        # bracketing controls by more than the tolerance is a regression no matter how far
-        # apart the controls sit, and a candidate at least as good as the better control
-        # cannot have regressed under any reading of the data — control drift only matters
-        # for candidates the controls actually bracket (run 29525842754: the candidate beat
-        # both controls on p99 yet was ruled inconclusive because the controls disagreed
-        # with each other by 12%).
-        if worse_than_both:
-            status = "regression"
-        elif better_than_both:
-            status = "pass"
-        elif controls_disagree:
-            status = "inconclusive"
-        elif (
+        candidates_disagree = (
             candidate_drift_percent > max_control_drift_percent
             and abs(candidate_samples[-1] - candidate_samples[0]) > noise_floor
-        ):
-            status = "inconclusive"
-        elif adverse:
+        )
+
+        # A loss beyond tolerance in every pairing remains grounds to reject. Otherwise
+        # drift or conflicting pairings cannot establish either acceptance or regression.
+        if all(adverse_pairs):
             status = "regression"
+        elif controls_disagree or candidates_disagree or any(adverse_pairs):
+            status = "inconclusive"
         else:
             status = "pass"
 
@@ -247,13 +233,21 @@ def _metric_status(
         "label": metric.label,
         "unit": metric.unit,
         "baselineA": baseline_a,
-        "candidate": candidate,
+        "candidate": candidate_mean,
         "candidateB": candidate_samples[0],
         "candidateB2": candidate_b2,
         "candidateDriftPercent": candidate_drift_percent,
         "baselineA2": baseline_a2,
         "baselineMean": baseline_mean,
-        "deltaPercent": delta_percent,
+        "deltaPercent": _percent_change(candidate_mean, baseline_mean),
+        "deltaVsBaselineAPercent": _percent_change(candidate, baseline_a),
+        "deltaVsBaselineA2Percent": _percent_change(candidate, baseline_a2),
+        "b2DeltaVsBaselineAPercent": (
+            None if candidate_b2 is None else _percent_change(candidate_b2, baseline_a)
+        ),
+        "b2DeltaVsBaselineA2Percent": (
+            None if candidate_b2 is None else _percent_change(candidate_b2, baseline_a2)
+        ),
         "controlDriftPercent": control_drift_percent,
         "noiseFloor": noise_floor,
         "status": status,
@@ -269,8 +263,9 @@ def compare(
     max_control_drift_percent=DEFAULT_MAX_CONTROL_DRIFT_PERCENT,
     candidate_b2_result=None,
 ):
-    if tolerance_percent < 0 or max_control_drift_percent < 0:
-        raise ValueError("Comparison thresholds cannot be negative")
+    if any(not _finite_number(value) or value < 0
+           for value in (tolerance_percent, max_control_drift_percent)):
+        raise ValueError("Comparison thresholds must be finite numbers and cannot be negative")
 
     identities = {
         _identity(baseline_a_result),
@@ -347,6 +342,10 @@ def _format_number(value):
     return f"{value:.3f}"
 
 
+def _format_percent(value):
+    return "n/a" if value is None else f"{value:+.2f}%"
+
+
 def markdown(comparison, baseline_sha, candidate_sha):
     verdict = comparison["verdict"].upper()
     lines = [
@@ -354,50 +353,62 @@ def markdown(comparison, baseline_sha, candidate_sha):
         "",
         f"**Verdict: {verdict}**",
         "",
-        f"Baseline: `{baseline_sha}` · Candidate: `{candidate_sha}` · "
+        "This is an aggregate metric screen, not full PR performance acceptance. "
+        "Runner/fixture identity, warmup and runtime activity, sampling uncertainty, "
+        "hot-path MemoryDiagnoser evidence and sustained stability require separate validation.",
+        "",
+        f"Baseline: `{baseline_sha}` · Candidate: `{candidate_sha}`",
+    ]
+    if comparison.get("validationError"):
+        lines.extend(["", f"Evidence validation failed: {comparison['validationError']}"])
+        return "\n".join(lines) + "\n"
+    lines.extend([
+        "",
         f"adverse tolerance: {comparison['tolerancePercent']:.1f}% · "
         f"maximum control drift: {comparison['maxControlDriftPercent']:.1f}% · "
         "allocation noise floor: 1.0 B/msg",
-    ]
+    ])
     two_candidates = comparison.get("candidateSegments", 1) == 2
     if two_candidates:
-        lines[-1] += " · four segments (A-B-A-B): candidate = mean of B and B2"
+        lines[-1] += " · four segments (A-B-A-B): each candidate is gated separately"
         lines.extend(
             [
                 "",
-                "| Metric | Baseline A | Candidate B | Baseline A2 | Candidate B2 | B mean vs control mean | Control drift | Candidate drift | Gate |",
-                "|---|---:|---:|---:|---:|---:|---:|---:|---|",
+                "| Metric | Baseline A | Candidate B | Baseline A2 | Candidate B2 | B vs A | B vs A2 | B2 vs A | B2 vs A2 | Control drift | Candidate drift | Gate |",
+                "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|",
             ]
         )
     else:
         lines.extend(
             [
                 "",
-                "| Metric | Baseline A | Candidate B | Baseline A2 | B vs mean | Control drift | Gate |",
-                "|---|---:|---:|---:|---:|---:|---|",
+                "| Metric | Baseline A | Candidate B | Baseline A2 | B vs A | B vs A2 | Control drift | Gate |",
+                "|---|---:|---:|---:|---:|---:|---:|---|",
             ]
         )
     for item in comparison["metrics"]:
+        cells = [
+            f"{item['label']} ({item['unit']})",
+            _format_number(item["baselineA"]),
+            _format_number(item["candidateB"]),
+            _format_number(item["baselineA2"]),
+        ]
         if two_candidates:
-            lines.append(
-                f"| {item['label']} ({item['unit']}) | "
-                f"{_format_number(item['baselineA'])} | "
-                f"{_format_number(item['candidateB'])} | "
-                f"{_format_number(item['baselineA2'])} | "
-                f"{_format_number(item['candidateB2'])} | "
-                f"{item['deltaPercent']:+.2f}% | "
-                f"{item['controlDriftPercent']:.2f}% | "
-                f"{item['candidateDriftPercent']:.2f}% | {item['status']} |"
-            )
-        else:
-            lines.append(
-                f"| {item['label']} ({item['unit']}) | "
-                f"{_format_number(item['baselineA'])} | "
-                f"{_format_number(item['candidate'])} | "
-                f"{_format_number(item['baselineA2'])} | "
-                f"{item['deltaPercent']:+.2f}% | "
-                f"{item['controlDriftPercent']:.2f}% | {item['status']} |"
-            )
+            cells.append(_format_number(item["candidateB2"]))
+        cells.extend([
+            _format_percent(item["deltaVsBaselineAPercent"]),
+            _format_percent(item["deltaVsBaselineA2Percent"]),
+        ])
+        if two_candidates:
+            cells.extend([
+                _format_percent(item["b2DeltaVsBaselineAPercent"]),
+                _format_percent(item["b2DeltaVsBaselineA2Percent"]),
+            ])
+        cells.append(f"{item['controlDriftPercent']:.2f}%")
+        if two_candidates:
+            cells.append(f"{item['candidateDriftPercent']:.2f}%")
+        cells.append(item["status"])
+        lines.append("| " + " | ".join(cells) + " |")
     if comparison["candidateErrors"] or comparison["candidateDeliveryMismatch"]:
         lines.extend(
             [
@@ -409,8 +420,13 @@ def markdown(comparison, baseline_sha, candidate_sha):
     lines.extend(
         [
             "",
-            "Acceptance requires PASS. REGRESSION rejects the candidate; "
-            "INCONCLUSIVE requires an exact repeat.",
+            "Percent changes from a zero control are n/a unless both values are zero. "
+            "Means in JSON are descriptive only; they do not decide the gate.",
+            "",
+            "REGRESSION rejects the measured candidate; INCONCLUSIVE does not establish acceptance. "
+            "The first INCONCLUSIVE permits one exact repeat. After a second, synthesize "
+            "the evidence and improve the experiment or obtain maintainer direction; "
+            "do not automatically repeat again.",
         ]
     )
     return "\n".join(lines) + "\n"
@@ -436,20 +452,23 @@ def main(argv=None):
     )
     args = parser.parse_args(argv)
 
-    comparison = compare(
-        _single_result(args.baseline_a),
-        _single_result(args.candidate),
-        _single_result(args.baseline_a2),
-        args.tolerance_percent,
-        args.max_control_drift_percent,
-        candidate_b2_result=None if not args.candidate_b2 else _single_result(args.candidate_b2),
-    )
+    try:
+        comparison = compare(
+            _single_result(args.baseline_a),
+            _single_result(args.candidate),
+            _single_result(args.baseline_a2),
+            args.tolerance_percent,
+            args.max_control_drift_percent,
+            candidate_b2_result=None if not args.candidate_b2 else _single_result(args.candidate_b2),
+        )
+    except (ValueError, OSError) as error:
+        comparison = {"verdict": "inconclusive", "validationError": str(error), "metrics": []}
     report = markdown(comparison, args.baseline_sha, args.candidate_sha)
     print(report, end="")
 
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps(comparison, indent=2) + "\n", encoding="utf-8")
+    output.write_text(json.dumps(comparison, indent=2, allow_nan=False) + "\n", encoding="utf-8")
     if args.summary:
         with Path(args.summary).open("a", encoding="utf-8") as handle:
             handle.write(report)

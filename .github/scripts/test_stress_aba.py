@@ -71,6 +71,79 @@ def result(
 
 
 class StressAbaComparisonTests(unittest.TestCase):
+    def test_zero_allocation_controls_are_valid(self):
+        for allocation, verdict in ((0, "pass"), (0.5, "pass"), (2, "regression")):
+            with self.subTest(allocation=allocation):
+                comparison = compare(
+                    result(allocation=0), result(allocation=allocation), result(allocation=0)
+                )
+                self.assertEqual(verdict, comparison["verdict"])
+                json.dumps(comparison, allow_nan=False)
+                self.assertIn("Allocation", markdown(comparison, "a" * 40, "b" * 40))
+
+    def test_maximum_latency_regression_is_gated(self):
+        comparison = compare(result(), result(maximum=60), result())
+        self.assertEqual("regression", comparison["verdict"])
+        maximum = next(metric for metric in comparison["metrics"] if metric["key"] == "max")
+        self.assertTrue(maximum["gated"])
+
+    def test_control_mean_cannot_hide_loss_against_one_control(self):
+        for a, b, a2 in (
+            (result(p99=100), result(p99=104), result(p99=104)),
+            (result(throughput=100), result(throughput=96), result(throughput=96)),
+        ):
+            with self.subTest(candidate=b):
+                self.assertEqual("inconclusive", compare(a, b, a2)["verdict"])
+
+    def test_candidate_mean_cannot_hide_loss_in_one_segment(self):
+        comparison = compare(
+            result(p99=100), result(p99=98), result(p99=100),
+            candidate_b2_result=result(p99=104),
+        )
+        self.assertEqual("inconclusive", comparison["verdict"])
+
+    def test_candidate_drift_cannot_pass_even_when_both_candidates_improve(self):
+        comparison = compare(
+            result(p99=100), result(p99=80), result(p99=100),
+            candidate_b2_result=result(p99=60),
+        )
+        self.assertEqual("inconclusive", comparison["verdict"])
+
+    def test_records_each_candidate_delta_against_each_control(self):
+        comparison = compare(
+            result(p99=100), result(p99=102), result(p99=104),
+            candidate_b2_result=result(p99=101),
+        )
+        p99 = next(metric for metric in comparison["metrics"] if metric["key"] == "p99")
+        self.assertAlmostEqual(2, p99["deltaVsBaselineAPercent"])
+        self.assertAlmostEqual(-100 * 2 / 104, p99["deltaVsBaselineA2Percent"])
+        self.assertAlmostEqual(1, p99["b2DeltaVsBaselineAPercent"])
+        self.assertAlmostEqual(-100 * 3 / 104, p99["b2DeltaVsBaselineA2Percent"])
+        report = markdown(comparison, "a" * 40, "b" * 40)
+        for column in ("B vs A", "B vs A2", "B2 vs A", "B2 vs A2"):
+            self.assertIn(column, report)
+
+    def test_nonfinite_thresholds_are_rejected(self):
+        for value in (float("nan"), float("inf"), True):
+            for name in ("tolerance_percent", "max_control_drift_percent"):
+                with self.subTest(value=value, name=name), self.assertRaises(ValueError):
+                    compare(result(), result(), result(), **{name: value})
+
+    def test_negative_metrics_are_rejected(self):
+        for option in ("throughput", "p99", "maximum", "cpu", "allocation"):
+            with self.subTest(option=option), self.assertRaisesRegex(ValueError, "nonnegative"):
+                compare(result(), result(**{option: -1}), result())
+
+    def test_zero_control_deltas_are_explicit_and_finite(self):
+        comparison = compare(result(allocation=0), result(allocation=2), result(allocation=0))
+        alloc = next(metric for metric in comparison["metrics"] if metric["key"] == "alloc")
+        self.assertIsNone(alloc["deltaVsBaselineAPercent"])
+        self.assertIsNone(alloc["deltaVsBaselineA2Percent"])
+        self.assertIsNone(alloc["deltaPercent"])
+        self.assertEqual(0, alloc["controlDriftPercent"])
+        report = markdown(comparison, "a" * 40, "b" * 40)
+        self.assertIn("| 0.000 | 2.000 | 0.000 | n/a | n/a |", report)
+
     def test_passes_pareto_safe_candidate(self):
         comparison = compare(
             result(throughput=100),
@@ -166,7 +239,7 @@ class StressAbaComparisonTests(unittest.TestCase):
         alloc = next(metric for metric in noisy["metrics"] if metric["key"] == "alloc")
         self.assertEqual("inconclusive", alloc["status"])
 
-    def test_four_segments_average_candidates_and_pass(self):
+    def test_four_segments_retain_descriptive_mean_and_pass(self):
         comparison = compare(
             result(100), result(104), result(100), candidate_b2_result=result(102)
         )
@@ -182,8 +255,7 @@ class StressAbaComparisonTests(unittest.TestCase):
         self.assertGreater(throughput["candidateDriftPercent"], 1.0)
 
     def test_four_segments_candidate_drift_is_inconclusive_like_control_drift(self):
-        # Candidates disagree by 20% while both controls agree: the mean sits above the
-        # controls but neither decisiveness override holds, so the metric is inconclusive.
+        # Candidates disagree while both controls agree; their mean cannot pass the gate.
         comparison = compare(
             result(100), result(95), result(100), candidate_b2_result=result(116)
         )
@@ -194,7 +266,7 @@ class StressAbaComparisonTests(unittest.TestCase):
         self.assertEqual("inconclusive", throughput["status"])
         self.assertEqual("inconclusive", comparison["verdict"])
 
-    def test_four_segments_decisive_overrides_need_both_candidates(self):
+    def test_four_segments_need_both_candidates_to_pass(self):
         both_better = compare(
             result(p99=15.0), result(p99=12.0), result(p99=16.0), candidate_b2_result=result(p99=13.0)
         )
@@ -224,21 +296,19 @@ class StressAbaComparisonTests(unittest.TestCase):
         self.assertIn("| Candidate B2 |", report)
         self.assertIn("Candidate drift", report)
 
-    def test_candidate_beating_both_noisy_controls_passes(self):
-        # Run 29525842754: candidate p99 (14.85ms) was better than both controls
-        # (17.25 / 15.25ms), yet 12.3% control drift ruled the metric inconclusive.
-        # A candidate at least as good as the better control cannot have regressed.
+    def test_candidate_beating_both_noisy_controls_remains_inconclusive(self):
+        # Improvement against noisy controls does not establish a valid experiment.
         comparison = compare(
             result(p99=17.25),
             result(p99=14.85),
             result(p99=15.25),
         )
 
-        self.assertEqual("pass", comparison["verdict"])
+        self.assertEqual("inconclusive", comparison["verdict"])
         p99 = next(
             metric for metric in comparison["metrics"] if metric["key"] == "p99"
         )
-        self.assertEqual("pass", p99["status"])
+        self.assertEqual("inconclusive", p99["status"])
         self.assertGreater(p99["controlDriftPercent"], 10.0)
 
     def test_bracketed_candidate_with_noisy_controls_stays_inconclusive(self):
@@ -377,6 +447,44 @@ class StressAbaComparisonTests(unittest.TestCase):
             self.assertEqual(0, exit_code)
             self.assertEqual("pass", json.loads(output.read_text())["verdict"])
             self.assertIn("Verdict: PASS", summary.read_text(encoding="utf-8"))
+            self.assertIn("not full PR performance acceptance", summary.read_text(encoding="utf-8"))
+
+    def test_main_retains_invalid_evidence_reason_in_both_outputs(self):
+        missing_metric = result()
+        del missing_metric["latency"]["maxUs"]
+        for invalid, expected in (
+            (None, "found 0"),
+            ("not json", "Expecting value"),
+            (json.dumps({"results": [missing_metric]}), "Latency max"),
+            (json.dumps({"results": [result(scenario="other")]}), "workload identity"),
+        ):
+            with self.subTest(expected=expected), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                for label in ("a", "b", "a2"):
+                    path = root / label
+                    path.mkdir()
+                    payload = invalid if label == "b" else json.dumps({"results": [result()]})
+                    if payload is not None:
+                        (path / "stress-test-results.json").write_text(payload, encoding="utf-8")
+                output = root / "comparison.json"
+                summary = root / "summary.md"
+                with contextlib.redirect_stdout(io.StringIO()):
+                    exit_code = main([
+                        "--baseline-a", str(root / "a"), "--candidate", str(root / "b"),
+                        "--baseline-a2", str(root / "a2"), "--baseline-sha", "a" * 40,
+                        "--candidate-sha", "b" * 40, "--output", str(output),
+                        "--summary", str(summary),
+                    ])
+                comparison = json.loads(output.read_text(encoding="utf-8"))
+                self.assertEqual(1, exit_code)
+                self.assertEqual("inconclusive", comparison["verdict"])
+                self.assertIn(expected, comparison["validationError"])
+                self.assertIn(expected, summary.read_text(encoding="utf-8"))
+
+    def test_report_does_not_prescribe_unlimited_repeats(self):
+        report = markdown(compare(result(90), result(100), result(110)), "a" * 40, "b" * 40)
+        self.assertIn("first INCONCLUSIVE permits one exact repeat", report)
+        self.assertIn("do not automatically repeat again", report)
 
 
 class StressAbaWorkflowTests(unittest.TestCase):
