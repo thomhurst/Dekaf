@@ -2,6 +2,8 @@
 
 **INCONCLUSIVE for performance acceptance.** Correctness checks pass and the warm pool benchmark allocates 0 B/op in all three phases. Candidate mean is 9.50% lower than A1 and 9.27% lower than A2, with -0.25% control drift. Compilation continues across measured workload boundaries without method attribution. Actual per-message latency, loaded completed throughput, CPU per message, and sustained stability remain missing; this microbenchmark improvement cannot clear those requirements.
 
+Follow-up: the [immutable-host JIT attribution experiment](jit-attribution/README.md) identifies background compilation of runtime sampling and BenchmarkDotNet helpers overlapping timed workload. Its U1/T/U2 observer comparison leaves this acceptance verdict unchanged.
+
 ## Change and correctness
 
 When reservation cleanup throws during `PendingRequestPool.Return`, Reservoir destroys the failed request and decrements the retained count, but the exception skips the wrapper's increment. Moving that existing increment into `PoolPolicy.TryReset`, before cleanup, lets destruction balance both reset failure and capacity rejection. The exception and discard behavior remain unchanged; successful return gains no allocation, exception handler, or counter operation.

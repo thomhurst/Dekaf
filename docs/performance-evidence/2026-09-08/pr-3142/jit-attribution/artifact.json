@@ -1,0 +1,20 @@
+{
+  "id": 10042580737,
+  "node_id": "MDg6QXJ0aWZhY3QxMDA0MjU4MDczNw==",
+  "name": "pool-jit-attribution",
+  "size_in_bytes": 55754523,
+  "url": "https://api.github.com/repos/thomhurst/Dekaf/actions/artifacts/10042580737",
+  "archive_download_url": "https://api.github.com/repos/thomhurst/Dekaf/actions/artifacts/10042580737/zip",
+  "expired": false,
+  "digest": "sha256:13a884c5388f99023325d955ecc76082ebbca1ed490b8506ec123fea21a2ffaa",
+  "created_at": "2026-09-08T05:50:19Z",
+  "updated_at": "2026-09-08T05:50:19Z",
+  "expires_at": "2026-12-07T05:44:53Z",
+  "workflow_run": {
+    "id": 34191811875,
+    "repository_id": 1139134709,
+    "head_repository_id": 1139134709,
+    "head_branch": "perf/pr-3142-jit-attribution",
+    "head_sha": "4eea4b281f91e1fd352df51d12b5b11075a5f5f2"
+  }
+}

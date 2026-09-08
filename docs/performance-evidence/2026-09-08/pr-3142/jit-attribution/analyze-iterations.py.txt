@@ -1,0 +1,65 @@
+"""Map CLR events to BDN engine windows; preserve every event and measurement."""
+import argparse,collections,csv,json,math
+from pathlib import Path
+parser=argparse.ArgumentParser(description=__doc__)
+parser.add_argument("events");parser.add_argument("bdn");parser.add_argument("output");parser.add_argument("--smoke",action="store_true")
+args=parser.parse_args();output=Path(args.output);output.mkdir(parents=True,exist_ok=True)
+trace=json.loads(Path(args.events).read_text());events=sorted(enumerate(trace["events"]),key=lambda pair:(pair[1]["milliseconds"],pair[0]))
+if trace["lost"]:raise RuntimeError("Trace lost events")
+report=json.loads(next((Path(args.bdn)/"results").glob("*full.json")).read_text())["Benchmarks"][0]
+measurements=report["Measurements"]
+windows=[];open_windows={}
+for _,e in events:
+    if e["kind"]!="engine" or e["id"] not in [13,14,15,16]:continue
+    stage="warmup" if e["id"] in [13,14] else "actual"
+    key=(stage,e["ThreadID"])
+    if e["id"] in [13,15]:
+        if key in open_windows:raise RuntimeError("Nested engine start")
+        open_windows[key]=e
+    else:
+        if key not in open_windows:raise RuntimeError("Engine stop without start")
+        start=open_windows.pop(key)
+        if start["payload"]["totalOperations"]!=e["payload"]["totalOperations"]:raise RuntimeError("Engine operation counts differ")
+        windows.append(dict(stage=stage,startMs=start["milliseconds"],endMs=e["milliseconds"],threadId=e["ThreadID"],operations=int(e["payload"]["totalOperations"])))
+if open_windows:raise RuntimeError("Engine start without stop")
+for stage,bdn_stage,expected in [("warmup","Warmup",1 if args.smoke else 30),("actual","Actual",1 if args.smoke else 25)]:
+    selected=[w for w in windows if w["stage"]==stage]
+    rows=[m for m in measurements if m["IterationMode"]=="Workload" and m["IterationStage"]==bdn_stage]
+    if len(rows)!=expected or len(selected)!=expected:raise RuntimeError("Unexpected engine/BDN sample count")
+    for index,(window,row) in enumerate(zip(selected,rows,strict=True),1):
+        if window["operations"]!=row["Operations"]:raise RuntimeError("BDN and engine operation counts differ")
+        window.update(index=index,bdnNs=row["Nanoseconds"],wrapperExcessNs=(window["endMs"]-window["startMs"])*1e6-row["Nanoseconds"])
+    if not args.smoke and stage=="warmup" and sum(m["Nanoseconds"] for m in rows)<20e9:raise RuntimeError("Warmup elapsed time below20s")
+actual=[w for w in windows if w["stage"]=="actual"]
+def inside(time):return [w["index"] for w in actual if w["startMs"]<=time<=w["endMs"]]
+def overlap(start,end):return [w["index"] for w in actual if start<=w["endMs"] and end>=w["startMs"]]
+first,last=actual[0]["startMs"],actual[-1]["endMs"]
+pending={};compiles=[];unmatched_loads=[]
+for _,e in events:
+    if e["kind"]=="jit":pending.setdefault((e["MethodID"],e["ThreadID"]),[]).append(e)
+    elif e["kind"]=="load":
+        key=(e["MethodID"],e["ThreadID"])
+        if not pending.get(key):unmatched_loads.append(e);continue
+        start=pending[key].pop()
+        compiles.append(dict(method=start["MethodNamespace"]+"."+start["MethodName"],signature=start["MethodSignature"],threadId=start["ThreadID"],methodId=start["MethodID"],startMs=start["milliseconds"],loadMs=e["milliseconds"],tier=e["payload"].get("OptimizationTier"),actualAtStart=inside(start["milliseconds"]),actualOverlapped=overlap(start["milliseconds"],e["milliseconds"])))
+unmatched_starts=[e for values in pending.values() for e in values]
+in_envelope=[e for e in compiles if e["startMs"]<=last and e["loadMs"]>=first]
+gcs=[e for _,e in events if e["kind"]=="gc" and first<=e["milliseconds"]<=last]
+suspensions=[];suspended=None;unmatched_suspensions=[]
+for _,e in events:
+    if e["kind"]=="suspend":
+        if suspended is not None:unmatched_suspensions.append(suspended)
+        suspended=e
+    elif e["kind"]=="restart":
+        if suspended is None:unmatched_suspensions.append(e);continue
+        suspensions.append(dict(startMs=suspended["milliseconds"],endMs=e["milliseconds"],reason=suspended["reason"],actualOverlapped=overlap(suspended["milliseconds"],e["milliseconds"])))
+        suspended=None
+if suspended is not None:unmatched_suspensions.append(suspended)
+summary=dict(traceSeconds=trace["seconds"],lost=trace["lost"],warmupWindows=len([w for w in windows if w["stage"]=="warmup"]),actualWindows=len(actual),actualOperations=sum(w["operations"] for w in actual),actualClockSeconds=sum(w["bdnNs"] for w in actual)/1e9,engineWindowSeconds=sum(w["endMs"]-w["startMs"] for w in actual)/1000,wrapperExcessNsMin=min(w["wrapperExcessNs"] for w in actual),wrapperExcessNsMax=max(w["wrapperExcessNs"] for w in actual),jitStartsInside=sum(bool(c["actualAtStart"]) for c in compiles),compilesOverlapping=sum(bool(c["actualOverlapped"]) for c in compiles),compilesInEnvelope=len(in_envelope),unmatchedJitStarts=len(unmatched_starts),unmatchedMethodLoads=len(unmatched_loads),unmatchedJitStartsInside=sum(bool(inside(e["milliseconds"])) for e in unmatched_starts),gcStartsInside=sum(bool(inside(e["milliseconds"])) for e in gcs),gcStartsInEnvelope=len(gcs),gcReasons=dict(collections.Counter(e["reason"] for e in gcs)),suspensionsOverlapping=sum(bool(s["actualOverlapped"]) for s in suspensions),unmatchedSuspensionEvents=len(unmatched_suspensions))
+result=dict(summary=summary,windows=windows,compilesInEnvelope=in_envelope,allCompiles=compiles,unmatchedJitStarts=unmatched_starts,unmatchedMethodLoads=unmatched_loads,gcEventsInEnvelope=gcs,suspensions=suspensions,unmatchedSuspensionEvents=unmatched_suspensions)
+(output/"attribution.json").write_text(json.dumps(result,indent=2))
+(output/"summary.json").write_text(json.dumps(summary,indent=2))
+with (output/"compiles.csv").open("w",newline="") as f:
+    fields=["method","signature","threadId","methodId","startMs","loadMs","tier","actualAtStart","actualOverlapped"]
+    writer=csv.DictWriter(f,fieldnames=fields);writer.writeheader();writer.writerows(in_envelope)
+print(json.dumps(summary,indent=2))

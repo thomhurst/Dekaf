@@ -1,0 +1,83 @@
+"""Reanalyze the immutable-host U1/T/U2 observer experiment without trimming samples."""
+import argparse
+import csv
+import hashlib
+import json
+import re
+from pathlib import Path
+
+
+def compare(root):
+    phases = {}
+    bindings = []
+    for phase in ("U1", "T", "U2"):
+        directory = root / phase
+        reports = list((directory / "bdn/results").glob("*full.json"))
+        if len(reports) != 1:
+            raise RuntimeError(f"Expected one report for {phase}")
+        benchmark = json.loads(reports[0].read_text())["Benchmarks"][0]
+        stats = benchmark["Statistics"]
+        measurements = benchmark["Measurements"]
+        warm = [m for m in measurements if m["IterationMode"] == "Workload" and m["IterationStage"] == "Warmup"]
+        actual = [m for m in measurements if m["IterationMode"] == "Workload" and m["IterationStage"] == "Actual"]
+        if len(warm) != 30 or len(actual) != 25 or stats["N"] != 25 or len(stats["OriginalValues"]) != 25:
+            raise RuntimeError(f"Unexpected sample count for {phase}")
+        host_log = (directory / "host.log").read_text()
+        setup = re.findall(r"WARM completed seconds=([\d.]+) calls=(\d+)", host_log)
+        if len(setup) != 1:
+            raise RuntimeError(f"Missing unique setup warmup for {phase}")
+        seconds, calls = float(setup[0][0]), int(setup[0][1])
+        warm_seconds = sum(m["Nanoseconds"] for m in warm) / 1e9
+        if seconds < 20 or warm_seconds < 20 or calls <= 0:
+            raise RuntimeError(f"Insufficient elapsed warmup for {phase}")
+        with (directory / "bdn/runtime.csv").open(newline="") as stream:
+            runtime = list(csv.DictReader(stream))
+        runtime_warm = [r for r in runtime if r["workload"].startswith("WorkloadWarmup")]
+        runtime_actual = [r for r in runtime if r["workload"].startswith("WorkloadActual")]
+        if len(runtime_warm) != 30 or len(runtime_actual) != 25:
+            raise RuntimeError(f"Unexpected runtime sample count for {phase}")
+        before, first, last = runtime_warm[-1], runtime_actual[0], runtime_actual[-1]
+        phases[phase] = dict(
+            meanNs=stats["Mean"], ciLowNs=stats["ConfidenceInterval"]["Lower"],
+            ciHighNs=stats["ConfidenceInterval"]["Upper"], standardErrorNs=stats["StandardError"],
+            maximumIterationNs=stats["Max"], bytesPerOp=benchmark["Memory"]["BytesAllocatedPerOperation"],
+            setupSeconds=seconds, setupCalls=calls, warmSeconds=warm_seconds,
+            warmCalls=sum(m["Operations"] for m in warm),
+            actualSeconds=sum(m["Nanoseconds"] for m in actual) / 1e9,
+            actualCalls=sum(m["Operations"] for m in actual), samples=len(actual),
+            boundaryJit=int(last["jit_methods"]) - int(before["jit_methods"]),
+            interiorBoundaryJit=int(last["jit_methods"]) - int(first["jit_methods"]),
+            boundaryCpuMs=float(last["cpu_ms"]) - float(before["cpu_ms"]),
+            boundaryGc=[int(last[f"gc{i}"]) - int(before[f"gc{i}"]) for i in range(3)],
+            maxThreads=max(int(r["threads"]) for r in runtime_actual),
+            heap=[int(before["heap_bytes"]), int(last["heap_bytes"])],
+            rss=[int(before["rss_bytes"]), int(last["rss_bytes"])],
+        )
+        loaded = json.loads(host_log.splitlines()[0])
+        if len(loaded) != 3:
+            raise RuntimeError(f"Expected three loaded assembly bindings for {phase}")
+        for binding in loaded:
+            local = root / "host" / Path(binding["Location"]).name
+            if hashlib.sha256(local.read_bytes()).hexdigest().upper() != binding["Sha256"]:
+                raise RuntimeError(f"Loaded assembly hash mismatch: {phase}, {local}")
+            bindings.append(dict(phase=phase, **binding))
+    mean = lambda phase: phases[phase]["meanNs"]
+    comparison = dict(
+        phases=phases,
+        tracedVsU1Percent=(mean("T") / mean("U1") - 1) * 100,
+        tracedVsU2Percent=(mean("T") / mean("U2") - 1) * 100,
+        controlDriftPercent=(mean("U2") / mean("U1") - 1) * 100,
+    )
+    return comparison, bindings
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("raw", type=Path)
+    parser.add_argument("output", type=Path)
+    args = parser.parse_args()
+    comparison, bindings = compare(args.raw)
+    args.output.mkdir(parents=True, exist_ok=True)
+    (args.output / "comparison.json").write_text(json.dumps(comparison, indent=2), encoding="utf-8")
+    (args.output / "loaded-bindings.json").write_text(json.dumps(bindings, indent=2), encoding="utf-8")
+    print(json.dumps(comparison, indent=2))
