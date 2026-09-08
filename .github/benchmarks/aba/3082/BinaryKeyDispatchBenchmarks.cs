@@ -13,6 +13,9 @@ public class BinaryKeyDispatchBenchmarks
     private ConsumeResult<ReadOnlyMemory<byte>, string>[] _memory = null!;
     private ConsumeResult<string, string>[] _strings = null!;
 
+    [Params(1, 4)]
+    public int Concurrency { get; set; }
+
     [GlobalSetup]
     public void Setup()
     {
@@ -22,13 +25,13 @@ public class BinaryKeyDispatchBenchmarks
     }
 
     [Benchmark(OperationsPerInvoke = RecordCount)]
-    public Task ByteArray() => DispatchAsync(_binary);
+    public Task ByteArray() => DispatchAsync(_binary, Concurrency);
 
     [Benchmark(OperationsPerInvoke = RecordCount)]
-    public Task RawMemory() => DispatchAsync(_memory);
+    public Task RawMemory() => DispatchAsync(_memory, Concurrency);
 
     [Benchmark(OperationsPerInvoke = RecordCount)]
-    public Task StringControl() => DispatchAsync(_strings);
+    public Task StringControl() => DispatchAsync(_strings, Concurrency);
 
     private static ConsumeResult<TKey, string>[] CreateRecords<TKey>(IDeserializer<TKey> deserializer)
     {
@@ -43,13 +46,13 @@ public class BinaryKeyDispatchBenchmarks
         return result;
     }
 
-    internal static async Task DispatchAsync<TKey>(ConsumeResult<TKey, string>[] records)
+    internal static async Task DispatchAsync<TKey>(ConsumeResult<TKey, string>[] records, int concurrency)
     {
         var lane = new PartitionLane<TKey, string>(new TopicPartition("topic", 0), records.Length,
             static (_, _) => ValueTask.CompletedTask, static _ => { }, static (_, error) => throw error);
         var context = new PartitionProcessorContext<TKey, string>(lane);
         var releaseFirst = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var dispatcher = new KeyOrderedPartitionDispatcher<TKey, string>(context, 1, 1, records.Length,
+        var dispatcher = new KeyOrderedPartitionDispatcher<TKey, string>(context, 1, concurrency, records.Length,
             async (batch, _) =>
             {
                 if (batch[0].Offset == 0)
@@ -79,6 +82,9 @@ public class DistinctBinaryKeyDispatchBenchmarks
     [Params(8, 1024, 65536)]
     public int KeySize { get; set; }
 
+    [Params(1, 4)]
+    public int Concurrency { get; set; }
+
     [GlobalSetup]
     public void Setup()
     {
@@ -87,10 +93,10 @@ public class DistinctBinaryKeyDispatchBenchmarks
     }
 
     [Benchmark(OperationsPerInvoke = RecordCount)]
-    public Task ByteArray() => BinaryKeyDispatchBenchmarks.DispatchAsync(_binary);
+    public Task ByteArray() => BinaryKeyDispatchBenchmarks.DispatchAsync(_binary, Concurrency);
 
     [Benchmark(OperationsPerInvoke = RecordCount)]
-    public Task RawMemory() => BinaryKeyDispatchBenchmarks.DispatchAsync(_memory);
+    public Task RawMemory() => BinaryKeyDispatchBenchmarks.DispatchAsync(_memory, Concurrency);
 
     private ConsumeResult<TKey, string>[] CreateRecords<TKey>(IDeserializer<TKey> deserializer)
     {
