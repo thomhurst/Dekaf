@@ -9,10 +9,10 @@ namespace Dekaf.StressTests.Scenarios;
 internal static class ProducerWorkload
 {
     internal static Task<ProducerWorkloadResult> RunAsync(
-        IKafkaProducer<string, string> producer, StressTestOptions options,
+        IKafkaProducer<string, string> producer, StressTestOptions options, string client, string scenario,
         ThroughputTracker throughput, LatencyTracker latency, TimeSpan duration,
         bool awaitDelivery, CancellationToken cancellationToken) =>
-        MeasureAsync(options, throughput, latency, duration, "Dekaf",
+        MeasureAsync(options, throughput, latency, duration, client, scenario,
             (ingress, delivery) => ProduceDekafAsync(producer, options, throughput, latency, awaitDelivery, ingress, delivery),
             () => StressTestHelpers.FlushWithTimeoutAsync(producer, throughput), cancellationToken,
             () => StressTestHelpers.CaptureProducerDeliveryDiagnostics(producer, options));
@@ -63,10 +63,10 @@ internal static class ProducerWorkload
     }
 
     internal static Task<ProducerWorkloadResult> RunAsync(
-        ConfluentKafka.IProducer<string, string> producer, StressTestOptions options,
+        ConfluentKafka.IProducer<string, string> producer, StressTestOptions options, string client, string scenario,
         ThroughputTracker throughput, LatencyTracker latency, TimeSpan duration,
         bool awaitDelivery, CancellationToken cancellationToken) =>
-        MeasureAsync(options, throughput, latency, duration, "Confluent",
+        MeasureAsync(options, throughput, latency, duration, client, scenario,
             (ingress, delivery) => ProduceConfluentAsync(producer, options, throughput, latency, awaitDelivery, ingress, delivery),
             () => { ConfluentStressTestHelpers.FlushWithTimeout(producer, throughput); return Task.CompletedTask; },
             cancellationToken);
@@ -117,14 +117,14 @@ internal static class ProducerWorkload
     }
 
     private static async Task<ProducerWorkloadResult> MeasureAsync(
-        StressTestOptions options, ThroughputTracker throughput, LatencyTracker latency, TimeSpan duration, string client,
+        StressTestOptions options, ThroughputTracker throughput, LatencyTracker latency, TimeSpan duration, string client, string scenario,
         Func<CancellationToken, CancellationToken, Task> produce, Func<Task> drain, CancellationToken cancellationToken,
         Func<ProducerDeliveryDiagnosticsSnapshot?>? captureProducerDiagnostics = null)
     {
         if (throughput.Warmup is not null)
         {
             // profile-stress-test.sh anchors trace windows to this measured-phase marker.
-            Console.WriteLine($"  Running {client} producer stress test for {options.DurationMinutes} minutes...");
+            Console.WriteLine($"  Running {client} {scenario} stress test for {options.DurationMinutes} minutes...");
         }
         using var gc = new GcStats();
         using var ingress = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -132,7 +132,7 @@ internal static class ProducerWorkload
         using var sampling = new CancellationTokenSource();
         throughput.Start();
         var stopIngress = StopIngressAsync(ingress, duration);
-        using var watchdog = options.ProgressWatchdog.Track(throughput, client, "producer workload", captureProducerDiagnostics);
+        using var watchdog = options.ProgressWatchdog.Track(throughput, client, scenario, captureProducerDiagnostics);
         var sampler = StressTestHelpers.RunSamplerAsync(throughput, sampling.Token);
         var resources = StressTestHelpers.RunResourceMonitorAsync(sampling.Token);
         var producing = produce(ingress.Token, delivery.Token);

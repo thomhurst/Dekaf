@@ -146,7 +146,7 @@ internal static class StressTestHelpers
     internal static async Task<long?> WarmUpProducerAndQueryStartOffsetAsync(
         IKafkaProducer<string, string> producer,
         StressTestOptions options,
-        string producerName,
+        IStressTestScenario scenario,
         ThroughputTracker throughput,
         CancellationToken cancellationToken,
         bool awaitDelivery = false)
@@ -154,13 +154,13 @@ internal static class StressTestHelpers
         var startOffset = await QueryTotalEndOffsetAsync(
             options.BootstrapServers, options.Topic, options.Partitions).ConfigureAwait(false);
         var value = new string('x', options.MessageSizeBytes);
-        Console.WriteLine($"  Warming up {producerName}: {options.ProducerWarmupSeconds}s of workload in six drain/reuse cycles...");
+        Console.WriteLine($"  Warming up {scenario.Client} {scenario.Name}: {options.ProducerWarmupSeconds}s of workload in six drain/reuse cycles...");
         // Prime metadata asynchronously before timed warmup. Rotate the same keys and use
         // the same payload size as measurement, rather than warming one tiny keyed batch.
         await producer.ProduceAsync(options.Topic, GetKey(0), value, cancellationToken).ConfigureAwait(false);
         throughput.Warmup = await ProducerWarmup.RunAsync(
             options.ProducerWarmupSeconds,
-            (duration, token) => ProducerWorkload.RunAsync(producer, options, new ThroughputTracker(),
+            (duration, token) => ProducerWorkload.RunAsync(producer, options, scenario.Client, scenario.Name, new ThroughputTracker(),
                 awaitDelivery ? new LatencyTracker() : StressTestHelpers.CreateDeliveryLatencyTracker(),
                 duration, awaitDelivery, token), cancellationToken).ConfigureAwait(false);
         var offset = await QueryTotalEndOffsetAfterProducerDrainAsync(

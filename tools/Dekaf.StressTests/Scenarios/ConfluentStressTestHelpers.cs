@@ -194,21 +194,21 @@ internal static class ConfluentStressTestHelpers
     internal static async Task<long?> WarmUpProducerAndQueryStartOffsetAsync(
         ConfluentKafka.IProducer<string, string> producer,
         StressTestOptions options,
-        string producerName,
+        IStressTestScenario scenario,
         ThroughputTracker throughput,
         CancellationToken cancellationToken,
         bool awaitDelivery = false)
     {
         var startOffset = QueryTotalEndOffset(options.BootstrapServers, options.Topic, options.Partitions);
         var value = new string('x', options.MessageSizeBytes);
-        Console.WriteLine($"  Warming up {producerName}: {options.ProducerWarmupSeconds}s of workload in six drain/reuse cycles...");
+        Console.WriteLine($"  Warming up {scenario.Client} {scenario.Name}: {options.ProducerWarmupSeconds}s of workload in six drain/reuse cycles...");
         await producer.ProduceAsync(options.Topic, new ConfluentKafka.Message<string, string>
         {
             Key = StressTestHelpers.GetKey(0), Value = value
         }, cancellationToken).ConfigureAwait(false);
         throughput.Warmup = await ProducerWarmup.RunAsync(
             options.ProducerWarmupSeconds,
-            (duration, token) => ProducerWorkload.RunAsync(producer, options, new ThroughputTracker(),
+            (duration, token) => ProducerWorkload.RunAsync(producer, options, scenario.Client, scenario.Name, new ThroughputTracker(),
                 awaitDelivery ? new LatencyTracker() : StressTestHelpers.CreateDeliveryLatencyTracker(),
                 duration, awaitDelivery, token), cancellationToken).ConfigureAwait(false);
         return await QueryTotalEndOffsetAfterProducerDrainAsync(

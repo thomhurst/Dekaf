@@ -38,12 +38,12 @@ internal sealed class ConfluentProducerStressTest : IStressTestScenario
         var startOffset = await ConfluentStressTestHelpers.WarmUpProducerAndQueryStartOffsetAsync(
             producer,
             options,
-            "Confluent producer",
+            this,
             throughput,
             cancellationToken);
 
         var workload = await ProducerWorkload.RunAsync(
-            producer, options, throughput, latency, TimeSpan.FromMinutes(options.DurationMinutes),
+            producer, options, Client, Name, throughput, latency, TimeSpan.FromMinutes(options.DurationMinutes),
             awaitDelivery: false, cancellationToken).ConfigureAwait(false);
 
         var completedAt = DateTime.UtcNow;
