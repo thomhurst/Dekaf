@@ -15,6 +15,8 @@ public static class Program
 
     public static int Main(string[] args)
     {
+        if (args[0] == "shutdown")
+            return ShutdownProbe.Run(args).GetAwaiter().GetResult();
         var pattern = Enum.Parse<KeyOrderedDispatchBenchmarks.KeyPattern>(args[0]);
         var batchSize = int.Parse(args[1]);
         Smoke = args.Contains("--smoke");

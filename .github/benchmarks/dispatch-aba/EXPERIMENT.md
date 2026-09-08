@@ -4,9 +4,9 @@ This task-scoped harness belongs on its comparison branch only. Do not merge its
 
 ## Pinned comparison
 
-Baseline A is fresh main `5df2f0d03607389384b5c1466e17812a9084fac9`. Candidate B is exact PR head `2a550007ccb091e8f2bf9275a7646277e984dff8`, which contains A. The workflow records its separate harness SHA, runner image/hardware, SDK/runtime and run URL. Archive and build both exact product revisions before timing. Assert the loaded `Dekaf.dll` and `Dekaf.Abstractions.dll` hashes against each product build. Preserve source archives, complete loaded binaries, raw logs, latency arrays and runtime samples.
+Baseline A and candidate B are exact dispatch inputs, recorded in provenance.json. Fetch and pin fresh main, and verify B contains it before dispatch. The workflow records its separate harness SHA, runner image/hardware, SDK/runtime and run URL. Archive and build both exact product revisions before timing. Assert the loaded `Dekaf.dll` and `Dekaf.Abstractions.dll` hashes against each product build. Preserve source archives, complete loaded binaries, raw logs, latency arrays and runtime samples.
 
-One `ubuntu-latest` job runs A1, then B, then A2 sequentially. Each phase includes six fresh-process microbenchmarks followed by four fresh-process Kafka workloads. Before A1, smoke every configuration against both products. Each loaded phase starts a fresh Kafka 4.3.1 container, with separate new topics in a fixed mode order. Pin microbenchmarks to CPU 2; loaded consumer to CPUs 2/3, the always-baseline producer to CPU 1, and broker to CPU 0. Stop build servers before validation/timing. No unrelated builds, tests or diagnostics run during timing.
+One `ubuntu-latest` job runs A1, then B, then A2 sequentially. Each phase includes six fresh-process microbenchmarks, four fresh-process Kafka workloads, and four fresh-process dispatcher shutdown workloads. Before A1, smoke every configuration against both products. Each loaded phase starts a fresh Kafka 4.3.1 container, with separate new topics in a fixed mode order. Detect physical-core topology and keep sibling threads together: consumer owns one physical core; baseline producer and broker use the remaining cores. Record exact affinity. Stop the broker before focused shutdown probes. Stop build servers before validation/timing. No unrelated builds, tests or diagnostics run during timing.
 
 ## Microbenchmarks
 
@@ -27,6 +27,38 @@ Pending handlers await `Task.Delay(1)` once per invocation. This intentionally m
 Latency begins at scheduled producer offer and ends when handler processing completes, after the pending delay when present. It includes producer pacing debt, broker time and consumer queueing, but excludes automatic frontier bookkeeping after handler return. Save every individual warmup and measured latency before sorting, including maxima. Derive per-second completion counts and latency percentiles from raw scheduled timestamps plus latency; retain any boundary buckets outside the nominal interval. CPU/allocation measurement begins with the first measured completion and ends with the final completion. Its scope is the consumer process including the sampler and handler simulation. Producer/broker CPU is separate. Throughput is completed throughput at the declared rate, not maximum consumer capacity.
 
 Capture one-second JIT count/time, thread-pool growth/backlog, process CPU, allocated bytes, GC counts, heap/RSS, completed counts, scheduled backlog and pending-handler counts. Retain all samples. Check producer acknowledgements, no duplicates/loss/key reordering, complete final drain, no pending handlers, and broker-confirmed committed offset for every partition. Shutdown timing starts after all handler processing completes; it checks final bookkeeping/commit completion and does **not** measure shutdown under load. This two-minute window does not establish long-run leak absence.
+
+## Focused loaded dispatcher shutdown
+
+After each Kafka phase, use the same actual CreateBatchProcessor factory and
+PartitionLane shutdown implementation in fresh processes. Cover batch sizes 1
+and 16, with one and two keys. Fill 128 records before starting the dispatcher.
+Hold handler completion, then wait on the actual lane buffered count until every
+record reaches the coordinator. An UnsafeAccessor reads the same private count
+on both pinned products; this is a fixture observation, not a product change.
+It prevents the first-handler signal from racing batch formation. Stop begins
+with pending handlers and all 128 records still unfinished. Request Drain,
+release handlers, and await stop. Verify every record exactly once, key order,
+zero pending handlers, the configured maximum batch size, and automatic commit
+frontier 128 with leader epoch 7 on every stop.
+
+Warm this complete lifecycle for 120 seconds and measure for 60 seconds, using
+one continuous loop across the boundary. Record exact-tick histograms for every
+shutdown and every message, including maxima. Message latency starts at queue
+fill and ends at handler completion; shutdown latency starts at Drain and ends
+when it returns. CPU/allocation and completed throughput cover the whole process
+and lifecycle, including fixture synchronization and histogram accounting.
+These cold lifecycle allocations are separate from the zero-allocation steady
+dispatch probe. Preserve per-second CPU, allocation, mean/max latency, GC, JIT,
+thread-pool, heap and RSS trends, plus method-level JIT events. Serialize only
+after both captures finish.
+
+This isolates shutdown with unfinished dispatcher work. It does not simulate
+Kafka transport; broker-confirmed committed progress remains covered by the
+separate public Kafka workload. Neither scope substitutes for the other.
+Apply the same 3% throughput/CPU, 5% message and shutdown p50/p99/max, and
+1 B/message allocation limits against both controls, including control drift.
+Remaining startup transitions, insufficient precision or scope remain INCONCLUSIVE.
 
 ## Predeclared decision rules
 

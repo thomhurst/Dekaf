@@ -49,6 +49,64 @@ def digest(path):
         return hashlib.file_digest(stream, 'sha256').hexdigest()
 
 
+def summarize_shutdown(data, minimum_seconds):
+    start, end = data['Start'], data['End']
+    seconds = end['Seconds'] - start['Seconds']
+    messages = end['Completed'] - start['Completed']
+    if seconds < minimum_seconds or messages <= 0 or messages % 128:
+        raise ValueError('Invalid shutdown duration/completion denominator')
+    if data['RecordsPerStop'] != 128 or data['Failures'] or data['PendingAfterStop']:
+        raise ValueError('Invalid shutdown correctness')
+    if data['BatchSize'] not in (1, 16) or data['Keys'] not in (1, 2):
+        raise ValueError('Invalid shutdown configuration')
+    frequency = data['StopwatchFrequency']
+    if frequency <= 0 or end['CpuTicks'] <= start['CpuTicks'] or end['AllocatedBytes'] < start['AllocatedBytes']:
+        raise ValueError('Invalid shutdown CPU/allocation scope')
+    result = dict(Messages=messages, Stops=messages // 128, Seconds=seconds,
+                  MessagesPerSecond=messages / seconds,
+                  CpuNsPerMessage=(end['CpuTicks'] - start['CpuTicks']) * 100 / messages,
+                  AllocatedBytesPerMessage=(end['AllocatedBytes'] - start['AllocatedBytes']) / messages,
+                  JitMethods=end['JitMethods'] - start['JitMethods'],
+                  JitMs=end['JitMs'] - start['JitMs'])
+    for field, count, prefix in [('StopTicks', messages // 128, 'Stop'), ('MessageTicks', messages, 'Message')]:
+        values = sorted(data[field], key=lambda value: value['Ticks'])
+        if not values or sum(row['Count'] for row in values) != count:
+            raise ValueError('Incomplete shutdown histogram')
+        if any(row['Count'] <= 0 or row['Ticks'] <= 0 for row in values):
+            raise ValueError('Invalid shutdown histogram values')
+        if len({row['Ticks'] for row in values}) != len(values):
+            raise ValueError('Duplicate shutdown histogram buckets')
+        for label, numerator in [('P50', 50), ('P99', 99), ('Max', 100)]:
+            target, cumulative = (count * numerator + 99) // 100, 0
+            for row in values:
+                cumulative += row['Count']
+                if cumulative >= target:
+                    result[prefix + label + 'Ns'] = row['Ticks'] * 1e9 / frequency
+                    break
+        if max(row[prefix + 'MaxTicks'] for row in data['Series']) != values[-1]['Ticks']:
+            raise ValueError('Shutdown time-series maximum differs from raw histogram')
+    if len(data['Series']) < int(seconds) - 1 or data['Series'][-1] != end:
+        raise ValueError('Missing shutdown runtime time series')
+    for row in data['Series']:
+        for field in ('JitMethods', 'JitMs', 'Threads', 'PendingWork', 'Gen0', 'Gen1', 'Gen2', 'HeapBytes', 'RssBytes',
+                      'CpuTicks', 'AllocatedBytes', 'StopMeanTicks', 'StopMaxTicks', 'MessageMeanTicks', 'MessageMaxTicks'):
+            if field not in row:
+                raise ValueError('Missing shutdown runtime metric: ' + field)
+    return result
+
+
+def shutdown(host, folder, batch, keys, smoke):
+    folder.mkdir(parents=True)
+    warmup, measured = (2, 2) if smoke else (120, 60)
+    environment = dict(os.environ, DOTNET_TieredCompilation='1', DOTNET_GCDynamicAdaptationMode='0')
+    command(['taskset', '-c', AFFINITY['consumer'], 'dotnet', host, 'shutdown', batch, keys,
+             folder, warmup, measured], folder / 'run.log', env=environment, timeout=warmup + measured + 60)
+    summarize_shutdown(json.loads((folder / 'warmup.json').read_text()), warmup)
+    metrics = summarize_shutdown(json.loads((folder / 'measured.json').read_text()), measured)
+    (folder / 'summary.json').write_text(json.dumps(metrics, indent=2))
+    return metrics
+
+
 def validate_loaded(folder, warmup, seconds, rate, acceptance):
     metrics = json.loads((folder / 'metrics.json').read_text())
     producer = json.loads((folder / 'producer.json').read_text())
@@ -210,6 +268,7 @@ def build(root, output, sha, label):
     fixture = output / f'fixture-{label}'
     shutil.copytree(root / '.github/benchmarks/dispatch-aba', fixture,
                     ignore=shutil.ignore_patterns('bin', 'obj', '__pycache__'))
+    shutil.copyfile(root / '.github/benchmarks/CompilationLog.cs', fixture.parent / 'CompilationLog.cs')
     for name in ('global.json', 'Directory.Packages.props'):
         shutil.copyfile(root / name, fixture / name)
     hosts = {}
@@ -291,12 +350,19 @@ def main():
                     latency_series(workload_folder, values[mode])
             finally:
                 broker_stop(phase_folder, broker)
+            shutdown_values = {}
+            for batch in (1, 16):
+                for keys in (1, 2):
+                    key = f'batch-{batch}-keys-{keys}'
+                    shutdown_values[key] = shutdown(hosts[label]['Harness'],
+                        phase_folder / ('shutdown-' + key), batch, keys, smoke)
+            (phase_folder / 'shutdown-metrics.json').write_text(json.dumps(shutdown_values, indent=2))
             if not smoke:
                 phases[phase] = values
                 (output / 'loaded-metrics.json').write_text(json.dumps(phases, indent=2))
         (output / 'decision.json').write_text(json.dumps({
             'measurement': 'COMPLETE', 'acceptance': 'INCONCLUSIVE',
-            'reason': 'Human review of protected metrics, controls, startup transitions, and missing loaded shutdown evidence required.'
+            'reason': 'Human review of protected metrics, controls, startup transitions, loaded Kafka and focused loaded dispatcher shutdown required.'
         }, indent=2))
     finally:
         inventory = {str(path.relative_to(output)): digest(path) for path in output.rglob('*') if path.is_file()}
