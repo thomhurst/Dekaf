@@ -355,16 +355,15 @@ def compare(
         "baselineA2": baseline_a2_result["latency"]["count"],
         "candidateB2": None if candidate_b2_result is None else candidate_b2_result["latency"]["count"],
     }
-    # Aggregate maxima have no distribution or uncertainty information. Unequal numbers
-    # of draws can inflate a maximum or conceal a loss, so neither verdict is supported.
-    # Keep every observed maximum; never trim samples to manufacture equal coverage.
-    if len({count for count in latency_sample_counts.values() if count is not None}) != 1:
-        maximum = next(item for item in metrics if item["key"] == "max")
-        maximum["status"] = "inconclusive"
-        maximum["reason"] = (
-            "Aggregate maximum comparison requires equal latency sample counts; "
-            "unequal counts require separate uncertainty analysis. All observed maxima are retained."
-        )
+    # A single observed maximum per segment cannot establish tail uncertainty, even
+    # with equal sample counts. Keep this protected metric gated so missing evidence
+    # prevents acceptance; neither a favorable nor an adverse raw extreme decides it.
+    maximum = next(item for item in metrics if item["key"] == "max")
+    maximum["status"] = "inconclusive"
+    maximum["reason"] = (
+        "Aggregate maxima lack an uncertainty-aware comparison, even with equal latency sample counts. "
+        "All observed maxima are retained; workload-level sampling and uncertainty evidence are required."
+    )
 
     candidate_failed = _errors(candidate_result) > 0 or _delivery_mismatch(candidate_result)
     if candidate_b2_result is not None:
@@ -418,9 +417,9 @@ def markdown(comparison, baseline_sha, candidate_sha):
         f"Each segment requires at least {MIN_LATENCY_SAMPLES} latency samples. This conservative "
         "screening floor does not establish tail precision or comparable sampling coverage; "
         "those still require the workload's sampling design and uncertainty analysis.",
-        "The aggregate maximum gate requires equal sample counts across all segments. "
-        "Unequal counts make that metric INCONCLUSIVE, even when its raw value improves. "
-        "Equal counts alone do not establish independent sampling or maximum precision.",
+        "The current aggregate result schema has no maximum-latency uncertainty evidence. "
+        "That protected metric remains INCONCLUSIVE for equal and unequal sample counts, "
+        "so this screen cannot return PASS. Other metric regressions and delivery failures still reject.",
         "",
         f"Baseline: `{baseline_sha}` · Candidate: `{candidate_sha}`",
     ]
@@ -502,6 +501,8 @@ def markdown(comparison, baseline_sha, candidate_sha):
             "The first INCONCLUSIVE permits one exact repeat. After a second, synthesize "
             "the evidence and improve the experiment or obtain maintainer direction; "
             "do not automatically repeat again.",
+            "An unchanged aggregate-only repeat cannot supply missing maximum uncertainty. "
+            "Improve the workload's sampling and uncertainty evidence before another acceptance run.",
         ]
     )
     return "\n".join(lines) + "\n"
