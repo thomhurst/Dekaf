@@ -11,6 +11,9 @@ from stress_report import cpu_micros_per_message, effective_rate, median_interva
 
 DEFAULT_TOLERANCE_PERCENT = 3.0
 DEFAULT_MAX_CONTROL_DRIFT_PERCENT = 10.0
+# Conservative aggregate-screen floor: 100 observations in the upper 1% by rank.
+# This does not establish independent samples, p99 precision, or complete coverage.
+MIN_LATENCY_SAMPLES = 10_000
 
 
 @dataclass(frozen=True)
@@ -142,6 +145,8 @@ def _measurements(result):
     count = latency.get("count")
     if not isinstance(count, int) or isinstance(count, bool) or count <= 0:
         raise ValueError("Latency evidence requires a positive integer sample count")
+    if count < MIN_LATENCY_SAMPLES:
+        raise ValueError(f"Aggregate screening requires at least {MIN_LATENCY_SAMPLES} latency samples per segment")
     return measurements
 
 
@@ -286,6 +291,14 @@ def compare(
            for value in (tolerance_percent, max_control_drift_percent)):
         raise ValueError("Comparison thresholds must be finite numbers and cannot be negative")
 
+    results = [baseline_a_result, candidate_result, baseline_a2_result]
+    if candidate_b2_result is not None:
+        results.append(candidate_b2_result)
+    for result in results:
+        for field in ("throughput", "producerDeliveryDiagnostics"):
+            if not isinstance(result.get(field), dict):
+                raise ValueError(f"Expected a {field} object")
+
     identities = {
         _identity(baseline_a_result),
         _identity(candidate_result),
@@ -352,6 +365,7 @@ def compare(
         "candidateDeliveryMismatch": _delivery_mismatch(candidate_result)
         or (candidate_b2_result is not None and _delivery_mismatch(candidate_b2_result)),
         "candidateSegments": 1 if candidate_b2_result is None else 2,
+        "minimumLatencySamples": MIN_LATENCY_SAMPLES,
         "latencySampleCounts": {
             "baselineA": baseline_a_result["latency"]["count"],
             "candidateB": candidate_result["latency"]["count"],
@@ -383,6 +397,9 @@ def markdown(comparison, baseline_sha, candidate_sha):
         "This is an aggregate metric screen, not full PR performance acceptance. "
         "Runner/fixture identity, warmup and runtime activity, sampling uncertainty, "
         "hot-path MemoryDiagnoser evidence and sustained stability require separate validation.",
+        f"Each segment requires at least {MIN_LATENCY_SAMPLES} latency samples. This conservative "
+        "screening floor does not establish tail precision or comparable sampling coverage; "
+        "those still require the workload's sampling design and uncertainty analysis.",
         "",
         f"Baseline: `{baseline_sha}` · Candidate: `{candidate_sha}`",
     ]

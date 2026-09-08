@@ -95,16 +95,25 @@ class StressAbaComparisonTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "sample count"):
             compare(result(), candidate, result())
 
+    def test_undersampled_latency_is_invalid_in_every_segment(self):
+        for count in (1, 100, 1000, 9999):
+            for segment in range(4):
+                segments = [result() for _ in range(4)]
+                segments[segment]["latency"]["count"] = count
+                with self.subTest(count=count, segment=segment):
+                    with self.assertRaisesRegex(ValueError, "at least 10000 latency samples"):
+                        compare(*segments[:3], candidate_b2_result=segments[3])
+
     def test_records_latency_sample_counts_for_all_segments(self):
         comparison = compare(
-            result(latency_count=100), result(latency_count=200), result(latency_count=300),
-            candidate_b2_result=result(latency_count=400),
+            result(latency_count=10000), result(latency_count=20000), result(latency_count=30000),
+            candidate_b2_result=result(latency_count=40000),
         )
         self.assertEqual(
-            {"baselineA": 100, "candidateB": 200, "baselineA2": 300, "candidateB2": 400},
+            {"baselineA": 10000, "candidateB": 20000, "baselineA2": 30000, "candidateB2": 40000},
             comparison["latencySampleCounts"],
         )
-        self.assertIn("Latency samples (A / B / A2 / B2): 100 / 200 / 300 / 400", markdown(comparison, "a", "b"))
+        self.assertIn("Latency samples (A / B / A2 / B2): 10000 / 20000 / 30000 / 40000", markdown(comparison, "a", "b"))
         single_candidate = compare(result(), result(), result())
         self.assertIsNone(single_candidate["latencySampleCounts"]["candidateB2"])
         self.assertIn("Latency samples (A / B / A2): 10000 / 10000 / 10000", markdown(single_candidate, "a", "b"))
@@ -540,7 +549,10 @@ class StressAbaComparisonTests(unittest.TestCase):
             (json.dumps({"results": [missing_metric]}), "Latency max"),
             (json.dumps({"results": [empty_latency]}), "positive latency"),
             (json.dumps({"results": [result(latency_count=0)]}), "sample count"),
+            (json.dumps({"results": [result(latency_count=1)]}), "at least 10000 latency samples"),
             (json.dumps({"results": [{**result(), "latency": ["invalid"]}]}), "latency object"),
+            (json.dumps({"results": [{**result(), "throughput": ["invalid"]}]}), "throughput object"),
+            (json.dumps({"results": [{**result(), "producerDeliveryDiagnostics": ["invalid"]}]}), "producerDeliveryDiagnostics object"),
             (json.dumps({"results": [result(scenario="other")]}), "workload identity"),
         ):
             with self.subTest(expected=expected), tempfile.TemporaryDirectory() as directory:
@@ -565,6 +577,16 @@ class StressAbaComparisonTests(unittest.TestCase):
                 self.assertEqual("inconclusive", comparison["verdict"])
                 self.assertIn(expected, comparison["validationError"])
                 self.assertIn(expected, summary.read_text(encoding="utf-8"))
+
+    def test_nested_result_objects_are_validated_in_every_segment(self):
+        for field in ("throughput", "producerDeliveryDiagnostics"):
+            for value in (None, [], ["invalid"], "invalid", 1, False):
+                for segment in range(4):
+                    segments = [result() for _ in range(4)]
+                    segments[segment][field] = value
+                    with self.subTest(field=field, value=value, segment=segment):
+                        with self.assertRaisesRegex(ValueError, f"{field} object"):
+                            compare(*segments[:3], candidate_b2_result=segments[3])
 
     def test_report_does_not_prescribe_unlimited_repeats(self):
         report = markdown(compare(result(90), result(100), result(110)), "a" * 40, "b" * 40)
