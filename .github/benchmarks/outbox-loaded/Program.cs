@@ -130,7 +130,7 @@ internal class Store : IOutboxStore
     private long _started;
     public long TotalCompleted;
     public int Pending;
-    public int MetricQueries;
+    public int MetricQueries = 0;
     public Exception? Failure;
     public readonly TaskCompletionSource Finished = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
