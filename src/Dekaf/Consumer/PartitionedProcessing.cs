@@ -65,7 +65,8 @@ public static class PartitionedConsumerExtensions
     /// </summary>
     /// <remarks>
     /// The comparer operates on deserialized keys within each partition. Keys and their hash codes
-    /// must remain stable until their processing lane is idle. Null keys share a separate lane.
+    /// must remain stable until their processing lane is idle. Kafka null keys share a separate lane.
+    /// A non-null Kafka key deserialized as null uses another lane without invoking the comparer.
     /// The comparer is ignored when ordering is by partition.
     /// </remarks>
     public static ValueTask RunPartitionedAsync<TKey, TValue>(
@@ -123,7 +124,8 @@ public static class PartitionedConsumerExtensions
     /// </summary>
     /// <remarks>
     /// The comparer operates on deserialized keys within each partition. Keys and their hash codes
-    /// must remain stable until their processing lane is idle. Null keys share a separate lane.
+    /// must remain stable until their processing lane is idle. Kafka null keys share a separate lane.
+    /// A non-null Kafka key deserialized as null uses another lane without invoking the comparer.
     /// The comparer is ignored when ordering is by partition.
     /// </remarks>
     public static ValueTask RunPartitionedBatchesAsync<TKey, TValue>(

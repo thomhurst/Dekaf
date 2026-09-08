@@ -19,6 +19,18 @@ public sealed class PartitionedNullKeyTests
         _ => throw new ArgumentOutOfRangeException(nameof(keyKind))
     };
 
+    [Test]
+    [Arguments(0)]
+    [Arguments(1)]
+    [Arguments(2)]
+    public Task WireNullAndDeserializedNullKeys_RunInSeparateLanes(int keyKind) => keyKind switch
+    {
+        0 => VerifyAsync(new BinaryDeserializer<byte[]?>(static _ => null)),
+        1 => VerifyAsync(new BinaryDeserializer<string?>(static _ => null)),
+        2 => VerifyAsync(new BinaryDeserializer<int?>(static _ => null)),
+        _ => throw new ArgumentOutOfRangeException(nameof(keyKind))
+    };
+
     private static async Task VerifyAsync<TKey>(IDeserializer<TKey> deserializer)
     {
         var lane = new PartitionLane<TKey, string>(new TopicPartition("topic", 0), 8,
@@ -27,7 +39,7 @@ public sealed class PartitionedNullKeyTests
         var firstStarted = NewSignal();
         var releaseFirst = NewSignal();
         var secondNullStarted = NewSignal();
-        var emptyStarted = NewSignal();
+        var nonNullWireStarted = NewSignal();
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         var dispatcher = new KeyOrderedPartitionDispatcher<TKey, string>(context, 1, 2, 8,
             async (records, token) =>
@@ -42,7 +54,7 @@ public sealed class PartitionedNullKeyTests
                         secondNullStarted.TrySetResult();
                         break;
                     case 2:
-                        emptyStarted.TrySetResult();
+                        nonNullWireStarted.TrySetResult();
                         break;
                 }
                 context.MarkProcessed(records[0]);
@@ -54,7 +66,7 @@ public sealed class PartitionedNullKeyTests
             await firstStarted.Task.WaitAsync(timeout.Token);
             lane.TryEnqueue(Message(1, true, deserializer));
             lane.TryEnqueue(Message(2, false, deserializer));
-            await emptyStarted.Task.WaitAsync(timeout.Token);
+            await nonNullWireStarted.Task.WaitAsync(timeout.Token);
             await Assert.That(secondNullStarted.Task.IsCompleted).IsFalse();
             releaseFirst.TrySetResult();
             await secondNullStarted.Task.WaitAsync(timeout.Token);

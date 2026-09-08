@@ -7,6 +7,51 @@ namespace Dekaf.Tests.Unit.Consumer;
 public sealed class PartitionMessageKeyTests
 {
     [Test]
+    public async Task DeserializedNull_IsDistinctFromWireNullAndEmptyBinaryKey()
+    {
+        var comparer = GetComparer<byte[]>();
+        var wireNull = PartitionMessageKey<byte[]>.From(null, isKeyNull: true);
+        var deserializedNull = PartitionMessageKey<byte[]>.From(null, isKeyNull: false);
+        var empty = PartitionMessageKey<byte[]>.From([]);
+        var keys = new Dictionary<PartitionMessageKey<byte[]>, string>(comparer)
+        {
+            [wireNull] = "wire-null",
+            [deserializedNull] = "deserialized-null",
+            [empty] = "empty"
+        };
+
+        await Assert.That(keys.Count).IsEqualTo(3);
+        await Assert.That(keys[wireNull]).IsEqualTo("wire-null");
+        await Assert.That(keys[deserializedNull]).IsEqualTo("deserialized-null");
+        await Assert.That(keys[empty]).IsEqualTo("empty");
+        await Assert.That(comparer.Equals(wireNull, deserializedNull)).IsFalse();
+        await Assert.That(comparer.Equals(deserializedNull, wireNull)).IsFalse();
+        await Assert.That(comparer.Equals(deserializedNull, empty)).IsFalse();
+        await Assert.That(comparer.Equals(empty, deserializedNull)).IsFalse();
+    }
+
+    [Test]
+    public async Task DeserializedNull_NullableScalarRetainsSeparateIdentity()
+    {
+        var wireNull = PartitionMessageKey<int?>.From(null, isKeyNull: true);
+        var deserializedNull = PartitionMessageKey<int?>.From(null, isKeyNull: false);
+        var zero = PartitionMessageKey<int?>.From(0);
+        var keys = new Dictionary<PartitionMessageKey<int?>, string>
+        {
+            [wireNull] = "wire-null",
+            [deserializedNull] = "deserialized-null",
+            [zero] = "zero"
+        };
+
+        await Assert.That(keys.Count).IsEqualTo(3);
+        await Assert.That(keys[wireNull]).IsEqualTo("wire-null");
+        await Assert.That(keys[deserializedNull]).IsEqualTo("deserialized-null");
+        await Assert.That(keys[zero]).IsEqualTo("zero");
+        await Assert.That(wireNull.Equals(PartitionMessageKey<int?>.From(42, isKeyNull: true))).IsTrue();
+        await Assert.That(deserializedNull.Equals(PartitionMessageKey<int?>.From(null, isKeyNull: false))).IsTrue();
+    }
+
+    [Test]
     public async Task BinaryKeys_CompareContentAcrossDifferentStorage()
     {
         await AssertEqual<byte[]>([1, 2, 3], [1, 2, 3]);

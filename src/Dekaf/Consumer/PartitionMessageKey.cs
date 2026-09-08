@@ -5,48 +5,60 @@ namespace Dekaf.Consumer;
 
 internal readonly struct PartitionMessageKey<TKey> : IEquatable<PartitionMessageKey<TKey>>
 {
-    private readonly bool _hasValue;
+    private enum KeyKind : byte
+    {
+        WireNull,
+        Value,
+        DeserializedNull
+    }
+
+    private readonly KeyKind _kind;
     private readonly TKey? _value;
 
-    internal bool HasValue => _hasValue;
+    internal bool HasValue => _kind == KeyKind.Value;
 
     internal TKey? Value => _value;
 
-    private PartitionMessageKey(TKey? value, bool hasValue)
+    private PartitionMessageKey(TKey? value, KeyKind kind)
     {
         _value = value;
-        _hasValue = hasValue;
+        _kind = kind;
     }
 
     public static PartitionMessageKey<TKey> From(TKey? value, bool isKeyNull = false)
     {
-        return isKeyNull || value is null
-            ? new PartitionMessageKey<TKey>(default, hasValue: false)
-            : new PartitionMessageKey<TKey>(value, hasValue: true);
+        if (isKeyNull)
+            return default;
+
+        // A deserializer can return null for a non-null wire key. Keep that lane
+        // separate from Kafka null keys without passing either null to a comparer.
+        return new PartitionMessageKey<TKey>(value, value is null ? KeyKind.DeserializedNull : KeyKind.Value);
     }
 
     public bool Equals(PartitionMessageKey<TKey> other)
     {
-        if (_hasValue != other._hasValue)
+        if (_kind != other._kind)
             return false;
 
-        return !_hasValue || EqualityComparer<TKey>.Default.Equals(_value!, other._value!);
+        return !HasValue || EqualityComparer<TKey>.Default.Equals(_value!, other._value!);
     }
 
     public override bool Equals(object? obj) => obj is PartitionMessageKey<TKey> other && Equals(other);
 
     public override int GetHashCode()
     {
-        return _hasValue
+        return HasValue
             ? EqualityComparer<TKey>.Default.GetHashCode(_value!)
             : 0;
     }
 
     internal bool Equals(PartitionMessageKey<TKey> other, IEqualityComparer<TKey> comparer)
-        => _hasValue == other._hasValue && (!_hasValue || comparer.Equals(_value!, other._value!));
+        => HasSameKind(other) && (!HasValue || comparer.Equals(_value!, other._value!));
 
     internal int GetHashCode(IEqualityComparer<TKey> comparer)
-        => _hasValue ? comparer.GetHashCode(_value!) : 0;
+        => HasValue ? comparer.GetHashCode(_value!) : 0;
+
+    internal bool HasSameKind(PartitionMessageKey<TKey> other) => _kind == other._kind;
 }
 
 internal static class PartitionMessageKeyComparer<TKey>
@@ -69,7 +81,7 @@ internal sealed class BinaryPartitionMessageKeyComparer<TKey> : IEqualityCompare
 {
     public bool Equals(PartitionMessageKey<TKey> x, PartitionMessageKey<TKey> y)
     {
-        return x.HasValue == y.HasValue
+        return x.HasSameKind(y)
             && (!x.HasValue || GetBytes(x.Value!).SequenceEqual(GetBytes(y.Value!)));
     }
 

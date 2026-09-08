@@ -32,6 +32,26 @@ public sealed class PartitionedKeyComparerIntegrationTests(KafkaTestContainer ka
         => VerifyOrderingAsync(Serializers.RawBytes, null, batches, nullAndEmpty: true);
 
     [Test]
+    [Arguments(false, 0)]
+    [Arguments(true, 0)]
+    [Arguments(false, 1)]
+    [Arguments(true, 1)]
+    [Arguments(false, 2)]
+    [Arguments(true, 2)]
+    [Arguments(false, 3)]
+    [Arguments(true, 3)]
+    public Task PublicHandlers_DeserializedNullStaysDistinctFromWireNull(bool batches, int keyKind)
+        => keyKind switch
+        {
+            0 => VerifyOrderingAsync(new NullKeyDeserializer<byte[]?>(), null, batches, nullAndEmpty: true),
+            1 => VerifyOrderingAsync(new NullKeyDeserializer<string?>(), null, batches, nullAndEmpty: true),
+            2 => VerifyOrderingAsync(new NullKeyDeserializer<int?>(), null, batches, nullAndEmpty: true),
+            3 => VerifyOrderingAsync(new NullKeyDeserializer<string?>(), new NullRejectingComparer(), batches,
+                nullAndEmpty: true),
+            _ => throw new ArgumentOutOfRangeException(nameof(keyKind))
+        };
+
+    [Test]
     [Arguments(false, false)]
     [Arguments(true, false)]
     [Arguments(false, true)]
@@ -183,6 +203,27 @@ public sealed class PartitionedKeyComparerIntegrationTests(KafkaTestContainer ka
     private sealed class CustomerKey(byte id)
     {
         public byte Id { get; } = id;
+    }
+
+    private sealed class NullKeyDeserializer<TKey> : IDeserializer<TKey>
+    {
+        public TKey Deserialize(ReadOnlyMemory<byte> data, SerializationContext context) => default!;
+    }
+
+    private sealed class NullRejectingComparer : IEqualityComparer<string?>
+    {
+        public bool Equals(string? x, string? y)
+        {
+            ArgumentNullException.ThrowIfNull(x);
+            ArgumentNullException.ThrowIfNull(y);
+            return StringComparer.Ordinal.Equals(x, y);
+        }
+
+        public int GetHashCode(string? obj)
+        {
+            ArgumentNullException.ThrowIfNull(obj);
+            return StringComparer.Ordinal.GetHashCode(obj);
+        }
     }
 
     private sealed class CustomerKeyDeserializer : IDeserializer<CustomerKey>
