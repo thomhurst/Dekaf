@@ -75,6 +75,24 @@ jobs:
         with:
           bun-version: latest
 
+      - name: Install verified Claude executable
+        id: claude-executable
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The native installer can report success without creating its launcher.
+          # Install the matching official Linux binary directly and verify it before
+          # the action uses it for plugin installation or review execution.
+          npm install --prefix "$RUNNER_TEMP/claude-code" --no-save --package-lock=false \
+            --ignore-scripts --no-audit --no-fund \
+            @anthropic-ai/claude-code-linux-x64@2.1.265
+          claude_executable="$RUNNER_TEMP/claude-code/node_modules/@anthropic-ai/claude-code-linux-x64/claude"
+          test -x "$claude_executable"
+          version="$("$claude_executable" --version)"
+          test "$version" = '2.1.265 (Claude Code)'
+          printf '%s\n' "$version"
+          printf 'path=%s\n' "$claude_executable" >> "$GITHUB_OUTPUT"
+
       - name: Run Claude Code Review
         id: claude-review
         uses: anthropics/claude-code-action@5ccc3a35a6367cdb8e6fbd0728287467540ecfe2 # v1
@@ -82,6 +100,7 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
           GH_REPO: ${{ github.repository }}
         with:
+          path_to_claude_code_executable: ${{ steps.claude-executable.outputs.path }}
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # The actor is the PR author, who by definition has no write access on a
           # fork PR. The action only honours this bypass when an explicit token is
