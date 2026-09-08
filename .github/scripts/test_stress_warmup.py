@@ -28,6 +28,35 @@ def result():
 
 
 class StressWarmupTests(unittest.TestCase):
+    def test_quiet_jit_cannot_validate_unassessed_startup_trends(self):
+        changes = (None, "cpuSeconds", "pendingWorkItems", "allocatedBytes", "heapBytes",
+                   "workingSetBytes", "gen0Collections", "gcPauseMilliseconds", "acceptedMessages")
+        for changed in changes:
+            with self.subTest(changed=changed), tempfile.TemporaryDirectory() as directory:
+                candidate = result()
+                for index, sample in enumerate(candidate["throughput"]["intervalSamples"]):
+                    if changed == "acceptedMessages":
+                        sample[changed] = (index + 1) ** 3 * 100
+                    elif changed is not None:
+                        sample["runtime"][changed] += (index + 1) ** 3 * 100
+                # Aggregate latency cannot establish whether latency changes over time.
+                candidate["latency"] = dict(count=10000, p50Ms=1, p99Ms=2, maxMs=10)
+                root = Path(directory)
+                source = root / "stress-test-results.json"
+                source.write_text(json.dumps({"results": [candidate]}), encoding="utf-8")
+                original = source.read_bytes()
+                output, summary = root / "validation.json", root / "summary.md"
+                with contextlib.redirect_stdout(io.StringIO()):
+                    code = main([str(root), "--output", str(output), "--summary", str(summary)])
+                self.assertEqual(1, code)
+                report = json.loads(output.read_text(encoding="utf-8"))
+                self.assertEqual("INCONCLUSIVE", report["verdict"])
+                self.assertEqual("VALIDATED", report["coverageVerdict"])
+                self.assertIn("delivery latency over time", report["unassessedMetrics"])
+                self.assertIn("completed-message throughput", report["unassessedMetrics"])
+                self.assertIn("INCONCLUSIVE", summary.read_text(encoding="utf-8"))
+                self.assertEqual(original, source.read_bytes())
+
     def test_exact_phase_still_requires_one_file_and_one_client_result(self):
         for files, clients in ((2, 1), (1, 2), (1, 1)):
             with self.subTest(files=files, clients=clients), tempfile.TemporaryDirectory() as directory:
@@ -39,7 +68,9 @@ class StressWarmupTests(unittest.TestCase):
                 output = root / "warmup-validation.json"
                 with contextlib.redirect_stdout(io.StringIO()):
                     code = main([str(root), "--output", str(output)])
-                self.assertEqual(0 if files == clients == 1 else 1, code)
+                self.assertEqual(1, code)
+                report = json.loads(output.read_text(encoding="utf-8"))
+                self.assertEqual("VALIDATED" if files == clients == 1 else "INCONCLUSIVE", report["coverageVerdict"])
 
     def test_regular_run_requires_same_declared_warmup(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -76,8 +107,9 @@ class StressWarmupTests(unittest.TestCase):
                 with contextlib.redirect_stdout(io.StringIO()):
                     code = main([str(root), "--expected-results", "4", "--output", str(output), "--summary", str(summary)])
                 report = json.loads(output.read_text(encoding="utf-8"))
-                self.assertEqual(0 if invalid_index is None else 1, code)
-                self.assertEqual("VALIDATED" if invalid_index is None else "INCONCLUSIVE", report["verdict"])
+                self.assertEqual(1, code)
+                self.assertEqual("INCONCLUSIVE", report["verdict"])
+                self.assertEqual("VALIDATED" if invalid_index is None else "INCONCLUSIVE", report["coverageVerdict"])
                 self.assertEqual(4, report["resultCount"])
                 self.assertIn(report["verdict"], summary.read_text(encoding="utf-8"))
                 if invalid_index is not None:

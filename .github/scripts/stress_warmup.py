@@ -1,4 +1,4 @@
-"""Validate producer warmup and runtime coverage without trimming measured samples."""
+"""Check producer runtime coverage; fail acceptance on unassessed startup trends."""
 
 import argparse
 import json
@@ -12,6 +12,16 @@ RUNTIME_FIELDS = (
     "compiledMethods", "compilationMilliseconds", "threadPoolThreads", "pendingWorkItems",
     "cpuSeconds", "allocatedBytes", "heapBytes", "workingSetBytes",
     "gen0Collections", "gen1Collections", "gen2Collections", "gcPauseMilliseconds",
+)
+
+
+# The retained schema has no interval delivery-latency distribution or continuous
+# completed-message counts. Counter coverage and quiet JIT alone cannot assess
+# startup trends. Do not invent tolerances or accept an external "steady" flag.
+UNASSESSED_METRICS = (
+    "completed-message throughput", "CPU per completed message", "pending work",
+    "allocations per completed message", "heap and working set", "GC activity",
+    "delivery latency over time",
 )
 
 
@@ -51,6 +61,7 @@ def quiet(samples, label):
 
 
 def validate(result):
+    """Validate coverage and JIT/thread-count checks only, not steady state."""
     throughput = object_value(result.get("throughput"), "throughput")
     warmup = object_value(throughput.get("warmup"), "warmup")
     requested = number(warmup.get("requestedSeconds"), "warmup requestedSeconds")
@@ -134,20 +145,26 @@ def main(argv=None):
         errors.append(f"Expected {args.expected_results} results, found {result_count}")
     if len(durations) > 1:
         errors.append("All phases must declare the same warmup duration")
-    report = {"verdict": "INCONCLUSIVE" if errors else "VALIDATED", "errors": errors,
-              "resultCount": result_count,
-              "scope": "Warmup/runtime coverage only; this does not establish full performance acceptance."}
+    coverage_verdict = "INCONCLUSIVE" if errors else "VALIDATED"
+    errors.append("Startup trends are unassessed: " + ", ".join(UNASSESSED_METRICS)
+                  + ". Interval latency and completed-message evidence plus a declared trend assessment "
+                  "are required; repeating the current aggregate schema cannot establish steady state.")
+    report = {"verdict": "INCONCLUSIVE", "coverageVerdict": coverage_verdict, "errors": errors,
+              "unassessedMetrics": list(UNASSESSED_METRICS), "resultCount": result_count,
+              "scope": "Coverage and JIT/thread-count checks only. Steady state remains unassessed; "
+                       "do not accept or publish these measurements as validated performance."}
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
-    summary = f"## Warmup/runtime evidence: {report['verdict']}\n\n{report['scope']}\n"
+    summary = (f"## Warmup/runtime evidence: {report['verdict']}\n\n{report['scope']}\n"
+               f"\nCoverage and JIT/thread-count checks: {coverage_verdict}.\n")
     if errors:
         summary += "\n" + "\n".join(f"- {error}" for error in errors) + "\n"
     print(summary)
     if args.summary:
         with Path(args.summary).open("a", encoding="utf-8") as handle:
             handle.write(summary)
-    return 1 if errors else 0
+    return 1
 
 
 if __name__ == "__main__":
