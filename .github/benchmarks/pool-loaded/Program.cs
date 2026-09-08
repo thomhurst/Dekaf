@@ -65,20 +65,21 @@ internal static class Program
         var consumerTask = workload.ConsumeAsync(consumer, consuming.Token);
         try
         {
-            // Exercise complete collection and serialization before the workload warmup.
-            // Background tiered compilation from the first report must not begin in measurement.
+            // Exercise phase entry, drain and sampling before the workload warmup.
+            // Report snapshots and serialization run only after collection has stopped.
             compilations.Phase("primer");
             await workload.RunPhaseAsync(producer, 0, primerSeconds, "primer", directory, timeout.Token);
             compilations.Phase("warmup");
             await workload.RunPhaseAsync(producer, 1, warmup, "warmup", directory, timeout.Token);
             compilations.Phase("measured");
             await workload.RunPhaseAsync(producer, 2, measured, "measured", directory, timeout.Token);
-            compilations.Phase("finalize");
         }
         finally
         {
+            compilations.Phase("finalize");
             consuming.Cancel();
             await consumerTask;
+            await workload.WriteReportsAsync(directory);
             await File.WriteAllTextAsync(Path.Combine(directory, "completion.json"), JsonSerializer.Serialize(workload.Completion));
         }
         workload.ThrowIfFailed();
@@ -224,34 +225,44 @@ internal sealed class Workload
             var allocated = GC.GetTotalAllocatedBytes(precise: true) - startAllocation;
             sampling.Cancel();
             await sampler;
+            phase.Capture = new PhaseCapture(label, elapsed, offeredSeconds, seconds, cpu, allocated, drained, samples);
+        }
+        ThrowIfFailed();
+    }
+
+    public async Task WriteReportsAsync(string directory)
+    {
+        foreach (var phase in _phases)
+        {
+            if (phase.Capture is not { } capture)
+                continue;
             var deliveryIntervals = phase.DeliveryIntervals.GetSnapshot();
             var completionIntervals = phase.CompletionIntervals.GetSnapshot();
             var deliveryBlocks = phase.DeliveryBlocks.GetSnapshot();
             var completionBlocks = phase.CompletionBlocks.GetSnapshot();
-            var intervalsComplete = drained
+            var intervalsComplete = capture.Drained
                 && deliveryIntervals.OutsideCapacity.Count == 0 && completionIntervals.OutsideCapacity.Count == 0
                 && deliveryIntervals.Intervals.Sum(interval => interval.Count) == phase.Acknowledged
                 && completionIntervals.Intervals.Sum(interval => interval.Count) == phase.Consumed
                 && deliveryBlocks.MatchesIntervalCounts(deliveryIntervals)
                 && completionBlocks.MatchesIntervalCounts(completionIntervals);
-            if (drained && !intervalsComplete)
+            if (capture.Drained && !intervalsComplete)
                 Fail(new InvalidOperationException("Interval observations exceeded capacity or lost completions."));
-            await File.WriteAllTextAsync(Path.Combine(directory, label + ".json"), JsonSerializer.Serialize(new
+            await File.WriteAllTextAsync(Path.Combine(directory, capture.Label + ".json"), JsonSerializer.Serialize(new
             {
-                Seconds = elapsed, OfferedSeconds = offeredSeconds, ConfiguredSeconds = seconds,
+                capture.Seconds, capture.OfferedSeconds, capture.ConfiguredSeconds,
                 phase.Sent, phase.Acknowledged, phase.Consumed,
-                CompletedPerSecond = phase.Consumed / elapsed,
-                CpuMs = cpu, CpuUsPerCompleted = cpu * 1000 / Math.Max(1, phase.Consumed),
-                AllocatedBytes = allocated, BytesPerCompleted = (double)allocated / Math.Max(1, phase.Consumed),
+                CompletedPerSecond = phase.Consumed / capture.Seconds,
+                CpuMs = capture.CpuMs, CpuUsPerCompleted = capture.CpuMs * 1000 / Math.Max(1, phase.Consumed),
+                capture.AllocatedBytes, BytesPerCompleted = (double)capture.AllocatedBytes / Math.Max(1, phase.Consumed),
                 DeliveryLatency = phase.Delivery.GetSnapshot(), CompletionLatency = phase.Completion.GetSnapshot(),
-                IntervalsStableAfterDrain = drained,
+                IntervalsStableAfterDrain = capture.Drained,
                 IntervalCaptureComplete = intervalsComplete,
                 DeliveryIntervals = deliveryIntervals, CompletionIntervals = completionIntervals,
                 DeliveryBlocks = deliveryBlocks, CompletionBlocks = completionBlocks,
-                Samples = samples, Failure = _failure?.ToString()
+                capture.Samples, Failure = _failure?.ToString()
             }), CancellationToken.None);
         }
-        ThrowIfFailed();
     }
 
     private async Task OfferAsync(IKafkaProducer<string, byte[]> producer, Phase phase, int index,
@@ -350,6 +361,7 @@ internal sealed class Workload
 
     private sealed class Phase(int capacitySeconds)
     {
+        public PhaseCapture? Capture;
         public long StartTimestamp;
         public long Sent;
         public long Acknowledged;
@@ -361,6 +373,9 @@ internal sealed class Workload
         public readonly BlockHistogram DeliveryBlocks = new(capacitySeconds);
         public readonly BlockHistogram CompletionBlocks = new(capacitySeconds);
     }
+
+    private sealed record PhaseCapture(string Label, double Seconds, double OfferedSeconds, int ConfiguredSeconds,
+        double CpuMs, long AllocatedBytes, bool Drained, List<RuntimeSample> Samples);
 
     private sealed class Slot
     {

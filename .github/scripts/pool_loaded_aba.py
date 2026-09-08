@@ -97,6 +97,7 @@ def execute():
             'profiling': {'purpose': 'allocation/GC transition diagnosis; not acceptance',
                           'profile': 'gc-verbose', 'windows': PROFILE_WINDOWS, 'version': trace_version} if profiling else None,
             'setup_admin': 'disposed before primer; successful disposal observed separately',
+            'reporting': 'histogram snapshots and JSON serialization deferred until after all phases finish',
             'broker_retention': BROKER_RETENTION,
             'cpu_core_socket': topology, 'affinity': dispatch.AFFINITY.copy(),
             'runner': 'ubuntu-latest', 'image': os.getenv('ImageVersion'), 'runtime': {
