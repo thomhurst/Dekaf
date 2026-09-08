@@ -54,7 +54,8 @@ def execute():
     a, b = os.environ['BASELINE_SHA'], os.environ['CANDIDATE_SHA']
     dispatch.command(['git', 'merge-base', '--is-ancestor', a, b], OUT / 'ancestry.log')
     plan = {'A': a, 'B': b, 'harness': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
-            'warmup_seconds': 180, 'measured_seconds': 300, 'configurations': CONFIGS,
+            'primer_seconds': 20, 'warmup_seconds': 360, 'measured_seconds': 300, 'configurations': CONFIGS,
+            'setup_admin': 'disposed before primer; successful disposal observed separately',
             'broker_retention': BROKER_RETENTION,
             'cpu_core_socket': topology, 'affinity': dispatch.AFFINITY.copy(),
             'runner': 'ubuntu-latest', 'image': os.getenv('ImageVersion'), 'runtime': {
@@ -109,8 +110,8 @@ def execute():
                 sampler.start()
                 output = folder / 'client'
                 dispatch.command(['taskset', '-c', dispatch.AFFINITY['consumer'], 'dotnet', hosts[label],
-                    'localhost:9092', output, broker, size, partitions, 12 if smoke else 180, 13 if smoke else 300],
-                    folder / 'client.log', timeout=210 if smoke else 660,
+                    'localhost:9092', output, broker, size, partitions, 12 if smoke else 360, 13 if smoke else 300],
+                    folder / 'client.log', timeout=210 if smoke else 840,
                     env=dict(os.environ, DOTNET_TieredCompilation='1', DOTNET_TieredPGO='1', DOTNET_ReadyToRun='1'))
                 result = {}
                 for stage in ('warmup', 'measured'):

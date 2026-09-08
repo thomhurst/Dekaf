@@ -37,13 +37,16 @@ internal static class Program
             ServerGc = System.Runtime.GCSettings.IsServerGC,
             Stopwatch.Frequency
         }));
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(warmup + measured + 120));
+        const int primerSeconds = 20;
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(primerSeconds + warmup + measured + 120));
         var admin = Kafka.CreateAdminClient().WithBootstrapServers(args[0]).Build();
-        await using var adminLifetime = new ObservedDisposal(admin, directory, "admin");
-        await admin.CreateTopicsAsync([new NewTopic
+        await using (var adminLifetime = new ObservedDisposal(admin, directory, "admin"))
         {
-            Name = args[2], NumPartitions = partitions, ReplicationFactor = 1
-        }], cancellationToken: timeout.Token);
+            await admin.CreateTopicsAsync([new NewTopic
+            {
+                Name = args[2], NumPartitions = partitions, ReplicationFactor = 1
+            }], cancellationToken: timeout.Token);
+        }
 
         var producer = await Kafka.CreateProducer<string, byte[]>()
             .WithBootstrapServers(args[0]).WithClientId("pool-loaded-producer")
@@ -57,15 +60,19 @@ internal static class Program
             .WithOffsetCommitMode(OffsetCommitMode.Manual).BuildAsync(timeout.Token);
         await using var consumerLifetime = new ObservedDisposal(consumer, directory, "consumer");
         consumer.Partitions.Assign(Enumerable.Range(0, partitions).Select(p => new TopicPartition(args[2], p)).ToArray());
-        var workload = new Workload(args[2], size, partitions, warmup, measured);
+        var workload = new Workload(args[2], size, partitions, primerSeconds, warmup, measured);
         using var consuming = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token);
         var consumerTask = workload.ConsumeAsync(consumer, consuming.Token);
         try
         {
+            // Exercise complete collection and serialization before the workload warmup.
+            // Background tiered compilation from the first report must not begin in measurement.
+            compilations.Phase("primer");
+            await workload.RunPhaseAsync(producer, 0, primerSeconds, "primer", directory, timeout.Token);
             compilations.Phase("warmup");
-            await workload.RunPhaseAsync(producer, 0, warmup, directory, timeout.Token);
+            await workload.RunPhaseAsync(producer, 1, warmup, "warmup", directory, timeout.Token);
             compilations.Phase("measured");
-            await workload.RunPhaseAsync(producer, 1, measured, directory, timeout.Token);
+            await workload.RunPhaseAsync(producer, 2, measured, "measured", directory, timeout.Token);
             compilations.Phase("finalize");
         }
         finally
@@ -119,10 +126,10 @@ internal sealed class Workload
     private readonly Phase[] _phases;
     private Exception? _failure;
 
-    public Workload(string topic, int size, int partitions, int warmupSeconds, int measuredSeconds)
+    public Workload(string topic, int size, int partitions, int primerSeconds, int warmupSeconds, int measuredSeconds)
     {
         // Include the entire 30-second drain and the final boundary interval.
-        _phases = [new(checked(warmupSeconds + 31)), new(checked(measuredSeconds + 31))];
+        _phases = [new(checked(primerSeconds + 31)), new(checked(warmupSeconds + 31)), new(checked(measuredSeconds + 31))];
         _sentByPartition = new long[partitions];
         _receivedByPartition = new long[partitions];
         for (var index = 0; index < Capacity; index++)
@@ -153,7 +160,7 @@ internal sealed class Workload
     }
 
     public async Task RunPhaseAsync(IKafkaProducer<string, byte[]> producer, int index, int seconds,
-        string directory, CancellationToken cancellationToken)
+        string label, string directory, CancellationToken cancellationToken)
     {
         var phase = _phases[index];
         using var process = Process.GetCurrentProcess();
@@ -225,7 +232,6 @@ internal sealed class Workload
                 && completionBlocks.MatchesIntervalCounts(completionIntervals);
             if (drained && !intervalsComplete)
                 Fail(new InvalidOperationException("Interval observations exceeded capacity or lost completions."));
-            var label = index == 0 ? "warmup" : "measured";
             await File.WriteAllTextAsync(Path.Combine(directory, label + ".json"), JsonSerializer.Serialize(new
             {
                 Seconds = elapsed, OfferedSeconds = offeredSeconds, ConfiguredSeconds = seconds,
