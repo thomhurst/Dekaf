@@ -1,0 +1,11 @@
+# Exact-head refresh campaign, 2026-09-08
+
+This task-scoped branch must not be merged. Baseline is `693a02e52b120ccd33ba1328843b0a052ec6766e`, containing #3143 and #3144. Candidate SHAs are explicit workflow inputs and must contain the baseline. Preserve each PR's prior evidence; new pins supersede old-head acceptance, not historical observations.
+
+Shared microbenchmark fixtures come unchanged from `perf/ubuntu-aba-20260907`. The driver now requests fifty one-second workload warmups and verifies at least twenty elapsed workload seconds per case. It retains twenty-five actual iterations, every outlier, MemoryDiagnoser output, and runtime samples at workload boundaries. Runtime sampling is reused from the pool harness. Release/net10.0, InProcessEmit, tiered compilation disabled, and CPU affinity are identical across A1/B/A2. Both products build and every fixture validates before timing. This isolates costs; it does not supply end-to-end acceptance.
+
+Pool rent/return uses the unchanged fixture from `perf/pool-reset-count-3141`, with explicit product inputs. Both products run the same fixture, twenty elapsed seconds of direct workload, thirty one-second BDN warmups, twenty-five actual iterations, and tiered compilation/PGO enabled. Identity/count checks and an exact allocation probe accompany MemoryDiagnoser. Reset failure and loaded recovery remain separate requirements.
+
+Predeclare microbenchmark mean-time loss tolerance 3% against each control, maximum control drift 5%, and no candidate per-message allocation increase. Require 0 B on per-message hot paths; distinguish per-batch and cold-path allocation. Report absolute A1/B/A2, both deltas, control drift, sample counts and confidence bounds. A confirmed loss is REGRESSION. Missing protected metrics, unresolved startup, noisy controls, invalid fixtures or insufficient precision are INCONCLUSIVE. No script turns workflow success into a performance PASS.
+
+Producer stress uses each rebased product's merged workflow unchanged: producer-1b, cheap, five minutes per phase, 1,000-byte messages, 180-second workload warmup, profiling off. Existing comparator limits and startup assessment stay unchanged. Each PR runs A1/B/A2 on one ubuntu-latest VM. Pool diagnostics supplement that loaded evidence.
