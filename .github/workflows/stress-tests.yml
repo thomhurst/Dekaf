@@ -36,6 +36,10 @@ on:
         description: 'Test duration in minutes'
         required: false
         default: '15'
+      producer_warmup_seconds:
+        description: 'Identical elapsed workload warmup for duration-based producers (minimum 20 seconds; no adaptive extension)'
+        required: false
+        default: '180'
       message_size:
         description: 'Message size in bytes'
         required: false
@@ -351,11 +355,11 @@ jobs:
     # 8 vCPUs, split so the client under test is the measured bottleneck:
     # brokers are pinned to BROKER_CPUS, the client to CLIENT_CPUS. On a shared-core
     # runner both clients just saturate the broker and report identical numbers.
-    runs-on: ubicloud-standard-8
+    runs-on: ${{ matrix.baseline_sha != '' && 'ubuntu-latest' || 'ubicloud-standard-8' }}
     timeout-minutes: ${{ matrix.timeout_minutes }}
     env:
-      BROKER_CPUS: 0-5
-      CLIENT_CPUS: 6,7
+      BROKER_CPUS: ${{ matrix.baseline_sha != '' && '0,1' || '0-5' }}
+      CLIENT_CPUS: ${{ matrix.baseline_sha != '' && '2,3' || '6,7' }}
       # .NET 10 DATAS can shrink Server GC heap count at Gen2 boundaries on the
       # two-core consumer runner, creating permanent throughput steps unrelated to
       # either Kafka client. Pin consumer jobs to stable Server GC topology so paired
@@ -372,6 +376,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
 
       - name: Checkout exact baseline
         if: matrix.baseline_sha != ''
@@ -384,6 +390,34 @@ jobs:
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           global-json-file: global.json
+
+      - name: Pin products and use identical comparison fixtures
+        if: matrix.baseline_sha != ''
+        env:
+          BASELINE_SHA: ${{ matrix.baseline_sha }}
+        run: |
+          git fetch origin main
+          test "$(git rev-parse origin/main)" = "$BASELINE_SHA"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git -C baseline-source rev-parse HEAD)" = "$BASELINE_SHA"
+          git merge-base --is-ancestor "$BASELINE_SHA" "$GITHUB_SHA"
+          # Both products compile the candidate's exact harness and build configuration.
+          # API incompatibilities must fail the build; never silently use older fixtures.
+          for directory in tools/Dekaf.StressTests tools/Shared; do
+            rsync -a --delete --exclude bin --exclude obj "$directory/" "baseline-source/$directory/"
+          done
+          cp tools/Directory.Build.props baseline-source/tools/Directory.Build.props
+          cp Directory.Build.props Directory.Packages.props global.json baseline-source/
+          mkdir -p aba-results
+          {
+            echo "baseline=$BASELINE_SHA candidate=$GITHUB_SHA harness=$GITHUB_SHA"
+            echo "image=$ImageOS/$ImageVersion broker_cpus=$BROKER_CPUS client_cpus=$CLIENT_CPUS"
+            echo 'Fixture adaptation: candidate stress harness/shared sources/build configuration on both products.'
+            dotnet --info
+            lscpu
+            env | sort | grep -E '^(DOTNET_|COMPlus_)' || true
+            git ls-files -s tools/Dekaf.StressTests tools/Shared tools/Directory.Build.props Directory.Build.props Directory.Packages.props global.json
+          } > aba-results/provenance.txt
 
       - name: Install stack diagnostics
         run: |
@@ -414,8 +448,11 @@ jobs:
         if: matrix.baseline_sha != ''
         run: dotnet build baseline-source/tools/Dekaf.StressTests --configuration Release
 
+      - name: Stop build servers before measurement
+        run: dotnet build-server shutdown
+
       - name: Start Kafka
-        if: matrix.brokers == 1
+        if: matrix.brokers == 1 && matrix.baseline_sha == ''
         run: |
           # Broker pinned to its own cores (client under test gets the rest) and log
           # dir on tmpfs so neither broker CPU starvation nor disk I/O caps ingestion.
@@ -467,7 +504,9 @@ jobs:
 
       - name: Run ${{ matrix.name }} Stress Test
         env:
-          KAFKA_BOOTSTRAP_SERVERS: ${{ matrix.brokers == 1 && 'localhost:9092' || '' }}
+          # A-B-A gets fresh Testcontainers brokers for every process, including 1-broker
+          # lanes; retained topics, JVM state and broker caches cannot leak across phases.
+          KAFKA_BOOTSTRAP_SERVERS: ${{ matrix.brokers == 1 && matrix.baseline_sha == '' && 'localhost:9092' || '' }}
           # Multi-broker runs start brokers via Testcontainers from inside the client
           # process; these apply the same core pinning and tmpfs as the docker run above.
           STRESS_BROKER_CPUSET: ${{ env.BROKER_CPUS }}
@@ -475,6 +514,8 @@ jobs:
           STRESS_BROKER_HEAP: ${{ env.BROKER_HEAP }}
           PROFILE_MODE: ${{ github.event.inputs.profile_mode || 'off' }}
           BASELINE_SHA: ${{ matrix.baseline_sha }}
+          PRODUCER_WARMUP_SECONDS: ${{ github.event.inputs.producer_warmup_seconds || '180' }}
+          DURATION_MINUTES: ${{ github.event.inputs.duration_minutes || '15' }}
         run: |
           # Background disk monitor: samples every broker's log-dir usage so a tmpfs
           # fill (ingestion outpacing retention — the known broker-halt failure mode)
@@ -506,6 +547,11 @@ jobs:
           # space-separated string as one quoted element would reach the client as a
           # single unparseable argument.
           EXTRA_ARGS=()
+          if ! [[ "$PRODUCER_WARMUP_SECONDS" =~ ^[0-9]{1,6}$ ]] || (( 10#$PRODUCER_WARMUP_SECONDS < 20 )); then
+            echo "::error::producer_warmup_seconds must be an integer from 20 to 999999."
+            exit 1
+          fi
+          EXTRA_ARGS+=(--producer-warmup-seconds "$PRODUCER_WARMUP_SECONDS")
           if [ "${{ github.event.inputs.consumer_fetch_diagnostics }}" = "true" ]; then
             EXTRA_ARGS+=(--consumer-fetch-diagnostics)
           fi
@@ -518,11 +564,12 @@ jobs:
               label="$1"
               project_dir="$2"
               output_dir="$3"
+              segment_duration="${4:-$DURATION_MINUTES}"
               echo "Running exact-SHA A-B-A segment: $label"
               taskset -c "${CLIENT_CPUS}" dotnet run \
                 --project "$project_dir/Dekaf.StressTests.csproj" \
                 --configuration Release --no-build -- \
-                --duration ${{ github.event.inputs.duration_minutes || '15' }} \
+                --duration "$segment_duration" \
                 --message-size ${{ matrix.message_size || github.event.inputs.message_size || '1000' }} \
                 --scenario ${{ matrix.scenario }} \
                 --client dekaf \
@@ -533,6 +580,15 @@ jobs:
                 "${EXTRA_ARGS[@]}" \
                 --output "$output_dir"
             }
+
+            # Validate both built fixtures before the first comparison sample. These
+            # one-minute correctness runs are retained separately and never compared.
+            run_aba validation-a \
+              "$GITHUB_WORKSPACE/baseline-source/tools/Dekaf.StressTests" \
+              "$GITHUB_WORKSPACE/aba-results/validation-a" 1
+            run_aba validation-b \
+              "$GITHUB_WORKSPACE/tools/Dekaf.StressTests" \
+              "$GITHUB_WORKSPACE/aba-results/validation-b" 1
 
             run_aba \
               baseline-a \
@@ -589,6 +645,7 @@ jobs:
               # tools use one broker core; profiling runs diagnose within-run change
               # and are intentionally excluded from acceptance/trend publication.
               PROFILE_OUTPUT_DIR="$PWD/results/profiling" \
+              PROFILE_START_TIMEOUT="$((10#$PRODUCER_WARMUP_SECONDS + 300))" \
               TRACE_PROFILE="$PROFILE_MODE" \
               TRACE_WINDOWS="${{ github.event.inputs.profile_windows }}" \
               PROFILE_COUNTERS="${{ github.event.inputs.profile_counters }}" \
@@ -646,7 +703,7 @@ jobs:
           # Multi-broker containers are owned by the test process, which dumps their
           # diagnostics before disposing them; only the workflow-managed single broker
           # is still around to inspect here.
-          if [ "${{ matrix.brokers }}" = "1" ]; then
+          if [ "${{ matrix.brokers }}" = "1" ] && [ -z "${{ matrix.baseline_sha }}" ]; then
             echo "=== Broker errors/storage events ==="
             docker logs kafka 2>&1 | grep -iE 'ERROR|FATAL|No space|IOException|offline|shutdown' | tail -40 || true
             echo "=== Broker last 60 log lines ==="
@@ -661,7 +718,7 @@ jobs:
       # such check and would otherwise report near-zero throughput as a valid result;
       # this step also gives a clearer verdict than the client's exception trace.
       - name: Verify Broker Survived
-        if: matrix.brokers == 1
+        if: matrix.brokers == 1 && matrix.baseline_sha == ''
         run: |
           status=$(docker inspect -f '{{.State.Status}}' kafka 2>/dev/null || echo "missing")
           if [ "$status" != "running" ]; then
@@ -670,8 +727,28 @@ jobs:
           fi
           echo "Broker container is running"
 
-      - name: Compare exact baseline A-B-A
+      - name: Validate exact baseline warmup and runtime coverage
+        id: warmup
         if: always() && matrix.baseline_sha != ''
+        run: |
+          extra=()
+          if [ "${{ matrix.aba_second_candidate }}" = "true" ]; then
+            extra+=(aba-results/candidate-b2)
+          fi
+          python3 .github/scripts/stress_warmup.py \
+            aba-results/baseline-a tools/Dekaf.StressTests/results aba-results/baseline-a2 "${extra[@]}" \
+            --output aba-results/warmup-validation.json --summary "$GITHUB_STEP_SUMMARY"
+
+      - name: Record comparison binaries and final main
+        if: always() && matrix.baseline_sha != ''
+        run: |
+          mkdir -p aba-results
+          git ls-remote origin refs/heads/main > aba-results/main-at-end.txt
+          find tools/Dekaf.StressTests/bin/Release baseline-source/tools/Dekaf.StressTests/bin/Release \
+            -type f -print0 | sort -z | xargs -0 sha256sum > aba-results/binary-sha256.txt
+
+      - name: Compare exact baseline A-B-A
+        if: always() && matrix.baseline_sha != '' && steps.warmup.outcome == 'success'
         run: |
           extra=()
           if [ "${{ matrix.aba_second_candidate }}" = "true" ]; then
@@ -706,7 +783,7 @@ jobs:
           retention-days: 90
 
       - name: Stop Kafka
-        if: always() && matrix.brokers == 1
+        if: always() && matrix.brokers == 1 && matrix.baseline_sha == ''
         run: docker rm -f kafka || true
 
   # Collect all results and generate summary

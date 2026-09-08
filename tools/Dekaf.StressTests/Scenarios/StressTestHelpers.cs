@@ -143,20 +143,32 @@ internal static class StressTestHelpers
         }
     }
 
-    internal static Task<long?> WarmUpProducerAndQueryStartOffsetAsync(
+    internal static async Task<long?> WarmUpProducerAndQueryStartOffsetAsync(
         IKafkaProducer<string, string> producer,
         StressTestOptions options,
         string producerName,
         ThroughputTracker throughput,
-        CancellationToken cancellationToken) =>
-        WarmUpProducerAndQueryStartOffsetAsync(
-            producer,
-            options,
-            producerName,
-            throughput,
-            "warmup",
-            "warmup",
-            cancellationToken);
+        CancellationToken cancellationToken,
+        bool awaitDelivery = false)
+    {
+        var startOffset = await QueryTotalEndOffsetAsync(
+            options.BootstrapServers, options.Topic, options.Partitions).ConfigureAwait(false);
+        var value = new string('x', options.MessageSizeBytes);
+        Console.WriteLine($"  Warming up {producerName}: {options.ProducerWarmupSeconds}s of workload in six drain/reuse cycles...");
+        // Prime metadata asynchronously before timed warmup. Rotate the same keys and use
+        // the same payload size as measurement, rather than warming one tiny keyed batch.
+        await producer.ProduceAsync(options.Topic, GetKey(0), value, cancellationToken).ConfigureAwait(false);
+        throughput.Warmup = await ProducerWarmup.RunAsync(
+            options.ProducerWarmupSeconds,
+            (duration, token) => ProducerWorkload.RunAsync(producer, options, new ThroughputTracker(),
+                awaitDelivery ? new LatencyTracker() : StressTestHelpers.CreateDeliveryLatencyTracker(),
+                duration, awaitDelivery, token), cancellationToken).ConfigureAwait(false);
+        var offset = await QueryTotalEndOffsetAfterProducerDrainAsync(
+            options.BootstrapServers, options.Topic, options.Partitions, startOffset,
+            throughput.Warmup.CompletedMessages + 1, throughput, "Warmup drain").ConfigureAwait(false);
+        ResetProducerDeliveryDiagnostics(producer);
+        return offset;
+    }
 
     internal static async Task<long?> WarmUpProducerAndQueryStartOffsetAsync<TKey, TValue>(
         IKafkaProducer<TKey, TValue> producer,
@@ -406,6 +418,7 @@ internal static class StressTestHelpers
         ThroughputTracker throughput,
         long? messageIndex = null)
     {
+        latency.BeginDeliverySample();
         _ = SampleAsync();
 
         async Task SampleAsync()
@@ -422,6 +435,10 @@ internal static class StressTestHelpers
                 // dekaf.producer.send.errors metric (DekafDeliveryErrorListener), and
                 // this message was accepted into MessageCount before delivery failed.
                 throughput.RecordDeliveryErrorDetail(ex, "SampleDeliveryLatency", messageIndex);
+            }
+            finally
+            {
+                latency.CompleteDeliverySample();
             }
         }
     }
@@ -467,13 +484,13 @@ internal static class StressTestHelpers
             throughput.TakeSample,
             cancellationToken);
 
-    internal static Task RunResourceMonitorAsync(CancellationToken cancellationToken)
+    internal static async Task RunResourceMonitorAsync(CancellationToken cancellationToken)
     {
-        var process = Process.GetCurrentProcess();
-        return RunPeriodicAsync(
+        using var process = Process.GetCurrentProcess();
+        await RunPeriodicAsync(
             TimeSpan.FromSeconds(5),
             () => LogResourceUsage("Monitor", process),
-            cancellationToken);
+            cancellationToken).ConfigureAwait(false);
     }
 
     internal static async Task RunPeriodicAsync(
@@ -497,7 +514,12 @@ internal static class StressTestHelpers
 
     internal static void LogResourceUsage(string label, Process? process = null)
     {
-        process ??= Process.GetCurrentProcess();
+        if (process is null)
+        {
+            using var ownedProcess = Process.GetCurrentProcess();
+            LogResourceUsage(label, ownedProcess);
+            return;
+        }
         // Refresh is essential: Process caches metrics at creation time, so without
         // this call the properties below would return stale values.
         process.Refresh();

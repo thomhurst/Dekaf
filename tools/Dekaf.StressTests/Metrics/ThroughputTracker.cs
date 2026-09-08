@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Dekaf.StressTests.Scenarios;
 
 namespace Dekaf.StressTests.Metrics;
 
@@ -32,6 +33,10 @@ internal sealed class ThroughputTracker
     private int _startGen1Collections;
     private int _startGen2Collections;
     private double _startGcPauseDurationMs;
+    private RuntimeObservation? _runtimeStart;
+    private RuntimeObservation? _runtimeEnd;
+
+    internal ProducerWarmupSnapshot? Warmup { get; set; }
 
     public long MessageCount => Interlocked.Read(ref _messageCount);
     public long ByteCount => Interlocked.Read(ref _byteCount);
@@ -48,6 +53,7 @@ internal sealed class ThroughputTracker
 
     public void Start()
     {
+        _runtimeStart = RuntimeObservation.Capture();
         _stopwatch.Start();
         _cpuTimeStart = Environment.CpuUsage.TotalTime;
         _lastSampleTimestamp = Stopwatch.GetTimestamp();
@@ -63,6 +69,7 @@ internal sealed class ThroughputTracker
     {
         _stopwatch.Stop();
         _cpuTimeSeconds = (Environment.CpuUsage.TotalTime - _cpuTimeStart).TotalSeconds;
+        _runtimeEnd = RuntimeObservation.Capture();
     }
 
     public void RecordMessage(int bytes)
@@ -210,6 +217,8 @@ internal sealed class ThroughputTracker
                     CapturedAtUtc = DateTimeOffset.UtcNow,
                     ElapsedSeconds = _stopwatch.Elapsed.TotalSeconds,
                     MessagesPerSecond = rate,
+                    AcceptedMessages = currentCount,
+                    Runtime = RuntimeObservation.Capture(),
                     Gen0Collections = GC.CollectionCount(0) - _startGen0Collections,
                     Gen1Collections = GC.CollectionCount(1) - _startGen1Collections,
                     Gen2Collections = GC.CollectionCount(2) - _startGen2Collections,
@@ -280,13 +289,19 @@ internal sealed class ThroughputTracker
             MessagesPerSecondSamples = samplesCopy,
             IntervalSamples = intervalSamplesCopy,
             SampledElapsedSeconds = sampledElapsedSeconds,
-            ErrorSamples = errorSamplesCopy
+            ErrorSamples = errorSamplesCopy,
+            Warmup = Warmup,
+            RuntimeStart = _runtimeStart,
+            RuntimeEnd = _runtimeEnd
         };
     }
 }
 
 internal sealed class ThroughputSnapshot
 {
+    public ProducerWarmupSnapshot? Warmup { get; init; }
+    public RuntimeObservation? RuntimeStart { get; init; }
+    public RuntimeObservation? RuntimeEnd { get; init; }
     public required long TotalMessages { get; init; }
     public required long TotalBytes { get; init; }
     public required long TotalErrors { get; init; }
@@ -314,6 +329,8 @@ internal sealed class ThroughputSnapshot
 
 internal sealed class ThroughputIntervalSample
 {
+    public long AcceptedMessages { get; init; }
+    public RuntimeObservation? Runtime { get; init; }
     public required DateTimeOffset CapturedAtUtc { get; init; }
     public required double ElapsedSeconds { get; init; }
     public required double MessagesPerSecond { get; init; }

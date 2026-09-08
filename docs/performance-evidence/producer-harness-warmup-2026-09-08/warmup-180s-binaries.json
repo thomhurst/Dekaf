@@ -1,0 +1,12 @@
+[
+  {
+    "Algorithm": "SHA256",
+    "Hash": "6C23C298C5E0953E96572FB9F71BBF23B0137509015953CD2571AAC5284ED4DB",
+    "Path": "C:\\git\\Dekaf-worktrees\\fix-producer-warmup\\tools\\Dekaf.StressTests\\bin\\Release\\net10.0\\Dekaf.StressTests.dll"
+  },
+  {
+    "Algorithm": "SHA256",
+    "Hash": "B55B960A5F7B96965226CF58972BC079BFE278A9B505D34D75008A07816B5224",
+    "Path": "C:\\git\\Dekaf-worktrees\\fix-producer-warmup\\src\\Dekaf\\bin\\Release\\net10.0\\Dekaf.dll"
+  }
+]
