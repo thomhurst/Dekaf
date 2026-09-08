@@ -3,7 +3,7 @@ import hashlib
 from pathlib import Path
 import tempfile
 import unittest
-from run_comparison import compare, validate_probe, validate_primer_segments, retain_loaded_binaries, validate_bdn_phase
+from run_comparison import validate_engine_primer, validate_bdn_workload_warmup, compare, validate_probe, validate_primer_segments, retain_loaded_binaries, validate_bdn_phase
 
 class ComparisonTests(unittest.TestCase):
     def metrics(self):
@@ -133,5 +133,36 @@ class ComparisonTests(unittest.TestCase):
             signals[1]['Timestamp'] = 1450
             path.write_text('\n'.join(json.dumps(row) for row in signals), encoding='utf-8')
             with self.assertRaises(ValueError): validate_bdn_phase(warmup)
+
+    def test_engine_primer_requires_elapsed_work_and_matching_counts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'engine-primer.json'
+            valid = dict(Seconds=10, CallbackPairs=100, FormattedMeasurements=100)
+            path.write_text(json.dumps(valid), encoding='utf-8')
+            self.assertEqual(validate_engine_primer(path), valid)
+            for changes in [dict(Seconds=9.999), dict(Seconds=float('nan')),
+                            dict(CallbackPairs=0, FormattedMeasurements=0), dict(FormattedMeasurements=99)]:
+                with self.subTest(changes=changes):
+                    path.write_text(json.dumps(dict(valid, **changes)), encoding='utf-8')
+                    with self.assertRaises(ValueError): validate_engine_primer(path)
+
+    def test_bdn_warmup_requires_elapsed_workload_not_iteration_count_alone(self):
+        row = dict(IterationMode='Workload', IterationStage='Warmup', Nanoseconds=400_000_000, Operations=100)
+        valid = {'Measurements': [dict(row) for _ in range(50)]}
+        result = validate_bdn_workload_warmup(valid)
+        self.assertEqual((result['seconds'], result['completed']), (20, 5000))
+        for measurements in [valid['Measurements'][:-1],
+                             [dict(row, Nanoseconds=399_000_000) for _ in range(50)],
+                             [dict(row, IterationMode='Overhead') for _ in range(50)],
+                             [dict(row, Nanoseconds=float('nan')) for _ in range(50)],
+                             [dict(row, Operations=0) for _ in range(50)]]:
+            with self.subTest(measurements=measurements[:1]):
+                with self.assertRaises(ValueError):
+                    validate_bdn_workload_warmup({'Measurements': measurements})
+
+    def test_only_explicit_smoke_can_omit_bdn_workload_warmup(self):
+        benchmark = {'Measurements': []}
+        with self.assertRaises(ValueError): validate_bdn_workload_warmup(benchmark)
+        self.assertTrue(validate_bdn_workload_warmup(benchmark, smoke=True)['smoke'])
 
 if __name__ == '__main__': unittest.main()

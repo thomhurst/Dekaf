@@ -21,6 +21,8 @@ public class AdminEvidenceBenchmark
         Probe.Save(Path.Combine(output, $"clock-{Case.Replace(':', '-')}-{Environment.ProcessId}.json"),
             new { _sampler.StartedTimestamp, StopwatchFrequency = System.Diagnostics.Stopwatch.Frequency,
                 ProcessId = Environment.ProcessId });
+        var enginePrimer = BenchmarkEnginePrimer.Warm(this);
+        Probe.Save(Path.Combine(output, $"engine-primer-{Case.Replace(':', '-')}-{Environment.ProcessId}.json"), enginePrimer);
         Probe.SaveLoadedBinaries(Path.Combine(output, $"binaries-{Case.Replace(':', '-')}-{Environment.ProcessId}.json"));
         await Probe.PrimeAsync(_fixture, Path.Combine(output, $"primer-{Case.Replace(':', '-')}-{Environment.ProcessId}.json"));
         var seconds = double.Parse(Environment.GetEnvironmentVariable("ADMIN_EVIDENCE_WARMUP_SECONDS") ?? "120",
