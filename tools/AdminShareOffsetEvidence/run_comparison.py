@@ -95,7 +95,7 @@ def validate_primer_segments(primer_path):
 
 def validate_bdn_phase(warmup):
     clock = json.loads(warmup.with_name('clock-' + warmup.name).read_text(encoding='utf-8-sig'))
-    signal_path = warmup.parent / f"signals-{clock['ProcessId']}.jsonl"
+    signal_path = warmup.with_name('signals-' + warmup.stem + '.jsonl')
     signals = [json.loads(line) for line in signal_path.read_text(encoding='utf-8-sig').splitlines()]
     if [row['Signal'] for row in signals] != ['BeforeActualRun', 'AfterActualRun']:
         raise ValueError(f'{signal_path}: actual workload boundaries missing, repeated or out of order')

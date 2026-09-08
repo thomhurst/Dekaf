@@ -117,11 +117,15 @@ class ComparisonTests(unittest.TestCase):
             warmup.with_name('runtime-' + warmup.name).write_text(json.dumps(runtime), encoding='utf-8')
             signals = [dict(Signal=signal, Timestamp=timestamp, StopwatchFrequency=100, ProcessId=42)
                        for signal, timestamp in [('BeforeActualRun', 1150), ('AfterActualRun', 1250)]]
-            path = root / 'signals-42.jsonl'
+            path = root / 'signals-inventory-16-42.jsonl'
             path.write_text('\n'.join(json.dumps(row) for row in signals), encoding='utf-8')
             result = validate_bdn_phase(warmup)
             self.assertEqual(result['actual_start_seconds'], 1.5)
             self.assertEqual(len(result['overlapping_runtime_intervals']), 2)
+            # A later case may reuse an exited worker's PID. Its independent
+            # boundaries must not contaminate this case's measurement window.
+            (root / 'signals-retry-16-42.jsonl').write_text('unrelated worker records', encoding='utf-8')
+            self.assertEqual(validate_bdn_phase(warmup), result)
             signals[1]['ProcessId'] = 43
             path.write_text('\n'.join(json.dumps(row) for row in signals), encoding='utf-8')
             with self.assertRaises(ValueError): validate_bdn_phase(warmup)
