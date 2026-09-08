@@ -558,6 +558,8 @@ class StressAbaComparisonTests(unittest.TestCase):
         missing_metric = result()
         del missing_metric["latency"]["maxUs"]
         empty_latency = result(p50=0, p95=0, p99=0, maximum=0, latency_count=0)
+        no_completed_work = result(delivered=0)
+        no_completed_work["throughput"]["totalMessages"] = 0
         for invalid, expected in (
             (None, "found 0"),
             ("not json", "Expecting value"),
@@ -568,9 +570,14 @@ class StressAbaComparisonTests(unittest.TestCase):
             (json.dumps({"results": [result(latency_count=0)]}), "sample count"),
             (json.dumps({"results": [result(latency_count=1)]}), "at least 10000 latency samples"),
             (json.dumps({"results": [result(cpu=0)]}), "positive CPU"),
+            (json.dumps({"results": [result(cpu=10**400)]}), "too large"),
+            (json.dumps({"results": [no_completed_work]}), "positive integer completed messages"),
             (json.dumps({"results": [{**result(), "latency": ["invalid"]}]}), "latency object"),
             (json.dumps({"results": [{**result(), "throughput": ["invalid"]}]}), "throughput object"),
             (json.dumps({"results": [{**result(), "producerDeliveryDiagnostics": ["invalid"]}]}), "producerDeliveryDiagnostics object"),
+            (json.dumps({"results": [{**result(), "producerDeliveryDiagnostics": {"brokerProduceRequests": [None]}}]}), "get"),
+            (json.dumps({"results": [{**result(), "throughput": {"totalErrors": "invalid"}}]}), "str"),
+            (json.dumps({"results": [{**result(), "brokerCount": []}]}), "unhashable"),
             (json.dumps({"results": [result(scenario="other")]}), "workload identity"),
         ):
             with self.subTest(expected=expected), tempfile.TemporaryDirectory() as directory:
@@ -595,6 +602,17 @@ class StressAbaComparisonTests(unittest.TestCase):
                 self.assertEqual("inconclusive", comparison["verdict"])
                 self.assertIn(expected, comparison["validationError"])
                 self.assertIn(expected, summary.read_text(encoding="utf-8"))
+
+    def test_candidates_require_completed_messages_despite_positive_cached_rates(self):
+        for completed in (0, -1, True, 1.5, "100", float("nan")):
+            for segment in (1, 3):
+                for legacy in (False, True):
+                    segments = [result() for _ in range(4)]
+                    segments[segment]["deliveredMessages"] = None if legacy else completed
+                    segments[segment]["throughput"]["totalMessages"] = completed
+                    with self.subTest(completed=completed, segment=segment, legacy=legacy):
+                        with self.assertRaisesRegex(ValueError, "positive integer completed messages"):
+                            compare(*segments[:3], candidate_b2_result=segments[3])
 
     def test_nested_result_objects_are_validated_in_every_segment(self):
         for field in ("throughput", "producerDeliveryDiagnostics"):

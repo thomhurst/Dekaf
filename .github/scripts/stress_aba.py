@@ -185,14 +185,17 @@ def _percent_change(value, baseline):
     return 100 * (value - baseline) / baseline
 
 
-def _validate_control_work(result, measurements):
+def _validate_control_rates(measurements):
     if measurements["throughput"] <= 0 or measurements["medianThroughput"] <= 0:
         raise ValueError("A baseline control requires positive delivered and median throughput")
+
+
+def _validate_completed_messages(result):
     completed = result.get("deliveredMessages")
     if completed is None:
         completed = (result.get("throughput") or {}).get("totalMessages")
-    if not _finite_number(completed) or completed <= 0:
-        raise ValueError("A baseline control requires positive completed messages")
+    if not isinstance(completed, int) or isinstance(completed, bool) or completed <= 0:
+        raise ValueError("A comparison segment requires positive integer completed messages")
 
 
 def _drift_percent(first, second):
@@ -300,6 +303,7 @@ def compare(
         for field in ("throughput", "producerDeliveryDiagnostics"):
             if not isinstance(result.get(field), dict):
                 raise ValueError(f"Expected a {field} object")
+        _validate_completed_messages(result)
 
     identities = {
         _identity(baseline_a_result),
@@ -321,8 +325,8 @@ def compare(
     candidate_b2 = (
         None if candidate_b2_result is None else _measurements(candidate_b2_result)
     )
-    _validate_control_work(baseline_a_result, baseline_a)
-    _validate_control_work(baseline_a2_result, baseline_a2)
+    _validate_control_rates(baseline_a)
+    _validate_control_rates(baseline_a2)
     if _stability_breached(candidate_result) or (
         candidate_b2_result is not None and _stability_breached(candidate_b2_result)
     ):
@@ -514,7 +518,8 @@ def main(argv=None):
             args.max_control_drift_percent,
             candidate_b2_result=None if not args.candidate_b2 else _single_result(args.candidate_b2),
         )
-    except (ValueError, OSError) as error:
+    # Helpers consume decoded JSON; malformed nested values can fail structurally.
+    except (ValueError, OSError, TypeError, AttributeError, OverflowError) as error:
         comparison = {"verdict": "inconclusive", "validationError": str(error), "metrics": []}
     report = markdown(comparison, args.baseline_sha, args.candidate_sha)
     print(report, end="")
