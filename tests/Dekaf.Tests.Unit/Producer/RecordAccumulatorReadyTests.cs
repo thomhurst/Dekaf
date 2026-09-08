@@ -1111,6 +1111,53 @@ public class RecordAccumulatorReadyTests
     }
 
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task LingerPartitionsQueue_FullBatchRotations_KeepOneNotificationPerPartition(bool appendFromSpans)
+    {
+        var accumulator = new RecordAccumulator(CreateTestOptions(batchSize: 256, lingerMs: 60_000));
+        AccumulatorTestHelpers.KeepBatchesOpenDespiteAppLimitedBypass(accumulator);
+        await using var pool = new ValueTaskSourcePool<RecordMetadata>();
+        var drained = 0;
+        try
+        {
+            // Full batches rotate independently of the linger sweep. Leaving their
+            // notification queued must not enqueue another copy for each new batch.
+            for (var i = 0; i < 512; i++)
+            {
+                if (appendFromSpans)
+                {
+                    var appended = await accumulator.AppendFromSpansAsync("test-topic", 0,
+                        DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                        ReadOnlySpan<byte>.Empty, true, ReadOnlySpan<byte>.Empty, true,
+                        null, 0, null, CancellationToken.None);
+                    await Assert.That(appended).IsTrue();
+                }
+                else
+                {
+                    accumulator.TryAppendWithCompletion("test-topic", 0,
+                        DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                        PooledMemory.Null, PooledMemory.Null, null, 0, pool.Rent());
+                }
+                while (accumulator.TryDrainBatch(out var batch))
+                {
+                    batch!.CompleteSend(baseOffset: drained++, timestamp: DateTimeOffset.UtcNow);
+                    accumulator.OnBatchExitsPipeline(batch);
+                    accumulator.ReturnReadyBatch(batch);
+                }
+            }
+
+            await Assert.That(drained).IsGreaterThan(10);
+            var queue = GetPrivateField<ConcurrentQueue<TopicPartition>>(accumulator, "_lingerPartitions");
+            await Assert.That(queue.Count).IsEqualTo(1);
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
     public async Task LingerPartitionsQueue_SameCurrentBatch_QueuesOnce()
     {
         var options = CreateTestOptions(batchSize: 100_000, lingerMs: 10_000);

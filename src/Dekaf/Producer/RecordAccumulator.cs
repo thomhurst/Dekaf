@@ -3393,20 +3393,22 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     {
         // Steady-state awaited appends land in a partition that is already queued, so a plain
         // read answers them; the exchange stays the single-enqueuer arbiter for the 0 -> 1
-        // transition. Every clear runs under pd.Lock alongside the batch detach (or in the
-        // linger sweep right before it takes pd.Lock), so an appender that reads 1 either
-        // has its record in a queued batch or in one the sweep is about to visit.
+        // transition. Only dequeue clears the flag, so batch rotation cannot duplicate
+        // an outstanding partition notification. An appender that reads 1 has its record
+        // in a queued partition or in one the sweep is about to visit.
         if (Volatile.Read(ref pd.LingerQueued) == 0
             && Interlocked.Exchange(ref pd.LingerQueued, 1) == 0)
         {
             _lingerPartitions.Enqueue(topicPartition);
-            if (signalLingerLoop
-                || (signalOnConcurrentSweep
-                    && ((observedSweepVersion & 1) != 0
-                        || Volatile.Read(ref _lingerSweepVersion) != observedSweepVersion)))
-            {
-                _lingerWakeupSignal.Signal();
-            }
+        }
+        // A queued notification can cover a replacement batch. Its new deadline or
+        // a concurrent sweep still requires a wakeup even when no enqueue is needed.
+        if (signalLingerLoop
+            || (signalOnConcurrentSweep
+                && ((observedSweepVersion & 1) != 0
+                    || Volatile.Read(ref _lingerSweepVersion) != observedSweepVersion)))
+        {
+            _lingerWakeupSignal.Signal();
         }
     }
 
@@ -3419,7 +3421,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static void ClearLingerPartitionTracking(PartitionDeque pd)
     {
-        MarkLingerPartitionDequeued(pd);
+        // Detaching a batch does not remove its outstanding partition notification.
         Volatile.Write(ref pd.LingerDeferred, 0);
     }
 
