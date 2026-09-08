@@ -1,0 +1,72 @@
+--- a/tools/AdminDescriptionEvidence/Program.cs
++++ b/tools/AdminDescriptionEvidence/Program.cs
+@@ -14,6 +14,8 @@
+     await using var fixture = new AdminFixture(args[1]);
+     await fixture.InitializeAsync();
+     Probe.SaveLoadedBinaries(Path.Combine(args[2], "binaries.json"));
++    PhaseEvents.Log.Phase("timer-primer");
++    Probe.Save(Path.Combine(args[2], "timer-primer.json"), TimerPrimer.Warm());
+     PhaseEvents.Log.Phase("primer");
+     await Probe.PrimeAsync(fixture, Path.Combine(args[2], "primer.json"));
+     PhaseEvents.Log.Phase("warmup");
+--- /dev/null
++++ b/tools/AdminDescriptionEvidence/TimerPrimer.cs
+@@ -0,0 +1,58 @@
++using System.Diagnostics;
++
++namespace Dekaf.Benchmarks;
++
++internal static class TimerPrimer
++{
++    private sealed class State
++    {
++        public long Callbacks;
++        public int LastThreadId;
++    }
++
++    public static object Warm()
++    {
++        var seconds = int.Parse(Environment.GetEnvironmentVariable("ADMIN_TIMER_PRIMER_SECONDS") ?? "0");
++        if (seconds is not (0 or 20)) throw new ArgumentOutOfRangeException(nameof(seconds));
++        var threadId = Environment.CurrentManagedThreadId;
++        var state = new State();
++        var start = Stopwatch.GetTimestamp();
++        if (seconds != 0)
++        {
++            var timer = new Timer(static value =>
++            {
++                var current = (State)value!;
++                Volatile.Write(ref current.LastThreadId, Environment.CurrentManagedThreadId);
++                Interlocked.Increment(ref current.Callbacks);
++            }, state, 0, 1);
++            var completedDrain = false;
++            try
++            {
++                while (Stopwatch.GetElapsedTime(start).TotalSeconds < seconds)
++                    Thread.Sleep(10);
++            }
++            finally
++            {
++                // Keep the completion handle alive on failure: the timer may still signal it.
++                var drained = new ManualResetEvent(false);
++                completedDrain = timer.Dispose(drained) && drained.WaitOne(TimeSpan.FromSeconds(30));
++                if (completedDrain) drained.Dispose();
++            }
++            if (!completedDrain) throw new InvalidOperationException("Timer primer did not drain.");
++            if (Interlocked.Read(ref state.Callbacks) == 0)
++                throw new InvalidOperationException("Timer primer completed no callbacks.");
++        }
++        if (threadId != Environment.CurrentManagedThreadId)
++            throw new InvalidOperationException("Timer primer changed the calling thread.");
++        return new
++        {
++            RequestedSeconds = seconds,
++            Seconds = Stopwatch.GetElapsedTime(start).TotalSeconds,
++            Callbacks = Interlocked.Read(ref state.Callbacks),
++            CallingThreadId = threadId,
++            FinalCallingThreadId = Environment.CurrentManagedThreadId,
++            LastCallbackThreadId = Volatile.Read(ref state.LastThreadId),
++            Drained = true
++        };
++    }
++}
