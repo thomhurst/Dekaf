@@ -15,6 +15,28 @@ CASES = [(pattern, batch) for pattern in ('Repeated', 'Distinct', 'PendingPairs'
 MODES = ('sync-records', 'sync-batches', 'pending-records', 'pending-batches')
 WARMUP = 121
 DURATION = 120
+AFFINITY = {'consumer': '2,3', 'infrastructure': '0,1'}
+
+
+def select_affinity(rows):
+    cores = {}
+    for cpu, core, socket in rows:
+        cores.setdefault((socket, core), []).append(cpu)
+    if len(cores) < 2:
+        raise ValueError('At least two physical cores required for workload isolation')
+    groups = [sorted(cores[key]) for key in sorted(cores)]
+    return {'consumer': ','.join(map(str, groups[-1])),
+            'infrastructure': ','.join(str(cpu) for group in groups[:-1] for cpu in group)}
+
+
+def configure_affinity():
+    rows = []
+    for cpu in sorted(os.sched_getaffinity(0)):
+        topology = Path(f'/sys/devices/system/cpu/cpu{cpu}/topology')
+        rows.append((cpu, int((topology / 'core_id').read_text()),
+                     int((topology / 'physical_package_id').read_text())))
+    AFFINITY.update(select_affinity(rows))
+    return rows
 
 
 def command(args, log, **kwargs):
@@ -87,7 +109,8 @@ def workload(hosts, label, folder, mode, warmup, seconds, rate, broker, pinned=T
     processes = []
     with (folder / 'producer.log').open('w') as producer_log, (folder / 'consumer.log').open('w') as consumer_log:
         try:
-            for role, product, cpus, stream in [('produce', 'A', '1', producer_log), ('consume', label, '2,3', consumer_log)]:
+            for role, product, cpus, stream in [('produce', 'A', AFFINITY['infrastructure'], producer_log),
+                                               ('consume', label, AFFINITY['consumer'], consumer_log)]:
                 prefix = ['taskset', '-c', cpus] if pinned else []
                 processes.append(subprocess.Popen(prefix + ['dotnet', str(hosts[product]), role, *common],
                                                   stdout=stream, stderr=subprocess.STDOUT, env=environment))
@@ -141,7 +164,7 @@ def latency_series(folder, metrics):
 
 
 def broker_start(folder, name):
-    command(['docker', 'run', '-d', '--name', name, '--cpuset-cpus', '0', '-p', '9092:9092',
+    command(['docker', 'run', '-d', '--name', name, '--cpuset-cpus', AFFINITY['infrastructure'], '-p', '9092:9092',
              '-e', 'KAFKA_HEAP_OPTS=-Xms1g -Xmx1g', '-e', 'KAFKA_NODE_ID=1',
              '-e', 'KAFKA_PROCESS_ROLES=broker,controller', '-e', 'KAFKA_CONTROLLER_QUORUM_VOTERS=1@localhost:9093',
              '-e', 'KAFKA_CONTROLLER_LISTENER_NAMES=CONTROLLER',
@@ -234,7 +257,9 @@ def main():
     subprocess.run(['git', 'merge-base', '--is-ancestor', args.baseline, args.candidate], check=True)
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
+    topology = configure_affinity()
     provenance = dict(baseline=args.baseline, candidate=args.candidate,
+                      cpu_core_socket=topology, affinity=AFFINITY.copy(),
                       harness=subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
                       runner_image=os.environ.get('ImageVersion'), runner_os=os.environ.get('ImageOS'),
                       run_url=f"https://github.com/{os.environ.get('GITHUB_REPOSITORY')}/actions/runs/{os.environ.get('GITHUB_RUN_ID')}",

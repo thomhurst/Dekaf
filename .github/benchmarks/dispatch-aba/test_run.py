@@ -9,6 +9,20 @@ from unittest.mock import patch
 import run
 
 
+class AffinityTests(unittest.TestCase):
+    def test_interleaved_hyperthreads_stay_on_the_same_side(self):
+        self.assertEqual(run.select_affinity([(0, 0, 0), (1, 1, 0), (2, 0, 0), (3, 1, 0)]),
+                         {'consumer': '1,3', 'infrastructure': '0,2'})
+
+    def test_adjacent_hyperthreads_stay_on_the_same_side(self):
+        self.assertEqual(run.select_affinity([(0, 0, 0), (1, 0, 0), (2, 1, 0), (3, 1, 0)]),
+                         {'consumer': '2,3', 'infrastructure': '0,1'})
+
+    def test_single_core_cannot_supply_isolation(self):
+        with self.assertRaisesRegex(ValueError, 'two physical cores'):
+            run.select_affinity([(0, 0, 0), (1, 0, 0)])
+
+
 class MicroDriverTests(unittest.TestCase):
     def exercise(self, smoke, actual_count):
         with tempfile.TemporaryDirectory() as directory:

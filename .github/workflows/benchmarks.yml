@@ -9,7 +9,7 @@ on:
       suite:
         required: true
         type: choice
-        options: [micro, pool, admin, dispatch]
+        options: [micro, pool, admin, dispatch, outbox]
       baseline_sha:
         required: true
         description: Exact baseline SHA
@@ -54,6 +54,11 @@ jobs:
           python3 .github/scripts/pool_reset_aba.py A1
           python3 .github/scripts/pool_reset_aba.py B
           python3 .github/scripts/pool_reset_aba.py A2
+      - name: Outbox cycle comparison
+        if: inputs.suite == 'outbox'
+        run: |
+          python3 -m unittest discover -s .github/scripts -p test_outbox_cycle_aba.py
+          python3 .github/scripts/outbox_cycle_aba.py --baseline "$BASELINE_SHA" --candidate "$CANDIDATE_SHA" --artifacts "$GITHUB_WORKSPACE/aba-results"
       - name: Administrative direct-call comparison
         if: inputs.suite == 'admin'
         run: |
