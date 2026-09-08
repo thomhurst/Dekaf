@@ -21,12 +21,14 @@ if (args.Length > 0 && args[0] == "probe")
     await Probe.PrimeAsync(fixture, Path.Combine(args[2], "primer.json"));
     PhaseEvents.Log.Phase("warmup");
     compilations.Phase("warmup");
-    var warmup = await Probe.MeasureAsync(fixture, double.Parse(args[3], System.Globalization.CultureInfo.InvariantCulture));
+    var warmupCapture = await Probe.CaptureAsync(fixture, double.Parse(args[3], System.Globalization.CultureInfo.InvariantCulture));
     PhaseEvents.Log.Phase("measured");
     compilations.Phase("measured");
-    var measured = await Probe.MeasureAsync(fixture, double.Parse(args[4], System.Globalization.CultureInfo.InvariantCulture));
+    var measuredCapture = await Probe.CaptureAsync(fixture, double.Parse(args[4], System.Globalization.CultureInfo.InvariantCulture));
     PhaseEvents.Log.Phase("finalize");
     compilations.Phase("finalize");
+    var warmup = Probe.Complete(warmupCapture);
+    var measured = Probe.Complete(measuredCapture);
     Probe.Save(Path.Combine(args[2], "warmup.json"), warmup);
     Probe.Save(Path.Combine(args[2], "measured.json"), measured);
     Console.WriteLine($"{args[1]} warmup={warmup.Seconds:F3}s/{warmup.Completed} calls measured={measured.Seconds:F3}s/{measured.Completed} calls");

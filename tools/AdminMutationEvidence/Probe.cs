@@ -24,6 +24,11 @@ public static class Probe
         long HeapBytes, long RssBytes, int Gen0, int Gen1, int Gen2, long JitMethods,
         double JitMilliseconds, int ThreadPoolThreads, long PendingWorkItems);
     public sealed record Interval(Snapshot Start, Snapshot End, List<TickCount> Latencies);
+    public sealed record Capture(Snapshot Start, Snapshot End, List<Interval> Intervals)
+    {
+        public double Seconds => End.Seconds - Start.Seconds;
+        public long Completed => End.Completed - Start.Completed;
+    }
     public sealed record Result(double Seconds, long Completed, double CallsPerSecond, double CpuNsPerCall,
         double AllocatedBytesPerCall, double P50Ns, double P99Ns, double MaxNs, long StopwatchFrequency,
         Snapshot Start, Snapshot End, List<Interval> Intervals, List<TickCount> Latencies);
@@ -40,12 +45,14 @@ public static class Probe
     }
 
     public static async Task<Result> MeasureAsync(AdminFixture fixture, double seconds)
+        => Complete(await CaptureAsync(fixture, seconds));
+
+    public static async Task<Capture> CaptureAsync(AdminFixture fixture, double seconds)
     {
         if (seconds <= 0 || !double.IsFinite(seconds)) throw new ArgumentOutOfRangeException(nameof(seconds));
         // Exact tick buckets below one millisecond; sparse overflow preserves every longer tail.
         var dense = new long[Math.Min(Stopwatch.Frequency / 1000, 1_000_000) + 1];
         var overflow = new Dictionary<long, long>();
-        var aggregate = new Dictionary<long, long>();
         var intervals = new List<Interval>((int)Math.Ceiling(seconds) + 1);
         using var process = Process.GetCurrentProcess();
         var started = Stopwatch.GetTimestamp();
@@ -67,16 +74,27 @@ public static class Probe
             {
                 var snapshot = TakeSnapshot(process, started, completed);
                 var histogram = DrainHistogram(dense, overflow);
-                foreach (var bucket in histogram)
-                {
-                    aggregate.TryGetValue(bucket.Ticks, out var count);
-                    aggregate[bucket.Ticks] = count + bucket.Count;
-                }
                 intervals.Add(new(previous, snapshot, histogram));
                 previous = snapshot;
                 nextSnapshot = Math.Floor(elapsed) + 1;
                 if (elapsed >= seconds) break;
             }
+        }
+        return new(first, previous, intervals);
+    }
+
+    // Complete both reports only after measured collection stops. Sorting the
+    // large warmup aggregate must not queue new JIT work at measurement start.
+    public static Result Complete(Capture capture)
+    {
+        var (first, previous, intervals) = capture;
+        var completed = capture.Completed;
+        var aggregate = new Dictionary<long, long>();
+        foreach (var interval in intervals)
+        foreach (var bucket in interval.Latencies)
+        {
+            aggregate.TryGetValue(bucket.Ticks, out var count);
+            aggregate[bucket.Ticks] = count + bucket.Count;
         }
         var all = aggregate.OrderBy(static pair => pair.Key).Select(static pair => new TickCount(pair.Key, pair.Value)).ToList();
         if (all.Sum(static bucket => bucket.Count) != completed)
