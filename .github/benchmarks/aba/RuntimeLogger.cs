@@ -62,7 +62,7 @@ internal sealed class RuntimeLogger(string path) : ILogger, IDisposable
 // Events are retained rather than used to exclude samples or waive startup checks.
 internal sealed class CompilationLog : EventListener
 {
-    private readonly Compilation?[] _events = new Compilation?[8192];
+    private readonly Compilation?[] _events = new Compilation?[65536];
     private int _count;
 
     protected override void OnEventSourceCreated(EventSource source)
