@@ -1,5 +1,9 @@
 # Exact-head refresh campaign, 2026-09-08
 
+## Causal improvement campaign
+
+The `perf/pr-improve-20260908` successor keeps the same pinned main and acceptance tolerances. New source fixes receive new exact candidate pins. Shared microbenchmarks now capture CLR MethodJittingStarted events alongside runtime boundary samples to identify residual compilation activity; this instrumentation applies identically to A1/B/A2. Its observer cost remains in the measured process. No compilation event or latency sample is excluded, and these diagnostic runs cannot substitute for missing loaded acceptance evidence. Compare each result with the preceding exact-head refresh and preserve both.
+
 This task-scoped branch must not be merged. Baseline is `693a02e52b120ccd33ba1328843b0a052ec6766e`, containing #3143 and #3144. Candidate SHAs are explicit workflow inputs and must contain the baseline. Preserve each PR's prior evidence; new pins supersede old-head acceptance, not historical observations.
 
 Shared microbenchmark fixtures come unchanged from `perf/ubuntu-aba-20260907`. The driver now requests fifty one-second workload warmups and verifies at least twenty elapsed workload seconds per case. It retains twenty-five actual iterations, every outlier, MemoryDiagnoser output, and runtime samples at workload boundaries. Runtime sampling is reused from the pool harness. Release/net10.0, InProcessEmit, tiered compilation disabled, and CPU affinity are identical across A1/B/A2. Both products build and every fixture validates before timing. This isolates costs; it does not supply end-to-end acceptance.
