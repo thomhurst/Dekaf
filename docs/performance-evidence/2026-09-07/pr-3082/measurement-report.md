@@ -1,5 +1,7 @@
 # PR #3082 binary-key hashing investigation
 
+Raw files referenced below remain in the [pinned evidence directory](https://github.com/thomhurst/Dekaf/tree/96a8694db9178379f8ee0b1844850bc971974116/docs/performance-evidence/2026-09-07/pr-3082/evidence), retained by branch `evidence/pr-3082-96a8694`. The historical report body and measured values below are unchanged.
+
 Published baba5bcd7307d89741e2fc130f32df048f7545ff; prefeature baseline 602b8c76ac1e895fe8d897821f65bb62da47afde. Local candidate replaces TryGetValue/Add with CollectionsMarshal.GetValueRefOrAddDefault on modern .NET, removing one full-content hash on lane insertion. The existing gate protects the dictionary reference. Entry publication precedes storage retention; cleanup tolerates an empty entry after allocation failure. netstandard2.0 retains the original path. Content equality, XxHash3, storage lifetime and key-mutation checks are preserved.
 
 One shared reservation covers preparation, both experiments and tests; ownership verified before and after timing. No competing .NET workloads or Kafka containers observed during timing. Windows 11/i7-12700K, SDK 10.0.400, runtime 10.0.11, BDN 0.15.8. Five jobs in each experiment: baseline → published → candidate → published → baseline. Five warmups, 15 iterations, 200 ms iteration target.
