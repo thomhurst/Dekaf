@@ -116,6 +116,8 @@ def _latency_ms(latency, key):
 
 def _measurements(result):
     latency = result.get("latency") or {}
+    if not isinstance(latency, dict):
+        raise ValueError("Expected a latency object")
     measurements = {
         "throughput": effective_rate(result),
         "medianThroughput": median_interval_rate(result),
@@ -135,6 +137,11 @@ def _measurements(result):
     ]
     if missing:
         raise ValueError(f"Missing finite nonnegative metric(s): {', '.join(missing)}")
+    if any(measurements[key] <= 0 for key in ("p50", "p95", "p99", "max")):
+        raise ValueError("Latency evidence requires positive latency quantiles and maximum")
+    count = latency.get("count")
+    if not isinstance(count, int) or isinstance(count, bool) or count <= 0:
+        raise ValueError("Latency evidence requires a positive integer sample count")
     return measurements
 
 
@@ -345,6 +352,12 @@ def compare(
         "candidateDeliveryMismatch": _delivery_mismatch(candidate_result)
         or (candidate_b2_result is not None and _delivery_mismatch(candidate_b2_result)),
         "candidateSegments": 1 if candidate_b2_result is None else 2,
+        "latencySampleCounts": {
+            "baselineA": baseline_a_result["latency"]["count"],
+            "candidateB": candidate_result["latency"]["count"],
+            "baselineA2": baseline_a2_result["latency"]["count"],
+            "candidateB2": None if candidate_b2_result is None else candidate_b2_result["latency"]["count"],
+        },
         "identity": list(_identity(candidate_result)),
         "metrics": metrics,
     }
@@ -383,8 +396,15 @@ def markdown(comparison, baseline_sha, candidate_sha):
         "allocation noise floor: 1.0 B/msg",
     ])
     two_candidates = comparison.get("candidateSegments", 1) == 2
+    sample_counts = comparison["latencySampleCounts"]
+    labels = "A / B / A2"
+    keys = ["baselineA", "candidateB", "baselineA2"]
     if two_candidates:
         lines[-1] += " · four segments (A-B-A-B): each candidate is gated separately"
+        labels += " / B2"
+        keys.append("candidateB2")
+    lines.extend(["", f"Latency samples ({labels}): " + " / ".join(str(sample_counts[key]) for key in keys)])
+    if two_candidates:
         lines.extend(
             [
                 "",

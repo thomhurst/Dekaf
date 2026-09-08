@@ -25,6 +25,7 @@ def result(
     errors=0,
     delivered=None,
     scenario="producer",
+    latency_count=10_000,
 ):
     total_messages = 1_000_000
     if delivered is None:
@@ -43,6 +44,7 @@ def result(
             throughput if median_throughput is None else median_throughput
         ),
         "latency": {
+            "count": latency_count,
             "p50Us": p50 * 1000,
             "p95Us": p95 * 1000,
             "p99Us": p99 * 1000,
@@ -71,6 +73,42 @@ def result(
 
 
 class StressAbaComparisonTests(unittest.TestCase):
+    def test_zero_latency_is_invalid_in_every_segment(self):
+        for field in ("p50Us", "p95Us", "p99Us", "maxUs"):
+            for segment in range(4):
+                segments = [result() for _ in range(4)]
+                segments[segment]["latency"][field] = 0
+                with self.subTest(field=field, segment=segment), self.assertRaisesRegex(ValueError, "positive latency"):
+                    compare(*segments[:3], candidate_b2_result=segments[3])
+
+    def test_latency_sample_count_must_be_a_positive_integer(self):
+        for count in (0, -1, None, True, 1.5, float("nan"), "100"):
+            for segment in range(4):
+                segments = [result() for _ in range(4)]
+                segments[segment]["latency"]["count"] = count
+                with self.subTest(count=count, segment=segment), self.assertRaisesRegex(ValueError, "sample count"):
+                    compare(*segments[:3], candidate_b2_result=segments[3])
+
+    def test_missing_latency_count_is_not_inferred_from_positive_quantiles(self):
+        candidate = result()
+        del candidate["latency"]["count"]
+        with self.assertRaisesRegex(ValueError, "sample count"):
+            compare(result(), candidate, result())
+
+    def test_records_latency_sample_counts_for_all_segments(self):
+        comparison = compare(
+            result(latency_count=100), result(latency_count=200), result(latency_count=300),
+            candidate_b2_result=result(latency_count=400),
+        )
+        self.assertEqual(
+            {"baselineA": 100, "candidateB": 200, "baselineA2": 300, "candidateB2": 400},
+            comparison["latencySampleCounts"],
+        )
+        self.assertIn("Latency samples (A / B / A2 / B2): 100 / 200 / 300 / 400", markdown(comparison, "a", "b"))
+        single_candidate = compare(result(), result(), result())
+        self.assertIsNone(single_candidate["latencySampleCounts"]["candidateB2"])
+        self.assertIn("Latency samples (A / B / A2): 10000 / 10000 / 10000", markdown(single_candidate, "a", "b"))
+
     def test_zero_throughput_controls_are_invalid(self):
         for key in ("throughput", "median_throughput"):
             for control in (0, 2):
@@ -493,12 +531,16 @@ class StressAbaComparisonTests(unittest.TestCase):
     def test_main_retains_invalid_evidence_reason_in_both_outputs(self):
         missing_metric = result()
         del missing_metric["latency"]["maxUs"]
+        empty_latency = result(p50=0, p95=0, p99=0, maximum=0, latency_count=0)
         for invalid, expected in (
             (None, "found 0"),
             ("not json", "Expecting value"),
             (json.dumps({"results": [None]}), "Expected a result object"),
             (json.dumps({"results": [[]]}), "Expected a result object"),
             (json.dumps({"results": [missing_metric]}), "Latency max"),
+            (json.dumps({"results": [empty_latency]}), "positive latency"),
+            (json.dumps({"results": [result(latency_count=0)]}), "sample count"),
+            (json.dumps({"results": [{**result(), "latency": ["invalid"]}]}), "latency object"),
             (json.dumps({"results": [result(scenario="other")]}), "workload identity"),
         ):
             with self.subTest(expected=expected), tempfile.TemporaryDirectory() as directory:
