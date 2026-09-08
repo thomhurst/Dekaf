@@ -5151,8 +5151,6 @@ internal sealed class PendingRequestPool
     public void Return(PooledPendingRequest request)
     {
         _pool.Return(request);
-        // Destroy runs synchronously when retention is rejected.
-        Interlocked.Increment(ref _poolCount);
     }
 
     private readonly struct PoolPolicy(PendingRequestPool owner)
@@ -5166,6 +5164,8 @@ internal sealed class PendingRequestPool
 
         public bool TryReset(PooledPendingRequest request)
         {
+            // Destroy balances this increment if reset throws or retention is rejected.
+            Interlocked.Increment(ref owner._poolCount);
             request.Reset();
             return true;
         }
