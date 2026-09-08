@@ -41,7 +41,8 @@ public sealed class ProducerWorkloadTests
             producer.Flush(Arg.Any<TimeSpan>()).Returns(_ => { flushStarted.TrySetResult(); return 0; });
             completeDelivery = () =>
             {
-                if (fails) delivery.TrySetException(new InvalidOperationException("delivery failed"));
+                if (fails) delivery.TrySetException(new ConfluentKafka.KafkaException(
+                    new ConfluentKafka.Error(ConfluentKafka.ErrorCode.Local_MsgTimedOut)));
                 else delivery.TrySetResult(new ConfluentKafka.DeliveryResult<string, string>());
             };
             run = ProducerWorkload.RunAsync(producer, options, throughput, latency,
@@ -60,7 +61,7 @@ public sealed class ProducerWorkloadTests
             });
             completeDelivery = () =>
             {
-                if (fails) delivery.TrySetException(new InvalidOperationException("delivery failed"));
+                if (fails) delivery.TrySetException(new Dekaf.Errors.KafkaException("delivery failed"));
                 else delivery.TrySetResult(default);
             };
             run = ProducerWorkload.RunAsync(producer, options, throughput, latency,
@@ -82,6 +83,49 @@ public sealed class ProducerWorkloadTests
         {
             completeDelivery();
             await run.WaitAsync(TimeSpan.FromSeconds(5));
+            watchdog.Dispose();
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task UnexpectedSendException_FaultsWorkload(bool confluent)
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "dekaf-workload-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        using var watchdog = new ProgressWatchdog(directory);
+        var options = new StressTestOptions
+        {
+            BootstrapServers = "unused:9092", Topic = "test", DurationMinutes = 1,
+            MessageSizeBytes = 1000, ProgressWatchdog = watchdog
+        };
+        var error = new InvalidOperationException("unexpected harness failure");
+        Task<ProducerWorkloadResult> run;
+        if (confluent)
+        {
+            var producer = Substitute.For<ConfluentKafka.IProducer<string, string>>();
+            producer.ProduceAsync("test", Arg.Any<ConfluentKafka.Message<string, string>>(), Arg.Any<CancellationToken>())
+                .Returns(Task.FromException<ConfluentKafka.DeliveryResult<string, string>>(error));
+            run = ProducerWorkload.RunAsync(producer, options, new ThroughputTracker(), new LatencyTracker(),
+                TimeSpan.FromMinutes(1), awaitDelivery: true, CancellationToken.None);
+        }
+        else
+        {
+            var producer = Substitute.For<IKafkaProducer<string, string>>();
+            producer.ProduceAsync("test", Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+                .Returns(_ => ValueTask.FromException<RecordMetadata>(error));
+            run = ProducerWorkload.RunAsync(producer, options, new ThroughputTracker(), new LatencyTracker(),
+                TimeSpan.FromMinutes(1), awaitDelivery: true, CancellationToken.None);
+        }
+        try
+        {
+            await Assert.That(async () => await run.WaitAsync(TimeSpan.FromSeconds(5)))
+                .Throws<InvalidOperationException>();
+        }
+        finally
+        {
             watchdog.Dispose();
             Directory.Delete(directory, recursive: true);
         }

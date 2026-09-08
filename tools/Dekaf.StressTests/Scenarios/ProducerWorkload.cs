@@ -53,7 +53,12 @@ internal static class ProducerWorkload
                 }
             }
             catch (OperationCanceledException) when (token.IsCancellationRequested) { break; }
-            catch (Exception error) { throughput.RecordError(error, "Produce loop", index); }
+            catch (Exception error) when (error is Dekaf.Errors.KafkaException or TimeoutException)
+            {
+                // Expected client failures remain visible in the result. Harness bugs
+                // and unexpected runtime failures must fault the workload instead.
+                throughput.RecordError(error, "Produce loop", index);
+            }
         }
     }
 
@@ -104,7 +109,10 @@ internal static class ProducerWorkload
                 }
             }
             catch (OperationCanceledException) when (token.IsCancellationRequested) { break; }
-            catch (Exception error) { throughput.RecordError(error, "Produce loop", index); }
+            catch (Exception error) when (error is ConfluentKafka.KafkaException or TimeoutException)
+            {
+                throughput.RecordError(error, "Produce loop", index);
+            }
         }
     }
 
@@ -181,7 +189,10 @@ internal static class ProducerWorkload
             }
             ingress.Cancel();
         }
-        catch (OperationCanceledException) when (ingress.IsCancellationRequested) { }
+        catch (OperationCanceledException) when (ingress.IsCancellationRequested)
+        {
+            // Phase cleanup cancels this delay after ingress has already stopped.
+        }
     }
 }
 
