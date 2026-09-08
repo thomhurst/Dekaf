@@ -1,0 +1,142 @@
+{
+  "primer": {
+    "U1": {
+      "seconds": 20.000049,
+      "callbacks": 133623,
+      "samples": 20,
+      "first": {
+        "seconds": "1.000366",
+        "callbacks": "4566",
+        "timestamp": "96462472564",
+        "cpu_ms": "1150.441",
+        "jit_methods": "257",
+        "jit_ms": "94.5763",
+        "threads": "0",
+        "pending_work": "0",
+        "gc0": "3",
+        "gc1": "0",
+        "gc2": "0",
+        "allocated_bytes": "65960096",
+        "heap_bytes": "16029864",
+        "rss_bytes": "74088448"
+      },
+      "last": {
+        "seconds": "20.0000484",
+        "callbacks": "133623",
+        "timestamp": "115462223910",
+        "cpu_ms": "20381.835",
+        "jit_methods": "591",
+        "jit_ms": "333.0716",
+        "threads": "0",
+        "pending_work": "0",
+        "gc0": "108",
+        "gc1": "2",
+        "gc2": "0",
+        "allocated_bytes": "1814900864",
+        "heap_bytes": "8636264",
+        "rss_bytes": "79630336"
+      }
+    },
+    "T": {
+      "seconds": 20.000251,
+      "callbacks": 122724,
+      "samples": 20,
+      "first": {
+        "seconds": "1.0002357",
+        "callbacks": "4299",
+        "timestamp": "219491886121",
+        "cpu_ms": "1174.792",
+        "jit_methods": "266",
+        "jit_ms": "104.2193",
+        "threads": "0",
+        "pending_work": "0",
+        "gc0": "3",
+        "gc1": "1",
+        "gc2": "0",
+        "allocated_bytes": "68078544",
+        "heap_bytes": "18418848",
+        "rss_bytes": "76095488"
+      },
+      "last": {
+        "seconds": "20.0002505",
+        "callbacks": "122724",
+        "timestamp": "238491980655",
+        "cpu_ms": "20453.253",
+        "jit_methods": "608",
+        "jit_ms": "355.6181",
+        "threads": "0",
+        "pending_work": "0",
+        "gc0": "107",
+        "gc1": "2",
+        "gc2": "1",
+        "allocated_bytes": "1804664040",
+        "heap_bytes": "12473528",
+        "rss_bytes": "78893056"
+      }
+    },
+    "U2": {
+      "seconds": 20.000269,
+      "callbacks": 133263,
+      "samples": 20,
+      "first": {
+        "seconds": "1.0001352",
+        "callbacks": "4491",
+        "timestamp": "343373713768",
+        "cpu_ms": "1158.792",
+        "jit_methods": "252",
+        "jit_ms": "101.8589",
+        "threads": "0",
+        "pending_work": "0",
+        "gc0": "3",
+        "gc1": "0",
+        "gc2": "0",
+        "allocated_bytes": "64935224",
+        "heap_bytes": "15002392",
+        "rss_bytes": "74039296"
+      },
+      "last": {
+        "seconds": "20.0002689",
+        "callbacks": "133263",
+        "timestamp": "362373913939",
+        "cpu_ms": "20391.479",
+        "jit_methods": "598",
+        "jit_ms": "341.6313",
+        "threads": "0",
+        "pending_work": "0",
+        "gc0": "109",
+        "gc1": "2",
+        "gc2": "0",
+        "allocated_bytes": "1827252960",
+        "heap_bytes": "4268792",
+        "rss_bytes": "80027648"
+      }
+    }
+  },
+  "boundaries": [
+    {
+      "method": "System.Number.UInt64ToDecStr",
+      "iteration": 12,
+      "compileStartBeforeWindowUs": 1054.93500000739,
+      "loadAfterWindowStartUs": 857.7099999965867,
+      "wrapperExcessUs": 74.5890000014305,
+      "minimumOverlapBeyondBoundaryUs": 783.1209999951562,
+      "benchmarkThread": 2819,
+      "compileThread": 2899
+    },
+    {
+      "method": "System.Threading.PortableThreadPool+ThreadCounts.get_NumExistingThreads",
+      "iteration": 19,
+      "compileStartBeforeWindowUs": 289.4209999940358,
+      "loadAfterWindowStartUs": 65.38200000068173,
+      "wrapperExcessUs": 73.90800000023842,
+      "minimumOverlapBeyondBoundaryUs": 0,
+      "benchmarkThread": 2819,
+      "compileThread": 2900
+    }
+  ],
+  "hostFiles": 40,
+  "changedHostFiles": [
+    "Dekaf.Benchmarks.dll",
+    "Dekaf.Benchmarks.pdb"
+  ]
+}

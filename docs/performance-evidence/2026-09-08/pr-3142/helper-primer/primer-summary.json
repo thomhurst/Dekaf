@@ -1,0 +1,121 @@
+{
+  "primer": {
+    "U1": {
+      "seconds": 20.00005,
+      "callbacks": 132690,
+      "samples": 20,
+      "first": {
+        "seconds": "1.0001239",
+        "callbacks": "4608",
+        "timestamp": "195030771110",
+        "cpu_ms": "1147.547",
+        "jit_methods": "253",
+        "jit_ms": "93.913",
+        "threads": "0",
+        "pending_work": "0",
+        "gc0": "3",
+        "gc1": "0",
+        "gc2": "0",
+        "allocated_bytes": "66558520",
+        "heap_bytes": "16633928",
+        "rss_bytes": "74162176"
+      },
+      "last": {
+        "seconds": "20.0000492",
+        "callbacks": "132690",
+        "timestamp": "214030777235",
+        "cpu_ms": "20378.11",
+        "jit_methods": "592",
+        "jit_ms": "329.5532",
+        "threads": "0",
+        "pending_work": "0",
+        "gc0": "108",
+        "gc1": "1",
+        "gc2": "0",
+        "allocated_bytes": "1819646960",
+        "heap_bytes": "13508176",
+        "rss_bytes": "80138240"
+      }
+    },
+    "T": {
+      "seconds": 20.000331,
+      "callbacks": 123879,
+      "samples": 20,
+      "first": {
+        "seconds": "1.0004079",
+        "callbacks": "4146",
+        "timestamp": "338203467566",
+        "cpu_ms": "1174.635",
+        "jit_methods": "266",
+        "jit_ms": "104.9082",
+        "threads": "0",
+        "pending_work": "0",
+        "gc0": "3",
+        "gc1": "1",
+        "gc2": "0",
+        "allocated_bytes": "65810904",
+        "heap_bytes": "16167272",
+        "rss_bytes": "76111872"
+      },
+      "last": {
+        "seconds": "20.0003305",
+        "callbacks": "123879",
+        "timestamp": "357203479565",
+        "cpu_ms": "20445.061",
+        "jit_methods": "610",
+        "jit_ms": "348.6104",
+        "threads": "0",
+        "pending_work": "0",
+        "gc0": "108",
+        "gc1": "2",
+        "gc2": "1",
+        "allocated_bytes": "1820553840",
+        "heap_bytes": "11625408",
+        "rss_bytes": "78950400"
+      }
+    },
+    "U2": {
+      "seconds": 20.000323,
+      "callbacks": 136251,
+      "samples": 20,
+      "first": {
+        "seconds": "1.0005647",
+        "callbacks": "4356",
+        "timestamp": "484637576639",
+        "cpu_ms": "1191.901",
+        "jit_methods": "279",
+        "jit_ms": "136.2262",
+        "threads": "0",
+        "pending_work": "0",
+        "gc0": "3",
+        "gc1": "0",
+        "gc2": "0",
+        "allocated_bytes": "63155608",
+        "heap_bytes": "13220728",
+        "rss_bytes": "74276864"
+      },
+      "last": {
+        "seconds": "20.0003225",
+        "callbacks": "136251",
+        "timestamp": "503637411477",
+        "cpu_ms": "20397.803",
+        "jit_methods": "599",
+        "jit_ms": "352.9231",
+        "threads": "0",
+        "pending_work": "0",
+        "gc0": "109",
+        "gc1": "2",
+        "gc2": "0",
+        "allocated_bytes": "1834152976",
+        "heap_bytes": "11198120",
+        "rss_bytes": "80064512"
+      }
+    }
+  },
+  "boundaries": [],
+  "hostFiles": 40,
+  "changedHostFiles": [
+    "Dekaf.Benchmarks.dll",
+    "Dekaf.Benchmarks.pdb"
+  ]
+}

@@ -1,0 +1,56 @@
+[
+  {
+    "phase": "U1",
+    "FullName": "Dekaf.Benchmarks, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null",
+    "Location": "/home/runner/work/Dekaf/Dekaf/evidence/host/Dekaf.Benchmarks.dll",
+    "Sha256": "CBE0A7876914116D1FED500D3339DD74698223784090EB89B259CE10D73E1D54"
+  },
+  {
+    "phase": "U1",
+    "FullName": "Dekaf, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null",
+    "Location": "/home/runner/work/Dekaf/Dekaf/evidence/host/Dekaf.dll",
+    "Sha256": "FD6FE4549270DA41EF040DF88D5A8293B41A25E6BEC02319A587F0A1C5083CE3"
+  },
+  {
+    "phase": "U1",
+    "FullName": "Reservoir, Version=1.6.7.0, Culture=neutral, PublicKeyToken=null",
+    "Location": "/home/runner/work/Dekaf/Dekaf/evidence/host/Reservoir.dll",
+    "Sha256": "A486B9BFE9856FC75D44AA4C47125007DC02BB01FE77CB4AB9D4D37353805800"
+  },
+  {
+    "phase": "T",
+    "FullName": "Dekaf.Benchmarks, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null",
+    "Location": "/home/runner/work/Dekaf/Dekaf/evidence/host/Dekaf.Benchmarks.dll",
+    "Sha256": "CBE0A7876914116D1FED500D3339DD74698223784090EB89B259CE10D73E1D54"
+  },
+  {
+    "phase": "T",
+    "FullName": "Dekaf, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null",
+    "Location": "/home/runner/work/Dekaf/Dekaf/evidence/host/Dekaf.dll",
+    "Sha256": "FD6FE4549270DA41EF040DF88D5A8293B41A25E6BEC02319A587F0A1C5083CE3"
+  },
+  {
+    "phase": "T",
+    "FullName": "Reservoir, Version=1.6.7.0, Culture=neutral, PublicKeyToken=null",
+    "Location": "/home/runner/work/Dekaf/Dekaf/evidence/host/Reservoir.dll",
+    "Sha256": "A486B9BFE9856FC75D44AA4C47125007DC02BB01FE77CB4AB9D4D37353805800"
+  },
+  {
+    "phase": "U2",
+    "FullName": "Dekaf.Benchmarks, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null",
+    "Location": "/home/runner/work/Dekaf/Dekaf/evidence/host/Dekaf.Benchmarks.dll",
+    "Sha256": "CBE0A7876914116D1FED500D3339DD74698223784090EB89B259CE10D73E1D54"
+  },
+  {
+    "phase": "U2",
+    "FullName": "Dekaf, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null",
+    "Location": "/home/runner/work/Dekaf/Dekaf/evidence/host/Dekaf.dll",
+    "Sha256": "FD6FE4549270DA41EF040DF88D5A8293B41A25E6BEC02319A587F0A1C5083CE3"
+  },
+  {
+    "phase": "U2",
+    "FullName": "Reservoir, Version=1.6.7.0, Culture=neutral, PublicKeyToken=null",
+    "Location": "/home/runner/work/Dekaf/Dekaf/evidence/host/Reservoir.dll",
+    "Sha256": "A486B9BFE9856FC75D44AA4C47125007DC02BB01FE77CB4AB9D4D37353805800"
+  }
+]

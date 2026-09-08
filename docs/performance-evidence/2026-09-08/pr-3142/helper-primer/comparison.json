@@ -1,0 +1,103 @@
+{
+  "phases": {
+    "U1": {
+      "meanNs": 23.30995726579109,
+      "ciLowNs": 23.16762360586672,
+      "ciHighNs": 23.452290925715463,
+      "standardErrorNs": 0.03800227277184065,
+      "maximumIterationNs": 23.64873441915601,
+      "bytesPerOp": 0,
+      "setupSeconds": 20.000315,
+      "setupCalls": 190413297,
+      "warmSeconds": 49.970166792,
+      "warmCalls": 2009069600,
+      "actualSeconds": 25.07824696,
+      "actualCalls": 1004534800,
+      "samples": 25,
+      "boundaryJit": 7,
+      "interiorBoundaryJit": 2,
+      "boundaryCpuMs": 25131.017999999982,
+      "boundaryGc": [
+        100,
+        100,
+        100
+      ],
+      "maxThreads": 0,
+      "heap": [
+        566872,
+        575536
+      ],
+      "rss": [
+        92454912,
+        91590656
+      ]
+    },
+    "T": {
+      "meanNs": 22.981673569181,
+      "ciLowNs": 22.92461981763568,
+      "ciHighNs": 23.038727320726323,
+      "standardErrorNs": 0.015233025203132697,
+      "maximumIterationNs": 23.30349308449192,
+      "bytesPerOp": 0,
+      "setupSeconds": 20.000003,
+      "setupCalls": 190750409,
+      "warmSeconds": 49.839312371,
+      "warmCalls": 2021485600,
+      "actualSeconds": 24.903715842,
+      "actualCalls": 1010742800,
+      "samples": 25,
+      "boundaryJit": 4,
+      "interiorBoundaryJit": 0,
+      "boundaryCpuMs": 24972.833999999988,
+      "boundaryGc": [
+        100,
+        100,
+        100
+      ],
+      "maxThreads": 0,
+      "heap": [
+        762392,
+        766872
+      ],
+      "rss": [
+        94613504,
+        93470720
+      ]
+    },
+    "U2": {
+      "meanNs": 23.147834574357045,
+      "ciLowNs": 23.064060290195457,
+      "ciHighNs": 23.231608858518634,
+      "standardErrorNs": 0.022367254517770965,
+      "maximumIterationNs": 23.44531317592533,
+      "bytesPerOp": 0,
+      "setupSeconds": 20.000311,
+      "setupCalls": 189899135,
+      "warmSeconds": 49.964556977,
+      "warmCalls": 2015755200,
+      "actualSeconds": 24.997745006,
+      "actualCalls": 1007877600,
+      "samples": 25,
+      "boundaryJit": 5,
+      "interiorBoundaryJit": 0,
+      "boundaryCpuMs": 25047.311,
+      "boundaryGc": [
+        100,
+        100,
+        100
+      ],
+      "maxThreads": 0,
+      "heap": [
+        526712,
+        535824
+      ],
+      "rss": [
+        88473600,
+        87531520
+      ]
+    }
+  },
+  "tracedVsU1Percent": -1.4083410487065406,
+  "tracedVsU2Percent": -0.7178252662999207,
+  "controlDriftPercent": -0.6955083168340814
+}
