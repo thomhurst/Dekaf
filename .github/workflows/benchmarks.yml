@@ -57,6 +57,7 @@ jobs:
       - name: Loaded pool comparison
         if: inputs.suite == 'pool-loaded'
         run: |
+          python3 -m unittest discover -s .github/scripts -p test_pool_loaded_aba.py
           python3 -m unittest discover -s .github/benchmarks/pool-loaded/tests -p 'test_*.py'
           dotnet test --project .github/benchmarks/pool-loaded/tests/IntervalLatency.Tests.csproj -c Release
           python3 .github/scripts/pool_loaded_aba.py

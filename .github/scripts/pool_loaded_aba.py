@@ -20,22 +20,23 @@ def module(path, name):
     return result
 
 
-def broker_samples(name, path, stop):
-    # Docker's stream retains broker CPU/memory separately from client process
+def broker_samples(name, path, stop, errors):
+    # Docker observations retain broker CPU/memory separately from client process
     # accounting. Receipt times identify the observation window; percentages are
     # Docker observations, not substituted for client CPU/message.
-    with path.open('w') as log:
-        process = subprocess.Popen(['docker', 'stats', '--format', '{{json .}}', name],
-                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-        try:
-            for line in process.stdout:
-                log.write(json.dumps({'utc_ns': time.time_ns(), 'observation': line.strip()}) + '\n')
+    try:
+        with path.open('w') as log:
+            while not stop.is_set():
+                result = subprocess.run(['docker', 'stats', '--no-stream', '--format', '{{json .}}', name],
+                                        capture_output=True, text=True, check=True, timeout=10)
+                observation = json.loads(result.stdout)
+                if not observation.get('CPUPerc') or not observation.get('MemUsage'):
+                    raise ValueError('Missing broker CPU/memory observation')
+                log.write(json.dumps({'utc_ns': time.time_ns(), 'observation': observation}) + '\n')
                 log.flush()
-                if stop.is_set():
-                    break
-        finally:
-            process.terminate()
-            process.wait(timeout=10)
+                stop.wait(1)
+    except Exception as error:
+        errors.append(error)
 
 
 def execute():
@@ -91,10 +92,12 @@ def execute():
             folder.mkdir(parents=True)
             broker = f'pool-{os.environ["PR"]}-{phase.lower()}-{size}'
             stop = threading.Event()
+            sampler_errors = []
             sampler = None
             try:
                 dispatch.broker_start(folder, broker)
-                sampler = threading.Thread(target=broker_samples, args=(broker, folder / 'broker-stats.jsonl', stop))
+                sampler = threading.Thread(target=broker_samples,
+                    args=(broker, folder / 'broker-stats.jsonl', stop, sampler_errors))
                 sampler.start()
                 output = folder / 'client'
                 dispatch.command(['taskset', '-c', dispatch.AFFINITY['consumer'], 'dotnet', hosts[label],
@@ -115,9 +118,11 @@ def execute():
                 stop.set()
                 try:
                     if sampler is not None:
-                        sampler.join(timeout=10)
+                        sampler.join(timeout=15)
                         if sampler.is_alive():
                             raise RuntimeError('Broker sampler did not exit')
+                        if sampler_errors:
+                            raise RuntimeError('Broker sampler failed') from sampler_errors[0]
                 finally:
                     dispatch.broker_stop(folder, broker)
     (OUT / 'decision.json').write_text(json.dumps({'collection': 'VALIDATED', 'acceptance': 'INCONCLUSIVE',
