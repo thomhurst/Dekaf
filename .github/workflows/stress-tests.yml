@@ -83,6 +83,9 @@ on:
         description: 'Duration-based producer lanes only: exact SHA for baseline → candidate → baseline; triples duration and blocks on regression/noisy controls'
         required: false
         default: ''
+      candidate_sha:
+        description: 'Dedicated Reservoir comparison: exact product head'
+        required: true
       aba_second_candidate:
         description: 'Exact-SHA A-B-A only: add a fourth segment (candidate again after the second baseline) so candidate drift is measured and gated like control drift; quadruples the measured duration'
         required: false
@@ -122,7 +125,7 @@ permissions:
 # they update the same docs/history branch; other lanes use isolated VMs and
 # share no mutable state.
 concurrency:
-  group: stress-tests-${{ (github.event_name == 'schedule' || github.event.inputs.full_run == 'true') && 'all-schedule' || format('{0}-{1}', github.event.inputs.lane || 'all', github.event_name) }}
+  group: reservoir-refresh-${{ (github.event_name == 'schedule' || github.event.inputs.full_run == 'true') && 'all-schedule' || format('{0}-{1}', github.event.inputs.lane || 'all', github.event_name) }}
   cancel-in-progress: false
 
 env:
@@ -382,6 +385,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          ref: ${{ inputs.candidate_sha }}
 
       - name: Checkout exact baseline
         if: matrix.baseline_sha != ''
@@ -399,15 +403,17 @@ jobs:
         if: matrix.baseline_sha != ''
         env:
           BASELINE_SHA: ${{ matrix.baseline_sha }}
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
         run: |
           git fetch origin main
           test "$(git rev-parse origin/main)" = "$BASELINE_SHA"
-          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
           test "$(git -C baseline-source rev-parse HEAD)" = "$BASELINE_SHA"
-          git merge-base --is-ancestor "$BASELINE_SHA" "$GITHUB_SHA"
+          git merge-base --is-ancestor "$BASELINE_SHA" "$CANDIDATE_SHA"
           # Keep the baseline's package/compiler/SDK inputs intact. If they differ,
           # stop for a dedicated fixture instead of silently rebuilding A as B.
-          python3 .github/scripts/stress_fixtures.py . baseline-source
+          git show "$GITHUB_SHA:.github/scripts/reservoir_fixture.py" > "$RUNNER_TEMP/reservoir_fixture.py"
+          PYTHONPATH=.github/scripts python3 "$RUNNER_TEMP/reservoir_fixture.py" . baseline-source
           # Only the harness/shared sources and tools-scoped props are overlaid.
           # API incompatibilities must fail the build; never silently use older fixtures.
           for directory in tools/Dekaf.StressTests tools/Shared; do
@@ -417,9 +423,9 @@ jobs:
           git -C baseline-source diff --exit-code -- src Directory.Build.props Directory.Build.targets Directory.Packages.props global.json
           mkdir -p aba-results
           {
-            echo "baseline=$BASELINE_SHA candidate=$GITHUB_SHA harness=$GITHUB_SHA"
+            echo "baseline=$BASELINE_SHA candidate=$CANDIDATE_SHA harness=$GITHUB_SHA"
             echo "image=$ImageOS/$ImageVersion broker_cpus=$BROKER_CPUS client_cpus=$CLIENT_CPUS"
-            echo 'Fixture adaptation: candidate stress harness/shared sources/tools props; matching root build inputs remain pinned and unchanged.'
+            echo 'Fixture adaptation: candidate stress harness/shared sources/tools props; root build inputs remain pinned; only Reservoir 1.6.7 versus 1.7.0 differs intentionally.'
             dotnet --info
             lscpu
             env | sort | grep -E '^(DOTNET_|COMPlus_)' || true
@@ -775,7 +781,7 @@ jobs:
             --baseline-a2 aba-results/baseline-a2 \
             "${extra[@]}" \
             --baseline-sha "${{ matrix.baseline_sha }}" \
-            --candidate-sha "${{ github.sha }}" \
+            --candidate-sha "${{ inputs.candidate_sha }}" \
             --output aba-results/comparison.json \
             --summary "$GITHUB_STEP_SUMMARY"
 
