@@ -25,24 +25,86 @@ public sealed class PartitionedKeyComparerIntegrationTests(KafkaTestContainer ka
     public Task PublicHandlers_CustomReferenceKeysUseProvidedComparer(bool batches)
         => VerifyOrderingAsync(new CustomerKeyDeserializer(), new CustomerKeyComparer(), batches);
 
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public Task PublicHandlers_NullAndEmptyRawMemoryKeysStayDistinct(bool batches)
+        => VerifyOrderingAsync(Serializers.RawBytes, null, batches, nullAndEmpty: true);
+
+    [Test]
+    [Arguments(false, false)]
+    [Arguments(true, false)]
+    [Arguments(false, true)]
+    [Arguments(true, true)]
+    public async Task AsyncConsumption_PreservesNullAndEmptyKeys(bool singleRecord, bool suspendDeserializer)
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 1);
+        await using var producer = await Kafka.CreateProducer<byte[], string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers).BuildAsync();
+        await producer.ProduceAsync(topic, null, "null");
+        await producer.ProduceAsync(topic, [], "empty");
+        var started = NewSignal();
+        var release = NewSignal();
+        await using var consumer = await Kafka.CreateConsumer<ReadOnlyMemory<byte>, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithKeyDeserializer(new AsyncKeyDeserializer<ReadOnlyMemory<byte>>(Serializers.RawBytes,
+                started, suspendDeserializer ? release.Task : Task.CompletedTask))
+            .WithValueDeserializer(Serializers.String)
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithOffsetCommitMode(OffsetCommitMode.Manual)
+            .WithQueuedMinMessages(1).BuildAsync();
+        consumer.Assign([new TopicPartition(topic, 0)]);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await using var records = consumer.ConsumeAsync(timeout.Token).GetAsyncEnumerator();
+
+        async ValueTask<ConsumeResult<ReadOnlyMemory<byte>, string>?> NextAsync()
+        {
+            if (singleRecord)
+                return await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(20), timeout.Token);
+            return await records.MoveNextAsync() ? records.Current : null;
+        }
+
+        var nullKey = await NextAsync();
+        await Assert.That(nullKey).IsNotNull();
+        await Assert.That(nullKey!.Value.IsKeyNull).IsTrue();
+        var pending = NextAsync().AsTask();
+        ConsumeResult<ReadOnlyMemory<byte>, string>? emptyKey;
+        try
+        {
+            await started.Task.WaitAsync(timeout.Token);
+            if (suspendDeserializer)
+                await Assert.That(pending.IsCompleted).IsFalse();
+        }
+        finally
+        {
+            release.TrySetResult();
+            emptyKey = await pending;
+        }
+        await Assert.That(emptyKey).IsNotNull();
+        await Assert.That(emptyKey!.Value.IsKeyNull).IsFalse();
+        await Assert.That(nullKey.Value.Key.IsEmpty).IsTrue();
+        await Assert.That(emptyKey.Value.Key.IsEmpty).IsTrue();
+    }
+
     private async Task VerifyOrderingAsync<TKey>(
-        IDeserializer<TKey> deserializer, IEqualityComparer<TKey>? comparer, bool batches)
+        IDeserializer<TKey> deserializer, IEqualityComparer<TKey>? comparer, bool batches,
+        bool nullAndEmpty = false)
     {
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 1);
         await using var producer = await Kafka.CreateProducer<byte[], string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .BuildAsync();
-        await producer.ProduceAsync(topic, [1], "first");
-        await producer.ProduceAsync(topic, [1], "equal");
-        await producer.ProduceAsync(topic, [2], "different");
-        await using var consumer = await Kafka.CreateConsumer<TKey, string>()
+        await producer.ProduceAsync(topic, nullAndEmpty ? null : [1], "first");
+        await producer.ProduceAsync(topic, nullAndEmpty ? null : [1], "equal");
+        await producer.ProduceAsync(topic, nullAndEmpty ? [] : [2], "different");
+        var builder = Kafka.CreateConsumer<TKey, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithKeyDeserializer(deserializer)
             .WithValueDeserializer(Serializers.String)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
-            .WithQueuedMinMessages(1)
-            .BuildAsync();
+            .WithQueuedMinMessages(1);
+        await using var consumer = await builder.BuildAsync();
         consumer.Assign([new TopicPartition(topic, 0)]);
         var firstStarted = NewSignal();
         var releaseFirst = NewSignal();
@@ -105,6 +167,18 @@ public sealed class PartitionedKeyComparerIntegrationTests(KafkaTestContainer ka
     }
 
     private static TaskCompletionSource NewSignal() => new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    private sealed class AsyncKeyDeserializer<TKey>(IDeserializer<TKey> deserializer,
+        TaskCompletionSource started, Task release) : IAsyncDeserializer<TKey>
+    {
+        public async ValueTask<TKey> DeserializeAsync(ReadOnlyMemory<byte> data, SerializationContext context,
+            CancellationToken cancellationToken = default)
+        {
+            started.TrySetResult();
+            await release.WaitAsync(cancellationToken);
+            return deserializer.Deserialize(data, context);
+        }
+    }
 
     private sealed class CustomerKey(byte id)
     {

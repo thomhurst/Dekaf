@@ -2006,7 +2006,7 @@ internal sealed class KeyOrderedPartitionDispatcher<TKey, TValue>
 
     private void Enqueue(ConsumeResult<TKey, TValue> message)
     {
-        var key = PartitionMessageKey<TKey>.From(message.Key);
+        var key = PartitionMessageKey<TKey>.From(message.Key, message.IsKeyNull);
         KeyOrderedProcessingLane<TKey, TValue> lane;
         bool shouldStart;
 

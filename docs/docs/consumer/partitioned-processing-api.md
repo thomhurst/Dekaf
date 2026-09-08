@@ -157,7 +157,9 @@ Key equality applies to **deserialized keys within one partition**. By default,
 `byte[]`, `ReadOnlyMemory<byte>`, `Memory<byte>`, and `ArraySegment<byte>` keys
 compare their byte content, including slice boundaries. Equal bytes share a lane
 even when deserialization creates separate arrays or memory slices. Empty binary
-keys share a lane; null reference keys share a separate lane. Other key types use
+keys share a lane. Kafka null keys share a separate lane, including when a binary
+value-type deserializer represents both null and empty bytes as its default value.
+Other key types use
 `EqualityComparer<TKey>.Default`, preserving ordinal string and value-type equality.
 These binary defaults apply when `TKey` is one of the listed types; wrapper or
 polymorphic key types can supply a comparer.

@@ -6712,7 +6712,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             pending,
             timestampMs,
             timestampType,
-            leaderEpoch);
+            leaderEpoch,
+            isKeyNull);
         return true;
     }
 
@@ -7050,7 +7051,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             pending,
             timestampMs,
             timestampType,
-            leaderEpoch);
+            leaderEpoch,
+            isKeyNull);
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]

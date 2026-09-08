@@ -18,9 +18,9 @@ internal readonly struct PartitionMessageKey<TKey> : IEquatable<PartitionMessage
         _hasValue = hasValue;
     }
 
-    public static PartitionMessageKey<TKey> From(TKey? value)
+    public static PartitionMessageKey<TKey> From(TKey? value, bool isKeyNull = false)
     {
-        return value is null
+        return isKeyNull || value is null
             ? new PartitionMessageKey<TKey>(default, hasValue: false)
             : new PartitionMessageKey<TKey>(value, hasValue: true);
     }

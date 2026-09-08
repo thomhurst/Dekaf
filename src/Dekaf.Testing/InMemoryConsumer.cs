@@ -2334,7 +2334,8 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             record.TimestampMs,
             TimestampType.CreateTime,
             leaderEpoch: null,
-            deferHeaderSnapshot: _borrowStoredRecords);
+            deferHeaderSnapshot: _borrowStoredRecords,
+            isKeyNull: record.IsKeyNull);
     }
 
     private RecordDeserializationException CreateDeserializationException(

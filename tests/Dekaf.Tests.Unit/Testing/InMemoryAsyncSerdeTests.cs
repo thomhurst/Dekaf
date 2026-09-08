@@ -19,6 +19,34 @@ namespace Dekaf.Tests.Unit.Testing;
 public sealed class InMemoryAsyncSerdeTests
 {
     [Test]
+    public async Task Consumer_AsyncBinaryKeys_PreserveNullVersusEmpty()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        await using var producer = new InMemoryProducer<byte[], string>(cluster);
+        await using var consumer = new InMemoryConsumer<ReadOnlyMemory<byte>, string>(
+            cluster, new AsyncRawKeyDeserializer(), Serializers.String,
+            new InMemoryConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest });
+        await producer.ProduceAsync("null-keys", null, "null");
+        await producer.ProduceAsync("null-keys", [], "empty");
+        consumer.Subscribe("null-keys");
+
+        var nullKey = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1));
+        var emptyKey = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1));
+        await Assert.That(nullKey).IsNotNull();
+        await Assert.That(emptyKey).IsNotNull();
+        await Assert.That(nullKey!.Value.IsKeyNull).IsTrue();
+        await Assert.That(emptyKey!.Value.IsKeyNull).IsFalse();
+        await Assert.That(nullKey.Value.Key.IsEmpty).IsTrue();
+        await Assert.That(emptyKey.Value.Key.IsEmpty).IsTrue();
+    }
+
+    private sealed class AsyncRawKeyDeserializer : IAsyncDeserializer<ReadOnlyMemory<byte>>
+    {
+        public ValueTask<ReadOnlyMemory<byte>> DeserializeAsync(ReadOnlyMemory<byte> data,
+            SerializationContext context, CancellationToken cancellationToken = default) => new(data);
+    }
+
+    [Test]
     public async Task Producer_AsyncSerializers_RoundTripThroughAsyncDeserializers()
     {
         var cluster = new InMemoryKafkaCluster();
