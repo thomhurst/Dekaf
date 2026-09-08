@@ -41,4 +41,5 @@ jobs:
           name: dispatch-3117-${{ github.run_id }}
           path: ${{ runner.temp }}/dispatch-evidence
           retention-days: 30
+          include-hidden-files: true
           if-no-files-found: error

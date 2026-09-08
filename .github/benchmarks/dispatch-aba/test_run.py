@@ -4,8 +4,36 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import run
+
+
+class MicroDriverTests(unittest.TestCase):
+    def exercise(self, smoke, actual_count):
+        with tempfile.TemporaryDirectory() as directory:
+            def write_log(args, log, **kwargs):
+                count = actual_count if isinstance(actual_count, int) else next(actual_count)
+                content = 'WARM completed seconds=20.020 operations=171442176\n'
+                content += ''.join(f'WorkloadActual {index}: 48 op, 1000000000.00 ns\n'
+                                   for index in range(1, count + 1))
+                Path(log).write_text(content)
+            with patch.object(run, 'command', side_effect=write_log):
+                run.micro(Path('host.dll'), Path(directory), 'B', 'Smoke' if smoke else 'B', smoke)
+
+    def test_smoke_accepts_single_iteration_without_acceptance_validation(self):
+        self.exercise(smoke=True, actual_count=1)
+
+    def test_measurement_requires_all_iterations(self):
+        with self.assertRaisesRegex(ValueError, 'Missing measured BDN iterations'):
+            self.exercise(smoke=False, actual_count=24)
+
+    def test_measurement_accepts_complete_iteration_count(self):
+        self.exercise(smoke=False, actual_count=25)
+
+    def test_earlier_incomplete_case_is_not_hidden_by_final_complete_case(self):
+        with self.assertRaisesRegex(ValueError, 'Missing measured BDN iterations'):
+            self.exercise(smoke=False, actual_count=iter([24, 25, 25, 25, 25, 25]))
 
 
 class MeasurementValidationTests(unittest.TestCase):

@@ -217,7 +217,7 @@ def micro(host, output, label, phase, smoke):
             if not warm or float(warm[1]) < 20 or int(warm[2]) <= 0:
                 raise ValueError(f'Missing actual warmup: {folder}')
             actual = re.findall(r'^WorkloadActual\s+\d+\s*:', content, re.MULTILINE)
-    if len(actual) != 25:
+            if len(actual) != 25:
                 raise ValueError(f'Missing measured BDN iterations: {folder}')
 
 
