@@ -1,4 +1,6 @@
 using BenchmarkDotNet.Attributes;
+using System.Collections.Concurrent;
+using System.Reflection;
 using Dekaf.Producer;
 using Dekaf;
 
@@ -11,6 +13,8 @@ public class LingerAppendBench
     private byte[] _value = null!;
     private long _completed;
     private TopicPartition[] _partitions = null!;
+    private Func<bool, CancellationToken, ValueTask> _seal = null!;
+    private long _appended;
 
     [Params(1000, 65536)] public int MessageSize { get; set; }
     [Params(1, 3)] public int Partitions { get; set; }
@@ -28,7 +32,13 @@ public class LingerAppendBench
             BufferMemory = 64L * 1024 * 1024, LingerMs = 5,
             EnableIdempotence = false
         });
+        _seal = typeof(RecordAccumulator).GetMethod("SealBatchesAsync", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .CreateDelegate<Func<bool, CancellationToken, ValueTask>>(_accumulator);
         AppendAndDrain();
+        var queue = (ConcurrentQueue<TopicPartition>)typeof(RecordAccumulator)
+            .GetField("_lingerPartitions", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(_accumulator)!;
+        if (!queue.IsEmpty || _completed != _appended)
+            throw new InvalidOperationException("Burst cleanup left work or notifications behind.");
     }
 
     [Benchmark(OperationsPerInvoke = 101)]
@@ -44,14 +54,22 @@ public class LingerAppendBench
                 throw new InvalidOperationException("Unexpected backpressure in the synchronous fixture.");
             Drain(_partitions[i % Partitions]);
         }
-        // Bound queued notifications in the baseline between repeated invocations.
-        // The loaded fixture deliberately retains the real producer sweep cadence.
-        var linger = _accumulator.ExpireLingerAsync(CancellationToken.None);
-        if (!linger.IsCompletedSuccessfully)
-            throw new InvalidOperationException("Unexpected asynchronous linger sweep.");
-        linger.GetAwaiter().GetResult();
+        _appended += 101;
+        // Flush each fixed burst, then sweep outstanding notifications with no current
+        // batch. ExpireLingerAsync skips that sweep when the accumulator is empty, so
+        // bind the common underlying method once during setup. This identical fixture
+        // adaptation bounds the defective baseline; loaded runs keep real scheduling.
+        AwaitCompleted(_seal(true, CancellationToken.None));
         foreach (var partition in _partitions)
             Drain(partition);
+        AwaitCompleted(_seal(false, CancellationToken.None));
+    }
+
+    private static void AwaitCompleted(ValueTask sweep)
+    {
+        if (!sweep.IsCompletedSuccessfully)
+            throw new InvalidOperationException("Unexpected asynchronous linger sweep.");
+        sweep.GetAwaiter().GetResult();
     }
 
     private void Drain(TopicPartition partition)
@@ -70,7 +88,7 @@ public class LingerAppendBench
     public async Task Cleanup()
     {
         await _accumulator.DisposeAsync();
-        if (_completed == 0)
-            throw new InvalidOperationException("The fixture never rotated and drained a batch.");
+        if (_completed == 0 || _completed != _appended)
+            throw new InvalidOperationException("Not every appended message was drained.");
     }
 }
