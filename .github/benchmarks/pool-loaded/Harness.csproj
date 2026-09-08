@@ -11,6 +11,7 @@
     <ProjectReference Include="../../../src/Dekaf/Dekaf.csproj" />
     <Compile Include="Program.cs" />
     <Compile Include="IntervalLatency.cs" />
+    <Compile Include="BlockHistogram.cs" />
     <Compile Include="../../../tools/Dekaf.StressTests/Metrics/LatencyTracker.cs" />
   </ItemGroup>
 </Project>

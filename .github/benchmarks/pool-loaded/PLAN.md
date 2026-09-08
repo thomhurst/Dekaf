@@ -20,7 +20,17 @@ The fixture additionally preallocates one-second intervals for both latency boun
 
 Recording uses preallocated storage and Interlocked updates. There is no reset, outlier sampling, per-message allocation, or replacement of the global 10-microsecond histogram. Snapshot allocation and serialization happen after the measured CPU/allocation boundaries. Recording overhead remains included in both products' client-process measurements. Observations beyond capacity retain their count and extrema in `OutsideCapacity`; they make a successfully drained phase fail collection validation rather than silently disappearing. `IntervalsStableAfterDrain` and `IntervalCaptureComplete` distinguish drained, count-validated observations from failure snapshots that can race late completions.
 
-These intervals preserve the global observed maximum and expose how extrema and completion counts change over time. They do not contain interval p50/p99 distributions, prove independence between intervals, or provide confidence bounds for a population maximum. Uncertainty analysis, interval percentile evidence, startup-trend assessment, and a justified maximum-latency acceptance method remain unfinished. Neither the collection flags nor local fixture tests confer performance acceptance.
+These intervals preserve the global observed maximum and expose how extrema and completion counts change over time. They do not prove independence between intervals or provide confidence bounds for a population maximum. Neither the collection flags nor local fixture tests confer performance acceptance.
+
+### Ten-second latency distributions
+
+Delivery and completion latency also record every completion in ten-second blocks with the global histogram's 10-microsecond buckets and five-second exclusive upper range. Raw reports retain every occupied bucket index/count and each block's latency-overflow count. Zero-count buckets are represented implicitly; zero-count time blocks remain explicit. Block assignment uses the same completion timestamp and phase origin as the one-second extrema. The final block may cover only part of its nominal ten-second range; use the reported phase duration and capacity when interpreting it. The block containing the ingress deadline includes both admission and drain work. No block or maximum is discarded.
+
+All block arrays are allocated and their pages touched before workload warmup. The planned 60-second warmup and 300-second measured workload require 352,000,000 bytes of histogram buckets across both latency boundaries and both phases, plus object headers and small counter arrays. This is harness memory, present equally for both products, outside measured allocation counters but inside heap/RSS scope. Every completion incurs an additional bucket update inside measured CPU scope. This observer changes the fixture; earlier timings cannot serve as its controls. Snapshots emit sparse buckets only after phase CPU/allocation accounting stops. Successful drain validates each block's count against its constituent one-second intervals. Capacity overflow invalidates collection; latency overflow remains recorded and precludes acceptance.
+
+The raw distributions support reconstruction of block and aggregate percentile bucket bounds. A bucket represents `[index * 10, (index + 1) * 10)` microseconds, not an exact latency. Aggregate percentiles can be checked against the original global histogram's midpoint convention; exact maxima remain in the one-second observations. A statistical estimator, dependence assessment, startup-trend assessment, and a justified maximum-latency acceptance method remain required. Retaining distributions does not establish those properties.
+
+`analyze-blocks.py warmup.json measured.json --output analysis.json` validates drained collection, exact counts and extrema, bucket ordering/ranges, and reconstructed global p50/p95/p99. It reports block p50/p99 bounds and partial-block duration, retains empty blocks, and refuses to overwrite an existing output. `COLLECTION_VALIDATED` describes those checks only; it is not a performance or steady-state verdict. Missing fields, capacity/latency overflow, nonfinite latency/duration fields, and inconsistent observations produce `INVALID_COLLECTION` with exit 1.
 
 ## Intended hosted campaign
 
@@ -35,6 +45,8 @@ Do not infer a formal performance PASS from the scalar screen alone. The current
 ## Local smoke
 
 Three seconds of warmup plus five measured seconds is deliberately below acceptance warmup. It tests both message configurations, all-message latency counts, exact completion and slot recovery against a newly owned Kafka container. The first launcher attempt used mismatched listener/advertised ports and failed readiness before running the client; its logs are retained. The corrected launcher binds the same selected port inside and outside the owned container. Only the container created by that launcher is removed.
+
+The block-histogram validation instead predeclares 12 seconds of warmup and 13 measured seconds for each product/configuration. Both phases cross a ten-second block boundary. This remains below the acceptance minimum and validates collection only. All other smoke inputs and fresh-container isolation remain the same; these new observations do not replace prior timing evidence.
 
 ## Broker-loss diagnostic
 

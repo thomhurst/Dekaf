@@ -210,10 +210,14 @@ internal sealed class Workload
             await sampler;
             var deliveryIntervals = phase.DeliveryIntervals.GetSnapshot();
             var completionIntervals = phase.CompletionIntervals.GetSnapshot();
+            var deliveryBlocks = phase.DeliveryBlocks.GetSnapshot();
+            var completionBlocks = phase.CompletionBlocks.GetSnapshot();
             var intervalsComplete = drained
                 && deliveryIntervals.OutsideCapacity.Count == 0 && completionIntervals.OutsideCapacity.Count == 0
                 && deliveryIntervals.Intervals.Sum(interval => interval.Count) == phase.Acknowledged
-                && completionIntervals.Intervals.Sum(interval => interval.Count) == phase.Consumed;
+                && completionIntervals.Intervals.Sum(interval => interval.Count) == phase.Consumed
+                && deliveryBlocks.MatchesIntervalCounts(deliveryIntervals)
+                && completionBlocks.MatchesIntervalCounts(completionIntervals);
             if (drained && !intervalsComplete)
                 Fail(new InvalidOperationException("Interval observations exceeded capacity or lost completions."));
             var label = index == 0 ? "warmup" : "measured";
@@ -228,6 +232,7 @@ internal sealed class Workload
                 IntervalsStableAfterDrain = drained,
                 IntervalCaptureComplete = intervalsComplete,
                 DeliveryIntervals = deliveryIntervals, CompletionIntervals = completionIntervals,
+                DeliveryBlocks = deliveryBlocks, CompletionBlocks = completionBlocks,
                 Samples = samples, Failure = _failure?.ToString()
             }), CancellationToken.None);
         }
@@ -294,6 +299,7 @@ internal sealed class Workload
                 var completed = Stopwatch.GetTimestamp();
                 phase.Completion.RecordTicks(completed - started);
                 phase.CompletionIntervals.RecordTicks(completed - started, completed - phase.StartTimestamp);
+                phase.CompletionBlocks.RecordTicks(completed - started, completed - phase.StartTimestamp);
                 Interlocked.Increment(ref phase.Consumed);
                 _slots[slotIndex].Consumed(sequence);
             }
@@ -337,6 +343,8 @@ internal sealed class Workload
         public readonly LatencyTracker Completion = new();
         public readonly IntervalLatency DeliveryIntervals = new(capacitySeconds);
         public readonly IntervalLatency CompletionIntervals = new(capacitySeconds);
+        public readonly BlockHistogram DeliveryBlocks = new(capacitySeconds);
+        public readonly BlockHistogram CompletionBlocks = new(capacitySeconds);
     }
 
     private sealed class Slot
@@ -385,6 +393,7 @@ internal sealed class Workload
                 var completed = Stopwatch.GetTimestamp();
                 _phase.Delivery.RecordTicks(completed - _started);
                 _phase.DeliveryIntervals.RecordTicks(completed - _started, completed - _phase.StartTimestamp);
+                _phase.DeliveryBlocks.RecordTicks(completed - _started, completed - _phase.StartTimestamp);
                 Interlocked.Increment(ref _phase.Acknowledged);
             }
             Complete();
