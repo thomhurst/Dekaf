@@ -1,0 +1,31 @@
+# PR #3138 administrative measurement plan
+
+This experiment branch is separate from the product PR. Do not merge the harness into the product. Pin A to fresh main `5df2f0d03607389384b5c1466e17812a9084fac9` and B to `0583a5013c6cd777cb02bbf6596d73b5087dd247`; verify ancestry and both build/fixture outputs before measuring. Any movement of main is recorded before dispatch and requires reconsidering these pins. Product source is never adapted.
+
+## Workloads and interpretation
+
+The PR adds new methods in partial classes and does not edit existing implementation methods. Common controls are cached-transport create-16 with validate-only enabled and delete-16, plus real Kafka validate-only create-16. These exact existing public calls run A1, B and A2 sequentially on one `ubuntu-latest` VM. Every phase starts fresh processes and resets the broker consistently before network work. Cached responses isolate administrative request/result handling; the network workload includes connection, serialization, broker response and response processing through public call completion.
+
+Candidate-only characterization covers create-1/create-16, partial authorization failure, controller retry, delete-16, expansion-16, reassignment-16, partial plus top-level reassignment rejection/retry, three ambiguous connection failures, and an unregistered controller. A real-broker mixed validate-only create returns 15 successes and one existing-topic error without changing topic state during measurement. Main has no detailed-result API. These new cases have no equivalent A measurement and cannot establish a before/after improvement. Existing integration tests cover applied mutations; validate-only load does not measure Kafka's topic-creation propagation latency.
+
+The earlier unpaired unregistered-controller timing signal also requires an incremental P1/B/P2 control: P is the exact immediately preceding product `a654039a5b23b1e50404da8d2d7e7ba43a1f9df2`, whose error semantics match B but whose closure costs eight extra bytes per call. Run `unregistered:16` on those three fresh processes with the same settings, after the fresh-main campaign. This isolates the capture correction and supplements the main comparison. It does not excuse the predecessor's allocation regression.
+
+The unit is a completed administrative call, including result observation. Concurrency is one, closed loop: the next call begins after the previous call completes. There is no external offered queue. Each call's exact Stopwatch duration contributes to the latency distribution, including every maximum. The process-wide CPU/allocation scope includes probe bookkeeping; broker CPU is separate. Producer/consumer per-message metrics are not applicable to this additive admin API. No zero-byte claim applies to allocated admin results.
+
+## Warmup and runtime evidence
+
+Use Release/net10.0 with SDK selected by global.json, workstation GC, tiered compilation and dynamic PGO enabled. The complete measurement path is primed by 128 segments of at least 50 ms followed by one complete one-second segment. Every fresh process then exercises its configured workload for 120 elapsed seconds before 60 measured seconds. Primer counts supplement elapsed warmup; they do not substitute for it. All primer, warmup and actual samples remain retained.
+
+This direct-call probe reuses the complete-entry primer and exact-tick histogram from `tools/AdminDescriptionEvidence/Probe.cs` at harness commit `9297e51a068a3511957b985fff9af21c5b9fcba9`. The cached fixture is adapted from `AdminDetailedMutationBenchmarks.cs` at the pinned product head, with elapsed warmup owned by the driver. `CANDIDATE` only compiles methods absent from main; the control source/input paths stay identical. No BenchmarkDotNet engine stage is used in this experiment. This does not repair or accept the earlier administrative BDN experiments, whose later JIT transitions remain unresolved.
+
+Retain one-second completed counts, CPU, exact p50/p99/max distributions, allocation totals, JIT method count/time, thread-pool growth/pending work, GC collections, managed heap and RSS. Validate histogram totals, measured boundaries, loaded product hashes and all expected outcomes before and after sampling. Any unexpected exception, timeout, wrong result or unfinished call invalidates the run. Assess JIT/thread-pool startup transitions and CPU/latency trends in the last ten warmup seconds and every measured row. An unexplained transition or continued startup means INCONCLUSIVE, with no retrospectively removed samples.
+
+## Criteria declared before timing
+
+Against each control independently: completed-call throughput must not fall over 3%; CPU/call must not increase over 3%; actual p50/p99/max latency must not increase over 5%; allocation/call must not increase over 1 byte. A1/A2 drift must satisfy the same bounds. Preserve absolute values and deltas against both controls. Report sample counts and uncertainty; point estimates and overlapping intervals alone do not establish equivalence.
+
+Require bounded heap/RSS/GC and pending work throughout the measured interval. This bounded administrative experiment does not prove long-term leak absence. Any applicable missing evidence, startup activity, material control drift or insufficient precision remains INCONCLUSIVE. A confirmed protected-metric loss is REGRESSION. No tradeoff is approved. Existing PR diagnostics and their adverse signals remain on record; candidate-only characterization cannot waive them.
+
+First validate all fixture configurations without timing. Then run a bounded local startup probe before considering a hosted comparison. Local output is diagnostic only. Do not dispatch a full comparison with an invalid fixture or unresolved startup design. A first hosted INCONCLUSIVE permits one exact repeat only; further work needs a changed experiment, causal candidate or maintainer direction.
+
+Archive exact source/product/harness SHAs, build commands/logs, runtime/runner metadata, loaded binaries with verified SHA-256 copies, every histogram/time-series row and the declared plan before citing evidence. Keep all results outside removable worktrees or in a durable uploaded artifact. The driver never writes a GitHub acceptance gate.

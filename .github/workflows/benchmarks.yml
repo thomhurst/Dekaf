@@ -9,7 +9,7 @@ on:
       suite:
         required: true
         type: choice
-        options: [micro, pool]
+        options: [micro, pool, admin]
       baseline_sha:
         required: true
         description: Exact baseline SHA
@@ -21,7 +21,7 @@ permissions:
 jobs:
   compare:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 180
     env:
       BASELINE_SHA: ${{ inputs.baseline_sha }}
       CANDIDATE_SHA: ${{ inputs.candidate_sha }}
@@ -54,6 +54,13 @@ jobs:
           python3 .github/scripts/pool_reset_aba.py A1
           python3 .github/scripts/pool_reset_aba.py B
           python3 .github/scripts/pool_reset_aba.py A2
+      - name: Administrative direct-call comparison
+        if: inputs.suite == 'admin'
+        run: |
+          python3 -m unittest discover -s tools/AdminMutationEvidence -p test_validate_results.py
+          python3 -m unittest discover -s tools/AdminShareOffsetEvidence -p test_comparison.py
+          python3 -m unittest discover -s tools/AdminMemberRemovalEvidence -p test_comparison.py
+          python3 .github/scripts/admin_refresh.py
       - name: Record final main
         if: always()
         run: git ls-remote origin refs/heads/main > main-at-end.txt
