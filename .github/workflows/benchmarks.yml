@@ -1,4 +1,4 @@
-name: Pool JIT attribution
+name: Pool sampler primer diagnostic
 on:
   workflow_dispatch:
 permissions:
@@ -21,7 +21,7 @@ jobs:
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
         with:
           global-json-file: global.json
-      - name: Verify immutable hosts and trace smoke
+      - name: Verify immutable product, build primer fixture, and trace smoke
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 .github/scripts/pool_jit_trace.py prepare
@@ -34,7 +34,7 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
-          name: pool-jit-attribution
+          name: pool-sampler-primer
           path: evidence/
           include-hidden-files: true
           retention-days: 90

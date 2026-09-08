@@ -1,10 +1,34 @@
-"""Candidate-only U1/trace/U2 diagnostic using immutable archived binaries."""
+"""Candidate-only U1/trace/U2 diagnostic of sampler priming with immutable product binaries."""
 from pathlib import Path
-import hashlib,json,os,shutil,subprocess,sys,zipfile
+import csv,hashlib,json,os,re,shutil,subprocess,sys,zipfile
 ROOT=Path.cwd();OUT=ROOT/"evidence";FIXTURE=ROOT/".github/benchmarks/pool-jit"
 ARTIFACT="10041764756";DIGEST="ede8e8e1beb3b6016ff2f779bae516720ab7cca465ff4172e10524e6bb08b3c5"
 def run(args,log):
     with log.open("w") as output:subprocess.run([str(x) for x in args],stdout=output,stderr=subprocess.STDOUT,check=True)
+
+def prepare_primer():
+    fixture = ROOT / ".github/benchmarks/pool-primer"
+    rebuilt = OUT / "rebuilt-fixture"
+    shutil.copytree(OUT / "host", OUT / "original-host")
+    shutil.copytree(fixture, OUT / "fixture-source")
+    run(["dotnet", "build", fixture / "Harness.csproj", "-c", "Release",
+         "--disable-build-servers", "-p:UseSharedCompilation=false",
+         "-p:ArchivedHost=" + str(OUT / "host"), "-o", rebuilt], OUT / "fixture-build.log")
+    replaced = {"Dekaf.Benchmarks.dll", "Dekaf.Benchmarks.pdb"}
+    for name in replaced:
+        shutil.copy2(rebuilt / name, OUT / "host" / name)
+    bindings = []
+    for original in sorted((OUT / "original-host").rglob("*")):
+        if not original.is_file():
+            continue
+        relative = original.relative_to(OUT / "original-host")
+        loaded = OUT / "host" / relative
+        before = hashlib.sha256(original.read_bytes()).hexdigest()
+        after = hashlib.sha256(loaded.read_bytes()).hexdigest()
+        if str(relative) not in replaced and before != after:
+            raise RuntimeError("Product or dependency changed: " + str(relative))
+        bindings.append(dict(path=relative.as_posix(), original=before, loaded=after))
+    (OUT / "fixture-bindings.json").write_text(json.dumps(bindings, indent=2))
 def execute(phase,traced=False,smoke=False):
     dest=OUT/phase;dest.mkdir()
     env=dict(os.environ,DOTNET_TieredCompilation="1",DOTNET_TieredPGO="1",DOTNET_ReadyToRun="1")
@@ -38,11 +62,30 @@ def execute(phase,traced=False,smoke=False):
         trace=json.loads((dest/"events.json").read_text());events=[e for e in trace["events"] if e["kind"]=="engine"]
         expected=1 if smoke else 25
         if trace["lost"] or sum(e["id"]==15 for e in events)!=expected or sum(e["id"]==16 for e in events)!=expected:raise RuntimeError("Incomplete engine trace")
+        expected_warmup = 1 if smoke else 50
+        if any(sum(e["id"] == event_id for e in events) != expected_warmup for event_id in (13, 14)):
+            raise RuntimeError("Incomplete engine warmup trace")
     benchmark=json.loads(next((dest/"bdn/results").glob("*full.json")).read_text())["Benchmarks"][0]
     warm=[m for m in benchmark["Measurements"] if m["IterationMode"]=="Workload" and m["IterationStage"]=="Warmup"]
     actual=[m for m in benchmark["Measurements"] if m["IterationMode"]=="Workload" and m["IterationStage"]=="Actual"]
-    if len(actual)!=(1 if smoke else 25) or len(warm)!=(1 if smoke else 30):raise RuntimeError("Wrong BDN sample shape")
+    if len(actual)!=(1 if smoke else 25) or len(warm)!=(1 if smoke else 50):raise RuntimeError("Wrong BDN sample shape")
     if not smoke and sum(m["Nanoseconds"] for m in warm)<20e9:raise RuntimeError("Insufficient elapsed BDN warmup")
+    setup = re.findall(r"WARM completed seconds=([\d.]+) calls=(\d+)", (dest / "host.log").read_text())
+    if len(setup) != 1 or int(setup[0][1]) <= 0 or (not smoke and float(setup[0][0]) < 20):
+        raise RuntimeError("Insufficient elapsed workload setup")
+    primer = re.findall(r"PRIMER completed seconds=([\d.]+) callbacks=(\d+)", (dest / "host.log").read_text())
+    if len(primer) != 1 or float(primer[0][0]) < (1 if smoke else 20):
+        raise RuntimeError("Missing elapsed sampler primer")
+    with (dest / "bdn/sampler-primer.csv").open(newline="") as stream:
+        series = list(csv.DictReader(stream))
+    if not series or int(series[-1]["callbacks"]) != int(primer[0][1]) or int(primer[0][1]) <= 0:
+        raise RuntimeError("Incomplete sampler primer series")
+    with (dest / "bdn/runtime.csv").open(newline="") as stream:
+        runtime = list(csv.DictReader(stream))
+    if any("primer" in row["workload"] for row in runtime):
+        raise RuntimeError("Primer samples leaked into workload samples")
+    if sum(row["workload"].startswith("WorkloadActual") for row in runtime) != len(actual):
+        raise RuntimeError("Missing actual runtime samples")
 if sys.argv[1]=="prepare":
     OUT.mkdir()
     run(["dotnet","--info"],OUT/"dotnet-info.txt");run(["lscpu"],OUT/"hardware.txt")
@@ -66,11 +109,13 @@ if sys.argv[1]=="prepare":
     shutil.copytree(FIXTURE,OUT/"inspector-source")
     shutil.copy2(__file__,OUT/"pool_jit_trace.py")
     manifest=dict(product="4479317a650ea51a2a2ecdc0ccf5a7de8fb51c7d",originalHarness="b26ffdc9070cc68ceaca07bf4193f334df6b2744",harness=subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip(),mainAtRun=subprocess.check_output(["git","ls-remote","origin","refs/heads/main"],text=True).strip(),imageVersion=os.getenv("ImageVersion"),imageOS=os.getenv("ImageOS"),settings={k:os.getenv(k) for k in ["DOTNET_TieredCompilation","DOTNET_TieredPGO","DOTNET_ReadyToRun"]})
+    manifest.update(fixtureIntervention="20-second real logger primer and 50 BDN workload warmups", plan=".github/benchmarks/pool-primer/PLAN.md")
     (OUT/"manifest.json").write_text(json.dumps(manifest,indent=2))
     run(["dotnet","tool","install","--tool-path",OUT/"trace-tool","dotnet-trace","--version","10.0.731102"],OUT/"trace-install.log")
     run(["dotnet","build",FIXTURE/"Inspector.csproj","-c","Release","--disable-build-servers","-p:UseSharedCompilation=false","-o",OUT/"inspector"],OUT/"inspector-build.log")
+    prepare_primer()
     run(["dotnet","build-server","shutdown"],OUT/"build-server-shutdown.log")
     execute("smoke",True,True)
-    run(["git","archive","--format=zip","--output="+str(OUT/"harness-source.zip"),"HEAD",".github/benchmarks/pool-jit",".github/scripts/pool_jit_trace.py",".github/workflows/benchmarks.yml","global.json","Directory.Build.props","Directory.Packages.props"],OUT/"harness-archive.log")
+    run(["git","archive","--format=zip","--output="+str(OUT/"harness-source.zip"),"HEAD",".github/benchmarks/pool-jit",".github/benchmarks/pool-primer",".github/scripts/pool_jit_trace.py",".github/workflows/benchmarks.yml","global.json","Directory.Build.props","Directory.Packages.props"],OUT/"harness-archive.log")
 elif sys.argv[1] in ["U1","T","U2"]:execute(sys.argv[1],sys.argv[1]=="T")
 else:raise ValueError(sys.argv[1])
