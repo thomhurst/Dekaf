@@ -1,0 +1,54 @@
+"""Validate elapsed exact-helper warmup and retain all per-second samples."""
+import argparse, hashlib, json, math
+from pathlib import Path
+
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('raw', type=Path)
+parser.add_argument('output', type=Path)
+parser.add_argument('--smoke', action='store_true')
+args = parser.parse_args()
+phases = ('smoke',) if args.smoke else ('U1', 'T', 'U2')
+expected = {
+    'System.Number': 'UInt64ToDecStr',
+    'System.Threading.PortableThreadPool': 'get_ThreadCount',
+}
+summary = {}
+common_bindings = None
+for phase in phases:
+    directory = args.raw / phase / 'bdn'
+    primer = json.loads((directory / 'helper-primer.json').read_text())
+    minimum = 1 if args.smoke else 20
+    seconds, completed, samples = primer['Seconds'], primer['Completed'], primer['Samples']
+    if not math.isfinite(seconds) or seconds < minimum or completed <= 0 or len(samples) < minimum:
+        raise RuntimeError(f'Incomplete helper primer: {phase}')
+    previous_seconds = previous_completed = 0
+    for sample in samples:
+        if any(not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0 for value in sample.values()):
+            raise RuntimeError(f'Invalid helper sample: {phase}')
+        if sample['Seconds'] <= previous_seconds or sample['Completed'] <= previous_completed or sample['Seconds'] > seconds:
+            raise RuntimeError(f'Non-increasing helper series: {phase}')
+        previous_seconds, previous_completed = sample['Seconds'], sample['Completed']
+    if previous_completed != completed:
+        raise RuntimeError(f'Missing final helper completion count: {phase}')
+    bindings = json.loads((directory / 'helper-bindings.json').read_text())
+    if len(bindings) != 4 or len({b['MetadataToken'] for b in bindings}) != 4 or len({b['ModuleId'] for b in bindings}) != 1:
+        raise RuntimeError(f'Invalid helper bindings: {phase}')
+    for type_name, method in expected.items():
+        if sum(b['Type'] == type_name and method in b['Signature'] for b in bindings) != 1:
+            raise RuntimeError(f'Wrong helper binding: {type_name}.{method}')
+    for method in ('VolatileRead', 'get_NumExistingThreads'):
+        if sum(b['Type'] == 'System.Threading.PortableThreadPool+ThreadCounts' and method in b['Signature'] for b in bindings) != 1:
+            raise RuntimeError(f'Wrong ThreadCounts binding: {method}')
+    if common_bindings is not None and common_bindings != bindings:
+        raise RuntimeError('Helper bindings differ across phases')
+    common_bindings = bindings
+    summary[phase] = dict(seconds=seconds, completed=completed, samples=len(samples), first=samples[0], last=samples[-1])
+runtime = json.loads((args.raw / 'runtime-bindings.json').read_text())
+core = args.raw / 'runtime' / Path(runtime['location']).name
+if hashlib.sha256(core.read_bytes()).hexdigest() != runtime['sha256']:
+    raise RuntimeError('Archived CoreLib hash mismatch')
+if common_bindings[0]['Location'] != runtime['location']:
+    raise RuntimeError('Loaded CoreLib path mismatch')
+args.output.mkdir(parents=True, exist_ok=False)
+(args.output / 'helper-summary.json').write_text(json.dumps(dict(phases=summary, bindings=common_bindings, runtime=runtime), indent=2), encoding='utf-8')
+print(json.dumps(summary, indent=2))
