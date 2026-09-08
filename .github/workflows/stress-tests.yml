@@ -141,6 +141,7 @@ jobs:
       matrix: ${{ steps.select.outputs.matrix }}
       full_run: ${{ steps.select.outputs.full_run }}
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - name: Select lanes for this run
         id: select
         env:
@@ -151,6 +152,8 @@ jobs:
           ADAPTIVE_CONNECTIONS: ${{ github.event.inputs.adaptive_connections }}
           BASELINE_SHA: ${{ github.event.inputs.baseline_sha }}
           ABA_SECOND_CANDIDATE: ${{ github.event.inputs.aba_second_candidate }}
+          DURATION_MINUTES: ${{ github.event.inputs.duration_minutes }}
+          PRODUCER_WARMUP_SECONDS: ${{ github.event.inputs.producer_warmup_seconds }}
           PROFILE_MODE: ${{ github.event.inputs.profile_mode }}
           EVENT_NAME: ${{ github.event_name }}
         run: |
@@ -329,6 +332,11 @@ jobs:
                   if segments < $full_segments then .timeout_minutes = $segment_budget * segments else . end
                 end
             ]}' lanes.json)
+          if [ -n "$baseline_sha" ]; then
+            matrix=$(python3 .github/scripts/stress_timeout.py --matrix "$matrix" \
+              --duration-minutes "${DURATION_MINUTES:-15}" \
+              --warmup-seconds "${PRODUCER_WARMUP_SECONDS:-180}")
+          fi
           count=$(echo "$matrix" | jq '.include | length')
           if [ "$count" -eq 0 ]; then
             echo "::error::Unknown lane '$lane'. Valid lanes: all $(jq -r '[.[].lane] | join(" ")' lanes.json)"

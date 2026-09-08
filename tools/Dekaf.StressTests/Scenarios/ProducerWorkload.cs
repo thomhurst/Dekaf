@@ -13,7 +13,7 @@ internal static class ProducerWorkload
         ThroughputTracker throughput, LatencyTracker latency, TimeSpan duration,
         bool awaitDelivery, CancellationToken cancellationToken) =>
         MeasureAsync(options, throughput, latency, duration, "Dekaf",
-            token => ProduceDekafAsync(producer, options, throughput, latency, awaitDelivery, token, cancellationToken),
+            (ingress, delivery) => ProduceDekafAsync(producer, options, throughput, latency, awaitDelivery, ingress, delivery),
             () => StressTestHelpers.FlushWithTimeoutAsync(producer, throughput), cancellationToken,
             () => StressTestHelpers.CaptureProducerDeliveryDiagnostics(producer, options));
 
@@ -22,7 +22,7 @@ internal static class ProducerWorkload
     private static async Task ProduceDekafAsync(
         IKafkaProducer<string, string> producer, StressTestOptions options,
         ThroughputTracker throughput, LatencyTracker latency, bool awaitDelivery,
-        CancellationToken token, CancellationToken callerToken)
+        CancellationToken token, CancellationToken deliveryToken)
     {
         var value = new string('x', options.MessageSizeBytes);
         var index = 0L;
@@ -33,7 +33,7 @@ internal static class ProducerWorkload
                 if (awaitDelivery)
                 {
                     var started = Stopwatch.GetTimestamp();
-                    await producer.ProduceAsync(options.Topic, StressTestHelpers.GetKey(index), value, callerToken).ConfigureAwait(false);
+                    await producer.ProduceAsync(options.Topic, StressTestHelpers.GetKey(index), value, deliveryToken).ConfigureAwait(false);
                     latency.RecordTicks(Stopwatch.GetTimestamp() - started);
                 }
                 else if (index % StressTestHelpers.LatencySampleInterval == 0)
@@ -62,14 +62,14 @@ internal static class ProducerWorkload
         ThroughputTracker throughput, LatencyTracker latency, TimeSpan duration,
         bool awaitDelivery, CancellationToken cancellationToken) =>
         MeasureAsync(options, throughput, latency, duration, "Confluent",
-            token => ProduceConfluentAsync(producer, options, throughput, latency, awaitDelivery, token, cancellationToken),
+            (ingress, delivery) => ProduceConfluentAsync(producer, options, throughput, latency, awaitDelivery, ingress, delivery),
             () => { ConfluentStressTestHelpers.FlushWithTimeout(producer, throughput); return Task.CompletedTask; },
             cancellationToken);
 
     private static async Task ProduceConfluentAsync(
         ConfluentKafka.IProducer<string, string> producer, StressTestOptions options,
         ThroughputTracker throughput, LatencyTracker latency, bool awaitDelivery,
-        CancellationToken token, CancellationToken callerToken)
+        CancellationToken token, CancellationToken deliveryToken)
     {
         var value = new string('x', options.MessageSizeBytes);
         var index = 0L;
@@ -84,7 +84,7 @@ internal static class ProducerWorkload
                 if (awaitDelivery)
                 {
                     var started = Stopwatch.GetTimestamp();
-                    await producer.ProduceAsync(options.Topic, message, callerToken).ConfigureAwait(false);
+                    await producer.ProduceAsync(options.Topic, message, deliveryToken).ConfigureAwait(false);
                     latency.RecordTicks(Stopwatch.GetTimestamp() - started);
                 }
                 else if (index % StressTestHelpers.LatencySampleInterval == 0)
@@ -110,7 +110,7 @@ internal static class ProducerWorkload
 
     private static async Task<ProducerWorkloadResult> MeasureAsync(
         StressTestOptions options, ThroughputTracker throughput, LatencyTracker latency, TimeSpan duration, string client,
-        Func<CancellationToken, Task> produce, Func<Task> drain, CancellationToken cancellationToken,
+        Func<CancellationToken, CancellationToken, Task> produce, Func<Task> drain, CancellationToken cancellationToken,
         Func<ProducerDeliveryDiagnosticsSnapshot?>? captureProducerDiagnostics = null)
     {
         if (throughput.Warmup is not null)
@@ -120,23 +120,42 @@ internal static class ProducerWorkload
         }
         using var gc = new GcStats();
         using var ingress = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        using var delivery = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         using var sampling = new CancellationTokenSource();
         throughput.Start();
         var stopIngress = StopIngressAsync(ingress, duration);
         using var watchdog = options.ProgressWatchdog.Track(throughput, client, "producer workload", captureProducerDiagnostics);
         var sampler = StressTestHelpers.RunSamplerAsync(throughput, sampling.Token);
         var resources = StressTestHelpers.RunResourceMonitorAsync(sampling.Token);
+        var producing = produce(ingress.Token, delivery.Token);
         double workloadSeconds;
         try
         {
-            await produce(ingress.Token).ConfigureAwait(false);
+            try
+            {
+                await producing.WaitAsync(ingress.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (ingress.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+            {
+                // Stop admission at the deadline, then observe the final in-flight send.
+                // Canceling ProduceAsync here could hide a message already appended.
+            }
             workloadSeconds = throughput.Elapsed.TotalSeconds;
+            delivery.CancelAfter(StressTestHelpers.OperationTimeout);
             await drain().ConfigureAwait(false);
-            await latency.WaitForDeliverySamplesAsync().ConfigureAwait(false);
+            await producing.WaitAsync(delivery.Token).ConfigureAwait(false);
+            await latency.WaitForDeliverySamplesAsync().WaitAsync(delivery.Token).ConfigureAwait(false);
+            delivery.Token.ThrowIfCancellationRequested();
         }
         finally
         {
             ingress.Cancel();
+            delivery.Cancel();
+            // A producer ignoring cancellation may finish after a failed drain. Observe
+            // that failure without holding up the bounded phase or retaining a task list.
+            if (!producing.IsCompletedSuccessfully)
+                _ = producing.ContinueWith(static task => _ = task.Exception, CancellationToken.None,
+                    TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
             sampling.Cancel();
             await stopIngress.ConfigureAwait(false);
             await Task.WhenAll(sampler, resources).ConfigureAwait(false);
