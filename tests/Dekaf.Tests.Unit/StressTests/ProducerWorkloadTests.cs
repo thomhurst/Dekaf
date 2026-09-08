@@ -15,15 +15,18 @@ public sealed class ProducerWorkloadTests
     [Arguments(true)]
     public async Task FinalFireAppend_IsDrainedOrReportsDeadlineBeforeMeasurementStops(bool drainExpires)
     {
-        var directory = Path.Combine(Path.GetTempPath(), "dekaf-workload-" + Guid.NewGuid().ToString("N"));
+        var directory = Path.Join(Path.GetTempPath(), "dekaf-workload-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
         try
         {
             using var watchdog = new ProgressWatchdog(directory);
             var options = new StressTestOptions
             {
-                BootstrapServers = "unused:9092", Topic = "test", DurationMinutes = 1,
-                MessageSizeBytes = 1000, ProgressWatchdog = watchdog
+                BootstrapServers = "unused:9092",
+                Topic = "test",
+                DurationMinutes = 1,
+                MessageSizeBytes = 1000,
+                ProgressWatchdog = watchdog
             };
             var admission = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             var firstFlush = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -81,15 +84,18 @@ public sealed class ProducerWorkloadTests
     [Arguments(true)]
     public async Task DrainTimeout_ReturnsSerializableFailureWithRuntimeSamples(bool confluent)
     {
-        var directory = Path.Combine(Path.GetTempPath(), "dekaf-workload-" + Guid.NewGuid().ToString("N"));
+        var directory = Path.Join(Path.GetTempPath(), "dekaf-workload-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
         try
         {
             using var watchdog = new ProgressWatchdog(directory);
             var options = new StressTestOptions
             {
-                BootstrapServers = "unused:9092", Topic = "test", DurationMinutes = 1,
-                MessageSizeBytes = 1000, ProgressWatchdog = watchdog
+                BootstrapServers = "unused:9092",
+                Topic = "test",
+                DurationMinutes = 1,
+                MessageSizeBytes = 1000,
+                ProgressWatchdog = watchdog
             };
             var throughput = new ThroughputTracker();
             Task<ProducerWorkloadResult> run;
@@ -150,68 +156,67 @@ public sealed class ProducerWorkloadTests
     public async Task StalledWorkload_ReportsClientAndScenario(bool confluent)
     {
         var client = confluent ? "Confluent" : "Dekaf";
-        var directory = Path.Combine(Path.GetTempPath(), "dekaf-workload-" + Guid.NewGuid().ToString("N"));
+        var directory = Path.Join(Path.GetTempPath(), "dekaf-workload-" + Guid.NewGuid().ToString("N"));
         var exited = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         using var cancellation = new CancellationTokenSource();
-        var watchdog = new ProgressWatchdog(directory,
-            captureAfter: TimeSpan.FromMilliseconds(20), exitAfter: TimeSpan.FromMilliseconds(60),
-            pollInterval: TimeSpan.FromMilliseconds(10), exitProcess: _ => exited.TrySetResult(),
-            captureManagedStackReport: () => "controlled stalled producer");
-        Task<ProducerWorkloadResult>? run = null;
         try
         {
-            var options = new StressTestOptions
+            using var watchdog = new ProgressWatchdog(directory,
+                captureAfter: TimeSpan.FromMilliseconds(20), exitAfter: TimeSpan.FromMilliseconds(60),
+                pollInterval: TimeSpan.FromMilliseconds(10), exitProcess: _ => exited.TrySetResult(),
+                captureManagedStackReport: () => "controlled stalled producer");
+            Task<ProducerWorkloadResult>? run = null;
+            try
             {
-                BootstrapServers = "unused:9092",
-                Topic = "test",
-                MessageSizeBytes = 1000,
-                DurationMinutes = 1,
-                ProgressWatchdog = watchdog
-            };
-            if (confluent)
-            {
-                var producer = Substitute.For<ConfluentKafka.IProducer<string, string>>();
-                producer.ProduceAsync("test", Arg.Any<ConfluentKafka.Message<string, string>>(), Arg.Any<CancellationToken>())
-                    .Returns(async call =>
-                    {
-                        await Task.Delay(Timeout.InfiniteTimeSpan, call.Arg<CancellationToken>());
-                        return new ConfluentKafka.DeliveryResult<string, string>();
-                    });
-                run = ProducerWorkload.RunAsync(producer, options, client, "producer-async-idempotent", new ThroughputTracker(), new LatencyTracker(),
-                    TimeSpan.FromMinutes(1), awaitDelivery: true, cancellation.Token);
+                var options = new StressTestOptions
+                {
+                    BootstrapServers = "unused:9092",
+                    Topic = "test",
+                    MessageSizeBytes = 1000,
+                    DurationMinutes = 1,
+                    ProgressWatchdog = watchdog
+                };
+                if (confluent)
+                {
+                    var producer = Substitute.For<ConfluentKafka.IProducer<string, string>>();
+                    producer.ProduceAsync("test", Arg.Any<ConfluentKafka.Message<string, string>>(), Arg.Any<CancellationToken>())
+                        .Returns(async call =>
+                        {
+                            await Task.Delay(Timeout.InfiniteTimeSpan, call.Arg<CancellationToken>());
+                            return new ConfluentKafka.DeliveryResult<string, string>();
+                        });
+                    run = ProducerWorkload.RunAsync(producer, options, client, "producer-async-idempotent", new ThroughputTracker(), new LatencyTracker(),
+                        TimeSpan.FromMinutes(1), awaitDelivery: true, cancellation.Token);
+                }
+                else
+                {
+                    var producer = Substitute.For<IKafkaProducer<string, string>>();
+                    producer.ProduceAsync("test", Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+                        .Returns(call => new ValueTask<RecordMetadata>(WaitForCancellationAsync(call.Arg<CancellationToken>())));
+                    run = ProducerWorkload.RunAsync(producer, options, client, "producer-async-idempotent", new ThroughputTracker(), new LatencyTracker(),
+                        TimeSpan.FromMinutes(1), awaitDelivery: true, cancellation.Token);
+                }
+                await exited.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                await Assert.That(watchdog.WaitForWorkerExit(TimeSpan.FromSeconds(5))).IsTrue();
+                var artifacts = Directory.GetFiles(Path.Join(directory, ProgressWatchdog.ArtifactsDirectoryName), "*-stacks.txt");
+                await Assert.That(artifacts.Length).IsEqualTo(2);
+                foreach (var artifact in artifacts)
+                {
+                    var text = await File.ReadAllTextAsync(artifact);
+                    await Assert.That(text).Contains($"Client: {(confluent ? "Confluent" : "Dekaf")}");
+                    await Assert.That(text).Contains("Scenario: producer-async-idempotent");
+                }
             }
-            else
+            finally
             {
-                var producer = Substitute.For<IKafkaProducer<string, string>>();
-                producer.ProduceAsync("test", Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
-                    .Returns(call => new ValueTask<RecordMetadata>(WaitForCancellationAsync(call.Arg<CancellationToken>())));
-                run = ProducerWorkload.RunAsync(producer, options, client, "producer-async-idempotent", new ThroughputTracker(), new LatencyTracker(),
-                    TimeSpan.FromMinutes(1), awaitDelivery: true, cancellation.Token);
-            }
-            await exited.Task.WaitAsync(TimeSpan.FromSeconds(5));
-            await Assert.That(watchdog.WaitForWorkerExit(TimeSpan.FromSeconds(5))).IsTrue();
-            var artifacts = Directory.GetFiles(Path.Combine(directory, ProgressWatchdog.ArtifactsDirectoryName), "*-stacks.txt");
-            await Assert.That(artifacts.Length).IsEqualTo(2);
-            foreach (var artifact in artifacts)
-            {
-                var text = await File.ReadAllTextAsync(artifact);
-                await Assert.That(text).Contains($"Client: {(confluent ? "Confluent" : "Dekaf")}");
-                await Assert.That(text).Contains("Scenario: producer-async-idempotent");
+                cancellation.Cancel();
+                if (run is not null)
+                    await Assert.That(async () => await run.WaitAsync(TimeSpan.FromSeconds(5))).Throws<OperationCanceledException>();
             }
         }
         finally
         {
-            cancellation.Cancel();
-            try
-            {
-                if (run is not null)
-                    await Assert.That(async () => await run.WaitAsync(TimeSpan.FromSeconds(5))).Throws<OperationCanceledException>();
-            }
-            finally
-            {
-                watchdog.Dispose();
-                Directory.Delete(directory, recursive: true);
-            }
+            Directory.Delete(directory, recursive: true);
         }
     }
 
@@ -226,15 +231,18 @@ public sealed class ProducerWorkloadTests
     [Arguments(true)]
     public async Task FireAndForget_StopsIngressAndWaitsForSampledDeliveryAfterFlush(bool confluent)
     {
-        var directory = Path.Combine(Path.GetTempPath(), "dekaf-workload-" + Guid.NewGuid().ToString("N"));
+        var directory = Path.Join(Path.GetTempPath(), "dekaf-workload-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
         try
         {
             using var watchdog = new ProgressWatchdog(directory);
             var options = new StressTestOptions
             {
-                BootstrapServers = "unused:9092", Topic = "test", DurationMinutes = 1,
-                MessageSizeBytes = 1000, ProgressWatchdog = watchdog
+                BootstrapServers = "unused:9092",
+                Topic = "test",
+                DurationMinutes = 1,
+                MessageSizeBytes = 1000,
+                ProgressWatchdog = watchdog
             };
             var throughput = new ThroughputTracker();
             var latency = new LatencyTracker();
@@ -319,7 +327,7 @@ public sealed class ProducerWorkloadTests
     public async Task AwaitedSend_StopsIngressBeforeFinalDeliveryAndRecordsOutcome(bool confluent, bool fails)
     {
         var client = confluent ? "Confluent" : "Dekaf";
-        var directory = Path.Combine(Path.GetTempPath(), "dekaf-workload-" + Guid.NewGuid().ToString("N"));
+        var directory = Path.Join(Path.GetTempPath(), "dekaf-workload-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
         try
         {
@@ -402,7 +410,7 @@ public sealed class ProducerWorkloadTests
     public async Task UnexpectedSendException_FaultsWorkload(bool confluent)
     {
         var client = confluent ? "Confluent" : "Dekaf";
-        var directory = Path.Combine(Path.GetTempPath(), "dekaf-workload-" + Guid.NewGuid().ToString("N"));
+        var directory = Path.Join(Path.GetTempPath(), "dekaf-workload-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
         try
         {
