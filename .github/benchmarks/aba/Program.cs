@@ -10,9 +10,10 @@ using Perfolizer.Mathematics.OutlierDetection;
 var phase = Environment.GetEnvironmentVariable("ABA_PHASE") ?? throw new InvalidOperationException("Missing phase.");
 var dry = args.Contains("--dry");
 var shutdown = Environment.GetEnvironmentVariable("ABA_PR") == "3109";
+var warmupIterations = int.Parse(Environment.GetEnvironmentVariable("ABA_WARMUP_ITERATIONS") ?? "50");
 var job = dry ? Job.Dry : shutdown
     ? Job.Default.WithWarmupCount(30).WithIterationCount(300)
-    : Job.Default.WithWarmupCount(50).WithIterationCount(25).WithIterationTime(TimeInterval.FromMilliseconds(1000));
+    : Job.Default.WithWarmupCount(warmupIterations).WithIterationCount(25).WithIterationTime(TimeInterval.FromMilliseconds(1000));
 job = job.WithId(phase).WithOutlierMode(OutlierMode.DontRemove).WithToolchain(InProcessEmitToolchain.Instance);
 using var runtime = new RuntimeLogger(Environment.GetEnvironmentVariable("ABA_RUNTIME_LOG") ?? "runtime.csv");
 var config = DefaultConfig.Instance.AddJob(job).AddLogger(runtime).AddExporter(JsonExporter.Full)

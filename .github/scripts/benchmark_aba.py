@@ -18,10 +18,10 @@ SUITES = {
     3085: ['*RelayMetricsBenchmarks*', '*ActualPublisherBenchmarks*'],
     3086: ['*SuccessfulFetch*', '*FollowerError(Prefetch*', '*LeaderError*', '*ResponsePoolControl*'],
     3109: ['*DrainFullQueue*'],
-    3116: ['*RecordCount: 1024, HeaderCount: 0*'],
+    3116: ['*RecordCount: 1024, HeaderCount: 0*', '*RecordCount: 64, HeaderCount: 2*'],
     3117: ['*Mode: KeyRecordsDistinct*', '*Mode: KeyBatchesDistinct*', '*Mode: KeyRecordsPaired*', '*Mode: KeyBatchesPaired*'],
 }
-EXPECTED_CASES = {3082: 9, 3083: 7, 3085: 10, 3086: 8, 3109: 1, 3116: 7, 3117: 4}
+EXPECTED_CASES = {3082: 9, 3083: 7, 3085: 10, 3086: 8, 3109: 1, 3116: 14, 3117: 4}
 
 def now():
     return datetime.now(timezone.utc).isoformat()
@@ -86,19 +86,23 @@ def execute(args):
     workspace.mkdir(exist_ok=False)
     allowed_cpus = sorted(os.sched_getaffinity(0))
     cpu = allowed_cpus[0]
+    warmup_iterations = 130 if args.pr == 3116 else 50
+    minimum_warmup_seconds = 120 if args.pr == 3116 else 20
     metadata = {'started_utc': now(), 'baseline_sha': args.baseline, 'candidate_sha': args.candidate,
                 'workflow_sha': os.environ.get('GITHUB_SHA'), 'run_url': f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}",
                 'runner': 'ubuntu-latest', 'image_os': os.environ.get('ImageOS'), 'image_version': os.environ.get('ImageVersion'),
                 'cpu_affinity': [cpu], 'original_allowed_cpus': allowed_cpus, 'phase_order': ['A1', 'B', 'A2'],
                 'runtime_configuration': {'DOTNET_TieredCompilation': '0'}, 'outliers': 'DontRemove',
-                'scope': 'Microbenchmark elapsed time and managed allocations; no full Pareto acceptance.', 'phases': []}
+                'scope': 'Microbenchmark elapsed time and managed allocations; no full Pareto acceptance.', 'phases': [],
+                'warmup_iterations': warmup_iterations, 'minimum_workload_warmup_seconds': minimum_warmup_seconds}
     (artifacts / 'provenance.json').write_text(json.dumps(metadata, indent=2))
     for name, command in {'cpu': ['lscpu'], 'runtime': ['dotnet', '--info'], 'os': ['uname', '-a']}.items():
         run(command, artifacts / f'{name}.txt')
     shutil.copyfile('/etc/os-release', artifacts / 'os-release.txt')
     fixtures = repository / '.github/benchmarks/aba'
     hosts = {}
-    environment = dict(os.environ, MSBUILDDISABLENODEREUSE='1', DOTNET_TieredCompilation='0', ABA_PR=str(args.pr))
+    environment = dict(os.environ, MSBUILDDISABLENODEREUSE='1', DOTNET_TieredCompilation='0', ABA_PR=str(args.pr),
+                       ABA_WARMUP_ITERATIONS=str(warmup_iterations))
     for label, sha in (('A', args.baseline), ('B', args.candidate)):
         product = workspace / f'product-{label}'
         run(['git', 'worktree', 'add', '--detach', str(product), sha], artifacts / f'checkout-{label}.log')
@@ -160,7 +164,7 @@ def execute(args):
                 seconds = sum(m['Nanoseconds'] for m in measurements) / 1e9
                 warmup[benchmark['FullName']] = {'seconds': seconds, 'operations': sum(m['Operations'] for m in measurements), 'iterations': len(measurements)}
         (artifacts / f'{phase}-warmup.json').write_text(json.dumps(warmup, indent=2))
-        if not warmup or any(w['seconds'] < 20 or w['operations'] <= 0 for w in warmup.values()):
+        if not warmup or any(w['seconds'] < minimum_warmup_seconds or w['operations'] <= 0 for w in warmup.values()):
             raise ValueError('Insufficient elapsed workload warmup; experiment is INCONCLUSIVE')
         entry['completed_utc'] = now()
         entry['cases'] = len(reports(artifacts / phase / 'results'))
