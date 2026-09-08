@@ -405,18 +405,21 @@ jobs:
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           test "$(git -C baseline-source rev-parse HEAD)" = "$BASELINE_SHA"
           git merge-base --is-ancestor "$BASELINE_SHA" "$GITHUB_SHA"
-          # Both products compile the candidate's exact harness and build configuration.
+          # Keep the baseline's package/compiler/SDK inputs intact. If they differ,
+          # stop for a dedicated fixture instead of silently rebuilding A as B.
+          python3 .github/scripts/stress_fixtures.py . baseline-source
+          # Only the harness/shared sources and tools-scoped props are overlaid.
           # API incompatibilities must fail the build; never silently use older fixtures.
           for directory in tools/Dekaf.StressTests tools/Shared; do
             rsync -a --delete --exclude bin --exclude obj "$directory/" "baseline-source/$directory/"
           done
           cp tools/Directory.Build.props baseline-source/tools/Directory.Build.props
-          cp Directory.Build.props Directory.Packages.props global.json baseline-source/
+          git -C baseline-source diff --exit-code -- src Directory.Build.props Directory.Build.targets Directory.Packages.props global.json
           mkdir -p aba-results
           {
             echo "baseline=$BASELINE_SHA candidate=$GITHUB_SHA harness=$GITHUB_SHA"
             echo "image=$ImageOS/$ImageVersion broker_cpus=$BROKER_CPUS client_cpus=$CLIENT_CPUS"
-            echo 'Fixture adaptation: candidate stress harness/shared sources/build configuration on both products.'
+            echo 'Fixture adaptation: candidate stress harness/shared sources/tools props; matching root build inputs remain pinned and unchanged.'
             dotnet --info
             lscpu
             env | sort | grep -E '^(DOTNET_|COMPlus_)' || true

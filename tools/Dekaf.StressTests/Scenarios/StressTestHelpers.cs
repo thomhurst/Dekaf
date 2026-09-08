@@ -143,6 +143,13 @@ internal static class StressTestHelpers
         }
     }
 
+    /// <summary>
+    /// Runs the measured producer workload for <see cref="StressTestOptions.ProducerWarmupSeconds"/>
+    /// across six load/drain cycles. <paramref name="awaitDelivery"/> selects per-message
+    /// delivery waiting or fire-and-forget with sampled delivery latency, matching measurement.
+    /// The final watermark must include CompletedMessages plus one for the metadata-priming
+    /// ProduceAsync, so no warmup delivery can inflate the measured end-offset delta.
+    /// </summary>
     internal static async Task<long?> WarmUpProducerAndQueryStartOffsetAsync(
         IKafkaProducer<string, string> producer,
         StressTestOptions options,

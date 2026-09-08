@@ -87,6 +87,96 @@ public sealed class ProducerWorkloadTests
     }
 
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task FireAndForget_StopsIngressAndWaitsForSampledDeliveryAfterFlush(bool confluent)
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "dekaf-workload-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        try
+        {
+            using var watchdog = new ProgressWatchdog(directory);
+            var options = new StressTestOptions
+            {
+                BootstrapServers = "unused:9092", Topic = "test", DurationMinutes = 1,
+                MessageSizeBytes = 1000, ProgressWatchdog = watchdog
+            };
+            var throughput = new ThroughputTracker();
+            var latency = new LatencyTracker();
+            var flushStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            Task<ProducerWorkloadResult> run;
+            Action completeDelivery;
+            if (confluent)
+            {
+                Action<ConfluentKafka.DeliveryReport<string, string>>? deliveryHandler = null;
+                var producer = Substitute.For<ConfluentKafka.IProducer<string, string>>();
+                producer.When(p => p.Produce("test", Arg.Any<ConfluentKafka.Message<string, string>>(),
+                    Arg.Any<Action<ConfluentKafka.DeliveryReport<string, string>>>())).Do(call =>
+                {
+                    var handler = call.Arg<Action<ConfluentKafka.DeliveryReport<string, string>>>();
+                    if (handler is not null)
+                    {
+                        deliveryHandler = handler;
+                        return;
+                    }
+                    // Keep unsampled sends under backpressure until ingress expires.
+                    throw new ConfluentKafka.ProduceException<string, string>(
+                        new ConfluentKafka.Error(ConfluentKafka.ErrorCode.Local_QueueFull),
+                        new ConfluentKafka.DeliveryResult<string, string>());
+                });
+                producer.Flush(Arg.Any<TimeSpan>()).Returns(_ => { flushStarted.TrySetResult(); return 0; });
+                completeDelivery = () => Interlocked.Exchange(ref deliveryHandler, null)?.Invoke(
+                    new ConfluentKafka.DeliveryReport<string, string>
+                    {
+                        Error = new ConfluentKafka.Error(ConfluentKafka.ErrorCode.NoError)
+                    });
+                run = ProducerWorkload.RunAsync(producer, options, "Confluent", "producer", throughput, latency,
+                    TimeSpan.FromMilliseconds(100), awaitDelivery: false, CancellationToken.None);
+            }
+            else
+            {
+                var sampledDelivery = new TaskCompletionSource<RecordMetadata>(TaskCreationOptions.RunContinuationsAsynchronously);
+                var bufferedSend = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                var producer = Substitute.For<IKafkaProducer<string, string>>();
+                producer.ProduceAsync("test", Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+                    .Returns(_ => new ValueTask<RecordMetadata>(sampledDelivery.Task));
+                producer.FireAsync("test", Arg.Any<string>(), Arg.Any<string>())
+                    .Returns(_ => new ValueTask(bufferedSend.Task));
+                producer.FlushAsync(Arg.Any<CancellationToken>()).Returns(_ =>
+                {
+                    bufferedSend.TrySetResult();
+                    flushStarted.TrySetResult();
+                    return ValueTask.CompletedTask;
+                });
+                completeDelivery = () => sampledDelivery.TrySetResult(default);
+                run = ProducerWorkload.RunAsync(producer, options, "Dekaf", "producer", throughput, latency,
+                    TimeSpan.FromMilliseconds(100), awaitDelivery: false, CancellationToken.None);
+            }
+            try
+            {
+                await flushStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                await Assert.That(run.IsCompleted).IsFalse();
+                completeDelivery();
+                var result = await run.WaitAsync(TimeSpan.FromSeconds(5));
+                await Assert.That(result.Throughput.TotalMessages).IsEqualTo(confluent ? 1 : 2);
+                await Assert.That(result.Throughput.TotalErrors).IsEqualTo(0);
+                await Assert.That(result.Throughput.TotalDeliveryErrors).IsEqualTo(0);
+                await Assert.That(latency.GetSnapshot().Count).IsEqualTo(1);
+                await Assert.That(result.WorkloadSeconds).IsLessThan(result.Throughput.ElapsedSeconds);
+            }
+            finally
+            {
+                completeDelivery();
+                await run.WaitAsync(TimeSpan.FromSeconds(5));
+            }
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Test]
     [Arguments(false, false)]
     [Arguments(true, false)]
     [Arguments(false, true)]

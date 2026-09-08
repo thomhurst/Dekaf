@@ -926,7 +926,7 @@ public static class Program
                     break;
                 case "--producer-warmup-seconds":
                     options.ProducerWarmupSeconds = ParsePositiveInt(args[++i], "--producer-warmup-seconds");
-                    ArgumentOutOfRangeException.ThrowIfLessThan(options.ProducerWarmupSeconds, 20);
+                    ArgumentOutOfRangeException.ThrowIfLessThan(options.ProducerWarmupSeconds, ProducerWarmup.MinimumSeconds);
                     break;
                 case "--message-size":
                     options.MessageSizeBytes = int.Parse(args[++i]);
@@ -1089,7 +1089,7 @@ public static class Program
 
     private static void PrintHelp()
     {
-        Console.WriteLine("""
+        Console.WriteLine($"""
             Dekaf Stress Test Runner
 
             Usage:
@@ -1097,7 +1097,7 @@ public static class Program
 
             Options:
               --duration <minutes>    Test duration in minutes (default: 15)
-              --producer-warmup-seconds <n>  Duration-based producer workload warmup (default: 180; minimum: 20)
+              --producer-warmup-seconds <n>  Duration-based producer workload warmup (default: {ProducerWarmup.DefaultSeconds}; minimum: {ProducerWarmup.MinimumSeconds})
               --message-size <bytes>  Message size in bytes (default: 1000)
               --scenario <name>       Run specific scenario: producer, producer-idempotent, producer-acks-all, producer-async, producer-async-idempotent, producer-transactional, producer-roundtrip-steady, consumer, consumer-batch, consumer-raw, consumer-raw-batch, soak, all (default: all; all excludes soak)
               --client <name>         Run specific client: dekaf, confluent, all (default: all)

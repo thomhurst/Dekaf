@@ -6,10 +6,8 @@ namespace Dekaf.Tests.Unit.StressTests;
 public sealed class ProducerWarmupTests
 {
     [Test]
-    public async Task Warmup_ReusesReturnedObjectsAndExcludesDrainTimeFromWorkload()
+    public async Task Warmup_AccumulatesCyclesAndMessagesWithoutCountingDrainTimeAsWorkload()
     {
-        var pool = new Stack<object>();
-        var created = 0;
         var runs = 0;
         var snapshot = await ProducerWarmup.RunAsync(60, RunAsync, CancellationToken.None);
         await Assert.That(snapshot.WorkloadSeconds).IsEqualTo(60);
@@ -17,18 +15,10 @@ public sealed class ProducerWarmupTests
         await Assert.That(snapshot.CompletedMessages).IsEqualTo(60);
         await Assert.That(snapshot.DrainCycles).IsEqualTo(6);
         await Assert.That(runs).IsEqualTo(6);
-        await Assert.That(created).IsEqualTo(10);
         await Assert.That(snapshot.Samples[^1].CompletedMessages).IsEqualTo(60);
 
         Task<ProducerWorkloadResult> RunAsync(TimeSpan duration, CancellationToken token)
         {
-            var pending = new List<object>();
-            for (var index = 0; index < 10; index++)
-            {
-                if (pool.Count == 0) { pool.Push(new object()); created++; }
-                pending.Add(pool.Pop());
-            }
-            foreach (var item in pending) pool.Push(item);
             runs++;
             return Task.FromResult(Cycle(duration.TotalSeconds, drainSeconds: 100));
         }

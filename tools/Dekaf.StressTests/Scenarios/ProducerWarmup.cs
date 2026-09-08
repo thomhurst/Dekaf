@@ -5,6 +5,7 @@ namespace Dekaf.StressTests.Scenarios;
 internal static class ProducerWarmup
 {
     internal const int DefaultSeconds = 180;
+    internal const int MinimumSeconds = 20;
     internal const int CycleCount = 6;
 
     // Run the actual measured loop and observers on the same producer. Every cycle
@@ -13,7 +14,7 @@ internal static class ProducerWarmup
         int seconds, Func<TimeSpan, CancellationToken, Task<ProducerWorkloadResult>> runCycle,
         CancellationToken cancellationToken)
     {
-        ArgumentOutOfRangeException.ThrowIfLessThan(seconds, 20);
+        ArgumentOutOfRangeException.ThrowIfLessThan(seconds, MinimumSeconds);
         var duration = TimeSpan.FromSeconds((double)seconds / CycleCount);
         var samples = new List<ProducerWarmupSample>(seconds + CycleCount * 2);
         var completed = 0L;
