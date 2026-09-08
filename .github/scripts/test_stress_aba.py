@@ -71,6 +71,47 @@ def result(
 
 
 class StressAbaComparisonTests(unittest.TestCase):
+    def test_zero_throughput_controls_are_invalid(self):
+        for key in ("throughput", "median_throughput"):
+            for control in (0, 2):
+                segments = [result(), result(), result()]
+                segments[control] = result(**{key: 0})
+                with self.subTest(key=key, control=control), self.assertRaisesRegex(ValueError, "positive.*throughput"):
+                    compare(*segments)
+
+    def test_controls_require_completed_messages_even_with_positive_cached_rates(self):
+        for control in (0, 2):
+            segments = [result(), result(), result()]
+            segments[control]["throughput"]["totalMessages"] = 0
+            segments[control]["deliveredMessages"] = 0
+            with self.subTest(control=control), self.assertRaisesRegex(ValueError, "completed messages"):
+                compare(*segments)
+
+    def test_zero_candidate_throughput_with_valid_controls_is_regression(self):
+        self.assertEqual("regression", compare(result(), result(throughput=0), result())["verdict"])
+
+    def test_main_retains_zero_work_controls_as_inconclusive(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for label in ("a", "b", "a2"):
+                path = root / label
+                path.mkdir()
+                payload = {"results": [result(throughput=0)]}
+                (path / "stress-test-results.json").write_text(json.dumps(payload), encoding="utf-8")
+            output, summary = root / "comparison.json", root / "summary.md"
+            with contextlib.redirect_stdout(io.StringIO()):
+                exit_code = main([
+                    "--baseline-a", str(root / "a"), "--candidate", str(root / "b"),
+                    "--baseline-a2", str(root / "a2"), "--baseline-sha", "a" * 40,
+                    "--candidate-sha", "b" * 40, "--output", str(output),
+                    "--summary", str(summary),
+                ])
+            self.assertEqual(1, exit_code)
+            comparison = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual("inconclusive", comparison["verdict"])
+            self.assertIn("positive", comparison["validationError"])
+            self.assertIn("Verdict: INCONCLUSIVE", summary.read_text(encoding="utf-8"))
+
     def test_zero_allocation_controls_are_valid(self):
         for allocation, verdict in ((0, "pass"), (0.5, "pass"), (2, "regression")):
             with self.subTest(allocation=allocation):
@@ -455,6 +496,8 @@ class StressAbaComparisonTests(unittest.TestCase):
         for invalid, expected in (
             (None, "found 0"),
             ("not json", "Expecting value"),
+            (json.dumps({"results": [None]}), "Expected a result object"),
+            (json.dumps({"results": [[]]}), "Expected a result object"),
             (json.dumps({"results": [missing_metric]}), "Latency max"),
             (json.dumps({"results": [result(scenario="other")]}), "workload identity"),
         ):

@@ -77,6 +77,8 @@ def _single_result(directory):
     results = envelope.get("results") if isinstance(envelope, dict) else None
     if not isinstance(results, list) or len(results) != 1:
         raise ValueError(f"Expected exactly one result in {files[0]}")
+    if not isinstance(results[0], dict):
+        raise ValueError(f"Expected a result object in {files[0]}")
     return results[0]
 
 
@@ -167,6 +169,16 @@ def _percent_change(value, baseline):
     if baseline == 0:
         return 0.0 if value == 0 else None
     return 100 * (value - baseline) / baseline
+
+
+def _validate_control_work(result, measurements):
+    if measurements["throughput"] <= 0 or measurements["medianThroughput"] <= 0:
+        raise ValueError("A baseline control requires positive delivered and median throughput")
+    completed = result.get("deliveredMessages")
+    if completed is None:
+        completed = (result.get("throughput") or {}).get("totalMessages")
+    if not _finite_number(completed) or completed <= 0:
+        raise ValueError("A baseline control requires positive completed messages")
 
 
 def _drift_percent(first, second):
@@ -287,6 +299,8 @@ def compare(
     candidate_b2 = (
         None if candidate_b2_result is None else _measurements(candidate_b2_result)
     )
+    _validate_control_work(baseline_a_result, baseline_a)
+    _validate_control_work(baseline_a2_result, baseline_a2)
     if _stability_breached(candidate_result) or (
         candidate_b2_result is not None and _stability_breached(candidate_b2_result)
     ):
