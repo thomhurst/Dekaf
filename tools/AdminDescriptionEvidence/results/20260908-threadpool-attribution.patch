@@ -1,0 +1,85 @@
+--- a/tools/AdminDescriptionEvidence/Probe.cs
++++ b/tools/AdminDescriptionEvidence/Probe.cs
+@@ -22,7 +22,7 @@
+     public sealed record TickCount(long Ticks, long Count);
+     public sealed record Snapshot(double Seconds, long Completed, long CpuTicks, long AllocatedBytes,
+         long HeapBytes, long RssBytes, int Gen0, int Gen1, int Gen2, long JitMethods,
+-        double JitMilliseconds, int ThreadPoolThreads, long PendingWorkItems);
++        double JitMilliseconds, int ThreadPoolThreads, long PendingWorkItems, long Timestamp);
+     public sealed record Interval(Snapshot Start, Snapshot End, List<TickCount> Latencies);
+     public sealed record Result(double Seconds, long Completed, double CallsPerSecond, double CpuNsPerCall,
+         double AllocatedBytesPerCall, double P50Ns, double P99Ns, double MaxNs, long StopwatchFrequency,
+@@ -119,11 +119,12 @@
+     internal static Snapshot TakeSnapshot(Process process, long started, long completed)
+     {
+         process.Refresh();
+-        return new(Stopwatch.GetElapsedTime(started).TotalSeconds, completed, process.TotalProcessorTime.Ticks,
++        var timestamp = Stopwatch.GetTimestamp();
++        return new(Stopwatch.GetElapsedTime(started, timestamp).TotalSeconds, completed, process.TotalProcessorTime.Ticks,
+             GC.GetTotalAllocatedBytes(true), GC.GetTotalMemory(false), process.WorkingSet64,
+             GC.CollectionCount(0), GC.CollectionCount(1), GC.CollectionCount(2),
+             JitInfo.GetCompiledMethodCount(false), JitInfo.GetCompilationTime(false).TotalMilliseconds,
+-            ThreadPool.ThreadCount, ThreadPool.PendingWorkItemCount);
++            ThreadPool.ThreadCount, ThreadPool.PendingWorkItemCount, timestamp);
+     }
+
+     public static void Save(string path, object value)
+--- /dev/null
++++ b/tools/AdminThreadPoolTraceInspector/Program.cs
+@@ -0,0 +1,43 @@
++using System.Text.Json;
++using Microsoft.Diagnostics.Tracing;
++
++// This Windows diagnostic needs raw QPC ticks to align trace events with
++// Stopwatch timestamps from the worker; relative trace time has a different origin.
++#pragma warning disable CS0618 // TimeStampQPC is discouraged for ordinary display, not removed.
++if (args.Length != 2) throw new ArgumentException("TRACE OUTPUT_JSON");
++var events = new List<object>();
++using (var source = new EventPipeEventSource(args[0]))
++{
++    source.Clr.All += data =>
++    {
++        if (data.EventName.Contains("Thread", StringComparison.OrdinalIgnoreCase))
++            events.Add(new
++            {
++                Kind = "thread", Milliseconds = data.TimeStampRelativeMSec,
++                Utc = data.TimeStamp.ToUniversalTime(), data.TimeStampQPC, data.ThreadID, Name = data.EventName,
++                Payload = data.PayloadNames.ToDictionary(name => name, name => data.PayloadByName(name)?.ToString())
++            });
++    };
++    source.Clr.MethodJittingStarted += data => events.Add(new
++    {
++        Kind = "jit", Milliseconds = data.TimeStampRelativeMSec, Utc = data.TimeStamp.ToUniversalTime(), data.TimeStampQPC, data.ThreadID,
++        data.MethodNamespace, data.MethodName, data.MethodSignature, data.MethodID
++    });
++    source.Clr.MethodLoadVerbose += data => events.Add(new
++    {
++        Kind = "load", Milliseconds = data.TimeStampRelativeMSec, Utc = data.TimeStamp.ToUniversalTime(), data.TimeStampQPC, data.ThreadID,
++        data.MethodNamespace, data.MethodName, data.MethodSignature, data.MethodID,
++        Payload = data.PayloadNames.ToDictionary(name => name, name => data.PayloadByName(name)?.ToString())
++    });
++    source.Dynamic.All += data =>
++    {
++        if (data.ProviderName == "Dekaf-AdminEvidence-Phases")
++            events.Add(new { Kind = "phase", Milliseconds = data.TimeStampRelativeMSec, Utc = data.TimeStamp.ToUniversalTime(),
++                data.TimeStampQPC, data.ThreadID, Name = data.PayloadByName("name") });
++    };
++    source.Process();
++    Console.WriteLine($"Trace duration: {source.SessionDuration.TotalSeconds:F3}s; events: {events.Count}; lost: {source.EventsLost}");
++    if (source.EventsLost != 0) throw new InvalidOperationException("Trace lost events.");
++    File.WriteAllText(args[1] + ".clock.json", JsonSerializer.Serialize(new { source.EventsLost }));
++}
++File.WriteAllText(args[1], JsonSerializer.Serialize(events));
+--- /dev/null
++++ b/tools/AdminThreadPoolTraceInspector/AdminJitTraceInspector.csproj
+@@ -0,0 +1,10 @@
++<Project Sdk="Microsoft.NET.Sdk">
++  <PropertyGroup>
++    <OutputType>Exe</OutputType>
++    <TargetFramework>net10.0</TargetFramework>
++    <IsPackable>false</IsPackable>
++  </PropertyGroup>
++  <ItemGroup>
++    <PackageReference Include="Microsoft.Diagnostics.Tracing.TraceEvent" />
++  </ItemGroup>
++</Project>
