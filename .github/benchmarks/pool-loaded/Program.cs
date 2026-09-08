@@ -36,21 +36,24 @@ internal static class Program
             Stopwatch.Frequency
         }));
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(warmup + measured + 120));
-        await using var admin = Kafka.CreateAdminClient().WithBootstrapServers(args[0]).Build();
+        var admin = Kafka.CreateAdminClient().WithBootstrapServers(args[0]).Build();
+        await using var adminLifetime = new ObservedDisposal(admin, directory, "admin");
         await admin.CreateTopicsAsync([new NewTopic
         {
             Name = args[2], NumPartitions = partitions, ReplicationFactor = 1
         }], cancellationToken: timeout.Token);
 
-        await using var producer = await Kafka.CreateProducer<string, byte[]>()
+        var producer = await Kafka.CreateProducer<string, byte[]>()
             .WithBootstrapServers(args[0]).WithClientId("pool-loaded-producer")
             .WithAcks(Acks.All).WithIdempotence(true).WithLinger(TimeSpan.FromMilliseconds(5))
             .WithBatchSize(128 * 1024).WithBufferMemory(64UL * 1024 * 1024)
             .WithConnectionsPerBroker(1).WithoutAdaptiveConnections().BuildAsync(timeout.Token);
-        await using var consumer = await Kafka.CreateConsumer<string, byte[]>()
+        await using var producerLifetime = new ObservedDisposal(producer, directory, "producer");
+        var consumer = await Kafka.CreateConsumer<string, byte[]>()
             .WithBootstrapServers(args[0]).WithClientId("pool-loaded-consumer")
             .WithGroupId("pool-loaded-group").WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual).BuildAsync(timeout.Token);
+        await using var consumerLifetime = new ObservedDisposal(consumer, directory, "consumer");
         consumer.Partitions.Assign(Enumerable.Range(0, partitions).Select(p => new TopicPartition(args[2], p)).ToArray());
         var workload = new Workload(args[2], size, partitions);
         using var consuming = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token);
@@ -67,6 +70,34 @@ internal static class Program
             await File.WriteAllTextAsync(Path.Combine(directory, "completion.json"), JsonSerializer.Serialize(workload.Completion));
         }
         workload.ThrowIfFailed();
+    }
+}
+
+// Disposal observations are outside both measured phases. Preserve default client
+// disposal behavior and identify which stage is active if an external ceiling fires.
+internal sealed class ObservedDisposal(IAsyncDisposable resource, string directory, string name) : IAsyncDisposable
+{
+    public async ValueTask DisposeAsync()
+    {
+        var started = DateTimeOffset.UtcNow;
+        await File.WriteAllTextAsync(Path.Combine(directory, "shutdown-" + name + "-start.json"),
+            JsonSerializer.Serialize(new { StartedAtUtc = started }));
+        var timer = Stopwatch.StartNew();
+        string? error = null;
+        try
+        {
+            await resource.DisposeAsync();
+        }
+        catch (Exception failure)
+        {
+            error = failure.ToString();
+            throw;
+        }
+        finally
+        {
+            await File.WriteAllTextAsync(Path.Combine(directory, "shutdown-" + name + ".json"),
+                JsonSerializer.Serialize(new { StartedAtUtc = started, Seconds = timer.Elapsed.TotalSeconds, Error = error }));
+        }
     }
 }
 
@@ -125,23 +156,26 @@ internal sealed class Workload
         using var sampling = new CancellationTokenSource();
         var samples = new List<RuntimeSample>(seconds + 40);
         var sampler = SampleAsync(phase, timer, samples, sampling.Token);
+        using var ingress = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var stopIngress = StopIngressAsync(ingress, timer, seconds);
+        var offering = OfferAsync(producer, phase, index, ingress.Token);
         double offeredSeconds = 0;
         try
         {
-            while (timer.Elapsed.TotalSeconds < seconds)
+            try
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                ThrowIfFailed();
-                var started = Stopwatch.GetTimestamp();
-                var slot = await _available.Reader.ReadAsync(cancellationToken);
-                slot.Prepare(phase, index, started, _sentByPartition[slot.Partition]++);
-                await producer.FireAsync(slot.Message, slot.OnDelivered);
-                Interlocked.Increment(ref phase.Sent);
+                await offering.WaitAsync(ingress.Token);
             }
+            catch (OperationCanceledException) when (ingress.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+            {
+                // Stop waiting for admission, then retain the final FireAsync until drain.
+            }
+            cancellationToken.ThrowIfCancellationRequested();
             offeredSeconds = timer.Elapsed.TotalSeconds;
             using var drain = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             drain.CancelAfter(TimeSpan.FromSeconds(30));
             await producer.FlushAsync(drain.Token);
+            await offering.WaitAsync(drain.Token);
             while (Volatile.Read(ref phase.Consumed) != phase.Sent || Volatile.Read(ref phase.Acknowledged) != phase.Sent
                 || _available.Reader.Count != Capacity)
             {
@@ -159,6 +193,11 @@ internal sealed class Workload
         }
         finally
         {
+            ingress.Cancel();
+            await stopIngress;
+            if (!offering.IsCompletedSuccessfully)
+                _ = offering.ContinueWith(static task => _ = task.Exception, CancellationToken.None,
+                    TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
             var elapsed = timer.Elapsed.TotalSeconds;
             var cpu = process.TotalProcessorTime.TotalMilliseconds - startCpu;
             var allocated = GC.GetTotalAllocatedBytes(precise: true) - startAllocation;
@@ -175,6 +214,46 @@ internal sealed class Workload
                 DeliveryLatency = phase.Delivery.GetSnapshot(), CompletionLatency = phase.Completion.GetSnapshot(),
                 Samples = samples, Failure = _failure?.ToString()
             }), CancellationToken.None);
+        }
+    }
+
+    private async Task OfferAsync(IKafkaProducer<string, byte[]> producer, Phase phase, int index,
+        CancellationToken cancellationToken)
+    {
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            ThrowIfFailed();
+            var started = Stopwatch.GetTimestamp();
+            Slot slot;
+            try
+            {
+                slot = await _available.Reader.ReadAsync(cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                return;
+            }
+            slot.Prepare(phase, index, started, _sentByPartition[slot.Partition]++);
+            await producer.FireAsync(slot.Message, slot.OnDelivered);
+            Interlocked.Increment(ref phase.Sent);
+        }
+    }
+
+    private static async Task StopIngressAsync(CancellationTokenSource ingress, Stopwatch timer, int seconds)
+    {
+        try
+        {
+            while (timer.Elapsed.TotalSeconds < seconds)
+            {
+                var remaining = TimeSpan.FromSeconds(seconds) - timer.Elapsed;
+                await Task.Delay(remaining < TimeSpan.FromMilliseconds(1) ? TimeSpan.FromMilliseconds(1) : remaining,
+                    ingress.Token);
+            }
+            ingress.Cancel();
+        }
+        catch (OperationCanceledException) when (ingress.IsCancellationRequested)
+        {
+            return;
         }
     }
 

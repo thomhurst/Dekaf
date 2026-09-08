@@ -10,6 +10,8 @@ The load is closed-loop saturation with 1,024 preallocated message slots. A slot
 
 The fixture exercises producer and consumer networking together. CPU time and allocation scope is the entire client process, including both clients, the load loop, bounded channel, timestamps, histograms and sampler. Broker CPU must be retained separately. This combined result cannot attribute a CPU change to one client independently. It also does not replace the pool microbenchmark's MemoryDiagnoser result or the separate throwing-reservation cleanup test.
 
+Ingress now has an elapsed-time deadline independent of the pending slot wait or final FireAsync. The controller stops waiting for admission at that deadline, then observes the offering task during the existing 30-second drain. A canceled slot wait does not count as a sent message. A pending FireAsync remains observed, including a late fault after unsuccessful drain. Client disposal retains the library defaults and writes separate start/end observations after measured metrics stop.
+
 Each fresh process runs the same workload during an elapsed warmup phase, drains all warmup work, then measures using the same clients. Warmup and measured histograms/counters are preallocated separately. One-second samples retain completion counts, process CPU, allocations, GC, heap/RSS, JIT activity, thread-pool state and cumulative delivery/completion latency. The measurement ends only after final acknowledgment and consumer completion; the tail drain has a 30-second ceiling. CPU/allocation totals stop before report serialization and client disposal. Sampler work during the measurement is included equally in every phase. No sample, maximum or startup spike is removed.
 
 ## Intended hosted campaign
@@ -25,3 +27,11 @@ Do not infer a formal performance PASS from the scalar screen alone. The current
 ## Local smoke
 
 Three seconds of warmup plus five measured seconds is deliberately below acceptance warmup. It tests both message configurations, all-message latency counts, exact completion and slot recovery against a newly owned Kafka container. The first launcher attempt used mismatched listener/advertised ports and failed readiness before running the client; its logs are retained. The corrected launcher binds the same selected port inside and outside the owned container. Only the container created by that launcher is removed.
+
+## Broker-loss diagnostic
+
+`validate-failure.py` kills only its owned broker one second after the three-second warmup report, during a five-second measured phase. The predeclared diagnostic exit ceiling is 45 seconds after fault injection. The original fixture exceeded that ceiling without a measured report: admission waited on an empty slot channel using only the much longer process cancellation token. The ingress repair now retains the measured failure and completion counts after approximately 35 seconds of measured time, including the 30-second drain.
+
+The repaired fixture still fails the original 45-second whole-process exit criterion. A separate `--observe-shutdown` diagnostic continues observing up to a 150-second hard ceiling without changing the failed verdict. It observed natural nonzero exits at 46.07 seconds for the candidate product and 46.03 seconds for baseline. Candidate producer disposal took 12.02 seconds; consumer and admin disposal completed separately. This matches the default producer's 30-second close budget with two-fifths allocated to graceful drain. No timeout or product close setting was shortened to pass the diagnostic. Start/end disposal artifacts distinguish drain from disposal and retain the stage active if the driver must kill its owned process.
+
+These are local correctness/failure diagnostics, not a performance comparison or evidence of meeting the original exit ceiling. All failed attempts remain retained. Hosted acceptance, uncertainty, broker CPU, fresh-main microbenchmarks, cold cleanup and a justified full failure/shutdown campaign remain incomplete.
