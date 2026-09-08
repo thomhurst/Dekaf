@@ -196,6 +196,7 @@ internal static class ConfluentStressTestHelpers
         StressTestOptions options,
         IStressTestScenario scenario,
         ThroughputTracker throughput,
+        LatencyTracker latency,
         CancellationToken cancellationToken,
         bool awaitDelivery = false)
     {
@@ -208,8 +209,8 @@ internal static class ConfluentStressTestHelpers
         }, cancellationToken).ConfigureAwait(false);
         throughput.Warmup = await ProducerWarmup.RunAsync(
             options.ProducerWarmupSeconds,
-            (duration, token) => ProducerWorkload.RunAsync(producer, options, scenario.Client, scenario.Name, new ThroughputTracker(),
-                awaitDelivery ? new LatencyTracker() : StressTestHelpers.CreateDeliveryLatencyTracker(),
+            (duration, cycleThroughput, token) => ProducerWorkload.RunAsync(producer, options, scenario.Client, scenario.Name, cycleThroughput,
+                latency,
                 duration, awaitDelivery, token), cancellationToken).ConfigureAwait(false);
         return await QueryTotalEndOffsetAfterProducerDrainAsync(
             options, startOffset, throughput.Warmup.CompletedMessages + 1, throughput,

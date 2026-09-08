@@ -42,6 +42,7 @@ internal sealed class ConfluentProducerAsyncIdempotentStressTest : IStressTestSc
             options,
             this,
             throughput,
+            latency,
             cancellationToken,
             awaitDelivery: true);
 

@@ -266,6 +266,9 @@ public sealed class ProducerWorkloadTests
             };
             var throughput = new ThroughputTracker();
             var latency = new LatencyTracker();
+            // Reuse a drained warmup histogram. Measurement must clear its samples and rearm its wait.
+            latency.Record(6000);
+            await latency.WaitForDeliverySamplesAsync();
             var flushStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             Task<ProducerWorkloadResult> run;
             Action completeDelivery;
@@ -362,6 +365,9 @@ public sealed class ProducerWorkloadTests
             };
             var throughput = new ThroughputTracker();
             var latency = new LatencyTracker();
+            // Reuse a drained warmup histogram. Measurement must clear its samples and rearm its wait.
+            latency.Record(6000);
+            await latency.WaitForDeliverySamplesAsync();
             var flushStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             Task<ProducerWorkloadResult> run;
             Action completeDelivery;

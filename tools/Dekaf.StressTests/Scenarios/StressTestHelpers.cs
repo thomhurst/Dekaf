@@ -155,6 +155,7 @@ internal static class StressTestHelpers
         StressTestOptions options,
         IStressTestScenario scenario,
         ThroughputTracker throughput,
+        LatencyTracker latency,
         CancellationToken cancellationToken,
         bool awaitDelivery = false)
     {
@@ -167,9 +168,10 @@ internal static class StressTestHelpers
         await producer.ProduceAsync(options.Topic, GetKey(0), value, cancellationToken).ConfigureAwait(false);
         throughput.Warmup = await ProducerWarmup.RunAsync(
             options.ProducerWarmupSeconds,
-            (duration, token) => ProducerWorkload.RunAsync(producer, options, scenario.Client, scenario.Name, new ThroughputTracker(),
-                awaitDelivery ? new LatencyTracker() : StressTestHelpers.CreateDeliveryLatencyTracker(),
-                duration, awaitDelivery, token), cancellationToken).ConfigureAwait(false);
+            (duration, cycleThroughput, token) => ProducerWorkload.RunAsync(producer, options, scenario.Client, scenario.Name, cycleThroughput,
+                latency,
+                duration, awaitDelivery, token), cancellationToken,
+            deliveryErrorTopic: awaitDelivery ? null : options.Topic).ConfigureAwait(false);
         var offset = await QueryTotalEndOffsetAfterProducerDrainAsync(
             options.BootstrapServers, options.Topic, options.Partitions, startOffset,
             throughput.Warmup.CompletedMessages + 1, throughput, "Warmup drain").ConfigureAwait(false);

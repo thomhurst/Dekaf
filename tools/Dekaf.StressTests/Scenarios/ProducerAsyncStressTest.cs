@@ -52,6 +52,7 @@ internal sealed class ProducerAsyncStressTest : IStressTestScenario
             options,
             this,
             throughput,
+            latency,
             cancellationToken,
             awaitDelivery: true);
 

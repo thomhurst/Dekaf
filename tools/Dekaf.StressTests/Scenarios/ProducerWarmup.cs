@@ -11,8 +11,8 @@ internal static class ProducerWarmup
     // Run the actual measured loop and observers on the same producer. Every cycle
     // drains outstanding deliveries so later cycles exercise returned pooled objects.
     internal static async Task<ProducerWarmupSnapshot> RunAsync(
-        int seconds, Func<TimeSpan, CancellationToken, Task<ProducerWorkloadResult>> runCycle,
-        CancellationToken cancellationToken)
+        int seconds, Func<TimeSpan, ThroughputTracker, CancellationToken, Task<ProducerWorkloadResult>> runCycle,
+        CancellationToken cancellationToken, string? deliveryErrorTopic = null)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(seconds, MinimumSeconds);
         var duration = TimeSpan.FromSeconds((double)seconds / CycleCount);
@@ -24,7 +24,10 @@ internal static class ProducerWarmup
         for (var cycle = 0; cycle < CycleCount; cycle++)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var run = await runCycle(duration, cancellationToken).ConfigureAwait(false);
+            var cycleThroughput = new ThroughputTracker();
+            using var deliveryErrors = deliveryErrorTopic is null
+                ? null : new DekafDeliveryErrorListener(cycleThroughput, deliveryErrorTopic);
+            var run = await runCycle(duration, cycleThroughput, cancellationToken).ConfigureAwait(false);
             var throughput = run.Throughput;
             if (run.WorkloadSeconds < duration.TotalSeconds || throughput.TotalMessages <= 0
                 || throughput.TotalErrors != 0 || throughput.TotalDeliveryErrors != 0)

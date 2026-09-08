@@ -26,7 +26,31 @@ internal sealed class LatencyTracker
     private long _outlierCount;
     private int _pendingDeliveries;
     private int _waitingForDeliveries;
-    private readonly TaskCompletionSource _deliveriesDrained = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private TaskCompletionSource _deliveriesDrained = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    // Only call between fully drained phases, with ingress stopped. Reuse the large
+    // histogram instead of leaving warmup-only LOH arrays for a measured collection.
+    internal void Reset()
+    {
+        if (Volatile.Read(ref _pendingDeliveries) != 0
+            || (Volatile.Read(ref _waitingForDeliveries) != 0 && !_deliveriesDrained.Task.IsCompleted))
+        {
+            throw new InvalidOperationException("Cannot reset latency while delivery samples are outstanding.");
+        }
+
+        Array.Clear(_buckets);
+        Array.Clear(_outlierSamples);
+        _count = 0;
+        _overflowCount = 0;
+        _minTicks = long.MaxValue;
+        _maxTicks = 0;
+        _outlierCount = 0;
+        if (_waitingForDeliveries != 0)
+        {
+            _deliveriesDrained = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            _waitingForDeliveries = 0;
+        }
+    }
 
     internal void BeginDeliverySample() => Interlocked.Increment(ref _pendingDeliveries);
 

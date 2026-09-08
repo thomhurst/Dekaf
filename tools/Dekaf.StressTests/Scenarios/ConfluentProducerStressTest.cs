@@ -40,6 +40,7 @@ internal sealed class ConfluentProducerStressTest : IStressTestScenario
             options,
             this,
             throughput,
+            latency,
             cancellationToken);
 
         var workload = await ProducerWorkload.RunAsync(

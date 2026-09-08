@@ -128,6 +128,7 @@ internal static class ProducerWorkload
             // profile-stress-test.sh anchors trace windows to this measured-phase marker.
             Console.WriteLine($"  Running {client} {scenario} stress test for {options.DurationMinutes} minutes...");
         }
+        latency.Reset();
         using var gc = new GcStats();
         using var ingress = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         using var delivery = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);

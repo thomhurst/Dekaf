@@ -15,9 +15,6 @@ internal sealed class ProducerIdempotentStressTest : IStressTestScenario
     public async Task<StressTestResult> RunAsync(StressTestOptions options, CancellationToken cancellationToken)
     {
         var throughput = new ThroughputTracker();
-        // Fire-and-forget messages have no awaiter; the error metric is the only signal
-        // that an accepted message failed delivery.
-        using var deliveryErrorListener = new DekafDeliveryErrorListener(throughput);
         var latency = StressTestHelpers.CreateDeliveryLatencyTracker();
         var startedAt = DateTime.UtcNow;
 
@@ -53,8 +50,11 @@ internal sealed class ProducerIdempotentStressTest : IStressTestScenario
             options,
             this,
             throughput,
+            latency,
             cancellationToken);
 
+        // Warmup cycles own their error counters. Observe measurement through disposal.
+        using var deliveryErrorListener = new DekafDeliveryErrorListener(throughput, options.Topic);
         var workload = await ProducerWorkload.RunAsync(
             producer, options, Client, Name, throughput, latency, TimeSpan.FromMinutes(options.DurationMinutes),
             awaitDelivery: false, cancellationToken).ConfigureAwait(false);
