@@ -762,13 +762,14 @@ jobs:
             -type f -print0 | sort -z | xargs -0 sha256sum > aba-results/binary-sha256.txt
 
       - name: Compare exact baseline A-B-A
-        if: always() && matrix.baseline_sha != '' && steps.warmup.outcome == 'success'
+        if: always() && matrix.baseline_sha != ''
         run: |
           extra=()
           if [ "${{ matrix.aba_second_candidate }}" = "true" ]; then
             extra+=(--candidate-b2 aba-results/candidate-b2)
           fi
           python3 .github/scripts/stress_aba.py \
+            --require-startup-assessment \
             --baseline-a aba-results/baseline-a \
             --candidate tools/Dekaf.StressTests/results \
             --baseline-a2 aba-results/baseline-a2 \

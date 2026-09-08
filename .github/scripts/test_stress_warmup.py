@@ -214,7 +214,7 @@ class StressWarmupTests(unittest.TestCase):
         self.assertIn('dotnet build-server shutdown', workflow)
         self.assertIn("matrix.brokers == 1 && matrix.baseline_sha == '' && 'localhost:9092' || ''", workflow)
         self.assertIn('python3 .github/scripts/stress_warmup.py', workflow)
-        self.assertIn("matrix.baseline_sha != '' && steps.warmup.outcome == 'success'", workflow)
+        self.assertIn("--require-startup-assessment", workflow)
         self.assertLess(workflow.index('Build Stress Tests (exact baseline)'), workflow.index('run_aba()'))
 
 

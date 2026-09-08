@@ -104,6 +104,31 @@ def validate(result):
     return requested
 
 
+def assessment_report(errors, result_count):
+    coverage_verdict = "INCONCLUSIVE" if errors else "VALIDATED"
+    errors = [*errors, "Startup trends are unassessed: " + ", ".join(UNASSESSED_METRICS)
+              + ". Interval latency and completed-message evidence plus a declared trend assessment "
+              "are required; repeating the current aggregate schema cannot establish steady state."]
+    return {"verdict": "INCONCLUSIVE", "coverageVerdict": coverage_verdict, "errors": errors,
+            "unassessedMetrics": list(UNASSESSED_METRICS), "resultCount": result_count,
+            "scope": "Coverage and JIT/thread-count checks only. Steady state remains unassessed; "
+                     "do not accept or publish these measurements as validated performance."}
+
+
+def assess_results(results):
+    """Assess the exact parsed phase objects used by the diagnostic comparator."""
+    errors = []
+    durations = set()
+    for label, result in results.items():
+        try:
+            durations.add(validate(object_value(result, "result")))
+        except ValueError as error:
+            errors.append(f"{label}: {error}")
+    if len(durations) > 1:
+        errors.append("All phases must declare the same warmup duration")
+    return assessment_report(errors, len(results))
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("directories", nargs="+")
@@ -145,14 +170,9 @@ def main(argv=None):
         errors.append(f"Expected {args.expected_results} results, found {result_count}")
     if len(durations) > 1:
         errors.append("All phases must declare the same warmup duration")
-    coverage_verdict = "INCONCLUSIVE" if errors else "VALIDATED"
-    errors.append("Startup trends are unassessed: " + ", ".join(UNASSESSED_METRICS)
-                  + ". Interval latency and completed-message evidence plus a declared trend assessment "
-                  "are required; repeating the current aggregate schema cannot establish steady state.")
-    report = {"verdict": "INCONCLUSIVE", "coverageVerdict": coverage_verdict, "errors": errors,
-              "unassessedMetrics": list(UNASSESSED_METRICS), "resultCount": result_count,
-              "scope": "Coverage and JIT/thread-count checks only. Steady state remains unassessed; "
-                       "do not accept or publish these measurements as validated performance."}
+    report = assessment_report(errors, result_count)
+    coverage_verdict = report["coverageVerdict"]
+    errors = report["errors"]
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")

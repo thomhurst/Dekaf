@@ -62,7 +62,9 @@ public sealed class ProducerWorkloadTests
                 if (!drainExpires) finalDelivery.TrySetResult();
                 var result = await run.WaitAsync(TimeSpan.FromSeconds(5));
                 await Assert.That(flushes).IsEqualTo(2);
-                await Assert.That(result.Throughput.ErrorSamples.Any(sample => sample.ExceptionType == "DeliveryDrainTimeout")).IsEqualTo(drainExpires);
+                // The flush timeout and shared drain cancellation can expire in either order.
+                await Assert.That(result.Throughput.ErrorSamples.Any(sample =>
+                    sample.ExceptionType is "DeliveryDrainTimeout" or "FlushTimeout")).IsEqualTo(drainExpires);
                 if (!drainExpires) await Assert.That(result.Throughput.TotalErrors).IsEqualTo(0);
                 await Assert.That(result.WorkloadSeconds).IsLessThan(result.Throughput.ElapsedSeconds);
             }
@@ -77,6 +79,24 @@ public sealed class ProducerWorkloadTests
         {
             Directory.Delete(directory, recursive: true);
         }
+    }
+
+    [Test]
+    public async Task FlushTimeout_IsRecordedBeforeDeliveryCancellation()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var producer = Substitute.For<IKafkaProducer<string, string>>();
+        producer.FlushAsync(cancellation.Token)
+            .Returns(ValueTask.FromException(new TimeoutException("Controlled flush timeout")));
+        var throughput = new ThroughputTracker();
+
+        await StressTestHelpers.FlushWithinDeadlineAsync(producer, throughput,
+            TimeSpan.FromSeconds(30), cancellation.Token);
+
+        var result = throughput.GetSnapshot();
+        await Assert.That(cancellation.IsCancellationRequested).IsFalse();
+        await Assert.That(result.TotalErrors).IsEqualTo(1);
+        await Assert.That(result.ErrorSamples.Single().ExceptionType).IsEqualTo("FlushTimeout");
     }
 
     [Test]
