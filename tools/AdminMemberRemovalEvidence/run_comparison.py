@@ -40,8 +40,24 @@ def verify_copied_tree(original, copied):
                 raise ValueError(f'Archive copy differs from original: {path}')
 
 
-def validate_probe(path, minimum_seconds):
-    data = json.loads(path.read_text(encoding='utf-8-sig'))
+def retain_loaded_binaries(manifest, original_root, archive_root):
+    rows = json.loads(manifest.read_text(encoding='utf-8-sig'))
+    if not rows or not any(Path(row['Path']).name == 'Dekaf.dll' for row in rows):
+        raise ValueError(f'{manifest}: loaded product identity missing')
+    for row in rows:
+        original = Path(row['Path']).resolve()
+        relative = original.relative_to(original_root.resolve())
+        target = archive_root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(original, target)
+        for path in [original, target]:
+            if hashlib.sha256(path.read_bytes()).hexdigest() != row['Sha256']:
+                raise ValueError(f'{manifest}: loaded binary hash mismatch: {path}')
+
+
+def validate_probe(path, minimum_seconds, data=None):
+    if data is None:
+        data = json.loads(path.read_text(encoding='utf-8-sig'))
     if data['Seconds'] < minimum_seconds or data['Completed'] <= 0:
         raise ValueError(f'{path}: insufficient workload duration or completions')
     histogram = data['Latencies']
@@ -68,19 +84,36 @@ def validate_probe(path, minimum_seconds):
     return data
 
 
-def retain_loaded_binaries(manifest, original_root, archive_root):
-    rows = json.loads(manifest.read_text(encoding='utf-8-sig'))
-    if not rows or not any(Path(row['Path']).name == 'Dekaf.dll' for row in rows):
-        raise ValueError(f'{manifest}: loaded product identity missing')
-    for row in rows:
-        original = Path(row['Path']).resolve()
-        relative = original.relative_to(original_root.resolve())
-        target = archive_root / relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(original, target)
-        for path in [original, target]:
-            if hashlib.sha256(path.read_bytes()).hexdigest() != row['Sha256']:
-                raise ValueError(f'{manifest}: loaded binary hash mismatch: {path}')
+def validate_primer_segments(primer_path):
+    path = primer_path.with_name('segments-' + primer_path.name)
+    segments = json.loads(path.read_text(encoding='utf-8-sig'))
+    if len(segments) != 128:
+        raise ValueError(f'{path}: complete measurement primer requires 128 segments')
+    for index, segment in enumerate(segments):
+        validate_probe(f'{path}[{index}]', .05, segment)
+
+
+def validate_bdn_phase(warmup):
+    clock = json.loads(warmup.with_name('clock-' + warmup.name).read_text(encoding='utf-8-sig'))
+    signal_path = warmup.with_name('signals-' + warmup.stem + '.jsonl')
+    signals = [json.loads(line) for line in signal_path.read_text(encoding='utf-8-sig').splitlines()]
+    if [row['Signal'] for row in signals] != ['BeforeActualRun', 'AfterActualRun']:
+        raise ValueError(f'{signal_path}: actual workload boundaries missing, repeated or out of order')
+    if any(row['StopwatchFrequency'] != clock['StopwatchFrequency'] or row['ProcessId'] != clock['ProcessId'] for row in signals):
+        raise ValueError(f'{signal_path}: runtime clock/process identity mismatch')
+    start, end = [(row['Timestamp'] - clock['StartedTimestamp']) / clock['StopwatchFrequency'] for row in signals]
+    if not 0 <= start < end:
+        raise ValueError(f'{signal_path}: invalid actual workload interval')
+    runtime = warmup.with_name('runtime-' + warmup.name)
+    rows = json.loads(runtime.read_text(encoding='utf-8-sig'))
+    if not rows or rows[0]['Seconds'] > start or rows[-1]['Seconds'] < end:
+        raise ValueError(f'{runtime}: runtime samples do not bracket the actual workload')
+    if any(first['Seconds'] >= second['Seconds'] for first, second in zip(rows, rows[1:])):
+        raise ValueError(f'{runtime}: runtime sample clock is not increasing')
+    overlapping = [{'Start': first, 'End': second} for first, second in zip(rows, rows[1:])
+                   if second['Seconds'] > start and first['Seconds'] < end]
+    return dict(actual_start_seconds=start, actual_end_seconds=end, overlapping_runtime_intervals=overlapping,
+                scope='Host signals bracket actual workload; one-second observer intervals may overlap adjacent stages. No per-iteration instrumentation.')
 
 
 def compare(a1, b, a2):
@@ -88,6 +121,15 @@ def compare(a1, b, a2):
     within_limits = True
     for field, tolerance in LIMITS.items():
         first, candidate, second = a1[field], b[field], a2[field]
+        if first == 0 or second == 0:
+            within_limits = False
+            rows.append(dict(metric=field, A1=first, B=candidate, A2=second,
+                             B_vs_A1=None if first == 0 else candidate / first - 1,
+                             B_vs_A2=None if second == 0 else candidate / second - 1,
+                             A2_vs_A1=None if first == 0 else second / first - 1,
+                             tolerance=tolerance, candidate_exceeds_limit=None,
+                             control_drift_exceeds_limit=None, precision_missing=True))
+            continue
         delta1, delta2, drift = candidate / first - 1, candidate / second - 1, second / first - 1
         loss = min(delta1, delta2) < -tolerance if field == 'CallsPerSecond' else max(delta1, delta2) > tolerance
         noisy = abs(drift) > tolerance
@@ -128,7 +170,9 @@ def execute(args):
                     main_at_start=main_now, platform=platform.platform(), machine=platform.machine(),
                     image=os.environ.get('ImageOS'), image_version=os.environ.get('ImageVersion'),
                     github_run=os.environ.get('GITHUB_RUN_ID'), smoke=args.smoke,
-                    warmup_seconds=.2 if args.smoke else 30, measured_seconds=.2 if args.smoke else 60,
+                    primer_segments=128, primer_segment_seconds=.05, primer_seconds=1,
+                    warmup_seconds=.2 if args.smoke else 120, measured_seconds=.2 if args.smoke else 60,
+                    bdn_outlier_mode='DontRemove', bdn_keep_files=True,
                     runtime={'DOTNET_TieredCompilation':'1', 'DOTNET_TieredPGO':'1', 'DOTNET_gcServer':'0'},
                     controls=CONTROLS, candidate_only=NEW_CASES, incremental=INCREMENTAL,
                     phases=['A1', 'B', 'A2', 'P1', 'B2', 'P2'])
@@ -183,19 +227,23 @@ def execute(args):
                 run(['dotnet',str(binary),'probe',case,str(destination),str(metadata['warmup_seconds']),str(metadata['measured_seconds'])],
                     checkout, destination / 'probe.log', env)
                 validate_probe(destination / 'warmup.json', metadata['warmup_seconds'])
+                validate_probe(destination / 'primer.json', metadata['primer_seconds'])
+                validate_primer_segments(destination / 'primer.json')
                 validate_probe(destination / 'measured.json', metadata['measured_seconds'])
                 retain_loaded_binaries(destination / 'binaries.json', binary.parent, archive / 'binaries' / product)
             env['ADMIN_EVIDENCE_CASES'] = ','.join(cases)
             env['ADMIN_EVIDENCE_WARMUP_DIRECTORY'] = str(archive / phase / 'bdn-runtime')
             bdn = ['dotnet',str(binary),'--filter','*AdminEvidenceBenchmark*','--exporters','fulljson',
-                   '--artifacts',str(archive / phase / 'bdn')]
+                   '--artifacts',str(archive / phase / 'bdn'), '--keepFiles']
             bdn += ['--smoke-bdn'] if args.smoke else []
-            run(bdn, binary.parent, archive / phase / 'bdn.log', env)
-            for generated in binary.parent.glob('Dekaf.Benchmarks-*'):
-                if generated.is_dir():
-                    target = archive / phase / 'bdn-binaries' / generated.name
-                    shutil.copytree(generated, target)
-                    verify_copied_tree(generated, target)
+            try:
+                run(bdn, binary.parent, archive / phase / 'bdn.log', env)
+            finally:
+                for generated in binary.parent.glob('Dekaf.Benchmarks-*'):
+                    if generated.is_dir():
+                        target = archive / phase / 'bdn-binaries' / generated.name
+                        shutil.copytree(generated, target)
+                        verify_copied_tree(generated, target)
             manifests = list((archive / phase / 'bdn-runtime').glob('binaries-*.json'))
             if len(manifests) < len(cases):
                 raise ValueError(f'{phase}: loaded BDN binary identities missing')
@@ -212,9 +260,12 @@ def execute(args):
                     raise ValueError(f'{phase}/{case}: BDN elapsed-workload warmup evidence missing')
                 for warmup in warmups:
                     validate_probe(warmup, metadata['warmup_seconds'])
+                    validate_probe(warmup.with_name('primer-' + warmup.name), metadata['primer_seconds'])
+                    validate_primer_segments(warmup.with_name('primer-' + warmup.name))
                     runtime = warmup.with_name('runtime-' + warmup.name)
                     if not runtime.exists() or not json.loads(runtime.read_text(encoding='utf-8-sig')):
                         raise ValueError(f'{phase}/{case}: BDN runtime activity evidence missing')
+                    save(warmup.with_name('measured-runtime-' + warmup.name), validate_bdn_phase(warmup))
         summary = {}
         for case in CONTROLS:
             inputs = [json.loads((archive / phase / case.replace(':','-') / 'measured.json').read_text(encoding='utf-8-sig')) for phase in ['A1','B','A2']]

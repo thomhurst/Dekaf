@@ -1,8 +1,9 @@
 import json
+import hashlib
 from pathlib import Path
 import tempfile
 import unittest
-from run_comparison import compare, validate_probe
+from run_comparison import compare, validate_probe, validate_primer_segments, retain_loaded_binaries, validate_bdn_phase
 
 class ComparisonTests(unittest.TestCase):
     def metrics(self):
@@ -29,6 +30,17 @@ class ComparisonTests(unittest.TestCase):
         result = compare(self.metrics(), self.metrics(), self.metrics())
         self.assertTrue(result['point_estimates_within_declared_limits'])
         self.assertTrue(result['verdict'].startswith('INCONCLUSIVE'))
+
+    def test_zero_resolution_control_keeps_absolute_data_without_claiming_a_ratio(self):
+        first, candidate, second = self.metrics(), self.metrics(), self.metrics()
+        first['P50Ns'] = 0
+        result = compare(first, candidate, second)
+        row = next(row for row in result['metrics'] if row['metric'] == 'P50Ns')
+        self.assertFalse(result['point_estimates_within_declared_limits'])
+        self.assertTrue(row['precision_missing'])
+        self.assertEqual(row['A1'], 0)
+        self.assertIsNone(row['B_vs_A1'])
+        self.assertEqual(row['B_vs_A2'], 0)
 
     def data(self):
         histogram = [{'Ticks':10,'Count':99}, {'Ticks':50,'Count':1}]
@@ -63,5 +75,63 @@ class ComparisonTests(unittest.TestCase):
         data = self.data()
         data['Intervals'] = []
         with self.assertRaises(ValueError): self.validate(data)
+
+    def test_reentry_primer_requires_every_elapsed_segment(self):
+        with tempfile.TemporaryDirectory() as directory:
+            primer = Path(directory) / 'primer.json'
+            segments_path = primer.with_name('segments-primer.json')
+            segment = self.data()
+            segment['Seconds'] = .05
+            segments = [dict(segment) for _ in range(128)]
+            segments_path.write_text(json.dumps(segments), encoding='utf-8')
+            validate_primer_segments(primer)
+            segments_path.write_text(json.dumps(segments[:-1]), encoding='utf-8')
+            with self.assertRaises(ValueError): validate_primer_segments(primer)
+            segments[-1]['Seconds'] = .049
+            segments_path.write_text(json.dumps(segments), encoding='utf-8')
+            with self.assertRaises(ValueError): validate_primer_segments(primer)
+
+    def test_loaded_binary_identity_rejects_replaced_product(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            original = root / 'original'
+            original.mkdir()
+            product = original / 'Dekaf.dll'
+            product.write_bytes(b'observed loaded product')
+            manifest = root / 'binaries.json'
+            manifest.write_text(json.dumps([{'Path': str(product),
+                'Sha256': hashlib.sha256(product.read_bytes()).hexdigest()}]), encoding='utf-8')
+            retain_loaded_binaries(manifest, original, root / 'archive')
+            self.assertEqual(product.read_bytes(), (root / 'archive' / 'Dekaf.dll').read_bytes())
+            product.write_bytes(b'replaced product')
+            with self.assertRaises(ValueError):
+                retain_loaded_binaries(manifest, original, root / 'other-archive')
+
+    def test_bdn_boundaries_match_the_observed_worker_clock(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            warmup = root / 'inventory-16-42.json'
+            clock = dict(StartedTimestamp=1000, StopwatchFrequency=100, ProcessId=42)
+            warmup.with_name('clock-' + warmup.name).write_text(json.dumps(clock), encoding='utf-8')
+            runtime = [{'Seconds': value} for value in [0, 1, 2, 3, 4]]
+            warmup.with_name('runtime-' + warmup.name).write_text(json.dumps(runtime), encoding='utf-8')
+            signals = [dict(Signal=signal, Timestamp=timestamp, StopwatchFrequency=100, ProcessId=42)
+                       for signal, timestamp in [('BeforeActualRun', 1150), ('AfterActualRun', 1250)]]
+            path = root / 'signals-inventory-16-42.jsonl'
+            path.write_text('\n'.join(json.dumps(row) for row in signals), encoding='utf-8')
+            result = validate_bdn_phase(warmup)
+            self.assertEqual(result['actual_start_seconds'], 1.5)
+            self.assertEqual(len(result['overlapping_runtime_intervals']), 2)
+            # A later case may reuse an exited worker's PID. Its independent
+            # boundaries must not contaminate this case's measurement window.
+            (root / 'signals-retry-16-42.jsonl').write_text('unrelated worker records', encoding='utf-8')
+            self.assertEqual(validate_bdn_phase(warmup), result)
+            signals[1]['ProcessId'] = 43
+            path.write_text('\n'.join(json.dumps(row) for row in signals), encoding='utf-8')
+            with self.assertRaises(ValueError): validate_bdn_phase(warmup)
+            signals[1]['ProcessId'] = 42
+            signals[1]['Timestamp'] = 1450
+            path.write_text('\n'.join(json.dumps(row) for row in signals), encoding='utf-8')
+            with self.assertRaises(ValueError): validate_bdn_phase(warmup)
 
 if __name__ == '__main__': unittest.main()
