@@ -166,7 +166,7 @@ def broker_start(folder, name):
 def broker_stop(folder, name):
     with (folder / 'broker.log').open('w') as stream:
         subprocess.run(['docker', 'logs', name], stdout=stream, stderr=subprocess.STDOUT)
-    subprocess.run(['docker', 'rm', '-f', name], check=True, capture_output=True)
+    subprocess.run(['docker', 'rm', '-f', '-v', name], check=True, capture_output=True)
 
 
 def build(root, output, sha, label):
