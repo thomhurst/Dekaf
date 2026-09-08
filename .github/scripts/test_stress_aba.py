@@ -73,6 +73,22 @@ def result(
 
 
 class StressAbaComparisonTests(unittest.TestCase):
+    def test_zero_cpu_is_invalid_in_every_segment(self):
+        for derived in (False, True):
+            for segment in range(4):
+                segments = [result() for _ in range(4)]
+                segments[segment]["cpuMicrosPerMessage"] = None if derived else 0
+                segments[segment]["cpuTimeSeconds"] = 0
+                with self.subTest(derived=derived, segment=segment):
+                    with self.assertRaisesRegex(ValueError, "positive CPU"):
+                        compare(*segments[:3], candidate_b2_result=segments[3])
+
+    def test_positive_derived_cpu_remains_valid(self):
+        segments = [result(cpu=None) for _ in range(4)]
+        for segment in segments:
+            segment["cpuTimeSeconds"] = 0.8
+        self.assertEqual("pass", compare(*segments[:3], candidate_b2_result=segments[3])["verdict"])
+
     def test_zero_latency_is_invalid_in_every_segment(self):
         for field in ("p50Us", "p95Us", "p99Us", "maxUs"):
             for segment in range(4):
@@ -137,27 +153,28 @@ class StressAbaComparisonTests(unittest.TestCase):
     def test_zero_candidate_throughput_with_valid_controls_is_regression(self):
         self.assertEqual("regression", compare(result(), result(throughput=0), result())["verdict"])
 
-    def test_main_retains_zero_work_controls_as_inconclusive(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            for label in ("a", "b", "a2"):
-                path = root / label
-                path.mkdir()
-                payload = {"results": [result(throughput=0)]}
-                (path / "stress-test-results.json").write_text(json.dumps(payload), encoding="utf-8")
-            output, summary = root / "comparison.json", root / "summary.md"
-            with contextlib.redirect_stdout(io.StringIO()):
-                exit_code = main([
-                    "--baseline-a", str(root / "a"), "--candidate", str(root / "b"),
-                    "--baseline-a2", str(root / "a2"), "--baseline-sha", "a" * 40,
-                    "--candidate-sha", "b" * 40, "--output", str(output),
-                    "--summary", str(summary),
-                ])
-            self.assertEqual(1, exit_code)
-            comparison = json.loads(output.read_text(encoding="utf-8"))
-            self.assertEqual("inconclusive", comparison["verdict"])
-            self.assertIn("positive", comparison["validationError"])
-            self.assertIn("Verdict: INCONCLUSIVE", summary.read_text(encoding="utf-8"))
+    def test_main_retains_zero_work_or_cpu_as_inconclusive(self):
+        for invalid in (result(throughput=0), result(cpu=0)):
+            with self.subTest(cpu=invalid["cpuMicrosPerMessage"]), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                for label in ("a", "b", "a2"):
+                    path = root / label
+                    path.mkdir()
+                    payload = {"results": [invalid]}
+                    (path / "stress-test-results.json").write_text(json.dumps(payload), encoding="utf-8")
+                output, summary = root / "comparison.json", root / "summary.md"
+                with contextlib.redirect_stdout(io.StringIO()):
+                    exit_code = main([
+                        "--baseline-a", str(root / "a"), "--candidate", str(root / "b"),
+                        "--baseline-a2", str(root / "a2"), "--baseline-sha", "a" * 40,
+                        "--candidate-sha", "b" * 40, "--output", str(output),
+                        "--summary", str(summary),
+                    ])
+                self.assertEqual(1, exit_code)
+                comparison = json.loads(output.read_text(encoding="utf-8"))
+                self.assertEqual("inconclusive", comparison["verdict"])
+                self.assertIn("positive", comparison["validationError"])
+                self.assertIn("Verdict: INCONCLUSIVE", summary.read_text(encoding="utf-8"))
 
     def test_zero_allocation_controls_are_valid(self):
         for allocation, verdict in ((0, "pass"), (0.5, "pass"), (2, "regression")):
@@ -550,6 +567,7 @@ class StressAbaComparisonTests(unittest.TestCase):
             (json.dumps({"results": [empty_latency]}), "positive latency"),
             (json.dumps({"results": [result(latency_count=0)]}), "sample count"),
             (json.dumps({"results": [result(latency_count=1)]}), "at least 10000 latency samples"),
+            (json.dumps({"results": [result(cpu=0)]}), "positive CPU"),
             (json.dumps({"results": [{**result(), "latency": ["invalid"]}]}), "latency object"),
             (json.dumps({"results": [{**result(), "throughput": ["invalid"]}]}), "throughput object"),
             (json.dumps({"results": [{**result(), "producerDeliveryDiagnostics": ["invalid"]}]}), "producerDeliveryDiagnostics object"),

@@ -140,6 +140,8 @@ def _measurements(result):
     ]
     if missing:
         raise ValueError(f"Missing finite nonnegative metric(s): {', '.join(missing)}")
+    if measurements["cpu"] <= 0:
+        raise ValueError("CPU evidence requires positive CPU time per completed message")
     if any(measurements[key] <= 0 for key in ("p50", "p95", "p99", "max")):
         raise ValueError("Latency evidence requires positive latency quantiles and maximum")
     count = latency.get("count")
