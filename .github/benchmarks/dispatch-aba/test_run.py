@@ -1,0 +1,91 @@
+import array
+import copy
+import json
+from pathlib import Path
+import tempfile
+import unittest
+
+import run
+
+
+class MeasurementValidationTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.folder = Path(self.temp.name)
+        self.metrics = dict(Mode='sync-records', Completed=241, Measured=120, WarmupCompleted=121,
+                            Failures=0, BacklogAtEnd=0, PendingAfterStop=0, CommittedOffsets=[61, 60, 60, 60],
+                            BatchCounts=[0, 241] + [0] * 15, MeasuredBatchCounts=[0, 120] + [0] * 15,
+                            MeasuredHandlerInvocations=120, MessagesPerSecond=1, CpuNsPerMessage=1,
+                            AllocatedBytesPerMessage=1, AllocatedBytesPerHandlerInvocation=1,
+                            P50Ns=10, P99Ns=20, MaxNs=30, ActualWarmupSeconds=120.5,
+                            JitMethodsStart=100, JitMethodsEnd=100, JitMsStart=1, JitMsEnd=1,
+                            MeasurementStart=122, MeasurementEnd=241, StopwatchFrequency=1)
+        self.producer = dict(Acknowledged=241, Sent=241, Failed=0, ScheduledStart=1, Rate=1, OfferBurst=1)
+        self.series = [dict(Timestamp=index, JitMethods=100, JitMs=1, Threads=2, PendingWork=0,
+                            CpuTicks=index, Gen0=0, Gen1=0, Gen2=0, HeapBytes=100, RssBytes=1000)
+                       for index in range(241)]
+        (self.folder / 'latency-ticks.bin').write_bytes(array.array('q', [10] * 120).tobytes())
+        (self.folder / 'all-latency-ticks.bin').write_bytes(array.array('q', [10] * 241).tobytes())
+
+    def validate(self):
+        for name, value in [('metrics.json', self.metrics), ('producer.json', self.producer), ('series.json', self.series)]:
+            (self.folder / name).write_text(json.dumps(value))
+        return run.validate_loaded(self.folder, 121, 120, 1, True)
+
+    def test_valid_completed_measurement(self):
+        result = self.validate()
+        self.assertEqual(result['MeasuredJitDelta'], 0)
+        self.assertEqual(result['MeasuredThreadRange'], [2, 2])
+
+    def test_rejects_missing_or_invalid_evidence(self):
+        valid = copy.deepcopy(self.metrics)
+        for key, value in [('Completed', 240), ('WarmupCompleted', 120), ('Measured', 119),
+                           ('ActualWarmupSeconds', 119.9), ('CpuNsPerMessage', float('nan')),
+                           ('P99Ns', 31), ('MessagesPerSecond', True), ('PendingAfterStop', 1),
+                           ('CommittedOffsets', [60, 60, 60, 60]), ('MeasuredHandlerInvocations', 119)]:
+            with self.subTest(key=key):
+                self.metrics = dict(valid, **{key: value})
+                with self.assertRaises(ValueError):
+                    self.validate()
+
+    def test_rejects_missing_runtime_counter(self):
+        del self.series[150]['JitMethods']
+        with self.assertRaisesRegex(ValueError, 'Missing runtime metric'):
+            self.validate()
+
+    def test_rejects_truncated_latency_stream(self):
+        (self.folder / 'latency-ticks.bin').write_bytes(b'')
+        with self.assertRaisesRegex(ValueError, 'Missing measured latency'):
+            self.validate()
+
+    def test_rejects_unexercised_pending_batch(self):
+        self.metrics.update(Mode='pending-batches', PendingCompletions=120)
+        with self.assertRaisesRegex(ValueError, 'No 16-record'):
+            self.validate()
+
+    def test_retains_measured_runtime_transitions(self):
+        self.metrics['JitMethodsEnd'] += 3
+        self.series[-1]['JitMethods'] += 3
+        self.series[-1]['Threads'] += 1
+        result = self.validate()
+        self.assertEqual(result['MeasuredJitDelta'], 3)
+        self.assertEqual(result['MeasuredThreadRange'], [2, 3])
+
+    def test_rejects_missing_boundary_even_with_complete_time_series(self):
+        del self.metrics['JitMethodsStart']
+        with self.assertRaisesRegex(ValueError, 'runtime measurement boundaries'):
+            self.validate()
+
+    def test_latency_series_preserves_outside_boundary_samples(self):
+        self.validate()
+        self.metrics['MeasurementStart'] = 140
+        run.latency_series(self.folder, self.metrics)
+        samples = json.loads((self.folder / 'latency-series.json').read_text())
+        self.assertEqual(sum(sample['completed'] for sample in samples), 120)
+        self.assertLess(samples[0]['second'], 0)
+        self.assertGreater(samples[-1]['second'], 100)
+
+
+if __name__ == '__main__':
+    unittest.main()
