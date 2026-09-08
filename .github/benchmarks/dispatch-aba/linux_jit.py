@@ -11,7 +11,7 @@ import run
 
 ROOT = Path(__file__).resolve().parents[3]
 WORK = ROOT / '.artifacts/linux-jit'
-INPUTS = WORK / 'inputs'
+INPUTS = Path('C:/git/Dekaf-evidence/pr-3117/linux-jit-20260908/raw/inputs')
 RESULTS = WORK / 'results'
 SDK = 'sha256:e1ffd2a92ae84c1291bc1b6887501f8af98e6331e7af6d4c8d37168c5e87a64c'
 KAFKA = 'sha256:77e3df9054047a88b520d0cc46e16696d3b22022e1d580aeccd2632df6532837'
@@ -93,6 +93,14 @@ def workload(label, warmup, seconds, rate, traced):
         seed_topic = topic + '-seed'
         command(['docker','exec',broker,'/opt/kafka/bin/kafka-topics.sh','--bootstrap-server','localhost:9092',
                  '--create','--topic',seed_topic,'--partitions','4','--replication-factor','1'],seed_folder/'topic.log')
+        seed_group = seed_topic + '-group'
+        command(['docker','exec',broker,'/opt/kafka/bin/kafka-consumer-groups.sh','--bootstrap-server','localhost:9092',
+                 '--group',seed_group,'--reset-offsets','--topic',seed_topic,'--to-offset','0','--execute','--timeout','30000'],
+                seed_folder/'coordinator-ready.log')
+        rows = [line.split() for line in (seed_folder/'coordinator-ready.log').read_text().splitlines()]
+        offsets = [row for row in rows if len(row)==4 and row[0]==seed_group and row[1]==seed_topic]
+        if len(offsets)!=4 or {row[2] for row in offsets}!={'0','1','2','3'} or any(row[3]!='0' for row in offsets):
+            raise ValueError('Broker preparation did not confirm all four zero offsets')
         execute_client(seed_client, broker, seed_topic, seed_folder, 2, 2, 1000, False)
         seed_metrics = run.validate_loaded(seed_folder, 2, 2, 1000, acceptance=False)
         (seed_folder/'validated-metrics.json').write_text(json.dumps(seed_metrics, indent=2))
@@ -129,11 +137,11 @@ def main():
     args=parser.parse_args()
     RESULTS.mkdir(parents=True,exist_ok=True)
     if args.stage=='smoke':
-        workload('smoke-prepared',2,2,1000,True)
+        workload('smoke-coordinator-ready',2,2,1000,True)
     else:
-        if not (RESULTS/'smoke-prepared/trace-correlation.json').is_file():
+        if not (RESULTS/'smoke-coordinator-ready/trace-correlation.json').is_file():
             raise ValueError('Validated trace smoke required before measurement')
-        for label,traced in [('U1-prepared',False),('T-prepared',True),('U2-prepared',False)]:
+        for label,traced in [('U1-coordinator-ready',False),('T-coordinator-ready',True),('U2-coordinator-ready',False)]:
             workload(label,121,120,50000,traced)
 
 
