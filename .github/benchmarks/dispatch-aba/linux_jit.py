@@ -54,6 +54,16 @@ def trace_check(folder, metrics):
     return result
 
 
+def execute_client(client, broker, topic, folder, warmup, seconds, rate, traced):
+    relative = folder.relative_to(RESULTS).as_posix()
+    command(['docker','run','--name',client,'--network',f'container:{broker}','--cpuset-cpus','1-4',
+             '-e','DOTNET_TieredCompilation=1','-e','DOTNET_GCDynamicAdaptationMode=0',
+             '-v',f'{INPUTS.as_posix()}:/inputs:ro','-v',f'{WORK.as_posix()}:/scripts:ro',
+             '-v',f'{RESULTS.as_posix()}:/results','--entrypoint','bash',SDK,
+             '/scripts/workload.sh',f'/results/{relative}',topic,str(warmup),str(seconds),str(rate),str(traced).lower()],
+            folder/'container.log',timeout=480)
+
+
 def workload(label, warmup, seconds, rate, traced):
     folder = RESULTS / label
     folder.mkdir(parents=True, exist_ok=False)
@@ -61,6 +71,7 @@ def workload(label, warmup, seconds, rate, traced):
     broker = f'dekaf-3117-jit-{suffix}'
     client = f'dekaf-3117-client-{suffix}'
     topic = f'dispatch-jit-{suffix}'
+    seed_client = client + '-seed'
     (folder / 'containers.json').write_text(json.dumps(dict(broker=broker, client=client, topic=topic), indent=2))
     try:
         args = ['docker', 'run', '-d', '--name', broker, '--cpuset-cpus', '0']
@@ -77,14 +88,17 @@ def workload(label, warmup, seconds, rate, traced):
                 time.sleep(2)
             else:
                 raise TimeoutError('Broker readiness expired')
+        seed_folder = folder / 'seed'
+        seed_folder.mkdir()
+        seed_topic = topic + '-seed'
+        command(['docker','exec',broker,'/opt/kafka/bin/kafka-topics.sh','--bootstrap-server','localhost:9092',
+                 '--create','--topic',seed_topic,'--partitions','4','--replication-factor','1'],seed_folder/'topic.log')
+        execute_client(seed_client, broker, seed_topic, seed_folder, 2, 2, 1000, False)
+        seed_metrics = run.validate_loaded(seed_folder, 2, 2, 1000, acceptance=False)
+        (seed_folder/'validated-metrics.json').write_text(json.dumps(seed_metrics, indent=2))
         command(['docker','exec',broker,'/opt/kafka/bin/kafka-topics.sh','--bootstrap-server','localhost:9092',
                  '--create','--topic',topic,'--partitions','4','--replication-factor','1'],folder/'topic.log')
-        command(['docker','run','--name',client,'--network',f'container:{broker}','--cpuset-cpus','1-4',
-                 '-e','DOTNET_TieredCompilation=1','-e','DOTNET_GCDynamicAdaptationMode=0',
-                 '-v',f'{INPUTS.as_posix()}:/inputs:ro','-v',f'{WORK.as_posix()}:/scripts:ro',
-                 '-v',f'{RESULTS.as_posix()}:/results','--entrypoint','bash',SDK,
-                 '/scripts/workload.sh',f'/results/{label}',topic,str(warmup),str(seconds),str(rate),str(traced).lower()],
-                folder/'container.log',timeout=480)
+        execute_client(client, broker, topic, folder, warmup, seconds, rate, traced)
         metrics = run.validate_loaded(folder,warmup,seconds,rate,acceptance=warmup==121)
         run.latency_series(folder,metrics)
         if traced:
@@ -95,7 +109,7 @@ def workload(label, warmup, seconds, rate, traced):
                               maximum_ns=metrics['MaxNs'],jit=metrics['MeasuredJitDelta'],traced=traced)),flush=True)
     finally:
         cleanup_errors = []
-        for name in (client,broker):
+        for name in (client,seed_client,broker):
             with (folder/f'{name}-inspect.json').open('w') as log:
                 exists=subprocess.run(['docker','inspect',name],stdout=log,stderr=subprocess.DEVNULL).returncode==0
             if exists:
@@ -115,11 +129,11 @@ def main():
     args=parser.parse_args()
     RESULTS.mkdir(parents=True,exist_ok=True)
     if args.stage=='smoke':
-        workload('smoke',2,2,1000,True)
+        workload('smoke-prepared',2,2,1000,True)
     else:
-        if not (RESULTS/'smoke/trace-correlation.json').is_file():
+        if not (RESULTS/'smoke-prepared/trace-correlation.json').is_file():
             raise ValueError('Validated trace smoke required before measurement')
-        for label,traced in [('U1',False),('T',True),('U2',False)]:
+        for label,traced in [('U1-prepared',False),('T-prepared',True),('U2-prepared',False)]:
             workload(label,121,120,50000,traced)
 
 
