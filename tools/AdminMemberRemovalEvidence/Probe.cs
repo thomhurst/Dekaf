@@ -19,7 +19,7 @@ public static class Probe
         Save(path, binaries);
     }
 
-    public sealed record TickCount(long Ticks, long Count);
+    public readonly record struct TickCount(long Ticks, long Count);
     public sealed record Snapshot(double Seconds, long Completed, long CpuTicks, long AllocatedBytes,
         long HeapBytes, long RssBytes, int Gen0, int Gen1, int Gen2, long JitMethods,
         double JitMilliseconds, int ThreadPoolThreads, long PendingWorkItems);
@@ -63,6 +63,11 @@ public static class Probe
             throw new ArgumentOutOfRangeException(nameof(durations));
         var captures = new Capture[durations.Length];
         var intervalSets = durations.Select(static seconds => new List<Interval>((int)Math.Ceiling(seconds) + 1)).ToArray();
+        // Retain raw exact-tick histograms without building a growing object graph
+        // during collection. Exceeding capacity invalidates the experiment.
+        const int histogramCapacity = 65536;
+        var histograms = durations.Select(static seconds => Enumerable.Range(0, (int)Math.Ceiling(seconds) + 1)
+            .Select(static _ => new List<TickCount>(histogramCapacity)).ToArray()).ToArray();
         var phase = 0;
         var seconds = durations[phase];
         // Exact tick buckets below one millisecond; sparse overflow preserves every longer tail.
@@ -93,7 +98,8 @@ public static class Probe
             if (elapsed >= nextSnapshot || elapsed >= seconds)
             {
                 var snapshot = TakeSnapshot(process, started, completed);
-                var histogram = DrainHistogram(dense, overflow);
+                var histogram = histograms[phase][intervals.Count];
+                DrainHistogram(dense, overflow, histogram);
                 intervals.Add(new(previous, snapshot, histogram));
                 previous = snapshot;
                 nextSnapshot = Math.Floor(elapsed) + 1;
@@ -156,18 +162,23 @@ public static class Probe
         throw new InvalidOperationException("Percentile exceeds histogram population.");
     }
 
-    private static List<TickCount> DrainHistogram(long[] dense, Dictionary<long, long> overflow)
+    private static void DrainHistogram(long[] dense, Dictionary<long, long> overflow, List<TickCount> result)
     {
-        var result = new List<TickCount>();
         for (var tick = 0; tick < dense.Length; tick++)
         {
             if (dense[tick] == 0) continue;
+            if (result.Count == result.Capacity)
+                throw new InvalidOperationException("Preallocated histogram capacity exceeded.");
             result.Add(new(tick, dense[tick]));
             dense[tick] = 0;
         }
-        foreach (var pair in overflow) result.Add(new(pair.Key, pair.Value));
+        foreach (var pair in overflow)
+        {
+            if (result.Count == result.Capacity)
+                throw new InvalidOperationException("Preallocated histogram capacity exceeded.");
+            result.Add(new(pair.Key, pair.Value));
+        }
         overflow.Clear();
-        return result;
     }
 
     internal static Snapshot TakeSnapshot(Process process, long started, long completed)

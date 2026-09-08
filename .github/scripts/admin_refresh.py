@@ -56,6 +56,7 @@ def execute():
     plan = dict(A=A, B=B, harness=subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
                 controls=controls, candidate_only=added, warmup_seconds=180, measured_seconds=60,
                 pilot=pilot, report_aggregation='all overflow sorting and aggregation deferred until both captures finish',
+                histograms='PR3129: value-type buckets with 65536 preallocated entries per interval; overflow invalidates' if PR == 3129 else 'reference buckets',
                 phase_transition='one continuous warmed call loop; no return/re-entry between warmup and measurement',
                 cpu_affinity=[cpu], jit_attribution='CLR MethodJittingStarted; identical observer in all phases',
                 image=os.getenv('ImageOS'), image_version=os.getenv('ImageVersion'), run_id=os.getenv('GITHUB_RUN_ID'),
