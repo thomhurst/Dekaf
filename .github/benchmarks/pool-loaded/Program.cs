@@ -55,7 +55,7 @@ internal static class Program
             .WithOffsetCommitMode(OffsetCommitMode.Manual).BuildAsync(timeout.Token);
         await using var consumerLifetime = new ObservedDisposal(consumer, directory, "consumer");
         consumer.Partitions.Assign(Enumerable.Range(0, partitions).Select(p => new TopicPartition(args[2], p)).ToArray());
-        var workload = new Workload(args[2], size, partitions);
+        var workload = new Workload(args[2], size, partitions, warmup, measured);
         using var consuming = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token);
         var consumerTask = workload.ConsumeAsync(consumer, consuming.Token);
         try
@@ -111,11 +111,13 @@ internal sealed class Workload
     private readonly long[] _sentByPartition;
     private readonly long[] _receivedByPartition;
     private readonly Slot[] _slots = new Slot[Capacity];
-    private readonly Phase[] _phases = [new(), new()];
+    private readonly Phase[] _phases;
     private Exception? _failure;
 
-    public Workload(string topic, int size, int partitions)
+    public Workload(string topic, int size, int partitions, int warmupSeconds, int measuredSeconds)
     {
+        // Include the entire 30-second drain and the final boundary interval.
+        _phases = [new(checked(warmupSeconds + 31)), new(checked(measuredSeconds + 31))];
         _sentByPartition = new long[partitions];
         _receivedByPartition = new long[partitions];
         for (var index = 0; index < Capacity; index++)
@@ -152,14 +154,16 @@ internal sealed class Workload
         using var process = Process.GetCurrentProcess();
         var startCpu = process.TotalProcessorTime.TotalMilliseconds;
         var startAllocation = GC.GetTotalAllocatedBytes(precise: true);
+        phase.StartTimestamp = Stopwatch.GetTimestamp();
         var timer = Stopwatch.StartNew();
         using var sampling = new CancellationTokenSource();
         var samples = new List<RuntimeSample>(seconds + 40);
-        var sampler = SampleAsync(phase, timer, samples, sampling.Token);
+        var sampler = SampleAsync(phase, samples, sampling.Token);
         using var ingress = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var stopIngress = StopIngressAsync(ingress, timer, seconds);
         var offering = OfferAsync(producer, phase, index, ingress.Token);
         double offeredSeconds = 0;
+        var drained = false;
         try
         {
             try
@@ -185,6 +189,7 @@ internal sealed class Workload
             ThrowIfFailed();
             if (_available.Reader.Count != Capacity)
                 throw new InvalidOperationException("Delivery completion left occupied slots.");
+            drained = true;
         }
         catch (Exception error)
         {
@@ -198,11 +203,19 @@ internal sealed class Workload
             if (!offering.IsCompletedSuccessfully)
                 _ = offering.ContinueWith(static task => _ = task.Exception, CancellationToken.None,
                     TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
-            var elapsed = timer.Elapsed.TotalSeconds;
+            var elapsed = Stopwatch.GetElapsedTime(phase.StartTimestamp).TotalSeconds;
             var cpu = process.TotalProcessorTime.TotalMilliseconds - startCpu;
             var allocated = GC.GetTotalAllocatedBytes(precise: true) - startAllocation;
             sampling.Cancel();
             await sampler;
+            var deliveryIntervals = phase.DeliveryIntervals.GetSnapshot();
+            var completionIntervals = phase.CompletionIntervals.GetSnapshot();
+            var intervalsComplete = drained
+                && deliveryIntervals.OutsideCapacity.Count == 0 && completionIntervals.OutsideCapacity.Count == 0
+                && deliveryIntervals.Intervals.Sum(interval => interval.Count) == phase.Acknowledged
+                && completionIntervals.Intervals.Sum(interval => interval.Count) == phase.Consumed;
+            if (drained && !intervalsComplete)
+                Fail(new InvalidOperationException("Interval observations exceeded capacity or lost completions."));
             var label = index == 0 ? "warmup" : "measured";
             await File.WriteAllTextAsync(Path.Combine(directory, label + ".json"), JsonSerializer.Serialize(new
             {
@@ -212,9 +225,13 @@ internal sealed class Workload
                 CpuMs = cpu, CpuUsPerCompleted = cpu * 1000 / Math.Max(1, phase.Consumed),
                 AllocatedBytes = allocated, BytesPerCompleted = (double)allocated / Math.Max(1, phase.Consumed),
                 DeliveryLatency = phase.Delivery.GetSnapshot(), CompletionLatency = phase.Completion.GetSnapshot(),
+                IntervalsStableAfterDrain = drained,
+                IntervalCaptureComplete = intervalsComplete,
+                DeliveryIntervals = deliveryIntervals, CompletionIntervals = completionIntervals,
                 Samples = samples, Failure = _failure?.ToString()
             }), CancellationToken.None);
         }
+        ThrowIfFailed();
     }
 
     private async Task OfferAsync(IKafkaProducer<string, byte[]> producer, Phase phase, int index,
@@ -274,7 +291,9 @@ internal sealed class Workload
                     || record.Offset != sequence || value[24] != 0x5a || value[^1] != 0xa5)
                     throw new InvalidOperationException("Duplicate, missing, reordered or corrupted record.");
                 var phase = _phases[phaseIndex];
-                phase.Completion.RecordTicks(Stopwatch.GetTimestamp() - started);
+                var completed = Stopwatch.GetTimestamp();
+                phase.Completion.RecordTicks(completed - started);
+                phase.CompletionIntervals.RecordTicks(completed - started, completed - phase.StartTimestamp);
                 Interlocked.Increment(ref phase.Consumed);
                 _slots[slotIndex].Consumed(sequence);
             }
@@ -286,7 +305,7 @@ internal sealed class Workload
         }
     }
 
-    private static async Task SampleAsync(Phase phase, Stopwatch timer,
+    private static async Task SampleAsync(Phase phase,
         List<RuntimeSample> samples, CancellationToken cancellationToken)
     {
         using var process = Process.GetCurrentProcess();
@@ -296,7 +315,7 @@ internal sealed class Workload
             do
             {
                 process.Refresh();
-                samples.Add(new RuntimeSample(timer.Elapsed.TotalSeconds,
+                samples.Add(new RuntimeSample(Stopwatch.GetElapsedTime(phase.StartTimestamp).TotalSeconds,
                     Volatile.Read(ref phase.Sent), Volatile.Read(ref phase.Acknowledged), Volatile.Read(ref phase.Consumed),
                     process.TotalProcessorTime.TotalMilliseconds, GC.GetTotalAllocatedBytes(), GC.GetTotalMemory(false),
                     process.WorkingSet64, GC.CollectionCount(0), GC.CollectionCount(1), GC.CollectionCount(2),
@@ -308,13 +327,16 @@ internal sealed class Workload
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
     }
 
-    private sealed class Phase
+    private sealed class Phase(int capacitySeconds)
     {
+        public long StartTimestamp;
         public long Sent;
         public long Acknowledged;
         public long Consumed;
         public readonly LatencyTracker Delivery = new();
         public readonly LatencyTracker Completion = new();
+        public readonly IntervalLatency DeliveryIntervals = new(capacitySeconds);
+        public readonly IntervalLatency CompletionIntervals = new(capacitySeconds);
     }
 
     private sealed class Slot
@@ -360,7 +382,9 @@ internal sealed class Workload
                 _owner.Fail(new InvalidOperationException("Incorrect delivery metadata."));
             else
             {
-                _phase.Delivery.RecordTicks(Stopwatch.GetTimestamp() - _started);
+                var completed = Stopwatch.GetTimestamp();
+                _phase.Delivery.RecordTicks(completed - _started);
+                _phase.DeliveryIntervals.RecordTicks(completed - _started, completed - _phase.StartTimestamp);
                 Interlocked.Increment(ref _phase.Acknowledged);
             }
             Complete();
