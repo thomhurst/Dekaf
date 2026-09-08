@@ -47,6 +47,7 @@ def execute():
         validator = original.validate_probe
         controls, added = original.CONTROLS, original.NEW_CASES
     pilot = os.getenv('ADMIN_PILOT') == '1'
+    warmup_seconds = 360 if PR == 3129 else 180
     if pilot:
         # Diagnose the observed report/JIT transition before expanding a campaign.
         controls, added = controls[:1], []
@@ -54,7 +55,8 @@ def execute():
     cpu = max(os.sched_getaffinity(0))
     probe_prefix = ['taskset', '-c', str(cpu), 'dotnet']
     plan = dict(A=A, B=B, harness=subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
-                controls=controls, candidate_only=added, warmup_seconds=180, measured_seconds=60,
+                controls=controls, candidate_only=added, warmup_seconds=warmup_seconds, measured_seconds=60,
+                warmup_rationale='PR3129: cover observed Gen2/ArrayPool-trimming JIT at approximately 214 process seconds; assess all measured runtime transitions',
                 pilot=pilot, report_aggregation='all overflow sorting and aggregation deferred until both captures finish',
                 histograms='PR3129: value-type buckets with 65536 preallocated entries per interval; overflow invalidates' if PR == 3129 else 'reference buckets',
                 phase_transition='one continuous warmed call loop; no return/re-entry between warmup and measurement',
@@ -97,15 +99,15 @@ def execute():
         for case in controls:
             destination = OUT / phase / case.replace(':', '-')
             binary = hosts[label]
-            run(probe_prefix + [str(binary), 'probe', case, str(destination), '180', '60'], destination / 'run.log', env=environment)
-            validator(destination / 'warmup.json', 180)
+            run(probe_prefix + [str(binary), 'probe', case, str(destination), str(warmup_seconds), '60'], destination / 'run.log', env=environment)
+            validator(destination / 'warmup.json', warmup_seconds)
             observations[phase][case] = validator(destination / 'measured.json', 60)
             common.retain_loaded_binaries(destination / 'binaries.json', binary.parent, OUT / 'binaries' / label)
     save(OUT / 'comparison.json', {case: common.compare(*(observations[phase][case] for phase in ['A1', 'B', 'A2'])) for case in controls})
     for case in added:
         destination = OUT / 'candidate-only' / case.replace(':', '-')
-        run(probe_prefix + [str(hosts['B']), 'probe', case, str(destination), '180', '60'], destination / 'run.log', env=environment)
-        validator(destination / 'warmup.json', 180)
+        run(probe_prefix + [str(hosts['B']), 'probe', case, str(destination), str(warmup_seconds), '60'], destination / 'run.log', env=environment)
+        validator(destination / 'warmup.json', warmup_seconds)
         validator(destination / 'measured.json', 60)
         common.retain_loaded_binaries(destination / 'binaries.json', hosts['B'].parent, OUT / 'binaries/B')
 
