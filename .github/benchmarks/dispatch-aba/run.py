@@ -163,7 +163,7 @@ def latency_series(folder, metrics):
     (folder / 'latency-series.json').write_text(json.dumps(samples, indent=2))
 
 
-def broker_start(folder, name):
+def broker_start(folder, name, extra_environment=()):
     command(['docker', 'run', '-d', '--name', name, '--cpuset-cpus', AFFINITY['infrastructure'], '-p', '9092:9092',
              '-e', 'KAFKA_HEAP_OPTS=-Xms1g -Xmx1g', '-e', 'KAFKA_NODE_ID=1',
              '-e', 'KAFKA_PROCESS_ROLES=broker,controller', '-e', 'KAFKA_CONTROLLER_QUORUM_VOTERS=1@localhost:9093',
@@ -173,7 +173,9 @@ def broker_start(folder, name):
              '-e', 'KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT',
              '-e', 'KAFKA_INTER_BROKER_LISTENER_NAME=PLAINTEXT', '-e', 'KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1',
              '-e', 'KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1', '-e', 'KAFKA_TRANSACTION_STATE_LOG_MIN_ISR=1',
-             '-e', 'KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS=0', 'apache/kafka:4.3.1'], folder / 'broker-start.log')
+             '-e', 'KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS=0',
+             *[argument for setting in extra_environment for argument in ('-e', setting)],
+             'apache/kafka:4.3.1'], folder / 'broker-start.log')
     deadline = time.monotonic() + 120
     with (folder / 'broker-ready.log').open('w') as stream:
         while time.monotonic() < deadline:

@@ -11,6 +11,12 @@ import time
 ROOT = Path.cwd()
 OUT = ROOT / 'evidence'
 CONFIGS = [(1000, 3), (65536, 1)]
+BROKER_RETENTION = (
+    'KAFKA_LOG_RETENTION_BYTES=1073741824',
+    'KAFKA_LOG_SEGMENT_BYTES=16777216',
+    'KAFKA_LOG_RETENTION_CHECK_INTERVAL_MS=1000',
+    'KAFKA_LOG_SEGMENT_DELETE_DELAY_MS=1000',
+)
 
 
 def module(path, name):
@@ -32,7 +38,8 @@ def broker_samples(name, path, stop, errors):
                 observation = json.loads(result.stdout)
                 if not observation.get('CPUPerc') or not observation.get('MemUsage'):
                     raise ValueError('Missing broker CPU/memory observation')
-                log.write(json.dumps({'utc_ns': time.time_ns(), 'observation': observation}) + '\n')
+                log.write(json.dumps({'utc_ns': time.time_ns(), 'observation': observation,
+                                      'runner_disk_free_bytes': shutil.disk_usage(ROOT).free}) + '\n')
                 log.flush()
                 stop.wait(1)
     except Exception as error:
@@ -48,6 +55,7 @@ def execute():
     dispatch.command(['git', 'merge-base', '--is-ancestor', a, b], OUT / 'ancestry.log')
     plan = {'A': a, 'B': b, 'harness': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
             'warmup_seconds': 180, 'measured_seconds': 300, 'configurations': CONFIGS,
+            'broker_retention': BROKER_RETENTION,
             'cpu_core_socket': topology, 'affinity': dispatch.AFFINITY.copy(),
             'runner': 'ubuntu-latest', 'image': os.getenv('ImageVersion'), 'runtime': {
                 'TieredCompilation': '1', 'TieredPGO': '1', 'ReadyToRun': '1', 'ServerGC': True},
@@ -95,7 +103,7 @@ def execute():
             sampler_errors = []
             sampler = None
             try:
-                dispatch.broker_start(folder, broker)
+                dispatch.broker_start(folder, broker, BROKER_RETENTION)
                 sampler = threading.Thread(target=broker_samples,
                     args=(broker, folder / 'broker-stats.jsonl', stop, sampler_errors))
                 sampler.start()
