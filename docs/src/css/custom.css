@@ -69,7 +69,7 @@
   --docusaurus-highlighted-code-line-bg: var(--dekaf-code-highlight);
 }
 
-[data-theme='dark'] {
+html[data-theme='dark'] {
   --dekaf-paper: #211a30;
   --dekaf-surface: #2a203c;
   --dekaf-lilac: #30263f;
@@ -82,6 +82,8 @@
   --dekaf-sage: #a6cbb4;
   --dekaf-rose: #eba1b5;
 
+  --ifm-background-color: var(--dekaf-paper);
+  --ifm-background-surface-color: var(--dekaf-surface);
   --ifm-color-primary-dark: #b28af7;
   --ifm-color-primary-darker: #a97bf6;
   --ifm-color-primary-darkest: #8d50f3;
