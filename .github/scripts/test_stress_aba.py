@@ -603,6 +603,45 @@ class StressAbaComparisonTests(unittest.TestCase):
                 self.assertIn(expected, comparison["validationError"])
                 self.assertIn(expected, summary.read_text(encoding="utf-8"))
 
+    def test_serialization_failures_never_publish_a_pass(self):
+        invalid_results = [
+            {**result(), "durationMinutes": value}
+            for value in (float("inf"), float("-inf"), float("nan"))
+        ]
+        # Finite inputs can also overflow descriptive means in the comparison.
+        invalid_results.append(result(throughput=1e308))
+        for invalid in invalid_results:
+            for second_candidate in (False, True):
+                with self.subTest(invalid=invalid, second_candidate=second_candidate):
+                    with tempfile.TemporaryDirectory() as directory:
+                        root = Path(directory)
+                        for label in ("a", "b", "a2", "b2"):
+                            path = root / label
+                            path.mkdir()
+                            (path / "stress-test-results.json").write_text(
+                                json.dumps({"results": [invalid]}), encoding="utf-8"
+                            )
+                        output = root / "comparison.json"
+                        summary = root / "summary.md"
+                        arguments = [
+                            "--baseline-a", str(root / "a"), "--candidate", str(root / "b"),
+                            "--baseline-a2", str(root / "a2"), "--baseline-sha", "a" * 40,
+                            "--candidate-sha", "b" * 40, "--output", str(output),
+                            "--summary", str(summary),
+                        ]
+                        if second_candidate:
+                            arguments.extend(["--candidate-b2", str(root / "b2")])
+                        stdout = io.StringIO()
+                        with contextlib.redirect_stdout(stdout):
+                            exit_code = main(arguments)
+                        comparison = json.loads(output.read_text(encoding="utf-8"))
+                        self.assertEqual(1, exit_code)
+                        self.assertEqual("inconclusive", comparison["verdict"])
+                        self.assertIn("JSON compliant", comparison["validationError"])
+                        for report in (stdout.getvalue(), summary.read_text(encoding="utf-8")):
+                            self.assertIn("Verdict: INCONCLUSIVE", report)
+                            self.assertNotIn("Verdict: PASS", report)
+
     def test_candidates_require_completed_messages_despite_positive_cached_rates(self):
         for completed in (0, -1, True, 1.5, "100", float("nan")):
             for segment in (1, 3):

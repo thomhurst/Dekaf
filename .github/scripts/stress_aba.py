@@ -518,15 +518,17 @@ def main(argv=None):
             args.max_control_drift_percent,
             candidate_b2_result=None if not args.candidate_b2 else _single_result(args.candidate_b2),
         )
-    # Helpers consume decoded JSON; malformed nested values can fail structurally.
+        serialized = json.dumps(comparison, indent=2, allow_nan=False) + "\n"
     except (ValueError, OSError, TypeError, AttributeError, OverflowError) as error:
+        # Invalid input or an unrepresentable comparison must not publish a pass.
         comparison = {"verdict": "inconclusive", "validationError": str(error), "metrics": []}
+        serialized = json.dumps(comparison, indent=2, allow_nan=False) + "\n"
     report = markdown(comparison, args.baseline_sha, args.candidate_sha)
     print(report, end="")
 
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps(comparison, indent=2, allow_nan=False) + "\n", encoding="utf-8")
+    output.write_text(serialized, encoding="utf-8")
     if args.summary:
         with Path(args.summary).open("a", encoding="utf-8") as handle:
             handle.write(report)
