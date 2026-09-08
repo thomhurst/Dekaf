@@ -38,8 +38,12 @@ public static class Probe
         // Re-enter the complete measurement path so tiered entry stubs and the
         // low-frequency sampler do not first optimize at the measurement boundary.
         var segments = new List<Result>(128);
-        for (var index = 0; index < 128; index++)
-            segments.Add(await MeasureAsync(fixture, 0.05));
+        for (var index = 0; index < 64; index++)
+        {
+            var pair = await CapturePhasesAsync(fixture, [0.05, 0.05]);
+            segments.Add(Complete(pair[0]));
+            segments.Add(Complete(pair[1]));
+        }
         Save(Path.Combine(Path.GetDirectoryName(outputPath)!, "segments-" + Path.GetFileName(outputPath)), segments);
         Save(outputPath, await MeasureAsync(fixture, 1));
     }
@@ -48,15 +52,31 @@ public static class Probe
         => Complete(await CaptureAsync(fixture, seconds));
 
     public static async Task<Capture> CaptureAsync(AdminFixture fixture, double seconds)
+        => (await CapturePhasesAsync(fixture, [seconds]))[0];
+
+    // Keep the same warmed call loop across phase boundaries. Returning from the
+    // warmup state machine and entering another invocation can trigger new Tier 1 code.
+    internal static async Task<Capture[]> CapturePhasesAsync(AdminFixture fixture, double[] durations,
+        CompilationLog? compilations = null)
     {
-        if (seconds <= 0 || !double.IsFinite(seconds)) throw new ArgumentOutOfRangeException(nameof(seconds));
+        if (durations.Length == 0 || durations.Any(static value => value <= 0 || !double.IsFinite(value)))
+            throw new ArgumentOutOfRangeException(nameof(durations));
+        var captures = new Capture[durations.Length];
+        var intervalSets = durations.Select(static seconds => new List<Interval>((int)Math.Ceiling(seconds) + 1)).ToArray();
+        var phase = 0;
+        var seconds = durations[phase];
         // Exact tick buckets below one millisecond; sparse overflow preserves every longer tail.
         var dense = new long[Math.Min(Stopwatch.Frequency / 1000, 1_000_000) + 1];
         var overflow = new Dictionary<long, long>();
-        var intervals = new List<Interval>((int)Math.Ceiling(seconds) + 1);
+        var intervals = intervalSets[phase];
         using var process = Process.GetCurrentProcess();
         var started = Stopwatch.GetTimestamp();
         long completed = 0;
+        if (compilations is not null)
+        {
+            PhaseEvents.Log.Phase("warmup");
+            compilations.Phase("warmup");
+        }
         var first = TakeSnapshot(process, started, completed);
         var previous = first;
         var nextSnapshot = 1d;
@@ -77,10 +97,23 @@ public static class Probe
                 intervals.Add(new(previous, snapshot, histogram));
                 previous = snapshot;
                 nextSnapshot = Math.Floor(elapsed) + 1;
-                if (elapsed >= seconds) break;
+                if (elapsed >= seconds)
+                {
+                    captures[phase] = new(first, previous, intervals);
+                    if (++phase == durations.Length) break;
+                    seconds = durations[phase];
+                    intervals = intervalSets[phase];
+                    if (compilations is not null)
+                    {
+                        PhaseEvents.Log.Phase("measured");
+                        compilations.Phase("measured");
+                    }
+                    first = previous = TakeSnapshot(process, started, completed);
+                    nextSnapshot = 1;
+                }
             }
         }
-        return new(first, previous, intervals);
+        return captures;
     }
 
     // Complete both reports only after measured collection stops. Sorting the
@@ -90,6 +123,9 @@ public static class Probe
         var (first, previous, intervals) = capture;
         var completed = capture.Completed;
         var aggregate = new Dictionary<long, long>();
+        // Sparse overflow buckets were retained unsorted during collection.
+        foreach (var interval in intervals)
+            interval.Latencies.Sort(static (left, right) => left.Ticks.CompareTo(right.Ticks));
         foreach (var interval in intervals)
         foreach (var bucket in interval.Latencies)
         {
@@ -129,7 +165,7 @@ public static class Probe
             result.Add(new(tick, dense[tick]));
             dense[tick] = 0;
         }
-        foreach (var pair in overflow.OrderBy(static pair => pair.Key)) result.Add(new(pair.Key, pair.Value));
+        foreach (var pair in overflow) result.Add(new(pair.Key, pair.Value));
         overflow.Clear();
         return result;
     }

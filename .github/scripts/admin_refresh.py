@@ -55,7 +55,8 @@ def execute():
     probe_prefix = ['taskset', '-c', str(cpu), 'dotnet']
     plan = dict(A=A, B=B, harness=subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
                 controls=controls, candidate_only=added, warmup_seconds=180, measured_seconds=60,
-                pilot=pilot, report_aggregation='deferred until after both captures; no warmup aggregate before measurement',
+                pilot=pilot, report_aggregation='all overflow sorting and aggregation deferred until both captures finish',
+                phase_transition='one continuous warmed call loop; no return/re-entry between warmup and measurement',
                 cpu_affinity=[cpu], jit_attribution='CLR MethodJittingStarted; identical observer in all phases',
                 image=os.getenv('ImageOS'), image_version=os.getenv('ImageVersion'), run_id=os.getenv('GITHUB_RUN_ID'),
                 scope='Cached-transport completed administrative calls; no network/broker acceptance.',
