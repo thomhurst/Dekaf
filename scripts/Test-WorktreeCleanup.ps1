@@ -21,10 +21,18 @@ try {
     git -C $repo init -b main --quiet
     git -C $repo config user.name 'Worktree Cleanup Test'
     git -C $repo config user.email 'worktree-cleanup@example.invalid'
+    # Ownership behavior has a separate live-Redis suite. Keep these filesystem
+    # guard tests independent of Docker and real work-item identities.
+    New-Item -ItemType Directory -Path (Join-Path $repo 'scripts') | Out-Null
+    Set-Content -LiteralPath (Join-Path $repo 'scripts/AgentLocks.ps1') -Value @'
+param($Verb, $LockName, $OwnerId)
+if ($Verb -eq 'status') { 'FREE' }
+exit 0
+'@
     Set-Content -LiteralPath (Join-Path $repo 'README.md') -Value '# fixture'
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot '../.gitignore') -Destination (Join-Path $repo '.gitignore')
     Add-Content -LiteralPath (Join-Path $repo '.gitignore') -Value "`n.env`nignored-source/"
-    git -C $repo add README.md .gitignore
+    git -C $repo add README.md .gitignore scripts/AgentLocks.ps1
     git -C $repo commit --quiet -m 'fixture'
 
     git -C $repo worktree add --quiet -b issue-123-fresh-source $sourceWorktree

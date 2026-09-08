@@ -117,13 +117,112 @@ function Test-WorktreeHeadMerged {
     return $LASTEXITCODE -eq 0
 }
 
+function Get-WorktreeCleanupLockName {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Worktree)
+
+    if (Test-Path -LiteralPath $Worktree) {
+        $enabled = git -C $Worktree config --local --bool --get extensions.worktreeConfig 2>$null
+        if ($LASTEXITCODE -notin @(0, 1)) { throw 'Cannot inspect worktree lock configuration.' }
+        # Without this extension --worktree aliases shared config, which can contain
+        # a legacy marker belonging to an entirely different checkout.
+        if ($enabled -eq 'true') {
+            $marker = git -C $Worktree config --worktree --get agent.lockName 2>$null
+            if ($LASTEXITCODE -notin @(0, 1)) { throw 'Cannot inspect worktree lock marker.' }
+            if ($marker) { return $marker.Trim() }
+        }
+    }
+
+    # Ownership is acquired before checkout. Protect the creation/registration gap
+    # using the work-item identity required by the issue/PR worktree convention.
+    $name = [IO.Path]::GetFileName($Worktree.TrimEnd('\', '/'))
+    if ($name -match '^(pr|issue)-(\d+)(?:-|$)') { return "$($Matches[1])-$($Matches[2])" }
+    return $null
+}
+
+function Invoke-WorktreeOwnershipCommand {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Script,
+        [Parameter(Mandatory)][string]$Verb,
+        [Parameter(Mandatory)][string]$LockName,
+        [Parameter(Mandatory)][string]$OwnerId
+    )
+
+    $state = $null
+    if ($Verb -eq 'status') {
+        $state = (& pwsh -NoProfile -File $Script $Verb -LockName $LockName -OwnerId $OwnerId 2>$null | Out-String).Trim()
+    } else {
+        # Acquire prints an opaque token. Only the canonical script may store it;
+        # never include it (or arbitrary endpoint output) in cleanup diagnostics.
+        & pwsh -NoProfile -File $Script $Verb -LockName $LockName -OwnerId $OwnerId *> $null
+    }
+    return [pscustomobject]@{ ExitCode = $LASTEXITCODE; State = $state }
+}
+
 function Remove-MergedWorktree {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Repo,
+        [Parameter(Mandatory)][string]$Worktree,
+        [string]$Label = '',
+        [string]$ExpectedHead,
+        [switch]$WhatIf
+    )
+
+    try { $lockName = Get-WorktreeCleanupLockName -Worktree $Worktree }
+    catch {
+        Write-Host "Preserving worktree $Label : $Worktree (ownership identity is unreadable)"
+        return
+    }
+    if (-not $lockName) {
+        Remove-MergedWorktreeCore @PSBoundParameters
+        return
+    }
+
+    # Repo is the shared checkout, not a branch copy whose locking protocol may be old.
+    $agentLocks = Join-Path $Repo 'scripts/AgentLocks.ps1'
+    if (-not (Test-Path -LiteralPath $agentLocks)) {
+        Write-Host "Preserving worktree $Label : $Worktree (canonical ownership script is unavailable)"
+        return
+    }
+    $owner = "worktree-cleanup-$([Guid]::NewGuid().ToString('N'))"
+    $verb = if ($WhatIf) { 'status' } else { 'acquire' }
+    try { $result = Invoke-WorktreeOwnershipCommand -Script $agentLocks -Verb $verb -LockName $lockName -OwnerId $owner }
+    catch {
+        Write-Host "Preserving worktree $Label : $Worktree (ownership check failed)"
+        return
+    }
+    if ($result.ExitCode -ne 0 -or ($WhatIf -and $result.State -ne 'FREE')) {
+        Write-Host "Preserving worktree $Label : $Worktree (Redis ownership held or unavailable for $lockName)"
+        return
+    }
+
+    try {
+        Remove-MergedWorktreeCore @PSBoundParameters -ExpectedLockName $lockName
+    }
+    finally {
+        if (-not $WhatIf) {
+            # No -Worktree was supplied on acquire: release only this temporary lease.
+            # A competing owner cannot acquire the item between our check and removal.
+            $released = Invoke-WorktreeOwnershipCommand -Script $agentLocks -Verb release -LockName $lockName -OwnerId $owner
+            if ($released.ExitCode -ne 0) {
+                Write-Host "WARNING: could not release cleanup ownership for $lockName (exit $($released.ExitCode))"
+            }
+        }
+    }
+}
+
+# Called only after Remove-MergedWorktree has established cleanup ownership, or
+# determined this checkout has no registered/standard work-item identity.
+function Remove-MergedWorktreeCore {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Repo,       # a checkout that is NOT the one being removed (main)
         [Parameter(Mandatory)][string]$Worktree,   # path to remove
         [string]$Label = '',                       # e.g. "#1234" for log lines
         [string]$ExpectedHead,
+        [string]$ExpectedLockName,
         [switch]$WhatIf
     )
 
@@ -183,6 +282,11 @@ function Remove-MergedWorktree {
 
     if ($WhatIf) {
         Write-Host "sweep: WOULD remove $Worktree -- $Label"
+        return
+    }
+
+    if ($ExpectedLockName -and (Get-WorktreeCleanupLockName -Worktree $Worktree) -cne $ExpectedLockName) {
+        Write-Host "Preserving worktree $Label : $Worktree (ownership identity changed during cleanup)"
         return
     }
 

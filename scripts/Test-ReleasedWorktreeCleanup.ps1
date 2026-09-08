@@ -1,6 +1,7 @@
 # Local regression suite: requires Git, PowerShell 7 and Docker.
+param([string]$AgentLocksScript = (Join-Path $PSScriptRoot 'AgentLocks.ps1'))
 $ErrorActionPreference = 'Stop'
-$agentLocks = Join-Path $PSScriptRoot 'AgentLocks.ps1'
+$agentLocks = (Resolve-Path -LiteralPath $AgentLocksScript).Path
 $suffix = [Guid]::NewGuid().ToString('N')
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) "released-worktree-tests-$suffix"
 $repo = Join-Path $testRoot 'repo'

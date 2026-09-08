@@ -29,13 +29,17 @@
 #   A failed `worktree remove` followed by `worktree prune` leaves a directory whose
 #   .git file points at a gitdir that no longer exists. Such dirs are invisible to
 #   `git worktree list`, so the sweep also scans the directories where worktrees are
-#   known to live and reaps any dir that provably WAS a worktree of this repo
+#   known to live and reports any dir that provably WAS a worktree of this repo
 #   (its .git file targets $mainRepo/.git/worktrees/* and that gitdir is gone).
+#   Preserve these directories: missing registration prevents verification of
+#   per-worktree ownership and uncommitted source.
 #   Dirs without a .git worktree marker (artifacts, scratch output) are never touched.
 #
 # Guards (never delete work):
 #   - skip the main checkout and anything inside it (.claude/worktrees is harness-managed)
 #   - skip locked worktrees (an agent session may still own them)
+#   - preserve Redis-owned worktrees; removal holds a temporary canonical lease
+#     for registered or convention-named work items, and fails closed on lock errors
 #   - skip a branch/tip that has an OPEN PR (branch reused for active work)
 #   - PRESERVE tracked changes and untracked files outside known generated directories
 #     or recognized root-level logs/PR notes covered by .gitignore
@@ -232,7 +236,7 @@ try {
         if ($parent) { $roots[$parent.ToLowerInvariant()] = $parent }
     }
 
-    $orphansRemoved = 0
+    $orphansPreserved = 0
     foreach ($root in $roots.Values) {
         if (-not (Test-Path -LiteralPath $root)) { continue }
         foreach ($dir in (Get-ChildItem -LiteralPath $root -Directory -Force -ErrorAction SilentlyContinue)) {
@@ -241,24 +245,17 @@ try {
             $marker = Join-Path $dir.FullName '.git'
             if (-not (Test-Path -LiteralPath $marker -PathType Leaf)) { continue }   # not a worktree (artifacts etc.) — leave alone
             $gitdir = ((Get-Content -LiteralPath $marker -TotalCount 1) -replace '^gitdir:\s*', '') -replace '\\', '/'
-            # Only reap dirs that provably WERE worktrees of THIS repo and whose
+            # Only report dirs that provably WERE worktrees of THIS repo and whose
             # registration is gone. A live marker (gitdir exists) is someone else's.
             if ($gitdir -notlike "$mainNorm/.git/worktrees/*") { continue }
             if (Test-Path -LiteralPath $gitdir) { continue }
-            if ($WhatIf) { Write-Host "sweep: WOULD remove orphaned dir $($dir.FullName) (dangling gitdir: $gitdir)"; continue }
-            Remove-Item -LiteralPath ('\\?\' + ($dir.FullName -replace '/', '\')) -Recurse -Force -ErrorAction SilentlyContinue
-            if (Test-Path -LiteralPath $dir.FullName) {
-                Write-Host "sweep: WARNING could not fully remove orphaned dir $($dir.FullName)"
-            }
-            else {
-                Write-Host "sweep: removed orphaned dir $($dir.FullName)"
-                $orphansRemoved++
-            }
+            Write-Host "sweep: preserving orphaned dir $($dir.FullName) (ownership and source cannot be verified; dangling gitdir: $gitdir)"
+            $orphansPreserved++
         }
     }
 
     if (-not $WhatIf) { git -C $mainRepo worktree prune }
-    Write-Host "sweep: removed $removed merged worktree(s), $orphansRemoved orphaned dir(s)."
+    Write-Host "sweep: removed $removed merged worktree(s), preserved $orphansPreserved orphaned dir(s)."
 }
 catch {
     Warn "unexpected sweep error (ignored, loop continues): $_"

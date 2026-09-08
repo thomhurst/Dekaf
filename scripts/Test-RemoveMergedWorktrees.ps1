@@ -49,6 +49,25 @@ try {
     Set-Content -LiteralPath (Join-Path $openWorktree 'README.md') -Value 'open PR'
     git -C $openWorktree commit --quiet -am 'open PR'
     $openHead = git -C $openWorktree rev-parse HEAD
+    $orphan = Join-Path $testRoot 'pr-123-orphan'
+    New-Item -ItemType Directory -Path $orphan | Out-Null
+    Set-Content -LiteralPath (Join-Path $orphan '.git') -Value "gitdir: $repo/.git/worktrees/missing-registration"
+    Set-Content -LiteralPath (Join-Path $orphan 'NewFeature.cs') -Value 'untracked source'
+    Set-Content -LiteralPath (Join-Path $repo 'README.md') -Value 'new main commit outside merged PR records'
+    git -C $repo commit --quiet -am 'advance main'
+    $mainHead = git -C $repo rev-parse HEAD
+    git -C $repo update-ref refs/remotes/origin/main $mainHead
+    $owned = Join-Path $testRoot 'owned-detached'
+    git -C $repo worktree add --quiet --detach $owned $mainHead
+    git -C $repo config extensions.worktreeConfig true
+    git -C $owned config --worktree agent.lockName fixture-owned
+    New-Item -ItemType Directory -Path (Join-Path $repo 'scripts') | Out-Null
+    # Live Redis semantics are tested separately; this verifies sweep routing.
+    Set-Content -LiteralPath (Join-Path $repo 'scripts/AgentLocks.ps1') -Value @'
+param($Verb, $LockName, $OwnerId)
+if ($Verb -eq 'status') { 'HELD'; exit 0 }
+exit 3
+'@
     $mergedJson = @(
         foreach ($name in @('merged', 'dirty', 'divergent', 'open')) {
             @{ headRefName = $name; headRefOid = $baseHead }
@@ -74,6 +93,8 @@ try {
         Assert-True (Test-Path -LiteralPath $dirtyWorktree) 'Dirty worktree was removed.'
         Assert-True (Test-Path -LiteralPath $divergentWorktree) 'Divergent local commit was removed.'
         Assert-True (Test-Path -LiteralPath $openWorktree) 'Open PR worktree was removed.'
+        Assert-True (Test-Path -LiteralPath $owned) 'Redis-owned detached main checkout was removed.'
+        Assert-True (Test-Path -LiteralPath (Join-Path $orphan 'NewFeature.cs')) 'Orphan with unverifiable ownership/source was removed.'
         git -C $repo show-ref --verify --quiet refs/heads/merged
         Assert-True ($LASTEXITCODE -ne 0) 'Merged branch was not cleaned up.'
         git -C $repo show-ref --verify --quiet refs/heads/divergent
