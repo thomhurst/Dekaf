@@ -40,7 +40,7 @@ def sha256(path):
 
 def reports(folder):
     cases = {}
-    for path in sorted(folder.glob('*-report-full.json')):
+    for path in sorted(folder.rglob('*-report-full.json')):
         for case in json.loads(path.read_text(encoding='utf-8-sig')).get('Benchmarks', []):
             stats = case.get('Statistics') or {}
             mean, count = stats.get('Mean'), stats.get('N')
@@ -134,16 +134,27 @@ def execute(args):
             artifacts / f'dry-{label}.log', cwd=hosts[label].parent, env=dict(environment, ABA_PHASE=f'Dry{label}', ABA_RUNTIME_LOG=str(artifacts / f'dry-{label}-runtime.csv')))
         if len(reports(artifacts / f'dry-{label}/results')) != EXPECTED_CASES[args.pr]:
             raise ValueError('Dry run did not cover the declared benchmark matrix')
+    dry_cases = {label: reports(artifacts / f'dry-{label}/results') for label in ('A', 'B')}
+    if dry_cases['A'].keys() != dry_cases['B'].keys():
+        raise ValueError('Dry baseline and candidate matrices differ')
+    metadata['process_isolation'] = 'One fresh process per case in each phase'
     for phase, label in (('A1', 'A'), ('B', 'B'), ('A2', 'A')):
         recorded = json.loads((artifacts / f'binaries-{label}.json').read_text())
         if any(sha256(hosts[label].parent / name) != digest for name, digest in recorded.items()):
             raise ValueError('Prebuilt measurement inputs changed')
         run(['ps', '-eo', 'pid,ppid,pcpu,pmem,args'], artifacts / f'processes-{phase}.txt')
         entry = {'phase': phase, 'product_sha': args.baseline if label == 'A' else args.candidate, 'started_utc': now()}
-        run(['taskset', '-c', str(cpu), 'dotnet', str(hosts[label]), '--filter', *SUITES[args.pr], '--artifacts', str(artifacts / phase)],
-            artifacts / f'{phase}.log', cwd=hosts[label].parent, env=dict(environment, ABA_PHASE=phase, ABA_RUNTIME_LOG=str(artifacts / f'{phase}-runtime.csv')))
+        for index, key in enumerate(sorted(dry_cases[label])):
+            case = dry_cases[label][key]
+            destination = artifacts / phase / 'results' / f'case-{index:02}'
+            run(['taskset', '-c', str(cpu), 'dotnet', str(hosts[label]), '--filter', case['full_name'], '--artifacts', str(destination)],
+                artifacts / f'{phase}-case-{index:02}.log', cwd=hosts[label].parent,
+                env=dict(environment, ABA_PHASE=phase, ABA_RUNTIME_LOG=str(artifacts / f'{phase}-case-{index:02}-runtime.csv')))
+            measured = reports(destination / 'results')
+            if measured.keys() != {key} or measured[key]['statistics']['N'] != 25:
+                raise ValueError('Isolated case selection or sample count differs from the declared matrix')
         warmup = {}
-        for report in (artifacts / phase / 'results').glob('*-report-full.json'):
+        for report in (artifacts / phase / 'results').rglob('*-report-full.json'):
             for benchmark in json.loads(report.read_text(encoding='utf-8-sig'))['Benchmarks']:
                 measurements = [m for m in benchmark['Measurements'] if m['IterationMode'] == 'Workload' and m['IterationStage'] == 'Warmup']
                 seconds = sum(m['Nanoseconds'] for m in measurements) / 1e9
