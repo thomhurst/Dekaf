@@ -86,6 +86,12 @@ builder.Services.AddDekaf(dekaf =>
 After:
 
 ```csharp
+using Dekaf.Compression;
+using Dekaf.Compression.Lz4;
+
+// Install Dekaf.Compression.Lz4 and register it before configuring clients.
+CompressionCodecRegistry.Default.AddLz4();
+
 var retryPolicy = new FixedDelayRetryPolicy
 {
     Delay = TimeSpan.FromMilliseconds(100),
@@ -140,6 +146,12 @@ public class OrderService
 Register multiple producers or consumers with different type parameters normally:
 
 ```csharp
+using Dekaf.Compression;
+using Dekaf.Compression.Lz4;
+
+// Install Dekaf.Compression.Lz4 and register it before configuring clients.
+CompressionCodecRegistry.Default.AddLz4();
+
 builder.Services.AddDekaf(dekaf =>
 {
     dekaf.AddProducer<string, string>(producer => producer

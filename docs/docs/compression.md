@@ -33,28 +33,69 @@ dotnet add package Dekaf.Compression.Snappy
 
 Gzip is built into .NET, no additional package needed.
 
+## Registering Codecs
+
+Explicitly register the codecs your application needs at startup, before building any
+producers or consumers. Do not rely on installing the package alone:
+
+```csharp
+using Dekaf.Compression;
+using Dekaf.Compression.Lz4;
+using Dekaf.Compression.Snappy;
+using Dekaf.Compression.Zstd;
+
+// Install and register only the codecs your application needs.
+CompressionCodecRegistry.Default
+    .AddLz4()
+    .AddZstd()
+    .AddSnappy();
+```
+
+Registration affects all clients in the process, so do this before building producers or
+consumers. `None` and `Gzip` are built in and need no extra registration.
+
 ## Enabling Compression
 
 ### Using Convenience Methods
 
+After registration, select the producer's compression type with the matching builder
+helper. For example, install `Dekaf.Compression.Lz4` and use:
+
 ```csharp
 using Dekaf;
+using Dekaf.Compression;
+using Dekaf.Compression.Lz4;
+
+CompressionCodecRegistry.Default.AddLz4();
 
 var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
-    .UseLz4Compression()    // or UseZstdCompression(), UseSnappyCompression(), UseGzipCompression()
+    .UseLz4Compression()
     .BuildAsync();
 ```
 
 ### Using Enum
 
+`UseCompression(...)` only selects the compression type. Register the codec first.
+The producer's `ForHighThroughput()` preset also selects LZ4, so register it before
+using that preset unless you override compression with `None` or `Gzip`.
+
 ```csharp
-.UseCompression(CompressionType.Lz4)
-.UseCompression(CompressionType.Zstd)
-.UseCompression(CompressionType.Snappy)
-.UseCompression(CompressionType.Gzip)
-.UseCompression(CompressionType.None)  // Disable
+using Dekaf;
+using Dekaf.Compression;
+using Dekaf.Compression.Lz4;
+using Dekaf.Protocol.Records;
+
+CompressionCodecRegistry.Default.AddLz4();
+
+var producer = await Kafka.CreateProducer<string, string>()
+    .WithBootstrapServers("localhost:9092")
+    .UseCompression(CompressionType.Lz4)
+    .BuildAsync();
 ```
+
+Other choices are `CompressionType.Zstd`, `CompressionType.Snappy`,
+`CompressionType.Gzip`, and `CompressionType.None` (disable compression).
 
 ## How It Works
 
@@ -124,6 +165,10 @@ Compression works best with batching. Configure linger time to allow batches to 
 
 ```csharp
 using Dekaf;
+using Dekaf.Compression;
+using Dekaf.Compression.Lz4;
+
+CompressionCodecRegistry.Default.AddLz4();
 
 var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
@@ -135,15 +180,21 @@ var producer = await Kafka.CreateProducer<string, string>()
 
 ## Consumer Decompression
 
-Consumers automatically detect and decompress messages. No configuration needed:
+Consumers detect the compression type from each record batch, but the matching codec
+must be registered. In a consumer application reading LZ4-compressed records, install
+`Dekaf.Compression.Lz4` and register it before building the consumer:
 
 ```csharp
 using Dekaf;
+using Dekaf.Compression;
+using Dekaf.Compression.Lz4;
 
-// Consumer handles decompression automatically
+CompressionCodecRegistry.Default.AddLz4();
+
 var consumer = await Kafka.CreateConsumer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithGroupId("my-group")
+    .SubscribeTo("events")
     .BuildAsync();
 
 await foreach (var msg in consumer.ConsumeAsync(ct))
@@ -154,7 +205,11 @@ await foreach (var msg in consumer.ConsumeAsync(ct))
 ```
 
 :::note
-Make sure the compression codec package is installed in your consumer application too, or decompression will fail.
+Register every optional codec the consumer may encounter, using `AddLz4()`, `AddZstd()`,
+or `AddSnappy()` and the matching package namespace. There is no consumer
+`UseLz4Compression()` method: consumers read whichever codec each batch specifies.
+Installing the package alone is not enough; a missing codec causes decompression to fail
+with `NotSupportedException`.
 :::
 
 ## Performance Impact
@@ -188,6 +243,10 @@ Typical performance characteristics:
 
 ```csharp
 using Dekaf;
+using Dekaf.Compression;
+using Dekaf.Compression.Lz4;
+
+CompressionCodecRegistry.Default.AddLz4();
 
 var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")

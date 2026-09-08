@@ -130,6 +130,10 @@ Not sure which settings to use? We've got you covered with presets for common sc
 
 ```csharp
 using Dekaf;
+using Dekaf.Compression;
+using Dekaf.Compression.Lz4;
+
+CompressionCodecRegistry.Default.AddLz4();
 
 // Maximize throughput (batching, compression, relaxed durability)
 var highThroughputProducer = await Kafka.CreateProducer<string, string>()
@@ -258,7 +262,7 @@ await foreach (var msg in manualCommitConsumer.ConsumeAsync(ct))
 
 ## Compression
 
-Dekaf supports standard Kafka compression codecs. Just add the relevant package:
+Dekaf supports standard Kafka compression codecs. Install the relevant package:
 
 ```bash
 dotnet add package Dekaf.Compression.Lz4     # Fast, good compression
@@ -266,16 +270,26 @@ dotnet add package Dekaf.Compression.Zstd    # Best compression ratio
 dotnet add package Dekaf.Compression.Snappy  # Balanced
 ```
 
-Then enable it:
+Register the codec at startup, then select the producer's compression type:
 
 ```csharp
 using Dekaf;
+using Dekaf.Compression;
+using Dekaf.Compression.Lz4;
+
+CompressionCodecRegistry.Default.AddLz4();
 
 var plainProducer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .UseLz4Compression()
     .BuildAsync();
 ```
+
+Consumer applications must also register every optional codec they read before building
+clients, using `CompressionCodecRegistry.Default.AddLz4()`, `AddZstd()`, or `AddSnappy()`.
+The producer's `ForHighThroughput()` preset selects LZ4 and needs the same registration.
+Gzip is built in and needs no extra package or registration. See the
+[compression guide](docs/docs/compression.md) for consumer examples and imports.
 
 ## Serialization
 

@@ -190,6 +190,12 @@ Supported compression values are `None`, `Gzip`, `Snappy`, `Lz4`, and `Zstd`. Su
 partitioner values are `Random`, `Consistent`, `ConsistentRandom`, `Murmur2`, `Murmur2Random`,
 `Fnv1a`, and `Fnv1aRandom`.
 
+Compression configuration selects a codec but does not load its package or register it.
+For LZ4, Zstd, or Snappy, install the matching package and call
+`CompressionCodecRegistry.Default.AddLz4()`, `AddZstd()`, or `AddSnappy()` at startup,
+before resolving clients. Register codecs in consumer applications too. See
+[Compression](../compression.md) for complete examples and imports.
+
 ### Consumer properties
 
 | Status | Properties or behavior |

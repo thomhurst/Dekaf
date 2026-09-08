@@ -28,6 +28,12 @@ dotnet add package Dekaf.Compression.Zstd   # Best compression ratio
 dotnet add package Dekaf.Compression.Snappy # Alternative fast codec
 ```
 
+Explicitly register each required codec at startup with
+`CompressionCodecRegistry.Default.AddLz4()`, `AddZstd()`, or `AddSnappy()`, before building
+producers or consumers. Then select the producer's compression type with a helper such
+as `UseLz4Compression()`. See [Compression](./compression.md) for complete setup examples
+and imports. Gzip needs no extra package or registration.
+
 ## Using Dekaf
 
 Dekaf's entry point is available through the `Dekaf` namespace:

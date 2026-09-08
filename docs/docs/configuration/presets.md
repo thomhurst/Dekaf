@@ -11,10 +11,16 @@ Not sure which settings to use? Dekaf provides configuration presets for common 
 
 ### ForHighThroughput
 
-Optimized for sending many messages with maximum efficiency:
+Optimized for sending many messages with maximum efficiency. This producer preset
+selects LZ4: install `Dekaf.Compression.Lz4` and explicitly register it at startup, as
+shown below. See [Compression](../compression.md) for registration in consumer applications.
 
 ```csharp
 using Dekaf;
+using Dekaf.Compression;
+using Dekaf.Compression.Lz4;
+
+CompressionCodecRegistry.Default.AddLz4();
 
 var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
@@ -129,6 +135,10 @@ Presets are just starting points. Override any setting by calling the appropriat
 
 ```csharp
 using Dekaf;
+using Dekaf.Compression;
+using Dekaf.Compression.Lz4;
+
+CompressionCodecRegistry.Default.AddLz4();
 
 var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
@@ -172,6 +182,10 @@ Create your own preset extensions for consistency across your application:
 
 ```csharp
 using Dekaf;
+using Dekaf.Compression;
+using Dekaf.Compression.Lz4;
+
+CompressionCodecRegistry.Default.AddLz4();
 
 // Usage
 var producer = await Kafka.CreateProducer<string, Order>()
@@ -220,6 +234,10 @@ If none of the presets match your needs, configure settings individually:
 
 ```csharp
 using Dekaf;
+using Dekaf.Compression;
+using Dekaf.Compression.Zstd;
+
+CompressionCodecRegistry.Default.AddZstd();
 
 var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")

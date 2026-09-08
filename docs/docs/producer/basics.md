@@ -114,10 +114,14 @@ var producer = await Kafka.CreateProducer<string, string>()
 
 ## Compression
 
-Enable compression to reduce network usage:
+Enable compression to reduce network usage. Install `Dekaf.Compression.Lz4` for this example:
 
 ```csharp
 using Dekaf;
+using Dekaf.Compression;
+using Dekaf.Compression.Lz4;
+
+CompressionCodecRegistry.Default.AddLz4();
 
 var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
@@ -133,6 +137,10 @@ Available compression methods:
 | `UseZstdCompression()` | `Dekaf.Compression.Zstd` | Best compression ratio |
 | `UseSnappyCompression()` | `Dekaf.Compression.Snappy` | Very fast, moderate compression |
 | `UseGzipCompression()` | Built-in | Widely compatible, slower |
+
+Import the namespace matching the optional package and explicitly register the codec at
+startup, as shown above. The builder method selects the producer's compression type.
+Consumer applications also need codec registration. See [Compression](../compression.md).
 
 :::tip
 LZ4 is recommended for most use cases - it provides a good balance of speed and compression ratio.

@@ -10,6 +10,12 @@ Complete reference for all producer configuration options.
 These methods are available anywhere a `ProducerBuilder<TKey,TValue>` is used, including dependency injection registration:
 
 ```csharp
+using Dekaf.Compression;
+using Dekaf.Compression.Lz4;
+
+// Install Dekaf.Compression.Lz4 and register it before configuring clients.
+CompressionCodecRegistry.Default.AddLz4();
+
 // Before: DI examples only showed the small common subset.
 builder.Services.AddDekaf(dekaf =>
 {
@@ -195,6 +201,12 @@ Enable message compression:
 // Or specify directly
 .UseCompression(CompressionType.Lz4)
 ```
+
+Install the matching package and explicitly register optional codecs at startup with
+`CompressionCodecRegistry.Default.AddLz4()`, `AddZstd()`, or `AddSnappy()` before building
+the producer. Import the matching namespace, such as `Dekaf.Compression.Lz4`.
+The builder methods above select the compression type. See
+[Compression](../compression.md) for complete registration examples.
 
 ## Partitioning
 

@@ -50,8 +50,12 @@ Two things catch people out here:
 - **Compression codecs are separate packages.** librdkafka bundles LZ4, Zstd, and Snappy, so
   `CompressionType = Lz4` just works in Confluent. In Dekaf you add `Dekaf.Compression.Lz4`,
   `Dekaf.Compression.Zstd`, or `Dekaf.Compression.Snappy`, and you need it on every consumer of
-  those topics too, not just the producers. Referencing the package is enough; it registers
-  itself. Gzip is built in. See [Compression](./compression.md).
+  those topics too, not just the producers. Explicitly register each required codec at startup
+  with `CompressionCodecRegistry.Default.AddLz4()` (or `AddZstd()` / `AddSnappy()`), before
+  building producers or consumers. Then select the producer's compression type with
+  `UseLz4Compression()`, `UseZstdCompression()`, or `UseSnappyCompression()`. Gzip is built
+  in and needs no extra registration. See [Compression](./compression.md) for complete
+  examples and imports.
 - **Both libraries use the same type names.** `Acks`, `AutoOffsetReset`,
   `ConsumeResult<TKey, TValue>`, `Headers`, `Header`, `TopicPartition`, `TopicPartitionOffset`,
   `IAdminClient`, `Ignore`, `ISerializer<T>`, `IDeserializer<T>`, and `KafkaException` all exist

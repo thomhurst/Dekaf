@@ -125,6 +125,11 @@ When you need to push as many messages as possible:
 
 ```csharp
 using Dekaf;
+using Dekaf.Compression;
+using Dekaf.Compression.Lz4;
+using Dekaf.Protocol.Records;
+
+CompressionCodecRegistry.Default.AddLz4();
 
 var presetProducer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
@@ -251,6 +256,11 @@ Compression can dramatically reduce network usage, but it costs CPU. Here's how 
 
 ```csharp
 using Dekaf;
+using Dekaf.Compression;
+using Dekaf.Compression.Lz4;
+using Dekaf.Protocol.Records;
+
+CompressionCodecRegistry.Default.AddLz4();
 
 // LZ4 for balanced performance
 var producer = await Kafka.CreateProducer<string, string>()
