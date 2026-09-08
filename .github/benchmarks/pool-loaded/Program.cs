@@ -163,6 +163,10 @@ internal sealed class Workload
         string label, string directory, CancellationToken cancellationToken)
     {
         var phase = _phases[index];
+        File.WriteAllText(Path.Combine(directory, label + "-start.json"), JsonSerializer.Serialize(new
+        {
+            Environment.ProcessId, StartedUtc = DateTimeOffset.UtcNow
+        }));
         using var process = Process.GetCurrentProcess();
         var startCpu = process.TotalProcessorTime.TotalMilliseconds;
         var startAllocation = GC.GetTotalAllocatedBytes(precise: true);

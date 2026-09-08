@@ -7,10 +7,39 @@ import shutil
 import subprocess
 import threading
 import time
+from datetime import datetime
 
 ROOT = Path.cwd()
 OUT = ROOT / 'evidence'
 CONFIGS = [(1000, 3), (65536, 1)]
+PROFILE_WINDOWS = [(10, 30, 'early'), (240, 30, 'late')]
+
+
+def profile_windows(output, stop, errors, dispatch, trace):
+    """Attach only during declared diagnostic windows; preserve every trace."""
+    try:
+        marker = output / 'measured-start.json'
+        while not marker.exists():
+            if stop.wait(0.1):
+                raise RuntimeError('Client stopped before profiling measurement marker')
+        # The marker is written synchronously before measured CPU/allocation boundaries.
+        for attempt in range(20):
+            try:
+                start = json.loads(marker.read_text())
+                break
+            except json.JSONDecodeError:
+                if stop.wait(0.05) or attempt == 19:
+                    raise
+        epoch = datetime.fromisoformat(start['StartedUtc']).timestamp()
+        for offset, duration, label in PROFILE_WINDOWS:
+            if stop.wait(max(0, epoch + offset - time.time())):
+                raise RuntimeError('Client stopped before all profiling windows')
+            dispatch.command(['taskset', '-c', dispatch.AFFINITY['infrastructure'], trace,
+                'collect', '--process-id', start['ProcessId'], '--profile', 'gc-verbose',
+                '--duration', f'00:00:{duration:02}', '--buffersize', '256',
+                '--output', output / f'{label}.nettrace'], output / f'{label}-trace.log', timeout=90)
+    except Exception as error:
+        errors.append(error)
 BROKER_RETENTION = (
     'KAFKA_LOG_RETENTION_BYTES=1073741824',
     'KAFKA_LOG_SEGMENT_BYTES=16777216',
@@ -51,10 +80,22 @@ def execute():
     dispatch = module(ROOT / '.github/benchmarks/dispatch-aba/run.py', 'dispatch_driver')
     analyzer = module(ROOT / '.github/benchmarks/pool-loaded/analyze-blocks.py', 'block_analyzer')
     topology = dispatch.configure_affinity()
+    profiling = os.getenv('POOL_PROFILE') == '1'
+    configs = [(65536, 1)] if profiling else CONFIGS
+    trace = None
+    if profiling:
+        trace_version = json.loads((ROOT / '.config/stress-diagnostics/dotnet-tools.json').read_text())['tools']['dotnet-trace']['version']
+        tool_path = OUT / 'diagnostic-tools'
+        dispatch.command(['dotnet', 'tool', 'install', 'dotnet-trace', '--tool-path', tool_path,
+                          '--version', trace_version], OUT / 'trace-install.log')
+        trace = tool_path / 'dotnet-trace'
+        dispatch.command([trace, '--version'], OUT / 'trace-version.log')
     a, b = os.environ['BASELINE_SHA'], os.environ['CANDIDATE_SHA']
     dispatch.command(['git', 'merge-base', '--is-ancestor', a, b], OUT / 'ancestry.log')
     plan = {'A': a, 'B': b, 'harness': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
-            'primer_seconds': 20, 'warmup_seconds': 360, 'measured_seconds': 300, 'configurations': CONFIGS,
+            'primer_seconds': 20, 'warmup_seconds': 360, 'measured_seconds': 300, 'configurations': configs,
+            'profiling': {'purpose': 'allocation/GC transition diagnosis; not acceptance',
+                          'profile': 'gc-verbose', 'windows': PROFILE_WINDOWS, 'version': trace_version} if profiling else None,
             'setup_admin': 'disposed before primer; successful disposal observed separately',
             'broker_retention': BROKER_RETENTION,
             'cpu_core_socket': topology, 'affinity': dispatch.AFFINITY.copy(),
@@ -96,19 +137,25 @@ def execute():
         if any(dispatch.digest(Path(path)) != digest for path, digest in bindings.items()):
             raise ValueError('Measured binaries changed')
         observations[phase] = {}
-        for size, partitions in CONFIGS:
+        for size, partitions in configs:
             folder = OUT / phase / f'{size}-{partitions}'
             folder.mkdir(parents=True)
             broker = f'pool-{os.environ["PR"]}-{phase.lower()}-{size}'
             stop = threading.Event()
             sampler_errors = []
             sampler = None
+            profiler = None
+            profile_errors = []
             try:
                 dispatch.broker_start(folder, broker, BROKER_RETENTION)
                 sampler = threading.Thread(target=broker_samples,
                     args=(broker, folder / 'broker-stats.jsonl', stop, sampler_errors))
                 sampler.start()
                 output = folder / 'client'
+                if profiling and not smoke:
+                    profiler = threading.Thread(target=profile_windows,
+                        args=(output, stop, profile_errors, dispatch, trace))
+                    profiler.start()
                 dispatch.command(['taskset', '-c', dispatch.AFFINITY['consumer'], 'dotnet', hosts[label],
                     'localhost:9092', output, broker, size, partitions, 12 if smoke else 360, 13 if smoke else 300],
                     folder / 'client.log', timeout=210 if smoke else 840,
@@ -132,6 +179,12 @@ def execute():
                             raise RuntimeError('Broker sampler did not exit')
                         if sampler_errors:
                             raise RuntimeError('Broker sampler failed') from sampler_errors[0]
+                    if profiler is not None:
+                        profiler.join(timeout=95)
+                        if profiler.is_alive():
+                            raise RuntimeError('Profiler did not exit')
+                        if profile_errors:
+                            raise RuntimeError('Profiler failed') from profile_errors[0]
                 finally:
                     dispatch.broker_stop(folder, broker)
     (OUT / 'decision.json').write_text(json.dumps({'collection': 'VALIDATED', 'acceptance': 'INCONCLUSIVE',

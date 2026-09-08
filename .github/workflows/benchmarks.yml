@@ -9,7 +9,7 @@ on:
       suite:
         required: true
         type: choice
-        options: [micro, pool, admin, dispatch, outbox, pool-loaded]
+        options: [micro, pool, admin, dispatch, outbox, pool-loaded, pool-profile]
       baseline_sha:
         required: true
         description: Exact baseline SHA
@@ -55,7 +55,9 @@ jobs:
           python3 .github/scripts/pool_reset_aba.py B
           python3 .github/scripts/pool_reset_aba.py A2
       - name: Loaded pool comparison
-        if: inputs.suite == 'pool-loaded'
+        if: inputs.suite == 'pool-loaded' || inputs.suite == 'pool-profile'
+        env:
+          POOL_PROFILE: ${{ inputs.suite == 'pool-profile' && '1' || '0' }}
         run: |
           python3 -m unittest discover -s .github/scripts -p test_pool_loaded_aba.py
           python3 -m unittest discover -s .github/benchmarks/pool-loaded/tests -p 'test_*.py'
