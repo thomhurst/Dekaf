@@ -12,6 +12,8 @@ from datetime import datetime
 ROOT = Path.cwd()
 OUT = ROOT / 'evidence'
 CONFIGS = [(1000, 3), (65536, 1)]
+WARMUP_SECONDS = 660
+MEASURED_SECONDS = 300
 PROFILE_WINDOWS = [(10, 30, 'early'), (240, 30, 'late')]
 
 
@@ -93,7 +95,8 @@ def execute():
     a, b = os.environ['BASELINE_SHA'], os.environ['CANDIDATE_SHA']
     dispatch.command(['git', 'merge-base', '--is-ancestor', a, b], OUT / 'ancestry.log')
     plan = {'A': a, 'B': b, 'harness': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
-            'primer_seconds': 20, 'warmup_seconds': 360, 'measured_seconds': 300, 'configurations': configs,
+            'primer_seconds': 20, 'warmup_seconds': WARMUP_SECONDS, 'measured_seconds': MEASURED_SECONDS, 'configurations': configs,
+            'warmup_reason': 'Exercise default ten-minute bootstrap connection idle retirement before measured collection',
             'profiling': {'purpose': 'allocation/GC transition diagnosis; not acceptance',
                           'profile': 'gc-verbose', 'windows': PROFILE_WINDOWS, 'version': trace_version} if profiling else None,
             'setup_admin': 'disposed before primer; successful disposal observed separately',
@@ -158,8 +161,8 @@ def execute():
                         args=(output, stop, profile_errors, dispatch, trace))
                     profiler.start()
                 dispatch.command(['taskset', '-c', dispatch.AFFINITY['consumer'], 'dotnet', hosts[label],
-                    'localhost:9092', output, broker, size, partitions, 12 if smoke else 360, 13 if smoke else 300],
-                    folder / 'client.log', timeout=210 if smoke else 840,
+                    'localhost:9092', output, broker, size, partitions, 12 if smoke else WARMUP_SECONDS, 13 if smoke else MEASURED_SECONDS],
+                    folder / 'client.log', timeout=210 if smoke else 1200,
                     env=dict(os.environ, DOTNET_TieredCompilation='1', DOTNET_TieredPGO='1', DOTNET_ReadyToRun='1'))
                 result = {}
                 for stage in ('warmup', 'measured'):
