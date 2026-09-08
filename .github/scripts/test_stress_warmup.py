@@ -1,8 +1,12 @@
 import copy
+import contextlib
+import io
+import json
+import tempfile
 import unittest
 from pathlib import Path
 
-from stress_warmup import validate
+from stress_warmup import main, validate
 
 
 def observation():
@@ -24,6 +28,73 @@ def result():
 
 
 class StressWarmupTests(unittest.TestCase):
+    def test_exact_phase_still_requires_one_file_and_one_client_result(self):
+        for files, clients in ((2, 1), (1, 2), (1, 1)):
+            with self.subTest(files=files, clients=clients), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                for index in range(files):
+                    (root / f"stress-test-results-{index}.json").write_text(
+                        json.dumps({"results": [result() for _ in range(clients)]}), encoding="utf-8"
+                    )
+                output = root / "warmup-validation.json"
+                with contextlib.redirect_stdout(io.StringIO()):
+                    code = main([str(root), "--output", str(output)])
+                self.assertEqual(0 if files == clients == 1 else 1, code)
+
+    def test_regular_run_requires_same_declared_warmup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            longer = result()
+            warmup = longer["throughput"]["warmup"]
+            warmup.update(requestedSeconds=21, workloadSeconds=21, completedMessages=2100)
+            last = copy.deepcopy(warmup["samples"][-1])
+            last.update(workloadSeconds=21, elapsedSeconds=22, acceptedMessages=2100, completedMessages=2100)
+            warmup["samples"].append(last)
+            (root / "stress-test-results.json").write_text(
+                json.dumps({"results": [result(), longer]}), encoding="utf-8"
+            )
+            output = root / "warmup-validation.json"
+            with contextlib.redirect_stdout(io.StringIO()):
+                code = main([str(root), "--expected-results", "2", "--output", str(output)])
+            self.assertEqual(1, code)
+            self.assertIn("same warmup duration", " ".join(json.loads(output.read_text(encoding="utf-8"))["errors"]))
+
+    def test_regular_run_validates_all_clients_and_variant_files(self):
+        for invalid_index in (None, 0, 1, 2, 3):
+            with self.subTest(invalid_index=invalid_index), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                for file_index in range(2):
+                    samples = [result(), result()]
+                    for index, sample in enumerate(samples):
+                        if file_index * 2 + index == invalid_index:
+                            sample["throughput"]["runtimeEnd"]["compiledMethods"] += 1
+                    (root / f"stress-test-results-{file_index}.json").write_text(
+                        json.dumps({"results": samples}), encoding="utf-8"
+                    )
+                output = root / "warmup-validation.json"
+                summary = root / "summary.md"
+                with contextlib.redirect_stdout(io.StringIO()):
+                    code = main([str(root), "--expected-results", "4", "--output", str(output), "--summary", str(summary)])
+                report = json.loads(output.read_text(encoding="utf-8"))
+                self.assertEqual(0 if invalid_index is None else 1, code)
+                self.assertEqual("VALIDATED" if invalid_index is None else "INCONCLUSIVE", report["verdict"])
+                self.assertEqual(4, report["resultCount"])
+                self.assertIn(report["verdict"], summary.read_text(encoding="utf-8"))
+                if invalid_index is not None:
+                    self.assertIn("JIT", " ".join(report["errors"]))
+
+    def test_regular_run_rejects_missing_or_malformed_results(self):
+        for payload in (None, {"results": []}, {"results": [result()]}, {"results": [None, result()]}):
+            with self.subTest(payload=payload), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                if payload is not None:
+                    (root / "stress-test-results.json").write_text(json.dumps(payload), encoding="utf-8")
+                output = root / "warmup-validation.json"
+                with contextlib.redirect_stdout(io.StringIO()):
+                    code = main([str(root), "--expected-results", "2", "--output", str(output)])
+                self.assertEqual(1, code)
+                self.assertEqual("INCONCLUSIVE", json.loads(output.read_text(encoding="utf-8"))["verdict"])
+
     def test_accepts_complete_quiet_runtime_coverage(self):
         self.assertEqual(20, validate(result()))
 

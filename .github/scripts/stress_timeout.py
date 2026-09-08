@@ -1,11 +1,11 @@
-"""Budget exact-SHA producer comparisons without changing paid-lane limits."""
+"""Budget selected producer samples, including warmup and bounded drains."""
 
 import argparse
 import json
 import math
 
 
-def budget(matrix, duration_minutes, warmup_seconds):
+def budget(matrix, duration_minutes, warmup_seconds, adaptive_connections=False):
     if not math.isfinite(duration_minutes) or duration_minutes <= 0 or warmup_seconds < 20:
         raise ValueError("Duration must be positive and producer warmup must be at least 20 seconds")
     # Six warmup drains plus the measured drain, each with the existing 30s ceiling.
@@ -15,16 +15,27 @@ def budget(matrix, duration_minutes, warmup_seconds):
     # Includes both product builds, fresh broker starts, teardown and artifact upload.
     setup_minutes = 15
     for lane in matrix["include"]:
-        if not lane.get("baseline_sha"):
+        if lane.get("baseline_sha"):
+            segments = 4 if lane.get("aba_second_candidate") else 3
+            validation = validation_minutes
+        elif lane.get("scenario") in (
+            "producer", "producer-idempotent", "producer-acks-all",
+            "producer-async", "producer-async-idempotent",
+        ):
+            segments = lane.get("paired_samples", 1) * (2 if lane.get("client") == "all" else 1)
+            segments += int(lane.get("run_3conn", False))
+            segments += int(lane.get("run_adaptive", False) and not adaptive_connections)
+            lane["producer_samples"] = segments
+            validation = 0
+        else:
             continue
-        segments = 4 if lane.get("aba_second_candidate") else 3
         required = math.ceil(
             segments * (duration_minutes + warmup_minutes + drain_minutes)
-            + validation_minutes + setup_minutes
+            + validation + setup_minutes
         )
         lane["timeout_minutes"] = max(lane["timeout_minutes"], required)
         if lane["timeout_minutes"] > 360:
-            raise ValueError("Requested A-B-A exceeds the 360-minute hosted job limit; reduce duration or warmup")
+            raise ValueError("Requested producer run exceeds the 360-minute hosted job limit; reduce duration or warmup")
     return matrix
 
 
@@ -33,8 +44,10 @@ def main():
     parser.add_argument("--matrix", required=True)
     parser.add_argument("--duration-minutes", type=float, required=True)
     parser.add_argument("--warmup-seconds", type=int, required=True)
+    parser.add_argument("--adaptive-connections", choices=("true", "false"), default="false")
     args = parser.parse_args()
-    print(json.dumps(budget(json.loads(args.matrix), args.duration_minutes, args.warmup_seconds)))
+    print(json.dumps(budget(json.loads(args.matrix), args.duration_minutes, args.warmup_seconds,
+                            adaptive_connections=args.adaptive_connections == "true")))
 
 
 if __name__ == "__main__":

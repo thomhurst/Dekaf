@@ -4,6 +4,38 @@ from stress_timeout import budget
 
 
 class StressTimeoutTests(unittest.TestCase):
+    def test_regular_producers_budget_every_selected_sample(self):
+        for client, paired, control, adaptive, count in (
+            ("dekaf", 1, False, False, 1),
+            ("dekaf", 1, True, False, 2),
+            ("dekaf", 1, True, True, 3),
+            ("all", 2, True, True, 6),
+            ("all", 2, False, False, 4),
+        ):
+            with self.subTest(client=client, paired=paired, control=control, adaptive=adaptive):
+                lane = dict(scenario="producer", client=client, paired_samples=paired,
+                            run_3conn=control, run_adaptive=adaptive, timeout_minutes=30)
+                actual = budget({"include": [lane]}, 30, 180)["include"][0]
+                self.assertGreaterEqual(actual["timeout_minutes"], count * 36.5 + 15)
+                self.assertEqual(count, actual["producer_samples"])
+
+    def test_adaptive_override_does_not_expect_skipped_variant(self):
+        lane = dict(scenario="producer-idempotent", client="dekaf", run_adaptive=True, timeout_minutes=30)
+        actual = budget({"include": [lane]}, 30, 180, adaptive_connections=True)["include"][0]
+        self.assertEqual(1, actual["producer_samples"])
+        self.assertEqual(52, actual["timeout_minutes"])
+
+    def test_other_scenarios_keep_their_own_budget(self):
+        for scenario in ("consumer", "producer-transactional", "producer-roundtrip-steady"):
+            lane = dict(scenario=scenario, timeout_minutes=90)
+            expected = lane.copy()
+            self.assertEqual(expected, budget({"include": [lane]}, 30, 180)["include"][0])
+
+    def test_regular_producer_cannot_exceed_hosted_limit(self):
+        lane = dict(scenario="producer", client="all", paired_samples=2, timeout_minutes=180)
+        with self.assertRaisesRegex(ValueError, "360-minute"):
+            budget({"include": [lane]}, 30, 999999)
+
     def test_thirty_minute_aba_includes_warmup_validation_and_drain(self):
         matrix = {"include": [{"baseline_sha": "a" * 40, "timeout_minutes": 90}]}
         self.assertEqual(140, budget(matrix, 30, 180)["include"][0]["timeout_minutes"])
@@ -20,9 +52,12 @@ class StressTimeoutTests(unittest.TestCase):
         matrix = {"include": [{"baseline_sha": "a" * 40, "timeout_minutes": 180}]}
         self.assertEqual(180, budget(matrix, 30, 180)["include"][0]["timeout_minutes"])
 
-    def test_paid_lanes_are_unchanged(self):
-        matrix = {"include": [{"lane": "producer-1b", "timeout_minutes": 180}, {"baseline_sha": "", "timeout_minutes": 30}]}
-        self.assertEqual(matrix, budget(matrix, 30, 180))
+    def test_existing_scheduled_budget_is_preserved_when_sufficient(self):
+        lane = dict(scenario="producer", client="all", paired_samples=2,
+                    run_3conn=True, run_adaptive=True, timeout_minutes=180)
+        actual = budget({"include": [lane]}, 15, 180)["include"][0]
+        self.assertEqual(180, actual["timeout_minutes"])
+        self.assertEqual(6, actual["producer_samples"])
 
     def test_impossible_hosted_job_is_rejected(self):
         for duration, warmup in ((120, 180), (30, 999999)):

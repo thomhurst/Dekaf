@@ -98,24 +98,44 @@ def main(argv=None):
     parser.add_argument("directories", nargs="+")
     parser.add_argument("--output", required=True)
     parser.add_argument("--summary")
+    parser.add_argument("--expected-results", type=int,
+                        help="Validate all result files/client entries and require this total count.")
     args = parser.parse_args(argv)
     errors = []
     durations = set()
+    result_count = 0
+    if args.expected_results is not None and args.expected_results <= 0:
+        errors.append("Expected result count must be positive")
     for directory in args.directories:
         try:
             paths = sorted(Path(directory).rglob("stress-test-results*.json"))
-            if len(paths) != 1:
+            if not paths or (args.expected_results is None and len(paths) != 1):
                 raise ValueError(f"Expected one stress result, found {len(paths)}")
-            envelope = object_value(json.loads(paths[0].read_text(encoding="utf-8-sig")), "result envelope")
-            results = envelope.get("results")
-            if not isinstance(results, list) or len(results) != 1 or not isinstance(results[0], dict):
-                raise ValueError("Expected one result object")
-            durations.add(validate(results[0]))
         except (ValueError, OSError) as error:
             errors.append(f"{directory}: {error}")
+            continue
+        for path in paths:
+            try:
+                envelope = object_value(json.loads(path.read_text(encoding="utf-8-sig")), "result envelope")
+                results = envelope.get("results")
+                if not isinstance(results, list) or not results or (
+                        args.expected_results is None and len(results) != 1):
+                    raise ValueError("Expected nonempty result objects (one per exact-SHA phase)")
+            except (ValueError, OSError) as error:
+                errors.append(f"{path}: {error}")
+                continue
+            for index, result in enumerate(results):
+                result_count += 1
+                try:
+                    durations.add(validate(object_value(result, "result")))
+                except ValueError as error:
+                    errors.append(f"{path} result {index + 1}: {error}")
+    if args.expected_results is not None and result_count != args.expected_results:
+        errors.append(f"Expected {args.expected_results} results, found {result_count}")
     if len(durations) > 1:
         errors.append("All phases must declare the same warmup duration")
     report = {"verdict": "INCONCLUSIVE" if errors else "VALIDATED", "errors": errors,
+              "resultCount": result_count,
               "scope": "Warmup/runtime coverage only; this does not establish full performance acceptance."}
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)

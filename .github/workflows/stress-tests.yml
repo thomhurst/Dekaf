@@ -260,12 +260,9 @@ jobs:
             esac
           fi
 
-          # timeout_minutes rationale: at a 30-minute dispatch the paired_samples=2
-          # lanes run four paired client durations plus one 3-connection duration
-          # (180 min); acks-all 1-broker runs four measured durations (150 min);
-          # all lanes leave setup/publish headroom. Reduced dispatch shapes scale
-          # these budgets down proportionally to surviving measured durations
-          # (see the jq below).
+          # Base budgets retain the existing lane/profile allowances. The jq below
+          # scales reduced shapes; stress_timeout.py then ensures producer budgets
+          # cover every selected client/variant, warmup, drain and setup period.
           cat > lanes.json << 'EOF'
           [
             {"lane": "producer-1b", "scenario": "producer", "client": "all", "brokers": 1, "paired_samples": 2, "run_3conn": true, "run_adaptive": true, "artifact_suffix": "-with-3conn", "timeout_minutes": 180, "name": "Producer (Paired)"},
@@ -332,11 +329,10 @@ jobs:
                   if segments < $full_segments then .timeout_minutes = $segment_budget * segments else . end
                 end
             ]}' lanes.json)
-          if [ -n "$baseline_sha" ]; then
-            matrix=$(python3 .github/scripts/stress_timeout.py --matrix "$matrix" \
-              --duration-minutes "${DURATION_MINUTES:-15}" \
-              --warmup-seconds "${PRODUCER_WARMUP_SECONDS:-180}")
-          fi
+          matrix=$(python3 .github/scripts/stress_timeout.py --matrix "$matrix" \
+            --duration-minutes "${DURATION_MINUTES:-15}" \
+            --warmup-seconds "${PRODUCER_WARMUP_SECONDS:-180}" \
+            --adaptive-connections "${ADAPTIVE_CONNECTIONS:-false}")
           count=$(echo "$matrix" | jq '.include | length')
           if [ "$count" -eq 0 ]; then
             echo "::error::Unknown lane '$lane'. Valid lanes: all $(jq -r '[.[].lane] | join(" ")' lanes.json)"
@@ -747,6 +743,13 @@ jobs:
             aba-results/baseline-a tools/Dekaf.StressTests/results aba-results/baseline-a2 "${extra[@]}" \
             --output aba-results/warmup-validation.json --summary "$GITHUB_STEP_SUMMARY"
 
+      - name: Validate regular producer warmup and runtime coverage
+        if: always() && matrix.baseline_sha == '' && matrix.producer_samples > 0
+        run: |
+          python3 .github/scripts/stress_warmup.py tools/Dekaf.StressTests/results \
+            --expected-results "${{ matrix.producer_samples }}" \
+            --output tools/Dekaf.StressTests/results/warmup-validation.json --summary "$GITHUB_STEP_SUMMARY"
+
       - name: Record comparison binaries and final main
         if: always() && matrix.baseline_sha != ''
         run: |
@@ -836,6 +839,7 @@ jobs:
       - name: Merge Results and Generate Summary
         env:
           PYTHONPATH: .github/scripts
+          STRESS_JOB_RESULT: ${{ needs.stress-test.result }}
         run: |
           python3 << 'EOF'
           import json
@@ -904,6 +908,9 @@ jobs:
           output = []
           output.append("# Dekaf Stress Test Results")
           output.append("")
+          if os.environ.get('STRESS_JOB_RESULT') != 'success':
+              output.append("**INCONCLUSIVE: stress execution or validation failed. Tables are retained diagnostics; publishing and trend acceptance are blocked.**")
+              output.append("")
           output.append(f"**Run Date:** {run_started or 'N/A'}")
           output.append(f"**Machine:** {machine_name or 'GitHub Actions'} ({processor_count or 'N/A'} processors)")
           output.append("")
@@ -924,6 +931,7 @@ jobs:
 
       - name: Detect Performance Trends
         id: stress-trends
+        if: needs.stress-test.result == 'success'
         env:
           PYTHONPATH: .github/scripts
         run: |
