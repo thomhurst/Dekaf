@@ -14,11 +14,7 @@ internal sealed class ProducerAcksAllStressTest : IStressTestScenario
 
     public async Task<StressTestResult> RunAsync(StressTestOptions options, CancellationToken cancellationToken)
     {
-        var messageValue = new string('x', options.MessageSizeBytes);
         var throughput = new ThroughputTracker();
-        // Fire-and-forget messages have no awaiter; the error metric is the only signal
-        // that an accepted message failed delivery.
-        using var deliveryErrorListener = new DekafDeliveryErrorListener(throughput);
         var latency = StressTestHelpers.CreateDeliveryLatencyTracker();
         var startedAt = DateTime.UtcNow;
 
@@ -53,74 +49,16 @@ internal sealed class ProducerAcksAllStressTest : IStressTestScenario
         var startOffset = await StressTestHelpers.WarmUpProducerAndQueryStartOffsetAsync(
             producer,
             options,
-            "Dekaf acks-all producer",
+            this,
             throughput,
+            latency,
             cancellationToken);
 
-        GC.Collect();
-        GC.WaitForPendingFinalizers();
-        GC.Collect();
-
-        using var gcStats = new GcStats();
-        using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        cts.CancelAfter(TimeSpan.FromMinutes(options.DurationMinutes));
-
-        Console.WriteLine($"  Running Dekaf acks-all producer stress test for {options.DurationMinutes} minutes...");
-        Console.WriteLine($"  Start time: {DateTime.UtcNow:HH:mm:ss.fff} UTC");
-        StressTestHelpers.LogResourceUsage("Initial");
-
-        throughput.Start();
-        using var watchdog = options.ProgressWatchdog.Track(
-            throughput,
-            Client,
-            Name,
-            () => StressTestHelpers.CaptureProducerDeliveryDiagnostics(producer, options));
-        var messageIndex = 0L;
-        var progress = new PeriodicProgressReporter(throughput);
-
-        var samplerTask = StressTestHelpers.RunSamplerAsync(throughput, cts.Token);
-        var resourceMonitorTask = StressTestHelpers.RunResourceMonitorAsync(cts.Token);
-
-        while (!cts.Token.IsCancellationRequested)
-        {
-            try
-            {
-                if (messageIndex % StressTestHelpers.LatencySampleInterval == 0)
-                {
-                    StressTestHelpers.SampleDeliveryLatency(producer, options.Topic, StressTestHelpers.GetKey(messageIndex), messageValue, latency, throughput, messageIndex);
-                }
-                else
-                {
-                    await producer.FireAsync(options.Topic, StressTestHelpers.GetKey(messageIndex), messageValue);
-                }
-                throughput.RecordMessage(options.MessageSizeBytes);
-                messageIndex++;
-
-                // Yield periodically to avoid starving other tasks
-                if (messageIndex % 100_000 == 0)
-                {
-                    await Task.Yield();
-                    progress.RecordMessage();
-                }
-            }
-            catch (OperationCanceledException) when (cts.Token.IsCancellationRequested)
-            {
-                break;
-            }
-            catch (Exception ex)
-            {
-                throughput.RecordError(ex, "Produce loop", messageIndex);
-            }
-        }
-
-        Console.WriteLine($"  Flushing remaining messages...");
-        await StressTestHelpers.FlushWithTimeoutAsync(producer, throughput);
-
-        throughput.Stop();
-        gcStats.Capture();
-
-        try { await samplerTask.ConfigureAwait(false); } catch { }
-        try { await resourceMonitorTask.ConfigureAwait(false); } catch { }
+        // Warmup cycles own their error counters. Observe measurement through disposal.
+        using var deliveryErrorListener = new DekafDeliveryErrorListener(throughput, options.Topic);
+        var workload = await ProducerWorkload.RunAsync(
+            producer, options, Client, Name, throughput, latency, TimeSpan.FromMinutes(options.DurationMinutes),
+            awaitDelivery: false, cancellationToken).ConfigureAwait(false);
 
         var completedAt = DateTime.UtcNow;
         Console.WriteLine($"  Completed: {throughput.MessageCount:N0} messages, {throughput.GetAverageMessagesPerSecond():N0} msg/sec");
@@ -155,7 +93,7 @@ internal sealed class ProducerAcksAllStressTest : IStressTestScenario
             Throughput = throughput.GetSnapshot(),
             DeliveredMessages = delivered,
             Latency = latency.GetSnapshot(),
-            GcStats = gcStats.ToSnapshot(),
+            GcStats = workload.Gc,
             CpuTimeSeconds = throughput.CpuTimeSeconds,
             ProducerDeliveryDiagnostics = producerDiagnostics
         };

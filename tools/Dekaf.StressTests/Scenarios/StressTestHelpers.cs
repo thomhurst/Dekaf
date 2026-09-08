@@ -143,20 +143,41 @@ internal static class StressTestHelpers
         }
     }
 
-    internal static Task<long?> WarmUpProducerAndQueryStartOffsetAsync(
+    /// <summary>
+    /// Runs the measured producer workload for <see cref="StressTestOptions.ProducerWarmupSeconds"/>
+    /// across six load/drain cycles. <paramref name="awaitDelivery"/> selects per-message
+    /// delivery waiting or fire-and-forget with sampled delivery latency, matching measurement.
+    /// The final watermark must include CompletedMessages plus one for the metadata-priming
+    /// ProduceAsync, so no warmup delivery can inflate the measured end-offset delta.
+    /// </summary>
+    internal static async Task<long?> WarmUpProducerAndQueryStartOffsetAsync(
         IKafkaProducer<string, string> producer,
         StressTestOptions options,
-        string producerName,
+        IStressTestScenario scenario,
         ThroughputTracker throughput,
-        CancellationToken cancellationToken) =>
-        WarmUpProducerAndQueryStartOffsetAsync(
-            producer,
-            options,
-            producerName,
-            throughput,
-            "warmup",
-            "warmup",
-            cancellationToken);
+        LatencyTracker latency,
+        CancellationToken cancellationToken,
+        bool awaitDelivery = false)
+    {
+        var startOffset = await QueryTotalEndOffsetAsync(
+            options.BootstrapServers, options.Topic, options.Partitions).ConfigureAwait(false);
+        var value = new string('x', options.MessageSizeBytes);
+        Console.WriteLine($"  Warming up {scenario.Client} {scenario.Name}: {options.ProducerWarmupSeconds}s of workload in six drain/reuse cycles...");
+        // Prime metadata asynchronously before timed warmup. Rotate the same keys and use
+        // the same payload size as measurement, rather than warming one tiny keyed batch.
+        await producer.ProduceAsync(options.Topic, GetKey(0), value, cancellationToken).ConfigureAwait(false);
+        throughput.Warmup = await ProducerWarmup.RunAsync(
+            options.ProducerWarmupSeconds,
+            (duration, cycleThroughput, token) => ProducerWorkload.RunAsync(producer, options, scenario.Client, scenario.Name, cycleThroughput,
+                latency,
+                duration, awaitDelivery, token), cancellationToken,
+            deliveryErrorTopic: awaitDelivery ? null : options.Topic).ConfigureAwait(false);
+        var offset = await QueryTotalEndOffsetAfterProducerDrainAsync(
+            options.BootstrapServers, options.Topic, options.Partitions, startOffset,
+            throughput.Warmup.CompletedMessages + 1, throughput, "Warmup drain").ConfigureAwait(false);
+        ResetProducerDeliveryDiagnostics(producer);
+        return offset;
+    }
 
     internal static async Task<long?> WarmUpProducerAndQueryStartOffsetAsync<TKey, TValue>(
         IKafkaProducer<TKey, TValue> producer,
@@ -279,23 +300,35 @@ internal static class StressTestHelpers
 
     /// <summary>
     /// Flushes the producer, recording a timeout as an error: a flush that cannot drain
-    /// in 30 seconds against a healthy broker means the producer is stuck, and any
+    /// within the configured timeout (30 seconds by default) means the producer is stuck, and any
     /// still-buffered messages will surface as undelivered loss.
     /// </summary>
-    internal static async Task FlushWithTimeoutAsync<TKey, TValue>(
+    internal static Task FlushWithTimeoutAsync<TKey, TValue>(
         IKafkaProducer<TKey, TValue> producer,
-        ThroughputTracker throughput)
+        ThroughputTracker throughput) =>
+        FlushWithinDeadlineAsync(producer, throughput, OperationTimeout, CancellationToken.None);
+
+    internal static async Task FlushWithinDeadlineAsync<TKey, TValue>(
+        IKafkaProducer<TKey, TValue> producer, ThroughputTracker throughput,
+        TimeSpan timeout, CancellationToken cancellationToken)
     {
+        var flushing = producer.FlushAsync(cancellationToken).AsTask();
         try
         {
-            await producer.FlushAsync(CancellationToken.None).AsTask()
-                .WaitAsync(OperationTimeout, CancellationToken.None).ConfigureAwait(false);
+            await flushing.WaitAsync(timeout, cancellationToken).ConfigureAwait(false);
         }
         catch (TimeoutException)
         {
-            var message = $"Flush did not complete within {OperationTimeout.TotalSeconds:N0} seconds";
+            var message = $"Flush did not complete within {timeout.TotalSeconds:N3} seconds";
             Console.WriteLine($"  Error: {message}");
             throughput.RecordError("FlushTimeout", message, "FlushAsync");
+        }
+        finally
+        {
+            // A broken producer may ignore cancellation and fault after the bounded wait.
+            if (!flushing.IsCompletedSuccessfully)
+                _ = flushing.ContinueWith(static task => _ = task.Exception, CancellationToken.None,
+                    TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
         }
     }
 
@@ -406,6 +439,7 @@ internal static class StressTestHelpers
         ThroughputTracker throughput,
         long? messageIndex = null)
     {
+        latency.BeginDeliverySample();
         _ = SampleAsync();
 
         async Task SampleAsync()
@@ -422,6 +456,10 @@ internal static class StressTestHelpers
                 // dekaf.producer.send.errors metric (DekafDeliveryErrorListener), and
                 // this message was accepted into MessageCount before delivery failed.
                 throughput.RecordDeliveryErrorDetail(ex, "SampleDeliveryLatency", messageIndex);
+            }
+            finally
+            {
+                latency.CompleteDeliverySample();
             }
         }
     }
@@ -467,13 +505,13 @@ internal static class StressTestHelpers
             throughput.TakeSample,
             cancellationToken);
 
-    internal static Task RunResourceMonitorAsync(CancellationToken cancellationToken)
+    internal static async Task RunResourceMonitorAsync(CancellationToken cancellationToken)
     {
-        var process = Process.GetCurrentProcess();
-        return RunPeriodicAsync(
+        using var process = Process.GetCurrentProcess();
+        await RunPeriodicAsync(
             TimeSpan.FromSeconds(5),
             () => LogResourceUsage("Monitor", process),
-            cancellationToken);
+            cancellationToken).ConfigureAwait(false);
     }
 
     internal static async Task RunPeriodicAsync(
@@ -497,7 +535,12 @@ internal static class StressTestHelpers
 
     internal static void LogResourceUsage(string label, Process? process = null)
     {
-        process ??= Process.GetCurrentProcess();
+        if (process is null)
+        {
+            using var ownedProcess = Process.GetCurrentProcess();
+            LogResourceUsage(label, ownedProcess);
+            return;
+        }
         // Refresh is essential: Process caches metrics at creation time, so without
         // this call the properties below would return stale values.
         process.Refresh();

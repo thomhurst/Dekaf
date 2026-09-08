@@ -24,6 +24,52 @@ internal sealed class LatencyTracker
     private long _minTicks = long.MaxValue;
     private long _maxTicks;
     private long _outlierCount;
+    private int _pendingDeliveries;
+    private int _waitingForDeliveries;
+    private TaskCompletionSource _deliveriesDrained = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    // Only call between fully drained phases, with ingress stopped. Reuse the large
+    // histogram instead of leaving warmup-only LOH arrays for a measured collection.
+    internal void Reset()
+    {
+        if (Volatile.Read(ref _pendingDeliveries) != 0
+            || (Volatile.Read(ref _waitingForDeliveries) != 0 && !_deliveriesDrained.Task.IsCompleted))
+        {
+            throw new InvalidOperationException("Cannot reset latency while delivery samples are outstanding.");
+        }
+
+        Array.Clear(_buckets);
+        Array.Clear(_outlierSamples);
+        _count = 0;
+        _overflowCount = 0;
+        _minTicks = long.MaxValue;
+        _maxTicks = 0;
+        _outlierCount = 0;
+        if (_waitingForDeliveries != 0)
+        {
+            _deliveriesDrained = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            _waitingForDeliveries = 0;
+        }
+    }
+
+    internal void BeginDeliverySample() => Interlocked.Increment(ref _pendingDeliveries);
+
+    internal void CompleteDeliverySample()
+    {
+        if (Interlocked.Decrement(ref _pendingDeliveries) == 0 && Volatile.Read(ref _waitingForDeliveries) != 0)
+        {
+            _deliveriesDrained.TrySetResult();
+        }
+    }
+
+    // Called once after ingress stops. Do not retain one Task per sampled message over
+    // a long run; only the outstanding count and one phase-level completion are needed.
+    internal Task WaitForDeliverySamplesAsync()
+    {
+        Volatile.Write(ref _waitingForDeliveries, 1);
+        if (Volatile.Read(ref _pendingDeliveries) == 0) _deliveriesDrained.TrySetResult();
+        return _deliveriesDrained.Task.WaitAsync(TimeSpan.FromSeconds(30));
+    }
 
     /// <param name="maxValueMs">Upper bound of the histogram in milliseconds. Values above this are counted as overflow.</param>
     /// <param name="bucketWidthUs">Width of each bucket in microseconds. Smaller = higher resolution but more memory.</param>
@@ -39,6 +85,12 @@ internal sealed class LatencyTracker
             1,
             (long)(outlierThresholdMs / 1000.0 * Stopwatch.Frequency));
         _buckets = new long[(int)(_maxValueUs / bucketWidthUs)];
+        // Commit histogram pages before loading the client. Otherwise the first measured
+        // samples can pay demand-zero page faults even after the producer pools are warm.
+        for (var index = 0; index < _buckets.Length; index += 512)
+        {
+            Volatile.Write(ref _buckets[index], 0);
+        }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

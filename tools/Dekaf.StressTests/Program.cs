@@ -224,6 +224,7 @@ public static class Program
             BootstrapServers = kafka.BootstrapServers,
             Topic = topic,
             DurationMinutes = options.DurationMinutes,
+            ProducerWarmupSeconds = options.ProducerWarmupSeconds,
             MessageSizeBytes = options.MessageSizeBytes,
             Partitions = options.Partitions,
             LingerMs = options.LingerMs,
@@ -923,6 +924,10 @@ public static class Program
                 case "--duration":
                     options.DurationMinutes = int.Parse(args[++i]);
                     break;
+                case "--producer-warmup-seconds":
+                    options.ProducerWarmupSeconds = ParsePositiveInt(args[++i], "--producer-warmup-seconds");
+                    ArgumentOutOfRangeException.ThrowIfLessThan(options.ProducerWarmupSeconds, ProducerWarmup.MinimumSeconds);
+                    break;
                 case "--message-size":
                     options.MessageSizeBytes = int.Parse(args[++i]);
                     break;
@@ -1084,7 +1089,7 @@ public static class Program
 
     private static void PrintHelp()
     {
-        Console.WriteLine("""
+        Console.WriteLine($"""
             Dekaf Stress Test Runner
 
             Usage:
@@ -1092,6 +1097,7 @@ public static class Program
 
             Options:
               --duration <minutes>    Test duration in minutes (default: 15)
+              --producer-warmup-seconds <n>  Duration-based producer workload warmup (default: {ProducerWarmup.DefaultSeconds}; minimum: {ProducerWarmup.MinimumSeconds})
               --message-size <bytes>  Message size in bytes (default: 1000)
               --scenario <name>       Run specific scenario: producer, producer-idempotent, producer-acks-all, producer-async, producer-async-idempotent, producer-transactional, producer-roundtrip-steady, consumer, consumer-batch, consumer-raw, consumer-raw-batch, soak, all (default: all; all excludes soak)
               --client <name>         Run specific client: dekaf, confluent, all (default: all)
@@ -1148,6 +1154,7 @@ public static class Program
         public bool IsReport { get; set; }
         public bool IsFaultInjection { get; set; }
         public int DurationMinutes { get; set; } = 15;
+        public int ProducerWarmupSeconds { get; set; } = ProducerWarmup.DefaultSeconds;
         public int MessageSizeBytes { get; set; } = 1000;
         public string Scenario { get; set; } = "all";
         public string Client { get; set; } = "all";

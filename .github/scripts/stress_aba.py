@@ -419,13 +419,19 @@ def markdown(comparison, baseline_sha, candidate_sha):
         "those still require the workload's sampling design and uncertainty analysis.",
         "The current aggregate result schema has no maximum-latency uncertainty evidence. "
         "That protected metric remains INCONCLUSIVE for equal and unequal sample counts, "
-        "so this screen cannot return PASS. Other metric regressions and delivery failures still reject.",
+        "so this screen cannot return PASS. Metric classifications require a valid experiment.",
         "",
         f"Baseline: `{baseline_sha}` · Candidate: `{candidate_sha}`",
     ]
     if comparison.get("validationError"):
         lines.extend(["", f"Evidence validation failed: {comparison['validationError']}"])
         return "\n".join(lines) + "\n"
+    if comparison.get("startupAssessment"):
+        assessment = comparison["startupAssessment"]
+        lines.extend(["", f"Startup assessment: {assessment['verdict']}",
+                      "The following raw metric classifications and deltas are diagnostic. "
+                      "Incomplete startup assessment prevents acceptance or a confirmed performance-regression conclusion."])
+        lines.extend(f"- {error}" for error in assessment["errors"])
     lines.extend([
         "",
         f"adverse tolerance: {comparison['tolerancePercent']:.1f}% · "
@@ -518,6 +524,8 @@ def main(argv=None):
     parser.add_argument("--candidate-sha", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--summary")
+    parser.add_argument("--require-startup-assessment", action="store_true",
+                        help="Retain diagnostic deltas but reject acceptance while startup assessment is incomplete.")
     parser.add_argument(
         "--tolerance-percent", type=float, default=DEFAULT_TOLERANCE_PERCENT
     )
@@ -529,14 +537,26 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     try:
+        results = {"baselineA": _single_result(args.baseline_a), "candidateB": _single_result(args.candidate),
+                   "baselineA2": _single_result(args.baseline_a2)}
+        if args.candidate_b2:
+            results["candidateB2"] = _single_result(args.candidate_b2)
         comparison = compare(
-            _single_result(args.baseline_a),
-            _single_result(args.candidate),
-            _single_result(args.baseline_a2),
+            results["baselineA"],
+            results["candidateB"],
+            results["baselineA2"],
             args.tolerance_percent,
             args.max_control_drift_percent,
-            candidate_b2_result=None if not args.candidate_b2 else _single_result(args.candidate_b2),
+            candidate_b2_result=results.get("candidateB2"),
         )
+        if args.require_startup_assessment:
+            from stress_warmup import assess_results
+
+            assessment = assess_results(results)
+            comparison["startupAssessment"] = assessment
+            if assessment["verdict"] != "VALIDATED":
+                comparison["diagnosticMetricVerdict"] = comparison["verdict"]
+                comparison["verdict"] = "inconclusive"
         serialized = json.dumps(comparison, indent=2, allow_nan=False) + "\n"
     except (ValueError, OSError, TypeError, AttributeError, OverflowError) as error:
         # Invalid input or an unrepresentable comparison must not publish a pass.

@@ -1,0 +1,74 @@
+Process started at 07:08:06.492 UTC, PID: 92720
+Dekaf Stress Test Runner
+Duration: 1 minutes
+Message Size: 1000 bytes
+Scenario: producer
+Client: all
+Compression: none
+Brokers: 1
+Producer delivery diagnostics: disabled
+Consumer fetch diagnostics: disabled
+Dekaf client logs: Warning+ (set DEKAF_STRESS_LOG_LEVEL=Debug for verbose diagnostics)
+Progress watchdog: stacks at 30s; fail at 5 minutes
+--------------------------------------------------
+Starting Kafka container via Testcontainers...
+[testcontainers.org 00:00:00.10] Connected to Docker:
+  Host: npipe://./pipe/docker_engine
+  Server Version: 29.7.2
+  Kernel Version: 6.18.33.2-microsoft-standard-WSL2
+  API Version: 1.55
+  Operating System: Docker Desktop
+  Total Memory: 15.49 GB
+  Labels: 
+    com.docker.desktop.address=npipe://\\.\pipe\docker_cli
+[testcontainers.org 00:00:00.25] Docker container 567397f7429f created
+[testcontainers.org 00:00:00.31] Start Docker container 567397f7429f
+[testcontainers.org 00:00:00.44] Wait for Docker container 567397f7429f to complete readiness checks
+[testcontainers.org 00:00:01.48] Docker container 567397f7429f ready
+[testcontainers.org 00:00:01.58] Docker container f4e76829112c created
+[testcontainers.org 00:00:01.58] Add file to tar archive: Content length: 226 byte(s), Target file: "/etc/kafka/docker/run", UID: 0, GID: 0, Mode: 0755
+[testcontainers.org 00:00:01.60] Copy tar archive to container: Content length: 226 byte(s), Docker container: f4e76829112c
+[testcontainers.org 00:00:01.63] Start Docker container f4e76829112c
+[testcontainers.org 00:00:01.76] Add file to tar archive: Content length: 127 byte(s), Target file: "/testcontainers.sh", UID: 0, GID: 0, Mode: 0755
+[testcontainers.org 00:00:01.76] Copy tar archive to container: Content length: 127 byte(s), Docker container: f4e76829112c
+[testcontainers.org 00:00:01.77] Wait for Docker container f4e76829112c to complete readiness checks
+[testcontainers.org 00:00:03.82] Docker container f4e76829112c ready
+Kafka started at plaintext://127.0.0.1:50927/
+Waiting for Kafka to be ready...
+Kafka is ready
+Created topic via Dekaf admin API: stress-producer-95aea60151a7492f8ab4185372cc7cff (partitions=6, replication=1)
+Created topic via Dekaf admin API: stress-consumer-f480802c5ead4b9cb5ea6ff174759347 (partitions=6, replication=1)
+
+=== Running: Dekaf producer ===
+  Warming up Dekaf producer: 60s of workload in six drain/reuse cycles...
+  [07:08:16] Monitor Resources: WorkingSet=143.4MB, Private=116.0MB, GCHeap=57.4MB, Threads=46, GC=[6/5/4]
+  [07:08:21] Monitor Resources: WorkingSet=136.0MB, Private=108.0MB, GCHeap=60.9MB, Threads=46, GC=[6/5/4]
+  [07:08:26] Monitor Resources: WorkingSet=136.9MB, Private=109.1MB, GCHeap=65.4MB, Threads=46, GC=[6/5/4]
+  [07:08:31] Monitor Resources: WorkingSet=137.8MB, Private=109.0MB, GCHeap=67.7MB, Threads=46, GC=[6/5/4]
+  [07:08:36] Monitor Resources: WorkingSet=141.4MB, Private=111.9MB, GCHeap=61.4MB, Threads=44, GC=[7/6/5]
+  [07:08:41] Monitor Resources: WorkingSet=141.5MB, Private=111.9MB, GCHeap=63.5MB, Threads=44, GC=[7/6/5]
+  [07:08:46] Monitor Resources: WorkingSet=141.8MB, Private=113.0MB, GCHeap=67.9MB, Threads=44, GC=[7/6/5]
+  [07:08:51] Monitor Resources: WorkingSet=141.5MB, Private=111.9MB, GCHeap=70.2MB, Threads=44, GC=[7/6/5]
+  [07:08:56] Monitor Resources: WorkingSet=147.2MB, Private=117.9MB, GCHeap=74.8MB, Threads=44, GC=[7/6/5]
+  [07:09:01] Monitor Resources: WorkingSet=149.7MB, Private=120.4MB, GCHeap=77.1MB, Threads=44, GC=[7/6/5]
+[testcontainers.org 00:00:55.02] Execute "df -h /var/lib/kafka/data" at Docker container f4e76829112c
+[kafka] log-dir usage:
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/sdd       1007G   63G  894G   7% /var/lib/kafka/data
+[kafka] broker errors/storage events (last 5):
+  [2026-09-08 07:08:10,162] INFO [BrokerServer id=1] Transition from SHUTDOWN to STARTING (kafka.server.BrokerServer)
+  	controlled.shutdown.enable = true
+  	controlled.shutdown.enable = true
+  	controlled.shutdown.enable = true
+  [2026-09-08 07:08:11,054] WARN Auto topic creation failed for stress-consumer-f480802c5ead4b9cb5ea6ff174759347 with error 'TOPIC_ALREADY_EXISTS': Topic 'stress-consumer-f480802c5ead4b9cb5ea6ff174759347' already exists. (kafka.server.DefaultAutoTopicCreationManager)
+Stopping Kafka container...
+[testcontainers.org 00:00:55.17] Delete Docker container f4e76829112c
+Error: System.InvalidOperationException: Warmup did not complete a full successful workload cycle.
+   at Dekaf.StressTests.Scenarios.ProducerWarmup.RunAsync(Int32 seconds, Func`3 runCycle, CancellationToken cancellationToken) in C:\git\Dekaf-worktrees\fix-producer-warmup\tools\Dekaf.StressTests\Scenarios\ProducerWarmup.cs:line 31
+   at Dekaf.StressTests.Scenarios.StressTestHelpers.WarmUpProducerAndQueryStartOffsetAsync(IKafkaProducer`2 producer, StressTestOptions options, String producerName, ThroughputTracker throughput, CancellationToken cancellationToken, Boolean awaitDelivery) in C:\git\Dekaf-worktrees\fix-producer-warmup\tools\Dekaf.StressTests\Scenarios\StressTestHelpers.cs:line 161
+   at Dekaf.StressTests.Scenarios.ProducerStressTest.RunAsync(StressTestOptions options, CancellationToken cancellationToken) in C:\git\Dekaf-worktrees\fix-producer-warmup\tools\Dekaf.StressTests\Scenarios\ProducerStressTest.cs:line 52
+   at Dekaf.StressTests.Program.<>c__DisplayClass3_0.<<RunStressTestsAsync>g__RunScenarioAsync|2>d.MoveNext() in C:\git\Dekaf-worktrees\fix-producer-warmup\tools\Dekaf.StressTests\Program.cs:line 259
+--- End of stack trace from previous location ---
+   at Dekaf.StressTests.Program.RunStressTestsAsync(CliOptions options) in C:\git\Dekaf-worktrees\fix-producer-warmup\tools\Dekaf.StressTests\Program.cs:line 306
+   at Dekaf.StressTests.Program.RunStressTestsAsync(CliOptions options) in C:\git\Dekaf-worktrees\fix-producer-warmup\tools\Dekaf.StressTests\Program.cs:line 390
+   at Dekaf.StressTests.Program.Main(String[] args) in C:\git\Dekaf-worktrees\fix-producer-warmup\tools\Dekaf.StressTests\Program.cs:line 96

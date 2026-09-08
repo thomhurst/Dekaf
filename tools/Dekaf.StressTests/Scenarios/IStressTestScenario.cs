@@ -19,6 +19,7 @@ internal sealed class StressTestOptions
     public required string Topic { get; init; }
     public required int DurationMinutes { get; init; }
     public required int MessageSizeBytes { get; init; }
+    public int ProducerWarmupSeconds { get; init; } = ProducerWarmup.DefaultSeconds;
     public int Partitions { get; init; } = 6;
     public int LingerMs { get; init; } = 5;
     public int BatchSize { get; init; } = 16384;

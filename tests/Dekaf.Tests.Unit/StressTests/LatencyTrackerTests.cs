@@ -7,6 +7,54 @@ namespace Dekaf.Tests.Unit.StressTests;
 public sealed class LatencyTrackerTests
 {
     [Test]
+    public async Task Reset_ClearsWarmupHistogramAndOutliersWithoutAllocatingAnotherHistogram()
+    {
+        var tracker = new LatencyTracker();
+        for (var index = 0; index < 257; index++) tracker.Record(6000);
+        tracker.Record(10);
+        await tracker.WaitForDeliverySamplesAsync();
+
+        var allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
+        tracker.Reset();
+        var resetAllocation = GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
+        await Assert.That(resetAllocation).IsLessThan(4096);
+
+        var empty = tracker.GetSnapshot();
+        await Assert.That(empty.Count).IsEqualTo(0);
+        await Assert.That(empty.OverflowCount).IsEqualTo(0);
+        await Assert.That(empty.MinUs).IsEqualTo(0);
+        await Assert.That(empty.MaxUs).IsEqualTo(0);
+        await Assert.That(empty.P50Us).IsEqualTo(0);
+        await Assert.That(empty.P95Us).IsEqualTo(0);
+        await Assert.That(empty.P99Us).IsEqualTo(0);
+        await Assert.That(empty.OutlierSamples).IsEmpty();
+        await Assert.That(empty.DroppedOutlierSamples).IsEqualTo(0);
+
+        tracker.Record(20);
+        var measured = tracker.GetSnapshot();
+        await Assert.That(measured.Count).IsEqualTo(1);
+        await Assert.That(measured.P50Us).IsBetween(20_000, 20_010);
+        await Assert.That(measured.MinUs).IsEqualTo(20_000);
+        await Assert.That(measured.MaxUs).IsEqualTo(20_000);
+    }
+
+    [Test]
+    public async Task Reset_RearmsDeliveryDrainAndRejectsOutstandingCallbacks()
+    {
+        var tracker = new LatencyTracker();
+        for (var phase = 0; phase < 7; phase++)
+        {
+            tracker.Reset();
+            tracker.BeginDeliverySample();
+            var drained = tracker.WaitForDeliverySamplesAsync();
+            await Assert.That(drained.IsCompleted).IsFalse();
+            await Assert.That(() => tracker.Reset()).Throws<InvalidOperationException>();
+            tracker.CompleteDeliverySample();
+            await drained;
+        }
+    }
+
+    [Test]
     public async Task RecordTicks_AboveOneSecond_CapturesOutlierContext()
     {
         var tracker = new LatencyTracker();

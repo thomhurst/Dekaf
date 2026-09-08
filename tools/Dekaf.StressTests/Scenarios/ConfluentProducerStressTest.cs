@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using Dekaf.StressTests.Metrics;
 using Dekaf.StressTests.Reporting;
 using ConfluentKafka = Confluent.Kafka;
@@ -12,7 +11,6 @@ internal sealed class ConfluentProducerStressTest : IStressTestScenario
 
     public async Task<StressTestResult> RunAsync(StressTestOptions options, CancellationToken cancellationToken)
     {
-        var messageValue = new string('x', options.MessageSizeBytes);
         var throughput = new ThroughputTracker();
         var latency = StressTestHelpers.CreateDeliveryLatencyTracker();
         var startedAt = DateTime.UtcNow;
@@ -40,100 +38,21 @@ internal sealed class ConfluentProducerStressTest : IStressTestScenario
         var startOffset = await ConfluentStressTestHelpers.WarmUpProducerAndQueryStartOffsetAsync(
             producer,
             options,
-            "Confluent producer",
-            throughput);
-
-        GC.Collect();
-        GC.WaitForPendingFinalizers();
-        GC.Collect();
-
-        using var gcStats = new GcStats();
-        using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        cts.CancelAfter(TimeSpan.FromMinutes(options.DurationMinutes));
-
-        Console.WriteLine($"  Running Confluent producer stress test for {options.DurationMinutes} minutes...");
-        Console.WriteLine($"  Start time: {DateTime.UtcNow:HH:mm:ss.fff} UTC");
-        LogResourceUsage("Initial");
-
-        throughput.Start();
-        using var watchdog = options.ProgressWatchdog.Track(throughput, Client, Name);
-        var messageIndex = 0L;
-        var lastStatusTime = DateTime.UtcNow;
-        var lastStatusMessageCount = 0L;
-
-        var samplerTask = RunSamplerAsync(throughput, cts.Token);
-        var resourceMonitorTask = RunResourceMonitorAsync(cts.Token);
-
-        while (!cts.Token.IsCancellationRequested)
-        {
-            try
-            {
-                var message = new ConfluentKafka.Message<string, string>
-                {
-                    Key = StressTestHelpers.GetKey(messageIndex),
-                    Value = messageValue
-                };
-
-                if (messageIndex % StressTestHelpers.LatencySampleInterval == 0)
-                {
-                    ConfluentStressTestHelpers.SampleDeliveryLatency(producer, options.Topic, message, latency, throughput, cts.Token, messageIndex);
-                }
-                else
-                {
-                    ConfluentStressTestHelpers.ProduceWithBackpressure(producer, options.Topic, message, null, cts.Token);
-                }
-                throughput.RecordMessage(options.MessageSizeBytes);
-                messageIndex++;
-
-                // Yield and report status periodically
-                if (messageIndex % 100_000 == 0)
-                {
-                    await Task.Yield();
-                    var now = DateTime.UtcNow;
-                    if ((now - lastStatusTime).TotalSeconds >= 10)
-                    {
-                        var elapsedSinceLastStatus = (now - lastStatusTime).TotalSeconds;
-                        var messagesSinceLastStatus = messageIndex - lastStatusMessageCount;
-                        var instantaneousMsgSec = messagesSinceLastStatus / elapsedSinceLastStatus;
-                        Console.WriteLine($"  [{now:HH:mm:ss}] Progress: {messageIndex:N0} messages | instant: {instantaneousMsgSec:N0} msg/sec | avg: {throughput.GetAverageMessagesPerSecond():N0} msg/sec");
-                        lastStatusTime = now;
-                        lastStatusMessageCount = messageIndex;
-                    }
-                }
-            }
-            catch (OperationCanceledException) when (cts.Token.IsCancellationRequested)
-            {
-                break;
-            }
-            catch (Exception ex)
-            {
-                throughput.RecordError(ex, "Produce loop", messageIndex);
-            }
-        }
-
-        ConfluentStressTestHelpers.FlushWithTimeout(producer, throughput);
-        throughput.Stop();
-        gcStats.Capture();
-
-        // Queried after the final flush — and outside the measurement window, so a slow
-        // query against a degraded broker can't skew elapsed/CPU stats — so the delta
-        // reflects what the broker actually accepted rather than what librdkafka's local
-        // queue absorbed. The drain wait absorbs follower high-watermark lag before the
-        // always-fatal shortfall check.
-        var endOffset = await ConfluentStressTestHelpers.QueryTotalEndOffsetAfterProducerDrainAsync(
-            options,
-            startOffset,
-            throughput.MessageCount,
+            this,
             throughput,
-            "Post-run drain");
+            latency,
+            cancellationToken);
 
-        try { await samplerTask.ConfigureAwait(false); } catch { }
-        try { await resourceMonitorTask.ConfigureAwait(false); } catch { }
+        var workload = await ProducerWorkload.RunAsync(
+            producer, options, Client, Name, throughput, latency, TimeSpan.FromMinutes(options.DurationMinutes),
+            awaitDelivery: false, cancellationToken).ConfigureAwait(false);
 
         var completedAt = DateTime.UtcNow;
         Console.WriteLine($"  Completed: {throughput.MessageCount:N0} messages, {throughput.GetAverageMessagesPerSecond():N0} msg/sec");
-        LogResourceUsage("Final");
+        StressTestHelpers.LogResourceUsage("Final");
 
+        var endOffset = await ConfluentStressTestHelpers.QueryTotalEndOffsetAfterProducerDrainAsync(
+            options, startOffset, throughput.MessageCount, throughput, "Post-run drain").ConfigureAwait(false);
         var delivered = StressTestHelpers.ComputeDelivered(startOffset, endOffset, throughput);
 
         return new StressTestResult
@@ -148,59 +67,8 @@ internal sealed class ConfluentProducerStressTest : IStressTestScenario
             Throughput = throughput.GetSnapshot(),
             DeliveredMessages = delivered,
             Latency = latency.GetSnapshot(),
-            GcStats = gcStats.ToSnapshot(),
+            GcStats = workload.Gc,
             CpuTimeSeconds = throughput.CpuTimeSeconds
         };
-    }
-
-    private static async Task RunSamplerAsync(ThroughputTracker throughput, CancellationToken cancellationToken)
-    {
-        while (!cancellationToken.IsCancellationRequested)
-        {
-            try
-            {
-                await Task.Delay(1000, cancellationToken).ConfigureAwait(false);
-                throughput.TakeSample();
-            }
-            catch (OperationCanceledException)
-            {
-                break;
-            }
-        }
-    }
-
-    private static async Task RunResourceMonitorAsync(CancellationToken cancellationToken)
-    {
-        var process = Process.GetCurrentProcess();
-        while (!cancellationToken.IsCancellationRequested)
-        {
-            try
-            {
-                await Task.Delay(5000, cancellationToken).ConfigureAwait(false);
-                LogResourceUsage("Monitor", process);
-            }
-            catch (OperationCanceledException)
-            {
-                break;
-            }
-        }
-    }
-
-    private static void LogResourceUsage(string label, Process? process = null)
-    {
-        process ??= Process.GetCurrentProcess();
-        process.Refresh();
-
-        var workingSet = process.WorkingSet64 / (1024.0 * 1024.0);
-        var privateMemory = process.PrivateMemorySize64 / (1024.0 * 1024.0);
-        var gcHeap = GC.GetTotalMemory(forceFullCollection: false) / (1024.0 * 1024.0);
-        var threadCount = process.Threads.Count;
-        var gen0 = GC.CollectionCount(0);
-        var gen1 = GC.CollectionCount(1);
-        var gen2 = GC.CollectionCount(2);
-
-        Console.WriteLine($"  [{DateTime.UtcNow:HH:mm:ss}] {label} Resources: " +
-            $"WorkingSet={workingSet:F1}MB, Private={privateMemory:F1}MB, GCHeap={gcHeap:F1}MB, " +
-            $"Threads={threadCount}, GC=[{gen0}/{gen1}/{gen2}]");
     }
 }
