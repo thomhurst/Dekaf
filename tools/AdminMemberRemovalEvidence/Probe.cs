@@ -25,16 +25,21 @@ public static class Probe
     public readonly record struct TickCount(long Ticks, long Count);
     public sealed record Snapshot(double Seconds, long Completed, long CpuTicks, long AllocatedBytes,
         long HeapBytes, long RssBytes, int Gen0, int Gen1, int Gen2, long JitMethods,
-        double JitMilliseconds, int ThreadPoolThreads, long PendingWorkItems);
-    public sealed record Interval(Snapshot Start, Snapshot End, ArraySegment<TickCount> Latencies);
-    public sealed record Capture(Snapshot Start, Snapshot End, List<Interval> Intervals)
+        double JitMilliseconds, int ThreadPoolThreads, long PendingWorkItems, long Timestamp);
+    public readonly record struct CallTiming(long StartTimestamp, long EndTimestamp)
+    {
+        public long Ticks => EndTimestamp - StartTimestamp;
+    }
+    public readonly record struct ClockSync(long BeforeTimestamp, long AfterTimestamp);
+    public sealed record Interval(Snapshot Start, Snapshot End, ArraySegment<TickCount> Latencies, CallTiming MaximumCall);
+    public sealed record Capture(Snapshot Start, Snapshot End, List<Interval> Intervals, ClockSync? TraceClock)
     {
         public double Seconds => End.Seconds - Start.Seconds;
         public long Completed => End.Completed - Start.Completed;
     }
     public sealed record Result(double Seconds, long Completed, double CallsPerSecond, double CpuNsPerCall,
         double AllocatedBytesPerCall, double P50Ns, double P99Ns, double MaxNs, long StopwatchFrequency,
-        Snapshot Start, Snapshot End, List<Interval> Intervals, List<TickCount> Latencies);
+        Snapshot Start, Snapshot End, List<Interval> Intervals, List<TickCount> Latencies, ClockSync? TraceClock);
 
     public static async Task PrimeAsync(AdminFixture fixture, string outputPath)
     {
@@ -73,8 +78,11 @@ public static class Probe
         var seconds = durations[phase];
         var intervals = intervalSets[phase];
         using var process = Process.GetCurrentProcess();
+        ClockSync? traceClock = null;
         if (compilations is not null)
         {
+            // Prime clock-event serialization before retaining the synchronization bracket.
+            PhaseEvents.Log.Clock(Stopwatch.GetTimestamp());
             // Age retained observer storage before the continuous workload starts.
             // Otherwise histogram allocation postpones the first Gen2/ArrayPool
             // finalizer transition into collection, even with longer warmup.
@@ -85,6 +93,11 @@ public static class Probe
                 GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, blocking: true, compacting: true);
                 GC.WaitForPendingFinalizers();
             }
+            // The EventPipe event timestamp lies inside this retained clock bracket.
+            // Keep synchronization outside the measured call loop.
+            var beforeClock = Stopwatch.GetTimestamp();
+            PhaseEvents.Log.Clock(beforeClock);
+            traceClock = new(beforeClock, Stopwatch.GetTimestamp());
         }
         var started = Stopwatch.GetTimestamp();
         long completed = 0;
@@ -96,24 +109,30 @@ public static class Probe
         var first = TakeSnapshot(process, started, completed);
         var previous = first;
         var nextSnapshot = 1d;
+        CallTiming maximumCall = default;
         while (true)
         {
             var callStart = Stopwatch.GetTimestamp();
             _ = await fixture.Call();
             var callEnd = Stopwatch.GetTimestamp();
             var ticks = callEnd - callStart;
+            // Reuse the existing timestamps; no extra clock read or per-call allocation.
+            // Retain the first occurrence when several calls share the maximum.
+            if (maximumCall.EndTimestamp == 0 || ticks > maximumCall.Ticks)
+                maximumCall = new(callStart, callEnd);
             histogram.Record(ticks);
             completed++;
             var elapsed = Stopwatch.GetElapsedTime(started).TotalSeconds - first.Seconds;
             if (elapsed >= nextSnapshot || elapsed >= seconds)
             {
                 var snapshot = TakeSnapshot(process, started, completed);
-                intervals.Add(new(previous, snapshot, histogram.Drain()));
+                intervals.Add(new(previous, snapshot, histogram.Drain(), maximumCall));
+                maximumCall = default;
                 previous = snapshot;
                 nextSnapshot = Math.Floor(elapsed) + 1;
                 if (elapsed >= seconds)
                 {
-                    captures[phase] = new(first, previous, intervals);
+                    captures[phase] = new(first, previous, intervals, traceClock);
                     if (++phase == durations.Length) break;
                     seconds = durations[phase];
                     intervals = intervalSets[phase];
@@ -134,7 +153,7 @@ public static class Probe
     // large warmup aggregate must not queue new JIT work at measurement start.
     public static Result Complete(Capture capture)
     {
-        var (first, previous, intervals) = capture;
+        var (first, previous, intervals, traceClock) = capture;
         var completed = capture.Completed;
         var aggregate = new Dictionary<long, long>();
         // Sparse overflow buckets were retained unsorted during collection.
@@ -156,7 +175,7 @@ public static class Probe
             (previous.AllocatedBytes - first.AllocatedBytes) / (double)completed,
             Percentile(all, completed, 0.50), Percentile(all, completed, 0.99),
             all[^1].Ticks * 1e9 / Stopwatch.Frequency, Stopwatch.Frequency,
-            first, previous, intervals, all);
+            first, previous, intervals, all, traceClock);
     }
 
     private static double Percentile(List<TickCount> histogram, long count, double fraction)
@@ -241,11 +260,12 @@ public static class Probe
     internal static Snapshot TakeSnapshot(Process process, long started, long completed)
     {
         process.Refresh();
-        return new(Stopwatch.GetElapsedTime(started).TotalSeconds, completed, process.TotalProcessorTime.Ticks,
+        var timestamp = Stopwatch.GetTimestamp();
+        return new((timestamp - started) / (double)Stopwatch.Frequency, completed, process.TotalProcessorTime.Ticks,
             GC.GetTotalAllocatedBytes(true), GC.GetTotalMemory(false), process.WorkingSet64,
             GC.CollectionCount(0), GC.CollectionCount(1), GC.CollectionCount(2),
             JitInfo.GetCompiledMethodCount(false), JitInfo.GetCompilationTime(false).TotalMilliseconds,
-            ThreadPool.ThreadCount, ThreadPool.PendingWorkItemCount);
+            ThreadPool.ThreadCount, ThreadPool.PendingWorkItemCount, timestamp);
     }
 
     public static void Save(string path, object value)

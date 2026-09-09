@@ -2,6 +2,7 @@
 import importlib.util
 from pathlib import Path
 import subprocess
+from admin_timing import validate_timing
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -34,7 +35,7 @@ def main():
         spec.loader.exec_module(validator)
         validate = validator.validate if mutation else validator.validate_probe
         for phase in ('warmup', 'measured'):
-            validate(destination / f'{phase}.json', .2)
+            validate_timing(validate(destination / f'{phase}.json', .2))
         print(f'{project}: build, capture and accounting replay passed', flush=True)
 
 

@@ -1,0 +1,65 @@
+using Microsoft.Diagnostics.Tracing;
+using System.Text.Json;
+
+if (args.Length != 2) throw new ArgumentException("trace.nettrace output.json");
+var collections = new List<object>();
+var phases = new List<object>();
+var counts = new Dictionary<string, long>();
+var pending = new Dictionary<(int Process, int Thread), Suspension>();
+var pauses = new List<object>();
+var anomalies = new Dictionary<string, long>();
+using var source = new EventPipeEventSource(args[0]);
+source.Clr.GCStart += data => collections.Add(new { data.ProcessID, data.ThreadID, data.Count, data.Depth, Reason = data.Reason.ToString(), Type = data.Type.ToString(), Milliseconds = data.TimeStampRelativeMSec });
+source.Clr.GCSuspendEEStart += data =>
+{
+    var key = (data.ProcessID, data.ThreadID);
+    if (pending.ContainsKey(key)) Anomaly("overlapping requests on same thread");
+    pending[key] = new(data.TimeStampRelativeMSec, data.Reason.ToString());
+};
+source.Clr.GCSuspendEEStop += data =>
+{
+    if (pending.TryGetValue((data.ProcessID, data.ThreadID), out var suspension))
+        suspension.SuspendedMs = data.TimeStampRelativeMSec;
+    else Anomaly("suspended without request on same thread");
+};
+source.Clr.GCRestartEEStart += data =>
+{
+    if (pending.TryGetValue((data.ProcessID, data.ThreadID), out var suspension))
+        suspension.RestartMs = data.TimeStampRelativeMSec;
+    else Anomaly("restart without request on same thread");
+};
+source.Clr.GCRestartEEStop += data =>
+{
+    if (!pending.Remove((data.ProcessID, data.ThreadID), out var suspension))
+    {
+        Anomaly("restart completed without request on same thread");
+        return;
+    }
+    if (suspension.SuspendedMs is null || suspension.RestartMs is null)
+        Anomaly("incomplete suspension phases");
+    pauses.Add(new { data.ProcessID, data.ThreadID, StartMs = suspension.StartMs,
+        EndMs = data.TimeStampRelativeMSec, DurationMs = data.TimeStampRelativeMSec - suspension.StartMs,
+        suspension.SuspendedMs, suspension.RestartMs,
+        FullySuspendedMs = suspension.RestartMs - suspension.SuspendedMs, suspension.Reason });
+};
+source.Dynamic.All += data =>
+{
+    counts[data.ProviderName] = counts.GetValueOrDefault(data.ProviderName) + 1;
+    if (data.ProviderName == "Dekaf-AdminEvidence-Phases")
+        phases.Add(new { data.ProcessID, data.ThreadID, data.EventName, Milliseconds = data.TimeStampRelativeMSec, Payload = data.PayloadNames.ToDictionary(name => name, data.PayloadByName) });
+};
+source.Process();
+var result = new { Trace = Path.GetFullPath(args[0]), source.EventsLost, Collections = collections,
+    AllSuspensions = pauses, Phases = phases, ProviderCounts = counts, Anomalies = anomalies,
+    OpenSuspensions = pending.Keys.Select(key => new { key.Process, key.Thread }),
+    Note = "Paired by process and requesting thread. Begin precedes the thread-store lock; request-to-restart includes waiting and is not entirely stop-the-world time." };
+File.WriteAllText(args[1], JsonSerializer.Serialize(result, new JsonSerializerOptions { WriteIndented = true }));
+Console.WriteLine($"GCs={collections.Count}, suspensions={pauses.Count}, phases={phases.Count}, lost={source.EventsLost}, anomalies={JsonSerializer.Serialize(anomalies)}, open={pending.Count}");
+void Anomaly(string name) => anomalies[name] = anomalies.GetValueOrDefault(name) + 1;
+sealed class Suspension(double startMs, string reason)
+{
+    public double StartMs { get; } = startMs;
+    public string Reason { get; } = reason;
+    public double? SuspendedMs { get; set; }
+    public double? RestartMs { get; set; }
+}

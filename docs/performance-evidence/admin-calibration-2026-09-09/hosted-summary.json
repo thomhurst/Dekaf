@@ -1,0 +1,740 @@
+{
+  "plan": {
+    "calibration": true,
+    "profiling": {
+      "purpose": "Attribute recurring GC pauses and sustained fresh-process CPU variation in identical binaries",
+      "scope": "Diagnostic only; EventPipe and JIT output affect execution. No product gate can pass from these observations.",
+      "providers": "Microsoft-Windows-DotNETRuntime:0x1:4,Microsoft-DotNETCore-SampleProfiler:0x0:4,Dekaf-AdminEvidence-Phases:0xFFFFFFFFFFFFFFFF:4",
+      "jit_disasm": "*DeleteTopics*:* *RefreshMetadata*:* *MetadataManager*:* *CapturePhases*:*",
+      "trace_buffer_mib": 128,
+      "coverage": "Entire process, including preparation, continuous 480-second warmup, 180-second measurement and finalization",
+      "decision": "Match GC reason/pause intervals to retained maxima, compare Tier1 code across processes, and inspect CPU stacks. Preserve all samples. Missing events or attribution remain inconclusive."
+    },
+    "topology": [
+      [
+        0,
+        0,
+        0
+      ],
+      [
+        1,
+        0,
+        0
+      ],
+      [
+        2,
+        1,
+        0
+      ],
+      [
+        3,
+        1,
+        0
+      ]
+    ],
+    "affinity": {
+      "consumer": "2,3",
+      "infrastructure": "0,1"
+    },
+    "A": "a12b5980bb9ca9aa31755f3784c5255d0288be71",
+    "B": "a12b5980bb9ca9aa31755f3784c5255d0288be71",
+    "harness": "e8042153cd071845a942316c0693c2c1a5ece155",
+    "controls": [
+      "legacy-delete:16"
+    ],
+    "candidate_only": [],
+    "warmup_seconds": 480,
+    "measured_seconds": 180,
+    "warmup_rationale": "480 seconds continuous workload after observer heap preparation; previous 360-second captures retained helper/ConditionalWeakTable JIT near total seconds 382-400. Collect 180 seconds to retain multiple recurring GC cycles, not select a GC-free window.",
+    "observer_preparation": "After histogram allocation, two blocking compacting full GCs with finalizer waits before workload warmup; no forced GC during warmup or measurement",
+    "pilot": false,
+    "report_aggregation": "all overflow sorting and aggregation deferred until both captures finish",
+    "histograms": "Exact ticks, touched buckets only; 65536 distinct ticks/interval, shared archive capped at 4194304 entries (64 MiB); exhaustion invalidates",
+    "phase_transition": "one continuous warmed call loop; no return/re-entry between warmup and measurement",
+    "cpu_affinity": [
+      3
+    ],
+    "jit_attribution": "CLR MethodJittingStarted; identical observer in all phases",
+    "phase_order": "For each control workload, run A1 then B then A2 before starting the next workload",
+    "endpoint": "127.0.0.1:9092; literal loopback avoids external OS DNS in cached-transport probes",
+    "image": "ubuntu24",
+    "image_version": "20260907.300.1",
+    "run_id": "34351058811",
+    "scope": "Cached-transport completed administrative calls; no network/broker acceptance.",
+    "verdict": "INCONCLUSIVE: partial scope; assess all retained runtime and metric evidence"
+  },
+  "rows": [
+    {
+      "phase": "A1",
+      "metrics": {
+        "CallsPerSecond": 747817.9586183848,
+        "CpuNsPerCall": 1256.929662910462,
+        "AllocatedBytesPerCall": 2384.021507313801,
+        "P50Ns": 922,
+        "P99Ns": 1733,
+        "MaxNs": 3231091
+      },
+      "warmup_seconds": 480.0000012,
+      "warmup_completed": 356750302,
+      "seconds": 180.00000059999996,
+      "completed": 134607233,
+      "trace_events_lost": 0,
+      "trace_suspensions": 485500,
+      "trace_anomalies": {},
+      "measured_suspensions": {
+        "SuspendForGC": {
+          "count": 19184,
+          "total_fully_suspended_ms": 3143.7883370059426,
+          "largest_request_to_restart": {
+            "ProcessID": 3066,
+            "ThreadID": 3066,
+            "StartMs": 507940.016827,
+            "EndMs": 507943.171166,
+            "DurationMs": 3.1543390000006184,
+            "SuspendedMs": 507940.019272,
+            "RestartMs": 507943.16244,
+            "FullySuspendedMs": 3.1431679999805056,
+            "Reason": "SuspendForGC"
+          },
+          "largest_fully_suspended": {
+            "ProcessID": 3066,
+            "ThreadID": 3066,
+            "StartMs": 507940.016827,
+            "EndMs": 507943.171166,
+            "DurationMs": 3.1543390000006184,
+            "SuspendedMs": 507940.019272,
+            "RestartMs": 507943.16244,
+            "FullySuspendedMs": 3.1431679999805056,
+            "Reason": "SuspendForGC"
+          }
+        },
+        "SuspendForGCPrep": {
+          "count": 1,
+          "total_fully_suspended_ms": 0.2882359999930486,
+          "largest_request_to_restart": {
+            "ProcessID": 3066,
+            "ThreadID": 3186,
+            "StartMs": 607949.366645,
+            "EndMs": 607949.707439,
+            "DurationMs": 0.34079400007613003,
+            "SuspendedMs": 607949.36957,
+            "RestartMs": 607949.657806,
+            "FullySuspendedMs": 0.2882359999930486,
+            "Reason": "SuspendForGCPrep"
+          },
+          "largest_fully_suspended": {
+            "ProcessID": 3066,
+            "ThreadID": 3186,
+            "StartMs": 607949.366645,
+            "EndMs": 607949.707439,
+            "DurationMs": 0.34079400007613003,
+            "SuspendedMs": 607949.36957,
+            "RestartMs": 607949.657806,
+            "FullySuspendedMs": 0.2882359999930486,
+            "Reason": "SuspendForGCPrep"
+          }
+        },
+        "SuspendOther": {
+          "count": 111849,
+          "total_fully_suspended_ms": 1071.9003309907275,
+          "largest_request_to_restart": {
+            "ProcessID": 3066,
+            "ThreadID": 3077,
+            "StartMs": 493794.856914,
+            "EndMs": 493798.566516,
+            "DurationMs": 3.7096020000171848,
+            "SuspendedMs": 493795.628529,
+            "RestartMs": 493795.641974,
+            "FullySuspendedMs": 0.013445000047795475,
+            "Reason": "SuspendOther"
+          },
+          "largest_fully_suspended": {
+            "ProcessID": 3066,
+            "ThreadID": 3077,
+            "StartMs": 601994.290745,
+            "EndMs": 601994.660713,
+            "DurationMs": 0.36996799998451024,
+            "SuspendedMs": 601994.522456,
+            "RestartMs": 601994.652728,
+            "FullySuspendedMs": 0.13027199998032302,
+            "Reason": "SuspendOther"
+          }
+        }
+      },
+      "gen0_gen1_gen2": [
+        19185,
+        119,
+        2
+      ],
+      "delivered_measured_jit": [],
+      "cpu_blocks": [
+        {
+          "start_seconds": 480.0003741,
+          "end_seconds": 510.0003751,
+          "cpu_ns_per_call": 1264.9673334878357
+        },
+        {
+          "start_seconds": 510.0003751,
+          "end_seconds": 540.0003753,
+          "cpu_ns_per_call": 1269.942305031791
+        },
+        {
+          "start_seconds": 540.0003753,
+          "end_seconds": 570.0003751,
+          "cpu_ns_per_call": 1271.766675459101
+        },
+        {
+          "start_seconds": 570.0003751,
+          "end_seconds": 600.0003748,
+          "cpu_ns_per_call": 1259.085045306517
+        },
+        {
+          "start_seconds": 600.0003748,
+          "end_seconds": 630.0003755,
+          "cpu_ns_per_call": 1247.1764723100948
+        },
+        {
+          "start_seconds": 630.0003755,
+          "end_seconds": 660.0003747,
+          "cpu_ns_per_call": 1229.6804911405084
+        }
+      ],
+      "max_interval": {
+        "start_trace_ms": 507917.50632300007,
+        "end_trace_ms": 508917.50692300004,
+        "start_seconds": 500.0003749,
+        "largest_suspensions": [
+          {
+            "ProcessID": 3066,
+            "ThreadID": 3066,
+            "StartMs": 507940.016827,
+            "EndMs": 507943.171166,
+            "DurationMs": 3.1543390000006184,
+            "SuspendedMs": 507940.019272,
+            "RestartMs": 507943.16244,
+            "FullySuspendedMs": 3.1431679999805056,
+            "Reason": "SuspendForGC"
+          },
+          {
+            "ProcessID": 3066,
+            "ThreadID": 3077,
+            "StartMs": 508634.555418,
+            "EndMs": 508637.566842,
+            "DurationMs": 3.011424000025727,
+            "SuspendedMs": 508634.702242,
+            "RestartMs": 508634.710687,
+            "FullySuspendedMs": 0.0084449999849312,
+            "Reason": "SuspendOther"
+          },
+          {
+            "ProcessID": 3066,
+            "ThreadID": 3077,
+            "StartMs": 508682.558634,
+            "EndMs": 508685.569576,
+            "DurationMs": 3.010941999964416,
+            "SuspendedMs": 508682.710887,
+            "RestartMs": 508682.720535,
+            "FullySuspendedMs": 0.0096479999483563,
+            "Reason": "SuspendOther"
+          },
+          {
+            "ProcessID": 3066,
+            "ThreadID": 3077,
+            "StartMs": 508748.555409,
+            "EndMs": 508751.563265,
+            "DurationMs": 3.0078559999819845,
+            "SuspendedMs": 508748.700449,
+            "RestartMs": 508748.709566,
+            "FullySuspendedMs": 0.009116999979596585,
+            "Reason": "SuspendOther"
+          },
+          {
+            "ProcessID": 3066,
+            "ThreadID": 3077,
+            "StartMs": 508315.557416,
+            "EndMs": 508318.564962,
+            "DurationMs": 3.0075460000080056,
+            "SuspendedMs": 508315.705712,
+            "RestartMs": 508315.713947,
+            "FullySuspendedMs": 0.008234999957494438,
+            "Reason": "SuspendOther"
+          }
+        ]
+      },
+      "heap_range": [
+        80202528,
+        96897648
+      ],
+      "rss_range": [
+        140931072,
+        147263488
+      ],
+      "max_workers": 0,
+      "max_pending": 0
+    },
+    {
+      "phase": "B",
+      "metrics": {
+        "CallsPerSecond": 723093.1665981641,
+        "CpuNsPerCall": 1298.1655944737597,
+        "AllocatedBytesPerCall": 2384.02227731971,
+        "P50Ns": 932,
+        "P99Ns": 1793,
+        "MaxNs": 3498079
+      },
+      "warmup_seconds": 480.00013440000004,
+      "warmup_completed": 347058756,
+      "seconds": 180.00000140000003,
+      "completed": 130156771,
+      "trace_events_lost": 0,
+      "trace_suspensions": 490400,
+      "trace_anomalies": {},
+      "measured_suspensions": {
+        "SuspendForGC": {
+          "count": 18550,
+          "total_fully_suspended_ms": 3591.4101889975136,
+          "largest_request_to_restart": {
+            "ProcessID": 3285,
+            "ThreadID": 3285,
+            "StartMs": 507927.91658,
+            "EndMs": 507931.225165,
+            "DurationMs": 3.308584999991581,
+            "SuspendedMs": 507927.918894,
+            "RestartMs": 507931.223142,
+            "FullySuspendedMs": 3.304247999971267,
+            "Reason": "SuspendForGC"
+          },
+          "largest_fully_suspended": {
+            "ProcessID": 3285,
+            "ThreadID": 3285,
+            "StartMs": 507927.91658,
+            "EndMs": 507931.225165,
+            "DurationMs": 3.308584999991581,
+            "SuspendedMs": 507927.918894,
+            "RestartMs": 507931.223142,
+            "FullySuspendedMs": 3.304247999971267,
+            "Reason": "SuspendForGC"
+          }
+        },
+        "SuspendForGCPrep": {
+          "count": 1,
+          "total_fully_suspended_ms": 0.18055499996989965,
+          "largest_request_to_restart": {
+            "ProcessID": 3285,
+            "ThreadID": 3371,
+            "StartMs": 607933.568191,
+            "EndMs": 607933.80406,
+            "DurationMs": 0.23586899996735156,
+            "SuspendedMs": 607933.57245,
+            "RestartMs": 607933.753005,
+            "FullySuspendedMs": 0.18055499996989965,
+            "Reason": "SuspendForGCPrep"
+          },
+          "largest_fully_suspended": {
+            "ProcessID": 3285,
+            "ThreadID": 3371,
+            "StartMs": 607933.568191,
+            "EndMs": 607933.80406,
+            "DurationMs": 0.23586899996735156,
+            "SuspendedMs": 607933.57245,
+            "RestartMs": 607933.753005,
+            "FullySuspendedMs": 0.18055499996989965,
+            "Reason": "SuspendForGCPrep"
+          }
+        },
+        "SuspendOther": {
+          "count": 114541,
+          "total_fully_suspended_ms": 1260.9416649899795,
+          "largest_request_to_restart": {
+            "ProcessID": 3285,
+            "ThreadID": 3296,
+            "StartMs": 634001.282728,
+            "EndMs": 634004.982812,
+            "DurationMs": 3.7000840000109747,
+            "SuspendedMs": 634002.081665,
+            "RestartMs": 634002.097985,
+            "FullySuspendedMs": 0.01632000005338341,
+            "Reason": "SuspendOther"
+          },
+          "largest_fully_suspended": {
+            "ProcessID": 3285,
+            "ThreadID": 3296,
+            "StartMs": 613627.637023,
+            "EndMs": 613628.115764,
+            "DurationMs": 0.4787409999407828,
+            "SuspendedMs": 613628.002603,
+            "RestartMs": 613628.112608,
+            "FullySuspendedMs": 0.11000500002410263,
+            "Reason": "SuspendOther"
+          }
+        }
+      },
+      "gen0_gen1_gen2": [
+        18551,
+        116,
+        2
+      ],
+      "delivered_measured_jit": [],
+      "cpu_blocks": [
+        {
+          "start_seconds": 480.0004425,
+          "end_seconds": 510.0004433,
+          "cpu_ns_per_call": 1300.59301646086
+        },
+        {
+          "start_seconds": 510.0004433,
+          "end_seconds": 540.0004434,
+          "cpu_ns_per_call": 1298.4803279853056
+        },
+        {
+          "start_seconds": 540.0004434,
+          "end_seconds": 570.0004442,
+          "cpu_ns_per_call": 1303.061499465746
+        },
+        {
+          "start_seconds": 570.0004442,
+          "end_seconds": 600.0004441,
+          "cpu_ns_per_call": 1297.7861462495987
+        },
+        {
+          "start_seconds": 600.0004441,
+          "end_seconds": 630.0004446,
+          "cpu_ns_per_call": 1294.917255538397
+        },
+        {
+          "start_seconds": 630.0004446,
+          "end_seconds": 660.0004439,
+          "cpu_ns_per_call": 1294.2073242860652
+        }
+      ],
+      "max_interval": {
+        "start_trace_ms": 539907.614339,
+        "end_trace_ms": 540907.643339,
+        "start_seconds": 532.0005048,
+        "largest_suspensions": [
+          {
+            "ProcessID": 3285,
+            "ThreadID": 3296,
+            "StartMs": 540057.982013,
+            "EndMs": 540060.996973,
+            "DurationMs": 3.014960000058636,
+            "SuspendedMs": 540058.127002,
+            "RestartMs": 540058.135749,
+            "FullySuspendedMs": 0.008747000014409423,
+            "Reason": "SuspendOther"
+          },
+          {
+            "ProcessID": 3285,
+            "ThreadID": 3296,
+            "StartMs": 540871.981552,
+            "EndMs": 540874.993427,
+            "DurationMs": 3.0118749999674037,
+            "SuspendedMs": 540872.126903,
+            "RestartMs": 540872.136561,
+            "FullySuspendedMs": 0.009657999966293573,
+            "Reason": "SuspendOther"
+          },
+          {
+            "ProcessID": 3285,
+            "ThreadID": 3296,
+            "StartMs": 540230.98462,
+            "EndMs": 540233.992707,
+            "DurationMs": 3.0080869999947026,
+            "SuspendedMs": 540231.132325,
+            "RestartMs": 540231.142634,
+            "FullySuspendedMs": 0.01030900003388524,
+            "Reason": "SuspendOther"
+          },
+          {
+            "ProcessID": 3285,
+            "ThreadID": 3296,
+            "StartMs": 540725.98358,
+            "EndMs": 540728.989553,
+            "DurationMs": 3.005972999962978,
+            "SuspendedMs": 540726.134961,
+            "RestartMs": 540726.145791,
+            "FullySuspendedMs": 0.010830000042915344,
+            "Reason": "SuspendOther"
+          },
+          {
+            "ProcessID": 3285,
+            "ThreadID": 3296,
+            "StartMs": 540461.987855,
+            "EndMs": 540464.992976,
+            "DurationMs": 3.0051209999946877,
+            "SuspendedMs": 540462.135499,
+            "RestartMs": 540462.144907,
+            "FullySuspendedMs": 0.009408000041730702,
+            "Reason": "SuspendOther"
+          }
+        ]
+      },
+      "heap_range": [
+        80121568,
+        96932080
+      ],
+      "rss_range": [
+        143806464,
+        150179840
+      ],
+      "max_workers": 0,
+      "max_pending": 0
+    },
+    {
+      "phase": "A2",
+      "metrics": {
+        "CallsPerSecond": 697250.4822413004,
+        "CpuNsPerCall": 1342.7411175634186,
+        "AllocatedBytesPerCall": 2384.023153919123,
+        "P50Ns": 971,
+        "P99Ns": 1853,
+        "MaxNs": 6979587
+      },
+      "warmup_seconds": 480.0000017,
+      "warmup_completed": 332897793,
+      "seconds": 180.0000849,
+      "completed": 125505146,
+      "trace_events_lost": 0,
+      "trace_suspensions": 499974,
+      "trace_anomalies": {},
+      "measured_suspensions": {
+        "SuspendForGC": {
+          "count": 17886,
+          "total_fully_suspended_ms": 3790.860234995489,
+          "largest_request_to_restart": {
+            "ProcessID": 3404,
+            "ThreadID": 3404,
+            "StartMs": 507956.932293,
+            "EndMs": 507960.32898,
+            "DurationMs": 3.3966870000003837,
+            "SuspendedMs": 507956.936631,
+            "RestartMs": 507960.325814,
+            "FullySuspendedMs": 3.389182999962941,
+            "Reason": "SuspendForGC"
+          },
+          "largest_fully_suspended": {
+            "ProcessID": 3404,
+            "ThreadID": 3404,
+            "StartMs": 507956.932293,
+            "EndMs": 507960.32898,
+            "DurationMs": 3.3966870000003837,
+            "SuspendedMs": 507956.936631,
+            "RestartMs": 507960.325814,
+            "FullySuspendedMs": 3.389182999962941,
+            "Reason": "SuspendForGC"
+          }
+        },
+        "SuspendForGCPrep": {
+          "count": 1,
+          "total_fully_suspended_ms": 0.18638700002338737,
+          "largest_request_to_restart": {
+            "ProcessID": 3404,
+            "ThreadID": 3487,
+            "StartMs": 607964.108443,
+            "EndMs": 607964.363978,
+            "DurationMs": 0.2555350000038743,
+            "SuspendedMs": 607964.122809,
+            "RestartMs": 607964.309196,
+            "FullySuspendedMs": 0.18638700002338737,
+            "Reason": "SuspendForGCPrep"
+          },
+          "largest_fully_suspended": {
+            "ProcessID": 3404,
+            "ThreadID": 3487,
+            "StartMs": 607964.108443,
+            "EndMs": 607964.363978,
+            "DurationMs": 0.2555350000038743,
+            "SuspendedMs": 607964.122809,
+            "RestartMs": 607964.309196,
+            "FullySuspendedMs": 0.18638700002338737,
+            "Reason": "SuspendForGCPrep"
+          }
+        },
+        "SuspendOther": {
+          "count": 119171,
+          "total_fully_suspended_ms": 1451.0070959982113,
+          "largest_request_to_restart": {
+            "ProcessID": 3404,
+            "ThreadID": 3415,
+            "StartMs": 665209.364828,
+            "EndMs": 665216.31014,
+            "DurationMs": 6.945311999996193,
+            "SuspendedMs": 665216.257162,
+            "RestartMs": 665216.29961,
+            "FullySuspendedMs": 0.04244799993466586,
+            "Reason": "SuspendOther"
+          },
+          "largest_fully_suspended": {
+            "ProcessID": 3404,
+            "ThreadID": 3415,
+            "StartMs": 518927.692218,
+            "EndMs": 518930.679333,
+            "DurationMs": 2.9871149999671616,
+            "SuspendedMs": 518927.924381,
+            "RestartMs": 518928.043693,
+            "FullySuspendedMs": 0.11931199999526143,
+            "Reason": "SuspendOther"
+          }
+        }
+      },
+      "gen0_gen1_gen2": [
+        17887,
+        112,
+        2
+      ],
+      "delivered_measured_jit": [
+        {
+          "type": "System.GC",
+          "method": "RunFinalizers"
+        }
+      ],
+      "cpu_blocks": [
+        {
+          "start_seconds": 480.0003313,
+          "end_seconds": 510.0003324,
+          "cpu_ns_per_call": 1354.4489800651177
+        },
+        {
+          "start_seconds": 510.0003324,
+          "end_seconds": 540.0003319,
+          "cpu_ns_per_call": 1343.01784677245
+        },
+        {
+          "start_seconds": 540.0003319,
+          "end_seconds": 570.0003328,
+          "cpu_ns_per_call": 1337.291052329104
+        },
+        {
+          "start_seconds": 570.0003328,
+          "end_seconds": 600.0003321,
+          "cpu_ns_per_call": 1338.139069138716
+        },
+        {
+          "start_seconds": 600.0003321,
+          "end_seconds": 630.0003328,
+          "cpu_ns_per_call": 1346.2529736496929
+        },
+        {
+          "start_seconds": 630.0003328,
+          "end_seconds": 660.0004162,
+          "cpu_ns_per_call": 1337.4995603111915
+        }
+      ],
+      "max_interval": {
+        "start_trace_ms": 664934.106717,
+        "end_trace_ms": 665934.1073169999,
+        "start_seconds": 657.0003323,
+        "largest_suspensions": [
+          {
+            "ProcessID": 3404,
+            "ThreadID": 3415,
+            "StartMs": 665209.364828,
+            "EndMs": 665216.31014,
+            "DurationMs": 6.945311999996193,
+            "SuspendedMs": 665216.257162,
+            "RestartMs": 665216.29961,
+            "FullySuspendedMs": 0.04244799993466586,
+            "Reason": "SuspendOther"
+          },
+          {
+            "ProcessID": 3404,
+            "ThreadID": 3415,
+            "StartMs": 665609.675133,
+            "EndMs": 665612.708221,
+            "DurationMs": 3.0330880000256,
+            "SuspendedMs": 665609.822598,
+            "RestartMs": 665609.832567,
+            "FullySuspendedMs": 0.009968999889679253,
+            "Reason": "SuspendOther"
+          },
+          {
+            "ProcessID": 3404,
+            "ThreadID": 3415,
+            "StartMs": 665312.673445,
+            "EndMs": 665315.697426,
+            "DurationMs": 3.023981000063941,
+            "SuspendedMs": 665312.82104,
+            "RestartMs": 665312.832471,
+            "FullySuspendedMs": 0.011431000079028308,
+            "Reason": "SuspendOther"
+          },
+          {
+            "ProcessID": 3404,
+            "ThreadID": 3415,
+            "StartMs": 665509.675818,
+            "EndMs": 665512.687545,
+            "DurationMs": 3.011727000004612,
+            "SuspendedMs": 665509.823092,
+            "RestartMs": 665509.834363,
+            "FullySuspendedMs": 0.011271000024862587,
+            "Reason": "SuspendOther"
+          },
+          {
+            "ProcessID": 3404,
+            "ThreadID": 3415,
+            "StartMs": 665623.673668,
+            "EndMs": 665626.684795,
+            "DurationMs": 3.0111269999761134,
+            "SuspendedMs": 665623.821734,
+            "RestartMs": 665623.835008,
+            "FullySuspendedMs": 0.013274000026285648,
+            "Reason": "SuspendOther"
+          }
+        ]
+      },
+      "heap_range": [
+        80175224,
+        96858640
+      ],
+      "rss_range": [
+        203354112,
+        209727488
+      ],
+      "max_workers": 0,
+      "max_pending": 0
+    }
+  ],
+  "deltas": {
+    "CallsPerSecond": {
+      "B_vs_A1_percent": -3.306258125426731,
+      "B_vs_A2_percent": 3.706370237822254,
+      "A2_vs_A1_percent": -6.762003478829159
+    },
+    "CpuNsPerCall": {
+      "B_vs_A1_percent": 3.2806872794945985,
+      "B_vs_A2_percent": -3.319740678720484,
+      "A2_vs_A1_percent": 6.827068943082892
+    },
+    "AllocatedBytesPerCall": {
+      "B_vs_A1_percent": 3.2298614205394927e-05,
+      "B_vs_A2_percent": -3.6769752487231244e-05,
+      "A2_vs_A1_percent": 6.906839209452897e-05
+    },
+    "P50Ns": {
+      "B_vs_A1_percent": 1.0845986984815648,
+      "B_vs_A2_percent": -4.016477857878476,
+      "A2_vs_A1_percent": 5.314533622559647
+    },
+    "P99Ns": {
+      "B_vs_A1_percent": 3.4622042700519273,
+      "B_vs_A2_percent": -3.237992444684301,
+      "A2_vs_A1_percent": 6.924408540103877
+    },
+    "MaxNs": {
+      "B_vs_A1_percent": 8.26309132116676,
+      "B_vs_A2_percent": -49.88128953761878,
+      "A2_vs_A1_percent": 116.01332181606772
+    }
+  },
+  "binary_files": 17,
+  "shared_tier1_methods": 35,
+  "changed_instruction_bodies": [
+    "; Assembly listing for method Dekaf.Admin.AdminClient+<>c__DisplayClass34_0+<<DeleteTopicsAsync>b__0>d:MoveNext():this (Tier1)",
+    "; Assembly listing for method Dekaf.Admin.AdminClient+<DeleteTopicsAsync>d__34:MoveNext():this (Tier1)",
+    "; Assembly listing for method Dekaf.Benchmarks.Probe+<CapturePhasesAsync>d__10:MoveNext():this (Tier1-OSR)",
+    "; Assembly listing for method Dekaf.Metadata.MetadataManager+<RefreshMetadataInternalAsync>d__84:MoveNext():this (Tier1)",
+    "; Assembly listing for method Dekaf.Metadata.MetadataManager:GetEndpointsToTry():System.Collections.Generic.IReadOnlyList`1[System.ValueTuple`3[int,System.String,int]]:this (Tier1)",
+    "; Assembly listing for method Dekaf.Metadata.MetadataManager:TryConsumeMetadataRebootstrapRequest():bool:this (Tier1)"
+  ],
+  "scope": "Diagnostic only. Profiled identical-product control; not product acceptance. Max-call interval alignment has only one-second resolution in this historical capture."
+}

@@ -34,6 +34,10 @@ class CalibrationTests(unittest.TestCase):
             verify_copied_tree=Mock(), retain_loaded_binaries=Mock(),
             compare=Mock(return_value={'point_estimates_within_declared_limits': False}))
         self.common.validate = self.common.validate_probe
+        self.common.validate_probe.return_value = dict(
+            TraceClock=dict(BeforeTimestamp=1, AfterTimestamp=2), Start=dict(Timestamp=3),
+            StopwatchFrequency=1000, Intervals=[dict(Start=dict(Timestamp=3), End=dict(Timestamp=10),
+                MaximumCall=dict(StartTimestamp=4, EndTimestamp=9, Ticks=5), Latencies=[dict(Ticks=5, Count=1)])])
         tools = self.root / '.config/stress-diagnostics/dotnet-tools.json'
         tools.parent.mkdir(parents=True)
         tools.write_text('{"tools":{"dotnet-trace":{"version":"10.0.731102"}}}')

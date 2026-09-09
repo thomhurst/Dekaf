@@ -1,0 +1,565 @@
+{
+  "pgo-on": {
+    "plan": {
+      "purpose": "Local Linux diagnostic: test whether sustained fresh-process CPU variation reproduces on Linux with identical hosted binaries; compare retained Tier1 JIT code if it does. Not performance acceptance.",
+      "product": "551d4d0825dca64b7143d6f18fc2b13baaf1fe0a",
+      "harness": "0e9eee1ba1818def803df3703891fa7aaaf35de4",
+      "source_run": 34333590992,
+      "runtime": "10.0.12",
+      "warmup_seconds": 120,
+      "measured_seconds": 120,
+      "case": "legacy-delete:16",
+      "phases": [
+        "A1",
+        "B",
+        "A2"
+      ],
+      "cpu_set": "0",
+      "container_image": "sha256:e1ffd2a92ae84c1291bc1b6887501f8af98e6331e7af6d4c8d37168c5e87a64c",
+      "hypothesis_screen": "More than 3% CPU/call variation between processes with stable measured JIT counters warrants code-shape or process-layout attribution. No product gate changes from this diagnostic.",
+      "binary_hashes": {
+        "Dekaf.Abstractions.dll": "eda5b96e085bdfbdf750ae4de4f46f62aa5d032e9b6326b7fd4d997d33cc4d82",
+        "Dekaf.Abstractions.pdb": "a61f1ea0153dfdd3e0aea4dd384ca79e1daf0af458fdd04d9f692c6bf373dc43",
+        "Dekaf.Abstractions.xml": "821c8787761aed339c8dff489b71e2c6c3a5125d75c53f7465eaf5fcb5def6d8",
+        "Dekaf.Benchmarks": "c9ffa3926ec47cfc954bfb7c07a080d493fc43ee81a098e3c8f002ed2bba713c",
+        "Dekaf.Benchmarks.deps.json": "bf071491b4bbb4a4a5f0f7e7a1fe1728fcafd9b4d8676d3b03a1f537c6437da0",
+        "Dekaf.Benchmarks.dll": "d1202e28ad0dd941cce86871e47289e5c098cce97feae0b3b04018c673fbb0cb",
+        "Dekaf.Benchmarks.pdb": "9274ecb26d497fa5561af0ca00ce39e46ce83d696374deab16377265e3d2da18",
+        "Dekaf.Benchmarks.runtimeconfig.json": "9950d4583cfc9a106857c0d5b8a75b53e8774852b57b80bc3823a74d44a4d87f",
+        "Dekaf.dll": "cb90a3111407bca4a252bbdd3b2c88b4d548d9749901f0ed88fe886bcb4b2ee4",
+        "Dekaf.pdb": "afa63ac9ef03705b4cd1cd0e00ca9dd9a384f8174d6ccba69b5a9eab0b320771",
+        "Dekaf.xml": "2362862e1cc46cad72ff856e6860d78627af82171cd51b51a25fde5ade7848fa",
+        "Microsoft.Extensions.DependencyInjection.Abstractions.dll": "da04edc338d5aa0f38a1f5fa5ff3ee7e36affe9c961daf3ea724a428bd746bc6",
+        "Microsoft.Extensions.Logging.Abstractions.dll": "7c242f8ca612fa1acc61f78efd5f8c89e01bd0bd47dc4ecc65e0e6e24f1a1668",
+        "Microsoft.Extensions.Options.dll": "b4ff561da6a7b11b68341f9fd32cab3f8b23cdd8b40332b9fd8bed73a9ee7de3",
+        "Microsoft.Extensions.Primitives.dll": "67642533eb87e8dadeb9026de59ff4b66cc9bf35c0cfbedfef7b79bc6d8b30bc",
+        "Reservoir.dll": "a486b9bfe9856fc75d44aa4c47125007dc02bb01fe77cb4ab9d4d37353805800",
+        "System.IO.Hashing.dll": "cea6795cf9f7b139b2215ff6de794a6f6e44e78640fb30fa4c0d5fa8472df8e5"
+      }
+    },
+    "shared_tier1_methods": 35,
+    "changed_instruction_bodies": [
+      "; Assembly listing for method Dekaf.Admin.AdminClient+<>c__DisplayClass34_0+<<DeleteTopicsAsync>b__0>d:MoveNext():this (Tier1)",
+      "; Assembly listing for method Dekaf.Admin.AdminClient+<DeleteTopicsAsync>d__34:MoveNext():this (Tier1)",
+      "; Assembly listing for method Dekaf.Metadata.MetadataManager+<RefreshMetadataInternalAsync>d__84:MoveNext():this (Tier1)",
+      "; Assembly listing for method Dekaf.Metadata.MetadataManager:GetEndpointsToTry():System.Collections.Generic.IReadOnlyList`1[System.ValueTuple`3[int,System.String,int]]:this (Tier1)",
+      "; Assembly listing for method Dekaf.Metadata.MetadataManager:PublishBrokerStatusSnapshot(System.Collections.Generic.IReadOnlyList`1[Dekaf.Protocol.Messages.BrokerMetadata]):this (Tier1)"
+    ],
+    "rows": [
+      {
+        "phase": "A1",
+        "metrics": {
+          "CallsPerSecond": 1417270.956383203,
+          "CpuNsPerCall": 705.4517872737565,
+          "AllocatedBytesPerCall": 2384.00977338057,
+          "P50Ns": 555,
+          "P99Ns": 1061,
+          "MaxNs": 7991011
+        },
+        "gc": [
+          31026,
+          199,
+          1
+        ],
+        "cpu_blocks": [
+          {
+            "start_seconds": 120.0001632,
+            "end_seconds": 150.0001643,
+            "cpu_ns_per_call": 699.1329313381657
+          },
+          {
+            "start_seconds": 150.0001643,
+            "end_seconds": 180.0001648,
+            "cpu_ns_per_call": 704.4190272504187
+          },
+          {
+            "start_seconds": 180.0001648,
+            "end_seconds": 210.0001643,
+            "cpu_ns_per_call": 702.4368961686345
+          },
+          {
+            "start_seconds": 210.0001643,
+            "end_seconds": 240.0002057,
+            "cpu_ns_per_call": 716.0470095585523
+          }
+        ],
+        "measured_jit": [
+          {
+            "type": "System.Gen2GcCallback",
+            "method": "Finalize"
+          },
+          {
+            "type": "System.Buffers.Utilities",
+            "method": "GetMemoryPressure"
+          },
+          {
+            "type": "System.GC",
+            "method": "GetGCMemoryInfo"
+          },
+          {
+            "type": "System.Runtime.CompilerServices.ConditionalWeakTable`2[System.__Canon,System.__Canon]",
+            "method": "System.Collections.Generic.IEnumerable<System.Collections.Generic.KeyValuePair<TKey,TValue>>.GetEnumerator"
+          },
+          {
+            "type": "System.Runtime.CompilerServices.ConditionalWeakTable`2+Enumerator[System.__Canon,System.__Canon]",
+            "method": ".ctor"
+          },
+          {
+            "type": "System.Runtime.CompilerServices.ConditionalWeakTable`2+Enumerator[System.__Canon,System.__Canon]",
+            "method": "Dispose"
+          },
+          {
+            "type": "System.GC",
+            "method": "ReRegisterForFinalize"
+          }
+        ]
+      },
+      {
+        "phase": "B",
+        "metrics": {
+          "CallsPerSecond": 1342187.4816002606,
+          "CpuNsPerCall": 744.9087946909355,
+          "AllocatedBytesPerCall": 2384.0103091905958,
+          "P50Ns": 596,
+          "P99Ns": 1091,
+          "MaxNs": 9692087
+        },
+        "gc": [
+          29382,
+          190,
+          1
+        ],
+        "cpu_blocks": [
+          {
+            "start_seconds": 120.000168,
+            "end_seconds": 150.0001691,
+            "cpu_ns_per_call": 741.1072284471838
+          },
+          {
+            "start_seconds": 150.0001691,
+            "end_seconds": 180.0001693,
+            "cpu_ns_per_call": 744.2831355214967
+          },
+          {
+            "start_seconds": 180.0001693,
+            "end_seconds": 210.0001689,
+            "cpu_ns_per_call": 747.6383354670834
+          },
+          {
+            "start_seconds": 210.0001689,
+            "end_seconds": 240.0001689,
+            "cpu_ns_per_call": 746.6409682144451
+          }
+        ],
+        "measured_jit": [
+          {
+            "type": "System.Gen2GcCallback",
+            "method": "Finalize"
+          },
+          {
+            "type": "System.Buffers.Utilities",
+            "method": "GetMemoryPressure"
+          },
+          {
+            "type": "System.GC",
+            "method": "GetGCMemoryInfo"
+          },
+          {
+            "type": "System.Runtime.CompilerServices.ConditionalWeakTable`2[System.__Canon,System.__Canon]",
+            "method": "System.Collections.Generic.IEnumerable<System.Collections.Generic.KeyValuePair<TKey,TValue>>.GetEnumerator"
+          },
+          {
+            "type": "System.Runtime.CompilerServices.ConditionalWeakTable`2+Enumerator[System.__Canon,System.__Canon]",
+            "method": ".ctor"
+          },
+          {
+            "type": "System.Runtime.CompilerServices.ConditionalWeakTable`2+Enumerator[System.__Canon,System.__Canon]",
+            "method": "Dispose"
+          }
+        ]
+      },
+      {
+        "phase": "A2",
+        "metrics": {
+          "CallsPerSecond": 1351983.3247668752,
+          "CpuNsPerCall": 739.5404052099976,
+          "AllocatedBytesPerCall": 2384.0102177787558,
+          "P50Ns": 583,
+          "P99Ns": 1109,
+          "MaxNs": 9228022
+        },
+        "gc": [
+          29596,
+          191,
+          1
+        ],
+        "cpu_blocks": [
+          {
+            "start_seconds": 120.0007479,
+            "end_seconds": 150.0007492,
+            "cpu_ns_per_call": 744.2839751049537
+          },
+          {
+            "start_seconds": 150.0007492,
+            "end_seconds": 180.0007487,
+            "cpu_ns_per_call": 749.9355800083047
+          },
+          {
+            "start_seconds": 180.0007487,
+            "end_seconds": 210.0007489,
+            "cpu_ns_per_call": 737.0388160170514
+          },
+          {
+            "start_seconds": 210.0007489,
+            "end_seconds": 240.0007494,
+            "cpu_ns_per_call": 727.2920388417217
+          }
+        ],
+        "measured_jit": [
+          {
+            "type": "System.Buffer",
+            "method": "ZeroMemoryInternal"
+          },
+          {
+            "type": "System.Gen2GcCallback",
+            "method": "Finalize"
+          },
+          {
+            "type": "System.Buffers.Utilities",
+            "method": "GetMemoryPressure"
+          },
+          {
+            "type": "System.GC",
+            "method": "GetGCMemoryInfo"
+          },
+          {
+            "type": "System.Runtime.CompilerServices.ConditionalWeakTable`2[System.__Canon,System.__Canon]",
+            "method": "System.Collections.Generic.IEnumerable<System.Collections.Generic.KeyValuePair<TKey,TValue>>.GetEnumerator"
+          },
+          {
+            "type": "System.Runtime.CompilerServices.ConditionalWeakTable`2+Enumerator[System.__Canon,System.__Canon]",
+            "method": ".ctor"
+          },
+          {
+            "type": "System.Runtime.CompilerServices.ConditionalWeakTable`2+Enumerator[System.__Canon,System.__Canon]",
+            "method": "Dispose"
+          }
+        ]
+      }
+    ]
+  },
+  "pgo-off": {
+    "plan": {
+      "purpose": "Causal contrast: dynamic PGO disabled while tiered compilation remains enabled. Compare same-binary fresh-process code and CPU variation to preceding PGO-on cohort; diagnostic only, not acceptance.",
+      "product": "551d4d0825dca64b7143d6f18fc2b13baaf1fe0a",
+      "harness": "0e9eee1ba1818def803df3703891fa7aaaf35de4",
+      "source_run": 34333590992,
+      "runtime": "10.0.12",
+      "warmup_seconds": 120,
+      "measured_seconds": 120,
+      "case": "legacy-delete:16",
+      "phases": [
+        "A1",
+        "B",
+        "A2"
+      ],
+      "cpu_set": "0",
+      "container_image": "sha256:e1ffd2a92ae84c1291bc1b6887501f8af98e6331e7af6d4c8d37168c5e87a64c",
+      "hypothesis_screen": "More than 3% CPU/call variation between processes with stable measured JIT counters warrants code-shape or process-layout attribution. No product gate changes from this diagnostic.",
+      "binary_hashes": {
+        "Dekaf.Abstractions.dll": "eda5b96e085bdfbdf750ae4de4f46f62aa5d032e9b6326b7fd4d997d33cc4d82",
+        "Dekaf.Abstractions.pdb": "a61f1ea0153dfdd3e0aea4dd384ca79e1daf0af458fdd04d9f692c6bf373dc43",
+        "Dekaf.Abstractions.xml": "821c8787761aed339c8dff489b71e2c6c3a5125d75c53f7465eaf5fcb5def6d8",
+        "Dekaf.Benchmarks": "c9ffa3926ec47cfc954bfb7c07a080d493fc43ee81a098e3c8f002ed2bba713c",
+        "Dekaf.Benchmarks.deps.json": "bf071491b4bbb4a4a5f0f7e7a1fe1728fcafd9b4d8676d3b03a1f537c6437da0",
+        "Dekaf.Benchmarks.dll": "d1202e28ad0dd941cce86871e47289e5c098cce97feae0b3b04018c673fbb0cb",
+        "Dekaf.Benchmarks.pdb": "9274ecb26d497fa5561af0ca00ce39e46ce83d696374deab16377265e3d2da18",
+        "Dekaf.Benchmarks.runtimeconfig.json": "9950d4583cfc9a106857c0d5b8a75b53e8774852b57b80bc3823a74d44a4d87f",
+        "Dekaf.dll": "cb90a3111407bca4a252bbdd3b2c88b4d548d9749901f0ed88fe886bcb4b2ee4",
+        "Dekaf.pdb": "afa63ac9ef03705b4cd1cd0e00ca9dd9a384f8174d6ccba69b5a9eab0b320771",
+        "Dekaf.xml": "2362862e1cc46cad72ff856e6860d78627af82171cd51b51a25fde5ade7848fa",
+        "Microsoft.Extensions.DependencyInjection.Abstractions.dll": "da04edc338d5aa0f38a1f5fa5ff3ee7e36affe9c961daf3ea724a428bd746bc6",
+        "Microsoft.Extensions.Logging.Abstractions.dll": "7c242f8ca612fa1acc61f78efd5f8c89e01bd0bd47dc4ecc65e0e6e24f1a1668",
+        "Microsoft.Extensions.Options.dll": "b4ff561da6a7b11b68341f9fd32cab3f8b23cdd8b40332b9fd8bed73a9ee7de3",
+        "Microsoft.Extensions.Primitives.dll": "67642533eb87e8dadeb9026de59ff4b66cc9bf35c0cfbedfef7b79bc6d8b30bc",
+        "Reservoir.dll": "a486b9bfe9856fc75d44aa4c47125007dc02bb01fe77cb4ab9d4d37353805800",
+        "System.IO.Hashing.dll": "cea6795cf9f7b139b2215ff6de794a6f6e44e78640fb30fa4c0d5fa8472df8e5"
+      },
+      "changed_variable": "DOTNET_TieredPGO=0; other declared runtime/workload settings match previous cohort",
+      "decision": "If native-code and CPU variation persist, PGO alone does not explain them. Reduced spread with stable code supports a PGO contribution but does not isolate host/time effects or permit acceptance without intended runtime settings. One cohort only."
+    },
+    "shared_tier1_methods": 36,
+    "changed_instruction_bodies": [],
+    "rows": [
+      {
+        "phase": "A1",
+        "metrics": {
+          "CallsPerSecond": 1140006.3821666134,
+          "CpuNsPerCall": 877.0680064973612,
+          "AllocatedBytesPerCall": 2424.0121447272295,
+          "P50Ns": 715,
+          "P99Ns": 1245,
+          "MaxNs": 8714144
+        },
+        "gc": [
+          25375,
+          165,
+          1
+        ],
+        "cpu_blocks": [
+          {
+            "start_seconds": 120.0001693,
+            "end_seconds": 150.00017,
+            "cpu_ns_per_call": 877.373509447357
+          },
+          {
+            "start_seconds": 150.00017,
+            "end_seconds": 180.0001703,
+            "cpu_ns_per_call": 879.3741810302267
+          },
+          {
+            "start_seconds": 180.0001703,
+            "end_seconds": 210.0001703,
+            "cpu_ns_per_call": 875.3665558639381
+          },
+          {
+            "start_seconds": 210.0001703,
+            "end_seconds": 240.0001703,
+            "cpu_ns_per_call": 876.1681687450047
+          }
+        ],
+        "measured_jit": [
+          {
+            "type": "System.Gen2GcCallback",
+            "method": "Finalize"
+          },
+          {
+            "type": "System.Buffers.Utilities",
+            "method": "GetMemoryPressure"
+          },
+          {
+            "type": "System.GC",
+            "method": "GetGCMemoryInfo"
+          },
+          {
+            "type": "System.Runtime.CompilerServices.ConditionalWeakTable`2[System.__Canon,System.__Canon]",
+            "method": "System.Collections.Generic.IEnumerable<System.Collections.Generic.KeyValuePair<TKey,TValue>>.GetEnumerator"
+          },
+          {
+            "type": "System.Runtime.CompilerServices.ConditionalWeakTable`2+Enumerator[System.__Canon,System.__Canon]",
+            "method": ".ctor"
+          },
+          {
+            "type": "System.Runtime.CompilerServices.ConditionalWeakTable`2+Enumerator[System.__Canon,System.__Canon]",
+            "method": "Dispose"
+          },
+          {
+            "type": "System.GC",
+            "method": "ReRegisterForFinalize"
+          }
+        ]
+      },
+      {
+        "phase": "B",
+        "metrics": {
+          "CallsPerSecond": 1100259.1899142908,
+          "CpuNsPerCall": 908.7438441778082,
+          "AllocatedBytesPerCall": 2424.0125832167546,
+          "P50Ns": 731,
+          "P99Ns": 1295,
+          "MaxNs": 10570972
+        },
+        "gc": [
+          24491,
+          158,
+          1
+        ],
+        "cpu_blocks": [
+          {
+            "start_seconds": 120.0002108,
+            "end_seconds": 150.000212,
+            "cpu_ns_per_call": 911.6971463091227
+          },
+          {
+            "start_seconds": 150.000212,
+            "end_seconds": 180.0002113,
+            "cpu_ns_per_call": 909.5687127609218
+          },
+          {
+            "start_seconds": 180.0002113,
+            "end_seconds": 210.0002118,
+            "cpu_ns_per_call": 906.1150726527658
+          },
+          {
+            "start_seconds": 210.0002118,
+            "end_seconds": 240.0002119,
+            "cpu_ns_per_call": 907.6138625137688
+          }
+        ],
+        "measured_jit": [
+          {
+            "type": "System.Gen2GcCallback",
+            "method": "Finalize"
+          },
+          {
+            "type": "System.Buffers.Utilities",
+            "method": "GetMemoryPressure"
+          },
+          {
+            "type": "System.GC",
+            "method": "GetGCMemoryInfo"
+          },
+          {
+            "type": "System.Runtime.CompilerServices.ConditionalWeakTable`2[System.__Canon,System.__Canon]",
+            "method": "System.Collections.Generic.IEnumerable<System.Collections.Generic.KeyValuePair<TKey,TValue>>.GetEnumerator"
+          },
+          {
+            "type": "System.Runtime.CompilerServices.ConditionalWeakTable`2+Enumerator[System.__Canon,System.__Canon]",
+            "method": ".ctor"
+          },
+          {
+            "type": "System.Runtime.CompilerServices.ConditionalWeakTable`2+Enumerator[System.__Canon,System.__Canon]",
+            "method": "Dispose"
+          },
+          {
+            "type": "System.GC",
+            "method": "ReRegisterForFinalize"
+          }
+        ]
+      },
+      {
+        "phase": "A2",
+        "metrics": {
+          "CallsPerSecond": 1121410.8415894187,
+          "CpuNsPerCall": 891.5988581110423,
+          "AllocatedBytesPerCall": 2424.0123465305633,
+          "P50Ns": 719,
+          "P99Ns": 1246,
+          "MaxNs": 10937349
+        },
+        "gc": [
+          24961,
+          162,
+          1
+        ],
+        "cpu_blocks": [
+          {
+            "start_seconds": 120.0002061,
+            "end_seconds": 150.0002069,
+            "cpu_ns_per_call": 894.5245212547185
+          },
+          {
+            "start_seconds": 150.0002069,
+            "end_seconds": 180.0002067,
+            "cpu_ns_per_call": 887.405921936767
+          },
+          {
+            "start_seconds": 180.0002067,
+            "end_seconds": 210.000207,
+            "cpu_ns_per_call": 895.0818030361949
+          },
+          {
+            "start_seconds": 210.000207,
+            "end_seconds": 240.000207,
+            "cpu_ns_per_call": 889.4318139161533
+          }
+        ],
+        "measured_jit": [
+          {
+            "type": "System.Gen2GcCallback",
+            "method": "Finalize"
+          },
+          {
+            "type": "System.Buffers.Utilities",
+            "method": "GetMemoryPressure"
+          },
+          {
+            "type": "System.GC",
+            "method": "GetGCMemoryInfo"
+          },
+          {
+            "type": "System.Runtime.CompilerServices.ConditionalWeakTable`2[System.__Canon,System.__Canon]",
+            "method": "System.Collections.Generic.IEnumerable<System.Collections.Generic.KeyValuePair<TKey,TValue>>.GetEnumerator"
+          },
+          {
+            "type": "System.Runtime.CompilerServices.ConditionalWeakTable`2+Enumerator[System.__Canon,System.__Canon]",
+            "method": ".ctor"
+          },
+          {
+            "type": "System.Runtime.CompilerServices.ConditionalWeakTable`2+Enumerator[System.__Canon,System.__Canon]",
+            "method": "Dispose"
+          },
+          {
+            "type": "System.GC",
+            "method": "ReRegisterForFinalize"
+          }
+        ]
+      }
+    ]
+  },
+  "observer-retention": {
+    "plan": {
+      "purpose": "Local causal attribution: does retaining the managed JIT event history inflate full-GC pauses? Not acceptance.",
+      "product": "551d4d0825dca64b7143d6f18fc2b13baaf1fe0a",
+      "base_harness": "0e9eee1ba1818def803df3703891fa7aaaf35de4",
+      "variable": "DEKAF_RECORD_COMPILATIONS 1 / 0 / 1 in the same newly compiled fixture binary; ordinary per-second JitInfo counters remain enabled",
+      "warmup_seconds": 120,
+      "measured_seconds": 120,
+      "phases": [
+        "history-A1",
+        "counters-B",
+        "history-A2"
+      ],
+      "runtime": "10.0.12",
+      "tiered_compilation": 1,
+      "tiered_pgo": 1,
+      "server_gc": false,
+      "profiling": "Identical EventPipe GC/CPU/phase attribution in all three processes; parent infra CPU1, workload CPU0. All samples retained. Code differences and host effects remain confounders.",
+      "decision": "Compare actual measured GC pause duration/reasons, retained heap, CPU and native code. A reduction supports observer contribution but does not establish acceptance or remove other variability. One triplet only."
+    },
+    "rows": [
+      {
+        "phase": "history-A1",
+        "metrics": {
+          "CpuNsPerCall": 795.0258884011528,
+          "CallsPerSecond": 1186635.0087557666,
+          "AllocatedBytesPerCall": 2384.0129496150466,
+          "P50Ns": 616,
+          "P99Ns": 1124,
+          "MaxNs": 7466561
+        },
+        "largest_fully_suspended_gc_ms": 1.0264899999892805,
+        "events_lost": 0,
+        "anomalies": {}
+      },
+      {
+        "phase": "counters-B",
+        "metrics": {
+          "CpuNsPerCall": 805.4614071672776,
+          "CallsPerSecond": 1171043.4245505077,
+          "AllocatedBytesPerCall": 2384.0119709764253,
+          "P50Ns": 626,
+          "P99Ns": 1138,
+          "MaxNs": 8818942
+        },
+        "largest_fully_suspended_gc_ms": 2.7604500000015832,
+        "events_lost": 0,
+        "anomalies": {}
+      },
+      {
+        "phase": "history-A2",
+        "metrics": {
+          "CpuNsPerCall": 808.0653619496932,
+          "CallsPerSecond": 1167361.313941983,
+          "AllocatedBytesPerCall": 2384.0134387886583,
+          "P50Ns": 624,
+          "P99Ns": 1141,
+          "MaxNs": 10722713
+        },
+        "largest_fully_suspended_gc_ms": 2.8816099999821745,
+        "events_lost": 0,
+        "anomalies": {}
+      }
+    ]
+  }
+}

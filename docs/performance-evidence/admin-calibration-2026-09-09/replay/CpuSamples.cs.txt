@@ -1,0 +1,61 @@
+using Microsoft.Diagnostics.Tracing.Etlx;
+using System.Text.Json;
+
+if (args.Length is < 2 or > 3) throw new ArgumentException("trace.nettrace output.json [gc-review.json]");
+double startMs = 0, endMs = double.PositiveInfinity;
+if (args.Length == 3)
+{
+    using var gc = JsonDocument.Parse(File.ReadAllText(args[2]));
+    foreach (var phase in gc.RootElement.GetProperty("Phases").EnumerateArray())
+    {
+        if (!phase.GetProperty("Payload").TryGetProperty("name", out var phaseName)) continue;
+        var name = phaseName.GetString();
+        if (name == "measured") startMs = phase.GetProperty("Milliseconds").GetDouble();
+        if (name == "finalize") endMs = phase.GetProperty("Milliseconds").GetDouble();
+    }
+    if (startMs <= 0 || !double.IsFinite(endMs) || endMs <= startMs)
+        throw new InvalidDataException("Missing or invalid measured/finalize phase boundaries.");
+}
+var etlx = TraceLog.CreateFromEventPipeDataFile(args[0]);
+using var log = new TraceLog(etlx);
+var leaves = new Dictionary<string, long>();
+var product = new Dictionary<string, long>();
+var kinds = new Dictionary<string, long>();
+var examples = new List<object>();
+long samples = 0, missing = 0;
+foreach (var entry in log.Events)
+{
+    if (entry.ProviderName != "Microsoft-DotNETCore-SampleProfiler" || entry.TimeStampRelativeMSec < startMs || entry.TimeStampRelativeMSec >= endMs) continue;
+    samples++;
+    var payload = string.Join(", ", entry.PayloadNames.Select(name => name + "=" + entry.PayloadByName(name)));
+    kinds.TryGetValue(payload, out var kindCount);
+    kinds[payload] = kindCount + 1;
+    var frames = new List<string>();
+    for (var stack = entry.CallStack(); stack is not null; stack = stack.Caller)
+        frames.Add(stack.CodeAddress.FullMethodName);
+    if (frames.Count == 0) { missing++; continue; }
+    Add(leaves, payload + " | " + frames[0]);
+    var firstProduct = frames.FirstOrDefault(frame => frame.Contains("Dekaf.") || frame.Contains("Loaded!Load."));
+    if (firstProduct is not null)
+    {
+        Add(product, payload + " | " + firstProduct + " | leaf=" + frames[0]);
+        if (examples.Count < 8)
+            examples.Add(new { entry.EventName, payload, entry.TimeStampRelativeMSec, frames });
+    }
+}
+var result = new {
+    Trace = Path.GetFullPath(args[0]), Samples = samples, MissingStacks = missing,
+    StartMs = startMs, EndMs = double.IsFinite(endMs) ? (double?)endMs : null,
+    Note = "Raw stack sample counts, not CPU percentages or elapsed times. Waiting/native samples remain labeled by the original payload.",
+    Kinds = kinds,
+    Leaves = leaves.OrderByDescending(pair => pair.Value).Take(80).Select(pair => new { Stack = pair.Key, Count = pair.Value }),
+    Product = product.OrderByDescending(pair => pair.Value).Take(100).Select(pair => new { Stack = pair.Key, Count = pair.Value }),
+    Examples = examples
+};
+File.WriteAllText(args[1], JsonSerializer.Serialize(result, new JsonSerializerOptions { WriteIndented = true }));
+Console.WriteLine($"{samples} samples; {missing} without stacks; {kinds.Count} payload kinds");
+static void Add(Dictionary<string, long> values, string key)
+{
+    values.TryGetValue(key, out var count);
+    values[key] = count + 1;
+}

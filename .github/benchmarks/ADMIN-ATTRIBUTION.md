@@ -39,6 +39,9 @@ maxima are removed.
 2. Match maximum-latency intervals to actual GC pause intervals and reasons.
    A one-second coincidence alone is not causal attribution. Retain unmatched
    pauses/events and report any timing-resolution limitation.
+   Pair suspension phases by process and requesting thread. A suspension request
+   is emitted before acquiring the thread-store lock; request-to-restart time
+   includes waiting and is not entirely time with managed threads suspended.
 3. Compare retained Tier1 code across fresh processes and inspect sampled CPU
    stacks. Distinguish stable code-generation differences from ongoing JIT
    transitions. Sample counts are not CPU time and native/wait samples are not
@@ -52,6 +55,22 @@ maxima are removed.
 
 After a correction, establish unprofiled identical-product repeatability before
 running a frozen representative PR through its complete acceptance scope.
+
+## Exact maximum-call timing
+
+Each interval now retains the first call attaining its maximum, including the
+original `Stopwatch` start/end timestamps. All histogram samples still survive.
+Snapshots retain their clock timestamp too, and replay rejects a maximum outside
+its interval or a duration that differs from the histogram. This adds no clock
+read or allocation per call, but the extra comparison remains observer work.
+
+Before workload warmup, the probe emits a `Clock` event whose payload matches
+`TraceClock.BeforeTimestamp`. The trace event's timestamp maps to a stopwatch
+value between `BeforeTimestamp` and `AfterTimestamp`; use this entire bracket
+when testing overlap. A preceding event primes serialization and is not the
+retained anchor. Never silently treat synchronization uncertainty as zero.
+The timing fields improve attribution only; they do not relax acceptance or
+make earlier captures retroactively precise.
 
 The child-launch mechanism follows the
 [official dotnet-trace documentation](https://learn.microsoft.com/en-us/dotnet/core/diagnostics/dotnet-trace).

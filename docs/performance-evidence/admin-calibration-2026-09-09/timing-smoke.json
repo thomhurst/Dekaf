@@ -1,0 +1,14 @@
+{
+  "valid": true,
+  "clock_bracket": {
+    "BeforeTimestamp": 531785255505163,
+    "AfterTimestamp": 531785255512089
+  },
+  "events_lost": 0,
+  "anomalies": {},
+  "scope": "Local Linux/.NET 10.0.12 collection validation only; 0.2 second warmup and measurement plus existing primer. Not performance acceptance.",
+  "source_files": {
+    "tools\\AdminMutationEvidence\\Probe.cs": "98d0212b8cd19c2947e1daff440e26614681b03bfddfa342633beb57658a6396",
+    "tools\\AdminMutationEvidence\\PhaseEvents.cs": "fea0aff208c8f42cb4eb8a76037043cde96cc6651cb4df649a841d1157f39094"
+  }
+}

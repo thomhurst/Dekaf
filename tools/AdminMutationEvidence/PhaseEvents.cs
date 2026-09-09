@@ -9,4 +9,7 @@ public sealed class PhaseEvents : EventSource
 
     [Event(1, Level = EventLevel.Informational)]
     public void Phase(string name) => WriteEvent(1, name);
+
+    [Event(2, Level = EventLevel.Informational)]
+    public void Clock(long timestamp) => WriteEvent(2, timestamp);
 }

@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 
+from admin_timing import validate_timing
 from runner_resources import configure_affinity
 
 ROOT = Path.cwd()
@@ -49,6 +50,10 @@ def execute():
         original = module(SOURCE / 'run_comparison.py', 'original')
         validator = original.validate_probe
         controls, added = original.CONTROLS, original.NEW_CASES
+
+    def validate(path, seconds):
+        return validate_timing(validator(path, seconds))
+
     profiling = os.getenv('ADMIN_PROFILE') == '1'
     calibration = os.getenv('ADMIN_CALIBRATION') == '1' or profiling
     if calibration and A != B:
@@ -129,7 +134,7 @@ def execute():
         for case in controls + (added if label == 'B' else []):
             destination = OUT / 'validation' / label / case.replace(':', '-')
             run(probe_prefix + [str(binary), 'probe', case, str(destination), '.2', '.2'], destination / 'run.log', env=environment)
-            validator(destination / 'measured.json', .2)
+            validate(destination / 'measured.json', .2)
             common.retain_loaded_binaries(destination / 'binaries.json', binary.parent, OUT / 'binaries' / label)
     observations = {phase: {} for phase in ['A1', 'B', 'A2']}
     captures = []
@@ -150,8 +155,8 @@ def execute():
             capture['completed_utc'] = datetime.now(timezone.utc).isoformat()
             captures.append(capture)
             save(OUT / 'capture-order.json', captures)
-            validator(destination / 'warmup.json', warmup_seconds)
-            observations[phase][case] = validator(destination / 'measured.json', measured_seconds)
+            validate(destination / 'warmup.json', warmup_seconds)
+            observations[phase][case] = validate(destination / 'measured.json', measured_seconds)
             common.retain_loaded_binaries(destination / 'binaries.json', binary.parent, OUT / 'binaries' / label)
     comparisons = {case: common.compare(*(observations[phase][case] for phase in ['A1', 'B', 'A2'])) for case in controls}
     save(OUT / 'comparison.json', comparisons)
@@ -164,8 +169,8 @@ def execute():
     for case in added:
         destination = OUT / 'candidate-only' / case.replace(':', '-')
         run(probe_prefix + [str(hosts['B']), 'probe', case, str(destination), str(warmup_seconds), str(measured_seconds)], destination / 'run.log', env=environment)
-        validator(destination / 'warmup.json', warmup_seconds)
-        validator(destination / 'measured.json', measured_seconds)
+        validate(destination / 'warmup.json', warmup_seconds)
+        validate(destination / 'measured.json', measured_seconds)
         common.retain_loaded_binaries(destination / 'binaries.json', hosts['B'].parent, OUT / 'binaries/B')
 
 

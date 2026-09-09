@@ -128,6 +128,33 @@ public sealed class RecorderTests
             await Assert.That(result.MaxNs).IsEqualTo(result.Latencies[^1].Ticks * 1e9 / Stopwatch.Frequency);
             await Assert.That(result.P50Ns).IsLessThanOrEqualTo(result.P99Ns);
             await Assert.That(result.P99Ns).IsLessThanOrEqualTo(result.MaxNs);
+            long previousCallEnd = 0;
+            foreach (var interval in result.Intervals)
+            {
+                await Assert.That(interval.MaximumCall.StartTimestamp).IsGreaterThan(previousCallEnd);
+                await Assert.That(interval.MaximumCall.Ticks).IsEqualTo(interval.Latencies.Max(static row => row.Ticks));
+                previousCallEnd = interval.MaximumCall.EndTimestamp;
+            }
         }
+    }
+
+    [Test]
+    public async Task TraceClockBoundsPrecedeAllRetainedCallsAcrossPhases()
+    {
+        var path = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"), "compilations.json");
+        using (var compilations = new CompilationLog(path))
+        {
+            var captures = await Probe.CapturePhasesAsync(new AdminFixture(), [0.05, 0.05], compilations);
+            var clock = captures[0].TraceClock!.Value;
+            await Assert.That(clock.AfterTimestamp).IsGreaterThanOrEqualTo(clock.BeforeTimestamp);
+            foreach (var capture in captures)
+            {
+                await Assert.That(capture.TraceClock).IsEqualTo(clock);
+                foreach (var interval in capture.Intervals)
+                    await Assert.That(interval.MaximumCall.StartTimestamp).IsGreaterThan(clock.AfterTimestamp);
+            }
+        }
+        File.Delete(path);
+        Directory.Delete(Path.GetDirectoryName(path)!);
     }
 }
