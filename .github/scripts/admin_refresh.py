@@ -49,14 +49,21 @@ def execute():
         original = module(SOURCE / 'run_comparison.py', 'original')
         validator = original.validate_probe
         controls, added = original.CONTROLS, original.NEW_CASES
-    calibration = os.getenv('ADMIN_CALIBRATION') == '1'
+    profiling = os.getenv('ADMIN_PROFILE') == '1'
+    calibration = os.getenv('ADMIN_CALIBRATION') == '1' or profiling
     if calibration and A != B:
         raise ValueError('Calibration requires identical exact product SHAs')
+    if profiling and PR != 3138:
+        raise ValueError('Administrative profiling currently covers PR 3138 legacy-delete:16 only')
     pilot = os.getenv('ADMIN_PILOT') == '1'
     warmup_seconds = 360 if pilot else 480
     measured_seconds = 60 if pilot else 180
     if calibration:
         added = []
+    if profiling:
+        controls = ['legacy-delete:16']
+        if pilot:
+            raise ValueError('Administrative profiling cannot use pilot durations')
     if pilot:
         # Diagnose the observed report/JIT transition before expanding a campaign.
         controls, added = controls[:1], []
@@ -64,7 +71,10 @@ def execute():
     topology, affinity = configure_affinity()
     cpu = max(map(int, affinity['consumer'].split(',')))
     probe_prefix = ['taskset', '-c', str(cpu), 'dotnet']
-    plan = dict(calibration=calibration, topology=topology, affinity=affinity, A=A, B=B, harness=subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
+    profile = None
+    if profiling:
+        profile = module(ROOT / '.github/scripts/admin_profile.py', 'admin_profile')
+    plan = dict(calibration=calibration, profiling=profile.SETTINGS if profile else None, topology=topology, affinity=affinity, A=A, B=B, harness=subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
                 controls=controls, candidate_only=added, warmup_seconds=warmup_seconds, measured_seconds=measured_seconds,
                 warmup_rationale=('480 seconds continuous workload after observer heap preparation; previous 360-second captures '
                                   'retained helper/ConditionalWeakTable JIT near total seconds 382-400. Collect 180 seconds '
@@ -84,6 +94,13 @@ def execute():
     save(OUT / 'plan.json', plan)
     run(['git', 'merge-base', '--is-ancestor', A, B], OUT / 'ancestry.log')
     run(['dotnet', '--info'], OUT / 'dotnet-info.txt')
+    trace = None
+    if profile:
+        version = json.loads((ROOT / '.config/stress-diagnostics/dotnet-tools.json').read_text())['tools']['dotnet-trace']['version']
+        tool_path = OUT / 'diagnostic-tools'
+        run(['dotnet', 'tool', 'install', 'dotnet-trace', '--tool-path', str(tool_path), '--version', version], OUT / 'trace-install.log')
+        trace = tool_path / 'dotnet-trace'
+        run([str(trace), '--version'], OUT / 'trace-version.log')
     run(['lscpu'], OUT / 'hardware.txt')
     run(['git', 'archive', '--format=zip', '--output=' + str(OUT / 'harness.zip'), 'HEAD'], OUT / 'archive-harness.log')
     hosts = {}
@@ -124,7 +141,12 @@ def execute():
             binary = hosts[label]
             capture = dict(case=case, phase=phase, product=A if label == 'A' else B, binary=str(binary),
                            started_utc=datetime.now(timezone.utc).isoformat())
-            run(probe_prefix + [str(binary), 'probe', case, str(destination), str(warmup_seconds), str(measured_seconds)], destination / 'run.log', env=environment)
+            command = probe_prefix + [str(binary), 'probe', case, str(destination), str(warmup_seconds), str(measured_seconds)]
+            if profile:
+                command = profile.capture_command(trace, command, destination)
+            run(command, destination / 'run.log', env=environment)
+            if profile:
+                profile.validate_capture(destination)
             capture['completed_utc'] = datetime.now(timezone.utc).isoformat()
             captures.append(capture)
             save(OUT / 'capture-order.json', captures)

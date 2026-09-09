@@ -35,6 +35,11 @@ select fixtures. H can differ. Calibration uses the same compiled baseline
 binary in all phases and never grants product acceptance. See
 [reliability and calibration details](HARNESS-RELIABILITY.md).
 
+When that calibration fails, `suite=admin-profile` provides the bounded
+GC/JIT/CPU attribution experiment for PR 3138 described in
+[ADMIN-ATTRIBUTION.md](ADMIN-ATTRIBUTION.md). It requires identical fresh-main
+products and cannot grant performance acceptance.
+
 ## Workload coverage
 
 | Suite | Scope and maintained driver |
@@ -43,6 +48,7 @@ binary in all phases and never grants product acceptance. See
 | `pool`, `pool-recovery` | Pool reset and recovery; [driver](../scripts/pool_reset_aba.py) |
 | `pool-loaded`, `pool-profile` | Loaded producer pool comparison and diagnostic profiling; [driver](../scripts/pool_loaded_aba.py) |
 | `admin`, `admin-pilot`, `admin-calibration` | Cached-transport administration for #3128, #3129, #3136, #3138; [driver](../scripts/admin_refresh.py) |
+| `admin-profile` | Diagnostic attribution of identical-product legacy delete for #3138; [plan](ADMIN-ATTRIBUTION.md) |
 | `dispatch`, `dispatch-loaded`, `dispatch-pilot`, `dispatch-record-pilot` | Dispatch micro/loaded and diagnostic cases; [driver](dispatch-aba/run.py) |
 | `dispatch-adjacent`, `dispatch-loaded-adjacent` | Adjacent dispatch workloads; [driver](dispatch-aba/run_adjacent.py) |
 | `share-loaded` | Loaded share consumer; [driver](share-loaded/run.py) |

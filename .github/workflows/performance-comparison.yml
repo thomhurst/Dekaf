@@ -9,7 +9,7 @@ on:
       suite:
         required: true
         type: choice
-        options: [micro, pool, pool-recovery, admin, admin-pilot, admin-calibration, dispatch, dispatch-adjacent, dispatch-loaded-adjacent, dispatch-loaded, dispatch-pilot, dispatch-record-pilot, share-loaded, outbox, outbox-loaded, outbox-adjacent, pool-loaded, pool-profile]
+        options: [micro, pool, pool-recovery, admin, admin-pilot, admin-calibration, admin-profile, dispatch, dispatch-adjacent, dispatch-loaded-adjacent, dispatch-loaded, dispatch-pilot, dispatch-record-pilot, share-loaded, outbox, outbox-loaded, outbox-adjacent, pool-loaded, pool-profile]
       harness_sha:
         required: true
         description: Exact harness source SHA (independent of product revisions)
@@ -88,9 +88,10 @@ jobs:
           python3 -m unittest discover -s .github/scripts -p test_outbox_loaded_aba.py
           python3 .github/scripts/runner_resources.py --output runner-resources -- python3 .github/scripts/outbox_loaded_aba.py
       - name: Administrative direct-call comparison
-        if: inputs.suite == 'admin' || inputs.suite == 'admin-calibration' || inputs.suite == 'admin-pilot'
+        if: inputs.suite == 'admin' || inputs.suite == 'admin-calibration' || inputs.suite == 'admin-pilot' || inputs.suite == 'admin-profile'
         env:
           ADMIN_CALIBRATION: ${{ inputs.suite == 'admin-calibration' && '1' || '0' }}
+          ADMIN_PROFILE: ${{ inputs.suite == 'admin-profile' && '1' || '0' }}
           ADMIN_PILOT: ${{ inputs.suite == 'admin-pilot' && '1' || '0' }}
         run: |
           python3 -m unittest discover -s tools/AdminMutationEvidence -p test_validate_results.py
