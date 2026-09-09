@@ -116,7 +116,7 @@ jobs:
           global-json-file: global.json
 
       - name: Build
-        run: dotnet build --configuration Release
+        run: dotnet build tools/Dekaf.Benchmarks --configuration Release
 
       - name: Run Unit Benchmarks
         env:
@@ -175,7 +175,7 @@ jobs:
           done
 
       - name: Build
-        run: dotnet build --configuration Release
+        run: dotnet build tools/Dekaf.Benchmarks --configuration Release
 
       - name: Run Client Benchmarks
         env:
@@ -231,7 +231,7 @@ jobs:
           global-json-file: global.json
 
       - name: Build
-        run: dotnet build --configuration Release
+        run: dotnet build tools/Dekaf.Benchmarks --configuration Release
 
       # windows-latest runs Docker in Windows-container mode and cannot pull the Linux
       # Kafka image, so Testcontainers fails. Instead run a native single-node KRaft broker
