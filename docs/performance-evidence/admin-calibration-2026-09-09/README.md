@@ -1,5 +1,9 @@
 # Administrative calibration attribution, 2026-09-09
 
+The later [sampler-control result](SAMPLER-CONTROL.md) uses precise maximum-call
+timestamps and GC-only controls. It measures a different harness and profiling
+plan; the historical all-sampled result below remains separate.
+
 **Decision: diagnostic only; product acceptance remains INCONCLUSIVE.** The same
 binary still varies across fresh processes. No unchanged triplet or product
 campaign is authorized by this experiment, and no tolerance has changed.

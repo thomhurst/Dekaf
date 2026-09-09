@@ -1,0 +1,1765 @@
+{
+  "scope": "Diagnostic only: sampler intentionally differs. Never product acceptance.",
+  "plan": {
+    "calibration": true,
+    "profiling": {
+      "purpose": "Attribute recurring GC pauses and sustained fresh-process CPU variation in identical binaries",
+      "scope": "Diagnostic only; EventPipe and JIT output affect execution. No product gate can pass from these observations.",
+      "providers": "Microsoft-Windows-DotNETRuntime:0x1:4,Microsoft-DotNETCore-SampleProfiler:0x0:4,Dekaf-AdminEvidence-Phases:0xFFFFFFFFFFFFFFFF:4",
+      "jit_disasm": "*DeleteTopics*:* *RefreshMetadata*:* *MetadataManager*:* *CapturePhases*:*",
+      "trace_buffer_mib": 128,
+      "coverage": "Entire process, including preparation, continuous 480-second warmup, 180-second measurement and finalization",
+      "decision": "Match GC reason/pause intervals to retained maxima, compare Tier1 code across processes, and inspect CPU stacks. Preserve all samples. Missing events or attribution remain inconclusive."
+    },
+    "topology": [
+      [
+        0,
+        0,
+        0
+      ],
+      [
+        1,
+        0,
+        0
+      ],
+      [
+        2,
+        1,
+        0
+      ],
+      [
+        3,
+        1,
+        0
+      ]
+    ],
+    "affinity": {
+      "consumer": "2,3",
+      "infrastructure": "0,1"
+    },
+    "A": "a12b5980bb9ca9aa31755f3784c5255d0288be71",
+    "B": "a12b5980bb9ca9aa31755f3784c5255d0288be71",
+    "harness": "e62b3f1dac3311665454e5fc0a2be36224e053f2",
+    "sampler_control": true,
+    "phase_providers": {
+      "A1": "Microsoft-Windows-DotNETRuntime:0x1:4,Dekaf-AdminEvidence-Phases:0xFFFFFFFFFFFFFFFF:4",
+      "B": "Microsoft-Windows-DotNETRuntime:0x1:4,Microsoft-DotNETCore-SampleProfiler:0x0:4,Dekaf-AdminEvidence-Phases:0xFFFFFFFFFFFFFFFF:4",
+      "A2": "Microsoft-Windows-DotNETRuntime:0x1:4,Dekaf-AdminEvidence-Phases:0xFFFFFFFFFFFFFFFF:4"
+    },
+    "causal_variable": "CPU sampling enabled only in B; GC tracing, JIT output, product binary and all workload settings match",
+    "controls": [
+      "legacy-delete:16"
+    ],
+    "candidate_only": [],
+    "warmup_seconds": 480,
+    "measured_seconds": 180,
+    "warmup_rationale": "480 seconds continuous workload after observer heap preparation; previous 360-second captures retained helper/ConditionalWeakTable JIT near total seconds 382-400. Collect 180 seconds to retain multiple recurring GC cycles, not select a GC-free window.",
+    "observer_preparation": "After histogram allocation, two blocking compacting full GCs with finalizer waits before workload warmup; no forced GC during warmup or measurement",
+    "pilot": false,
+    "report_aggregation": "all overflow sorting and aggregation deferred until both captures finish",
+    "histograms": "Exact ticks, touched buckets only; 65536 distinct ticks/interval, shared archive capped at 4194304 entries (64 MiB); exhaustion invalidates",
+    "phase_transition": "one continuous warmed call loop; no return/re-entry between warmup and measurement",
+    "cpu_affinity": [
+      3
+    ],
+    "jit_attribution": "CLR MethodJittingStarted; identical observer in all phases",
+    "phase_order": "For each control workload, run A1 then B then A2 before starting the next workload",
+    "endpoint": "127.0.0.1:9092; literal loopback avoids external OS DNS in cached-transport probes",
+    "image": "ubuntu24",
+    "image_version": "20260907.300.1",
+    "run_id": "34358968465",
+    "scope": "Cached-transport completed administrative calls; no network/broker acceptance.",
+    "verdict": "INCONCLUSIVE: partial scope; assess all retained runtime and metric evidence"
+  },
+  "rows": [
+    {
+      "phase": "A1",
+      "metrics": {
+        "CallsPerSecond": 865831.8873299937,
+        "CpuNsPerCall": 1154.7893547363076,
+        "AllocatedBytesPerCall": 2384.0172557488095,
+        "P50Ns": 932,
+        "P99Ns": 1532,
+        "MaxNs": 3726392
+      },
+      "warmup_completed": 411518016,
+      "measured_completed": 155849742,
+      "warmup_seconds": 480.00000275499997,
+      "measured_seconds": 180.00000263399994,
+      "clock_bracket_ns": 9384.0,
+      "maximum_call": {
+        "StartTimestamp": 882094812964,
+        "EndTimestamp": 882098539356,
+        "Ticks": 3726392
+      },
+      "maximum_call_trace_bounds": {
+        "start_earliest_ms": 507864.442391,
+        "start_latest_ms": 507864.451775,
+        "end_earliest_ms": 507868.16878300003,
+        "end_latest_ms": 507868.178167
+      },
+      "maximum_call_overlapping_suspensions": [
+        {
+          "ProcessID": 3046,
+          "ThreadID": 3046,
+          "StartMs": 507864.445196,
+          "EndMs": 507868.086741,
+          "DurationMs": 3.6415450000204146,
+          "SuspendedMs": 507864.450804,
+          "RestartMs": 507868.084738,
+          "FullySuspendedMs": 3.633933999983128,
+          "Reason": "SuspendForGC",
+          "request_overlap": "guaranteed within clock bounds",
+          "fully_suspended_overlap": "guaranteed within clock bounds"
+        }
+      ],
+      "trace_samples": 0,
+      "measured_suspensions": {
+        "SuspendForGC": {
+          "count": 22211,
+          "total_fully_suspended_ms": 3122.874270999164,
+          "max_fully_suspended_ms": 3.633933999983128
+        },
+        "SuspendForGCPrep": {
+          "count": 1,
+          "total_fully_suspended_ms": 0.1922790000680834,
+          "max_fully_suspended_ms": 0.1922790000680834
+        },
+        "SuspendOther": {
+          "count": 181,
+          "total_fully_suspended_ms": 0.13486299943178892,
+          "max_fully_suspended_ms": 0.0069209999637678266
+        }
+      },
+      "events_lost": 0,
+      "anomalies": {},
+      "stability": {
+        "HeapBytes": {
+          "min": 80247432,
+          "max": 97217688
+        },
+        "RssBytes": {
+          "min": 162668544,
+          "max": 166891520
+        },
+        "ThreadPoolThreads": {
+          "min": 0,
+          "max": 0
+        },
+        "PendingWorkItems": {
+          "min": 0,
+          "max": 0
+        }
+      },
+      "complete_suspension_sequences": 82017,
+      "total_gc_starts": 81091
+    },
+    {
+      "phase": "B",
+      "metrics": {
+        "CallsPerSecond": 734766.4354389907,
+        "CpuNsPerCall": 1296.629320169407,
+        "AllocatedBytesPerCall": 2384.021785357602,
+        "P50Ns": 1001,
+        "P99Ns": 1592,
+        "MaxNs": 3715888
+      },
+      "warmup_completed": 347061040,
+      "measured_completed": 132258008,
+      "warmup_seconds": 480.000001626,
+      "measured_seconds": 180.000067533,
+      "clock_bracket_ns": 8873.0,
+      "maximum_call": {
+        "StartTimestamp": 1651257502024,
+        "EndTimestamp": 1651261217912,
+        "Ticks": 3715888
+      },
+      "maximum_call_trace_bounds": {
+        "start_earliest_ms": 607932.107498,
+        "start_latest_ms": 607932.116371,
+        "end_earliest_ms": 607935.823386,
+        "end_latest_ms": 607935.8322589999
+      },
+      "maximum_call_overlapping_suspensions": [
+        {
+          "ProcessID": 3197,
+          "ThreadID": 3208,
+          "StartMs": 607930.622765,
+          "EndMs": 607932.117793,
+          "DurationMs": 1.4950279999757186,
+          "SuspendedMs": 607930.731007,
+          "RestartMs": 607930.73929,
+          "FullySuspendedMs": 0.008283000090159476,
+          "Reason": "SuspendOther",
+          "request_overlap": "guaranteed within clock bounds",
+          "fully_suspended_overlap": "none"
+        },
+        {
+          "ProcessID": 3197,
+          "ThreadID": 3197,
+          "StartMs": 607932.111033,
+          "EndMs": 607935.736505,
+          "DurationMs": 3.625471999985166,
+          "SuspendedMs": 607932.124783,
+          "RestartMs": 607935.734081,
+          "FullySuspendedMs": 3.6092979999957606,
+          "Reason": "SuspendForGC",
+          "request_overlap": "guaranteed within clock bounds",
+          "fully_suspended_overlap": "guaranteed within clock bounds"
+        }
+      ],
+      "trace_samples": 1033512,
+      "measured_suspensions": {
+        "SuspendForGC": {
+          "count": 18849,
+          "total_fully_suspended_ms": 2782.913784000266,
+          "max_fully_suspended_ms": 3.6092979999957606
+        },
+        "SuspendForGCPrep": {
+          "count": 1,
+          "total_fully_suspended_ms": 0.1947529999888502,
+          "max_fully_suspended_ms": 0.1947529999888502
+        },
+        "SuspendOther": {
+          "count": 139532,
+          "total_fully_suspended_ms": 1150.7989320225897,
+          "max_fully_suspended_ms": 0.06473699997877702
+        }
+      },
+      "events_lost": 0,
+      "anomalies": {},
+      "stability": {
+        "HeapBytes": {
+          "min": 80377848,
+          "max": 97228152
+        },
+        "RssBytes": {
+          "min": 142520320,
+          "max": 148901888
+        },
+        "ThreadPoolThreads": {
+          "min": 0,
+          "max": 0
+        },
+        "PendingWorkItems": {
+          "min": 0,
+          "max": 0
+        }
+      },
+      "complete_suspension_sequences": 586212,
+      "total_gc_starts": 68517
+    },
+    {
+      "phase": "A2",
+      "metrics": {
+        "CallsPerSecond": 887242.5015683251,
+        "CpuNsPerCall": 1126.9224763877035,
+        "AllocatedBytesPerCall": 2384.016941278212,
+        "P50Ns": 911,
+        "P99Ns": 1502,
+        "MaxNs": 3686130
+      },
+      "warmup_completed": 418175936,
+      "measured_completed": 159703652,
+      "warmup_seconds": 480.000001925,
+      "measured_seconds": 180.000001936,
+      "clock_bracket_ns": 9715.0,
+      "maximum_call": {
+        "StartTimestamp": 2220968993029,
+        "EndTimestamp": 2220972679159,
+        "Ticks": 3686130
+      },
+      "maximum_call_trace_bounds": {
+        "start_earliest_ms": 507864.557957,
+        "start_latest_ms": 507864.567672,
+        "end_earliest_ms": 507868.24408699997,
+        "end_latest_ms": 507868.25380199996
+      },
+      "maximum_call_overlapping_suspensions": [
+        {
+          "ProcessID": 3399,
+          "ThreadID": 3399,
+          "StartMs": 507864.55963,
+          "EndMs": 507868.151308,
+          "DurationMs": 3.591677999997046,
+          "SuspendedMs": 507864.563256,
+          "RestartMs": 507868.149646,
+          "FullySuspendedMs": 3.5863900000113063,
+          "Reason": "SuspendForGC",
+          "request_overlap": "guaranteed within clock bounds",
+          "fully_suspended_overlap": "guaranteed within clock bounds"
+        }
+      ],
+      "trace_samples": 0,
+      "measured_suspensions": {
+        "SuspendForGC": {
+          "count": 22760,
+          "total_fully_suspended_ms": 2969.1060100132017,
+          "max_fully_suspended_ms": 3.5863900000113063
+        },
+        "SuspendForGCPrep": {
+          "count": 1,
+          "total_fully_suspended_ms": 0.21181899996008724,
+          "max_fully_suspended_ms": 0.21181899996008724
+        },
+        "SuspendOther": {
+          "count": 181,
+          "total_fully_suspended_ms": 0.24622600013390183,
+          "max_fully_suspended_ms": 0.022613999957684427
+        }
+      },
+      "events_lost": 0,
+      "anomalies": {},
+      "stability": {
+        "HeapBytes": {
+          "min": 80247248,
+          "max": 96970336
+        },
+        "RssBytes": {
+          "min": 136462336,
+          "max": 140693504
+        },
+        "ThreadPoolThreads": {
+          "min": 0,
+          "max": 0
+        },
+        "PendingWorkItems": {
+          "min": 0,
+          "max": 0
+        }
+      },
+      "complete_suspension_sequences": 83494,
+      "total_gc_starts": 82568
+    }
+  ],
+  "deltas": {
+    "CallsPerSecond": {
+      "B_vs_A1_percent": -15.137517318191595,
+      "B_vs_A2_percent": -17.185387970009515,
+      "A2_vs_A1_percent": 2.47283734309629
+    },
+    "CpuNsPerCall": {
+      "B_vs_A1_percent": 12.282756578188936,
+      "B_vs_A2_percent": 15.05931839479242,
+      "A2_vs_A1_percent": -2.413156844086728
+    },
+    "AllocatedBytesPerCall": {
+      "B_vs_A1_percent": 0.00018999899356053618,
+      "B_vs_A2_percent": 0.0002031898056475967,
+      "A2_vs_A1_percent": -1.3190785286276707e-05
+    },
+    "P50Ns": {
+      "B_vs_A1_percent": 7.4034334763948495,
+      "B_vs_A2_percent": 9.87925356750823,
+      "A2_vs_A1_percent": -2.2532188841201672
+    },
+    "P99Ns": {
+      "B_vs_A1_percent": 3.9164490861618884,
+      "B_vs_A2_percent": 5.992010652463375,
+      "A2_vs_A1_percent": -1.9582245430809442
+    },
+    "MaxNs": {
+      "B_vs_A1_percent": -0.28188124062095143,
+      "B_vs_A2_percent": 0.8072965413590927,
+      "A2_vs_A1_percent": -1.0804553036824927
+    }
+  },
+  "verified_files": 154,
+  "binary_files": 17,
+  "artifact": {
+    "id": 10108596847,
+    "name": "performance-3138-admin-sampler-control-34358968465",
+    "size_in_bytes": 175127422,
+    "expired": false,
+    "digest": "sha256:782a3c23a464846128da7ffe75deb6aef44273cba83bbcc82672934ee35615dd",
+    "created_at": "2026-09-09T14:20:27Z",
+    "updated_at": "2026-09-09T14:20:27Z",
+    "expires_at": "2026-12-08T13:43:58Z",
+    "download_sha256": "782a3c23a464846128da7ffe75deb6aef44273cba83bbcc82672934ee35615dd"
+  },
+  "main_at_end": "a12b5980bb9ca9aa31755f3784c5255d0288be71",
+  "code_and_cpu": {
+    "scope": "Diagnostic only; code identity does not prove identical host costs and code differences do not prove CPU causality.",
+    "rows": [
+      {
+        "phase": "A1",
+        "metrics": {
+          "CallsPerSecond": 865831.8873299937,
+          "CpuNsPerCall": 1154.7893547363076,
+          "AllocatedBytesPerCall": 2384.0172557488095,
+          "P50Ns": 932,
+          "P99Ns": 1532,
+          "MaxNs": 3726392
+        },
+        "gc": [
+          22212,
+          138,
+          2
+        ],
+        "jit_overflow": false,
+        "measured_jit": [],
+        "cpu_blocks": [
+          {
+            "start_seconds": 480.000336116,
+            "end_seconds": 510.000338078,
+            "cpu_ns_per_call": 1159.0741229196537
+          },
+          {
+            "start_seconds": 510.000338078,
+            "end_seconds": 540.00033812,
+            "cpu_ns_per_call": 1153.3715066339041
+          },
+          {
+            "start_seconds": 540.00033812,
+            "end_seconds": 570.000338123,
+            "cpu_ns_per_call": 1155.7227945923544
+          },
+          {
+            "start_seconds": 570.000338123,
+            "end_seconds": 600.000338006,
+            "cpu_ns_per_call": 1153.2665877493814
+          },
+          {
+            "start_seconds": 600.000338006,
+            "end_seconds": 630.000337737,
+            "cpu_ns_per_call": 1153.729632815636
+          },
+          {
+            "start_seconds": 630.000337737,
+            "end_seconds": 660.00033875,
+            "cpu_ns_per_call": 1153.5940333712263
+          }
+        ],
+        "methods": {
+          "; Assembly listing for method Dekaf.Benchmarks.Probe+<CapturePhasesAsync>d__12:MoveNext():this (Tier1-OSR)": {
+            "bytes": 5317,
+            "instruction_sha256": "cab5f72ab026768605fb71de99aab49825fa6589702df631092225c328d829ea"
+          },
+          "; Assembly listing for method Dekaf.Protocol.Messages.DeleteTopicsResponseTopic:get_ErrorCode():short:this (Tier1)": {
+            "bytes": 6,
+            "instruction_sha256": "2732f99cadf9a14fb2cd5b0e416dd00a3637d1b59bfccdf6d1c9bae7b2e9685a"
+          },
+          "; Assembly listing for method Dekaf.Metadata.MetadataManager:get_Metadata():Dekaf.Metadata.ClusterMetadata:this (Tier1)": {
+            "bytes": 5,
+            "instruction_sha256": "6feef27634feb3eb3cd1b85d39f38e1049f2323f699566503b0a162223617f25"
+          },
+          "; Assembly listing for method Dekaf.Metadata.MetadataManager:RegisterBroker(int,System.String,int):this (Tier1)": {
+            "bytes": 116,
+            "instruction_sha256": "579e39a5790d5b60b8dbb9dade0dfb6fae6198999b0b4db099083fc109f1c33a"
+          },
+          "; Assembly listing for method Dekaf.Metadata.MetadataManager:UpdateMetadataClusterId(System.String):this (Tier1)": {
+            "bytes": 126,
+            "instruction_sha256": "4dbd2f870bf32b69bc933ebb3332ce02b8639e9ff9085b597e5a71960ae37ad1"
+          },
+          "; Assembly listing for method Dekaf.Metadata.MetadataManager:UpdateMetadataClusterId(Dekaf.Networking.IConnectionPool,System.String) (Tier1)": {
+            "bytes": 93,
+            "instruction_sha256": "67e13629d7a92dca20906dc071467e7f7ec1fd1e52aaf840e3ad8fcee34bb614"
+          },
+          "; Assembly listing for method Dekaf.Metadata.MetadataManager:PublishBrokerStatusSnapshot(System.Collections.Generic.IReadOnlyList`1[Dekaf.Protocol.Messages.BrokerMetadata]):this (Tier1)": {
+            "bytes": 467,
+            "instruction_sha256": "5735f97cd93da10a4ac9c3bd6f693d1935613c58500b3c7d3d7c4990b5927b03"
+          },
+          "; Assembly listing for method Dekaf.Metadata.MetadataManager:UpdateBrokerStatusSnapshot(Dekaf.Networking.IConnectionPool,int[]) (Tier1)": {
+            "bytes": 93,
+            "instruction_sha256": "49cdf5120785220b90194d2576e23972be3d06966b407183aa852edd4c0a763c"
+          },
+          "; Assembly listing for method Dekaf.Metadata.MetadataManager:LogMetadataRefreshed(int,int):this (Tier1)": {
+            "bytes": 132,
+            "instruction_sha256": "3d41180a4ca93c1bcb3ac555e6c484603899549085c2779d3089faf116bac5bc"
+          },
+          "; Assembly listing for method Dekaf.Metadata.MetadataManager:NotifyBrokerCountDiscovered(int):this (Tier1)": {
+            "bytes": 203,
+            "instruction_sha256": "a6f838e7c0d926a828c8cc026328b71074b821565c670373de603923fafdf81d"
+          },
+          "; Assembly listing for method Dekaf.Metadata.MetadataManager:ResetAllBrokersUnavailableTimestamp():this (Tier1)": {
+            "bytes": 13,
+            "instruction_sha256": "a1f14f1fc3b4e175bc7733676fa5b73e0c926407a0dd4fb49475ee74b95fec3a"
+          },
+          "; Assembly listing for method Dekaf.Admin.AdminClient+<DeleteTopicsAsync>d__34:MoveNext():this (Tier1)": {
+            "bytes": 3785,
+            "instruction_sha256": "7676c90686cf7ed198c3fcfc1fec37f3077cfd1e89695cf20bfa4dab259fec81"
+          },
+          "; Assembly listing for method Dekaf.Admin.DeleteTopicsOptions:.ctor():this (Tier1)": {
+            "bytes": 8,
+            "instruction_sha256": "b373c91896d8e5ff407f30344626036d7a515929260c259dbda60a720092d44b"
+          },
+          "; Assembly listing for method Dekaf.Admin.AdminClient+<>c__DisplayClass34_0+<<DeleteTopicsAsync>b__0>d:MoveNext():this (Tier1)": {
+            "bytes": 3968,
+            "instruction_sha256": "987c9d27f86676b5dddd0fbeedd968dcb5df63668f8551012285b85127efe7a7"
+          },
+          "; Assembly listing for method Dekaf.Protocol.Messages.DeleteTopicsRequest:get_LowestSupportedVersion():short (Tier1)": {
+            "bytes": 6,
+            "instruction_sha256": "30d3b5fcbbd7008d24cf26ca061874b4456ae60a7e97ccae69687b871fb275df"
+          },
+          "; Assembly listing for method Dekaf.Protocol.Messages.DeleteTopicsRequest:get_HighestSupportedVersion():short (Tier1)": {
+            "bytes": 6,
+            "instruction_sha256": "06c3f858a5e8adebbec915c5b09dfe34c241592d9f80508b56569a0483415796"
+          },
+          "; Assembly listing for method Dekaf.Metadata.MetadataManager:GetNegotiatedApiVersion(Dekaf.Networking.IKafkaConnection,short,short,short):short:this (Tier1)": {
+            "bytes": 1101,
+            "instruction_sha256": "a52b671c39f6abc955857edcfd2cb3c861d24589807ccd84593ccbfb0b260958"
+          },
+          "; Assembly listing for method Dekaf.Metadata.MetadataManager:GetNegotiatedApiVersion(short,short,short):short:this (Tier1)": {
+            "bytes": 825,
+            "instruction_sha256": "f8ea612c2324e609a7e546225f9410ed69a5f1450e84f0219afe8e87fa3059b5"
+          },
+          "; Assembly listing for method Dekaf.Protocol.Messages.DeleteTopicsRequest:.ctor():this (Tier1)": {
+            "bytes": 8,
+            "instruction_sha256": "b54a14c150b9a656c31393774200e856a2386ed3bbcd85d12ec84346d9de7038"
+          },
+          "; Assembly listing for method Dekaf.Protocol.Messages.DeleteTopicsRequest:set_Topics(System.Collections.Generic.IReadOnlyList`1[Dekaf.Protocol.Messages.DeleteTopicState]):this (Tier1)": {
+            "bytes": 11,
+            "instruction_sha256": "311ab04060c551d1cd78e43db230b493c06d7a51e83fea0059fb4db94ac1c061"
+          },
+          "; Assembly listing for method Dekaf.Admin.DeleteTopicsOptions:get_TimeoutMs():int:this (Tier1)": {
+            "bytes": 4,
+            "instruction_sha256": "f68e43ad03195cb072d74dad94d5e28000666a0ee291c762f5b473e5819696e0"
+          },
+          "; Assembly listing for method Dekaf.Protocol.Messages.DeleteTopicsRequest:set_TimeoutMs(int):this (Tier1)": {
+            "bytes": 4,
+            "instruction_sha256": "e4ad0f81f95c6aa964fce97a57260f69351675c2feb629faffc9234176f7cec8"
+          },
+          "; Assembly listing for method Dekaf.Protocol.Messages.DeleteTopicsResponse:get_Responses():System.Collections.Generic.IReadOnlyList`1[Dekaf.Protocol.Messages.DeleteTopicsResponseTopic]:this (Tier1)": {
+            "bytes": 5,
+            "instruction_sha256": "9f63360eab75419b38504c248212a323c5ea9b8211adb426e03a78d2889a4071"
+          },
+          "; Assembly listing for method Dekaf.Metadata.MetadataManager:RefreshMetadataAsync(System.Threading.CancellationToken):System.Threading.Tasks.ValueTask:this (Tier1)": {
+            "bytes": 428,
+            "instruction_sha256": "a919dee2fb626236cf03edd079bcf9b1626247fe416ddc7ac1091fdf3dd8cc9f"
+          },
+          "; Assembly listing for method Dekaf.Metadata.MetadataManager+<RefreshMetadataAsync>d__78:MoveNext():this (Tier1)": {
+            "bytes": 921,
+            "instruction_sha256": "c5088d7352f42b97943e8d82c72915d6bbfe504a3860e128842228462dc79c97"
+          },
+          "; Assembly listing for method Dekaf.Metadata.MetadataManager:RefreshMetadataAsync(System.Collections.Generic.IEnumerable`1[System.String],bool,System.Threading.CancellationToken):System.Threading.Tasks.ValueTask:this (Tier1)": {
+            "bytes": 446,
+            "instruction_sha256": "f3aa1579fb5360815e589e5a7a88acc80b0ef3e2459b129e8c293d90ed9323fd"
+          },
+          "; Assembly listing for method Dekaf.Metadata.MetadataManager:RefreshMetadataAsyncCore(System.Collections.Generic.IEnumerable`1[System.String],bool,int,bool,System.Threading.CancellationToken):System.Threading.Tasks.ValueTask:this (Tier1)": {
+            "bytes": 442,
+            "instruction_sha256": "70b081ea142dec77c83ea6e1ec2f1214a69cdf9a9525e14a75c6a8b92678464f"
+          },
+          "; Assembly listing for method Dekaf.Metadata.MetadataManager+<RefreshMetadataAsyncCore>d__82:MoveNext():this (Tier1)": {
+            "bytes": 2585,
+            "instruction_sha256": "702b60b77b4120d019a3c549af774786ba1e5db64bd230d3cde70e79a31f07e4"
+          },
+          "; Assembly listing for method Dekaf.Metadata.MetadataManager:LogMetadataRefreshRequested():this (Tier1)": {
+            "bytes": 104,
+            "instruction_sha256": "82d80c71342fcdb0000c83f3c74d9813fda4bda89154625c039e73208b4029ab"
+          },
+          "; Assembly listing for method Dekaf.Metadata.MetadataManager:RefreshMetadataInternalAsync(System.Collections.Generic.IEnumerable`1[System.String],bool,System.Threading.CancellationToken):System.Threading.Tasks.ValueTask:this (Tier1)": {
+            "bytes": 556,
+            "instruction_sha256": "986beeec076d9bd36290d3da86729b9c3f86e710829c92ecfe2970026624df3b"
+          },
+          "; Assembly listing for method Dekaf.Metadata.MetadataManager+<RefreshMetadataInternalAsync>d__84:MoveNext():this (Tier1)": {
+            "bytes": 8088,
+            "instruction_sha256": "0663f5768c46f02c0cc9bbd29fb229ef7547c1a1c181c54e5e9614c6b9de64da"
+          },
+          "; Assembly listing for method Dekaf.Metadata.MetadataManager:TryConsumeMetadataRebootstrapRequest():bool:this (Tier1)": {
+            "bytes": 148,
+            "instruction_sha256": "4569da6f9a7ddf2c4093bd8727a67f19ff12eae08e9aa8002402498880fc86be"
+          },
+          "; Assembly listing for method Dekaf.Metadata.MetadataManager:GetEndpointsToTry():System.Collections.Generic.IReadOnlyList`1[System.ValueTuple`3[int,System.String,int]]:this (Tier1)": {
+            "bytes": 3890,
+            "instruction_sha256": "31fa4c7b98dc2c740a7cf0f1adb94fba7219e18ccf8e707f5c39990ff950b18b"
+          },
+          "; Assembly listing for method Dekaf.Metadata.MetadataManager:UpdateVersionlessCapabilities(Dekaf.Networking.IKafkaConnection,short,bool):this (Tier1)": {
+            "bytes": 223,
+            "instruction_sha256": "28bb6b21d9b52342baefab3a26f5e7a393fd614851fc08cc6f4ab5128550714b"
+          },
+          "; Assembly listing for method Dekaf.Metadata.MetadataManager:ObserveClusterCapabilities(System.String,Dekaf.Networking.IKafkaConnection):this (Tier1)": {
+            "bytes": 105,
+            "instruction_sha256": "a0ae74d22c4ec32cec5ad1c58d9ea6744faada86a9622a38baaba72a9c81a60b"
+          }
+        }
+      },
+      {
+        "phase": "B",
+        "metrics": {
+          "CallsPerSecond": 734766.4354389907,
+          "CpuNsPerCall": 1296.629320169407,
+          "AllocatedBytesPerCall": 2384.021785357602,
+          "P50Ns": 1001,
+          "P99Ns": 1592,
+          "MaxNs": 3715888
+        },
+        "gc": [
+          18850,
+          118,
+          2
+        ],
+        "jit_overflow": false,
+        "measured_jit": [],
+        "cpu_blocks": [
+          {
+            "start_seconds": 480.000374126,
+            "end_seconds": 510.000375177,
+            "cpu_ns_per_call": 1291.2905636549344
+          },
+          {
+            "start_seconds": 510.000375177,
+            "end_seconds": 540.000382495,
+            "cpu_ns_per_call": 1290.0806752356627
+          },
+          {
+            "start_seconds": 540.000382495,
+            "end_seconds": 570.000376106,
+            "cpu_ns_per_call": 1289.8154083307256
+          },
+          {
+            "start_seconds": 570.000376106,
+            "end_seconds": 600.000376121,
+            "cpu_ns_per_call": 1298.952736602055
+          },
+          {
+            "start_seconds": 600.000376121,
+            "end_seconds": 630.000376264,
+            "cpu_ns_per_call": 1311.6795292938937
+          },
+          {
+            "start_seconds": 630.000376264,
+            "end_seconds": 660.000441659,
+            "cpu_ns_per_call": 1298.231338498658
+          }
+        ],
+        "methods": {
+          "; Assembly listing for method Dekaf.Benchmarks.Probe+<CapturePhasesAsync>d__12:MoveNext():this (Tier1-OSR)": {
+            "bytes": 3254,
+            "instruction_sha256": "ca5f8feb04dfccdde551238691ef2571c53deeb63ff4c9c0218381c6d8784224"
+          },
+          "; Assembly listing for method Dekaf.Protocol.Messages.DeleteTopicsResponseTopic:get_ErrorCode():short:this (Tier1)": {
+            "bytes": 6,
+            "instruction_sha256": "2732f99cadf9a14fb2cd5b0e416dd00a3637d1b59bfccdf6d1c9bae7b2e9685a"
+          },
+          "; Assembly listing for method Dekaf.Metadata.MetadataManager:get_Metadata():Dekaf.Metadata.ClusterMetadata:this (Tier1)": {
+            "bytes": 5,
+            "instruction_sha256": "6feef27634feb3eb3cd1b85d39f38e1049f2323f699566503b0a162223617f25"
+          },
+          "; Assembly listing for method Dekaf.Metadata.MetadataManager:RefreshMetadataAsync(System.Threading.CancellationToken):System.Threading.Tasks.ValueTask:this (Tier1)": {
+            "bytes": 428,
+            "instruction_sha256": "a919dee2fb626236cf03edd079bcf9b1626247fe416ddc7ac1091fdf3dd8cc9f"
+          },
+          "; Assembly listing for method Dekaf.Metadata.MetadataManager+<RefreshMetadataAsync>d__78:MoveNext():this (Tier1)": {
+            "bytes": 921,
+            "instruction_sha256": "c5088d7352f42b97943e8d82c72915d6bbfe504a3860e128842228462dc79c97"
+          },
+          "; Assembly listing for method Dekaf.Metadata.MetadataManager:RefreshMetadataAsync(System.Collections.Generic.IEnumerable`1[System.String],bool,System.Threading.CancellationToken):System.Threading.Tasks.ValueTask:this (Tier1)": {
+            "bytes": 446,
+            "instruction_sha256": "f3aa1579fb5360815e589e5a7a88acc80b0ef3e2459b129e8c293d90ed9323fd"
+          },
+          "; Assembly listing for method Dekaf.Metadata.MetadataManager:RefreshMetadataAsyncCore(System.Collections.Generic.IEnumerable`1[System.String],bool,int,bool,System.Threading.CancellationToken):System.Threading.Tasks.ValueTask:this (Tier1)": {
+            "bytes": 442,
+            "instruction_sha256": "70b081ea142dec77c83ea6e1ec2f1214a69cdf9a9525e14a75c6a8b92678464f"
+          },
+          "; Assembly listing for method Dekaf.Metadata.MetadataManager+<RefreshMetadataAsyncCore>d__82:MoveNext():this (Tier1)": {
+            "bytes": 2585,
+            "instruction_sha256": "702b60b77b4120d019a3c549af774786ba1e5db64bd230d3cde70e79a31f07e4"
+          },
+          "; Assembly listing for method Dekaf.Metadata.MetadataManager:LogMetadataRefreshRequested():this (Tier1)": {
+            "bytes": 104,
+            "instruction_sha256": "82d80c71342fcdb0000c83f3c74d9813fda4bda89154625c039e73208b4029ab"
+          },
+          "; Assembly listing for method Dekaf.Metadata.MetadataManager:RefreshMetadataInternalAsync(System.Collections.Generic.IEnumerable`1[System.String],bool,System.Threading.CancellationToken):System.Threading.Tasks.ValueTask:this (Tier1)": {
+            "bytes": 556,
+            "instruction_sha256": "986beeec076d9bd36290d3da86729b9c3f86e710829c92ecfe2970026624df3b"
+          },
+          "; Assembly listing for method Dekaf.Metadata.MetadataManager+<RefreshMetadataInternalAsync>d__84:MoveNext():this (Tier1)": {
+            "bytes": 8094,
+            "instruction_sha256": "746fdef42724fdf046616cd757fcaf9be4c57c91162b520218835296cfb6218d"
+          },
+          "; Assembly listing for method Dekaf.Metadata.MetadataManager:TryConsumeMetadataRebootstrapRequest():bool:this (Tier1)": {
+            "bytes": 148,
+            "instruction_sha256": "0da6bee5d87ce2961bfdfd38e6803dd2a23bcbbfcf3fcab62f11b80f2502064a"
+          },
+          "; Assembly listing for method Dekaf.Metadata.MetadataManager:GetEndpointsToTry():System.Collections.Generic.IReadOnlyList`1[System.ValueTuple`3[int,System.String,int]]:this (Tier1)": {
+            "bytes": 3892,
+            "instruction_sha256": "69ea575afd5e95c791e7c207f8a207d200a891e72cd8d59d364f72564cc316f4"
+          },
+          "; Assembly listing for method Dekaf.Metadata.MetadataManager:UpdateVersionlessCapabilities(Dekaf.Networking.IKafkaConnection,short,bool):this (Tier1)": {
+            "bytes": 223,
+            "instruction_sha256": "28bb6b21d9b52342baefab3a26f5e7a393fd614851fc08cc6f4ab5128550714b"
+          },
+          "; Assembly listing for method Dekaf.Metadata.MetadataManager:RegisterBroker(int,System.String,int):this (Tier1)": {
+            "bytes": 116,
+            "instruction_sha256": "579e39a5790d5b60b8dbb9dade0dfb6fae6198999b0b4db099083fc109f1c33a"
+          },
+          "; Assembly listing for method Dekaf.Metadata.MetadataManager:UpdateMetadataClusterId(System.String):this (Tier1)": {
+            "bytes": 126,
+            "instruction_sha256": "4dbd2f870bf32b69bc933ebb3332ce02b8639e9ff9085b597e5a71960ae37ad1"
+          },
+          "; Assembly listing for method Dekaf.Metadata.MetadataManager:UpdateMetadataClusterId(Dekaf.Networking.IConnectionPool,System.String) (Tier1)": {
+            "bytes": 93,
+            "instruction_sha256": "67e13629d7a92dca20906dc071467e7f7ec1fd1e52aaf840e3ad8fcee34bb614"
+          },
+          "; Assembly listing for method Dekaf.Metadata.MetadataManager:PublishBrokerStatusSnapshot(System.Collections.Generic.IReadOnlyList`1[Dekaf.Protocol.Messages.BrokerMetadata]):this (Tier1)": {
+            "bytes": 457,
+            "instruction_sha256": "3e37f32371290e0224ef57f1a2ea8100d7894122ba1074637d59c5251e783a5b"
+          },
+          "; Assembly listing for method Dekaf.Metadata.MetadataManager:UpdateBrokerStatusSnapshot(Dekaf.Networking.IConnectionPool,int[]) (Tier1)": {
+            "bytes": 93,
+            "instruction_sha256": "49cdf5120785220b90194d2576e23972be3d06966b407183aa852edd4c0a763c"
+          },
+          "; Assembly listing for method Dekaf.Metadata.MetadataManager:LogMetadataRefreshed(int,int):this (Tier1)": {
+            "bytes": 132,
+            "instruction_sha256": "3d41180a4ca93c1bcb3ac555e6c484603899549085c2779d3089faf116bac5bc"
+          },
+          "; Assembly listing for method Dekaf.Metadata.MetadataManager:NotifyBrokerCountDiscovered(int):this (Tier1)": {
+            "bytes": 203,
+            "instruction_sha256": "a6f838e7c0d926a828c8cc026328b71074b821565c670373de603923fafdf81d"
+          },
+          "; Assembly listing for method Dekaf.Metadata.MetadataManager:ResetAllBrokersUnavailableTimestamp():this (Tier1)": {
+            "bytes": 13,
+            "instruction_sha256": "a1f14f1fc3b4e175bc7733676fa5b73e0c926407a0dd4fb49475ee74b95fec3a"
+          },
+          "; Assembly listing for method Dekaf.Admin.AdminClient+<DeleteTopicsAsync>d__34:MoveNext():this (Tier1)": {
+            "bytes": 3794,
+            "instruction_sha256": "252df42add31cd29a0c7f077021208e3b85932bea0206b80e451a108a6a9280a"
+          },
+          "; Assembly listing for method Dekaf.Admin.DeleteTopicsOptions:.ctor():this (Tier1)": {
+            "bytes": 8,
+            "instruction_sha256": "b373c91896d8e5ff407f30344626036d7a515929260c259dbda60a720092d44b"
+          },
+          "; Assembly listing for method Dekaf.Admin.AdminClient+<>c__DisplayClass34_0+<<DeleteTopicsAsync>b__0>d:MoveNext():this (Tier1)": {
+            "bytes": 3966,
+            "instruction_sha256": "492a9c4e864ab2c367631a9a97c86ba627d7d19466a53b7f64adc2ea1cb9716d"
+          },
+          "; Assembly listing for method Dekaf.Protocol.Messages.DeleteTopicsRequest:get_LowestSupportedVersion():short (Tier1)": {
+            "bytes": 6,
+            "instruction_sha256": "30d3b5fcbbd7008d24cf26ca061874b4456ae60a7e97ccae69687b871fb275df"
+          },
+          "; Assembly listing for method Dekaf.Protocol.Messages.DeleteTopicsRequest:get_HighestSupportedVersion():short (Tier1)": {
+            "bytes": 6,
+            "instruction_sha256": "06c3f858a5e8adebbec915c5b09dfe34c241592d9f80508b56569a0483415796"
+          },
+          "; Assembly listing for method Dekaf.Metadata.MetadataManager:GetNegotiatedApiVersion(Dekaf.Networking.IKafkaConnection,short,short,short):short:this (Tier1)": {
+            "bytes": 1101,
+            "instruction_sha256": "a52b671c39f6abc955857edcfd2cb3c861d24589807ccd84593ccbfb0b260958"
+          },
+          "; Assembly listing for method Dekaf.Metadata.MetadataManager:GetNegotiatedApiVersion(short,short,short):short:this (Tier1)": {
+            "bytes": 825,
+            "instruction_sha256": "f8ea612c2324e609a7e546225f9410ed69a5f1450e84f0219afe8e87fa3059b5"
+          },
+          "; Assembly listing for method Dekaf.Protocol.Messages.DeleteTopicsRequest:.ctor():this (Tier1)": {
+            "bytes": 8,
+            "instruction_sha256": "b54a14c150b9a656c31393774200e856a2386ed3bbcd85d12ec84346d9de7038"
+          },
+          "; Assembly listing for method Dekaf.Protocol.Messages.DeleteTopicsRequest:set_Topics(System.Collections.Generic.IReadOnlyList`1[Dekaf.Protocol.Messages.DeleteTopicState]):this (Tier1)": {
+            "bytes": 11,
+            "instruction_sha256": "311ab04060c551d1cd78e43db230b493c06d7a51e83fea0059fb4db94ac1c061"
+          },
+          "; Assembly listing for method Dekaf.Admin.DeleteTopicsOptions:get_TimeoutMs():int:this (Tier1)": {
+            "bytes": 4,
+            "instruction_sha256": "f68e43ad03195cb072d74dad94d5e28000666a0ee291c762f5b473e5819696e0"
+          },
+          "; Assembly listing for method Dekaf.Protocol.Messages.DeleteTopicsRequest:set_TimeoutMs(int):this (Tier1)": {
+            "bytes": 4,
+            "instruction_sha256": "e4ad0f81f95c6aa964fce97a57260f69351675c2feb629faffc9234176f7cec8"
+          },
+          "; Assembly listing for method Dekaf.Protocol.Messages.DeleteTopicsResponse:get_Responses():System.Collections.Generic.IReadOnlyList`1[Dekaf.Protocol.Messages.DeleteTopicsResponseTopic]:this (Tier1)": {
+            "bytes": 5,
+            "instruction_sha256": "9f63360eab75419b38504c248212a323c5ea9b8211adb426e03a78d2889a4071"
+          },
+          "; Assembly listing for method Dekaf.Metadata.MetadataManager:ObserveClusterCapabilities(System.String,Dekaf.Networking.IKafkaConnection):this (Tier1)": {
+            "bytes": 105,
+            "instruction_sha256": "a0ae74d22c4ec32cec5ad1c58d9ea6744faada86a9622a38baaba72a9c81a60b"
+          }
+        }
+      },
+      {
+        "phase": "A2",
+        "metrics": {
+          "CallsPerSecond": 887242.5015683251,
+          "CpuNsPerCall": 1126.9224763877035,
+          "AllocatedBytesPerCall": 2384.016941278212,
+          "P50Ns": 911,
+          "P99Ns": 1502,
+          "MaxNs": 3686130
+        },
+        "gc": [
+          22761,
+          143,
+          2
+        ],
+        "jit_overflow": false,
+        "measured_jit": [
+          {
+            "type": "System.GC",
+            "method": "RunFinalizers"
+          },
+          {
+            "type": "System.Buffer",
+            "method": "ZeroMemoryInternal"
+          }
+        ],
+        "cpu_blocks": [
+          {
+            "start_seconds": 480.000316377,
+            "end_seconds": 510.000317779,
+            "cpu_ns_per_call": 1128.3875719778518
+          },
+          {
+            "start_seconds": 510.000317779,
+            "end_seconds": 540.000318096,
+            "cpu_ns_per_call": 1150.7457696979816
+          },
+          {
+            "start_seconds": 540.000318096,
+            "end_seconds": 570.00040096,
+            "cpu_ns_per_call": 1129.3351767639194
+          },
+          {
+            "start_seconds": 570.00040096,
+            "end_seconds": 600.00031847,
+            "cpu_ns_per_call": 1114.5577082208563
+          },
+          {
+            "start_seconds": 600.00031847,
+            "end_seconds": 630.000317539,
+            "cpu_ns_per_call": 1117.652350002709
+          },
+          {
+            "start_seconds": 630.000317539,
+            "end_seconds": 660.000318313,
+            "cpu_ns_per_call": 1121.5957648166318
+          }
+        ],
+        "methods": {
+          "; Assembly listing for method Dekaf.Benchmarks.Probe+<CapturePhasesAsync>d__12:MoveNext():this (Tier1-OSR)": {
+            "bytes": 3258,
+            "instruction_sha256": "9cff4af4cf358a475d24e9cd2870a03713d8da39aacfb1c6a0414bca6eb37f66"
+          },
+          "; Assembly listing for method Dekaf.Protocol.Messages.DeleteTopicsResponseTopic:get_ErrorCode():short:this (Tier1)": {
+            "bytes": 6,
+            "instruction_sha256": "2732f99cadf9a14fb2cd5b0e416dd00a3637d1b59bfccdf6d1c9bae7b2e9685a"
+          },
+          "; Assembly listing for method Dekaf.Metadata.MetadataManager:get_Metadata():Dekaf.Metadata.ClusterMetadata:this (Tier1)": {
+            "bytes": 5,
+            "instruction_sha256": "6feef27634feb3eb3cd1b85d39f38e1049f2323f699566503b0a162223617f25"
+          },
+          "; Assembly listing for method Dekaf.Metadata.MetadataManager:ResetAllBrokersUnavailableTimestamp():this (Tier1)": {
+            "bytes": 13,
+            "instruction_sha256": "a1f14f1fc3b4e175bc7733676fa5b73e0c926407a0dd4fb49475ee74b95fec3a"
+          },
+          "; Assembly listing for method Dekaf.Admin.AdminClient+<DeleteTopicsAsync>d__34:MoveNext():this (Tier1)": {
+            "bytes": 3785,
+            "instruction_sha256": "7676c90686cf7ed198c3fcfc1fec37f3077cfd1e89695cf20bfa4dab259fec81"
+          },
+          "; Assembly listing for method Dekaf.Admin.DeleteTopicsOptions:.ctor():this (Tier1)": {
+            "bytes": 8,
+            "instruction_sha256": "b373c91896d8e5ff407f30344626036d7a515929260c259dbda60a720092d44b"
+          },
+          "; Assembly listing for method Dekaf.Admin.AdminClient+<>c__DisplayClass34_0+<<DeleteTopicsAsync>b__0>d:MoveNext():this (Tier1)": {
+            "bytes": 3966,
+            "instruction_sha256": "492a9c4e864ab2c367631a9a97c86ba627d7d19466a53b7f64adc2ea1cb9716d"
+          },
+          "; Assembly listing for method Dekaf.Protocol.Messages.DeleteTopicsRequest:get_LowestSupportedVersion():short (Tier1)": {
+            "bytes": 6,
+            "instruction_sha256": "30d3b5fcbbd7008d24cf26ca061874b4456ae60a7e97ccae69687b871fb275df"
+          },
+          "; Assembly listing for method Dekaf.Protocol.Messages.DeleteTopicsRequest:get_HighestSupportedVersion():short (Tier1)": {
+            "bytes": 6,
+            "instruction_sha256": "06c3f858a5e8adebbec915c5b09dfe34c241592d9f80508b56569a0483415796"
+          },
+          "; Assembly listing for method Dekaf.Metadata.MetadataManager:GetNegotiatedApiVersion(Dekaf.Networking.IKafkaConnection,short,short,short):short:this (Tier1)": {
+            "bytes": 1101,
+            "instruction_sha256": "a52b671c39f6abc955857edcfd2cb3c861d24589807ccd84593ccbfb0b260958"
+          },
+          "; Assembly listing for method Dekaf.Metadata.MetadataManager:GetNegotiatedApiVersion(short,short,short):short:this (Tier1)": {
+            "bytes": 825,
+            "instruction_sha256": "f8ea612c2324e609a7e546225f9410ed69a5f1450e84f0219afe8e87fa3059b5"
+          },
+          "; Assembly listing for method Dekaf.Protocol.Messages.DeleteTopicsRequest:.ctor():this (Tier1)": {
+            "bytes": 8,
+            "instruction_sha256": "b54a14c150b9a656c31393774200e856a2386ed3bbcd85d12ec84346d9de7038"
+          },
+          "; Assembly listing for method Dekaf.Protocol.Messages.DeleteTopicsRequest:set_Topics(System.Collections.Generic.IReadOnlyList`1[Dekaf.Protocol.Messages.DeleteTopicState]):this (Tier1)": {
+            "bytes": 11,
+            "instruction_sha256": "311ab04060c551d1cd78e43db230b493c06d7a51e83fea0059fb4db94ac1c061"
+          },
+          "; Assembly listing for method Dekaf.Admin.DeleteTopicsOptions:get_TimeoutMs():int:this (Tier1)": {
+            "bytes": 4,
+            "instruction_sha256": "f68e43ad03195cb072d74dad94d5e28000666a0ee291c762f5b473e5819696e0"
+          },
+          "; Assembly listing for method Dekaf.Protocol.Messages.DeleteTopicsRequest:set_TimeoutMs(int):this (Tier1)": {
+            "bytes": 4,
+            "instruction_sha256": "e4ad0f81f95c6aa964fce97a57260f69351675c2feb629faffc9234176f7cec8"
+          },
+          "; Assembly listing for method Dekaf.Protocol.Messages.DeleteTopicsResponse:get_Responses():System.Collections.Generic.IReadOnlyList`1[Dekaf.Protocol.Messages.DeleteTopicsResponseTopic]:this (Tier1)": {
+            "bytes": 5,
+            "instruction_sha256": "9f63360eab75419b38504c248212a323c5ea9b8211adb426e03a78d2889a4071"
+          },
+          "; Assembly listing for method Dekaf.Metadata.MetadataManager:RefreshMetadataAsync(System.Threading.CancellationToken):System.Threading.Tasks.ValueTask:this (Tier1)": {
+            "bytes": 428,
+            "instruction_sha256": "a919dee2fb626236cf03edd079bcf9b1626247fe416ddc7ac1091fdf3dd8cc9f"
+          },
+          "; Assembly listing for method Dekaf.Metadata.MetadataManager+<RefreshMetadataAsync>d__78:MoveNext():this (Tier1)": {
+            "bytes": 921,
+            "instruction_sha256": "c5088d7352f42b97943e8d82c72915d6bbfe504a3860e128842228462dc79c97"
+          },
+          "; Assembly listing for method Dekaf.Metadata.MetadataManager:RefreshMetadataAsync(System.Collections.Generic.IEnumerable`1[System.String],bool,System.Threading.CancellationToken):System.Threading.Tasks.ValueTask:this (Tier1)": {
+            "bytes": 446,
+            "instruction_sha256": "f3aa1579fb5360815e589e5a7a88acc80b0ef3e2459b129e8c293d90ed9323fd"
+          },
+          "; Assembly listing for method Dekaf.Metadata.MetadataManager:RefreshMetadataAsyncCore(System.Collections.Generic.IEnumerable`1[System.String],bool,int,bool,System.Threading.CancellationToken):System.Threading.Tasks.ValueTask:this (Tier1)": {
+            "bytes": 442,
+            "instruction_sha256": "70b081ea142dec77c83ea6e1ec2f1214a69cdf9a9525e14a75c6a8b92678464f"
+          },
+          "; Assembly listing for method Dekaf.Metadata.MetadataManager+<RefreshMetadataAsyncCore>d__82:MoveNext():this (Tier1)": {
+            "bytes": 2585,
+            "instruction_sha256": "702b60b77b4120d019a3c549af774786ba1e5db64bd230d3cde70e79a31f07e4"
+          },
+          "; Assembly listing for method Dekaf.Metadata.MetadataManager:LogMetadataRefreshRequested():this (Tier1)": {
+            "bytes": 104,
+            "instruction_sha256": "82d80c71342fcdb0000c83f3c74d9813fda4bda89154625c039e73208b4029ab"
+          },
+          "; Assembly listing for method Dekaf.Metadata.MetadataManager:RefreshMetadataInternalAsync(System.Collections.Generic.IEnumerable`1[System.String],bool,System.Threading.CancellationToken):System.Threading.Tasks.ValueTask:this (Tier1)": {
+            "bytes": 556,
+            "instruction_sha256": "986beeec076d9bd36290d3da86729b9c3f86e710829c92ecfe2970026624df3b"
+          },
+          "; Assembly listing for method Dekaf.Metadata.MetadataManager+<RefreshMetadataInternalAsync>d__84:MoveNext():this (Tier1)": {
+            "bytes": 8134,
+            "instruction_sha256": "8d9018b3026d2053eb73bafbadb2166e26e2667b9d50297cf126b368e5349b2e"
+          },
+          "; Assembly listing for method Dekaf.Metadata.MetadataManager:TryConsumeMetadataRebootstrapRequest():bool:this (Tier1)": {
+            "bytes": 148,
+            "instruction_sha256": "4569da6f9a7ddf2c4093bd8727a67f19ff12eae08e9aa8002402498880fc86be"
+          },
+          "; Assembly listing for method Dekaf.Metadata.MetadataManager:GetEndpointsToTry():System.Collections.Generic.IReadOnlyList`1[System.ValueTuple`3[int,System.String,int]]:this (Tier1)": {
+            "bytes": 3934,
+            "instruction_sha256": "6992a9565415ee059bf2f1ec15994a81caec24d43c7efb690b4bee7f0f4a7233"
+          },
+          "; Assembly listing for method Dekaf.Metadata.MetadataManager:UpdateVersionlessCapabilities(Dekaf.Networking.IKafkaConnection,short,bool):this (Tier1)": {
+            "bytes": 223,
+            "instruction_sha256": "28bb6b21d9b52342baefab3a26f5e7a393fd614851fc08cc6f4ab5128550714b"
+          },
+          "; Assembly listing for method Dekaf.Metadata.MetadataManager:ObserveClusterCapabilities(System.String,Dekaf.Networking.IKafkaConnection):this (Tier1)": {
+            "bytes": 105,
+            "instruction_sha256": "a0ae74d22c4ec32cec5ad1c58d9ea6744faada86a9622a38baaba72a9c81a60b"
+          },
+          "; Assembly listing for method Dekaf.Metadata.MetadataManager:RegisterBroker(int,System.String,int):this (Tier1)": {
+            "bytes": 116,
+            "instruction_sha256": "579e39a5790d5b60b8dbb9dade0dfb6fae6198999b0b4db099083fc109f1c33a"
+          },
+          "; Assembly listing for method Dekaf.Metadata.MetadataManager:UpdateMetadataClusterId(System.String):this (Tier1)": {
+            "bytes": 126,
+            "instruction_sha256": "4dbd2f870bf32b69bc933ebb3332ce02b8639e9ff9085b597e5a71960ae37ad1"
+          },
+          "; Assembly listing for method Dekaf.Metadata.MetadataManager:UpdateMetadataClusterId(Dekaf.Networking.IConnectionPool,System.String) (Tier1)": {
+            "bytes": 93,
+            "instruction_sha256": "67e13629d7a92dca20906dc071467e7f7ec1fd1e52aaf840e3ad8fcee34bb614"
+          },
+          "; Assembly listing for method Dekaf.Metadata.MetadataManager:PublishBrokerStatusSnapshot(System.Collections.Generic.IReadOnlyList`1[Dekaf.Protocol.Messages.BrokerMetadata]):this (Tier1)": {
+            "bytes": 457,
+            "instruction_sha256": "3e37f32371290e0224ef57f1a2ea8100d7894122ba1074637d59c5251e783a5b"
+          },
+          "; Assembly listing for method Dekaf.Metadata.MetadataManager:UpdateBrokerStatusSnapshot(Dekaf.Networking.IConnectionPool,int[]) (Tier1)": {
+            "bytes": 93,
+            "instruction_sha256": "49cdf5120785220b90194d2576e23972be3d06966b407183aa852edd4c0a763c"
+          },
+          "; Assembly listing for method Dekaf.Metadata.MetadataManager:LogMetadataRefreshed(int,int):this (Tier1)": {
+            "bytes": 132,
+            "instruction_sha256": "3d41180a4ca93c1bcb3ac555e6c484603899549085c2779d3089faf116bac5bc"
+          },
+          "; Assembly listing for method Dekaf.Metadata.MetadataManager:NotifyBrokerCountDiscovered(int):this (Tier1)": {
+            "bytes": 203,
+            "instruction_sha256": "a6f838e7c0d926a828c8cc026328b71074b821565c670373de603923fafdf81d"
+          }
+        }
+      }
+    ],
+    "shared_tier1_methods": 35,
+    "changed_instruction_bodies": [
+      "; Assembly listing for method Dekaf.Admin.AdminClient+<>c__DisplayClass34_0+<<DeleteTopicsAsync>b__0>d:MoveNext():this (Tier1)",
+      "; Assembly listing for method Dekaf.Admin.AdminClient+<DeleteTopicsAsync>d__34:MoveNext():this (Tier1)",
+      "; Assembly listing for method Dekaf.Benchmarks.Probe+<CapturePhasesAsync>d__12:MoveNext():this (Tier1-OSR)",
+      "; Assembly listing for method Dekaf.Metadata.MetadataManager+<RefreshMetadataInternalAsync>d__84:MoveNext():this (Tier1)",
+      "; Assembly listing for method Dekaf.Metadata.MetadataManager:GetEndpointsToTry():System.Collections.Generic.IReadOnlyList`1[System.ValueTuple`3[int,System.String,int]]:this (Tier1)",
+      "; Assembly listing for method Dekaf.Metadata.MetadataManager:PublishBrokerStatusSnapshot(System.Collections.Generic.IReadOnlyList`1[Dekaf.Protocol.Messages.BrokerMetadata]):this (Tier1)",
+      "; Assembly listing for method Dekaf.Metadata.MetadataManager:TryConsumeMetadataRebootstrapRequest():bool:this (Tier1)"
+    ]
+  },
+  "runner_resources": [
+    {
+      "phase": "A1",
+      "case": "legacy-delete:16",
+      "samples": 180,
+      "observed_seconds": 179.11205731,
+      "max_sample_gap_seconds": 1.00069758,
+      "cpu": {
+        "cpu": {
+          "busy_fraction": 0.25281699986019857,
+          "steal_fraction": 0.0
+        },
+        "cpu3": {
+          "busy_fraction": 1.0,
+          "steal_fraction": 0.0
+        }
+      },
+      "min_memory_available_bytes": 15592919040,
+      "min_swap_free_bytes": 3221221376,
+      "swap_pages_in": 0,
+      "swap_pages_out": 0,
+      "pressure_fractions": {
+        "cpu": {
+          "some": 0.002278590320101326,
+          "full": 0.0
+        },
+        "memory": {
+          "some": 0.0,
+          "full": 0.0
+        },
+        "io": {
+          "some": 1.4527218541723086e-05,
+          "full": 1.4471387571155356e-05
+        }
+      }
+    },
+    {
+      "phase": "B",
+      "case": "legacy-delete:16",
+      "samples": 180,
+      "observed_seconds": 179.104130216,
+      "max_sample_gap_seconds": 1.000678244,
+      "cpu": {
+        "cpu": {
+          "busy_fraction": 0.24308551483420593,
+          "steal_fraction": 0.0
+        },
+        "cpu3": {
+          "busy_fraction": 0.955891339370035,
+          "steal_fraction": 0.0
+        }
+      },
+      "min_memory_available_bytes": 15533056000,
+      "min_swap_free_bytes": 3221221376,
+      "swap_pages_in": 0,
+      "swap_pages_out": 0,
+      "pressure_fractions": {
+        "cpu": {
+          "some": 0.10996316487089358,
+          "full": 0.0
+        },
+        "memory": {
+          "some": 0.0,
+          "full": 0.0
+        },
+        "io": {
+          "some": 3.35000649776417e-08,
+          "full": 2.7916720814701416e-08
+        }
+      }
+    },
+    {
+      "phase": "A2",
+      "case": "legacy-delete:16",
+      "samples": 180,
+      "observed_seconds": 179.112589016,
+      "max_sample_gap_seconds": 1.00071705,
+      "cpu": {
+        "cpu": {
+          "busy_fraction": 0.2526280474166853,
+          "steal_fraction": 0.0
+        },
+        "cpu3": {
+          "busy_fraction": 1.0,
+          "steal_fraction": 0.0
+        }
+      },
+      "min_memory_available_bytes": 15446618112,
+      "min_swap_free_bytes": 3221221376,
+      "swap_pages_in": 0,
+      "swap_pages_out": 0,
+      "pressure_fractions": {
+        "cpu": {
+          "some": 0.0023003129052151386,
+          "full": 0.0
+        },
+        "memory": {
+          "some": 0.0,
+          "full": 0.0
+        },
+        "io": {
+          "some": 4.466464386423093e-08,
+          "full": 4.466464386423093e-08
+        }
+      }
+    }
+  ],
+  "sampled_cpu": {
+    "Samples": 278703,
+    "MissingStacks": 0,
+    "StartMs": 487909.92624,
+    "EndMs": 667910.334224,
+    "Note": "Raw stack sample counts, not CPU percentages or elapsed times. Waiting/native samples remain labeled by the original payload.",
+    "Kinds": {
+      "Type=Managed": 139255,
+      "Type=External": 139448
+    },
+    "Leaves": [
+      {
+        "Stack": "Type=External | System.Diagnostics.Tracing.EventPipeEventDispatcher.DispatchEventsToEventListeners(unsigned int64,value class System.DateTime,int64,int64,class System.Threading.Tasks.Task,value class System.Threading.CancellationToken)",
+        "Count": 139351
+      },
+      {
+        "Stack": "Type=Managed | System.Threading.Monitor.Enter_Slowpath(class System.Object)",
+        "Count": 45070
+      },
+      {
+        "Stack": "Type=Managed | System.Threading.Thread.<PollGC>g__PollGCWorker|67_0()",
+        "Count": 32988
+      },
+      {
+        "Stack": "Type=Managed | Dekaf.Admin.AdminClient+<>c__DisplayClass34_0+<<DeleteTopicsAsync>b__0>d.MoveNext()",
+        "Count": 12149
+      },
+      {
+        "Stack": "Type=Managed | Dekaf.Admin.AdminClient+<DeleteTopicsAsync>d__34.MoveNext()",
+        "Count": 6213
+      },
+      {
+        "Stack": "Type=Managed | Dekaf.Metadata.MetadataManager+<RefreshMetadataInternalAsync>d__84.MoveNext()",
+        "Count": 6058
+      },
+      {
+        "Stack": "Type=Managed | Dekaf.Benchmarks.Probe+<CapturePhasesAsync>d__12.MoveNext()",
+        "Count": 5649
+      },
+      {
+        "Stack": "Type=Managed | Dekaf.Metadata.MetadataManager.GetEndpointsToTry()",
+        "Count": 5488
+      },
+      {
+        "Stack": "Type=Managed | Dekaf.Benchmarks.AdminFixture+<Call>d__16.MoveNext()",
+        "Count": 4795
+      },
+      {
+        "Stack": "Type=Managed | Dekaf.Metadata.ClusterMetadata.Update(class Dekaf.Protocol.Messages.MetadataResponse,bool)",
+        "Count": 3238
+      },
+      {
+        "Stack": "Type=Managed | Dekaf.Metadata.MetadataManager+<RefreshMetadataAsyncCore>d__82.MoveNext()",
+        "Count": 3051
+      },
+      {
+        "Stack": "Type=Managed | Dekaf.Retry.RetryHelper+<WithRetryAsync>d__1.MoveNext()",
+        "Count": 2252
+      },
+      {
+        "Stack": "Type=Managed | Dekaf.Networking.ConnectionPoolLeaseExtensions+<LeaseConnectionAsync>d__1.MoveNext()",
+        "Count": 1924
+      },
+      {
+        "Stack": "Type=Managed | System.Runtime.CompilerServices.VirtualDispatchHelpers.VirtualFunctionPointer(class System.Object,int,int)",
+        "Count": 1759
+      },
+      {
+        "Stack": "Type=Managed | Dekaf.Admin.AdminClient+<LeaseControllerAsync>d__151.MoveNext()",
+        "Count": 1573
+      },
+      {
+        "Stack": "Type=Managed | Dekaf.Metadata.MetadataManager+<RefreshMetadataAsync>d__78.MoveNext()",
+        "Count": 1010
+      },
+      {
+        "Stack": "Type=Managed | System.Collections.Generic.List`1[System.__Canon]..ctor(class System.Collections.Generic.IEnumerable`1<!0>)",
+        "Count": 948
+      },
+      {
+        "Stack": "Type=Managed | System.Linq.Enumerable+ListSelectIterator`2[System.__Canon,System.__Canon].ToList()",
+        "Count": 913
+      },
+      {
+        "Stack": "Type=Managed | System.Runtime.CompilerServices.CastHelpers.IsInstanceOfClass(void*,class System.Object)",
+        "Count": 824
+      },
+      {
+        "Stack": "Type=Managed | System.Runtime.CompilerServices.CastHelpers.IsInstance_Helper(void*,class System.Object)",
+        "Count": 726
+      },
+      {
+        "Stack": "Type=Managed | Dekaf.Metadata.ClusterMetadataSnapshot.BuildPartitionsByBroker(class System.Collections.Generic.Dictionary`2<class System.String,class Dekaf.Metadata.TopicInfo>)",
+        "Count": 533
+      },
+      {
+        "Stack": "Type=Managed | Dekaf.Internal.SemaphoreHelper+<AcquireOrThrowDisposedAsync>d__0.MoveNext()",
+        "Count": 391
+      },
+      {
+        "Stack": "Type=Managed | Dekaf.Internal.SemaphoreHelper.ReleaseSafely(class System.Threading.SemaphoreSlim)",
+        "Count": 365
+      },
+      {
+        "Stack": "Type=Managed | Dekaf.Metadata.ClusterMetadataSnapshot.BuildPartitionsByTopicIndex(class System.Collections.Generic.Dictionary`2<class System.String,class Dekaf.Metadata.TopicInfo>)",
+        "Count": 245
+      },
+      {
+        "Stack": "Type=Managed | Dekaf.Admin.AdminClient+<EnsureInitializedAsync>d__141.MoveNext()",
+        "Count": 236
+      },
+      {
+        "Stack": "Type=Managed | System.Runtime.CompilerServices.CastHelpers.IsInstanceOfInterface(void*,class System.Object)",
+        "Count": 215
+      },
+      {
+        "Stack": "Type=Managed | Dekaf.Metadata.ClusterMetadataSnapshot.BuildPartitionsByTopicRack(class System.Collections.Generic.Dictionary`2<int32,class Dekaf.Metadata.BrokerNode>,class System.Collections.Generic.Dictionary`2<class System.String,class Dekaf.Metadata.TopicInfo>)",
+        "Count": 158
+      },
+      {
+        "Stack": "Type=Managed | Dekaf.Metadata.ClusterMetadata.AddResponseTopics(class Dekaf.Protocol.Messages.MetadataResponse,class System.Collections.Generic.Dictionary`2<class System.String,class Dekaf.Metadata.TopicInfo>,class System.Collections.Generic.Dictionary`2<value class System.Guid,class Dekaf.Metadata.TopicInfo>,class Dekaf.Metadata.ClusterMetadataSnapshot,class System.Collections.Generic.Dictionary`2<int32,class Dekaf.Metadata.BrokerNode>)",
+        "Count": 155
+      },
+      {
+        "Stack": "Type=Managed | System.Collections.Generic.Dictionary`2[System.Int32,System.__Canon].Initialize(int32)",
+        "Count": 106
+      },
+      {
+        "Stack": "Type=Managed | System.SZArrayHelper.CopyTo(!!0[],int32)",
+        "Count": 102
+      },
+      {
+        "Stack": "Type=Managed | System.Buffer.BulkMoveWithWriteBarrier(unsigned int8&,unsigned int8&,unsigned int)",
+        "Count": 37
+      },
+      {
+        "Stack": "Type=Managed | Dekaf.Admin.AdminClient+<>c.<DeleteTopicsAsync>b__34_1(class System.String)",
+        "Count": 36
+      },
+      {
+        "Stack": "Type=Managed | System.Collections.HashHelpers.GetPrime(int32)",
+        "Count": 34
+      },
+      {
+        "Stack": "Type=External | Dekaf.Admin.AdminClient+<>c.<DeleteTopicsAsync>b__34_1(class System.String)",
+        "Count": 16
+      },
+      {
+        "Stack": "Type=External | Dekaf.Metadata.ClusterMetadataSnapshot.BuildPartitionsByBroker(class System.Collections.Generic.Dictionary`2<class System.String,class Dekaf.Metadata.TopicInfo>)",
+        "Count": 11
+      },
+      {
+        "Stack": "Type=External | Dekaf.Admin.AdminClient+<DeleteTopicsAsync>d__34.MoveNext()",
+        "Count": 11
+      },
+      {
+        "Stack": "Type=External | Interop+procfs.TryReadFile(class System.String,class System.String&)",
+        "Count": 11
+      },
+      {
+        "Stack": "Type=External | Interop+Sys.Open(class System.String,value class OpenFlags,int32)",
+        "Count": 10
+      },
+      {
+        "Stack": "Type=External | Dekaf.Metadata.MetadataManager.GetEndpointsToTry()",
+        "Count": 9
+      },
+      {
+        "Stack": "Type=External | Dekaf.Metadata.ClusterMetadata.Update(class Dekaf.Protocol.Messages.MetadataResponse,bool)",
+        "Count": 6
+      },
+      {
+        "Stack": "Type=Managed | Dekaf.Benchmarks.Probe+ExactHistogram.Drain()",
+        "Count": 5
+      },
+      {
+        "Stack": "Type=External | System.Linq.Enumerable+ListSelectIterator`2[System.__Canon,System.__Canon].ToList()",
+        "Count": 5
+      },
+      {
+        "Stack": "Type=External | System.Collections.Generic.Dictionary`2[System.Int32,System.__Canon].Initialize(int32)",
+        "Count": 5
+      },
+      {
+        "Stack": "Type=External | Microsoft.Win32.SafeHandles.SafeFileHandle.Open(class System.String,value class System.IO.FileMode,value class System.IO.FileAccess,value class System.IO.FileShare,value class System.IO.FileOptions,int64,value class System.IO.UnixFileMode,int64&,value class System.IO.UnixFileMode&,bool,bool&,class System.Func`4<value class ErrorInfo,value class OpenFlags,class System.String,class System.Exception>)",
+        "Count": 3
+      },
+      {
+        "Stack": "Type=Managed | System.IO.Enumeration.FileSystemEnumerator`1[System.__Canon].MoveNext()",
+        "Count": 2
+      },
+      {
+        "Stack": "Type=Managed | System.Diagnostics.ProcessManager.CreateProcessInfo(value class ProcPid,value class ParsedStat&,value class ParsedStatus&,class System.String)",
+        "Count": 2
+      },
+      {
+        "Stack": "Type=External | System.IO.Enumeration.FileSystemEnumerator`1[System.__Canon].MoveNext()",
+        "Count": 2
+      },
+      {
+        "Stack": "Type=External | Dekaf.Admin.AdminClient+<>c__DisplayClass34_0+<<DeleteTopicsAsync>b__0>d.MoveNext()",
+        "Count": 2
+      },
+      {
+        "Stack": "Type=Managed | Dekaf.Benchmarks.Probe+ExactHistogram.Record(int64)",
+        "Count": 2
+      },
+      {
+        "Stack": "Type=External | System.IO.Enumeration.FileSystemEnumerator`1[System.__Canon].DirectoryFinished()",
+        "Count": 1
+      },
+      {
+        "Stack": "Type=External | System.Diagnostics.Process.GetUntruncatedProcessName(value class ProcPid,value class ParsedStat&)",
+        "Count": 1
+      },
+      {
+        "Stack": "Type=External | System.Environment.get_CpuUsage()",
+        "Count": 1
+      },
+      {
+        "Stack": "Type=External | System.RuntimeType+ActivatorCache..ctor(class System.RuntimeType)",
+        "Count": 1
+      },
+      {
+        "Stack": "Type=Managed | System.Number.TryParseBinaryIntegerStyle(value class System.ReadOnlySpan`1<!!0>,value class System.Globalization.NumberStyles,class System.Globalization.NumberFormatInfo,!!1&)",
+        "Count": 1
+      },
+      {
+        "Stack": "Type=External | Interop+Sys.OpenDir(class System.String)",
+        "Count": 1
+      },
+      {
+        "Stack": "Type=Managed | System.GC.GetGCMemoryInfo(value class System.GCKind)",
+        "Count": 1
+      },
+      {
+        "Stack": "Type=External | Microsoft.Win32.SafeHandles.SafeFileHandle.ReleaseHandle()",
+        "Count": 1
+      },
+      {
+        "Stack": "Type=Managed | System.IO.Strategies.OSFileStreamStrategy..ctor(class System.String,value class System.IO.FileMode,value class System.IO.FileAccess,value class System.IO.FileShare,value class System.IO.FileOptions,int64,value class System.Nullable`1<value class System.IO.UnixFileMode>)",
+        "Count": 1
+      }
+    ],
+    "Product": [
+      {
+        "Stack": "Type=Managed | Dekaf.Internal.SemaphoreHelper+<AcquireOrThrowDisposedAsync>d__0.MoveNext() | leaf=System.Threading.Monitor.Enter_Slowpath(class System.Object)",
+        "Count": 25673
+      },
+      {
+        "Stack": "Type=Managed | Dekaf.Metadata.ClusterMetadata.Update(class Dekaf.Protocol.Messages.MetadataResponse,bool) | leaf=System.Threading.Thread.<PollGC>g__PollGCWorker|67_0()",
+        "Count": 12885
+      },
+      {
+        "Stack": "Type=Managed | Dekaf.Admin.AdminClient+<>c__DisplayClass34_0+<<DeleteTopicsAsync>b__0>d.MoveNext() | leaf=Dekaf.Admin.AdminClient+<>c__DisplayClass34_0+<<DeleteTopicsAsync>b__0>d.MoveNext()",
+        "Count": 12149
+      },
+      {
+        "Stack": "Type=Managed | Dekaf.Metadata.ClusterMetadata.Update(class Dekaf.Protocol.Messages.MetadataResponse,bool) | leaf=System.Threading.Monitor.Enter_Slowpath(class System.Object)",
+        "Count": 11702
+      },
+      {
+        "Stack": "Type=Managed | Dekaf.Admin.AdminClient+<DeleteTopicsAsync>d__34.MoveNext() | leaf=System.Threading.Thread.<PollGC>g__PollGCWorker|67_0()",
+        "Count": 10257
+      },
+      {
+        "Stack": "Type=Managed | Dekaf.Benchmarks.Probe+<CapturePhasesAsync>d__12.MoveNext() | leaf=System.Threading.Thread.<PollGC>g__PollGCWorker|67_0()",
+        "Count": 9845
+      },
+      {
+        "Stack": "Type=Managed | Dekaf.Admin.AdminClient+<DeleteTopicsAsync>d__34.MoveNext() | leaf=Dekaf.Admin.AdminClient+<DeleteTopicsAsync>d__34.MoveNext()",
+        "Count": 6213
+      },
+      {
+        "Stack": "Type=Managed | Dekaf.Metadata.MetadataManager+<RefreshMetadataInternalAsync>d__84.MoveNext() | leaf=Dekaf.Metadata.MetadataManager+<RefreshMetadataInternalAsync>d__84.MoveNext()",
+        "Count": 6058
+      },
+      {
+        "Stack": "Type=Managed | Dekaf.Benchmarks.Probe+<CapturePhasesAsync>d__12.MoveNext() | leaf=Dekaf.Benchmarks.Probe+<CapturePhasesAsync>d__12.MoveNext()",
+        "Count": 5649
+      },
+      {
+        "Stack": "Type=Managed | Dekaf.Metadata.MetadataManager.GetEndpointsToTry() | leaf=Dekaf.Metadata.MetadataManager.GetEndpointsToTry()",
+        "Count": 5488
+      },
+      {
+        "Stack": "Type=Managed | Dekaf.Benchmarks.AdminFixture+<Call>d__16.MoveNext() | leaf=Dekaf.Benchmarks.AdminFixture+<Call>d__16.MoveNext()",
+        "Count": 4795
+      },
+      {
+        "Stack": "Type=Managed | Dekaf.Metadata.MetadataManager.GetEndpointsToTry() | leaf=System.Threading.Monitor.Enter_Slowpath(class System.Object)",
+        "Count": 3297
+      },
+      {
+        "Stack": "Type=Managed | Dekaf.Metadata.ClusterMetadata.Update(class Dekaf.Protocol.Messages.MetadataResponse,bool) | leaf=Dekaf.Metadata.ClusterMetadata.Update(class Dekaf.Protocol.Messages.MetadataResponse,bool)",
+        "Count": 3238
+      },
+      {
+        "Stack": "Type=Managed | Dekaf.Metadata.MetadataManager+<RefreshMetadataAsyncCore>d__82.MoveNext() | leaf=Dekaf.Metadata.MetadataManager+<RefreshMetadataAsyncCore>d__82.MoveNext()",
+        "Count": 3051
+      },
+      {
+        "Stack": "Type=Managed | Dekaf.Metadata.MetadataManager+<RefreshMetadataInternalAsync>d__84.MoveNext() | leaf=System.Threading.Monitor.Enter_Slowpath(class System.Object)",
+        "Count": 2397
+      },
+      {
+        "Stack": "Type=Managed | Dekaf.Retry.RetryHelper+<WithRetryAsync>d__1.MoveNext() | leaf=Dekaf.Retry.RetryHelper+<WithRetryAsync>d__1.MoveNext()",
+        "Count": 2252
+      },
+      {
+        "Stack": "Type=Managed | Dekaf.Internal.SemaphoreHelper.ReleaseSafely(class System.Threading.SemaphoreSlim) | leaf=System.Threading.Monitor.Enter_Slowpath(class System.Object)",
+        "Count": 2001
+      },
+      {
+        "Stack": "Type=Managed | Dekaf.Networking.ConnectionPoolLeaseExtensions+<LeaseConnectionAsync>d__1.MoveNext() | leaf=Dekaf.Networking.ConnectionPoolLeaseExtensions+<LeaseConnectionAsync>d__1.MoveNext()",
+        "Count": 1924
+      },
+      {
+        "Stack": "Type=Managed | Dekaf.Admin.AdminClient+<LeaseControllerAsync>d__151.MoveNext() | leaf=Dekaf.Admin.AdminClient+<LeaseControllerAsync>d__151.MoveNext()",
+        "Count": 1573
+      },
+      {
+        "Stack": "Type=Managed | Dekaf.Admin.AdminClient+<>c__DisplayClass34_0+<<DeleteTopicsAsync>b__0>d.MoveNext() | leaf=System.Runtime.CompilerServices.VirtualDispatchHelpers.VirtualFunctionPointer(class System.Object,int,int)",
+        "Count": 1043
+      },
+      {
+        "Stack": "Type=Managed | Dekaf.Metadata.MetadataManager+<RefreshMetadataAsync>d__78.MoveNext() | leaf=Dekaf.Metadata.MetadataManager+<RefreshMetadataAsync>d__78.MoveNext()",
+        "Count": 1010
+      },
+      {
+        "Stack": "Type=Managed | Dekaf.Admin.AdminClient+<DeleteTopicsAsync>d__34.MoveNext() | leaf=System.Collections.Generic.List`1[System.__Canon]..ctor(class System.Collections.Generic.IEnumerable`1<!0>)",
+        "Count": 948
+      },
+      {
+        "Stack": "Type=Managed | Dekaf.Admin.AdminClient+<>c__DisplayClass34_0+<<DeleteTopicsAsync>b__0>d.MoveNext() | leaf=System.Linq.Enumerable+ListSelectIterator`2[System.__Canon,System.__Canon].ToList()",
+        "Count": 913
+      },
+      {
+        "Stack": "Type=Managed | Dekaf.Admin.AdminClient+<DeleteTopicsAsync>d__34.MoveNext() | leaf=System.Runtime.CompilerServices.CastHelpers.IsInstance_Helper(void*,class System.Object)",
+        "Count": 726
+      },
+      {
+        "Stack": "Type=Managed | Dekaf.Admin.AdminClient+<DeleteTopicsAsync>d__34.MoveNext() | leaf=System.Runtime.CompilerServices.CastHelpers.IsInstanceOfClass(void*,class System.Object)",
+        "Count": 721
+      },
+      {
+        "Stack": "Type=Managed | Dekaf.Metadata.MetadataManager+<RefreshMetadataInternalAsync>d__84.MoveNext() | leaf=System.Runtime.CompilerServices.VirtualDispatchHelpers.VirtualFunctionPointer(class System.Object,int,int)",
+        "Count": 716
+      },
+      {
+        "Stack": "Type=Managed | Dekaf.Metadata.ClusterMetadataSnapshot.BuildPartitionsByBroker(class System.Collections.Generic.Dictionary`2<class System.String,class Dekaf.Metadata.TopicInfo>) | leaf=Dekaf.Metadata.ClusterMetadataSnapshot.BuildPartitionsByBroker(class System.Collections.Generic.Dictionary`2<class System.String,class Dekaf.Metadata.TopicInfo>)",
+        "Count": 533
+      },
+      {
+        "Stack": "Type=Managed | Dekaf.Internal.SemaphoreHelper+<AcquireOrThrowDisposedAsync>d__0.MoveNext() | leaf=Dekaf.Internal.SemaphoreHelper+<AcquireOrThrowDisposedAsync>d__0.MoveNext()",
+        "Count": 391
+      },
+      {
+        "Stack": "Type=Managed | Dekaf.Internal.SemaphoreHelper.ReleaseSafely(class System.Threading.SemaphoreSlim) | leaf=Dekaf.Internal.SemaphoreHelper.ReleaseSafely(class System.Threading.SemaphoreSlim)",
+        "Count": 365
+      },
+      {
+        "Stack": "Type=Managed | Dekaf.Metadata.ClusterMetadataSnapshot.BuildPartitionsByTopicIndex(class System.Collections.Generic.Dictionary`2<class System.String,class Dekaf.Metadata.TopicInfo>) | leaf=Dekaf.Metadata.ClusterMetadataSnapshot.BuildPartitionsByTopicIndex(class System.Collections.Generic.Dictionary`2<class System.String,class Dekaf.Metadata.TopicInfo>)",
+        "Count": 245
+      },
+      {
+        "Stack": "Type=Managed | Dekaf.Admin.AdminClient+<EnsureInitializedAsync>d__141.MoveNext() | leaf=Dekaf.Admin.AdminClient+<EnsureInitializedAsync>d__141.MoveNext()",
+        "Count": 236
+      },
+      {
+        "Stack": "Type=Managed | Dekaf.Admin.AdminClient+<DeleteTopicsAsync>d__34.MoveNext() | leaf=System.Runtime.CompilerServices.CastHelpers.IsInstanceOfInterface(void*,class System.Object)",
+        "Count": 213
+      },
+      {
+        "Stack": "Type=Managed | Dekaf.Metadata.ClusterMetadataSnapshot.BuildPartitionsByTopicRack(class System.Collections.Generic.Dictionary`2<int32,class Dekaf.Metadata.BrokerNode>,class System.Collections.Generic.Dictionary`2<class System.String,class Dekaf.Metadata.TopicInfo>) | leaf=Dekaf.Metadata.ClusterMetadataSnapshot.BuildPartitionsByTopicRack(class System.Collections.Generic.Dictionary`2<int32,class Dekaf.Metadata.BrokerNode>,class System.Collections.Generic.Dictionary`2<class System.String,class Dekaf.Metadata.TopicInfo>)",
+        "Count": 158
+      },
+      {
+        "Stack": "Type=Managed | Dekaf.Metadata.ClusterMetadata.AddResponseTopics(class Dekaf.Protocol.Messages.MetadataResponse,class System.Collections.Generic.Dictionary`2<class System.String,class Dekaf.Metadata.TopicInfo>,class System.Collections.Generic.Dictionary`2<value class System.Guid,class Dekaf.Metadata.TopicInfo>,class Dekaf.Metadata.ClusterMetadataSnapshot,class System.Collections.Generic.Dictionary`2<int32,class Dekaf.Metadata.BrokerNode>) | leaf=Dekaf.Metadata.ClusterMetadata.AddResponseTopics(class Dekaf.Protocol.Messages.MetadataResponse,class System.Collections.Generic.Dictionary`2<class System.String,class Dekaf.Metadata.TopicInfo>,class System.Collections.Generic.Dictionary`2<value class System.Guid,class Dekaf.Metadata.TopicInfo>,class Dekaf.Metadata.ClusterMetadataSnapshot,class System.Collections.Generic.Dictionary`2<int32,class Dekaf.Metadata.BrokerNode>)",
+        "Count": 155
+      },
+      {
+        "Stack": "Type=Managed | Dekaf.Metadata.ClusterMetadata.Update(class Dekaf.Protocol.Messages.MetadataResponse,bool) | leaf=System.Collections.Generic.Dictionary`2[System.Int32,System.__Canon].Initialize(int32)",
+        "Count": 106
+      },
+      {
+        "Stack": "Type=Managed | Dekaf.Admin.AdminClient+<>c__DisplayClass34_0+<<DeleteTopicsAsync>b__0>d.MoveNext() | leaf=System.Runtime.CompilerServices.CastHelpers.IsInstanceOfClass(void*,class System.Object)",
+        "Count": 103
+      },
+      {
+        "Stack": "Type=Managed | Dekaf.Admin.AdminClient+<DeleteTopicsAsync>d__34.MoveNext() | leaf=System.SZArrayHelper.CopyTo(!!0[],int32)",
+        "Count": 102
+      },
+      {
+        "Stack": "Type=Managed | Dekaf.Admin.AdminClient+<DeleteTopicsAsync>d__34.MoveNext() | leaf=System.Buffer.BulkMoveWithWriteBarrier(unsigned int8&,unsigned int8&,unsigned int)",
+        "Count": 37
+      },
+      {
+        "Stack": "Type=Managed | Dekaf.Admin.AdminClient+<>c.<DeleteTopicsAsync>b__34_1(class System.String) | leaf=Dekaf.Admin.AdminClient+<>c.<DeleteTopicsAsync>b__34_1(class System.String)",
+        "Count": 36
+      },
+      {
+        "Stack": "Type=Managed | Dekaf.Metadata.ClusterMetadata.Update(class Dekaf.Protocol.Messages.MetadataResponse,bool) | leaf=System.Collections.HashHelpers.GetPrime(int32)",
+        "Count": 34
+      },
+      {
+        "Stack": "Type=External | Dekaf.Admin.AdminClient+<>c.<DeleteTopicsAsync>b__34_1(class System.String) | leaf=Dekaf.Admin.AdminClient+<>c.<DeleteTopicsAsync>b__34_1(class System.String)",
+        "Count": 16
+      },
+      {
+        "Stack": "Type=External | Dekaf.Metadata.ClusterMetadataSnapshot.BuildPartitionsByBroker(class System.Collections.Generic.Dictionary`2<class System.String,class Dekaf.Metadata.TopicInfo>) | leaf=Dekaf.Metadata.ClusterMetadataSnapshot.BuildPartitionsByBroker(class System.Collections.Generic.Dictionary`2<class System.String,class Dekaf.Metadata.TopicInfo>)",
+        "Count": 11
+      },
+      {
+        "Stack": "Type=External | Dekaf.Admin.AdminClient+<DeleteTopicsAsync>d__34.MoveNext() | leaf=Dekaf.Admin.AdminClient+<DeleteTopicsAsync>d__34.MoveNext()",
+        "Count": 11
+      },
+      {
+        "Stack": "Type=External | Dekaf.Benchmarks.Probe.TakeSnapshot(class System.Diagnostics.Process,int64,int64) | leaf=Interop+procfs.TryReadFile(class System.String,class System.String&)",
+        "Count": 11
+      },
+      {
+        "Stack": "Type=External | Dekaf.Benchmarks.Probe.TakeSnapshot(class System.Diagnostics.Process,int64,int64) | leaf=Interop+Sys.Open(class System.String,value class OpenFlags,int32)",
+        "Count": 10
+      },
+      {
+        "Stack": "Type=External | Dekaf.Metadata.MetadataManager.GetEndpointsToTry() | leaf=Dekaf.Metadata.MetadataManager.GetEndpointsToTry()",
+        "Count": 9
+      },
+      {
+        "Stack": "Type=External | Dekaf.Metadata.ClusterMetadata.Update(class Dekaf.Protocol.Messages.MetadataResponse,bool) | leaf=Dekaf.Metadata.ClusterMetadata.Update(class Dekaf.Protocol.Messages.MetadataResponse,bool)",
+        "Count": 6
+      },
+      {
+        "Stack": "Type=Managed | Dekaf.Benchmarks.Probe+ExactHistogram.Drain() | leaf=Dekaf.Benchmarks.Probe+ExactHistogram.Drain()",
+        "Count": 5
+      },
+      {
+        "Stack": "Type=External | Dekaf.Admin.AdminClient+<>c__DisplayClass34_0+<<DeleteTopicsAsync>b__0>d.MoveNext() | leaf=System.Linq.Enumerable+ListSelectIterator`2[System.__Canon,System.__Canon].ToList()",
+        "Count": 5
+      },
+      {
+        "Stack": "Type=External | Dekaf.Metadata.ClusterMetadata.Update(class Dekaf.Protocol.Messages.MetadataResponse,bool) | leaf=System.Collections.Generic.Dictionary`2[System.Int32,System.__Canon].Initialize(int32)",
+        "Count": 5
+      },
+      {
+        "Stack": "Type=External | Dekaf.Benchmarks.Probe.TakeSnapshot(class System.Diagnostics.Process,int64,int64) | leaf=Microsoft.Win32.SafeHandles.SafeFileHandle.Open(class System.String,value class System.IO.FileMode,value class System.IO.FileAccess,value class System.IO.FileShare,value class System.IO.FileOptions,int64,value class System.IO.UnixFileMode,int64&,value class System.IO.UnixFileMode&,bool,bool&,class System.Func`4<value class ErrorInfo,value class OpenFlags,class System.String,class System.Exception>)",
+        "Count": 3
+      },
+      {
+        "Stack": "Type=Managed | Dekaf.Benchmarks.Probe.TakeSnapshot(class System.Diagnostics.Process,int64,int64) | leaf=System.IO.Enumeration.FileSystemEnumerator`1[System.__Canon].MoveNext()",
+        "Count": 2
+      },
+      {
+        "Stack": "Type=Managed | Dekaf.Benchmarks.Probe.TakeSnapshot(class System.Diagnostics.Process,int64,int64) | leaf=System.Diagnostics.ProcessManager.CreateProcessInfo(value class ProcPid,value class ParsedStat&,value class ParsedStatus&,class System.String)",
+        "Count": 2
+      },
+      {
+        "Stack": "Type=External | Dekaf.Benchmarks.Probe.TakeSnapshot(class System.Diagnostics.Process,int64,int64) | leaf=System.IO.Enumeration.FileSystemEnumerator`1[System.__Canon].MoveNext()",
+        "Count": 2
+      },
+      {
+        "Stack": "Type=External | Dekaf.Admin.AdminClient+<>c__DisplayClass34_0+<<DeleteTopicsAsync>b__0>d.MoveNext() | leaf=Dekaf.Admin.AdminClient+<>c__DisplayClass34_0+<<DeleteTopicsAsync>b__0>d.MoveNext()",
+        "Count": 2
+      },
+      {
+        "Stack": "Type=Managed | Dekaf.Metadata.MetadataManager+<RefreshMetadataInternalAsync>d__84.MoveNext() | leaf=System.Runtime.CompilerServices.CastHelpers.IsInstanceOfInterface(void*,class System.Object)",
+        "Count": 2
+      },
+      {
+        "Stack": "Type=Managed | Dekaf.Benchmarks.Probe+ExactHistogram.Record(int64) | leaf=Dekaf.Benchmarks.Probe+ExactHistogram.Record(int64)",
+        "Count": 2
+      },
+      {
+        "Stack": "Type=Managed | Dekaf.Benchmarks.Probe.TakeSnapshot(class System.Diagnostics.Process,int64,int64) | leaf=System.Threading.Thread.<PollGC>g__PollGCWorker|67_0()",
+        "Count": 1
+      },
+      {
+        "Stack": "Type=External | Dekaf.Benchmarks.Probe.TakeSnapshot(class System.Diagnostics.Process,int64,int64) | leaf=System.IO.Enumeration.FileSystemEnumerator`1[System.__Canon].DirectoryFinished()",
+        "Count": 1
+      },
+      {
+        "Stack": "Type=External | Dekaf.Benchmarks.Probe.TakeSnapshot(class System.Diagnostics.Process,int64,int64) | leaf=System.Diagnostics.Process.GetUntruncatedProcessName(value class ProcPid,value class ParsedStat&)",
+        "Count": 1
+      },
+      {
+        "Stack": "Type=External | Dekaf.Benchmarks.Probe.TakeSnapshot(class System.Diagnostics.Process,int64,int64) | leaf=System.Environment.get_CpuUsage()",
+        "Count": 1
+      },
+      {
+        "Stack": "Type=External | Dekaf.Benchmarks.Probe.TakeSnapshot(class System.Diagnostics.Process,int64,int64) | leaf=System.RuntimeType+ActivatorCache..ctor(class System.RuntimeType)",
+        "Count": 1
+      },
+      {
+        "Stack": "Type=Managed | Dekaf.Benchmarks.Probe.TakeSnapshot(class System.Diagnostics.Process,int64,int64) | leaf=System.Number.TryParseBinaryIntegerStyle(value class System.ReadOnlySpan`1<!!0>,value class System.Globalization.NumberStyles,class System.Globalization.NumberFormatInfo,!!1&)",
+        "Count": 1
+      },
+      {
+        "Stack": "Type=External | Dekaf.Benchmarks.Probe.TakeSnapshot(class System.Diagnostics.Process,int64,int64) | leaf=Interop+Sys.OpenDir(class System.String)",
+        "Count": 1
+      },
+      {
+        "Stack": "Type=External | Dekaf.Benchmarks.Probe.TakeSnapshot(class System.Diagnostics.Process,int64,int64) | leaf=Microsoft.Win32.SafeHandles.SafeFileHandle.ReleaseHandle()",
+        "Count": 1
+      },
+      {
+        "Stack": "Type=Managed | Dekaf.Benchmarks.Probe.TakeSnapshot(class System.Diagnostics.Process,int64,int64) | leaf=System.IO.Strategies.OSFileStreamStrategy..ctor(class System.String,value class System.IO.FileMode,value class System.IO.FileAccess,value class System.IO.FileShare,value class System.IO.FileOptions,int64,value class System.Nullable`1<value class System.IO.UnixFileMode>)",
+        "Count": 1
+      }
+    ],
+    "Examples": [
+      {
+        "EventName": "Thread/Sample",
+        "payload": "Type=Managed",
+        "TimeStampRelativeMSec": 487910.353433,
+        "frames": [
+          "System.Threading.Monitor.Enter_Slowpath(class System.Object)",
+          "Dekaf.Metadata.ClusterMetadata.Update(class Dekaf.Protocol.Messages.MetadataResponse,bool)",
+          "Dekaf.Metadata.MetadataManager+<RefreshMetadataInternalAsync>d__84.MoveNext()",
+          "Dekaf.Metadata.MetadataManager+<RefreshMetadataAsyncCore>d__82.MoveNext()",
+          "Dekaf.Metadata.MetadataManager+<RefreshMetadataAsync>d__78.MoveNext()",
+          "Dekaf.Admin.AdminClient+<DeleteTopicsAsync>d__34.MoveNext()",
+          "Dekaf.Benchmarks.AdminFixture+<Call>d__16.MoveNext()",
+          "Dekaf.Benchmarks.Probe+<CapturePhasesAsync>d__12.MoveNext()",
+          "System.Runtime.CompilerServices.AsyncMethodBuilderCore.Start(!!0&)",
+          "System.Runtime.CompilerServices.AsyncTaskMethodBuilder`1[System.__Canon].Start(!!0&)",
+          "Dekaf.Benchmarks.Probe.CapturePhasesAsync(class Dekaf.Benchmarks.AdminFixture,float64[],class CompilationLog)",
+          "Program+<<Main>$>d__0.MoveNext()",
+          "System.Runtime.CompilerServices.AsyncMethodBuilderCore.Start(!!0&)",
+          "System.Runtime.CompilerServices.AsyncTaskMethodBuilder.Start(!!0&)",
+          "Program.<Main>$(class System.String[])",
+          "Program.<Main>(class System.String[])"
+        ]
+      },
+      {
+        "EventName": "Thread/Sample",
+        "payload": "Type=Managed",
+        "TimeStampRelativeMSec": 487911.53466,
+        "frames": [
+          "Dekaf.Admin.AdminClient+<>c__DisplayClass34_0+<<DeleteTopicsAsync>b__0>d.MoveNext()",
+          "Dekaf.Retry.RetryHelper+<WithRetryAsync>d__1.MoveNext()",
+          "Dekaf.Admin.AdminClient+<DeleteTopicsAsync>d__34.MoveNext()",
+          "Dekaf.Benchmarks.AdminFixture+<Call>d__16.MoveNext()",
+          "Dekaf.Benchmarks.Probe+<CapturePhasesAsync>d__12.MoveNext()",
+          "System.Runtime.CompilerServices.AsyncMethodBuilderCore.Start(!!0&)",
+          "System.Runtime.CompilerServices.AsyncTaskMethodBuilder`1[System.__Canon].Start(!!0&)",
+          "Dekaf.Benchmarks.Probe.CapturePhasesAsync(class Dekaf.Benchmarks.AdminFixture,float64[],class CompilationLog)",
+          "Program+<<Main>$>d__0.MoveNext()",
+          "System.Runtime.CompilerServices.AsyncMethodBuilderCore.Start(!!0&)",
+          "System.Runtime.CompilerServices.AsyncTaskMethodBuilder.Start(!!0&)",
+          "Program.<Main>$(class System.String[])",
+          "Program.<Main>(class System.String[])"
+        ]
+      },
+      {
+        "EventName": "Thread/Sample",
+        "payload": "Type=Managed",
+        "TimeStampRelativeMSec": 487912.725922,
+        "frames": [
+          "System.Threading.Thread.<PollGC>g__PollGCWorker|67_0()",
+          "System.Buffer.BulkMoveWithWriteBarrier(unsigned int8&,unsigned int8&,unsigned int)",
+          "System.Collections.Generic.List`1[System.__Canon]..ctor(class System.Collections.Generic.IEnumerable`1<!0>)",
+          "Dekaf.Admin.AdminClient+<DeleteTopicsAsync>d__34.MoveNext()",
+          "Dekaf.Benchmarks.AdminFixture+<Call>d__16.MoveNext()",
+          "Dekaf.Benchmarks.Probe+<CapturePhasesAsync>d__12.MoveNext()",
+          "System.Runtime.CompilerServices.AsyncMethodBuilderCore.Start(!!0&)",
+          "System.Runtime.CompilerServices.AsyncTaskMethodBuilder`1[System.__Canon].Start(!!0&)",
+          "Dekaf.Benchmarks.Probe.CapturePhasesAsync(class Dekaf.Benchmarks.AdminFixture,float64[],class CompilationLog)",
+          "Program+<<Main>$>d__0.MoveNext()",
+          "System.Runtime.CompilerServices.AsyncMethodBuilderCore.Start(!!0&)",
+          "System.Runtime.CompilerServices.AsyncTaskMethodBuilder.Start(!!0&)",
+          "Program.<Main>$(class System.String[])",
+          "Program.<Main>(class System.String[])"
+        ]
+      },
+      {
+        "EventName": "Thread/Sample",
+        "payload": "Type=Managed",
+        "TimeStampRelativeMSec": 487913.903303,
+        "frames": [
+          "System.Threading.Thread.<PollGC>g__PollGCWorker|67_0()",
+          "",
+          "Dekaf.Benchmarks.Probe+<CapturePhasesAsync>d__12.MoveNext()",
+          "System.Runtime.CompilerServices.AsyncMethodBuilderCore.Start(!!0&)",
+          "System.Runtime.CompilerServices.AsyncTaskMethodBuilder`1[System.__Canon].Start(!!0&)",
+          "Dekaf.Benchmarks.Probe.CapturePhasesAsync(class Dekaf.Benchmarks.AdminFixture,float64[],class CompilationLog)",
+          "Program+<<Main>$>d__0.MoveNext()",
+          "System.Runtime.CompilerServices.AsyncMethodBuilderCore.Start(!!0&)",
+          "System.Runtime.CompilerServices.AsyncTaskMethodBuilder.Start(!!0&)",
+          "Program.<Main>$(class System.String[])",
+          "Program.<Main>(class System.String[])"
+        ]
+      },
+      {
+        "EventName": "Thread/Sample",
+        "payload": "Type=Managed",
+        "TimeStampRelativeMSec": 487915.081005,
+        "frames": [
+          "System.Threading.Thread.<PollGC>g__PollGCWorker|67_0()",
+          "",
+          "Dekaf.Benchmarks.Probe+<CapturePhasesAsync>d__12.MoveNext()",
+          "System.Runtime.CompilerServices.AsyncMethodBuilderCore.Start(!!0&)",
+          "System.Runtime.CompilerServices.AsyncTaskMethodBuilder`1[System.__Canon].Start(!!0&)",
+          "Dekaf.Benchmarks.Probe.CapturePhasesAsync(class Dekaf.Benchmarks.AdminFixture,float64[],class CompilationLog)",
+          "Program+<<Main>$>d__0.MoveNext()",
+          "System.Runtime.CompilerServices.AsyncMethodBuilderCore.Start(!!0&)",
+          "System.Runtime.CompilerServices.AsyncTaskMethodBuilder.Start(!!0&)",
+          "Program.<Main>$(class System.String[])",
+          "Program.<Main>(class System.String[])"
+        ]
+      },
+      {
+        "EventName": "Thread/Sample",
+        "payload": "Type=Managed",
+        "TimeStampRelativeMSec": 487916.259558,
+        "frames": [
+          "System.Threading.Monitor.Enter_Slowpath(class System.Object)",
+          "Dekaf.Metadata.ClusterMetadata.Update(class Dekaf.Protocol.Messages.MetadataResponse,bool)",
+          "Dekaf.Metadata.MetadataManager+<RefreshMetadataInternalAsync>d__84.MoveNext()",
+          "Dekaf.Metadata.MetadataManager+<RefreshMetadataAsyncCore>d__82.MoveNext()",
+          "Dekaf.Metadata.MetadataManager+<RefreshMetadataAsync>d__78.MoveNext()",
+          "Dekaf.Admin.AdminClient+<DeleteTopicsAsync>d__34.MoveNext()",
+          "Dekaf.Benchmarks.AdminFixture+<Call>d__16.MoveNext()",
+          "Dekaf.Benchmarks.Probe+<CapturePhasesAsync>d__12.MoveNext()",
+          "System.Runtime.CompilerServices.AsyncMethodBuilderCore.Start(!!0&)",
+          "System.Runtime.CompilerServices.AsyncTaskMethodBuilder`1[System.__Canon].Start(!!0&)",
+          "Dekaf.Benchmarks.Probe.CapturePhasesAsync(class Dekaf.Benchmarks.AdminFixture,float64[],class CompilationLog)",
+          "Program+<<Main>$>d__0.MoveNext()",
+          "System.Runtime.CompilerServices.AsyncMethodBuilderCore.Start(!!0&)",
+          "System.Runtime.CompilerServices.AsyncTaskMethodBuilder.Start(!!0&)",
+          "Program.<Main>$(class System.String[])",
+          "Program.<Main>(class System.String[])"
+        ]
+      },
+      {
+        "EventName": "Thread/Sample",
+        "payload": "Type=Managed",
+        "TimeStampRelativeMSec": 487917.437771,
+        "frames": [
+          "Dekaf.Metadata.ClusterMetadataSnapshot.BuildPartitionsByTopicRack(class System.Collections.Generic.Dictionary`2<int32,class Dekaf.Metadata.BrokerNode>,class System.Collections.Generic.Dictionary`2<class System.String,class Dekaf.Metadata.TopicInfo>)",
+          "Dekaf.Metadata.ClusterMetadata.Update(class Dekaf.Protocol.Messages.MetadataResponse,bool)",
+          "Dekaf.Metadata.MetadataManager+<RefreshMetadataInternalAsync>d__84.MoveNext()",
+          "Dekaf.Metadata.MetadataManager+<RefreshMetadataAsyncCore>d__82.MoveNext()",
+          "Dekaf.Metadata.MetadataManager+<RefreshMetadataAsync>d__78.MoveNext()",
+          "Dekaf.Admin.AdminClient+<DeleteTopicsAsync>d__34.MoveNext()",
+          "Dekaf.Benchmarks.AdminFixture+<Call>d__16.MoveNext()",
+          "Dekaf.Benchmarks.Probe+<CapturePhasesAsync>d__12.MoveNext()",
+          "System.Runtime.CompilerServices.AsyncMethodBuilderCore.Start(!!0&)",
+          "System.Runtime.CompilerServices.AsyncTaskMethodBuilder`1[System.__Canon].Start(!!0&)",
+          "Dekaf.Benchmarks.Probe.CapturePhasesAsync(class Dekaf.Benchmarks.AdminFixture,float64[],class CompilationLog)",
+          "Program+<<Main>$>d__0.MoveNext()",
+          "System.Runtime.CompilerServices.AsyncMethodBuilderCore.Start(!!0&)",
+          "System.Runtime.CompilerServices.AsyncTaskMethodBuilder.Start(!!0&)",
+          "Program.<Main>$(class System.String[])",
+          "Program.<Main>(class System.String[])"
+        ]
+      },
+      {
+        "EventName": "Thread/Sample",
+        "payload": "Type=Managed",
+        "TimeStampRelativeMSec": 487918.634792,
+        "frames": [
+          "System.Threading.Thread.<PollGC>g__PollGCWorker|67_0()",
+          "",
+          "Dekaf.Benchmarks.Probe+<CapturePhasesAsync>d__12.MoveNext()",
+          "System.Runtime.CompilerServices.AsyncMethodBuilderCore.Start(!!0&)",
+          "System.Runtime.CompilerServices.AsyncTaskMethodBuilder`1[System.__Canon].Start(!!0&)",
+          "Dekaf.Benchmarks.Probe.CapturePhasesAsync(class Dekaf.Benchmarks.AdminFixture,float64[],class CompilationLog)",
+          "Program+<<Main>$>d__0.MoveNext()",
+          "System.Runtime.CompilerServices.AsyncMethodBuilderCore.Start(!!0&)",
+          "System.Runtime.CompilerServices.AsyncTaskMethodBuilder.Start(!!0&)",
+          "Program.<Main>$(class System.String[])",
+          "Program.<Main>(class System.String[])"
+        ]
+      }
+    ]
+  }
+}
