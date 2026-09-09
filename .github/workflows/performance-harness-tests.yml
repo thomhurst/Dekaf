@@ -26,7 +26,7 @@ jobs:
       - name: Test recorder and comparison drivers
         run: |
           dotnet test --project .github/benchmarks/admin-recorder-tests/Recorder.Tests.csproj -c Release
-          for test in test_verify_performance_pins.py test_stress_warmup.py test_stress_aba_startup.py test_reservoir_fixture.py test_runner_affinity.py test_admin_refresh.py test_outbox_cycle_aba.py test_outbox_loaded_aba.py test_pool_loaded_aba.py; do
+          for test in test_verify_performance_pins.py test_performance_shards.py test_stress_warmup.py test_stress_aba_startup.py test_reservoir_fixture.py test_runner_affinity.py test_admin_refresh.py test_outbox_cycle_aba.py test_outbox_loaded_aba.py test_pool_loaded_aba.py; do
             python3 -m unittest discover -s .github/scripts -p "$test"
           done
           python3 -m unittest discover -s .github/benchmarks/dispatch-aba -p 'test_*.py'

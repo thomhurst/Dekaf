@@ -15,18 +15,26 @@ WARMUP = 180
 MEASURED = 180
 
 
-def execution_plan(adjacent=False):
+def configurations(shard='all'):
+    selected = [case for case in CONFIGS if shard == 'all' or '-'.join(case) == shard]
+    if not selected:
+        raise ValueError(f'Unknown outbox shard: {shard}')
+    return selected
+
+
+def execution_plan(adjacent=False, shard='all'):
+    configs = configurations(shard)
     for phase, label in [('DryA', 'A'), ('DryB', 'B')]:
-        for store, listener in CONFIGS:
+        for store, listener in configs:
             yield phase, label, True, store, listener
     phases = [('A1', 'A'), ('B', 'B'), ('A2', 'A')]
     if adjacent:
-        for store, listener in CONFIGS:
+        for store, listener in configs:
             for phase, label in phases:
                 yield phase, label, False, store, listener
     else:
         for phase, label in phases:
-            for store, listener in CONFIGS:
+            for store, listener in configs:
                 yield phase, label, False, store, listener
 
 
@@ -110,19 +118,27 @@ def execute():
     out = root / 'evidence'
     out.mkdir(exist_ok=False)
     adjacent = os.environ.get('OUTBOX_ADJACENT') == '1'
+    shard = os.environ.get('PERFORMANCE_SHARD', 'all')
+    configs = configurations(shard)
     declared_warmup = 480 if adjacent else WARMUP
     dispatch = module(root / '.github/benchmarks/dispatch-aba/run.py', 'outbox_dispatch')
     pool = module(root / '.github/scripts/pool_loaded_aba.py', 'outbox_broker')
     topology = dispatch.configure_affinity()
     a, b = os.environ['BASELINE_SHA'], os.environ['CANDIDATE_SHA']
     dispatch.command(['git', 'merge-base', '--is-ancestor', a, b], out / 'ancestry.log')
-    main = subprocess.check_output(['git', 'ls-remote', 'origin', 'refs/heads/main'], text=True).split()[0]
-    if main != a:
-        raise ValueError('Main moved before this new campaign; rebase and repin')
+    if os.environ.get('PERFORMANCE_CAMPAIGN'):
+        from performance_shards import validate_campaign
+        campaign = json.loads(Path(os.environ['PERFORMANCE_CAMPAIGN']).read_text())
+        pins = validate_campaign(campaign, os.environ['HARNESS_SHA'], a, b, int(os.environ['PR']), os.environ['SUITE'])
+        main = pins['main_at_start']
+    else:
+        main = subprocess.check_output(['git', 'ls-remote', 'origin', 'refs/heads/main'], text=True).split()[0]
+        if main != a:
+            raise ValueError('Main moved before this new campaign; rebase and repin')
     plan = {'A': a, 'B': b, 'harness': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
             'main_at_start': main, 'primer_seconds': 20, 'warmup_seconds': declared_warmup, 'measured_seconds': MEASURED,
-            'adjacent_controls': adjacent, 'execution_plan': list(execution_plan(adjacent)),
-            'configs': CONFIGS, 'runner': 'ubuntu-latest', 'image': os.getenv('ImageVersion'),
+            'adjacent_controls': adjacent or shard != 'all', 'execution_plan': list(execution_plan(adjacent, shard)),
+            'configs': configs, 'shard': shard, 'runner': 'ubuntu-latest', 'image': os.getenv('ImageVersion'),
             'topology': topology, 'affinity': dispatch.AFFINITY.copy(),
             'runtime': {'TieredCompilation': '1', 'TieredPGO': '1', 'ReadyToRun': '1', 'ServerGC': True},
             'run_url': f'https://github.com/{os.environ["GITHUB_REPOSITORY"]}/actions/runs/{os.environ["GITHUB_RUN_ID"]}',
@@ -150,7 +166,7 @@ def execute():
     (out / 'bindings.json').write_text(json.dumps(bindings, indent=2), encoding='utf-8')
     observations = {}
     order = []
-    for phase, label, smoke, store, listener in execution_plan(adjacent):
+    for phase, label, smoke, store, listener in execution_plan(adjacent, shard):
         if any(dispatch.digest(Path(path)) != digest for path, digest in bindings.items()):
             raise ValueError('Measurement inputs changed')
         observations.setdefault(phase, {})

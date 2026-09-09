@@ -22,22 +22,60 @@ on:
 permissions:
   contents: read
   pull-requests: read
+env:
+  HARNESS_SHA: ${{ inputs.harness_sha }}
+  GH_TOKEN: ${{ github.token }}
+  SUITE: ${{ inputs.suite }}
+  BASELINE_SHA: ${{ inputs.baseline_sha }}
+  CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+  PR: ${{ inputs.pr }}
+  DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: '1'
+  DOTNET_TieredCompilation: '1'
+  DOTNET_TieredPGO: '1'
+  DOTNET_ReadyToRun: '1'
 jobs:
-  compare:
+  prepare:
+    name: Pin comparison campaign
     runs-on: ubuntu-latest
-    timeout-minutes: ${{ startsWith(inputs.suite, 'admin') && 60 || (inputs.suite == 'dispatch-adjacent' || inputs.suite == 'dispatch-loaded-adjacent') && 350 || 180 }}
+    timeout-minutes: 10
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      sharded: ${{ steps.plan.outputs.sharded }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.harness_sha }}
+      - name: Verify fresh main and PR pins once before fan-out
+        run: |
+          python3 .github/scripts/verify_performance_pins.py \
+            --harness "$HARNESS_SHA" --baseline "$BASELINE_SHA" --candidate "$CANDIDATE_SHA" \
+            --pr "$PR" --suite "$SUITE" --repository "$GITHUB_REPOSITORY" --output performance-pins.json
+      - name: Plan complete-workload jobs
+        id: plan
+        run: |
+          python3 -m unittest discover -s .github/scripts -p test_performance_shards.py
+          python3 .github/scripts/performance_shards.py plan >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: performance-campaign-${{ github.run_id }}
+          path: |
+            performance-campaign.json
+            performance-pins.json
+          overwrite: true
+          retention-days: 90
+  compare:
+    name: Compare (${{ matrix.shard }})
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ needs.prepare.outputs.sharded == 'true' && 90 || startsWith(inputs.suite, 'admin') && 60 || 180 }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
     env:
-      HARNESS_SHA: ${{ inputs.harness_sha }}
-      GH_TOKEN: ${{ github.token }}
-      SUITE: ${{ inputs.suite }}
-      BASELINE_SHA: ${{ inputs.baseline_sha }}
-      CANDIDATE_SHA: ${{ inputs.candidate_sha }}
-      PR: ${{ inputs.pr }}
-      DOTNET_CLI_TELEMETRY_OPTOUT: '1'
-      DOTNET_SKIP_FIRST_TIME_EXPERIENCE: '1'
-      DOTNET_TieredCompilation: '1'
-      DOTNET_TieredPGO: '1'
-      DOTNET_ReadyToRun: '1'
+      PERFORMANCE_SHARD: ${{ matrix.shard }}
+      PERFORMANCE_CAMPAIGN: performance-campaign.json
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -46,11 +84,11 @@ jobs:
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
         with:
           global-json-file: global.json
-      - name: Verify pins
-        run: |
-          python3 .github/scripts/verify_performance_pins.py \
-            --harness "$HARNESS_SHA" --baseline "$BASELINE_SHA" --candidate "$CANDIDATE_SHA" \
-            --pr "$PR" --suite "$SUITE" --repository "$GITHUB_REPOSITORY" --output performance-pins.json
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: performance-campaign-${{ github.run_id }}
+      - name: Verify this job uses the pinned campaign
+        run: python3 .github/scripts/performance_shards.py verify
       - name: Shared microbenchmark comparison
         if: inputs.suite == 'micro'
         env:
@@ -187,20 +225,35 @@ jobs:
           python3 -m unittest discover -s .github/benchmarks/dispatch-aba -p 'test_*.py'
           extra_args=()
           if [[ "$LOADED_ONLY" == 1 ]]; then extra_args+=(--loaded-only); fi
-          python3 .github/benchmarks/dispatch-aba/run_adjacent.py --baseline "$BASELINE_SHA" --candidate "$CANDIDATE_SHA" --output "$GITHUB_WORKSPACE/evidence" "${extra_args[@]}"
+          python3 .github/benchmarks/dispatch-aba/run_adjacent.py --baseline "$BASELINE_SHA" --candidate "$CANDIDATE_SHA" --output "$GITHUB_WORKSPACE/evidence" --shard "$PERFORMANCE_SHARD" "${extra_args[@]}"
+      - name: Require complete workload triplets
+        if: needs.prepare.outputs.sharded == 'true'
+        run: python3 .github/scripts/performance_shards.py complete --shard "$PERFORMANCE_SHARD"
+      - name: Retain shard coverage receipt
+        if: needs.prepare.outputs.sharded == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: performance-completion-${{ github.run_id }}-${{ matrix.shard }}
+          path: shard-completion.json
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 90
       - name: Record final main
         if: always()
         run: git ls-remote origin refs/heads/main > main-at-end.txt
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
-          name: performance-${{ inputs.pr }}-${{ inputs.suite }}-${{ github.run_id }}
+          name: performance-${{ inputs.pr }}-${{ inputs.suite }}-${{ github.run_id }}-${{ matrix.shard }}
           path: |
             aba-results/
             evidence/
             main-at-end.txt
             performance-pins.json
+            performance-campaign.json
+            shard-completion.json
           include-hidden-files: true
+          overwrite: true
           retention-days: 90
       - name: Retain BenchmarkDotNet generated builds
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -211,4 +264,33 @@ jobs:
             ${{ runner.temp }}/performance-A/.performance/bin/
             ${{ runner.temp }}/performance-B/.performance/bin/
           include-hidden-files: true
+          overwrite: true
+          retention-days: 90
+  coverage:
+    name: Verify complete comparison coverage
+    needs: [prepare, compare]
+    if: always() && needs.prepare.result == 'success' && needs.prepare.outputs.sharded == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.harness_sha }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: performance-campaign-${{ github.run_id }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          pattern: performance-completion-${{ github.run_id }}-*
+          path: receipts
+      - name: Require every planned shard and successful comparison job
+        env:
+          COMPARISON_RESULT: ${{ needs.compare.result }}
+        run: |
+          python3 .github/scripts/performance_shards.py aggregate --comparison-result "$COMPARISON_RESULT" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: performance-coverage-${{ github.run_id }}
+          path: campaign-completion.json
+          overwrite: true
           retention-days: 90

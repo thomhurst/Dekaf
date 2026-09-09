@@ -275,7 +275,7 @@ def completion_defines(source):
     return ['-p:DefineConstants=COMPLETION_BATCHES'] if 'CreateCompletionBatch(' in text else []
 
 
-def build(root, output, sha, label, loaded_only=False):
+def build(root, output, sha, label, loaded_only=False, include_loaded=True):
     source = output / f'product-{label}'
     snapshot = output / f'product-{label}.zip'
     command(['git', 'archive', '--format=zip', f'--output={snapshot}', sha], output / f'archive-{label}.log', cwd=root)
@@ -300,7 +300,9 @@ def build(root, output, sha, label, loaded_only=False):
         scope='Private dispatcher reserves one full-lifetime completion batch when required; '
               'loaded public-API workloads cover runtime chunking. First warmup lifetime primes storage; '
               'subsequent lifetimes retain the zero-allocation assertion.'), indent=2))
-    projects = [('Loaded', 'Loaded')] if loaded_only else [('Harness', 'Dekaf.Benchmarks'), ('Loaded', 'Loaded')]
+    projects = [] if loaded_only else [('Harness', 'Dekaf.Benchmarks')]
+    if include_loaded:
+        projects.append(('Loaded', 'Loaded'))
     for project, assembly in projects:
         target = output / f'{project}-{label}'
         command(['dotnet', 'build', fixture / f'{project}.csproj', '-c', 'Release',

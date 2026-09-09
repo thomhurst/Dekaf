@@ -16,8 +16,9 @@ paid-run limits and publishing coverage.
 
 The harness is maintained with the repository. Its source is pinned independently
 from both products: H is the harness, A is fresh main, and B is the current open
-PR head containing A. Each comparison runs A1, B, A2 sequentially on one
-`ubuntu-latest` VM. The `micro` suite screens every case against the declared
+PR head containing A. Each workload comparison runs A1, B, A2 sequentially in
+one job on one `ubuntu-latest` VM. Independent workloads can use separate jobs
+as described below. The `micro` suite screens every case against the declared
 tolerances and fails on `REGRESSION`; that screen is the acceptance result for
 micro-scoped changes. Other suites and identity checks are not a performance
 PASS by themselves. Apply [repository acceptance requirements](../../AGENTS.md)
@@ -36,6 +37,9 @@ gh workflow run performance-comparison.yml --ref main -f pr=3128 -f suite=admin 
 The workflow rejects moving product names, a different checked-out harness,
 stale main, a candidate missing main, a changed/closed PR, and unknown suites.
 `performance-pins.json` records independent workflow/harness/product identities.
+The preparation job verifies fresh main and the open PR once before jobs fan out.
+Queued jobs use that pinned campaign, so main moving during the campaign does
+not change their controls. Each job still records main at its end.
 Suite artifacts retain source/binary identities, settings and raw measurements.
 The shared micro suite retains static CPU/runtime/OS details and BDN's original
 reports and logs. The shared Linux helper only selects CPU affinity; the custom
@@ -81,6 +85,37 @@ counter failures as zero allocations, or missing metrics as passes. Preserve
 all maxima and time series. Historical `PLAN.md`, `EXPERIMENT.md`, `REFRESH.md`
 and dated reports describe their original configurations; they are not current
 acceptance evidence. New H/A/B combinations require new evidence.
+
+## Parallel workload jobs
+
+The workflow splits `dispatch-adjacent` into six jobs: one for each of the four
+loaded modes, one for all six micro cases, and one for all four shutdown cases.
+`dispatch-loaded-adjacent` uses just the four loaded jobs. `outbox-loaded` and
+`outbox-adjacent` each use four jobs, one per store/listener configuration.
+Other suites retain one comparison job. There are no new dispatch inputs.
+
+Each job builds both pinned products and validates every selected case on both
+before timing. Its complete A1/B/A2 triplets run sequentially with the existing
+warmup, sampling, runtime settings and broker resets. Workloads never run
+concurrently on the same VM. Coverage across these independent jobs must not
+be interpreted as cross-VM absolute performance comparisons.
+
+The pinned `performance-campaign.json` declares the exact workload groups.
+Raw artifacts are named `performance-PR-SUITE-RUN_ID-SHARD`; small
+`performance-completion-RUN_ID-SHARD` artifacts record completed coverage.
+The final coverage job rejects missing/duplicate groups, mismatched campaigns,
+different capture durations, incomplete/reordered phases and failed/cancelled
+comparison jobs. It reports collection completeness, never performance acceptance.
+Review each workload against its own same-VM controls. A failed-job rerun reuses
+the original verified campaign and replaces that shard's artifacts; an entirely
+new campaign must pin fresh main as usual.
+
+This reduces elapsed time when runners are available, while duplicating some
+build/setup cost. Based on the 9 September captures, full adjacent dispatch is
+estimated at 40–45 minutes across six jobs (previously 181 minutes); ordinary
+loaded outbox at 25–30 minutes across four (previously 86 minutes). Queueing is
+excluded and the parallel workflow has not yet been timed. The longer adjacent
+outbox variant keeps its 480-second warmup, so it has a larger budget.
 
 ## Validation and provenance
 
