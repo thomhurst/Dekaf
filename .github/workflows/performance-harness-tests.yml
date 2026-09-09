@@ -63,7 +63,10 @@ jobs:
           screen same same same | jq -e '.screen == "PASS" and (.cases | length) == 2 and all(.cases[]; .screen == "PASS" and .b_vs_a1_percent == 0 and .drift_percent == 0)'
           screen same slower same | jq -e '.screen == "REGRESSION" and all(.cases[]; .screen == "REGRESSION")'
           screen same allocating same | jq -e '.screen == "REGRESSION" and all(.cases[]; .screen == "REGRESSION")'
-          screen same same drifted | jq -e '.screen == "INCONCLUSIVE" and all(.cases[]; .screen == "NOISE")'
+          screen same same drifted | jq -e '.screen == "PASS" and all(.cases[]; .screen == "PASS" and .control_drift_exceeds_tolerance)'
+          screen same allocating drifted | jq -e '.screen == "REGRESSION" and all(.cases[]; .control_drift_exceeds_tolerance)'
+          screen same slower allocating | jq -e '.screen == "REGRESSION"'
+          screen same allocating allocating | jq -e '.screen == "INCONCLUSIVE"'
           screen same drifted nearer | jq -e '.screen == "INCONCLUSIVE" and all(.cases[]; .screen == "INCONCLUSIVE")'
           screen slower same slower | jq -e '.screen == "PASS" and all(.cases[]; .screen == "IMPROVEMENT")'
           if screen same partial same > /dev/null 2>&1; then echo 'Mismatched case sets were compared'; exit 1; fi
@@ -89,6 +92,10 @@ jobs:
           dotnet build Dekaf.Benchmarks.csproj -c Release --disable-build-servers > "$results/build.log" 2>&1
           dotnet run --project Dekaf.Benchmarks.csproj -c Release --no-build -- --job Dry --filter '*ShareResponseFrameBench*' --artifacts "$results/dry" > "$results/dry.log" 2>&1
           jq -s -e '[.[].Benchmarks[]] | length == 6 and all(.[]; .Statistics.N == 1)' "$results/dry/results/"*-report-full.json
+          export ABA_PR=3142
+          dotnet build Dekaf.Benchmarks.csproj -c Release --disable-build-servers > "$results/pool-build.log" 2>&1
+          dotnet run --project Dekaf.Benchmarks.csproj -c Release --no-build -- --job Dry --filter '*PendingRequest*Benchmark*' --artifacts "$results/pool-dry" > "$results/pool-dry.log" 2>&1
+          jq -s -e '[.[].Benchmarks[]] | length == 3 and all(.[]; .Statistics.N == 1)' "$results/pool-dry/results/"*-report-full.json
       - name: Verify Linux client and broker affinity
         run: |
           python3 .github/scripts/test_runner_affinity.py --linux-smoke

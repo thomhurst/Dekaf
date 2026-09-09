@@ -9,14 +9,14 @@
 # parameters. Means and allocations are BenchmarkDotNet's own values; nothing is re-estimated.
 #
 # Per-case screen, evaluated in this order:
-#   NOISE        control drift (A2 vs A1) beyond the tolerance; the case cannot be judged.
 #   REGRESSION   candidate slower than both controls beyond the tolerance, or allocating more
 #                bytes per operation than both controls.
-#   INCONCLUSIVE candidate slower than one control beyond the tolerance but not the other.
+#   INCONCLUSIVE candidate slower or allocating more than one control but not the other.
 #   IMPROVEMENT  candidate faster than both controls beyond the tolerance.
 #   PASS         within the tolerance against both controls and not allocating more than both.
-# Overall screen: REGRESSION if any case regresses; INCONCLUSIVE if any case is NOISE or
-# INCONCLUSIVE; otherwise PASS.
+# Control drift is retained as a diagnostic and does not override either decisive direction.
+# Overall screen: REGRESSION if any case regresses; INCONCLUSIVE if any case is inconclusive;
+# otherwise PASS. Scope, precision and correctness still require review.
 
 def case_key: [.Namespace, .Type, .Method, .Parameters] | map(select(. != null and . != "")) | join(" ");
 def allocated: [.Metrics[] | select(.Descriptor.Id == "Allocated Memory") | .Value] | first;
@@ -25,10 +25,10 @@ def percent(x; control): (x / control - 1) * 100;
 def round2: (. * 100 | round) / 100 | if . == 0 then 0 else . end;
 def signed: round2 | if . > 0 then "+\(.)%" else "\(.)%" end;
 def screen($t):
-  if (.drift_percent | fabs) > $t then "NOISE"
-  elif (.b_vs_a1_percent > $t and .b_vs_a2_percent > $t)
+  if (.b_vs_a1_percent > $t and .b_vs_a2_percent > $t)
     or (.B.allocated_bytes > .A1.allocated_bytes and .B.allocated_bytes > .A2.allocated_bytes) then "REGRESSION"
-  elif .b_vs_a1_percent > $t or .b_vs_a2_percent > $t then "INCONCLUSIVE"
+  elif .b_vs_a1_percent > $t or .b_vs_a2_percent > $t
+    or .B.allocated_bytes > .A1.allocated_bytes or .B.allocated_bytes > .A2.allocated_bytes then "INCONCLUSIVE"
   elif .b_vs_a1_percent < -$t and .b_vs_a2_percent < -$t then "IMPROVEMENT"
   else "PASS" end;
 
@@ -40,15 +40,15 @@ def screen($t):
     | . + {b_vs_a1_percent: percent(.B.mean_ns; .A1.mean_ns),
            b_vs_a2_percent: percent(.B.mean_ns; .A2.mean_ns),
            drift_percent: percent(.A2.mean_ns; .A1.mean_ns)}
-    | . + {screen: screen($tolerance)}]
+    | . + {control_drift_exceeds_tolerance: ((.drift_percent | fabs) > $tolerance), screen: screen($tolerance)}]
 | {tolerance_percent: $tolerance, cases: .,
    screen: (if any(.[]; .screen == "REGRESSION") then "REGRESSION"
-            elif any(.[]; .screen == "NOISE" or .screen == "INCONCLUSIVE") then "INCONCLUSIVE"
+            elif any(.[]; .screen == "INCONCLUSIVE") then "INCONCLUSIVE"
             else "PASS" end)}
 | if $format == "markdown" then
     (["| Case | A1 ns/op | B ns/op | A2 ns/op | B vs A1 | B vs A2 | A1 to A2 drift | Allocated B/op A1 / B / A2 | Screen |",
       "| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |"]
      + [.cases[] | "| \(.case | gsub("[|]"; "/")) | \(.A1.mean_ns | round2) | \(.B.mean_ns | round2) | \(.A2.mean_ns | round2) | \(.b_vs_a1_percent | signed) | \(.b_vs_a2_percent | signed) | \(.drift_percent | signed) | \(.A1.allocated_bytes) / \(.B.allocated_bytes) / \(.A2.allocated_bytes) | \(.screen) |"]
-     + ["", "Micro screen: **\(.screen)** at \(.tolerance_percent)% mean time and 0 B/op allocation against both controls. REGRESSION: worse than both controls beyond tolerance. NOISE: control drift beyond tolerance. INCONCLUSIVE: worse than one control only."])
+     + ["", "Micro screen: **\(.screen)** at \(.tolerance_percent)% mean time and 0 B/op allocation growth against both controls. REGRESSION: worse than both controls beyond tolerance. INCONCLUSIVE: worse than one control only. Control drift is diagnostic; review precision, correctness and workload scope."])
     | join("\n")
   else . end

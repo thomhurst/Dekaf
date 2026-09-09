@@ -63,9 +63,10 @@ jobs:
             3082) filters=('*BinaryKeyDispatchBenchmarks*'); count=18 ;;
             3083) filters=('*BatchReadBench*' '*BatchBoundBench*'); count=12 ;;
             3085) filters=('*RelayMetricsBenchmarks*' '*ActualPublisherBenchmarks*'); count=10 ;;
-            3086) filters=('*SuccessfulFetch*' '*FollowerError(Prefetch*' '*LeaderError*' '*ResponsePoolControl*'); count=8 ;;
+            3086) filters=('*ConsumerFollowerOffsetRetryBenchmarks*'); count=10 ;;
             3116) filters=('*RecordCount: 1024, HeaderCount: 0*' '*RecordCount: 64, HeaderCount: 2*'); count=14; warmup=130; minimum_warmup=120 ;;
             3117) filters=('*Mode: KeyRecordsDistinct*' '*Mode: KeyBatchesDistinct*' '*Mode: KeyRecordsPaired*' '*Mode: KeyBatchesPaired*'); count=4 ;;
+            3137|3142) filters=('*PendingRequest*Benchmark*'); count=3 ;;
             3149) filters=('*LingerAppendBench*'); count=4 ;;
             3158) filters=('*ShareResponseFrameBench*'); count=6 ;;
             *) echo 'No declared steady-state fixture for this PR'; exit 1 ;;
@@ -116,7 +117,7 @@ jobs:
           screen=$(jq -r .screen "$results/comparison.json")
           case "$screen" in
             PASS) echo 'Micro screen PASS for the declared fixture. Whole-PR acceptance still requires correctness and any loaded evidence the change scope requires.' >> "$GITHUB_STEP_SUMMARY" ;;
-            INCONCLUSIVE) echo '::warning::Micro screen INCONCLUSIVE: control drift beyond tolerance or a loss against one control only. One exact repeat is permitted.' ;;
+            INCONCLUSIVE) echo '::warning::Micro screen INCONCLUSIVE: a loss against one control only. Review the affected metric and uncertainty before using the permitted exact repeat.' ;;
             *) echo '::error::Micro screen REGRESSION: the candidate is slower or allocates more than both controls beyond tolerance.'; exit 1 ;;
           esac
       - name: Pool comparison

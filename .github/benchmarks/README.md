@@ -51,7 +51,7 @@ binary in all phases and never grants product acceptance. See
 
 | Suite | Scope and maintained driver |
 | --- | --- |
-| `micro` | Focused cases for #3082, #3083, #3085, #3086, #3116, #3117, #3149, #3158; normal [project references](aba/Dekaf.Benchmarks.csproj) and BDN CLI in the workflow |
+| `micro` | Focused cases for #3082, #3083, #3085, #3086, #3116, #3117, #3137, #3142, #3149, #3158; normal [project references](aba/Dekaf.Benchmarks.csproj) and BDN CLI in the workflow |
 | `pool`, `pool-recovery` | Pool reset and recovery; [driver](../scripts/pool_reset_aba.py) |
 | `pool-loaded`, `pool-profile` | Loaded producer pool comparison and diagnostic profiling; [driver](../scripts/pool_loaded_aba.py) |
 | `admin`, `admin-pilot`, `admin-calibration` | Cached-transport administration for #3128, #3129, #3136, #3138; [driver](../scripts/admin_refresh.py) |
