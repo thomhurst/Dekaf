@@ -48,9 +48,8 @@ def execute():
         validator = original.validate_probe
         controls, added = original.CONTROLS, original.NEW_CASES
     pilot = os.getenv('ADMIN_PILOT') == '1'
-    extended_member_removal = PR == 3129 and not pilot
-    warmup_seconds = 480 if extended_member_removal else 360
-    measured_seconds = 180 if extended_member_removal else 60
+    warmup_seconds = 360 if pilot else 480
+    measured_seconds = 60 if pilot else 180
     if pilot:
         # Diagnose the observed report/JIT transition before expanding a campaign.
         controls, added = controls[:1], []
@@ -62,7 +61,7 @@ def execute():
                 warmup_rationale=('480 seconds continuous workload after observer heap preparation; previous 360-second captures '
                                   'retained helper/ConditionalWeakTable JIT near total seconds 382-400. Collect 180 seconds '
                                   'to retain multiple recurring GC cycles, not select a GC-free window.'
-                                  if extended_member_removal else
+                                  if not pilot else
                                   '360 seconds continuous workload after observer heap preparation; assess all measured runtime transitions'),
                 observer_preparation='After histogram allocation, two blocking compacting full GCs with finalizer waits before workload warmup; no forced GC during warmup or measurement',
                 pilot=pilot, report_aggregation='all overflow sorting and aggregation deferred until both captures finish',
