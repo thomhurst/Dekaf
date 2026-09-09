@@ -132,6 +132,12 @@ def execute(args):
         for file in fixture.iterdir():
             if file.is_file():
                 shutil.copyfile(file, snapshot / file.name)
+        # Retain the measured host and dependencies, not just their identities,
+        # so downloaded evidence can independently verify the phase inputs.
+        binaries = snapshot / 'binaries'
+        shutil.copytree(hosts[label].parent, binaries)
+        if any(sha256(binaries / name) != digest for name, digest in manifest.items()):
+            raise ValueError('Archived measurement binaries differ from the built inputs')
     # Both builds finish before timing. Each phase uses a fresh prebuilt host;
     # in-process emit does not launch MSBuild during the experiment.
     run(['dotnet', 'build-server', 'shutdown'], artifacts / 'build-server-shutdown.log', env=environment)
