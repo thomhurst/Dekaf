@@ -47,9 +47,9 @@ main before dispatch. The selected PR determines the existing control matrix.
 Calibration builds the baseline fixture once without `CANDIDATE`, validates it,
 and uses that exact binary path for all A1/B/A2 launches. New APIs with no baseline
 equivalent are excluded. Each control runs consecutively in three fresh processes
-on one `ubuntu-latest` VM, with 480 seconds continuous workload warmup and 180
+on one `ubuntu-latest` VM, with 30 seconds continuous workload warmup and 30
 seconds measurement per process. Both product inputs must match or collection
-fails before building. Budget 33 measured/warmup minutes per control case, plus
+fails before building. Budget 3 measured/warmup minutes per control case, plus
 builds and fixture validation. There is no automatic repetition.
 
 `calibration.json` reports the existing 3% throughput/CPU, 5% p50/p99/max, and

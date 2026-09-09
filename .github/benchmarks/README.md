@@ -67,8 +67,14 @@ coverage before evaluating a new change. Pilots/profiling and partial-scope suit
 retain their stated limitations. The `micro` suite configures BDN warmup iteration counts; verify actual elapsed
 workload warmup before using its measurements for steady-state acceptance.
 Other suites enforce their own elapsed warmup and measurement plans. In particular,
-full admin captures use 480 seconds warmup and 180 seconds measurement per phase
-per control (33 minutes per triplet, before builds/validation).
+admin captures use 30 seconds warmup and 30 seconds measurement per phase
+per control (3 minutes per triplet, before builds/validation). Administrative
+calls get a smaller sampling budget than sustained producer/consumer workloads.
+All control and candidate-only cases remain covered: the full matrices take
+14–27 minutes of warmup/measurement, plus builds and validation. The one-control
+`admin-pilot` and identical-product `admin-calibration` use the same durations.
+Metric tolerances and correctness checks still apply; inspect retained workload
+trends and report uncertainty if the shorter capture does not reach steady state.
 
 Do not reinterpret BDN iteration percentiles as per-message latency, process
 counter failures as zero allocations, or missing metrics as passes. Preserve

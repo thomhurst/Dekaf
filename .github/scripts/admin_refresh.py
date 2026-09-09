@@ -53,8 +53,11 @@ def execute():
     if calibration and A != B:
         raise ValueError('Calibration requires identical exact product SHAs')
     pilot = os.getenv('ADMIN_PILOT') == '1'
-    warmup_seconds = 360 if pilot else 480
-    measured_seconds = 60 if pilot else 180
+    # Administrative calls get a shorter capture budget than sustained message
+    # pipelines. Keep elapsed warmup above the 20-second repository minimum and
+    # use the same settings for comparisons, calibration and the one-case pilot.
+    warmup_seconds = 30
+    measured_seconds = 30
     if calibration:
         added = []
     if pilot:
@@ -66,7 +69,7 @@ def execute():
     probe_prefix = ['taskset', '-c', str(cpu), 'dotnet']
     plan = dict(calibration=calibration, topology=topology, affinity=affinity, A=A, B=B, harness=subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
                 controls=controls, candidate_only=added, warmup_seconds=warmup_seconds, measured_seconds=measured_seconds,
-                warmup_rationale='Same declared continuous workload duration for all phases; assess throughput and latency trends',
+                warmup_rationale='30 seconds continuous workload for administrative calls, above the 20-second minimum; assess throughput and latency trends',
                 pilot=pilot, report_aggregation='all overflow sorting and aggregation deferred until both captures finish',
                 histograms='Exact ticks, touched buckets only; 65536 distinct ticks/interval, shared archive capped at 4194304 entries (64 MiB); exhaustion invalidates',
                 phase_transition='one continuous warmed call loop; no return/re-entry between warmup and measurement',

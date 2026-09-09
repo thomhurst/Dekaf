@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import os
 from pathlib import Path
 import tempfile
@@ -37,8 +38,8 @@ class CalibrationTests(unittest.TestCase):
             output.mkdir(parents=True)
             (output / 'Dekaf.Benchmarks.dll').write_bytes(b'identical compiled fixture')
 
-    def execute(self, calibration):
-        with patch.dict(os.environ, ADMIN_CALIBRATION='1' if calibration else '0', ADMIN_PILOT='0'), \
+    def execute(self, calibration, pilot=False):
+        with patch.dict(os.environ, ADMIN_CALIBRATION='1' if calibration else '0', ADMIN_PILOT='1' if pilot else '0'), \
              patch.object(self.driver, 'configure_affinity', return_value=([], {'consumer': '2,3', 'infrastructure': '0,1'})), \
              patch.object(self.driver, 'module', return_value=self.common), \
              patch.object(self.driver, 'run', side_effect=self.fake_run), \
@@ -54,8 +55,7 @@ class CalibrationTests(unittest.TestCase):
         self.assertEqual(len(probes), 5)  # Two validation launches, then three measured launches.
         self.assertEqual(len({row[4] for row in probes}), 1)
         self.assertTrue(all(row[6] == 'legacy:16' for row in probes))
-        self.assertEqual([row[-2:] for row in probes], [['.2', '.2']] * 2 + [['480', '180']] * 3)
-        import json
+        self.assertEqual([row[-2:] for row in probes], [['.2', '.2']] * 2 + [['30', '30']] * 3)
         report = json.loads((self.driver.OUT / 'calibration.json').read_text())
         self.assertFalse(report['point_estimates_within_declared_limits'])
         self.assertIn('never product acceptance', report['verdict'])
@@ -75,7 +75,24 @@ class CalibrationTests(unittest.TestCase):
         probes = [row for row in self.commands if 'probe' in row]
         self.assertEqual(len({row[4] for row in probes}), 2)
         self.assertEqual(probes[-1][6], 'new:16')
+        self.assertEqual([row[-2:] for row in probes], [['.2', '.2']] * 3 + [['30', '30']] * 4)
+        plan = json.loads((self.driver.OUT / 'plan.json').read_text())
+        self.assertEqual((plan['warmup_seconds'], plan['measured_seconds']), (30, 30))
+        self.assertEqual(plan['controls'], ['legacy:16'])
+        self.assertEqual(plan['candidate_only'], ['new:16'])
+        self.assertEqual(self.common.validate_probe.call_count, 11)
         self.assertFalse((self.driver.OUT / 'calibration.json').exists())
+
+    def test_pilot_uses_comparison_durations_for_one_control_without_new_apis(self):
+        self.common.CONTROLS = ['legacy:16', 'inventory:16']
+        self.execute(False, pilot=True)
+        probes = [row for row in self.commands if 'probe' in row]
+        self.assertTrue(all(row[6] == 'legacy:16' for row in probes))
+        self.assertEqual([row[-2:] for row in probes], [['.2', '.2']] * 2 + [['30', '30']] * 3)
+        plan = json.loads((self.driver.OUT / 'plan.json').read_text())
+        self.assertTrue(plan['pilot'])
+        self.assertEqual(plan['controls'], ['legacy:16'])
+        self.assertEqual(plan['candidate_only'], [])
 
     def test_all_four_deployed_probes_match_the_tested_recorder(self):
         probes = list(ROOT.glob('tools/Admin*Evidence/Probe.cs'))
