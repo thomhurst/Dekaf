@@ -48,7 +48,7 @@ public sealed class AdminFixture(string scenario) : IAsyncDisposable
         }
         var metadata = new MetadataResponse
         {
-            Brokers = [new BrokerMetadata { NodeId = 1, Host = "localhost", Port = 9092 }],
+            Brokers = [new BrokerMetadata { NodeId = 1, Host = "127.0.0.1", Port = 9092 }],
             ControllerId = 1,
             ClusterId = "fixture",
             Topics = []
@@ -70,7 +70,7 @@ public sealed class AdminFixture(string scenario) : IAsyncDisposable
                 { Name = name, Partitions = [new() { PartitionIndex = 0 }] }).ToArray()
             });
         var pool = new Pool(_connection);
-        _metadata = new MetadataManager(pool, ["localhost:9092"]);
+        _metadata = new MetadataManager(pool, ["127.0.0.1:9092"]);
         _metadata.Metadata.Update(metadata);
         _metadata.SetApiVersion(ApiKey.Metadata, 9, 13);
         _metadata.SetApiVersion(ApiKey.CreateTopics, 5, 7);
@@ -79,7 +79,7 @@ public sealed class AdminFixture(string scenario) : IAsyncDisposable
         _metadata.SetApiVersion(ApiKey.AlterPartitionReassignments, 0, 1);
         _admin = new AdminClient(new AdminClientOptions
         {
-            BootstrapServers = ["localhost:9092"],
+            BootstrapServers = ["127.0.0.1:9092"],
             RetryBackoffMs = 1,
             RetryBackoffMaxMs = 1
         }, pool, _metadata);
@@ -244,7 +244,7 @@ public sealed class AdminFixture(string scenario) : IAsyncDisposable
         private readonly AlterPartitionReassignmentsResponse _rejectedReassignment = new() { ErrorCode = ErrorCode.NotController, Responses = [] };
         private readonly AlterPartitionReassignmentsResponse _retriedReassignment = new() { Responses = [reassign.Responses[^1]] };
         public int BrokerId => 1;
-        public string Host => "localhost";
+        public string Host => "127.0.0.1";
         public int Port => 9092;
         public bool IsConnected => true;
         public ValueTask<TResponse> SendAsync<TRequest, TResponse>(TRequest request, short version, CancellationToken token = default)

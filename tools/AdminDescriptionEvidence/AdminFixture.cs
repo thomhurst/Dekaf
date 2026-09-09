@@ -53,7 +53,7 @@ public sealed class AdminFixture : IAsyncDisposable
         for (var i = 0; i < _count; i++)
         {
             var id = _ids[i];
-            coordinatorResponses.Add(id, new() { Coordinators = [new Coordinator { Key = id, NodeId = 1, Host = "localhost", Port = 9092 }] });
+            coordinatorResponses.Add(id, new() { Coordinators = [new Coordinator { Key = id, NodeId = 1, Host = "127.0.0.1", Port = 9092 }] });
             groups[i] = new()
             {
                 GroupId = id, GroupState = "Stable", ProtocolType = _mode == "mixed" ? "connect" : "consumer", ProtocolData = "range",
@@ -69,19 +69,19 @@ public sealed class AdminFixture : IAsyncDisposable
         retryGroups[^1] = new() { GroupId = _ids[^1], GroupState = "", Members = [], ErrorCode = ErrorCode.NotCoordinator };
         var metadata = new MetadataResponse
         {
-            Brokers = [new BrokerMetadata { NodeId = 1, Host = "localhost", Port = 9092 }],
+            Brokers = [new BrokerMetadata { NodeId = 1, Host = "127.0.0.1", Port = 9092 }],
             ControllerId = 1, ClusterId = "fixture", Topics = []
         };
         _connection = new(coordinatorResponses, new() { Groups = groups }, new() { Groups = retryGroups }, metadata);
         var pool = new Pool(_connection);
-        _metadata = new MetadataManager(pool, ["localhost:9092"]);
+        _metadata = new MetadataManager(pool, ["127.0.0.1:9092"]);
         _metadata.Metadata.Update(metadata);
         _metadata.SetApiVersion(ApiKey.FindCoordinator, 4, 4);
         _metadata.SetApiVersion(ApiKey.DescribeGroups, 5, 5);
         _metadata.SetApiVersion(ApiKey.Metadata, 9, 13);
         _admin = new AdminClient(new AdminClientOptions
         {
-            BootstrapServers = ["localhost:9092"], RetryBackoffMs = 1, RetryBackoffMaxMs = 1
+            BootstrapServers = ["127.0.0.1:9092"], RetryBackoffMs = 1, RetryBackoffMaxMs = 1
         }, pool, _metadata);
         var cluster = new InMemoryKafkaCluster();
         cluster.CreateTopic("orders");
@@ -159,7 +159,7 @@ public sealed class AdminFixture : IAsyncDisposable
         private readonly DescribeGroupsResponse _retrySuccess = new() { Groups = [descriptions.Groups[^1]] };
         public bool RetryNext { get; set; }
         public int BrokerId => 1;
-        public string Host => "localhost";
+        public string Host => "127.0.0.1";
         public int Port => 9092;
         public bool IsConnected => true;
         public ValueTask<TResponse> SendAsync<TRequest, TResponse>(TRequest request, short version, CancellationToken token = default)

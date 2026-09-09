@@ -24,3 +24,31 @@ Candidate-only cases still run after the controls. Their recorded thread-pool an
 DNS continuation transitions are a separate unresolved question; changing control
 order does not waive startup, correctness, changed-path or stability requirements.
 The reorder alone is not a performance PASS or authorization for another run.
+
+## Cached-transport DNS boundary
+
+The same run records ClientDnsEndpointResolver.ResolveAsync continuations during
+the candidate retry case. The fake connection pool returns in-memory responses,
+but metadata recovery still resolves the fixture's localhost hostname through OS
+DNS. This adds an external service and asynchronous completion timing to a probe
+whose declared scope is cached transport.
+
+Use the literal loopback address 127.0.0.1 consistently in each fixture's bootstrap,
+broker/coordinator metadata and fake connection identity. The existing resolver's
+literal-address branch returns synchronously without consulting DNS. Apply this
+identical input to A1, B and A2, retain every protocol/correctness check, and record
+the fixture adaptation in the plan. This characterizes administrative operations
+with an already specified endpoint; it does not certify DNS discovery or recovery
+performance. Thread-pool transitions from other sources still require assessment.
+
+## Explicit fixture preflight
+
+Description, member-removal and share-offset hosts now handle the same `validate`
+command as the mutation host. Previously, that argument fell through to
+BenchmarkDotNet's interactive selection and could return success without running
+the requested fixture. Hosted admin_refresh.py validation used `probe`, including
+InitializeAsync and the retained capture validator, so its completed results are
+not invalidated by this local-preflight bug. Local preflight now requires the
+explicit `Validated CASE` marker and rejects unsupported cases on both products.
+Member-removal and share-offset dispatch also reject unknown candidate modes
+instead of silently treating them as ordinary candidate calls.

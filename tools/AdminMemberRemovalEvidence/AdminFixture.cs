@@ -65,22 +65,22 @@ public sealed class AdminFixture : IAsyncDisposable
         }
         var metadata = new MetadataResponse
         {
-            Brokers = [new() { NodeId = 1, Host = "localhost", Port = 9092 }],
+            Brokers = [new() { NodeId = 1, Host = "127.0.0.1", Port = 9092 }],
             ControllerId = 1, ClusterId = "fixture", Topics = []
         };
         _connection = new(metadata,
             new() { Groups = [new() { GroupId = Group, ErrorCode = ErrorCode.None,
                 GroupState = "Stable", ProtocolType = "consumer", Members = described }] },
             new() { ErrorCode = ErrorCode.None, Members = outcomes },
-            new() { Coordinators = [new() { Key = Group, NodeId = 1, Host = "localhost", Port = 9092 }] });
+            new() { Coordinators = [new() { Key = Group, NodeId = 1, Host = "127.0.0.1", Port = 9092 }] });
         var pool = new Pool(_connection);
-        _metadata = new(pool, ["localhost:9092"]);
+        _metadata = new(pool, ["127.0.0.1:9092"]);
         _metadata.Metadata.Update(metadata);
         _metadata.SetApiVersion(ApiKey.Metadata, 9, 13);
         _metadata.SetApiVersion(ApiKey.FindCoordinator, 4, 5);
         _metadata.SetApiVersion(ApiKey.DescribeGroups, 5, 6);
         _metadata.SetApiVersion(ApiKey.LeaveGroup, 3, 5);
-        _admin = new AdminClient(new() { BootstrapServers = ["localhost:9092"], RetryBackoffMs = 1, RetryBackoffMaxMs = 1 }, pool, _metadata);
+        _admin = new AdminClient(new() { BootstrapServers = ["127.0.0.1:9092"], RetryBackoffMs = 1, RetryBackoffMaxMs = 1 }, pool, _metadata);
         _cluster.CreateTopic("orders");
         _fake = new(_cluster);
 #if CANDIDATE
@@ -92,10 +92,11 @@ public sealed class AdminFixture : IAsyncDisposable
             "legacy" => LegacyCall,
             "registration" => RegistrationCall,
 #if CANDIDATE
-            _ => CandidateCall
-#else
-            _ => throw new NotSupportedException(_mode)
+            "static" or "dynamic" or "all" or "partial" or "retry" or "ambiguous"
+                or "cancel" or "deadline" or "fake-all" or "fake-static"
+                or "fake-replace" or "fake-deadline" => CandidateCall,
 #endif
+            _ => throw new NotSupportedException(_mode)
         };
         if (await Call() != _count) throw new InvalidOperationException("Fixture did not complete every member.");
         if (_mode == "legacy") Validate(await _admin.RemoveMembersFromConsumerGroupAsync(Group, _legacy));
@@ -222,7 +223,7 @@ public sealed class AdminFixture : IAsyncDisposable
         public bool FailNext { get; set; }
         public CancellationTokenSource? CancelOnSend { get; set; }
         public int BrokerId => 1;
-        public string Host => "localhost";
+        public string Host => "127.0.0.1";
         public int Port => 9092;
         public bool IsConnected => true;
         public ValueTask<TResponse> SendAsync<TRequest, TResponse>(TRequest request, short version, CancellationToken token = default)

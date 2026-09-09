@@ -64,6 +64,7 @@ def execute():
                 phase_transition='one continuous warmed call loop; no return/re-entry between warmup and measurement',
                 cpu_affinity=[cpu], jit_attribution='CLR MethodJittingStarted; identical observer in all phases',
                 phase_order='For each control workload, run A1 then B then A2 before starting the next workload',
+                endpoint='127.0.0.1:9092; literal loopback avoids external OS DNS in cached-transport probes',
                 image=os.getenv('ImageOS'), image_version=os.getenv('ImageVersion'), run_id=os.getenv('GITHUB_RUN_ID'),
                 scope='Cached-transport completed administrative calls; no network/broker acceptance.',
                 verdict='INCONCLUSIVE: partial scope; assess all retained runtime and metric evidence')
