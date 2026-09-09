@@ -9,7 +9,7 @@ on:
       suite:
         required: true
         type: choice
-        options: [micro, pool, pool-recovery, admin, admin-pilot, dispatch, dispatch-adjacent, dispatch-loaded, dispatch-pilot, dispatch-record-pilot, share-loaded, outbox, outbox-loaded, pool-loaded, pool-profile]
+        options: [micro, pool, pool-recovery, admin, admin-pilot, dispatch, dispatch-adjacent, dispatch-loaded, dispatch-pilot, dispatch-record-pilot, share-loaded, outbox, outbox-loaded, outbox-adjacent, pool-loaded, pool-profile]
       baseline_sha:
         required: true
         description: Exact baseline SHA
@@ -72,7 +72,9 @@ jobs:
           python3 -m unittest discover -s .github/scripts -p test_outbox_cycle_aba.py
           python3 .github/scripts/outbox_cycle_aba.py --baseline "$BASELINE_SHA" --candidate "$CANDIDATE_SHA" --artifacts "$GITHUB_WORKSPACE/aba-results"
       - name: Loaded outbox comparison
-        if: inputs.suite == 'outbox-loaded'
+        if: inputs.suite == 'outbox-loaded' || inputs.suite == 'outbox-adjacent'
+        env:
+          OUTBOX_ADJACENT: ${{ inputs.suite == 'outbox-adjacent' && '1' || '0' }}
         run: |
           python3 -m unittest discover -s .github/scripts -p test_outbox_loaded_aba.py
           python3 .github/scripts/outbox_loaded_aba.py

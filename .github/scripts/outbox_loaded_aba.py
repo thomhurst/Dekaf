@@ -1,5 +1,6 @@
 """Real Kafka outbox observations; successful collection does not set a PR gate."""
 import importlib.util
+from datetime import datetime, timezone
 import json
 import math
 import os
@@ -12,6 +13,21 @@ import threading
 CONFIGS = [(store, listener) for store in ('legacy', 'renewal') for listener in ('off', 'on')]
 WARMUP = 180
 MEASURED = 180
+
+
+def execution_plan(adjacent=False):
+    for phase, label in [('DryA', 'A'), ('DryB', 'B')]:
+        for store, listener in CONFIGS:
+            yield phase, label, True, store, listener
+    phases = [('A1', 'A'), ('B', 'B'), ('A2', 'A')]
+    if adjacent:
+        for store, listener in CONFIGS:
+            for phase, label in phases:
+                yield phase, label, False, store, listener
+    else:
+        for phase, label in phases:
+            for store, listener in CONFIGS:
+                yield phase, label, False, store, listener
 
 
 def module(path, name):
@@ -93,6 +109,8 @@ def execute():
     root = Path.cwd()
     out = root / 'evidence'
     out.mkdir(exist_ok=False)
+    adjacent = os.environ.get('OUTBOX_ADJACENT') == '1'
+    declared_warmup = 480 if adjacent else WARMUP
     dispatch = module(root / '.github/benchmarks/dispatch-aba/run.py', 'outbox_dispatch')
     pool = module(root / '.github/scripts/pool_loaded_aba.py', 'outbox_broker')
     topology = dispatch.configure_affinity()
@@ -102,7 +120,8 @@ def execute():
     if main != a:
         raise ValueError('Main moved before this new campaign; rebase and repin')
     plan = {'A': a, 'B': b, 'harness': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
-            'main_at_start': main, 'primer_seconds': 20, 'warmup_seconds': WARMUP, 'measured_seconds': MEASURED,
+            'main_at_start': main, 'primer_seconds': 20, 'warmup_seconds': declared_warmup, 'measured_seconds': MEASURED,
+            'adjacent_controls': adjacent, 'execution_plan': list(execution_plan(adjacent)),
             'configs': CONFIGS, 'runner': 'ubuntu-latest', 'image': os.getenv('ImageVersion'),
             'topology': topology, 'affinity': dispatch.AFFINITY.copy(),
             'runtime': {'TieredCompilation': '1', 'TieredPGO': '1', 'ReadyToRun': '1', 'ServerGC': True},
@@ -131,38 +150,44 @@ def execute():
     bindings = {str(file): dispatch.digest(file) for host in hosts.values() for file in host.parent.iterdir() if file.is_file()}
     (out / 'bindings.json').write_text(json.dumps(bindings, indent=2), encoding='utf-8')
     observations = {}
-    for phase, label, smoke in [('DryA', 'A', True), ('DryB', 'B', True), ('A1', 'A', False), ('B', 'B', False), ('A2', 'A', False)]:
+    order = []
+    for phase, label, smoke, store, listener in execution_plan(adjacent):
         if any(dispatch.digest(Path(path)) != digest for path, digest in bindings.items()):
             raise ValueError('Measurement inputs changed')
-        observations[phase] = {}
-        for store, listener in CONFIGS:
-            key = f'{store}-{listener}'
-            folder = out / phase / key
-            folder.mkdir(parents=True)
-            broker = f'outbox-{phase.lower()}-{key}'
-            stop = threading.Event()
-            errors = []
-            sampler = None
+        observations.setdefault(phase, {})
+        key = f'{store}-{listener}'
+        folder = out / phase / key
+        folder.mkdir(parents=True)
+        broker = f'outbox-{phase.lower()}-{key}'
+        stop = threading.Event()
+        errors = []
+        sampler = None
+        entry = dict(phase=phase, label=label, smoke=smoke, case=key,
+                     started_utc=datetime.now(timezone.utc).isoformat())
+        order.append(entry)
+        (out/'capture-order.json').write_text(json.dumps(order, indent=2))
+        try:
+            dispatch.broker_start(folder, broker, pool.BROKER_RETENTION)
+            sampler = threading.Thread(target=pool.broker_samples, args=(broker, folder / 'broker-stats.jsonl', stop, errors))
+            sampler.start()
+            warmup, measured = (2, 2) if smoke else (declared_warmup, MEASURED)
+            dispatch.command(['taskset', '-c', dispatch.AFFINITY['consumer'], 'dotnet', hosts[label],
+                              'localhost:9092', folder / 'client', broker, store, listener, warmup, measured],
+                             folder / 'client.log', timeout=20 + warmup + measured + 150,
+                             env=dict(os.environ, DOTNET_TieredCompilation='1', DOTNET_TieredPGO='1', DOTNET_ReadyToRun='1'))
+            observations[phase][key] = validate(folder / 'client', warmup, measured, label == 'B', listener)
+            (out / 'collection.json').write_text(json.dumps(observations, indent=2), encoding='utf-8')
+        finally:
+            stop.set()
             try:
-                dispatch.broker_start(folder, broker, pool.BROKER_RETENTION)
-                sampler = threading.Thread(target=pool.broker_samples, args=(broker, folder / 'broker-stats.jsonl', stop, errors))
-                sampler.start()
-                warmup, measured = (2, 2) if smoke else (WARMUP, MEASURED)
-                dispatch.command(['taskset', '-c', dispatch.AFFINITY['consumer'], 'dotnet', hosts[label],
-                                  'localhost:9092', folder / 'client', broker, store, listener, warmup, measured],
-                                 folder / 'client.log', timeout=20 + warmup + measured + 150,
-                                 env=dict(os.environ, DOTNET_TieredCompilation='1', DOTNET_TieredPGO='1', DOTNET_ReadyToRun='1'))
-                observations[phase][key] = validate(folder / 'client', warmup, measured, label == 'B', listener)
-                (out / 'collection.json').write_text(json.dumps(observations, indent=2), encoding='utf-8')
+                if sampler is not None:
+                    sampler.join(timeout=15)
+                    if sampler.is_alive() or errors:
+                        raise RuntimeError(f'Broker sampling failed: {errors}')
             finally:
-                stop.set()
-                try:
-                    if sampler is not None:
-                        sampler.join(timeout=15)
-                        if sampler.is_alive() or errors:
-                            raise RuntimeError(f'Broker sampling failed: {errors}')
-                finally:
-                    dispatch.broker_stop(folder, broker)
+                dispatch.broker_stop(folder, broker)
+        entry['completed_utc'] = datetime.now(timezone.utc).isoformat()
+        (out/'capture-order.json').write_text(json.dumps(order, indent=2))
 
 
 if __name__ == '__main__':

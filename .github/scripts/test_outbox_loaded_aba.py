@@ -4,7 +4,25 @@ import struct
 import tempfile
 import unittest
 
-from outbox_loaded_aba import validate_phase
+from outbox_loaded_aba import validate_phase, execution_plan
+
+
+class ExecutionPlanTests(unittest.TestCase):
+    def test_adjacent_controls_keep_all_cases_and_smoke_first(self):
+        plan = list(execution_plan(True))
+        self.assertEqual(len(plan), 20)
+        self.assertTrue(all(row[2] for row in plan[:8]))
+        self.assertTrue(all(not row[2] for row in plan[8:]))
+        for index in range(8, 20, 3):
+            group = plan[index:index+3]
+            self.assertEqual([row[:2] for row in group], [('A1','A'),('B','B'),('A2','A')])
+            self.assertEqual(len({row[3:] for row in group}), 1)
+        self.assertEqual(len({row[3:] for row in plan[8:]}), 4)
+
+    def test_default_phase_order_is_unchanged(self):
+        plan = list(execution_plan())
+        self.assertEqual([row[0] for row in plan],
+                         ['DryA']*4 + ['DryB']*4 + ['A1']*4 + ['B']*4 + ['A2']*4)
 
 
 class PhaseValidationTests(unittest.TestCase):
