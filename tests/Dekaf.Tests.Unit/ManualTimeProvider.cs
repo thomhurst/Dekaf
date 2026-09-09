@@ -1,11 +1,11 @@
 using System.Threading.Channels;
 
-namespace Dekaf.Tests.Unit.Outbox;
+namespace Dekaf.Tests.Unit;
 
-internal sealed class ManualLeaseTimeProvider : TimeProvider
+internal sealed class ManualTimeProvider : TimeProvider
 {
     private readonly object _gate = new();
-    private readonly List<LeaseTimer> _timers = [];
+    private readonly List<ManualTimer> _timers = [];
     private readonly Channel<TimeSpan> _scheduled = Channel.CreateUnbounded<TimeSpan>();
     private long _ticks = TimeSpan.TicksPerSecond;
 
@@ -15,7 +15,7 @@ internal sealed class ManualLeaseTimeProvider : TimeProvider
 
     public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
     {
-        var timer = new LeaseTimer(this, callback, state);
+        var timer = new ManualTimer(this, callback, state);
         lock (_gate)
             _timers.Add(timer);
         timer.Change(dueTime, period);
@@ -30,7 +30,7 @@ internal sealed class ManualLeaseTimeProvider : TimeProvider
 
     public void Advance(TimeSpan elapsed)
     {
-        List<LeaseTimer> due = [];
+        List<ManualTimer> due = [];
         lock (_gate)
         {
             Interlocked.Add(ref _ticks, elapsed.Ticks);
@@ -48,7 +48,7 @@ internal sealed class ManualLeaseTimeProvider : TimeProvider
             timer.Invoke();
     }
 
-    private sealed class LeaseTimer(ManualLeaseTimeProvider owner, TimerCallback callback, object? state) : ITimer
+    private sealed class ManualTimer(ManualTimeProvider owner, TimerCallback callback, object? state) : ITimer
     {
         internal long Due { get; set; } = long.MaxValue;
         internal TimeSpan Period { get; private set; }

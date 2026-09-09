@@ -11,7 +11,7 @@ public sealed class OutboxLeaseRenewalTests
     [Test]
     public async Task Dispose_ThrowingRenewalCancellation_StillDisposesSource()
     {
-        var time = new ManualLeaseTimeProvider();
+        var time = new ManualTimeProvider();
         using var relay = CreateRelay(new RenewableStore(time), new Publisher(), time);
         using var cancellation = new CancellationTokenSource();
         using var registration = cancellation.Token.Register(static () => throw new InvalidOperationException("callback failed"));
@@ -26,7 +26,7 @@ public sealed class OutboxLeaseRenewalTests
     [Test]
     public async Task SlowPublish_RenewsBeyondOriginalExpiry_PeerCannotTakeOver()
     {
-        var time = new ManualLeaseTimeProvider();
+        var time = new ManualTimeProvider();
         var store = new RenewableStore(time);
         var publisher = new PausedPublisher();
         using var relay = CreateRelay(store, publisher, time);
@@ -56,7 +56,7 @@ public sealed class OutboxLeaseRenewalTests
     [Test]
     public async Task ExpiredLease_TakenByPeer_OriginalPublishIsObservedButRowsRetained()
     {
-        var time = new ManualLeaseTimeProvider();
+        var time = new ManualTimeProvider();
         var store = new RenewableStore(time);
         var publisher = new PausedPublisher();
         using var relay = CreateRelay(store, publisher, time);
@@ -84,7 +84,7 @@ public sealed class OutboxLeaseRenewalTests
     [Test]
     public async Task FetchNearLeaseBoundary_RenewsBeforeStartingPublisher()
     {
-        var time = new ManualLeaseTimeProvider();
+        var time = new ManualTimeProvider();
         var store = new RenewableStore(time) { FetchDuration = TimeSpan.FromSeconds(29) };
         var publisher = new PausedPublisher();
         using var relay = CreateRelay(store, publisher, time);
@@ -107,7 +107,7 @@ public sealed class OutboxLeaseRenewalTests
     [Test]
     public async Task RenewalResponseAfterOldExpiry_RetainsRowsDespiteSuccessfulStoreResponse()
     {
-        var time = new ManualLeaseTimeProvider();
+        var time = new ManualTimeProvider();
         var store = new RenewableStore(time) { RenewalDuration = TimeSpan.FromSeconds(21) };
         var publisher = new PausedPublisher();
         using var relay = CreateRelay(store, publisher, time);
@@ -133,7 +133,7 @@ public sealed class OutboxLeaseRenewalTests
     [Test]
     public async Task SynchronousPublisherCrossesExpiry_RetainsRows()
     {
-        var time = new ManualLeaseTimeProvider();
+        var time = new ManualTimeProvider();
         var store = new RenewableStore(time);
         using var relay = CreateRelay(store,
             new Publisher(() => time.Advance(TimeSpan.FromSeconds(31))), time);
@@ -152,7 +152,7 @@ public sealed class OutboxLeaseRenewalTests
     [Test]
     public async Task WholePublishBudgetExceeded_FaultsRelayWithoutMarkingRows()
     {
-        var time = new ManualLeaseTimeProvider();
+        var time = new ManualTimeProvider();
         var store = new RenewableStore(time);
         using var relay = new OutboxRelayService(store,
             new Publisher(() => time.Advance(TimeSpan.FromSeconds(6))),
@@ -167,7 +167,7 @@ public sealed class OutboxLeaseRenewalTests
     [Test]
     public async Task FailedRenewal_DoesNotPublishAnotherBucketFromStaleProbe()
     {
-        var time = new ManualLeaseTimeProvider();
+        var time = new ManualTimeProvider();
         var store = new RenewableStore(time)
         {
             Buckets = [0, 1], FetchDuration = TimeSpan.FromSeconds(10), RenewalSucceeds = false
@@ -195,7 +195,7 @@ public sealed class OutboxLeaseRenewalTests
     [Arguments(20, false)]
     public async Task LegacyStore_ReservesWholePublishBudgetAfterFetch(int acquisitionSeconds, bool canPublish)
     {
-        var time = new ManualLeaseTimeProvider();
+        var time = new ManualTimeProvider();
         var inner = new RenewableStore(time)
         {
             FetchDuration = TimeSpan.FromSeconds(26),
@@ -313,7 +313,7 @@ public sealed class OutboxLeaseRenewalTests
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
-    private sealed class RenewableStore(ManualLeaseTimeProvider time) : IOutboxStore, IOutboxLeaseRenewalStore
+    private sealed class RenewableStore(ManualTimeProvider time) : IOutboxStore, IOutboxLeaseRenewalStore
     {
         private readonly object _gate = new();
         private readonly OutboxMessage[] _batch = [new()
