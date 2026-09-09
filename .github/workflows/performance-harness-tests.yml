@@ -74,6 +74,21 @@ jobs:
           if dotnet run -c Release --no-build -- --job Dry --filter '*DoesNotExist*' --artifacts "$results/empty" > "$results/empty.log" 2>&1; then
             echo 'An empty selection returned success'; exit 1
           fi
+      - name: Verify copied comparison project discovery
+        env:
+          ABA_PR: '3158'
+          ABA_ROLE: A
+          MSBUILDDISABLENODEREUSE: '1'
+          DOTNET_CLI_USE_MSBUILD_SERVER: '0'
+        run: |
+          results="$GITHUB_WORKSPACE/.artifacts/comparison-discovery"
+          mkdir -p "$results"
+          cp -R .github/benchmarks/aba .performance
+          cp global.json Directory.Packages.props .performance/
+          cd .performance
+          dotnet build Dekaf.Benchmarks.csproj -c Release --disable-build-servers > "$results/build.log" 2>&1
+          dotnet run --project Dekaf.Benchmarks.csproj -c Release --no-build -- --job Dry --filter '*ShareResponseFrameBench*' --artifacts "$results/dry" > "$results/dry.log" 2>&1
+          jq -s -e '[.[].Benchmarks[]] | length == 6 and all(.[]; .Statistics.N == 1)' "$results/dry/results/"*-report-full.json
       - name: Verify Linux client and broker affinity
         run: |
           python3 .github/scripts/test_runner_affinity.py --linux-smoke
@@ -86,4 +101,5 @@ jobs:
           path: |
             .artifacts/admin-smoke/
             .artifacts/bdn-smoke/
+            .artifacts/comparison-discovery/
             TestResults/

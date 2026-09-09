@@ -7,6 +7,8 @@ normal project into each product checkout. BenchmarkDotNet handles builds,
 process isolation, timing, allocation measurement and exports. The copied
 directory includes `Directory.Build.props`/`.targets` stop-files so the fixture
 host does not import the product checkout's repository build settings.
+The copied `Performance.sln` bounds BenchmarkDotNet's project discovery to this
+directory, avoiding other `Dekaf.Benchmarks.csproj` files in the product checkout.
 
 Fixture differences required for a fresh-main comparison:
 
