@@ -35,8 +35,8 @@ cleanup and alert dismissal happen only after the credential is invalidated.
 
 Renovate is the dependency update service for this repository; do not add a
 Dependabot version-update configuration. Dependency review and NuGet
-vulnerability auditing gate incoming changes. CodeQL and secret scanning
-provide additional detection. GitHub Actions must use least-privilege token
+vulnerability auditing gate incoming changes. Secret scanning provides
+additional detection. GitHub Actions must use least-privilege token
 permissions, immutable commit pins for third-party actions, isolated handling
 of untrusted pull requests, and trusted-only publishing paths.
 
