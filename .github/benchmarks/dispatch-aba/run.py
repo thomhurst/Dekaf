@@ -328,7 +328,12 @@ def main():
     parser.add_argument('--output', required=True, type=Path)
     parser.add_argument('--loaded-only', action='store_true',
                         help='Run public-API Kafka workloads without the private dispatcher fixture')
+    parser.add_argument('--mode', choices=MODES,
+                        help='Diagnose one loaded workload; partial scope cannot certify the full PR')
     args = parser.parse_args()
+    if args.mode and not args.loaded_only:
+        parser.error('--mode requires --loaded-only')
+    modes = (args.mode,) if args.mode else MODES
     root = Path.cwd()
     for sha in (args.baseline, args.candidate):
         if not re.fullmatch('[0-9a-f]{40}', sha):
@@ -344,6 +349,7 @@ def main():
                       run_url=f"https://github.com/{os.environ.get('GITHUB_REPOSITORY')}/actions/runs/{os.environ.get('GITHUB_RUN_ID')}",
                       phases=['A1', 'B', 'A2'], loaded_warmup_seconds=WARMUP, loaded_duration_seconds=DURATION,
                       loaded_only=args.loaded_only,
+                      loaded_modes=modes, partial_loaded_scope=args.mode is not None,
                       focused_dispatcher_shutdown_measured=not args.loaded_only)
     (output / 'provenance.json').write_text(json.dumps(provenance, indent=2))
     command(['dotnet', '--info'], output / 'dotnet-info.log')
@@ -364,7 +370,7 @@ def main():
             values = {}
             try:
                 broker_start(phase_folder, broker)
-                for mode in MODES:
+                for mode in modes:
                     rate = 1000 if smoke or mode.startswith('pending') else 50000
                     workload_folder = phase_folder / f'{phase}-{mode}'
                     values[mode] = workload(loaded_hosts, label, workload_folder, mode,
@@ -386,6 +392,7 @@ def main():
         (output / 'decision.json').write_text(json.dumps({
             'measurement': 'COMPLETE', 'acceptance': 'INCONCLUSIVE',
             'reason': 'Human review of protected metrics, controls, startup transitions and changed-path coverage required.',
+            'partial_loaded_scope': args.mode is not None,
             'focused_dispatcher_shutdown_measured': not args.loaded_only
         }, indent=2))
     finally:
