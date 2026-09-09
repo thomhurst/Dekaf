@@ -35,6 +35,7 @@ internal static class Program
             ProductSha256 = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(assembly.Location))),
             Runtime = Environment.Version.ToString(), Environment.ProcessorCount,
             ServerGc = System.Runtime.GCSettings.IsServerGC,
+            DynamicAdaptationMode = Environment.GetEnvironmentVariable("DOTNET_GCDynamicAdaptationMode") ?? "runtime default",
             Stopwatch.Frequency
         }));
         const int primerSeconds = 20;
@@ -221,11 +222,14 @@ internal sealed class Workload
                 _ = offering.ContinueWith(static task => _ = task.Exception, CancellationToken.None,
                     TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
             var elapsed = Stopwatch.GetElapsedTime(phase.StartTimestamp).TotalSeconds;
-            var cpu = process.TotalProcessorTime.TotalMilliseconds - startCpu;
-            var allocated = GC.GetTotalAllocatedBytes(precise: true) - startAllocation;
+            var endCpu = process.TotalProcessorTime.TotalMilliseconds;
+            var endAllocation = GC.GetTotalAllocatedBytes(precise: true);
+            var cpu = endCpu - startCpu;
+            var allocated = endAllocation - startAllocation;
             sampling.Cancel();
             await sampler;
-            phase.Capture = new PhaseCapture(label, elapsed, offeredSeconds, seconds, cpu, allocated, drained, samples);
+            phase.Capture = new PhaseCapture(label, elapsed, offeredSeconds, seconds, cpu, allocated,
+                startCpu, endCpu, startAllocation, endAllocation, drained, samples);
         }
         ThrowIfFailed();
     }
@@ -255,6 +259,8 @@ internal sealed class Workload
                 CompletedPerSecond = phase.Consumed / capture.Seconds,
                 CpuMs = capture.CpuMs, CpuUsPerCompleted = capture.CpuMs * 1000 / Math.Max(1, phase.Consumed),
                 capture.AllocatedBytes, BytesPerCompleted = (double)capture.AllocatedBytes / Math.Max(1, phase.Consumed),
+                capture.CpuMillisecondsStart, capture.CpuMillisecondsEnd,
+                capture.AllocatedBytesStart, capture.AllocatedBytesEnd,
                 DeliveryLatency = phase.Delivery.GetSnapshot(), CompletionLatency = phase.Completion.GetSnapshot(),
                 IntervalsStableAfterDrain = capture.Drained,
                 IntervalCaptureComplete = intervalsComplete,
@@ -375,7 +381,8 @@ internal sealed class Workload
     }
 
     private sealed record PhaseCapture(string Label, double Seconds, double OfferedSeconds, int ConfiguredSeconds,
-        double CpuMs, long AllocatedBytes, bool Drained, List<RuntimeSample> Samples);
+        double CpuMs, long AllocatedBytes, double CpuMillisecondsStart, double CpuMillisecondsEnd,
+        long AllocatedBytesStart, long AllocatedBytesEnd, bool Drained, List<RuntimeSample> Samples);
 
     private sealed class Slot
     {

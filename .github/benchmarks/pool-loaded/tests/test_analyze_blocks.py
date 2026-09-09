@@ -21,7 +21,10 @@ def fixture():
     blocks[0].update(Count=60, Buckets=[dict(Index=0, Count=60)])
     blocks[1].update(Count=40, Buckets=[dict(Index=9, Count=40)])
     result = dict(Failure=None, IntervalsStableAfterDrain=True, IntervalCaptureComplete=True,
-                  Sent=100, Acknowledged=100, Consumed=100, ConfiguredSeconds=11, Seconds=11.5, OfferedSeconds=11.1)
+                  Sent=100, Acknowledged=100, Consumed=100, ConfiguredSeconds=11, Seconds=11.5, OfferedSeconds=11.1,
+                  AllocatedBytes=1000, BytesPerCompleted=10, CpuMs=2, CpuUsPerCompleted=20,
+                  CompletedPerSecond=100 / 11.5, AllocatedBytesStart=10000, AllocatedBytesEnd=11000,
+                  CpuMillisecondsStart=10, CpuMillisecondsEnd=12)
     for boundary in ['Delivery', 'Completion']:
         result[boundary + 'Latency'] = dict(Count=100, MinUs=2, MaxUs=99, P50Us=5, P95Us=95, P99Us=95, OverflowCount=0)
         result[boundary + 'Intervals'] = dict(IntervalSeconds=1, TicksPerSecond=1_000_000,
@@ -51,6 +54,12 @@ class BlockAnalysisTests(unittest.TestCase):
             ('failed', lambda x: x.update(Failure='timeout')),
             ('completion count', lambda x: x.update(Acknowledged=99)),
             ('nan duration', lambda x: x.update(Seconds=float('nan'))),
+            ('negative allocated bytes', lambda x: x.update(AllocatedBytes=-1000, BytesPerCompleted=-10)),
+            ('decreasing allocation counter', lambda x: x.update(AllocatedBytesEnd=9000)),
+            ('wrong allocation denominator', lambda x: x.update(BytesPerCompleted=11)),
+            ('wrong CPU denominator', lambda x: x.update(CpuUsPerCompleted=21)),
+            ('decreasing CPU counter', lambda x: x.update(CpuMillisecondsEnd=9)),
+            ('wrong throughput denominator', lambda x: x.update(CompletedPerSecond=100)),
             ('capacity overflow', lambda x: x['DeliveryBlocks'].update(OutsideCapacityCount=1)),
             ('interval overflow type', lambda x: x['DeliveryIntervals']['OutsideCapacity'].update(Count=False)),
             ('latency overflow', lambda x: x['DeliveryBlocks']['Blocks'][0].update(LatencyOverflowCount=1)),

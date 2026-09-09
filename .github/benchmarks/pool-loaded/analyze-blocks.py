@@ -41,6 +41,19 @@ def analyze(data):
     elapsed = finite(data['Seconds'])
     if not elapsed >= finite(data['OfferedSeconds']) >= configured:
         raise ValueError('Invalid phase duration')
+    allocated = integer(data['AllocatedBytes'])
+    cpu = finite(data['CpuMs'])
+    allocation_start, allocation_end = (integer(data[name]) for name in ('AllocatedBytesStart', 'AllocatedBytesEnd'))
+    cpu_start, cpu_end = (finite(data[name]) for name in ('CpuMillisecondsStart', 'CpuMillisecondsEnd'))
+    if allocation_end < allocation_start or allocated != allocation_end - allocation_start:
+        raise ValueError('Invalid allocation accounting boundaries')
+    if cpu_end < cpu_start or not math.isclose(cpu, cpu_end - cpu_start, rel_tol=1e-12):
+        raise ValueError('Invalid CPU accounting boundaries')
+    for key, expected in [('BytesPerCompleted', allocated / completed),
+                          ('CpuUsPerCompleted', cpu * 1000 / completed),
+                          ('CompletedPerSecond', completed / elapsed)]:
+        if not math.isclose(finite(data[key]), expected, rel_tol=1e-12):
+            raise ValueError('Invalid protected metric denominator: ' + key)
     result = dict(completed=completed, seconds=elapsed, configuredSeconds=configured,
                   offeredSeconds=data['OfferedSeconds'], distributions={})
     for boundary in ['Delivery', 'Completion']:

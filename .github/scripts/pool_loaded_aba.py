@@ -104,7 +104,8 @@ def execute():
             'broker_retention': BROKER_RETENTION,
             'cpu_core_socket': topology, 'affinity': dispatch.AFFINITY.copy(),
             'runner': 'ubuntu-latest', 'image': os.getenv('ImageVersion'), 'runtime': {
-                'TieredCompilation': '1', 'TieredPGO': '1', 'ReadyToRun': '1', 'ServerGC': True},
+                'TieredCompilation': '1', 'TieredPGO': '1', 'ReadyToRun': '1', 'ServerGC': True,
+                'GCDynamicAdaptationMode': '0'},
             'scope': 'Closed-loop producer and consumer completion; interval distributions and runtime attribution',
             'acceptance': 'NOT_EVALUATED; uncertainty, cold reset and failure/shutdown scope require review'}
     (OUT / 'plan.json').write_text(json.dumps(plan, indent=2))
@@ -163,7 +164,8 @@ def execute():
                 dispatch.command(['taskset', '-c', dispatch.AFFINITY['consumer'], 'dotnet', hosts[label],
                     'localhost:9092', output, broker, size, partitions, 12 if smoke else WARMUP_SECONDS, 13 if smoke else MEASURED_SECONDS],
                     folder / 'client.log', timeout=210 if smoke else 1200,
-                    env=dict(os.environ, DOTNET_TieredCompilation='1', DOTNET_TieredPGO='1', DOTNET_ReadyToRun='1'))
+                    env=dict(os.environ, DOTNET_TieredCompilation='1', DOTNET_TieredPGO='1', DOTNET_ReadyToRun='1',
+                             DOTNET_GCDynamicAdaptationMode='0'))
                 result = {}
                 for stage in ('warmup', 'measured'):
                     data = json.loads((output / f'{stage}.json').read_text())
