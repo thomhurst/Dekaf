@@ -9,7 +9,7 @@ on:
       suite:
         required: true
         type: choice
-        options: [micro, pool, admin, admin-pilot, dispatch, dispatch-loaded, dispatch-pilot, dispatch-record-pilot, share-loaded, outbox, outbox-loaded, pool-loaded, pool-profile]
+        options: [micro, pool, pool-recovery, admin, admin-pilot, dispatch, dispatch-loaded, dispatch-pilot, dispatch-record-pilot, share-loaded, outbox, outbox-loaded, pool-loaded, pool-profile]
       baseline_sha:
         required: true
         description: Exact baseline SHA
@@ -48,7 +48,10 @@ jobs:
           python3 -m unittest discover -s .github/scripts -p test_benchmark_aba.py
           python3 .github/scripts/benchmark_aba.py --pr "$PR" --baseline "$BASELINE_SHA" --candidate "$CANDIDATE_SHA" --artifacts "$GITHUB_WORKSPACE/aba-results"
       - name: Pool comparison
-        if: inputs.suite == 'pool'
+        if: inputs.suite == 'pool' || inputs.suite == 'pool-recovery'
+        env:
+          POOL_RECOVERY: ${{ inputs.suite == 'pool-recovery' && '1' || '0' }}
+          DOTNET_TieredCompilation: ${{ inputs.suite == 'pool-recovery' && '0' || '1' }}
         run: |
           python3 .github/scripts/pool_reset_aba.py prepare
           python3 .github/scripts/pool_reset_aba.py A1

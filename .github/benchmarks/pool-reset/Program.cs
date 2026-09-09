@@ -16,9 +16,11 @@ namespace Dekaf.Benchmarks;
 internal static class Program
 {
     internal static bool Smoke;
+    internal static bool Baseline;
     public static int Main(string[] args)
     {
         Smoke = args.Contains("--smoke");
+        Baseline = args.Contains("--baseline");
         Console.WriteLine(JsonSerializer.Serialize(new[] { typeof(Program).Assembly, typeof(PendingRequestPool).Assembly, typeof(Reservoir.ObjectPool<>).Assembly }
             .Select(a => new { a.FullName, a.Location, Sha256 = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(a.Location))) })));
         using var runtime = new RuntimeLogger(Path.Combine(args[0], "runtime.csv"));
@@ -26,7 +28,9 @@ internal static class Program
             .AddJob(Job.Default.WithToolchain(InProcessEmitToolchain.Instance).WithAffinity(new IntPtr(4))
                 .WithWarmupCount(Smoke ? 1 : 30).WithIterationCount(Smoke ? 1 : 25)
                 .WithIterationTime(TimeInterval.FromMilliseconds(1000)).WithOutlierMode(OutlierMode.DontRemove));
-        var summary = BenchmarkRunner.Run<PendingRequestBenchmark>(config);
+        var summary = args.Contains("--recovery")
+            ? BenchmarkRunner.Run<PendingRequestRecoveryBenchmark>(config)
+            : BenchmarkRunner.Run<PendingRequestBenchmark>(config);
         return summary.HasCriticalValidationErrors || summary.Reports.Length == 0 || summary.Reports.Any(r => !r.Success) ? 1 : 0;
     }
 }
