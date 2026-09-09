@@ -100,7 +100,9 @@ The workflow splits `dispatch-adjacent` into six jobs: one for each of the four
 loaded modes, one for all six micro cases, and one for all four shutdown cases.
 `dispatch-loaded-adjacent` uses just the four loaded jobs. `outbox-loaded` and
 `outbox-adjacent` each use four jobs, one per store/listener configuration.
-`outbox-recovery` uses four jobs for failure/lease-loss and listener off/on.
+`outbox-recovery` uses four jobs for #3085 (failure/lease-loss and listener off/on).
+For #3171 it uses two jobs with listeners off, validating the product's commit
+notifier during the same failure, lease-loss and loaded-shutdown workloads.
 Other suites retain one comparison job. There are no new dispatch inputs.
 
 Each job builds both pinned products and validates every selected case on both

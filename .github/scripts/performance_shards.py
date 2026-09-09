@@ -11,7 +11,7 @@ DISPATCH_MODES = ('sync-records', 'sync-batches', 'pending-records', 'pending-ba
 OUTBOX_CASES = ('legacy-off', 'legacy-on', 'renewal-off', 'renewal-on')
 
 
-def workloads(suite):
+def workloads(suite, pr=None):
     if suite in ('dispatch-adjacent', 'dispatch-loaded-adjacent'):
         groups = {mode: [f'loaded/{mode}'] for mode in DISPATCH_MODES}
         if suite == 'dispatch-adjacent':
@@ -21,8 +21,9 @@ def workloads(suite):
                                   for batch in (1, 16) for keys in (1, 2)]
         return groups
     if suite == 'outbox-recovery':
+        listeners = ('off',) if pr == 3171 else ('off', 'on')
         return {f'{store}-{listener}': [f'{store}-{listener}']
-                for store in ('legacy-failure', 'renewal-loss') for listener in ('off', 'on')}
+                for store in ('legacy-failure', 'renewal-loss') for listener in listeners}
     if suite in ('outbox-loaded', 'outbox-adjacent'):
         return {case: [case] for case in OUTBOX_CASES}
     return {'all': []}
@@ -31,7 +32,7 @@ def workloads(suite):
 def campaign(pins):
     if pins.get('status') != 'VERIFIED':
         raise ValueError('Campaign requires verified pins')
-    return dict(pins=pins, run_id=os.environ.get('GITHUB_RUN_ID'), workloads=workloads(pins['suite']))
+    return dict(pins=pins, run_id=os.environ.get('GITHUB_RUN_ID'), workloads=workloads(pins['suite'], pins['pr']))
 
 
 def settings(suite):
@@ -47,7 +48,7 @@ def validate_campaign(plan, harness, baseline, candidate, pr, suite):
                     pr=pr, suite=suite, status='VERIFIED')
     if any(pins.get(key) != value for key, value in expected.items()):
         raise ValueError('Campaign pins differ from requested comparison')
-    if plan['workloads'] != workloads(suite):
+    if plan['workloads'] != workloads(suite, pr):
         raise ValueError('Campaign workload manifest differs from this harness')
     if plan['run_id'] != os.environ.get('GITHUB_RUN_ID'):
         raise ValueError('Campaign belongs to another workflow run')

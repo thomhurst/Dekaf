@@ -1,11 +1,13 @@
 # Outbox failure, lease-loss and loaded shutdown comparison
 
-Use `suite=outbox-recovery` for PR #3085 after its normal-path micro and loaded
+Use `suite=outbox-recovery` for PR #3085 or #3171 after their normal-path
 comparisons. This extends the maintained Kafka workload and recorder; it adds
 fault injection and correctness checks, not a benchmark engine or profiler.
 
 Four independent jobs cover `legacy-failure` and `renewal-loss`, each with
-listeners off/on. Every job validates both products, then runs A1, B, A2
+listeners off/on for #3085. PR #3171 uses only two jobs, one for each failure mode
+with listeners off, since that product does not introduce the metrics API.
+Every job validates both products, then runs A1, B, A2
 sequentially on one Ubuntu VM with exact pins and a fresh broker for each phase.
 The same three-partition, 500-row, 1,000-byte payload batch is used throughout.
 Each process has a 20-second primer, 180-second warmup and 180-second measurement.
@@ -51,3 +53,16 @@ and the single final shutdown duration are diagnostic. The existing 30-second
 shutdown correctness deadline remains enforced. A successful collection proves
 coverage and correctness, not performance acceptance. Retain each raw screen and
 apply the main agent instructions to the combined normal and recovery evidence.
+
+For #3171, the candidate resolves its real notifier through public DI registration
+and passes it to the relay. The synthetic store sends one notification when a new
+logical batch becomes available, including the final shutdown batch. Retrying a
+retained batch does not count as another commit. Repeated notifications remain
+pending/coalesced during the busy relay and failure backoff. Recorded notification
+counts must equal completed logical batches plus the one retained shutdown batch;
+a missing/wrong notifier binding fails validation. The baseline uses its existing
+relay constructor because it has no notification API. Both sides keep the same
+10 ms polling override, payloads, faults, timing boundaries and work counts.
+This controls recovery behavior independently of the requested default polling
+tradeoff. EF transaction observation, idle discovery and normal per-row latency
+belong to #3171's separate shared SQLite/Kafka experiment.

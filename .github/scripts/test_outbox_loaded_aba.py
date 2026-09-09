@@ -4,7 +4,8 @@ import struct
 import tempfile
 import unittest
 
-from outbox_loaded_aba import validate_phase, execution_plan, validate_recovery
+from outbox_loaded_aba import (validate_phase, execution_plan, validate_recovery,
+                               fixture_settings, validate_notification_coverage)
 
 
 class ExecutionPlanTests(unittest.TestCase):
@@ -89,10 +90,6 @@ class PhaseValidationTests(unittest.TestCase):
             validate_phase(self.root, 'measured', 2)
 
 
-if __name__ == '__main__':
-    unittest.main()
-
-
 class RecoveryValidationTests(unittest.TestCase):
     def setUp(self):
         self.phases = {name: {'Faults': 2} for name in ('primer', 'warmup', 'measured')}
@@ -132,3 +129,30 @@ class RecoveryValidationTests(unittest.TestCase):
         self.completion['ExpectedRetainedRows'] = 0
         with self.assertRaisesRegex(ValueError, 'retain its acknowledged rows'):
             validate_recovery(self.completion, self.phases, True, 'on', True)
+
+
+class NotificationCoverageTests(unittest.TestCase):
+    def test_commit_product_uses_notifications_without_requiring_metrics_api(self):
+        self.assertEqual(dict(telemetry=False, notifications=False), fixture_settings(3171, 'A'))
+        self.assertEqual(dict(telemetry=False, notifications=True), fixture_settings(3171, 'B'))
+        self.assertEqual(dict(telemetry=True, notifications=False), fixture_settings(3085, 'B'))
+
+    def test_one_notification_per_new_batch_includes_shutdown_but_not_retries(self):
+        completion = dict(TotalCompleted=1500, ExpectedRetainedRows=500,
+                          CommitNotificationsEnabled=True, CommitNotifications=4)
+        validate_notification_coverage(completion, True)
+        for count in (0, 3, 5):
+            completion['CommitNotifications'] = count
+            with self.assertRaisesRegex(ValueError, 'committed-batch notifications'):
+                validate_notification_coverage(completion, True)
+
+    def test_disabled_or_missing_candidate_binding_is_not_coverage(self):
+        with self.assertRaisesRegex(ValueError, 'fixture binding'):
+            validate_notification_coverage(dict(TotalCompleted=500), True)
+        with self.assertRaisesRegex(ValueError, 'committed-batch notifications'):
+            validate_notification_coverage(dict(CommitNotifications=1), False)
+        validate_notification_coverage({}, False)
+
+
+if __name__ == '__main__':
+    unittest.main()

@@ -8,6 +8,9 @@ using Dekaf.Admin;
 using Dekaf.Outbox;
 using Dekaf.Producer;
 using Microsoft.Extensions.Logging;
+#if OUTBOX_COMMIT_NOTIFICATIONS
+using Microsoft.Extensions.DependencyInjection;
+#endif
 
 internal static class Program
 {
@@ -54,7 +57,19 @@ internal static class Program
         // The baseline has no telemetry options. Publication inputs are identical.
         typeof(OutboxRelayOptions).GetProperty("MetricsName")?.SetValue(options, "loaded");
         typeof(OutboxRelayOptions).GetProperty("MetricsCollectionInterval")?.SetValue(options, TimeSpan.FromSeconds(1));
+#if OUTBOX_COMMIT_NOTIFICATIONS
+        // Resolve the product's notifier through its public registration. This container
+        // owns only the notifier; the manually constructed relay/publisher retain their
+        // existing lifetimes. The baseline has no notification API.
+        using var notificationServices = new ServiceCollection().AddDekafOutboxRelay(options).BuildServiceProvider();
+        var notifier = notificationServices.GetRequiredService<IOutboxNotifier>();
+        store.RowsCommitted = notifier.NotifyCommitted;
+        using var relay = new OutboxRelayService(store, publisher, options, new FailureLogger(store), null, notifier);
+        const bool notificationsEnabled = true;
+#else
         using var relay = new OutboxRelayService(store, publisher, options, new FailureLogger(store));
+        const bool notificationsEnabled = false;
+#endif
         using var sampling = new ManualResetEventSlim();
         var sampler = new Thread(() => store.Sample(sampling, metrics)) { IsBackground = true, Name = "outbox-observer" };
         sampler.Start();
@@ -105,6 +120,7 @@ internal static class Program
                 store.TotalCompleted, store.Pending, store.MetricQueries, metrics.Acknowledged,
                 store.InjectedFailures, store.RecoveredFailures, store.ObservedFailureLogs, LeaseLossScenario = leaseLoss,
                 store.ExpectedRetainedRows, store.ShutdownAcknowledged, store.ShutdownPublisherInFlight,
+                CommitNotificationsEnabled = notificationsEnabled, store.CommitNotifications,
                 metrics.Failures, metrics.GaugeSamples, ShutdownSeconds = shutdownSeconds,
                 Error = failure?.ToString() ?? store.Failure?.ToString()
             }));
@@ -149,6 +165,8 @@ internal class Store : IOutboxStore
     public int InjectedFailures;
     public int RecoveredFailures;
     public int ObservedFailureLogs;
+    public int CommitNotifications;
+    internal Action? RowsCommitted { get; set; }
     public bool FaultPending;
     private int _loadedShutdown;
     internal bool LoadedShutdown => Volatile.Read(ref _loadedShutdown) != 0;
@@ -157,8 +175,21 @@ internal class Store : IOutboxStore
     public bool ShutdownPublisherInFlight;
     internal readonly TaskCompletionSource ShutdownEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
     internal readonly TaskCompletionSource ShutdownRelease = new(TaskCreationOptions.RunContinuationsAsynchronously);
-    internal void BeginLoadedShutdown() => Volatile.Write(ref _loadedShutdown, 1);
+    internal void BeginLoadedShutdown()
+    {
+        Volatile.Write(ref _loadedShutdown, 1);
+        SignalCommittedRows();
+    }
     internal TaskCompletionSource? LeaseLoss;
+
+    private void SignalCommittedRows()
+    {
+        if (RowsCommitted is { } notify)
+        {
+            Interlocked.Increment(ref CommitNotifications);
+            notify();
+        }
+    }
 
     internal void InjectFailure()
     {
@@ -220,6 +251,7 @@ internal class Store : IOutboxStore
         }
         Volatile.Write(ref Pending, BatchCount);
         _started = Stopwatch.GetTimestamp();
+        SignalCommittedRows();
         return new(_rows);
     }
 

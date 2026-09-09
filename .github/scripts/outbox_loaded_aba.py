@@ -109,10 +109,25 @@ def validate_recovery(completion, phases, candidate, listener, recovery):
         raise ValueError('Incorrect failure telemetry')
 
 
-def validate(folder, warmup, measured, candidate, listener, recovery=False):
+def validate_notification_coverage(completion, notifications):
+    if completion.get('CommitNotificationsEnabled', False) != notifications:
+        raise ValueError('Incorrect commit-notification fixture binding')
+    expected = (completion['TotalCompleted'] + completion.get('ExpectedRetainedRows', 0)) // 500 if notifications else 0
+    if completion.get('CommitNotifications', 0) != expected or notifications and expected == 0:
+        raise ValueError('Missing or duplicated committed-batch notifications')
+
+
+def fixture_settings(pr, role):
+    if role not in ('A', 'B'):
+        raise ValueError('Unknown product role')
+    return dict(telemetry=role == 'B' and pr != 3171, notifications=role == 'B' and pr == 3171)
+
+
+def validate(folder, warmup, measured, candidate, listener, recovery=False, notifications=False):
     phases = {name: validate_phase(folder, name, seconds)
               for name, seconds in [('primer', 20), ('warmup', warmup), ('measured', measured)]}
     completion = json.loads((folder / 'completion.json').read_text(encoding='utf-8'))
+    validate_notification_coverage(completion, notifications)
     if completion['Error'] is not None or completion['Pending'] != completion.get('ExpectedRetainedRows', 0):
         raise ValueError('Failed, incomplete or leftover work')
     validate_recovery(completion, phases, candidate, listener, recovery)
@@ -145,6 +160,10 @@ def execute():
     adjacent = os.environ.get('OUTBOX_ADJACENT') == '1'
     recovery = os.environ.get('SUITE') == 'outbox-recovery'
     shard = os.environ.get('PERFORMANCE_SHARD', 'all')
+    pr = int(os.environ['PR'])
+    if pr == 3171 and (not recovery or shard not in ('legacy-failure-off', 'renewal-loss-off')):
+        raise ValueError('PR 3171 requires its declared recovery shards without telemetry listeners')
+    features = {role: fixture_settings(pr, role) for role in ('A', 'B')}
     configs = configurations(shard, recovery)
     declared_warmup = 480 if adjacent else WARMUP
     dispatch = module(root / '.github/benchmarks/dispatch-aba/run.py', 'outbox_dispatch')
@@ -165,6 +184,7 @@ def execute():
             'main_at_start': main, 'primer_seconds': 20, 'warmup_seconds': declared_warmup, 'measured_seconds': MEASURED,
             'adjacent_controls': adjacent or shard != 'all', 'execution_plan': list(execution_plan(adjacent, shard, recovery)),
             'configs': configs, 'shard': shard, 'recovery': recovery, 'runner': 'ubuntu-latest', 'image': os.getenv('ImageVersion'),
+            'fixture_bindings': features,
             'topology': topology, 'affinity': dispatch.AFFINITY.copy(),
             'runtime': {'TieredCompilation': '1', 'TieredPGO': '1', 'ReadyToRun': '1', 'ServerGC': True},
             'run_url': f'https://github.com/{os.environ["GITHUB_REPOSITORY"]}/actions/runs/{os.environ["GITHUB_RUN_ID"]}',
@@ -184,7 +204,9 @@ def execute():
             shutil.copyfile(root / name, fixture / name)
         dispatch.command(['dotnet', 'build', fixture / 'Harness.csproj', '-c', 'Release', '--disable-build-servers',
                           f'-p:ProductProject={product}/src/Dekaf.Outbox/Dekaf.Outbox.csproj',
-                          f'-p:FixtureSource={fixture}', f'-p:CandidateFixture={str(label == "B").lower()}'],
+                          f'-p:FixtureSource={fixture}',
+                          f'-p:CandidateFixture={str(features[label]["telemetry"]).lower()}',
+                          f'-p:CommitNotificationsFixture={str(features[label]["notifications"]).lower()}'],
                          out / f'build-{label}.log', cwd=fixture)
         hosts[label] = fixture / 'bin/Release/net10.0/Harness.dll'
     dispatch.command(['dotnet', 'build-server', 'shutdown'], out / 'build-server-shutdown.log')
@@ -216,7 +238,8 @@ def execute():
                               'localhost:9092', folder / 'client', broker, store, listener, warmup, measured],
                              folder / 'client.log', timeout=20 + warmup + measured + 150,
                              env=dict(os.environ, DOTNET_TieredCompilation='1', DOTNET_TieredPGO='1', DOTNET_ReadyToRun='1'))
-            observations[phase][key] = validate(folder / 'client', warmup, measured, label == 'B', listener, recovery)
+            observations[phase][key] = validate(folder / 'client', warmup, measured, features[label]['telemetry'],
+                                                listener, recovery, features[label]['notifications'])
             (out / 'collection.json').write_text(json.dumps(observations, indent=2), encoding='utf-8')
         finally:
             stop.set()

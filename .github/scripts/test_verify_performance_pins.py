@@ -55,6 +55,13 @@ class PinTests(unittest.TestCase):
                 self.verify(suite)
         self.assertEqual(self.calls, [])
 
+    def test_outbox_commit_recovery_still_verifies_exact_product_pins(self):
+        with patch.object(pins, 'command', side_effect=self.command):
+            result = pins.verify(self.harness, self.baseline, self.candidate, 3171,
+                                 'outbox-recovery', 'thomhurst/Dekaf', now=NOW)
+        self.assertEqual('VERIFIED', result['status'])
+        self.assertIn(('gh', 'api', 'repos/thomhurst/Dekaf/pulls/3171'), self.calls)
+
     def test_distinct_harness_and_product_pins_are_retained(self):
         result = self.verify()
         self.assertEqual(result['harness_sha'], self.harness)

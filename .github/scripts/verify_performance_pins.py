@@ -32,8 +32,8 @@ def verify(harness, baseline, candidate, pr, suite, repository, now=None):
         raise ValueError('A positive PR number and supported suite are required')
     if suite == 'micro-completion' and pr != 3083:
         raise ValueError('micro-completion covers PR 3083 only')
-    if suite == 'outbox-recovery' and pr != 3085:
-        raise ValueError('outbox-recovery covers PR 3085 only')
+    if suite == 'outbox-recovery' and pr not in (3085, 3171):
+        raise ValueError('outbox-recovery covers PRs 3085 and 3171 only')
     if not re.fullmatch(r'[\w.-]+/[\w.-]+', repository, flags=re.ASCII):
         raise ValueError('Expected owner/repository')
     if command('git', 'rev-parse', 'HEAD') != harness:

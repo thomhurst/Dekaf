@@ -83,6 +83,20 @@ class ShardTests(unittest.TestCase):
             if suite not in ('dispatch-adjacent', 'dispatch-loaded-adjacent', 'outbox-loaded', 'outbox-adjacent', 'outbox-recovery'):
                 self.assertEqual(shards.workloads(suite), {'all': []})
 
+    def test_commit_recovery_uses_two_complete_jobs_without_duplicate_listener_modes(self):
+        pins = dict(status='VERIFIED', suite='outbox-recovery', pr=3171,
+                    harness_sha='a' * 40, baseline_sha='b' * 40, candidate_sha='c' * 40)
+        plan = shards.campaign(pins)
+        self.assertEqual({'legacy-failure-off', 'renewal-loss-off'}, set(plan['workloads']))
+        receipts = []
+        for shard in plan['workloads']:
+            self.evidence(plan, shard)
+            receipts.append(shards.complete(plan, shard, self.root))
+        self.assertEqual('COMPLETE', shards.aggregate(plan, receipts, 'success')['collection'])
+        with self.assertRaisesRegex(ValueError, 'Missing'):
+            shards.aggregate(plan, receipts[:1], 'success')
+        self.assertEqual(4, len(shards.workloads('outbox-recovery', 3085)))
+
     def test_unknown_and_incompatible_driver_selections_fail(self):
         for shard in ('typo', 'micro', 'shutdown'):
             with self.assertRaises(ValueError):

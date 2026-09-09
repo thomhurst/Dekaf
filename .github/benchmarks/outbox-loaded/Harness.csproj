@@ -12,6 +12,9 @@
   <PropertyGroup Condition="'$(CandidateFixture)' == 'true'">
     <DefineConstants>$(DefineConstants);CANDIDATE</DefineConstants>
   </PropertyGroup>
+  <PropertyGroup Condition="'$(CommitNotificationsFixture)' == 'true'">
+    <DefineConstants>$(DefineConstants);OUTBOX_COMMIT_NOTIFICATIONS</DefineConstants>
+  </PropertyGroup>
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
     <ProjectReference Include="$(ProductProject)" />
