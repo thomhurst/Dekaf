@@ -3,6 +3,7 @@ import hashlib
 import importlib.util
 import json
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 import shutil
 import subprocess
@@ -62,6 +63,7 @@ def execute():
                 histograms='Value-type buckets with 65536 preallocated entries per interval; overflow invalidates',
                 phase_transition='one continuous warmed call loop; no return/re-entry between warmup and measurement',
                 cpu_affinity=[cpu], jit_attribution='CLR MethodJittingStarted; identical observer in all phases',
+                phase_order='For each control workload, run A1 then B then A2 before starting the next workload',
                 image=os.getenv('ImageOS'), image_version=os.getenv('ImageVersion'), run_id=os.getenv('GITHUB_RUN_ID'),
                 scope='Cached-transport completed administrative calls; no network/broker acceptance.',
                 verdict='INCONCLUSIVE: partial scope; assess all retained runtime and metric evidence')
@@ -94,13 +96,20 @@ def execute():
             run(probe_prefix + [str(binary), 'probe', case, str(destination), '.2', '.2'], destination / 'run.log', env=environment)
             validator(destination / 'measured.json', .2)
             common.retain_loaded_binaries(destination / 'binaries.json', binary.parent, OUT / 'binaries' / label)
-    observations = {}
-    for phase, label in [('A1', 'A'), ('B', 'B'), ('A2', 'A')]:
-        observations[phase] = {}
-        for case in controls:
+    observations = {phase: {} for phase in ['A1', 'B', 'A2']}
+    captures = []
+    # Keep each candidate close to its own controls. Running every A1 workload
+    # first separated matching controls by up to an hour in the full matrix.
+    for case in controls:
+        for phase, label in [('A1', 'A'), ('B', 'B'), ('A2', 'A')]:
             destination = OUT / phase / case.replace(':', '-')
             binary = hosts[label]
+            capture = dict(case=case, phase=phase, product=A if label == 'A' else B,
+                           started_utc=datetime.now(timezone.utc).isoformat())
             run(probe_prefix + [str(binary), 'probe', case, str(destination), str(warmup_seconds), '60'], destination / 'run.log', env=environment)
+            capture['completed_utc'] = datetime.now(timezone.utc).isoformat()
+            captures.append(capture)
+            save(OUT / 'capture-order.json', captures)
             validator(destination / 'warmup.json', warmup_seconds)
             observations[phase][case] = validator(destination / 'measured.json', 60)
             common.retain_loaded_binaries(destination / 'binaries.json', binary.parent, OUT / 'binaries' / label)
