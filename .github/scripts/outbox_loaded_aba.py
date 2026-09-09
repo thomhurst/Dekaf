@@ -99,7 +99,7 @@ def validate(folder, warmup, measured, candidate, listener):
         raise ValueError('Missing runtime time series')
     for sample in samples:
         for key in ('Timestamp', 'CpuTicks', 'Allocated', 'Completed', 'Pending', 'Gen0', 'Gen1', 'Gen2',
-                    'HeapBytes', 'RssBytes', 'Threads', 'PendingWork', 'JitMethods', 'JitMs'):
+                    'HeapBytes', 'RssBytes', 'Threads', 'PendingWork'):
             if not math.isfinite(sample[key]) or sample[key] < 0:
                 raise ValueError(f'Missing runtime metric {key}')
     return {'phases': phases, 'completion': completion, 'runtime_samples': len(samples)}
@@ -138,7 +138,6 @@ def execute():
         dispatch.command(['git', 'worktree', 'add', '--detach', product, sha], out / f'checkout-{label}.log')
         fixture = out / f'fixture-{label}' / 'outbox-loaded'
         shutil.copytree(fixtures, fixture, ignore=shutil.ignore_patterns('bin', 'obj'))
-        shutil.copyfile(fixtures.parent / 'CompilationLog.cs', fixture.parent / 'CompilationLog.cs')
         for name in ('global.json', 'Directory.Packages.props'):
             shutil.copyfile(root / name, fixture / name)
         dispatch.command(['dotnet', 'build', fixture / 'Harness.csproj', '-c', 'Release', '--disable-build-servers',

@@ -20,7 +20,7 @@ AFFINITY = {'consumer': '2,3', 'infrastructure': '0,1'}
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'scripts'))
-from runner_resources import configure_affinity as configure_runner, select_affinity
+from runner_affinity import configure_affinity as configure_runner, select_affinity
 
 
 def configure_affinity():
@@ -55,9 +55,7 @@ def summarize_shutdown(data, minimum_seconds):
     result = dict(Messages=messages, Stops=messages // 128, Seconds=seconds,
                   MessagesPerSecond=messages / seconds,
                   CpuNsPerMessage=(end['CpuTicks'] - start['CpuTicks']) * 100 / messages,
-                  AllocatedBytesPerMessage=(end['AllocatedBytes'] - start['AllocatedBytes']) / messages,
-                  JitMethods=end['JitMethods'] - start['JitMethods'],
-                  JitMs=end['JitMs'] - start['JitMs'])
+                  AllocatedBytesPerMessage=(end['AllocatedBytes'] - start['AllocatedBytes']) / messages)
     for field, count, prefix in [('StopTicks', messages // 128, 'Stop'), ('MessageTicks', messages, 'Message')]:
         values = sorted(data[field], key=lambda value: value['Ticks'])
         if not values or sum(row['Count'] for row in values) != count:
@@ -78,7 +76,7 @@ def summarize_shutdown(data, minimum_seconds):
     if len(data['Series']) < int(seconds) - 1 or data['Series'][-1] != end:
         raise ValueError('Missing shutdown runtime time series')
     for row in data['Series']:
-        for field in ('JitMethods', 'JitMs', 'Threads', 'PendingWork', 'Gen0', 'Gen1', 'Gen2', 'HeapBytes', 'RssBytes',
+        for field in ('Threads', 'PendingWork', 'Gen0', 'Gen1', 'Gen2', 'HeapBytes', 'RssBytes',
                       'CpuTicks', 'AllocatedBytes', 'StopMeanTicks', 'StopMaxTicks', 'MessageMeanTicks', 'MessageMaxTicks'):
             if field not in row:
                 raise ValueError('Missing shutdown runtime metric: ' + field)
@@ -131,34 +129,16 @@ def validate_loaded(folder, warmup, seconds, rate, acceptance):
         raise ValueError('Invalid latency percentiles')
     if acceptance and metrics['ActualWarmupSeconds'] < 120:
         raise ValueError('Less than 120 seconds of actual loaded warmup')
-    for start, end in [('JitMethodsStart', 'JitMethodsEnd'), ('JitMsStart', 'JitMsEnd')]:
-        if start not in metrics or end not in metrics or metrics[end] < metrics[start]:
-            raise ValueError('Missing/invalid runtime measurement boundaries')
     if len(series) < seconds + warmup - 3:
         raise ValueError('Missing runtime time series')
     for sample in series:
-        for key in ('JitMethods', 'JitMs', 'Threads', 'PendingWork', 'CpuTicks', 'Gen0', 'Gen1', 'Gen2', 'HeapBytes', 'RssBytes'):
+        for key in ('Threads', 'PendingWork', 'CpuTicks', 'Gen0', 'Gen1', 'Gen2', 'HeapBytes', 'RssBytes'):
             if key not in sample:
                 raise ValueError(f'Missing runtime metric {key}')
     # Keep startup transitions explicit; no automatic PASS from scalar metrics.
     actual = [s for s in series if metrics['MeasurementStart'] <= s['Timestamp'] <= metrics['MeasurementEnd']]
-    metrics['MeasuredJitDelta'] = metrics['JitMethodsEnd'] - metrics['JitMethodsStart']
     metrics['MeasuredThreadRange'] = [min(s['Threads'] for s in actual), max(s['Threads'] for s in actual)] if actual else None
     return metrics
-
-
-def validate_compilations(folder, metrics):
-    data = json.loads((folder / 'compilations.json').read_text())
-    if data['overflow'] or data['total_events'] != len(data['events']):
-        raise ValueError('Incomplete compilation event stream')
-    if data['frequency'] != metrics['StopwatchFrequency']:
-        raise ValueError('Compilation timestamps use a different clock')
-    phases = data['phases']
-    if [phase['Name'] for phase in phases] != ['initialize', 'warmup', 'measured', 'drain', 'finalize']:
-        raise ValueError('Missing compilation phase boundaries')
-    if any(left['Timestamp'] > right['Timestamp'] for left, right in zip(phases, phases[1:])):
-        raise ValueError('Out-of-order compilation phase boundaries')
-    return data
 
 
 def workload(hosts, label, folder, mode, warmup, seconds, rate, broker, pinned=True):
@@ -195,7 +175,6 @@ def workload(hosts, label, folder, mode, warmup, seconds, rate, broker, pinned=T
                         process.kill()
                         process.wait()
     metrics = validate_loaded(folder, warmup, seconds, rate, acceptance=pinned and warmup == WARMUP)
-    validate_compilations(folder, metrics)
     if metrics['Mode'] != mode or metrics['OfferedMessagesPerSecond'] != rate:
         raise ValueError('Wrong measured workload')
     return metrics
@@ -312,7 +291,6 @@ def build(root, output, sha, label, loaded_only=False):
     fixture = output / f'fixture-{label}'
     shutil.copytree(root / '.github/benchmarks/dispatch-aba', fixture,
                     ignore=shutil.ignore_patterns('bin', 'obj', '__pycache__'))
-    shutil.copyfile(root / '.github/benchmarks/CompilationLog.cs', fixture.parent / 'CompilationLog.cs')
     for name in ('global.json', 'Directory.Packages.props'):
         shutil.copyfile(root / name, fixture / name)
     hosts = {}

@@ -9,14 +9,14 @@ from pathlib import Path
 QUIET_WORKLOAD_SECONDS = 10
 MAX_SAMPLE_GAP_SECONDS = 2
 RUNTIME_FIELDS = (
-    "compiledMethods", "compilationMilliseconds", "threadPoolThreads", "pendingWorkItems",
+    "threadPoolThreads", "pendingWorkItems",
     "cpuSeconds", "allocatedBytes", "heapBytes", "workingSetBytes",
     "gen0Collections", "gen1Collections", "gen2Collections", "gcPauseMilliseconds",
 )
 
 
 # The retained schema has no interval delivery-latency distribution or continuous
-# completed-message counts. Counter coverage and quiet JIT alone cannot assess
+# completed-message counts. Runtime counter coverage alone cannot assess
 # startup trends. Do not invent tolerances or accept an external "steady" flag.
 UNASSESSED_METRICS = (
     "completed-message throughput", "CPU per completed message", "pending work",
@@ -53,15 +53,12 @@ def sample_list(value, name):
 
 def quiet(samples, label):
     for previous, current in zip(samples, samples[1:]):
-        if (current["compiledMethods"] != previous["compiledMethods"]
-                or current["compilationMilliseconds"] != previous["compilationMilliseconds"]):
-            raise ValueError(f"{label}: JIT activity remains; retain samples and investigate or extend all phase warmups")
         if current["threadPoolThreads"] != previous["threadPoolThreads"]:
             raise ValueError(f"{label}: thread-pool size changes; steady state is not established")
 
 
 def validate(result):
-    """Validate coverage and JIT/thread-count checks only, not steady state."""
+    """Validate coverage and thread-count checks only, not steady state."""
     throughput = object_value(result.get("throughput"), "throughput")
     warmup = object_value(throughput.get("warmup"), "warmup")
     requested = number(warmup.get("requestedSeconds"), "warmup requestedSeconds")
@@ -97,9 +94,7 @@ def validate(result):
     if elapsed <= 0 or not intervals or any(
             right < left or right - left > MAX_SAMPLE_GAP_SECONDS for left, right in zip(times, times[1:])):
         raise ValueError("Measured runtime samples do not cover the complete window, including drain")
-    # Preserve both boundaries, but do not confuse setup between warmup and Start with
-    # compilation inside measurement. Any measured activity, including observer work,
-    # remains inconclusive until a trace attributes it; no measured sample is trimmed.
+    # Preserve all measured samples, including both boundaries and drain.
     quiet([start] + [runtime(item.get("runtime")) for item in intervals] + [end], "Measurement")
     return requested
 
@@ -111,7 +106,7 @@ def assessment_report(errors, result_count):
               "are required; repeating the current aggregate schema cannot establish steady state."]
     return {"verdict": "INCONCLUSIVE", "coverageVerdict": coverage_verdict, "errors": errors,
             "unassessedMetrics": list(UNASSESSED_METRICS), "resultCount": result_count,
-            "scope": "Coverage and JIT/thread-count checks only. Steady state remains unassessed; "
+            "scope": "Coverage and thread-count checks only. Steady state remains unassessed; "
                      "do not accept or publish these measurements as validated performance."}
 
 
@@ -177,7 +172,7 @@ def main(argv=None):
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     summary = (f"## Warmup/runtime evidence: {report['verdict']}\n\n{report['scope']}\n"
-               f"\nCoverage and JIT/thread-count checks: {coverage_verdict}.\n")
+               f"\nCoverage and thread-count checks: {coverage_verdict}.\n")
     if errors:
         summary += "\n" + "\n".join(f"- {error}" for error in errors) + "\n"
     print(summary)

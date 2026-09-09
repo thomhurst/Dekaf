@@ -8,7 +8,6 @@
     <DefineConstants Condition="'$(Candidate)' == 'true'">$(DefineConstants);CANDIDATE</DefineConstants>
   </PropertyGroup>
   <ItemGroup>
-    <Compile Include="../../.github/benchmarks/CompilationLog.cs" Link="CompilationLog.cs" Condition="!Exists('CompilationLog.cs')" />
     <ProjectReference Include="../../src/Dekaf/Dekaf.csproj" />
     <ProjectReference Include="../../src/Dekaf.Testing/Dekaf.Testing.csproj" />
     <PackageReference Include="BenchmarkDotNet" />

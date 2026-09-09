@@ -38,8 +38,7 @@ internal sealed class ShareLoad
     private int _seriesCount, _total, _warmupCount, _rate;
     private long _processed, _completed, _measured, _failures, _commits;
     private long _firstCompletion, _measurementStart, _measurementEnd, _scheduledStart;
-    private long _cpuStart, _cpuEnd, _allocatedStart, _allocatedEnd, _jitStart, _jitEnd;
-    private double _jitMsStart, _jitMsEnd;
+    private long _cpuStart, _cpuEnd, _allocatedStart, _allocatedEnd;
 
     internal static async Task Produce(string topic, string folder, int warmup, int seconds, int rate)
     {
@@ -179,7 +178,6 @@ internal sealed class ShareLoad
             P50Ns = Percentile(measured, .5), P99Ns = Percentile(measured, .99),
             MaxNs = measured[^1] * 1e9 / Stopwatch.Frequency, StopwatchFrequency = Stopwatch.Frequency,
             MeasurementStart = _measurementStart, MeasurementEnd = _measurementEnd,
-            JitMethodsStart = _jitStart, JitMethodsEnd = _jitEnd, JitMsStart = _jitMsStart, JitMsEnd = _jitMsEnd,
             ExplicitCommits = _commits, BacklogAtEnd = _total - _completed,
             PostDrainCloseNs = stopTicks * 1e9 / Stopwatch.Frequency,
             Scope = "Consumer process including observer. Each completion is a successful broker acknowledgement callback. " +
@@ -225,8 +223,6 @@ internal sealed class ShareLoad
                     _accounting.Refresh();
                     _cpuStart = _accounting.TotalProcessorTime.Ticks;
                     _allocatedStart = GC.GetTotalAllocatedBytes(true);
-                    _jitStart = System.Runtime.JitInfo.GetCompiledMethodCount();
-                    _jitMsStart = System.Runtime.JitInfo.GetCompilationTime().TotalMilliseconds;
                     Volatile.Write(ref _measurementStart, Stopwatch.GetTimestamp());
                 }
                 if (Interlocked.CompareExchange(ref _latencies[offset], Math.Max(1, now - _scheduled[offset]), 0) != 0)
@@ -241,8 +237,6 @@ internal sealed class ShareLoad
                     _accounting.Refresh();
                     _cpuEnd = _accounting.TotalProcessorTime.Ticks;
                     _allocatedEnd = GC.GetTotalAllocatedBytes(true);
-                    _jitEnd = System.Runtime.JitInfo.GetCompiledMethodCount();
-                    _jitMsEnd = System.Runtime.JitInfo.GetCompilationTime().TotalMilliseconds;
                 }
             }
         }
@@ -262,7 +256,6 @@ internal sealed class ShareLoad
                 expected, expected < 0 ? -1 : Math.Max(0, expected - completed), _process.TotalProcessorTime.Ticks,
                 GC.GetTotalAllocatedBytes(false), GC.GetTotalMemory(false), _process.WorkingSet64,
                 GC.CollectionCount(0), GC.CollectionCount(1), GC.CollectionCount(2),
-                System.Runtime.JitInfo.GetCompiledMethodCount(), System.Runtime.JitInfo.GetCompilationTime().TotalMilliseconds,
                 ThreadPool.ThreadCount, ThreadPool.PendingWorkItemCount);
             try { await Task.Delay(1000, token); }
             catch (OperationCanceledException) when (token.IsCancellationRequested) { }
@@ -271,7 +264,7 @@ internal sealed class ShareLoad
 
     private readonly record struct Sample(long Timestamp, long Processed, long Completed, long Measured,
         long OfferedBySchedule, long Backlog, long CpuTicks, long AllocatedBytes, long HeapBytes, long RssBytes,
-        int Gen0, int Gen1, int Gen2, long JitMethods, double JitMs, int Threads, long PendingWork);
+        int Gen0, int Gen1, int Gen2, int Threads, long PendingWork);
     private static double Percentile(ReadOnlySpan<long> values, double percentile)
         => values[(int)Math.Ceiling(values.Length * percentile) - 1] * 1e9 / Stopwatch.Frequency;
     private static void Save<T>(string folder, string name, T value)

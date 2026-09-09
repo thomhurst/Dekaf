@@ -34,9 +34,7 @@ public static class Program
             Console.WriteLine("All eight fixtures validated");
             return 0;
         }
-        using var runtimeLog = new RuntimeLogger(Path.Combine(args[1], "runtime.csv"));
         var config = DefaultConfig.Instance.WithArtifactsPath(args[1])
-            .AddLogger(runtimeLog)
             .AddExporter(JsonExporter.Full)
             .AddJob(Job.Default.WithToolchain(InProcessEmitToolchain.Instance)
                 .WithAffinity(new IntPtr(1L << int.Parse(Environment.GetEnvironmentVariable("ABA_CPU") ?? "0")))
@@ -51,18 +49,10 @@ public static class Program
     {
         var timer = Stopwatch.StartNew();
         long cycles = 0;
-        var next = 1d;
-        using var process = Process.GetCurrentProcess();
         do
         {
             operation().GetAwaiter().GetResult();
             cycles++;
-            if (!Validate && timer.Elapsed.TotalSeconds >= next)
-            {
-                process.Refresh();
-                Console.WriteLine($"WARM seconds={timer.Elapsed.TotalSeconds:F3} cycles={cycles} jit={System.Runtime.JitInfo.GetCompiledMethodCount()} threads={ThreadPool.ThreadCount} cpuMs={process.TotalProcessorTime.TotalMilliseconds:F3} gc0={GC.CollectionCount(0)} gc1={GC.CollectionCount(1)} gc2={GC.CollectionCount(2)} heap={GC.GetTotalMemory(false)} rss={process.WorkingSet64}");
-                next++;
-            }
         } while (!Validate && timer.Elapsed.TotalSeconds < 20);
         if (fixture.Deleted != cycles * 500 || fixture.Acknowledged != (enabled && HasMetrics ? cycles * 500 : 0))
             throw new InvalidOperationException("Warmup delivery or metric count mismatch");

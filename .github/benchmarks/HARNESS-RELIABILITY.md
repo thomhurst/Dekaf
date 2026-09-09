@@ -24,30 +24,18 @@ The existing copies of `Probe.cs` stay self-contained because historical drivers
 copy individual fixture directories into product checkouts. A test verifies that
 all four deployed copies match the recorder tested by TUnit.
 
-## CPU isolation and host evidence
+## CPU isolation
 
-The wrapper in `.github/scripts/runner_resources.py` discovers physical core and
-socket IDs within the original allowed CPU set. SMT siblings stay on the same
-side. One physical core belongs to the client; remaining cores belong to harness
-infrastructure and Kafka. A runner with fewer than two physical cores is rejected.
-This preserves the existing loaded-workload allocation instead of silently changing
-concurrency or offered load.
+The helper in `.github/scripts/runner_affinity.py` discovers physical core and
+socket IDs within the original allowed CPU set. SMT siblings stay together.
+One physical core belongs to the loaded client; remaining cores belong to the
+broker and driver. Fewer than two physical cores is unsupported by these lanes.
+The shared micro suite uses normal runner affinity.
 
-The wrapper and Python drivers run on infrastructure CPUs. Their subprocesses,
-including `docker stats`, inherit that mask. Measured processes explicitly select
-the client mask. Pool BenchmarkDotNet affinity no longer overrides the topology
-with hard-coded CPU 2. Original allowed CPUs are retained across nested drivers.
-In-process runtime samplers remain included in client CPU/allocation scope; this
-change does not claim to remove their cost or isolate the host kernel, Docker
-daemon, interrupts, or other VM activity.
-
-Every wrapped suite retains `runner-resources/plan.json`, raw one-second
-`series.jsonl`, and the child's exit code. Series include `/proc/stat` CPU and steal
-counters, memory and swap counters, CPU/memory/I/O pressure stall information,
-load, and available disk. These are host observations, not client CPU per message.
-Missing required counters fail before starting work; a later sampling failure
-terminates the workload and fails collection. A nonzero workload exit stays
-nonzero. Artifacts upload even when execution fails.
+The custom background host-resource sampler and its wrapper are removed.
+Loaded workload counters still include their observation cost in process CPU and
+allocations. Investigate runtime behavior manually with standard tools in separate
+runs; host CPU does not substitute for client CPU per completed message.
 
 ## Identical-product calibration
 
@@ -69,14 +57,14 @@ builds and fixture validation. There is no automatic repetition.
 screen demonstrates that this capture cannot distinguish a product change at
 those limits. A successful screen is only a repeatability observation for that
 configuration; one triplet does not establish maximum-latency precision, loaded
-Kafka behavior, long-run stability, or a product performance PASS. JIT/GC and
-thread-pool transitions still need attribution using the retained runtime series.
+Kafka behavior, long-run stability, or a product performance PASS. Assess throughput,
+latency, CPU, allocations and stability; JIT activity is not a gate.
 Do not remove maxima or widen tolerances to turn calibration green.
 
 ## Validation
 
 `performance-harness-tests.yml` runs TUnit recorder tests, Python comparison and
-resource-wrapper tests, and a real Linux child-affinity/resource-capture smoke.
+affinity tests, and a real Linux child-affinity smoke.
 Recorder tests independently verify counts, random interval histograms, exact
 long tails, immutable prior intervals, bounded failure, JSON compatibility, zero
 record/drain allocations, and the complete probe's report accounting.

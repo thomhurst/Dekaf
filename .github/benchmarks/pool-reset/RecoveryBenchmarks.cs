@@ -29,18 +29,9 @@ public class PendingRequestRecoveryBenchmark
         writer.WriteInt8(1);
         _frame = bytes.WrittenSpan.ToArray();
         var timer = Stopwatch.StartNew();
-        var next = 1d;
-        using var process = Process.GetCurrentProcess();
         do
         {
             CompleteResetAndRecover();
-            if (!Program.Smoke && timer.Elapsed.TotalSeconds >= next)
-            {
-                Verify();
-                process.Refresh();
-                Console.WriteLine($"WARM seconds={timer.Elapsed.TotalSeconds:F6} completed={_operations} failures={_failures} jit={System.Runtime.JitInfo.GetCompiledMethodCount()} threads={ThreadPool.ThreadCount} cpuMs={process.TotalProcessorTime.TotalMilliseconds:F3} gc0={GC.CollectionCount(0)} gc1={GC.CollectionCount(1)} gc2={GC.CollectionCount(2)} heap={GC.GetTotalMemory(false)} rss={process.WorkingSet64}");
-                next++;
-            }
         } while (!Program.Smoke && timer.Elapsed.TotalSeconds < 20);
         Verify();
         Console.WriteLine($"WARM completed seconds={timer.Elapsed.TotalSeconds:F6} calls={_operations} failures={_failures}");

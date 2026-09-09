@@ -9,7 +9,7 @@ import shutil
 import subprocess
 import sys
 
-from runner_resources import configure_affinity
+from runner_affinity import configure_affinity
 
 ROOT = Path.cwd()
 OUT = ROOT / 'evidence'
@@ -58,7 +58,7 @@ def execute():
     if calibration:
         added = []
     if pilot:
-        # Diagnose the observed report/JIT transition before expanding a campaign.
+        # Limit the pilot to one workload before expanding a campaign.
         controls, added = controls[:1], []
     environment = dict(os.environ, DOTNET_TieredCompilation='1', DOTNET_TieredPGO='1', DOTNET_gcServer='0')
     topology, affinity = configure_affinity()
@@ -66,16 +66,11 @@ def execute():
     probe_prefix = ['taskset', '-c', str(cpu), 'dotnet']
     plan = dict(calibration=calibration, topology=topology, affinity=affinity, A=A, B=B, harness=subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
                 controls=controls, candidate_only=added, warmup_seconds=warmup_seconds, measured_seconds=measured_seconds,
-                warmup_rationale=('480 seconds continuous workload after observer heap preparation; previous 360-second captures '
-                                  'retained helper/ConditionalWeakTable JIT near total seconds 382-400. Collect 180 seconds '
-                                  'to retain multiple recurring GC cycles, not select a GC-free window.'
-                                  if not pilot else
-                                  '360 seconds continuous workload after observer heap preparation; assess all measured runtime transitions'),
-                observer_preparation='After histogram allocation, two blocking compacting full GCs with finalizer waits before workload warmup; no forced GC during warmup or measurement',
+                warmup_rationale='Same declared continuous workload duration for all phases; assess throughput and latency trends',
                 pilot=pilot, report_aggregation='all overflow sorting and aggregation deferred until both captures finish',
                 histograms='Exact ticks, touched buckets only; 65536 distinct ticks/interval, shared archive capped at 4194304 entries (64 MiB); exhaustion invalidates',
                 phase_transition='one continuous warmed call loop; no return/re-entry between warmup and measurement',
-                cpu_affinity=[cpu], jit_attribution='CLR MethodJittingStarted; identical observer in all phases',
+                cpu_affinity=[cpu], diagnostics='Manual standard tools, separate from timing',
                 phase_order='For each control workload, run A1 then B then A2 before starting the next workload',
                 endpoint='127.0.0.1:9092; literal loopback avoids external OS DNS in cached-transport probes',
                 image=os.getenv('ImageOS'), image_version=os.getenv('ImageVersion'), run_id=os.getenv('GITHUB_RUN_ID'),
@@ -97,7 +92,6 @@ def execute():
         for source in SOURCE.iterdir():
             if source.suffix in {'.cs', '.csproj'}:
                 shutil.copy2(source, fixture / source.name)
-        shutil.copy2(ROOT / '.github/benchmarks/CompilationLog.cs', fixture / 'CompilationLog.cs')
         run(['dotnet', 'build', str(fixture / 'Runner.csproj'), '-c', 'Release', '--disable-build-servers',
              '-p:Candidate=' + str(label == 'B').lower()], OUT / f'build-{label}.log', cwd=product)
         binary = fixture / 'bin/Release/net10.0/Dekaf.Benchmarks.dll'

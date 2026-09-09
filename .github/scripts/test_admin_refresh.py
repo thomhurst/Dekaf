@@ -24,9 +24,6 @@ class CalibrationTests(unittest.TestCase):
         self.driver.SOURCE = self.root / 'fixture'
         self.driver.SOURCE.mkdir()
         (self.driver.SOURCE / 'Runner.csproj').write_text('<Project/>')
-        helper = self.root / '.github/benchmarks/CompilationLog.cs'
-        helper.parent.mkdir(parents=True)
-        helper.write_text('// fixture')
         self.commands = []
         self.common = SimpleNamespace(
             CONTROLS=['legacy:16'], NEW_CASES=['new:16'], validate_probe=Mock(return_value={}),

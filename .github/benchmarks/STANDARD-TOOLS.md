@@ -1,8 +1,8 @@
 # Standard performance tooling
 
 Use BenchmarkDotNet for microbenchmark execution, statistics, allocation reports
-and supported diagnosers. Use `dotnet-counters` for runtime trends and
-`dotnet-trace` for targeted diagnosis. Prefer their original exports and standard
+and allocation diagnostics. Use `dotnet-counters` and `dotnet-trace` for manual
+investigations in separate runs. Prefer their original exports and standard
 viewers to custom listeners, samplers, trace parsers or replacement statistics.
 
 Keep custom code for Kafka workloads, correctness assertions, delivery/processing
@@ -27,14 +27,12 @@ The runner uses repository-pinned BenchmarkDotNet **0.15.8**, the SDK in
 | Sampling | One launch per case in each phase, 25 measured iterations. Keep the same configuration across controls; inspect precision rather than adding runs until green. |
 | Outliers | `DontRemove`; retain every measured sample and maximum. |
 | Allocations | Existing `[MemoryDiagnoser]` attributes. Report bytes per benchmark operation; identify batch size before deriving per-message costs. |
-| Output | BDN full JSON, standard Markdown/CSV, original logs and generated executables. The workflow checks completeness, matching cases and elapsed warmup with `jq`; it does not reimplement statistics or generate a product verdict. |
-| Diagnostics | Plain `micro` has no extra profiler. After the entire timing triplet, `micro-profile` uses `EventPipeProfiler(..., performExtraBenchmarksRun: true)` for A and B, producing separate diagnostic processes and `.nettrace` files. |
+| Output | BDN full JSON, standard Markdown/CSV, original logs and generated executables. The workflow checks completeness, matching cases and elapsed warmup with `jq`; it shows mean-time deltas and allocations without reimplementing statistics or generating a product verdict. |
+| Diagnostics | No runtime/JIT loggers or tracing in the benchmark runner. JIT is not an acceptance metric. Investigate it manually, separately from benchmark timing. |
 
-The additional profiling runs are diagnostic; their measurements do not replace
-the preceding plain A1/B/A2 triplet.
-Do not attach external tracing to the BDN controller: its workload runs in a
-different process. In BDN 0.15.8, CLI `--profiler EP` profiles the normal run;
-the maintained runner deliberately uses the config API with extra runs enabled.
+Manual profiling results do not replace the plain A1/B/A2 triplet.
+When investigating a benchmark, attach to the workload child process; the BDN
+controller runs in a different process.
 
 The timing command is ordinary BenchmarkDotNet CLI:
 
@@ -54,9 +52,10 @@ dedicated lifecycle workload and its completion/correctness boundaries.
 
 Neither a minimum warmup duration nor BDN's iteration statistics prove absence
 of startup transitions or provide per-message p99, CPU per message or sustained
-stability. Retain the repository's runtime-series and loaded-evidence requirements.
-Use standard counters for lightweight observation, check observer overhead, and
-collect heavier traces separately. Missing evidence remains INCONCLUSIVE.
+stability. Use throughput and latency trends to assess warmup, and collect the
+CPU, allocation and stability evidence appropriate to the workload. A compilation
+event is not a regression. Missing applicable performance evidence remains
+INCONCLUSIVE; missing JIT logs does not.
 
 ## Loaded workload diagnostics
 
@@ -75,16 +74,17 @@ dotnet-trace report diagnostic.nettrace topN -n 50
 dotnet-trace convert diagnostic.nettrace --format Speedscope
 ```
 
-Run heavy tracing as a targeted diagnostic, separately from acceptance timing.
-Inspect GC/JIT events with a standard trace viewer when runtime transitions matter.
+Run diagnostics manually, separately from acceptance timing. Inspect GC/JIT events
+with a standard trace viewer when investigating a measured performance problem.
 All collectors have overhead; identical instrumentation does not prove equal bias.
 
 ## Remaining migration
 
-Pool, outbox and dispatch have older BDN entry points with custom runtime loggers.
-Administrative and loaded suites also retain custom recorders and JIT listeners.
-These are still active dependencies, not standard-tool replacements. Migrate their
-consumers and validate workload/metric boundaries before deleting them. Preserve
+Custom BDN runtime loggers, JIT listeners and phase diagnosers are removed from
+the shared, pool, outbox, dispatch and administrative fixtures. The custom BDN
+engine primer and background host-resource sampler are also removed. Loaded workloads
+retain completion/latency recorders and CPU/allocation/stability counters. Older
+specialized runners still have project/build orchestration to simplify. Preserve
 historical evidence at its recorded SHA; never rewrite old reports to the new
 instrumentation or treat old and new measurements as interchangeable.
 

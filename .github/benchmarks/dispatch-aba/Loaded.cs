@@ -19,10 +19,7 @@ if (role == "produce")
     await Load.Produce(topic, folder, mode, warmup, seconds, rate);
 else if (role == "consume")
 {
-    using var compilations = new CompilationLog(Path.Combine(folder, "compilations.json"));
-    compilations.Phase("initialize");
-    await new Load().Consume(topic, folder, mode, warmup, seconds, rate, compilations);
-    compilations.Phase("finalize");
+    await new Load().Consume(topic, folder, mode, warmup, seconds, rate);
 }
 else
     throw new ArgumentException("Unknown role.");
@@ -48,7 +45,6 @@ internal sealed class Load
     private readonly Process _accountingProcess = Process.GetCurrentProcess();
     private long[] _latencies = null!;
     private long[]? _handlerStarts;
-    private CompilationLog _compilations = null!;
     private Sample[] _series = null!;
     private int _seriesCount;
     private int _warmupCount;
@@ -63,10 +59,6 @@ internal sealed class Load
     private long _cpuEnd;
     private long _allocationStart;
     private long _allocationEnd;
-    private long _jitStart;
-    private long _jitEnd;
-    private double _jitMsStart;
-    private double _jitMsEnd;
     private long _scheduledStart;
     private int _pendingHandlers;
     private long _pendingCompletions;
@@ -126,10 +118,8 @@ internal sealed class Load
             throw new InvalidOperationException("Producer delivery count mismatch.");
     }
 
-    internal async Task Consume(string topic, string folder, string mode, int warmup, int seconds, int rate,
-        CompilationLog compilations)
+    internal async Task Consume(string topic, string folder, string mode, int warmup, int seconds, int rate)
     {
-        _compilations = compilations;
         _pending = mode.StartsWith("pending", StringComparison.Ordinal);
         var batches = mode.EndsWith("batches", StringComparison.Ordinal);
         if (mode is not ("sync-records" or "sync-batches" or "pending-records" or "pending-batches"))
@@ -194,7 +184,6 @@ internal sealed class Load
             ? consumer.RunPartitionedBatchesAsync(HandleBatch, options, stop.Token).AsTask()
             : consumer.RunPartitionedAsync(HandleRecord, options, stop.Token).AsTask();
         var observing = ObserveSeries(rate, stopSampler.Token);
-        _compilations.Phase("warmup");
         File.WriteAllText(Path.Combine(folder, "ready"), "ready");
         long stopTicks = 0;
         try
@@ -258,8 +247,6 @@ internal sealed class Load
             WarmupOfferedSeconds = warmup, WarmupCompleted = _completed - _measured,
             ActualWarmupSeconds = (_measurementStart - _firstCompletion) / (double)Stopwatch.Frequency,
             MeasurementStart = _measurementStart, MeasurementEnd = _measurementEnd,
-            JitMethodsStart = _jitStart, JitMethodsEnd = _jitEnd,
-            JitMsStart = _jitMsStart, JitMsEnd = _jitMsEnd,
             MessagesPerSecond = _measured / elapsed,
             CpuNsPerMessage = (_cpuEnd - _cpuStart) * 100d / _measured,
             AllocatedBytesPerMessage = (_allocationEnd - _allocationStart) / (double)_measured,
@@ -357,10 +344,7 @@ internal sealed class Load
             _accountingProcess.Refresh();
             _cpuStart = _accountingProcess.TotalProcessorTime.Ticks;
             _allocationStart = GC.GetTotalAllocatedBytes(true);
-            _jitStart = System.Runtime.JitInfo.GetCompiledMethodCount();
-            _jitMsStart = System.Runtime.JitInfo.GetCompilationTime().TotalMilliseconds;
             Volatile.Write(ref _measurementStart, Stopwatch.GetTimestamp());
-            _compilations.Phase("measured");
         }
         Interlocked.CompareExchange(ref _scheduledStart, payload.Scheduled -
             (long)((index / OfferBurst * OfferBurst) * (double)Stopwatch.Frequency / _rate), 0);
@@ -373,9 +357,6 @@ internal sealed class Load
             _accountingProcess.Refresh();
             _cpuEnd = _accountingProcess.TotalProcessorTime.Ticks;
             _allocationEnd = GC.GetTotalAllocatedBytes(true);
-            _jitEnd = System.Runtime.JitInfo.GetCompiledMethodCount();
-            _jitMsEnd = System.Runtime.JitInfo.GetCompilationTime().TotalMilliseconds;
-            _compilations.Phase("drain");
             _done.TrySetResult();
         }
     }
@@ -397,7 +378,6 @@ internal sealed class Load
                 expected < 0 ? -1 : Math.Max(0, expected - completed), _process.TotalProcessorTime.Ticks,
                 GC.GetTotalAllocatedBytes(false), GC.GetTotalMemory(false), _process.WorkingSet64,
                 GC.CollectionCount(0), GC.CollectionCount(1), GC.CollectionCount(2),
-                System.Runtime.JitInfo.GetCompiledMethodCount(), System.Runtime.JitInfo.GetCompilationTime().TotalMilliseconds,
                 ThreadPool.ThreadCount, ThreadPool.PendingWorkItemCount, Volatile.Read(ref _pendingHandlers));
             try { await Task.Delay(1000, token); }
             catch (OperationCanceledException) when (token.IsCancellationRequested) { }
@@ -406,7 +386,7 @@ internal sealed class Load
 
     private readonly record struct Sample(long Timestamp, long Completed, long Measured, long OfferedBySchedule,
         long Backlog, long CpuTicks, long AllocatedBytes, long HeapBytes, long RssBytes,
-        int Gen0, int Gen1, int Gen2, long JitMethods, double JitMs, int Threads, long PendingWork, int PendingHandlers);
+        int Gen0, int Gen1, int Gen2, int Threads, long PendingWork, int PendingHandlers);
 
     private static double Percentile(ReadOnlySpan<long> values, double percentile)
         => values[(int)Math.Ceiling(values.Length * percentile) - 1] * 1_000_000_000d / Stopwatch.Frequency;

@@ -54,13 +54,3 @@ def validate(path, minimum_seconds):
         if not math.isfinite(data[name]) or data[name] < 0:
             raise ValueError(f'{path}: invalid metric {name}')
     return data
-
-
-def runtime_transitions(warmup, measured):
-    rows = [row for row in warmup['Intervals'] if row['End']['Seconds'] >= warmup['End']['Seconds'] - 10]
-    rows += measured['Intervals']
-    return [dict(start=row['Start']['Seconds'], end=row['End']['Seconds'],
-                 jit=row['End']['JitMethods'] - row['Start']['JitMethods'],
-                 threads_before=row['Start']['ThreadPoolThreads'], threads_after=row['End']['ThreadPoolThreads'])
-            for row in rows if row['End']['JitMethods'] != row['Start']['JitMethods']
-            or row['End']['ThreadPoolThreads'] != row['Start']['ThreadPoolThreads']]

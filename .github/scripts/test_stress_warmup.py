@@ -10,7 +10,7 @@ from stress_warmup import main, validate
 
 
 def observation():
-    return dict(compiledMethods=100, compilationMilliseconds=10, threadPoolThreads=4,
+    return dict(threadPoolThreads=4,
                 pendingWorkItems=0, cpuSeconds=10, allocatedBytes=1000, heapBytes=100,
                 workingSetBytes=200, gen0Collections=1, gen1Collections=0,
                 gen2Collections=0, gcPauseMilliseconds=1)
@@ -28,7 +28,7 @@ def result():
 
 
 class StressWarmupTests(unittest.TestCase):
-    def test_quiet_jit_cannot_validate_unassessed_startup_trends(self):
+    def test_counter_coverage_cannot_validate_unassessed_startup_trends(self):
         changes = (None, "cpuSeconds", "pendingWorkItems", "allocatedBytes", "heapBytes",
                    "workingSetBytes", "gen0Collections", "gcPauseMilliseconds", "acceptedMessages")
         for changed in changes:
@@ -98,7 +98,7 @@ class StressWarmupTests(unittest.TestCase):
                     samples = [result(), result()]
                     for index, sample in enumerate(samples):
                         if file_index * 2 + index == invalid_index:
-                            sample["throughput"]["runtimeEnd"]["compiledMethods"] += 1
+                            sample["throughput"]["runtimeEnd"]["cpuSeconds"] = -1
                     (root / f"stress-test-results-{file_index}.json").write_text(
                         json.dumps({"results": samples}), encoding="utf-8"
                     )
@@ -113,7 +113,7 @@ class StressWarmupTests(unittest.TestCase):
                 self.assertEqual(4, report["resultCount"])
                 self.assertIn(report["verdict"], summary.read_text(encoding="utf-8"))
                 if invalid_index is not None:
-                    self.assertIn("JIT", " ".join(report["errors"]))
+                    self.assertIn("cpuSeconds", " ".join(report["errors"]))
 
     def test_regular_run_rejects_missing_or_malformed_results(self):
         for payload in (None, {"results": []}, {"results": [result()]}, {"results": [None, result()]}):
@@ -130,17 +130,14 @@ class StressWarmupTests(unittest.TestCase):
     def test_accepts_complete_quiet_runtime_coverage(self):
         self.assertEqual(20, validate(result()))
 
-    def test_early_jit_is_allowed_but_tail_jit_is_not(self):
-        early = result()
-        early["throughput"]["warmup"]["samples"][0]["runtime"]["compiledMethods"] = 90
-        self.assertEqual(20, validate(early))
-        late = result()
-        late["throughput"]["warmup"]["samples"][-1]["runtime"]["compiledMethods"] = 101
-        with self.assertRaisesRegex(ValueError, "JIT"):
-            validate(late)
+    def test_jit_diagnostics_do_not_gate_measurements(self):
+        candidate = result()
+        for phase in ("runtimeStart", "runtimeEnd"):
+            candidate["throughput"][phase]["compiledMethods"] = 100 if phase == "runtimeStart" else 200
+        self.assertEqual(20, validate(candidate))
 
     def test_measurement_and_boundary_activity_cannot_be_trimmed(self):
-        for field, value in (("compiledMethods", 101), ("compilationMilliseconds", 11), ("threadPoolThreads", 5)):
+        for field, value in (("threadPoolThreads", 5),):
             for location in ("runtimeStart", "runtimeEnd", "interval"):
                 with self.subTest(field=field, location=location):
                     candidate = result()
@@ -149,15 +146,6 @@ class StressWarmupTests(unittest.TestCase):
                     target[field] = value
                     with self.assertRaises(ValueError):
                         validate(candidate)
-
-    def test_compilation_entirely_before_measurement_is_not_misclassified(self):
-        candidate = result()
-        throughput = candidate["throughput"]
-        for sample in [throughput["runtimeStart"], throughput["runtimeEnd"]] + [
-                item["runtime"] for item in throughput["intervalSamples"]]:
-            sample["compiledMethods"] = 105
-            sample["compilationMilliseconds"] = 11
-        self.assertEqual(20, validate(candidate))
 
     def test_drain_or_idle_time_cannot_replace_workload_warmup(self):
         candidate = result()

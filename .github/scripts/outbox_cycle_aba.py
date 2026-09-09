@@ -1,6 +1,5 @@
 """Task-scoped outbox comparison including renewal stores; never promotes the PR performance gate."""
 import argparse
-import csv
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -11,7 +10,7 @@ import re
 import shutil
 import subprocess
 
-from runner_resources import configure_affinity
+from runner_affinity import configure_affinity
 
 MODES = ('sync-off', 'pending-off', 'sync-on', 'pending-on',
          'renewal-sync-off', 'renewal-pending-off', 'renewal-sync-on', 'renewal-pending-on')
@@ -63,18 +62,9 @@ def read_case(folder, log):
     raw = re.findall(r'^RAW cycles=1000 bytes=(\d+)', text, re.M)
     if len(raw) != 1:
         raise ValueError(f'Missing exact allocation probe: {folder}')
-    with (folder / 'runtime.csv').open(newline='') as stream:
-        runtime = list(csv.DictReader(stream))
-    actual = [row for row in runtime if row['workload'].startswith('WorkloadActual')]
-    warm = [row for row in runtime if row['workload'].startswith('WorkloadWarmup')]
-    if len(actual) != 25 or len(warm) != 30:
-        raise ValueError(f'Runtime series does not cover every workload interval: {folder}')
     return {'mean_ns': statistics['Mean'], 'allocated_bytes': allocated,
             'statistics': statistics, 'raw_1000_cycle_bytes': int(raw[0]),
-            'warmup_seconds': elapsed, 'warmup_cycles': sum(int(ops) for ops, _ in warmups),
-            'measured_jit_methods': int(actual[-1]['jit_methods']) - int(warm[-1]['jit_methods']),
-            'measured_jit_ms': float(actual[-1]['jit_ms']) - float(warm[-1]['jit_ms']),
-            'runtime_samples': len(runtime)}
+            'warmup_seconds': elapsed, 'warmup_cycles': sum(int(ops) for ops, _ in warmups)}
 
 
 def comparison(phases):

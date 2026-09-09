@@ -4,9 +4,9 @@ Prefer standard .NET tooling over custom measurement and profiling code. See
 [tool selection and BenchmarkDotNet settings](STANDARD-TOOLS.md). The shared
 `micro` suite uses BenchmarkDotNet's normal out-of-process toolchain; it has no
 custom runtime logger, JIT event listener or background resource sampler.
-`micro-profile` enables BenchmarkDotNet's built-in EventPipe profiler in separate
-diagnostic processes. The older specialized suites below have not yet migrated;
-do not assume their instrumentation has been removed.
+Pool, outbox, dispatch and administrative fixtures also remove custom BDN runtime
+loggers, samplers and JIT listeners. JIT investigations are manual and separate
+from timing; compilation activity is not an acceptance metric.
 
 Use [performance-comparison.yml](../workflows/performance-comparison.yml) for
 manual, exact-revision comparisons. The existing daily
@@ -35,8 +35,8 @@ stale main, a candidate missing main, a changed/closed PR, and unknown suites.
 `performance-pins.json` records independent workflow/harness/product identities.
 Suite artifacts retain source/binary identities, settings and raw measurements.
 The shared micro suite retains static CPU/runtime/OS details and BDN's original
-reports and logs. Older specialized suites also retain their resource-wrapper
-series; those observations include collection overhead.
+reports and logs. The shared Linux helper only selects CPU affinity; the custom
+background host-resource sampler is removed.
 
 For identical-product repeatability, select `suite=admin-calibration`, set A and
 B to the same fresh-main SHA, and use a supported administrative PR number to
@@ -48,7 +48,7 @@ binary in all phases and never grants product acceptance. See
 
 | Suite | Scope and maintained driver |
 | --- | --- |
-| `micro`, `micro-profile` | Focused cases for #3082, #3083, #3085, #3086, #3116, #3117, #3149, #3158; normal [project references](aba/Dekaf.Benchmarks.csproj) and BDN CLI in the workflow |
+| `micro` | Focused cases for #3082, #3083, #3085, #3086, #3116, #3117, #3149, #3158; normal [project references](aba/Dekaf.Benchmarks.csproj) and BDN CLI in the workflow |
 | `pool`, `pool-recovery` | Pool reset and recovery; [driver](../scripts/pool_reset_aba.py) |
 | `pool-loaded`, `pool-profile` | Loaded producer pool comparison and diagnostic profiling; [driver](../scripts/pool_loaded_aba.py) |
 | `admin`, `admin-pilot`, `admin-calibration` | Cached-transport administration for #3128, #3129, #3136, #3138; [driver](../scripts/admin_refresh.py) |
@@ -77,7 +77,7 @@ acceptance evidence. New H/A/B combinations require new evidence.
 
 [performance-harness-tests.yml](../workflows/performance-harness-tests.yml) runs
 driver/replay tests, recorder allocation tests, pool interval tests, actual
-administrative fixture builds/captures and Linux affinity/resource smoke checks.
+administrative fixture builds/captures and Linux affinity smoke checks.
 For the administrative smoke locally:
 
 ```text

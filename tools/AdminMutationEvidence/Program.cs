@@ -5,9 +5,6 @@ if (args.Length != 5 || args[0] is not ("validate" or "probe"))
     throw new ArgumentException("validate|probe CASE OUTPUT WARMUP_SECONDS MEASURED_SECONDS");
 var warmupSeconds = double.Parse(args[3], CultureInfo.InvariantCulture);
 var measuredSeconds = double.Parse(args[4], CultureInfo.InvariantCulture);
-using var compilations = new CompilationLog(Path.Combine(args[2], "compilations.json"));
-PhaseEvents.Log.Phase("initialize");
-compilations.Phase("initialize");
 await using var fixture = new AdminFixture(args[1]);
 await fixture.InitializeAsync();
 Probe.SaveLoadedBinaries(Path.Combine(args[2], "binaries.json"));
@@ -18,12 +15,8 @@ if (args[0] == "validate")
     Console.WriteLine($"Validated {args[1]}");
     return;
 }
-PhaseEvents.Log.Phase("primer");
-compilations.Phase("primer");
 await Probe.PrimeAsync(fixture, Path.Combine(args[2], "primer.json"));
-var captures = await Probe.CapturePhasesAsync(fixture, [warmupSeconds, measuredSeconds], compilations);
-PhaseEvents.Log.Phase("finalize");
-compilations.Phase("finalize");
+var captures = await Probe.CapturePhasesAsync(fixture, [warmupSeconds, measuredSeconds]);
 var warmup = Probe.Complete(captures[0]);
 var measured = Probe.Complete(captures[1]);
 await fixture.ValidateAsync();

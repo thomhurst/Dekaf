@@ -26,8 +26,7 @@ internal static class Program
         Baseline = args.Contains("--baseline");
         Console.WriteLine(JsonSerializer.Serialize(new[] { typeof(Program).Assembly, typeof(PendingRequestPool).Assembly, typeof(Reservoir.ObjectPool<>).Assembly }
             .Select(a => new { a.FullName, a.Location, Sha256 = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(a.Location))) })));
-        using var runtime = new RuntimeLogger(Path.Combine(args[0], "runtime.csv"));
-        var config = DefaultConfig.Instance.WithArtifactsPath(args[0]).AddLogger(runtime).AddExporter(JsonExporter.Full)
+        var config = DefaultConfig.Instance.WithArtifactsPath(args[0]).AddExporter(JsonExporter.Full)
             .AddJob(Job.Default.WithToolchain(InProcessEmitToolchain.Instance).WithAffinity(new IntPtr(1L << cpu))
                 .WithWarmupCount(Smoke ? 1 : 30).WithIterationCount(Smoke ? 1 : 25)
                 .WithIterationTime(TimeInterval.FromMilliseconds(1000)).WithOutlierMode(OutlierMode.DontRemove));
@@ -54,18 +53,11 @@ public class PendingRequestBenchmark
             _pool.Return(item);
             if (RentReturn() != 1) throw new InvalidOperationException("Pool count changed.");
         }
-        var timer = Stopwatch.StartNew(); long completed = 0; var next = 1d;
-        using var process = Process.GetCurrentProcess();
+        var timer = Stopwatch.StartNew(); long completed = 0;
         do
         {
             if (RentReturn() != 1) throw new InvalidOperationException("Warmup count changed.");
             completed++;
-            if (!Program.Smoke && timer.Elapsed.TotalSeconds >= next)
-            {
-                process.Refresh();
-                Console.WriteLine($"WARM seconds={timer.Elapsed.TotalSeconds:F6} completed={completed} jit={System.Runtime.JitInfo.GetCompiledMethodCount()} threads={ThreadPool.ThreadCount} cpuMs={process.TotalProcessorTime.TotalMilliseconds:F3} gc0={GC.CollectionCount(0)} gc1={GC.CollectionCount(1)} gc2={GC.CollectionCount(2)} heap={GC.GetTotalMemory(false)} rss={process.WorkingSet64}");
-                next++;
-            }
         } while (!Program.Smoke && timer.Elapsed.TotalSeconds < 20);
         Console.WriteLine($"WARM completed seconds={timer.Elapsed.TotalSeconds:F6} calls={completed}");
         var before = GC.GetAllocatedBytesForCurrentThread();

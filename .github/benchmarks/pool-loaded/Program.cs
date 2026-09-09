@@ -20,8 +20,6 @@ internal static class Program
         if (Directory.Exists(directory))
             throw new IOException("Output directory already exists.");
         Directory.CreateDirectory(directory);
-        using var compilations = new CompilationLog(Path.Combine(directory, "compilations.json"));
-        compilations.Phase("initialize");
         var size = int.Parse(args[3]);
         var partitions = int.Parse(args[4]);
         var warmup = int.Parse(args[5]);
@@ -68,16 +66,12 @@ internal static class Program
         {
             // Exercise phase entry, drain and sampling before the workload warmup.
             // Report snapshots and serialization run only after collection has stopped.
-            compilations.Phase("primer");
             await workload.RunPhaseAsync(producer, 0, primerSeconds, "primer", directory, timeout.Token);
-            compilations.Phase("warmup");
             await workload.RunPhaseAsync(producer, 1, warmup, "warmup", directory, timeout.Token);
-            compilations.Phase("measured");
             await workload.RunPhaseAsync(producer, 2, measured, "measured", directory, timeout.Token);
         }
         finally
         {
-            compilations.Phase("finalize");
             consuming.Cancel();
             await consumerTask;
             await workload.WriteReportsAsync(directory);
@@ -357,7 +351,6 @@ internal sealed class Workload
                     Volatile.Read(ref phase.Sent), Volatile.Read(ref phase.Acknowledged), Volatile.Read(ref phase.Consumed),
                     process.TotalProcessorTime.TotalMilliseconds, GC.GetTotalAllocatedBytes(), GC.GetTotalMemory(false),
                     process.WorkingSet64, GC.CollectionCount(0), GC.CollectionCount(1), GC.CollectionCount(2),
-                    System.Runtime.JitInfo.GetCompiledMethodCount(), System.Runtime.JitInfo.GetCompilationTime().TotalMilliseconds,
                     ThreadPool.ThreadCount, ThreadPool.PendingWorkItemCount,
                     phase.Delivery.GetSnapshot(), phase.Completion.GetSnapshot()));
             } while (await tick.WaitForNextTickAsync(cancellationToken));
@@ -455,6 +448,6 @@ internal sealed class Workload
 
     private sealed record RuntimeSample(double Seconds, long Sent, long Acknowledged, long Consumed,
         double CpuMs, long AllocatedBytes, long HeapBytes, long RssBytes, int Gc0, int Gc1, int Gc2,
-        long JitMethods, double JitMs, int Threads, long PendingWork,
+        int Threads, long PendingWork,
         LatencySnapshot DeliveryLatency, LatencySnapshot CompletionLatency);
 }

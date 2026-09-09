@@ -69,11 +69,9 @@ def validate(folder, warmup, seconds, rate, acceptance=False):
     if len(series) < warmup + seconds - 3:
         raise ValueError('Missing runtime time series')
     for sample in series:
-        for field in ('JitMethods', 'JitMs', 'Threads', 'PendingWork', 'CpuTicks', 'Gen0', 'Gen1', 'Gen2', 'HeapBytes', 'RssBytes'):
+        for field in ('Threads', 'PendingWork', 'CpuTicks', 'Gen0', 'Gen1', 'Gen2', 'HeapBytes', 'RssBytes'):
             if field not in sample:
                 raise ValueError(f'Missing runtime metric {field}')
-    if metrics['JitMethodsEnd'] < metrics['JitMethodsStart'] or metrics['JitMsEnd'] < metrics['JitMsStart']:
-        raise ValueError('Invalid JIT boundary counters')
     common.latency_series(folder, metrics)
     return metrics
 

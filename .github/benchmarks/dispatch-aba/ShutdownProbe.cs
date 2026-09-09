@@ -148,8 +148,6 @@ internal sealed class ShutdownProbe
         var durations = new[] { double.Parse(args[4], System.Globalization.CultureInfo.InvariantCulture),
             double.Parse(args[5], System.Globalization.CultureInfo.InvariantCulture) };
         Directory.CreateDirectory(folder);
-        using var compilations = new CompilationLog(Path.Combine(folder, "compilations.json"));
-        compilations.Phase("initialize");
         var probe = new ShutdownProbe(batchSize, keys);
         var captures = durations.Select(static seconds => new Capture(seconds)).ToArray();
         using var process = Process.GetCurrentProcess();
@@ -158,7 +156,6 @@ internal sealed class ShutdownProbe
         // One continuous loop crosses the warmup boundary; reporting happens afterwards.
         var phase = 0;
         var current = captures[phase];
-        compilations.Phase("warmup");
         current.Start = Snapshot.Take(process, origin, completed);
         var nextSecond = 1d;
         long stopSum = 0, messageSum = 0, intervalStops = 0, stopMax = 0, messageMax = 0;
@@ -190,11 +187,9 @@ internal sealed class ShutdownProbe
             current.End = snapshot;
             if (++phase == captures.Length) break;
             current = captures[phase];
-            compilations.Phase("measured");
             current.Start = Snapshot.Take(process, origin, completed);
             nextSecond = 1;
         }
-        compilations.Phase("finalize");
         for (var index = 0; index < captures.Length; index++)
         {
             var capture = captures[index];
@@ -239,7 +234,7 @@ internal sealed class ShutdownProbe
     }
 
     private sealed record Snapshot(double Seconds, long Completed, long CpuTicks, long AllocatedBytes,
-        long JitMethods, double JitMs, int Threads, long PendingWork, int Gen0, int Gen1, int Gen2,
+        int Threads, long PendingWork, int Gen0, int Gen1, int Gen2,
         long HeapBytes, long RssBytes, double StopMeanTicks = 0, long StopMaxTicks = 0,
         double MessageMeanTicks = 0, long MessageMaxTicks = 0)
     {
@@ -247,8 +242,7 @@ internal sealed class ShutdownProbe
         {
             process.Refresh();
             return new(Stopwatch.GetElapsedTime(origin).TotalSeconds, completed, process.TotalProcessorTime.Ticks,
-                GC.GetTotalAllocatedBytes(true), System.Runtime.JitInfo.GetCompiledMethodCount(),
-                System.Runtime.JitInfo.GetCompilationTime().TotalMilliseconds, ThreadPool.ThreadCount,
+                GC.GetTotalAllocatedBytes(true), ThreadPool.ThreadCount,
                 ThreadPool.PendingWorkItemCount, GC.CollectionCount(0), GC.CollectionCount(1), GC.CollectionCount(2),
                 GC.GetTotalMemory(false), process.WorkingSet64);
         }

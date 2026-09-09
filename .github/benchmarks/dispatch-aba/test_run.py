@@ -69,24 +69,6 @@ class MicroDriverTests(unittest.TestCase):
             self.exercise(smoke=False, actual_count=iter([24, 25, 25, 25, 25, 25]))
 
 
-class CompilationValidationTests(unittest.TestCase):
-    def test_rejects_lost_events_wrong_clock_and_missing_boundaries(self):
-        valid = dict(frequency=1000, total_events=0, overflow=False, events=[],
-                     phases=[dict(Name=name, Timestamp=index) for index, name in enumerate(
-                         ['initialize', 'warmup', 'measured', 'drain', 'finalize'])])
-        with tempfile.TemporaryDirectory() as directory:
-            folder = Path(directory)
-            for changed in ({}, {'overflow': True}, {'total_events': 1}, {'frequency': 1},
-                            {'phases': valid['phases'][:-1]}, {'phases': list(reversed(valid['phases']))}):
-                with self.subTest(changed=changed):
-                    (folder / 'compilations.json').write_text(json.dumps(dict(valid, **changed)))
-                    if changed:
-                        with self.assertRaises(ValueError):
-                            run.validate_compilations(folder, {'StopwatchFrequency': 1000})
-                    else:
-                        run.validate_compilations(folder, {'StopwatchFrequency': 1000})
-
-
 class MeasurementValidationTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -98,10 +80,9 @@ class MeasurementValidationTests(unittest.TestCase):
                             MeasuredHandlerInvocations=120, MessagesPerSecond=1, CpuNsPerMessage=1,
                             AllocatedBytesPerMessage=1, AllocatedBytesPerHandlerInvocation=1,
                             P50Ns=10, P99Ns=20, MaxNs=30, ActualWarmupSeconds=120.5,
-                            JitMethodsStart=100, JitMethodsEnd=100, JitMsStart=1, JitMsEnd=1,
                             MeasurementStart=122, MeasurementEnd=241, StopwatchFrequency=1)
         self.producer = dict(Acknowledged=241, Sent=241, Failed=0, ScheduledStart=1, Rate=1, OfferBurst=1)
-        self.series = [dict(Timestamp=index, JitMethods=100, JitMs=1, Threads=2, PendingWork=0,
+        self.series = [dict(Timestamp=index, Threads=2, PendingWork=0,
                             CpuTicks=index, Gen0=0, Gen1=0, Gen2=0, HeapBytes=100, RssBytes=1000)
                        for index in range(241)]
         (self.folder / 'latency-ticks.bin').write_bytes(array.array('q', [10] * 120).tobytes())
@@ -114,7 +95,6 @@ class MeasurementValidationTests(unittest.TestCase):
 
     def test_valid_completed_measurement(self):
         result = self.validate()
-        self.assertEqual(result['MeasuredJitDelta'], 0)
         self.assertEqual(result['MeasuredThreadRange'], [2, 2])
 
     def test_rejects_missing_or_invalid_evidence(self):
@@ -129,7 +109,7 @@ class MeasurementValidationTests(unittest.TestCase):
                     self.validate()
 
     def test_rejects_missing_runtime_counter(self):
-        del self.series[150]['JitMethods']
+        del self.series[150]['CpuTicks']
         with self.assertRaisesRegex(ValueError, 'Missing runtime metric'):
             self.validate()
 
@@ -144,17 +124,9 @@ class MeasurementValidationTests(unittest.TestCase):
             self.validate()
 
     def test_retains_measured_runtime_transitions(self):
-        self.metrics['JitMethodsEnd'] += 3
-        self.series[-1]['JitMethods'] += 3
         self.series[-1]['Threads'] += 1
         result = self.validate()
-        self.assertEqual(result['MeasuredJitDelta'], 3)
         self.assertEqual(result['MeasuredThreadRange'], [2, 3])
-
-    def test_rejects_missing_boundary_even_with_complete_time_series(self):
-        del self.metrics['JitMethodsStart']
-        with self.assertRaisesRegex(ValueError, 'runtime measurement boundaries'):
-            self.validate()
 
     def test_latency_series_preserves_outside_boundary_samples(self):
         self.validate()

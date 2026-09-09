@@ -13,7 +13,7 @@ from test_stress_warmup import result as warmup_result
 class StressAbaStartupTests(unittest.TestCase):
     def test_diagnostic_deltas_survive_incomplete_startup_assessment(self):
         for fourth in (False, True):
-            for condition in ('quiet', 'missing', 'jit'):
+            for condition in ('quiet', 'missing', 'invalid-cpu'):
                 with self.subTest(fourth=fourth, condition=condition), tempfile.TemporaryDirectory() as directory:
                     root = Path(directory)
                     arguments = ['--baseline-sha', 'a' * 40, '--candidate-sha', 'b' * 40,
@@ -26,8 +26,8 @@ class StressAbaStartupTests(unittest.TestCase):
                         data['throughput'].update(warmup_result()['throughput'])
                         if condition == 'missing' and name == ('B2' if fourth else 'B'):
                             del data['throughput']['warmup']
-                        if condition == 'jit' and name == ('B2' if fourth else 'B'):
-                            data['throughput']['runtimeEnd']['compiledMethods'] += 1
+                        if condition == 'invalid-cpu' and name == ('B2' if fourth else 'B'):
+                            data['throughput']['runtimeEnd']['cpuSeconds'] = -1
                         phase = root / name
                         phase.mkdir()
                         source = phase / 'stress-test-results.json'

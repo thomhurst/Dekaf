@@ -9,6 +9,5 @@
     <Reference Include="Dekaf.Abstractions"><HintPath>$(ProductDirectory)/Dekaf.Abstractions.dll</HintPath></Reference>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
     <Compile Include="Loaded.cs" />
-    <Compile Include="../CompilationLog.cs" />
   </ItemGroup>
 </Project>

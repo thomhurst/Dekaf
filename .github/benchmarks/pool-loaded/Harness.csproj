@@ -12,7 +12,6 @@
     <Compile Include="Program.cs" />
     <Compile Include="IntervalLatency.cs" />
     <Compile Include="BlockHistogram.cs" />
-    <Compile Include="../CompilationLog.cs" />
     <Compile Include="../../../tools/Dekaf.StressTests/Metrics/LatencyTracker.cs" />
   </ItemGroup>
 </Project>

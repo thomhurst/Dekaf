@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Runtime;
 using System.Text.Json;
 
 namespace Dekaf.Benchmarks;
@@ -24,8 +23,7 @@ public static class Probe
 
     public readonly record struct TickCount(long Ticks, long Count);
     public sealed record Snapshot(double Seconds, long Completed, long CpuTicks, long AllocatedBytes,
-        long HeapBytes, long RssBytes, int Gen0, int Gen1, int Gen2, long JitMethods,
-        double JitMilliseconds, int ThreadPoolThreads, long PendingWorkItems);
+        long HeapBytes, long RssBytes, int Gen0, int Gen1, int Gen2, int ThreadPoolThreads, long PendingWorkItems);
     public sealed record Interval(Snapshot Start, Snapshot End, ArraySegment<TickCount> Latencies);
     public sealed record Capture(Snapshot Start, Snapshot End, List<Interval> Intervals)
     {
@@ -58,9 +56,8 @@ public static class Probe
         => (await CapturePhasesAsync(fixture, [seconds]))[0];
 
     // Keep the same warmed call loop across phase boundaries. Returning from the
-    // warmup state machine and entering another invocation can trigger new Tier 1 code.
-    internal static async Task<Capture[]> CapturePhasesAsync(AdminFixture fixture, double[] durations,
-        CompilationLog? compilations = null)
+    // warmup state machine must not change the measured workload.
+    internal static async Task<Capture[]> CapturePhasesAsync(AdminFixture fixture, double[] durations)
     {
         if (durations.Length == 0 || durations.Any(static value => value <= 0 || !double.IsFinite(value)))
             throw new ArgumentOutOfRangeException(nameof(durations));
@@ -73,26 +70,8 @@ public static class Probe
         var seconds = durations[phase];
         var intervals = intervalSets[phase];
         using var process = Process.GetCurrentProcess();
-        if (compilations is not null)
-        {
-            // Age retained observer storage before the continuous workload starts.
-            // Otherwise histogram allocation postpones the first Gen2/ArrayPool
-            // finalizer transition into collection, even with longer warmup.
-            PhaseEvents.Log.Phase("prepare-observer-heap");
-            compilations.Phase("prepare-observer-heap");
-            for (var generationPass = 0; generationPass < 2; generationPass++)
-            {
-                GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, blocking: true, compacting: true);
-                GC.WaitForPendingFinalizers();
-            }
-        }
         var started = Stopwatch.GetTimestamp();
         long completed = 0;
-        if (compilations is not null)
-        {
-            PhaseEvents.Log.Phase("warmup");
-            compilations.Phase("warmup");
-        }
         var first = TakeSnapshot(process, started, completed);
         var previous = first;
         var nextSnapshot = 1d;
@@ -117,11 +96,6 @@ public static class Probe
                     if (++phase == durations.Length) break;
                     seconds = durations[phase];
                     intervals = intervalSets[phase];
-                    if (compilations is not null)
-                    {
-                        PhaseEvents.Log.Phase("measured");
-                        compilations.Phase("measured");
-                    }
                     first = previous = TakeSnapshot(process, started, completed);
                     nextSnapshot = 1;
                 }
@@ -131,7 +105,7 @@ public static class Probe
     }
 
     // Complete both reports only after measured collection stops. Sorting the
-    // large warmup aggregate must not queue new JIT work at measurement start.
+    // large warmup aggregate must not add work at measurement start.
     public static Result Complete(Capture capture)
     {
         var (first, previous, intervals) = capture;
@@ -244,7 +218,6 @@ public static class Probe
         return new(Stopwatch.GetElapsedTime(started).TotalSeconds, completed, process.TotalProcessorTime.Ticks,
             GC.GetTotalAllocatedBytes(true), GC.GetTotalMemory(false), process.WorkingSet64,
             GC.CollectionCount(0), GC.CollectionCount(1), GC.CollectionCount(2),
-            JitInfo.GetCompiledMethodCount(false), JitInfo.GetCompilationTime(false).TotalMilliseconds,
             ThreadPool.ThreadCount, ThreadPool.PendingWorkItemCount);
     }
 

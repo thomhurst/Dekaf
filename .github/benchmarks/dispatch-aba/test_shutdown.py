@@ -5,7 +5,7 @@ import run
 
 class ShutdownValidationTests(unittest.TestCase):
     def sample(self):
-        start = dict(Seconds=0, Completed=0, CpuTicks=0, AllocatedBytes=0, JitMethods=0, JitMs=0)
+        start = dict(Seconds=0, Completed=0, CpuTicks=0, AllocatedBytes=0)
         end = dict(start, Seconds=2, Completed=256, CpuTicks=100, AllocatedBytes=512,
                    Threads=2, PendingWork=0, Gen0=0, Gen1=0, Gen2=0, HeapBytes=1000, RssBytes=2000,
                    StopMeanTicks=10, StopMaxTicks=10, MessageMeanTicks=20, MessageMaxTicks=20)
