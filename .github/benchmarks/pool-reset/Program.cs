@@ -19,13 +19,16 @@ internal static class Program
     internal static bool Baseline;
     public static int Main(string[] args)
     {
+        var cpu = int.Parse(Environment.GetEnvironmentVariable("DEKAF_BENCHMARK_CPU") ?? "2");
+        if (cpu < 0 || cpu >= IntPtr.Size * 8)
+            throw new InvalidOperationException("DEKAF_BENCHMARK_CPU does not fit the process affinity mask.");
         Smoke = args.Contains("--smoke");
         Baseline = args.Contains("--baseline");
         Console.WriteLine(JsonSerializer.Serialize(new[] { typeof(Program).Assembly, typeof(PendingRequestPool).Assembly, typeof(Reservoir.ObjectPool<>).Assembly }
             .Select(a => new { a.FullName, a.Location, Sha256 = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(a.Location))) })));
         using var runtime = new RuntimeLogger(Path.Combine(args[0], "runtime.csv"));
         var config = DefaultConfig.Instance.WithArtifactsPath(args[0]).AddLogger(runtime).AddExporter(JsonExporter.Full)
-            .AddJob(Job.Default.WithToolchain(InProcessEmitToolchain.Instance).WithAffinity(new IntPtr(4))
+            .AddJob(Job.Default.WithToolchain(InProcessEmitToolchain.Instance).WithAffinity(new IntPtr(1L << cpu))
                 .WithWarmupCount(Smoke ? 1 : 30).WithIterationCount(Smoke ? 1 : 25)
                 .WithIterationTime(TimeInterval.FromMilliseconds(1000)).WithOutlierMode(OutlierMode.DontRemove));
         var summary = args.Contains("--recovery")

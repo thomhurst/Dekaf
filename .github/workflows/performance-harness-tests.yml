@@ -1,0 +1,43 @@
+name: Performance harness tests
+on:
+  pull_request:
+    paths:
+      - '.github/benchmarks/**'
+      - '.github/scripts/**'
+      - '.github/workflows/benchmarks.yml'
+      - '.github/workflows/performance-harness-tests.yml'
+      - 'tools/Admin*Evidence/**'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
+        with:
+          global-json-file: global.json
+      - name: Test recorder and comparison drivers
+        run: |
+          dotnet test --project .github/benchmarks/admin-recorder-tests/Recorder.Tests.csproj -c Release
+          for test in test_runner_resources.py test_admin_refresh.py test_benchmark_aba.py test_outbox_cycle_aba.py test_outbox_loaded_aba.py test_pool_loaded_aba.py; do
+            python3 -m unittest discover -s .github/scripts -p "$test"
+          done
+          python3 -m unittest discover -s .github/benchmarks/dispatch-aba -p 'test_*.py'
+          for project in AdminDescriptionEvidence AdminShareOffsetEvidence AdminMemberRemovalEvidence; do
+            python3 -m unittest discover -s "tools/$project" -p test_comparison.py
+          done
+          python3 -m unittest discover -s tools/AdminMutationEvidence -p test_validate_results.py
+      - name: Verify Linux affinity and resource capture
+        run: |
+          python3 .github/scripts/runner_resources.py --output resource-smoke -- python3 .github/scripts/test_runner_resources.py --linux-smoke
+      - name: Retain diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: performance-harness-tests
+          path: |
+            resource-smoke/
+            TestResults/

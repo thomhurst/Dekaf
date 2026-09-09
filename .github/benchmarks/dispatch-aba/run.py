@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 import time
 import zipfile
 
@@ -18,24 +19,13 @@ DURATION = 120
 AFFINITY = {'consumer': '2,3', 'infrastructure': '0,1'}
 
 
-def select_affinity(rows):
-    cores = {}
-    for cpu, core, socket in rows:
-        cores.setdefault((socket, core), []).append(cpu)
-    if len(cores) < 2:
-        raise ValueError('At least two physical cores required for workload isolation')
-    groups = [sorted(cores[key]) for key in sorted(cores)]
-    return {'consumer': ','.join(map(str, groups[-1])),
-            'infrastructure': ','.join(str(cpu) for group in groups[:-1] for cpu in group)}
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'scripts'))
+from runner_resources import configure_affinity as configure_runner, select_affinity
 
 
 def configure_affinity():
-    rows = []
-    for cpu in sorted(os.sched_getaffinity(0)):
-        topology = Path(f'/sys/devices/system/cpu/cpu{cpu}/topology')
-        rows.append((cpu, int((topology / 'core_id').read_text()),
-                     int((topology / 'physical_package_id').read_text())))
-    AFFINITY.update(select_affinity(rows))
+    rows, layout = configure_runner()
+    AFFINITY.update(layout)
     return rows
 
 
@@ -349,7 +339,8 @@ def micro(host, output, label, phase, smoke, cases=None):
     environment = dict(os.environ, DOTNET_TieredCompilation='0')
     for pattern, batch in CASES if cases is None else cases:
         folder = output / f'{phase}-micro-{pattern}-{batch}'
-        args = ['taskset', '-c', '2', 'dotnet', host, pattern, str(batch), folder]
+        cpu = min(map(int, AFFINITY['consumer'].split(',')))
+        args = ['taskset', '-c', str(cpu), 'dotnet', host, pattern, str(batch), folder]
         if smoke:
             args.append('--smoke')
         if label == 'B':

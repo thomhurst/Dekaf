@@ -6,6 +6,9 @@ namespace Dekaf.Benchmarks;
 
 public static class Probe
 {
+    private static readonly IComparer<TickCount> TickComparer =
+        Comparer<TickCount>.Create(static (left, right) => left.Ticks.CompareTo(right.Ticks));
+
     public static void SaveLoadedBinaries(string path)
     {
         var root = Path.GetFullPath(AppContext.BaseDirectory);
@@ -23,7 +26,7 @@ public static class Probe
     public sealed record Snapshot(double Seconds, long Completed, long CpuTicks, long AllocatedBytes,
         long HeapBytes, long RssBytes, int Gen0, int Gen1, int Gen2, long JitMethods,
         double JitMilliseconds, int ThreadPoolThreads, long PendingWorkItems);
-    public sealed record Interval(Snapshot Start, Snapshot End, List<TickCount> Latencies);
+    public sealed record Interval(Snapshot Start, Snapshot End, ArraySegment<TickCount> Latencies);
     public sealed record Capture(Snapshot Start, Snapshot End, List<Interval> Intervals)
     {
         public double Seconds => End.Seconds - Start.Seconds;
@@ -63,16 +66,11 @@ public static class Probe
             throw new ArgumentOutOfRangeException(nameof(durations));
         var captures = new Capture[durations.Length];
         var intervalSets = durations.Select(static seconds => new List<Interval>((int)Math.Ceiling(seconds) + 1)).ToArray();
-        // Retain raw exact-tick histograms without building a growing object graph
-        // during collection. Exceeding capacity invalidates the experiment.
-        const int histogramCapacity = 65536;
-        var histograms = durations.Select(static seconds => Enumerable.Range(0, (int)Math.Ceiling(seconds) + 1)
-            .Select(static _ => new List<TickCount>(histogramCapacity)).ToArray()).ToArray();
+        // Share bounded storage across intervals instead of reserving 1 MiB for every second.
+        var intervalCount = durations.Sum(static seconds => checked((int)Math.Ceiling(seconds) + 1));
+        var histogram = new ExactHistogram((int)Math.Min((long)intervalCount * 65536, 4_194_304));
         var phase = 0;
         var seconds = durations[phase];
-        // Exact tick buckets below one millisecond; sparse overflow preserves every longer tail.
-        var dense = new long[Math.Min(Stopwatch.Frequency / 1000, 1_000_000) + 1];
-        var overflow = new Dictionary<long, long>();
         var intervals = intervalSets[phase];
         using var process = Process.GetCurrentProcess();
         if (compilations is not null)
@@ -104,16 +102,13 @@ public static class Probe
             _ = await fixture.Call();
             var callEnd = Stopwatch.GetTimestamp();
             var ticks = callEnd - callStart;
-            if ((ulong)ticks < (ulong)dense.Length) dense[ticks]++;
-            else { overflow.TryGetValue(ticks, out var count); overflow[ticks] = count + 1; }
+            histogram.Record(ticks);
             completed++;
             var elapsed = Stopwatch.GetElapsedTime(started).TotalSeconds - first.Seconds;
             if (elapsed >= nextSnapshot || elapsed >= seconds)
             {
                 var snapshot = TakeSnapshot(process, started, completed);
-                var histogram = histograms[phase][intervals.Count];
-                DrainHistogram(dense, overflow, histogram);
-                intervals.Add(new(previous, snapshot, histogram));
+                intervals.Add(new(previous, snapshot, histogram.Drain()));
                 previous = snapshot;
                 nextSnapshot = Math.Floor(elapsed) + 1;
                 if (elapsed >= seconds)
@@ -144,7 +139,8 @@ public static class Probe
         var aggregate = new Dictionary<long, long>();
         // Sparse overflow buckets were retained unsorted during collection.
         foreach (var interval in intervals)
-            interval.Latencies.Sort(static (left, right) => left.Ticks.CompareTo(right.Ticks));
+            Array.Sort(interval.Latencies.Array!, interval.Latencies.Offset, interval.Latencies.Count,
+                TickComparer);
         foreach (var interval in intervals)
         foreach (var bucket in interval.Latencies)
         {
@@ -175,23 +171,71 @@ public static class Probe
         throw new InvalidOperationException("Percentile exceeds histogram population.");
     }
 
-    private static void DrainHistogram(long[] dense, Dictionary<long, long> overflow, List<TickCount> result)
+    // Single-writer recorder. Exact ticks and every maximum survive; exhaustion invalidates the capture.
+    internal sealed class ExactHistogram
     {
-        for (var tick = 0; tick < dense.Length; tick++)
+        private const int IntervalCapacity = 65536;
+        private readonly long[] _dense = new long[Math.Min(Stopwatch.Frequency / 1000, 1_000_000) + 1];
+        private readonly int[] _touched = new int[IntervalCapacity];
+        private readonly Dictionary<long, long> _overflow = new(IntervalCapacity);
+        private readonly TickCount[] _archive;
+        private int _touchedCount;
+        private int _used;
+
+        internal ExactHistogram(int capacity)
         {
-            if (dense[tick] == 0) continue;
-            if (result.Count == result.Capacity)
-                throw new InvalidOperationException("Preallocated histogram capacity exceeded.");
-            result.Add(new(tick, dense[tick]));
-            dense[tick] = 0;
+            ArgumentOutOfRangeException.ThrowIfNegativeOrZero(capacity);
+            _archive = new TickCount[capacity];
         }
-        foreach (var pair in overflow)
+
+        internal void Record(long ticks)
         {
-            if (result.Count == result.Capacity)
-                throw new InvalidOperationException("Preallocated histogram capacity exceeded.");
-            result.Add(new(pair.Key, pair.Value));
+            ArgumentOutOfRangeException.ThrowIfNegative(ticks);
+            if (ticks < _dense.Length)
+            {
+                if (_dense[ticks] == 0)
+                {
+                    RequireIntervalSpace();
+                    _touched[_touchedCount++] = (int)ticks;
+                }
+                _dense[ticks]++;
+            }
+            else if (_overflow.TryGetValue(ticks, out var count))
+            {
+                _overflow[ticks] = count + 1;
+            }
+            else
+            {
+                RequireIntervalSpace();
+                _overflow.Add(ticks, 1);
+            }
         }
-        overflow.Clear();
+
+        private void RequireIntervalSpace()
+        {
+            if (_touchedCount + _overflow.Count == IntervalCapacity)
+                throw new InvalidOperationException("Preallocated interval histogram capacity exceeded.");
+        }
+
+        internal ArraySegment<TickCount> Drain()
+        {
+            var count = _touchedCount + _overflow.Count;
+            if (count > _archive.Length - _used)
+                throw new InvalidOperationException("Preallocated histogram archive capacity exceeded.");
+            var result = new ArraySegment<TickCount>(_archive, _used, count);
+            // Visit only observed tick values, not all one million possible values.
+            for (var index = 0; index < _touchedCount; index++)
+            {
+                var tick = _touched[index];
+                _archive[_used++] = new(tick, _dense[tick]);
+                _dense[tick] = 0;
+            }
+            foreach (var pair in _overflow)
+                _archive[_used++] = new(pair.Key, pair.Value);
+            _touchedCount = 0;
+            _overflow.Clear();
+            return result;
+        }
     }
 
     internal static Snapshot TakeSnapshot(Process process, long started, long completed)

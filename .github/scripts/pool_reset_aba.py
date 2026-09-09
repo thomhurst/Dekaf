@@ -1,6 +1,12 @@
 """Task-scoped exact-SHA comparison. Never merge this experimental branch."""
 from pathlib import Path
 import hashlib,json,os,shutil,subprocess,sys
+from runner_resources import configure_affinity
+
+TOPOLOGY, AFFINITY = configure_affinity()
+CLIENT_CPU = min(map(int, AFFINITY['consumer'].split(',')))
+os.environ['DEKAF_BENCHMARK_CPU'] = str(CLIENT_CPU)
+
 ROOT=Path.cwd()
 OUT=ROOT/"evidence"
 A=os.environ['BASELINE_SHA']
@@ -8,12 +14,16 @@ B=os.environ['CANDIDATE_SHA']
 FIXTURE=ROOT/".github/benchmarks/pool-reset"
 RECOVERY=os.environ.get('POOL_RECOVERY') == '1'
 def run(args,log,cwd=ROOT):
+    if args[0] == 'dotnet' and str(args[1]).endswith('.dll'):
+        args = ['taskset', '-c', str(CLIENT_CPU), *args]
     with log.open("w") as output:
         subprocess.run([str(x) for x in args],cwd=cwd,stdout=output,stderr=subprocess.STDOUT,check=True)
 if sys.argv[1]=="prepare":
     OUT.mkdir()
     subprocess.run(["git","merge-base","--is-ancestor",A,B],check=True)
     manifest=dict(A=A,B=B,harness=subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip(),mainAtRun=subprocess.check_output(["git","ls-remote","origin","refs/heads/main"],text=True).strip(),imageVersion=os.getenv("ImageVersion"),imageOS=os.getenv("ImageOS"),runnerName=os.getenv("RUNNER_NAME"),settings={k:os.getenv(k) for k in ["DOTNET_TieredCompilation","DOTNET_TieredPGO","DOTNET_ReadyToRun"]})
+    manifest['affinity'] = AFFINITY
+    manifest['topology'] = TOPOLOGY
     manifest['recovery_probe'] = RECOVERY
     manifest['tiered_compilation'] = os.environ.get('DOTNET_TieredCompilation')
     (OUT/"manifest.json").write_text(json.dumps(manifest,indent=2))

@@ -9,6 +9,8 @@ import shutil
 import subprocess
 import sys
 
+from runner_resources import configure_affinity
+
 ROOT = Path.cwd()
 OUT = ROOT / 'evidence'
 PR = int(os.environ['PR'])
@@ -47,16 +49,22 @@ def execute():
         original = module(SOURCE / 'run_comparison.py', 'original')
         validator = original.validate_probe
         controls, added = original.CONTROLS, original.NEW_CASES
+    calibration = os.getenv('ADMIN_CALIBRATION') == '1'
+    if calibration and A != B:
+        raise ValueError('Calibration requires identical exact product SHAs')
     pilot = os.getenv('ADMIN_PILOT') == '1'
     warmup_seconds = 360 if pilot else 480
     measured_seconds = 60 if pilot else 180
+    if calibration:
+        added = []
     if pilot:
         # Diagnose the observed report/JIT transition before expanding a campaign.
         controls, added = controls[:1], []
     environment = dict(os.environ, DOTNET_TieredCompilation='1', DOTNET_TieredPGO='1', DOTNET_gcServer='0')
-    cpu = max(os.sched_getaffinity(0))
+    topology, affinity = configure_affinity()
+    cpu = max(map(int, affinity['consumer'].split(',')))
     probe_prefix = ['taskset', '-c', str(cpu), 'dotnet']
-    plan = dict(A=A, B=B, harness=subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
+    plan = dict(calibration=calibration, topology=topology, affinity=affinity, A=A, B=B, harness=subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
                 controls=controls, candidate_only=added, warmup_seconds=warmup_seconds, measured_seconds=measured_seconds,
                 warmup_rationale=('480 seconds continuous workload after observer heap preparation; previous 360-second captures '
                                   'retained helper/ConditionalWeakTable JIT near total seconds 382-400. Collect 180 seconds '
@@ -65,7 +73,7 @@ def execute():
                                   '360 seconds continuous workload after observer heap preparation; assess all measured runtime transitions'),
                 observer_preparation='After histogram allocation, two blocking compacting full GCs with finalizer waits before workload warmup; no forced GC during warmup or measurement',
                 pilot=pilot, report_aggregation='all overflow sorting and aggregation deferred until both captures finish',
-                histograms='Value-type buckets with 65536 preallocated entries per interval; overflow invalidates',
+                histograms='Exact ticks, touched buckets only; 65536 distinct ticks/interval, shared archive capped at 4194304 entries (64 MiB); exhaustion invalidates',
                 phase_transition='one continuous warmed call loop; no return/re-entry between warmup and measurement',
                 cpu_affinity=[cpu], jit_attribution='CLR MethodJittingStarted; identical observer in all phases',
                 phase_order='For each control workload, run A1 then B then A2 before starting the next workload',
@@ -79,7 +87,8 @@ def execute():
     run(['lscpu'], OUT / 'hardware.txt')
     run(['git', 'archive', '--format=zip', '--output=' + str(OUT / 'harness.zip'), 'HEAD'], OUT / 'archive-harness.log')
     hosts = {}
-    for label, sha in [('A', A), ('B', B)]:
+    revisions = [('A', A)] if calibration else [('A', A), ('B', B)]
+    for label, sha in revisions:
         product = ROOT / ('product-' + label)
         run(['git', 'worktree', 'add', '--detach', str(product), sha], OUT / f'checkout-{label}.log')
         run(['git', 'archive', '--format=zip', '--output=' + str(OUT / f'product-{label}.zip'), sha], OUT / f'archive-{label}.log')
@@ -96,6 +105,9 @@ def execute():
         shutil.copytree(binary.parent, OUT / 'binaries' / label)
         common.verify_copied_tree(binary.parent, OUT / 'binaries' / label)
     run(['dotnet', 'build-server', 'shutdown'], OUT / 'build-server-shutdown.log')
+    if calibration:
+        hosts['B'] = hosts['A']
+        shutil.copytree(OUT / 'binaries/A', OUT / 'binaries/B')
     for label, binary in hosts.items():
         for case in controls + (added if label == 'B' else []):
             destination = OUT / 'validation' / label / case.replace(':', '-')
@@ -110,7 +122,7 @@ def execute():
         for phase, label in [('A1', 'A'), ('B', 'B'), ('A2', 'A')]:
             destination = OUT / phase / case.replace(':', '-')
             binary = hosts[label]
-            capture = dict(case=case, phase=phase, product=A if label == 'A' else B,
+            capture = dict(case=case, phase=phase, product=A if label == 'A' else B, binary=str(binary),
                            started_utc=datetime.now(timezone.utc).isoformat())
             run(probe_prefix + [str(binary), 'probe', case, str(destination), str(warmup_seconds), str(measured_seconds)], destination / 'run.log', env=environment)
             capture['completed_utc'] = datetime.now(timezone.utc).isoformat()
@@ -119,7 +131,14 @@ def execute():
             validator(destination / 'warmup.json', warmup_seconds)
             observations[phase][case] = validator(destination / 'measured.json', measured_seconds)
             common.retain_loaded_binaries(destination / 'binaries.json', binary.parent, OUT / 'binaries' / label)
-    save(OUT / 'comparison.json', {case: common.compare(*(observations[phase][case] for phase in ['A1', 'B', 'A2'])) for case in controls})
+    comparisons = {case: common.compare(*(observations[phase][case] for phase in ['A1', 'B', 'A2'])) for case in controls}
+    save(OUT / 'comparison.json', comparisons)
+    if calibration:
+        save(OUT / 'calibration.json', {
+            'product_sha': A, 'binary': str(hosts['A']),
+            'point_estimates_within_declared_limits': all(row['point_estimates_within_declared_limits'] for row in comparisons.values()),
+            'verdict': 'DIAGNOSTIC ONLY: identical-product repeatability; never product acceptance',
+            'comparisons': comparisons})
     for case in added:
         destination = OUT / 'candidate-only' / case.replace(':', '-')
         run(probe_prefix + [str(hosts['B']), 'probe', case, str(destination), str(warmup_seconds), str(measured_seconds)], destination / 'run.log', env=environment)
