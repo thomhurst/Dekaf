@@ -3,11 +3,24 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
-from outbox_cycle_aba import MODES, comparison, read_case
+from outbox_cycle_aba import MODES, comparison, read_case, validate_pr_head
 
 
 class OutboxEvidenceTests(unittest.TestCase):
+    def test_validates_requested_pr_without_historical_branch(self):
+        candidate = 'a' * 40
+        with patch('outbox_cycle_aba.output', return_value=f'{candidate}\trefs/pull/4000/head') as remote:
+            validate_pr_head(4000, candidate)
+        remote.assert_called_once_with(['git', 'ls-remote', 'origin', 'refs/pull/4000/head'])
+
+    def test_rejects_missing_or_stale_requested_pr_head(self):
+        for response in ('', f'{"b" * 40}\trefs/pull/4000/head'):
+            with self.subTest(response=response), patch('outbox_cycle_aba.output', return_value=response):
+                with self.assertRaisesRegex(ValueError, 'missing or changed'):
+                    validate_pr_head(4000, 'a' * 40)
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)

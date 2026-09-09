@@ -90,6 +90,14 @@ def comparison(phases):
     return rows
 
 
+def validate_pr_head(pr, candidate):
+    if pr <= 0:
+        raise ValueError('A positive PR number is required')
+    remote = output(['git', 'ls-remote', 'origin', f'refs/pull/{pr}/head']).split()
+    if len(remote) != 2 or remote[0] != candidate:
+        raise ValueError('The requested PR head is missing or changed before this campaign')
+
+
 def execute(args):
     repository = Path.cwd()
     artifacts = Path(args.artifacts).resolve()
@@ -101,15 +109,13 @@ def execute(args):
     remote_main = output(['git', 'ls-remote', 'origin', 'refs/heads/main']).split()[0]
     if remote_main != args.baseline:
         raise ValueError('Main moved before this new campaign; repin/rebase before measuring')
-    remote_head = output(['git', 'ls-remote', 'origin', 'refs/heads/issue-3041-outbox-metrics']).split()[0]
-    if remote_head != args.candidate:
-        raise ValueError('The PR head changed before this campaign')
+    validate_pr_head(args.pr, args.candidate)
     workspace = Path(os.environ['RUNNER_TEMP']) / f'outbox-cycle-{os.environ["GITHUB_RUN_ID"]}'
     workspace.mkdir(exist_ok=False)
     topology, affinity = configure_affinity()
     cpu = min(map(int, affinity['consumer'].split(',')))
     environment = dict(os.environ, DOTNET_TieredCompilation='0', ABA_CPU=str(cpu), MSBUILDDISABLENODEREUSE='1')
-    provenance = {'baseline_sha': args.baseline, 'candidate_sha': args.candidate,
+    provenance = {'pr': args.pr, 'baseline_sha': args.baseline, 'candidate_sha': args.candidate,
                   'harness_sha': output(['git', 'rev-parse', 'HEAD']), 'started_utc': now(),
                   'run_url': f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}",
                   'runner': 'ubuntu-latest', 'image_os': os.environ.get('ImageOS'),
@@ -192,6 +198,7 @@ def execute(args):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
+    parser.add_argument('--pr', type=int, required=True)
     parser.add_argument('--baseline', required=True)
     parser.add_argument('--candidate', required=True)
     parser.add_argument('--artifacts', required=True)

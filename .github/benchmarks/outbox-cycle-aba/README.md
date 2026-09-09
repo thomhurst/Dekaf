@@ -1,6 +1,6 @@
 # Outbox cycle A–B–A diagnostic
 
-This experimental harness is dispatched from the task branch only. It must not replace main's scheduled benchmark or stress coverage. Product and harness SHAs are pinned in each artifact's provenance.
+Dispatch the maintained `performance-comparison.yml` workflow with `suite=outbox` and the requested PR number; see [harness instructions](../README.md). Product and harness SHAs are pinned independently in each artifact's provenance. Existing scheduled benchmark and stress coverage remains unchanged. Historical observations below retain their original scope.
 
 Eight cases cover synchronous/pending publishers, enabled/disabled metrics, and bounded/renewable stores. Each operation runs the actual relay cycle for 500 messages using a deterministic in-memory publisher. The pending publisher starts incomplete and completes after the cycle enters its await. Renewable stores implement `IOutboxLeaseRenewalStore`; their long lease isolates the normal publication path before renewal becomes due. Blocked-renewal correctness and duration accounting have deterministic product tests; this fixture does not substitute for loaded renewal evidence.
 

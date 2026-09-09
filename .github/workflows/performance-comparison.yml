@@ -79,7 +79,7 @@ jobs:
         if: inputs.suite == 'outbox'
         run: |
           python3 -m unittest discover -s .github/scripts -p test_outbox_cycle_aba.py
-          python3 .github/scripts/runner_resources.py --output runner-resources -- python3 .github/scripts/outbox_cycle_aba.py --baseline "$BASELINE_SHA" --candidate "$CANDIDATE_SHA" --artifacts "$GITHUB_WORKSPACE/aba-results"
+          python3 .github/scripts/runner_resources.py --output runner-resources -- python3 .github/scripts/outbox_cycle_aba.py --pr "$PR" --baseline "$BASELINE_SHA" --candidate "$CANDIDATE_SHA" --artifacts "$GITHUB_WORKSPACE/aba-results"
       - name: Loaded outbox comparison
         if: inputs.suite == 'outbox-loaded' || inputs.suite == 'outbox-adjacent'
         env:
