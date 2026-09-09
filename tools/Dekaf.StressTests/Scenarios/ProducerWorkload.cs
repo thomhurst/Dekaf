@@ -11,12 +11,13 @@ internal static class ProducerWorkload
     internal static Task<ProducerWorkloadResult> RunAsync(
         IKafkaProducer<string, string> producer, StressTestOptions options, string client, string scenario,
         ThroughputTracker throughput, LatencyTracker latency, TimeSpan duration,
-        bool awaitDelivery, CancellationToken cancellationToken, TimeSpan? drainTimeout = null) =>
+        bool awaitDelivery, CancellationToken cancellationToken, TimeSpan? drainTimeout = null,
+        TimeProvider? ingressTimeProvider = null) =>
         MeasureAsync(options, throughput, latency, duration, client, scenario,
             (ingress, delivery) => ProduceDekafAsync(producer, options, throughput, latency, awaitDelivery, ingress, delivery),
             (timeout, token) => StressTestHelpers.FlushWithinDeadlineAsync(producer, throughput, timeout, token),
             !awaitDelivery, drainTimeout ?? StressTestHelpers.OperationTimeout, cancellationToken,
-            () => StressTestHelpers.CaptureProducerDeliveryDiagnostics(producer, options));
+            () => StressTestHelpers.CaptureProducerDeliveryDiagnostics(producer, options), ingressTimeProvider);
 
     // Separate overloads keep calls to each client direct inside the loop. Delegates below
     // run once per load phase, never once per message.
@@ -66,11 +67,13 @@ internal static class ProducerWorkload
     internal static Task<ProducerWorkloadResult> RunAsync(
         ConfluentKafka.IProducer<string, string> producer, StressTestOptions options, string client, string scenario,
         ThroughputTracker throughput, LatencyTracker latency, TimeSpan duration,
-        bool awaitDelivery, CancellationToken cancellationToken, TimeSpan? drainTimeout = null) =>
+        bool awaitDelivery, CancellationToken cancellationToken, TimeSpan? drainTimeout = null,
+        TimeProvider? ingressTimeProvider = null) =>
         MeasureAsync(options, throughput, latency, duration, client, scenario,
             (ingress, delivery) => ProduceConfluentAsync(producer, options, throughput, latency, awaitDelivery, ingress, delivery),
             (timeout, _) => { ConfluentStressTestHelpers.FlushWithTimeout(producer, throughput, timeout); return Task.CompletedTask; },
-            !awaitDelivery, drainTimeout ?? StressTestHelpers.OperationTimeout, cancellationToken);
+            !awaitDelivery, drainTimeout ?? StressTestHelpers.OperationTimeout, cancellationToken,
+            ingressTimeProvider: ingressTimeProvider);
 
     private static async Task ProduceConfluentAsync(
         ConfluentKafka.IProducer<string, string> producer, StressTestOptions options,
@@ -121,7 +124,8 @@ internal static class ProducerWorkload
         StressTestOptions options, ThroughputTracker throughput, LatencyTracker latency, TimeSpan duration, string client, string scenario,
         Func<CancellationToken, CancellationToken, Task> produce, Func<TimeSpan, CancellationToken, Task> drain,
         bool flushAfterAdmission, TimeSpan drainTimeout, CancellationToken cancellationToken,
-        Func<ProducerDeliveryDiagnosticsSnapshot?>? captureProducerDiagnostics = null)
+        Func<ProducerDeliveryDiagnosticsSnapshot?>? captureProducerDiagnostics = null,
+        TimeProvider? ingressTimeProvider = null)
     {
         if (throughput.Warmup is not null)
         {
@@ -134,7 +138,9 @@ internal static class ProducerWorkload
         using var delivery = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         using var sampling = new CancellationTokenSource();
         throughput.Start();
-        var stopIngress = StopIngressAsync(ingress, duration);
+        // Tests control only ingress expiry; measurements and delivery deadlines
+        // retain their real clocks. Normal runs use the system monotonic clock.
+        var stopIngress = StopIngressAsync(ingress, duration, ingressTimeProvider ?? TimeProvider.System);
         using var watchdog = options.ProgressWatchdog.Track(throughput, client, scenario, captureProducerDiagnostics);
         var sampler = StressTestHelpers.RunSamplerAsync(throughput, sampling.Token);
         var resources = StressTestHelpers.RunResourceMonitorAsync(sampling.Token);
@@ -200,17 +206,17 @@ internal static class ProducerWorkload
 
     // Timer callbacks can arrive slightly before their nominal duration. Recheck an
     // elapsed monotonic clock instead of counting an early timer as full workload warmup.
-    private static async Task StopIngressAsync(CancellationTokenSource ingress, TimeSpan duration)
+    private static async Task StopIngressAsync(CancellationTokenSource ingress, TimeSpan duration, TimeProvider timeProvider)
     {
-        var started = Stopwatch.GetTimestamp();
+        var started = timeProvider.GetTimestamp();
         try
         {
             while (!ingress.IsCancellationRequested)
             {
-                var remaining = duration - Stopwatch.GetElapsedTime(started);
+                var remaining = duration - timeProvider.GetElapsedTime(started);
                 if (remaining <= TimeSpan.Zero) break;
                 var delay = remaining < TimeSpan.FromMilliseconds(1) ? TimeSpan.FromMilliseconds(1) : remaining;
-                await Task.Delay(delay, ingress.Token).ConfigureAwait(false);
+                await Task.Delay(delay, timeProvider, ingress.Token).ConfigureAwait(false);
             }
             ingress.Cancel();
         }
