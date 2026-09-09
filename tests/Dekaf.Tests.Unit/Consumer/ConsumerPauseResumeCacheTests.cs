@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using System.Text;
 using Dekaf.Consumer;
 using Dekaf.Metadata;
@@ -498,6 +499,64 @@ public sealed class ConsumerPauseResumeCacheTests
         await Assert.That(resumed!.Value.Topic).IsEqualTo(pausedPartition.Topic);
         await Assert.That(resumed.Value.Partition).IsEqualTo(pausedPartition.Partition);
         await Assert.That(resumed.Value.Offset).IsEqualTo(10);
+    }
+
+    [Test]
+    [Arguments(false, false)]
+    [Arguments(true, false)]
+    [Arguments(false, true)]
+    public async Task DirectPausedDelay_ResumeCompletesAndCancellationPropagates(
+        bool callerCancellation,
+        bool internalCancellation)
+    {
+        var partition = new TopicPartition(PrefetchedTopic, 0);
+        await using var consumer = CreatePrefetchedConsumer(CreatePendingFetch(partition, 10, 1));
+        consumer.Pause(partition);
+        using var consumeSource = new CancellationTokenSource();
+        using var callerSource = new CancellationTokenSource();
+        var version = (int)GetField("_pausedSnapshotVersion").GetValue(consumer)!;
+        var delay = typeof(KafkaConsumer<string, string>)
+            .GetMethod("DelayPausedDirectFetchAsync", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .CreateDelegate<Func<int, CancellationTokenSource, CancellationToken, ValueTask>>(consumer);
+        var exceptionCount = new StrongBox<int>();
+        var observedOperation = new AsyncLocal<StrongBox<int>?>();
+        void ObserveException(object? sender, System.Runtime.ExceptionServices.FirstChanceExceptionEventArgs args)
+        {
+            if (args.Exception is OperationCanceledException && observedOperation.Value is { } count)
+                Interlocked.Increment(ref count.Value);
+        }
+
+        AppDomain.CurrentDomain.FirstChanceException += ObserveException;
+        try
+        {
+            observedOperation.Value = exceptionCount;
+            var wait = delay(version, consumeSource, callerSource.Token);
+            await Assert.That(wait.IsCompleted).IsFalse();
+            if (callerCancellation)
+                callerSource.Cancel();
+            if (internalCancellation)
+                consumeSource.Cancel();
+            else
+                consumer.Resume(partition);
+
+            if (callerCancellation || internalCancellation)
+                await Assert.That(async () => await wait).Throws<OperationCanceledException>();
+            else
+            {
+                await wait;
+#if NET10_0_OR_GREATER
+                // net8 tests exercise the netstandard asset, whose compatibility
+                // await still catches cancellation internally.
+                await Assert.That(exceptionCount.Value).IsEqualTo(0);
+#endif
+            }
+        }
+        finally
+        {
+            observedOperation.Value = null;
+            AppDomain.CurrentDomain.FirstChanceException -= ObserveException;
+            GetField("_pausedDirectFetchCancellationSource").SetValue(consumer, null);
+        }
     }
 
     [Test]

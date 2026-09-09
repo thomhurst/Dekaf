@@ -1,0 +1,137 @@
+[
+  {
+    "path": "3117-pause-after-unit.log",
+    "bytes": 525,
+    "sha256": "2a9bb50b664828d083ab8efc4ec8b720d29d508f0a82e9ff7a624ad8449945ef"
+  },
+  {
+    "path": "3117-pause-before.log",
+    "bytes": 1863,
+    "sha256": "f63d13ae96772b3e0325589559af2b84aba65c5c727d5d14bed2eaab6e5db5d9"
+  },
+  {
+    "path": "3117-pause-integration.log",
+    "bytes": 558,
+    "sha256": "94c86629592a1330f1429fea658fdeada272d3de95ca1df2a90a613a5652fbcf"
+  },
+  {
+    "path": "3117-pause-net10-final-unit.log",
+    "bytes": 525,
+    "sha256": "3a539e3f879a8fe021da6fcd74baa5a827f5c2546066fa24c8b7525f2b44f0e6"
+  },
+  {
+    "path": "3117-pause-net8-final-unit.log",
+    "bytes": 410,
+    "sha256": "27e22379852a675ed923cfc1ddfe411cefb7b3432c6ef1baea1c706f2ab5a70b"
+  },
+  {
+    "path": "3117-pause-net8-unit.log",
+    "bytes": 1379,
+    "sha256": "13bab2fd48d116b505b76c0bbb7e62987ef9e5016c90b783e6e16e91d35a3daf"
+  },
+  {
+    "path": "candidate.patch",
+    "bytes": 4894,
+    "sha256": "551c0e2198b6b2f26e8020c353560ff66a28d54cf5b40029de0ac0b29e771cbf"
+  },
+  {
+    "path": "after/Dekaf.Benchmarks.csproj.txt",
+    "bytes": 523,
+    "sha256": "41e3284173f05881bd07022f962429923da8f1953f4dd4b2e32e7660bd0c7074"
+  },
+  {
+    "path": "after/Directory.Packages.props.txt",
+    "bytes": 6087,
+    "sha256": "0621ecffb5a68e6fd8f8034b5f5938c01a8d73f3f2a8325bdc22e2ae2935be2b"
+  },
+  {
+    "path": "after/global.json",
+    "bytes": 179,
+    "sha256": "7e4c820f5d664523cbd36a384cbf90787d7911679098fde25bc5d7117c153db1"
+  },
+  {
+    "path": "after/PausedFetchWakeBench-report-full.json",
+    "bytes": 18802,
+    "sha256": "7db5cdeb151f060ed4a2601faa63195451b56a660e49f09d6af8969204ff011d"
+  },
+  {
+    "path": "after/PausedFetchWakeBench-report-github.md",
+    "bytes": 622,
+    "sha256": "0f72787e1bf4327be4f08c12389bb335cf2937cecf9680c17207c735a1bd5339"
+  },
+  {
+    "path": "after/PausedFetchWakeBench-report.csv",
+    "bytes": 1060,
+    "sha256": "7d313d9ec312819c2988195f7d98ee3c0aaa0eb97d1a7aba69894500a97bfb2b"
+  },
+  {
+    "path": "after/PausedFetchWakeBench-report.html",
+    "bytes": 1157,
+    "sha256": "45cf0ff00b98404b2c2a28c7e83a82066574bd76c4c340cf842e7db46c92033b"
+  },
+  {
+    "path": "after/PausedFetchWakeBench.cs.txt",
+    "bytes": 2439,
+    "sha256": "e72d5713037a8ee58b29ead76b7ab6824dfebebbbdc873b3bfc35d842f98f258"
+  },
+  {
+    "path": "after/Program.cs.txt",
+    "bytes": 771,
+    "sha256": "5ed5de2ecd6e804ea5d036d4b870df3e1f62682b8a298db09ae91327647007aa"
+  },
+  {
+    "path": "after/run.log",
+    "bytes": 7747,
+    "sha256": "3ba5bd7dc45c135b9a19da54329fb47f49a999af31200363421cf935c48ec0dd"
+  },
+  {
+    "path": "before/Dekaf.Benchmarks.csproj.txt",
+    "bytes": 523,
+    "sha256": "41e3284173f05881bd07022f962429923da8f1953f4dd4b2e32e7660bd0c7074"
+  },
+  {
+    "path": "before/Directory.Packages.props.txt",
+    "bytes": 6087,
+    "sha256": "0621ecffb5a68e6fd8f8034b5f5938c01a8d73f3f2a8325bdc22e2ae2935be2b"
+  },
+  {
+    "path": "before/global.json",
+    "bytes": 179,
+    "sha256": "7e4c820f5d664523cbd36a384cbf90787d7911679098fde25bc5d7117c153db1"
+  },
+  {
+    "path": "before/PausedFetchWakeBench-report-full.json",
+    "bytes": 19653,
+    "sha256": "e3cda3ed786ecf0d3f8174e87d3d43741b977ddd5263921588f09ed43295edd1"
+  },
+  {
+    "path": "before/PausedFetchWakeBench-report-github.md",
+    "bytes": 631,
+    "sha256": "b78cd8349732377a6831d8da3c4bee8fc0cab1007854e63c97cb1ded8eb2e860"
+  },
+  {
+    "path": "before/PausedFetchWakeBench-report.csv",
+    "bytes": 1067,
+    "sha256": "76101d77917de7dc265d9fd5ed198731303d027a30898cd0db8b203bd7950741"
+  },
+  {
+    "path": "before/PausedFetchWakeBench-report.html",
+    "bytes": 1170,
+    "sha256": "515ee74cadd44a088ab65d79ea4d325f8f2c331f4afceb65566a406871d6f44c"
+  },
+  {
+    "path": "before/PausedFetchWakeBench.cs.txt",
+    "bytes": 2439,
+    "sha256": "e72d5713037a8ee58b29ead76b7ab6824dfebebbbdc873b3bfc35d842f98f258"
+  },
+  {
+    "path": "before/Program.cs.txt",
+    "bytes": 771,
+    "sha256": "5ed5de2ecd6e804ea5d036d4b870df3e1f62682b8a298db09ae91327647007aa"
+  },
+  {
+    "path": "before/run.log",
+    "bytes": 7737,
+    "sha256": "294f1fe3a4dfd09b34d1d7f0be15c3db51c7f22ce7f99b90b727ba4aea09de96"
+  }
+]

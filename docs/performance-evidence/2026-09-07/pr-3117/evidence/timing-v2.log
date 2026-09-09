@@ -1,0 +1,2151 @@
+// Validating benchmarks:
+// ***** BenchmarkRunner: Start   *****
+// ***** Found 24 benchmark(s) in total *****
+// ***** Building 4 exe(s) in Parallel: Start   *****
+// ***** Done, took 00:00:03 (3.19 sec)   *****
+// Found 24 benchmarks:
+//   PartitionedLifetimeBenchmarks.ProcessLifetime: A_Predecessor(Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=A_Predecessor, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/predecessor,/p:UseSharedCompilation=false, IterationCount=15, IterationTime=250ms, WarmupCount=5) [Mode=KeyRecordsDistinct]
+//   PartitionedLifetimeBenchmarks.ProcessLifetime: B_Published(Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=B_Published, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/published,/p:UseSharedCompilation=false, IterationCount=15, IterationTime=250ms, WarmupCount=5) [Mode=KeyRecordsDistinct]
+//   PartitionedLifetimeBenchmarks.ProcessLifetime: C_SingleProbe(Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=C_SingleProbe, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/candidate,/p:UseSharedCompilation=false, IterationCount=15, IterationTime=250ms, WarmupCount=5) [Mode=KeyRecordsDistinct]
+//   PartitionedLifetimeBenchmarks.ProcessLifetime: D_ClearOnce(Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=D_ClearOnce, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/candidate-v2,/p:UseSharedCompilation=false, IterationCount=15, IterationTime=250ms, WarmupCount=5) [Mode=KeyRecordsDistinct]
+//   PartitionedLifetimeBenchmarks.ProcessLifetime: E_PublishedControl(Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=E_PublishedControl, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/published,/p:UseSharedCompilation=false, IterationCount=15, IterationTime=250ms, WarmupCount=5) [Mode=KeyRecordsDistinct]
+//   PartitionedLifetimeBenchmarks.ProcessLifetime: F_PredecessorControl(Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=F_PredecessorControl, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/predecessor,/p:UseSharedCompilation=false, IterationCount=15, IterationTime=250ms, WarmupCount=5) [Mode=KeyRecordsDistinct]
+//   PartitionedLifetimeBenchmarks.ProcessLifetime: A_Predecessor(Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=A_Predecessor, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/predecessor,/p:UseSharedCompilation=false, IterationCount=15, IterationTime=250ms, WarmupCount=5) [Mode=KeyBatchesDistinct]
+//   PartitionedLifetimeBenchmarks.ProcessLifetime: B_Published(Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=B_Published, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/published,/p:UseSharedCompilation=false, IterationCount=15, IterationTime=250ms, WarmupCount=5) [Mode=KeyBatchesDistinct]
+//   PartitionedLifetimeBenchmarks.ProcessLifetime: C_SingleProbe(Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=C_SingleProbe, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/candidate,/p:UseSharedCompilation=false, IterationCount=15, IterationTime=250ms, WarmupCount=5) [Mode=KeyBatchesDistinct]
+//   PartitionedLifetimeBenchmarks.ProcessLifetime: D_ClearOnce(Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=D_ClearOnce, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/candidate-v2,/p:UseSharedCompilation=false, IterationCount=15, IterationTime=250ms, WarmupCount=5) [Mode=KeyBatchesDistinct]
+//   PartitionedLifetimeBenchmarks.ProcessLifetime: E_PublishedControl(Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=E_PublishedControl, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/published,/p:UseSharedCompilation=false, IterationCount=15, IterationTime=250ms, WarmupCount=5) [Mode=KeyBatchesDistinct]
+//   PartitionedLifetimeBenchmarks.ProcessLifetime: F_PredecessorControl(Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=F_PredecessorControl, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/predecessor,/p:UseSharedCompilation=false, IterationCount=15, IterationTime=250ms, WarmupCount=5) [Mode=KeyBatchesDistinct]
+//   PartitionedLifetimeBenchmarks.ProcessLifetime: A_Predecessor(Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=A_Predecessor, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/predecessor,/p:UseSharedCompilation=false, IterationCount=15, IterationTime=250ms, WarmupCount=5) [Mode=KeyRecordsPaired]
+//   PartitionedLifetimeBenchmarks.ProcessLifetime: B_Published(Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=B_Published, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/published,/p:UseSharedCompilation=false, IterationCount=15, IterationTime=250ms, WarmupCount=5) [Mode=KeyRecordsPaired]
+//   PartitionedLifetimeBenchmarks.ProcessLifetime: C_SingleProbe(Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=C_SingleProbe, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/candidate,/p:UseSharedCompilation=false, IterationCount=15, IterationTime=250ms, WarmupCount=5) [Mode=KeyRecordsPaired]
+//   PartitionedLifetimeBenchmarks.ProcessLifetime: D_ClearOnce(Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=D_ClearOnce, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/candidate-v2,/p:UseSharedCompilation=false, IterationCount=15, IterationTime=250ms, WarmupCount=5) [Mode=KeyRecordsPaired]
+//   PartitionedLifetimeBenchmarks.ProcessLifetime: E_PublishedControl(Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=E_PublishedControl, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/published,/p:UseSharedCompilation=false, IterationCount=15, IterationTime=250ms, WarmupCount=5) [Mode=KeyRecordsPaired]
+//   PartitionedLifetimeBenchmarks.ProcessLifetime: F_PredecessorControl(Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=F_PredecessorControl, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/predecessor,/p:UseSharedCompilation=false, IterationCount=15, IterationTime=250ms, WarmupCount=5) [Mode=KeyRecordsPaired]
+//   PartitionedLifetimeBenchmarks.ProcessLifetime: A_Predecessor(Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=A_Predecessor, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/predecessor,/p:UseSharedCompilation=false, IterationCount=15, IterationTime=250ms, WarmupCount=5) [Mode=KeyBatchesPaired]
+//   PartitionedLifetimeBenchmarks.ProcessLifetime: B_Published(Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=B_Published, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/published,/p:UseSharedCompilation=false, IterationCount=15, IterationTime=250ms, WarmupCount=5) [Mode=KeyBatchesPaired]
+//   PartitionedLifetimeBenchmarks.ProcessLifetime: C_SingleProbe(Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=C_SingleProbe, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/candidate,/p:UseSharedCompilation=false, IterationCount=15, IterationTime=250ms, WarmupCount=5) [Mode=KeyBatchesPaired]
+//   PartitionedLifetimeBenchmarks.ProcessLifetime: D_ClearOnce(Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=D_ClearOnce, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/candidate-v2,/p:UseSharedCompilation=false, IterationCount=15, IterationTime=250ms, WarmupCount=5) [Mode=KeyBatchesPaired]
+//   PartitionedLifetimeBenchmarks.ProcessLifetime: E_PublishedControl(Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=E_PublishedControl, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/published,/p:UseSharedCompilation=false, IterationCount=15, IterationTime=250ms, WarmupCount=5) [Mode=KeyBatchesPaired]
+//   PartitionedLifetimeBenchmarks.ProcessLifetime: F_PredecessorControl(Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=F_PredecessorControl, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/predecessor,/p:UseSharedCompilation=false, IterationCount=15, IterationTime=250ms, WarmupCount=5) [Mode=KeyBatchesPaired]
+
+Setup power plan (GUID: 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c FriendlyName: High performance)
+// **************************
+// Benchmark: PartitionedLifetimeBenchmarks.ProcessLifetime: A_Predecessor(Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=A_Predecessor, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/predecessor,/p:UseSharedCompilation=false, IterationCount=15, IterationTime=250ms, WarmupCount=5) [Mode=KeyRecordsDistinct]
+// *** Execute ***
+// Launch: 1 / 1
+// Execute: dotnet Dekaf.Benchmarks-A_Predecessor-1.dll --anonymousPipes 1516 1668 --benchmarkName "Dekaf.Benchmarks.PartitionedLifetimeBenchmarks.ProcessLifetime(Mode: KeyRecordsDistinct)" --job A_Predecessor --benchmarkId 0 in C:\git\Dekaf-perf-improvements-20260907\pr-3117\comparison-v2\bin\Release\net10.0\Dekaf.Benchmarks-A_Predecessor-1\bin\Release\net10.0
+// BeforeAnythingElse
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.15.8
+// Runtime=.NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2+BMI1+BMI2+F16C+FMA+LZCNT+MOVBE,AVX,SSE3+SSSE3+SSE4.1+SSE4.2+POPCNT,X86Base+SSE+SSE2,AES+PCLMUL,AvxVnni,SERIALIZE VectorSize=256
+// Job: A_Predecessor(Affinity=100, IterationCount=15, IterationTime=250ms, WarmupCount=5)
+
+OverheadJitting  1: 262144 op, 170300.00 ns, 0.6496 ns/op
+WorkloadJitting  1: 262144 op, 46571300.00 ns, 177.6554 ns/op
+
+WorkloadPilot    1: 1048576 op, 170966000.00 ns, 163.0459 ns/op
+WorkloadPilot    2: 1572864 op, 257258600.00 ns, 163.5606 ns/op
+
+WorkloadWarmup   1: 1572864 op, 262146600.00 ns, 166.6683 ns/op
+WorkloadWarmup   2: 1572864 op, 254984900.00 ns, 162.1150 ns/op
+WorkloadWarmup   3: 1572864 op, 253026900.00 ns, 160.8702 ns/op
+WorkloadWarmup   4: 1572864 op, 258909800.00 ns, 164.6104 ns/op
+WorkloadWarmup   5: 1572864 op, 287826800.00 ns, 182.9954 ns/op
+
+// BeforeActualRun
+WorkloadActual   1: 1572864 op, 255635500.00 ns, 162.5287 ns/op
+WorkloadActual   2: 1572864 op, 255319500.00 ns, 162.3278 ns/op
+WorkloadActual   3: 1572864 op, 260038600.00 ns, 165.3281 ns/op
+WorkloadActual   4: 1572864 op, 258126900.00 ns, 164.1127 ns/op
+WorkloadActual   5: 1572864 op, 263709500.00 ns, 167.6620 ns/op
+WorkloadActual   6: 1572864 op, 300382500.00 ns, 190.9781 ns/op
+WorkloadActual   7: 1572864 op, 269106700.00 ns, 171.0934 ns/op
+WorkloadActual   8: 1572864 op, 260780300.00 ns, 165.7996 ns/op
+WorkloadActual   9: 1572864 op, 258798200.00 ns, 164.5395 ns/op
+WorkloadActual  10: 1572864 op, 257443000.00 ns, 163.6779 ns/op
+WorkloadActual  11: 1572864 op, 264438200.00 ns, 168.1253 ns/op
+WorkloadActual  12: 1572864 op, 259215700.00 ns, 164.8049 ns/op
+WorkloadActual  13: 1572864 op, 264630100.00 ns, 168.2473 ns/op
+WorkloadActual  14: 1572864 op, 255684900.00 ns, 162.5601 ns/op
+WorkloadActual  15: 1572864 op, 254825800.00 ns, 162.0139 ns/op
+
+// AfterActualRun
+WorkloadResult   1: 1572864 op, 255635500.00 ns, 162.5287 ns/op
+WorkloadResult   2: 1572864 op, 255319500.00 ns, 162.3278 ns/op
+WorkloadResult   3: 1572864 op, 260038600.00 ns, 165.3281 ns/op
+WorkloadResult   4: 1572864 op, 258126900.00 ns, 164.1127 ns/op
+WorkloadResult   5: 1572864 op, 263709500.00 ns, 167.6620 ns/op
+WorkloadResult   6: 1572864 op, 269106700.00 ns, 171.0934 ns/op
+WorkloadResult   7: 1572864 op, 260780300.00 ns, 165.7996 ns/op
+WorkloadResult   8: 1572864 op, 258798200.00 ns, 164.5395 ns/op
+WorkloadResult   9: 1572864 op, 257443000.00 ns, 163.6779 ns/op
+WorkloadResult  10: 1572864 op, 264438200.00 ns, 168.1253 ns/op
+WorkloadResult  11: 1572864 op, 259215700.00 ns, 164.8049 ns/op
+WorkloadResult  12: 1572864 op, 264630100.00 ns, 168.2473 ns/op
+WorkloadResult  13: 1572864 op, 255684900.00 ns, 162.5601 ns/op
+WorkloadResult  14: 1572864 op, 254825800.00 ns, 162.0139 ns/op
+// GC:  0 0 0 281856 1572864
+// Threading:  0 0 1572864
+
+STEADY_ALLOCATION mode=KeyRecordsDistinct records=261888 bytes=0
+// AfterAll
+// Benchmark Process 110504 has exited with code 0.
+
+Mean = 165.202 ns, StdErr = 0.725 ns (0.44%), N = 14, StdDev = 2.712 ns
+Min = 162.014 ns, Q1 = 162.840 ns, Median = 164.672 ns, Q3 = 167.196 ns, Max = 171.093 ns
+IQR = 4.357 ns, LowerFence = 156.304 ns, UpperFence = 173.732 ns
+ConfidenceInterval = [162.142 ns; 168.261 ns] (CI 99.9%), Margin = 3.059 ns (1.85% of Mean)
+Skewness = 0.62, Kurtosis = 2.22, MValue = 2
+
+// ** Remained 23 (95.8%) benchmark(s) to run. Estimated finish 2026-09-07 16:12 (0h 2m from now) **
+Setup power plan (GUID: 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c FriendlyName: High performance)
+// **************************
+// Benchmark: PartitionedLifetimeBenchmarks.ProcessLifetime: B_Published(Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=B_Published, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/published,/p:UseSharedCompilation=false, IterationCount=15, IterationTime=250ms, WarmupCount=5) [Mode=KeyRecordsDistinct]
+// *** Execute ***
+// Launch: 1 / 1
+// Execute: dotnet Dekaf.Benchmarks-B_Published-2.dll --anonymousPipes 1456 1484 --benchmarkName "Dekaf.Benchmarks.PartitionedLifetimeBenchmarks.ProcessLifetime(Mode: KeyRecordsDistinct)" --job B_Published --benchmarkId 0 in C:\git\Dekaf-perf-improvements-20260907\pr-3117\comparison-v2\bin\Release\net10.0\Dekaf.Benchmarks-B_Published-2\bin\Release\net10.0
+// BeforeAnythingElse
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.15.8
+// Runtime=.NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2+BMI1+BMI2+F16C+FMA+LZCNT+MOVBE,AVX,SSE3+SSSE3+SSE4.1+SSE4.2+POPCNT,X86Base+SSE+SSE2,AES+PCLMUL,AvxVnni,SERIALIZE VectorSize=256
+// Job: B_Published(Affinity=100, IterationCount=15, IterationTime=250ms, WarmupCount=5)
+
+OverheadJitting  1: 262144 op, 171800.00 ns, 0.6554 ns/op
+WorkloadJitting  1: 262144 op, 40547000.00 ns, 154.6745 ns/op
+
+WorkloadPilot    1: 1048576 op, 157031900.00 ns, 149.7573 ns/op
+WorkloadPilot    2: 1572864 op, 236703700.00 ns, 150.4922 ns/op
+
+WorkloadWarmup   1: 1572864 op, 240359800.00 ns, 152.8166 ns/op
+WorkloadWarmup   2: 1572864 op, 235986900.00 ns, 150.0364 ns/op
+WorkloadWarmup   3: 1572864 op, 240588400.00 ns, 152.9620 ns/op
+WorkloadWarmup   4: 1572864 op, 240176900.00 ns, 152.7004 ns/op
+WorkloadWarmup   5: 1572864 op, 236890700.00 ns, 150.6111 ns/op
+
+// BeforeActualRun
+WorkloadActual   1: 1572864 op, 236055600.00 ns, 150.0801 ns/op
+WorkloadActual   2: 1572864 op, 236624800.00 ns, 150.4420 ns/op
+WorkloadActual   3: 1572864 op, 237349500.00 ns, 150.9027 ns/op
+WorkloadActual   4: 1572864 op, 236467100.00 ns, 150.3417 ns/op
+WorkloadActual   5: 1572864 op, 239264200.00 ns, 152.1201 ns/op
+WorkloadActual   6: 1572864 op, 276690600.00 ns, 175.9151 ns/op
+WorkloadActual   7: 1572864 op, 242374300.00 ns, 154.0974 ns/op
+WorkloadActual   8: 1572864 op, 251130300.00 ns, 159.6643 ns/op
+WorkloadActual   9: 1572864 op, 243874900.00 ns, 155.0515 ns/op
+WorkloadActual  10: 1572864 op, 248550100.00 ns, 158.0239 ns/op
+WorkloadActual  11: 1572864 op, 242144800.00 ns, 153.9515 ns/op
+WorkloadActual  12: 1572864 op, 243727600.00 ns, 154.9578 ns/op
+WorkloadActual  13: 1572864 op, 245328800.00 ns, 155.9759 ns/op
+WorkloadActual  14: 1572864 op, 246314000.00 ns, 156.6022 ns/op
+WorkloadActual  15: 1572864 op, 274855600.00 ns, 174.7485 ns/op
+
+// AfterActualRun
+WorkloadResult   1: 1572864 op, 236055600.00 ns, 150.0801 ns/op
+WorkloadResult   2: 1572864 op, 236624800.00 ns, 150.4420 ns/op
+WorkloadResult   3: 1572864 op, 237349500.00 ns, 150.9027 ns/op
+WorkloadResult   4: 1572864 op, 236467100.00 ns, 150.3417 ns/op
+WorkloadResult   5: 1572864 op, 239264200.00 ns, 152.1201 ns/op
+WorkloadResult   6: 1572864 op, 242374300.00 ns, 154.0974 ns/op
+WorkloadResult   7: 1572864 op, 251130300.00 ns, 159.6643 ns/op
+WorkloadResult   8: 1572864 op, 243874900.00 ns, 155.0515 ns/op
+WorkloadResult   9: 1572864 op, 248550100.00 ns, 158.0239 ns/op
+WorkloadResult  10: 1572864 op, 242144800.00 ns, 153.9515 ns/op
+WorkloadResult  11: 1572864 op, 243727600.00 ns, 154.9578 ns/op
+WorkloadResult  12: 1572864 op, 245328800.00 ns, 155.9759 ns/op
+WorkloadResult  13: 1572864 op, 246314000.00 ns, 156.6022 ns/op
+// GC:  0 0 0 281856 1572864
+// Threading:  0 0 1572864
+
+STEADY_ALLOCATION mode=KeyRecordsDistinct records=261888 bytes=0
+// AfterAll
+// Benchmark Process 88768 has exited with code 0.
+
+Mean = 154.016 ns, StdErr = 0.861 ns (0.56%), N = 13, StdDev = 3.103 ns
+Min = 150.080 ns, Q1 = 150.903 ns, Median = 154.097 ns, Q3 = 155.976 ns, Max = 159.664 ns
+IQR = 5.073 ns, LowerFence = 143.293 ns, UpperFence = 163.586 ns
+ConfidenceInterval = [150.301 ns; 157.732 ns] (CI 99.9%), Margin = 3.716 ns (2.41% of Mean)
+Skewness = 0.2, Kurtosis = 1.68, MValue = 2
+
+// ** Remained 22 (91.7%) benchmark(s) to run. Estimated finish 2026-09-07 16:12 (0h 2m from now) **
+Setup power plan (GUID: 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c FriendlyName: High performance)
+// **************************
+// Benchmark: PartitionedLifetimeBenchmarks.ProcessLifetime: C_SingleProbe(Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=C_SingleProbe, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/candidate,/p:UseSharedCompilation=false, IterationCount=15, IterationTime=250ms, WarmupCount=5) [Mode=KeyRecordsDistinct]
+// *** Execute ***
+// Launch: 1 / 1
+// Execute: dotnet Dekaf.Benchmarks-C_SingleProbe-3.dll --anonymousPipes 1548 1536 --benchmarkName "Dekaf.Benchmarks.PartitionedLifetimeBenchmarks.ProcessLifetime(Mode: KeyRecordsDistinct)" --job C_SingleProbe --benchmarkId 0 in C:\git\Dekaf-perf-improvements-20260907\pr-3117\comparison-v2\bin\Release\net10.0\Dekaf.Benchmarks-C_SingleProbe-3\bin\Release\net10.0
+// BeforeAnythingElse
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.15.8
+// Runtime=.NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2+BMI1+BMI2+F16C+FMA+LZCNT+MOVBE,AVX,SSE3+SSSE3+SSE4.1+SSE4.2+POPCNT,X86Base+SSE+SSE2,AES+PCLMUL,AvxVnni,SERIALIZE VectorSize=256
+// Job: C_SingleProbe(Affinity=100, IterationCount=15, IterationTime=250ms, WarmupCount=5)
+
+OverheadJitting  1: 262144 op, 173800.00 ns, 0.6630 ns/op
+WorkloadJitting  1: 262144 op, 41710300.00 ns, 159.1122 ns/op
+
+WorkloadPilot    1: 1048576 op, 160861200.00 ns, 153.4092 ns/op
+WorkloadPilot    2: 1572864 op, 237849900.00 ns, 151.2209 ns/op
+
+WorkloadWarmup   1: 1572864 op, 251362100.00 ns, 159.8117 ns/op
+WorkloadWarmup   2: 1572864 op, 266023000.00 ns, 169.1329 ns/op
+WorkloadWarmup   3: 1572864 op, 248601300.00 ns, 158.0564 ns/op
+WorkloadWarmup   4: 1572864 op, 240866100.00 ns, 153.1385 ns/op
+WorkloadWarmup   5: 1572864 op, 237306500.00 ns, 150.8754 ns/op
+
+// BeforeActualRun
+WorkloadActual   1: 1572864 op, 237056800.00 ns, 150.7167 ns/op
+WorkloadActual   2: 1572864 op, 242538300.00 ns, 154.2017 ns/op
+WorkloadActual   3: 1572864 op, 240143300.00 ns, 152.6790 ns/op
+WorkloadActual   4: 1572864 op, 247008200.00 ns, 157.0436 ns/op
+WorkloadActual   5: 1572864 op, 248100800.00 ns, 157.7382 ns/op
+WorkloadActual   6: 1572864 op, 236291100.00 ns, 150.2298 ns/op
+WorkloadActual   7: 1572864 op, 241698700.00 ns, 153.6679 ns/op
+WorkloadActual   8: 1572864 op, 239182300.00 ns, 152.0680 ns/op
+WorkloadActual   9: 1572864 op, 239458400.00 ns, 152.2436 ns/op
+WorkloadActual  10: 1572864 op, 235968600.00 ns, 150.0248 ns/op
+WorkloadActual  11: 1572864 op, 242618700.00 ns, 154.2528 ns/op
+WorkloadActual  12: 1572864 op, 237799400.00 ns, 151.1888 ns/op
+WorkloadActual  13: 1572864 op, 238109700.00 ns, 151.3861 ns/op
+WorkloadActual  14: 1572864 op, 240886400.00 ns, 153.1514 ns/op
+WorkloadActual  15: 1572864 op, 237024600.00 ns, 150.6962 ns/op
+
+// AfterActualRun
+WorkloadResult   1: 1572864 op, 237056800.00 ns, 150.7167 ns/op
+WorkloadResult   2: 1572864 op, 242538300.00 ns, 154.2017 ns/op
+WorkloadResult   3: 1572864 op, 240143300.00 ns, 152.6790 ns/op
+WorkloadResult   4: 1572864 op, 247008200.00 ns, 157.0436 ns/op
+WorkloadResult   5: 1572864 op, 248100800.00 ns, 157.7382 ns/op
+WorkloadResult   6: 1572864 op, 236291100.00 ns, 150.2298 ns/op
+WorkloadResult   7: 1572864 op, 241698700.00 ns, 153.6679 ns/op
+WorkloadResult   8: 1572864 op, 239182300.00 ns, 152.0680 ns/op
+WorkloadResult   9: 1572864 op, 239458400.00 ns, 152.2436 ns/op
+WorkloadResult  10: 1572864 op, 235968600.00 ns, 150.0248 ns/op
+WorkloadResult  11: 1572864 op, 242618700.00 ns, 154.2528 ns/op
+WorkloadResult  12: 1572864 op, 237799400.00 ns, 151.1888 ns/op
+WorkloadResult  13: 1572864 op, 238109700.00 ns, 151.3861 ns/op
+WorkloadResult  14: 1572864 op, 240886400.00 ns, 153.1514 ns/op
+WorkloadResult  15: 1572864 op, 237024600.00 ns, 150.6962 ns/op
+// GC:  0 0 0 281856 1572864
+// Threading:  0 0 1572864
+
+STEADY_ALLOCATION mode=KeyRecordsDistinct records=261888 bytes=0
+// AfterAll
+// Benchmark Process 67520 has exited with code 0.
+
+Mean = 152.753 ns, StdErr = 0.601 ns (0.39%), N = 15, StdDev = 2.328 ns
+Min = 150.025 ns, Q1 = 150.953 ns, Median = 152.244 ns, Q3 = 153.935 ns, Max = 157.738 ns
+IQR = 2.982 ns, LowerFence = 146.480 ns, UpperFence = 158.408 ns
+ConfidenceInterval = [150.264 ns; 155.241 ns] (CI 99.9%), Margin = 2.488 ns (1.63% of Mean)
+Skewness = 0.79, Kurtosis = 2.52, MValue = 2
+
+// ** Remained 21 (87.5%) benchmark(s) to run. Estimated finish 2026-09-07 16:12 (0h 2m from now) **
+Setup power plan (GUID: 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c FriendlyName: High performance)
+// **************************
+// Benchmark: PartitionedLifetimeBenchmarks.ProcessLifetime: D_ClearOnce(Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=D_ClearOnce, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/candidate-v2,/p:UseSharedCompilation=false, IterationCount=15, IterationTime=250ms, WarmupCount=5) [Mode=KeyRecordsDistinct]
+// *** Execute ***
+// Launch: 1 / 1
+// Execute: dotnet Dekaf.Benchmarks-D_ClearOnce-4.dll --anonymousPipes 1784 1556 --benchmarkName "Dekaf.Benchmarks.PartitionedLifetimeBenchmarks.ProcessLifetime(Mode: KeyRecordsDistinct)" --job D_ClearOnce --benchmarkId 0 in C:\git\Dekaf-perf-improvements-20260907\pr-3117\comparison-v2\bin\Release\net10.0\Dekaf.Benchmarks-D_ClearOnce-4\bin\Release\net10.0
+// BeforeAnythingElse
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.15.8
+// Runtime=.NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2+BMI1+BMI2+F16C+FMA+LZCNT+MOVBE,AVX,SSE3+SSSE3+SSE4.1+SSE4.2+POPCNT,X86Base+SSE+SSE2,AES+PCLMUL,AvxVnni,SERIALIZE VectorSize=256
+// Job: D_ClearOnce(Affinity=100, IterationCount=15, IterationTime=250ms, WarmupCount=5)
+
+OverheadJitting  1: 262144 op, 157500.00 ns, 0.6008 ns/op
+WorkloadJitting  1: 262144 op, 40676900.00 ns, 155.1701 ns/op
+
+WorkloadPilot    1: 1048576 op, 158320400.00 ns, 150.9861 ns/op
+WorkloadPilot    2: 1572864 op, 238411900.00 ns, 151.5782 ns/op
+
+WorkloadWarmup   1: 1572864 op, 236868600.00 ns, 150.5970 ns/op
+WorkloadWarmup   2: 1572864 op, 249286600.00 ns, 158.4922 ns/op
+WorkloadWarmup   3: 1572864 op, 265748000.00 ns, 168.9580 ns/op
+WorkloadWarmup   4: 1572864 op, 235598800.00 ns, 149.7897 ns/op
+WorkloadWarmup   5: 1572864 op, 243663800.00 ns, 154.9173 ns/op
+
+// BeforeActualRun
+WorkloadActual   1: 1572864 op, 237251300.00 ns, 150.8403 ns/op
+WorkloadActual   2: 1572864 op, 246036500.00 ns, 156.4258 ns/op
+WorkloadActual   3: 1572864 op, 236499800.00 ns, 150.3625 ns/op
+WorkloadActual   4: 1572864 op, 234376300.00 ns, 149.0124 ns/op
+WorkloadActual   5: 1572864 op, 236079600.00 ns, 150.0954 ns/op
+WorkloadActual   6: 1572864 op, 246403500.00 ns, 156.6591 ns/op
+WorkloadActual   7: 1572864 op, 287118700.00 ns, 182.5452 ns/op
+WorkloadActual   8: 1572864 op, 238434700.00 ns, 151.5927 ns/op
+WorkloadActual   9: 1572864 op, 240871500.00 ns, 153.1420 ns/op
+WorkloadActual  10: 1572864 op, 239047300.00 ns, 151.9822 ns/op
+WorkloadActual  11: 1572864 op, 237608700.00 ns, 151.0675 ns/op
+WorkloadActual  12: 1572864 op, 236978800.00 ns, 150.6671 ns/op
+WorkloadActual  13: 1572864 op, 269835200.00 ns, 171.5566 ns/op
+WorkloadActual  14: 1572864 op, 251803300.00 ns, 160.0922 ns/op
+WorkloadActual  15: 1572864 op, 241627000.00 ns, 153.6223 ns/op
+
+// AfterActualRun
+WorkloadResult   1: 1572864 op, 237251300.00 ns, 150.8403 ns/op
+WorkloadResult   2: 1572864 op, 246036500.00 ns, 156.4258 ns/op
+WorkloadResult   3: 1572864 op, 236499800.00 ns, 150.3625 ns/op
+WorkloadResult   4: 1572864 op, 234376300.00 ns, 149.0124 ns/op
+WorkloadResult   5: 1572864 op, 236079600.00 ns, 150.0954 ns/op
+WorkloadResult   6: 1572864 op, 246403500.00 ns, 156.6591 ns/op
+WorkloadResult   7: 1572864 op, 238434700.00 ns, 151.5927 ns/op
+WorkloadResult   8: 1572864 op, 240871500.00 ns, 153.1420 ns/op
+WorkloadResult   9: 1572864 op, 239047300.00 ns, 151.9822 ns/op
+WorkloadResult  10: 1572864 op, 237608700.00 ns, 151.0675 ns/op
+WorkloadResult  11: 1572864 op, 236978800.00 ns, 150.6671 ns/op
+WorkloadResult  12: 1572864 op, 251803300.00 ns, 160.0922 ns/op
+WorkloadResult  13: 1572864 op, 241627000.00 ns, 153.6223 ns/op
+// GC:  0 0 0 281856 1572864
+// Threading:  0 0 1572864
+
+STEADY_ALLOCATION mode=KeyRecordsDistinct records=261888 bytes=0
+// AfterAll
+// Benchmark Process 31192 has exited with code 0.
+
+Mean = 152.736 ns, StdErr = 0.888 ns (0.58%), N = 13, StdDev = 3.203 ns
+Min = 149.012 ns, Q1 = 150.667 ns, Median = 151.593 ns, Q3 = 153.622 ns, Max = 160.092 ns
+IQR = 2.955 ns, LowerFence = 146.234 ns, UpperFence = 158.055 ns
+ConfidenceInterval = [148.900 ns; 156.571 ns] (CI 99.9%), Margin = 3.835 ns (2.51% of Mean)
+Skewness = 0.95, Kurtosis = 2.68, MValue = 2
+
+// ** Remained 20 (83.3%) benchmark(s) to run. Estimated finish 2026-09-07 16:12 (0h 2m from now) **
+Setup power plan (GUID: 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c FriendlyName: High performance)
+// **************************
+// Benchmark: PartitionedLifetimeBenchmarks.ProcessLifetime: E_PublishedControl(Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=E_PublishedControl, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/published,/p:UseSharedCompilation=false, IterationCount=15, IterationTime=250ms, WarmupCount=5) [Mode=KeyRecordsDistinct]
+// *** Execute ***
+// Launch: 1 / 1
+// Execute: dotnet Dekaf.Benchmarks-B_Published-2.dll --anonymousPipes 1640 1480 --benchmarkName "Dekaf.Benchmarks.PartitionedLifetimeBenchmarks.ProcessLifetime(Mode: KeyRecordsDistinct)" --job E_PublishedControl --benchmarkId 1 in C:\git\Dekaf-perf-improvements-20260907\pr-3117\comparison-v2\bin\Release\net10.0\Dekaf.Benchmarks-B_Published-2\bin\Release\net10.0
+// BeforeAnythingElse
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.15.8
+// Runtime=.NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2+BMI1+BMI2+F16C+FMA+LZCNT+MOVBE,AVX,SSE3+SSSE3+SSE4.1+SSE4.2+POPCNT,X86Base+SSE+SSE2,AES+PCLMUL,AvxVnni,SERIALIZE VectorSize=256
+// Job: E_PublishedControl(Affinity=100, IterationCount=15, IterationTime=250ms, WarmupCount=5)
+
+OverheadJitting  1: 262144 op, 289300.00 ns, 1.1036 ns/op
+WorkloadJitting  1: 262144 op, 42116100.00 ns, 160.6602 ns/op
+
+WorkloadPilot    1: 1048576 op, 168764800.00 ns, 160.9467 ns/op
+WorkloadPilot    2: 1572864 op, 244280700.00 ns, 155.3095 ns/op
+
+WorkloadWarmup   1: 1572864 op, 250017100.00 ns, 158.9566 ns/op
+WorkloadWarmup   2: 1572864 op, 246369300.00 ns, 156.6374 ns/op
+WorkloadWarmup   3: 1572864 op, 242825400.00 ns, 154.3842 ns/op
+WorkloadWarmup   4: 1572864 op, 243624600.00 ns, 154.8923 ns/op
+WorkloadWarmup   5: 1572864 op, 241782100.00 ns, 153.7209 ns/op
+
+// BeforeActualRun
+WorkloadActual   1: 1572864 op, 242330400.00 ns, 154.0695 ns/op
+WorkloadActual   2: 1572864 op, 243303600.00 ns, 154.6883 ns/op
+WorkloadActual   3: 1572864 op, 247335400.00 ns, 157.2516 ns/op
+WorkloadActual   4: 1572864 op, 243056400.00 ns, 154.5311 ns/op
+WorkloadActual   5: 1572864 op, 242318900.00 ns, 154.0622 ns/op
+WorkloadActual   6: 1572864 op, 244544000.00 ns, 155.4769 ns/op
+WorkloadActual   7: 1572864 op, 242748500.00 ns, 154.3353 ns/op
+WorkloadActual   8: 1572864 op, 243557900.00 ns, 154.8499 ns/op
+WorkloadActual   9: 1572864 op, 244969800.00 ns, 155.7476 ns/op
+WorkloadActual  10: 1572864 op, 246401400.00 ns, 156.6578 ns/op
+WorkloadActual  11: 1572864 op, 243176600.00 ns, 154.6075 ns/op
+WorkloadActual  12: 1572864 op, 243822900.00 ns, 155.0184 ns/op
+WorkloadActual  13: 1572864 op, 244697200.00 ns, 155.5743 ns/op
+WorkloadActual  14: 1572864 op, 277176400.00 ns, 176.2240 ns/op
+WorkloadActual  15: 1572864 op, 244394100.00 ns, 155.3816 ns/op
+
+// AfterActualRun
+WorkloadResult   1: 1572864 op, 242330400.00 ns, 154.0695 ns/op
+WorkloadResult   2: 1572864 op, 243303600.00 ns, 154.6883 ns/op
+WorkloadResult   3: 1572864 op, 247335400.00 ns, 157.2516 ns/op
+WorkloadResult   4: 1572864 op, 243056400.00 ns, 154.5311 ns/op
+WorkloadResult   5: 1572864 op, 242318900.00 ns, 154.0622 ns/op
+WorkloadResult   6: 1572864 op, 244544000.00 ns, 155.4769 ns/op
+WorkloadResult   7: 1572864 op, 242748500.00 ns, 154.3353 ns/op
+WorkloadResult   8: 1572864 op, 243557900.00 ns, 154.8499 ns/op
+WorkloadResult   9: 1572864 op, 244969800.00 ns, 155.7476 ns/op
+WorkloadResult  10: 1572864 op, 246401400.00 ns, 156.6578 ns/op
+WorkloadResult  11: 1572864 op, 243176600.00 ns, 154.6075 ns/op
+WorkloadResult  12: 1572864 op, 243822900.00 ns, 155.0184 ns/op
+WorkloadResult  13: 1572864 op, 244697200.00 ns, 155.5743 ns/op
+WorkloadResult  14: 1572864 op, 244394100.00 ns, 155.3816 ns/op
+// GC:  0 0 0 281856 1572864
+// Threading:  0 0 1572864
+
+STEADY_ALLOCATION mode=KeyRecordsDistinct records=261888 bytes=0
+// AfterAll
+// Benchmark Process 36976 has exited with code 0.
+
+Mean = 155.161 ns, StdErr = 0.250 ns (0.16%), N = 14, StdDev = 0.936 ns
+Min = 154.062 ns, Q1 = 154.550 ns, Median = 154.934 ns, Q3 = 155.550 ns, Max = 157.252 ns
+IQR = 1.000 ns, LowerFence = 153.051 ns, UpperFence = 157.050 ns
+ConfidenceInterval = [154.105 ns; 156.217 ns] (CI 99.9%), Margin = 1.056 ns (0.68% of Mean)
+Skewness = 0.79, Kurtosis = 2.6, MValue = 2
+
+// ** Remained 19 (79.2%) benchmark(s) to run. Estimated finish 2026-09-07 16:12 (0h 1m from now) **
+Setup power plan (GUID: 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c FriendlyName: High performance)
+// **************************
+// Benchmark: PartitionedLifetimeBenchmarks.ProcessLifetime: F_PredecessorControl(Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=F_PredecessorControl, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/predecessor,/p:UseSharedCompilation=false, IterationCount=15, IterationTime=250ms, WarmupCount=5) [Mode=KeyRecordsDistinct]
+// *** Execute ***
+// Launch: 1 / 1
+// Execute: dotnet Dekaf.Benchmarks-A_Predecessor-1.dll --anonymousPipes 1716 836 --benchmarkName "Dekaf.Benchmarks.PartitionedLifetimeBenchmarks.ProcessLifetime(Mode: KeyRecordsDistinct)" --job F_PredecessorControl --benchmarkId 1 in C:\git\Dekaf-perf-improvements-20260907\pr-3117\comparison-v2\bin\Release\net10.0\Dekaf.Benchmarks-A_Predecessor-1\bin\Release\net10.0
+// BeforeAnythingElse
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.15.8
+// Runtime=.NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2+BMI1+BMI2+F16C+FMA+LZCNT+MOVBE,AVX,SSE3+SSSE3+SSE4.1+SSE4.2+POPCNT,X86Base+SSE+SSE2,AES+PCLMUL,AvxVnni,SERIALIZE VectorSize=256
+// Job: F_PredecessorControl(Affinity=100, IterationCount=15, IterationTime=250ms, WarmupCount=5)
+
+OverheadJitting  1: 262144 op, 164300.00 ns, 0.6268 ns/op
+WorkloadJitting  1: 262144 op, 49972000.00 ns, 190.6281 ns/op
+
+WorkloadPilot    1: 1048576 op, 158654300.00 ns, 151.3045 ns/op
+WorkloadPilot    2: 1572864 op, 243476500.00 ns, 154.7982 ns/op
+
+WorkloadWarmup   1: 1572864 op, 244719800.00 ns, 155.5887 ns/op
+WorkloadWarmup   2: 1572864 op, 243928600.00 ns, 155.0856 ns/op
+WorkloadWarmup   3: 1572864 op, 251378100.00 ns, 159.8219 ns/op
+WorkloadWarmup   4: 1572864 op, 263420000.00 ns, 167.4779 ns/op
+WorkloadWarmup   5: 1572864 op, 246422200.00 ns, 156.6710 ns/op
+
+// BeforeActualRun
+WorkloadActual   1: 1572864 op, 242429000.00 ns, 154.1322 ns/op
+WorkloadActual   2: 1572864 op, 249298700.00 ns, 158.4998 ns/op
+WorkloadActual   3: 1572864 op, 241602400.00 ns, 153.6067 ns/op
+WorkloadActual   4: 1572864 op, 241778100.00 ns, 153.7184 ns/op
+WorkloadActual   5: 1572864 op, 280905000.00 ns, 178.5946 ns/op
+WorkloadActual   6: 1572864 op, 251117200.00 ns, 159.6560 ns/op
+WorkloadActual   7: 1572864 op, 244771100.00 ns, 155.6213 ns/op
+WorkloadActual   8: 1572864 op, 240923000.00 ns, 153.1747 ns/op
+WorkloadActual   9: 1572864 op, 243034700.00 ns, 154.5173 ns/op
+WorkloadActual  10: 1572864 op, 250820700.00 ns, 159.4675 ns/op
+WorkloadActual  11: 1572864 op, 243469400.00 ns, 154.7937 ns/op
+WorkloadActual  12: 1572864 op, 242261200.00 ns, 154.0255 ns/op
+WorkloadActual  13: 1572864 op, 254659800.00 ns, 161.9083 ns/op
+WorkloadActual  14: 1572864 op, 240137800.00 ns, 152.6755 ns/op
+WorkloadActual  15: 1572864 op, 239925100.00 ns, 152.5403 ns/op
+
+// AfterActualRun
+WorkloadResult   1: 1572864 op, 242429000.00 ns, 154.1322 ns/op
+WorkloadResult   2: 1572864 op, 249298700.00 ns, 158.4998 ns/op
+WorkloadResult   3: 1572864 op, 241602400.00 ns, 153.6067 ns/op
+WorkloadResult   4: 1572864 op, 241778100.00 ns, 153.7184 ns/op
+WorkloadResult   5: 1572864 op, 251117200.00 ns, 159.6560 ns/op
+WorkloadResult   6: 1572864 op, 244771100.00 ns, 155.6213 ns/op
+WorkloadResult   7: 1572864 op, 240923000.00 ns, 153.1747 ns/op
+WorkloadResult   8: 1572864 op, 243034700.00 ns, 154.5173 ns/op
+WorkloadResult   9: 1572864 op, 250820700.00 ns, 159.4675 ns/op
+WorkloadResult  10: 1572864 op, 243469400.00 ns, 154.7937 ns/op
+WorkloadResult  11: 1572864 op, 242261200.00 ns, 154.0255 ns/op
+WorkloadResult  12: 1572864 op, 254659800.00 ns, 161.9083 ns/op
+WorkloadResult  13: 1572864 op, 240137800.00 ns, 152.6755 ns/op
+WorkloadResult  14: 1572864 op, 239925100.00 ns, 152.5403 ns/op
+// GC:  0 0 0 281856 1572864
+// Threading:  0 0 1572864
+
+STEADY_ALLOCATION mode=KeyRecordsDistinct records=261888 bytes=0
+// AfterAll
+// Benchmark Process 106896 has exited with code 0.
+
+Mean = 155.596 ns, StdErr = 0.803 ns (0.52%), N = 14, StdDev = 3.005 ns
+Min = 152.540 ns, Q1 = 153.635 ns, Median = 154.325 ns, Q3 = 157.780 ns, Max = 161.908 ns
+IQR = 4.146 ns, LowerFence = 147.416 ns, UpperFence = 163.999 ns
+ConfidenceInterval = [152.206 ns; 158.985 ns] (CI 99.9%), Margin = 3.390 ns (2.18% of Mean)
+Skewness = 0.82, Kurtosis = 2.09, MValue = 2
+
+// ** Remained 18 (75.0%) benchmark(s) to run. Estimated finish 2026-09-07 16:12 (0h 1m from now) **
+Setup power plan (GUID: 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c FriendlyName: High performance)
+// **************************
+// Benchmark: PartitionedLifetimeBenchmarks.ProcessLifetime: A_Predecessor(Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=A_Predecessor, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/predecessor,/p:UseSharedCompilation=false, IterationCount=15, IterationTime=250ms, WarmupCount=5) [Mode=KeyBatchesDistinct]
+// *** Execute ***
+// Launch: 1 / 1
+// Execute: dotnet Dekaf.Benchmarks-A_Predecessor-1.dll --anonymousPipes 1784 1664 --benchmarkName "Dekaf.Benchmarks.PartitionedLifetimeBenchmarks.ProcessLifetime(Mode: KeyBatchesDistinct)" --job A_Predecessor --benchmarkId 2 in C:\git\Dekaf-perf-improvements-20260907\pr-3117\comparison-v2\bin\Release\net10.0\Dekaf.Benchmarks-A_Predecessor-1\bin\Release\net10.0
+// BeforeAnythingElse
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.15.8
+// Runtime=.NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2+BMI1+BMI2+F16C+FMA+LZCNT+MOVBE,AVX,SSE3+SSSE3+SSE4.1+SSE4.2+POPCNT,X86Base+SSE+SSE2,AES+PCLMUL,AvxVnni,SERIALIZE VectorSize=256
+// Job: A_Predecessor(Affinity=100, IterationCount=15, IterationTime=250ms, WarmupCount=5)
+
+OverheadJitting  1: 262144 op, 157800.00 ns, 0.6020 ns/op
+WorkloadJitting  1: 262144 op, 41564500.00 ns, 158.5560 ns/op
+
+WorkloadPilot    1: 1048576 op, 161421200.00 ns, 153.9433 ns/op
+WorkloadPilot    2: 1572864 op, 242460800.00 ns, 154.1524 ns/op
+
+WorkloadWarmup   1: 1572864 op, 241661900.00 ns, 153.6445 ns/op
+WorkloadWarmup   2: 1572864 op, 242122600.00 ns, 153.9374 ns/op
+WorkloadWarmup   3: 1572864 op, 242239000.00 ns, 154.0114 ns/op
+WorkloadWarmup   4: 1572864 op, 240167800.00 ns, 152.6946 ns/op
+WorkloadWarmup   5: 1572864 op, 276227400.00 ns, 175.6207 ns/op
+
+// BeforeActualRun
+WorkloadActual   1: 1572864 op, 240118500.00 ns, 152.6632 ns/op
+WorkloadActual   2: 1572864 op, 239647700.00 ns, 152.3639 ns/op
+WorkloadActual   3: 1572864 op, 241456300.00 ns, 153.5138 ns/op
+WorkloadActual   4: 1572864 op, 241209600.00 ns, 153.3569 ns/op
+WorkloadActual   5: 1572864 op, 272394900.00 ns, 173.1840 ns/op
+WorkloadActual   6: 1572864 op, 253088300.00 ns, 160.9092 ns/op
+WorkloadActual   7: 1572864 op, 242289400.00 ns, 154.0435 ns/op
+WorkloadActual   8: 1572864 op, 244236700.00 ns, 155.2815 ns/op
+WorkloadActual   9: 1572864 op, 241966800.00 ns, 153.8383 ns/op
+WorkloadActual  10: 1572864 op, 247778300.00 ns, 157.5332 ns/op
+WorkloadActual  11: 1572864 op, 240673600.00 ns, 153.0162 ns/op
+WorkloadActual  12: 1572864 op, 244560400.00 ns, 155.4873 ns/op
+WorkloadActual  13: 1572864 op, 242528400.00 ns, 154.1954 ns/op
+WorkloadActual  14: 1572864 op, 275613600.00 ns, 175.2304 ns/op
+WorkloadActual  15: 1572864 op, 247983400.00 ns, 157.6636 ns/op
+
+// AfterActualRun
+WorkloadResult   1: 1572864 op, 240118500.00 ns, 152.6632 ns/op
+WorkloadResult   2: 1572864 op, 239647700.00 ns, 152.3639 ns/op
+WorkloadResult   3: 1572864 op, 241456300.00 ns, 153.5138 ns/op
+WorkloadResult   4: 1572864 op, 241209600.00 ns, 153.3569 ns/op
+WorkloadResult   5: 1572864 op, 253088300.00 ns, 160.9092 ns/op
+WorkloadResult   6: 1572864 op, 242289400.00 ns, 154.0435 ns/op
+WorkloadResult   7: 1572864 op, 244236700.00 ns, 155.2815 ns/op
+WorkloadResult   8: 1572864 op, 241966800.00 ns, 153.8383 ns/op
+WorkloadResult   9: 1572864 op, 247778300.00 ns, 157.5332 ns/op
+WorkloadResult  10: 1572864 op, 240673600.00 ns, 153.0162 ns/op
+WorkloadResult  11: 1572864 op, 244560400.00 ns, 155.4873 ns/op
+WorkloadResult  12: 1572864 op, 242528400.00 ns, 154.1954 ns/op
+WorkloadResult  13: 1572864 op, 247983400.00 ns, 157.6636 ns/op
+// GC:  0 0 0 290112 1572864
+// Threading:  0 0 1572864
+
+STEADY_ALLOCATION mode=KeyBatchesDistinct records=261888 bytes=0
+// AfterAll
+// Benchmark Process 86304 has exited with code 0.
+
+Mean = 154.913 ns, StdErr = 0.683 ns (0.44%), N = 13, StdDev = 2.463 ns
+Min = 152.364 ns, Q1 = 153.357 ns, Median = 154.043 ns, Q3 = 155.487 ns, Max = 160.909 ns
+IQR = 2.130 ns, LowerFence = 150.161 ns, UpperFence = 158.683 ns
+ConfidenceInterval = [151.963 ns; 157.863 ns] (CI 99.9%), Margin = 2.950 ns (1.90% of Mean)
+Skewness = 1.09, Kurtosis = 3.11, MValue = 2
+
+// ** Remained 17 (70.8%) benchmark(s) to run. Estimated finish 2026-09-07 16:12 (0h 1m from now) **
+Setup power plan (GUID: 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c FriendlyName: High performance)
+// **************************
+// Benchmark: PartitionedLifetimeBenchmarks.ProcessLifetime: B_Published(Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=B_Published, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/published,/p:UseSharedCompilation=false, IterationCount=15, IterationTime=250ms, WarmupCount=5) [Mode=KeyBatchesDistinct]
+// *** Execute ***
+// Launch: 1 / 1
+// Execute: dotnet Dekaf.Benchmarks-B_Published-2.dll --anonymousPipes 1416 1532 --benchmarkName "Dekaf.Benchmarks.PartitionedLifetimeBenchmarks.ProcessLifetime(Mode: KeyBatchesDistinct)" --job B_Published --benchmarkId 2 in C:\git\Dekaf-perf-improvements-20260907\pr-3117\comparison-v2\bin\Release\net10.0\Dekaf.Benchmarks-B_Published-2\bin\Release\net10.0
+// BeforeAnythingElse
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.15.8
+// Runtime=.NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2+BMI1+BMI2+F16C+FMA+LZCNT+MOVBE,AVX,SSE3+SSSE3+SSE4.1+SSE4.2+POPCNT,X86Base+SSE+SSE2,AES+PCLMUL,AvxVnni,SERIALIZE VectorSize=256
+// Job: B_Published(Affinity=100, IterationCount=15, IterationTime=250ms, WarmupCount=5)
+
+OverheadJitting  1: 262144 op, 182000.00 ns, 0.6943 ns/op
+WorkloadJitting  1: 262144 op, 41203100.00 ns, 157.1774 ns/op
+
+WorkloadPilot    1: 1048576 op, 161431300.00 ns, 153.9529 ns/op
+WorkloadPilot    2: 1572864 op, 242410700.00 ns, 154.1206 ns/op
+
+WorkloadWarmup   1: 1572864 op, 275590800.00 ns, 175.2159 ns/op
+WorkloadWarmup   2: 1572864 op, 264645400.00 ns, 168.2570 ns/op
+WorkloadWarmup   3: 1572864 op, 246764400.00 ns, 156.8886 ns/op
+WorkloadWarmup   4: 1572864 op, 248698900.00 ns, 158.1185 ns/op
+WorkloadWarmup   5: 1572864 op, 247978200.00 ns, 157.6603 ns/op
+
+// BeforeActualRun
+WorkloadActual   1: 1572864 op, 252719000.00 ns, 160.6744 ns/op
+WorkloadActual   2: 1572864 op, 250939700.00 ns, 159.5432 ns/op
+WorkloadActual   3: 1572864 op, 248180400.00 ns, 157.7888 ns/op
+WorkloadActual   4: 1572864 op, 257300400.00 ns, 163.5872 ns/op
+WorkloadActual   5: 1572864 op, 246812800.00 ns, 156.9194 ns/op
+WorkloadActual   6: 1572864 op, 250522500.00 ns, 159.2779 ns/op
+WorkloadActual   7: 1572864 op, 246911100.00 ns, 156.9818 ns/op
+WorkloadActual   8: 1572864 op, 247472800.00 ns, 157.3390 ns/op
+WorkloadActual   9: 1572864 op, 249639500.00 ns, 158.7165 ns/op
+WorkloadActual  10: 1572864 op, 246499800.00 ns, 156.7204 ns/op
+WorkloadActual  11: 1572864 op, 247487200.00 ns, 157.3481 ns/op
+WorkloadActual  12: 1572864 op, 247245600.00 ns, 157.1945 ns/op
+WorkloadActual  13: 1572864 op, 245619100.00 ns, 156.1604 ns/op
+WorkloadActual  14: 1572864 op, 247132900.00 ns, 157.1229 ns/op
+WorkloadActual  15: 1572864 op, 245211900.00 ns, 155.9015 ns/op
+
+// AfterActualRun
+WorkloadResult   1: 1572864 op, 252719000.00 ns, 160.6744 ns/op
+WorkloadResult   2: 1572864 op, 250939700.00 ns, 159.5432 ns/op
+WorkloadResult   3: 1572864 op, 248180400.00 ns, 157.7888 ns/op
+WorkloadResult   4: 1572864 op, 246812800.00 ns, 156.9194 ns/op
+WorkloadResult   5: 1572864 op, 250522500.00 ns, 159.2779 ns/op
+WorkloadResult   6: 1572864 op, 246911100.00 ns, 156.9818 ns/op
+WorkloadResult   7: 1572864 op, 247472800.00 ns, 157.3390 ns/op
+WorkloadResult   8: 1572864 op, 249639500.00 ns, 158.7165 ns/op
+WorkloadResult   9: 1572864 op, 246499800.00 ns, 156.7204 ns/op
+WorkloadResult  10: 1572864 op, 247487200.00 ns, 157.3481 ns/op
+WorkloadResult  11: 1572864 op, 247245600.00 ns, 157.1945 ns/op
+WorkloadResult  12: 1572864 op, 245619100.00 ns, 156.1604 ns/op
+WorkloadResult  13: 1572864 op, 247132900.00 ns, 157.1229 ns/op
+WorkloadResult  14: 1572864 op, 245211900.00 ns, 155.9015 ns/op
+// GC:  0 0 0 290112 1572864
+// Threading:  0 0 1572864
+
+STEADY_ALLOCATION mode=KeyBatchesDistinct records=261888 bytes=0
+// AfterAll
+// Benchmark Process 95360 has exited with code 0.
+
+Mean = 157.692 ns, StdErr = 0.365 ns (0.23%), N = 14, StdDev = 1.367 ns
+Min = 155.902 ns, Q1 = 156.935 ns, Median = 157.267 ns, Q3 = 158.485 ns, Max = 160.674 ns
+IQR = 1.550 ns, LowerFence = 154.611 ns, UpperFence = 160.809 ns
+ConfidenceInterval = [156.150 ns; 159.235 ns] (CI 99.9%), Margin = 1.543 ns (0.98% of Mean)
+Skewness = 0.74, Kurtosis = 2.37, MValue = 2
+
+// ** Remained 16 (66.7%) benchmark(s) to run. Estimated finish 2026-09-07 16:12 (0h 1m from now) **
+Setup power plan (GUID: 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c FriendlyName: High performance)
+// **************************
+// Benchmark: PartitionedLifetimeBenchmarks.ProcessLifetime: C_SingleProbe(Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=C_SingleProbe, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/candidate,/p:UseSharedCompilation=false, IterationCount=15, IterationTime=250ms, WarmupCount=5) [Mode=KeyBatchesDistinct]
+// *** Execute ***
+// Launch: 1 / 1
+// Execute: dotnet Dekaf.Benchmarks-C_SingleProbe-3.dll --anonymousPipes 1488 1368 --benchmarkName "Dekaf.Benchmarks.PartitionedLifetimeBenchmarks.ProcessLifetime(Mode: KeyBatchesDistinct)" --job C_SingleProbe --benchmarkId 1 in C:\git\Dekaf-perf-improvements-20260907\pr-3117\comparison-v2\bin\Release\net10.0\Dekaf.Benchmarks-C_SingleProbe-3\bin\Release\net10.0
+// BeforeAnythingElse
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.15.8
+// Runtime=.NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2+BMI1+BMI2+F16C+FMA+LZCNT+MOVBE,AVX,SSE3+SSSE3+SSE4.1+SSE4.2+POPCNT,X86Base+SSE+SSE2,AES+PCLMUL,AvxVnni,SERIALIZE VectorSize=256
+// Job: C_SingleProbe(Affinity=100, IterationCount=15, IterationTime=250ms, WarmupCount=5)
+
+OverheadJitting  1: 262144 op, 164600.00 ns, 0.6279 ns/op
+WorkloadJitting  1: 262144 op, 43516300.00 ns, 166.0015 ns/op
+
+WorkloadPilot    1: 1048576 op, 167859900.00 ns, 160.0837 ns/op
+WorkloadPilot    2: 1572864 op, 250217400.00 ns, 159.0839 ns/op
+
+WorkloadWarmup   1: 1572864 op, 250941900.00 ns, 159.5446 ns/op
+WorkloadWarmup   2: 1572864 op, 281498500.00 ns, 178.9719 ns/op
+WorkloadWarmup   3: 1572864 op, 250085000.00 ns, 158.9998 ns/op
+WorkloadWarmup   4: 1572864 op, 250973600.00 ns, 159.5647 ns/op
+WorkloadWarmup   5: 1572864 op, 256011300.00 ns, 162.7676 ns/op
+
+// BeforeActualRun
+WorkloadActual   1: 1572864 op, 255097400.00 ns, 162.1866 ns/op
+WorkloadActual   2: 1572864 op, 247189700.00 ns, 157.1590 ns/op
+WorkloadActual   3: 1572864 op, 249625000.00 ns, 158.7073 ns/op
+WorkloadActual   4: 1572864 op, 250339700.00 ns, 159.1617 ns/op
+WorkloadActual   5: 1572864 op, 258196400.00 ns, 164.1569 ns/op
+WorkloadActual   6: 1572864 op, 284228700.00 ns, 180.7077 ns/op
+WorkloadActual   7: 1572864 op, 246743700.00 ns, 156.8754 ns/op
+WorkloadActual   8: 1572864 op, 249912400.00 ns, 158.8900 ns/op
+WorkloadActual   9: 1572864 op, 253571000.00 ns, 161.2161 ns/op
+WorkloadActual  10: 1572864 op, 247594700.00 ns, 157.4165 ns/op
+WorkloadActual  11: 1572864 op, 249440500.00 ns, 158.5900 ns/op
+WorkloadActual  12: 1572864 op, 282544700.00 ns, 179.6371 ns/op
+WorkloadActual  13: 1572864 op, 258758100.00 ns, 164.5140 ns/op
+WorkloadActual  14: 1572864 op, 250773500.00 ns, 159.4375 ns/op
+WorkloadActual  15: 1572864 op, 250694600.00 ns, 159.3873 ns/op
+
+// AfterActualRun
+WorkloadResult   1: 1572864 op, 255097400.00 ns, 162.1866 ns/op
+WorkloadResult   2: 1572864 op, 247189700.00 ns, 157.1590 ns/op
+WorkloadResult   3: 1572864 op, 249625000.00 ns, 158.7073 ns/op
+WorkloadResult   4: 1572864 op, 250339700.00 ns, 159.1617 ns/op
+WorkloadResult   5: 1572864 op, 258196400.00 ns, 164.1569 ns/op
+WorkloadResult   6: 1572864 op, 246743700.00 ns, 156.8754 ns/op
+WorkloadResult   7: 1572864 op, 249912400.00 ns, 158.8900 ns/op
+WorkloadResult   8: 1572864 op, 253571000.00 ns, 161.2161 ns/op
+WorkloadResult   9: 1572864 op, 247594700.00 ns, 157.4165 ns/op
+WorkloadResult  10: 1572864 op, 249440500.00 ns, 158.5900 ns/op
+WorkloadResult  11: 1572864 op, 258758100.00 ns, 164.5140 ns/op
+WorkloadResult  12: 1572864 op, 250773500.00 ns, 159.4375 ns/op
+WorkloadResult  13: 1572864 op, 250694600.00 ns, 159.3873 ns/op
+// GC:  0 0 0 290112 1572864
+// Threading:  0 0 1572864
+
+STEADY_ALLOCATION mode=KeyBatchesDistinct records=261888 bytes=0
+// AfterAll
+// Benchmark Process 111664 has exited with code 0.
+
+Mean = 159.823 ns, StdErr = 0.690 ns (0.43%), N = 13, StdDev = 2.488 ns
+Min = 156.875 ns, Q1 = 158.590 ns, Median = 159.162 ns, Q3 = 161.216 ns, Max = 164.514 ns
+IQR = 2.626 ns, LowerFence = 154.651 ns, UpperFence = 165.155 ns
+ConfidenceInterval = [156.843 ns; 162.803 ns] (CI 99.9%), Margin = 2.980 ns (1.86% of Mean)
+Skewness = 0.69, Kurtosis = 2.08, MValue = 2
+
+// ** Remained 15 (62.5%) benchmark(s) to run. Estimated finish 2026-09-07 16:12 (0h 1m from now) **
+Setup power plan (GUID: 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c FriendlyName: High performance)
+// **************************
+// Benchmark: PartitionedLifetimeBenchmarks.ProcessLifetime: D_ClearOnce(Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=D_ClearOnce, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/candidate-v2,/p:UseSharedCompilation=false, IterationCount=15, IterationTime=250ms, WarmupCount=5) [Mode=KeyBatchesDistinct]
+// *** Execute ***
+// Launch: 1 / 1
+// Execute: dotnet Dekaf.Benchmarks-D_ClearOnce-4.dll --anonymousPipes 1808 1536 --benchmarkName "Dekaf.Benchmarks.PartitionedLifetimeBenchmarks.ProcessLifetime(Mode: KeyBatchesDistinct)" --job D_ClearOnce --benchmarkId 1 in C:\git\Dekaf-perf-improvements-20260907\pr-3117\comparison-v2\bin\Release\net10.0\Dekaf.Benchmarks-D_ClearOnce-4\bin\Release\net10.0
+// BeforeAnythingElse
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.15.8
+// Runtime=.NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2+BMI1+BMI2+F16C+FMA+LZCNT+MOVBE,AVX,SSE3+SSSE3+SSE4.1+SSE4.2+POPCNT,X86Base+SSE+SSE2,AES+PCLMUL,AvxVnni,SERIALIZE VectorSize=256
+// Job: D_ClearOnce(Affinity=100, IterationCount=15, IterationTime=250ms, WarmupCount=5)
+
+OverheadJitting  1: 262144 op, 162800.00 ns, 0.6210 ns/op
+WorkloadJitting  1: 262144 op, 40396300.00 ns, 154.0997 ns/op
+
+WorkloadPilot    1: 1048576 op, 154609200.00 ns, 147.4468 ns/op
+WorkloadPilot    2: 1572864 op, 242873400.00 ns, 154.4147 ns/op
+
+WorkloadWarmup   1: 1572864 op, 236226900.00 ns, 150.1890 ns/op
+WorkloadWarmup   2: 1572864 op, 236026100.00 ns, 150.0614 ns/op
+WorkloadWarmup   3: 1572864 op, 234964100.00 ns, 149.3862 ns/op
+WorkloadWarmup   4: 1572864 op, 232324700.00 ns, 147.7081 ns/op
+WorkloadWarmup   5: 1572864 op, 234306700.00 ns, 148.9682 ns/op
+
+// BeforeActualRun
+WorkloadActual   1: 1572864 op, 232369100.00 ns, 147.7363 ns/op
+WorkloadActual   2: 1572864 op, 233228500.00 ns, 148.2827 ns/op
+WorkloadActual   3: 1572864 op, 235161300.00 ns, 149.5115 ns/op
+WorkloadActual   4: 1572864 op, 231941800.00 ns, 147.4646 ns/op
+WorkloadActual   5: 1572864 op, 232114400.00 ns, 147.5744 ns/op
+WorkloadActual   6: 1572864 op, 237205200.00 ns, 150.8110 ns/op
+WorkloadActual   7: 1572864 op, 233236200.00 ns, 148.2876 ns/op
+WorkloadActual   8: 1572864 op, 230172300.00 ns, 146.3396 ns/op
+WorkloadActual   9: 1572864 op, 235110100.00 ns, 149.4790 ns/op
+WorkloadActual  10: 1572864 op, 236828300.00 ns, 150.5714 ns/op
+WorkloadActual  11: 1572864 op, 240884100.00 ns, 153.1500 ns/op
+WorkloadActual  12: 1572864 op, 237031500.00 ns, 150.7006 ns/op
+WorkloadActual  13: 1572864 op, 276264100.00 ns, 175.6440 ns/op
+WorkloadActual  14: 1572864 op, 238585700.00 ns, 151.6887 ns/op
+WorkloadActual  15: 1572864 op, 233751800.00 ns, 148.6154 ns/op
+
+// AfterActualRun
+WorkloadResult   1: 1572864 op, 232369100.00 ns, 147.7363 ns/op
+WorkloadResult   2: 1572864 op, 233228500.00 ns, 148.2827 ns/op
+WorkloadResult   3: 1572864 op, 235161300.00 ns, 149.5115 ns/op
+WorkloadResult   4: 1572864 op, 231941800.00 ns, 147.4646 ns/op
+WorkloadResult   5: 1572864 op, 232114400.00 ns, 147.5744 ns/op
+WorkloadResult   6: 1572864 op, 237205200.00 ns, 150.8110 ns/op
+WorkloadResult   7: 1572864 op, 233236200.00 ns, 148.2876 ns/op
+WorkloadResult   8: 1572864 op, 230172300.00 ns, 146.3396 ns/op
+WorkloadResult   9: 1572864 op, 235110100.00 ns, 149.4790 ns/op
+WorkloadResult  10: 1572864 op, 236828300.00 ns, 150.5714 ns/op
+WorkloadResult  11: 1572864 op, 240884100.00 ns, 153.1500 ns/op
+WorkloadResult  12: 1572864 op, 237031500.00 ns, 150.7006 ns/op
+WorkloadResult  13: 1572864 op, 238585700.00 ns, 151.6887 ns/op
+WorkloadResult  14: 1572864 op, 233751800.00 ns, 148.6154 ns/op
+// GC:  0 0 0 290112 1572864
+// Threading:  0 0 1572864
+
+STEADY_ALLOCATION mode=KeyBatchesDistinct records=261888 bytes=0
+// AfterAll
+// Benchmark Process 48724 has exited with code 0.
+
+Mean = 149.301 ns, StdErr = 0.506 ns (0.34%), N = 14, StdDev = 1.892 ns
+Min = 146.340 ns, Q1 = 147.873 ns, Median = 149.047 ns, Q3 = 150.668 ns, Max = 153.150 ns
+IQR = 2.795 ns, LowerFence = 143.680 ns, UpperFence = 154.861 ns
+ConfidenceInterval = [147.166 ns; 151.436 ns] (CI 99.9%), Margin = 2.135 ns (1.43% of Mean)
+Skewness = 0.37, Kurtosis = 2.06, MValue = 2
+
+// ** Remained 14 (58.3%) benchmark(s) to run. Estimated finish 2026-09-07 16:12 (0h 1m from now) **
+Setup power plan (GUID: 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c FriendlyName: High performance)
+// **************************
+// Benchmark: PartitionedLifetimeBenchmarks.ProcessLifetime: E_PublishedControl(Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=E_PublishedControl, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/published,/p:UseSharedCompilation=false, IterationCount=15, IterationTime=250ms, WarmupCount=5) [Mode=KeyBatchesDistinct]
+// *** Execute ***
+// Launch: 1 / 1
+// Execute: dotnet Dekaf.Benchmarks-B_Published-2.dll --anonymousPipes 1912 1420 --benchmarkName "Dekaf.Benchmarks.PartitionedLifetimeBenchmarks.ProcessLifetime(Mode: KeyBatchesDistinct)" --job E_PublishedControl --benchmarkId 3 in C:\git\Dekaf-perf-improvements-20260907\pr-3117\comparison-v2\bin\Release\net10.0\Dekaf.Benchmarks-B_Published-2\bin\Release\net10.0
+// BeforeAnythingElse
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.15.8
+// Runtime=.NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2+BMI1+BMI2+F16C+FMA+LZCNT+MOVBE,AVX,SSE3+SSSE3+SSE4.1+SSE4.2+POPCNT,X86Base+SSE+SSE2,AES+PCLMUL,AvxVnni,SERIALIZE VectorSize=256
+// Job: E_PublishedControl(Affinity=100, IterationCount=15, IterationTime=250ms, WarmupCount=5)
+
+OverheadJitting  1: 262144 op, 159200.00 ns, 0.6073 ns/op
+WorkloadJitting  1: 262144 op, 40207000.00 ns, 153.3775 ns/op
+
+WorkloadPilot    1: 1048576 op, 157142700.00 ns, 149.8630 ns/op
+WorkloadPilot    2: 1572864 op, 238804400.00 ns, 151.8277 ns/op
+
+WorkloadWarmup   1: 1572864 op, 238744600.00 ns, 151.7897 ns/op
+WorkloadWarmup   2: 1572864 op, 239954800.00 ns, 152.5592 ns/op
+WorkloadWarmup   3: 1572864 op, 281775000.00 ns, 179.1477 ns/op
+WorkloadWarmup   4: 1572864 op, 239797100.00 ns, 152.4589 ns/op
+WorkloadWarmup   5: 1572864 op, 232904500.00 ns, 148.0767 ns/op
+
+// BeforeActualRun
+WorkloadActual   1: 1572864 op, 244235500.00 ns, 155.2807 ns/op
+WorkloadActual   2: 1572864 op, 240128900.00 ns, 152.6698 ns/op
+WorkloadActual   3: 1572864 op, 235190900.00 ns, 149.5303 ns/op
+WorkloadActual   4: 1572864 op, 277991200.00 ns, 176.7420 ns/op
+WorkloadActual   5: 1572864 op, 250992200.00 ns, 159.5765 ns/op
+WorkloadActual   6: 1572864 op, 238948000.00 ns, 151.9190 ns/op
+WorkloadActual   7: 1572864 op, 237593900.00 ns, 151.0581 ns/op
+WorkloadActual   8: 1572864 op, 239116600.00 ns, 152.0262 ns/op
+WorkloadActual   9: 1572864 op, 240289100.00 ns, 152.7717 ns/op
+WorkloadActual  10: 1572864 op, 241378900.00 ns, 153.4646 ns/op
+WorkloadActual  11: 1572864 op, 237677700.00 ns, 151.1114 ns/op
+WorkloadActual  12: 1572864 op, 234861000.00 ns, 149.3206 ns/op
+WorkloadActual  13: 1572864 op, 246588700.00 ns, 156.7769 ns/op
+WorkloadActual  14: 1572864 op, 233698900.00 ns, 148.5818 ns/op
+WorkloadActual  15: 1572864 op, 231843000.00 ns, 147.4018 ns/op
+
+// AfterActualRun
+WorkloadResult   1: 1572864 op, 244235500.00 ns, 155.2807 ns/op
+WorkloadResult   2: 1572864 op, 240128900.00 ns, 152.6698 ns/op
+WorkloadResult   3: 1572864 op, 235190900.00 ns, 149.5303 ns/op
+WorkloadResult   4: 1572864 op, 250992200.00 ns, 159.5765 ns/op
+WorkloadResult   5: 1572864 op, 238948000.00 ns, 151.9190 ns/op
+WorkloadResult   6: 1572864 op, 237593900.00 ns, 151.0581 ns/op
+WorkloadResult   7: 1572864 op, 239116600.00 ns, 152.0262 ns/op
+WorkloadResult   8: 1572864 op, 240289100.00 ns, 152.7717 ns/op
+WorkloadResult   9: 1572864 op, 241378900.00 ns, 153.4646 ns/op
+WorkloadResult  10: 1572864 op, 237677700.00 ns, 151.1114 ns/op
+WorkloadResult  11: 1572864 op, 234861000.00 ns, 149.3206 ns/op
+WorkloadResult  12: 1572864 op, 246588700.00 ns, 156.7769 ns/op
+WorkloadResult  13: 1572864 op, 233698900.00 ns, 148.5818 ns/op
+WorkloadResult  14: 1572864 op, 231843000.00 ns, 147.4018 ns/op
+// GC:  0 0 0 290112 1572864
+// Threading:  0 0 1572864
+
+STEADY_ALLOCATION mode=KeyBatchesDistinct records=261888 bytes=0
+// AfterAll
+// Benchmark Process 95420 has exited with code 0.
+
+Mean = 152.249 ns, StdErr = 0.880 ns (0.58%), N = 14, StdDev = 3.294 ns
+Min = 147.402 ns, Q1 = 149.912 ns, Median = 151.973 ns, Q3 = 153.291 ns, Max = 159.577 ns
+IQR = 3.379 ns, LowerFence = 144.844 ns, UpperFence = 158.360 ns
+ConfidenceInterval = [148.533 ns; 155.966 ns] (CI 99.9%), Margin = 3.716 ns (2.44% of Mean)
+Skewness = 0.61, Kurtosis = 2.58, MValue = 2
+
+// ** Remained 13 (54.2%) benchmark(s) to run. Estimated finish 2026-09-07 16:12 (0h 1m from now) **
+Setup power plan (GUID: 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c FriendlyName: High performance)
+// **************************
+// Benchmark: PartitionedLifetimeBenchmarks.ProcessLifetime: F_PredecessorControl(Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=F_PredecessorControl, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/predecessor,/p:UseSharedCompilation=false, IterationCount=15, IterationTime=250ms, WarmupCount=5) [Mode=KeyBatchesDistinct]
+// *** Execute ***
+// Launch: 1 / 1
+// Execute: dotnet Dekaf.Benchmarks-A_Predecessor-1.dll --anonymousPipes 1384 1648 --benchmarkName "Dekaf.Benchmarks.PartitionedLifetimeBenchmarks.ProcessLifetime(Mode: KeyBatchesDistinct)" --job F_PredecessorControl --benchmarkId 3 in C:\git\Dekaf-perf-improvements-20260907\pr-3117\comparison-v2\bin\Release\net10.0\Dekaf.Benchmarks-A_Predecessor-1\bin\Release\net10.0
+// BeforeAnythingElse
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.15.8
+// Runtime=.NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2+BMI1+BMI2+F16C+FMA+LZCNT+MOVBE,AVX,SSE3+SSSE3+SSE4.1+SSE4.2+POPCNT,X86Base+SSE+SSE2,AES+PCLMUL,AvxVnni,SERIALIZE VectorSize=256
+// Job: F_PredecessorControl(Affinity=100, IterationCount=15, IterationTime=250ms, WarmupCount=5)
+
+OverheadJitting  1: 262144 op, 232600.00 ns, 0.8873 ns/op
+WorkloadJitting  1: 262144 op, 40251700.00 ns, 153.5480 ns/op
+
+WorkloadPilot    1: 1048576 op, 163963800.00 ns, 156.3681 ns/op
+WorkloadPilot    2: 1572864 op, 244600300.00 ns, 155.5127 ns/op
+
+WorkloadWarmup   1: 1572864 op, 245787500.00 ns, 156.2675 ns/op
+WorkloadWarmup   2: 1572864 op, 248862000.00 ns, 158.2222 ns/op
+WorkloadWarmup   3: 1572864 op, 241902000.00 ns, 153.7971 ns/op
+WorkloadWarmup   4: 1572864 op, 241344800.00 ns, 153.4429 ns/op
+WorkloadWarmup   5: 1572864 op, 246616300.00 ns, 156.7944 ns/op
+
+// BeforeActualRun
+WorkloadActual   1: 1572864 op, 244505000.00 ns, 155.4521 ns/op
+WorkloadActual   2: 1572864 op, 247899400.00 ns, 157.6102 ns/op
+WorkloadActual   3: 1572864 op, 243037800.00 ns, 154.5193 ns/op
+WorkloadActual   4: 1572864 op, 243928600.00 ns, 155.0856 ns/op
+WorkloadActual   5: 1572864 op, 282584900.00 ns, 179.6626 ns/op
+WorkloadActual   6: 1572864 op, 250287700.00 ns, 159.1286 ns/op
+WorkloadActual   7: 1572864 op, 250494800.00 ns, 159.2603 ns/op
+WorkloadActual   8: 1572864 op, 247262700.00 ns, 157.2054 ns/op
+WorkloadActual   9: 1572864 op, 258190000.00 ns, 164.1528 ns/op
+WorkloadActual  10: 1572864 op, 245048900.00 ns, 155.7979 ns/op
+WorkloadActual  11: 1572864 op, 241437900.00 ns, 153.5021 ns/op
+WorkloadActual  12: 1572864 op, 244245500.00 ns, 155.2871 ns/op
+WorkloadActual  13: 1572864 op, 250523600.00 ns, 159.2786 ns/op
+WorkloadActual  14: 1572864 op, 285529700.00 ns, 181.5349 ns/op
+WorkloadActual  15: 1572864 op, 249898700.00 ns, 158.8813 ns/op
+
+// AfterActualRun
+WorkloadResult   1: 1572864 op, 244505000.00 ns, 155.4521 ns/op
+WorkloadResult   2: 1572864 op, 247899400.00 ns, 157.6102 ns/op
+WorkloadResult   3: 1572864 op, 243037800.00 ns, 154.5193 ns/op
+WorkloadResult   4: 1572864 op, 243928600.00 ns, 155.0856 ns/op
+WorkloadResult   5: 1572864 op, 250287700.00 ns, 159.1286 ns/op
+WorkloadResult   6: 1572864 op, 250494800.00 ns, 159.2603 ns/op
+WorkloadResult   7: 1572864 op, 247262700.00 ns, 157.2054 ns/op
+WorkloadResult   8: 1572864 op, 258190000.00 ns, 164.1528 ns/op
+WorkloadResult   9: 1572864 op, 245048900.00 ns, 155.7979 ns/op
+WorkloadResult  10: 1572864 op, 241437900.00 ns, 153.5021 ns/op
+WorkloadResult  11: 1572864 op, 244245500.00 ns, 155.2871 ns/op
+WorkloadResult  12: 1572864 op, 250523600.00 ns, 159.2786 ns/op
+WorkloadResult  13: 1572864 op, 249898700.00 ns, 158.8813 ns/op
+// GC:  0 0 0 290112 1572864
+// Threading:  0 0 1572864
+
+STEADY_ALLOCATION mode=KeyBatchesDistinct records=261888 bytes=0
+// AfterAll
+// Benchmark Process 100036 has exited with code 0.
+
+Mean = 157.320 ns, StdErr = 0.790 ns (0.50%), N = 13, StdDev = 2.850 ns
+Min = 153.502 ns, Q1 = 155.287 ns, Median = 157.205 ns, Q3 = 159.129 ns, Max = 164.153 ns
+IQR = 3.842 ns, LowerFence = 149.525 ns, UpperFence = 164.891 ns
+ConfidenceInterval = [153.908 ns; 160.733 ns] (CI 99.9%), Margin = 3.413 ns (2.17% of Mean)
+Skewness = 0.79, Kurtosis = 2.98, MValue = 2
+
+// ** Remained 12 (50.0%) benchmark(s) to run. Estimated finish 2026-09-07 16:12 (0h 1m from now) **
+Setup power plan (GUID: 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c FriendlyName: High performance)
+// **************************
+// Benchmark: PartitionedLifetimeBenchmarks.ProcessLifetime: A_Predecessor(Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=A_Predecessor, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/predecessor,/p:UseSharedCompilation=false, IterationCount=15, IterationTime=250ms, WarmupCount=5) [Mode=KeyRecordsPaired]
+// *** Execute ***
+// Launch: 1 / 1
+// Execute: dotnet Dekaf.Benchmarks-A_Predecessor-1.dll --anonymousPipes 1872 1424 --benchmarkName "Dekaf.Benchmarks.PartitionedLifetimeBenchmarks.ProcessLifetime(Mode: KeyRecordsPaired)" --job A_Predecessor --benchmarkId 4 in C:\git\Dekaf-perf-improvements-20260907\pr-3117\comparison-v2\bin\Release\net10.0\Dekaf.Benchmarks-A_Predecessor-1\bin\Release\net10.0
+// BeforeAnythingElse
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.15.8
+// Runtime=.NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2+BMI1+BMI2+F16C+FMA+LZCNT+MOVBE,AVX,SSE3+SSSE3+SSE4.1+SSE4.2+POPCNT,X86Base+SSE+SSE2,AES+PCLMUL,AvxVnni,SERIALIZE VectorSize=256
+// Job: A_Predecessor(Affinity=100, IterationCount=15, IterationTime=250ms, WarmupCount=5)
+
+OverheadJitting  1: 262144 op, 192700.00 ns, 0.7351 ns/op
+WorkloadJitting  1: 262144 op, 45414900.00 ns, 173.2441 ns/op
+
+WorkloadPilot    1: 1048576 op, 179078400.00 ns, 170.7825 ns/op
+WorkloadPilot    2: 1572864 op, 266759100.00 ns, 169.6009 ns/op
+
+WorkloadWarmup   1: 1572864 op, 311546700.00 ns, 198.0761 ns/op
+WorkloadWarmup   2: 1572864 op, 280312800.00 ns, 178.2181 ns/op
+WorkloadWarmup   3: 1572864 op, 273613400.00 ns, 173.9587 ns/op
+WorkloadWarmup   4: 1572864 op, 266515200.00 ns, 169.4458 ns/op
+WorkloadWarmup   5: 1572864 op, 275878500.00 ns, 175.3988 ns/op
+
+// BeforeActualRun
+WorkloadActual   1: 1572864 op, 274534900.00 ns, 174.5446 ns/op
+WorkloadActual   2: 1572864 op, 274111300.00 ns, 174.2753 ns/op
+WorkloadActual   3: 1572864 op, 278860900.00 ns, 177.2950 ns/op
+WorkloadActual   4: 1572864 op, 272760300.00 ns, 173.4163 ns/op
+WorkloadActual   5: 1572864 op, 269581300.00 ns, 171.3952 ns/op
+WorkloadActual   6: 1572864 op, 270258700.00 ns, 171.8259 ns/op
+WorkloadActual   7: 1572864 op, 272773100.00 ns, 173.4245 ns/op
+WorkloadActual   8: 1572864 op, 272512400.00 ns, 173.2587 ns/op
+WorkloadActual   9: 1572864 op, 263018100.00 ns, 167.2224 ns/op
+WorkloadActual  10: 1572864 op, 265252700.00 ns, 168.6431 ns/op
+WorkloadActual  11: 1572864 op, 266771300.00 ns, 169.6086 ns/op
+WorkloadActual  12: 1572864 op, 269646000.00 ns, 171.4363 ns/op
+WorkloadActual  13: 1572864 op, 267097700.00 ns, 169.8161 ns/op
+WorkloadActual  14: 1572864 op, 273508100.00 ns, 173.8918 ns/op
+WorkloadActual  15: 1572864 op, 266369900.00 ns, 169.3534 ns/op
+
+// AfterActualRun
+WorkloadResult   1: 1572864 op, 274534900.00 ns, 174.5446 ns/op
+WorkloadResult   2: 1572864 op, 274111300.00 ns, 174.2753 ns/op
+WorkloadResult   3: 1572864 op, 278860900.00 ns, 177.2950 ns/op
+WorkloadResult   4: 1572864 op, 272760300.00 ns, 173.4163 ns/op
+WorkloadResult   5: 1572864 op, 269581300.00 ns, 171.3952 ns/op
+WorkloadResult   6: 1572864 op, 270258700.00 ns, 171.8259 ns/op
+WorkloadResult   7: 1572864 op, 272773100.00 ns, 173.4245 ns/op
+WorkloadResult   8: 1572864 op, 272512400.00 ns, 173.2587 ns/op
+WorkloadResult   9: 1572864 op, 263018100.00 ns, 167.2224 ns/op
+WorkloadResult  10: 1572864 op, 265252700.00 ns, 168.6431 ns/op
+WorkloadResult  11: 1572864 op, 266771300.00 ns, 169.6086 ns/op
+WorkloadResult  12: 1572864 op, 269646000.00 ns, 171.4363 ns/op
+WorkloadResult  13: 1572864 op, 267097700.00 ns, 169.8161 ns/op
+WorkloadResult  14: 1572864 op, 273508100.00 ns, 173.8918 ns/op
+WorkloadResult  15: 1572864 op, 266369900.00 ns, 169.3534 ns/op
+// GC:  0 0 0 284064 1572864
+// Threading:  0 0 1572864
+
+STEADY_ALLOCATION mode=KeyRecordsPaired records=261888 bytes=0
+// AfterAll
+// Benchmark Process 94920 has exited with code 0.
+
+Mean = 171.960 ns, StdErr = 0.694 ns (0.40%), N = 15, StdDev = 2.688 ns
+Min = 167.222 ns, Q1 = 169.712 ns, Median = 171.826 ns, Q3 = 173.658 ns, Max = 177.295 ns
+IQR = 3.946 ns, LowerFence = 163.794 ns, UpperFence = 179.577 ns
+ConfidenceInterval = [169.087 ns; 174.834 ns] (CI 99.9%), Margin = 2.874 ns (1.67% of Mean)
+Skewness = 0.05, Kurtosis = 2.08, MValue = 2
+
+// ** Remained 11 (45.8%) benchmark(s) to run. Estimated finish 2026-09-07 16:12 (0h 1m from now) **
+Setup power plan (GUID: 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c FriendlyName: High performance)
+// **************************
+// Benchmark: PartitionedLifetimeBenchmarks.ProcessLifetime: B_Published(Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=B_Published, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/published,/p:UseSharedCompilation=false, IterationCount=15, IterationTime=250ms, WarmupCount=5) [Mode=KeyRecordsPaired]
+// *** Execute ***
+// Launch: 1 / 1
+// Execute: dotnet Dekaf.Benchmarks-B_Published-2.dll --anonymousPipes 1352 1348 --benchmarkName "Dekaf.Benchmarks.PartitionedLifetimeBenchmarks.ProcessLifetime(Mode: KeyRecordsPaired)" --job B_Published --benchmarkId 4 in C:\git\Dekaf-perf-improvements-20260907\pr-3117\comparison-v2\bin\Release\net10.0\Dekaf.Benchmarks-B_Published-2\bin\Release\net10.0
+// BeforeAnythingElse
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.15.8
+// Runtime=.NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2+BMI1+BMI2+F16C+FMA+LZCNT+MOVBE,AVX,SSE3+SSSE3+SSE4.1+SSE4.2+POPCNT,X86Base+SSE+SSE2,AES+PCLMUL,AvxVnni,SERIALIZE VectorSize=256
+// Job: B_Published(Affinity=100, IterationCount=15, IterationTime=250ms, WarmupCount=5)
+
+OverheadJitting  1: 262144 op, 167800.00 ns, 0.6401 ns/op
+WorkloadJitting  1: 262144 op, 45785500.00 ns, 174.6578 ns/op
+
+WorkloadPilot    1: 1048576 op, 213884100.00 ns, 203.9758 ns/op
+
+WorkloadWarmup   1: 1048576 op, 178285000.00 ns, 170.0258 ns/op
+WorkloadWarmup   2: 1048576 op, 172452100.00 ns, 164.4631 ns/op
+WorkloadWarmup   3: 1048576 op, 170092100.00 ns, 162.2125 ns/op
+WorkloadWarmup   4: 1048576 op, 171468800.00 ns, 163.5254 ns/op
+WorkloadWarmup   5: 1048576 op, 180033200.00 ns, 171.6930 ns/op
+
+// BeforeActualRun
+WorkloadActual   1: 1048576 op, 182769000.00 ns, 174.3021 ns/op
+WorkloadActual   2: 1048576 op, 169626000.00 ns, 161.7680 ns/op
+WorkloadActual   3: 1048576 op, 169844300.00 ns, 161.9761 ns/op
+WorkloadActual   4: 1048576 op, 169739800.00 ns, 161.8765 ns/op
+WorkloadActual   5: 1048576 op, 169823600.00 ns, 161.9564 ns/op
+WorkloadActual   6: 1048576 op, 175349800.00 ns, 167.2266 ns/op
+WorkloadActual   7: 1048576 op, 177439400.00 ns, 169.2194 ns/op
+WorkloadActual   8: 1048576 op, 208681200.00 ns, 199.0139 ns/op
+WorkloadActual   9: 1048576 op, 169793600.00 ns, 161.9278 ns/op
+WorkloadActual  10: 1048576 op, 170890200.00 ns, 162.9736 ns/op
+WorkloadActual  11: 1048576 op, 170432400.00 ns, 162.5370 ns/op
+WorkloadActual  12: 1048576 op, 170309200.00 ns, 162.4195 ns/op
+WorkloadActual  13: 1048576 op, 170928700.00 ns, 163.0103 ns/op
+WorkloadActual  14: 1048576 op, 169221500.00 ns, 161.3822 ns/op
+WorkloadActual  15: 1048576 op, 168719000.00 ns, 160.9030 ns/op
+
+// AfterActualRun
+WorkloadResult   1: 1048576 op, 169626000.00 ns, 161.7680 ns/op
+WorkloadResult   2: 1048576 op, 169844300.00 ns, 161.9761 ns/op
+WorkloadResult   3: 1048576 op, 169739800.00 ns, 161.8765 ns/op
+WorkloadResult   4: 1048576 op, 169823600.00 ns, 161.9564 ns/op
+WorkloadResult   5: 1048576 op, 175349800.00 ns, 167.2266 ns/op
+WorkloadResult   6: 1048576 op, 177439400.00 ns, 169.2194 ns/op
+WorkloadResult   7: 1048576 op, 169793600.00 ns, 161.9278 ns/op
+WorkloadResult   8: 1048576 op, 170890200.00 ns, 162.9736 ns/op
+WorkloadResult   9: 1048576 op, 170432400.00 ns, 162.5370 ns/op
+WorkloadResult  10: 1048576 op, 170309200.00 ns, 162.4195 ns/op
+WorkloadResult  11: 1048576 op, 170928700.00 ns, 163.0103 ns/op
+WorkloadResult  12: 1048576 op, 169221500.00 ns, 161.3822 ns/op
+WorkloadResult  13: 1048576 op, 168719000.00 ns, 160.9030 ns/op
+// GC:  0 0 0 189488 1048576
+// Threading:  0 0 1048576
+
+STEADY_ALLOCATION mode=KeyRecordsPaired records=261888 bytes=0
+// AfterAll
+// Benchmark Process 78824 has exited with code 0.
+
+Mean = 163.014 ns, StdErr = 0.671 ns (0.41%), N = 13, StdDev = 2.418 ns
+Min = 160.903 ns, Q1 = 161.876 ns, Median = 161.976 ns, Q3 = 162.974 ns, Max = 169.219 ns
+IQR = 1.097 ns, LowerFence = 160.231 ns, UpperFence = 164.619 ns
+ConfidenceInterval = [160.118 ns; 165.910 ns] (CI 99.9%), Margin = 2.896 ns (1.78% of Mean)
+Skewness = 1.59, Kurtosis = 4.12, MValue = 2
+
+// ** Remained 10 (41.7%) benchmark(s) to run. Estimated finish 2026-09-07 16:12 (0h 0m from now) **
+Setup power plan (GUID: 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c FriendlyName: High performance)
+// **************************
+// Benchmark: PartitionedLifetimeBenchmarks.ProcessLifetime: C_SingleProbe(Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=C_SingleProbe, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/candidate,/p:UseSharedCompilation=false, IterationCount=15, IterationTime=250ms, WarmupCount=5) [Mode=KeyRecordsPaired]
+// *** Execute ***
+// Launch: 1 / 1
+// Execute: dotnet Dekaf.Benchmarks-C_SingleProbe-3.dll --anonymousPipes 1584 1512 --benchmarkName "Dekaf.Benchmarks.PartitionedLifetimeBenchmarks.ProcessLifetime(Mode: KeyRecordsPaired)" --job C_SingleProbe --benchmarkId 2 in C:\git\Dekaf-perf-improvements-20260907\pr-3117\comparison-v2\bin\Release\net10.0\Dekaf.Benchmarks-C_SingleProbe-3\bin\Release\net10.0
+// BeforeAnythingElse
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.15.8
+// Runtime=.NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2+BMI1+BMI2+F16C+FMA+LZCNT+MOVBE,AVX,SSE3+SSSE3+SSE4.1+SSE4.2+POPCNT,X86Base+SSE+SSE2,AES+PCLMUL,AvxVnni,SERIALIZE VectorSize=256
+// Job: C_SingleProbe(Affinity=100, IterationCount=15, IterationTime=250ms, WarmupCount=5)
+
+OverheadJitting  1: 262144 op, 172400.00 ns, 0.6577 ns/op
+WorkloadJitting  1: 262144 op, 43609300.00 ns, 166.3563 ns/op
+
+WorkloadPilot    1: 1048576 op, 171115400.00 ns, 163.1884 ns/op
+WorkloadPilot    2: 1572864 op, 257107700.00 ns, 163.4647 ns/op
+
+WorkloadWarmup   1: 1572864 op, 259946600.00 ns, 165.2696 ns/op
+WorkloadWarmup   2: 1572864 op, 264369100.00 ns, 168.0813 ns/op
+WorkloadWarmup   3: 1572864 op, 255974900.00 ns, 162.7445 ns/op
+WorkloadWarmup   4: 1572864 op, 255493800.00 ns, 162.4386 ns/op
+WorkloadWarmup   5: 1572864 op, 258255200.00 ns, 164.1942 ns/op
+
+// BeforeActualRun
+WorkloadActual   1: 1572864 op, 259540800.00 ns, 165.0116 ns/op
+WorkloadActual   2: 1572864 op, 253388000.00 ns, 161.0998 ns/op
+WorkloadActual   3: 1572864 op, 256022100.00 ns, 162.7745 ns/op
+WorkloadActual   4: 1572864 op, 255445600.00 ns, 162.4079 ns/op
+WorkloadActual   5: 1572864 op, 257784100.00 ns, 163.8947 ns/op
+WorkloadActual   6: 1572864 op, 255711000.00 ns, 162.5767 ns/op
+WorkloadActual   7: 1572864 op, 254990900.00 ns, 162.1188 ns/op
+WorkloadActual   8: 1572864 op, 262268400.00 ns, 166.7458 ns/op
+WorkloadActual   9: 1572864 op, 255069800.00 ns, 162.1690 ns/op
+WorkloadActual  10: 1572864 op, 254362400.00 ns, 161.7193 ns/op
+WorkloadActual  11: 1572864 op, 257354900.00 ns, 163.6218 ns/op
+WorkloadActual  12: 1572864 op, 256485300.00 ns, 163.0690 ns/op
+WorkloadActual  13: 1572864 op, 256982300.00 ns, 163.3849 ns/op
+WorkloadActual  14: 1572864 op, 255279600.00 ns, 162.3024 ns/op
+WorkloadActual  15: 1572864 op, 254104200.00 ns, 161.5551 ns/op
+
+// AfterActualRun
+WorkloadResult   1: 1572864 op, 259540800.00 ns, 165.0116 ns/op
+WorkloadResult   2: 1572864 op, 253388000.00 ns, 161.0998 ns/op
+WorkloadResult   3: 1572864 op, 256022100.00 ns, 162.7745 ns/op
+WorkloadResult   4: 1572864 op, 255445600.00 ns, 162.4079 ns/op
+WorkloadResult   5: 1572864 op, 257784100.00 ns, 163.8947 ns/op
+WorkloadResult   6: 1572864 op, 255711000.00 ns, 162.5767 ns/op
+WorkloadResult   7: 1572864 op, 254990900.00 ns, 162.1188 ns/op
+WorkloadResult   8: 1572864 op, 255069800.00 ns, 162.1690 ns/op
+WorkloadResult   9: 1572864 op, 254362400.00 ns, 161.7193 ns/op
+WorkloadResult  10: 1572864 op, 257354900.00 ns, 163.6218 ns/op
+WorkloadResult  11: 1572864 op, 256485300.00 ns, 163.0690 ns/op
+WorkloadResult  12: 1572864 op, 256982300.00 ns, 163.3849 ns/op
+WorkloadResult  13: 1572864 op, 255279600.00 ns, 162.3024 ns/op
+WorkloadResult  14: 1572864 op, 254104200.00 ns, 161.5551 ns/op
+// GC:  0 0 0 284064 1572864
+// Threading:  0 0 1572864
+
+STEADY_ALLOCATION mode=KeyRecordsPaired records=261888 bytes=0
+// AfterAll
+// Benchmark Process 113896 has exited with code 0.
+
+Mean = 162.693 ns, StdErr = 0.277 ns (0.17%), N = 14, StdDev = 1.036 ns
+Min = 161.100 ns, Q1 = 162.131 ns, Median = 162.492 ns, Q3 = 163.306 ns, Max = 165.012 ns
+IQR = 1.175 ns, LowerFence = 160.370 ns, UpperFence = 165.068 ns
+ConfidenceInterval = [161.525 ns; 163.861 ns] (CI 99.9%), Margin = 1.168 ns (0.72% of Mean)
+Skewness = 0.55, Kurtosis = 2.56, MValue = 2
+
+// ** Remained 9 (37.5%) benchmark(s) to run. Estimated finish 2026-09-07 16:12 (0h 0m from now) **
+Setup power plan (GUID: 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c FriendlyName: High performance)
+// **************************
+// Benchmark: PartitionedLifetimeBenchmarks.ProcessLifetime: D_ClearOnce(Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=D_ClearOnce, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/candidate-v2,/p:UseSharedCompilation=false, IterationCount=15, IterationTime=250ms, WarmupCount=5) [Mode=KeyRecordsPaired]
+// *** Execute ***
+// Launch: 1 / 1
+// Execute: dotnet Dekaf.Benchmarks-D_ClearOnce-4.dll --anonymousPipes 1584 1512 --benchmarkName "Dekaf.Benchmarks.PartitionedLifetimeBenchmarks.ProcessLifetime(Mode: KeyRecordsPaired)" --job D_ClearOnce --benchmarkId 2 in C:\git\Dekaf-perf-improvements-20260907\pr-3117\comparison-v2\bin\Release\net10.0\Dekaf.Benchmarks-D_ClearOnce-4\bin\Release\net10.0
+// BeforeAnythingElse
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.15.8
+// Runtime=.NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2+BMI1+BMI2+F16C+FMA+LZCNT+MOVBE,AVX,SSE3+SSSE3+SSE4.1+SSE4.2+POPCNT,X86Base+SSE+SSE2,AES+PCLMUL,AvxVnni,SERIALIZE VectorSize=256
+// Job: D_ClearOnce(Affinity=100, IterationCount=15, IterationTime=250ms, WarmupCount=5)
+
+OverheadJitting  1: 262144 op, 161400.00 ns, 0.6157 ns/op
+WorkloadJitting  1: 262144 op, 42950300.00 ns, 163.8424 ns/op
+
+WorkloadPilot    1: 1048576 op, 181758600.00 ns, 173.3385 ns/op
+WorkloadPilot    2: 1572864 op, 280751100.00 ns, 178.4967 ns/op
+
+WorkloadWarmup   1: 1572864 op, 283204300.00 ns, 180.0564 ns/op
+WorkloadWarmup   2: 1572864 op, 274225500.00 ns, 174.3479 ns/op
+WorkloadWarmup   3: 1572864 op, 273409500.00 ns, 173.8291 ns/op
+WorkloadWarmup   4: 1572864 op, 278635300.00 ns, 177.1516 ns/op
+WorkloadWarmup   5: 1572864 op, 311557900.00 ns, 198.0832 ns/op
+
+// BeforeActualRun
+WorkloadActual   1: 1572864 op, 272152500.00 ns, 173.0299 ns/op
+WorkloadActual   2: 1572864 op, 276488700.00 ns, 175.7868 ns/op
+WorkloadActual   3: 1572864 op, 277627200.00 ns, 176.5106 ns/op
+WorkloadActual   4: 1572864 op, 274302400.00 ns, 174.3968 ns/op
+WorkloadActual   5: 1572864 op, 298378100.00 ns, 189.7037 ns/op
+WorkloadActual   6: 1572864 op, 291110000.00 ns, 185.0828 ns/op
+WorkloadActual   7: 1572864 op, 276274100.00 ns, 175.6503 ns/op
+WorkloadActual   8: 1572864 op, 274296400.00 ns, 174.3930 ns/op
+WorkloadActual   9: 1572864 op, 275573100.00 ns, 175.2047 ns/op
+WorkloadActual  10: 1572864 op, 277731400.00 ns, 176.5769 ns/op
+WorkloadActual  11: 1572864 op, 272557900.00 ns, 173.2876 ns/op
+WorkloadActual  12: 1572864 op, 272646400.00 ns, 173.3439 ns/op
+WorkloadActual  13: 1572864 op, 280123700.00 ns, 178.0979 ns/op
+WorkloadActual  14: 1572864 op, 275198200.00 ns, 174.9663 ns/op
+WorkloadActual  15: 1572864 op, 273095400.00 ns, 173.6294 ns/op
+
+// AfterActualRun
+WorkloadResult   1: 1572864 op, 272152500.00 ns, 173.0299 ns/op
+WorkloadResult   2: 1572864 op, 276488700.00 ns, 175.7868 ns/op
+WorkloadResult   3: 1572864 op, 277627200.00 ns, 176.5106 ns/op
+WorkloadResult   4: 1572864 op, 274302400.00 ns, 174.3968 ns/op
+WorkloadResult   5: 1572864 op, 276274100.00 ns, 175.6503 ns/op
+WorkloadResult   6: 1572864 op, 274296400.00 ns, 174.3930 ns/op
+WorkloadResult   7: 1572864 op, 275573100.00 ns, 175.2047 ns/op
+WorkloadResult   8: 1572864 op, 277731400.00 ns, 176.5769 ns/op
+WorkloadResult   9: 1572864 op, 272557900.00 ns, 173.2876 ns/op
+WorkloadResult  10: 1572864 op, 272646400.00 ns, 173.3439 ns/op
+WorkloadResult  11: 1572864 op, 280123700.00 ns, 178.0979 ns/op
+WorkloadResult  12: 1572864 op, 275198200.00 ns, 174.9663 ns/op
+WorkloadResult  13: 1572864 op, 273095400.00 ns, 173.6294 ns/op
+// GC:  0 0 0 284064 1572864
+// Threading:  0 0 1572864
+
+STEADY_ALLOCATION mode=KeyRecordsPaired records=261888 bytes=0
+// AfterAll
+// Benchmark Process 85052 has exited with code 0.
+
+Mean = 174.990 ns, StdErr = 0.421 ns (0.24%), N = 13, StdDev = 1.517 ns
+Min = 173.030 ns, Q1 = 173.629 ns, Median = 174.966 ns, Q3 = 175.787 ns, Max = 178.098 ns
+IQR = 2.157 ns, LowerFence = 170.393 ns, UpperFence = 179.023 ns
+ConfidenceInterval = [173.174 ns; 176.807 ns] (CI 99.9%), Margin = 1.817 ns (1.04% of Mean)
+Skewness = 0.41, Kurtosis = 2.03, MValue = 2
+
+// ** Remained 8 (33.3%) benchmark(s) to run. Estimated finish 2026-09-07 16:12 (0h 0m from now) **
+Setup power plan (GUID: 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c FriendlyName: High performance)
+// **************************
+// Benchmark: PartitionedLifetimeBenchmarks.ProcessLifetime: E_PublishedControl(Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=E_PublishedControl, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/published,/p:UseSharedCompilation=false, IterationCount=15, IterationTime=250ms, WarmupCount=5) [Mode=KeyRecordsPaired]
+// *** Execute ***
+// Launch: 1 / 1
+// Execute: dotnet Dekaf.Benchmarks-B_Published-2.dll --anonymousPipes 1524 1376 --benchmarkName "Dekaf.Benchmarks.PartitionedLifetimeBenchmarks.ProcessLifetime(Mode: KeyRecordsPaired)" --job E_PublishedControl --benchmarkId 5 in C:\git\Dekaf-perf-improvements-20260907\pr-3117\comparison-v2\bin\Release\net10.0\Dekaf.Benchmarks-B_Published-2\bin\Release\net10.0
+// BeforeAnythingElse
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.15.8
+// Runtime=.NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2+BMI1+BMI2+F16C+FMA+LZCNT+MOVBE,AVX,SSE3+SSSE3+SSE4.1+SSE4.2+POPCNT,X86Base+SSE+SSE2,AES+PCLMUL,AvxVnni,SERIALIZE VectorSize=256
+// Job: E_PublishedControl(Affinity=100, IterationCount=15, IterationTime=250ms, WarmupCount=5)
+
+OverheadJitting  1: 262144 op, 169500.00 ns, 0.6466 ns/op
+WorkloadJitting  1: 262144 op, 43944000.00 ns, 167.6331 ns/op
+
+WorkloadPilot    1: 1048576 op, 173360700.00 ns, 165.3296 ns/op
+WorkloadPilot    2: 1572864 op, 254166300.00 ns, 161.5946 ns/op
+
+WorkloadWarmup   1: 1572864 op, 257096000.00 ns, 163.4572 ns/op
+WorkloadWarmup   2: 1572864 op, 254757400.00 ns, 161.9704 ns/op
+WorkloadWarmup   3: 1572864 op, 257231600.00 ns, 163.5434 ns/op
+WorkloadWarmup   4: 1572864 op, 254595300.00 ns, 161.8673 ns/op
+WorkloadWarmup   5: 1572864 op, 256244800.00 ns, 162.9161 ns/op
+
+// BeforeActualRun
+WorkloadActual   1: 1572864 op, 255793300.00 ns, 162.6290 ns/op
+WorkloadActual   2: 1572864 op, 254267600.00 ns, 161.6590 ns/op
+WorkloadActual   3: 1572864 op, 252824500.00 ns, 160.7415 ns/op
+WorkloadActual   4: 1572864 op, 290452800.00 ns, 184.6649 ns/op
+WorkloadActual   5: 1572864 op, 265238000.00 ns, 168.6338 ns/op
+WorkloadActual   6: 1572864 op, 258556200.00 ns, 164.3856 ns/op
+WorkloadActual   7: 1572864 op, 257927700.00 ns, 163.9860 ns/op
+WorkloadActual   8: 1572864 op, 271423500.00 ns, 172.5664 ns/op
+WorkloadActual   9: 1572864 op, 257783200.00 ns, 163.8941 ns/op
+WorkloadActual  10: 1572864 op, 258516600.00 ns, 164.3604 ns/op
+WorkloadActual  11: 1572864 op, 259094800.00 ns, 164.7280 ns/op
+WorkloadActual  12: 1572864 op, 268692300.00 ns, 170.8300 ns/op
+WorkloadActual  13: 1572864 op, 306261300.00 ns, 194.7157 ns/op
+WorkloadActual  14: 1572864 op, 258522300.00 ns, 164.3641 ns/op
+WorkloadActual  15: 1572864 op, 261389400.00 ns, 166.1869 ns/op
+
+// AfterActualRun
+WorkloadResult   1: 1572864 op, 255793300.00 ns, 162.6290 ns/op
+WorkloadResult   2: 1572864 op, 254267600.00 ns, 161.6590 ns/op
+WorkloadResult   3: 1572864 op, 252824500.00 ns, 160.7415 ns/op
+WorkloadResult   4: 1572864 op, 265238000.00 ns, 168.6338 ns/op
+WorkloadResult   5: 1572864 op, 258556200.00 ns, 164.3856 ns/op
+WorkloadResult   6: 1572864 op, 257927700.00 ns, 163.9860 ns/op
+WorkloadResult   7: 1572864 op, 271423500.00 ns, 172.5664 ns/op
+WorkloadResult   8: 1572864 op, 257783200.00 ns, 163.8941 ns/op
+WorkloadResult   9: 1572864 op, 258516600.00 ns, 164.3604 ns/op
+WorkloadResult  10: 1572864 op, 259094800.00 ns, 164.7280 ns/op
+WorkloadResult  11: 1572864 op, 268692300.00 ns, 170.8300 ns/op
+WorkloadResult  12: 1572864 op, 258522300.00 ns, 164.3641 ns/op
+WorkloadResult  13: 1572864 op, 261389400.00 ns, 166.1869 ns/op
+// GC:  0 0 0 284064 1572864
+// Threading:  0 0 1572864
+
+STEADY_ALLOCATION mode=KeyRecordsPaired records=261888 bytes=0
+// AfterAll
+// Benchmark Process 62972 has exited with code 0.
+
+Mean = 165.305 ns, StdErr = 0.958 ns (0.58%), N = 13, StdDev = 3.453 ns
+Min = 160.741 ns, Q1 = 163.894 ns, Median = 164.364 ns, Q3 = 166.187 ns, Max = 172.566 ns
+IQR = 2.293 ns, LowerFence = 160.455 ns, UpperFence = 169.626 ns
+ConfidenceInterval = [161.170 ns; 169.440 ns] (CI 99.9%), Margin = 4.135 ns (2.50% of Mean)
+Skewness = 0.78, Kurtosis = 2.44, MValue = 2
+
+// ** Remained 7 (29.2%) benchmark(s) to run. Estimated finish 2026-09-07 16:12 (0h 0m from now) **
+Setup power plan (GUID: 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c FriendlyName: High performance)
+// **************************
+// Benchmark: PartitionedLifetimeBenchmarks.ProcessLifetime: F_PredecessorControl(Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=F_PredecessorControl, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/predecessor,/p:UseSharedCompilation=false, IterationCount=15, IterationTime=250ms, WarmupCount=5) [Mode=KeyRecordsPaired]
+// *** Execute ***
+// Launch: 1 / 1
+// Execute: dotnet Dekaf.Benchmarks-A_Predecessor-1.dll --anonymousPipes 1812 1344 --benchmarkName "Dekaf.Benchmarks.PartitionedLifetimeBenchmarks.ProcessLifetime(Mode: KeyRecordsPaired)" --job F_PredecessorControl --benchmarkId 5 in C:\git\Dekaf-perf-improvements-20260907\pr-3117\comparison-v2\bin\Release\net10.0\Dekaf.Benchmarks-A_Predecessor-1\bin\Release\net10.0
+// BeforeAnythingElse
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.15.8
+// Runtime=.NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2+BMI1+BMI2+F16C+FMA+LZCNT+MOVBE,AVX,SSE3+SSSE3+SSE4.1+SSE4.2+POPCNT,X86Base+SSE+SSE2,AES+PCLMUL,AvxVnni,SERIALIZE VectorSize=256
+// Job: F_PredecessorControl(Affinity=100, IterationCount=15, IterationTime=250ms, WarmupCount=5)
+
+OverheadJitting  1: 262144 op, 165700.00 ns, 0.6321 ns/op
+WorkloadJitting  1: 262144 op, 45983800.00 ns, 175.4143 ns/op
+
+WorkloadPilot    1: 1048576 op, 212779300.00 ns, 202.9222 ns/op
+
+WorkloadWarmup   1: 1048576 op, 185893800.00 ns, 177.2821 ns/op
+WorkloadWarmup   2: 1048576 op, 189040400.00 ns, 180.2830 ns/op
+WorkloadWarmup   3: 1048576 op, 178022300.00 ns, 169.7753 ns/op
+WorkloadWarmup   4: 1048576 op, 180490000.00 ns, 172.1287 ns/op
+WorkloadWarmup   5: 1048576 op, 179366400.00 ns, 171.0571 ns/op
+
+// BeforeActualRun
+WorkloadActual   1: 1048576 op, 180504500.00 ns, 172.1425 ns/op
+WorkloadActual   2: 1048576 op, 189822100.00 ns, 181.0285 ns/op
+WorkloadActual   3: 1048576 op, 179762400.00 ns, 171.4348 ns/op
+WorkloadActual   4: 1048576 op, 180763200.00 ns, 172.3892 ns/op
+WorkloadActual   5: 1048576 op, 182621800.00 ns, 174.1617 ns/op
+WorkloadActual   6: 1048576 op, 183687700.00 ns, 175.1782 ns/op
+WorkloadActual   7: 1048576 op, 186716800.00 ns, 178.0670 ns/op
+WorkloadActual   8: 1048576 op, 180971400.00 ns, 172.5878 ns/op
+WorkloadActual   9: 1048576 op, 179488300.00 ns, 171.1734 ns/op
+WorkloadActual  10: 1048576 op, 179348500.00 ns, 171.0401 ns/op
+WorkloadActual  11: 1048576 op, 179349800.00 ns, 171.0413 ns/op
+WorkloadActual  12: 1048576 op, 178915000.00 ns, 170.6266 ns/op
+WorkloadActual  13: 1048576 op, 180048400.00 ns, 171.7075 ns/op
+WorkloadActual  14: 1048576 op, 180064000.00 ns, 171.7224 ns/op
+WorkloadActual  15: 1048576 op, 180357700.00 ns, 172.0025 ns/op
+
+// AfterActualRun
+WorkloadResult   1: 1048576 op, 180504500.00 ns, 172.1425 ns/op
+WorkloadResult   2: 1048576 op, 179762400.00 ns, 171.4348 ns/op
+WorkloadResult   3: 1048576 op, 180763200.00 ns, 172.3892 ns/op
+WorkloadResult   4: 1048576 op, 182621800.00 ns, 174.1617 ns/op
+WorkloadResult   5: 1048576 op, 183687700.00 ns, 175.1782 ns/op
+WorkloadResult   6: 1048576 op, 180971400.00 ns, 172.5878 ns/op
+WorkloadResult   7: 1048576 op, 179488300.00 ns, 171.1734 ns/op
+WorkloadResult   8: 1048576 op, 179348500.00 ns, 171.0401 ns/op
+WorkloadResult   9: 1048576 op, 179349800.00 ns, 171.0413 ns/op
+WorkloadResult  10: 1048576 op, 178915000.00 ns, 170.6266 ns/op
+WorkloadResult  11: 1048576 op, 180048400.00 ns, 171.7075 ns/op
+WorkloadResult  12: 1048576 op, 180064000.00 ns, 171.7224 ns/op
+WorkloadResult  13: 1048576 op, 180357700.00 ns, 172.0025 ns/op
+// GC:  0 0 0 189488 1048576
+// Threading:  0 0 1048576
+
+STEADY_ALLOCATION mode=KeyRecordsPaired records=261888 bytes=0
+// AfterAll
+// Benchmark Process 93100 has exited with code 0.
+
+Mean = 172.093 ns, StdErr = 0.359 ns (0.21%), N = 13, StdDev = 1.293 ns
+Min = 170.627 ns, Q1 = 171.173 ns, Median = 171.722 ns, Q3 = 172.389 ns, Max = 175.178 ns
+IQR = 1.216 ns, LowerFence = 169.350 ns, UpperFence = 174.213 ns
+ConfidenceInterval = [170.544 ns; 173.642 ns] (CI 99.9%), Margin = 1.549 ns (0.90% of Mean)
+Skewness = 1.13, Kurtosis = 3.22, MValue = 2
+
+// ** Remained 6 (25.0%) benchmark(s) to run. Estimated finish 2026-09-07 16:12 (0h 0m from now) **
+Setup power plan (GUID: 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c FriendlyName: High performance)
+// **************************
+// Benchmark: PartitionedLifetimeBenchmarks.ProcessLifetime: A_Predecessor(Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=A_Predecessor, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/predecessor,/p:UseSharedCompilation=false, IterationCount=15, IterationTime=250ms, WarmupCount=5) [Mode=KeyBatchesPaired]
+// *** Execute ***
+// Launch: 1 / 1
+// Execute: dotnet Dekaf.Benchmarks-A_Predecessor-1.dll --anonymousPipes 1860 1152 --benchmarkName "Dekaf.Benchmarks.PartitionedLifetimeBenchmarks.ProcessLifetime(Mode: KeyBatchesPaired)" --job A_Predecessor --benchmarkId 6 in C:\git\Dekaf-perf-improvements-20260907\pr-3117\comparison-v2\bin\Release\net10.0\Dekaf.Benchmarks-A_Predecessor-1\bin\Release\net10.0
+// BeforeAnythingElse
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.15.8
+// Runtime=.NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2+BMI1+BMI2+F16C+FMA+LZCNT+MOVBE,AVX,SSE3+SSSE3+SSE4.1+SSE4.2+POPCNT,X86Base+SSE+SSE2,AES+PCLMUL,AvxVnni,SERIALIZE VectorSize=256
+// Job: A_Predecessor(Affinity=100, IterationCount=15, IterationTime=250ms, WarmupCount=5)
+
+OverheadJitting  1: 262144 op, 167100.00 ns, 0.6374 ns/op
+WorkloadJitting  1: 262144 op, 44874400.00 ns, 171.1823 ns/op
+
+WorkloadPilot    1: 1048576 op, 174199600.00 ns, 166.1297 ns/op
+WorkloadPilot    2: 1572864 op, 264213200.00 ns, 167.9822 ns/op
+
+WorkloadWarmup   1: 1572864 op, 264174000.00 ns, 167.9573 ns/op
+WorkloadWarmup   2: 1572864 op, 262644500.00 ns, 166.9849 ns/op
+WorkloadWarmup   3: 1572864 op, 263567000.00 ns, 167.5714 ns/op
+WorkloadWarmup   4: 1572864 op, 265168500.00 ns, 168.5896 ns/op
+WorkloadWarmup   5: 1572864 op, 262590400.00 ns, 166.9505 ns/op
+
+// BeforeActualRun
+WorkloadActual   1: 1572864 op, 300424500.00 ns, 191.0048 ns/op
+WorkloadActual   2: 1572864 op, 265058600.00 ns, 168.5197 ns/op
+WorkloadActual   3: 1572864 op, 265364500.00 ns, 168.7142 ns/op
+WorkloadActual   4: 1572864 op, 263041300.00 ns, 167.2372 ns/op
+WorkloadActual   5: 1572864 op, 271621600.00 ns, 172.6924 ns/op
+WorkloadActual   6: 1572864 op, 262394500.00 ns, 166.8259 ns/op
+WorkloadActual   7: 1572864 op, 262883500.00 ns, 167.1368 ns/op
+WorkloadActual   8: 1572864 op, 265746000.00 ns, 168.9568 ns/op
+WorkloadActual   9: 1572864 op, 310621600.00 ns, 197.4879 ns/op
+WorkloadActual  10: 1572864 op, 266904800.00 ns, 169.6935 ns/op
+WorkloadActual  11: 1572864 op, 264501200.00 ns, 168.1653 ns/op
+WorkloadActual  12: 1572864 op, 266860700.00 ns, 169.6655 ns/op
+WorkloadActual  13: 1572864 op, 265763700.00 ns, 168.9680 ns/op
+WorkloadActual  14: 1572864 op, 267400400.00 ns, 170.0086 ns/op
+WorkloadActual  15: 1572864 op, 300247900.00 ns, 190.8925 ns/op
+
+// AfterActualRun
+WorkloadResult   1: 1572864 op, 265058600.00 ns, 168.5197 ns/op
+WorkloadResult   2: 1572864 op, 265364500.00 ns, 168.7142 ns/op
+WorkloadResult   3: 1572864 op, 263041300.00 ns, 167.2372 ns/op
+WorkloadResult   4: 1572864 op, 271621600.00 ns, 172.6924 ns/op
+WorkloadResult   5: 1572864 op, 262394500.00 ns, 166.8259 ns/op
+WorkloadResult   6: 1572864 op, 262883500.00 ns, 167.1368 ns/op
+WorkloadResult   7: 1572864 op, 265746000.00 ns, 168.9568 ns/op
+WorkloadResult   8: 1572864 op, 266904800.00 ns, 169.6935 ns/op
+WorkloadResult   9: 1572864 op, 264501200.00 ns, 168.1653 ns/op
+WorkloadResult  10: 1572864 op, 266860700.00 ns, 169.6655 ns/op
+WorkloadResult  11: 1572864 op, 265763700.00 ns, 168.9680 ns/op
+WorkloadResult  12: 1572864 op, 267400400.00 ns, 170.0086 ns/op
+// GC:  0 0 0 300576 1572864
+// Threading:  0 0 1572864
+
+STEADY_ALLOCATION mode=KeyBatchesPaired records=261888 bytes=0
+// AfterAll
+// Benchmark Process 88528 has exited with code 0.
+
+Mean = 168.882 ns, StdErr = 0.458 ns (0.27%), N = 12, StdDev = 1.588 ns
+Min = 166.826 ns, Q1 = 167.933 ns, Median = 168.835 ns, Q3 = 169.672 ns, Max = 172.692 ns
+IQR = 1.739 ns, LowerFence = 165.325 ns, UpperFence = 172.281 ns
+ConfidenceInterval = [166.849 ns; 170.915 ns] (CI 99.9%), Margin = 2.033 ns (1.20% of Mean)
+Skewness = 0.81, Kurtosis = 3.25, MValue = 2
+
+// ** Remained 5 (20.8%) benchmark(s) to run. Estimated finish 2026-09-07 16:12 (0h 0m from now) **
+Setup power plan (GUID: 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c FriendlyName: High performance)
+// **************************
+// Benchmark: PartitionedLifetimeBenchmarks.ProcessLifetime: B_Published(Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=B_Published, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/published,/p:UseSharedCompilation=false, IterationCount=15, IterationTime=250ms, WarmupCount=5) [Mode=KeyBatchesPaired]
+// *** Execute ***
+// Launch: 1 / 1
+// Execute: dotnet Dekaf.Benchmarks-B_Published-2.dll --anonymousPipes 1184 1764 --benchmarkName "Dekaf.Benchmarks.PartitionedLifetimeBenchmarks.ProcessLifetime(Mode: KeyBatchesPaired)" --job B_Published --benchmarkId 6 in C:\git\Dekaf-perf-improvements-20260907\pr-3117\comparison-v2\bin\Release\net10.0\Dekaf.Benchmarks-B_Published-2\bin\Release\net10.0
+// BeforeAnythingElse
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.15.8
+// Runtime=.NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2+BMI1+BMI2+F16C+FMA+LZCNT+MOVBE,AVX,SSE3+SSSE3+SSE4.1+SSE4.2+POPCNT,X86Base+SSE+SSE2,AES+PCLMUL,AvxVnni,SERIALIZE VectorSize=256
+// Job: B_Published(Affinity=100, IterationCount=15, IterationTime=250ms, WarmupCount=5)
+
+OverheadJitting  1: 262144 op, 220800.00 ns, 0.8423 ns/op
+WorkloadJitting  1: 262144 op, 50850000.00 ns, 193.9774 ns/op
+
+WorkloadPilot    1: 1048576 op, 178258200.00 ns, 170.0003 ns/op
+WorkloadPilot    2: 1572864 op, 270545200.00 ns, 172.0080 ns/op
+
+WorkloadWarmup   1: 1572864 op, 269767400.00 ns, 171.5135 ns/op
+WorkloadWarmup   2: 1572864 op, 268467700.00 ns, 170.6872 ns/op
+WorkloadWarmup   3: 1572864 op, 268561000.00 ns, 170.7465 ns/op
+WorkloadWarmup   4: 1572864 op, 276443400.00 ns, 175.7580 ns/op
+WorkloadWarmup   5: 1572864 op, 266048000.00 ns, 169.1488 ns/op
+
+// BeforeActualRun
+WorkloadActual   1: 1572864 op, 265986800.00 ns, 169.1099 ns/op
+WorkloadActual   2: 1572864 op, 265265400.00 ns, 168.6512 ns/op
+WorkloadActual   3: 1572864 op, 268317900.00 ns, 170.5919 ns/op
+WorkloadActual   4: 1572864 op, 268932800.00 ns, 170.9829 ns/op
+WorkloadActual   5: 1572864 op, 267912400.00 ns, 170.3341 ns/op
+WorkloadActual   6: 1572864 op, 263895000.00 ns, 167.7799 ns/op
+WorkloadActual   7: 1572864 op, 265042800.00 ns, 168.5097 ns/op
+WorkloadActual   8: 1572864 op, 264272700.00 ns, 168.0201 ns/op
+WorkloadActual   9: 1572864 op, 265153500.00 ns, 168.5801 ns/op
+WorkloadActual  10: 1572864 op, 264981200.00 ns, 168.4705 ns/op
+WorkloadActual  11: 1572864 op, 268758700.00 ns, 170.8722 ns/op
+WorkloadActual  12: 1572864 op, 262870500.00 ns, 167.1286 ns/op
+WorkloadActual  13: 1572864 op, 271937700.00 ns, 172.8933 ns/op
+WorkloadActual  14: 1572864 op, 303135600.00 ns, 192.7284 ns/op
+WorkloadActual  15: 1572864 op, 269796200.00 ns, 171.5318 ns/op
+
+// AfterActualRun
+WorkloadResult   1: 1572864 op, 265986800.00 ns, 169.1099 ns/op
+WorkloadResult   2: 1572864 op, 265265400.00 ns, 168.6512 ns/op
+WorkloadResult   3: 1572864 op, 268317900.00 ns, 170.5919 ns/op
+WorkloadResult   4: 1572864 op, 268932800.00 ns, 170.9829 ns/op
+WorkloadResult   5: 1572864 op, 267912400.00 ns, 170.3341 ns/op
+WorkloadResult   6: 1572864 op, 263895000.00 ns, 167.7799 ns/op
+WorkloadResult   7: 1572864 op, 265042800.00 ns, 168.5097 ns/op
+WorkloadResult   8: 1572864 op, 264272700.00 ns, 168.0201 ns/op
+WorkloadResult   9: 1572864 op, 265153500.00 ns, 168.5801 ns/op
+WorkloadResult  10: 1572864 op, 264981200.00 ns, 168.4705 ns/op
+WorkloadResult  11: 1572864 op, 268758700.00 ns, 170.8722 ns/op
+WorkloadResult  12: 1572864 op, 262870500.00 ns, 167.1286 ns/op
+WorkloadResult  13: 1572864 op, 271937700.00 ns, 172.8933 ns/op
+WorkloadResult  14: 1572864 op, 269796200.00 ns, 171.5318 ns/op
+// GC:  0 0 0 300576 1572864
+// Threading:  0 0 1572864
+
+STEADY_ALLOCATION mode=KeyBatchesPaired records=261888 bytes=0
+// AfterAll
+// Benchmark Process 65288 has exited with code 0.
+
+Mean = 169.533 ns, StdErr = 0.446 ns (0.26%), N = 14, StdDev = 1.667 ns
+Min = 167.129 ns, Q1 = 168.480 ns, Median = 168.881 ns, Q3 = 170.802 ns, Max = 172.893 ns
+IQR = 2.322 ns, LowerFence = 164.998 ns, UpperFence = 174.285 ns
+ConfidenceInterval = [167.652 ns; 171.413 ns] (CI 99.9%), Margin = 1.881 ns (1.11% of Mean)
+Skewness = 0.41, Kurtosis = 1.89, MValue = 2
+
+// ** Remained 4 (16.7%) benchmark(s) to run. Estimated finish 2026-09-07 16:12 (0h 0m from now) **
+Setup power plan (GUID: 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c FriendlyName: High performance)
+// **************************
+// Benchmark: PartitionedLifetimeBenchmarks.ProcessLifetime: C_SingleProbe(Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=C_SingleProbe, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/candidate,/p:UseSharedCompilation=false, IterationCount=15, IterationTime=250ms, WarmupCount=5) [Mode=KeyBatchesPaired]
+// *** Execute ***
+// Launch: 1 / 1
+// Execute: dotnet Dekaf.Benchmarks-C_SingleProbe-3.dll --anonymousPipes 1776 1368 --benchmarkName "Dekaf.Benchmarks.PartitionedLifetimeBenchmarks.ProcessLifetime(Mode: KeyBatchesPaired)" --job C_SingleProbe --benchmarkId 3 in C:\git\Dekaf-perf-improvements-20260907\pr-3117\comparison-v2\bin\Release\net10.0\Dekaf.Benchmarks-C_SingleProbe-3\bin\Release\net10.0
+// BeforeAnythingElse
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.15.8
+// Runtime=.NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2+BMI1+BMI2+F16C+FMA+LZCNT+MOVBE,AVX,SSE3+SSSE3+SSE4.1+SSE4.2+POPCNT,X86Base+SSE+SSE2,AES+PCLMUL,AvxVnni,SERIALIZE VectorSize=256
+// Job: C_SingleProbe(Affinity=100, IterationCount=15, IterationTime=250ms, WarmupCount=5)
+
+OverheadJitting  1: 262144 op, 175700.00 ns, 0.6702 ns/op
+WorkloadJitting  1: 262144 op, 44350700.00 ns, 169.1845 ns/op
+
+WorkloadPilot    1: 1048576 op, 172371500.00 ns, 164.3863 ns/op
+WorkloadPilot    2: 1572864 op, 262626300.00 ns, 166.9733 ns/op
+
+WorkloadWarmup   1: 1572864 op, 264230900.00 ns, 167.9935 ns/op
+WorkloadWarmup   2: 1572864 op, 280132800.00 ns, 178.1036 ns/op
+WorkloadWarmup   3: 1572864 op, 297915200.00 ns, 189.4094 ns/op
+WorkloadWarmup   4: 1572864 op, 264219700.00 ns, 167.9864 ns/op
+WorkloadWarmup   5: 1572864 op, 266196600.00 ns, 169.2432 ns/op
+
+// BeforeActualRun
+WorkloadActual   1: 1572864 op, 263416900.00 ns, 167.4760 ns/op
+WorkloadActual   2: 1572864 op, 266658300.00 ns, 169.5368 ns/op
+WorkloadActual   3: 1572864 op, 292662200.00 ns, 186.0696 ns/op
+WorkloadActual   4: 1572864 op, 281314500.00 ns, 178.8549 ns/op
+WorkloadActual   5: 1572864 op, 265286400.00 ns, 168.6646 ns/op
+WorkloadActual   6: 1572864 op, 266956000.00 ns, 169.7261 ns/op
+WorkloadActual   7: 1572864 op, 264789000.00 ns, 168.3483 ns/op
+WorkloadActual   8: 1572864 op, 273832300.00 ns, 174.0979 ns/op
+WorkloadActual   9: 1572864 op, 266605100.00 ns, 169.5030 ns/op
+WorkloadActual  10: 1572864 op, 266423300.00 ns, 169.3874 ns/op
+WorkloadActual  11: 1572864 op, 264566400.00 ns, 168.2068 ns/op
+WorkloadActual  12: 1572864 op, 271459500.00 ns, 172.5893 ns/op
+WorkloadActual  13: 1572864 op, 262777700.00 ns, 167.0696 ns/op
+WorkloadActual  14: 1572864 op, 261486300.00 ns, 166.2485 ns/op
+WorkloadActual  15: 1572864 op, 267406000.00 ns, 170.0122 ns/op
+
+// AfterActualRun
+WorkloadResult   1: 1572864 op, 263416900.00 ns, 167.4760 ns/op
+WorkloadResult   2: 1572864 op, 266658300.00 ns, 169.5368 ns/op
+WorkloadResult   3: 1572864 op, 265286400.00 ns, 168.6646 ns/op
+WorkloadResult   4: 1572864 op, 266956000.00 ns, 169.7261 ns/op
+WorkloadResult   5: 1572864 op, 264789000.00 ns, 168.3483 ns/op
+WorkloadResult   6: 1572864 op, 273832300.00 ns, 174.0979 ns/op
+WorkloadResult   7: 1572864 op, 266605100.00 ns, 169.5030 ns/op
+WorkloadResult   8: 1572864 op, 266423300.00 ns, 169.3874 ns/op
+WorkloadResult   9: 1572864 op, 264566400.00 ns, 168.2068 ns/op
+WorkloadResult  10: 1572864 op, 271459500.00 ns, 172.5893 ns/op
+WorkloadResult  11: 1572864 op, 262777700.00 ns, 167.0696 ns/op
+WorkloadResult  12: 1572864 op, 261486300.00 ns, 166.2485 ns/op
+WorkloadResult  13: 1572864 op, 267406000.00 ns, 170.0122 ns/op
+// GC:  0 0 0 300576 1572864
+// Threading:  0 0 1572864
+
+STEADY_ALLOCATION mode=KeyBatchesPaired records=261888 bytes=0
+// AfterAll
+// Benchmark Process 96496 has exited with code 0.
+
+Mean = 169.297 ns, StdErr = 0.592 ns (0.35%), N = 13, StdDev = 2.136 ns
+Min = 166.249 ns, Q1 = 168.207 ns, Median = 169.387 ns, Q3 = 169.726 ns, Max = 174.098 ns
+IQR = 1.519 ns, LowerFence = 165.928 ns, UpperFence = 172.005 ns
+ConfidenceInterval = [166.739 ns; 171.855 ns] (CI 99.9%), Margin = 2.558 ns (1.51% of Mean)
+Skewness = 0.78, Kurtosis = 2.86, MValue = 2
+
+// ** Remained 3 (12.5%) benchmark(s) to run. Estimated finish 2026-09-07 16:12 (0h 0m from now) **
+Setup power plan (GUID: 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c FriendlyName: High performance)
+// **************************
+// Benchmark: PartitionedLifetimeBenchmarks.ProcessLifetime: D_ClearOnce(Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=D_ClearOnce, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/candidate-v2,/p:UseSharedCompilation=false, IterationCount=15, IterationTime=250ms, WarmupCount=5) [Mode=KeyBatchesPaired]
+// *** Execute ***
+// Launch: 1 / 1
+// Execute: dotnet Dekaf.Benchmarks-D_ClearOnce-4.dll --anonymousPipes 1344 1924 --benchmarkName "Dekaf.Benchmarks.PartitionedLifetimeBenchmarks.ProcessLifetime(Mode: KeyBatchesPaired)" --job D_ClearOnce --benchmarkId 3 in C:\git\Dekaf-perf-improvements-20260907\pr-3117\comparison-v2\bin\Release\net10.0\Dekaf.Benchmarks-D_ClearOnce-4\bin\Release\net10.0
+// BeforeAnythingElse
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.15.8
+// Runtime=.NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2+BMI1+BMI2+F16C+FMA+LZCNT+MOVBE,AVX,SSE3+SSSE3+SSE4.1+SSE4.2+POPCNT,X86Base+SSE+SSE2,AES+PCLMUL,AvxVnni,SERIALIZE VectorSize=256
+// Job: D_ClearOnce(Affinity=100, IterationCount=15, IterationTime=250ms, WarmupCount=5)
+
+OverheadJitting  1: 262144 op, 162800.00 ns, 0.6210 ns/op
+WorkloadJitting  1: 262144 op, 48495700.00 ns, 184.9964 ns/op
+
+WorkloadPilot    1: 1048576 op, 181612000.00 ns, 173.1987 ns/op
+WorkloadPilot    2: 1572864 op, 272498600.00 ns, 173.2499 ns/op
+
+WorkloadWarmup   1: 1572864 op, 269614500.00 ns, 171.4163 ns/op
+WorkloadWarmup   2: 1572864 op, 270155300.00 ns, 171.7601 ns/op
+WorkloadWarmup   3: 1572864 op, 270132900.00 ns, 171.7459 ns/op
+WorkloadWarmup   4: 1572864 op, 273413700.00 ns, 173.8317 ns/op
+WorkloadWarmup   5: 1572864 op, 274578100.00 ns, 174.5721 ns/op
+
+// BeforeActualRun
+WorkloadActual   1: 1572864 op, 271061100.00 ns, 172.3360 ns/op
+WorkloadActual   2: 1572864 op, 311526500.00 ns, 198.0632 ns/op
+WorkloadActual   3: 1572864 op, 278521100.00 ns, 177.0789 ns/op
+WorkloadActual   4: 1572864 op, 269812600.00 ns, 171.5422 ns/op
+WorkloadActual   5: 1572864 op, 273434700.00 ns, 173.8451 ns/op
+WorkloadActual   6: 1572864 op, 291051500.00 ns, 185.0456 ns/op
+WorkloadActual   7: 1572864 op, 271137800.00 ns, 172.3848 ns/op
+WorkloadActual   8: 1572864 op, 270660100.00 ns, 172.0811 ns/op
+WorkloadActual   9: 1572864 op, 279292900.00 ns, 177.5696 ns/op
+WorkloadActual  10: 1572864 op, 327749100.00 ns, 208.3773 ns/op
+WorkloadActual  11: 1572864 op, 272180900.00 ns, 173.0480 ns/op
+WorkloadActual  12: 1572864 op, 273164100.00 ns, 173.6731 ns/op
+WorkloadActual  13: 1572864 op, 279994700.00 ns, 178.0158 ns/op
+WorkloadActual  14: 1572864 op, 270837200.00 ns, 172.1937 ns/op
+WorkloadActual  15: 1572864 op, 288058000.00 ns, 183.1423 ns/op
+
+// AfterActualRun
+WorkloadResult   1: 1572864 op, 271061100.00 ns, 172.3360 ns/op
+WorkloadResult   2: 1572864 op, 278521100.00 ns, 177.0789 ns/op
+WorkloadResult   3: 1572864 op, 269812600.00 ns, 171.5422 ns/op
+WorkloadResult   4: 1572864 op, 273434700.00 ns, 173.8451 ns/op
+WorkloadResult   5: 1572864 op, 291051500.00 ns, 185.0456 ns/op
+WorkloadResult   6: 1572864 op, 271137800.00 ns, 172.3848 ns/op
+WorkloadResult   7: 1572864 op, 270660100.00 ns, 172.0811 ns/op
+WorkloadResult   8: 1572864 op, 279292900.00 ns, 177.5696 ns/op
+WorkloadResult   9: 1572864 op, 272180900.00 ns, 173.0480 ns/op
+WorkloadResult  10: 1572864 op, 273164100.00 ns, 173.6731 ns/op
+WorkloadResult  11: 1572864 op, 279994700.00 ns, 178.0158 ns/op
+WorkloadResult  12: 1572864 op, 270837200.00 ns, 172.1937 ns/op
+WorkloadResult  13: 1572864 op, 288058000.00 ns, 183.1423 ns/op
+// GC:  0 0 0 300576 1572864
+// Threading:  0 0 1572864
+
+STEADY_ALLOCATION mode=KeyBatchesPaired records=261888 bytes=0
+// AfterAll
+// Benchmark Process 104112 has exited with code 0.
+
+Mean = 175.535 ns, StdErr = 1.221 ns (0.70%), N = 13, StdDev = 4.404 ns
+Min = 171.542 ns, Q1 = 172.336 ns, Median = 173.673 ns, Q3 = 177.570 ns, Max = 185.046 ns
+IQR = 5.234 ns, LowerFence = 164.486 ns, UpperFence = 185.420 ns
+ConfidenceInterval = [170.262 ns; 180.809 ns] (CI 99.9%), Margin = 5.274 ns (3.00% of Mean)
+Skewness = 0.99, Kurtosis = 2.53, MValue = 2
+
+// ** Remained 2 (8.3%) benchmark(s) to run. Estimated finish 2026-09-07 16:12 (0h 0m from now) **
+Setup power plan (GUID: 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c FriendlyName: High performance)
+// **************************
+// Benchmark: PartitionedLifetimeBenchmarks.ProcessLifetime: E_PublishedControl(Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=E_PublishedControl, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/published,/p:UseSharedCompilation=false, IterationCount=15, IterationTime=250ms, WarmupCount=5) [Mode=KeyBatchesPaired]
+// *** Execute ***
+// Launch: 1 / 1
+// Execute: dotnet Dekaf.Benchmarks-B_Published-2.dll --anonymousPipes 1620 576 --benchmarkName "Dekaf.Benchmarks.PartitionedLifetimeBenchmarks.ProcessLifetime(Mode: KeyBatchesPaired)" --job E_PublishedControl --benchmarkId 7 in C:\git\Dekaf-perf-improvements-20260907\pr-3117\comparison-v2\bin\Release\net10.0\Dekaf.Benchmarks-B_Published-2\bin\Release\net10.0
+// BeforeAnythingElse
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.15.8
+// Runtime=.NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2+BMI1+BMI2+F16C+FMA+LZCNT+MOVBE,AVX,SSE3+SSSE3+SSE4.1+SSE4.2+POPCNT,X86Base+SSE+SSE2,AES+PCLMUL,AvxVnni,SERIALIZE VectorSize=256
+// Job: E_PublishedControl(Affinity=100, IterationCount=15, IterationTime=250ms, WarmupCount=5)
+
+OverheadJitting  1: 262144 op, 199200.00 ns, 0.7599 ns/op
+WorkloadJitting  1: 262144 op, 44749300.00 ns, 170.7050 ns/op
+
+WorkloadPilot    1: 1048576 op, 179753600.00 ns, 171.4264 ns/op
+WorkloadPilot    2: 1572864 op, 270752300.00 ns, 172.1397 ns/op
+
+WorkloadWarmup   1: 1572864 op, 280260400.00 ns, 178.1848 ns/op
+WorkloadWarmup   2: 1572864 op, 264949500.00 ns, 168.4504 ns/op
+WorkloadWarmup   3: 1572864 op, 270341400.00 ns, 171.8784 ns/op
+WorkloadWarmup   4: 1572864 op, 268420700.00 ns, 170.6573 ns/op
+WorkloadWarmup   5: 1572864 op, 284241200.00 ns, 180.7157 ns/op
+
+// BeforeActualRun
+WorkloadActual   1: 1572864 op, 263142000.00 ns, 167.3012 ns/op
+WorkloadActual   2: 1572864 op, 266633200.00 ns, 169.5208 ns/op
+WorkloadActual   3: 1572864 op, 270643500.00 ns, 172.0705 ns/op
+WorkloadActual   4: 1572864 op, 276370200.00 ns, 175.7114 ns/op
+WorkloadActual   5: 1572864 op, 276389900.00 ns, 175.7240 ns/op
+WorkloadActual   6: 1572864 op, 270811900.00 ns, 172.1776 ns/op
+WorkloadActual   7: 1572864 op, 269433200.00 ns, 171.3010 ns/op
+WorkloadActual   8: 1572864 op, 268395600.00 ns, 170.6413 ns/op
+WorkloadActual   9: 1572864 op, 270809800.00 ns, 172.1762 ns/op
+WorkloadActual  10: 1572864 op, 267165200.00 ns, 169.8591 ns/op
+WorkloadActual  11: 1572864 op, 268912900.00 ns, 170.9702 ns/op
+WorkloadActual  12: 1572864 op, 268223100.00 ns, 170.5317 ns/op
+WorkloadActual  13: 1572864 op, 274898900.00 ns, 174.7760 ns/op
+WorkloadActual  14: 1572864 op, 312412700.00 ns, 198.6266 ns/op
+WorkloadActual  15: 1572864 op, 271133900.00 ns, 172.3823 ns/op
+
+// AfterActualRun
+WorkloadResult   1: 1572864 op, 263142000.00 ns, 167.3012 ns/op
+WorkloadResult   2: 1572864 op, 266633200.00 ns, 169.5208 ns/op
+WorkloadResult   3: 1572864 op, 270643500.00 ns, 172.0705 ns/op
+WorkloadResult   4: 1572864 op, 276370200.00 ns, 175.7114 ns/op
+WorkloadResult   5: 1572864 op, 276389900.00 ns, 175.7240 ns/op
+WorkloadResult   6: 1572864 op, 270811900.00 ns, 172.1776 ns/op
+WorkloadResult   7: 1572864 op, 269433200.00 ns, 171.3010 ns/op
+WorkloadResult   8: 1572864 op, 268395600.00 ns, 170.6413 ns/op
+WorkloadResult   9: 1572864 op, 270809800.00 ns, 172.1762 ns/op
+WorkloadResult  10: 1572864 op, 267165200.00 ns, 169.8591 ns/op
+WorkloadResult  11: 1572864 op, 268912900.00 ns, 170.9702 ns/op
+WorkloadResult  12: 1572864 op, 268223100.00 ns, 170.5317 ns/op
+WorkloadResult  13: 1572864 op, 274898900.00 ns, 174.7760 ns/op
+WorkloadResult  14: 1572864 op, 271133900.00 ns, 172.3823 ns/op
+// GC:  0 0 0 300240 1572864
+// Threading:  0 0 1572864
+
+STEADY_ALLOCATION mode=KeyBatchesPaired records=261888 bytes=0
+// AfterAll
+// Benchmark Process 113996 has exited with code 0.
+
+Mean = 171.796 ns, StdErr = 0.635 ns (0.37%), N = 14, StdDev = 2.375 ns
+Min = 167.301 ns, Q1 = 170.559 ns, Median = 171.686 ns, Q3 = 172.331 ns, Max = 175.724 ns
+IQR = 1.772 ns, LowerFence = 167.901 ns, UpperFence = 174.989 ns
+ConfidenceInterval = [169.117 ns; 174.475 ns] (CI 99.9%), Margin = 2.679 ns (1.56% of Mean)
+Skewness = 0.18, Kurtosis = 2.26, MValue = 2
+
+// ** Remained 1 (4.2%) benchmark(s) to run. Estimated finish 2026-09-07 16:12 (0h 0m from now) **
+Setup power plan (GUID: 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c FriendlyName: High performance)
+// **************************
+// Benchmark: PartitionedLifetimeBenchmarks.ProcessLifetime: F_PredecessorControl(Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=F_PredecessorControl, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/predecessor,/p:UseSharedCompilation=false, IterationCount=15, IterationTime=250ms, WarmupCount=5) [Mode=KeyBatchesPaired]
+// *** Execute ***
+// Launch: 1 / 1
+// Execute: dotnet Dekaf.Benchmarks-A_Predecessor-1.dll --anonymousPipes 580 1776 --benchmarkName "Dekaf.Benchmarks.PartitionedLifetimeBenchmarks.ProcessLifetime(Mode: KeyBatchesPaired)" --job F_PredecessorControl --benchmarkId 7 in C:\git\Dekaf-perf-improvements-20260907\pr-3117\comparison-v2\bin\Release\net10.0\Dekaf.Benchmarks-A_Predecessor-1\bin\Release\net10.0
+// BeforeAnythingElse
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.15.8
+// Runtime=.NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2+BMI1+BMI2+F16C+FMA+LZCNT+MOVBE,AVX,SSE3+SSSE3+SSE4.1+SSE4.2+POPCNT,X86Base+SSE+SSE2,AES+PCLMUL,AvxVnni,SERIALIZE VectorSize=256
+// Job: F_PredecessorControl(Affinity=100, IterationCount=15, IterationTime=250ms, WarmupCount=5)
+
+OverheadJitting  1: 262144 op, 170800.00 ns, 0.6516 ns/op
+WorkloadJitting  1: 262144 op, 45760500.00 ns, 174.5625 ns/op
+
+WorkloadPilot    1: 1048576 op, 191413400.00 ns, 182.5460 ns/op
+
+WorkloadWarmup   1: 1048576 op, 181220000.00 ns, 172.8249 ns/op
+WorkloadWarmup   2: 1048576 op, 182684200.00 ns, 174.2212 ns/op
+WorkloadWarmup   3: 1048576 op, 185919200.00 ns, 177.3064 ns/op
+WorkloadWarmup   4: 1048576 op, 180259100.00 ns, 171.9085 ns/op
+WorkloadWarmup   5: 1048576 op, 211912400.00 ns, 202.0954 ns/op
+
+// BeforeActualRun
+WorkloadActual   1: 1048576 op, 191414100.00 ns, 182.5467 ns/op
+WorkloadActual   2: 1048576 op, 180531900.00 ns, 172.1686 ns/op
+WorkloadActual   3: 1048576 op, 177747200.00 ns, 169.5129 ns/op
+WorkloadActual   4: 1048576 op, 182577400.00 ns, 174.1194 ns/op
+WorkloadActual   5: 1048576 op, 185033300.00 ns, 176.4615 ns/op
+WorkloadActual   6: 1048576 op, 178659700.00 ns, 170.3832 ns/op
+WorkloadActual   7: 1048576 op, 179954900.00 ns, 171.6184 ns/op
+WorkloadActual   8: 1048576 op, 179809000.00 ns, 171.4792 ns/op
+WorkloadActual   9: 1048576 op, 209136100.00 ns, 199.4477 ns/op
+WorkloadActual  10: 1048576 op, 191826100.00 ns, 182.9396 ns/op
+WorkloadActual  11: 1048576 op, 182962200.00 ns, 174.4864 ns/op
+WorkloadActual  12: 1048576 op, 179614600.00 ns, 171.2938 ns/op
+WorkloadActual  13: 1048576 op, 184701800.00 ns, 176.1454 ns/op
+WorkloadActual  14: 1048576 op, 182069300.00 ns, 173.6348 ns/op
+WorkloadActual  15: 1048576 op, 181586800.00 ns, 173.1747 ns/op
+
+// AfterActualRun
+WorkloadResult   1: 1048576 op, 191414100.00 ns, 182.5467 ns/op
+WorkloadResult   2: 1048576 op, 180531900.00 ns, 172.1686 ns/op
+WorkloadResult   3: 1048576 op, 177747200.00 ns, 169.5129 ns/op
+WorkloadResult   4: 1048576 op, 182577400.00 ns, 174.1194 ns/op
+WorkloadResult   5: 1048576 op, 185033300.00 ns, 176.4615 ns/op
+WorkloadResult   6: 1048576 op, 178659700.00 ns, 170.3832 ns/op
+WorkloadResult   7: 1048576 op, 179954900.00 ns, 171.6184 ns/op
+WorkloadResult   8: 1048576 op, 179809000.00 ns, 171.4792 ns/op
+WorkloadResult   9: 1048576 op, 191826100.00 ns, 182.9396 ns/op
+WorkloadResult  10: 1048576 op, 182962200.00 ns, 174.4864 ns/op
+WorkloadResult  11: 1048576 op, 179614600.00 ns, 171.2938 ns/op
+WorkloadResult  12: 1048576 op, 184701800.00 ns, 176.1454 ns/op
+WorkloadResult  13: 1048576 op, 182069300.00 ns, 173.6348 ns/op
+WorkloadResult  14: 1048576 op, 181586800.00 ns, 173.1747 ns/op
+// GC:  0 0 0 200496 1048576
+// Threading:  0 0 1048576
+
+STEADY_ALLOCATION mode=KeyBatchesPaired records=261888 bytes=0
+// AfterAll
+// Benchmark Process 112984 has exited with code 0.
+
+Mean = 174.283 ns, StdErr = 1.098 ns (0.63%), N = 14, StdDev = 4.109 ns
+Min = 169.513 ns, Q1 = 171.514 ns, Median = 173.405 ns, Q3 = 175.731 ns, Max = 182.940 ns
+IQR = 4.217 ns, LowerFence = 165.189 ns, UpperFence = 182.056 ns
+ConfidenceInterval = [169.648 ns; 178.918 ns] (CI 99.9%), Margin = 4.635 ns (2.66% of Mean)
+Skewness = 1.01, Kurtosis = 2.83, MValue = 2
+
+// ** Remained 0 (0.0%) benchmark(s) to run. Estimated finish 2026-09-07 16:12 (0h 0m from now) **
+Successfully reverted power plan (GUID: 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c FriendlyName: High performance)
+// ***** BenchmarkRunner: Finish  *****
+
+// * Export *
+  C:\git\Dekaf-perf-improvements-20260907\pr-3117\timing-v2\results\Dekaf.Benchmarks.PartitionedLifetimeBenchmarks-report.csv
+  C:\git\Dekaf-perf-improvements-20260907\pr-3117\timing-v2\results\Dekaf.Benchmarks.PartitionedLifetimeBenchmarks-report-github.md
+  C:\git\Dekaf-perf-improvements-20260907\pr-3117\timing-v2\results\Dekaf.Benchmarks.PartitionedLifetimeBenchmarks-report.html
+  C:\git\Dekaf-perf-improvements-20260907\pr-3117\timing-v2\results\Dekaf.Benchmarks.PartitionedLifetimeBenchmarks-report-full.json
+
+// * Detailed results *
+PartitionedLifetimeBenchmarks.ProcessLifetime: A_Predecessor(Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=A_Predecessor, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/predecessor,/p:UseSharedCompilation=false, IterationCount=15, IterationTime=250ms, WarmupCount=5) [Mode=KeyRecordsDistinct]
+Runtime = .NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3; GC = Concurrent Workstation
+Mean = 165.202 ns, StdErr = 0.725 ns (0.44%), N = 14, StdDev = 2.712 ns
+Min = 162.014 ns, Q1 = 162.840 ns, Median = 164.672 ns, Q3 = 167.196 ns, Max = 171.093 ns
+IQR = 4.357 ns, LowerFence = 156.304 ns, UpperFence = 173.732 ns
+ConfidenceInterval = [162.142 ns; 168.261 ns] (CI 99.9%), Margin = 3.059 ns (1.85% of Mean)
+Skewness = 0.62, Kurtosis = 2.22, MValue = 2
+-------------------- Histogram --------------------
+[161.775 ns ; 168.456 ns) | @@@@@@@@@@@@@
+[168.456 ns ; 172.570 ns) | @
+---------------------------------------------------
+
+PartitionedLifetimeBenchmarks.ProcessLifetime: B_Published(Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=B_Published, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/published,/p:UseSharedCompilation=false, IterationCount=15, IterationTime=250ms, WarmupCount=5) [Mode=KeyRecordsDistinct]
+Runtime = .NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3; GC = Concurrent Workstation
+Mean = 154.016 ns, StdErr = 0.861 ns (0.56%), N = 13, StdDev = 3.103 ns
+Min = 150.080 ns, Q1 = 150.903 ns, Median = 154.097 ns, Q3 = 155.976 ns, Max = 159.664 ns
+IQR = 5.073 ns, LowerFence = 143.293 ns, UpperFence = 163.586 ns
+ConfidenceInterval = [150.301 ns; 157.732 ns] (CI 99.9%), Margin = 3.716 ns (2.41% of Mean)
+Skewness = 0.2, Kurtosis = 1.68, MValue = 2
+-------------------- Histogram --------------------
+[149.368 ns ; 152.832 ns) | @@@@@
+[152.832 ns ; 157.009 ns) | @@@@@@
+[157.009 ns ; 160.576 ns) | @@
+---------------------------------------------------
+
+PartitionedLifetimeBenchmarks.ProcessLifetime: C_SingleProbe(Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=C_SingleProbe, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/candidate,/p:UseSharedCompilation=false, IterationCount=15, IterationTime=250ms, WarmupCount=5) [Mode=KeyRecordsDistinct]
+Runtime = .NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3; GC = Concurrent Workstation
+Mean = 152.753 ns, StdErr = 0.601 ns (0.39%), N = 15, StdDev = 2.328 ns
+Min = 150.025 ns, Q1 = 150.953 ns, Median = 152.244 ns, Q3 = 153.935 ns, Max = 157.738 ns
+IQR = 2.982 ns, LowerFence = 146.480 ns, UpperFence = 158.408 ns
+ConfidenceInterval = [150.264 ns; 155.241 ns] (CI 99.9%), Margin = 2.488 ns (1.63% of Mean)
+Skewness = 0.79, Kurtosis = 2.52, MValue = 2
+-------------------- Histogram --------------------
+[149.623 ns ; 155.001 ns) | @@@@@@@@@@@@@
+[155.001 ns ; 158.977 ns) | @@
+---------------------------------------------------
+
+PartitionedLifetimeBenchmarks.ProcessLifetime: D_ClearOnce(Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=D_ClearOnce, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/candidate-v2,/p:UseSharedCompilation=false, IterationCount=15, IterationTime=250ms, WarmupCount=5) [Mode=KeyRecordsDistinct]
+Runtime = .NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3; GC = Concurrent Workstation
+Mean = 152.736 ns, StdErr = 0.888 ns (0.58%), N = 13, StdDev = 3.203 ns
+Min = 149.012 ns, Q1 = 150.667 ns, Median = 151.593 ns, Q3 = 153.622 ns, Max = 160.092 ns
+IQR = 2.955 ns, LowerFence = 146.234 ns, UpperFence = 158.055 ns
+ConfidenceInterval = [148.900 ns; 156.571 ns] (CI 99.9%), Margin = 3.835 ns (2.51% of Mean)
+Skewness = 0.95, Kurtosis = 2.68, MValue = 2
+-------------------- Histogram --------------------
+[147.225 ns ; 153.646 ns) | @@@@@@@@@@
+[153.646 ns ; 158.330 ns) | @@
+[158.330 ns ; 161.880 ns) | @
+---------------------------------------------------
+
+PartitionedLifetimeBenchmarks.ProcessLifetime: E_PublishedControl(Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=E_PublishedControl, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/published,/p:UseSharedCompilation=false, IterationCount=15, IterationTime=250ms, WarmupCount=5) [Mode=KeyRecordsDistinct]
+Runtime = .NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3; GC = Concurrent Workstation
+Mean = 155.161 ns, StdErr = 0.250 ns (0.16%), N = 14, StdDev = 0.936 ns
+Min = 154.062 ns, Q1 = 154.550 ns, Median = 154.934 ns, Q3 = 155.550 ns, Max = 157.252 ns
+IQR = 1.000 ns, LowerFence = 153.051 ns, UpperFence = 157.050 ns
+ConfidenceInterval = [154.105 ns; 156.217 ns] (CI 99.9%), Margin = 1.056 ns (0.68% of Mean)
+Skewness = 0.79, Kurtosis = 2.6, MValue = 2
+-------------------- Histogram --------------------
+[153.552 ns ; 157.762 ns) | @@@@@@@@@@@@@@
+---------------------------------------------------
+
+PartitionedLifetimeBenchmarks.ProcessLifetime: F_PredecessorControl(Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=F_PredecessorControl, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/predecessor,/p:UseSharedCompilation=false, IterationCount=15, IterationTime=250ms, WarmupCount=5) [Mode=KeyRecordsDistinct]
+Runtime = .NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3; GC = Concurrent Workstation
+Mean = 155.596 ns, StdErr = 0.803 ns (0.52%), N = 14, StdDev = 3.005 ns
+Min = 152.540 ns, Q1 = 153.635 ns, Median = 154.325 ns, Q3 = 157.780 ns, Max = 161.908 ns
+IQR = 4.146 ns, LowerFence = 147.416 ns, UpperFence = 163.999 ns
+ConfidenceInterval = [152.206 ns; 158.985 ns] (CI 99.9%), Margin = 3.390 ns (2.18% of Mean)
+Skewness = 0.82, Kurtosis = 2.09, MValue = 2
+-------------------- Histogram --------------------
+[152.444 ns ; 155.717 ns) | @@@@@@@@@@
+[155.717 ns ; 163.545 ns) | @@@@
+---------------------------------------------------
+
+PartitionedLifetimeBenchmarks.ProcessLifetime: A_Predecessor(Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=A_Predecessor, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/predecessor,/p:UseSharedCompilation=false, IterationCount=15, IterationTime=250ms, WarmupCount=5) [Mode=KeyBatchesDistinct]
+Runtime = .NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3; GC = Concurrent Workstation
+Mean = 154.913 ns, StdErr = 0.683 ns (0.44%), N = 13, StdDev = 2.463 ns
+Min = 152.364 ns, Q1 = 153.357 ns, Median = 154.043 ns, Q3 = 155.487 ns, Max = 160.909 ns
+IQR = 2.130 ns, LowerFence = 150.161 ns, UpperFence = 158.683 ns
+ConfidenceInterval = [151.963 ns; 157.863 ns] (CI 99.9%), Margin = 2.950 ns (1.90% of Mean)
+Skewness = 1.09, Kurtosis = 3.11, MValue = 2
+-------------------- Histogram --------------------
+[151.747 ns ; 158.037 ns) | @@@@@@@@@@@@
+[158.037 ns ; 162.284 ns) | @
+---------------------------------------------------
+
+PartitionedLifetimeBenchmarks.ProcessLifetime: B_Published(Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=B_Published, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/published,/p:UseSharedCompilation=false, IterationCount=15, IterationTime=250ms, WarmupCount=5) [Mode=KeyBatchesDistinct]
+Runtime = .NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3; GC = Concurrent Workstation
+Mean = 157.692 ns, StdErr = 0.365 ns (0.23%), N = 14, StdDev = 1.367 ns
+Min = 155.902 ns, Q1 = 156.935 ns, Median = 157.267 ns, Q3 = 158.485 ns, Max = 160.674 ns
+IQR = 1.550 ns, LowerFence = 154.611 ns, UpperFence = 160.809 ns
+ConfidenceInterval = [156.150 ns; 159.235 ns] (CI 99.9%), Margin = 1.543 ns (0.98% of Mean)
+Skewness = 0.74, Kurtosis = 2.37, MValue = 2
+-------------------- Histogram --------------------
+[155.157 ns ; 160.721 ns) | @@@@@@@@@@@@@@
+---------------------------------------------------
+
+PartitionedLifetimeBenchmarks.ProcessLifetime: C_SingleProbe(Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=C_SingleProbe, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/candidate,/p:UseSharedCompilation=false, IterationCount=15, IterationTime=250ms, WarmupCount=5) [Mode=KeyBatchesDistinct]
+Runtime = .NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3; GC = Concurrent Workstation
+Mean = 159.823 ns, StdErr = 0.690 ns (0.43%), N = 13, StdDev = 2.488 ns
+Min = 156.875 ns, Q1 = 158.590 ns, Median = 159.162 ns, Q3 = 161.216 ns, Max = 164.514 ns
+IQR = 2.626 ns, LowerFence = 154.651 ns, UpperFence = 165.155 ns
+ConfidenceInterval = [156.843 ns; 162.803 ns] (CI 99.9%), Margin = 2.980 ns (1.86% of Mean)
+Skewness = 0.69, Kurtosis = 2.08, MValue = 2
+-------------------- Histogram --------------------
+[156.575 ns ; 164.984 ns) | @@@@@@@@@@@@@
+---------------------------------------------------
+
+PartitionedLifetimeBenchmarks.ProcessLifetime: D_ClearOnce(Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=D_ClearOnce, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/candidate-v2,/p:UseSharedCompilation=false, IterationCount=15, IterationTime=250ms, WarmupCount=5) [Mode=KeyBatchesDistinct]
+Runtime = .NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3; GC = Concurrent Workstation
+Mean = 149.301 ns, StdErr = 0.506 ns (0.34%), N = 14, StdDev = 1.892 ns
+Min = 146.340 ns, Q1 = 147.873 ns, Median = 149.047 ns, Q3 = 150.668 ns, Max = 153.150 ns
+IQR = 2.795 ns, LowerFence = 143.680 ns, UpperFence = 154.861 ns
+ConfidenceInterval = [147.166 ns; 151.436 ns] (CI 99.9%), Margin = 2.135 ns (1.43% of Mean)
+Skewness = 0.37, Kurtosis = 2.06, MValue = 2
+-------------------- Histogram --------------------
+[145.309 ns ; 149.973 ns) | @@@@@@@@@
+[149.973 ns ; 154.180 ns) | @@@@@
+---------------------------------------------------
+
+PartitionedLifetimeBenchmarks.ProcessLifetime: E_PublishedControl(Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=E_PublishedControl, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/published,/p:UseSharedCompilation=false, IterationCount=15, IterationTime=250ms, WarmupCount=5) [Mode=KeyBatchesDistinct]
+Runtime = .NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3; GC = Concurrent Workstation
+Mean = 152.249 ns, StdErr = 0.880 ns (0.58%), N = 14, StdDev = 3.294 ns
+Min = 147.402 ns, Q1 = 149.912 ns, Median = 151.973 ns, Q3 = 153.291 ns, Max = 159.577 ns
+IQR = 3.379 ns, LowerFence = 144.844 ns, UpperFence = 158.360 ns
+ConfidenceInterval = [148.533 ns; 155.966 ns] (CI 99.9%), Margin = 3.716 ns (2.44% of Mean)
+Skewness = 0.61, Kurtosis = 2.58, MValue = 2
+-------------------- Histogram --------------------
+[145.608 ns ; 149.252 ns) | @@
+[149.252 ns ; 152.840 ns) | @@@@@@@@
+[152.840 ns ; 156.915 ns) | @@@
+[156.915 ns ; 161.371 ns) | @
+---------------------------------------------------
+
+PartitionedLifetimeBenchmarks.ProcessLifetime: F_PredecessorControl(Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=F_PredecessorControl, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/predecessor,/p:UseSharedCompilation=false, IterationCount=15, IterationTime=250ms, WarmupCount=5) [Mode=KeyBatchesDistinct]
+Runtime = .NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3; GC = Concurrent Workstation
+Mean = 157.320 ns, StdErr = 0.790 ns (0.50%), N = 13, StdDev = 2.850 ns
+Min = 153.502 ns, Q1 = 155.287 ns, Median = 157.205 ns, Q3 = 159.129 ns, Max = 164.153 ns
+IQR = 3.842 ns, LowerFence = 149.525 ns, UpperFence = 164.891 ns
+ConfidenceInterval = [153.908 ns; 160.733 ns] (CI 99.9%), Margin = 3.413 ns (2.17% of Mean)
+Skewness = 0.79, Kurtosis = 2.98, MValue = 2
+-------------------- Histogram --------------------
+[151.911 ns ; 157.655 ns) | @@@@@@@@
+[157.655 ns ; 165.744 ns) | @@@@@
+---------------------------------------------------
+
+PartitionedLifetimeBenchmarks.ProcessLifetime: A_Predecessor(Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=A_Predecessor, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/predecessor,/p:UseSharedCompilation=false, IterationCount=15, IterationTime=250ms, WarmupCount=5) [Mode=KeyRecordsPaired]
+Runtime = .NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3; GC = Concurrent Workstation
+Mean = 171.960 ns, StdErr = 0.694 ns (0.40%), N = 15, StdDev = 2.688 ns
+Min = 167.222 ns, Q1 = 169.712 ns, Median = 171.826 ns, Q3 = 173.658 ns, Max = 177.295 ns
+IQR = 3.946 ns, LowerFence = 163.794 ns, UpperFence = 179.577 ns
+ConfidenceInterval = [169.087 ns; 174.834 ns] (CI 99.9%), Margin = 2.874 ns (1.67% of Mean)
+Skewness = 0.05, Kurtosis = 2.08, MValue = 2
+-------------------- Histogram --------------------
+[166.834 ns ; 170.917 ns) | @@@@@
+[170.917 ns ; 177.679 ns) | @@@@@@@@@@
+---------------------------------------------------
+
+PartitionedLifetimeBenchmarks.ProcessLifetime: B_Published(Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=B_Published, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/published,/p:UseSharedCompilation=false, IterationCount=15, IterationTime=250ms, WarmupCount=5) [Mode=KeyRecordsPaired]
+Runtime = .NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3; GC = Concurrent Workstation
+Mean = 163.014 ns, StdErr = 0.671 ns (0.41%), N = 13, StdDev = 2.418 ns
+Min = 160.903 ns, Q1 = 161.876 ns, Median = 161.976 ns, Q3 = 162.974 ns, Max = 169.219 ns
+IQR = 1.097 ns, LowerFence = 160.231 ns, UpperFence = 164.619 ns
+ConfidenceInterval = [160.118 ns; 165.910 ns] (CI 99.9%), Margin = 2.896 ns (1.78% of Mean)
+Skewness = 1.59, Kurtosis = 4.12, MValue = 2
+-------------------- Histogram --------------------
+[160.337 ns ; 169.905 ns) | @@@@@@@@@@@@@
+---------------------------------------------------
+
+PartitionedLifetimeBenchmarks.ProcessLifetime: C_SingleProbe(Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=C_SingleProbe, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/candidate,/p:UseSharedCompilation=false, IterationCount=15, IterationTime=250ms, WarmupCount=5) [Mode=KeyRecordsPaired]
+Runtime = .NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3; GC = Concurrent Workstation
+Mean = 162.693 ns, StdErr = 0.277 ns (0.17%), N = 14, StdDev = 1.036 ns
+Min = 161.100 ns, Q1 = 162.131 ns, Median = 162.492 ns, Q3 = 163.306 ns, Max = 165.012 ns
+IQR = 1.175 ns, LowerFence = 160.370 ns, UpperFence = 165.068 ns
+ConfidenceInterval = [161.525 ns; 163.861 ns] (CI 99.9%), Margin = 1.168 ns (0.72% of Mean)
+Skewness = 0.55, Kurtosis = 2.56, MValue = 2
+-------------------- Histogram --------------------
+[160.968 ns ; 165.576 ns) | @@@@@@@@@@@@@@
+---------------------------------------------------
+
+PartitionedLifetimeBenchmarks.ProcessLifetime: D_ClearOnce(Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=D_ClearOnce, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/candidate-v2,/p:UseSharedCompilation=false, IterationCount=15, IterationTime=250ms, WarmupCount=5) [Mode=KeyRecordsPaired]
+Runtime = .NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3; GC = Concurrent Workstation
+Mean = 174.990 ns, StdErr = 0.421 ns (0.24%), N = 13, StdDev = 1.517 ns
+Min = 173.030 ns, Q1 = 173.629 ns, Median = 174.966 ns, Q3 = 175.787 ns, Max = 178.098 ns
+IQR = 2.157 ns, LowerFence = 170.393 ns, UpperFence = 179.023 ns
+ConfidenceInterval = [173.174 ns; 176.807 ns] (CI 99.9%), Margin = 1.817 ns (1.04% of Mean)
+Skewness = 0.41, Kurtosis = 2.03, MValue = 2
+-------------------- Histogram --------------------
+[172.183 ns ; 178.945 ns) | @@@@@@@@@@@@@
+---------------------------------------------------
+
+PartitionedLifetimeBenchmarks.ProcessLifetime: E_PublishedControl(Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=E_PublishedControl, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/published,/p:UseSharedCompilation=false, IterationCount=15, IterationTime=250ms, WarmupCount=5) [Mode=KeyRecordsPaired]
+Runtime = .NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3; GC = Concurrent Workstation
+Mean = 165.305 ns, StdErr = 0.958 ns (0.58%), N = 13, StdDev = 3.453 ns
+Min = 160.741 ns, Q1 = 163.894 ns, Median = 164.364 ns, Q3 = 166.187 ns, Max = 172.566 ns
+IQR = 2.293 ns, LowerFence = 160.455 ns, UpperFence = 169.626 ns
+ConfidenceInterval = [161.170 ns; 169.440 ns] (CI 99.9%), Margin = 4.135 ns (2.50% of Mean)
+Skewness = 0.78, Kurtosis = 2.44, MValue = 2
+-------------------- Histogram --------------------
+[158.814 ns ; 165.121 ns) | @@@@@@@@@
+[165.121 ns ; 169.338 ns) | @@
+[169.338 ns ; 173.626 ns) | @@
+---------------------------------------------------
+
+PartitionedLifetimeBenchmarks.ProcessLifetime: F_PredecessorControl(Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=F_PredecessorControl, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/predecessor,/p:UseSharedCompilation=false, IterationCount=15, IterationTime=250ms, WarmupCount=5) [Mode=KeyRecordsPaired]
+Runtime = .NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3; GC = Concurrent Workstation
+Mean = 172.093 ns, StdErr = 0.359 ns (0.21%), N = 13, StdDev = 1.293 ns
+Min = 170.627 ns, Q1 = 171.173 ns, Median = 171.722 ns, Q3 = 172.389 ns, Max = 175.178 ns
+IQR = 1.216 ns, LowerFence = 169.350 ns, UpperFence = 174.213 ns
+ConfidenceInterval = [170.544 ns; 173.642 ns] (CI 99.9%), Margin = 1.549 ns (0.90% of Mean)
+Skewness = 1.13, Kurtosis = 3.22, MValue = 2
+-------------------- Histogram --------------------
+[169.905 ns ; 175.900 ns) | @@@@@@@@@@@@@
+---------------------------------------------------
+
+PartitionedLifetimeBenchmarks.ProcessLifetime: A_Predecessor(Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=A_Predecessor, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/predecessor,/p:UseSharedCompilation=false, IterationCount=15, IterationTime=250ms, WarmupCount=5) [Mode=KeyBatchesPaired]
+Runtime = .NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3; GC = Concurrent Workstation
+Mean = 168.882 ns, StdErr = 0.458 ns (0.27%), N = 12, StdDev = 1.588 ns
+Min = 166.826 ns, Q1 = 167.933 ns, Median = 168.835 ns, Q3 = 169.672 ns, Max = 172.692 ns
+IQR = 1.739 ns, LowerFence = 165.325 ns, UpperFence = 172.281 ns
+ConfidenceInterval = [166.849 ns; 170.915 ns] (CI 99.9%), Margin = 2.033 ns (1.20% of Mean)
+Skewness = 0.81, Kurtosis = 3.25, MValue = 2
+-------------------- Histogram --------------------
+[165.916 ns ; 173.603 ns) | @@@@@@@@@@@@
+---------------------------------------------------
+
+PartitionedLifetimeBenchmarks.ProcessLifetime: B_Published(Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=B_Published, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/published,/p:UseSharedCompilation=false, IterationCount=15, IterationTime=250ms, WarmupCount=5) [Mode=KeyBatchesPaired]
+Runtime = .NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3; GC = Concurrent Workstation
+Mean = 169.533 ns, StdErr = 0.446 ns (0.26%), N = 14, StdDev = 1.667 ns
+Min = 167.129 ns, Q1 = 168.480 ns, Median = 168.881 ns, Q3 = 170.802 ns, Max = 172.893 ns
+IQR = 2.322 ns, LowerFence = 164.998 ns, UpperFence = 174.285 ns
+ConfidenceInterval = [167.652 ns; 171.413 ns] (CI 99.9%), Margin = 1.881 ns (1.11% of Mean)
+Skewness = 0.41, Kurtosis = 1.89, MValue = 2
+-------------------- Histogram --------------------
+[166.760 ns ; 173.801 ns) | @@@@@@@@@@@@@@
+---------------------------------------------------
+
+PartitionedLifetimeBenchmarks.ProcessLifetime: C_SingleProbe(Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=C_SingleProbe, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/candidate,/p:UseSharedCompilation=false, IterationCount=15, IterationTime=250ms, WarmupCount=5) [Mode=KeyBatchesPaired]
+Runtime = .NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3; GC = Concurrent Workstation
+Mean = 169.297 ns, StdErr = 0.592 ns (0.35%), N = 13, StdDev = 2.136 ns
+Min = 166.249 ns, Q1 = 168.207 ns, Median = 169.387 ns, Q3 = 169.726 ns, Max = 174.098 ns
+IQR = 1.519 ns, LowerFence = 165.928 ns, UpperFence = 172.005 ns
+ConfidenceInterval = [166.739 ns; 171.855 ns] (CI 99.9%), Margin = 2.558 ns (1.51% of Mean)
+Skewness = 0.78, Kurtosis = 2.86, MValue = 2
+-------------------- Histogram --------------------
+[165.056 ns ; 170.800 ns) | @@@@@@@@@@@
+[170.800 ns ; 175.290 ns) | @@
+---------------------------------------------------
+
+PartitionedLifetimeBenchmarks.ProcessLifetime: D_ClearOnce(Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=D_ClearOnce, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/candidate-v2,/p:UseSharedCompilation=false, IterationCount=15, IterationTime=250ms, WarmupCount=5) [Mode=KeyBatchesPaired]
+Runtime = .NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3; GC = Concurrent Workstation
+Mean = 175.535 ns, StdErr = 1.221 ns (0.70%), N = 13, StdDev = 4.404 ns
+Min = 171.542 ns, Q1 = 172.336 ns, Median = 173.673 ns, Q3 = 177.570 ns, Max = 185.046 ns
+IQR = 5.234 ns, LowerFence = 164.486 ns, UpperFence = 185.420 ns
+ConfidenceInterval = [170.262 ns; 180.809 ns] (CI 99.9%), Margin = 5.274 ns (3.00% of Mean)
+Skewness = 0.99, Kurtosis = 2.53, MValue = 2
+-------------------- Histogram --------------------
+[170.236 ns ; 175.152 ns) | @@@@@@@@
+[175.152 ns ; 181.636 ns) | @@@
+[181.636 ns ; 187.504 ns) | @@
+---------------------------------------------------
+
+PartitionedLifetimeBenchmarks.ProcessLifetime: E_PublishedControl(Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=E_PublishedControl, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/published,/p:UseSharedCompilation=false, IterationCount=15, IterationTime=250ms, WarmupCount=5) [Mode=KeyBatchesPaired]
+Runtime = .NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3; GC = Concurrent Workstation
+Mean = 171.796 ns, StdErr = 0.635 ns (0.37%), N = 14, StdDev = 2.375 ns
+Min = 167.301 ns, Q1 = 170.559 ns, Median = 171.686 ns, Q3 = 172.331 ns, Max = 175.724 ns
+IQR = 1.772 ns, LowerFence = 167.901 ns, UpperFence = 174.989 ns
+ConfidenceInterval = [169.117 ns; 174.475 ns] (CI 99.9%), Margin = 2.679 ns (1.56% of Mean)
+Skewness = 0.18, Kurtosis = 2.26, MValue = 2
+-------------------- Histogram --------------------
+[166.008 ns ; 169.409 ns) | @
+[169.409 ns ; 173.497 ns) | @@@@@@@@@@
+[173.497 ns ; 177.018 ns) | @@@
+---------------------------------------------------
+
+PartitionedLifetimeBenchmarks.ProcessLifetime: F_PredecessorControl(Affinity=00000000000000000100, EnvironmentVariables=DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=F_PredecessorControl, Arguments=/p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/predecessor,/p:UseSharedCompilation=false, IterationCount=15, IterationTime=250ms, WarmupCount=5) [Mode=KeyBatchesPaired]
+Runtime = .NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3; GC = Concurrent Workstation
+Mean = 174.283 ns, StdErr = 1.098 ns (0.63%), N = 14, StdDev = 4.109 ns
+Min = 169.513 ns, Q1 = 171.514 ns, Median = 173.405 ns, Q3 = 175.731 ns, Max = 182.940 ns
+IQR = 4.217 ns, LowerFence = 165.189 ns, UpperFence = 182.056 ns
+ConfidenceInterval = [169.648 ns; 178.918 ns] (CI 99.9%), Margin = 4.635 ns (2.66% of Mean)
+Skewness = 1.01, Kurtosis = 2.83, MValue = 2
+-------------------- Histogram --------------------
+[167.275 ns ; 174.672 ns) | @@@@@@@@@@
+[174.672 ns ; 180.506 ns) | @@
+[180.506 ns ; 185.177 ns) | @@
+---------------------------------------------------
+
+// * Summary *
+
+BenchmarkDotNet v0.15.8, Windows 11 (10.0.26200.9168/25H2/2025Update/HudsonValley2)
+12th Gen Intel Core i7-12700K 3.60GHz, 1 CPU, 20 logical and 12 physical cores
+.NET SDK 10.0.400
+  [Host]               : .NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+  A_Predecessor        : .NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+  B_Published          : .NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+  C_SingleProbe        : .NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+  D_ClearOnce          : .NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+  E_PublishedControl   : .NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+  F_PredecessorControl : .NET 10.0.11 (10.0.11, 10.0.1126.37416), X64 RyuJIT x86-64-v3
+
+Affinity=00000000000000000100  IterationCount=15  IterationTime=250ms  
+WarmupCount=5  
+
+| Method          | Job                  | EnvironmentVariables                                                                                                                                                                                  | Arguments                                                                                                      | Mode               | Mean     | Error   | StdDev  | Allocated |
+|---------------- |--------------------- |------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |--------------------------------------------------------------------------------------------------------------- |------------------- |---------:|--------:|--------:|----------:|
+| ProcessLifetime | A_Predecessor        | DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=A_Predecessor        | /p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/predecessor,/p:UseSharedCompilation=false  | KeyRecordsDistinct | 165.2 ns | 3.06 ns | 2.71 ns |         - |
+| ProcessLifetime | B_Published          | DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=B_Published          | /p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/published,/p:UseSharedCompilation=false    | KeyRecordsDistinct | 154.0 ns | 3.72 ns | 3.10 ns |         - |
+| ProcessLifetime | C_SingleProbe        | DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=C_SingleProbe        | /p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/candidate,/p:UseSharedCompilation=false    | KeyRecordsDistinct | 152.8 ns | 2.49 ns | 2.33 ns |         - |
+| ProcessLifetime | D_ClearOnce          | DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=D_ClearOnce          | /p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/candidate-v2,/p:UseSharedCompilation=false | KeyRecordsDistinct | 152.7 ns | 3.84 ns | 3.20 ns |         - |
+| ProcessLifetime | E_PublishedControl   | DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=E_PublishedControl   | /p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/published,/p:UseSharedCompilation=false    | KeyRecordsDistinct | 155.2 ns | 1.06 ns | 0.94 ns |         - |
+| ProcessLifetime | F_PredecessorControl | DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=F_PredecessorControl | /p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/predecessor,/p:UseSharedCompilation=false  | KeyRecordsDistinct | 155.6 ns | 3.39 ns | 3.00 ns |         - |
+| ProcessLifetime | A_Predecessor        | DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=A_Predecessor        | /p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/predecessor,/p:UseSharedCompilation=false  | KeyBatchesDistinct | 154.9 ns | 2.95 ns | 2.46 ns |         - |
+| ProcessLifetime | B_Published          | DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=B_Published          | /p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/published,/p:UseSharedCompilation=false    | KeyBatchesDistinct | 157.7 ns | 1.54 ns | 1.37 ns |         - |
+| ProcessLifetime | C_SingleProbe        | DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=C_SingleProbe        | /p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/candidate,/p:UseSharedCompilation=false    | KeyBatchesDistinct | 159.8 ns | 2.98 ns | 2.49 ns |         - |
+| ProcessLifetime | D_ClearOnce          | DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=D_ClearOnce          | /p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/candidate-v2,/p:UseSharedCompilation=false | KeyBatchesDistinct | 149.3 ns | 2.13 ns | 1.89 ns |         - |
+| ProcessLifetime | E_PublishedControl   | DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=E_PublishedControl   | /p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/published,/p:UseSharedCompilation=false    | KeyBatchesDistinct | 152.2 ns | 3.72 ns | 3.29 ns |         - |
+| ProcessLifetime | F_PredecessorControl | DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=F_PredecessorControl | /p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/predecessor,/p:UseSharedCompilation=false  | KeyBatchesDistinct | 157.3 ns | 3.41 ns | 2.85 ns |         - |
+| ProcessLifetime | A_Predecessor        | DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=A_Predecessor        | /p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/predecessor,/p:UseSharedCompilation=false  | KeyRecordsPaired   | 172.0 ns | 2.87 ns | 2.69 ns |         - |
+| ProcessLifetime | B_Published          | DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=B_Published          | /p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/published,/p:UseSharedCompilation=false    | KeyRecordsPaired   | 163.0 ns | 2.90 ns | 2.42 ns |         - |
+| ProcessLifetime | C_SingleProbe        | DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=C_SingleProbe        | /p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/candidate,/p:UseSharedCompilation=false    | KeyRecordsPaired   | 162.7 ns | 1.17 ns | 1.04 ns |         - |
+| ProcessLifetime | D_ClearOnce          | DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=D_ClearOnce          | /p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/candidate-v2,/p:UseSharedCompilation=false | KeyRecordsPaired   | 175.0 ns | 1.82 ns | 1.52 ns |         - |
+| ProcessLifetime | E_PublishedControl   | DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=E_PublishedControl   | /p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/published,/p:UseSharedCompilation=false    | KeyRecordsPaired   | 165.3 ns | 4.14 ns | 3.45 ns |         - |
+| ProcessLifetime | F_PredecessorControl | DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=F_PredecessorControl | /p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/predecessor,/p:UseSharedCompilation=false  | KeyRecordsPaired   | 172.1 ns | 1.55 ns | 1.29 ns |         - |
+| ProcessLifetime | A_Predecessor        | DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=A_Predecessor        | /p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/predecessor,/p:UseSharedCompilation=false  | KeyBatchesPaired   | 168.9 ns | 2.03 ns | 1.59 ns |         - |
+| ProcessLifetime | B_Published          | DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=B_Published          | /p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/published,/p:UseSharedCompilation=false    | KeyBatchesPaired   | 169.5 ns | 1.88 ns | 1.67 ns |         - |
+| ProcessLifetime | C_SingleProbe        | DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=C_SingleProbe        | /p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/candidate,/p:UseSharedCompilation=false    | KeyBatchesPaired   | 169.3 ns | 2.56 ns | 2.14 ns |         - |
+| ProcessLifetime | D_ClearOnce          | DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=D_ClearOnce          | /p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/candidate-v2,/p:UseSharedCompilation=false | KeyBatchesPaired   | 175.5 ns | 5.27 ns | 4.40 ns |         - |
+| ProcessLifetime | E_PublishedControl   | DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=E_PublishedControl   | /p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/published,/p:UseSharedCompilation=false    | KeyBatchesPaired   | 171.8 ns | 2.68 ns | 2.38 ns |         - |
+| ProcessLifetime | F_PredecessorControl | DOTNET_TieredCompilation=0,DEKAF_DISPATCH_PROFILE=0,DEKAF_DISPATCH_SAMPLE_DIRECTORY=C:/git/Dekaf-perf-improvements-20260907/pr-3117/timing-v2\latency-samples,DEKAF_DISPATCH_JOB=F_PredecessorControl | /p:ProductDirectory=C:/git/Dekaf-perf-improvements-20260907/pr-3117/predecessor,/p:UseSharedCompilation=false  | KeyBatchesPaired   | 174.3 ns | 4.64 ns | 4.11 ns |         - |
+
+// * Hints *
+Outliers
+  PartitionedLifetimeBenchmarks.ProcessLifetime: A_Predecessor        -> 1 outlier  was  removed (190.98 ns)
+  PartitionedLifetimeBenchmarks.ProcessLifetime: B_Published          -> 2 outliers were removed (174.75 ns, 175.92 ns)
+  PartitionedLifetimeBenchmarks.ProcessLifetime: D_ClearOnce          -> 2 outliers were removed (171.56 ns, 182.55 ns)
+  PartitionedLifetimeBenchmarks.ProcessLifetime: E_PublishedControl   -> 1 outlier  was  removed (176.22 ns)
+  PartitionedLifetimeBenchmarks.ProcessLifetime: F_PredecessorControl -> 1 outlier  was  removed (178.59 ns)
+  PartitionedLifetimeBenchmarks.ProcessLifetime: A_Predecessor        -> 2 outliers were removed (173.18 ns, 175.23 ns)
+  PartitionedLifetimeBenchmarks.ProcessLifetime: B_Published          -> 1 outlier  was  removed (163.59 ns)
+  PartitionedLifetimeBenchmarks.ProcessLifetime: C_SingleProbe        -> 2 outliers were removed (179.64 ns, 180.71 ns)
+  PartitionedLifetimeBenchmarks.ProcessLifetime: D_ClearOnce          -> 1 outlier  was  removed (175.64 ns)
+  PartitionedLifetimeBenchmarks.ProcessLifetime: E_PublishedControl   -> 1 outlier  was  removed (176.74 ns)
+  PartitionedLifetimeBenchmarks.ProcessLifetime: F_PredecessorControl -> 2 outliers were removed (179.66 ns, 181.53 ns)
+  PartitionedLifetimeBenchmarks.ProcessLifetime: B_Published          -> 2 outliers were removed (174.30 ns, 199.01 ns)
+  PartitionedLifetimeBenchmarks.ProcessLifetime: C_SingleProbe        -> 1 outlier  was  removed (166.75 ns)
+  PartitionedLifetimeBenchmarks.ProcessLifetime: D_ClearOnce          -> 2 outliers were removed (185.08 ns, 189.70 ns)
+  PartitionedLifetimeBenchmarks.ProcessLifetime: E_PublishedControl   -> 2 outliers were removed (184.66 ns, 194.72 ns)
+  PartitionedLifetimeBenchmarks.ProcessLifetime: F_PredecessorControl -> 2 outliers were removed (178.07 ns, 181.03 ns)
+  PartitionedLifetimeBenchmarks.ProcessLifetime: A_Predecessor        -> 3 outliers were removed (190.89 ns..197.49 ns)
+  PartitionedLifetimeBenchmarks.ProcessLifetime: B_Published          -> 1 outlier  was  removed (192.73 ns)
+  PartitionedLifetimeBenchmarks.ProcessLifetime: C_SingleProbe        -> 2 outliers were removed (178.85 ns, 186.07 ns)
+  PartitionedLifetimeBenchmarks.ProcessLifetime: D_ClearOnce          -> 2 outliers were removed (198.06 ns, 208.38 ns)
+  PartitionedLifetimeBenchmarks.ProcessLifetime: E_PublishedControl   -> 1 outlier  was  removed (198.63 ns)
+  PartitionedLifetimeBenchmarks.ProcessLifetime: F_PredecessorControl -> 1 outlier  was  removed (199.45 ns)
+
+// * Legends *
+  Mode      : Value of the 'Mode' parameter
+  Mean      : Arithmetic mean of all measurements
+  Error     : Half of 99.9% confidence interval
+  StdDev    : Standard deviation of all measurements
+  Allocated : Allocated memory per single operation (managed only, inclusive, 1KB = 1024B)
+  1 ns      : 1 Nanosecond (0.000000001 sec)
+
+// * Diagnostic Output - MemoryDiagnoser *
+
+
+// ***** BenchmarkRunner: End *****
+Run time: 00:02:25 (145.31 sec), executed benchmarks: 24
+
+Global total time: 00:02:28 (148.87 sec), executed benchmarks: 24
+// * Artifacts cleanup *
+Artifacts cleanup is finished

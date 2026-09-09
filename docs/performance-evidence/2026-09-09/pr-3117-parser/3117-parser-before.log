@@ -1,0 +1,14 @@
+valid: accepted=True expected=True
+duplicate-case: accepted=False expected=False
+missing-case: accepted=False expected=False
+wrong-largest-batch: accepted=False expected=False
+missing-allocation: accepted=False expected=False
+wrong-allocation-case: accepted=False expected=False
+duplicate-allocation: accepted=False expected=False
+allocation-trailing-data: accepted=True expected=False
+extra-malformed-allocation: accepted=False expected=False
+Exception: C:\git\Dekaf-worktrees\pr-3117-improve\docs\performance-evidence\2026-09-07\pr-3117\permanent-dispatch-coverage\test-summarize-run.ps1:39
+Line |
+  39 |  … nt -ne 0) { throw "Parser validation failed: $($failures -join ', ')" …
+     |                ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+     | Parser validation failed: allocation-trailing-data

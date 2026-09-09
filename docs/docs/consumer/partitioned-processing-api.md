@@ -65,6 +65,10 @@ storage while records are queued or being processed. For the long-lived partitio
 processor's `Messages` stream, each record remains valid until the enumerator
 advances or is disposed. Copy borrowed data if it must outlive that boundary.
 
+Batch handlers also borrow the `IReadOnlyList` view. Its storage is reused after the
+handler completes. Copy the records, along with any borrowed key/value/header data,
+before retaining a batch outside its handler.
+
 Custom deserializers may return slices of their input: that fetch storage follows
 the same lifetime. A deserializer's own reusable scratch buffer is not fetch
 storage; return an owned value instead of exposing scratch memory that the next
@@ -76,11 +80,17 @@ runtime's stop timeout has elapsed. Revoke and lost-assignment cleanup use the s
 ownership rules. Key ordering also retains the input backing a dictionary key
 until its key lane is removed.
 
+For key ordering, keep each key's hash code and equality stable while records are
+queued or running. If cleanup cannot remove a key, dispatch fails and observes
+in-flight handlers before releasing retained storage.
+
 `MaxBufferedRecordsPerPartition` bounds the partition queue, not retained bytes.
 Partition ordering additionally holds the active handler batch (one record for a
 record handler). Key ordering additionally holds at most that many dispatched
-records, one record waiting for a dispatch permit, and one retained key per active
-key lane. One borrowed record can pin an entire fetch response and its decompressed
+records and one retained key per active key lane. Completed records release their
+dispatch slots and fetch storage immediately, including behind an unfinished
+earlier record; commits still wait for that gap to close. One borrowed record can
+pin an entire fetch response and its decompressed
 record storage. Budget those buffers separately from consumer prefetch; fetch-size
 settings and compression affect their byte cost. Slow handlers do not accumulate
 an unbounded history of completed fetches.
@@ -168,6 +178,7 @@ await consumer.RunPartitionedBatchesAsync(
     {
         Ordering = PartitionedProcessingOrder.Key,
         MaxConcurrentHandlersPerPartition = 4,
+        MaxBufferedRecordsPerPartition = 400,
         MaxHandlerBatchSize = 100
     },
     stoppingToken);
@@ -176,6 +187,16 @@ await consumer.RunPartitionedBatchesAsync(
 Batch handlers receive up to `MaxHandlerBatchSize` records. In key-ordered mode,
 each batch contains records for one key lane. Records in a handler or batch are
 marked processed only after the callback completes successfully.
+
+Key-ordered processing divides reusable batch storage across the configured
+workers. The effective worker count is the smaller of
+`MaxConcurrentHandlersPerPartition` and `MaxBufferedRecordsPerPartition`.
+The effective batch cap is the smaller of `MaxHandlerBatchSize` and
+`MaxBufferedRecordsPerPartition / effectiveWorkerCount`, using integer division.
+This cap applies even when fewer keys are active. With the default 256-record
+buffer and four workers, requesting 100-record batches gives a cap of 64. The
+example reserves 400 records to permit up to 100 per batch with four workers.
+A batch can still contain fewer records when its key has less work available.
 
 ## Commit Semantics
 

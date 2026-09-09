@@ -1,0 +1,12 @@
+Running tests from C:\git\Dekaf-worktrees\pr-3117-improve\tests\Dekaf.Tests.Integration\bin\Release\net10.0\Dekaf.Tests.Integration.dll (net10.0|x64)
+C:\git\Dekaf-worktrees\pr-3117-improve\tests\Dekaf.Tests.Integration\bin\Release\net10.0\Dekaf.Tests.Integration.dll (net10.0|x64) passed (7s 347ms)
+
+  In process file artifacts produced:
+    - C:\git\Dekaf-worktrees\pr-3117-improve\TestResults\Dekaf.Tests.Integration-windows-net10.0-report.html
+
+Test run summary: Passed!
+  total: 1
+  failed: 0
+  succeeded: 1
+  skipped: 0
+  duration: 8s 118ms

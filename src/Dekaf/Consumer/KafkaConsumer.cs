@@ -9883,6 +9883,19 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         if (Volatile.Read(ref _pausedSnapshotVersion) != pausedSnapshotVersion)
             return;
 
+#if NET
+        var delay = Task.Delay(AllPartitionsPausedDelayMs, consumeCts.Token);
+        await delay.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+        if (delay.IsCanceled && (cancellationToken.IsCancellationRequested
+            || Volatile.Read(ref _pausedSnapshotVersion) == pausedSnapshotVersion))
+        {
+            // Propagate caller/shutdown cancellation. Resume only wakes the delay;
+            // avoid constructing and throwing an exception for that routine signal.
+            await delay.ConfigureAwait(false);
+        }
+#else
+        // The netstandard polyfill suppresses cancellation by catching it. Keep
+        // the original await here rather than adding its extra async wrapper.
         try
         {
             await Task.Delay(AllPartitionsPausedDelayMs, consumeCts.Token).ConfigureAwait(false);
@@ -9893,6 +9906,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             // Resume is a control-plane wake, not caller cancellation.
         }
+#endif
     }
 
     internal static void DisposeCompletedFetchResults(
