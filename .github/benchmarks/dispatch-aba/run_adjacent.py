@@ -13,11 +13,12 @@ WARMUP = 361
 DURATION = 180
 
 
-def schedule():
-    cases = [('micro', f'{pattern}-{batch}', (pattern, batch)) for pattern, batch in run.CASES]
+def schedule(loaded_only=False):
+    cases = [] if loaded_only else [('micro', f'{pattern}-{batch}', (pattern, batch)) for pattern, batch in run.CASES]
     cases += [('loaded', mode, mode) for mode in run.MODES]
-    cases += [('shutdown', f'batch-{batch}-keys-{keys}', (batch, keys))
-              for batch in (1, 16) for keys in (1, 2)]
+    if not loaded_only:
+        cases += [('shutdown', f'batch-{batch}-keys-{keys}', (batch, keys))
+                  for batch in (1, 16) for keys in (1, 2)]
     # Validate every fixture against both revisions before the first measurement.
     for phases, smoke in [([('DryA', 'A'), ('DryB', 'B')], True),
                           ([('A1', 'A'), ('B', 'B'), ('A2', 'A')], False)]:
@@ -31,6 +32,8 @@ def main():
     parser.add_argument('--baseline', required=True)
     parser.add_argument('--candidate', required=True)
     parser.add_argument('--output', required=True, type=Path)
+    parser.add_argument('--loaded-only', action='store_true',
+                        help='Measure all public Kafka modes; private dispatch/shutdown scope remains missing')
     args = parser.parse_args()
     for sha in (args.baseline, args.candidate):
         if not re.fullmatch('[0-9a-f]{40}', sha):
@@ -41,7 +44,7 @@ def main():
     root, output = Path.cwd(), args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     topology = run.configure_affinity()
-    plan = list(schedule())
+    plan = list(schedule(args.loaded_only))
     provenance = dict(baseline=args.baseline, candidate=args.candidate,
                       harness=subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
                       cpu_core_socket=topology, affinity=run.AFFINITY,
@@ -49,13 +52,14 @@ def main():
                       run_url=f"https://github.com/{os.environ.get('GITHUB_REPOSITORY')}/actions/runs/{os.environ.get('GITHUB_RUN_ID')}",
                       phases=['A1', 'B', 'A2'], loaded_warmup_seconds=WARMUP,
                       loaded_duration_seconds=DURATION, loaded_modes=run.MODES,
-                      loaded_only=False, handler_stage_timing=False, partial_loaded_scope=False,
-                      focused_dispatcher_shutdown_measured=True, adjacent_controls=True)
+                      loaded_only=args.loaded_only, handler_stage_timing=False, partial_loaded_scope=False,
+                      focused_dispatcher_shutdown_measured=not args.loaded_only, adjacent_controls=True)
     (output/'provenance.json').write_text(json.dumps(provenance, indent=2))
     (output/'execution-plan.json').write_text(json.dumps(plan, indent=2))
     run.command(['dotnet', '--info'], output/'dotnet-info.log')
     run.command(['lscpu'], output/'hardware.log')
-    hosts = {label: run.build(root, output, sha, label) for label, sha in [('A', args.baseline), ('B', args.candidate)]}
+    hosts = {label: run.build(root, output, sha, label, loaded_only=args.loaded_only)
+             for label, sha in [('A', args.baseline), ('B', args.candidate)]}
     loaded_hosts = {label: values['Loaded'] for label, values in hosts.items()}
     run.command(['dotnet', 'build-server', 'shutdown'], output/'build-server-shutdown.log')
     loaded = {phase: {} for phase in ['A1', 'B', 'A2']}

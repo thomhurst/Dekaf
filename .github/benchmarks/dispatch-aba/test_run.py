@@ -9,6 +9,18 @@ from unittest.mock import patch
 import run
 
 
+class CompletionApiTests(unittest.TestCase):
+    def test_detects_api_from_each_archived_product(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / 'src/Dekaf/Consumer/PartitionedProcessing.cs'
+            source.parent.mkdir(parents=True)
+            for api, expected in [('TryEnqueue(record)', []),
+                                  ('CreateCompletionBatch(int capacity)', ['-p:DefineConstants=COMPLETION_BATCHES'])]:
+                source.write_text(api)
+                self.assertEqual(run.completion_defines(root), expected)
+
+
 class AffinityTests(unittest.TestCase):
     def test_interleaved_hyperthreads_stay_on_the_same_side(self):
         self.assertEqual(run.select_affinity([(0, 0, 0), (1, 1, 0), (2, 0, 0), (3, 1, 0)]),

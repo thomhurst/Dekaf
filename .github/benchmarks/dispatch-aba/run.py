@@ -301,6 +301,11 @@ def broker_stop(folder, name):
     subprocess.run(['docker', 'rm', '-f', '-v', name], check=True, capture_output=True)
 
 
+def completion_defines(source):
+    text = (source / 'src/Dekaf/Consumer/PartitionedProcessing.cs').read_text(encoding='utf-8')
+    return ['-p:DefineConstants=COMPLETION_BATCHES'] if 'CreateCompletionBatch(' in text else []
+
+
 def build(root, output, sha, label, loaded_only=False):
     source = output / f'product-{label}'
     snapshot = output / f'product-{label}.zip'
@@ -321,11 +326,17 @@ def build(root, output, sha, label, loaded_only=False):
     for name in ('global.json', 'Directory.Packages.props'):
         shutil.copyfile(root / name, fixture / name)
     hosts = {}
+    defines = completion_defines(source)
+    (output / f'fixture-adaptation-{label}.json').write_text(json.dumps(dict(
+        product=sha, defines=defines,
+        scope='Private dispatcher reserves one full-lifetime completion batch when required; '
+              'loaded public-API workloads cover runtime chunking. First warmup lifetime primes storage; '
+              'subsequent lifetimes retain the zero-allocation assertion.'), indent=2))
     projects = [('Loaded', 'Loaded')] if loaded_only else [('Harness', 'Dekaf.Benchmarks'), ('Loaded', 'Loaded')]
     for project, assembly in projects:
         target = output / f'{project}-{label}'
         command(['dotnet', 'build', fixture / f'{project}.csproj', '-c', 'Release',
-                 f'-p:ProductDirectory={product}', '-m:1', '-nr:false', '-o', target],
+                 f'-p:ProductDirectory={product}', *defines, '-m:1', '-nr:false', '-o', target],
                 output / f'build-{project}-{label}.log', cwd=fixture)
         for name in ('Dekaf.dll', 'Dekaf.Abstractions.dll'):
             if digest(product / name) != digest(target / name):

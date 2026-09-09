@@ -21,6 +21,10 @@ public class KeyOrderedDispatchBenchmarks
     private readonly HandlerGate _handlerGate = new();
     private PartitionProcessor<int, int> _processor = null!;
     private PartitionLane<int, int> _lane = null!;
+#if COMPLETION_BATCHES
+    private OffsetCompletionBatch _completionBatch = null!;
+#endif
+    private bool _storageWarmed;
     private int _written;
     private int _handled;
     private int _largestBatch;
@@ -83,15 +87,30 @@ public class KeyOrderedDispatchBenchmarks
         Array.Fill(_lastByKey, -1);
         _lane = new(new TopicPartition("key-dispatch", 0), Capacity,
             static (_, _) => default, static _ => { }, static (_, _) => { });
-        for (var index = 0; index < Capacity; index++)
-            EnqueueNext();
-        await _processor(new PartitionProcessorContext<int, int>(_lane), deadline.Token).ConfigureAwait(false);
+#if COMPLETION_BATCHES
+        _completionBatch = _lane.CreateCompletionBatch(RecordCount);
+#endif
+        try
+        {
+            for (var index = 0; index < Capacity; index++)
+                EnqueueNext();
+            await _processor(new PartitionProcessorContext<int, int>(_lane), deadline.Token).ConfigureAwait(false);
+        }
+        finally
+        {
+#if COMPLETION_BATCHES
+            _lane.EndBatch(_completionBatch, _written);
+#endif
+        }
         SteadyAllocatedBytes = _allocationEnd - _allocationStart;
         if (_handled != RecordCount
             || _lane.GetCommitOffset() != new TopicPartitionOffset("key-dispatch", 0, RecordCount, 7))
             throw new InvalidOperationException("Dispatch lost records or committed incomplete progress.");
-        if (Program.RequireZero && SteadyAllocatedBytes != 0)
+        // The first warmup lifetime initializes pooled storage. Every subsequent
+        // lifetime, including the smoke measurement, must satisfy the same bound.
+        if (Program.RequireZero && _storageWarmed && SteadyAllocatedBytes != 0)
             throw new InvalidOperationException($"Steady dispatch allocated {SteadyAllocatedBytes} bytes.");
+        _storageWarmed = true;
         if (Pattern == KeyPattern.PendingPairs && _largestBatch != BatchSize)
             throw new InvalidOperationException("Paired handlers did not exercise the configured batch size.");
         return _handled;
@@ -140,10 +159,15 @@ public class KeyOrderedDispatchBenchmarks
             KeyPattern.PendingPairs => (_written / (BatchSize * 2)) & 1,
             _ => 0
         };
-        var record = new ConsumeResult<int, int>("key-dispatch", 0, _written++, key, 0,
+        var record = new ConsumeResult<int, int>("key-dispatch", 0, _written, key, 0,
             null, 0, TimestampType.CreateTime, 7);
+#if COMPLETION_BATCHES
+        if (!_lane.TryEnqueue(record, _completionBatch))
+#else
         if (!_lane.TryEnqueue(record))
+#endif
             throw new InvalidOperationException("Replenished input exceeded the bounded queue.");
+        _written++;
     }
 
     [GlobalCleanup]

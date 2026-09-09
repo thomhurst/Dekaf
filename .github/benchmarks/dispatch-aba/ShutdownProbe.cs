@@ -78,11 +78,29 @@ internal sealed class ShutdownProbe
         var lane = new PartitionLane<int, int>(new TopicPartition("shutdown", 0), Records,
             static (_, _) => default, static _ => { }, _failed);
         _enqueuedAt = Stopwatch.GetTimestamp();
-        for (var index = 0; index < Records; index++)
+#if COMPLETION_BATCHES
+        var completionBatch = lane.CreateCompletionBatch(Records);
+#endif
+        var published = 0;
+        try
         {
-            if (!lane.TryEnqueue(new ConsumeResult<int, int>("shutdown", 0, index,
-                    (index / 32) % _keys, 0, null, 0, TimestampType.CreateTime, 7)))
-                throw new InvalidOperationException("Shutdown queue fill failed.");
+            for (; published < Records; published++)
+            {
+                var record = new ConsumeResult<int, int>("shutdown", 0, published,
+                    (published / 32) % _keys, 0, null, 0, TimestampType.CreateTime, 7);
+#if COMPLETION_BATCHES
+                if (!lane.TryEnqueue(record, completionBatch))
+#else
+                if (!lane.TryEnqueue(record))
+#endif
+                    throw new InvalidOperationException("Shutdown queue fill failed.");
+            }
+        }
+        finally
+        {
+#if COMPLETION_BATCHES
+            lane.EndBatch(completionBatch, published);
+#endif
         }
         lane.Start(_processor);
         try
