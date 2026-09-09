@@ -1,0 +1,4 @@
+Revision.props
+bin/
+obj/
+__pycache__/

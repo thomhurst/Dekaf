@@ -1,0 +1,141 @@
+name: Performance comparison
+run-name: 'Performance comparison PR #${{ inputs.pr }} (${{ inputs.suite }})'
+on:
+  workflow_dispatch:
+    inputs:
+      pr:
+        required: true
+        description: PR number
+      suite:
+        required: true
+        type: choice
+        options: [micro, pool, pool-recovery, admin, admin-pilot, admin-calibration, dispatch, dispatch-adjacent, dispatch-loaded-adjacent, dispatch-loaded, dispatch-pilot, dispatch-record-pilot, share-loaded, outbox, outbox-loaded, outbox-adjacent, pool-loaded, pool-profile]
+      harness_sha:
+        required: true
+        description: Exact harness source SHA (independent of product revisions)
+      baseline_sha:
+        required: true
+        description: Exact baseline SHA
+      candidate_sha:
+        required: true
+        description: Exact candidate SHA
+permissions:
+  contents: read
+  pull-requests: read
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ (inputs.suite == 'admin' || inputs.suite == 'admin-calibration' || inputs.suite == 'dispatch-adjacent' || inputs.suite == 'dispatch-loaded-adjacent') && 350 || 180 }}
+    env:
+      HARNESS_SHA: ${{ inputs.harness_sha }}
+      GH_TOKEN: ${{ github.token }}
+      SUITE: ${{ inputs.suite }}
+      BASELINE_SHA: ${{ inputs.baseline_sha }}
+      CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+      PR: ${{ inputs.pr }}
+      DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+      DOTNET_SKIP_FIRST_TIME_EXPERIENCE: '1'
+      DOTNET_TieredCompilation: '1'
+      DOTNET_TieredPGO: '1'
+      DOTNET_ReadyToRun: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.harness_sha }}
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
+        with:
+          global-json-file: global.json
+      - name: Verify pins
+        run: |
+          python3 .github/scripts/verify_performance_pins.py \
+            --harness "$HARNESS_SHA" --baseline "$BASELINE_SHA" --candidate "$CANDIDATE_SHA" \
+            --pr "$PR" --suite "$SUITE" --repository "$GITHUB_REPOSITORY" --output performance-pins.json
+      - name: Shared microbenchmark comparison
+        if: inputs.suite == 'micro'
+        run: |
+          python3 -m unittest discover -s .github/scripts -p test_benchmark_aba.py
+          python3 .github/scripts/runner_resources.py --output runner-resources -- python3 .github/scripts/benchmark_aba.py --pr "$PR" --baseline "$BASELINE_SHA" --candidate "$CANDIDATE_SHA" --artifacts "$GITHUB_WORKSPACE/aba-results"
+      - name: Pool comparison
+        if: inputs.suite == 'pool' || inputs.suite == 'pool-recovery'
+        env:
+          POOL_RECOVERY: ${{ inputs.suite == 'pool-recovery' && '1' || '0' }}
+          DOTNET_TieredCompilation: ${{ inputs.suite == 'pool-recovery' && '0' || '1' }}
+        run: |
+          python3 .github/scripts/runner_resources.py --output runner-resources/prepare -- python3 .github/scripts/pool_reset_aba.py prepare
+          python3 .github/scripts/runner_resources.py --output runner-resources/A1 -- python3 .github/scripts/pool_reset_aba.py A1
+          python3 .github/scripts/runner_resources.py --output runner-resources/B -- python3 .github/scripts/pool_reset_aba.py B
+          python3 .github/scripts/runner_resources.py --output runner-resources/A2 -- python3 .github/scripts/pool_reset_aba.py A2
+      - name: Loaded pool comparison
+        if: inputs.suite == 'pool-loaded' || inputs.suite == 'pool-profile'
+        env:
+          POOL_PROFILE: ${{ inputs.suite == 'pool-profile' && '1' || '0' }}
+        run: |
+          python3 -m unittest discover -s .github/scripts -p test_pool_loaded_aba.py
+          python3 -m unittest discover -s .github/benchmarks/pool-loaded/tests -p 'test_*.py'
+          dotnet test --project .github/benchmarks/pool-loaded/tests/IntervalLatency.Tests.csproj -c Release
+          python3 .github/scripts/runner_resources.py --output runner-resources -- python3 .github/scripts/pool_loaded_aba.py
+      - name: Outbox cycle comparison
+        if: inputs.suite == 'outbox'
+        run: |
+          python3 -m unittest discover -s .github/scripts -p test_outbox_cycle_aba.py
+          python3 .github/scripts/runner_resources.py --output runner-resources -- python3 .github/scripts/outbox_cycle_aba.py --pr "$PR" --baseline "$BASELINE_SHA" --candidate "$CANDIDATE_SHA" --artifacts "$GITHUB_WORKSPACE/aba-results"
+      - name: Loaded outbox comparison
+        if: inputs.suite == 'outbox-loaded' || inputs.suite == 'outbox-adjacent'
+        env:
+          OUTBOX_ADJACENT: ${{ inputs.suite == 'outbox-adjacent' && '1' || '0' }}
+        run: |
+          python3 -m unittest discover -s .github/scripts -p test_outbox_loaded_aba.py
+          python3 .github/scripts/runner_resources.py --output runner-resources -- python3 .github/scripts/outbox_loaded_aba.py
+      - name: Administrative direct-call comparison
+        if: inputs.suite == 'admin' || inputs.suite == 'admin-calibration' || inputs.suite == 'admin-pilot'
+        env:
+          ADMIN_CALIBRATION: ${{ inputs.suite == 'admin-calibration' && '1' || '0' }}
+          ADMIN_PILOT: ${{ inputs.suite == 'admin-pilot' && '1' || '0' }}
+        run: |
+          python3 -m unittest discover -s tools/AdminMutationEvidence -p test_validate_results.py
+          python3 -m unittest discover -s tools/AdminShareOffsetEvidence -p test_comparison.py
+          python3 -m unittest discover -s tools/AdminMemberRemovalEvidence -p test_comparison.py
+          python3 .github/scripts/runner_resources.py --output runner-resources -- python3 .github/scripts/admin_refresh.py
+      - name: Dispatch comparison with initialized coordinator
+        if: inputs.suite == 'dispatch' || inputs.suite == 'dispatch-loaded' || inputs.suite == 'dispatch-pilot' || inputs.suite == 'dispatch-record-pilot'
+        env:
+          DISPATCH_LOADED_ONLY: ${{ inputs.suite != 'dispatch' && '1' || '0' }}
+          DISPATCH_PILOT: ${{ inputs.suite == 'dispatch-pilot' && '1' || '0' }}
+          DISPATCH_STAGE_TIMING: ${{ inputs.suite == 'dispatch-record-pilot' && '1' || '0' }}
+        run: |
+          python3 -m unittest discover -s .github/benchmarks/dispatch-aba -p 'test_*.py'
+          extra_args=()
+          if [[ "$DISPATCH_LOADED_ONLY" == 1 ]]; then extra_args+=(--loaded-only); fi
+          if [[ "$DISPATCH_PILOT" == 1 ]]; then extra_args+=(--mode pending-batches); fi
+          if [[ "$DISPATCH_STAGE_TIMING" == 1 ]]; then extra_args+=(--mode pending-records); fi
+          python3 .github/scripts/runner_resources.py --output runner-resources -- python3 .github/benchmarks/dispatch-aba/run.py --baseline "$BASELINE_SHA" --candidate "$CANDIDATE_SHA" --output "$GITHUB_WORKSPACE/evidence" "${extra_args[@]}"
+      - name: Completed share acknowledgement comparison
+        if: inputs.suite == 'share-loaded'
+        run: |
+          python3 -m unittest discover -s .github/benchmarks/share-loaded -p 'test_*.py'
+          python3 .github/scripts/runner_resources.py --output runner-resources -- python3 .github/benchmarks/share-loaded/run.py --baseline "$BASELINE_SHA" --candidate "$CANDIDATE_SHA" --output "$GITHUB_WORKSPACE/evidence"
+      - name: Full dispatch comparison with adjacent controls
+        if: inputs.suite == 'dispatch-adjacent' || inputs.suite == 'dispatch-loaded-adjacent'
+        env:
+          LOADED_ONLY: ${{ inputs.suite == 'dispatch-loaded-adjacent' && '1' || '0' }}
+        run: |
+          python3 -m unittest discover -s .github/benchmarks/dispatch-aba -p 'test_*.py'
+          extra_args=()
+          if [[ "$LOADED_ONLY" == 1 ]]; then extra_args+=(--loaded-only); fi
+          python3 .github/scripts/runner_resources.py --output runner-resources -- python3 .github/benchmarks/dispatch-aba/run_adjacent.py --baseline "$BASELINE_SHA" --candidate "$CANDIDATE_SHA" --output "$GITHUB_WORKSPACE/evidence" "${extra_args[@]}"
+      - name: Record final main
+        if: always()
+        run: git ls-remote origin refs/heads/main > main-at-end.txt
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: performance-${{ inputs.pr }}-${{ inputs.suite }}-${{ github.run_id }}
+          path: |
+            aba-results/
+            evidence/
+            main-at-end.txt
+            performance-pins.json
+            runner-resources/
+          include-hidden-files: true
+          retention-days: 90

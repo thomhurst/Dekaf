@@ -1,0 +1,11 @@
+# Pending-batch CPU diagnosis
+
+This is a partial diagnostic, not full PR acceptance. The preceding full run [34294127203](https://github.com/thomhurst/Dekaf/actions/runs/34294127203) measured pending-batch CPU at 21525.258 / 22274.358 / 21520.908 ns/message, +3.48%/+3.50% against stable mean controls. It also retained JIT growth and worker changes: candidate 4-5 workers, A2 3-6. JIT method names were not captured. Full latency/control tables and other workloads remain in the previous PR report.
+
+The new candidate guards completion pool-return checks until the remaining count reaches zero. A local before/after A1/B/A2 MemoryDiagnoser probe reports 1.094 / 0.224 / 1.087 ns/completion and 0 B. That roughly 0.86 ns isolated saving cannot establish resolution of the roughly 749 ns/message loaded CPU difference.
+
+Pin fresh-main A 551d4d0825dca64b7143d6f18fc2b13baaf1fe0a and rebased B db184957ce6534e4c6b0dd075c5ebe5fa3a816f8. Run only pending-batches with the unchanged public-Kafka fixture, 1,000 offered messages/s, four partitions, 256-byte messages, capacity 128, concurrency two, maximum batch 16 and Task.Delay(1) pending handlers. Retain 121 seconds offered warmup, at least 120 seconds completed warmup, and 120 seconds measurement for every fresh process.
+
+Sequential A1/B/A2 use one ubuntu-latest VM, workstation GC, tiered compilation, identical CPU affinity, broker reset, SDK/runtime and observer. The already-prepared CompilationLog now records named CLR JIT events alongside existing per-second CPU, latency, GC, thread-pool, allocation, heap/RSS and backlog data. Preserve every sample and maximum. Validate completion counts, ordering, no duplicate delivery, final backlog, pending handlers and committed offsets. Archive exact sources/binaries and hashes.
+
+The pilot asks whether the previous CPU loss persists and whether measured runtime transitions explain it. Keep the original 3% throughput/CPU, 5% latency, 1 B/message allocation and control-drift criteria. Missing full workload/error/shutdown coverage remains INCONCLUSIVE even if this single case meets its point criteria. Do not infer a protected tradeoff or fund an identical sequence of reruns from a successful workflow.
