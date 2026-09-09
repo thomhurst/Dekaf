@@ -15,6 +15,8 @@ public sealed class ProducerWorkloadTests
     [Arguments(true)]
     public async Task FinalFireAppend_IsDrainedOrReportsDeadlineBeforeMeasurementStops(bool drainExpires)
     {
+        var time = new ManualTimeProvider();
+        var duration = TimeSpan.FromMilliseconds(100);
         var directory = Path.Join(Path.GetTempPath(), "dekaf-workload-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
         try
@@ -37,7 +39,12 @@ public sealed class ProducerWorkloadTests
             producer.ProduceAsync("test", Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
                 .Returns(ValueTask.FromResult(default(RecordMetadata)));
             producer.FireAsync("test", Arg.Any<string>(), Arg.Any<string>())
-                .Returns(_ => new ValueTask(admission.Task));
+                .Returns(_ =>
+                {
+                    // Expire ingress only after the final append is actually in flight.
+                    time.Advance(duration);
+                    return new ValueTask(admission.Task);
+                });
             var flushes = 0;
             producer.FlushAsync(Arg.Any<CancellationToken>()).Returns(_ =>
             {
@@ -50,8 +57,8 @@ public sealed class ProducerWorkloadTests
                 return new ValueTask(finalDelivery.Task);
             });
             var run = ProducerWorkload.RunAsync(producer, options, "Dekaf", "producer", throughput, new LatencyTracker(),
-                TimeSpan.FromMilliseconds(100), awaitDelivery: false, CancellationToken.None,
-                drainTimeout: TimeSpan.FromSeconds(drainExpires ? 1 : 5));
+                duration, awaitDelivery: false, CancellationToken.None,
+                drainTimeout: TimeSpan.FromSeconds(drainExpires ? 1 : 5), ingressTimeProvider: time);
             try
             {
                 await firstFlush.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -104,6 +111,8 @@ public sealed class ProducerWorkloadTests
     [Arguments(true)]
     public async Task DrainTimeout_ReturnsSerializableFailureWithRuntimeSamples(bool confluent)
     {
+        var time = new ManualTimeProvider();
+        var duration = TimeSpan.FromMilliseconds(100);
         var directory = Path.Join(Path.GetTempPath(), "dekaf-workload-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
         try
@@ -127,6 +136,7 @@ public sealed class ProducerWorkloadTests
                     .Returns(async call =>
                     {
                         deliveryToken = call.Arg<CancellationToken>();
+                        time.Advance(duration);
                         await Task.Delay(Timeout.InfiniteTimeSpan, deliveryToken);
                         return new ConfluentKafka.DeliveryResult<string, string>();
                     });
@@ -138,20 +148,25 @@ public sealed class ProducerWorkloadTests
                     return 1;
                 });
                 run = ProducerWorkload.RunAsync(producer, options, "Confluent", "producer-async", throughput, new LatencyTracker(),
-                    TimeSpan.FromMilliseconds(100), awaitDelivery: true, CancellationToken.None, drainTimeout: TimeSpan.FromMilliseconds(100));
+                    duration, awaitDelivery: true, CancellationToken.None, drainTimeout: TimeSpan.FromMilliseconds(100), ingressTimeProvider: time);
             }
             else
             {
                 var producer = Substitute.For<IKafkaProducer<string, string>>();
                 producer.ProduceAsync("test", Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
-                    .Returns(call => new ValueTask<RecordMetadata>(WaitForCancellationAsync(call.Arg<CancellationToken>())));
+                    .Returns(call =>
+                    {
+                        var pending = WaitForCancellationAsync(call.Arg<CancellationToken>());
+                        time.Advance(duration);
+                        return new ValueTask<RecordMetadata>(pending);
+                    });
                 producer.FlushAsync(Arg.Any<CancellationToken>()).Returns(call =>
                 {
                     throughput.TakeSample();
                     return new ValueTask(Task.Delay(Timeout.InfiniteTimeSpan, call.Arg<CancellationToken>()));
                 });
                 run = ProducerWorkload.RunAsync(producer, options, "Dekaf", "producer-async", throughput, new LatencyTracker(),
-                    TimeSpan.FromMilliseconds(100), awaitDelivery: true, CancellationToken.None, drainTimeout: TimeSpan.FromMilliseconds(100));
+                    duration, awaitDelivery: true, CancellationToken.None, drainTimeout: TimeSpan.FromMilliseconds(100), ingressTimeProvider: time);
             }
             var result = await run.WaitAsync(TimeSpan.FromSeconds(5));
             await Assert.That(result.Throughput.TotalErrors).IsGreaterThan(0);
@@ -251,6 +266,8 @@ public sealed class ProducerWorkloadTests
     [Arguments(true)]
     public async Task FireAndForget_StopsIngressAndWaitsForSampledDeliveryAfterFlush(bool confluent)
     {
+        var time = new ManualTimeProvider();
+        var duration = TimeSpan.FromMilliseconds(100);
         var directory = Path.Join(Path.GetTempPath(), "dekaf-workload-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
         try
@@ -286,6 +303,7 @@ public sealed class ProducerWorkloadTests
                         return;
                     }
                     // Keep unsampled sends under backpressure until ingress expires.
+                    time.Advance(duration);
                     throw new ConfluentKafka.ProduceException<string, string>(
                         new ConfluentKafka.Error(ConfluentKafka.ErrorCode.Local_QueueFull),
                         new ConfluentKafka.DeliveryResult<string, string>());
@@ -297,7 +315,7 @@ public sealed class ProducerWorkloadTests
                         Error = new ConfluentKafka.Error(ConfluentKafka.ErrorCode.NoError)
                     });
                 run = ProducerWorkload.RunAsync(producer, options, "Confluent", "producer", throughput, latency,
-                    TimeSpan.FromMilliseconds(100), awaitDelivery: false, CancellationToken.None);
+                    duration, awaitDelivery: false, CancellationToken.None, ingressTimeProvider: time);
             }
             else
             {
@@ -307,7 +325,11 @@ public sealed class ProducerWorkloadTests
                 producer.ProduceAsync("test", Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
                     .Returns(_ => new ValueTask<RecordMetadata>(sampledDelivery.Task));
                 producer.FireAsync("test", Arg.Any<string>(), Arg.Any<string>())
-                    .Returns(_ => new ValueTask(bufferedSend.Task));
+                    .Returns(_ =>
+                    {
+                        time.Advance(duration);
+                        return new ValueTask(bufferedSend.Task);
+                    });
                 producer.FlushAsync(Arg.Any<CancellationToken>()).Returns(_ =>
                 {
                     bufferedSend.TrySetResult();
@@ -316,7 +338,7 @@ public sealed class ProducerWorkloadTests
                 });
                 completeDelivery = () => sampledDelivery.TrySetResult(default);
                 run = ProducerWorkload.RunAsync(producer, options, "Dekaf", "producer", throughput, latency,
-                    TimeSpan.FromMilliseconds(100), awaitDelivery: false, CancellationToken.None);
+                    duration, awaitDelivery: false, CancellationToken.None, ingressTimeProvider: time);
             }
             try
             {
@@ -349,6 +371,8 @@ public sealed class ProducerWorkloadTests
     [Arguments(true, true)]
     public async Task AwaitedSend_StopsIngressBeforeFinalDeliveryAndRecordsOutcome(bool confluent, bool fails)
     {
+        var time = new ManualTimeProvider();
+        var duration = TimeSpan.FromSeconds(1);
         var client = confluent ? "Confluent" : "Dekaf";
         var directory = Path.Join(Path.GetTempPath(), "dekaf-workload-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
@@ -376,7 +400,11 @@ public sealed class ProducerWorkloadTests
                 var delivery = new TaskCompletionSource<ConfluentKafka.DeliveryResult<string, string>>(TaskCreationOptions.RunContinuationsAsynchronously);
                 var producer = Substitute.For<ConfluentKafka.IProducer<string, string>>();
                 producer.ProduceAsync("test", Arg.Any<ConfluentKafka.Message<string, string>>(), Arg.Any<CancellationToken>())
-                    .Returns(delivery.Task);
+                    .Returns(_ =>
+                    {
+                        time.Advance(duration);
+                        return delivery.Task;
+                    });
                 producer.Flush(Arg.Any<TimeSpan>()).Returns(_ => { flushStarted.TrySetResult(); return 0; });
                 completeDelivery = () =>
                 {
@@ -385,14 +413,18 @@ public sealed class ProducerWorkloadTests
                     else delivery.TrySetResult(new ConfluentKafka.DeliveryResult<string, string>());
                 };
                 run = ProducerWorkload.RunAsync(producer, options, client, "producer-async-idempotent", throughput, latency,
-                    TimeSpan.FromSeconds(1), awaitDelivery: true, CancellationToken.None);
+                    duration, awaitDelivery: true, CancellationToken.None, ingressTimeProvider: time);
             }
             else
             {
                 var delivery = new TaskCompletionSource<RecordMetadata>(TaskCreationOptions.RunContinuationsAsynchronously);
                 var producer = Substitute.For<IKafkaProducer<string, string>>();
                 producer.ProduceAsync("test", Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
-                    .Returns(_ => new ValueTask<RecordMetadata>(delivery.Task));
+                    .Returns(_ =>
+                    {
+                        time.Advance(duration);
+                        return new ValueTask<RecordMetadata>(delivery.Task);
+                    });
                 producer.FlushAsync(Arg.Any<CancellationToken>()).Returns(_ =>
                 {
                     flushStarted.TrySetResult();
@@ -404,7 +436,7 @@ public sealed class ProducerWorkloadTests
                     else delivery.TrySetResult(default);
                 };
                 run = ProducerWorkload.RunAsync(producer, options, client, "producer-async-idempotent", throughput, latency,
-                    TimeSpan.FromSeconds(1), awaitDelivery: true, CancellationToken.None);
+                    duration, awaitDelivery: true, CancellationToken.None, ingressTimeProvider: time);
             }
 
             try
