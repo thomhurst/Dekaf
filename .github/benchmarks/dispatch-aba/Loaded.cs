@@ -18,7 +18,12 @@ Directory.CreateDirectory(folder);
 if (role == "produce")
     await Load.Produce(topic, folder, mode, warmup, seconds, rate);
 else if (role == "consume")
-    await new Load().Consume(topic, folder, mode, warmup, seconds, rate);
+{
+    using var compilations = new CompilationLog(Path.Combine(folder, "compilations.json"));
+    compilations.Phase("initialize");
+    await new Load().Consume(topic, folder, mode, warmup, seconds, rate, compilations);
+    compilations.Phase("finalize");
+}
 else
     throw new ArgumentException("Unknown role.");
 
@@ -42,6 +47,7 @@ internal sealed class Load
     private readonly Process _process = Process.GetCurrentProcess();
     private readonly Process _accountingProcess = Process.GetCurrentProcess();
     private long[] _latencies = null!;
+    private CompilationLog _compilations = null!;
     private Sample[] _series = null!;
     private int _seriesCount;
     private int _warmupCount;
@@ -119,8 +125,10 @@ internal sealed class Load
             throw new InvalidOperationException("Producer delivery count mismatch.");
     }
 
-    internal async Task Consume(string topic, string folder, string mode, int warmup, int seconds, int rate)
+    internal async Task Consume(string topic, string folder, string mode, int warmup, int seconds, int rate,
+        CompilationLog compilations)
     {
+        _compilations = compilations;
         _pending = mode.StartsWith("pending", StringComparison.Ordinal);
         var batches = mode.EndsWith("batches", StringComparison.Ordinal);
         if (mode is not ("sync-records" or "sync-batches" or "pending-records" or "pending-batches"))
@@ -178,6 +186,7 @@ internal sealed class Load
             ? consumer.RunPartitionedBatchesAsync(HandleBatch, options, stop.Token).AsTask()
             : consumer.RunPartitionedAsync(HandleRecord, options, stop.Token).AsTask();
         var observing = ObserveSeries(rate, stopSampler.Token);
+        _compilations.Phase("warmup");
         File.WriteAllText(Path.Combine(folder, "ready"), "ready");
         long stopTicks = 0;
         try
@@ -332,6 +341,7 @@ internal sealed class Load
             _jitStart = System.Runtime.JitInfo.GetCompiledMethodCount();
             _jitMsStart = System.Runtime.JitInfo.GetCompilationTime().TotalMilliseconds;
             Volatile.Write(ref _measurementStart, Stopwatch.GetTimestamp());
+            _compilations.Phase("measured");
         }
         Interlocked.CompareExchange(ref _scheduledStart, payload.Scheduled -
             (long)((index / OfferBurst * OfferBurst) * (double)Stopwatch.Frequency / _rate), 0);
@@ -346,6 +356,7 @@ internal sealed class Load
             _allocationEnd = GC.GetTotalAllocatedBytes(true);
             _jitEnd = System.Runtime.JitInfo.GetCompiledMethodCount();
             _jitMsEnd = System.Runtime.JitInfo.GetCompilationTime().TotalMilliseconds;
+            _compilations.Phase("drain");
             _done.TrySetResult();
         }
     }

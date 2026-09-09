@@ -157,6 +157,20 @@ def validate_loaded(folder, warmup, seconds, rate, acceptance):
     return metrics
 
 
+def validate_compilations(folder, metrics):
+    data = json.loads((folder / 'compilations.json').read_text())
+    if data['overflow'] or data['total_events'] != len(data['events']):
+        raise ValueError('Incomplete compilation event stream')
+    if data['frequency'] != metrics['StopwatchFrequency']:
+        raise ValueError('Compilation timestamps use a different clock')
+    phases = data['phases']
+    if [phase['Name'] for phase in phases] != ['initialize', 'warmup', 'measured', 'drain', 'finalize']:
+        raise ValueError('Missing compilation phase boundaries')
+    if any(left['Timestamp'] > right['Timestamp'] for left, right in zip(phases, phases[1:])):
+        raise ValueError('Out-of-order compilation phase boundaries')
+    return data
+
+
 def workload(hosts, label, folder, mode, warmup, seconds, rate, broker, pinned=True):
     folder.mkdir(parents=True)
     topic = 'dispatch-' + folder.name.lower()
@@ -191,6 +205,7 @@ def workload(hosts, label, folder, mode, warmup, seconds, rate, broker, pinned=T
                         process.kill()
                         process.wait()
     metrics = validate_loaded(folder, warmup, seconds, rate, acceptance=pinned and warmup == WARMUP)
+    validate_compilations(folder, metrics)
     if metrics['Mode'] != mode or metrics['OfferedMessagesPerSecond'] != rate:
         raise ValueError('Wrong measured workload')
     return metrics

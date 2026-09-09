@@ -50,6 +50,24 @@ class MicroDriverTests(unittest.TestCase):
             self.exercise(smoke=False, actual_count=iter([24, 25, 25, 25, 25, 25]))
 
 
+class CompilationValidationTests(unittest.TestCase):
+    def test_rejects_lost_events_wrong_clock_and_missing_boundaries(self):
+        valid = dict(frequency=1000, total_events=0, overflow=False, events=[],
+                     phases=[dict(Name=name, Timestamp=index) for index, name in enumerate(
+                         ['initialize', 'warmup', 'measured', 'drain', 'finalize'])])
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            for changed in ({}, {'overflow': True}, {'total_events': 1}, {'frequency': 1},
+                            {'phases': valid['phases'][:-1]}, {'phases': list(reversed(valid['phases']))}):
+                with self.subTest(changed=changed):
+                    (folder / 'compilations.json').write_text(json.dumps(dict(valid, **changed)))
+                    if changed:
+                        with self.assertRaises(ValueError):
+                            run.validate_compilations(folder, {'StopwatchFrequency': 1000})
+                    else:
+                        run.validate_compilations(folder, {'StopwatchFrequency': 1000})
+
+
 class MeasurementValidationTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
