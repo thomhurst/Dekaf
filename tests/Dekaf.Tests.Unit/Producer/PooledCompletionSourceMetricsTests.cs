@@ -30,7 +30,10 @@ public sealed class PooledCompletionSourceMetricsTests
         var source = pool.Rent();
         CompleteCoreWithoutUpdatingSourceState(source);
 
-        await Assert.That(Complete(source, completionKind)).IsFalse();
+        var completed = Complete(source, completionKind);
+        listener.Dispose();
+
+        await Assert.That(completed).IsFalse();
         await Assert.That(Volatile.Read(ref inlineExceptions)).IsEqualTo(0);
         await Assert.That(Volatile.Read(ref sourceFaults)).IsEqualTo(1);
     }
@@ -59,13 +62,50 @@ public sealed class PooledCompletionSourceMetricsTests
             Timestamp = DateTimeOffset.UnixEpoch
         });
 
+        listener.Dispose();
+
         await Assert.That(completed).IsTrue();
         await Assert.That(Volatile.Read(ref recordedExceptions)).IsEqualTo(1);
         _ = awaiter.GetResult();
     }
 
+    [Test]
+    public async Task CompletionExceptionListener_IgnoresOtherThreads()
+    {
+        long inlineExceptions = 0;
+        long sourceFaults = 0;
+        using var listener = CreateCompletionExceptionListener((instrument, measurement) =>
+        {
+            if (instrument == "dekaf.producer.inline_continuation.exceptions")
+                Interlocked.Add(ref inlineExceptions, measurement);
+            else if (instrument == "dekaf.producer.completion_source.faults")
+                Interlocked.Add(ref sourceFaults, measurement);
+        });
+
+        // An ungrouped producer test can emit the same process-wide instruments
+        // while this listener is active. Emit deterministically on another thread.
+        var otherThread = new Thread(static () =>
+        {
+            DekafMetrics.InlineContinuationExceptions.Add(100);
+            DekafMetrics.CompletionSourceFaults.Add(100);
+        }) { IsBackground = true };
+        otherThread.Start();
+        var joined = otherThread.Join(TimeSpan.FromSeconds(10));
+
+        DekafMetrics.InlineContinuationExceptions.Add(1);
+        DekafMetrics.CompletionSourceFaults.Add(1);
+        listener.Dispose();
+
+        await Assert.That(joined).IsTrue();
+        await Assert.That(Volatile.Read(ref inlineExceptions)).IsEqualTo(1);
+        await Assert.That(Volatile.Read(ref sourceFaults)).IsEqualTo(1);
+    }
+
     private static MeterListener CreateCompletionExceptionListener(Action<string, long> onMeasurement)
     {
+        // These counters are emitted synchronously by the completion call. Scope
+        // observations to this thread; other producer tests also emit them.
+        var measurementThreadId = Environment.CurrentManagedThreadId;
         var listener = new MeterListener();
         listener.InstrumentPublished = (instrument, meterListener) =>
         {
@@ -78,7 +118,8 @@ public sealed class PooledCompletionSourceMetricsTests
         };
         listener.SetMeasurementEventCallback<long>((instrument, measurement, _, _) =>
         {
-            onMeasurement(instrument.Name, measurement);
+            if (Environment.CurrentManagedThreadId == measurementThreadId)
+                onMeasurement(instrument.Name, measurement);
         });
         listener.Start();
         return listener;
