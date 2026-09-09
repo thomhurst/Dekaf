@@ -119,7 +119,6 @@ def execute():
         fixture = product / '.github/benchmarks/pool-loaded'
         shutil.copytree(ROOT / '.github/benchmarks/pool-loaded', fixture, dirs_exist_ok=True,
                         ignore=shutil.ignore_patterns('bin', 'obj'))
-        shutil.copyfile(ROOT / '.github/benchmarks/CompilationLog.cs', fixture.parent / 'CompilationLog.cs')
         dispatch.command(['dotnet', 'build', fixture / 'Harness.csproj', '-c', 'Release', '--disable-build-servers'],
                          OUT / f'build-{label}.log', cwd=product)
         hosts[label] = fixture / 'bin/Release/net10.0/Dekaf.Benchmarks.dll'

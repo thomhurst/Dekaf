@@ -9,7 +9,6 @@
     <Reference Include="Dekaf"><HintPath>$(ProductDirectory)/Dekaf.dll</HintPath></Reference>
     <Reference Include="Dekaf.Abstractions"><HintPath>$(ProductDirectory)/Dekaf.Abstractions.dll</HintPath></Reference>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
-    <Compile Include="Program.cs;RuntimeLogger.cs;DispatchBenchmarks.cs;ShutdownProbe.cs" />
-    <Compile Include="../CompilationLog.cs" />
+    <Compile Include="Program.cs;DispatchBenchmarks.cs;ShutdownProbe.cs" />
   </ItemGroup>
 </Project>

@@ -1,25 +1,11 @@
 using BenchmarkDotNet.Configs;
 using BenchmarkDotNet.Exporters.Json;
-using BenchmarkDotNet.Filters;
-using BenchmarkDotNet.Jobs;
 using BenchmarkDotNet.Running;
-using BenchmarkDotNet.Toolchains.InProcess.Emit;
-using Perfolizer.Horology;
-using Perfolizer.Mathematics.OutlierDetection;
 
-var phase = Environment.GetEnvironmentVariable("ABA_PHASE") ?? throw new InvalidOperationException("Missing phase.");
-var dry = args.Contains("--dry");
-var shutdown = Environment.GetEnvironmentVariable("ABA_PR") == "3109";
-var warmupIterations = int.Parse(Environment.GetEnvironmentVariable("ABA_WARMUP_ITERATIONS") ?? "50");
-var job = dry ? Job.Dry : shutdown
-    ? Job.Default.WithWarmupCount(30).WithIterationCount(300)
-    : Job.Default.WithWarmupCount(warmupIterations).WithIterationCount(25).WithIterationTime(TimeInterval.FromMilliseconds(1000));
-job = job.WithId(phase).WithOutlierMode(OutlierMode.DontRemove).WithToolchain(InProcessEmitToolchain.Instance);
-using var runtime = new RuntimeLogger(Environment.GetEnvironmentVariable("ABA_RUNTIME_LOG") ?? "runtime.csv");
-var config = DefaultConfig.Instance.AddJob(job).AddLogger(runtime).AddExporter(JsonExporter.Full)
-    .AddFilter(new SimpleFilter(benchmark => benchmark.Job.ResolvedId == phase));
-var summaries = BenchmarkSwitcher.FromAssembly(typeof(Program).Assembly)
-    .Run(args.Where(argument => argument != "--dry").ToArray(), config).ToArray();
+var config = DefaultConfig.Instance.AddExporter(JsonExporter.Full)
+    .WithOptions(ConfigOptions.KeepBenchmarkFiles | ConfigOptions.DisableParallelBuild);
+
+var summaries = BenchmarkSwitcher.FromAssembly(typeof(Program).Assembly).Run(args, config).ToArray();
 return summaries.Length == 0 || summaries.Any(summary => summary.HasCriticalValidationErrors
     || summary.Reports.Length == 0 || summary.Reports.Any(report => !report.Success
         || report.ResultStatistics is null || report.ResultStatistics.N < 1)) ? 1 : 0;

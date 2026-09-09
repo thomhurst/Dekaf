@@ -53,19 +53,82 @@ jobs:
             --pr "$PR" --suite "$SUITE" --repository "$GITHUB_REPOSITORY" --output performance-pins.json
       - name: Shared microbenchmark comparison
         if: inputs.suite == 'micro'
+        env:
+          ABA_PR: ${{ inputs.pr }}
+          MSBUILDDISABLENODEREUSE: '1'
+          DOTNET_CLI_USE_MSBUILD_SERVER: '0'
         run: |
-          python3 -m unittest discover -s .github/scripts -p test_benchmark_aba.py
-          python3 .github/scripts/runner_resources.py --output runner-resources -- python3 .github/scripts/benchmark_aba.py --pr "$PR" --baseline "$BASELINE_SHA" --candidate "$CANDIDATE_SHA" --artifacts "$GITHUB_WORKSPACE/aba-results"
+          warmup=50; minimum_warmup=20; tolerance=5
+          case "$PR" in
+            3082) filters=('*BinaryKeyDispatchBenchmarks*'); count=18 ;;
+            3083) filters=('*BatchReadBench*' '*BatchBoundBench*'); count=12 ;;
+            3085) filters=('*RelayMetricsBenchmarks*' '*ActualPublisherBenchmarks*'); count=10 ;;
+            3086) filters=('*SuccessfulFetch*' '*FollowerError(Prefetch*' '*LeaderError*' '*ResponsePoolControl*'); count=8 ;;
+            3116) filters=('*RecordCount: 1024, HeaderCount: 0*' '*RecordCount: 64, HeaderCount: 2*'); count=14; warmup=130; minimum_warmup=120 ;;
+            3117) filters=('*Mode: KeyRecordsDistinct*' '*Mode: KeyBatchesDistinct*' '*Mode: KeyRecordsPaired*' '*Mode: KeyBatchesPaired*'); count=4 ;;
+            3149) filters=('*LingerAppendBench*'); count=4 ;;
+            3158) filters=('*ShareResponseFrameBench*'); count=6 ;;
+            *) echo 'No declared steady-state fixture for this PR'; exit 1 ;;
+          esac
+          results="$GITHUB_WORKSPACE/aba-results"
+          mkdir "$results"
+          dotnet --info > "$results/runtime.txt"
+          lscpu > "$results/cpu.txt"
+          cp /etc/os-release "$results/os-release.txt"
+          for role in A B; do
+            sha="$BASELINE_SHA"; if [[ "$role" == B ]]; then sha="$CANDIDATE_SHA"; fi
+            product="$RUNNER_TEMP/performance-$role"
+            git worktree add --detach "$product" "$sha"
+            cp -R .github/benchmarks/aba "$product/.performance"
+            cp global.json Directory.Packages.props "$product/.performance/"
+            (
+              cd "$product/.performance"
+              export ABA_ROLE="$role"
+              dotnet build Dekaf.Benchmarks.csproj -c Release --disable-build-servers > "$results/build-$role.log" 2>&1
+              dotnet run --project Dekaf.Benchmarks.csproj -c Release --no-build -- --job Dry --filter "${filters[@]}" --artifacts "$results/dry-$role" > "$results/dry-$role.log" 2>&1
+            )
+            jq -s -e --argjson count "$count" '[.[].Benchmarks[]] | length == $count' "$results/dry-$role/results/"*-report-full.json
+          done
+          dotnet build-server shutdown
+          for phase in A1 B A2; do
+            role=A; if [[ "$phase" == B ]]; then role=B; fi
+            (
+              cd "$RUNNER_TEMP/performance-$role/.performance"
+              export ABA_ROLE="$role"
+              dotnet run --project Dekaf.Benchmarks.csproj -c Release --no-build -- --filter "${filters[@]}" --warmupCount "$warmup" --iterationCount 25 --iterationTime 1000 --launchCount 1 --outliers DontRemove --artifacts "$results/$phase" > "$results/$phase.log" 2>&1
+            )
+            jq -s -e --argjson count "$count" --argjson seconds "$minimum_warmup" '
+              [.[].Benchmarks[]] | length == $count and all(.[];
+                .Statistics.N == 25 and
+                any(.Metrics[]; .Descriptor.Id == "Allocated Memory" and (.Value | type) == "number" and .Value >= 0) and
+                ([.Measurements[] | select(.IterationMode == "Workload" and .IterationStage == "Warmup") | .Nanoseconds] | add) >= ($seconds * 1e9))
+            ' "$results/$phase/results/"*-report-full.json
+            jq -s '[.[].Benchmarks[] | [.Namespace, .Type, .Method, .Parameters]] | sort' "$results/$phase/results/"*-report-full.json > "$results/$phase-cases.json"
+            jq -s '[.[].Benchmarks[]] | sort_by([.Namespace, .Type, .Method, .Parameters])' "$results/$phase/results/"*-report-full.json > "$results/$phase.json"
+          done
+          diff "$results/A1-cases.json" "$results/B-cases.json"
+          diff "$results/A1-cases.json" "$results/A2-cases.json"
+          compare=(jq -nr --slurpfile a1 "$results/A1.json" --slurpfile b "$results/B.json" --slurpfile a2 "$results/A2.json" --argjson tolerance "$tolerance" -f "$GITHUB_WORKSPACE/.github/scripts/compare_bdn_reports.jq")
+          "${compare[@]}" --arg format json > "$results/comparison.json"
+          "${compare[@]}" --arg format markdown > "$results/comparison.md"
+          cat "$results/comparison.md" >> "$GITHUB_STEP_SUMMARY"
+          echo >> "$GITHUB_STEP_SUMMARY"
+          screen=$(jq -r .screen "$results/comparison.json")
+          case "$screen" in
+            PASS) echo 'Micro screen PASS for the declared fixture. Whole-PR acceptance still requires correctness and any loaded evidence the change scope requires.' >> "$GITHUB_STEP_SUMMARY" ;;
+            INCONCLUSIVE) echo '::warning::Micro screen INCONCLUSIVE: control drift beyond tolerance or a loss against one control only. One exact repeat is permitted.' ;;
+            *) echo '::error::Micro screen REGRESSION: the candidate is slower or allocates more than both controls beyond tolerance.'; exit 1 ;;
+          esac
       - name: Pool comparison
         if: inputs.suite == 'pool' || inputs.suite == 'pool-recovery'
         env:
           POOL_RECOVERY: ${{ inputs.suite == 'pool-recovery' && '1' || '0' }}
           DOTNET_TieredCompilation: ${{ inputs.suite == 'pool-recovery' && '0' || '1' }}
         run: |
-          python3 .github/scripts/runner_resources.py --output runner-resources/prepare -- python3 .github/scripts/pool_reset_aba.py prepare
-          python3 .github/scripts/runner_resources.py --output runner-resources/A1 -- python3 .github/scripts/pool_reset_aba.py A1
-          python3 .github/scripts/runner_resources.py --output runner-resources/B -- python3 .github/scripts/pool_reset_aba.py B
-          python3 .github/scripts/runner_resources.py --output runner-resources/A2 -- python3 .github/scripts/pool_reset_aba.py A2
+          python3 .github/scripts/pool_reset_aba.py prepare
+          python3 .github/scripts/pool_reset_aba.py A1
+          python3 .github/scripts/pool_reset_aba.py B
+          python3 .github/scripts/pool_reset_aba.py A2
       - name: Loaded pool comparison
         if: inputs.suite == 'pool-loaded' || inputs.suite == 'pool-profile'
         env:
@@ -74,19 +137,19 @@ jobs:
           python3 -m unittest discover -s .github/scripts -p test_pool_loaded_aba.py
           python3 -m unittest discover -s .github/benchmarks/pool-loaded/tests -p 'test_*.py'
           dotnet test --project .github/benchmarks/pool-loaded/tests/IntervalLatency.Tests.csproj -c Release
-          python3 .github/scripts/runner_resources.py --output runner-resources -- python3 .github/scripts/pool_loaded_aba.py
+          python3 .github/scripts/pool_loaded_aba.py
       - name: Outbox cycle comparison
         if: inputs.suite == 'outbox'
         run: |
           python3 -m unittest discover -s .github/scripts -p test_outbox_cycle_aba.py
-          python3 .github/scripts/runner_resources.py --output runner-resources -- python3 .github/scripts/outbox_cycle_aba.py --pr "$PR" --baseline "$BASELINE_SHA" --candidate "$CANDIDATE_SHA" --artifacts "$GITHUB_WORKSPACE/aba-results"
+          python3 .github/scripts/outbox_cycle_aba.py --pr "$PR" --baseline "$BASELINE_SHA" --candidate "$CANDIDATE_SHA" --artifacts "$GITHUB_WORKSPACE/aba-results"
       - name: Loaded outbox comparison
         if: inputs.suite == 'outbox-loaded' || inputs.suite == 'outbox-adjacent'
         env:
           OUTBOX_ADJACENT: ${{ inputs.suite == 'outbox-adjacent' && '1' || '0' }}
         run: |
           python3 -m unittest discover -s .github/scripts -p test_outbox_loaded_aba.py
-          python3 .github/scripts/runner_resources.py --output runner-resources -- python3 .github/scripts/outbox_loaded_aba.py
+          python3 .github/scripts/outbox_loaded_aba.py
       - name: Administrative direct-call comparison
         if: inputs.suite == 'admin' || inputs.suite == 'admin-calibration' || inputs.suite == 'admin-pilot'
         env:
@@ -96,7 +159,7 @@ jobs:
           python3 -m unittest discover -s tools/AdminMutationEvidence -p test_validate_results.py
           python3 -m unittest discover -s tools/AdminShareOffsetEvidence -p test_comparison.py
           python3 -m unittest discover -s tools/AdminMemberRemovalEvidence -p test_comparison.py
-          python3 .github/scripts/runner_resources.py --output runner-resources -- python3 .github/scripts/admin_refresh.py
+          python3 .github/scripts/admin_refresh.py
       - name: Dispatch comparison with initialized coordinator
         if: inputs.suite == 'dispatch' || inputs.suite == 'dispatch-loaded' || inputs.suite == 'dispatch-pilot' || inputs.suite == 'dispatch-record-pilot'
         env:
@@ -109,12 +172,12 @@ jobs:
           if [[ "$DISPATCH_LOADED_ONLY" == 1 ]]; then extra_args+=(--loaded-only); fi
           if [[ "$DISPATCH_PILOT" == 1 ]]; then extra_args+=(--mode pending-batches); fi
           if [[ "$DISPATCH_STAGE_TIMING" == 1 ]]; then extra_args+=(--mode pending-records); fi
-          python3 .github/scripts/runner_resources.py --output runner-resources -- python3 .github/benchmarks/dispatch-aba/run.py --baseline "$BASELINE_SHA" --candidate "$CANDIDATE_SHA" --output "$GITHUB_WORKSPACE/evidence" "${extra_args[@]}"
+          python3 .github/benchmarks/dispatch-aba/run.py --baseline "$BASELINE_SHA" --candidate "$CANDIDATE_SHA" --output "$GITHUB_WORKSPACE/evidence" "${extra_args[@]}"
       - name: Completed share acknowledgement comparison
         if: inputs.suite == 'share-loaded'
         run: |
           python3 -m unittest discover -s .github/benchmarks/share-loaded -p 'test_*.py'
-          python3 .github/scripts/runner_resources.py --output runner-resources -- python3 .github/benchmarks/share-loaded/run.py --baseline "$BASELINE_SHA" --candidate "$CANDIDATE_SHA" --output "$GITHUB_WORKSPACE/evidence"
+          python3 .github/benchmarks/share-loaded/run.py --baseline "$BASELINE_SHA" --candidate "$CANDIDATE_SHA" --output "$GITHUB_WORKSPACE/evidence"
       - name: Full dispatch comparison with adjacent controls
         if: inputs.suite == 'dispatch-adjacent' || inputs.suite == 'dispatch-loaded-adjacent'
         env:
@@ -123,7 +186,7 @@ jobs:
           python3 -m unittest discover -s .github/benchmarks/dispatch-aba -p 'test_*.py'
           extra_args=()
           if [[ "$LOADED_ONLY" == 1 ]]; then extra_args+=(--loaded-only); fi
-          python3 .github/scripts/runner_resources.py --output runner-resources -- python3 .github/benchmarks/dispatch-aba/run_adjacent.py --baseline "$BASELINE_SHA" --candidate "$CANDIDATE_SHA" --output "$GITHUB_WORKSPACE/evidence" "${extra_args[@]}"
+          python3 .github/benchmarks/dispatch-aba/run_adjacent.py --baseline "$BASELINE_SHA" --candidate "$CANDIDATE_SHA" --output "$GITHUB_WORKSPACE/evidence" "${extra_args[@]}"
       - name: Record final main
         if: always()
         run: git ls-remote origin refs/heads/main > main-at-end.txt
@@ -136,6 +199,15 @@ jobs:
             evidence/
             main-at-end.txt
             performance-pins.json
-            runner-resources/
+          include-hidden-files: true
+          retention-days: 90
+      - name: Retain BenchmarkDotNet generated builds
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always() && inputs.suite == 'micro'
+        with:
+          name: benchmark-builds-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/performance-A/.performance/bin/
+            ${{ runner.temp }}/performance-B/.performance/bin/
           include-hidden-files: true
           retention-days: 90

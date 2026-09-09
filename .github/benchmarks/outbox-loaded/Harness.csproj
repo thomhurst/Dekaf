@@ -16,6 +16,5 @@
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
     <ProjectReference Include="$(ProductProject)" />
     <Compile Include="$(FixtureSource)/*.cs" />
-    <Compile Include="$(FixtureSource)/../CompilationLog.cs" />
   </ItemGroup>
 </Project>

@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Copied unchanged to .performance/ inside each pinned product checkout. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>preview</LangVersion>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <EnableNETAnalyzers>false</EnableNETAnalyzers>
+    <UseSharedCompilation>false</UseSharedCompilation>
+    <DefineConstants Condition="'$(ABA_ROLE)' == 'A'">$(DefineConstants);ABA_BASELINE</DefineConstants>
+    <DefineConstants Condition="'$(ABA_ROLE)' == 'B'">$(DefineConstants);ABA_CANDIDATE</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <PackageReference Include="BenchmarkDotNet" />
+    <Compile Include="Program.cs;$(ABA_PR)/*.cs" />
+    <ProjectReference Include="../src/Dekaf/Dekaf.csproj" />
+    <ProjectReference Include="../src/Dekaf.Outbox/Dekaf.Outbox.csproj" Condition="'$(ABA_PR)' == '3085'" />
+  </ItemGroup>
+</Project>

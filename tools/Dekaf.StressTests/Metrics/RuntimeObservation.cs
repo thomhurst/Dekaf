@@ -1,13 +1,10 @@
 using System.Diagnostics;
-using System.Runtime;
 
 namespace Dekaf.StressTests.Metrics;
 
 /// <summary>Process-wide counters, including harness work; no client-only attribution is implied.</summary>
 internal sealed record RuntimeObservation
 {
-    public long CompiledMethods { get; init; }
-    public double CompilationMilliseconds { get; init; }
     public int ThreadPoolThreads { get; init; }
     public long PendingWorkItems { get; init; }
     public double CpuSeconds { get; init; }
@@ -33,9 +30,7 @@ internal sealed record RuntimeObservation
             Gen2Collections = GC.CollectionCount(2),
             GcPauseMilliseconds = GC.GetTotalPauseDuration().TotalMilliseconds,
             ThreadPoolThreads = ThreadPool.ThreadCount,
-            PendingWorkItems = ThreadPool.PendingWorkItemCount,
-            CompilationMilliseconds = JitInfo.GetCompilationTime().TotalMilliseconds,
-            CompiledMethods = JitInfo.GetCompiledMethodCount()
+            PendingWorkItems = ThreadPool.PendingWorkItemCount
         };
     }
 }

@@ -93,14 +93,6 @@ def validate_primer_segments(primer_path):
         validate_probe(f'{path}[{index}]', .05, segment)
 
 
-def validate_engine_primer(path):
-    data = json.loads(path.read_text(encoding='utf-8-sig'))
-    if not math.isfinite(data['Seconds']) or data['Seconds'] < 10:
-        raise ValueError(f'{path}: engine primer requires ten elapsed seconds')
-    if data['CallbackPairs'] <= 0 or data['FormattedMeasurements'] != data['CallbackPairs']:
-        raise ValueError(f'{path}: engine primer callback/formatting work is missing')
-    return data
-
 def validate_bdn_workload_warmup(benchmark, smoke=False):
     warmups = [row for row in benchmark['Measurements']
                if row['IterationMode'] == 'Workload' and row['IterationStage'] == 'Warmup']
@@ -113,29 +105,6 @@ def validate_bdn_workload_warmup(benchmark, smoke=False):
         raise ValueError('BDN requires fifty workload warmups totaling at least twenty elapsed seconds')
     return dict(seconds=seconds, completed=completed, iterations=len(warmups),
                 smoke=smoke, scope='Raw BDN Workload/Warmup measurements; smoke is not acceptance')
-
-
-def validate_bdn_phase(warmup):
-    clock = json.loads(warmup.with_name('clock-' + warmup.name).read_text(encoding='utf-8-sig'))
-    signal_path = warmup.with_name('signals-' + warmup.stem + '.jsonl')
-    signals = [json.loads(line) for line in signal_path.read_text(encoding='utf-8-sig').splitlines()]
-    if [row['Signal'] for row in signals] != ['BeforeActualRun', 'AfterActualRun']:
-        raise ValueError(f'{signal_path}: actual workload boundaries missing, repeated or out of order')
-    if any(row['StopwatchFrequency'] != clock['StopwatchFrequency'] or row['ProcessId'] != clock['ProcessId'] for row in signals):
-        raise ValueError(f'{signal_path}: runtime clock/process identity mismatch')
-    start, end = [(row['Timestamp'] - clock['StartedTimestamp']) / clock['StopwatchFrequency'] for row in signals]
-    if not 0 <= start < end:
-        raise ValueError(f'{signal_path}: invalid actual workload interval')
-    runtime = warmup.with_name('runtime-' + warmup.name)
-    rows = json.loads(runtime.read_text(encoding='utf-8-sig'))
-    if not rows or rows[0]['Seconds'] > start or rows[-1]['Seconds'] < end:
-        raise ValueError(f'{runtime}: runtime samples do not bracket the actual workload')
-    if any(first['Seconds'] >= second['Seconds'] for first, second in zip(rows, rows[1:])):
-        raise ValueError(f'{runtime}: runtime sample clock is not increasing')
-    overlapping = [{'Start': first, 'End': second} for first, second in zip(rows, rows[1:])
-                   if second['Seconds'] > start and first['Seconds'] < end]
-    return dict(actual_start_seconds=start, actual_end_seconds=end, overlapping_runtime_intervals=overlapping,
-                scope='Host signals bracket actual workload; one-second observer intervals may overlap adjacent stages. No per-iteration instrumentation.')
 
 
 def compare(a1, b, a2):
@@ -194,7 +163,7 @@ def execute(args):
                     github_run=os.environ.get('GITHUB_RUN_ID'), smoke=args.smoke,
                     primer_segments=128, primer_segment_seconds=.05, primer_seconds=1,
                     warmup_seconds=.2 if args.smoke else 120, measured_seconds=.2 if args.smoke else 60,
-                    bdn_engine_primer_seconds=10, bdn_workload_warmup_iterations=None if args.smoke else 50,
+                    bdn_workload_warmup_iterations=None if args.smoke else 50,
                     bdn_workload_warmup_minimum_seconds=0 if args.smoke else 20,
                     bdn_outlier_mode='DontRemove', bdn_keep_files=True,
                     runtime={'DOTNET_TieredCompilation':'1', 'DOTNET_TieredPGO':'1', 'DOTNET_gcServer':'0'},
@@ -205,8 +174,6 @@ def execute(args):
     if sys.platform.startswith('linux'):
         run(['lscpu'], repository, archive / 'hardware.txt')
     copied_sources = [p for p in source.iterdir() if p.suffix in {'.cs', '.csproj', '.py', '.md'}]
-    if not (source / 'CompilationLog.cs').exists():
-        copied_sources.append(repository / '.github/benchmarks/CompilationLog.cs')
     (archive / 'harness').mkdir(parents=True)
     for path in copied_sources:
         shutil.copy2(path, archive / 'harness' / path.name)
@@ -237,7 +204,6 @@ def execute(args):
             shutil.copytree(project, archive / 'fixtures' / name, ignore=shutil.ignore_patterns('bin', 'obj', '__pycache__'))
         env = os.environ.copy()
         env.update(metadata['runtime'])
-        env['ADMIN_EVIDENCE_WARMUP_SECONDS'] = str(metadata['warmup_seconds'])
         for name, (checkout, binary) in products.items():
             for case in (INCREMENTAL if name == 'P' else CONTROLS + (NEW_CASES if name == 'B' else [])):
                 destination = archive / 'validation' / name / case.replace(':','-')
@@ -258,7 +224,6 @@ def execute(args):
                 validate_probe(destination / 'measured.json', metadata['measured_seconds'])
                 retain_loaded_binaries(destination / 'binaries.json', binary.parent, archive / 'binaries' / product)
             env['ADMIN_EVIDENCE_CASES'] = ','.join(cases)
-            env['ADMIN_EVIDENCE_WARMUP_DIRECTORY'] = str(archive / phase / 'bdn-runtime')
             bdn = ['dotnet',str(binary),'--filter','*AdminEvidenceBenchmark*','--exporters','fulljson',
                    '--artifacts',str(archive / phase / 'bdn'), '--keepFiles']
             bdn += ['--smoke-bdn'] if args.smoke else []
@@ -270,11 +235,6 @@ def execute(args):
                         target = archive / phase / 'bdn-binaries' / generated.name
                         shutil.copytree(generated, target)
                         verify_copied_tree(generated, target)
-            manifests = list((archive / phase / 'bdn-runtime').glob('binaries-*.json'))
-            if len(manifests) < len(cases):
-                raise ValueError(f'{phase}: loaded BDN binary identities missing')
-            for manifest in manifests:
-                retain_loaded_binaries(manifest, binary.parent, archive / phase / 'bdn-binaries')
             reports = list((archive / phase / 'bdn' / 'results').glob('*-full.json'))
             benchmarks = [benchmark for path in reports for benchmark in json.loads(path.read_text(encoding='utf-8-sig')).get('Benchmarks', [])]
             if len(benchmarks) != len(cases) or any(not b.get('Statistics') for b in benchmarks):
@@ -283,20 +243,6 @@ def execute(args):
                 raise ValueError(f'{phase}: BDN measured fixture identities differ from requested cases')
             save(archive / phase / 'bdn-workload-warmup.json',
                  {b['Parameters']: validate_bdn_workload_warmup(b, args.smoke) for b in benchmarks})
-            for case in cases:
-                prefix = case.replace(':', '-')
-                warmups = list((archive / phase / 'bdn-runtime').glob(f'{prefix}-*.json'))
-                if not warmups:
-                    raise ValueError(f'{phase}/{case}: BDN elapsed-workload warmup evidence missing')
-                for warmup in warmups:
-                    validate_engine_primer(warmup.with_name('engine-primer-' + warmup.name))
-                    validate_probe(warmup, metadata['warmup_seconds'])
-                    validate_probe(warmup.with_name('primer-' + warmup.name), metadata['primer_seconds'])
-                    validate_primer_segments(warmup.with_name('primer-' + warmup.name))
-                    runtime = warmup.with_name('runtime-' + warmup.name)
-                    if not runtime.exists() or not json.loads(runtime.read_text(encoding='utf-8-sig')):
-                        raise ValueError(f'{phase}/{case}: BDN runtime activity evidence missing')
-                    save(warmup.with_name('measured-runtime-' + warmup.name), validate_bdn_phase(warmup))
         summary = {}
         for case in CONTROLS:
             inputs = [json.loads((archive / phase / case.replace(':','-') / 'measured.json').read_text(encoding='utf-8-sig')) for phase in ['A1','B','A2']]

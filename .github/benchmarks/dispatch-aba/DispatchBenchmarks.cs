@@ -55,20 +55,12 @@ public class KeyOrderedDispatchBenchmarks
             .MakeGenericMethod(typeof(int), typeof(int));
         PartitionBatchProcessor<int, int> handler = (_, records, token) => HandleBatch(records, token);
         _processor = (PartitionProcessor<int, int>)factory.Invoke(null, [handler, options])!;
-        using var process = Process.GetCurrentProcess();
         var warmup = Stopwatch.StartNew();
         long operations = 0;
-        var next = 1d;
         do
         {
             await DispatchLifetime().ConfigureAwait(false);
             operations += RecordCount;
-            if (warmup.Elapsed.TotalSeconds >= next)
-            {
-                process.Refresh();
-                Console.WriteLine(FormattableString.Invariant($"WARM seconds={warmup.Elapsed.TotalSeconds:F3} operations={operations} jit={System.Runtime.JitInfo.GetCompiledMethodCount()} jitMs={System.Runtime.JitInfo.GetCompilationTime().TotalMilliseconds:F3} threads={ThreadPool.ThreadCount} pending={ThreadPool.PendingWorkItemCount} cpuMs={process.TotalProcessorTime.TotalMilliseconds:F3} gc0={GC.CollectionCount(0)} gc1={GC.CollectionCount(1)} gc2={GC.CollectionCount(2)} heap={GC.GetTotalMemory(false)} rss={process.WorkingSet64}"));
-                next++;
-            }
         } while (!Program.Smoke && warmup.Elapsed.TotalSeconds < 20);
         Console.WriteLine(FormattableString.Invariant($"WARM completed seconds={warmup.Elapsed.TotalSeconds:F3} operations={operations}"));
     }

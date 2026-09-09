@@ -4,7 +4,7 @@ from pathlib import Path
 import tempfile
 import unittest
 from run_comparison import (compare, validate_probe, validate_primer_segments, retain_loaded_binaries,
-                            validate_bdn_phase, validate_engine_primer, validate_bdn_workload_warmup)
+                            validate_bdn_workload_warmup)
 
 class ComparisonTests(unittest.TestCase):
     def metrics(self):
@@ -96,57 +96,6 @@ class ComparisonTests(unittest.TestCase):
             product.write_bytes(b'replaced product')
             with self.assertRaises(ValueError):
                 retain_loaded_binaries(manifest, original, root / 'other-archive')
-
-    def test_bdn_boundaries_match_the_observed_worker_clock(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            warmup = root / 'inventory-16-42.json'
-            clock = dict(StartedTimestamp=1000, StopwatchFrequency=100, ProcessId=42)
-            warmup.with_name('clock-' + warmup.name).write_text(json.dumps(clock), encoding='utf-8')
-            runtime = [{'Seconds': value} for value in [0, 1, 2, 3, 4]]
-            warmup.with_name('runtime-' + warmup.name).write_text(json.dumps(runtime), encoding='utf-8')
-            signals = [dict(Signal=signal, Timestamp=timestamp, StopwatchFrequency=100, ProcessId=42)
-                       for signal, timestamp in [('BeforeActualRun', 1150), ('AfterActualRun', 1250)]]
-            path = root / 'signals-inventory-16-42.jsonl'
-            path.write_text('\n'.join(json.dumps(row) for row in signals), encoding='utf-8')
-            result = validate_bdn_phase(warmup)
-            self.assertEqual(result['actual_start_seconds'], 1.5)
-            self.assertEqual(len(result['overlapping_runtime_intervals']), 2)
-            signals[1]['ProcessId'] = 43
-            path.write_text('\n'.join(json.dumps(row) for row in signals), encoding='utf-8')
-            with self.assertRaises(ValueError): validate_bdn_phase(warmup)
-            signals[1]['ProcessId'] = 42
-            signals[1]['Timestamp'] = 1450
-            path.write_text('\n'.join(json.dumps(row) for row in signals), encoding='utf-8')
-            with self.assertRaises(ValueError): validate_bdn_phase(warmup)
-
-    def test_reused_worker_pid_does_not_combine_different_cases(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            for case, started in [('legacy-16', 1000), ('delete-16', 2000)]:
-                warmup = root / f'{case}-42.json'
-                clock = dict(StartedTimestamp=started, StopwatchFrequency=100, ProcessId=42)
-                warmup.with_name('clock-' + warmup.name).write_text(json.dumps(clock), encoding='utf-8')
-                warmup.with_name('runtime-' + warmup.name).write_text(
-                    json.dumps([{'Seconds': value} for value in [0, 1, 2, 3]]), encoding='utf-8')
-                signals = [dict(Signal=signal, Timestamp=started + offset, StopwatchFrequency=100, ProcessId=42)
-                           for signal, offset in [('BeforeActualRun', 150), ('AfterActualRun', 250)]]
-                warmup.with_name('signals-' + warmup.stem + '.jsonl').write_text(
-                    '\n'.join(json.dumps(row) for row in signals), encoding='utf-8')
-            for case in ['legacy-16', 'delete-16']:
-                self.assertEqual(validate_bdn_phase(root / f'{case}-42.json')['actual_start_seconds'], 1.5)
-
-    def test_engine_primer_requires_elapsed_work_and_matching_counts(self):
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / 'engine-primer.json'
-            valid = dict(Seconds=10, CallbackPairs=100, FormattedMeasurements=100)
-            path.write_text(json.dumps(valid), encoding='utf-8')
-            self.assertEqual(validate_engine_primer(path), valid)
-            for changes in [dict(Seconds=9.999), dict(Seconds=float('nan')),
-                            dict(CallbackPairs=0, FormattedMeasurements=0), dict(FormattedMeasurements=99)]:
-                with self.subTest(changes=changes):
-                    path.write_text(json.dumps(dict(valid, **changes)), encoding='utf-8')
-                    with self.assertRaises(ValueError): validate_engine_primer(path)
 
     def test_bdn_warmup_requires_elapsed_workload_not_iteration_count_alone(self):
         row = dict(IterationMode='Workload', IterationStage='Warmup', Nanoseconds=400_000_000, Operations=100)

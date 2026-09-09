@@ -7,7 +7,5 @@
   <ItemGroup>
     <PackageReference Include="TUnit" />
     <Compile Include="../../../tools/AdminDescriptionEvidence/Probe.cs" Link="Probe.cs" />
-    <Compile Include="../../../tools/AdminDescriptionEvidence/PhaseEvents.cs" Link="PhaseEvents.cs" />
-    <Compile Include="../CompilationLog.cs" Link="CompilationLog.cs" />
   </ItemGroup>
 </Project>

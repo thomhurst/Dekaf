@@ -21,8 +21,7 @@ public static class Program
         var batchSize = int.Parse(args[1]);
         Smoke = args.Contains("--smoke");
         RequireZero = args.Contains("--require-zero");
-        using var runtime = new RuntimeLogger(Path.Combine(args[2], "runtime.csv"));
-        var config = DefaultConfig.Instance.WithArtifactsPath(args[2]).AddLogger(runtime)
+        var config = DefaultConfig.Instance.WithArtifactsPath(args[2])
             .AddExporter(JsonExporter.Full)
             .AddFilter(new SimpleFilter(test =>
                 (KeyOrderedDispatchBenchmarks.KeyPattern)test.Parameters[nameof(KeyOrderedDispatchBenchmarks.Pattern)] == pattern

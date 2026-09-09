@@ -1,7 +1,7 @@
 """Exact-SHA pool comparison; collection does not establish performance acceptance."""
 from pathlib import Path
 import hashlib,json,os,shutil,subprocess,sys
-from runner_resources import configure_affinity
+from runner_affinity import configure_affinity
 
 TOPOLOGY, AFFINITY = configure_affinity()
 CLIENT_CPU = min(map(int, AFFINITY['consumer'].split(',')))

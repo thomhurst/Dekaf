@@ -24,11 +24,9 @@ internal static class Program
         int warmup = int.Parse(args[5]), measured = int.Parse(args[6]);
         if (warmup < 1 || measured < 1)
             throw new ArgumentOutOfRangeException(nameof(args));
-        using var compilations = new CompilationLog(Path.Combine(output, "compilations.json"));
-        compilations.Phase("initialize");
         Store store = args[3] == "renewal"
-            ? new RenewingStore(args[2], warmup, measured, compilations)
-            : new Store(args[2], warmup, measured, compilations);
+            ? new RenewingStore(args[2], warmup, measured)
+            : new Store(args[2], warmup, measured);
         using var metrics = new MetricsObserver(args[4] == "on");
         using var lifetime = new CancellationTokenSource(TimeSpan.FromSeconds(20 + warmup + measured + 120));
         var admin = Kafka.CreateAdminClient().WithBootstrapServers(args[0]).Build();
@@ -73,7 +71,6 @@ internal static class Program
         }
         finally
         {
-            compilations.Phase("finalize");
             var stopped = Stopwatch.StartNew();
             try
             {
@@ -124,7 +121,6 @@ internal class Store : IOutboxStore
     private static readonly int[] Buckets = [0];
     private readonly OutboxMessage[] _rows;
     private readonly Phase[] _phases;
-    private readonly CompilationLog _compilations;
     private readonly List<Snapshot> _samples;
     private int _phase;
     private long _started;
@@ -134,9 +130,8 @@ internal class Store : IOutboxStore
     public Exception? Failure;
     public readonly TaskCompletionSource Finished = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-    internal Store(string topic, int warmup, int measured, CompilationLog compilations)
+    internal Store(string topic, int warmup, int measured)
     {
-        _compilations = compilations;
         _phases = [new("primer", 20), new("warmup", warmup), new("measured", measured)];
         _samples = new(20 + warmup + measured + 140);
         _rows = new OutboxMessage[BatchCount];
@@ -163,7 +158,6 @@ internal class Store : IOutboxStore
         var phase = _phases[_phase];
         if (phase.Start.Timestamp == 0)
         {
-            _compilations.Phase(phase.Name);
             phase.Start = Snapshot.Capture(TotalCompleted, Pending);
         }
         Volatile.Write(ref Pending, BatchCount);
@@ -261,8 +255,8 @@ internal class Store : IOutboxStore
     }
 }
 
-internal sealed class RenewingStore(string topic, int warmup, int measured, CompilationLog compilations)
-    : Store(topic, warmup, measured, compilations), IOutboxLeaseRenewalStore
+internal sealed class RenewingStore(string topic, int warmup, int measured)
+    : Store(topic, warmup, measured), IOutboxLeaseRenewalStore
 {
     public ValueTask<bool> RenewBucketLeasesAsync(OutboxLeaseRequest request, IReadOnlyList<int> buckets,
         CancellationToken cancellationToken = default) => new(true);
@@ -282,7 +276,7 @@ internal sealed class Phase(string name, int seconds)
 internal readonly record struct Cycle(long Start, long End);
 internal readonly record struct Snapshot(long Timestamp, long CpuTicks, long Allocated, long Completed,
     int Pending, int Gen0, int Gen1, int Gen2, long HeapBytes, long RssBytes, int Threads,
-    long PendingWork, long JitMethods, double JitMs)
+    long PendingWork)
 {
     public static Snapshot Capture(long completed, int pending)
     {
@@ -290,7 +284,7 @@ internal readonly record struct Snapshot(long Timestamp, long CpuTicks, long All
         return new(Stopwatch.GetTimestamp(), process.TotalProcessorTime.Ticks, GC.GetTotalAllocatedBytes(true),
             completed, pending, GC.CollectionCount(0), GC.CollectionCount(1), GC.CollectionCount(2),
             GC.GetGCMemoryInfo().HeapSizeBytes, process.WorkingSet64, ThreadPool.ThreadCount,
-            ThreadPool.PendingWorkItemCount, JitInfo.GetCompiledMethodCount(), JitInfo.GetCompilationTime().TotalMilliseconds);
+            ThreadPool.PendingWorkItemCount);
     }
 }
 

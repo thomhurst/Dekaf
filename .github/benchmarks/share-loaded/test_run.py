@@ -19,9 +19,9 @@ class CompletedAcknowledgementValidation(unittest.TestCase):
             CpuNsPerMessage=100, AllocatedBytesPerMessage=8, P50Ns=100, P99Ns=100, MaxNs=100,
             CpuTicksStart=0, CpuTicksEnd=256, AllocatedBytesStart=0, AllocatedBytesEnd=2048,
             ActualWarmupSeconds=2, MeasuredDurationSeconds=2, StopwatchFrequency=1_000_000_000,
-            JitMethodsStart=10, JitMethodsEnd=10, JitMsStart=1, JitMsEnd=1, MeasurementStart=0)
+            MeasurementStart=0)
         self.producer = dict(Sent=512, Acknowledged=512, Failed=0, ScheduledStart=0, Rate=128, OfferBurst=128)
-        sample = dict(JitMethods=10, JitMs=1, Threads=1, PendingWork=0, CpuTicks=0,
+        sample = dict(Threads=1, PendingWork=0, CpuTicks=0,
             Gen0=0, Gen1=0, Gen2=0, HeapBytes=100, RssBytes=1000)
         self.series = [sample.copy() for _ in range(4)]
         for name, count in [('all-latency-ticks.bin', 512), ('latency-ticks.bin', 256)]:
@@ -66,8 +66,8 @@ class CompletedAcknowledgementValidation(unittest.TestCase):
             self.validate()
 
     def test_reject_missing_runtime_counter(self):
-        del self.series[1]['JitMethods']
-        with self.assertRaisesRegex(ValueError, 'JitMethods'):
+        del self.series[1]['CpuTicks']
+        with self.assertRaisesRegex(ValueError, 'CpuTicks'):
             self.validate()
 
     def test_reject_wrong_cpu_denominator(self):

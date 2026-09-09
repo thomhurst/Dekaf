@@ -1,5 +1,13 @@
 # Maintained performance comparison harness
 
+Prefer standard .NET tooling over custom measurement and profiling code. See
+[tool selection and BenchmarkDotNet settings](STANDARD-TOOLS.md). The shared
+`micro` suite uses BenchmarkDotNet's normal out-of-process toolchain; it has no
+custom runtime logger, JIT event listener or background resource sampler.
+Pool, outbox, dispatch and administrative fixtures also remove custom BDN runtime
+loggers, samplers and JIT listeners. JIT investigations are manual and separate
+from timing; compilation activity is not an acceptance metric.
+
 Use [performance-comparison.yml](../workflows/performance-comparison.yml) for
 manual, exact-revision comparisons. The existing daily
 [benchmarks.yml](../workflows/benchmarks.yml) and scheduled/manual
@@ -9,9 +17,12 @@ paid-run limits and publishing coverage.
 The harness is maintained with the repository. Its source is pinned independently
 from both products: H is the harness, A is fresh main, and B is the current open
 PR head containing A. Each comparison runs A1, B, A2 sequentially on one
-`ubuntu-latest` VM. A successful workflow or identity check is not a performance
-PASS. Apply [repository acceptance requirements](../../AGENTS.md) to every
-applicable protected metric, control drift, uncertainty and correctness result.
+`ubuntu-latest` VM. The `micro` suite screens every case against the declared
+tolerances and fails on `REGRESSION`; that screen is the acceptance result for
+micro-scoped changes. Other suites and identity checks are not a performance
+PASS by themselves. Apply [repository acceptance requirements](../../AGENTS.md)
+to every applicable protected metric, control drift, uncertainty and
+correctness result.
 
 ## Dispatch
 
@@ -26,8 +37,9 @@ The workflow rejects moving product names, a different checked-out harness,
 stale main, a candidate missing main, a changed/closed PR, and unknown suites.
 `performance-pins.json` records independent workflow/harness/product identities.
 Suite artifacts retain source/binary identities, settings and raw measurements.
-The resource wrapper retains CPU topology, affinity, CPU steal, memory, pressure,
-disk and child exit status. Inspect these alongside client measurements.
+The shared micro suite retains static CPU/runtime/OS details and BDN's original
+reports and logs. The shared Linux helper only selects CPU affinity; the custom
+background host-resource sampler is removed.
 
 For identical-product repeatability, select `suite=admin-calibration`, set A and
 B to the same fresh-main SHA, and use a supported administrative PR number to
@@ -39,7 +51,7 @@ binary in all phases and never grants product acceptance. See
 
 | Suite | Scope and maintained driver |
 | --- | --- |
-| `micro` | Focused cases for #3082, #3083, #3085, #3086, #3109, #3116, #3117, #3149, #3158; [driver](../scripts/benchmark_aba.py) |
+| `micro` | Focused cases for #3082, #3083, #3085, #3086, #3116, #3117, #3149, #3158; normal [project references](aba/Dekaf.Benchmarks.csproj) and BDN CLI in the workflow |
 | `pool`, `pool-recovery` | Pool reset and recovery; [driver](../scripts/pool_reset_aba.py) |
 | `pool-loaded`, `pool-profile` | Loaded producer pool comparison and diagnostic profiling; [driver](../scripts/pool_loaded_aba.py) |
 | `admin`, `admin-pilot`, `admin-calibration` | Cached-transport administration for #3128, #3129, #3136, #3138; [driver](../scripts/admin_refresh.py) |
@@ -68,7 +80,7 @@ acceptance evidence. New H/A/B combinations require new evidence.
 
 [performance-harness-tests.yml](../workflows/performance-harness-tests.yml) runs
 driver/replay tests, recorder allocation tests, pool interval tests, actual
-administrative fixture builds/captures and Linux affinity/resource smoke checks.
+administrative fixture builds/captures and Linux affinity smoke checks.
 For the administrative smoke locally:
 
 ```text
@@ -83,5 +95,5 @@ and existing workflows. Historical allocation observations remain linked to
 their original commit instead of copied into this tree. Two historical startup
 diagnostic launchers (`run_diagnostic.py`, `run_startup.py`) require an external,
 uncommitted `AdminJitTraceInspector`; they are excluded from the maintained
-entry points. The runnable allocation-counter calibration utility remains a
-diagnostic, not a replacement acceptance metric.
+entry points. The custom allocation-counter calibration workload and trace
+inspector have been removed; historical sources remain at the imported SHA.
