@@ -1,0 +1,9 @@
+# Unpooled ShareFetch follow-up
+
+Predeclared candidate `87a2c812fef9f1d41757745717182a2c690db048`, containing freshly fetched main `551d4d0825dca64b7143d6f18fc2b13baaf1fe0a` as both controls. Use the unchanged six-case fixture and all settings/criteria in PLAN.md. This is a new causal candidate, not an unchanged repeat.
+
+The pipelined parser now avoids an ownership wrapper only for unpooled managed ShareFetch frames with no memory-budget reservation. Pooled/native frames and active reservations retain ownership. All 69 focused connection/response tests and both native-payload Kafka integration cases pass. Local before/after diagnostics reduce stable decode from roughly 123–132 ns to 80–81 ns; all six cases remain 264 B/response. These local results do not prove hosted acceptance.
+
+Prior hosted run 34300421499 used A db9df0ce888f3974d4adc423906d9025cdfa9c30 and the preceding ownership implementation. Its stable 32-KiB A1/B/A2 means were 161.343/254.512/159.540 ns, B +57.75%/+59.53%, controls -1.12%, with separated intervals. Allocation was 256/264/256 B per response. Other controls and pooled modes retained drift and timing limitations; the full report is PR comment 5594773268. Its measured verdict remains REGRESSION for that implementation, not waived by the local improvement.
+
+Measure fresh-main A1/B/A2 sequentially on one ubuntu-latest VM, build/validate both products and all fixtures before timing, preserve every sample, runtime series, source/binary hash and hardware/runtime setting. Keep the common 3% mean/control limit and record allocation changes separately. The existing extra 8 B/response remains unapproved. Native baseline delivery remains invalid until main's lifetime defect is fixed; do not run that crashing comparison. This microbenchmark cannot certify loaded CPU/message latency, recovery or long-run stability.
