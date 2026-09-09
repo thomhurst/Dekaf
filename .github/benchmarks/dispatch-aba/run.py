@@ -211,6 +211,30 @@ def workload(hosts, label, folder, mode, warmup, seconds, rate, broker, pinned=T
     return metrics
 
 
+def summarize_stages(starts, latencies, producer, metrics):
+    if len(starts) != metrics['Completed'] or len(latencies) != len(starts):
+        raise ValueError('Missing handler stage samples')
+    frequency = metrics['StopwatchFrequency']
+    rows = []
+    for index, (start, latency) in enumerate(zip(starts, latencies)):
+        scheduled = producer['ScheduledStart'] + int((index // producer['OfferBurst'] * producer['OfferBurst']) *
+                                                     frequency / producer['Rate'])
+        end = scheduled + latency
+        if latency <= 0 or not scheduled <= start <= end:
+            raise ValueError('Invalid handler stage boundary')
+        if index >= metrics['WarmupCompleted']:
+            rows.append(dict(sequence=index, scheduled=scheduled, handler_start=start, completed=end,
+                             before_handler_ticks=start - scheduled, handler_ticks=end - start,
+                             total_ticks=latency))
+    if len(rows) != metrics['Measured']:
+        raise ValueError('Incorrect handler stage denominator')
+    # Every sample remains in the binary files. These rows locate the largest
+    # total latencies without discarding them from any acceptance metric.
+    return dict(measured=len(rows), stopwatch_frequency=frequency,
+                largest_total=sorted(rows, key=lambda row: row['total_ticks'], reverse=True)[:32],
+                largest_handler=sorted(rows, key=lambda row: row['handler_ticks'], reverse=True)[:32])
+
+
 def latency_series(folder, metrics):
     producer = json.loads((folder / 'producer.json').read_text())
     latencies = array.array('q')
@@ -234,6 +258,13 @@ def latency_series(folder, metrics):
     if sum(row['completed'] for row in samples) != metrics['Measured']:
         raise ValueError('Latency time series dropped samples')
     (folder / 'latency-series.json').write_text(json.dumps(samples, indent=2))
+    if metrics.get('StageTiming'):
+        starts = array.array('q')
+        starts.frombytes((folder / 'handler-start-ticks.bin').read_bytes())
+        all_latencies = array.array('q')
+        all_latencies.frombytes((folder / 'all-latency-ticks.bin').read_bytes())
+        stages = summarize_stages(starts, all_latencies, producer, metrics)
+        (folder / 'handler-stage-summary.json').write_text(json.dumps(stages, indent=2))
 
 
 def broker_start(folder, name, extra_environment=()):
@@ -334,6 +365,9 @@ def main():
     if args.mode and not args.loaded_only:
         parser.error('--mode requires --loaded-only')
     modes = (args.mode,) if args.mode else MODES
+    stage_timing = os.environ.get('DISPATCH_STAGE_TIMING') == '1'
+    if stage_timing and (not args.loaded_only or args.mode != 'pending-records'):
+        parser.error('DISPATCH_STAGE_TIMING requires --loaded-only --mode pending-records')
     root = Path.cwd()
     for sha in (args.baseline, args.candidate):
         if not re.fullmatch('[0-9a-f]{40}', sha):
@@ -348,7 +382,7 @@ def main():
                       runner_image=os.environ.get('ImageVersion'), runner_os=os.environ.get('ImageOS'),
                       run_url=f"https://github.com/{os.environ.get('GITHUB_REPOSITORY')}/actions/runs/{os.environ.get('GITHUB_RUN_ID')}",
                       phases=['A1', 'B', 'A2'], loaded_warmup_seconds=WARMUP, loaded_duration_seconds=DURATION,
-                      loaded_only=args.loaded_only,
+                      loaded_only=args.loaded_only, handler_stage_timing=stage_timing,
                       loaded_modes=modes, partial_loaded_scope=args.mode is not None,
                       focused_dispatcher_shutdown_measured=not args.loaded_only)
     (output / 'provenance.json').write_text(json.dumps(provenance, indent=2))

@@ -47,6 +47,7 @@ internal sealed class Load
     private readonly Process _process = Process.GetCurrentProcess();
     private readonly Process _accountingProcess = Process.GetCurrentProcess();
     private long[] _latencies = null!;
+    private long[]? _handlerStarts;
     private CompilationLog _compilations = null!;
     private Sample[] _series = null!;
     private int _seriesCount;
@@ -138,6 +139,13 @@ internal sealed class Load
         _total = checked((warmup + seconds) * rate);
         _latencies = new long[_total];
         Array.Fill(_latencies, 0L);
+        if (Environment.GetEnvironmentVariable("DISPATCH_STAGE_TIMING") == "1")
+        {
+            if (mode != "pending-records")
+                throw new ArgumentException("Stage timing requires pending-records mode.");
+            _handlerStarts = new long[_total];
+            Array.Fill(_handlerStarts, 0L);
+        }
         Array.Fill(_lastByKey, -1L);
         _series = new Sample[warmup + seconds + 200];
         using var watchdog = new CancellationTokenSource(TimeSpan.FromSeconds(warmup + seconds + 180));
@@ -216,6 +224,11 @@ internal sealed class Load
                 WriteJson(folder, "series.json", _series.AsSpan(0, _seriesCount).ToArray());
                 using var output = File.Create(Path.Combine(folder, "all-latency-ticks.bin"));
                 output.Write(MemoryMarshal.AsBytes(_latencies.AsSpan()));
+                if (_handlerStarts is not null)
+                {
+                    using var starts = File.Create(Path.Combine(folder, "handler-start-ticks.bin"));
+                    starts.Write(MemoryMarshal.AsBytes(_handlerStarts.AsSpan()));
+                }
             }
         }
         if (_completed != _total || _measured != seconds * (long)rate || _latencies.Any(t => t <= 0)
@@ -240,6 +253,7 @@ internal sealed class Load
         WriteJson(folder, "metrics.json", new
         {
             Mode = mode, Completed = _completed, Measured = _measured, Failures = 0, BacklogAtEnd = 0,
+            StageTiming = _handlerStarts is not null,
             OfferedMessagesPerSecond = rate, MeasuredDurationSeconds = elapsed,
             WarmupOfferedSeconds = warmup, WarmupCompleted = _completed - _measured,
             ActualWarmupSeconds = (_measurementStart - _firstCompletion) / (double)Stopwatch.Frequency,
@@ -270,6 +284,8 @@ internal sealed class Load
     private ValueTask HandleRecord(PartitionRecordProcessorContext<int, Payload> context,
         ConsumeResult<int, Payload> record, CancellationToken token)
     {
+        if (_handlerStarts is not null)
+            _handlerStarts[record.Value.Sequence] = Stopwatch.GetTimestamp();
         Interlocked.Increment(ref _batchCounts[1]);
         if (record.Value.Sequence >= _warmupCount) Interlocked.Increment(ref _measuredBatchCounts[1]);
         if (_pending) return CompletePendingRecord(record);
@@ -332,6 +348,9 @@ internal sealed class Load
             throw new InvalidOperationException("Invalid record or per-key ordering.");
         _lastByKey[record.Key] = index;
         var now = Stopwatch.GetTimestamp();
+        if (_handlerStarts is not null &&
+            (_handlerStarts[index] <= 0 || _handlerStarts[index] > now))
+            throw new InvalidOperationException("Missing or invalid handler entry timestamp.");
         Interlocked.CompareExchange(ref _firstCompletion, now, 0);
         if (index >= _warmupCount && Interlocked.CompareExchange(ref _measurementStart, -1, 0) == 0)
         {
