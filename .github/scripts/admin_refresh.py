@@ -48,7 +48,9 @@ def execute():
         validator = original.validate_probe
         controls, added = original.CONTROLS, original.NEW_CASES
     pilot = os.getenv('ADMIN_PILOT') == '1'
-    warmup_seconds = 360
+    extended_member_removal = PR == 3129 and not pilot
+    warmup_seconds = 480 if extended_member_removal else 360
+    measured_seconds = 180 if extended_member_removal else 60
     if pilot:
         # Diagnose the observed report/JIT transition before expanding a campaign.
         controls, added = controls[:1], []
@@ -56,8 +58,12 @@ def execute():
     cpu = max(os.sched_getaffinity(0))
     probe_prefix = ['taskset', '-c', str(cpu), 'dotnet']
     plan = dict(A=A, B=B, harness=subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
-                controls=controls, candidate_only=added, warmup_seconds=warmup_seconds, measured_seconds=60,
-                warmup_rationale='360 seconds continuous workload after observer heap preparation; assess all measured runtime transitions',
+                controls=controls, candidate_only=added, warmup_seconds=warmup_seconds, measured_seconds=measured_seconds,
+                warmup_rationale=('480 seconds continuous workload after observer heap preparation; previous 360-second captures '
+                                  'retained helper/ConditionalWeakTable JIT near total seconds 382-400. Collect 180 seconds '
+                                  'to retain multiple recurring GC cycles, not select a GC-free window.'
+                                  if extended_member_removal else
+                                  '360 seconds continuous workload after observer heap preparation; assess all measured runtime transitions'),
                 observer_preparation='After histogram allocation, two blocking compacting full GCs with finalizer waits before workload warmup; no forced GC during warmup or measurement',
                 pilot=pilot, report_aggregation='all overflow sorting and aggregation deferred until both captures finish',
                 histograms='Value-type buckets with 65536 preallocated entries per interval; overflow invalidates',
@@ -107,19 +113,19 @@ def execute():
             binary = hosts[label]
             capture = dict(case=case, phase=phase, product=A if label == 'A' else B,
                            started_utc=datetime.now(timezone.utc).isoformat())
-            run(probe_prefix + [str(binary), 'probe', case, str(destination), str(warmup_seconds), '60'], destination / 'run.log', env=environment)
+            run(probe_prefix + [str(binary), 'probe', case, str(destination), str(warmup_seconds), str(measured_seconds)], destination / 'run.log', env=environment)
             capture['completed_utc'] = datetime.now(timezone.utc).isoformat()
             captures.append(capture)
             save(OUT / 'capture-order.json', captures)
             validator(destination / 'warmup.json', warmup_seconds)
-            observations[phase][case] = validator(destination / 'measured.json', 60)
+            observations[phase][case] = validator(destination / 'measured.json', measured_seconds)
             common.retain_loaded_binaries(destination / 'binaries.json', binary.parent, OUT / 'binaries' / label)
     save(OUT / 'comparison.json', {case: common.compare(*(observations[phase][case] for phase in ['A1', 'B', 'A2'])) for case in controls})
     for case in added:
         destination = OUT / 'candidate-only' / case.replace(':', '-')
-        run(probe_prefix + [str(hosts['B']), 'probe', case, str(destination), str(warmup_seconds), '60'], destination / 'run.log', env=environment)
+        run(probe_prefix + [str(hosts['B']), 'probe', case, str(destination), str(warmup_seconds), str(measured_seconds)], destination / 'run.log', env=environment)
         validator(destination / 'warmup.json', warmup_seconds)
-        validator(destination / 'measured.json', 60)
+        validator(destination / 'measured.json', measured_seconds)
         common.retain_loaded_binaries(destination / 'binaries.json', hosts['B'].parent, OUT / 'binaries/B')
 
 
