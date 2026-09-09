@@ -52,3 +52,22 @@ not invalidated by this local-preflight bug. Local preflight now requires the
 explicit `Validated CASE` marker and rejects unsupported cases on both products.
 Member-removal and share-offset dispatch also reject unknown candidate modes
 instead of silently treating them as ordinary candidate calls.
+
+## Periodic collection is not removable startup noise
+
+Run 34294583224 records Gen2 collection near total workload seconds 100, 200,
+300 and 400 in all six controlled captures. Every measured maximum occurs in
+the interval containing the fourth collection. ConditionalWeakTable Enumerator
+MoveNext compiles near warmup second 1.55 and again near total second 400.09;
+the later compilation is a runtime transition, while full collection itself is
+already recurring during warmup. These observations do not establish which part
+of the interval causes each pause.
+
+Do not choose a later 60-second measurement window merely to miss the next
+collection. A longer-warmup experiment must also measure multiple collection
+cycles, retain every pause and establish that compilation has stabilized.
+Changing the number of retained histogram intervals changes observer heap size,
+which must be recorded and assessed. The current hosted defaults remain 360
+seconds of warmup and 60 seconds of measurement; no new hosted run follows this
+diagnosis alone. A local diagnostic extends measurement to 300 seconds with the
+same 360-second warmup to inspect later cycles; it cannot provide acceptance.
