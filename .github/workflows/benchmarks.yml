@@ -9,7 +9,7 @@ on:
       suite:
         required: true
         type: choice
-        options: [micro, pool, pool-recovery, admin, admin-pilot, dispatch, dispatch-loaded, dispatch-pilot, dispatch-record-pilot, share-loaded, outbox, outbox-loaded, pool-loaded, pool-profile]
+        options: [micro, pool, pool-recovery, admin, admin-pilot, dispatch, dispatch-adjacent, dispatch-loaded, dispatch-pilot, dispatch-record-pilot, share-loaded, outbox, outbox-loaded, pool-loaded, pool-profile]
       baseline_sha:
         required: true
         description: Exact baseline SHA
@@ -21,7 +21,7 @@ permissions:
 jobs:
   compare:
     runs-on: ubuntu-latest
-    timeout-minutes: ${{ inputs.suite == 'admin' && 350 || 180 }}
+    timeout-minutes: ${{ (inputs.suite == 'admin' || inputs.suite == 'dispatch-adjacent') && 350 || 180 }}
     env:
       BASELINE_SHA: ${{ inputs.baseline_sha }}
       CANDIDATE_SHA: ${{ inputs.candidate_sha }}
@@ -103,6 +103,11 @@ jobs:
         run: |
           python3 -m unittest discover -s .github/benchmarks/share-loaded -p 'test_*.py'
           python3 .github/benchmarks/share-loaded/run.py --baseline "$BASELINE_SHA" --candidate "$CANDIDATE_SHA" --output "$GITHUB_WORKSPACE/evidence"
+      - name: Full dispatch comparison with adjacent controls
+        if: inputs.suite == 'dispatch-adjacent'
+        run: |
+          python3 -m unittest discover -s .github/benchmarks/dispatch-aba -p 'test_*.py'
+          python3 .github/benchmarks/dispatch-aba/run_adjacent.py --baseline "$BASELINE_SHA" --candidate "$CANDIDATE_SHA" --output "$GITHUB_WORKSPACE/evidence"
       - name: Record final main
         if: always()
         run: git ls-remote origin refs/heads/main > main-at-end.txt

@@ -334,9 +334,9 @@ def build(root, output, sha, label, loaded_only=False):
     return hosts
 
 
-def micro(host, output, label, phase, smoke):
+def micro(host, output, label, phase, smoke, cases=None):
     environment = dict(os.environ, DOTNET_TieredCompilation='0')
-    for pattern, batch in CASES:
+    for pattern, batch in CASES if cases is None else cases:
         folder = output / f'{phase}-micro-{pattern}-{batch}'
         args = ['taskset', '-c', '2', 'dotnet', host, pattern, str(batch), folder]
         if smoke:
