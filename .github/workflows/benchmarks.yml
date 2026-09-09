@@ -9,7 +9,7 @@ on:
       suite:
         required: true
         type: choice
-        options: [micro, pool, admin, admin-pilot, dispatch, dispatch-loaded, outbox, outbox-loaded, pool-loaded, pool-profile]
+        options: [micro, pool, admin, admin-pilot, dispatch, dispatch-loaded, share-loaded, outbox, outbox-loaded, pool-loaded, pool-profile]
       baseline_sha:
         required: true
         description: Exact baseline SHA
@@ -91,6 +91,11 @@ jobs:
           extra_args=()
           if [[ "$DISPATCH_LOADED_ONLY" == 1 ]]; then extra_args+=(--loaded-only); fi
           python3 .github/benchmarks/dispatch-aba/run.py --baseline "$BASELINE_SHA" --candidate "$CANDIDATE_SHA" --output "$GITHUB_WORKSPACE/evidence" "${extra_args[@]}"
+      - name: Completed share acknowledgement comparison
+        if: inputs.suite == 'share-loaded'
+        run: |
+          python3 -m unittest discover -s .github/benchmarks/share-loaded -p 'test_*.py'
+          python3 .github/benchmarks/share-loaded/run.py --baseline "$BASELINE_SHA" --candidate "$CANDIDATE_SHA" --output "$GITHUB_WORKSPACE/evidence"
       - name: Record final main
         if: always()
         run: git ls-remote origin refs/heads/main > main-at-end.txt
