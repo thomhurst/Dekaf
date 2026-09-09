@@ -1,0 +1,97 @@
+[
+  {
+    "path": "measured/compare-observer.py.txt",
+    "original": "compare-observer.py",
+    "sha256": "3a001edf41f91273cf3b0c3cd569034e5d465a2d7cfe047b4be02d2f7c0cc483"
+  },
+  {
+    "path": "analyze-iterations.py.txt",
+    "original": "analyze-iterations.py",
+    "sha256": "509dc459deb13fd14aecaac3c0d9e359f51f393f9372c01fd292ab63e09cf853"
+  },
+  {
+    "path": "artifact.json",
+    "original": "hosted-trace/artifact.json",
+    "sha256": "3b6a654ec28b33566bf3af16ab33fd237330fb161e9bd79e3957d279b5cfede9"
+  },
+  {
+    "path": "manifest.json",
+    "original": "hosted-trace/raw/manifest.json",
+    "sha256": "59f6a6b86df751d516bac25d627d9c26ed8c062e149b147f92c55c7e685fa2bf"
+  },
+  {
+    "path": "summary.json",
+    "original": "hosted-trace/analysis/summary.json",
+    "sha256": "83e0798f6d7cd3d188d27d5cf63d6b62a77f0e0bbbab4274fa9bed11df8bdab4"
+  },
+  {
+    "path": "comparison.json",
+    "original": "hosted-trace/analysis/comparison.json",
+    "sha256": "81c4abf43417127d2c39e3953dea49b63321f01a9f5d37ecf713d67f60bad52c"
+  },
+  {
+    "path": "loaded-bindings.json",
+    "original": "hosted-trace/analysis/loaded-bindings.json",
+    "sha256": "824c38946125788b5cde9dc0c1c6be1570c48233eaf3e029bf77830b0d8e481d"
+  },
+  {
+    "path": "compiles.csv",
+    "original": "hosted-trace/analysis/compiles.csv",
+    "sha256": "8728d12bb631ae5292d25a41dab39d9cd4c5ddac865186599c47662dafcc1af2"
+  },
+  {
+    "path": "hardware.txt",
+    "original": "hosted-trace/raw/hardware.txt",
+    "sha256": "7630af067e8703adb64f6501b9ec80e82044e70f37a3df588a41eedc86b6ca24"
+  },
+  {
+    "path": "dotnet-info.txt",
+    "original": "hosted-trace/raw/dotnet-info.txt",
+    "sha256": "c763a0741adcf1daa6180a0457b9fb57af752cfa7cadfeac77bfc56e4815384c"
+  },
+  {
+    "path": "U1-host.log.txt",
+    "original": "hosted-trace/raw/U1/host.log",
+    "sha256": "45d755346b6c89da84980685b720ee258fb3346084f88ac7cd68c510afa22ebb"
+  },
+  {
+    "path": "U1-runtime.csv",
+    "original": "hosted-trace/raw/U1/bdn/runtime.csv",
+    "sha256": "44234e65b9efc15af30c8fd284b8bef412bf3d5e4a1ae539a1de7f84470ba4e7"
+  },
+  {
+    "path": "U1-full.json",
+    "original": "hosted-trace\\raw\\U1\\bdn\\results\\Dekaf.Benchmarks.PendingRequestBenchmark-report-full.json",
+    "sha256": "4ec3478b9e53a7c407013d608222752e2bfae29e925973d71bff6bdfebbd082b"
+  },
+  {
+    "path": "T-host.log.txt",
+    "original": "hosted-trace/raw/T/host.log",
+    "sha256": "94de23e9607770c725fd00f5146a85e0872132afc9eee8a31a734db24d34e74c"
+  },
+  {
+    "path": "T-runtime.csv",
+    "original": "hosted-trace/raw/T/bdn/runtime.csv",
+    "sha256": "c557365ecaa6b417eecf19c62d93fe9deddc9f562beb243952e089380c383335"
+  },
+  {
+    "path": "T-full.json",
+    "original": "hosted-trace\\raw\\T\\bdn\\results\\Dekaf.Benchmarks.PendingRequestBenchmark-report-full.json",
+    "sha256": "0a2b56acd00e8f4cb5267819252ef19a37843a2db47c226093a5a67f3761cb2f"
+  },
+  {
+    "path": "U2-host.log.txt",
+    "original": "hosted-trace/raw/U2/host.log",
+    "sha256": "6c83d4648e69df24efa8f82db8255832d38e16d921b971d4983684d1b15e37a4"
+  },
+  {
+    "path": "U2-runtime.csv",
+    "original": "hosted-trace/raw/U2/bdn/runtime.csv",
+    "sha256": "8d37057f4f5645ad4c1b12545a9b642213ad85a1488123cd296f6838b5f7c081"
+  },
+  {
+    "path": "U2-full.json",
+    "original": "hosted-trace\\raw\\U2\\bdn\\results\\Dekaf.Benchmarks.PendingRequestBenchmark-report-full.json",
+    "sha256": "109292b0e7ce0d5babcf989c50ab3cca685208845fe81fb5a5fd1558b684b094"
+  }
+]

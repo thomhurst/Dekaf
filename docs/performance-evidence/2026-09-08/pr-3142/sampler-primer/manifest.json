@@ -1,0 +1,15 @@
+{
+  "product": "4479317a650ea51a2a2ecdc0ccf5a7de8fb51c7d",
+  "originalHarness": "b26ffdc9070cc68ceaca07bf4193f334df6b2744",
+  "harness": "3e4ba83fbc76b75f143ca4dca28a2b4c0fa48db5",
+  "mainAtRun": "9eec358dad2a081dedbbfc75f02aee743e6bdad9\trefs/heads/main",
+  "imageVersion": "20260831.293.1",
+  "imageOS": "ubuntu24",
+  "settings": {
+    "DOTNET_TieredCompilation": "1",
+    "DOTNET_TieredPGO": "1",
+    "DOTNET_ReadyToRun": "1"
+  },
+  "fixtureIntervention": "20-second real logger primer and 50 BDN workload warmups",
+  "plan": ".github/benchmarks/pool-primer/PLAN.md"
+}

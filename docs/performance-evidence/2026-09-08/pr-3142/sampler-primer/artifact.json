@@ -1,0 +1,20 @@
+{
+  "id": 10043481837,
+  "node_id": "MDg6QXJ0aWZhY3QxMDA0MzQ4MTgzNw==",
+  "name": "pool-sampler-primer",
+  "size_in_bytes": 81005089,
+  "url": "https://api.github.com/repos/thomhurst/Dekaf/actions/artifacts/10043481837",
+  "archive_download_url": "https://api.github.com/repos/thomhurst/Dekaf/actions/artifacts/10043481837/zip",
+  "expired": false,
+  "digest": "sha256:6d133a3a8a879868ae8122aec75585e70c769fc0f8334af7adde2829ce1742dc",
+  "created_at": "2026-09-08T06:28:39Z",
+  "updated_at": "2026-09-08T06:28:39Z",
+  "expires_at": "2026-12-07T06:21:09Z",
+  "workflow_run": {
+    "id": 34194281968,
+    "repository_id": 1139134709,
+    "head_repository_id": 1139134709,
+    "head_branch": "perf/pr-3142-sampler-primer",
+    "head_sha": "3e4ba83fbc76b75f143ca4dca28a2b4c0fa48db5"
+  }
+}

@@ -1,4 +1,6 @@
+using System.Buffers;
 using Dekaf.Networking;
+using Dekaf.Protocol;
 
 namespace Dekaf.Tests.Unit.Networking;
 
@@ -209,5 +211,130 @@ public class PendingRequestPoolTests
         await Assert.That(result.Data.Span[0]).IsEqualTo((byte)99);
 
         pool.Return(sameRequest);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Return_WithReservation_BalancesCountAndPreservesResetContract(bool failReset)
+    {
+        var pool = new PendingRequestPool(maxPoolSize: 1);
+        var request = pool.Rent();
+        var reservation = new TestReservation(failReset);
+        await CompleteWithReservationAsync(request, reservation);
+
+        Exception? observed = null;
+        try
+        {
+            pool.Return(request);
+        }
+        catch (InvalidOperationException exception)
+        {
+            observed = exception;
+        }
+
+        await Assert.That(reservation.DisposeCalls).IsEqualTo(1);
+        await Assert.That(observed).IsSameReferenceAs(failReset ? reservation.Failure : null);
+        await Assert.That(pool.ApproximateCount).IsEqualTo(failReset ? 0 : 1);
+        var replacement = pool.Rent();
+        await Assert.That(ReferenceEquals(replacement, request)).IsEqualTo(!failReset);
+        await Assert.That(pool.ApproximateCount).IsEqualTo(0);
+        pool.Return(replacement);
+        await Assert.That(pool.ApproximateCount).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task Return_Null_DoesNotChangeCount()
+    {
+        var pool = new PendingRequestPool(maxPoolSize: 1);
+        var request = pool.Rent();
+        pool.Return(request);
+
+        await Assert.That(() => pool.Return(null!)).Throws<ArgumentNullException>();
+
+        await Assert.That(pool.ApproximateCount).IsEqualTo(1);
+        await Assert.That(pool.Rent()).IsSameReferenceAs(request);
+        await Assert.That(pool.ApproximateCount).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task ConcurrentReturns_WithResetFailures_CountOnlyRetainedRequests()
+    {
+        const int capacity = 8;
+        const int requestCount = 32;
+        var pool = new PendingRequestPool(capacity);
+        var requests = new PooledPendingRequest[requestCount];
+        var reservations = new TestReservation[requestCount];
+        for (var i = 0; i < requestCount; i++)
+        {
+            requests[i] = pool.Rent();
+            reservations[i] = new TestReservation(failReset: i % 2 == 0);
+            await CompleteWithReservationAsync(requests[i], reservations[i]);
+        }
+
+        var errors = new Exception?[requestCount];
+        Parallel.For(0, requestCount, i =>
+        {
+            try
+            {
+                pool.Return(requests[i]);
+            }
+            catch (InvalidOperationException exception)
+            {
+                errors[i] = exception;
+            }
+        });
+
+        for (var i = 0; i < requestCount; i++)
+        {
+            await Assert.That(reservations[i].DisposeCalls).IsEqualTo(1);
+            await Assert.That(errors[i]).IsSameReferenceAs(i % 2 == 0 ? reservations[i].Failure : null);
+        }
+        await Assert.That(pool.ApproximateCount).IsEqualTo(capacity);
+
+        var retained = new PooledPendingRequest[capacity];
+        for (var i = 0; i < capacity; i++)
+        {
+            retained[i] = pool.Rent();
+            var originalIndex = Array.IndexOf(requests, retained[i]);
+            await Assert.That(originalIndex).IsGreaterThanOrEqualTo(0);
+            await Assert.That(originalIndex % 2).IsEqualTo(1);
+        }
+        await Assert.That(new HashSet<PooledPendingRequest>(retained).Count).IsEqualTo(capacity);
+        await Assert.That(pool.ApproximateCount).IsEqualTo(0);
+        foreach (var request in retained)
+        {
+            pool.Return(request);
+        }
+        await Assert.That(pool.ApproximateCount).IsEqualTo(capacity);
+    }
+
+    private static async Task CompleteWithReservationAsync(
+        PooledPendingRequest request, IResponseMemoryReservation reservation)
+    {
+        request.Initialize(0, CancellationToken.None);
+        var bytes = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(bytes);
+        writer.WriteInt32(42);
+        writer.WriteInt8(1);
+        var response = new PooledResponseBuffer(bytes.WrittenSpan.ToArray(), bytes.WrittenCount, isPooled: false);
+        await Assert.That(request.TryComplete(request.Version, response, reservation)).IsTrue();
+        using var result = await request.AsValueTask();
+        await Assert.That(result.Data.Span[0]).IsEqualTo((byte)1);
+    }
+
+    private sealed class TestReservation(bool failReset) : IResponseMemoryReservation
+    {
+        public InvalidOperationException Failure { get; } = new("Injected reservation cleanup failure.");
+        public int DisposeCalls { get; private set; }
+
+        public void Dispose()
+        {
+            DisposeCalls++;
+            if (failReset)
+            {
+                throw Failure;
+            }
+        }
     }
 }
