@@ -1,0 +1,3 @@
+<Project>
+  <!-- Stops MSBuild's upward Directory.Build.props search so the fixture project keeps its own settings instead of importing the product checkout's repository build properties. -->
+</Project>

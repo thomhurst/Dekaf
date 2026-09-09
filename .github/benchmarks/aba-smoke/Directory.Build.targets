@@ -1,0 +1,3 @@
+<Project>
+  <!-- Stops MSBuild's upward Directory.Build.targets search; see Directory.Build.props. -->
+</Project>

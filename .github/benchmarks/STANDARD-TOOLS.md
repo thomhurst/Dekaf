@@ -27,7 +27,9 @@ The runner uses repository-pinned BenchmarkDotNet **0.15.8**, the SDK in
 | Sampling | One launch per case in each phase, 25 measured iterations. Keep the same configuration across controls; inspect precision rather than adding runs until green. |
 | Outliers | `DontRemove`; retain every measured sample and maximum. |
 | Allocations | Existing `[MemoryDiagnoser]` attributes. Report bytes per benchmark operation; identify batch size before deriving per-message costs. |
-| Output | BDN full JSON, standard Markdown/CSV, original logs and generated executables. The workflow checks completeness, matching cases and elapsed warmup with `jq`; it shows mean-time deltas and allocations without reimplementing statistics or generating a product verdict. |
+| Output | BDN full JSON, standard Markdown/CSV, original logs and generated executables. The workflow checks completeness, matching cases and elapsed warmup with `jq`, then pairs A1/B/A2 cases with [`compare_bdn_reports.jq`](../scripts/compare_bdn_reports.jq) into `comparison.json` and `comparison.md`. It does not reimplement statistics. |
+| Screen | 5% tolerance on BDN mean time against both controls and 0 B/op allocation growth. Per case: `NOISE` (A1/A2 drift beyond tolerance), `REGRESSION` (worse than both controls beyond tolerance, or allocating more than both), `INCONCLUSIVE` (worse than one control only), `IMPROVEMENT`, `PASS`. `REGRESSION` fails the job; `INCONCLUSIVE` warns and permits one exact repeat. The screen is the acceptance result for changes within the micro scope in [AGENTS.md](../../AGENTS.md). |
+| Build isolation | The copied directory ships `Directory.Build.props`/`.targets` stop-files, so the product checkout's repository build settings (warnings-as-errors, analyzers, packaging) do not apply to the fixture host or BDN's generated project. |
 | Diagnostics | No runtime/JIT loggers or tracing in the benchmark runner. JIT is not an acceptance metric. Investigate it manually, separately from benchmark timing. |
 
 Manual profiling results do not replace the plain A1/B/A2 triplet.

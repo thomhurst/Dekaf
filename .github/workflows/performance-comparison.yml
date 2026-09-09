@@ -58,7 +58,7 @@ jobs:
           MSBUILDDISABLENODEREUSE: '1'
           DOTNET_CLI_USE_MSBUILD_SERVER: '0'
         run: |
-          warmup=50; minimum_warmup=20
+          warmup=50; minimum_warmup=20; tolerance=5
           case "$PR" in
             3082) filters=('*BinaryKeyDispatchBenchmarks*'); count=18 ;;
             3083) filters=('*BatchReadBench*' '*BatchBoundBench*'); count=12 ;;
@@ -108,20 +108,17 @@ jobs:
           done
           diff "$results/A1-cases.json" "$results/B-cases.json"
           diff "$results/A1-cases.json" "$results/A2-cases.json"
-          jq -nr --slurpfile a1 "$results/A1.json" --slurpfile b "$results/B.json" --slurpfile a2 "$results/A2.json" '
-            def delta(x; control): if control == 0 then "n/a" else ((x / control - 1) * 10000 | round) / 100 end;
-            def allocated: [.Metrics[] | select(.Descriptor.Id == "Allocated Memory") | .Value][0];
-            "| Case | A1 ns/op | B ns/op | A2 ns/op | B/A1 % | B/A2 % | A2/A1 % | A1/B/A2 B/op |",
-            "| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
-            (range(0; $a1[0] | length) as $i | $a1[0][$i] as $x | $b[0][$i] as $y | $a2[0][$i] as $z |
-              [([$x.Type, $x.Method, $x.Parameters] | join(" ") | gsub("[|]"; "/")),
-               $x.Statistics.Mean, $y.Statistics.Mean, $z.Statistics.Mean,
-               delta($y.Statistics.Mean; $x.Statistics.Mean), delta($y.Statistics.Mean; $z.Statistics.Mean),
-               delta($z.Statistics.Mean; $x.Statistics.Mean), ([$x, $y, $z] | map(allocated | tostring) | join(" / "))]
-              | "| " + (map(tostring) | join(" | ")) + " |")
-          ' > "$results/comparison.md"
+          compare=(jq -nr --slurpfile a1 "$results/A1.json" --slurpfile b "$results/B.json" --slurpfile a2 "$results/A2.json" --argjson tolerance "$tolerance" -f "$GITHUB_WORKSPACE/.github/scripts/compare_bdn_reports.jq")
+          "${compare[@]}" --arg format json > "$results/comparison.json"
+          "${compare[@]}" --arg format markdown > "$results/comparison.md"
           cat "$results/comparison.md" >> "$GITHUB_STEP_SUMMARY"
-          echo 'A1/B/A2 reports retained. Workflow success is not a product performance PASS.' >> "$GITHUB_STEP_SUMMARY"
+          echo >> "$GITHUB_STEP_SUMMARY"
+          screen=$(jq -r .screen "$results/comparison.json")
+          case "$screen" in
+            PASS) echo 'Micro screen PASS for the declared fixture. Whole-PR acceptance still requires correctness and any loaded evidence the change scope requires.' >> "$GITHUB_STEP_SUMMARY" ;;
+            INCONCLUSIVE) echo '::warning::Micro screen INCONCLUSIVE: control drift beyond tolerance or a loss against one control only. One exact repeat is permitted.' ;;
+            *) echo '::error::Micro screen REGRESSION: the candidate is slower or allocates more than both controls beyond tolerance.'; exit 1 ;;
+          esac
       - name: Pool comparison
         if: inputs.suite == 'pool' || inputs.suite == 'pool-recovery'
         env:

@@ -52,6 +52,22 @@ jobs:
           dotnet run -c Release --no-build -- --filter '*SmokeBenchmarks*' "${settings[@]}" --artifacts "$results/timing" > "$results/timing.log" 2>&1
           jq -e '.Benchmarks | length == 2 and all(.[]; . as $case | .Statistics.N == 3 and any(.Metrics[]; .Descriptor.Id == "Allocated Memory" and .Value == (if $case.Method == "Allocate" then 1048 else 0 end)))' "$results/timing/results/"*-report-full.json
           test "$(grep 'SMOKE workload-pid=' "$results/timing.log" | sort -u | wc -l)" -eq 2
+          compare=(jq -nr --argjson tolerance 5 -f "$GITHUB_WORKSPACE/.github/scripts/compare_bdn_reports.jq")
+          jq -s '[.[].Benchmarks[]] | sort_by([.Namespace, .Type, .Method, .Parameters])' "$results/timing/results/"*-report-full.json > "$results/same.json"
+          jq '[.[] | .Statistics.Mean *= 1.1]' "$results/same.json" > "$results/slower.json"
+          jq '[.[] | .Statistics.Mean *= 1.06]' "$results/same.json" > "$results/drifted.json"
+          jq '[.[] | .Statistics.Mean *= 1.03]' "$results/same.json" > "$results/nearer.json"
+          jq '[.[] | (.Metrics[] | select(.Descriptor.Id == "Allocated Memory") | .Value) += 8]' "$results/same.json" > "$results/allocating.json"
+          jq '.[:1]' "$results/same.json" > "$results/partial.json"
+          screen() { "${compare[@]}" --arg format json --slurpfile a1 "$results/$1.json" --slurpfile b "$results/$2.json" --slurpfile a2 "$results/$3.json"; }
+          screen same same same | jq -e '.screen == "PASS" and (.cases | length) == 2 and all(.cases[]; .screen == "PASS" and .b_vs_a1_percent == 0 and .drift_percent == 0)'
+          screen same slower same | jq -e '.screen == "REGRESSION" and all(.cases[]; .screen == "REGRESSION")'
+          screen same allocating same | jq -e '.screen == "REGRESSION" and all(.cases[]; .screen == "REGRESSION")'
+          screen same same drifted | jq -e '.screen == "INCONCLUSIVE" and all(.cases[]; .screen == "NOISE")'
+          screen same drifted nearer | jq -e '.screen == "INCONCLUSIVE" and all(.cases[]; .screen == "INCONCLUSIVE")'
+          screen slower same slower | jq -e '.screen == "PASS" and all(.cases[]; .screen == "IMPROVEMENT")'
+          if screen same partial same > /dev/null 2>&1; then echo 'Mismatched case sets were compared'; exit 1; fi
+          "${compare[@]}" --arg format markdown --slurpfile a1 "$results/same.json" --slurpfile b "$results/same.json" --slurpfile a2 "$results/same.json" | grep -q 'Micro screen: \*\*PASS\*\*'
           if SMOKE_FAIL_SETUP=1 dotnet run -c Release --no-build -- --job Dry --filter '*NoAllocation*' --artifacts "$results/failure" > "$results/failure.log" 2>&1; then
             echo 'A failing fixture returned success'; exit 1
           fi

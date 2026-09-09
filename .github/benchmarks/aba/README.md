@@ -4,7 +4,9 @@ Dispatch `performance-comparison.yml` with `suite=micro` and exact harness,
 baseline and candidate SHAs; see [dispatch instructions](../README.md) and
 [standard tooling/settings](../STANDARD-TOOLS.md). The workflow copies this
 normal project into each product checkout. BenchmarkDotNet handles builds,
-process isolation, timing, allocation measurement and exports.
+process isolation, timing, allocation measurement and exports. The copied
+directory includes `Directory.Build.props`/`.targets` stop-files so the fixture
+host does not import the product checkout's repository build settings.
 
 Fixture differences required for a fresh-main comparison:
 
@@ -15,4 +17,4 @@ Fixture differences required for a fresh-main comparison:
 - #3116: 1,024 records, no headers; synchronous/warm/cold parsing and retained traversal. Main has no borrowed API, so the Borrowed-named rows use its equivalent legacy parser; candidate rows use borrowed parsing. Both compute the same record/header checksum. Legacy rows remain as common controls. This is an API implementation comparison, not an assertion that main has the new API.
 - #3117: sustained distinct and paired record/batch dispatch; identical lifecycle and zero-allocation probes, with main's existing allocation reported as measured.
 
-A successful workflow does not set `agent/performance-gate` to success or establish whole-PR acceptance. Inspect control drift and every applicable protected metric. Raw artifacts are retained for 90 days.
+The workflow screens every paired case against the declared tolerance (see [standard tooling](../STANDARD-TOOLS.md)); `REGRESSION` fails the job and `INCONCLUSIVE` permits one exact repeat. That screen is the acceptance result for changes within the micro scope. Whole-PR acceptance also requires correctness and any loaded evidence the change scope requires. Raw artifacts are retained for 90 days.

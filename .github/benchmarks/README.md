@@ -17,9 +17,12 @@ paid-run limits and publishing coverage.
 The harness is maintained with the repository. Its source is pinned independently
 from both products: H is the harness, A is fresh main, and B is the current open
 PR head containing A. Each comparison runs A1, B, A2 sequentially on one
-`ubuntu-latest` VM. A successful workflow or identity check is not a performance
-PASS. Apply [repository acceptance requirements](../../AGENTS.md) to every
-applicable protected metric, control drift, uncertainty and correctness result.
+`ubuntu-latest` VM. The `micro` suite screens every case against the declared
+tolerances and fails on `REGRESSION`; that screen is the acceptance result for
+micro-scoped changes. Other suites and identity checks are not a performance
+PASS by themselves. Apply [repository acceptance requirements](../../AGENTS.md)
+to every applicable protected metric, control drift, uncertainty and
+correctness result.
 
 ## Dispatch
 
