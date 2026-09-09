@@ -56,6 +56,7 @@ binary in all phases and never grants product acceptance. See
 | Suite | Scope and maintained driver |
 | --- | --- |
 | `micro` | Focused cases for #3082, #3083, #3085, #3086, #3116, #3117, #3137, #3142, #3149, #3158; normal [project references](aba/Dekaf.Benchmarks.csproj) and BDN CLI in the workflow |
+| `micro-completion` | Standard BenchmarkDotNet publication and manual completion for #3083, ordered/fragmented batches of 128 and 4,096 records; compare full batch cost and identify amortized reservation storage separately |
 | `pool`, `pool-recovery` | Pool reset and recovery; [driver](../scripts/pool_reset_aba.py) |
 | `pool-loaded`, `pool-profile` | Loaded producer pool comparison and diagnostic profiling; [driver](../scripts/pool_loaded_aba.py) |
 | `admin`, `admin-pilot`, `admin-calibration` | Cached-transport administration for #3128, #3129, #3136, #3138; [driver](../scripts/admin_refresh.py) |
@@ -63,7 +64,7 @@ binary in all phases and never grants product acceptance. See
 | `dispatch-adjacent`, `dispatch-loaded-adjacent` | Adjacent dispatch workloads; [driver](dispatch-aba/run_adjacent.py) |
 | `share-loaded` | Loaded share consumer; [driver](share-loaded/run.py) |
 | `outbox` | Outbox relay cycle; [driver](../scripts/outbox_cycle_aba.py) |
-| `outbox-loaded`, `outbox-adjacent` | Loaded and adjacent outbox paths; [driver](../scripts/outbox_loaded_aba.py) |
+| `outbox-loaded`, `outbox-adjacent`, `outbox-recovery` | Loaded, adjacent and [failure/lease-loss/shutdown](outbox-loaded/RECOVERY.md) outbox paths; [driver](../scripts/outbox_loaded_aba.py) |
 
 Fixtures include explicit baseline API adaptations and candidate-only checks.
 They are not a universal gate for arbitrary PRs. Extend fixtures and predeclare
@@ -92,6 +93,7 @@ The workflow splits `dispatch-adjacent` into six jobs: one for each of the four
 loaded modes, one for all six micro cases, and one for all four shutdown cases.
 `dispatch-loaded-adjacent` uses just the four loaded jobs. `outbox-loaded` and
 `outbox-adjacent` each use four jobs, one per store/listener configuration.
+`outbox-recovery` uses four jobs for failure/lease-loss and listener off/on.
 Other suites retain one comparison job. There are no new dispatch inputs.
 
 Each job builds both pinned products and validates every selected case on both

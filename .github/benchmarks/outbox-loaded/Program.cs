@@ -14,17 +14,19 @@ internal static class Program
     public static async Task Main(string[] args)
     {
         if (args.Length != 7)
-            throw new ArgumentException("bootstrap output topic legacy|renewal off|on warmupSeconds measuredSeconds");
+            throw new ArgumentException("bootstrap output topic legacy|renewal|legacy-failure|renewal-loss off|on warmupSeconds measuredSeconds");
         var output = Path.GetFullPath(args[1]);
         if (Directory.Exists(output))
             throw new IOException("Output already exists");
         Directory.CreateDirectory(output);
-        if (args[3] is not ("legacy" or "renewal") || args[4] is not ("off" or "on"))
+        if (args[3] is not ("legacy" or "renewal" or "legacy-failure" or "renewal-loss") || args[4] is not ("off" or "on"))
             throw new ArgumentException("Invalid store/listener mode");
         int warmup = int.Parse(args[5]), measured = int.Parse(args[6]);
         if (warmup < 1 || measured < 1)
             throw new ArgumentOutOfRangeException(nameof(args));
-        Store store = args[3] == "renewal"
+        var recovery = args[3] is "legacy-failure" or "renewal-loss";
+        var leaseLoss = args[3] == "renewal-loss";
+        Store store = args[3].StartsWith("renewal", StringComparison.Ordinal)
             ? new RenewingStore(args[2], warmup, measured)
             : new Store(args[2], warmup, measured);
         using var metrics = new MetricsObserver(args[4] == "on");
@@ -38,12 +40,16 @@ internal static class Program
             .WithAcks(Acks.All).WithIdempotence(true).WithLinger(TimeSpan.FromMilliseconds(5))
             .WithBatchSize(128 * 1024).WithBufferMemory(64UL * 1024 * 1024)
             .WithConnectionsPerBroker(1).WithoutAdaptiveConnections().BuildAsync(lifetime.Token);
-        var publisher = new DekafOutboxPublisher(producer);
+        IOutboxPublisher publisher = new DekafOutboxPublisher(producer);
+        if (recovery)
+            publisher = new RecoveryPublisher(publisher, store, leaseLoss);
         var options = new OutboxRelayOptions
         {
             RelayId = "outbox-loaded", BucketCount = 1, BatchSize = Store.BatchCount + 1,
             MaxPublishDuration = TimeSpan.FromSeconds(30), LeaseDuration = TimeSpan.FromSeconds(90),
-            LeaseRenewInterval = TimeSpan.FromSeconds(30), PollInterval = TimeSpan.FromMilliseconds(10)
+            LeaseRenewInterval = leaseLoss ? TimeSpan.FromMilliseconds(100) : TimeSpan.FromSeconds(30),
+            ErrorBackoff = recovery ? TimeSpan.FromMilliseconds(10) : TimeSpan.FromSeconds(1),
+            PollInterval = TimeSpan.FromMilliseconds(10)
         };
         // The baseline has no telemetry options. Publication inputs are identical.
         typeof(OutboxRelayOptions).GetProperty("MetricsName")?.SetValue(options, "loaded");
@@ -64,6 +70,11 @@ internal static class Program
                 throw new InvalidOperationException("Relay exited before all phases finished");
             }
             await store.Finished.Task;
+            if (recovery)
+            {
+                store.BeginLoadedShutdown();
+                await store.ShutdownEntered.Task.WaitAsync(lifetime.Token);
+            }
         }
         catch (Exception error)
         {
@@ -75,7 +86,9 @@ internal static class Program
             try
             {
                 using var shutdown = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-                await relay.StopAsync(shutdown.Token);
+                var stopping = relay.StopAsync(shutdown.Token);
+                store.ShutdownRelease.TrySetResult();
+                await stopping;
                 await publisher.DisposeAsync().AsTask().WaitAsync(shutdown.Token);
             }
             catch (Exception error)
@@ -90,6 +103,8 @@ internal static class Program
             await File.WriteAllTextAsync(Path.Combine(output, "completion.json"), JsonSerializer.Serialize(new
             {
                 store.TotalCompleted, store.Pending, store.MetricQueries, metrics.Acknowledged,
+                store.InjectedFailures, store.RecoveredFailures, store.ObservedFailureLogs, LeaseLossScenario = leaseLoss,
+                store.ExpectedRetainedRows, store.ShutdownAcknowledged, store.ShutdownPublisherInFlight,
                 metrics.Failures, metrics.GaugeSamples, ShutdownSeconds = shutdownSeconds,
                 Error = failure?.ToString() ?? store.Failure?.ToString()
             }));
@@ -103,10 +118,14 @@ internal static class Program
         }
         if (failure is not null || store.Failure is not null)
             throw new InvalidOperationException("Loaded outbox failed", failure ?? store.Failure);
-        if (store.Pending != 0 || metrics.Failures != 0)
+        if (store.Pending != store.ExpectedRetainedRows || store.ShutdownPublisherInFlight
+            || store.ShutdownAcknowledged != store.ExpectedRetainedRows
+            || store.InjectedFailures != store.RecoveredFailures
+            || recovery && (store.InjectedFailures == 0 || store.ObservedFailureLogs == 0))
             throw new InvalidOperationException("Failed or leftover work");
 #if CANDIDATE
-        if (args[4] == "on" && (metrics.Acknowledged != store.TotalCompleted || store.MetricQueries == 0 || metrics.GaugeSamples == 0))
+        if (args[4] == "on" && (metrics.Acknowledged != store.TotalCompleted + store.ShutdownAcknowledged + (leaseLoss ? (long)store.InjectedFailures * Store.BatchCount : 0)
+            || metrics.Failures != (leaseLoss ? 0 : store.InjectedFailures) || store.MetricQueries == 0 || metrics.GaugeSamples == 0))
             throw new InvalidOperationException("Missing or incorrect telemetry coverage");
 #endif
     }
@@ -127,6 +146,28 @@ internal class Store : IOutboxStore
     public long TotalCompleted;
     public int Pending;
     public int MetricQueries = 0;
+    public int InjectedFailures;
+    public int RecoveredFailures;
+    public int ObservedFailureLogs;
+    public bool FaultPending;
+    private int _loadedShutdown;
+    internal bool LoadedShutdown => Volatile.Read(ref _loadedShutdown) != 0;
+    public int ExpectedRetainedRows => LoadedShutdown ? BatchCount : 0;
+    public int ShutdownAcknowledged;
+    public bool ShutdownPublisherInFlight;
+    internal readonly TaskCompletionSource ShutdownEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    internal readonly TaskCompletionSource ShutdownRelease = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    internal void BeginLoadedShutdown() => Volatile.Write(ref _loadedShutdown, 1);
+    internal TaskCompletionSource? LeaseLoss;
+
+    internal void InjectFailure()
+    {
+        if (FaultPending || Pending != BatchCount)
+            throw new InvalidOperationException("Fault injection has no unique pending batch");
+        FaultPending = true;
+        InjectedFailures++;
+        _phases[_phase].Faults++;
+    }
     public Exception? Failure;
     public readonly TaskCompletionSource Finished = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -146,15 +187,32 @@ internal class Store : IOutboxStore
     public ValueTask<IReadOnlyList<int>> AcquireBucketLeasesAsync(OutboxLeaseRequest request,
         CancellationToken cancellationToken = default) => new(Buckets);
     public ValueTask<IReadOnlyList<int>> GetBucketsWithPendingAsync(IReadOnlyList<int> buckets,
-        CancellationToken cancellationToken = default) => new(_phase == _phases.Length ? Array.Empty<int>() : Buckets);
+        CancellationToken cancellationToken = default) => new(_phase == _phases.Length && !LoadedShutdown ? Array.Empty<int>() : Buckets);
 
     public ValueTask<IReadOnlyList<OutboxMessage>> GetNextBatchAsync(int bucket, int maxCount,
         CancellationToken cancellationToken = default)
     {
         if (_phase == _phases.Length)
-            return new(Array.Empty<OutboxMessage>());
-        if (maxCount <= BatchCount || bucket != 0 || Pending != 0)
+        {
+            if (!LoadedShutdown)
+                return new(Array.Empty<OutboxMessage>());
+            if (Pending != 0)
+                throw new InvalidOperationException("Shutdown attempted another publication");
+            Volatile.Write(ref Pending, BatchCount);
+            return new(_rows);
+        }
+        if (maxCount <= BatchCount || bucket != 0)
             throw new InvalidOperationException("Invalid batch fetch");
+        if (Pending != 0)
+        {
+            if (!FaultPending || Pending != BatchCount)
+                throw new InvalidOperationException("Unexpected retry or overlapping batch");
+            FaultPending = false;
+            RecoveredFailures++;
+            // Keep the original start: recovery latency includes failed attempts,
+            // lease loss and backoff through the eventual acknowledged deletion.
+            return new(_rows);
+        }
         var phase = _phases[_phase];
         if (phase.Start.Timestamp == 0)
         {
@@ -168,7 +226,7 @@ internal class Store : IOutboxStore
     public ValueTask MarkPublishedAsync(int bucket, IReadOnlyList<OutboxMessage> messages,
         CancellationToken cancellationToken = default)
     {
-        if (bucket != 0 || messages.Count != BatchCount || Pending != BatchCount)
+        if (bucket != 0 || messages.Count != BatchCount || Pending != BatchCount || FaultPending || LoadedShutdown)
             throw new InvalidOperationException("Partial or duplicated batch deletion");
         for (var index = 0; index < messages.Count; index++)
             if (!ReferenceEquals(messages[index], _rows[index]))
@@ -249,7 +307,7 @@ internal class Store : IOutboxStore
                 MessagesPerSecond = duration > 0 ? completed / duration : 0,
                 CpuNsPerMessage = completed > 0 ? (phase.End.CpuTicks - phase.Start.CpuTicks) * 100.0 / completed : 0,
                 AllocatedBytesPerMessage = completed > 0 ? (phase.End.Allocated - phase.Start.Allocated) / (double)completed : 0,
-                P50Ns = percentile(.50), P99Ns = percentile(.99), MaxNs = percentile(1), phase.Start, phase.End
+                phase.Faults, P50Ns = percentile(.50), P99Ns = percentile(.99), MaxNs = percentile(1), phase.Start, phase.End
             }));
         }
     }
@@ -259,7 +317,68 @@ internal sealed class RenewingStore(string topic, int warmup, int measured)
     : Store(topic, warmup, measured), IOutboxLeaseRenewalStore
 {
     public ValueTask<bool> RenewBucketLeasesAsync(OutboxLeaseRequest request, IReadOnlyList<int> buckets,
-        CancellationToken cancellationToken = default) => new(true);
+        CancellationToken cancellationToken = default)
+    {
+        var release = Interlocked.Exchange(ref LeaseLoss, null);
+        if (release is null)
+            return new(true);
+        release.SetResult();
+        return new(false);
+    }
+}
+
+// Workload fault injection only: the maintained recorder and standard tools still
+// measure the same completed rows, CPU, allocations and full retry boundaries.
+internal sealed class RecoveryPublisher(IOutboxPublisher inner, Store store, bool leaseLoss) : IOutboxPublisher
+{
+    internal static readonly Exception Failure = new IOException("Injected publish failure");
+    private int _attempts;
+    public ValueTask InitializeAsync(CancellationToken cancellationToken = default) => inner.InitializeAsync(cancellationToken);
+    public ValueTask DisposeAsync() => inner.DisposeAsync();
+    public ValueTask<OutboxPublishResult> PublishAsync(IReadOnlyList<OutboxMessage> messages,
+        string messageIdHeaderName, CancellationToken cancellationToken = default)
+    {
+        if (store.LoadedShutdown)
+            return PublishDuringShutdownAsync(messages, messageIdHeaderName, cancellationToken);
+        if (++_attempts % 32 != 0)
+            return inner.PublishAsync(messages, messageIdHeaderName, cancellationToken);
+        store.InjectFailure();
+        if (!leaseLoss)
+            return new(new OutboxPublishResult(0, Failure));
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Volatile.Write(ref store.LeaseLoss, release);
+        return PublishAcrossLeaseLossAsync(messages, messageIdHeaderName, release.Task, cancellationToken);
+    }
+
+    private async ValueTask<OutboxPublishResult> PublishDuringShutdownAsync(IReadOnlyList<OutboxMessage> messages,
+        string header, CancellationToken token)
+    {
+        store.ShutdownPublisherInFlight = true;
+        try
+        {
+            var result = await inner.PublishAsync(messages, header, token).ConfigureAwait(false);
+            if (result.FirstError is not null || result.AckedCount != Store.BatchCount)
+                throw new InvalidOperationException("Shutdown batch was not acknowledged", result.FirstError);
+            store.ShutdownAcknowledged = result.AckedCount;
+            store.ShutdownEntered.TrySetResult();
+            // Stop begins with an observed Kafka publication still in flight at
+            // the relay boundary. Its cancellation must retain the durable rows.
+            await store.ShutdownRelease.Task.ConfigureAwait(false);
+            return result;
+        }
+        finally
+        {
+            store.ShutdownPublisherInFlight = false;
+        }
+    }
+
+    private async ValueTask<OutboxPublishResult> PublishAcrossLeaseLossAsync(IReadOnlyList<OutboxMessage> messages,
+        string header, Task leaseLost, CancellationToken token)
+    {
+        var result = await inner.PublishAsync(messages, header, token).ConfigureAwait(false);
+        await leaseLost.WaitAsync(token).ConfigureAwait(false);
+        return result;
+    }
 }
 
 internal sealed class Phase(string name, int seconds)
@@ -269,6 +388,7 @@ internal sealed class Phase(string name, int seconds)
     // 2.5 million completed rows/s ceiling; exceeding it invalidates, never drops samples.
     public readonly Cycle[] Cycles = new Cycle[checked((seconds + 1) * 5000)];
     public int Count;
+    public int Faults;
     public Snapshot Start;
     public Snapshot End;
 }
@@ -327,6 +447,11 @@ internal sealed class FailureLogger(Store store) : ILogger<OutboxRelayService>
     public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
         Func<TState, Exception?, string> formatter)
     {
+        if (store.FaultPending && eventId.Name is "LogBatchPublishFailed" or "LogLeaseLostDuringPublish")
+        {
+            Interlocked.Increment(ref store.ObservedFailureLogs);
+            return;
+        }
         if (IsEnabled(logLevel))
             store.Fail(exception ?? new InvalidOperationException(formatter(state, exception)));
     }

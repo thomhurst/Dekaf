@@ -4,7 +4,7 @@ import struct
 import tempfile
 import unittest
 
-from outbox_loaded_aba import validate_phase, execution_plan
+from outbox_loaded_aba import validate_phase, execution_plan, validate_recovery
 
 
 class ExecutionPlanTests(unittest.TestCase):
@@ -91,3 +91,44 @@ class PhaseValidationTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class RecoveryValidationTests(unittest.TestCase):
+    def setUp(self):
+        self.phases = {name: {'Faults': 2} for name in ('primer', 'warmup', 'measured')}
+        self.completion = dict(ExpectedRetainedRows=500, ShutdownAcknowledged=500,
+                               ShutdownPublisherInFlight=False, InjectedFailures=6, RecoveredFailures=6,
+                               ObservedFailureLogs=6, LeaseLossScenario=False, Failures=6)
+
+    def test_every_recovery_shard_keeps_its_own_triplet(self):
+        for case in ('legacy-failure-off', 'legacy-failure-on', 'renewal-loss-off', 'renewal-loss-on'):
+            plan = list(execution_plan(False, case, True))
+            self.assertEqual([row[0] for row in plan], ['DryA', 'DryB', 'A1', 'B', 'A2'])
+            self.assertTrue(all('-'.join(row[3:]) == case for row in plan))
+
+    def test_acknowledged_lease_loss_is_not_a_failed_publish(self):
+        self.completion.update(LeaseLossScenario=True, Failures=0, ObservedFailureLogs=12)
+        validate_recovery(self.completion, self.phases, True, 'on', True)
+        self.completion['Failures'] = 6
+        with self.assertRaisesRegex(ValueError, 'failure telemetry'):
+            validate_recovery(self.completion, self.phases, True, 'on', True)
+
+    def test_each_phase_must_exercise_recovery(self):
+        self.phases['measured']['Faults'] = 0
+        with self.assertRaisesRegex(ValueError, 'Missing recovery coverage'):
+            validate_recovery(self.completion, self.phases, True, 'on', True)
+
+    def test_unrecovered_rows_fail(self):
+        self.completion['RecoveredFailures'] = 5
+        with self.assertRaisesRegex(ValueError, 'recover all retained rows'):
+            validate_recovery(self.completion, self.phases, True, 'on', True)
+
+    def test_unobserved_shutdown_work_fails(self):
+        self.completion['ShutdownPublisherInFlight'] = True
+        with self.assertRaisesRegex(ValueError, 'unobserved publisher'):
+            validate_recovery(self.completion, self.phases, True, 'on', True)
+
+    def test_deleting_shutdown_rows_fails(self):
+        self.completion['ExpectedRetainedRows'] = 0
+        with self.assertRaisesRegex(ValueError, 'retain its acknowledged rows'):
+            validate_recovery(self.completion, self.phases, True, 'on', True)

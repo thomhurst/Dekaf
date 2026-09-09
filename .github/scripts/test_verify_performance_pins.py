@@ -36,6 +36,12 @@ class PinTests(unittest.TestCase):
         with patch.object(pins, 'command', side_effect=self.command):
             return pins.verify(self.harness, self.baseline, self.candidate, 3128, suite, 'thomhurst/Dekaf')
 
+    def test_focused_recovery_suites_reject_unrelated_products(self):
+        for suite in ('micro-completion', 'outbox-recovery'):
+            with self.assertRaisesRegex(ValueError, 'covers PR'):
+                self.verify(suite)
+        self.assertEqual(self.calls, [])
+
     def test_distinct_harness_and_product_pins_are_retained(self):
         result = self.verify()
         self.assertEqual(result['harness_sha'], self.harness)

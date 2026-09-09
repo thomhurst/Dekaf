@@ -20,6 +20,9 @@ def workloads(suite):
             groups['shutdown'] = [f'shutdown/batch-{batch}-keys-{keys}'
                                   for batch in (1, 16) for keys in (1, 2)]
         return groups
+    if suite == 'outbox-recovery':
+        return {f'{store}-{listener}': [f'{store}-{listener}']
+                for store in ('legacy-failure', 'renewal-loss') for listener in ('off', 'on')}
     if suite in ('outbox-loaded', 'outbox-adjacent'):
         return {case: [case] for case in OUTBOX_CASES}
     return {'all': []}

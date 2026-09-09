@@ -11,19 +11,20 @@ import subprocess
 import threading
 
 CONFIGS = [(store, listener) for store in ('legacy', 'renewal') for listener in ('off', 'on')]
+RECOVERY_CONFIGS = [(store, listener) for store in ('legacy-failure', 'renewal-loss') for listener in ('off', 'on')]
 WARMUP = 180
 MEASURED = 180
 
 
-def configurations(shard='all'):
-    selected = [case for case in CONFIGS if shard == 'all' or '-'.join(case) == shard]
+def configurations(shard='all', recovery=False):
+    selected = [case for case in (RECOVERY_CONFIGS if recovery else CONFIGS) if shard == 'all' or '-'.join(case) == shard]
     if not selected:
         raise ValueError(f'Unknown outbox shard: {shard}')
     return selected
 
 
-def execution_plan(adjacent=False, shard='all'):
-    configs = configurations(shard)
+def execution_plan(adjacent=False, shard='all', recovery=False):
+    configs = configurations(shard, recovery)
     for phase, label in [('DryA', 'A'), ('DryB', 'B')]:
         for store, listener in configs:
             yield phase, label, True, store, listener
@@ -87,18 +88,42 @@ def validate_phase(folder, name, seconds):
     return data
 
 
-def validate(folder, warmup, measured, candidate, listener):
+def validate_recovery(completion, phases, candidate, listener, recovery):
+    expected_retained = 500 if recovery else 0
+    if completion.get('ExpectedRetainedRows', 0) != expected_retained or completion.get('ShutdownAcknowledged', 0) != expected_retained:
+        raise ValueError('Loaded shutdown did not retain its acknowledged rows')
+    if completion.get('ShutdownPublisherInFlight', False):
+        raise ValueError('Loaded shutdown left an unobserved publisher')
+    injected = completion.get('InjectedFailures', 0)
+    if completion.get('RecoveredFailures', 0) != injected:
+        raise ValueError('Fault injection did not recover all retained rows')
+    if recovery:
+        if min(p.get('Faults', 0) for p in phases.values()) <= 0 or injected != sum(p['Faults'] for p in phases.values()):
+            raise ValueError('Missing recovery coverage in a workload phase')
+        if completion.get('ObservedFailureLogs', 0) < injected:
+            raise ValueError('Injected failures were not observed by the relay')
+    elif injected:
+        raise ValueError('Unexpected fault injection in normal workload')
+    expected_failures = injected if candidate and listener == 'on' and not completion.get('LeaseLossScenario', False) else 0
+    if completion['Failures'] != expected_failures:
+        raise ValueError('Incorrect failure telemetry')
+
+
+def validate(folder, warmup, measured, candidate, listener, recovery=False):
     phases = {name: validate_phase(folder, name, seconds)
               for name, seconds in [('primer', 20), ('warmup', warmup), ('measured', measured)]}
     completion = json.loads((folder / 'completion.json').read_text(encoding='utf-8'))
-    if completion['Error'] is not None or completion['Pending'] or completion['Failures']:
+    if completion['Error'] is not None or completion['Pending'] != completion.get('ExpectedRetainedRows', 0):
         raise ValueError('Failed, incomplete or leftover work')
+    validate_recovery(completion, phases, candidate, listener, recovery)
+    injected = completion.get('InjectedFailures', 0)
     if completion['TotalCompleted'] != sum(p['Completed'] for p in phases.values()):
         raise ValueError('Phases do not cover all completed work')
     if completion['ShutdownSeconds'] > 30:
         raise ValueError('Shutdown exceeded its deadline')
     if candidate and listener == 'on':
-        if completion['Acknowledged'] != completion['TotalCompleted'] or min(completion['MetricQueries'], completion['GaugeSamples']) <= 0:
+        expected_acknowledged = completion['TotalCompleted'] + completion.get('ShutdownAcknowledged', 0) + (injected * 500 if completion.get('LeaseLossScenario', False) else 0)
+        if completion['Acknowledged'] != expected_acknowledged or min(completion['MetricQueries'], completion['GaugeSamples']) <= 0:
             raise ValueError('Missing or incorrect active telemetry coverage')
     elif completion['MetricQueries'] or completion['Acknowledged'] or completion['GaugeSamples']:
         raise ValueError('Unexpected telemetry in baseline/disabled mode')
@@ -118,8 +143,9 @@ def execute():
     out = root / 'evidence'
     out.mkdir(exist_ok=False)
     adjacent = os.environ.get('OUTBOX_ADJACENT') == '1'
+    recovery = os.environ.get('SUITE') == 'outbox-recovery'
     shard = os.environ.get('PERFORMANCE_SHARD', 'all')
-    configs = configurations(shard)
+    configs = configurations(shard, recovery)
     declared_warmup = 480 if adjacent else WARMUP
     dispatch = module(root / '.github/benchmarks/dispatch-aba/run.py', 'outbox_dispatch')
     pool = module(root / '.github/scripts/pool_loaded_aba.py', 'outbox_broker')
@@ -137,8 +163,8 @@ def execute():
             raise ValueError('Main moved before this new campaign; rebase and repin')
     plan = {'A': a, 'B': b, 'harness': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
             'main_at_start': main, 'primer_seconds': 20, 'warmup_seconds': declared_warmup, 'measured_seconds': MEASURED,
-            'adjacent_controls': adjacent or shard != 'all', 'execution_plan': list(execution_plan(adjacent, shard)),
-            'configs': configs, 'shard': shard, 'runner': 'ubuntu-latest', 'image': os.getenv('ImageVersion'),
+            'adjacent_controls': adjacent or shard != 'all', 'execution_plan': list(execution_plan(adjacent, shard, recovery)),
+            'configs': configs, 'shard': shard, 'recovery': recovery, 'runner': 'ubuntu-latest', 'image': os.getenv('ImageVersion'),
             'topology': topology, 'affinity': dispatch.AFFINITY.copy(),
             'runtime': {'TieredCompilation': '1', 'TieredPGO': '1', 'ReadyToRun': '1', 'ServerGC': True},
             'run_url': f'https://github.com/{os.environ["GITHUB_REPOSITORY"]}/actions/runs/{os.environ["GITHUB_RUN_ID"]}',
@@ -166,7 +192,7 @@ def execute():
     (out / 'bindings.json').write_text(json.dumps(bindings, indent=2), encoding='utf-8')
     observations = {}
     order = []
-    for phase, label, smoke, store, listener in execution_plan(adjacent, shard):
+    for phase, label, smoke, store, listener in execution_plan(adjacent, shard, recovery):
         if any(dispatch.digest(Path(path)) != digest for path, digest in bindings.items()):
             raise ValueError('Measurement inputs changed')
         observations.setdefault(phase, {})
@@ -190,7 +216,7 @@ def execute():
                               'localhost:9092', folder / 'client', broker, store, listener, warmup, measured],
                              folder / 'client.log', timeout=20 + warmup + measured + 150,
                              env=dict(os.environ, DOTNET_TieredCompilation='1', DOTNET_TieredPGO='1', DOTNET_ReadyToRun='1'))
-            observations[phase][key] = validate(folder / 'client', warmup, measured, label == 'B', listener)
+            observations[phase][key] = validate(folder / 'client', warmup, measured, label == 'B', listener, recovery)
             (out / 'collection.json').write_text(json.dumps(observations, indent=2), encoding='utf-8')
         finally:
             stop.set()

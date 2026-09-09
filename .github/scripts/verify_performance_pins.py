@@ -8,10 +8,10 @@ import subprocess
 
 
 SUITES = (
-    'micro', 'pool', 'pool-recovery', 'admin', 'admin-pilot', 'admin-calibration',
+    'micro', 'micro-completion', 'pool', 'pool-recovery', 'admin', 'admin-pilot', 'admin-calibration',
     'dispatch', 'dispatch-adjacent', 'dispatch-loaded-adjacent', 'dispatch-loaded',
     'dispatch-pilot', 'dispatch-record-pilot', 'share-loaded', 'outbox',
-    'outbox-loaded', 'outbox-adjacent', 'pool-loaded', 'pool-profile',
+    'outbox-loaded', 'outbox-adjacent', 'outbox-recovery', 'pool-loaded', 'pool-profile',
 )
 
 
@@ -25,6 +25,10 @@ def verify(harness, baseline, candidate, pr, suite, repository):
             raise ValueError(f'{name} must be an exact lowercase 40-character SHA')
     if pr <= 0 or suite not in SUITES:
         raise ValueError('A positive PR number and supported suite are required')
+    if suite == 'micro-completion' and pr != 3083:
+        raise ValueError('micro-completion covers PR 3083 only')
+    if suite == 'outbox-recovery' and pr != 3085:
+        raise ValueError('outbox-recovery covers PR 3085 only')
     if not re.fullmatch(r'[\w.-]+/[\w.-]+', repository, flags=re.ASCII):
         raise ValueError('Expected owner/repository')
     if command('git', 'rev-parse', 'HEAD') != harness:

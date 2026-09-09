@@ -44,7 +44,7 @@ class ShardTests(unittest.TestCase):
                               loaded_warmup_seconds=361, loaded_duration_seconds=180)
         else:
             rows = [dict(phase=phase, label=label, smoke=smoke, case=f'{store}-{listener}')
-                    for phase, label, smoke, store, listener in execution_plan(pins['suite'] == 'outbox-adjacent', shard)]
+                    for phase, label, smoke, store, listener in execution_plan(pins['suite'] == 'outbox-adjacent', shard, pins['suite'] == 'outbox-recovery')]
             provenance = dict(harness=pins['harness_sha'], A=pins['baseline_sha'], B=pins['candidate_sha'],
                               shard=shard, primer_seconds=20, measured_seconds=180,
                               warmup_seconds=480 if pins['suite'] == 'outbox-adjacent' else 180)
@@ -80,7 +80,7 @@ class ShardTests(unittest.TestCase):
 
     def test_other_suites_remain_single_jobs(self):
         for suite in SUITES:
-            if suite not in ('dispatch-adjacent', 'dispatch-loaded-adjacent', 'outbox-loaded', 'outbox-adjacent'):
+            if suite not in ('dispatch-adjacent', 'dispatch-loaded-adjacent', 'outbox-loaded', 'outbox-adjacent', 'outbox-recovery'):
                 self.assertEqual(shards.workloads(suite), {'all': []})
 
     def test_unknown_and_incompatible_driver_selections_fail(self):
@@ -91,7 +91,7 @@ class ShardTests(unittest.TestCase):
             list(execution_plan(shard='typo'))
 
     def test_each_complete_suite_aggregates_without_granting_performance_acceptance(self):
-        for suite in ('dispatch-adjacent', 'dispatch-loaded-adjacent', 'outbox-loaded', 'outbox-adjacent'):
+        for suite in ('dispatch-adjacent', 'dispatch-loaded-adjacent', 'outbox-loaded', 'outbox-adjacent', 'outbox-recovery'):
             plan = self.campaign(suite)
             receipts = []
             for shard in plan['workloads']:

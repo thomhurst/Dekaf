@@ -9,7 +9,7 @@ on:
       suite:
         required: true
         type: choice
-        options: [micro, pool, pool-recovery, admin, admin-pilot, admin-calibration, dispatch, dispatch-adjacent, dispatch-loaded-adjacent, dispatch-loaded, dispatch-pilot, dispatch-record-pilot, share-loaded, outbox, outbox-loaded, outbox-adjacent, pool-loaded, pool-profile]
+        options: [micro, micro-completion, pool, pool-recovery, admin, admin-pilot, admin-calibration, dispatch, dispatch-adjacent, dispatch-loaded-adjacent, dispatch-loaded, dispatch-pilot, dispatch-record-pilot, share-loaded, outbox, outbox-loaded, outbox-adjacent, outbox-recovery, pool-loaded, pool-profile]
       harness_sha:
         required: true
         description: Exact harness source SHA (independent of product revisions)
@@ -90,7 +90,7 @@ jobs:
       - name: Verify this job uses the pinned campaign
         run: python3 .github/scripts/performance_shards.py verify
       - name: Shared microbenchmark comparison
-        if: inputs.suite == 'micro'
+        if: inputs.suite == 'micro' || inputs.suite == 'micro-completion'
         env:
           ABA_PR: ${{ inputs.pr }}
           MSBUILDDISABLENODEREUSE: '1'
@@ -99,7 +99,7 @@ jobs:
           warmup=50; minimum_warmup=20; tolerance=5
           case "$PR" in
             3082) filters=('*BinaryKeyDispatchBenchmarks*'); count=18 ;;
-            3083) filters=('*BatchReadBench*' '*BatchBoundBench*'); count=12 ;;
+            3083) if [[ "$SUITE" == micro-completion ]]; then filters=('*CompletionTrackingBench*'); count=4; else filters=('*BatchReadBench*' '*BatchBoundBench*'); count=12; fi ;;
             3085) filters=('*RelayMetricsBenchmarks*' '*ActualPublisherBenchmarks*'); count=10 ;;
             3086) filters=('*ConsumerFollowerOffsetRetryBenchmarks*'); count=10 ;;
             3116) filters=('*RecordCount: 1024, HeaderCount: 0*' '*RecordCount: 64, HeaderCount: 2*'); count=14; warmup=130; minimum_warmup=120 ;;
@@ -183,7 +183,7 @@ jobs:
           python3 -m unittest discover -s .github/scripts -p test_outbox_cycle_aba.py
           python3 .github/scripts/outbox_cycle_aba.py --pr "$PR" --baseline "$BASELINE_SHA" --candidate "$CANDIDATE_SHA" --artifacts "$GITHUB_WORKSPACE/aba-results"
       - name: Loaded outbox comparison
-        if: inputs.suite == 'outbox-loaded' || inputs.suite == 'outbox-adjacent'
+        if: inputs.suite == 'outbox-loaded' || inputs.suite == 'outbox-adjacent' || inputs.suite == 'outbox-recovery'
         env:
           OUTBOX_ADJACENT: ${{ inputs.suite == 'outbox-adjacent' && '1' || '0' }}
         run: |
