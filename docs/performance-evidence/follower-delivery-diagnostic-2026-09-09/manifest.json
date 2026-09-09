@@ -1,0 +1,52 @@
+[
+  {
+    "original": "Program.cs",
+    "retained": "Program.cs.txt",
+    "sha256": "91598c2e5ac7e934fed47d935f20724a3631025650b98f0e2b7f2865eb245bcd"
+  },
+  {
+    "original": "broker.log",
+    "retained": "broker.log",
+    "sha256": "2bd4c2367fe0e60d3410934766692f62af5bf7a2078651b3590db91525210431"
+  },
+  {
+    "original": "A\\run.log",
+    "retained": "A-run.log",
+    "sha256": "4aca57b4560b6bbed067eff0cea25e0e690a63b9bf122a2849b4904e2c59196f"
+  },
+  {
+    "original": "A\\build.log",
+    "retained": "A-build.log",
+    "sha256": "bb85749beb9b2a91c846d3443e7fbaa43a8b812166e20320c7af7a44154c386f"
+  },
+  {
+    "original": "A\\Smoke.csproj",
+    "retained": "A-Smoke.csproj.txt",
+    "sha256": "01a20d30a04a469f310811788cda9331ec3736150f0055012a4b125c612a9294"
+  },
+  {
+    "original": "A\\input-hashes.json",
+    "retained": "A-input-hashes.json",
+    "sha256": "334baa969865e4915adc8708e999d14e37100b16e0f6c39fd19ee889cfd598d7"
+  },
+  {
+    "original": "B\\run.log",
+    "retained": "B-run.log",
+    "sha256": "bfa45a436eb8f8c71969bd730871fd4c4ea5e54533738a02fb7212f762763b29"
+  },
+  {
+    "original": "B\\build.log",
+    "retained": "B-build.log",
+    "sha256": "a0b819d3d1e39dc787cf680f6cfd9526567347192e82a047f64b9a7e14d19303"
+  },
+  {
+    "original": "B\\Smoke.csproj",
+    "retained": "B-Smoke.csproj.txt",
+    "sha256": "770eab1bb6b07933c1b44fae7995153afdae11c6f167fb800feac9b22ddf450d"
+  },
+  {
+    "original": "B\\input-hashes.json",
+    "retained": "B-input-hashes.json",
+    "sha256": "899548321992922a06ee1e67f54d186ddbfa1301c620660dc1cff83057240d58"
+  }
+]

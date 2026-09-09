@@ -83,7 +83,7 @@ def analyze(root):
                  warmup_completed=warm['Completed'],measured_completed=data['Completed'],warmup_seconds=warm['Seconds'],measured_seconds=data['Seconds'],
                  clock_bracket_ns=(clock['AfterTimestamp']-clock['BeforeTimestamp'])*1e9/data['StopwatchFrequency'],
                  maximum_call=interval['MaximumCall'],maximum_call_trace_bounds=bounds,maximum_call_overlapping_suspensions=nearby,
-                 trace_samples=sampled,measured_suspensions=reasons,events_lost=trace['EventsLost'],anomalies=trace['Anomalies'])
+                 sample_profiler_provider_events_whole_trace=sampled,measured_suspensions=reasons,events_lost=trace['EventsLost'],anomalies=trace['Anomalies'])
         rows.append(row)
         print(phase,json.dumps(row['metrics']),'clock ns',row['clock_bracket_ns'],'overlaps',[(p['Reason'],p['request_overlap'],p['fully_suspended_overlap']) for p in nearby])
     deltas={k:dict(B_vs_A1_percent=(rows[1]['metrics'][k]/rows[0]['metrics'][k]-1)*100,

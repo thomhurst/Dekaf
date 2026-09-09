@@ -113,7 +113,6 @@
           "fully_suspended_overlap": "guaranteed within clock bounds"
         }
       ],
-      "trace_samples": 0,
       "measured_suspensions": {
         "SuspendForGC": {
           "count": 22211,
@@ -152,7 +151,8 @@
         }
       },
       "complete_suspension_sequences": 82017,
-      "total_gc_starts": 81091
+      "total_gc_starts": 81091,
+      "sample_profiler_provider_events_whole_trace": 0
     },
     {
       "phase": "B",
@@ -208,7 +208,6 @@
           "fully_suspended_overlap": "guaranteed within clock bounds"
         }
       ],
-      "trace_samples": 1033512,
       "measured_suspensions": {
         "SuspendForGC": {
           "count": 18849,
@@ -247,7 +246,8 @@
         }
       },
       "complete_suspension_sequences": 586212,
-      "total_gc_starts": 68517
+      "total_gc_starts": 68517,
+      "sample_profiler_provider_events_whole_trace": 1033512
     },
     {
       "phase": "A2",
@@ -290,7 +290,6 @@
           "fully_suspended_overlap": "guaranteed within clock bounds"
         }
       ],
-      "trace_samples": 0,
       "measured_suspensions": {
         "SuspendForGC": {
           "count": 22760,
@@ -329,7 +328,8 @@
         }
       },
       "complete_suspension_sequences": 83494,
-      "total_gc_starts": 82568
+      "total_gc_starts": 82568,
+      "sample_profiler_provider_events_whole_trace": 0
     }
   ],
   "deltas": {

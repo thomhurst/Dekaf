@@ -1,0 +1,10 @@
+{
+  "Dekaf.Abstractions.dll": "d055087dbc0786b5f239bc85363976b93fff80e7ea49c7b9d3b848d1d6202f40",
+  "Dekaf.dll": "75b4c20206a4f08e4a9f720cf18127d8437302410f8298bf85aa280e13c8d78d",
+  "Microsoft.Extensions.DependencyInjection.Abstractions.dll": "da04edc338d5aa0f38a1f5fa5ff3ee7e36affe9c961daf3ea724a428bd746bc6",
+  "Microsoft.Extensions.Logging.Abstractions.dll": "7c242f8ca612fa1acc61f78efd5f8c89e01bd0bd47dc4ecc65e0e6e24f1a1668",
+  "Microsoft.Extensions.Options.dll": "b4ff561da6a7b11b68341f9fd32cab3f8b23cdd8b40332b9fd8bed73a9ee7de3",
+  "Microsoft.Extensions.Primitives.dll": "67642533eb87e8dadeb9026de59ff4b66cc9bf35c0cfbedfef7b79bc6d8b30bc",
+  "Reservoir.dll": "a486b9bfe9856fc75d44aa4c47125007dc02bb01fe77cb4ab9d4d37353805800",
+  "System.IO.Hashing.dll": "cea6795cf9f7b139b2215ff6de794a6f6e44e78640fb30fa4c0d5fa8472df8e5"
+}

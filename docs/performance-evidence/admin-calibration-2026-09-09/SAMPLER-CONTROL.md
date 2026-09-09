@@ -70,7 +70,8 @@ would therefore be wrong. Request waiting and fully suspended time stay separate
 
 During measurement, `SuspendOther` counts are 181 / 139,532 / 181; summed fully
 suspended times are 0.134863 / 1,150.798932 / 0.246226 ms. CPU-sampler provider
-events are absent in both controls and present in B. Not every `SuspendOther`
+events are absent in both controls and present in B (1,033,512 provider events
+over the entire trace, separately named in the summary). Not every `SuspendOther`
 event is a sampler event. B retains 278,703 measured CPU samples, zero missing
 stacks, with managed/external labels kept separate. Sample counts are not CPU time.
 

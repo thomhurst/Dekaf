@@ -1,0 +1,1 @@
+{"expectedRepair":false,"Received":[0,1,2,3,4,5,6,7,8,9,10,11,12,13],"Injected":1,"FollowerFetches":179,"LeaderFetches":2,"InjectedOffset":14,"LeaderOffsetsAfterFault":[200],"LatestOffsetLookups":1,"Complete":false,"Scope":"Local correctness diagnostic: real Kafka records, synthetic logical follower/error, no performance acceptance"}

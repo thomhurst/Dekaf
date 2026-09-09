@@ -17,4 +17,5 @@ class ClockBoundsTests(unittest.TestCase):
         self.assertEqual(overlap(result,199,300),'guaranteed within clock bounds')
 
 
-if __name__=='__main__':unittest.main()
+if __name__ == '__main__':
+    unittest.main()

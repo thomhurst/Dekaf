@@ -1,0 +1,155 @@
+using System.Text.Json;
+using Dekaf;
+using Dekaf.Admin;
+using Dekaf.Consumer;
+using Dekaf.Metadata;
+using Dekaf.Networking;
+using Dekaf.Producer;
+using Dekaf.Protocol;
+using Dekaf.Protocol.Messages;
+using Dekaf.Serialization;
+
+// Diagnostic only. Broker 2 is a logical follower routed to the real broker.
+// Only its injected error is synthetic; successful records come from Kafka.
+var topic = args[0];
+var expectedRepair = bool.Parse(args[1]);
+using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(90));
+await using (var admin = Kafka.CreateAdminClient().WithBootstrapServers("localhost:19094").Build())
+    await admin.CreateTopicsAsync([new NewTopic { Name = topic, NumPartitions = 1, ReplicationFactor = 1 }], cancellationToken: timeout.Token);
+await using var producer = await Kafka.CreateProducer<string, string>().WithBootstrapServers("localhost:19094")
+    .WithAcks(Acks.All).WithLinger(TimeSpan.Zero).BuildAsync(timeout.Token);
+for (var i = 0; i < 200; i++)
+    await producer.ProduceAsync(topic, i.ToString(), i.ToString(), timeout.Token);
+await producer.FlushAsync(timeout.Token);
+
+var pool = new FaultPool(topic);
+var metadata = new MetadataManager(pool, ["localhost:19094"]);
+await using var consumer = new KafkaConsumer<string, string>(new ConsumerOptions
+{
+    BootstrapServers = ["localhost:19094"], ClientRack = "rack-a",
+    AutoOffsetReset = AutoOffsetReset.Latest, EnableFetchSessions = false,
+    OffsetCommitMode = OffsetCommitMode.Manual, MaxPartitionFetchBytes = 1024,
+    FetchMaxBytes = 1024, FetchMaxWaitMs = 10, PrefetchPipelineDepth = 1
+}, Serializers.String, Serializers.String, pool, metadata);
+await consumer.InitializeAsync(timeout.Token);
+consumer.Assign(new TopicPartition(topic, 0));
+consumer.Seek(new TopicPartitionOffset(topic, 0, 0));
+var received = new List<long>();
+while (received.Count < 200)
+{
+    var record = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(2), timeout.Token);
+    if (record is null)
+        break;
+    if (record.Value.Value != record.Value.Offset.ToString())
+        throw new InvalidOperationException("Payload differs from its persisted offset.");
+    received.Add(record.Value.Offset);
+}
+var result = new { expectedRepair, Received = received, pool.Injected, pool.FollowerFetches, pool.LeaderFetches,
+    pool.InjectedOffset, pool.LeaderOffsetsAfterFault, pool.LatestOffsetLookups,
+    Complete = received.SequenceEqual(Enumerable.Range(0,200).Select(i => (long)i)),
+    Scope = "Local correctness diagnostic: real Kafka records, synthetic logical follower/error, no performance acceptance" };
+Console.WriteLine(JsonSerializer.Serialize(result));
+if (pool.Injected != 1 || pool.FollowerFetches == 0 || result.Complete != expectedRepair)
+    throw new InvalidOperationException("The diagnostic did not reproduce the declared recovery behavior.");
+
+sealed class FaultPool(string topic) : IConnectionPool
+{
+    private readonly ConnectionPool _inner = new("follower-delivery-smoke");
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<int, FaultConnection> _connections = new();
+    internal int Injected;
+    internal int FollowerFetches;
+    internal int LeaderFetches;
+    internal long InjectedOffset = -1;
+    internal int LatestOffsetLookups;
+    internal System.Collections.Concurrent.ConcurrentQueue<long> LeaderOffsetsAfterFault = new();
+
+    private async ValueTask<IKafkaConnection> GetAsync(int id, CancellationToken cancellationToken)
+    {
+        if (_connections.TryGetValue(id, out var known)) return known;
+        var inner = await _inner.GetConnectionAsync("localhost",19094,cancellationToken);
+        var connection = new FaultConnection(this,inner,id,topic);
+        return _connections.GetOrAdd(id,connection);
+    }
+    public ValueTask<IKafkaConnection> GetConnectionAsync(int brokerId, CancellationToken cancellationToken = default) => GetAsync(brokerId,cancellationToken);
+    public ValueTask<IKafkaConnection> GetConnectionByIndexAsync(int brokerId, int index, CancellationToken cancellationToken = default) => GetAsync(brokerId,cancellationToken);
+    public ValueTask<IKafkaConnection> GetConnectionAsync(string host,int port,CancellationToken cancellationToken = default) => GetAsync(port == 19095 ? 2 : 1,cancellationToken);
+    public void RegisterBroker(int brokerId,string host,int port) { }
+    public ValueTask<int> ScaleConnectionGroupAsync(int brokerId,int newCount,CancellationToken cancellationToken = default) => new(1);
+    public ValueTask<IKafkaConnection?> ShrinkConnectionGroupAsync(int brokerId,int newCount,CancellationToken cancellationToken = default) => new((IKafkaConnection?)null);
+    public ValueTask RemoveConnectionAsync(int brokerId) => default;
+    public ValueTask CloseAllAsync() => _inner.CloseAllAsync();
+    public ValueTask DisposeAsync() => _inner.DisposeAsync();
+
+    private sealed class FaultConnection(FaultPool pool, IKafkaConnection inner,int brokerId,string topic) : IKafkaConnection
+    {
+        public int BrokerId => brokerId;
+        public string Host => "localhost";
+        public int Port => brokerId == 2 ? 19095 : 19094;
+        public bool IsConnected => inner.IsConnected;
+        public ValueTask ConnectAsync(CancellationToken cancellationToken = default) => inner.ConnectAsync(cancellationToken);
+        public ValueTask DisposeAsync() => default;
+        public ValueTask SendFireAndForgetAsync<TRequest,TResponse>(TRequest request,short apiVersion,CancellationToken cancellationToken = default)
+            where TRequest : IKafkaRequest<TResponse> where TResponse : IKafkaResponse => inner.SendFireAndForgetAsync<TRequest,TResponse>(request,apiVersion,cancellationToken);
+        public ValueTask SendFireAndForgetWithCallerTimeoutAsync<TRequest,TResponse>(TRequest request,short apiVersion,CancellationToken cancellationToken = default)
+            where TRequest : IKafkaRequest<TResponse> where TResponse : IKafkaResponse => inner.SendFireAndForgetWithCallerTimeoutAsync<TRequest,TResponse>(request,apiVersion,cancellationToken);
+        public Task<TResponse> SendPipelinedAsync<TRequest,TResponse>(TRequest request,short apiVersion,CancellationToken cancellationToken = default)
+            where TRequest : IKafkaRequest<TResponse> where TResponse : IKafkaResponse => SendAsync<TRequest,TResponse>(request,apiVersion,cancellationToken).AsTask();
+        public Task<TResponse> SendPipelinedWithCallerTimeoutAsync<TRequest,TResponse>(TRequest request,short apiVersion,CancellationToken cancellationToken = default)
+            where TRequest : IKafkaRequest<TResponse> where TResponse : IKafkaResponse => SendAsync<TRequest,TResponse>(request,apiVersion,cancellationToken).AsTask();
+
+        public async ValueTask<TResponse> SendAsync<TRequest,TResponse>(TRequest request,short apiVersion,CancellationToken cancellationToken = default)
+            where TRequest : IKafkaRequest<TResponse> where TResponse : IKafkaResponse
+        {
+            if (request is FetchRequest fetch && fetch.Topics.Count > 0 && fetch.Topics[0].Partitions.Count > 0)
+            {
+                var offset = fetch.Topics[0].Partitions[0].FetchOffset;
+                if (brokerId == 2)
+                {
+                    Interlocked.Increment(ref pool.FollowerFetches);
+                    if (offset > 0 && Interlocked.CompareExchange(ref pool.Injected,1,0) == 0)
+                    {
+                        pool.InjectedOffset = offset;
+                        var partition = FetchResponsePartition.Rent();
+                        partition.PartitionIndex = 0;
+                        partition.ErrorCode = ErrorCode.OffsetOutOfRange;
+                        partition.HighWatermark = 200;
+                        var responseTopic = FetchResponseTopic.Rent();
+                        responseTopic.Topic = topic;
+                        responseTopic.TopicId = fetch.Topics[0].TopicId;
+                        responseTopic.Partitions = new[] { partition };
+                        var response = FetchResponse.Rent();
+                        response.Responses = new[] { responseTopic };
+                        return (TResponse)(object)response;
+                    }
+                }
+                else
+                {
+                    pool.LeaderFetches++;
+                    if (pool.Injected != 0) pool.LeaderOffsetsAfterFault.Enqueue(offset);
+                }
+            }
+            if (request is ListOffsetsRequest offsets && pool.Injected != 0)
+                foreach (var requestedTopic in offsets.Topics)
+                foreach (var partition in requestedTopic.Partitions)
+                    if (partition.Timestamp == -1) pool.LatestOffsetLookups++;
+            var result = await inner.SendAsync<TRequest,TResponse>(request,apiVersion,cancellationToken);
+            if (result is MetadataResponse metadata)
+            {
+                // Preserve real topic IDs, epochs and partition information. Only the
+                // logical follower endpoint is added; no Kafka replication is claimed.
+                return (TResponse)(object)new MetadataResponse
+                {
+                    Brokers = metadata.Brokers.Concat(new[] { new BrokerMetadata { NodeId = 2, Host = "localhost", Port = 19095, Rack = "rack-a" } }).ToArray(),
+                    Topics = metadata.Topics, ClusterId = metadata.ClusterId, ControllerId = metadata.ControllerId,
+                    ErrorCode = metadata.ErrorCode, ThrottleTimeMs = metadata.ThrottleTimeMs,
+                    ClusterAuthorizedOperations = metadata.ClusterAuthorizedOperations
+                };
+            }
+            if (result is FetchResponse fetched)
+                foreach (var responseTopic in fetched.Responses)
+                foreach (var partition in responseTopic.Partitions)
+                    if (partition.ErrorCode == ErrorCode.None) partition.PreferredReadReplica = 2;
+            return result;
+        }
+    }
+}

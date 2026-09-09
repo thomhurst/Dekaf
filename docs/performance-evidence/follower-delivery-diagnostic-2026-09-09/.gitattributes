@@ -1,0 +1,5 @@
+*.txt -text whitespace=cr-at-eol
+*.json -text whitespace=cr-at-eol
+*.log -text whitespace=cr-at-eol
+# Raw Kafka output contains trailing spaces; its original bytes are hash-verified.
+broker.log -whitespace
