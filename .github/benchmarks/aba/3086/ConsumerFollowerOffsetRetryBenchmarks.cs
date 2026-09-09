@@ -37,6 +37,7 @@ public class ConsumerFollowerOffsetRetryBenchmarks
         var pool = new BenchmarkPool(_leader, _follower);
         var metadata = new MetadataManager(pool, ["localhost:9092"]);
         metadata.SetApiVersion(ApiKey.Fetch, FetchRequest.LowestSupportedVersion, FetchRequest.HighestSupportedVersion);
+        metadata.SetApiVersion(ApiKey.ListOffsets, ListOffsetsRequest.LowestSupportedVersion, ListOffsetsRequest.HighestSupportedVersion);
         metadata.Metadata.Update(new MetadataResponse
         {
             Brokers =
@@ -142,6 +143,8 @@ public class ConsumerFollowerOffsetRetryBenchmarks
             throw new InvalidOperationException("FollowerError did not match the documented product behavior.");
         if (LeaderError() != -1 || _leader.SendCount != 2 || _follower.SendCount != 1)
             throw new InvalidOperationException("LeaderError fixture failed.");
+        if (FollowerErrorThenLeaderSuccess() != 42 || _leader.LastFetchOffset != 42)
+            throw new InvalidOperationException("Follower retry did not complete at the expected leader offset.");
         _leader.Error = ErrorCode.None;
         _follower.Error = ErrorCode.None;
     }
@@ -156,6 +159,17 @@ public class ConsumerFollowerOffsetRetryBenchmarks
     {
         private readonly FetchResponseTopic[] _topics = new FetchResponseTopic[1];
         private readonly FetchResponsePartition[] _partitions = new FetchResponsePartition[1];
+        private readonly ListOffsetsResponse _offsets = new()
+        {
+            Topics = [new ListOffsetsResponseTopic
+            {
+                Name = Topic,
+                Partitions = [new ListOffsetsResponsePartition
+                {
+                    PartitionIndex = 0, ErrorCode = ErrorCode.None, Offset = 42
+                }]
+            }]
+        };
         internal ErrorCode Error;
         internal long SendCount;
         internal long LastFetchOffset;
@@ -185,8 +199,13 @@ public class ConsumerFollowerOffsetRetryBenchmarks
         public ValueTask<TResponse> SendAsync<TRequest, TResponse>(TRequest request, short apiVersion, CancellationToken cancellationToken = default)
             where TRequest : IKafkaRequest<TResponse> where TResponse : IKafkaResponse
         {
+            // Main's follower error resets its position to -1. Its subsequent
+            // leader fetch resolves that sentinel through ListOffsets; the fix
+            // preserves 42 and avoids this request. Keep that real work visible.
+            if (request is ListOffsetsRequest)
+                return new((TResponse)(object)_offsets);
             if (request is not FetchRequest fetch)
-                throw new InvalidOperationException("The fixture supports only fetch requests.");
+                throw new InvalidOperationException("The fixture supports Fetch and ListOffsets requests.");
             SendCount++;
             LastFetchOffset = fetch.Topics[0].Partitions[0].FetchOffset;
             return new((TResponse)(object)CreateResponse());

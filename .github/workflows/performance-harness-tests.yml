@@ -94,8 +94,10 @@ jobs:
           jq -s -e '[.[].Benchmarks[]] | length == 6 and all(.[]; .Statistics.N == 1)' "$results/dry/results/"*-report-full.json
           export ABA_PR=3142
           dotnet build Dekaf.Benchmarks.csproj -c Release --disable-build-servers > "$results/pool-build.log" 2>&1
-          dotnet run --project Dekaf.Benchmarks.csproj -c Release --no-build -- --job Dry --filter '*PendingRequest*Benchmark*' --artifacts "$results/pool-dry" > "$results/pool-dry.log" 2>&1
-          jq -s -e '[.[].Benchmarks[]] | length == 3 and all(.[]; .Statistics.N == 1)' "$results/pool-dry/results/"*-report-full.json
+          # This checkout can contain either pool-count behavior. Recovery's exact
+          # baseline/candidate assertions run in the comparison workflow preflight.
+          dotnet run --project Dekaf.Benchmarks.csproj -c Release --no-build -- --job Dry --filter '*PendingRequestBenchmark*' --artifacts "$results/pool-dry" > "$results/pool-dry.log" 2>&1
+          jq -s -e '[.[].Benchmarks[]] | length == 1 and all(.[]; .Statistics.N == 1)' "$results/pool-dry/results/"*-report-full.json
       - name: Verify Linux client and broker affinity
         run: |
           python3 .github/scripts/test_runner_affinity.py --linux-smoke
