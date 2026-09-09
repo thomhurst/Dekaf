@@ -220,7 +220,10 @@ def summarize_stages(starts, latencies, producer, metrics):
         scheduled = producer['ScheduledStart'] + int((index // producer['OfferBurst'] * producer['OfferBurst']) *
                                                      frequency / producer['Rate'])
         end = scheduled + latency
-        if latency <= 0 or not scheduled <= start <= end:
+        # A timer can release the producer slightly before its scheduled offer.
+        # Preserve that signed interval; only actual entry-after-completion or
+        # missing timestamps invalidate the handler boundary.
+        if latency <= 0 or start <= 0 or start > end:
             raise ValueError('Invalid handler stage boundary')
         if index >= metrics['WarmupCompleted']:
             rows.append(dict(sequence=index, scheduled=scheduled, handler_start=start, completed=end,

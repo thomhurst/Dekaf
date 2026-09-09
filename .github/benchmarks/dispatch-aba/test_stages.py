@@ -19,8 +19,15 @@ class HandlerStageTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Missing handler stage samples'):
             run.summarize_stages([101], [2, 3, 4, 9], self.producer, self.metrics)
 
-    def test_rejects_start_before_offer_or_after_completion(self):
-        for start in (109, 115):
+    def test_preserves_entry_before_scheduled_offer(self):
+        result = run.summarize_stages([101, 102, 109, 118], [2, 3, 4, 9], self.producer, self.metrics)
+        row = next(row for row in result['largest_total'] if row['sequence'] == 2)
+        self.assertEqual(row['before_handler_ticks'], -1)
+        self.assertEqual(row['handler_ticks'], 5)
+        self.assertEqual(row['total_ticks'], 4)
+
+    def test_rejects_missing_entry_or_entry_after_completion(self):
+        for start in (0, 115):
             with self.subTest(start=start), self.assertRaisesRegex(ValueError, 'Invalid handler stage boundary'):
                 run.summarize_stages([101, 102, start, 118], [2, 3, 4, 9], self.producer, self.metrics)
 
