@@ -168,6 +168,8 @@ internal sealed class InflightEntryPool
     private readonly struct InflightEntryPolicy(InflightEntryPool owner)
         : Reservoir.IPooledObjectPolicy<InflightEntry>, Reservoir.INonThrowingResetPolicy
     {
+        public void Destroy(InflightEntry item) { }
+
         public InflightEntry Create()
         {
             Interlocked.Increment(ref owner._misses);
