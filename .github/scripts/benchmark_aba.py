@@ -12,6 +12,8 @@ import sys
 from datetime import datetime, timezone
 from xml.sax.saxutils import escape
 
+from runner_resources import configure_affinity
+
 SUITES = {
     3082: ['*BinaryKeyDispatchBenchmarks*'],
     3083: ['*BatchReadBench*', '*BatchBoundBench*'],
@@ -86,8 +88,9 @@ def execute(args):
     subprocess.run(['git', 'merge-base', '--is-ancestor', args.baseline, args.candidate], check=True)
     workspace = Path(os.environ['RUNNER_TEMP']) / f'aba-{args.pr}'
     workspace.mkdir(exist_ok=False)
-    allowed_cpus = sorted(os.sched_getaffinity(0))
-    cpu = allowed_cpus[0]
+    topology, affinity = configure_affinity()
+    allowed_cpus = [row[0] for row in topology]
+    cpu = min(map(int, affinity['consumer'].split(',')))
     warmup_iterations = 130 if args.pr == 3116 else 50
     minimum_warmup_seconds = 120 if args.pr == 3116 else 20
     metadata = {'started_utc': now(), 'baseline_sha': args.baseline, 'candidate_sha': args.candidate,

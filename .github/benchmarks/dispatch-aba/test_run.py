@@ -36,6 +36,13 @@ class AffinityTests(unittest.TestCase):
 
 
 class MicroDriverTests(unittest.TestCase):
+    def test_micro_uses_detected_client_core(self):
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.dict(run.AFFINITY, consumer='1,3', infrastructure='0,2'), \
+             patch.object(run, 'command', side_effect=lambda args, log, **kwargs: Path(log).write_text('smoke')) as launch:
+            run.micro(Path('host.dll'), Path(directory), 'B', 'Smoke', True, cases=[('Repeated', 1)])
+            self.assertEqual(launch.call_args.args[0][:3], ['taskset', '-c', '1'])
+
     def exercise(self, smoke, actual_count):
         with tempfile.TemporaryDirectory() as directory:
             def write_log(args, log, **kwargs):

@@ -11,6 +11,8 @@ import re
 import shutil
 import subprocess
 
+from runner_resources import configure_affinity
+
 MODES = ('sync-off', 'pending-off', 'sync-on', 'pending-on',
          'renewal-sync-off', 'renewal-pending-off', 'renewal-sync-on', 'renewal-pending-on')
 PHASES = (('A1', 'A'), ('B', 'B'), ('A2', 'A'))
@@ -104,7 +106,8 @@ def execute(args):
         raise ValueError('The PR head changed before this campaign')
     workspace = Path(os.environ['RUNNER_TEMP']) / f'outbox-cycle-{os.environ["GITHUB_RUN_ID"]}'
     workspace.mkdir(exist_ok=False)
-    cpu = min(os.sched_getaffinity(0))
+    topology, affinity = configure_affinity()
+    cpu = min(map(int, affinity['consumer'].split(',')))
     environment = dict(os.environ, DOTNET_TieredCompilation='0', ABA_CPU=str(cpu), MSBUILDDISABLENODEREUSE='1')
     provenance = {'baseline_sha': args.baseline, 'candidate_sha': args.candidate,
                   'harness_sha': output(['git', 'rev-parse', 'HEAD']), 'started_utc': now(),
