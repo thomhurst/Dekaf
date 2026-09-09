@@ -21,7 +21,7 @@ permissions:
 jobs:
   compare:
     runs-on: ubuntu-latest
-    timeout-minutes: ${{ inputs.suite == 'admin' && inputs.pr == '3129' && 240 || 180 }}
+    timeout-minutes: ${{ inputs.suite == 'admin' && 240 || 180 }}
     env:
       BASELINE_SHA: ${{ inputs.baseline_sha }}
       CANDIDATE_SHA: ${{ inputs.candidate_sha }}

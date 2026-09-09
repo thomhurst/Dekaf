@@ -47,7 +47,7 @@ def execute():
         validator = original.validate_probe
         controls, added = original.CONTROLS, original.NEW_CASES
     pilot = os.getenv('ADMIN_PILOT') == '1'
-    warmup_seconds = 360 if PR == 3129 else 180
+    warmup_seconds = 360
     if pilot:
         # Diagnose the observed report/JIT transition before expanding a campaign.
         controls, added = controls[:1], []
@@ -56,10 +56,10 @@ def execute():
     probe_prefix = ['taskset', '-c', str(cpu), 'dotnet']
     plan = dict(A=A, B=B, harness=subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
                 controls=controls, candidate_only=added, warmup_seconds=warmup_seconds, measured_seconds=60,
-                warmup_rationale='PR3129: 360 seconds continuous workload after observer heap preparation; assess all measured runtime transitions',
-                observer_preparation='PR3129: after histogram allocation, two blocking compacting full GCs with finalizer waits before workload warmup; no forced GC during warmup or measurement',
+                warmup_rationale='360 seconds continuous workload after observer heap preparation; assess all measured runtime transitions',
+                observer_preparation='After histogram allocation, two blocking compacting full GCs with finalizer waits before workload warmup; no forced GC during warmup or measurement',
                 pilot=pilot, report_aggregation='all overflow sorting and aggregation deferred until both captures finish',
-                histograms='PR3129: value-type buckets with 65536 preallocated entries per interval; overflow invalidates' if PR == 3129 else 'reference buckets',
+                histograms='Value-type buckets with 65536 preallocated entries per interval; overflow invalidates',
                 phase_transition='one continuous warmed call loop; no return/re-entry between warmup and measurement',
                 cpu_affinity=[cpu], jit_attribution='CLR MethodJittingStarted; identical observer in all phases',
                 image=os.getenv('ImageOS'), image_version=os.getenv('ImageVersion'), run_id=os.getenv('GITHUB_RUN_ID'),
