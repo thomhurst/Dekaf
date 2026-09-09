@@ -54,7 +54,8 @@ def execute():
     def validate(path, seconds):
         return validate_timing(validator(path, seconds))
 
-    profiling = os.getenv('ADMIN_PROFILE') == '1'
+    sampler_control = os.getenv('ADMIN_SAMPLER_CONTROL') == '1'
+    profiling = os.getenv('ADMIN_PROFILE') == '1' or sampler_control
     calibration = os.getenv('ADMIN_CALIBRATION') == '1' or profiling
     if calibration and A != B:
         raise ValueError('Calibration requires identical exact product SHAs')
@@ -79,7 +80,11 @@ def execute():
     profile = None
     if profiling:
         profile = module(ROOT / '.github/scripts/admin_profile.py', 'admin_profile')
+    phase_sampling = {phase: not sampler_control or phase == 'B' for phase in ('A1', 'B', 'A2')}
     plan = dict(calibration=calibration, profiling=profile.SETTINGS if profile else None, topology=topology, affinity=affinity, A=A, B=B, harness=subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
+                sampler_control=sampler_control,
+                phase_providers={phase: profile.providers(enabled) for phase, enabled in phase_sampling.items()} if profile else None,
+                causal_variable='CPU sampling enabled only in B; GC tracing, JIT output, product binary and all workload settings match' if sampler_control else None,
                 controls=controls, candidate_only=added, warmup_seconds=warmup_seconds, measured_seconds=measured_seconds,
                 warmup_rationale=('480 seconds continuous workload after observer heap preparation; previous 360-second captures '
                                   'retained helper/ConditionalWeakTable JIT near total seconds 382-400. Collect 180 seconds '
@@ -148,7 +153,9 @@ def execute():
                            started_utc=datetime.now(timezone.utc).isoformat())
             command = probe_prefix + [str(binary), 'probe', case, str(destination), str(warmup_seconds), str(measured_seconds)]
             if profile:
-                command = profile.capture_command(trace, command, destination)
+                sample_cpu = phase_sampling[phase]
+                command = profile.capture_command(trace, command, destination, sample_cpu=sample_cpu)
+                capture['providers'] = profile.providers(sample_cpu)
             run(command, destination / 'run.log', env=environment)
             if profile:
                 profile.validate_capture(destination)

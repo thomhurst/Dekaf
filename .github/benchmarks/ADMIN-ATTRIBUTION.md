@@ -72,5 +72,39 @@ retained anchor. Never silently treat synchronization uncertainty as zero.
 The timing fields improve attribution only; they do not relax acceptance or
 make earlier captures retroactively precise.
 
+## Sampler control: one distinct triplet
+
+The [first profiled triplet](../../docs/performance-evidence/admin-calibration-2026-09-09/README.md)
+contains frequent non-GC suspension requests, including one 6.945 ms sequence
+in the worst A2 interval. Most of that sequence precedes fully suspended time.
+The original unprofiled calibration also drifts, so CPU sampling cannot be
+assumed to explain all variation. The next question is narrower: how much does
+the sampler perturb this diagnostic, and do precisely timestamped worst calls
+overlap actual GC or non-GC suspension intervals?
+
+Select `admin-sampler-control` with PR 3138 and identical pinned fresh-main
+products. Use one baseline binary and the unchanged 480-second warmup and
+180-second measurement. Run A1 with GC and clock/phase tracing, B with those
+same providers plus `Microsoft-DotNETCore-SampleProfiler`, then A2 with the
+same providers as A1. JIT output, runtime flags, CPU affinity, fixtures, observer
+history and exact call timing stay the same. The plan and capture-order files
+record each phase's providers. No CPU samples are expected in A1/A2; absence is
+the intended control, not missing evidence being reclassified as acceptance.
+
+Before dispatch, a real Linux smoke must verify that the GC-only command does
+not implicitly enable the sampler. After collection, verify binary identity,
+all accounting, provider presence/absence, clock brackets, suspension pairing
+and event loss. Compare B with both controls and retain A1/A2 drift. Associate
+the exact maximum-call intervals with trace events using the full clock bounds.
+Inspect native-code differences as a remaining confounder; do not attribute
+every CPU difference to the sampler merely because B enables it.
+
+This is one triplet, with no automatic repeat. Profiling intentionally differs
+between phases, so **it can never be product acceptance**. A sampler effect
+supports reducing observer intrusion in subsequent diagnostics; it does not
+resolve the earlier unprofiled CPU drift. If controls still drift or timing
+does not attribute the stalls, preserve that result and design the next causal
+test instead of resuming the product queue's unchanged benchmark campaigns.
+
 The child-launch mechanism follows the
 [official dotnet-trace documentation](https://learn.microsoft.com/en-us/dotnet/core/diagnostics/dotnet-trace).

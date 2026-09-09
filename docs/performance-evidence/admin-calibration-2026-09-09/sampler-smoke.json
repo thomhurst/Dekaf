@@ -1,0 +1,17 @@
+{
+  "scope": "GC-only collection smoke; not performance acceptance",
+  "provider_counts": {
+    "Microsoft-Windows-DotNETRuntime": 5997,
+    "Dekaf-AdminEvidence-Phases": 8,
+    "Microsoft-DotNETCore-EventPipe": 2,
+    "Microsoft-Windows-DotNETRuntimeRundown": 6096
+  },
+  "suspension_reasons": {
+    "SuspendForGC": 494,
+    "SuspendOther": 262,
+    "SuspendForGCPrep": 9
+  },
+  "clock_bracket_ns": 7202,
+  "events_lost": 0,
+  "anomalies": {}
+}

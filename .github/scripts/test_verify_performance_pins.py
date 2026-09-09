@@ -95,6 +95,16 @@ class PinTests(unittest.TestCase):
         options = re.search(r'options: \[([^\]]+)\]', workflow.read_text()).group(1)
         self.assertEqual(tuple(value.strip() for value in options.split(',')), pins.SUITES)
 
+    def test_sampler_control_requires_same_fresh_product_and_supported_fixture(self):
+        with patch.object(pins, 'command', side_effect=self.command):
+            with self.assertRaisesRegex(ValueError, 'identical product'):
+                pins.verify(self.harness, self.baseline, self.candidate, 3138, 'admin-sampler-control', 'thomhurst/Dekaf')
+            self.candidate = self.baseline
+            with self.assertRaisesRegex(ValueError, 'PR 3138 only'):
+                self.verify('admin-sampler-control')
+            self.assertTrue(pins.verify(self.harness, self.baseline, self.candidate, 3138,
+                                       'admin-sampler-control', 'thomhurst/Dekaf')['calibration'])
+
 
 if __name__ == '__main__':
     unittest.main()

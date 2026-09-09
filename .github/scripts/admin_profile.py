@@ -12,11 +12,16 @@ SETTINGS = {
 }
 
 
-def capture_command(trace, workload, destination):
+def providers(sample_cpu=True):
+    value = SETTINGS['providers']
+    return value if sample_cpu else value.replace('Microsoft-DotNETCore-SampleProfiler:0x0:4,', '')
+
+
+def capture_command(trace, workload, destination, *, sample_cpu=True):
     destination = Path(destination)
     # Only the workload receives JIT output settings. The collector is another .NET
     # process and must not concurrently write its own compilation output to this file.
-    return [str(trace), 'collect', '--providers', SETTINGS['providers'],
+    return [str(trace), 'collect', '--providers', providers(sample_cpu),
             '--buffersize', str(SETTINGS['trace_buffer_mib']), '--show-child-io',
             '--output', str(destination / 'runtime.nettrace'), '--', 'env',
             'DOTNET_JitDisasm=' + SETTINGS['jit_disasm'], 'DOTNET_JitDisasmDiffable=1',

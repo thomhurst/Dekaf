@@ -8,7 +8,7 @@ import subprocess
 
 
 SUITES = (
-    'micro', 'pool', 'pool-recovery', 'admin', 'admin-pilot', 'admin-calibration', 'admin-profile',
+    'micro', 'pool', 'pool-recovery', 'admin', 'admin-pilot', 'admin-calibration', 'admin-profile', 'admin-sampler-control',
     'dispatch', 'dispatch-adjacent', 'dispatch-loaded-adjacent', 'dispatch-loaded',
     'dispatch-pilot', 'dispatch-record-pilot', 'share-loaded', 'outbox',
     'outbox-loaded', 'outbox-adjacent', 'pool-loaded', 'pool-profile',
@@ -37,8 +37,8 @@ def verify(harness, baseline, candidate, pr, suite, repository):
     if main != baseline:
         raise ValueError('Baseline is not fresh main; rebase the candidate and repin before a new campaign')
     command('git', 'merge-base', '--is-ancestor', baseline, candidate)
-    calibration = suite in ('admin-calibration', 'admin-profile')
-    if suite == 'admin-profile' and pr != 3138:
+    calibration = suite in ('admin-calibration', 'admin-profile', 'admin-sampler-control')
+    if suite in ('admin-profile', 'admin-sampler-control') and pr != 3138:
         raise ValueError('Administrative profiling currently covers PR 3138 only')
     if calibration:
         if candidate != baseline:

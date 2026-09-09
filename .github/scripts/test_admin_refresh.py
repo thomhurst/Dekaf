@@ -54,13 +54,29 @@ class CalibrationTests(unittest.TestCase):
             output.write_bytes(b'trace')
             (output.parent / 'jit.asm').write_bytes(b'code')
 
-    def execute(self, calibration, profiling=False):
-        with patch.dict(os.environ, ADMIN_CALIBRATION='1' if calibration else '0', ADMIN_PILOT='0', ADMIN_PROFILE='1' if profiling else '0'), \
+    def execute(self, calibration, profiling=False, sampler_control=False):
+        with patch.dict(os.environ, ADMIN_CALIBRATION='1' if calibration else '0', ADMIN_PILOT='0', ADMIN_PROFILE='1' if profiling else '0', ADMIN_SAMPLER_CONTROL='1' if sampler_control else '0'), \
              patch.object(self.driver, 'configure_affinity', return_value=([], {'consumer': '2,3', 'infrastructure': '0,1'})), \
              patch.object(self.driver, 'module', side_effect=lambda path, name: admin_profile if name == 'admin_profile' else self.common), \
              patch.object(self.driver, 'run', side_effect=self.fake_run), \
              patch.object(self.driver.subprocess, 'check_output', return_value='a' * 40):
             self.driver.execute()
+
+    def test_sampler_control_changes_only_middle_provider_and_keeps_one_binary(self):
+        self.driver.PR = 3138
+        self.execute(False, sampler_control=True)
+        self.assertEqual(len([row for row in self.commands if row[:2] == ['dotnet', 'build']]), 1)
+        traces = [row for row in self.commands if 'collect' in row]
+        self.assertEqual(len(traces), 3)
+        self.assertEqual(len({row[row.index('probe') - 1] for row in traces}), 1)
+        self.assertEqual(['SampleProfiler' in row[row.index('--providers') + 1] for row in traces], [False, True, False])
+        self.assertTrue(all(row[-2:] == ['480', '180'] for row in traces))
+        import json
+        plan = json.loads((self.driver.OUT / 'plan.json').read_text())
+        self.assertTrue(plan['sampler_control'])
+        self.assertEqual(plan['phase_providers']['A1'], plan['phase_providers']['A2'])
+        self.assertNotEqual(plan['phase_providers']['A1'], plan['phase_providers']['B'])
+        self.assertIn('never product acceptance', json.loads((self.driver.OUT / 'calibration.json').read_text())['verdict'])
 
     def test_profile_collects_three_matching_processes_and_retains_diagnostic_verdict(self):
         self.driver.PR = 3138

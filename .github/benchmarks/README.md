@@ -39,6 +39,9 @@ When that calibration fails, `suite=admin-profile` provides the bounded
 GC/JIT/CPU attribution experiment for PR 3138 described in
 [ADMIN-ATTRIBUTION.md](ADMIN-ATTRIBUTION.md). It requires identical fresh-main
 products and cannot grant performance acceptance.
+`suite=admin-sampler-control` isolates the CPU sampler with GC-only controls and
+GC-plus-CPU sampling in B, using the same binary. Its differing diagnostic
+settings prohibit product acceptance; see the same plan for the bounded test.
 
 ## Workload coverage
 
@@ -48,7 +51,7 @@ products and cannot grant performance acceptance.
 | `pool`, `pool-recovery` | Pool reset and recovery; [driver](../scripts/pool_reset_aba.py) |
 | `pool-loaded`, `pool-profile` | Loaded producer pool comparison and diagnostic profiling; [driver](../scripts/pool_loaded_aba.py) |
 | `admin`, `admin-pilot`, `admin-calibration` | Cached-transport administration for #3128, #3129, #3136, #3138; [driver](../scripts/admin_refresh.py) |
-| `admin-profile` | Diagnostic attribution of identical-product legacy delete for #3138; [plan](ADMIN-ATTRIBUTION.md) |
+| `admin-profile`, `admin-sampler-control` | Diagnostic attribution of identical-product legacy delete for #3138; [plan](ADMIN-ATTRIBUTION.md) |
 | `dispatch`, `dispatch-loaded`, `dispatch-pilot`, `dispatch-record-pilot` | Dispatch micro/loaded and diagnostic cases; [driver](dispatch-aba/run.py) |
 | `dispatch-adjacent`, `dispatch-loaded-adjacent` | Adjacent dispatch workloads; [driver](dispatch-aba/run_adjacent.py) |
 | `share-loaded` | Loaded share consumer; [driver](share-loaded/run.py) |
