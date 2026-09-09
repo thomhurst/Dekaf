@@ -71,3 +71,10 @@ which must be recorded and assessed. The current hosted defaults remain 360
 seconds of warmup and 60 seconds of measurement; no new hosted run follows this
 diagnosis alone. A local diagnostic extends measurement to 300 seconds with the
 same 360-second warmup to inspect later cycles; it cannot provide acceptance.
+
+That local Windows capture completed 1,095,911,655 warmup calls and 918,083,895
+measured calls. Its complete histograms and duration checks pass. Gen2 collection
+recurs near total seconds 100, 200, 300, 400, 500 and 600. The 300-second measured
+capture has zero JIT growth/events and retains a 17.664 ms maximum. This supports
+keeping recurring collections in future measurements; it does not establish
+Linux timing, A/B equivalence, or the cause of the maximum.
