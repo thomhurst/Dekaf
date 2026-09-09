@@ -26,7 +26,7 @@ jobs:
       - name: Test recorder and comparison drivers
         run: |
           dotnet test --project .github/benchmarks/admin-recorder-tests/Recorder.Tests.csproj -c Release
-          for test in test_verify_performance_pins.py test_reservoir_fixture.py test_runner_resources.py test_admin_refresh.py test_benchmark_aba.py test_outbox_cycle_aba.py test_outbox_loaded_aba.py test_pool_loaded_aba.py; do
+          for test in test_verify_performance_pins.py test_reservoir_fixture.py test_runner_resources.py test_admin_refresh.py test_outbox_cycle_aba.py test_outbox_loaded_aba.py test_pool_loaded_aba.py; do
             python3 -m unittest discover -s .github/scripts -p "$test"
           done
           python3 -m unittest discover -s .github/benchmarks/dispatch-aba -p 'test_*.py'
@@ -39,6 +39,29 @@ jobs:
           python3 -m unittest discover -s tools/AdminMutationEvidence -p test_validate_results.py
       - name: Build and replay administrative fixture smoke
         run: python3 .github/scripts/smoke_admin_harness.py
+      - name: Verify BenchmarkDotNet isolation and diagnostics
+        working-directory: .github/benchmarks/aba-smoke
+        env:
+          MSBUILDDISABLENODEREUSE: '1'
+          DOTNET_CLI_USE_MSBUILD_SERVER: '0'
+        run: |
+          results="$GITHUB_WORKSPACE/.artifacts/bdn-smoke"
+          mkdir -p "$results"
+          dotnet build Smoke.csproj -c Release --disable-build-servers > "$results/build.log" 2>&1
+          settings=(--warmupCount 3 --iterationCount 3 --iterationTime 100 --launchCount 1 --outliers DontRemove)
+          dotnet run -c Release --no-build -- --filter '*SmokeBenchmarks*' "${settings[@]}" --artifacts "$results/timing" > "$results/timing.log" 2>&1
+          jq -e '.Benchmarks | length == 2 and all(.[]; . as $case | .Statistics.N == 3 and any(.Metrics[]; .Descriptor.Id == "Allocated Memory" and .Value == (if $case.Method == "Allocate" then 1048 else 0 end)))' "$results/timing/results/"*-report-full.json
+          test "$(grep 'SMOKE workload-pid=' "$results/timing.log" | sort -u | wc -l)" -eq 2
+          ABA_PROFILE=1 dotnet run -c Release --no-build -- --filter '*NoAllocation*' "${settings[@]}" --artifacts "$results/profile" > "$results/profile.log" 2>&1
+          grep -q '// Run, Diagnostic' "$results/profile.log"
+          test "$(grep 'SMOKE workload-pid=' "$results/profile.log" | sort -u | wc -l)" -eq 2
+          test -n "$(find "$results/profile" -name '*.nettrace' -print -quit)"
+          if SMOKE_FAIL_SETUP=1 dotnet run -c Release --no-build -- --job Dry --filter '*NoAllocation*' --artifacts "$results/failure" > "$results/failure.log" 2>&1; then
+            echo 'A failing fixture returned success'; exit 1
+          fi
+          if dotnet run -c Release --no-build -- --job Dry --filter '*DoesNotExist*' --artifacts "$results/empty" > "$results/empty.log" 2>&1; then
+            echo 'An empty selection returned success'; exit 1
+          fi
       - name: Verify Linux affinity and resource capture
         run: |
           python3 .github/scripts/runner_resources.py --output resource-smoke -- python3 .github/scripts/test_runner_resources.py --linux-smoke
@@ -51,4 +74,5 @@ jobs:
           path: |
             resource-smoke/
             .artifacts/admin-smoke/
+            .artifacts/bdn-smoke/
             TestResults/

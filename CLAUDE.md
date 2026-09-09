@@ -21,6 +21,8 @@ Dekaf is a high-performance, pure C# Apache Kafka client. Performance is the pro
 
 ## Benchmark execution
 
+- Prefer standard .NET tooling and its original exports over custom profilers, runtime listeners, samplers or statistical engines. Follow [tool selection and BenchmarkDotNet settings](.github/benchmarks/STANDARD-TOOLS.md). Keep heavy tracing separate from acceptance timing; preserve applicable runtime-series, loaded-metric and observer-overhead requirements.
+
 - Before starting or resuming PR performance work, read the [maintained harness guide](.github/benchmarks/README.md) and [comparison workflow](.github/workflows/performance-comparison.yml). Dispatch `performance-comparison.yml` from `main` with `pr`, the appropriate `suite`, and exact full `harness_sha`, `baseline_sha`, and `candidate_sha` inputs. Use the maintained harness on main instead of historical experimental branches; select or extend fixtures to cover the change.
 - After a rebase, refresh the PR checkout and reread these instructions. Rebasing triggers CI but does not dispatch performance comparisons or grant acceptance. Previous-head results remain historical; collect fresh same-VM A1/B/A2 evidence for the new exact head before updating its performance gate. Harness tests and identical-product calibration are correctness/repeatability checks, not product performance `PASS` verdicts.
 - Run PR performance acceptance on GitHub-hosted Actions with `runs-on: ubuntu-latest`. Measure A1 (baseline), B (candidate), then A2 (the same baseline) sequentially in one job on one runner VM. Separate jobs or historical baseline artifacts do not substitute for these controls. Local measurements are diagnostic only. Hosted runners can still be noisy; assess control drift.

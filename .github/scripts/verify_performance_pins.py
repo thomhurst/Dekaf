@@ -8,7 +8,7 @@ import subprocess
 
 
 SUITES = (
-    'micro', 'pool', 'pool-recovery', 'admin', 'admin-pilot', 'admin-calibration',
+    'micro', 'micro-profile', 'pool', 'pool-recovery', 'admin', 'admin-pilot', 'admin-calibration',
     'dispatch', 'dispatch-adjacent', 'dispatch-loaded-adjacent', 'dispatch-loaded',
     'dispatch-pilot', 'dispatch-record-pilot', 'share-loaded', 'outbox',
     'outbox-loaded', 'outbox-adjacent', 'pool-loaded', 'pool-profile',

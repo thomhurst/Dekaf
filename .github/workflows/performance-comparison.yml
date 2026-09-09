@@ -9,7 +9,7 @@ on:
       suite:
         required: true
         type: choice
-        options: [micro, pool, pool-recovery, admin, admin-pilot, admin-calibration, dispatch, dispatch-adjacent, dispatch-loaded-adjacent, dispatch-loaded, dispatch-pilot, dispatch-record-pilot, share-loaded, outbox, outbox-loaded, outbox-adjacent, pool-loaded, pool-profile]
+        options: [micro, micro-profile, pool, pool-recovery, admin, admin-pilot, admin-calibration, dispatch, dispatch-adjacent, dispatch-loaded-adjacent, dispatch-loaded, dispatch-pilot, dispatch-record-pilot, share-loaded, outbox, outbox-loaded, outbox-adjacent, pool-loaded, pool-profile]
       harness_sha:
         required: true
         description: Exact harness source SHA (independent of product revisions)
@@ -52,10 +52,71 @@ jobs:
             --harness "$HARNESS_SHA" --baseline "$BASELINE_SHA" --candidate "$CANDIDATE_SHA" \
             --pr "$PR" --suite "$SUITE" --repository "$GITHUB_REPOSITORY" --output performance-pins.json
       - name: Shared microbenchmark comparison
-        if: inputs.suite == 'micro'
+        if: inputs.suite == 'micro' || inputs.suite == 'micro-profile'
+        env:
+          ABA_PR: ${{ inputs.pr }}
+          MSBUILDDISABLENODEREUSE: '1'
+          DOTNET_CLI_USE_MSBUILD_SERVER: '0'
         run: |
-          python3 -m unittest discover -s .github/scripts -p test_benchmark_aba.py
-          python3 .github/scripts/runner_resources.py --output runner-resources -- python3 .github/scripts/benchmark_aba.py --pr "$PR" --baseline "$BASELINE_SHA" --candidate "$CANDIDATE_SHA" --artifacts "$GITHUB_WORKSPACE/aba-results"
+          warmup=50; minimum_warmup=20
+          case "$PR" in
+            3082) filters=('*BinaryKeyDispatchBenchmarks*'); count=18 ;;
+            3083) filters=('*BatchReadBench*' '*BatchBoundBench*'); count=12 ;;
+            3085) filters=('*RelayMetricsBenchmarks*' '*ActualPublisherBenchmarks*'); count=10 ;;
+            3086) filters=('*SuccessfulFetch*' '*FollowerError(Prefetch*' '*LeaderError*' '*ResponsePoolControl*'); count=8 ;;
+            3116) filters=('*RecordCount: 1024, HeaderCount: 0*' '*RecordCount: 64, HeaderCount: 2*'); count=14; warmup=130; minimum_warmup=120 ;;
+            3117) filters=('*Mode: KeyRecordsDistinct*' '*Mode: KeyBatchesDistinct*' '*Mode: KeyRecordsPaired*' '*Mode: KeyBatchesPaired*'); count=4 ;;
+            3149) filters=('*LingerAppendBench*'); count=4 ;;
+            3158) filters=('*ShareResponseFrameBench*'); count=6 ;;
+            *) echo 'No declared steady-state fixture for this PR'; exit 1 ;;
+          esac
+          results="$GITHUB_WORKSPACE/aba-results"
+          mkdir "$results"
+          dotnet --info > "$results/runtime.txt"
+          lscpu > "$results/cpu.txt"
+          cp /etc/os-release "$results/os-release.txt"
+          for role in A B; do
+            sha="$BASELINE_SHA"; if [[ "$role" == B ]]; then sha="$CANDIDATE_SHA"; fi
+            product="$RUNNER_TEMP/performance-$role"
+            git worktree add --detach "$product" "$sha"
+            cp -R .github/benchmarks/aba "$product/.performance"
+            cp global.json Directory.Packages.props "$product/.performance/"
+            (
+              cd "$product/.performance"
+              export ABA_ROLE="$role"
+              dotnet build Dekaf.Benchmarks.csproj -c Release --disable-build-servers > "$results/build-$role.log" 2>&1
+              dotnet run --project Dekaf.Benchmarks.csproj -c Release --no-build -- --job Dry --filter "${filters[@]}" --artifacts "$results/dry-$role" > "$results/dry-$role.log" 2>&1
+            )
+            jq -s -e --argjson count "$count" '[.[].Benchmarks[]] | length == $count' "$results/dry-$role/results/"*-report-full.json
+          done
+          dotnet build-server shutdown
+          for phase in A1 B A2; do
+            role=A; if [[ "$phase" == B ]]; then role=B; fi
+            (
+              cd "$RUNNER_TEMP/performance-$role/.performance"
+              export ABA_ROLE="$role"
+              dotnet run --project Dekaf.Benchmarks.csproj -c Release --no-build -- --filter "${filters[@]}" --warmupCount "$warmup" --iterationCount 25 --iterationTime 1000 --launchCount 1 --outliers DontRemove --artifacts "$results/$phase" > "$results/$phase.log" 2>&1
+            )
+            jq -s -e --argjson count "$count" --argjson seconds "$minimum_warmup" '
+              [.[].Benchmarks[]] | length == $count and all(.[];
+                .Statistics.N == 25 and
+                any(.Metrics[]; .Descriptor.Id == "Allocated Memory" and (.Value | type) == "number" and .Value >= 0) and
+                ([.Measurements[] | select(.IterationMode == "Workload" and .IterationStage == "Warmup") | .Nanoseconds] | add) >= ($seconds * 1e9))
+            ' "$results/$phase/results/"*-report-full.json
+            jq -s '[.[].Benchmarks[] | [.Namespace, .Type, .Method, .Parameters]] | sort' "$results/$phase/results/"*-report-full.json > "$results/$phase-cases.json"
+          done
+          diff "$results/A1-cases.json" "$results/B-cases.json"
+          diff "$results/A1-cases.json" "$results/A2-cases.json"
+          if [[ "$SUITE" == micro-profile ]]; then
+            for role in A B; do
+              (
+                cd "$RUNNER_TEMP/performance-$role/.performance"
+                export ABA_ROLE="$role" ABA_PROFILE=1
+                dotnet run --project Dekaf.Benchmarks.csproj -c Release --no-build -- --filter "${filters[@]}" --warmupCount "$warmup" --iterationCount 25 --iterationTime 1000 --launchCount 1 --outliers DontRemove --artifacts "$results/profile-$role" > "$results/profile-$role.log" 2>&1
+              )
+            done
+          fi
+          echo 'A1/B/A2 reports retained. Workflow success is not a product performance PASS.' >> "$GITHUB_STEP_SUMMARY"
       - name: Pool comparison
         if: inputs.suite == 'pool' || inputs.suite == 'pool-recovery'
         env:
@@ -137,5 +198,15 @@ jobs:
             main-at-end.txt
             performance-pins.json
             runner-resources/
+          include-hidden-files: true
+          retention-days: 90
+      - name: Retain BenchmarkDotNet generated builds
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always() && (inputs.suite == 'micro' || inputs.suite == 'micro-profile')
+        with:
+          name: benchmark-builds-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/performance-A/.performance/bin/
+            ${{ runner.temp }}/performance-B/.performance/bin/
           include-hidden-files: true
           retention-days: 90

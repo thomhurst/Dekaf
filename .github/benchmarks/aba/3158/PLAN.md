@@ -1,5 +1,7 @@
 # ShareFetch response ownership microbenchmarks
 
+Historical experiment settings. New runs use the [maintained standard-tool settings](../../STANDARD-TOOLS.md); do not combine measurements across these configurations.
+
 Compare fresh-main A with the exact #3158 candidate, on one ubuntu-latest VM in
 A1/B/A2 order. Use the common fixed-fixture runner: Release, MemoryDiagnoser,
 workstation GC, tiered compilation disabled, 50 elapsed-verified workload warmup
