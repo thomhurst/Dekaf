@@ -1,0 +1,4 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0</TargetFramework><Nullable>enable</Nullable><ImplicitUsings>enable</ImplicitUsings><LangVersion>preview</LangVersion><EnableNETAnalyzers>false</EnableNETAnalyzers><EnableDefaultCompileItems>false</EnableDefaultCompileItems><ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally><UseSharedCompilation>false</UseSharedCompilation></PropertyGroup>
+  <ItemGroup><FrameworkReference Include="Microsoft.AspNetCore.App"/><PackageReference Include="BenchmarkDotNet"/><ProjectReference Include="$(ProductProject)"/><Compile Include="$(FixtureSource)/*.cs"/></ItemGroup>
+</Project>

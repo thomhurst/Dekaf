@@ -1,0 +1,9 @@
+# Pending-record latency attribution
+
+Predeclared follow-up for #3117: the previous full run 34287951725 had a 61.897 ms candidate maximum versus 48.607/48.987 ms controls. Its one-second runtime samples did not identify a nearby JIT transition. Do not infer a cause or remove this observation.
+
+Pin current main 551d4d0825dca64b7143d6f18fc2b13baaf1fe0a as both controls and rebased candidate e376956c74b544e961d9e508a5d8402e35765c69. Use the dispatch-record-pilot suite: the unchanged pending-record workload, fresh processes, 121 seconds offered warmup and 120 seconds measurement, one ubuntu-latest VM, sequential A1/B/A2. Keep runtime, affinity, broker reset, offered rate, batching and all protected-metric tolerances unchanged.
+
+The fixture adds a preallocated handler-entry timestamp array and one Stopwatch timestamp/store per record in all three phases. Raw entry timestamps and all existing completion latencies are retained by sequence, including warmup. The reviewer can reconstruct scheduled-offer-to-handler-entry and handler-entry-to-completion intervals for the same maximum-latency records. The first interval includes producer scheduling, network and client queueing; the second includes the simulated Task.Delay(1), its scheduling, and handler bookkeeping. Neither isolates a library-only delay. The added observation cost is included in CPU and latency scope and can perturb results; compare controls within this experiment, not instrumented scalars against historical uninstrumented scalars.
+
+Validate timestamp order and counts for every record, preserving every maximum. Retain the largest 32 total and handler intervals as navigation aids alongside complete raw binaries, time series and named compilation events. This partial diagnostic does not replace the full workload/shutdown matrix or certify performance acceptance. A source change requires causal support and new evidence on its exact head.

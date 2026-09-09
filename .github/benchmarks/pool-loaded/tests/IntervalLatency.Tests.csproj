@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <IsTestProject>true</IsTestProject>
+    <IsPackable>false</IsPackable>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>PoolLoadedValidation</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="TUnit" />
+    <Compile Include="../IntervalLatency.cs" Link="IntervalLatency.cs" />
+    <Compile Include="../BlockHistogram.cs" Link="BlockHistogram.cs" />
+  </ItemGroup>
+</Project>
