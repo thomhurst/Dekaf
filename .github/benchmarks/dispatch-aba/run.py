@@ -252,7 +252,7 @@ def broker_stop(folder, name):
     subprocess.run(['docker', 'rm', '-f', '-v', name], check=True, capture_output=True)
 
 
-def build(root, output, sha, label):
+def build(root, output, sha, label, loaded_only=False):
     source = output / f'product-{label}'
     snapshot = output / f'product-{label}.zip'
     command(['git', 'archive', '--format=zip', f'--output={snapshot}', sha], output / f'archive-{label}.log', cwd=root)
@@ -272,7 +272,8 @@ def build(root, output, sha, label):
     for name in ('global.json', 'Directory.Packages.props'):
         shutil.copyfile(root / name, fixture / name)
     hosts = {}
-    for project, assembly in [('Harness', 'Dekaf.Benchmarks'), ('Loaded', 'Loaded')]:
+    projects = [('Loaded', 'Loaded')] if loaded_only else [('Harness', 'Dekaf.Benchmarks'), ('Loaded', 'Loaded')]
+    for project, assembly in projects:
         target = output / f'{project}-{label}'
         command(['dotnet', 'build', fixture / f'{project}.csproj', '-c', 'Release',
                  f'-p:ProductDirectory={product}', '-m:1', '-nr:false', '-o', target],
@@ -310,6 +311,8 @@ def main():
     parser.add_argument('--baseline', required=True)
     parser.add_argument('--candidate', required=True)
     parser.add_argument('--output', required=True, type=Path)
+    parser.add_argument('--loaded-only', action='store_true',
+                        help='Run public-API Kafka workloads without the private dispatcher fixture')
     args = parser.parse_args()
     root = Path.cwd()
     for sha in (args.baseline, args.candidate):
@@ -324,19 +327,23 @@ def main():
                       harness=subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
                       runner_image=os.environ.get('ImageVersion'), runner_os=os.environ.get('ImageOS'),
                       run_url=f"https://github.com/{os.environ.get('GITHUB_REPOSITORY')}/actions/runs/{os.environ.get('GITHUB_RUN_ID')}",
-                      phases=['A1', 'B', 'A2'], loaded_warmup_seconds=WARMUP, loaded_duration_seconds=DURATION)
+                      phases=['A1', 'B', 'A2'], loaded_warmup_seconds=WARMUP, loaded_duration_seconds=DURATION,
+                      loaded_only=args.loaded_only,
+                      focused_dispatcher_shutdown_measured=not args.loaded_only)
     (output / 'provenance.json').write_text(json.dumps(provenance, indent=2))
     command(['dotnet', '--info'], output / 'dotnet-info.log')
     command(['lscpu'], output / 'hardware.log')
-    hosts = {label: build(root, output, sha, label) for label, sha in [('A', args.baseline), ('B', args.candidate)]}
+    hosts = {label: build(root, output, sha, label, args.loaded_only)
+             for label, sha in [('A', args.baseline), ('B', args.candidate)]}
     loaded_hosts = {label: values['Loaded'] for label, values in hosts.items()}
     command(['dotnet', 'build-server', 'shutdown'], output / 'build-server-shutdown.log')
     phases = {}
     try:
         for phase, label, smoke in [('DryA', 'A', True), ('DryB', 'B', True),
                                     ('A1', 'A', False), ('B', 'B', False), ('A2', 'A', False)]:
-            micro(hosts[label]['Harness'], output, label, phase, smoke)
-            broker = f'dispatch-3117-{phase.lower()}'
+            if not args.loaded_only:
+                micro(hosts[label]['Harness'], output, label, phase, smoke)
+            broker = f'dispatch-{phase.lower()}'
             phase_folder = output / phase
             phase_folder.mkdir()
             values = {}
@@ -351,18 +358,20 @@ def main():
             finally:
                 broker_stop(phase_folder, broker)
             shutdown_values = {}
-            for batch in (1, 16):
-                for keys in (1, 2):
-                    key = f'batch-{batch}-keys-{keys}'
-                    shutdown_values[key] = shutdown(hosts[label]['Harness'],
-                        phase_folder / ('shutdown-' + key), batch, keys, smoke)
+            if not args.loaded_only:
+                for batch in (1, 16):
+                    for keys in (1, 2):
+                        key = f'batch-{batch}-keys-{keys}'
+                        shutdown_values[key] = shutdown(hosts[label]['Harness'],
+                            phase_folder / ('shutdown-' + key), batch, keys, smoke)
             (phase_folder / 'shutdown-metrics.json').write_text(json.dumps(shutdown_values, indent=2))
             if not smoke:
                 phases[phase] = values
                 (output / 'loaded-metrics.json').write_text(json.dumps(phases, indent=2))
         (output / 'decision.json').write_text(json.dumps({
             'measurement': 'COMPLETE', 'acceptance': 'INCONCLUSIVE',
-            'reason': 'Human review of protected metrics, controls, startup transitions, loaded Kafka and focused loaded dispatcher shutdown required.'
+            'reason': 'Human review of protected metrics, controls, startup transitions and changed-path coverage required.',
+            'focused_dispatcher_shutdown_measured': not args.loaded_only
         }, indent=2))
     finally:
         inventory = {str(path.relative_to(output)): digest(path) for path in output.rglob('*') if path.is_file()}

@@ -75,3 +75,18 @@ This campaign supplies current-head normal/pending dispatch evidence. Loaded shu
 Run 34175751899 stopped in the first baseline smoke case before A1 measurement. The driver accessed the measured-iteration variable outside its non-smoke branch. Regression coverage now tests smoke acceptance, complete/incomplete measured iterations, and an earlier incomplete case followed by a complete final case. All 12 validator/driver tests pass after moving the guard into its intended block. Product pins, C# fixtures, workloads, warmup, sampling and tolerances are unchanged; this correction does not repeat a measured experiment.
 
 That failed run's artifact inventory lists 6,273 files. The durable archive verifies 6,267, including all loaded binaries; 101 tracked hidden files were recovered byte-for-byte from the preserved product source ZIPs. Six generated hidden `.NETCoreApp,Version=v10.0.AssemblyAttributes.cs` files were omitted by upload-artifact's default hidden-file exclusion and are explicitly not claimed as retained. The corrected workflow enables `include-hidden-files: true`. Raw failure logs, the original inventory and a detailed retention audit remain at `C:/git/Dekaf-evidence/pr-3117/hosted-current-20260908/run-34175751899/`.
+
+## Public-API-only comparisons
+
+`dispatch-loaded` runs the same four real-Kafka workloads with the same fixtures,
+loads, measurement boundaries, runtime settings, warmup, durations and tolerances.
+It builds only the public-API executable, so revisions with different private
+completion-reservation APIs can be compared without substituting a different
+implementation for either product. The baseline producer drives every phase;
+only the consumer revision changes. The output identifies this scope explicitly.
+
+This mode does not run the private dispatcher microbenchmarks or focused loaded
+dispatcher shutdown probe. Those metrics remain unmeasured in this run. For PR
+#3083, combine the results with the separate parsing/MemoryDiagnoser campaign and
+the required completion-order, sparse-offset and loaded-shutdown evidence before
+claiming acceptance. Successful collection does not set a performance gate.
