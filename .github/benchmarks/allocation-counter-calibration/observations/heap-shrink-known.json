@@ -1,0 +1,16 @@
+{
+  "Scope": "Allocation counter calibration only; not product performance acceptance",
+  "Size": 1000,
+  "WorkerCount": 4,
+  "IterationsPerWorker": 512000,
+  "KnownWorkerAllocatedBytes": 10289245648,
+  "GlobalAllocatedStart": 700896,
+  "GlobalAllocatedEnd": 6248854256,
+  "GlobalAllocatedDelta": 6248153360,
+  "GlobalAllocatedHotEnd": 2097860144,
+  "SerialAllocatedBytes": 8192086448,
+  "GlobalSerialDelta": 4150994112,
+  "ServerGC": true,
+  "DynamicAdaptationMode": "1",
+  "RuntimeVersion": "10.0.12"
+}

@@ -1,0 +1,372 @@
+[
+  {
+    "path": "build-server-shutdown.log",
+    "bytes": 160,
+    "sha256": "b8028200bc3b12a3210641024da80eb85dffe587d8192df519108d0a20cfe822"
+  },
+  {
+    "path": "Inspector-build.log",
+    "bytes": 318,
+    "sha256": "122b7fae4da1fda067022cda20cc370deef106cbea366f84674f8f838057d86a"
+  },
+  {
+    "path": "plan.json",
+    "bytes": 867,
+    "sha256": "dc396463922e04cd3dd59999d033bacc135dca82fa91fed5d37d8550937a47ab"
+  },
+  {
+    "path": "runtime.log",
+    "bytes": 1615,
+    "sha256": "30f4e30ce2d4f0c456d6485c7b2fd3feb3d38d43ab27fca69b0f48a9e5f98df0"
+  },
+  {
+    "path": "summary.json",
+    "bytes": 2150,
+    "sha256": "2212b9ac446dfb759c7f88094a6e52ff309d3edcd07ca68a70f8bc0c6eda2619"
+  },
+  {
+    "path": "trace-version.log",
+    "bytes": 53,
+    "sha256": "91ad7b01c8a011d6a132e9867f4d639479d41ddf6f058a21cbae47149b169075"
+  },
+  {
+    "path": "Workload-build.log",
+    "bytes": 315,
+    "sha256": "04773c833b89b61ef544f4ec054bd8a4e5c48bf256f5508533e594aa9313d59c"
+  },
+  {
+    "path": "datas0-1000\\analysis.log",
+    "bytes": 1635,
+    "sha256": "22bf852d49bcc68853e666becbbc5f4b0156bdfb8d44bcfac34ae338153a7ad3"
+  },
+  {
+    "path": "datas0-1000\\capture.log",
+    "bytes": 779,
+    "sha256": "02d6e623f8f95b390a18ca2f471a27a29a07e1ba75360442559339e7df713a55"
+  },
+  {
+    "path": "datas0-1000\\capture.nettrace",
+    "bytes": 2248350,
+    "sha256": "f2ddd7ea0f3adce5a69f0e25f279787768d90ec461b6fd5610ac0ebc0dedc730"
+  },
+  {
+    "path": "datas0-1000\\capture.nettrace.etlx",
+    "bytes": 4546323,
+    "sha256": "af44374a1fe0d33793411b0e81043e96c5431afe7447c7f8527435a3256767ab"
+  },
+  {
+    "path": "datas0-1000\\known.json",
+    "bytes": 500,
+    "sha256": "f3624b4fe73c7e31ae4a886ceb508697c7c2e7ae572292cfca28b3c4d1a4ac3a"
+  },
+  {
+    "path": "datas0-1000\\result.json",
+    "bytes": 2868,
+    "sha256": "fe923602a5ddb81c34bb5b5553965e453ca2d420696ca8c67e2216c303b8ce3a"
+  },
+  {
+    "path": "datas0-100000\\analysis.log",
+    "bytes": 2185,
+    "sha256": "ab485480a411779c7619c55fbcd073fd581830b1c5cab695c7b9ac75d5efbe3e"
+  },
+  {
+    "path": "datas0-100000\\capture.log",
+    "bytes": 785,
+    "sha256": "d93f60b658863e90fb401c366ac9ba0e6d2700de0953c3ba150df069cf545f09"
+  },
+  {
+    "path": "datas0-100000\\capture.nettrace",
+    "bytes": 1970310,
+    "sha256": "fbaa50c9545edd3a3b49d70dd604cf4bee2f807c223ad4bf8c7a934452757168"
+  },
+  {
+    "path": "datas0-100000\\capture.nettrace.etlx",
+    "bytes": 4577111,
+    "sha256": "b0eb95af10bd0d5e572bdafe5daf0199b9dccbbd298157151c87f51b074979f6"
+  },
+  {
+    "path": "datas0-100000\\known.json",
+    "bytes": 500,
+    "sha256": "a3003783066feb2f047b9c0b53fef5dc0d6e49e7b547272ad44860a803e6a579"
+  },
+  {
+    "path": "datas0-100000\\result.json",
+    "bytes": 3988,
+    "sha256": "f45834cb1e681f7a70d33900801d4401412da1377bf38bad4087d1288af95f05"
+  },
+  {
+    "path": "datas1-1000\\analysis.log",
+    "bytes": 4457,
+    "sha256": "42f6dc616ae2f8a1f1421e5ce2dd1591ffe642f8a6da9cc8d8afde2b02f26e0a"
+  },
+  {
+    "path": "datas1-1000\\capture.log",
+    "bytes": 779,
+    "sha256": "b5d08215a719ab10728709a8133f42c05cf3f0ea084278356b780a45d4fe9241"
+  },
+  {
+    "path": "datas1-1000\\capture.nettrace",
+    "bytes": 3115526,
+    "sha256": "3016169a1a9f1e5aab248492f7573bd3a0f9d7e4cd87d4df4c92ed62c6d3ddb7"
+  },
+  {
+    "path": "datas1-1000\\capture.nettrace.etlx",
+    "bytes": 8248336,
+    "sha256": "8144c739339ba3abf74a7afe40a15a85b40bde89832c5defd126810a60f36418"
+  },
+  {
+    "path": "datas1-1000\\known.json",
+    "bytes": 500,
+    "sha256": "18b8de1ccfb4526f3ad06cb09c86a65d2707193c6f8218d82861f88ac0b236b0"
+  },
+  {
+    "path": "datas1-1000\\result.json",
+    "bytes": 8936,
+    "sha256": "c3d3697eb683a0616623cd6f68721cc6ac533b01bf4f06a87f4deea705959b48"
+  },
+  {
+    "path": "datas1-100000\\analysis.log",
+    "bytes": 2807,
+    "sha256": "d94bfea978634f7aa07e2630dc07f3a33649f2b969737bba0ec22d20ac24fe3d"
+  },
+  {
+    "path": "datas1-100000\\capture.log",
+    "bytes": 785,
+    "sha256": "1bfd312b56b29ab5d59560ee058bd51d8fc1eb352c18191a3a3076aeb01d3c98"
+  },
+  {
+    "path": "datas1-100000\\capture.nettrace",
+    "bytes": 2181566,
+    "sha256": "bbe860378a6280d58f5545383b2d32a49b6ffbbb92834eb5c820cc1ffd0d5292"
+  },
+  {
+    "path": "datas1-100000\\capture.nettrace.etlx",
+    "bytes": 5526275,
+    "sha256": "0a8c554644f87d607be4773c82e55f40cc488daeab997758d1d580709d4a2197"
+  },
+  {
+    "path": "datas1-100000\\known.json",
+    "bytes": 500,
+    "sha256": "f111d6de93923d563eaeec95720c2132f5ac61a92b2b82ab78e0543e458368d3"
+  },
+  {
+    "path": "datas1-100000\\result.json",
+    "bytes": 5312,
+    "sha256": "4c4dccc5573cc9f2319c9b2d0da190605dddd69f07cd820c21789aa0253a262f"
+  },
+  {
+    "path": "heap-shrink\\analysis.log",
+    "bytes": 70889,
+    "sha256": "c5afbd31ef74eb22389a6d2226f2527846a02912a5d521b66b45c215d94c2bbb"
+  },
+  {
+    "path": "heap-shrink\\capture.log",
+    "bytes": 790,
+    "sha256": "d3ff7136869564e65d0ee50b3a80818b93d77e646c7d3de58d0df05b8317a18d"
+  },
+  {
+    "path": "heap-shrink\\capture.nettrace",
+    "bytes": 14994334,
+    "sha256": "7e942f29b3f508da996b354390f7087839ce5656a7c11981c6f87c76f5df93d2"
+  },
+  {
+    "path": "heap-shrink\\capture.nettrace.etlx",
+    "bytes": 47431389,
+    "sha256": "fbc6ec18b4f781be2e51a0f5b54a20710d699cc071aa8ec31441821f9c61815b"
+  },
+  {
+    "path": "heap-shrink\\known.json",
+    "bytes": 519,
+    "sha256": "20d5e35d32df29a178c5cad789de04af0679b28a8df14d28a0dd09a819195881"
+  },
+  {
+    "path": "heap-shrink\\result.json",
+    "bytes": 143486,
+    "sha256": "0078b63d220501fe250d6d6e42658eee7d7c95095d57a0fa7ad418ff331003f8"
+  },
+  {
+    "path": "source\\run.py",
+    "bytes": 4454,
+    "sha256": "4b8d1158a82b0a8ade7a2f6c8b90e2eb006581d9e1dd20e4733d5ada7c122cdf"
+  },
+  {
+    "path": "source\\Inspector\\Inspector.csproj",
+    "bytes": 312,
+    "sha256": "17d0e42d83bae1ee32e2009d3ce46c276116e76c1a609f6d19708978d9f8c4bf"
+  },
+  {
+    "path": "source\\Inspector\\Program.cs",
+    "bytes": 2860,
+    "sha256": "7088c42cf0ba0b2f6e775a2e76f51e3489d4737e0cc6a279297e820c870c4b70"
+  },
+  {
+    "path": "source\\repository\\Directory.Build.props",
+    "bytes": 2259,
+    "sha256": "e5970e8aa73cc798aef1a756799cdd58ea7442dd740792dfa8e21873cd9eea38"
+  },
+  {
+    "path": "source\\repository\\Directory.Build.targets",
+    "bytes": 231,
+    "sha256": "66d17d2d8fd403c47261b43d0b8b9626871c02dffbf0dd908a9f65c47a68330e"
+  },
+  {
+    "path": "source\\repository\\Directory.Packages.props",
+    "bytes": 6087,
+    "sha256": "0621ecffb5a68e6fd8f8034b5f5938c01a8d73f3f2a8325bdc22e2ae2935be2b"
+  },
+  {
+    "path": "source\\repository\\global.json",
+    "bytes": 179,
+    "sha256": "7e4c820f5d664523cbd36a384cbf90787d7911679098fde25bc5d7117c153db1"
+  },
+  {
+    "path": "source\\Workload\\Program.cs",
+    "bytes": 3029,
+    "sha256": "2553ca6cda56907e6e04abfbe94ce3ede426a5d81a8de302acde476643e9c306"
+  },
+  {
+    "path": "source\\Workload\\Workload.csproj",
+    "bytes": 270,
+    "sha256": "6154123b82b53b3a484789e47dc732b631aca768fade0b7baf659dd16bac4c04"
+  },
+  {
+    "path": "binaries\\Inspector\\Dia2Lib.dll",
+    "bytes": 59024,
+    "sha256": "6c4cac68010fe032218efe5e9fcf46eef9f77bfaa5f3bd33f03c5ff77d5a8fac"
+  },
+  {
+    "path": "binaries\\Inspector\\Inspector.deps.json",
+    "bytes": 6925,
+    "sha256": "2fd3a6ecdd5c3e0e669aee773a1e845968976fdbc7992813f35fd41f52643b06"
+  },
+  {
+    "path": "binaries\\Inspector\\Inspector.dll",
+    "bytes": 16384,
+    "sha256": "298a8c38fe486c3c213a0413b85916916e31b6fff59ed49ce9a980a980ff86cd"
+  },
+  {
+    "path": "binaries\\Inspector\\Inspector.exe",
+    "bytes": 162304,
+    "sha256": "c6c22a265be56dbdf7fb657dbc63d348548c195838927440673af886fc4b71dc"
+  },
+  {
+    "path": "binaries\\Inspector\\Inspector.pdb",
+    "bytes": 13332,
+    "sha256": "0af3c9a39c0f48f6b51e8e52340b37a4039626349ad96b3930ae765556c54a26"
+  },
+  {
+    "path": "binaries\\Inspector\\Inspector.runtimeconfig.json",
+    "bytes": 342,
+    "sha256": "c230a317a54dd960bcbeb5f347f52e18dc665a26f7efda2159fced9a5ac7e097"
+  },
+  {
+    "path": "binaries\\Inspector\\Microsoft.Diagnostics.FastSerialization.dll",
+    "bytes": 76088,
+    "sha256": "cf86fa00693e9b1ca7b7d955bfb18720cc473f721582007036d3c742ee67eec2"
+  },
+  {
+    "path": "binaries\\Inspector\\Microsoft.Diagnostics.NETCore.Client.dll",
+    "bytes": 146368,
+    "sha256": "baed2d25ca5bc53a3447c237d5572c92eac1fd842807b3e72602a711749b1b22"
+  },
+  {
+    "path": "binaries\\Inspector\\Microsoft.Diagnostics.Tracing.TraceEvent.dll",
+    "bytes": 3323192,
+    "sha256": "530946dc20e89754783f0ac76d86b7a4eedf95326f255db34c32fcbf5c3ce0ff"
+  },
+  {
+    "path": "binaries\\Inspector\\Microsoft.Extensions.DependencyInjection.Abstractions.dll",
+    "bytes": 43632,
+    "sha256": "9ccd830351aa28bc683d4f8d1cefd9e724161f972d25bfb64eee5bf55c48c5e3"
+  },
+  {
+    "path": "binaries\\Inspector\\Microsoft.Extensions.DependencyInjection.dll",
+    "bytes": 81536,
+    "sha256": "2aa8182b5356a8cc5c35fc3641a87e814857d8d9be399ac78f260343754d09e0"
+  },
+  {
+    "path": "binaries\\Inspector\\Microsoft.Extensions.Logging.Abstractions.dll",
+    "bytes": 62064,
+    "sha256": "d575c9d1543ca726ce14dbdffd103e93ea527cd46bb28316da1f4122dbc55d56"
+  },
+  {
+    "path": "binaries\\Inspector\\Microsoft.Extensions.Logging.dll",
+    "bytes": 44656,
+    "sha256": "183650081b551dfad967a7cbf79946a229cb79458b8d04a12db7c44b03bb9ab7"
+  },
+  {
+    "path": "binaries\\Inspector\\Microsoft.Extensions.Options.dll",
+    "bytes": 59008,
+    "sha256": "786112cb2f6646ef1170219a8c0bb813c9f14a6781e67c6266414f55a679565d"
+  },
+  {
+    "path": "binaries\\Inspector\\Microsoft.Extensions.Primitives.dll",
+    "bytes": 40048,
+    "sha256": "8ce9a85927ec7507b11ffe90080e7a811d51304a9e8b1da20c350159ba403902"
+  },
+  {
+    "path": "binaries\\Inspector\\TraceReloggerLib.dll",
+    "bytes": 23216,
+    "sha256": "6830c0f1d3f3c17719181e73dd5cfa8ccbb3f3c575329d2120576545103467b5"
+  },
+  {
+    "path": "binaries\\Workload\\Workload.deps.json",
+    "bytes": 418,
+    "sha256": "445bc03d1b4c3e3b2b7217b5a03585d6712bd108fd4faa73649b48e242c3423f"
+  },
+  {
+    "path": "binaries\\Workload\\Workload.dll",
+    "bytes": 13312,
+    "sha256": "59469a7001d431f1b2d303d941b0770e82752183107b3e476312951c3577ce56"
+  },
+  {
+    "path": "binaries\\Workload\\Workload.exe",
+    "bytes": 162304,
+    "sha256": "5adcfb1110261ed306f10ea7efe78c44ded16d6bf36b1f55881bc0e04241a6fa"
+  },
+  {
+    "path": "binaries\\Workload\\Workload.pdb",
+    "bytes": 12832,
+    "sha256": "64b95fd3bd3e0775b142e9c1daddec11b6a9287e2b4dc88f59b4f414cb8e655f"
+  },
+  {
+    "path": "binaries\\Workload\\Workload.runtimeconfig.json",
+    "bytes": 375,
+    "sha256": "87aa7c21398e7f7d483dfd4c547d2cf7ff1023c8a0bcb410c3881a6da7982f56"
+  },
+  {
+    "path": "binaries\\Inspector\\amd64\\KernelTraceControl.dll",
+    "bytes": 266696,
+    "sha256": "98de2f1de4fb1711688c04e2cb0187bf8c47e627771e8f51329671f296bfc688"
+  },
+  {
+    "path": "binaries\\Inspector\\amd64\\msdia140.dll",
+    "bytes": 2255920,
+    "sha256": "7341081feac7a2cebcc796c9c2bc5041a295df0673244f2595294e06a0bd7ee8"
+  },
+  {
+    "path": "binaries\\Inspector\\arm64\\KernelTraceControl.dll",
+    "bytes": 258504,
+    "sha256": "45b6d97a6c64229976b71a0fe709617190267fd02147a5c7e1e4fb9b17fa2956"
+  },
+  {
+    "path": "binaries\\Inspector\\arm64\\msdia140.dll",
+    "bytes": 5185968,
+    "sha256": "149f8d131a9d664014cafdfc3b77935b13472c250743dd669341ef0d1d4ef0fd"
+  },
+  {
+    "path": "binaries\\Inspector\\x86\\KernelTraceControl.dll",
+    "bytes": 185800,
+    "sha256": "7a4b8319f36304a7686576ea130a351818f73fabf90c511e243b957fdfa8cbb0"
+  },
+  {
+    "path": "binaries\\Inspector\\x86\\KernelTraceControl.Win61.dll",
+    "bytes": 159952,
+    "sha256": "b7a83f51eae2824e9259ffe567f0fb42177d7b02674be760eb88df270459d8bf"
+  },
+  {
+    "path": "binaries\\Inspector\\x86\\msdia140.dll",
+    "bytes": 2191912,
+    "sha256": "db546904a0824c78134a75b366a45434ed7745e4a4782628414e37fd0254c30b"
+  }
+]
