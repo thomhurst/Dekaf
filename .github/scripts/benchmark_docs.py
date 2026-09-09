@@ -590,7 +590,7 @@ def generate_document(
         "",
         "# Benchmark Results",
         "",
-        "How Dekaf compares to Confluent.Kafka, measured with BenchmarkDotNet on GitHub Actions and refreshed daily or on demand from main.",
+        "How Dekaf compares to Confluent.Kafka, measured with BenchmarkDotNet on GitHub Actions and refreshed on demand from main.",
         "",
         f"**Last Updated:** {updated_at}",
         "",
@@ -695,7 +695,7 @@ def generate_document(
     )
 
     output.append(
-        "*Benchmarks automatically run daily at 05:00 UTC from main and can also be run manually.*"
+        "*Benchmarks run on demand from main through the Benchmarks workflow.*"
     )
 
     return "\n".join(output)

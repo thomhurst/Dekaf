@@ -11,7 +11,7 @@ Long-running stress tests comparing sustained performance between Dekaf and Conf
 **Last Updated:** 2026-09-06 03:46 UTC
 
 :::info
-The paired Dekaf vs Confluent comparison runs weekly (Sunday 2 AM UTC) and updates this page. 
+The paired Dekaf vs Confluent comparison runs on demand (`full_run=true` from main) and updates this page. 
 Manual dispatches stay Dekaf-only unless full_run explicitly requests the same paired publish path. 
 Tests measure sustained performance over 15+ minutes with real Kafka instances.
 :::

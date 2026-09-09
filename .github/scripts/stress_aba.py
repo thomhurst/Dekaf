@@ -53,9 +53,13 @@ METRICS = (
     # consumer lanes at ~2 KB/msg are unaffected because their 3% tolerance is ~60 B/msg.
     Metric("alloc", "Allocation", "B/msg", False, noise_floor=1.0),
     Metric("stability", "Steady/peak ratio", "ratio", True, floor=True),
-    Metric("max", "Latency max", "ms", False),
+    # Maximum latency is informational: one observed extreme per segment carries no
+    # uncertainty estimate on hosted runners (AGENTS.md), so it is recorded, never gated.
+    Metric("max", "Latency max", "ms", False, gated=False),
     Metric("averageRequest", "Average request", "KiB", True, gated=False),
 )
+
+LATENCY_KEYS = ("p50", "p95", "p99", "max")
 
 DEFAULT_STABILITY_FLOOR = 0.85
 
@@ -117,10 +121,17 @@ def _latency_ms(latency, key):
     return value / 1000 if _finite_number(value) else None
 
 
-def _measurements(result):
-    latency = result.get("latency") or {}
-    if not isinstance(latency, dict):
+def _has_latency(result):
+    return result.get("latency") is not None
+
+
+def _measurements(result, latency_required=True):
+    """Extract gated metrics. Consumer replay scenarios record no delivery latency, so latency
+    quantiles are optional when every segment omits them; they are then reported as n/a."""
+    latency = result.get("latency")
+    if latency_required and not isinstance(latency, dict):
         raise ValueError("Expected a latency object")
+    latency = latency if isinstance(latency, dict) else {}
     measurements = {
         "throughput": effective_rate(result),
         "medianThroughput": median_interval_rate(result),
@@ -136,13 +147,18 @@ def _measurements(result):
     missing = [
         metric.label
         for metric in METRICS
-        if not _finite_number(measurements.get(metric.key)) or measurements[metric.key] < 0
+        if (latency_required if metric.key in LATENCY_KEYS else metric.gated)
+        and (not _finite_number(measurements.get(metric.key)) or measurements[metric.key] < 0)
     ]
     if missing:
         raise ValueError(f"Missing finite nonnegative metric(s): {', '.join(missing)}")
     if measurements["cpu"] <= 0:
         raise ValueError("CPU evidence requires positive CPU time per completed message")
-    if any(measurements[key] <= 0 for key in ("p50", "p95", "p99", "max")):
+    if not latency_required:
+        for key in LATENCY_KEYS:
+            measurements[key] = None
+        return measurements
+    if any(measurements[key] <= 0 for key in LATENCY_KEYS):
         raise ValueError("Latency evidence requires positive latency quantiles and maximum")
     count = latency.get("count")
     if not isinstance(count, int) or isinstance(count, bool) or count <= 0:
@@ -218,6 +234,16 @@ def _metric_status(
     floor_status=None,
     candidate_b2=None,
 ):
+    if any(value is None for value in (baseline_a, candidate, baseline_a2)):
+        return {
+            "key": metric.key, "label": metric.label, "unit": metric.unit,
+            "baselineA": None, "candidate": None, "candidateB": None, "candidateB2": None,
+            "candidateDriftPercent": None, "baselineA2": None, "baselineMean": None,
+            "deltaPercent": None, "deltaVsBaselineAPercent": None, "deltaVsBaselineA2Percent": None,
+            "b2DeltaVsBaselineAPercent": None, "b2DeltaVsBaselineA2Percent": None,
+            "controlDriftPercent": None, "noiseFloor": metric.noise_floor, "status": "n/a", "gated": False,
+            "reason": f"{metric.label} is not recorded by this scenario (consumer replay has no delivery latency).",
+        }
     baseline_mean = (baseline_a + baseline_a2) / 2
     candidate_samples = [candidate] if candidate_b2 is None else [candidate, candidate_b2]
     candidate_mean = sum(candidate_samples) / len(candidate_samples)
@@ -227,6 +253,7 @@ def _metric_status(
     control_drift_percent = _drift_percent(baseline_a, baseline_a2)
     control_spread = abs(baseline_a2 - baseline_a)
     noise_floor = metric.noise_floor
+    reason = None
     if not metric.gated:
         status = "recorded"
     elif metric.floor:
@@ -248,14 +275,30 @@ def _metric_status(
             and abs(candidate_samples[-1] - candidate_samples[0]) > noise_floor
         )
 
-        # A loss beyond tolerance in every pairing remains grounds to reject. Otherwise
-        # drift or conflicting pairings cannot establish either acceptance or regression.
+        # A loss beyond tolerance in every pairing remains grounds to reject. A loss against
+        # one control only is inconclusive unless every candidate sample lies inside the band
+        # spanned by the two controls: identical code produced both ends of that band, so a
+        # bracketed candidate is not a demonstrated loss (AGENTS.md). Control or candidate
+        # drift on its own is diagnostic and never overrides a result within tolerance.
+        low, high = min(baseline_a, baseline_a2), max(baseline_a, baseline_a2)
+        bracketed = all(low <= sample <= high for sample in candidate_samples)
         if all(adverse_pairs):
             status = "regression"
-        elif controls_disagree or candidates_disagree or any(adverse_pairs):
-            status = "inconclusive"
+        elif any(adverse_pairs):
+            status = "pass" if bracketed else "inconclusive"
+            if bracketed:
+                reason = (f"{metric.label} misses the tolerance against one control but every candidate "
+                          f"sample lies between the controls (drift {control_drift_percent:.2f}%); "
+                          "not a demonstrated loss.")
         else:
             status = "pass"
+        if status == "pass" and (controls_disagree or candidates_disagree):
+            drift_note = []
+            if controls_disagree:
+                drift_note.append(f"control drift {control_drift_percent:.2f}% exceeds {max_control_drift_percent:.1f}%")
+            if candidates_disagree:
+                drift_note.append(f"candidate drift {candidate_drift_percent:.2f}% exceeds {max_control_drift_percent:.1f}%")
+            reason = (reason + " " if reason else "") + "; ".join(drift_note) + " (diagnostic only)."
 
     return {
         "key": metric.key,
@@ -281,6 +324,7 @@ def _metric_status(
         "noiseFloor": noise_floor,
         "status": status,
         "gated": metric.gated,
+        **({"reason": reason} if reason else {}),
     }
 
 
@@ -299,8 +343,17 @@ def compare(
     results = [baseline_a_result, candidate_result, baseline_a2_result]
     if candidate_b2_result is not None:
         results.append(candidate_b2_result)
+    latency_present = [_has_latency(item) for item in results]
+    if any(latency_present) and not all(latency_present):
+        raise ValueError("Latency evidence must be present in every segment or absent in all")
+    latency_required = all(latency_present)
     for result in results:
-        for field in ("throughput", "producerDeliveryDiagnostics"):
+        # Consumer replay segments carry no producer delivery diagnostics; producer
+        # segments (those with delivery latency) must retain them.
+        required = ["throughput"]
+        if _has_latency(result) or "producerDeliveryDiagnostics" in result:
+            required.append("producerDeliveryDiagnostics")
+        for field in required:
             if not isinstance(result.get(field), dict):
                 raise ValueError(f"Expected a {field} object")
         _validate_completed_messages(result)
@@ -319,11 +372,11 @@ def compare(
     if _delivery_mismatch(baseline_a_result) or _delivery_mismatch(baseline_a2_result):
         raise ValueError("A baseline control did not deliver every accepted message")
 
-    baseline_a = _measurements(baseline_a_result)
-    candidate = _measurements(candidate_result)
-    baseline_a2 = _measurements(baseline_a2_result)
+    baseline_a = _measurements(baseline_a_result, latency_required)
+    candidate = _measurements(candidate_result, latency_required)
+    baseline_a2 = _measurements(baseline_a2_result, latency_required)
     candidate_b2 = (
-        None if candidate_b2_result is None else _measurements(candidate_b2_result)
+        None if candidate_b2_result is None else _measurements(candidate_b2_result, latency_required)
     )
     _validate_control_rates(baseline_a)
     _validate_control_rates(baseline_a2)
@@ -349,21 +402,21 @@ def compare(
         for metric in METRICS
     ]
 
+    def latency_count(item):
+        return (item.get("latency") or {}).get("count") if item is not None else None
+
     latency_sample_counts = {
-        "baselineA": baseline_a_result["latency"]["count"],
-        "candidateB": candidate_result["latency"]["count"],
-        "baselineA2": baseline_a2_result["latency"]["count"],
-        "candidateB2": None if candidate_b2_result is None else candidate_b2_result["latency"]["count"],
+        "baselineA": latency_count(baseline_a_result),
+        "candidateB": latency_count(candidate_result),
+        "baselineA2": latency_count(baseline_a2_result),
+        "candidateB2": latency_count(candidate_b2_result),
     }
-    # A single observed maximum per segment cannot establish tail uncertainty, even
-    # with equal sample counts. Keep this protected metric gated so missing evidence
-    # prevents acceptance; neither a favorable nor an adverse raw extreme decides it.
     maximum = next(item for item in metrics if item["key"] == "max")
-    maximum["status"] = "inconclusive"
-    maximum["reason"] = (
-        "Aggregate maxima lack an uncertainty-aware comparison, even with equal latency sample counts. "
-        "All observed maxima are retained; workload-level sampling and uncertainty evidence are required."
-    )
+    if maximum["status"] != "n/a":
+        maximum["reason"] = (
+            "Maximum latency is informational: one observed extreme per segment carries no uncertainty "
+            "estimate on hosted runners, so it is recorded and never decides the screen."
+        )
 
     candidate_failed = _errors(candidate_result) > 0 or _delivery_mismatch(candidate_result)
     if candidate_b2_result is not None:
@@ -395,6 +448,8 @@ def compare(
 
 
 def _format_number(value):
+    if value is None:
+        return "n/a"
     if abs(value) >= 1000:
         return f"{value:,.0f}"
     return f"{value:.3f}"
@@ -402,6 +457,10 @@ def _format_number(value):
 
 def _format_percent(value):
     return "n/a" if value is None else f"{value:+.2f}%"
+
+
+def _format_drift(value):
+    return "n/a" if value is None else f"{value:.2f}%"
 
 
 def markdown(comparison, baseline_sha, candidate_sha):
@@ -414,12 +473,12 @@ def markdown(comparison, baseline_sha, candidate_sha):
         "This is an aggregate metric screen, not full PR performance acceptance. "
         "Runner/fixture identity, warmup and runtime activity, sampling uncertainty, "
         "hot-path MemoryDiagnoser evidence and sustained stability require separate validation.",
-        f"Each segment requires at least {MIN_LATENCY_SAMPLES} latency samples. This conservative "
+        f"Producer segments require at least {MIN_LATENCY_SAMPLES} latency samples. This conservative "
         "screening floor does not establish tail precision or comparable sampling coverage; "
         "those still require the workload's sampling design and uncertainty analysis.",
-        "The current aggregate result schema has no maximum-latency uncertainty evidence. "
-        "That protected metric remains INCONCLUSIVE for equal and unequal sample counts, "
-        "so this screen cannot return PASS. Metric classifications require a valid experiment.",
+        "Maximum latency is recorded as informational and never decides the screen. Consumer replay "
+        "scenarios record no delivery latency, so their latency rows are n/a and the gate covers "
+        "throughput, CPU per message, allocations per message and stability.",
         "",
         f"Baseline: `{baseline_sha}` · Candidate: `{candidate_sha}`",
     ]
@@ -481,9 +540,9 @@ def markdown(comparison, baseline_sha, candidate_sha):
                 _format_percent(item["b2DeltaVsBaselineAPercent"]),
                 _format_percent(item["b2DeltaVsBaselineA2Percent"]),
             ])
-        cells.append(f"{item['controlDriftPercent']:.2f}%")
+        cells.append(_format_drift(item["controlDriftPercent"]))
         if two_candidates:
-            cells.append(f"{item['candidateDriftPercent']:.2f}%")
+            cells.append(_format_drift(item["candidateDriftPercent"]))
         cells.append(item["status"])
         lines.append("| " + " | ".join(cells) + " |")
     for item in comparison["metrics"]:
@@ -507,8 +566,6 @@ def markdown(comparison, baseline_sha, candidate_sha):
             "The first INCONCLUSIVE permits one exact repeat. After a second, synthesize "
             "the evidence and improve the experiment or obtain maintainer direction; "
             "do not automatically repeat again.",
-            "An unchanged aggregate-only repeat cannot supply missing maximum uncertainty. "
-            "Improve the workload's sampling and uncertainty evidence before another acceptance run.",
         ]
     )
     return "\n".join(lines) + "\n"

@@ -4,7 +4,7 @@ The `Benchmarks` workflow has two paths:
 
 | Trigger | Work | Publication |
 |---|---|---|
-| Daily schedule, or manual `benchmark_filter` equal to `*` or empty | Existing unit shards, Linux client cases, Windows native-memory cases, and summary | History/docs on main |
+| Manual `benchmark_filter` equal to `*` or empty | Existing unit shards, Linux client cases, Windows native-memory cases, and summary | History/docs on main |
 | Manual nonempty filter other than `*` | One Linux benchmark runner executing that BDN glob | Artifact only |
 
 A filtered run builds the benchmark project and passes the filter as one quoted argument. It does not split the value into shell words or interpret it as a command. Match the whole benchmark name with wildcards, including a leading `*` when omitting the namespace. Whitespace-only input is a filter that matches nothing, not a request to launch the full suite.

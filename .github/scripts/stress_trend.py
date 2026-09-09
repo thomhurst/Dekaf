@@ -1,4 +1,4 @@
-"""Noise-aware regression detection for weekly stress-test results."""
+"""Noise-aware regression detection for full-run stress-test results."""
 
 import argparse
 import json

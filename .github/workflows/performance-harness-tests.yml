@@ -26,7 +26,7 @@ jobs:
       - name: Test recorder and comparison drivers
         run: |
           dotnet test --project .github/benchmarks/admin-recorder-tests/Recorder.Tests.csproj -c Release
-          for test in test_verify_performance_pins.py test_performance_shards.py test_stress_warmup.py test_stress_aba_startup.py test_reservoir_fixture.py test_runner_affinity.py test_admin_refresh.py test_outbox_cycle_aba.py test_outbox_loaded_aba.py test_pool_loaded_aba.py; do
+          for test in test_verify_performance_pins.py test_performance_shards.py test_performance_gate.py test_stress_warmup.py test_stress_aba.py test_stress_aba_startup.py test_reservoir_fixture.py test_runner_affinity.py test_admin_refresh.py test_outbox_cycle_aba.py test_outbox_loaded_aba.py test_pool_loaded_aba.py; do
             python3 -m unittest discover -s .github/scripts -p "$test"
           done
           python3 -m unittest discover -s .github/benchmarks/dispatch-aba -p 'test_*.py'
@@ -57,7 +57,8 @@ jobs:
           jq '[.[] | .Statistics.Mean *= 1.1]' "$results/same.json" > "$results/slower.json"
           jq '[.[] | .Statistics.Mean *= 1.06]' "$results/same.json" > "$results/drifted.json"
           jq '[.[] | .Statistics.Mean *= 1.03]' "$results/same.json" > "$results/nearer.json"
-          jq '[.[] | (.Metrics[] | select(.Descriptor.Id == "Allocated Memory") | .Value) += 8]' "$results/same.json" > "$results/allocating.json"
+          jq '[.[] | (.Metrics[] | select(.Descriptor.Id == "Allocated Memory") | .Value) += 64]' "$results/same.json" > "$results/allocating.json"
+          jq '[.[] | (.Metrics[] | select(.Descriptor.Id == "Allocated Memory") | .Value) += 4]' "$results/same.json" > "$results/nearly_allocating.json"
           jq '.[:1]' "$results/same.json" > "$results/partial.json"
           screen() { "${compare[@]}" --arg format json --slurpfile a1 "$results/$1.json" --slurpfile b "$results/$2.json" --slurpfile a2 "$results/$3.json"; }
           screen same same same | jq -e '.screen == "PASS" and (.cases | length) == 2 and all(.cases[]; .screen == "PASS" and .b_vs_a1_percent == 0 and .drift_percent == 0)'
@@ -66,10 +67,19 @@ jobs:
           screen same same drifted | jq -e '.screen == "PASS" and all(.cases[]; .screen == "PASS" and .control_drift_exceeds_tolerance)'
           screen same allocating drifted | jq -e '.screen == "REGRESSION" and all(.cases[]; .control_drift_exceeds_tolerance)'
           screen same slower allocating | jq -e '.screen == "REGRESSION"'
-          screen same allocating allocating | jq -e '.screen == "INCONCLUSIVE"'
-          screen same drifted nearer | jq -e '.screen == "INCONCLUSIVE" and all(.cases[]; .screen == "INCONCLUSIVE")'
+          screen same allocating allocating | jq -e '.screen == "PASS" and all(.cases[]; .alloc_bracketed and (.notes | any(contains("allocation bracketed"))))'
+          jq '[.[] | (.Metrics[] | select(.Descriptor.Id == "Allocated Memory") | .Value) += 60]' "$results/same.json" > "$results/allocating_60.json"
+          screen same drifted nearer | jq -e '.screen == "INCONCLUSIVE" and all(.cases[]; .screen == "INCONCLUSIVE" and (.bracketed | not))'
+          screen same drifted slower | jq -e '.screen == "PASS" and all(.cases[]; .screen == "PASS" and .bracketed and (.notes | any(contains("bracketed"))))'
+          screen slower drifted same | jq -e '.screen == "PASS" and all(.cases[]; .screen == "PASS" and .bracketed)'
           screen slower same slower | jq -e '.screen == "PASS" and all(.cases[]; .screen == "IMPROVEMENT")'
-          if screen same partial same > /dev/null 2>&1; then echo 'Mismatched case sets were compared'; exit 1; fi
+          if screen same same partial > /dev/null 2>&1; then echo 'Mismatched baseline case sets were compared'; exit 1; fi
+          screen same partial same | jq -e '.screen == "PASS" and (.cases | length) == 1 and (.baseline_only | length) == 1 and (.candidate_only | length) == 0'
+          floor() { "${compare[@]}" --argjson alloc_floor 8 --arg format json --slurpfile a1 "$results/$1.json" --slurpfile b "$results/$2.json" --slurpfile a2 "$results/$3.json"; }
+          floor same nearly_allocating same | jq -e '.screen == "PASS" and all(.cases[]; .screen == "PASS" and (.notes | any(contains("floor"))))'
+          floor same allocating same | jq -e '.screen == "REGRESSION"'
+          floor same allocating allocating_60 | jq -e '.screen == "INCONCLUSIVE" and all(.cases[]; .alloc_bracketed | not)'
+          "${compare[@]}" --argjson min_warmup 20 --arg format json --slurpfile a1 "$results/same.json" --slurpfile b "$results/same.json" --slurpfile a2 "$results/same.json" | jq -e '.screen == "INCONCLUSIVE" and all(.cases[]; .short_warmup == ["A1", "B", "A2"] and (.notes | any(contains("warmup"))))'
           "${compare[@]}" --arg format markdown --slurpfile a1 "$results/same.json" --slurpfile b "$results/same.json" --slurpfile a2 "$results/same.json" | grep -q 'Micro screen: \*\*PASS\*\*'
           if SMOKE_FAIL_SETUP=1 dotnet run -c Release --no-build -- --job Dry --filter '*NoAllocation*' --artifacts "$results/failure" > "$results/failure.log" 2>&1; then
             echo 'A failing fixture returned success'; exit 1

@@ -1,8 +1,6 @@
 name: Benchmarks
 
 on:
-  schedule:
-    - cron: '0 5 * * *'  # Daily at 05:00 UTC
   workflow_dispatch:
     inputs:
       benchmark_filter:
@@ -19,8 +17,7 @@ env:
   ContinuousIntegrationBuild: true
   Deterministic: true
 
-# Cancel an overlapping scheduled run before starting the next one. Manual
-# workflow_dispatch runs are never cancelled.
+# Manual workflow_dispatch runs share one group per ref and are never cancelled.
 concurrency:
   group: benchmarks-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
@@ -480,10 +477,10 @@ jobs:
           output-file-path: combined-results/combined.json
           github-token: ${{ secrets.GITHUB_TOKEN }}
           auto-push: true
-          alert-threshold: '150%'
+          alert-threshold: '110%'
           comment-on-alert: true
           fail-on-alert: false
-          alert-comment-cc-users: '@thomholloway'
+          alert-comment-cc-users: '@thomhurst'
 
   publish-to-docs:
     name: Publish Benchmarks to Documentation

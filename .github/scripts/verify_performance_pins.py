@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import time
 
 
 SUITES = (
@@ -13,13 +14,17 @@ SUITES = (
     'dispatch-pilot', 'dispatch-record-pilot', 'share-loaded', 'outbox',
     'outbox-loaded', 'outbox-adjacent', 'outbox-recovery', 'pool-loaded', 'pool-profile',
 )
+# A pinned baseline stays valid while it is on main's history and no older than this
+# (AGENTS.md: evidence is valid while the baseline is at most 7 days old). Main moving
+# between dispatch and the prepare job therefore no longer invalidates a campaign.
+MAX_BASELINE_AGE_DAYS = 7
 
 
 def command(*args):
     return subprocess.check_output(args, text=True).strip()
 
 
-def verify(harness, baseline, candidate, pr, suite, repository):
+def verify(harness, baseline, candidate, pr, suite, repository, now=None):
     for name, value in [('harness', harness), ('baseline', baseline), ('candidate', candidate)]:
         if not re.fullmatch('[0-9a-f]{40}', value):
             raise ValueError(f'{name} must be an exact lowercase 40-character SHA')
@@ -38,8 +43,16 @@ def verify(harness, baseline, candidate, pr, suite, repository):
             raise ValueError('Product commit did not resolve to the requested SHA')
     command('git', 'fetch', 'origin', 'main')
     main = command('git', 'rev-parse', 'FETCH_HEAD')
-    if main != baseline:
-        raise ValueError('Baseline is not fresh main; rebase the candidate and repin before a new campaign')
+    try:
+        command('git', 'merge-base', '--is-ancestor', baseline, main)
+    except subprocess.CalledProcessError:
+        raise ValueError('Baseline is not on main; pin a fresh main SHA and repin before a new campaign') from None
+    committed = int(command('git', 'show', '-s', '--format=%ct', baseline))
+    age_days = ((time.time() if now is None else now) - committed) / 86400
+    if age_days > MAX_BASELINE_AGE_DAYS:
+        raise ValueError(f'Baseline is {age_days:.1f} days old (limit {MAX_BASELINE_AGE_DAYS}); '
+                         'rebase the candidate onto fresh main and repin')
+    main_ahead = int(command('git', 'rev-list', '--count', f'{baseline}..{main}'))
     command('git', 'merge-base', '--is-ancestor', baseline, candidate)
     calibration = suite == 'admin-calibration'
     if calibration:
@@ -50,7 +63,8 @@ def verify(harness, baseline, candidate, pr, suite, repository):
         if pull['state'] != 'open' or pull['head']['sha'] != candidate:
             raise ValueError('Candidate is not the current head of the open PR')
     return {'harness_sha': harness, 'baseline_sha': baseline, 'candidate_sha': candidate,
-            'main_at_start': main, 'pr': pr, 'suite': suite, 'calibration': calibration,
+            'main_at_start': main, 'main_commits_after_baseline': main_ahead,
+            'baseline_age_days': round(age_days, 2), 'pr': pr, 'suite': suite, 'calibration': calibration,
             'workflow_sha': os.getenv('GITHUB_SHA'), 'status': 'VERIFIED',
             'scope': 'Identity validation only; never a product performance PASS'}
 

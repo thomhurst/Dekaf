@@ -7,7 +7,7 @@ import ComparisonChart, {ComparisonChartGrid} from '@site/src/components/Compari
 
 # Benchmark Results
 
-How Dekaf compares to Confluent.Kafka, measured with BenchmarkDotNet in daily or on-demand GitHub Actions runs from main.
+How Dekaf compares to Confluent.Kafka, measured with BenchmarkDotNet in on-demand GitHub Actions runs from main.
 
 **Last Updated:** 2026-08-16 14:42 UTC
 
@@ -259,4 +259,4 @@ Wire protocol serialization/deserialization. **Allocated = `-` means zero heap a
 
 </details>
 
-*Benchmarks automatically run daily at 05:00 UTC from main and can also be run manually.*
+*Benchmarks run on demand from main through the Benchmarks workflow.*

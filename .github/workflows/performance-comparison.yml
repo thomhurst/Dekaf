@@ -107,7 +107,7 @@ jobs:
             3137|3142) filters=('*PendingRequest*Benchmark*'); count=3 ;;
             3149) filters=('*LingerAppendBench*'); count=4 ;;
             3158) filters=('*ShareResponseFrameBench*'); count=6 ;;
-            *) echo 'No declared steady-state fixture for this PR'; exit 1 ;;
+            *) echo '::error::No declared bespoke fixture for this PR. The automatic performance-gate.yml screen already covers tools/Dekaf.Benchmarks fixtures for every PR; declare a fixture here only for a bespoke case.'; exit 1 ;;
           esac
           results="$GITHUB_WORKSPACE/aba-results"
           mkdir "$results"
@@ -126,7 +126,7 @@ jobs:
               dotnet build Dekaf.Benchmarks.csproj -c Release --disable-build-servers > "$results/build-$role.log" 2>&1
               dotnet run --project Dekaf.Benchmarks.csproj -c Release --no-build -- --job Dry --filter "${filters[@]}" --artifacts "$results/dry-$role" > "$results/dry-$role.log" 2>&1
             )
-            jq -s -e --argjson count "$count" '[.[].Benchmarks[]] | length == $count' "$results/dry-$role/results/"*-report-full.json
+            python3 .github/scripts/performance_gate.py validate --dry --phase "$results/dry-$role" --expected "$count"
           done
           dotnet build-server shutdown
           for phase in A1 B A2; do
@@ -136,18 +136,11 @@ jobs:
               export ABA_ROLE="$role"
               dotnet run --project Dekaf.Benchmarks.csproj -c Release --no-build -- --filter "${filters[@]}" --warmupCount "$warmup" --iterationCount 25 --iterationTime 1000 --launchCount 1 --outliers DontRemove --artifacts "$results/$phase" > "$results/$phase.log" 2>&1
             )
-            jq -s -e --argjson count "$count" --argjson seconds "$minimum_warmup" '
-              [.[].Benchmarks[]] | length == $count and all(.[];
-                .Statistics.N == 25 and
-                any(.Metrics[]; .Descriptor.Id == "Allocated Memory" and (.Value | type) == "number" and .Value >= 0) and
-                ([.Measurements[] | select(.IterationMode == "Workload" and .IterationStage == "Warmup") | .Nanoseconds] | add) >= ($seconds * 1e9))
-            ' "$results/$phase/results/"*-report-full.json
-            jq -s '[.[].Benchmarks[] | [.Namespace, .Type, .Method, .Parameters]] | sort' "$results/$phase/results/"*-report-full.json > "$results/$phase-cases.json"
-            jq -s '[.[].Benchmarks[]] | sort_by([.Namespace, .Type, .Method, .Parameters])' "$results/$phase/results/"*-report-full.json > "$results/$phase.json"
+            # Incomplete phases (missing cases, iterations or MemoryDiagnoser output) fail here with
+            # the case named; a warmup shortfall is reported and makes that case INCONCLUSIVE below.
+            python3 .github/scripts/performance_gate.py validate --phase "$results/$phase" --expected "$count" --iterations 25 --min-warmup "$minimum_warmup" --merged "$results/$phase.json" --cases "$results/$phase-cases.json"
           done
-          diff "$results/A1-cases.json" "$results/B-cases.json"
-          diff "$results/A1-cases.json" "$results/A2-cases.json"
-          compare=(jq -nr --slurpfile a1 "$results/A1.json" --slurpfile b "$results/B.json" --slurpfile a2 "$results/A2.json" --argjson tolerance "$tolerance" -f "$GITHUB_WORKSPACE/.github/scripts/compare_bdn_reports.jq")
+          compare=(jq -nr --slurpfile a1 "$results/A1.json" --slurpfile b "$results/B.json" --slurpfile a2 "$results/A2.json" --argjson tolerance "$tolerance" --argjson alloc_floor 8 --argjson min_warmup "$minimum_warmup" -f "$GITHUB_WORKSPACE/.github/scripts/compare_bdn_reports.jq")
           "${compare[@]}" --arg format json > "$results/comparison.json"
           "${compare[@]}" --arg format markdown > "$results/comparison.md"
           cat "$results/comparison.md" >> "$GITHUB_STEP_SUMMARY"
@@ -155,7 +148,7 @@ jobs:
           screen=$(jq -r .screen "$results/comparison.json")
           case "$screen" in
             PASS) echo 'Micro screen PASS for the declared fixture. Whole-PR acceptance still requires correctness and any loaded evidence the change scope requires.' >> "$GITHUB_STEP_SUMMARY" ;;
-            INCONCLUSIVE) echo '::warning::Micro screen INCONCLUSIVE: a loss against one control only. Review the affected metric and uncertainty before using the permitted exact repeat.' ;;
+            INCONCLUSIVE) echo '::warning::Micro screen INCONCLUSIVE: a loss against one control only, or a phase below the warmup floor. Review the affected cases and uncertainty before using the permitted exact repeat.' ;;
             *) echo '::error::Micro screen REGRESSION: the candidate is slower or allocates more than both controls beyond tolerance.'; exit 1 ;;
           esac
       - name: Pool comparison

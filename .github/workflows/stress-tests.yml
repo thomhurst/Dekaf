@@ -1,19 +1,17 @@
 name: Stress Tests
-run-name: Stress Tests (${{ github.event.inputs.full_run == 'true' && 'all / weekly full' || github.event.inputs.lane || 'all' }}${{ github.event_name == 'workflow_dispatch' && github.event.inputs.full_run != 'true' && ' / dekaf only' || '' }}${{ github.event.inputs.full_run != 'true' && github.event.inputs.dispatch_shape != 'lane-default' && github.event.inputs.dispatch_shape && format(' / {0}', github.event.inputs.dispatch_shape) || '' }}${{ github.event.inputs.baseline_sha && ' / exact-SHA A-B-A' || '' }})
+run-name: Stress Tests (${{ github.event.inputs.full_run == 'true' && 'all / full' || github.event.inputs.lane || 'all' }}${{ github.event_name == 'workflow_dispatch' && github.event.inputs.full_run != 'true' && ' / dekaf only' || '' }}${{ github.event.inputs.full_run != 'true' && github.event.inputs.dispatch_shape != 'lane-default' && github.event.inputs.dispatch_shape && format(' / {0}', github.event.inputs.dispatch_shape) || '' }}${{ github.event.inputs.baseline_sha && ' / exact-SHA A-B-A' || '' }})
 
 on:
-  schedule:
-    - cron: '0 2 * * 0'  # Weekly Sunday 2 AM UTC
   workflow_dispatch:
     inputs:
       # Required so every manual dispatch makes an explicit cost decision: each
       # lane is its own paid 8-core runner job (up to 3 hours), so pick the single
       # lane whose data you need. Manual dispatches run Dekaf only by default —
       # Confluent's numbers don't change with Dekaf code. full_run is the explicit
-      # exception for a weekly-equivalent paired comparison and publish run.
+      # exception for a full paired comparison and publish run.
       # Manual dispatches also default to the cheap dispatch_shape (below);
       # baseline_sha explicitly replaces it with three baseline/candidate/baseline
-      # segments for one supported producer lane.
+      # segments for one supported producer or consumer lane.
       lane:
         description: 'Stress lane to run (one paid runner job per lane; "all" is Dekaf-only unless full_run is enabled)'
         required: true
@@ -64,7 +62,7 @@ on:
       # 3-connection pass), so a single-lane feedback run costs one measured
       # duration. lane-default restores the lane's full shape (extra samples +
       # 3conn pass where the lane defines them) but still runs Dekaf only unless
-      # full_run is enabled. Scheduled runs always use the full paired shape.
+      # full_run is enabled.
       dispatch_shape:
         description: 'cheap = 1 sample/no 3conn; cheap-with-3conn adds control pass; lane-default = full lane shape'
         required: false
@@ -75,7 +73,7 @@ on:
           - cheap-with-3conn
           - lane-default
       full_run:
-        description: 'Weekly-equivalent paired matrix; overrides lane/shape and publishes docs/history (12 paid jobs; main only)'
+        description: 'Full paired matrix; overrides lane/shape and publishes docs/history (12 paid jobs; main only)'
         required: false
         type: boolean
         default: false
@@ -118,11 +116,11 @@ permissions:
   contents: read
 
 # Scoped per lane+event so a cheap single-lane dispatch is not queued for hours
-# behind a full-matrix run. Publishing runs share the all-schedule group because
+# behind a full-matrix run. Publishing runs share the all-full group because
 # they update the same docs/history branch; other lanes use isolated VMs and
 # share no mutable state.
 concurrency:
-  group: stress-tests-${{ (github.event_name == 'schedule' || github.event.inputs.full_run == 'true') && 'all-schedule' || format('{0}-{1}', github.event.inputs.lane || 'all', github.event_name) }}
+  group: stress-tests-${{ github.event.inputs.full_run == 'true' && 'all-full' || format('{0}-{1}', github.event.inputs.lane || 'all', github.event_name) }}
   cancel-in-progress: false
 
 env:
@@ -159,21 +157,17 @@ jobs:
         run: |
           # The UI enforces the required choice input, but API/CLI dispatches can
           # omit it; fail fast here rather than defaulting a manual run to the
-          # full (expensive) matrix. Scheduled runs have no inputs and always run
-          # the full matrix.
+          # full (expensive) matrix.
           if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ -z "$LANE" ]; then
             echo "::error::Missing required 'lane' input. Pass -f lane=<lane> (single paid-runner job) or -f lane=all for the full matrix."
             exit 1
           fi
           lane="${LANE:-all}"
 
-          # Scheduled runs are full by definition. Manual full_run is the explicit
-          # paid/publishing override: it runs only from main and forces the same
-          # all-lane selection as the weekly schedule.
+          # Manual full_run is the explicit paid/publishing override: it runs only
+          # from main and forces the all-lane paired selection. There is no schedule.
           full_run=false
-          if [ "$EVENT_NAME" = "schedule" ]; then
-            full_run=true
-          elif [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$FULL_RUN" = "true" ]; then
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$FULL_RUN" = "true" ]; then
             if [ "$GITHUB_REF" != "refs/heads/main" ]; then
               echo "::error::full_run must be dispatched from main so docs/history publishing and the regression gate can run."
               exit 1
@@ -189,7 +183,7 @@ jobs:
             client="dekaf"
           fi
 
-          # Dispatch-shape override. Empty (scheduled runs) means lane-default;
+          # Dispatch-shape override. Empty means lane-default;
           # the dispatch UI defaults to the cheap shape.
           shape="$DISPATCH_SHAPE"
           [ "$shape" = "lane-default" ] && shape=""
@@ -205,11 +199,11 @@ jobs:
           fi
 
           if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$full_run" = "true" ]; then
-            echo "::notice::Manual full_run selected: running all 12 paid lanes with the weekly paired shape, then publishing docs/history."
+            echo "::notice::Manual full_run selected: running all 12 paid lanes with the paired publishing shape, then publishing docs/history."
           elif [ "$lane" = "all" ] && [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             # Surface the cost/publish reality before 12 paid runners start:
             # normal manual runs are Dekaf-only and do not publish docs/history.
-            echo "::notice::Manual lane=all runs every lane Dekaf-only and does not publish docs/history; enable full_run for the weekly paired publish run."
+            echo "::notice::Manual lane=all runs every lane Dekaf-only and does not publish docs/history; enable full_run for the paired publish run."
           fi
           if [ "$full_run" = "true" ] && [ "$CONSUMER_FETCH_DIAGNOSTICS" = "true" ]; then
             echo "::error::full_run cannot enable consumer_fetch_diagnostics because its Dekaf-only overhead would invalidate the published comparison."
@@ -253,8 +247,9 @@ jobs:
             fi
             case "$lane" in
               producer-1b|producer-3b|producer-idempotent-1b|producer-idempotent-3b|producer-acks-all-1b|producer-acks-all-3b) ;;
+              consumer-1b|consumer-batch-1b|consumer-raw-1b|consumer-raw-batch-1b) ;;
               *)
-                echo "::error::Exact-SHA A-B-A requires a duration-based producer lane with delivery-latency metrics."
+                echo "::error::Exact-SHA A-B-A requires a duration-based producer lane or a consumer replay lane."
                 exit 1
                 ;;
             esac
@@ -340,7 +335,7 @@ jobs:
           fi
 
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
-          # Only scheduled or explicitly opted-in manual full runs may publish.
+          # Only explicitly opted-in manual full runs may publish.
           # Normal manual runs stay single-client/partial and would wipe rows or
           # ratio columns from the regenerated docs/history tables.
           echo "full_run=$full_run" >> "$GITHUB_OUTPUT"
@@ -969,8 +964,8 @@ jobs:
     # must block the docs update rather than publish a partial or invalid table.
     # Normal manual dispatches do not publish: their partial/single-client rows
     # would wipe lanes or ratio columns because docs/history are regenerated from
-    # this run alone. Scheduled runs and explicit manual full_run dispatches emit
-    # the complete paired matrix and may publish.
+    # this run alone. Explicit manual full_run dispatches emit the complete
+    # paired matrix and may publish.
     if: github.ref == 'refs/heads/main' && needs.select-lanes.outputs.full_run == 'true' && needs.stress-test.result == 'success' && needs.generate-summary.result == 'success'
 
     permissions:
@@ -1020,7 +1015,7 @@ jobs:
     # Wait for the docs PR so valid regression observations are persisted before
     # reporting a repeated regression. Partial/Dekaf-only manual dispatches skip
     # publish-to-docs and this gate because their observations are not persisted;
-    # manual full_run dispatches follow the scheduled publish/gate path.
+    # manual full_run dispatches follow the publish/gate path.
     if: >-
       always() &&
       needs.stress-test.result == 'success' &&

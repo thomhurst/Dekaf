@@ -1,0 +1,180 @@
+name: Performance gate
+run-name: 'Performance gate ${{ github.event.pull_request.number && format(''PR #{0}'', github.event.pull_request.number) || github.ref_name }}'
+# Automatic same-VM A1/B/A2 microbenchmark screen for every pull request that changes
+# product source. A is the PR's merge base with main, B is the exact PR head. Fixtures come
+# from tools/Dekaf.Benchmarks and are selected from the changed paths by
+# .github/scripts/performance_gate.py; each product revision builds and runs its own copy.
+# Loaded producer/consumer pipeline changes still need the evidence described in AGENTS.md.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - 'src/**'
+      - 'Directory.Packages.props'
+      - 'Directory.Build.props'
+      - 'Directory.Build.targets'
+      - 'global.json'
+      - '.github/workflows/performance-gate.yml'
+      - '.github/scripts/performance_gate.py'
+      - '.github/scripts/compare_bdn_reports.jq'
+  workflow_dispatch:
+    inputs:
+      base_sha:
+        description: 'Exact baseline SHA (default: merge base of the dispatched ref with main)'
+        required: false
+      head_sha:
+        description: 'Exact candidate SHA (default: the dispatched ref)'
+        required: false
+      filters:
+        description: 'Explicit BenchmarkDotNet globs, space separated (default: selected from the changed product paths)'
+        required: false
+permissions:
+  contents: read
+concurrency:
+  group: performance-gate-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: '1'
+  DOTNET_TieredCompilation: '1'
+  DOTNET_TieredPGO: '1'
+  DOTNET_ReadyToRun: '1'
+  MSBUILDDISABLENODEREUSE: '1'
+  DOTNET_CLI_USE_MSBUILD_SERVER: '0'
+  GATE: ${{ github.workspace }}/gate
+  TOLERANCE: '5'
+  MIN_WARMUP: '20'
+jobs:
+  gate:
+    name: Micro A1/B/A2 screen
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || inputs.head_sha || github.sha }}
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
+        with:
+          global-json-file: global.json
+      - name: Pin exact baseline and candidate revisions
+        id: pins
+        env:
+          BASE_INPUT: ${{ inputs.base_sha }}
+          HEAD_INPUT: ${{ inputs.head_sha }}
+        run: |
+          mkdir -p "$GATE"
+          git fetch --no-tags origin main
+          head="${HEAD_INPUT:-$(git rev-parse HEAD)}"
+          base="${BASE_INPUT:-$(git merge-base "$head" origin/main)}"
+          git merge-base --is-ancestor "$base" "$head"
+          for sha in "$base" "$head"; do [[ "$sha" =~ ^[0-9a-f]{40}$ ]]; done
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+          echo "head=$head" >> "$GITHUB_OUTPUT"
+          jq -n --arg base "$base" --arg head "$head" --arg main "$(git rev-parse origin/main)" \
+            --arg workflow "$GITHUB_SHA" --arg run "$GITHUB_RUN_ID" \
+            '{baseline_sha: $base, candidate_sha: $head, main_at_start: $main, workflow_sha: $workflow, run_id: $run}' \
+            > "$GATE/provenance.json"
+          dotnet --info > "$GATE/runtime.txt"
+          lscpu > "$GATE/cpu.txt"
+          cp /etc/os-release "$GATE/os-release.txt"
+          {
+            echo "## Performance gate"
+            echo
+            echo "Baseline A: \`$base\` (merge base with main) · Candidate B: \`$head\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Select fixtures from the changed product paths
+        id: select
+        env:
+          FILTERS: ${{ inputs.filters }}
+        run: |
+          python3 .github/scripts/performance_gate.py select \
+            --base "${{ steps.pins.outputs.base }}" --head "${{ steps.pins.outputs.head }}" \
+            --filters "$FILTERS" --output "$GATE/selection.json"
+          applicable=$(jq -r .applicable "$GATE/selection.json")
+          echo "applicable=$applicable" >> "$GITHUB_OUTPUT"
+          {
+            echo
+            echo "Areas: $(jq -r '.areas | join(", ")' "$GATE/selection.json")"
+            echo
+            echo "Filters: $(jq -r '.filters | map("`" + . + "`") | join(" ")' "$GATE/selection.json")"
+            jq -r '.not_applicable[] | "\n- " + .area + ": " + .reason' "$GATE/selection.json"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [[ "$applicable" != true ]]; then
+            echo "No steady-state microbenchmark fixture maps to the changed paths; nothing was measured." >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Build both product revisions
+        if: steps.select.outputs.applicable == 'true'
+        run: |
+          for role in A B; do
+            sha="${{ steps.pins.outputs.base }}"; if [[ "$role" == B ]]; then sha="${{ steps.pins.outputs.head }}"; fi
+            git worktree add --detach "$RUNNER_TEMP/gate-$role" "$sha"
+            (cd "$RUNNER_TEMP/gate-$role" && dotnet build tools/Dekaf.Benchmarks -c Release --disable-build-servers > "$GATE/build-$role.log" 2>&1)
+          done
+          git diff --stat "${{ steps.pins.outputs.base }}" "${{ steps.pins.outputs.head }}" -- tools/Dekaf.Benchmarks > "$GATE/fixture-diff.txt" || true
+          if [[ -s "$GATE/fixture-diff.txt" ]]; then
+            echo "::warning::The PR changes tools/Dekaf.Benchmarks; each revision measured its own fixture source. Review the fixture diff before trusting the comparison."
+            { echo; echo "Fixture source differs between A and B:"; echo '```'; cat "$GATE/fixture-diff.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Validate the selected cases on both revisions
+        id: dry
+        if: steps.select.outputs.applicable == 'true'
+        run: |
+          mapfile -t filters < <(jq -r '.filters[]' "$GATE/selection.json")
+          for role in A B; do
+            (
+              cd "$RUNNER_TEMP/gate-$role"
+              dotnet run --project tools/Dekaf.Benchmarks -c Release --no-build -- --list flat --filter "${filters[@]}" > "$GATE/list-$role.txt" 2>&1
+              count=$(python3 "$GITHUB_WORKSPACE/.github/scripts/performance_gate.py" count < "$GATE/list-$role.txt")
+              echo "$count" > "$GATE/count-$role.txt"
+              dotnet run --project tools/Dekaf.Benchmarks -c Release --no-build -- --job Dry --filter "${filters[@]}" --exporters fulljson --buildTimeout 900 --artifacts "$GATE/dry-$role" > "$GATE/dry-$role.log" 2>&1
+              python3 "$GITHUB_WORKSPACE/.github/scripts/performance_gate.py" validate --dry --phase "$GATE/dry-$role" --expected "$count"
+            )
+          done
+          dotnet build-server shutdown
+          {
+            echo
+            echo "Cases: A $(cat "$GATE/count-A.txt") · B $(cat "$GATE/count-B.txt") · estimated $(python3 -c "import sys; sys.path.insert(0, '.github/scripts'); import performance_gate as g; print(g.estimate_minutes($(cat "$GATE/count-B.txt")))") minutes for A1/B/A2"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Measure A1, B and A2 sequentially on this VM
+        if: steps.select.outputs.applicable == 'true'
+        run: |
+          mapfile -t filters < <(jq -r '.filters[]' "$GATE/selection.json")
+          for phase in A1 B A2; do
+            role=A; if [[ "$phase" == B ]]; then role=B; fi
+            (
+              cd "$RUNNER_TEMP/gate-$role"
+              dotnet run --project tools/Dekaf.Benchmarks -c Release --no-build -- --filter "${filters[@]}" \
+                --warmupCount 50 --iterationCount 25 --iterationTime 1000 --launchCount 1 --outliers DontRemove \
+                --exporters fulljson --buildTimeout 900 --artifacts "$GATE/$phase" > "$GATE/$phase.log" 2>&1
+            )
+            python3 .github/scripts/performance_gate.py validate --phase "$GATE/$phase" --expected "$(cat "$GATE/count-$role.txt")" \
+              --iterations 25 --min-warmup "$MIN_WARMUP" --merged "$GATE/$phase.json" --cases "$GATE/$phase-cases.json"
+          done
+      - name: Screen the candidate against both controls
+        if: steps.select.outputs.applicable == 'true'
+        run: |
+          compare=(jq -nr --slurpfile a1 "$GATE/A1.json" --slurpfile b "$GATE/B.json" --slurpfile a2 "$GATE/A2.json"
+                   --argjson tolerance "$TOLERANCE" --argjson alloc_floor 8 --argjson min_warmup 20
+                   -f .github/scripts/compare_bdn_reports.jq)
+          "${compare[@]}" --arg format json > "$GATE/comparison.json"
+          "${compare[@]}" --arg format markdown > "$GATE/comparison.md"
+          { echo; cat "$GATE/comparison.md"; echo; } >> "$GITHUB_STEP_SUMMARY"
+          screen=$(jq -r .screen "$GATE/comparison.json")
+          case "$screen" in
+            PASS) echo 'Micro screen PASS. Loaded producer/consumer pipeline changes still need the end-to-end evidence described in AGENTS.md.' >> "$GITHUB_STEP_SUMMARY" ;;
+            INCONCLUSIVE) echo '::warning::Micro screen INCONCLUSIVE: a loss against one control only, or a phase below the warmup floor. Review the affected cases; one exact repeat is permitted.' ;;
+            *) echo '::error::Micro screen REGRESSION: the candidate is slower or allocates more than both controls beyond tolerance.'; exit 1 ;;
+          esac
+      - name: Record final main
+        if: always()
+        run: git ls-remote origin refs/heads/main > "$GATE/main-at-end.txt" || true
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: performance-gate-${{ github.event.pull_request.number || github.ref_name }}-${{ github.run_id }}
+          path: gate/
+          include-hidden-files: true
+          overwrite: true
+          retention-days: 90

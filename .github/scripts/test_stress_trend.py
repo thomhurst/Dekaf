@@ -1936,7 +1936,7 @@ class StressTrendTests(unittest.TestCase):
             workflow.index("  # Run each scenario in parallel.")
         ]
         self.assertIn(
-            'elif [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$FULL_RUN" = "true" ]',
+            'if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$FULL_RUN" = "true" ]',
             selector,
         )
         self.assertIn('[ "$GITHUB_REF" != "refs/heads/main" ]', selector)
@@ -1970,7 +1970,7 @@ class StressTrendTests(unittest.TestCase):
         )
         self.assertIn('echo "full_run=$full_run"', selector)
         self.assertIn(
-            "(github.event_name == 'schedule' || github.event.inputs.full_run == 'true') && 'all-schedule'",
+            "github.event.inputs.full_run == 'true' && 'all-full'",
             workflow,
         )
 

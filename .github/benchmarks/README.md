@@ -8,11 +8,16 @@ Pool, outbox, dispatch and administrative fixtures also remove custom BDN runtim
 loggers, samplers and JIT listeners. JIT investigations are manual and separate
 from timing; compilation activity is not an acceptance metric.
 
-Use [performance-comparison.yml](../workflows/performance-comparison.yml) for
-manual, exact-revision comparisons. The existing daily
-[benchmarks.yml](../workflows/benchmarks.yml) and scheduled/manual
-[stress-tests.yml](../workflows/stress-tests.yml) retain their existing behavior,
-paid-run limits and publishing coverage.
+Every pull request that changes `src/` runs
+[performance-gate.yml](../workflows/performance-gate.yml): an automatic same-VM
+A1/B/A2 screen of the maintained `tools/Dekaf.Benchmarks` fixtures selected from
+the changed paths by [performance_gate.py](../scripts/performance_gate.py)
+(merge base versus PR head, each revision building its own fixture copy). Use
+[performance-comparison.yml](../workflows/performance-comparison.yml) for
+manual, exact-revision comparisons with loaded or bespoke suites. The manual
+[benchmarks.yml](../workflows/benchmarks.yml) and
+[stress-tests.yml](../workflows/stress-tests.yml) workflows have no schedule;
+they retain their paid-run limits and publishing coverage when dispatched.
 
 The harness is maintained with the repository. Its source is pinned independently
 from both products: H is the harness, A is fresh main, and B is the current open
@@ -35,7 +40,9 @@ gh workflow run performance-comparison.yml --ref main -f pr=3128 -f suite=admin 
 ```
 
 The workflow rejects moving product names, a different checked-out harness,
-stale main, a candidate missing main, a changed/closed PR, and unknown suites.
+a baseline that is not on main or is older than 7 days, a candidate missing the
+baseline, a changed/closed PR, and unknown suites. Main moving after dispatch does
+not invalidate a campaign; `performance-pins.json` records how far main moved.
 `performance-pins.json` records independent workflow/harness/product identities.
 The preparation job verifies fresh main and the open PR once before jobs fan out.
 Queued jobs use that pinned campaign, so main moving during the campaign does
@@ -55,7 +62,7 @@ binary in all phases and never grants product acceptance. See
 
 | Suite | Scope and maintained driver |
 | --- | --- |
-| `micro` | Focused cases for #3082, #3083, #3085, #3086, #3116, #3117, #3137, #3142, #3149, #3158; normal [project references](aba/Dekaf.Benchmarks.csproj) and BDN CLI in the workflow |
+| `micro` | Bespoke cases declared per PR (#3082, #3083, #3085, #3086, #3116, #3117, #3137, #3142, #3149, #3158); normal [project references](aba/Dekaf.Benchmarks.csproj) and BDN CLI in the workflow. Ordinary PRs use the automatic gate instead |
 | `micro-completion` | Standard BenchmarkDotNet publication and manual completion for #3083, ordered/fragmented batches of 128 and 4,096 records; compare full batch cost and identify amortized reservation storage separately |
 | `pool`, `pool-recovery` | Pool reset and recovery; [driver](../scripts/pool_reset_aba.py) |
 | `pool-loaded`, `pool-profile` | Loaded producer pool comparison and diagnostic profiling; [driver](../scripts/pool_loaded_aba.py) |
