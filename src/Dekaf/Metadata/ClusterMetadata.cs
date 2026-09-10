@@ -170,6 +170,10 @@ public sealed class ClusterMetadata
     private volatile ClusterMetadataSnapshot _snapshot = ClusterMetadataSnapshot.Empty;
     private readonly object _writeLock = new(); // Only needed for concurrent writes (rare)
 
+    // Cold recovery paths can couple leader validation to dependent state updates.
+    // Never await or call consumer code from a metadata writer while holding this lock.
+    internal object UpdateLock => _writeLock;
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal ClusterMetadataSnapshot CaptureSnapshot() => _snapshot;
 
