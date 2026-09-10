@@ -310,7 +310,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                 continue;
             }
 
-            _acquisitionStartedTimestamp = System.Diagnostics.Stopwatch.GetTimestamp();
+            _bufferedAcquisitionTimestamps?.Clear();
             _rawRecords?.Clear();
             // All readable slices belong to the new poll; overwrite payload bytes as needed.
             _rawBuffer?.ResetWrittenCount();
@@ -358,6 +358,8 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
             List<ShareConsumeResult<TKey, TValue>>? fetchedRecords = _renewedRecords is null
                 ? null
                 : new List<ShareConsumeResult<TKey, TValue>>(_options.MaxPollRecords);
+            if (fetchedRecords is not null && _hostedProcessing)
+                _bufferedAcquisitionTimestamps ??= [];
             Exception? firstFetchError = null;
             Dictionary<TopicPartition, Exception>? acknowledgementErrors = null;
             if (pendingAcks is not null && sentAcknowledgementPartitionCount != pendingAcks.Count)
@@ -374,7 +376,8 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
 
             foreach (var fetchTask in fetchTasks)
             {
-                var (brokerId, version, response, sentAcks, error, acknowledgementError) = fetchTask.Result;
+                var fetchResult = await fetchTask.ConfigureAwait(false);
+                var (brokerId, version, response, sentAcks, error, acknowledgementError) = fetchResult;
 
                 if (error is not null)
                 {
@@ -432,7 +435,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                         acknowledgementFailures,
                         out var successfulAcknowledgements,
                         out var failedAcknowledgements);
-                    ApplySuccessfulAcknowledgements(successfulAcknowledgements);
+                    ApplySuccessfulAcknowledgements(successfulAcknowledgements, fetchResult.ReceivedTimestamp);
                     RequeueAcknowledgements(failedAcknowledgements);
                     AddAcknowledgementErrors(
                         ref acknowledgementErrors,
@@ -441,7 +444,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                 }
                 else
                 {
-                    ApplySuccessfulAcknowledgements(sentAcks);
+                    ApplySuccessfulAcknowledgements(sentAcks, fetchResult.ReceivedTimestamp);
                 }
             }
 
@@ -454,7 +457,8 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
             // is per poll, not per message, and avoids buffering records when no renewal is active.
             foreach (var fetchTask in fetchTasks)
             {
-                var (_, _, response, _, _, _) = fetchTask.Result;
+                var fetchResult = await fetchTask.ConfigureAwait(false);
+                var response = fetchResult.Response;
                 if (response is null || response.ErrorCode != ErrorCode.None)
                     continue;
 
@@ -543,6 +547,8 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                         }
 
                         var tp = new TopicPartition(topicInfo.Name, partition.PartitionIndex);
+                        if (fetchedRecords is not null && _hostedProcessing)
+                            _bufferedAcquisitionTimestamps![tp] = fetchResult.ReceivedTimestamp;
 
                         foreach (var result in parsed)
                         {
@@ -565,6 +571,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                             }
 
                             recordCount++;
+                            _acquisitionStartedTimestamp = fetchResult.ReceivedTimestamp;
                             yield return result;
                         }
                     }
@@ -580,6 +587,15 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                     _options.MaxPollRecords - recordCount - bufferedRecordCount);
                 foreach (var renewedRecord in renewedRecords)
                 {
+                    if (_hostedProcessing)
+                    {
+                        // A previous handler can finish another record from this replay snapshot.
+                        if (_renewedRecords is null || !_renewedRecords.TryGetValue(
+                                new RenewedRecordKey(renewedRecord.Topic, renewedRecord.Partition, renewedRecord.Offset),
+                                out var state) || !state.Active)
+                            continue;
+                        _acquisitionStartedTimestamp = state.ReceiptTimestamp;
+                    }
                     Interlocked.Increment(ref _renewedRecordReplayCount);
                     recordCount++;
                     yield return renewedRecord;
@@ -600,6 +616,9 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                     }
 
                     recordCount++;
+                    if (_hostedProcessing)
+                        _acquisitionStartedTimestamp = _bufferedAcquisitionTimestamps![
+                            new TopicPartition(fetchedRecord.Topic, fetchedRecord.Partition)];
                     yield return fetchedRecord;
                 }
             }
@@ -819,6 +838,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
 
         _rawRecords = null;
         _rawBuffer = null;
+        _bufferedAcquisitionTimestamps = null;
         _initLock.Dispose();
     }
 
@@ -942,6 +962,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                 var response = (ShareFetchResponse)await connection
                     .SendAsync<ShareFetchRequest, ShareFetchResponse>(request, version, cancellationToken)
                     .ConfigureAwait(false);
+                var receivedTimestamp = System.Diagnostics.Stopwatch.GetTimestamp();
 
                 if (attempt < RetryHelper.MaxRetries && response.ErrorCode.IsRetriable())
                 {
@@ -961,7 +982,10 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                     continue;
                 }
 
-                return new ShareFetchBrokerResult(brokerId, version, response, brokerAcks, null, null);
+                return new ShareFetchBrokerResult(brokerId, version, response, brokerAcks, null, null)
+                {
+                    ReceivedTimestamp = receivedTimestamp
+                };
             }
             catch (Exception ex) when (ex is OperationCanceledException or BrokerVersionException)
             {
@@ -1105,6 +1129,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                     .SendAsync<ShareAcknowledgeRequest, ShareAcknowledgeResponse>(
                         request, shareAckVersion, cancellationToken)
                     .ConfigureAwait(false);
+                var receivedTimestamp = System.Diagnostics.Stopwatch.GetTimestamp();
 
                 if (response.ErrorCode != ErrorCode.None)
                 {
@@ -1132,6 +1157,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                     pendingAcknowledgements);
                 if (acknowledgementFailures is null)
                 {
+                    RecordRenewalReceipt(pendingAcknowledgements, receivedTimestamp);
                     MergeAcknowledgements(ref successfulAcknowledgements, pendingAcknowledgements);
                     return new AcknowledgeBrokerResult(
                         successfulAcknowledgements,
@@ -1145,6 +1171,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                     acknowledgementFailures,
                     out var successfulThisAttempt,
                     out var failedThisAttempt);
+                RecordRenewalReceipt(successfulThisAttempt, receivedTimestamp);
                 MergeAcknowledgements(ref successfulAcknowledgements, successfulThisAttempt);
 
                 SplitRetriableAcknowledgements(
@@ -2074,7 +2101,8 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
     }
 
     private void ApplySuccessfulAcknowledgements(
-        Dictionary<TopicPartition, List<AcknowledgementBatchData>>? acknowledgements)
+        Dictionary<TopicPartition, List<AcknowledgementBatchData>>? acknowledgements,
+        long receivedTimestamp = 0)
     {
         if (_renewedRecords is null || acknowledgements is null)
             return;
@@ -2093,7 +2121,11 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                     if (type == AcknowledgeType.Renew)
                     {
                         if (_renewedRecords.TryGetValue(key, out var state))
+                        {
+                            if (receivedTimestamp != 0)
+                                state.ReceiptTimestamp = receivedTimestamp;
                             state.Active = true;
+                        }
                     }
                     else
                     {
@@ -2105,6 +2137,23 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
 
         if (_renewedRecords.Count == 0)
             _renewedRecords = null;
+    }
+
+    private void RecordRenewalReceipt(
+        Dictionary<TopicPartition, List<AcknowledgementBatchData>>? acknowledgements, long receivedTimestamp)
+    {
+        if (!_hostedProcessing || _renewedRecords is null || acknowledgements is null)
+            return;
+
+        // Broker tasks only read the dictionary and update their own records. Activation and
+        // dictionary mutation remain after Task.WhenAll. Retried partitions keep distinct times.
+        foreach (var (partition, batches) in acknowledgements)
+            foreach (var batch in batches)
+                for (var index = 0; index < batch.AcknowledgeTypes.Length; index++)
+                    if (batch.AcknowledgeTypes[index] == (byte)AcknowledgeType.Renew
+                        && _renewedRecords.TryGetValue(new RenewedRecordKey(
+                            partition.Topic, partition.Partition, batch.FirstOffset + index), out var state))
+                        state.ReceiptTimestamp = -receivedTimestamp;
     }
 
     private List<ShareConsumeResult<TKey, TValue>> GetActiveRenewedRecords(
@@ -2293,7 +2342,14 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
     private sealed class RenewedRecordState(ShareConsumeResult<TKey, TValue> record)
     {
         internal ShareConsumeResult<TKey, TValue> Record { get; set; } = record;
-        internal bool Active { get; set; }
+        // The sign stores pending/active state in the timestamp, replacing the bool and its
+        // padding instead of adding another per-record field. Zero means no confirmed renewal.
+        internal long ReceiptTimestamp { get; set; }
+        internal bool Active
+        {
+            get => ReceiptTimestamp > 0;
+            set => ReceiptTimestamp = value ? Math.Max(1, Math.Abs(ReceiptTimestamp)) : 0;
+        }
     }
 
     private sealed class AcknowledgementFailures(
@@ -2337,7 +2393,12 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         ShareFetchResponse? Response,
         Dictionary<TopicPartition, List<AcknowledgementBatchData>>? SentAcknowledgements,
         Exception? Error,
-        Exception? AcknowledgementError);
+        Exception? AcknowledgementError)
+    {
+        // Capture before awaiting other brokers or preparing deserializers. Every record in
+        // this response shares the same local receipt time, including records buffered for yield.
+        public long ReceivedTimestamp { get; init; }
+    }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void ThrowIfNotInitialized()

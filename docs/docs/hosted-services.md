@@ -421,8 +421,11 @@ in the background.
 
 Renewal requires broker support for **ShareFetch/ShareAcknowledge v2**. On older brokers a required
 renewal fails, cancels processing, and leaves the record for redelivery. Long synchronous handlers
-must yield to permit renewal. The built-in consumer supplies a conservative fetch-start timestamp;
-if its known acquisition deadline has elapsed, the service refuses to process or accept that record.
+must yield to permit renewal. The built-in consumer timestamps each broker response when received,
+so fetch waiting does not consume a newly delivered record's local processing budget. Records retain
+that timestamp while waiting for other brokers, deserialization, or earlier handlers. If the local
+acquisition deadline has elapsed, the service refuses to process or accept that record. The broker
+remains authoritative: response transit time and process pauses can make a lock expire sooner.
 Renewal extends only the current record's lock. Other records acquired in the same batch may expire
 while a slow record is processed. Broker failures, lock expiry, and process pauses can all cause
 redelivery; make application effects idempotent. For tightly limited acquisition on v2 brokers,

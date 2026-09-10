@@ -130,6 +130,52 @@ public sealed class ShareConsumerRenewalTests
     }
 
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Poll_AcquisitionTimestamp_UsesEachBrokerResponseAndSurvivesBuffering(bool bufferRecords)
+    {
+        var received = new long[2];
+        var first = new CapturingConnection(ApiKey.ShareFetch, 2)
+        {
+            ShareFetchResponse = CreateFetchResponse(partition: 0, offset: 42, recordCount: 2),
+            OnSend = () => received[0] = System.Diagnostics.Stopwatch.GetTimestamp()
+        };
+        var second = new CapturingConnection(ApiKey.ShareFetch, 2, brokerId: 2)
+        {
+            ShareFetchResponse = CreateFetchResponse(partition: 1, offset: 100),
+            OnSend = () => received[1] = System.Diagnostics.Stopwatch.GetTimestamp()
+        };
+        await using var fixture = CreateFixture(first, secondConnection: second);
+        var hosted = (IHostedShareConsumer)fixture.Consumer;
+        hosted.ObserveAcknowledgements(static _ => { });
+        PrepareForPoll(fixture.Consumer, new TopicPartition("topic", 0), new TopicPartition("topic", 1));
+        fixture.Consumer.Subscribe("topic");
+        if (bufferRecords)
+        {
+            fixture.Consumer.Acknowledge(CreateRecord(), AcknowledgeType.Renew);
+            FlushPendingAcknowledgements(fixture.Consumer);
+            ApplySuccessfulAcknowledgements(fixture.Consumer, RenewalAcknowledgements());
+        }
+
+        await using var poll = fixture.Consumer.PollAsync().GetAsyncEnumerator();
+        var timestamps = new Dictionary<int, long>();
+        for (var index = 0; index < 3; index++)
+        {
+            await Assert.That(await poll.MoveNextAsync()).IsTrue();
+            var timestamp = hosted.AcquisitionStartedTimestamp;
+            var responseBoundary = received[poll.Current.Partition];
+            await Assert.That(timestamp).IsGreaterThanOrEqualTo(responseBoundary);
+            var lastResponseBoundary = Math.Max(received[0], received[1]);
+            if (responseBoundary < lastResponseBoundary)
+                await Assert.That(timestamp).IsLessThan(lastResponseBoundary);
+            if (timestamps.TryGetValue(poll.Current.Partition, out var earlierRecordTimestamp))
+                await Assert.That(timestamp).IsEqualTo(earlierRecordTimestamp);
+            timestamps[poll.Current.Partition] = timestamp;
+        }
+        await Assert.That(timestamps.Count).IsEqualTo(2);
+    }
+
+    [Test]
     public async Task Poll_RenewalSuccess_ReplaysRecordAndPublishesLockTimeout()
     {
         var connection = new CapturingConnection(ApiKey.ShareFetch, 2)
@@ -144,10 +190,13 @@ public sealed class ShareConsumerRenewalTests
         };
         await using var fixture = CreateFixture(connection);
         var record = CreateRecord();
+        var hosted = (IHostedShareConsumer)fixture.Consumer;
+        hosted.ObserveAcknowledgements(static _ => { });
         PrepareForPoll(fixture.Consumer);
         fixture.Consumer.Subscribe("topic");
         fixture.Consumer.Acknowledge(record, AcknowledgeType.Renew);
 
+        var beforePoll = System.Diagnostics.Stopwatch.GetTimestamp();
         await using var poll = fixture.Consumer.PollAsync().GetAsyncEnumerator();
         var moved = await poll.MoveNextAsync();
 
@@ -155,6 +204,7 @@ public sealed class ShareConsumerRenewalTests
         await Assert.That(ReferenceEquals(poll.Current, record)).IsTrue();
         await Assert.That(fixture.Consumer.AcquisitionLockTimeoutMs).IsEqualTo(30_000);
         await Assert.That(fixture.Consumer.RenewedRecordReplayCount).IsEqualTo(1);
+        await Assert.That(hosted.AcquisitionStartedTimestamp).IsGreaterThanOrEqualTo(beforePoll);
     }
 
     [Test]
@@ -178,6 +228,70 @@ public sealed class ShareConsumerRenewalTests
         await Assert.That(poll.Current.Offset).IsEqualTo(100);
         var assignment = new HashSet<TopicPartition> { new("topic", 0) };
         await Assert.That(GetActiveRenewedRecords(fixture.Consumer, assignment)).HasSingleItem();
+    }
+
+    [Test]
+    public async Task Commit_RenewalRetry_PreservesEachSuccessfulResponseTimeForReplay()
+    {
+        var received = new List<long>();
+        CapturingConnection connection = null!;
+        connection = new CapturingConnection(ApiKey.ShareAcknowledge, 2, supportShareFetch: true)
+        {
+            ShareAcknowledgeResponses = new Queue<ShareAcknowledgeResponse>(
+            [
+                CreateAcknowledgeResponse((0, ErrorCode.None), (1, ErrorCode.NotLeaderOrFollower)),
+                CreateAcknowledgeResponse((1, ErrorCode.None))
+            ]),
+            OnSend = () =>
+            {
+                if (connection.ShareAcknowledgeRequests.Count > received.Count)
+                    received.Add(System.Diagnostics.Stopwatch.GetTimestamp());
+            }
+        };
+        await using var fixture = CreateFixture(connection);
+        var hosted = (IHostedShareConsumer)fixture.Consumer;
+        hosted.ObserveAcknowledgements(static _ => { });
+        PrepareForPoll(fixture.Consumer, new TopicPartition("topic", 0), new TopicPartition("topic", 1));
+        fixture.Consumer.Subscribe("topic");
+        fixture.Consumer.Acknowledge(CreateRecord(partition: 0, offset: 40), AcknowledgeType.Renew);
+        fixture.Consumer.Acknowledge(CreateRecord(partition: 1, offset: 41), AcknowledgeType.Renew);
+
+        await fixture.Consumer.CommitAsync();
+        var beforeReplay = System.Diagnostics.Stopwatch.GetTimestamp();
+        await Assert.That(received.Count).IsEqualTo(2);
+        await using var poll = fixture.Consumer.PollAsync().GetAsyncEnumerator();
+        for (var index = 0; index < 2; index++)
+        {
+            await Assert.That(await poll.MoveNextAsync()).IsTrue();
+            var partition = poll.Current.Partition;
+            await Assert.That(hosted.AcquisitionStartedTimestamp).IsGreaterThanOrEqualTo(received[partition]);
+            await Assert.That(hosted.AcquisitionStartedTimestamp).IsLessThanOrEqualTo(beforeReplay);
+            if (partition == 0)
+                await Assert.That(hosted.AcquisitionStartedTimestamp).IsLessThan(received[1]);
+        }
+    }
+
+    [Test]
+    public async Task Poll_TerminalDispositionSkipsRemainingRenewedSnapshot()
+    {
+        await using var fixture = CreateFixture(new CapturingConnection(ApiKey.ShareFetch, 2));
+        var hosted = (IHostedShareConsumer)fixture.Consumer;
+        hosted.ObserveAcknowledgements(static _ => { });
+        PrepareForPoll(fixture.Consumer);
+        fixture.Consumer.Subscribe("topic");
+        var first = CreateRecord(offset: 42);
+        var second = CreateRecord(offset: 43);
+        fixture.Consumer.Acknowledge(first, AcknowledgeType.Renew);
+        fixture.Consumer.Acknowledge(second, AcknowledgeType.Renew);
+        using var cancellation = new CancellationTokenSource();
+        await using var poll = fixture.Consumer.PollAsync(cancellation.Token).GetAsyncEnumerator();
+        await Assert.That(await poll.MoveNextAsync()).IsTrue();
+
+        fixture.Consumer.Acknowledge(first, AcknowledgeType.Accept);
+        fixture.Consumer.Acknowledge(second, AcknowledgeType.Accept);
+        await cancellation.CancelAsync();
+
+        await Assert.That(await poll.MoveNextAsync()).IsFalse();
     }
 
     [Test]
@@ -1221,7 +1335,7 @@ public sealed class ShareConsumerRenewalTests
     private static void ApplySuccessfulAcknowledgements(
         KafkaShareConsumer<string, string> consumer,
         Dictionary<TopicPartition, List<AcknowledgementBatchData>> acknowledgements)
-        => InvokePrivate(consumer, "ApplySuccessfulAcknowledgements", acknowledgements);
+        => InvokePrivate(consumer, "ApplySuccessfulAcknowledgements", acknowledgements, System.Diagnostics.Stopwatch.GetTimestamp());
 
     private static List<ShareConsumeResult<string, string>> GetActiveRenewedRecords(
         KafkaShareConsumer<string, string> consumer,
@@ -1337,7 +1451,8 @@ public sealed class ShareConsumerRenewalTests
     private sealed class CapturingConnection(
         ApiKey apiKey,
         short maximumVersion,
-        int brokerId = 1) :
+        int brokerId = 1,
+        bool supportShareFetch = false) :
         IKafkaConnection,
         IKafkaCapabilityProvider
     {
@@ -1352,6 +1467,7 @@ public sealed class ShareConsumerRenewalTests
                 ApiKeys =
                 [
                     new ApiVersion(apiKey, 0, maximumVersion),
+                    .. supportShareFetch ? new[] { new ApiVersion(ApiKey.ShareFetch, 0, 2) } : [],
                     new ApiVersion(
                         ApiKey.Metadata,
                         MetadataRequest.LowestSupportedVersion,
