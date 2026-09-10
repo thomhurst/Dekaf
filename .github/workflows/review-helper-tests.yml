@@ -1,0 +1,19 @@
+name: Review helper tests
+on:
+  pull_request:
+    paths:
+      - '.github/scripts/pr-review-comment.sh'
+      - '.github/scripts/pr_review_comment.py'
+      - '.github/scripts/test_pr_review_comment.py'
+      - '.github/workflows/claude-code-review.yml'
+      - '.github/workflows/review-helper-tests.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - run: python3 -m unittest discover -s .github/scripts -p test_pr_review_comment.py -v

@@ -45,6 +45,8 @@ jobs:
     env:
       # Cap the write-capable helper so an injected instruction cannot spam the PR.
       CLAUDE_CODE_SCRIPT_CAPS: '{"pr-review-comment.sh":2}'
+      PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
+      GH_REPO: ${{ github.repository }}
 
     steps:
       # Trusted base ref at the workspace root - this is what Claude runs in.
@@ -79,8 +81,7 @@ jobs:
         id: claude-review
         uses: anthropics/claude-code-action@19dda84776b3518d98b8798e591daee763049ed3 # v1
         env:
-          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
-          GH_REPO: ${{ github.repository }}
+          REVIEW_RECEIPT: ${{ runner.temp }}/claude-review-${{ github.run_id }}-${{ github.run_attempt }}.json
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # The actor is the PR author, who by definition has no write access on a
@@ -132,3 +133,8 @@ jobs:
           claude_args: |
             --add-dir pr-head --allowedTools "Read,Glob,Grep,Bash(.github/scripts/pr-review-comment.sh:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*)" --model claude-sonnet-5
           allowed_bots: "dependabot[bot]"
+
+      - name: Require a successfully posted review
+        env:
+          REVIEW_RECEIPT: ${{ runner.temp }}/claude-review-${{ github.run_id }}-${{ github.run_attempt }}.json
+        run: python3 .github/scripts/pr_review_comment.py --verify-receipt
