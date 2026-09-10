@@ -1,14 +1,122 @@
+using System.Data.Common;
 using System.Transactions;
 using Dekaf.Outbox;
 using Dekaf.Outbox.EntityFrameworkCore;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace Dekaf.Tests.Unit.Outbox;
 
 public sealed class OutboxCommitNotificationTests
 {
+    [Test]
+    [Arguments(false, false)]
+    [Arguments(false, true)]
+    [Arguments(true, false)]
+    [Arguments(true, true)]
+    public async Task Saving_DetectsChangesOnlyOnce_WithOrWithoutOutboxRows(bool asynchronous, bool outboxRow)
+    {
+        using var database = new Database();
+        await using var context = database.CreateContext();
+        for (var index = 1; index <= 1024; index++)
+            context.Attach(new BusinessRow { Id = index });
+        if (outboxRow)
+            context.Set<OutboxMessage>().Add(Row());
+        var detectionPasses = 0;
+        context.ChangeTracker.DetectedAllChanges += (_, _) => detectionPasses++;
+
+        await SaveAsync(context, asynchronous);
+
+        await Assert.That(detectionPasses).IsEqualTo(1);
+        await Assert.That(database.Notifier.Count).IsEqualTo(outboxRow ? 1 : 0);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task DirectAdd_NotifiesWithoutAcceptingTrackedChanges(bool asynchronous)
+    {
+        using var database = new Database();
+        await using var context = database.CreateContext();
+        var row = Row();
+        context.Set<OutboxMessage>().Add(row);
+        if (asynchronous)
+            await context.SaveChangesAsync(acceptAllChangesOnSuccess: false);
+        else
+            context.SaveChanges(acceptAllChangesOnSuccess: false);
+
+        await Assert.That(database.Notifier.Count).IsEqualTo(1);
+        await Assert.That(context.Entry(row).State).IsEqualTo(EntityState.Added);
+        await Assert.That(await context.Set<OutboxMessage>().CountAsync()).IsEqualTo(1);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task NavigationDiscoveredInsert_NotifiesAfterCommit(bool asynchronous)
+    {
+        using var database = new Database();
+        await using var context = database.CreateContext();
+        var business = new BusinessRow { Id = 1 };
+        context.Add(business);
+        await SaveAsync(context, asynchronous);
+        await Assert.That(database.Notifier.Count).IsEqualTo(0);
+
+        // Adding to the CLR collection only becomes a tracked insert during EF's
+        // change detection, after the SavingChanges interceptor has run.
+        business.OutboxMessages.Add(Row());
+        await SaveAsync(context, asynchronous);
+
+        await Assert.That(database.Notifier.Count).IsEqualTo(1);
+        await Assert.That(await context.Set<OutboxMessage>().CountAsync()).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task UnchangedOutboxRows_DoNotNotifyForUnrelatedInserts()
+    {
+        using var database = new Database();
+        await using var context = database.CreateContext();
+        for (var index = 0; index < 1024; index++)
+            context.Attach(Row(index + 1));
+        context.Add(new BusinessRow { Id = 1 });
+
+        await context.SaveChangesAsync();
+
+        await Assert.That(database.Notifier.Count).IsEqualTo(0);
+        await Assert.That(await context.Set<BusinessRow>().CountAsync()).IsEqualTo(1);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task PooledContext_ReattachesNotificationsForEachLease(bool asynchronous)
+    {
+        using var connection = new SqliteConnection("Data Source=:memory:");
+        connection.Open();
+        var notifier = new CountingNotifier();
+        var services = new ServiceCollection();
+        services.AddPooledDbContextFactory<Context>(options =>
+            options.UseSqlite(connection).UseDekafOutboxNotifications(notifier), poolSize: 1);
+        await using var provider = services.BuildServiceProvider();
+        var factory = provider.GetRequiredService<IDbContextFactory<Context>>();
+        var previousLease = 0;
+        for (var iteration = 1; iteration <= 3; iteration++)
+        {
+            await using var context = await factory.CreateDbContextAsync();
+            if (iteration == 1)
+                await context.Database.EnsureCreatedAsync();
+            await Assert.That(context.ContextId.Lease).IsGreaterThan(previousLease);
+            previousLease = context.ContextId.Lease;
+            await SaveAsync(context, asynchronous);
+            await Assert.That(notifier.Count).IsEqualTo(iteration - 1);
+            context.AddOutboxMessage(Row());
+            await SaveAsync(context, asynchronous);
+            await Assert.That(notifier.Count).IsEqualTo(iteration);
+        }
+    }
+
     [Test]
     [Arguments(false)]
     [Arguments(true)]
@@ -127,6 +235,58 @@ public sealed class OutboxCommitNotificationTests
     }
 
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task CancellationAfterCommandInspection_DoesNotNotifyOnLaterEmptySave(bool asynchronous)
+    {
+        var cancel = new CancelFirstSaveCommand();
+        using var database = new Database(cancel);
+        await using var context = database.CreateContext();
+        context.AddOutboxMessage(Row());
+        await Assert.That(async () => await SaveAsync(context, asynchronous)).Throws<OperationCanceledException>();
+        await Assert.That(database.Notifier.Count).IsEqualTo(0);
+        context.ChangeTracker.Clear();
+        await SaveAsync(context, asynchronous);
+        await Assert.That(database.Notifier.Count).IsEqualTo(0);
+        context.AddOutboxMessage(Row());
+        await SaveAsync(context, asynchronous);
+        await Assert.That(database.Notifier.Count).IsEqualTo(1);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task SavedChangesHandler_CanSaveAgainWithoutLosingCommitNotification(bool asynchronous)
+    {
+        using var database = new Database();
+        await using var context = database.CreateContext();
+        var nested = false;
+        context.SavedChanges += (_, _) =>
+        {
+            if (nested) return;
+            nested = true;
+            context.SaveChanges();
+        };
+        context.AddOutboxMessage(Row());
+        await SaveAsync(context, asynchronous);
+        await Assert.That(database.Notifier.Count).IsEqualTo(1);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task DisabledAutomaticDetection_PreservesExplicitlyAddedNotification(bool asynchronous)
+    {
+        using var database = new Database();
+        await using var context = database.CreateContext();
+        context.ChangeTracker.AutoDetectChangesEnabled = false;
+        context.Set<OutboxMessage>().Add(Row());
+        await SaveAsync(context, asynchronous);
+        await Assert.That(database.Notifier.Count).IsEqualTo(1);
+        await Assert.That(context.ChangeTracker.AutoDetectChangesEnabled).IsFalse();
+    }
+
+    [Test]
     public async Task SharedOptions_KeepPendingSavesIndependentAcrossContexts()
     {
         using var database = new Database();
@@ -147,9 +307,9 @@ public sealed class OutboxCommitNotificationTests
         return Task.CompletedTask;
     }
 
-    private static OutboxMessage Row() => new()
+    private static OutboxMessage Row(long id = 0) => new()
     {
-        MessageId = Guid.NewGuid(), Topic = "outbox-notification", Bucket = 0,
+        Id = id, MessageId = Guid.NewGuid(), Topic = "outbox-notification", Bucket = 0,
         Value = [1], CreatedAtUtc = DateTimeOffset.UnixEpoch
     };
 
@@ -159,11 +319,11 @@ public sealed class OutboxCommitNotificationTests
         private readonly DbContextOptions<Context> _options;
         public CountingNotifier Notifier { get; } = new();
 
-        public Database()
+        public Database(params IInterceptor[] interceptors)
         {
             _connection.Open();
             _options = new DbContextOptionsBuilder<Context>().UseSqlite(_connection)
-                .UseDekafOutboxNotifications(Notifier).Options;
+                .UseDekafOutboxNotifications(Notifier).AddInterceptors(interceptors).Options;
             using var context = CreateContext();
             context.Database.EnsureCreated();
         }
@@ -174,7 +334,39 @@ public sealed class OutboxCommitNotificationTests
 
     private sealed class Context(DbContextOptions<Context> options) : DbContext(options)
     {
-        protected override void OnModelCreating(ModelBuilder modelBuilder) => modelBuilder.UseDekafOutbox();
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.UseDekafOutbox();
+            modelBuilder.Entity<BusinessRow>().HasKey(row => row.Id);
+            modelBuilder.Entity<BusinessRow>().HasMany(row => row.OutboxMessages)
+                .WithOne().HasForeignKey("BusinessId");
+        }
+    }
+
+    private sealed class BusinessRow
+    {
+        public int Id { get; set; }
+        public List<OutboxMessage> OutboxMessages { get; } = [];
+    }
+
+    private sealed class CancelFirstSaveCommand : DbCommandInterceptor
+    {
+        private bool _cancel = true;
+
+        public override InterceptionResult<DbDataReader> ReaderExecuting(DbCommand command,
+            CommandEventData eventData, InterceptionResult<DbDataReader> result)
+        {
+            if (_cancel && eventData.CommandSource == CommandSource.SaveChanges)
+            {
+                _cancel = false;
+                throw new OperationCanceledException("Cancel after the notification observer inspects the write.");
+            }
+            return result;
+        }
+
+        public override ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(DbCommand command,
+            CommandEventData eventData, InterceptionResult<DbDataReader> result,
+            CancellationToken cancellationToken = default) => new(ReaderExecuting(command, eventData, result));
     }
 
     private sealed class CountingNotifier : IOutboxNotifier
