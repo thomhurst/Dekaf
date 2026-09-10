@@ -36,9 +36,10 @@ public sealed class OutboxRelayOptions
     public int BatchSize { get; init; } = 500;
 
     /// <summary>
-    /// Delay before polling again when no bucket had work.
+    /// Fallback delay before polling again when no bucket had work. A local commit
+    /// notification interrupts this delay; writers without notifications rely on polling.
     /// </summary>
-    public TimeSpan PollInterval { get; init; } = TimeSpan.FromMilliseconds(100);
+    public TimeSpan PollInterval { get; init; } = TimeSpan.FromSeconds(1);
 
     /// <summary>
     /// Delay before retrying after a store or publish failure.

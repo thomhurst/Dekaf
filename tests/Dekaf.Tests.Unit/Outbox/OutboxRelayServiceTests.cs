@@ -8,6 +8,203 @@ public class OutboxRelayServiceTests
 {
     private static readonly TimeSpan SignalTimeout = TimeSpan.FromSeconds(30);
 
+    [Test]
+    public async Task Restart_DrainsPersistedRowsWithoutNotification()
+    {
+        var time = new ManualTimeProvider();
+        var store = new FakeStore();
+        var options = new OutboxRelayOptions { MaxPublishDuration = TimeSpan.FromSeconds(5) };
+        using (var notifier = new OutboxNotifier(time))
+        using (var first = new OutboxRelayService(store, new FakePublisher(), options,
+            NullLogger<OutboxRelayService>.Instance, time, notifier))
+        {
+            await first.StartAsync(CancellationToken.None);
+            await time.WaitForTimerAsync(TimeSpan.FromSeconds(1));
+            await first.StopAsync(CancellationToken.None).WaitAsync(SignalTimeout);
+        }
+        store.Enqueue(Row(1));
+        using var restartedNotifier = new OutboxNotifier(time);
+        var publisher = new FakePublisher();
+        using var restarted = new OutboxRelayService(store, publisher, options,
+            NullLogger<OutboxRelayService>.Instance, time, restartedNotifier);
+        await restarted.StartAsync(CancellationToken.None);
+        try
+        {
+            await store.WaitForEmptyAsync(SignalTimeout);
+            await Assert.That(publisher.PublishedIds.ToArray()).IsEquivalentTo(new long[] { 1 });
+        }
+        finally
+        {
+            await restarted.StopAsync(CancellationToken.None).WaitAsync(SignalTimeout);
+        }
+    }
+
+    [Test]
+    public async Task IdlePolling_UsesConfiguredCadence()
+    {
+        var time = new ManualTimeProvider();
+        using var notifier = new OutboxNotifier(time);
+        var store = new FakeStore();
+        var options = new OutboxRelayOptions
+        {
+            PollInterval = TimeSpan.FromSeconds(2), MaxPublishDuration = TimeSpan.FromSeconds(5)
+        };
+        using var relay = new OutboxRelayService(store, new FakePublisher(), options,
+            NullLogger<OutboxRelayService>.Instance, time, notifier);
+        await relay.StartAsync(CancellationToken.None);
+        try
+        {
+            for (var expected = 1; expected <= 3; expected++)
+            {
+                await time.WaitForTimerAsync(options.PollInterval);
+                await Assert.That(store.ProbeCalls).IsEqualTo(expected);
+                time.Advance(TimeSpan.FromSeconds(1));
+                await Assert.That(store.ProbeCalls).IsEqualTo(expected);
+                time.Advance(TimeSpan.FromSeconds(1));
+            }
+        }
+        finally
+        {
+            await relay.StopAsync(CancellationToken.None).WaitAsync(SignalTimeout);
+        }
+    }
+
+    [Test]
+    [Arguments(true)]
+    [Arguments(false)]
+    public async Task IdleRelay_DiscoversCommitImmediatelyOrThroughFallback(bool notify)
+    {
+        var time = new ManualTimeProvider();
+        using var notifier = new OutboxNotifier(time);
+        var store = new FakeStore();
+        var publisher = new FakePublisher();
+        var options = new OutboxRelayOptions { BatchSize = 2, MaxPublishDuration = TimeSpan.FromSeconds(5) };
+        using var relay = new OutboxRelayService(store, publisher, options,
+            NullLogger<OutboxRelayService>.Instance, time, notifier);
+        await relay.StartAsync(CancellationToken.None);
+        try
+        {
+            await time.WaitForTimerAsync(TimeSpan.FromSeconds(1));
+            await Assert.That(store.ProbeCalls).IsEqualTo(1);
+            store.Enqueue(Row(1), Row(2), Row(3));
+            if (notify)
+                notifier.NotifyCommitted();
+            else
+            {
+                time.Advance(TimeSpan.FromMilliseconds(999));
+                await Assert.That(store.ProbeCalls).IsEqualTo(1);
+                await Assert.That(publisher.PublishCalls).IsEqualTo(0);
+                time.Advance(TimeSpan.FromMilliseconds(1));
+            }
+            await store.WaitForEmptyAsync(SignalTimeout);
+            await Assert.That(publisher.PublishedIds.ToArray()).IsEquivalentTo(new long[] { 1, 2, 3 });
+            await Assert.That(publisher.PublishCalls).IsEqualTo(2);
+        }
+        finally
+        {
+            await relay.StopAsync(CancellationToken.None).WaitAsync(SignalTimeout);
+        }
+    }
+
+    [Test]
+    public async Task CommitNotifications_DoNotInterruptErrorBackoff()
+    {
+        var time = new ManualTimeProvider();
+        using var notifier = new OutboxNotifier(time);
+        var store = new FakeStore();
+        store.Enqueue(Row(1));
+        var publisher = new FakePublisher { FailFirstCalls = 1 };
+        var options = new OutboxRelayOptions
+        {
+            ErrorBackoff = TimeSpan.FromSeconds(3), MaxPublishDuration = TimeSpan.FromSeconds(5)
+        };
+        using var relay = new OutboxRelayService(store, publisher, options,
+            NullLogger<OutboxRelayService>.Instance, time, notifier);
+        await relay.StartAsync(CancellationToken.None);
+        try
+        {
+            await time.WaitForTimerAsync(TimeSpan.FromSeconds(3));
+            for (var index = 0; index < 100; index++)
+                notifier.NotifyCommitted();
+            time.Advance(TimeSpan.FromSeconds(2));
+            await Assert.That(publisher.PublishCalls).IsEqualTo(1);
+            await Assert.That(store.Rows(0).Count).IsEqualTo(1);
+            time.Advance(TimeSpan.FromSeconds(1));
+            await store.WaitForEmptyAsync(SignalTimeout);
+            await Assert.That(publisher.PublishCalls).IsEqualTo(2);
+        }
+        finally
+        {
+            await relay.StopAsync(CancellationToken.None).WaitAsync(SignalTimeout);
+        }
+    }
+
+    [Test]
+    public async Task IdleRelay_ConfiguredPollingPreservesLeaseRenewalDeadline()
+    {
+        var time = new ManualTimeProvider();
+        using var notifier = new OutboxNotifier(time);
+        var store = new FakeStore();
+        var options = new OutboxRelayOptions
+        {
+            PollInterval = TimeSpan.FromMinutes(1), MaxPublishDuration = TimeSpan.FromSeconds(5)
+        };
+        using var relay = new OutboxRelayService(store, new FakePublisher(), options,
+            NullLogger<OutboxRelayService>.Instance, time, notifier);
+        await relay.StartAsync(CancellationToken.None);
+        try
+        {
+            await time.WaitForTimerAsync(options.LeaseRenewInterval);
+            await Assert.That(store.LeaseCalls).IsEqualTo(1);
+            time.Advance(options.LeaseRenewInterval);
+            await time.WaitForTimerAsync(options.LeaseRenewInterval);
+            await Assert.That(store.LeaseCalls).IsEqualTo(2);
+        }
+        finally
+        {
+            await relay.StopAsync(CancellationToken.None).WaitAsync(SignalTimeout);
+        }
+    }
+
+    [Test]
+    public async Task PendingProbeOutlastingLease_PreservesErrorBackoffDespiteNotifications()
+    {
+        var time = new ManualTimeProvider();
+        using var notifier = new OutboxNotifier(time);
+        var store = new FakeStore();
+        store.Enqueue(Row(1));
+        store.OnPendingReturned = () =>
+        {
+            store.OnPendingReturned = null;
+            time.Advance(TimeSpan.FromSeconds(65));
+        };
+        var publisher = new FakePublisher();
+        var options = new OutboxRelayOptions
+        {
+            ErrorBackoff = TimeSpan.FromSeconds(3), LeaseDuration = TimeSpan.FromSeconds(60),
+            MaxPublishDuration = TimeSpan.FromSeconds(5)
+        };
+        using var relay = new OutboxRelayService(store, publisher, options,
+            NullLogger<OutboxRelayService>.Instance, time, notifier);
+        await relay.StartAsync(CancellationToken.None);
+        try
+        {
+            await time.WaitForTimerAsync(options.ErrorBackoff);
+            notifier.NotifyCommitted();
+            time.Advance(TimeSpan.FromSeconds(2));
+            await Assert.That(store.LeaseCalls).IsEqualTo(1);
+            await Assert.That(publisher.PublishCalls).IsEqualTo(0);
+            time.Advance(TimeSpan.FromSeconds(1));
+            await store.WaitForEmptyAsync(SignalTimeout);
+            await Assert.That(store.LeaseCalls).IsEqualTo(2);
+            await Assert.That(publisher.PublishCalls).IsEqualTo(1);
+        }
+        finally
+        {
+            await relay.StopAsync(CancellationToken.None).WaitAsync(SignalTimeout);
+        }
+    }
+
     private static OutboxRelayOptions FastOptions(int bucketCount = 1, int batchSize = 500) => new()
     {
         BucketCount = bucketCount,
@@ -319,6 +516,7 @@ public class OutboxRelayServiceTests
         private readonly IReadOnlyList<int> _ownedBuckets;
         private readonly TaskCompletionSource _empty = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private int _leaseCalls;
+        private int _probeCalls;
 
         public FakeStore(IReadOnlyList<int>? ownedBuckets = null)
         {
@@ -330,12 +528,15 @@ public class OutboxRelayServiceTests
         public ConcurrentQueue<OutboxMessage> MarkedMessages { get; } = [];
         public int FailFirstLeaseCalls { get; init; }
         public int LeaseCalls => Volatile.Read(ref _leaseCalls);
+        public int ProbeCalls => Volatile.Read(ref _probeCalls);
 
         /// <summary>Invoked after each non-empty batch is served (e.g. to advance a fake clock).</summary>
         public Action? OnBatchReturned { get; set; }
 
         /// <summary>Invoked inside each successful lease acquisition (e.g. to simulate a slow store).</summary>
         public Action? OnLeaseAcquired { get; set; }
+
+        public Action? OnPendingReturned { get; set; }
 
         public void Enqueue(params OutboxMessage[] rows)
         {
@@ -376,6 +577,8 @@ public class OutboxRelayServiceTests
             IReadOnlyList<int> buckets, CancellationToken cancellationToken = default)
         {
             await Task.Yield();
+            Interlocked.Increment(ref _probeCalls);
+            OnPendingReturned?.Invoke();
             lock (_lock)
             {
                 var pending = new List<int>();

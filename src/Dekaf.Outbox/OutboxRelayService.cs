@@ -28,6 +28,7 @@ public sealed partial class OutboxRelayService : BackgroundService
     private readonly ILogger<OutboxRelayService> _logger;
     private readonly OutboxLeaseRequest _leaseRequest;
     private readonly IOutboxLeaseRenewalStore? _renewalStore;
+    private readonly IOutboxNotifier? _notifier;
 
     private IReadOnlyList<int> _ownedBuckets = [];
     private long _leaseTimestamp;
@@ -38,6 +39,21 @@ public sealed partial class OutboxRelayService : BackgroundService
         OutboxRelayOptions options,
         ILogger<OutboxRelayService> logger,
         TimeProvider? timeProvider = null)
+        : this(store, publisher, options, logger, timeProvider, null)
+    {
+    }
+
+    /// <summary>
+    /// Creates a relay with optional local post-commit notifications. Use a separate
+    /// notifier for each independently wired relay. The caller owns its lifetime.
+    /// </summary>
+    public OutboxRelayService(
+        IOutboxStore store,
+        IOutboxPublisher publisher,
+        OutboxRelayOptions options,
+        ILogger<OutboxRelayService> logger,
+        TimeProvider? timeProvider,
+        IOutboxNotifier? notifier)
     {
         ArgumentNullException.ThrowIfNull(store);
         ArgumentNullException.ThrowIfNull(publisher);
@@ -58,6 +74,7 @@ public sealed partial class OutboxRelayService : BackgroundService
         _options = options;
         _logger = logger;
         _timeProvider = timeProvider ?? TimeProvider.System;
+        _notifier = notifier;
         _leaseRequest = new OutboxLeaseRequest
         {
             RelayId = options.RelayId,
@@ -130,8 +147,24 @@ public sealed partial class OutboxRelayService : BackgroundService
 
             try
             {
-                var delay = cycle.HadError ? _options.ErrorBackoff : _options.PollInterval;
-                await Task.Delay(delay, _timeProvider, stoppingToken).ConfigureAwait(false);
+                if (cycle.HadError)
+                {
+                    // Commit notifications must never bypass failure backoff.
+                    await Task.Delay(_options.ErrorBackoff, _timeProvider, stoppingToken).ConfigureAwait(false);
+                }
+                else
+                {
+                    // A long configured poll interval must not let idle leases expire.
+                    var untilRenewal = _options.LeaseRenewInterval - LeaseAge();
+                    if (untilRenewal <= TimeSpan.Zero)
+                        continue;
+                    var delay = untilRenewal < _options.PollInterval
+                        ? untilRenewal : _options.PollInterval;
+                    if (_notifier is null)
+                        await Task.Delay(delay, _timeProvider, stoppingToken).ConfigureAwait(false);
+                    else
+                        await _notifier.WaitAsync(delay, stoppingToken).ConfigureAwait(false);
+                }
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
@@ -173,8 +206,10 @@ public sealed partial class OutboxRelayService : BackgroundService
 
             if (_ownedBuckets.Count == 0 || LeaseAge() >= _options.LeaseDuration)
             {
-                // Lease may have expired mid-cycle; stop publishing until re-acquired.
+                // A slow pending probe can outlast the lease. Pace re-acquisition like
+                // other lease failures; the cleared timestamp cannot bound an idle wait.
                 ResetLeaseState();
+                hadError = true;
                 break;
             }
 

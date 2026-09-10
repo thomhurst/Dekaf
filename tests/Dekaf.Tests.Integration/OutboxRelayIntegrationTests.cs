@@ -1,3 +1,4 @@
+using System.Threading.Channels;
 using Dekaf.Consumer;
 using Dekaf.Outbox;
 using Dekaf.Outbox.EntityFrameworkCore;
@@ -5,6 +6,8 @@ using Dekaf.Producer;
 using Dekaf.Serialization;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
 namespace Dekaf.Tests.Integration;
@@ -17,6 +20,97 @@ namespace Dekaf.Tests.Integration;
 public class OutboxRelayIntegrationTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     private const int BucketCount = 4;
+
+    [Test]
+    public async Task Commit_WakesIdleRelay_WhileRollbackNeverPublishes()
+    {
+        var topic = $"outbox-commit-{Guid.NewGuid():N}";
+        await KafkaContainer.CreateTopicAsync(topic, partitions: 1);
+        var databasePath = Path.Combine(Path.GetTempPath(), $"dekaf-outbox-commit-{Guid.NewGuid():N}.db");
+        var time = new FrozenPollingTimeProvider();
+        var options = new OutboxRelayOptions { BucketCount = 1, PollInterval = TimeSpan.FromSeconds(1) };
+        try
+        {
+            var services = new ServiceCollection();
+            services.AddLogging();
+            services.AddSingleton<TimeProvider>(time);
+            services.AddDekafEntityFrameworkCoreOutboxStore<OutboxContext>((_, builder) =>
+                builder.UseSqlite(new SqliteConnectionStringBuilder
+                {
+                    DataSource = databasePath, Pooling = false, DefaultTimeout = 30
+                }.ToString()));
+            services.AddDekafOutboxRelay(producer => producer.WithBootstrapServers(KafkaContainer.BootstrapServers), options);
+            await using var provider = services.BuildServiceProvider();
+            var factory = provider.GetRequiredService<IDbContextFactory<OutboxContext>>();
+            await using (var context = await factory.CreateDbContextAsync())
+                await context.Database.EnsureCreatedAsync();
+            var relay = provider.GetServices<IHostedService>().OfType<OutboxRelayService>().Single();
+            await relay.StartAsync(CancellationToken.None);
+            try
+            {
+                await time.Scheduled.Reader.ReadAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(30));
+                await using (var context = await factory.CreateDbContextAsync())
+                {
+                    await using var transaction = await context.Database.BeginTransactionAsync();
+                    context.AddOutboxMessage(topic, "key", "rolled-back", Serializers.String, Serializers.String, bucketCount: 1);
+                    await context.SaveChangesAsync();
+                    await transaction.RollbackAsync();
+                }
+                await using (var context = await factory.CreateDbContextAsync())
+                {
+                    await using var transaction = await context.Database.BeginTransactionAsync();
+                    context.AddOutboxMessage(topic, "key", "committed", Serializers.String, Serializers.String, bucketCount: 1);
+                    await context.SaveChangesAsync();
+                    // The fallback clock never fires. Delivery below requires the actual
+                    // explicit-commit notification and cannot pass through polling.
+                    await transaction.CommitAsync();
+                }
+
+                await using var consumer = await Kafka.CreateConsumer<string, string>()
+                    .WithBootstrapServers(KafkaContainer.BootstrapServers)
+                    .WithGroupId($"outbox-commit-group-{Guid.NewGuid():N}")
+                    .WithAutoOffsetReset(AutoOffsetReset.Earliest).BuildAsync();
+                consumer.Subscribe(topic);
+                using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                await using var delivered = consumer.ConsumeAsync(deadline.Token).GetAsyncEnumerator();
+                await Assert.That(await delivered.MoveNextAsync()).IsTrue();
+                await Assert.That(delivered.Current.Value).IsEqualTo("committed");
+                await Assert.That(delivered.Current.Offset).IsEqualTo(0);
+                await time.Scheduled.Reader.ReadAsync(deadline.Token);
+                await using var verification = await factory.CreateDbContextAsync();
+                await Assert.That(await verification.Set<OutboxMessage>().CountAsync()).IsEqualTo(0);
+            }
+            finally
+            {
+                await relay.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(30));
+            }
+        }
+        finally
+        {
+            DeleteDatabaseFiles(databasePath);
+        }
+    }
+
+    private sealed class FrozenPollingTimeProvider : TimeProvider
+    {
+        public Channel<TimeSpan> Scheduled { get; } = Channel.CreateUnbounded<TimeSpan>();
+        public override long GetTimestamp() => 1;
+        public override DateTimeOffset GetUtcNow() => DateTimeOffset.UnixEpoch;
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+            => new FrozenTimer(this);
+
+        private sealed class FrozenTimer(FrozenPollingTimeProvider owner) : ITimer
+        {
+            public bool Change(TimeSpan dueTime, TimeSpan period)
+            {
+                if (dueTime != Timeout.InfiniteTimeSpan)
+                    owner.Scheduled.Writer.TryWrite(dueTime);
+                return true;
+            }
+            public void Dispose() { }
+            public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+        }
+    }
 
     [Test]
     [Arguments(false)]

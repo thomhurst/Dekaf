@@ -95,6 +95,7 @@ public static class OutboxServiceCollectionExtensions
         // The OutboxRelayService constructor is the single validation gate for the options.
         services.TryAddSingleton(options ?? new OutboxRelayOptions());
         services.TryAddSingleton(TimeProvider.System);
+        services.TryAddSingleton<IOutboxNotifier, OutboxNotifier>();
         services.AddHostedService<OutboxRelayService>();
 
         return services;
