@@ -41,6 +41,50 @@ class SelectionTests(unittest.TestCase):
                 self.assertIn(fixture, selection['filters'])
         self.assertIn('*.Unit.KeyOrderedDispatchBenchmarks.*', selection['filters'])
 
+    def test_added_record_bound_retains_reads_but_does_not_select_unchanged_writes(self):
+        addition = ('+++ b/src/Dekaf/Protocol/Records/RecordBatch.cs\n'
+                    '+    // Bound encoded records.\n+    internal int RecordCountUpperBound\n'
+                    '+    {\n+        get => _recordCount;\n+    }\n')
+        path = 'src/Dekaf/Protocol/Records/RecordBatch.cs'
+        with mock.patch.object(gate.subprocess, 'check_output', return_value=addition):
+            selection = gate.select([path], 'base', 'head')
+        self.assertIn('*.Unit.ProtocolBenchmarks.Read*RecordBatch*', selection['filters'])
+        self.assertIn('*.Unit.ParsedRecordSlabLifecycleBenchmarks.*', selection['filters'])
+        self.assertNotIn('*.Unit.ProtocolBenchmarks.*RecordBatch*', selection['filters'])
+        for diff in (addition + '-    WriteOld();\n+    WriteNew();\n',
+                     addition + '+    private int _newField;\n',
+                     addition.replace('get => _recordCount;', 'get;'),
+                     addition.replace('internal int', 'internal static int')):
+            with self.subTest(diff=diff), mock.patch.object(gate.subprocess, 'check_output', return_value=diff):
+                selection = gate.select([path], 'base', 'head')
+            self.assertIn('*.Unit.ProtocolBenchmarks.*RecordBatch*', selection['filters'])
+
+    def test_pending_fetch_only_changes_keep_actual_lifecycle_coverage(self):
+        source = ('using System;\ninternal sealed class PendingFetchData : IDisposable\n{\n'
+                  '    private int _count = 1;\n}\n'
+                  'public sealed class KafkaConsumer\n{\n    public void StoreOffset() { }\n}\n')
+        changed = source.replace('_count = 1', '_count = 2')
+        with mock.patch.object(gate.subprocess, 'check_output', side_effect=[source, changed]):
+            selection = gate.select(['src/Dekaf/Consumer/KafkaConsumer.cs'], 'base', 'head')
+        self.assertEqual(gate.unit('ConsumerHotPathBenchmarks', 'ParsedRecordSlabLifecycleBenchmarks'),
+                         selection['filters'])
+        self.assertEqual(1, len(selection['scoped_files']))
+
+        # Any change outside the known class, including a using, offset-store method,
+        # new top-level type or an unfamiliar declaration, retains the broad fallback.
+        for candidate in (changed.replace('StoreOffset()', 'StoreOffsets()'),
+                          changed.replace('using System;', 'using System.Text;'),
+                          changed + 'internal sealed class Other { }\n',
+                          changed.replace('internal sealed class PendingFetchData',
+                                          'internal partial class PendingFetchData')):
+            with self.subTest(candidate=candidate), mock.patch.object(
+                    gate.subprocess, 'check_output', side_effect=[source, candidate]):
+                selection = gate.select(['src/Dekaf/Consumer/KafkaConsumer.cs'], 'base', 'head')
+            self.assertIn('*.Unit.OffsetStoreBenchmarks.*', selection['filters'])
+            self.assertIn('*.Unit.ConsumeResultOffsetStoreBenchmarks.*', selection['filters'])
+            self.assertIn('*.Unit.FetchRequestBuildBenchmarks.*', selection['filters'])
+            self.assertEqual([], selection['scoped_files'])
+
     def test_kafka_consumer_retains_all_offset_store_api_coverage(self):
         selection = gate.select(['src/Dekaf/Consumer/KafkaConsumer.cs'])
         self.assertEqual(gate.unit('ConsumerHotPathBenchmarks', 'FetchResponseParsingBenchmarks',
