@@ -12,6 +12,33 @@ namespace Dekaf.Tests.Integration;
 public sealed class ClientTelemetryReceiverIntegrationTests(TelemetryReceiverKafkaContainer kafka)
 {
     [Test]
+    [Timeout(90_000)]
+    public async Task SubscriptionProbe_DistinguishesUnconfiguredAndReadyClients(CancellationToken cancellationToken)
+    {
+        const string metricName = "com.example.telemetry.readiness";
+        var clientId = $"telemetry-readiness-{Guid.NewGuid():N}";
+        var unconfigured = await kafka.ReadSubscriptionAsync(clientId, cancellationToken);
+        await Assert.That(unconfigured.ErrorCode).IsEqualTo(Protocol.ErrorCode.None);
+        await Assert.That(unconfigured.RequestedMetrics.Count).IsEqualTo(0);
+        await Assert.That(unconfigured.PushIntervalMs).IsGreaterThan(30_000);
+
+        await using var admin = kafka.CreateAdminClient();
+        await admin.IncrementalAlterConfigsAsync(new Dictionary<ConfigResource, IReadOnlyList<ConfigAlter>>
+        {
+            [new ConfigResource { Type = ConfigResourceType.ClientMetrics, Name = clientId }] =
+            [
+                ConfigAlter.Set("metrics", metricName),
+                ConfigAlter.Set("interval.ms", "500"),
+                ConfigAlter.Set("match", $"client_id={clientId}")
+            ]
+        }, cancellationToken: cancellationToken);
+
+        var ready = await kafka.WaitForSubscriptionAsync(clientId, [metricName], 500, cancellationToken);
+        await Assert.That(ready.RequestedMetrics).Contains(metricName);
+        await Assert.That(ready.PushIntervalMs).IsEqualTo(500);
+    }
+
+    [Test]
     [Arguments(42.0)]
     [Arguments(84.0)]
     [Timeout(90_000)]
@@ -31,6 +58,8 @@ public sealed class ClientTelemetryReceiverIntegrationTests(TelemetryReceiverKaf
                 ConfigAlter.Set("match", $"client_id={clientId}")
             ]
         }, cancellationToken: cancellationToken);
+
+        await kafka.WaitForSubscriptionAsync(clientId, [applicationName, builtinName], 1000, cancellationToken);
 
         var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
@@ -89,6 +118,8 @@ public sealed class ClientTelemetryReceiverIntegrationTests(TelemetryReceiverKaf
                 ConfigAlter.Set("match", $"client_id={clientId}")
             ]
         }, cancellationToken: cancellationToken);
+
+        await kafka.WaitForSubscriptionAsync(clientId, [applicationName], 1000, cancellationToken);
 
         var consumer = await Kafka.CreateShareConsumer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
