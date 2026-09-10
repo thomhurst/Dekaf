@@ -19,6 +19,81 @@ namespace Dekaf.Tests.Integration;
 public sealed class HostedServiceTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
+    [Arguments(false, 1)]
+    [Arguments(false, 1000)]
+    [Arguments(true, 1)]
+    [Arguments(true, 1000)]
+    public async Task AutoCommit_WhileHostRunning_CommitsEachWaveBeforeShutdown(
+        bool keyed, int queuedMinMessages)
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync();
+        var groupId = $"hosted-auto-commit-{Guid.NewGuid():N}";
+        var receivedMessages = new ConcurrentBag<string>();
+
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        // Establish producer metadata and partition state before background consumer polling
+        // competes for CI runner resources. Include this delivered record in both wave counts.
+        await producer.ProduceAsync(topic, "warmup", "warmup", CancellationToken.None);
+
+        // Read fresh broker offsets without advancing the hosted consumer or triggering
+        // an explicit or shutdown commit. GetCommittedOffsetAsync on a consumer caches results.
+        await using var admin = KafkaContainer.CreateAdminClient();
+
+        var builder = Host.CreateApplicationBuilder();
+        builder.Services.AddSingleton(receivedMessages);
+        builder.Services.AddSingleton(new TestTopicHolder(topic));
+        builder.Services.AddDekaf(dekaf =>
+        {
+            void ConfigureConsumer(ConsumerBuilder<string, string> consumer) => consumer
+                .WithBootstrapServers(KafkaContainer.BootstrapServers)
+                .WithGroupId(groupId)
+                .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+                .WithQueuedMinMessages(queuedMinMessages);
+
+            // Leave commit mode, interval and offset storage at their defaults.
+            if (keyed)
+                dekaf.AddConsumerService<TestConsumerService, string, string>("consumer", ConfigureConsumer);
+            else
+                dekaf.AddConsumerService<TestConsumerService, string, string>(ConfigureConsumer);
+        });
+
+        using var host = builder.Build();
+        try
+        {
+            await host.StartAsync();
+
+            for (var wave = 0; wave < 2; wave++)
+            {
+                const int messagesPerWave = 5;
+                for (var i = 0; i < messagesPerWave; i++)
+                    await producer.ProduceAsync(topic, $"key-{wave}-{i}", $"value-{wave}-{i}", CancellationToken.None);
+
+                var expectedOffset = 1 + (wave + 1) * messagesPerWave;
+                await WaitForConditionAsync(
+                    () => receivedMessages.Count == expectedOffset,
+                    TimeSpan.FromSeconds(30),
+                    description: "hosted consumer processed the wave");
+
+                var committed = await WaitForConditionAsync(
+                    () => admin.ListConsumerGroupOffsetsAsync(groupId).AsTask(),
+                    offsets => offsets.TryGetValue(new TopicPartition(topic, 0), out var offset)
+                               && offset == expectedOffset,
+                    description: "automatic broker commit while the host remains running");
+                await Assert.That(committed[new TopicPartition(topic, 0)]).IsEqualTo((long)expectedOffset);
+            }
+        }
+        finally
+        {
+            using var stopCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            await host.StopAsync(stopCts.Token);
+        }
+    }
+
+    [Test]
     public async Task ProcessesMessages_ViaHostedService_MessagesReceived()
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
