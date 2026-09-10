@@ -17,7 +17,7 @@
     <PackageVersion Include="Confluent.Kafka" Version="2.15.1" />
     <PackageVersion Include="Confluent.SchemaRegistry" Version="2.15.0" />
     <PackageVersion Include="Confluent.SchemaRegistry.Serdes.Avro" Version="2.15.0" />
-    <PackageVersion Include="Confluent.SchemaRegistry.Serdes.Json" Version="2.15.0" />
+    <PackageVersion Include="Confluent.SchemaRegistry.Serdes.Json" Version="2.15.1" />
     <PackageVersion Include="Confluent.SchemaRegistry.Serdes.Protobuf" Version="2.15.0" />
     <PackageVersion Include="Dekaf" Version="$(DekafPackageVersion)" />
     <PackageVersion Include="Dekaf.Abstractions" Version="$(DekafPackageVersion)" />
