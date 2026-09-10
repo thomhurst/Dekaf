@@ -100,8 +100,6 @@ jobs:
           # permissions above.
           github_token: ${{ secrets.GITHUB_TOKEN }}
           allowed_non_write_users: "*"
-          plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
-          plugins: 'code-review@claude-code-plugins'
           prompt: |
             REPO: ${{ github.repository }}
             PR NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
@@ -123,6 +121,7 @@ jobs:
               * Design/architecture, maintainability, better abstractions and anti-patterns
             - Verify every finding against the actual code before reporting it. Do not invent issues to fill space — if the code is sound, a brief acknowledgement is a valid review; say so rather than manufacturing suggestions.
             - When you do find an issue, suggest a concrete better approach and explain WHY it is better, not just WHAT to change.
+            - Review this exact head even for a trivial change or when an earlier review comment exists. Every run requires its own posted verdict; neither condition permits skipping the review or its posting step.
             - ALWAYS post a review, even if no issues are found. If the code is good, acknowledge it.
             - Compare the current state of the PR against any previous PR comments to make sure they have been addressed.
             - You MUST post your review before finishing, by running:
@@ -139,7 +138,7 @@ jobs:
             - Skip minor style/formatting issues unless they impact readability significantly.
             - Always explain WHY the suggested approach is better, not just WHAT to change.
 
-            Use the code review skill to run this review: /code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number || inputs.pr_number }}
+            Perform the review directly using these instructions and the allowed read tools, then post through the required helper. Do not finish with terminal output alone: a review is incomplete until the helper confirms the comment was posted.
           claude_args: |
             --add-dir pr-head --allowedTools "Read,Glob,Grep,Bash(.github/scripts/pr-review-comment.sh:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*)" --model claude-sonnet-5
           allowed_bots: "dependabot[bot]"
