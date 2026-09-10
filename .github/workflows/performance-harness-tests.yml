@@ -45,7 +45,7 @@ jobs:
           dotnet run --project Dekaf.Benchmarks.csproj -c Release --no-build -- \
             --filter '*.Unit.ValueTaskSourcePoolBenchmarks.RentReturnSameThread' '*.Unit.ConsumerHotPathBenchmarks.ConsumeBatch_String_Deserialize' \
             --warmupCount 3 --iterationCount 3 --iterationTime 100 --launchCount 1 --outliers DontRemove \
-            --exporters fulljson --artifacts "$results/timing" > "$results/timing.log" 2>&1
+            --exporters fulljson --buildTimeout 900 --artifacts "$results/timing" > "$results/timing.log" 2>&1
           python3 "$GITHUB_WORKSPACE/.github/scripts/performance_gate.py" validate --phase "$results/timing" \
             --expected 2 --iterations 3 --min-warmup 0 --merged "$results/same.json" --cases "$results/cases.json"
           jq -e 'length == 2 and any(.[]; any(.Metrics[]; .Descriptor.Id == "Allocated Memory" and .Value == 0)) and any(.[]; any(.Metrics[]; .Descriptor.Id == "Allocated Memory" and .Value > 0))' "$results/same.json"
