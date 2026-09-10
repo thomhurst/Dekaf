@@ -8,7 +8,7 @@ using Dekaf.Protocol.Messages;
 namespace Dekaf.Benchmarks.Benchmarks.Unit;
 
 /// <summary>
-/// One ShareFetch v1 response: optional managed pool rent/copy, actual connection
+/// One ShareFetch v1 response: optional pool rent/copy, actual connection
 /// decoding, metadata consumption and response release. Payload bytes stay opaque;
 /// record-batch parsing, network I/O and per-message delivery are outside this boundary.
 /// Allocations are per response, not per record. No payload view is read after decoding:
@@ -26,7 +26,7 @@ public class ShareFetchResponseDecodingBenchmarks
     [Params(false, true)]
     public bool Pooled { get; set; }
 
-    [Params(0, 65536)]
+    [Params(0, 65536, 131072)]
     public int PayloadBytes { get; set; }
 
     [GlobalSetup]
@@ -58,18 +58,36 @@ public class ShareFetchResponseDecodingBenchmarks
         }
         // Validate both the selected storage path and its cleanup before timing.
         DecodeAndRelease();
+        if (Pooled && _encoded.Length >= ResponseBufferPool.NativeMemoryThresholdBytes
+            && _pool.RetainedNativeBufferCount != 1)
+            throw new InvalidOperationException("The decoded native frame was not returned to its pool.");
     }
+
+    [GlobalCleanup]
+    public void Cleanup() => _pool.TrimNativeBuffers();
 
     [Benchmark]
     public int DecodeAndRelease()
     {
-        var bytes = _encoded;
-        if (Pooled)
+        PooledResponseBuffer frame;
+        if (!Pooled)
         {
-            bytes = _pool.Pool.Rent(_encoded.Length);
-            _encoded.CopyTo(bytes, 0);
+            frame = new PooledResponseBuffer(_encoded, _encoded.Length, false);
         }
-        var response = _parse(new PooledResponseBuffer(bytes, _encoded.Length, Pooled, pool: _pool), 1, false, null);
+        else if (_encoded.Length >= ResponseBufferPool.NativeMemoryThresholdBytes)
+        {
+            // Match ResponseFrameReader's native-storage selection for large frames.
+            var native = _pool.RentNative(_encoded.Length);
+            _encoded.AsSpan().CopyTo(native.GetSpan());
+            frame = new PooledResponseBuffer(native, _encoded.Length);
+        }
+        else
+        {
+            var bytes = _pool.Pool.Rent(_encoded.Length);
+            _encoded.CopyTo(bytes, 0);
+            frame = new PooledResponseBuffer(bytes, _encoded.Length, true, pool: _pool);
+        }
+        var response = _parse(frame, 1, false, null);
         try
         {
             return Validate(response);
