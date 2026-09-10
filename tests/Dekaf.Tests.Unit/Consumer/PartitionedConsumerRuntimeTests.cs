@@ -1016,6 +1016,44 @@ public sealed class PartitionedConsumerRuntimeTests
     }
 
     [Test]
+    public async Task RunPartitionedBatchesAsync_SingleRecordSnapshotsRemainIndependent()
+    {
+        var partition = new TopicPartition("topic-a", 0);
+        var consumer = new TestConsumer();
+        consumer.SetAssignment(partition);
+        var retained = new List<IReadOnlyList<ConsumeResult<string, string>>>();
+        var completed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var running = consumer.RunPartitionedBatchesAsync((_, messages, _) =>
+        {
+            // Main's dispatcher lends the batch until the handler completes.
+            retained.Add(messages.ToArray());
+            if (retained.Count == 3)
+                completed.TrySetResult();
+            return ValueTask.CompletedTask;
+        }, new PartitionedProcessingOptions
+        {
+            Ordering = PartitionedProcessingOrder.Key,
+            MaxHandlerBatchSize = 1,
+            MaxConcurrentHandlersPerPartition = 1,
+            CommitPolicy = PartitionCommitPolicy.CommitCompletedOnRevoke
+        }, cancellation.Token).AsTask();
+        consumer.Enqueue(CreateResult(partition, 0), CreateResult(partition, 1), CreateResult(partition, 2));
+        try
+        {
+            await completed.Task.WaitAsync(cancellation.Token);
+        }
+        finally
+        {
+            await StopRuntimeAsync(cancellation, running);
+        }
+        await Assert.That(retained.Count).IsEqualTo(3);
+        for (var index = 0; index < retained.Count; index++)
+            await Assert.That(retained[index][0].Offset).IsEqualTo((long)index);
+        await Assert.That(ReferenceEquals(retained[0], retained[1])).IsFalse();
+    }
+
+    [Test]
     public async Task RunPartitionedBatchesAsync_ProcessesBatchesAndMarksOffsets()
     {
         var partition = new TopicPartition("topic-a", 0);

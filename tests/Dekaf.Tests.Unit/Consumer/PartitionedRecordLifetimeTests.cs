@@ -479,6 +479,8 @@ public sealed class PartitionedRecordLifetimeTests
         }, new PartitionedProcessingOptions
         {
             Ordering = PartitionedProcessingOrder.Key,
+            // Exercise the dictionary path; concurrency one preserves order without key lookup.
+            MaxConcurrentHandlersPerPartition = 2,
             CommitPolicy = PartitionCommitPolicy.UserManaged,
             MaxBufferedRecordsPerPartition = 4
         }, timeout.Token).AsTask();

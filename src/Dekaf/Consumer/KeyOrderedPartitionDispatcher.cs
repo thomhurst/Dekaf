@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
@@ -14,6 +15,7 @@ internal sealed class KeyOrderedPartitionDispatcher<TKey, TValue>
     private PendingRecord[] _records;
     private readonly int _maxBufferedRecords;
     private readonly Dictionary<PartitionMessageKey<TKey>, KeyLane> _lanes;
+    private readonly BinaryPartitionMessageKeyComparer<TKey>? _binaryKeyComparer;
     private readonly Stack<KeyLane> _freeLanes;
     private readonly Queue<KeyLane> _readyLanes;
     private readonly Stack<Worker> _freeWorkers;
@@ -47,6 +49,7 @@ internal sealed class KeyOrderedPartitionDispatcher<TKey, TValue>
         int maxConcurrentHandlers,
         int maxBufferedRecords,
         Func<IReadOnlyList<ConsumeResult<TKey, TValue>>, CancellationToken, ValueTask> processor,
+        IEqualityComparer<TKey>? keyComparer = null,
         bool automaticCompletion = false)
     {
         _context = context;
@@ -61,7 +64,15 @@ internal sealed class KeyOrderedPartitionDispatcher<TKey, TValue>
         // A batch size is an upper bound. Divide reusable storage across workers so
         // multiplying the two user limits cannot allocate quadratic record storage.
         _batchSize = Math.Min(maxBatchSize, Math.Max(1, maxBufferedRecords / _maxWorkers));
-        _lanes = new Dictionary<PartitionMessageKey<TKey>, KeyLane>(initialCapacity);
+        IEqualityComparer<PartitionMessageKey<TKey>>? comparer = null;
+        if (_maxWorkers != 1 || _batchSize != 1)
+        {
+            comparer = keyComparer is null
+                ? PartitionMessageKeyComparer<TKey>.Default
+                : new CustomPartitionMessageKeyComparer<TKey>(keyComparer);
+        }
+        _binaryKeyComparer = comparer as BinaryPartitionMessageKeyComparer<TKey>;
+        _lanes = new Dictionary<PartitionMessageKey<TKey>, KeyLane>(initialCapacity, comparer);
         _freeLanes = new Stack<KeyLane>(initialCapacity);
         _readyLanes = new Queue<KeyLane>(initialCapacity);
         _freeWorkers = new Stack<Worker>(Math.Min(_maxWorkers, initialCapacity));
@@ -226,7 +237,13 @@ internal sealed class KeyOrderedPartitionDispatcher<TKey, TValue>
             _lastReadOffset = record.Offset;
             _lastReadEpoch = record.LeaderEpoch ?? -1;
         }
-        var key = PartitionMessageKey<TKey>.From(record.Key);
+        // One sequential record handler needs no key comparison. Other shapes
+        // preserve wire-null identity and cache binary hashes through lane removal.
+        var key = _maxWorkers == 1 && _batchSize == 1
+            ? default
+            : PartitionMessageKey<TKey>.From(record.Key, record.IsKeyNull);
+        if (_binaryKeyComparer is not null && key.HasValue)
+            key = key.WithBinaryHashCode(_binaryKeyComparer.GetHashCode(key));
 #if NETSTANDARD2_0
         if (!_lanes.TryGetValue(key, out var lane))
         {
@@ -268,6 +285,49 @@ internal sealed class KeyOrderedPartitionDispatcher<TKey, TValue>
         {
             lane.Scheduled = true;
             _readyLanes.Enqueue(lane);
+        }
+        if (_binaryKeyComparer is { NeedsFullHashing: true })
+            StrengthenBinaryHashing();
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private void StrengthenBinaryHashing()
+    {
+        // Rebuild at most once per dispatcher after repeated expensive collisions.
+        // Reuse dictionary capacity and rent temporary references; ordinary probes
+        // neither allocate another table nor scan the active lanes.
+        var count = _lanes.Count;
+        var lanes = ArrayPool<KeyLane>.Shared.Rent(count);
+        try
+        {
+            _lanes.Values.CopyTo(lanes, 0);
+            try
+            {
+                _lanes.Clear();
+                _binaryKeyComparer!.EnableFullHashing();
+                for (var index = 0; index < count; index++)
+                {
+                    var lane = lanes[index];
+                    lane.Key = lane.Key.WithBinaryHashCode(_binaryKeyComparer.ComputeHashCode(lane.Key));
+                    _lanes.Add(lane.Key, lane);
+                }
+            }
+            catch (Exception error)
+            {
+                // Mutable binary keys can become equal during the rebuild. Shutdown
+                // must retain every key owner until all in-flight handlers complete,
+                // including lanes no longer reachable from the partially rebuilt table.
+                for (var index = 0; index < count; index++)
+                    _freeLanes.Push(lanes[index]);
+                if (error is ArgumentException)
+                    throw new InvalidOperationException(
+                        "A partition key changed its hash code or equality while being processed.", error);
+                throw;
+            }
+        }
+        finally
+        {
+            ArrayPool<KeyLane>.Shared.Return(lanes, clearArray: true);
         }
     }
 
