@@ -115,6 +115,7 @@ jobs:
             echo
             echo "Filters: $(jq -r '.filters | map("`" + . + "`") | join(" ")' "$GATE/selection.json")"
             jq -r '.not_applicable[] | "\n- " + .area + ": " + .reason' "$GATE/selection.json"
+            jq -r '.scoped_files[]? | "\n- " + .path + ": " + .reason' "$GATE/selection.json"
           } >> "$GITHUB_STEP_SUMMARY"
           if [[ "$applicable" != true ]]; then
             echo "No steady-state microbenchmark fixture maps to the changed paths; nothing was measured." >> "$GITHUB_STEP_SUMMARY"

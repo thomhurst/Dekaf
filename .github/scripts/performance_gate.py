@@ -133,9 +133,9 @@ def _area_for(path):
     return match
 
 
-def select(changed_files):
+def select(changed_files, base=None, head=None):
     """Map changed product files to benchmark globs; order follows the first matching file."""
-    areas, filters, not_applicable, considered = [], [], {}, []
+    areas, filters, not_applicable, considered, scopes = [], [], {}, [], []
     for path in changed_files:
         path = path.replace('\\', '/')
         if path in BUILD_INPUTS:
@@ -144,6 +144,18 @@ def select(changed_files):
             continue
         else:
             match = _area_for(path)
+            if (base and head and path == 'src/Dekaf/Consumer/KafkaConsumer.cs'
+                    and _pending_fetch_only(base, head, path)):
+                match = (path, 'consumer', unit('ConsumerHotPathBenchmarks',
+                                              'ParsedRecordSlabLifecycleBenchmarks'), None)
+                scopes.append({'path': path, 'reason': 'Only PendingFetchData changed; consumer fetch '
+                               'scheduling and offset-store implementations are byte-for-byte unchanged.'})
+            elif (base and head and path == 'src/Dekaf/Protocol/Records/RecordBatch.cs'
+                  and _record_count_bound_only(base, head, path)):
+                match = (path, 'protocol', unit('ConsumerHotPathBenchmarks', 'ParsedRecordSlabLifecycleBenchmarks')
+                         + ['*.Unit.ProtocolBenchmarks.Read*RecordBatch*'], None)
+                scopes.append({'path': path, 'reason': 'Only the instance RecordCountUpperBound getter was added; '
+                               'retain read/lifecycle coverage. Unchanged write methods cannot call the new getter.'})
         if match is None:
             continue
         considered.append(path)
@@ -162,7 +174,47 @@ def select(changed_files):
         'filters': filters,
         'not_applicable': [{'area': area, 'reason': reason} for area, reason in not_applicable.items()],
         'considered_files': considered,
+        'scoped_files': scopes,
     }
+
+
+def _pending_fetch_only(base, head, path):
+    """Narrow only this known top-level type; unfamiliar formatting keeps the broad map."""
+    # This is a conservative boundary check for the maintained file, not a C# parser.
+    # Nested braces are indented. Every byte outside this class must remain unchanged.
+    pattern = re.compile(r'^internal sealed class PendingFetchData : IDisposable\n\{.*?^\}\n', re.M | re.S)
+    remaining = []
+    for revision in (base, head):
+        try:
+            source = subprocess.check_output(['git', 'show', f'{revision}:{path}'],
+                                             text=True, stderr=subprocess.DEVNULL)
+        except subprocess.CalledProcessError:
+            return False
+        matches = list(pattern.finditer(source))
+        if len(matches) != 1:
+            return False
+        match = matches[0]
+        remaining.append(source[:match.start()] + source[match.end():])
+    return remaining[0] == remaining[1]
+
+
+def _record_count_bound_only(base, head, path):
+    """Recognize only an added instance getter, with no field/layout or existing-code edits."""
+    diff = subprocess.check_output([
+        'git', 'diff', '--no-ext-diff', '--unified=0', f'{base}..{head}', '--', path,
+    ], text=True)
+    added = []
+    for line in diff.splitlines():
+        if line.startswith(('+++', '---')):
+            continue
+        if line.startswith('-'):
+            return False
+        if line.startswith('+') and line[1:].strip() and not line[1:].lstrip().startswith('//'):
+            added.append(line[1:])
+    return bool(re.fullmatch(
+        r'    internal int RecordCountUpperBound\n    \{\n'
+        r'(?:        \[MethodImpl\(MethodImplOptions\.AggressiveInlining\)\]\n)?'
+        r'        get => [^\n]+(?:\n            [^\n]+)*;\n    \}', '\n'.join(added)))
 
 
 def changed_files(base, head):
@@ -282,7 +334,7 @@ def main(argv=None):
             selection = {'applicable': True, 'areas': ['explicit'], 'filters': filters, 'not_applicable': [],
                          'considered_files': []}
         else:
-            selection = select(changed_files(args.base, args.head))
+            selection = select(changed_files(args.base, args.head), args.base, args.head)
         selection.update(base=args.base, head=args.head)
         args.output.write_text(json.dumps(selection, indent=2) + '\n', encoding='utf-8')
         print(json.dumps(selection, indent=2))
