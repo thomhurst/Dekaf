@@ -672,3 +672,27 @@ Dekaf.Admin.AdminClientConsumerGroupOffsetQueryExtensions
 Dekaf.Admin.AdminClient.ListConsumerGroupOffsetsAsync(System.Collections.Generic.IReadOnlyDictionary<string!, Dekaf.Admin.ListConsumerGroupOffsetsSpec!>! groupSpecs, Dekaf.Admin.ListConsumerGroupOffsetsOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<string!, Dekaf.Admin.ConsumerGroupOffsetsResult!>!>
 Dekaf.Admin.IConsumerGroupOffsetQueryAdminClient.ListConsumerGroupOffsetsAsync(System.Collections.Generic.IReadOnlyDictionary<string!, Dekaf.Admin.ListConsumerGroupOffsetsSpec!>! groupSpecs, Dekaf.Admin.ListConsumerGroupOffsetsOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<string!, Dekaf.Admin.ConsumerGroupOffsetsResult!>!>
 static Dekaf.Admin.AdminClientConsumerGroupOffsetQueryExtensions.ListConsumerGroupOffsetsAsync(this Dekaf.Admin.IAdminClient! adminClient, System.Collections.Generic.IReadOnlyDictionary<string!, Dekaf.Admin.ListConsumerGroupOffsetsSpec!>! groupSpecs, Dekaf.Admin.ListConsumerGroupOffsetsOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<string!, Dekaf.Admin.ConsumerGroupOffsetsResult!>!>
+
+Dekaf.Admin.AdminClient.ListShareGroupOffsetsAsync(System.Collections.Generic.IReadOnlyDictionary<string!, Dekaf.Admin.ListShareGroupOffsetsSpec!>! groupSpecs, Dekaf.Admin.ListShareGroupOffsetsOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<string!, Dekaf.Admin.ShareGroupOffsetsResult!>!>
+Dekaf.Admin.AdminClientShareGroupOffsetQueryExtensions
+Dekaf.Admin.IShareGroupOffsetQueryAdminClient
+Dekaf.Admin.IShareGroupOffsetQueryAdminClient.ListShareGroupOffsetsAsync(System.Collections.Generic.IReadOnlyDictionary<string!, Dekaf.Admin.ListShareGroupOffsetsSpec!>! groupSpecs, Dekaf.Admin.ListShareGroupOffsetsOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<string!, Dekaf.Admin.ShareGroupOffsetsResult!>!>
+Dekaf.Admin.ListShareGroupOffsetsOptions
+Dekaf.Admin.ListShareGroupOffsetsOptions.ListShareGroupOffsetsOptions() -> void
+Dekaf.Admin.ListShareGroupOffsetsOptions.TimeoutMs.get -> int
+Dekaf.Admin.ListShareGroupOffsetsOptions.TimeoutMs.init -> void
+Dekaf.Admin.ListShareGroupOffsetsSpec
+Dekaf.Admin.ListShareGroupOffsetsSpec.ListShareGroupOffsetsSpec() -> void
+Dekaf.Admin.ListShareGroupOffsetsSpec.TopicPartitions.get -> System.Collections.Generic.IReadOnlyList<Dekaf.TopicPartition>?
+Dekaf.Admin.ListShareGroupOffsetsSpec.TopicPartitions.init -> void
+Dekaf.Admin.ShareGroupOffsetsResult
+Dekaf.Admin.ShareGroupOffsetsResult.ErrorCode.get -> Dekaf.Protocol.ErrorCode
+Dekaf.Admin.ShareGroupOffsetsResult.ErrorCode.init -> void
+Dekaf.Admin.ShareGroupOffsetsResult.ErrorMessage.get -> string?
+Dekaf.Admin.ShareGroupOffsetsResult.ErrorMessage.init -> void
+Dekaf.Admin.ShareGroupOffsetsResult.GroupId.get -> string!
+Dekaf.Admin.ShareGroupOffsetsResult.GroupId.init -> void
+Dekaf.Admin.ShareGroupOffsetsResult.Offsets.get -> System.Collections.Generic.IReadOnlyDictionary<Dekaf.TopicPartition, Dekaf.Admin.ShareGroupOffsetDescription!>!
+Dekaf.Admin.ShareGroupOffsetsResult.Offsets.init -> void
+Dekaf.Admin.ShareGroupOffsetsResult.ShareGroupOffsetsResult() -> void
+static Dekaf.Admin.AdminClientShareGroupOffsetQueryExtensions.ListShareGroupOffsetsAsync(this Dekaf.Admin.IAdminClient! adminClient, System.Collections.Generic.IReadOnlyDictionary<string!, Dekaf.Admin.ListShareGroupOffsetsSpec!>! groupSpecs, Dekaf.Admin.ListShareGroupOffsetsOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<string!, Dekaf.Admin.ShareGroupOffsetsResult!>!>

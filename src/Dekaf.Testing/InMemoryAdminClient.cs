@@ -1480,21 +1480,23 @@ public sealed partial class InMemoryAdminClient :
                 partition.Partition,
                 groupId).ConfigureAwait(false);
         }
-        var result = targetPartitions
-            .Select(partition =>
+        var result = targetPartitions.Length == 0
+            ? Array.Empty<ShareGroupOffsetDescription>()
+            : new ShareGroupOffsetDescription[targetPartitions.Length];
+        for (var index = 0; index < targetPartitions.Length; index++)
+        {
+            var partition = targetPartitions[index];
+            var offset = groupOffsets.GetValueOrDefault(partition);
+            var high = _cluster.GetWatermarks(partition).High;
+            result[index] = new ShareGroupOffsetDescription
             {
-                var offset = groupOffsets.GetValueOrDefault(partition);
-                var high = _cluster.GetWatermarks(partition).High;
-                return new ShareGroupOffsetDescription
-                {
-                    TopicPartition = partition,
-                    StartOffset = offset,
-                    LeaderEpoch = 0,
-                    Lag = Math.Max(0, high - offset),
-                    ErrorCode = ErrorCode.None
-                };
-            })
-            .ToArray();
+                TopicPartition = partition,
+                StartOffset = offset,
+                LeaderEpoch = 0,
+                Lag = Math.Max(0, high - offset),
+                ErrorCode = ErrorCode.None
+            };
+        }
 
         return result;
     }
