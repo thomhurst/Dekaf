@@ -10,7 +10,8 @@ import sys
 def verdict(body):
     lines = body.rstrip().splitlines()
     marker = re.fullmatch(r'<!-- REVIEW_VERDICT: (CLEAR|BLOCKING) -->', lines[-1]) if lines else None
-    if marker is None or body.count('REVIEW_VERDICT:') != 1:
+    marker_lines = [line for line in lines if re.fullmatch(r'<!-- REVIEW_VERDICT: .* -->', line)]
+    if marker is None or len(marker_lines) != 1:
         raise ValueError('review must end with exactly one CLEAR or BLOCKING verdict marker')
     if not '\n'.join(lines[:-1]).strip():
         raise ValueError('review must contain an explanation before its verdict')

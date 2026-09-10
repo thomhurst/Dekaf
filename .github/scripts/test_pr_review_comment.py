@@ -81,6 +81,12 @@ class ReviewPostingTests(unittest.TestCase):
         self.assertFalse(self.receipt.exists())
         self.assertNotEqual(self.verify().returncode, 0)
 
+    def test_review_can_discuss_the_verdict_token(self):
+        body = 'The helper must validate the literal `REVIEW_VERDICT:` token.\n<!-- REVIEW_VERDICT: CLEAR -->'
+        result = self.post(body)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.verify().returncode, 0)
+
     def test_missing_malformed_or_wrong_target_receipt_fails(self):
         self.assertNotEqual(self.verify().returncode, 0)
         self.receipt.write_text('not json')
