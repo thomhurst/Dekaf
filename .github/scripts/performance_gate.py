@@ -51,6 +51,12 @@ AREAS = (
     ('src/Dekaf/Protocol/Records/RecordBatch.cs', 'protocol',
      unit('ConsumerHotPathBenchmarks', 'ParsedRecordSlabLifecycleBenchmarks')
      + ['*.Unit.ProtocolBenchmarks.*RecordBatch*'], None),
+    ('src/Dekaf/Consumer/PartitionMessageKey.cs', 'consumer', unit(
+        'BinaryKeyDispatchBenchmarks', 'DistinctBinaryKeyDispatchBenchmarks',
+        'SharedSuffixBinaryKeyDispatchBenchmarks'), None),
+    ('src/Dekaf/Consumer/KeyOrderedPartitionDispatcher.cs', 'consumer', unit(
+        'KeyOrderedDispatchBenchmarks', 'BinaryKeyDispatchBenchmarks',
+        'DistinctBinaryKeyDispatchBenchmarks', 'SharedSuffixBinaryKeyDispatchBenchmarks'), None),
     ('src/Dekaf/Producer/', 'producer', unit(
         'AccumulatorAppendBenchmarks', 'AccumulatorAdmissionAppendBenchmarks', 'ProducerFireHotPathBenchmarks',
         'PartitionerBenchmarks', 'InflightTrackingBenchmarks', 'BrokerUnackedByteBudgetBenchmarks',

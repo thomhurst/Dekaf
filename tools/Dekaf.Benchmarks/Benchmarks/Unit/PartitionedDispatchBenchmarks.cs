@@ -45,7 +45,15 @@ public class PartitionedDispatchBenchmarks
         Delegate handler = batches
             ? (PartitionBatchProcessor<int, int>)HandleBatch
             : (PartitionRecordProcessor<int, int>)HandleRecord;
-        _processor = (PartitionProcessor<int, int>)factory.Invoke(null, [handler, options])!;
+        // Older revisions have no optional key comparer. Resolve this only during setup
+        // so both revisions execute the same processor workload when compared.
+        object?[] arguments = factory.GetParameters().Length switch
+        {
+            2 => [handler, options],
+            3 => [handler, options, null],
+            _ => throw new InvalidOperationException("Unexpected partition processor factory signature.")
+        };
+        _processor = (PartitionProcessor<int, int>)factory.Invoke(null, arguments)!;
         await Dispatch();
     }
 
