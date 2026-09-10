@@ -8,6 +8,74 @@ namespace Dekaf.Tests.Unit.Consumer;
 public class ConsumeBatchTests
 {
     [Test]
+    [Arguments(false, true)]
+    [Arguments(false, false)]
+    [Arguments(true, true)]
+    [Arguments(true, false)]
+    public async Task Interceptor_DeliveryGuardHonorsUserCallbacks(bool duringDeserialization, bool paused)
+    {
+        var stoppedStatus = paused ? BatchIterationStatus.Paused : BatchIterationStatus.Stopped;
+        using var pending = CreatePendingFetchData("test-topic", 0, 7, 1);
+        var epoch = new BatchIterationEpoch();
+        var status = BatchIterationStatus.Continue;
+        var calls = 0;
+        var stored = 0;
+        void Stop()
+        {
+            status = stoppedStatus;
+            epoch.Invalidate();
+        }
+        var batch = new ConsumeBatch<string, string>(pending, Serializers.String,
+            duringDeserialization ? new CallbackDeserializer(Stop) : Serializers.String,
+            new BatchIterationGuard(epoch, epoch.Version, _ => status),
+            storeOffsetOnDelivery: (_, _, _) => stored++,
+            onConsume: result =>
+            {
+                calls++;
+                Stop();
+                return result;
+            });
+        using var records = batch.GetEnumerator();
+        await Assert.That(records.MoveNext()).IsFalse();
+        await Assert.That(calls).IsEqualTo(duringDeserialization ? 0 : 1);
+        await Assert.That(stored).IsEqualTo(0);
+        await Assert.That(batch.Count).IsEqualTo(0);
+        await Assert.That(pending.MoveNext()).IsEqualTo(stoppedStatus == BatchIterationStatus.Paused);
+    }
+
+    [Test]
+    public async Task Interceptor_OnlySeesUnfilteredRecordsAndPreservesDeliveredOffsets()
+    {
+        using var pending = CreatePendingFetchData("test-topic", 0, 0, 3);
+        var calls = new List<long>();
+        var stored = new List<long>();
+        var batch = new ConsumeBatch<string, string>(pending, Serializers.String, Serializers.String,
+            storeOffsetOnDelivery: (_, offset, _) => stored.Add(offset), recordFilter: new OddOffsetFilter(),
+            onConsume: result =>
+            {
+                calls.Add(result.Offset);
+                return new ConsumeResult<string, string>("replacement-topic", 99, 99, result.Key,
+                    "replacement", result.Headers, 0, result.TimestampType, 99);
+            });
+        var results = batch.ToList();
+        await Assert.That(results.Count).IsEqualTo(1);
+        await Assert.That(results[0].Value).IsEqualTo("replacement");
+        await Assert.That(results[0].Topic).IsEqualTo("test-topic");
+        await Assert.That(results[0].Partition).IsEqualTo(0);
+        await Assert.That(results[0].Offset).IsEqualTo(1);
+        await Assert.That(results[0].LeaderEpoch).IsNull();
+        await Assert.That(results[0].IsPartitionEof).IsFalse();
+        await Assert.That(calls.SequenceEqual([1L])).IsTrue();
+        // Replacement metadata must not change the broker progress tracked for this fetch.
+        await Assert.That(stored.SequenceEqual([1L, 2L, 3L])).IsTrue();
+    }
+
+    private sealed class OddOffsetFilter : IConsumerRecordFilter
+    {
+        public bool ShouldDeserialize(scoped in ConsumerRecordFilterContext context) => context.Offset % 2 != 0;
+    }
+
+    [Test]
     public async Task ConsumeBatch_EnumeratesAllRecords()
     {
         // Arrange
