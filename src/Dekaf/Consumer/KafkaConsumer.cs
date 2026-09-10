@@ -1493,6 +1493,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     // Interceptors - stored as typed array for zero-allocation iteration
     private readonly IConsumerInterceptor<TKey, TValue>[]? _interceptors;
+    private readonly Func<ConsumeResult<TKey, TValue>, ConsumeResult<TKey, TValue>>? _onBatchConsume;
 
     // Incremental fetch responses can omit unchanged empty partitions; EOF mode needs those
     // empty partition responses to emit partition EOF events.
@@ -1881,6 +1882,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 interceptors[i] = (IConsumerInterceptor<TKey, TValue>)options.Interceptors[i];
             }
             _interceptors = interceptors;
+            _onBatchConsume = ApplyOnConsumeInterceptorsSlow;
         }
 
         _connectionPool = infrastructure.Pool;
@@ -3573,6 +3575,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 long? batchProcessingStarted = _adaptiveFetchSizer is not null
                     ? Stopwatch.GetTimestamp() : null;
 
+                // User callbacks can seek or revoke this fetch during synchronous batch
+                // iteration. Retain once across the yield, including its final cleanup.
+                using var interceptorRetention = _onBatchConsume is null
+                    ? (PendingFetchData.RetentionLease?)null
+                    : pending.RetainForIteration();
                 try
                 {
                     // Eagerly parse all records upfront for cache-friendly access
@@ -3593,7 +3600,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         _rewindBatchAfterDeliveryFailure,
                         _options.RecordFilter,
                         _recordHeaderRoutingPlan,
-                        _tryRecordPollFast);
+                        _tryRecordPollFast,
+                        _onBatchConsume);
                     batchYielded = true;
                     yield return batch;
                     // Resumption = the caller requested the next batch, proving this one was
@@ -11106,7 +11114,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             try
             {
-                result = interceptor.OnConsume(result);
+                var replacement = interceptor.OnConsume(result);
+                result = replacement.WithStorageOwnerFrom(in result);
             }
             catch (Exception ex)
             {

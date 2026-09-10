@@ -239,6 +239,8 @@ namespace Dekaf.Consumer
         private readonly Action<PendingFetchData, long>? _rewindAfterDeliveryFailure;
         private readonly IConsumerRecordFilter? _recordFilter;
         private readonly Func<bool>? _tryRecordPollFast;
+        private readonly Func<ConsumeResult<TKey, TValue>, ConsumeResult<TKey, TValue>>? _onConsume;
+        private readonly bool _useFastPath;
         private readonly int _maxRecords;
         private long _count;
 
@@ -251,7 +253,8 @@ namespace Dekaf.Consumer
             Action<PendingFetchData, long>? rewindAfterDeliveryFailure = null,
             IConsumerRecordFilter? recordFilter = null,
             RecordHeaderRoutingPlan? recordHeaderRoutingPlan = null,
-            Func<bool>? tryRecordPollFast = null)
+            Func<bool>? tryRecordPollFast = null,
+            Func<ConsumeResult<TKey, TValue>, ConsumeResult<TKey, TValue>>? onConsume = null)
         {
             ArgumentOutOfRangeException.ThrowIfLessThan(maxRecords, 1);
             _pendingFetchData = pendingFetchData;
@@ -263,11 +266,13 @@ namespace Dekaf.Consumer
             _rewindAfterDeliveryFailure = rewindAfterDeliveryFailure;
             _recordFilter = recordFilter;
             _tryRecordPollFast = tryRecordPollFast;
+            _onConsume = onConsume;
             _recordHeaderRoutingPlan = recordHeaderRoutingPlan
                                        ?? RecordHeaderRoutingPlan.Create(
                                            keyDeserializer,
                                            valueDeserializer);
             _hasRecordHeaderDeserializers = _recordHeaderRoutingPlan is not null;
+            _useFastPath = recordFilter is null && !_hasRecordHeaderDeserializers && onConsume is null;
             _recordHeaderDeserializationHeaders =
                 _recordHeaderRoutingPlan?.NeedsMaterializedHeaders is true
                     ? new Headers(2)
@@ -400,7 +405,7 @@ namespace Dekaf.Consumer
                 if (!_canContinue)
                     return false;
 
-                return _batch._recordFilter is null && !_batch._hasRecordHeaderDeserializers
+                return _batch._useFastPath
                     ? MoveNextFast(pending)
                     : MoveNextFilteredOrRouted(pending);
             }
@@ -637,8 +642,19 @@ namespace Dekaf.Consumer
                         return false;
                     }
 
-                    if (!CompleteRecord(pending, offset, messageBytes, proveProcessed: false))
+                    if (_batch._onConsume is { } onConsume)
+                    {
+                        if (!CanDeliverRecord(pending))
+                            return false;
+                        var original = Current;
+                        Current = onConsume(original).WithBrokerIdentityFrom(in original);
+                        if (!CompleteRecord(pending, offset, messageBytes, proveProcessed: false))
+                            return false;
+                    }
+                    else if (!CompleteRecord(pending, offset, messageBytes, proveProcessed: false))
+                    {
                         return false;
+                    }
 
                     _hasYieldedResult = true;
                     _batch._count++;
@@ -653,6 +669,23 @@ namespace Dekaf.Consumer
                 int messageBytes,
                 bool proveProcessed)
             {
+                if (!CanDeliverRecord(pending))
+                    return false;
+
+                pending.TrackConsumed(offset, messageBytes);
+                if (proveProcessed && !_hasYieldedResult)
+                    pending.MarkYieldedProcessed();
+                _batch._storeOffsetOnDelivery?.Invoke(
+                    pending.TopicPartition,
+                    offset + 1,
+                    pending.LastYieldedLeaderEpoch);
+                _recordsExamined++;
+                return true;
+            }
+
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            private bool CanDeliverRecord(PendingFetchData pending)
+            {
                 var iterationStatus = _batch._iterationGuard.GetStatusAfterRead(
                     pending.TopicPartition,
                     ref _observedVersion);
@@ -664,14 +697,6 @@ namespace Dekaf.Consumer
                     return false;
                 }
 
-                pending.TrackConsumed(offset, messageBytes);
-                if (proveProcessed && !_hasYieldedResult)
-                    pending.MarkYieldedProcessed();
-                _batch._storeOffsetOnDelivery?.Invoke(
-                    pending.TopicPartition,
-                    offset + 1,
-                    pending.LastYieldedLeaderEpoch);
-                _recordsExamined++;
                 return true;
             }
 

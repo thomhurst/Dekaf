@@ -111,6 +111,7 @@ public interface IKafkaConsumer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     /// Each batch contains all records from a single partition fetch response.
     /// Records within a batch are iterated synchronously (no async overhead per message).
     /// Position tracking is deferred to batch completion.
+    /// Configured OnConsume interceptors run in registration order before each record is delivered.
     /// When partition EOF reporting is enabled, EOF is surfaced as a zero-record batch whose
     /// <see cref="ConsumeBatch{TKey,TValue}.IsPartitionEof"/> property is <see langword="true"/>.
     /// </summary>
@@ -562,6 +563,32 @@ public readonly struct ConsumeResult<TKey, TValue>
     }
 
     internal void ReleaseStorage() => _headerOwner?.ReleaseAfterProcessing();
+
+    // Partitioned completion uses the delivered record's broker identity. Interceptors
+    // may replace payload metadata, but cannot redirect routing or committed progress.
+    internal ConsumeResult<TKey, TValue> WithBrokerIdentityFrom(in ConsumeResult<TKey, TValue> original)
+        => new(this, in original);
+
+    private ConsumeResult(in ConsumeResult<TKey, TValue> replacement, in ConsumeResult<TKey, TValue> original)
+    {
+        this = replacement;
+        Topic = original.Topic;
+        Partition = original.Partition;
+        Offset = original.Offset;
+        LeaderEpoch = original.LeaderEpoch;
+        IsPartitionEof = original.IsPartitionEof;
+    }
+
+    // A replacement may still borrow the original key/value memory. Preserve the
+    // fetch owner so partitioned handlers can retain that storage while queued.
+    internal ConsumeResult<TKey, TValue> WithStorageOwnerFrom(in ConsumeResult<TKey, TValue> original)
+        => _headerOwner is null && original._headerOwner is { } owner ? new(this, owner) : this;
+
+    private ConsumeResult(in ConsumeResult<TKey, TValue> replacement, PendingFetchData owner)
+    {
+        this = replacement;
+        _headerOwner = owner;
+    }
 
     /// <summary>
     /// Creates a new ConsumeResult with eager deserialization.

@@ -11,6 +11,77 @@ namespace Dekaf.Tests.Unit.Consumer;
 public sealed class PartitionedRecordLifetimeTests
 {
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task InterceptorBatch_RetainsStorageUntilRevocationGuard(bool disposeDuringDeserialization)
+    {
+        var memory = new ReusedMemory();
+        var pending = CreatePending(memory);
+        var disposedInsideCallback = -1;
+        var calls = 0;
+        KafkaConsumer<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>> consumer = null!;
+        void Revoke()
+        {
+            consumer.Unassign();
+            disposedInsideCallback = memory.DisposeCount;
+        }
+        consumer = new KafkaConsumer<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>>(
+            new ConsumerOptions
+            {
+                BootstrapServers = ["localhost:9092"],
+                OffsetCommitMode = OffsetCommitMode.Manual,
+                QueuedMinMessages = 1,
+                Interceptors = [new CallbackRawInterceptor(() => { calls++; Revoke(); })]
+            }, Serializers.RawBytes,
+            disposeDuringDeserialization ? new CallbackRawDeserializer(Revoke) : Serializers.RawBytes);
+        await using var ownedConsumer = consumer;
+        var consumerType = consumer.GetType();
+        System.Reflection.FieldInfo Field(string name) => consumerType.GetField(name,
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException($"{name} field not found.");
+        Field("_initialized").SetValue(consumer, true);
+        consumer.Assign(pending.TopicPartition);
+        Field("_lastManualAssignmentEnsureVersion").SetValue(consumer, Field("_assignmentEnsureVersion").GetValue(consumer));
+        ((System.Collections.Concurrent.ConcurrentDictionary<TopicPartition, long>)Field("_fetchPositions").GetValue(consumer)!)
+            [pending.TopicPartition] = 0;
+        ((Queue<PendingFetchData>)Field("_pendingFetches").GetValue(consumer)!).Enqueue(pending);
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await using (var batches = consumer.ConsumeBatchAsync(timeout.Token).GetAsyncEnumerator())
+        {
+            await Assert.That(await batches.MoveNextAsync()).IsTrue();
+            using var records = batches.Current.GetEnumerator();
+            await Assert.That(records.MoveNext()).IsFalse();
+            await Assert.That(calls).IsEqualTo(disposeDuringDeserialization ? 0 : 1);
+            await Assert.That(disposedInsideCallback).IsEqualTo(0);
+            await Assert.That(memory.DisposeCount).IsEqualTo(0);
+        }
+        await Assert.That(memory.DisposeCount).IsEqualTo(1);
+    }
+
+    private sealed class CallbackRawInterceptor(Action callback)
+        : IConsumerInterceptor<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>>
+    {
+        public ConsumeResult<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>> OnConsume(
+            ConsumeResult<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>> result)
+        {
+            callback();
+            return result;
+        }
+
+        public void OnCommit(IReadOnlyList<TopicPartitionOffset> offsets) { }
+    }
+
+    private sealed class CallbackRawDeserializer(Action callback) : IDeserializer<ReadOnlyMemory<byte>>
+    {
+        public ReadOnlyMemory<byte> Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
+        {
+            callback();
+            return data;
+        }
+    }
+
+    [Test]
     public async Task FullOrCompletedQueue_DoesNotRetainRejectedRecords()
     {
         var acceptedMemory = new ReusedMemory();
@@ -57,12 +128,16 @@ public sealed class PartitionedRecordLifetimeTests
     }
 
     [Test]
-    [Arguments(PartitionedProcessingOrder.Partition, PartitionBackpressureMode.AwaitCapacity)]
-    [Arguments(PartitionedProcessingOrder.Partition, PartitionBackpressureMode.PauseResume)]
-    [Arguments(PartitionedProcessingOrder.Key, PartitionBackpressureMode.AwaitCapacity)]
-    [Arguments(PartitionedProcessingOrder.Key, PartitionBackpressureMode.PauseResume)]
+    [Arguments(PartitionedProcessingOrder.Partition, PartitionBackpressureMode.AwaitCapacity, false)]
+    [Arguments(PartitionedProcessingOrder.Partition, PartitionBackpressureMode.PauseResume, false)]
+    [Arguments(PartitionedProcessingOrder.Key, PartitionBackpressureMode.AwaitCapacity, false)]
+    [Arguments(PartitionedProcessingOrder.Key, PartitionBackpressureMode.PauseResume, false)]
+    [Arguments(PartitionedProcessingOrder.Partition, PartitionBackpressureMode.AwaitCapacity, true)]
+    [Arguments(PartitionedProcessingOrder.Partition, PartitionBackpressureMode.PauseResume, true)]
+    [Arguments(PartitionedProcessingOrder.Key, PartitionBackpressureMode.AwaitCapacity, true)]
+    [Arguments(PartitionedProcessingOrder.Key, PartitionBackpressureMode.PauseResume, true)]
     public async Task RawRecords_RemainValidAfterFetchAdvances(
-        PartitionedProcessingOrder ordering, PartitionBackpressureMode backpressure)
+        PartitionedProcessingOrder ordering, PartitionBackpressureMode backpressure, bool replaceResult)
     {
         using var timeout = new CancellationTokenSource();
         var handlerStarted = NewSignal();
@@ -70,10 +145,21 @@ public sealed class PartitionedRecordLifetimeTests
         var releaseHandler = NewSignal();
         var memory = new ReusedMemory();
         var pending = CreatePending(memory);
+        await using var interceptorConsumer = new KafkaConsumer<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>>(
+            new ConsumerOptions
+            {
+                BootstrapServers = ["localhost:9092"],
+                OffsetCommitMode = OffsetCommitMode.Manual,
+                Interceptors = replaceResult ? [new BorrowingReplacementInterceptor()] : null
+            }, Serializers.RawBytes, Serializers.RawBytes);
+        var onConsume = (Func<ConsumeResult<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>>,
+            ConsumeResult<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>>>?)typeof(KafkaConsumer<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>>)
+            .GetField("_onBatchConsume", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+            .GetValue(interceptorConsumer);
         var consumer = Substitute.For<IKafkaConsumer<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>>>();
         consumer.Partitions.Assignment.Returns(new HashSet<TopicPartition> { new("lifetime", 0) });
         consumer.ConsumeBatchAsync(Arg.Any<CancellationToken>()).Returns(call =>
-            Fetch(pending, handlerStarted, fetchAdvanced, call.Arg<CancellationToken>()));
+            Fetch(pending, handlerStarted, fetchAdvanced, call.Arg<CancellationToken>(), onConsume: onConsume));
 
         // Start the operation budget after pooled storage and proxy setup.
         timeout.CancelAfter(TimeSpan.FromSeconds(10));
@@ -337,12 +423,13 @@ public sealed class PartitionedRecordLifetimeTests
 
     private static async IAsyncEnumerable<ConsumeBatch<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>>> Fetch(
         PendingFetchData pending, TaskCompletionSource handlerStarted, TaskCompletionSource fetchAdvanced,
-        [EnumeratorCancellation] CancellationToken cancellationToken, bool keepOpen = false)
+        [EnumeratorCancellation] CancellationToken cancellationToken, bool keepOpen = false,
+        Func<ConsumeResult<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>>, ConsumeResult<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>>>? onConsume = null)
     {
         using (pending)
         {
             yield return new ConsumeBatch<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>>(
-                pending, Serializers.RawBytes, Serializers.RawBytes);
+                pending, Serializers.RawBytes, Serializers.RawBytes, onConsume: onConsume);
             await handlerStarted.Task.WaitAsync(cancellationToken);
         }
         fetchAdvanced.TrySetResult();
@@ -445,6 +532,16 @@ public sealed class PartitionedRecordLifetimeTests
     }
 
     private static TaskCompletionSource NewSignal() => new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    private sealed class BorrowingReplacementInterceptor : IConsumerInterceptor<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>>
+    {
+        public ConsumeResult<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>> OnConsume(
+            ConsumeResult<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>> result)
+            => new(result.Topic, result.Partition, result.Offset, result.Key, result.Value, result.Headers,
+                result.Timestamp.ToUnixTimeMilliseconds(), result.TimestampType, result.LeaderEpoch);
+
+        public void OnCommit(IReadOnlyList<TopicPartitionOffset> offsets) { }
+    }
 
     // Public so NSubstitute can construct the generic consumer proxy for this test key.
     public readonly struct BorrowedKey(ReadOnlyMemory<byte> bytes, TaskCompletionSource sameKeyFound) : IEquatable<BorrowedKey>

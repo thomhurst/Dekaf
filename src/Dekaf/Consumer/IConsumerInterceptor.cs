@@ -28,6 +28,8 @@ public interface IConsumerInterceptor<TKey, TValue>
     /// <para>This method is called on the consumer's hot path. Implementations should
     /// be lightweight and avoid blocking operations.</para>
     /// <para>If an interceptor throws, the original result is used and the exception is logged.</para>
+    /// <para>Batch delivery preserves the original topic, partition, offset and leader epoch
+    /// so replacement results cannot change partitioned routing or committed broker progress.</para>
     /// </remarks>
     ConsumeResult<TKey, TValue> OnConsume(ConsumeResult<TKey, TValue> result);
 
