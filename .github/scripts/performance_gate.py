@@ -8,6 +8,7 @@ elapsed time, sample counts and allocations are BenchmarkDotNet's own measuremen
 import argparse
 import json
 import math
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -144,8 +145,16 @@ def changed_files(base, head):
 
 
 def count_listed_cases(listing):
-    """Count BenchmarkDotNet `--list flat` lines (one per case, ignoring blank/log lines)."""
+    """Count listed methods; BDN --list flat does not expand parameter combinations."""
     return sum(1 for line in listing.splitlines() if line.strip().startswith('Dekaf.Benchmarks.'))
+
+
+def count_execution_cases(log):
+    """Read BDN's declared expanded total, including cases that later fail execution."""
+    totals = re.findall(r'^// \*+ Found (\d+) benchmark\(s\) in total \*+\s*$', log, re.MULTILINE)
+    if len(totals) != 1:
+        raise ValueError('Expected exactly one BenchmarkDotNet expanded case total in the execution log')
+    return int(totals[0])
 
 
 def _case_key(benchmark):
@@ -214,8 +223,9 @@ def main(argv=None):
     selecting.add_argument('--head', required=True)
     selecting.add_argument('--filters', help='Explicit space-separated BDN globs that replace path selection')
     selecting.add_argument('--output', type=Path, required=True)
-    counting = commands.add_parser('count', help='Count cases from a BDN --list flat listing on stdin')
+    counting = commands.add_parser('count', help='Count listed methods, or expanded cases from an execution log')
     counting.add_argument('--max-cases', type=int, default=MAX_CASES)
+    counting.add_argument('--execution-log', type=Path, help='Use the BDN declared case total instead of stdin method names')
     validating = commands.add_parser('validate', help='Validate one phase and write its merged case array')
     validating.add_argument('--phase', type=Path, required=True)
     validating.add_argument('--expected', type=int)
@@ -238,7 +248,12 @@ def main(argv=None):
         print(json.dumps(selection, indent=2))
         return 0
     if args.command == 'count':
-        count = count_listed_cases(sys.stdin.read())
+        try:
+            count = (count_execution_cases(args.execution_log.read_text(encoding='utf-8-sig'))
+                     if args.execution_log else count_listed_cases(sys.stdin.read()))
+        except ValueError as error:
+            print(str(error), file=sys.stderr)
+            return 1
         if count == 0:
             print('The selected filters match no benchmark cases', file=sys.stderr)
             return 1
