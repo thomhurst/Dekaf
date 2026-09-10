@@ -40,6 +40,14 @@ class SelectionTests(unittest.TestCase):
         self.assertIn('*.Unit.ConsumerGroupAssignmentBenchmarks.*', selection['filters'])
         self.assertIn('*.Unit.ControlPlaneProtocolBenchmarks.*', selection['filters'])
 
+    def test_outbox_save_coverage_does_not_claim_relay_or_store_workloads(self):
+        for name in ('OutboxCommitObserver.cs', 'OutboxNotificationOptionsExtensions.cs'):
+            selection = gate.select([f'src/Dekaf.Outbox.EntityFrameworkCore/{name}'])
+            self.assertEqual(gate.unit('OutboxSaveChangesBenchmarks'), selection['filters'])
+        for path in ('src/Dekaf.Outbox/OutboxRelayService.cs',
+                     'src/Dekaf.Outbox.EntityFrameworkCore/EfCoreOutboxStore.cs'):
+            self.assertNotIn('*.Unit.OutboxSaveChangesBenchmarks.*', gate.select([path])['filters'])
+
     def test_share_fetch_response_selects_its_actual_decoder(self):
         selection = gate.select(['src/Dekaf/Protocol/Messages/ShareFetchResponse.cs'])
         self.assertEqual(gate.unit('ShareFetchResponseDecodingBenchmarks'), selection['filters'])
