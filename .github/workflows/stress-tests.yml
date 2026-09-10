@@ -35,7 +35,7 @@ on:
         required: false
         default: '15'
       producer_warmup_seconds:
-        description: 'Identical elapsed workload warmup for duration-based producers (minimum 20 seconds; no adaptive extension)'
+        description: 'Identical elapsed workload warmup for producers and consumer replay (minimum 20 seconds; no adaptive extension)'
         required: false
         default: '180'
       message_size:
@@ -78,7 +78,7 @@ on:
         type: boolean
         default: false
       baseline_sha:
-        description: 'Duration-based producer lanes only: exact SHA for baseline → candidate → baseline; triples duration and blocks on regression/noisy controls'
+        description: 'Duration-based producer and consumer replay lanes: exact SHA for baseline → candidate → baseline; triples duration and blocks on regression/noisy controls'
         required: false
         default: ''
       aba_second_candidate:
@@ -741,7 +741,7 @@ jobs:
             aba-results/baseline-a tools/Dekaf.StressTests/results aba-results/baseline-a2 "${extra[@]}" \
             --output aba-results/warmup-validation.json --summary "$GITHUB_STEP_SUMMARY"
 
-      - name: Validate regular producer warmup and runtime coverage
+      - name: Validate regular workload warmup and runtime coverage
         if: always() && matrix.baseline_sha == '' && matrix.producer_samples > 0
         run: |
           python3 .github/scripts/stress_warmup.py tools/Dekaf.StressTests/results \

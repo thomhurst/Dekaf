@@ -1,6 +1,6 @@
 """Validate runtime coverage and assess steady-state trends for stress comparison segments.
 
-Coverage checks confirm that every phase retained its warmup (duration-based producers), its
+Coverage checks confirm that every phase retained its warmup (duration-based producers and consumer replay), its
 runtime observations at both measurement boundaries and one-second interval samples across
 the whole measured window. The trend assessment then compares the first and last third of
 the measured intervals: throughput, CPU per completed message, allocations per message and
@@ -64,11 +64,6 @@ def quiet(samples, label):
             raise ValueError(f"{label}: thread-pool size changes; steady state is not established")
 
 
-def _requires_warmup(result):
-    scenario = str(result.get("scenario") or "producer").casefold()
-    return not scenario.startswith("consumer")
-
-
 def _validate_warmup(warmup):
     requested = number(warmup.get("requestedSeconds"), "warmup requestedSeconds")
     workload = number(warmup.get("workloadSeconds"), "warmup workloadSeconds")
@@ -98,13 +93,9 @@ def _validate_warmup(warmup):
 
 
 def validate(result):
-    """Validate runtime coverage. Returns the declared warmup seconds (None for consumer replay)."""
+    """Validate runtime coverage and return the declared workload warmup seconds."""
     throughput = object_value(result.get("throughput"), "throughput")
-    warmup = throughput.get("warmup")
-    if warmup is None and not _requires_warmup(result):
-        requested = None
-    else:
-        requested = _validate_warmup(object_value(warmup, "warmup"))
+    requested = _validate_warmup(object_value(throughput.get("warmup"), "warmup"))
 
     start = runtime(throughput.get("runtimeStart"))
     end = runtime(throughput.get("runtimeEnd"))

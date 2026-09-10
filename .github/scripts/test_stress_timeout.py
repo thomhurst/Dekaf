@@ -26,10 +26,23 @@ class StressTimeoutTests(unittest.TestCase):
         self.assertEqual(52, actual["timeout_minutes"])
 
     def test_other_scenarios_keep_their_own_budget(self):
-        for scenario in ("consumer", "producer-transactional", "producer-roundtrip-steady"):
+        for scenario in ("producer-transactional", "producer-roundtrip-steady"):
             lane = dict(scenario=scenario, timeout_minutes=90)
             expected = lane.copy()
             self.assertEqual(expected, budget({"include": [lane]}, 30, 180)["include"][0])
+
+    def test_consumer_samples_include_declared_warmup(self):
+        for scenario, client, paired, count in (
+            ("consumer", "all", 2, 4), ("consumer-batch", "dekaf", 1, 1),
+            ("consumer-raw", "dekaf", 1, 1), ("consumer-raw-batch", "dekaf", 1, 1),
+        ):
+            with self.subTest(scenario=scenario):
+                lane = dict(scenario=scenario, client=client, paired_samples=paired, timeout_minutes=60)
+                actual = budget({"include": [lane]}, 15, 3600)["include"][0]
+                self.assertGreaterEqual(actual["timeout_minutes"], count * 78.5 + 15)
+                self.assertEqual(count, actual["producer_samples"])
+        with self.assertRaisesRegex(ValueError, "360-minute"):
+            budget({"include": [dict(scenario="consumer", client="all", timeout_minutes=90)]}, 15, 999999)
 
     def test_regular_producer_cannot_exceed_hosted_limit(self):
         lane = dict(scenario="producer", client="all", paired_samples=2, timeout_minutes=180)
