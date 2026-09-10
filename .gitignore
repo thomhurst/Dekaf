@@ -113,3 +113,10 @@ stress_run.log
 
 # Stryker.NET mutation-test output
 StrykerOutput/
+
+# Generated performance evidence belongs in GitHub job summaries/artifacts.
+*.log
+/docs/performance-evidence/
+benchmark-results/
+BenchmarkResults/
+.performance/

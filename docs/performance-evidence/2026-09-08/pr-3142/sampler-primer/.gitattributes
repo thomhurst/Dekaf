@@ -1,3 +1,0 @@
-* -text whitespace=cr-at-eol
-*-full.json whitespace=cr-at-eol,-blank-at-eol
-*-host.log.txt whitespace=cr-at-eol,-blank-at-eol

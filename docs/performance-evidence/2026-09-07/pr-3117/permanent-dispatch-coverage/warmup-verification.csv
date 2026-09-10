@@ -1,7 +1,0 @@
-"Pattern","BatchSize","WarmupSeconds","WarmupLifetimes","WarmupIterations","Samples","SteadyBytes","LargestBatch"
-"Repeated","1","34.6312435","960","30","15","0","1"
-"Repeated","16","34.0025794","960","30","15","0","1"
-"Distinct","1","32.9943559","960","30","15","0","1"
-"Distinct","16","33.3881551","960","30","15","0","1"
-"PendingPairs","1","33.53400489999999","960","30","15","0","1"
-"PendingPairs","16","44.18895979999999","1440","30","15","0","16"

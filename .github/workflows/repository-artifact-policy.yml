@@ -1,0 +1,22 @@
+name: Repository artifact policy
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+permissions:
+  contents: read
+jobs:
+  check:
+    name: No generated evidence or standalone harnesses
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+      - name: Test artifact policy
+        run: python3 -m unittest discover -s .github/scripts -p test_check_repository_artifacts.py
+      - name: Check changed files
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 .github/scripts/check_repository_artifacts.py --base "$BASE_SHA" --head "$HEAD_SHA"

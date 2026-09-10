@@ -1,5 +1,0 @@
-method,signature,threadId,methodId,startMs,loadMs,tier,actualAtStart,actualOverlapped
-System.Number.UInt64ToDecStr,class System.String  (unsigned int64),2899,140370578768328,108155.843222,108157.755867,OptimizedTier1,[],[12]
-System.Threading.PortableThreadPool.get_ThreadCount,instance int32  (),2900,140370577519552,115031.996343,115032.24612,OptimizedTier1,[],[]
-System.Threading.PortableThreadPool+ThreadCounts.VolatileRead,instance value class ThreadCounts  (),2900,140370577518408,115032.255358,115032.714095,OptimizedTier1,[],[]
-System.Threading.PortableThreadPool+ThreadCounts.get_NumExistingThreads,instance int16  (),2900,140370577518248,115032.722812,115033.077615,OptimizedTier1,[],[19]

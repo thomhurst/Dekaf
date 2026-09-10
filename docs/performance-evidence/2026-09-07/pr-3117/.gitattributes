@@ -1,2 +1,0 @@
-# Preserve raw tool output; whitespace diagnostics still apply to product source.
-* -text whitespace=cr-at-eol,-blank-at-eol,-blank-at-eof

@@ -1,8 +1,12 @@
 import contextlib
 import io
 import json
+import os
 import re
+import shutil
+import subprocess
 import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -166,6 +170,40 @@ class ValidationTests(unittest.TestCase):
 
 
 class WorkflowTests(unittest.TestCase):
+    @unittest.skipUnless(os.name != 'nt' and shutil.which('bash') and shutil.which('jq'), 'requires bash and jq')
+    def test_manual_pins_reject_stale_closed_and_unrelated_candidates(self):
+        workflow = WORKFLOW.read_text(encoding='utf-8')
+        script = textwrap.dedent(workflow.split('          git fetch --no-tags origin main\n', 1)[1]
+                                .split('          echo "base=$base"', 1)[0])
+        commands = '''
+git() {
+  case "$1 $2" in
+    'rev-parse origin/main') echo "$TEST_MAIN" ;;
+    'rev-parse HEAD') echo "$TEST_CHECKOUT" ;;
+    'merge-base --is-ancestor') [[ "$TEST_ANCESTOR" == true ]] ;;
+    'fetch --no-tags') return 0 ;;
+    *) return 1 ;;
+  esac
+}
+gh() { printf '%s' "$TEST_PR_JSON"; }
+'''
+        baseline, candidate = 'a' * 40, 'b' * 40
+        valid = dict(BASE_INPUT=baseline, HEAD_INPUT=candidate, PR_INPUT='42',
+                     TEST_MAIN=baseline, TEST_CHECKOUT=baseline, TEST_ANCESTOR='true',
+                     TEST_PR_JSON=json.dumps({'state': 'open', 'head': {'sha': candidate}}))
+        cases = [{}, {'BASE_INPUT': 'c' * 40}, {'HEAD_INPUT': 'c' * 40},
+                 {'TEST_CHECKOUT': 'c' * 40}, {'TEST_ANCESTOR': 'false'}, {'PR_INPUT': 'invalid'},
+                 {'BASE_INPUT': ''}, {'HEAD_INPUT': 'branch'},
+                 {'TEST_PR_JSON': json.dumps({'state': 'closed', 'head': {'sha': candidate}})}]
+        with tempfile.TemporaryDirectory() as directory:
+            for changes in cases:
+                with self.subTest(changes=changes):
+                    env = dict(os.environ, GATE=directory, GITHUB_EVENT_NAME='workflow_dispatch',
+                               GITHUB_REPOSITORY='owner/repository', **(valid | changes))
+                    result = subprocess.run(['bash', '-euo', 'pipefail', '-c', commands + script],
+                                            env=env, capture_output=True, text=True)
+                    self.assertEqual(not changes, result.returncode == 0, result.stderr)
+
     def test_gate_workflow_measures_a1_b_a2_on_one_hosted_vm_with_the_shared_screen(self):
         workflow = WORKFLOW.read_text(encoding='utf-8')
         self.assertIn('pull_request:', workflow)

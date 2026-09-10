@@ -70,9 +70,11 @@ AREAS = (
     ('src/Dekaf/Streams/', 'streams', unit('StreamsGroupHeartbeatProtocolBenchmarks'), None),
     ('src/Dekaf/Compression/', 'compression', [],
      'Compression fixtures (CompressionBenchmarks, CompressionCodecComparisonBenchmarks) use per-iteration '
-     'setup/cleanup and cannot meet the elapsed warmup floor; measure them with performance-comparison.yml.'),
+     'setup/cleanup and cannot meet the elapsed warmup floor. Add steady-state coverage in '
+     'tools/Dekaf.Benchmarks before performance acceptance.'),
     ('src/Dekaf.Compression.', 'compression', [],
-     'Compression fixtures use per-iteration setup/cleanup; measure them with performance-comparison.yml.'),
+     'Compression fixtures use per-iteration setup/cleanup. Add steady-state coverage in '
+     'tools/Dekaf.Benchmarks before performance acceptance.'),
     ('src/Dekaf.Serialization.Routing/', 'routing', unit(
         'RoutingSerdeBenchmarks', 'HeaderRoutingLookupBenchmarks', 'HeaderRoutingParseBenchmarks'), None),
     ('src/Dekaf.Serialization.Json/', 'json-serialization', [],
@@ -92,7 +94,8 @@ AREAS = (
         'InMemoryPendingOffsetQueryBenchmarks', 'InMemoryDeliveryCallbackBenchmarks',
         'InMemoryAdminTimeoutBenchmarks', 'InMemoryConsumerGroupOffsetQueryBenchmarks'), None),
     ('src/Dekaf.Outbox', 'outbox', [],
-     'Outbox has no unit fixture; use the outbox suites in performance-comparison.yml.'),
+     'Outbox lacks mapped steady-state coverage. Add fixtures in tools/Dekaf.Benchmarks and map them '
+     'here before performance acceptance; loaded scenarios also need the existing stress project.'),
     ('src/Dekaf.Extensions.', 'extensions', [], 'Hosting/DI extensions are not on a measured hot path.'),
     ('src/Dekaf.Abstractions/', 'core', CORE, None),
     ('src/Dekaf/', 'core', CORE, None),
