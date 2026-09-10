@@ -37,6 +37,10 @@ TRACE = unit('TraceContextInjectionBenchmarks', 'TraceContextExtractionBenchmark
 # [IterationSetup]/[IterationCleanup], fixed InvocationCount or ColdStart fixtures, because
 # those cannot reach the elapsed warmup floor with the shared BDN settings.
 AREAS = (
+    ('src/Dekaf.Outbox.EntityFrameworkCore/OutboxCommitObserver.cs', 'outbox-save',
+     unit('OutboxSaveChangesBenchmarks'), None),
+    ('src/Dekaf.Outbox.EntityFrameworkCore/OutboxNotificationOptionsExtensions.cs', 'outbox-save',
+     unit('OutboxSaveChangesBenchmarks'), None),
     ('src/Dekaf/Protocol/Messages/ShareFetchResponse.cs', 'share-consumer',
      unit('ShareFetchResponseDecodingBenchmarks'), None),
     # KafkaConsumer owns both fetching and the offset-store API. The separate
