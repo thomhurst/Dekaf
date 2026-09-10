@@ -110,7 +110,7 @@ class SelectionTests(unittest.TestCase):
 
     def test_kafka_consumer_retains_all_offset_store_api_coverage(self):
         selection = gate.select(['src/Dekaf/Consumer/KafkaConsumer.cs'])
-        self.assertEqual(gate.unit('ConsumerHotPathBenchmarks', 'ConsumerBatchInterceptorBenchmarks', 'FetchResponseParsingBenchmarks',
+        self.assertEqual(gate.unit('ConsumerHotPathBenchmarks', 'ConsumerBatchInterceptorBenchmarks', 'ConsumerFollowerOffsetRetryBenchmarks', 'FetchResponseParsingBenchmarks',
                                    'FetchRequestBuildBenchmarks', 'OffsetStoreBenchmarks',
                                    'ConsumeResultOffsetStoreBenchmarks'), selection['filters'])
         self.assertNotIn('*.Unit.PartitionedDispatchBenchmarks.*', selection['filters'])
@@ -122,6 +122,11 @@ class SelectionTests(unittest.TestCase):
                 self.assertIn(fixture, selection['filters'])
             if path != 'UnknownConsumer.cs':
                 self.assertNotIn('*.Unit.PartitionedDispatchBenchmarks.*', selection['filters'])
+
+    def test_follower_recovery_covers_consumer_and_metadata_paths(self):
+        for path in ('src/Dekaf/Consumer/KafkaConsumer.cs', 'src/Dekaf/Consumer/Unknown.cs',
+                     'src/Dekaf/Metadata/ClusterMetadata.cs'):
+            self.assertIn('*.Unit.ConsumerFollowerOffsetRetryBenchmarks.*', gate.select([path])['filters'])
 
     def test_partition_completion_retains_dispatch_and_tracking_coverage(self):
         selection = gate.select(['src/Dekaf/Consumer/PartitionedProcessing.cs',

@@ -47,7 +47,7 @@ AREAS = (
     # partition dispatcher has its own implementation; unknown files retain the
     # directory-wide fallback below.
     ('src/Dekaf/Consumer/KafkaConsumer.cs', 'consumer', unit(
-        'ConsumerHotPathBenchmarks', 'ConsumerBatchInterceptorBenchmarks', 'FetchResponseParsingBenchmarks', 'FetchRequestBuildBenchmarks',
+        'ConsumerHotPathBenchmarks', 'ConsumerBatchInterceptorBenchmarks', 'ConsumerFollowerOffsetRetryBenchmarks', 'FetchResponseParsingBenchmarks', 'FetchRequestBuildBenchmarks',
         'OffsetStoreBenchmarks', 'ConsumeResultOffsetStoreBenchmarks'), None),
     ('src/Dekaf/Consumer/IKafkaConsumer.cs', 'consumer', unit('ConsumerHotPathBenchmarks', 'ConsumerBatchInterceptorBenchmarks'), None),
     ('src/Dekaf/Consumer/IConsumerInterceptor.cs', 'consumer', unit('ConsumerHotPathBenchmarks', 'ConsumerBatchInterceptorBenchmarks'), None),
@@ -72,7 +72,7 @@ AREAS = (
         'ValueTaskSourcePoolBenchmarks', 'ProduceResponseParsingBenchmarks', 'PartitionQueueAccountingBenchmarks',
         'WaveCoalesceProbeBenchmarks'), None),
     ('src/Dekaf/Consumer/', 'consumer', unit(
-        'ConsumerHotPathBenchmarks', 'ConsumerBatchInterceptorBenchmarks', 'FetchResponseParsingBenchmarks', 'FetchRequestBuildBenchmarks',
+        'ConsumerHotPathBenchmarks', 'ConsumerBatchInterceptorBenchmarks', 'ConsumerFollowerOffsetRetryBenchmarks', 'FetchResponseParsingBenchmarks', 'FetchRequestBuildBenchmarks',
         'OffsetStoreBenchmarks', 'ConsumeResultOffsetStoreBenchmarks',
         'PartitionedDispatchBenchmarks', 'KeyOrderedDispatchBenchmarks'), None),
     ('src/Dekaf/ShareConsumer/', 'share-consumer', unit(
@@ -92,7 +92,7 @@ AREAS = (
         'DescribeTransactionsProtocolBenchmarks', 'OffsetTopicIdProtocolBenchmarks',
         'ConsumerGroupAssignmentBenchmarks'), None),
     ('src/Dekaf/Metadata/', 'metadata', unit(
-        'ControllerMetadataRefreshBenchmarks', 'TopicIdentityCheckBenchmarks', 'ProduceTopicCorrelationBenchmarks',
+        'ControllerMetadataRefreshBenchmarks', 'ConsumerFollowerOffsetRetryBenchmarks', 'TopicIdentityCheckBenchmarks', 'ProduceTopicCorrelationBenchmarks',
         'DnsPreferenceCacheBenchmarks'), None),
     ('src/Dekaf/Retry/', 'retry', unit(
         'ExponentialBackoffRetryPolicyBenchmarks', 'ProducerRetryWaitBenchmarks', 'TransactionRetryClockBenchmarks'), None),
