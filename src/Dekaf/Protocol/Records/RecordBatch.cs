@@ -540,6 +540,14 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
         _records = this;
     }
 
+    internal ReadOnlyMemory<byte> GetUnparsedRecordData()
+    {
+        ThrowIfNotLazyRecordList();
+        if (_parsedRecords is not null)
+            throw new InvalidOperationException("The batch records have already been materialized.");
+        return _rawRecordData;
+    }
+
     internal int UnparsedLazyRecordCount =>
         ReferenceEquals(_records, this) && _parsedRecords is null ? _recordCount : -1;
 

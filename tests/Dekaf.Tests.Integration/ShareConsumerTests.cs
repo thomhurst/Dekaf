@@ -21,6 +21,49 @@ namespace Dekaf.Tests.Integration;
 public class ShareConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
+    [Arguments(1)]
+    [Arguments(4)]
+    public async Task ShareConsumer_NativeResponsePayload_RemainsReadable(int messageCount)
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 1);
+        var groupId = $"share-native-{Guid.NewGuid():N}";
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers).BuildAsync();
+        await using var consumer = await Kafka.CreateShareConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers).WithGroupId(groupId)
+            .WithAcknowledgementMode(ShareAcknowledgementMode.Explicit).WithMaxPollRecords(messageCount)
+            .BuildAsync();
+        consumer.Subscribe(topic);
+        await ShareConsumerTestHelper.PrimeShareConsumerAsync(consumer);
+
+        // Each record exceeds the 85,000-byte native response threshold by itself.
+        var values = new string[messageCount];
+        for (var index = 0; index < messageCount; index++)
+        {
+            values[index] = new string((char)('a' + index), 128 * 1024);
+            await producer.ProduceAsync(new ProducerMessage<string, string>
+            {
+                Topic = topic, Partition = 0, Key = index.ToString(), Value = values[index]
+            });
+        }
+        await producer.FlushAsync();
+
+        var received = new HashSet<int>();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await foreach (var record in consumer.PollAsync(timeout.Token))
+        {
+            var index = int.Parse(record.Key!);
+            await Assert.That(received.Add(index)).IsTrue();
+            await Assert.That(record.Value).IsEqualTo(values[index]);
+            consumer.Acknowledge(record);
+            await consumer.CommitAsync(timeout.Token);
+            if (received.Count == messageCount) break;
+        }
+        await Assert.That(received.Count).IsEqualTo(messageCount);
+        await consumer.CloseAsync(timeout.Token);
+    }
+
+    [Test]
     public async Task ShareConsumer_SingleConsumer_ReceivesAllMessages()
     {
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 3);

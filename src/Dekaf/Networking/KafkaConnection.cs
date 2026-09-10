@@ -1619,7 +1619,10 @@ public sealed partial class KafkaConnection :
         where TRequest : IKafkaRequest<TResponse>
         where TResponse : IKafkaResponse
     {
-        if (KafkaMessageMetadata<TRequest, TResponse>.ApiKey == ApiKey.Fetch)
+        var apiKey = KafkaMessageMetadata<TRequest, TResponse>.ApiKey;
+        // Managed unpooled ShareFetch views already keep their array alive. Only
+        // pooled storage or an active budget reservation needs a retained owner.
+        if (apiKey == ApiKey.Fetch || (apiKey == ApiKey.ShareFetch && (pooledBuffer.IsPooled || reservation is not null)))
             return ParseFetchResponse<TRequest, TResponse>(
                 pooledBuffer,
                 apiVersion,
@@ -1662,6 +1665,9 @@ public sealed partial class KafkaConnection :
         where TRequest : IKafkaRequest<TResponse>
         where TResponse : IKafkaResponse
     {
+        if (typeof(TResponse) == typeof(ShareFetchResponse))
+            return (TResponse)(object)ParseShareFetchResponse(pooledBuffer, apiVersion, reservation);
+
         var memoryOwner = pooledBuffer.TransferOwnership(reservation);
         using var parsingScope = ResponseParsingContext.SetPooledMemory(memoryOwner, checkCrcs);
 
@@ -1693,6 +1699,31 @@ public sealed partial class KafkaConnection :
         {
             memoryOwner.Dispose();
             throw;
+        }
+    }
+
+    private static ShareFetchResponse ParseShareFetchResponse(
+        PooledResponseBuffer pooledBuffer, short apiVersion, IResponseMemoryReservation? reservation)
+    {
+        var transferred = false;
+        try
+        {
+            var reader = new KafkaProtocolReader(pooledBuffer.Data);
+            var response = (ShareFetchResponse)ShareFetchResponse.Read(ref reader, apiVersion);
+            if (reader.HasBorrowedMemory)
+            {
+                response.PooledMemoryOwner = pooledBuffer.TransferOwnership(reservation);
+                transferred = true;
+            }
+            return response;
+        }
+        finally
+        {
+            if (!transferred)
+            {
+                pooledBuffer.Dispose();
+                reservation?.Dispose();
+            }
         }
     }
 
@@ -4990,7 +5021,10 @@ internal readonly struct PooledResponseBuffer : IDisposable
 /// </summary>
 internal sealed class PooledResponseMemory : IPooledMemory
 {
-    private static readonly PooledResponseMemoryPool s_pool = new();
+    // This private fixed-capacity pool needs neither retained-count diagnostics nor
+    // capacity ratcheting. Use Reservoir directly, preserving the thread-local path.
+    private static readonly Reservoir.ObjectPool<PooledResponseMemory, MemoryPoolPolicy> s_pool =
+        new(new MemoryPoolPolicy(), 256, threadLocalFastPath: true);
 
     private byte[]? _buffer;
     private NativeResponseBuffer? _nativeBuffer;
@@ -5067,9 +5101,14 @@ internal sealed class PooledResponseMemory : IPooledMemory
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
             return;
 
-        var buffer = Interlocked.Exchange(ref _buffer, null);
-        var nativeBuffer = Interlocked.Exchange(ref _nativeBuffer, null);
-        var reservation = Interlocked.Exchange(ref _reservation, null);
+        // The disposal claim above grants exclusive access until this owner returns
+        // to the pool. Clearing each field needs no additional atomic operation.
+        var buffer = _buffer;
+        var nativeBuffer = _nativeBuffer;
+        var reservation = _reservation;
+        _buffer = null;
+        _nativeBuffer = null;
+        _reservation = null;
         try
         {
             nativeBuffer?.Return();
@@ -5088,11 +5127,14 @@ internal sealed class PooledResponseMemory : IPooledMemory
             s_pool.Return(this);
     }
 
-    private sealed class PooledResponseMemoryPool() : ObjectPool<PooledResponseMemory>(maxPoolSize: 256)
+    private readonly struct MemoryPoolPolicy
+        : Reservoir.IPooledObjectPolicy<PooledResponseMemory>, Reservoir.INonThrowingResetPolicy
     {
-        protected override PooledResponseMemory Create() => new();
+        public PooledResponseMemory Create() => new();
 
-        protected override void Reset(PooledResponseMemory item)
+        public void Destroy(PooledResponseMemory item) { }
+
+        public bool TryReset(PooledResponseMemory item)
         {
             item._buffer = null;
             item._nativeBuffer = null;
@@ -5103,6 +5145,7 @@ internal sealed class PooledResponseMemory : IPooledMemory
             item._reservation = null;
             item._pooled = 0;
             Volatile.Write(ref item._disposed, 1);
+            return true;
         }
     }
 }

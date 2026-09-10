@@ -31,6 +31,12 @@ public ref struct KafkaProtocolReader
     private SequenceReader<byte> _reader;
     private readonly bool _isContiguous;
 
+    // ShareFetch exposes opaque record slices; ownership can wait until parsing
+    // confirms that at least one slice borrows the response frame.
+    internal bool HasBorrowedMemory { get; private set; }
+
+    internal void MarkBorrowedMemoryUsed() => HasBorrowedMemory = true;
+
     /// <summary>
     /// Creates a reader from a byte array. This is the most common case.
     /// </summary>

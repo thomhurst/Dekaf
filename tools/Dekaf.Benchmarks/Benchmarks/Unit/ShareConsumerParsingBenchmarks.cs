@@ -2,6 +2,7 @@ using System.Buffers;
 using System.Reflection;
 using BenchmarkDotNet.Attributes;
 using Dekaf.Metadata;
+using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
 using Dekaf.Protocol.Records;
 using Dekaf.Serialization;
@@ -22,12 +23,15 @@ public class ShareConsumerParsingBenchmarks
     private const long BaseTimestamp = 1700000000000;
     private KafkaShareConsumer<int, int> _synchronousConsumer = null!;
     private KafkaShareConsumer<int, int> _preparedConsumer = null!;
+    private KafkaShareConsumer<int, int> _coldConsumer = null!;
+    private readonly ColdInt32Deserializer _coldDeserializer = new();
     private Func<TopicInfo, ShareFetchResponsePartition, int, List<ShareConsumeResult<int, int>>> _parse = null!;
     private readonly TopicInfo _topic = new() { Name = "share-benchmark", Partitions = [] };
     private ShareFetchResponsePartition _partition = null!;
     private List<ShareConsumeResult<int, int>> _retained = null!;
     private Action _releaseSynchronous = null!;
     private Action _releasePrepared = null!;
+    private Action _releaseCold = null!;
 
     [Params(64, 1024)]
     public int RecordCount { get; set; }
@@ -36,7 +40,7 @@ public class ShareConsumerParsingBenchmarks
     public int HeaderCount { get; set; }
 
     [GlobalSetup]
-    public void Setup()
+    public async ValueTask Setup()
     {
         var records = new Record[RecordCount];
         for (var index = 0; index < records.Length; index++)
@@ -94,12 +98,14 @@ public class ShareConsumerParsingBenchmarks
         _synchronousConsumer = new KafkaShareConsumer<int, int>(options, Serializers.Int32, Serializers.Int32);
         var prepared = new WarmInt32Deserializer();
         _preparedConsumer = new KafkaShareConsumer<int, int>(options, prepared, prepared);
+        _coldConsumer = new KafkaShareConsumer<int, int>(options, Serializers.Int32, _coldDeserializer);
         _parse = typeof(KafkaShareConsumer<int, int>)
             .GetMethod("ParsePartitionRecords", BindingFlags.Instance | BindingFlags.NonPublic)!
             .CreateDelegate<Func<TopicInfo, ShareFetchResponsePartition, int, List<ShareConsumeResult<int, int>>>>(
                 _synchronousConsumer);
         _releaseSynchronous = BindPollRelease(_synchronousConsumer);
         _releasePrepared = BindPollRelease(_preparedConsumer);
+        _releaseCold = BindPollRelease(_coldConsumer);
 
         var parsed = _parse(_topic, _partition, RecordCount);
         Validate(parsed);
@@ -125,6 +131,11 @@ public class ShareConsumerParsingBenchmarks
         Validate(ParsePrepared());
         _releasePrepared();
         Validate(_retained);
+        await ValidateBorrowedBatch(_synchronousConsumer);
+        await ValidateBorrowedBatch(_preparedConsumer);
+        _coldDeserializer.Reset();
+        await ValidateBorrowedBatch(_coldConsumer);
+        await ValidateColdPreparedBatch();
     }
 
     [GlobalCleanup]
@@ -132,6 +143,7 @@ public class ShareConsumerParsingBenchmarks
     {
         await _synchronousConsumer.DisposeAsync();
         await _preparedConsumer.DisposeAsync();
+        await _coldConsumer.DisposeAsync();
     }
 
     [Benchmark]
@@ -170,6 +182,132 @@ public class ShareConsumerParsingBenchmarks
         typeof(KafkaShareConsumer<int, int>)
             .GetMethod("ReleasePolledBatchOwners", BindingFlags.Instance | BindingFlags.NonPublic)?
             .CreateDelegate<Action>(consumer) ?? (static () => { });
+    public ValueTask<long> ParseBorrowedSynchronousBatch() => ParseBorrowedBatch(_synchronousConsumer);
+
+    public ValueTask<long> ParseBorrowedWarmPreparedBatch() => ParseBorrowedBatch(_preparedConsumer);
+
+    public ValueTask<long> ParseBorrowedColdPreparedBatch()
+    {
+        _coldDeserializer.Reset();
+        return ParseBorrowedBatch(_coldConsumer);
+    }
+
+    [Benchmark]
+    public async ValueTask<long> ParseColdPreparedBatch()
+    {
+        _coldDeserializer.Reset();
+        var records = new List<ShareConsumeResult<int, int>>();
+        var state = new KafkaShareConsumer<int, int>.DeserializerPreparationParserState();
+        var hasRetainedKey = false;
+        var retainedKey = 0;
+        try
+        {
+            while (true)
+            {
+                var pending = _coldConsumer.ParsePartitionRecordsWithPreparation(
+                    _topic, _partition, RecordCount, records, ref state, hasRetainedKey, retainedKey);
+                if (pending is null)
+                    break;
+                await _coldConsumer.PrepareDeserializerAsync(pending, CancellationToken.None);
+                hasRetainedKey = pending.HasRetainedKey;
+                retainedKey = pending.RetainedKey;
+            }
+            return Traverse(records);
+        }
+        finally
+        {
+            state.DisposeCurrentBatch();
+            _releaseCold();
+        }
+    }
+
+    private async ValueTask<long> ParseBorrowedBatch(KafkaShareConsumer<int, int> consumer)
+    {
+        using var batch = await consumer.ParseRecordBatchAsync(
+            new TopicPartition(_topic.Name, 0), ReadSource(), _partition.AcquiredRecords,
+            RecordCount, CancellationToken.None);
+        long checksum = 0;
+        foreach (var record in batch)
+        {
+            checksum += record.Offset + record.Key + record.Value + record.DeliveryCount + record.TimestampMs;
+            foreach (var header in record.Headers)
+            {
+                checksum += header.KeyUtf8.Length;
+                if (!header.IsValueNull)
+                    checksum += header.Value.Span[0];
+            }
+        }
+        return checksum;
+    }
+
+    private async ValueTask ValidateBorrowedBatch(KafkaShareConsumer<int, int> consumer)
+    {
+        using var batch = await consumer.ParseRecordBatchAsync(
+            new TopicPartition(_topic.Name, 0), ReadSource(), _partition.AcquiredRecords,
+            RecordCount, CancellationToken.None);
+        var index = 0;
+        foreach (var record in batch)
+        {
+            if (index >= RecordCount || record.Topic != _topic.Name || record.Partition != 0
+                || record.Offset != BaseOffset + index || record.Key != index || record.Value != index + 1
+                || record.DeliveryCount != 3 || record.TimestampMs != BaseTimestamp + index
+                || record.Headers.Count != HeaderCount)
+                throw new InvalidOperationException("Borrowed parsing changed record data, metadata or order.");
+            var headerIndex = 0;
+            foreach (var header in record.Headers)
+            {
+                var valid = headerIndex switch
+                {
+                    0 => header.KeyUtf8.Span.SequenceEqual("kind"u8) && !header.IsValueNull
+                        && header.Value.Length == 1 && header.Value.Span[0] == 42,
+                    1 => header.KeyUtf8.Span.SequenceEqual("nullable"u8) && header.IsValueNull,
+                    _ => false
+                };
+                if (!valid)
+                    throw new InvalidOperationException("Borrowed parsing changed header bytes, nullability or order.");
+                headerIndex++;
+            }
+            if (headerIndex != HeaderCount)
+                throw new InvalidOperationException("Borrowed parsing changed header cardinality.");
+            index++;
+        }
+        if (index != RecordCount)
+            throw new InvalidOperationException("Borrowed parsing changed acquisition cardinality.");
+    }
+
+    private async ValueTask ValidateColdPreparedBatch()
+    {
+        _coldDeserializer.Reset();
+        var records = new List<ShareConsumeResult<int, int>>();
+        var state = new KafkaShareConsumer<int, int>.DeserializerPreparationParserState();
+        var hasRetainedKey = false;
+        var retainedKey = 0;
+        try
+        {
+            while (true)
+            {
+                var pending = _coldConsumer.ParsePartitionRecordsWithPreparation(
+                    _topic, _partition, RecordCount, records, ref state, hasRetainedKey, retainedKey);
+                if (pending is null)
+                    break;
+                await _coldConsumer.PrepareDeserializerAsync(pending, CancellationToken.None);
+                hasRetainedKey = pending.HasRetainedKey;
+                retainedKey = pending.RetainedKey;
+            }
+            Validate(records);
+        }
+        finally
+        {
+            state.DisposeCurrentBatch();
+            _releaseCold();
+        }
+    }
+
+    private RecordBatch ReadSource()
+    {
+        var reader = new KafkaProtocolReader(_partition.RecordBytes);
+        return RecordBatch.Read(ref reader);
+    }
 
     private List<ShareConsumeResult<int, int>> ParsePrepared()
     {
@@ -240,5 +378,29 @@ public class ShareConsumerParsingBenchmarks
         public ValueTask PrepareAsync(ReadOnlyMemory<byte> data, SerializationContext context,
             CancellationToken cancellationToken = default)
             => throw new InvalidOperationException("This benchmark models a warm deserializer.");
+    }
+
+    // Models one schema/cache miss per batch. The deserializer's asynchronous preparation
+    // cost is included equally in both APIs; no network service or per-record miss is assumed.
+    private sealed class ColdInt32Deserializer : IDeserializer<int>, IAsyncDeserializerPreparer<int>
+    {
+        private bool _prepared;
+        internal void Reset() => _prepared = false;
+        public int Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
+            => Serializers.Int32.Deserialize(data, context);
+
+        public bool TryDeserialize(ReadOnlyMemory<byte> data, SerializationContext context, out int value)
+        {
+            value = _prepared ? Deserialize(data, context) : default;
+            return _prepared;
+        }
+
+        public async ValueTask PrepareAsync(ReadOnlyMemory<byte> data, SerializationContext context,
+            CancellationToken cancellationToken = default)
+        {
+            await Task.Yield();
+            cancellationToken.ThrowIfCancellationRequested();
+            _prepared = true;
+        }
     }
 }

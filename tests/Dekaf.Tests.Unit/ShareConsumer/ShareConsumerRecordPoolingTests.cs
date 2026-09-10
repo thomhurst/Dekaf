@@ -2,6 +2,7 @@ using System.Buffers;
 using System.Reflection;
 using Dekaf.Metadata;
 using Dekaf.Networking;
+using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
 using Dekaf.Protocol.Records;
 using Dekaf.Serialization;
@@ -147,7 +148,9 @@ public sealed class ShareConsumerRecordPoolingTests
 
     [Test]
     [NotInParallel]
-    public async Task ParsePartitionRecords_RecordHeaderDecoratorsShareOneMaterialization()
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task ParsePartitionRecords_RecordHeaderDecoratorsShareOneMaterialization(bool borrowed)
     {
         var buffer = new ArrayBufferWriter<byte>();
         using var source = new RecordBatch
@@ -181,30 +184,23 @@ public sealed class ShareConsumerRecordPoolingTests
             valueDeserializer,
             pool,
             metadataManager);
-        var method = typeof(KafkaShareConsumer<string, string>).GetMethod(
-            "ParsePartitionRecords",
-            BindingFlags.Instance | BindingFlags.NonPublic)!;
-
-        _ = method.Invoke(consumer,
-        [
-            new TopicInfo { Name = "topic", Partitions = [] },
-            new ShareFetchResponsePartition
-            {
-                PartitionIndex = 0,
-                CurrentLeader = new ShareFetchLeaderIdAndEpoch(),
-                RecordBytes = buffer.WrittenMemory,
-                AcquiredRecords =
-                [
-                    new ShareFetchAcquiredRecords
-                    {
-                        FirstOffset = 17,
-                        LastOffset = 17,
-                        DeliveryCount = 1
-                    }
-                ]
-            },
-            1
-        ]);
+        var partition = CreatePartition(buffer.WrittenMemory);
+        if (borrowed)
+        {
+            var position = 0;
+            using var batch = await consumer.ParseRecordBatchAsync(
+                new TopicPartition("topic", 0), ReadNextBatch(buffer.WrittenMemory, ref position),
+                partition.AcquiredRecords, 1, default);
+            var records = batch.GetEnumerator();
+            await Assert.That(records.MoveNext()).IsTrue();
+            await Assert.That(records.Current.Headers.Count).IsEqualTo(1);
+        }
+        else
+        {
+            var method = typeof(KafkaShareConsumer<string, string>).GetMethod(
+                "ParsePartitionRecords", BindingFlags.Instance | BindingFlags.NonPublic)!;
+            _ = method.Invoke(consumer, [new TopicInfo { Name = "topic", Partitions = [] }, partition, 1]);
+        }
 
         await Assert.That(keyDeserializer.HeaderCount).IsEqualTo(1);
         await Assert.That(valueDeserializer.HeaderCount).IsEqualTo(2);
@@ -290,7 +286,9 @@ public sealed class ShareConsumerRecordPoolingTests
 
     [Test]
     [NotInParallel]
-    public async Task ParsePartitionRecords_ColdHeaderPreparers_ParseEachBatchOnce()
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task ParsePartitionRecords_ColdHeaderPreparers_ParseEachBatchOnce(bool borrowed)
     {
         var buffer = new ArrayBufferWriter<byte>();
         using var warmBatch = new RecordBatch
@@ -369,17 +367,41 @@ public sealed class ShareConsumerRecordPoolingTests
         int returnedBatchCount;
         try
         {
-            var firstPreparation = consumer.ParsePartitionRecordsWithPreparation(
-                topicInfo, partition, 3, results, ref parserState, false, null);
-            await consumer.PrepareDeserializerAsync(firstPreparation!, CancellationToken.None);
+            if (borrowed)
+            {
+                var position = 0;
+                while (position < buffer.WrittenCount)
+                {
+                    using var batch = await consumer.ParseRecordBatchAsync(
+                        new TopicPartition("topic", 0), ReadNextBatch(buffer.WrittenMemory, ref position),
+                        partition.AcquiredRecords, 3, default);
+                    foreach (var record in batch)
+                    {
+                        results.Add(new ShareConsumeResult<string, string>
+                        {
+                            Topic = record.Topic,
+                            Partition = record.Partition,
+                            Offset = record.Offset,
+                            Value = record.Value,
+                            DeliveryCount = record.DeliveryCount
+                        });
+                    }
+                }
+            }
+            else
+            {
+                var firstPreparation = consumer.ParsePartitionRecordsWithPreparation(
+                    topicInfo, partition, 3, results, ref parserState, false, null);
+                await consumer.PrepareDeserializerAsync(firstPreparation!, CancellationToken.None);
 
-            var secondPreparation = consumer.ParsePartitionRecordsWithPreparation(
-                topicInfo, partition, 3, results, ref parserState, false, null);
-            await consumer.PrepareDeserializerAsync(secondPreparation!, CancellationToken.None);
+                var secondPreparation = consumer.ParsePartitionRecordsWithPreparation(
+                    topicInfo, partition, 3, results, ref parserState, false, null);
+                await consumer.PrepareDeserializerAsync(secondPreparation!, CancellationToken.None);
 
-            var finalPreparation = consumer.ParsePartitionRecordsWithPreparation(
-                topicInfo, partition, 3, results, ref parserState, false, null);
-            await Assert.That(finalPreparation).IsNull();
+                var finalPreparation = consumer.ParsePartitionRecordsWithPreparation(
+                    topicInfo, partition, 3, results, ref parserState, false, null);
+                await Assert.That(finalPreparation).IsNull();
+            }
         }
         finally
         {
@@ -394,6 +416,14 @@ public sealed class ShareConsumerRecordPoolingTests
         await Assert.That(results[0].Value).IsEqualTo("warm");
         await Assert.That(results[1].Value).IsEqualTo("first");
         await Assert.That(results[2].Value).IsEqualTo("second");
+    }
+
+    private static RecordBatch ReadNextBatch(ReadOnlyMemory<byte> bytes, ref int position)
+    {
+        var reader = new KafkaProtocolReader(bytes[position..]);
+        var batch = RecordBatch.Read(ref reader);
+        position += (int)reader.Consumed;
+        return batch;
     }
 
     private sealed class ColdHeaderPreparer :

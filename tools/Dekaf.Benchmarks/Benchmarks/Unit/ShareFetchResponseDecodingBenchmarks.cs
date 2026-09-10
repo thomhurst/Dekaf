@@ -26,7 +26,7 @@ public class ShareFetchResponseDecodingBenchmarks
     [Params(false, true)]
     public bool Pooled { get; set; }
 
-    [Params(0, 65536, 131072)]
+    [Params(0, 4096, 65536, 131072)]
     public int PayloadBytes { get; set; }
 
     [GlobalSetup]
