@@ -12,6 +12,8 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 /// <summary>
 /// Measures one complete partition batch, separately from traversal of retained results.
 /// Fixture serialization and private-method delegate binding happen only during setup.
+/// Parsing results include record/header creation and pooled storage cleanup, expressed
+/// per batch. Network I/O, polling, acknowledgement tracking and end-to-end latency are excluded.
 /// </summary>
 [MemoryDiagnoser]
 public class ShareConsumerParsingBenchmarks
