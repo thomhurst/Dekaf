@@ -110,7 +110,13 @@ jobs:
           for role in A B; do
             sha="${{ steps.pins.outputs.base }}"; if [[ "$role" == B ]]; then sha="${{ steps.pins.outputs.head }}"; fi
             git worktree add --detach "$RUNNER_TEMP/gate-$role" "$sha"
-            (cd "$RUNNER_TEMP/gate-$role" && dotnet build tools/Dekaf.Benchmarks -c Release --disable-build-servers > "$GATE/build-$role.log" 2>&1)
+            (
+              cd "$RUNNER_TEMP/gate-$role/tools/Dekaf.Benchmarks"
+              # Scope BDN project discovery so the bespoke harness's namesake is not ambiguous.
+              dotnet new sln --name GateBenchmarkExecution --format sln > "$GATE/solution-$role.log" 2>&1
+              dotnet sln GateBenchmarkExecution.sln add Dekaf.Benchmarks.csproj >> "$GATE/solution-$role.log" 2>&1
+              dotnet build Dekaf.Benchmarks.csproj -c Release --disable-build-servers > "$GATE/build-$role.log" 2>&1
+            )
           done
           git diff --stat "${{ steps.pins.outputs.base }}" "${{ steps.pins.outputs.head }}" -- tools/Dekaf.Benchmarks > "$GATE/fixture-diff.txt" || true
           if [[ -s "$GATE/fixture-diff.txt" ]]; then
@@ -124,11 +130,13 @@ jobs:
           mapfile -t filters < <(jq -r '.filters[]' "$GATE/selection.json")
           for role in A B; do
             (
-              cd "$RUNNER_TEMP/gate-$role"
-              dotnet run --project tools/Dekaf.Benchmarks -c Release --no-build -- --list flat --filter "${filters[@]}" > "$GATE/list-$role.txt" 2>&1
+              cd "$RUNNER_TEMP/gate-$role/tools/Dekaf.Benchmarks"
+              dotnet run --project Dekaf.Benchmarks.csproj -c Release --no-build -- --list flat --filter "${filters[@]}" > "$GATE/list-$role.txt" 2>&1
               count=$(python3 "$GITHUB_WORKSPACE/.github/scripts/performance_gate.py" count < "$GATE/list-$role.txt")
+              dotnet run --project Dekaf.Benchmarks.csproj -c Release --no-build -- --job Dry --filter "${filters[@]}" --exporters fulljson --buildTimeout 900 --artifacts "$GATE/dry-$role" > "$GATE/dry-$role.log" 2>&1
+              # --list flat counts methods; execution expands their parameter combinations.
+              count=$(python3 "$GITHUB_WORKSPACE/.github/scripts/performance_gate.py" count --execution-log "$GATE/dry-$role.log")
               echo "$count" > "$GATE/count-$role.txt"
-              dotnet run --project tools/Dekaf.Benchmarks -c Release --no-build -- --job Dry --filter "${filters[@]}" --exporters fulljson --buildTimeout 900 --artifacts "$GATE/dry-$role" > "$GATE/dry-$role.log" 2>&1
               python3 "$GITHUB_WORKSPACE/.github/scripts/performance_gate.py" validate --dry --phase "$GATE/dry-$role" --expected "$count"
             )
           done
@@ -144,8 +152,8 @@ jobs:
           for phase in A1 B A2; do
             role=A; if [[ "$phase" == B ]]; then role=B; fi
             (
-              cd "$RUNNER_TEMP/gate-$role"
-              dotnet run --project tools/Dekaf.Benchmarks -c Release --no-build -- --filter "${filters[@]}" \
+              cd "$RUNNER_TEMP/gate-$role/tools/Dekaf.Benchmarks"
+              dotnet run --project Dekaf.Benchmarks.csproj -c Release --no-build -- --filter "${filters[@]}" \
                 --warmupCount 50 --iterationCount 25 --iterationTime 1000 --launchCount 1 --outliers DontRemove \
                 --exporters fulljson --buildTimeout 900 --artifacts "$GATE/$phase" > "$GATE/$phase.log" 2>&1
             )

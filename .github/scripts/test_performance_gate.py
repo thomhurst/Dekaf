@@ -81,6 +81,28 @@ class SelectionTests(unittest.TestCase):
         listing = '// Validating benchmarks\nDekaf.Benchmarks.Benchmarks.Unit.A.M\n\nDekaf.Benchmarks.Benchmarks.Unit.A.N(X: 1)\n'
         self.assertEqual(2, gate.count_listed_cases(listing))
 
+    def test_execution_total_includes_parameterized_and_failed_cases(self):
+        log = ('// ***** Found 31 benchmark(s) in total *****\n'
+               '// Found 4 benchmarks:\n// Found 27 benchmarks:\n'
+               '// Benchmark process exited with code 1\n')
+        self.assertEqual(31, gate.count_execution_cases(log))
+        fatal, _ = gate.validate_phase([benchmark()], gate.count_execution_cases(log), None, 0)
+        self.assertIn('expected 31 cases, found 1', fatal)
+
+    def test_execution_count_rejects_missing_or_ambiguous_totals(self):
+        line = '// ***** Found 31 benchmark(s) in total *****\n'
+        for log in ('// Found 31 benchmarks:\n', line + line):
+            with self.subTest(log=log), self.assertRaises(ValueError):
+                gate.count_execution_cases(log)
+
+    def test_execution_count_enforces_expanded_case_budget(self):
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / 'dry.log'
+            log.write_text(f'// ***** Found {gate.MAX_CASES + 1} benchmark(s) in total *****\n', encoding='utf-8')
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(1, gate.main(['count', '--execution-log', str(log)]))
+                self.assertEqual(0, gate.main(['count', '--execution-log', str(log), '--max-cases', str(gate.MAX_CASES + 1)]))
+
     def test_count_command_rejects_empty_and_oversized_selections(self):
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             with mock.patch('sys.stdin', io.StringIO('')):
