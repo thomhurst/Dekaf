@@ -13,6 +13,7 @@ public sealed partial class OutboxRelayService
     {
         base.Dispose();
         CancelRenewalDelay();
+        _metrics.Dispose();
     }
 
     private void CancelRenewalDelay()
@@ -50,15 +51,39 @@ public sealed partial class OutboxRelayService
         return false;
     }
 
-    private async ValueTask<bool> PreparePublishLeaseAsync(int bucket, CancellationToken cancellationToken)
+    private ValueTask<bool> PreparePublishLeaseAsync(int bucket, CancellationToken cancellationToken)
     {
+        var ownsBucket = _renewalStore is not null || OwnsBucket(bucket);
+        var leaseAge = LeaseAge();
+        // A stalled fetch must not publish under an expired lease. Use the same
+        // observation for expiry and the remaining whole-call publication budget.
+        if (leaseAge >= _options.LeaseDuration)
+        {
+            LogLeaseExpiredDuringBatchFetch(_options.LeaseDuration);
+            ResetLeaseState();
+            return new ValueTask<bool>(false);
+        }
         if (_renewalStore is not null)
-            return !RenewalDue || await RenewOwnedLeasesAsync(cancellationToken).ConfigureAwait(false);
+            return _leaseTimestamp == 0 || leaseAge >= _options.LeaseRenewInterval
+                ? RenewOwnedLeasesAsync(cancellationToken) : new ValueTask<bool>(true);
 
         var publishBudget = _options.MaxPublishDuration!.Value;
         var latestStart = _options.LeaseDuration - publishBudget - _options.LeaseRenewInterval;
-        if (LeaseAge() >= latestStart)
-            await RefreshLeasesIfDueAsync(cancellationToken, force: true).ConfigureAwait(false);
+        if (leaseAge >= latestStart)
+            return RefreshPublishLeaseAsync(bucket, publishBudget, latestStart, cancellationToken);
+
+        if (ownsBucket)
+            return new ValueTask<bool>(true);
+
+        LogInsufficientPublishLease(publishBudget);
+        ResetLeaseState();
+        return new ValueTask<bool>(false);
+    }
+
+    private async ValueTask<bool> RefreshPublishLeaseAsync(int bucket, TimeSpan publishBudget,
+        TimeSpan latestStart, CancellationToken cancellationToken)
+    {
+        await RefreshLeasesAsync(cancellationToken).ConfigureAwait(false);
 
         // An acquisition can rebalance this bucket away; a slow acquisition can also use
         // up the reserved publish budget. Neither case permits publishing the fetched rows.
@@ -96,9 +121,9 @@ public sealed partial class OutboxRelayService
         return true;
     }
 
-    private void ValidatePublishDuration(long started)
+    private void ValidatePublishDuration(long started, long finished)
     {
-        if (_options.MaxPublishDuration is { } budget && _timeProvider.GetElapsedTime(started) > budget)
+        if (_options.MaxPublishDuration is { } budget && _timeProvider.GetElapsedTime(started, finished) > budget)
         {
             ResetLeaseState();
             throw new OutboxMisconfigurationException(

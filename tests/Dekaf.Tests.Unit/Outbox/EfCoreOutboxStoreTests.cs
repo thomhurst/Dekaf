@@ -4,11 +4,58 @@ using Dekaf.Serialization;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 
 namespace Dekaf.Tests.Unit.Outbox;
 
 public class EfCoreOutboxStoreTests
 {
+    [Test]
+    public async Task PendingMetrics_NonSqliteProviderReturnsOldestTimestampWithoutChangingRows()
+    {
+        var options = new DbContextOptionsBuilder<OutboxTestContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .Options;
+        var factory = new PooledDbContextFactory<OutboxTestContext>(options);
+        var store = new EfCoreOutboxStore<OutboxTestContext>(factory);
+        var empty = await store.GetPendingMetricsAsync();
+        await Assert.That(empty!.PendingCount).IsEqualTo(0);
+        await Assert.That(empty.OldestCreatedAtUtc).IsNull();
+
+        var oldest = new DateTimeOffset(2026, 9, 1, 8, 0, 0, TimeSpan.Zero);
+        await using var context = await factory.CreateDbContextAsync();
+        foreach (var timestamp in new[] { oldest.AddHours(2), oldest, oldest.AddHours(1) })
+        {
+            context.AddOutboxMessage(new OutboxMessage
+            {
+                MessageId = Guid.NewGuid(), Bucket = 0, Topic = "topic", Value = [1], CreatedAtUtc = timestamp
+            });
+        }
+        await context.SaveChangesAsync();
+
+        var pending = await store.GetPendingMetricsAsync();
+        await Assert.That(pending!.PendingCount).IsEqualTo(3);
+        await Assert.That(pending.OldestCreatedAtUtc).IsEqualTo(oldest);
+        await Assert.That(await context.Set<OutboxMessage>().CountAsync()).IsEqualTo(3);
+    }
+
+    [Test]
+    public async Task PendingMetrics_ReportsEmptyAndNonemptyCountsWithoutChangingRows()
+    {
+        using var db = new SqliteOutboxDatabase();
+        var store = db.CreateStore();
+        var empty = await store.GetPendingMetricsAsync();
+        await Assert.That(empty!.PendingCount).IsEqualTo(0);
+        await Assert.That(empty.OldestCreatedAtUtc).IsNull();
+        await db.InsertRowsAsync(NewRow(0, "first"), NewRow(2, "second"));
+        var pending = await store.GetPendingMetricsAsync();
+        await Assert.That(pending!.PendingCount).IsEqualTo(2);
+        // Native SQLite DateTimeOffset mapping cannot compute a server-side minimum.
+        await Assert.That(pending.OldestCreatedAtUtc).IsNull();
+        await using var context = db.CreateContext();
+        await Assert.That(await context.Set<OutboxMessage>().CountAsync()).IsEqualTo(2);
+    }
+
     private static readonly int[] AllBuckets = [0, 1, 2, 3];
     private static readonly int[] BucketsZeroAndTwo = [0, 2];
 

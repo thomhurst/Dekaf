@@ -17,7 +17,7 @@ namespace Dekaf.Outbox.EntityFrameworkCore;
 /// a Kafka hot path, so EF/LINQ usage here is intentional and fine.</para>
 /// </remarks>
 /// <typeparam name="TContext">The application's context type containing the outbox model.</typeparam>
-public sealed class EfCoreOutboxStore<TContext> : IOutboxStore, IOutboxLeaseRenewalStore
+public sealed class EfCoreOutboxStore<TContext> : IOutboxStore, IOutboxLeaseRenewalStore, IOutboxMetricsStore
     where TContext : DbContext
 {
     /// <summary>
@@ -36,6 +36,25 @@ public sealed class EfCoreOutboxStore<TContext> : IOutboxStore, IOutboxLeaseRene
         ArgumentNullException.ThrowIfNull(contextFactory);
         _contextFactory = contextFactory;
         _timeProvider = timeProvider ?? TimeProvider.System;
+    }
+
+    /// <summary>
+    /// Samples the whole table with server-side aggregates on a separate context.
+    /// SQLite's native DateTimeOffset mapping cannot order/aggregate timestamps, so
+    /// nonempty SQLite backlogs report count with an unavailable oldest timestamp.
+    /// </summary>
+    public async ValueTask<OutboxPendingMetrics?> GetPendingMetricsAsync(CancellationToken cancellationToken = default)
+    {
+        var context = await _contextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+        await using var contextDisposal = context.ConfigureAwait(false);
+        var messages = context.Set<OutboxMessage>().AsNoTracking();
+        var count = await messages.LongCountAsync(cancellationToken).ConfigureAwait(false);
+        if (count == 0 || context.Database.ProviderName == "Microsoft.EntityFrameworkCore.Sqlite")
+            return new OutboxPendingMetrics(count, null);
+
+        var oldest = await messages.MinAsync(static message => (DateTimeOffset?)message.CreatedAtUtc, cancellationToken)
+            .ConfigureAwait(false);
+        return new OutboxPendingMetrics(count, oldest);
     }
 
     public async ValueTask<IReadOnlyList<int>> AcquireBucketLeasesAsync(

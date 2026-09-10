@@ -237,6 +237,9 @@ var messageId = outboxResult.Headers.FirstOrDefault(h => h.Key == "x-outbox-mess
 | `LeaseRenewInterval` | 10 s | Renewal cadence, including pending publishes. Leave enough slack for database latency, scheduling pauses, and clock skew. |
 | `MaxPublishDuration` | `null` | Required only for stores without `IOutboxLeaseRenewalStore`. Bound the **entire** publish call, not one record's delivery timeout. The budget plus a renewal interval must fit inside `LeaseDuration`. |
 | `MessageIdHeaderName` | `x-outbox-message-id` | Dedup header stamped on every record. |
+| `MetricsName` | `outbox` | Stable logical store name in the `outbox.name` metric tag; 1–64 nonblank characters. Use the same name for replicas sharing a store, distinct names for independent stores. |
+| `MetricsCollectionInterval` | 30 s | Minimum delay after each optional backlog query completes. No catch-up bursts. |
+| `MetricsCollectionTimeout` | 5 s | Cancellation deadline for an optional backlog query. The store must honor cancellation. |
 
 Pass options at registration:
 
@@ -251,11 +254,71 @@ builder.Services.AddDekafOutboxRelay(
     });
 ```
 
+## Operational metrics
+
+The relay exposes the `Dekaf.Outbox` meter through `OutboxDiagnostics.MeterName`. Subscribe with your existing .NET metrics pipeline; for example, add `.AddMeter(OutboxDiagnostics.MeterName)` to an OpenTelemetry `MeterProviderBuilder`. Meter callbacks read cached state; they never query the database.
+
+Every instrument has only one library tag, `outbox.name`. Do not put message IDs, keys, tenant IDs, or generated `RelayId` values in `MetricsName`. Exporter resource attributes can identify service instances. Counters and histograms are recorded once per batch or cycle, without a per-message instrumentation loop. Their listener callbacks execute inline, so exporters must keep callbacks fast. Listener exceptions do not change publication or deletion outcomes.
+
+| Instrument | Type / unit | Meaning |
+| --- | --- | --- |
+| `dekaf.outbox.owned_buckets` | Gauge / buckets | Buckets in the relay's current local lease set. Updated on acquisition or invalidation; this is not a live database ownership query. |
+| `dekaf.outbox.publish.acknowledged` | Counter / messages | Contiguous acknowledged prefix reported by the publisher, counted before lease validation and database deletion. |
+| `dekaf.outbox.publish.failures` | Counter / attempts | Batch publish calls that throw or return `FirstError`, once per attempt. Cooperative shutdown cancellation is excluded. Store query, deletion, and lease errors are not publish failures. |
+| `dekaf.outbox.lease.expirations` | Counter / events | Observed expiry of a nonempty owned lease set, once when that local set is invalidated. This does not count individual buckets or unobserved expiry while the process is stopped. |
+| `dekaf.outbox.publish.duration` | Histogram / seconds | Entire batch publisher call, including failed and cancelled calls. |
+| `dekaf.outbox.cycle.duration` | Histogram / seconds | Acquisition, pending probe, and draining for one relay cycle, including failure paths. Excludes idle delay and error backoff. |
+| `dekaf.outbox.pending.messages` | Gauge / messages | Latest available whole-store pending count, including buckets this relay does not own. |
+| `dekaf.outbox.pending.oldest_age` | Gauge / seconds | Age of the oldest pending row from the latest sample. Its age increases between samples. Future timestamps are clamped to zero. |
+| `dekaf.outbox.pending.available` | Gauge / dimensionless | `1` when a pending-count snapshot is available; `0` before sampling, when unsupported, or after a failed/timed-out/null sample. |
+
+Acknowledgements count attempts, not unique messages. For example, publishing two rows successfully and then failing to delete them adds two acknowledgements. A successful retry adds two more. Later acknowledgements outside a failed batch's contiguous prefix cannot be inferred from `IOutboxPublisher` and are not counted. This counter cannot prove exactly-once delivery; consumers still need message-ID deduplication.
+
+Backlog sampling is optional. Existing `IOutboxStore` implementations keep working without implementing `IOutboxMetricsStore`; their backlog is **unavailable**, not zero. A known empty snapshot emits count `0` and age `0`. A nonempty snapshot without a timestamp emits its count but omits age. Failed, timed-out, or null samples clear the previous snapshot and omit both count and age until a successful sample. Stopping or disposing a relay unregisters its observations.
+
+The optional collector runs separately from publication, with at most one outstanding query per relay. It queries only while a pending instrument has a listener, then waits `MetricsCollectionInterval` after completion. There is no query per message or per scrape. Sampling is concurrent with ordinary store operations, so implement this capability with a separate database context/connection and honor the supplied cancellation token. A custom store that ignores cancellation can delay shutdown; the relay does not abandon queries and start overlapping replacements.
+
+`EfCoreOutboxStore` implements this capability using a separate context. Each nonempty sample uses a count and, where supported, a server-side minimum timestamp; the two queries are approximate under concurrent writes. SQLite's native `DateTimeOffset` mapping cannot translate timestamp aggregation, so SQLite supplies the count and leaves nonempty age unavailable. No schema conversion or client-side timestamp scan is performed. See the [EF Core SQLite limitations](https://learn.microsoft.com/en-us/ef/core/providers/sqlite/limitations).
+
+Custom stores can implement `IOutboxMetricsStore.GetPendingMetricsAsync` alongside `IOutboxStore`, returning `new OutboxPendingMetrics(count, oldestCreatedAtUtc)`. Return `null` if no snapshot is available, or use a null timestamp when only the count is known. The count must be nonnegative. Use a bounded query strategy appropriate to your database and collection interval.
+
+When several relays in one process share `MetricsName`, owned buckets are summed; whole-store pending count and known age use the maximum available sample. Across process replicas, also use `max` for backlog and age to avoid multiplying the same database rows. Samples may differ temporarily. Use distinct names for independent databases whose counts should be added.
+
+### Example alerts and queries
+
+These PromQL examples assume classic OpenTelemetry Prometheus translation: dots become underscores, counters gain `_total`, and seconds gain `_seconds`. Check your exporter's [translation configuration](https://opentelemetry.io/docs/specs/otel/metrics/sdk_exporters/prometheus/) if names differ. Scope queries to one service/environment with your resource labels, and adjust thresholds to your delivery objective.
+
+```promql
+# Acknowledgements per second, including re-acknowledged retries.
+sum by (outbox_name) (rate(dekaf_outbox_publish_acknowledged_total[5m]))
+
+# Any publish failures in five minutes.
+sum by (outbox_name) (increase(dekaf_outbox_publish_failures_total[5m])) > 0
+
+# Oldest pending row exceeds five minutes; require this for a sustained alert window.
+max by (outbox_name) (dekaf_outbox_pending_oldest_age_seconds) > 300
+
+# Whole-store backlog exceeds an application-specific capacity threshold.
+max by (outbox_name) (dekaf_outbox_pending_messages) > 10000
+
+# No replica has an available backlog sample.
+max by (outbox_name) (dekaf_outbox_pending_available) == 0
+
+# An observed lease expiry needs investigation even if publishing later recovers.
+sum by (outbox_name) (increase(dekaf_outbox_lease_expirations_total[5m])) > 0
+
+# p99 publisher duration from classic histogram buckets.
+histogram_quantile(0.99, sum by (le, outbox_name)
+  (rate(dekaf_outbox_publish_duration_seconds_bucket[5m])))
+```
+
+Also alert on a missing scrape target: no series is different from `pending.available == 0`. An unavailable oldest-age series with `pending.available == 1` can mean the store knows the count but cannot provide timestamps. Never replace missing backlog or age with zero in a dashboard.
+
 ## Custom Stores (Relational, NoSQL, or Anything Else)
 
 ### Lease timing and migration
 
-The EF store implements `IOutboxLeaseRenewalStore`. Its renewal atomically checks ownership and unexpired leases, extends them, and refreshes the relay heartbeat. It does **not** acquire or relinquish buckets while a publish is pending. Fair-share rebalancing resumes between publish calls. Store calls remain serialized: renewal runs alongside the publisher, never alongside another store operation from that relay.
+The EF store implements `IOutboxLeaseRenewalStore`. Its renewal atomically checks ownership and unexpired leases, extends them, and refreshes the relay heartbeat. It does **not** acquire or relinquish buckets while a publish is pending. Fair-share rebalancing resumes between publish calls. Publication and lease store calls remain serialized: renewal runs alongside the publisher. Optional metrics collection uses a separate context and can run concurrently with these store calls.
 
 Custom stores should implement the same optional capability. Without it, registration must provide `MaxPublishDuration`; an unspecified bound now fails at startup with `OutboxMisconfigurationException`. For example, if measurement establishes that a custom publisher's whole batch completes within two minutes:
 
