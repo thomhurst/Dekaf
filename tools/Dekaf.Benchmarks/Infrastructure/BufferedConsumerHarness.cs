@@ -23,6 +23,28 @@ namespace Dekaf.Benchmarks.Infrastructure;
 /// </remarks>
 internal static class BufferedConsumerHarness
 {
+    public delegate ValueTask PrefetchResponseHandler(int brokerId, List<TopicPartition> partitions,
+        int startIndex, int count, int connectionIndex, int epoch, CancellationToken cancellationToken);
+
+    // Setup-only bindings for both follower-error handlers. The returned capability
+    // selects the declared correctness expectation, never the measured workload.
+    public static bool BindFollowerFetchHandlers<TKey, TValue>(KafkaConsumer<TKey, TValue> consumer,
+        out Func<int, List<TopicPartition>, int, CancellationToken, ValueTask<List<PendingFetchData>?>> fetch,
+        out PrefetchResponseHandler prefetch,
+        out Action<TopicPartition, long, bool> setPosition)
+    {
+        var consumerType = consumer.GetType();
+        MethodInfo RequireMethod(string name) => consumerType.GetMethod(name,
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException($"{name} method not found.");
+        fetch = RequireMethod("FetchFromBrokerAsync")
+            .CreateDelegate<Func<int, List<TopicPartition>, int, CancellationToken, ValueTask<List<PendingFetchData>?>>>(consumer);
+        prefetch = RequireMethod("PrefetchFromBrokerAsync").CreateDelegate<PrefetchResponseHandler>(consumer);
+        setPosition = RequireMethod("SetPosition").CreateDelegate<Action<TopicPartition, long, bool>>(consumer);
+        return consumerType.GetMethod("HandleFetchOffsetOutOfRangeAsync",
+            BindingFlags.Instance | BindingFlags.NonPublic) is not null;
+    }
+
     /// <summary>
     /// Adapts revisions that omit batch callbacks by binding their existing interceptor
     /// chain for the caller to execute. Native revisions return null. Call only in setup,
@@ -130,11 +152,11 @@ internal static class BufferedConsumerHarness
         KafkaConsumer<TKey, TValue> consumer)
         => (Queue<PendingFetchData>)GetPrivateField(consumer, "_pendingFetches")!;
 
-    private static ConcurrentDictionary<TopicPartition, long> GetFetchPositions<TKey, TValue>(
+    public static ConcurrentDictionary<TopicPartition, long> GetFetchPositions<TKey, TValue>(
         KafkaConsumer<TKey, TValue> consumer)
         => (ConcurrentDictionary<TopicPartition, long>)GetPrivateField(consumer, "_fetchPositions")!;
 
-    private static object? GetPrivateField<TKey, TValue>(
+    public static object? GetPrivateField<TKey, TValue>(
         KafkaConsumer<TKey, TValue> consumer,
         string fieldName)
         => RequireField<TKey, TValue>(fieldName).GetValue(consumer);
