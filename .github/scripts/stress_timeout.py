@@ -1,4 +1,4 @@
-"""Budget selected producer samples, including warmup and bounded drains."""
+"""Budget selected stress samples, including workload warmup and bounded drains."""
 
 import argparse
 import json
@@ -7,7 +7,7 @@ import math
 
 def budget(matrix, duration_minutes, warmup_seconds, adaptive_connections=False):
     if not math.isfinite(duration_minutes) or duration_minutes <= 0 or warmup_seconds < 20:
-        raise ValueError("Duration must be positive and producer warmup must be at least 20 seconds")
+        raise ValueError("Duration must be positive and workload warmup must be at least 20 seconds")
     # Six warmup drains plus the measured drain, each with the existing 30s ceiling.
     drain_minutes = 7 * 30 / 60
     warmup_minutes = warmup_seconds / 60
@@ -27,6 +27,11 @@ def budget(matrix, duration_minutes, warmup_seconds, adaptive_connections=False)
             segments += int(lane.get("run_adaptive", False) and not adaptive_connections)
             lane["producer_samples"] = segments
             validation = 0
+        elif str(lane.get("scenario", "")).startswith("consumer"):
+            segments = lane.get("paired_samples", 1) * (2 if lane.get("client") == "all" else 1)
+            # The existing workflow field gates validation and its expected result count.
+            lane["producer_samples"] = segments
+            validation = 0
         else:
             continue
         required = math.ceil(
@@ -35,7 +40,7 @@ def budget(matrix, duration_minutes, warmup_seconds, adaptive_connections=False)
         )
         lane["timeout_minutes"] = max(lane["timeout_minutes"], required)
         if lane["timeout_minutes"] > 360:
-            raise ValueError("Requested producer run exceeds the 360-minute hosted job limit; reduce duration or warmup")
+            raise ValueError("Requested stress run exceeds the 360-minute hosted job limit; reduce duration or warmup")
     return matrix
 
 

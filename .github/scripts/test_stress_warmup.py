@@ -37,9 +37,7 @@ def result(scenario=None, intervals=INTERVALS):
 
 
 def consumer_result():
-    data = result(scenario="consumer")
-    del data["throughput"]["warmup"]
-    return data
+    return result(scenario="consumer")
 
 
 def write(root, *results, name="stress-test-results.json"):
@@ -124,9 +122,9 @@ class StressWarmupTests(unittest.TestCase):
             sample["runtime"]["allocatedBytes"] = 1000 + index * 100 + (index // 20) * 500
         self.assertEqual([], assess_trends(candidate)["findings"])
 
-    def test_consumer_replay_segments_need_no_producer_warmup(self):
+    def test_consumer_replay_segments_validate_workload_warmup(self):
         candidate = consumer_result()
-        self.assertIsNone(validate(candidate))
+        self.assertEqual(20, validate(candidate))
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             write(root, candidate)
@@ -134,8 +132,9 @@ class StressWarmupTests(unittest.TestCase):
             self.assertEqual(0, code)
             self.assertEqual("VALIDATED", report["verdict"])
 
-    def test_producer_segments_without_warmup_are_rejected(self):
-        for scenario in (None, "producer", "producer-idempotent"):
+    def test_segments_without_warmup_are_rejected(self):
+        for scenario in (None, "producer", "producer-idempotent", "consumer", "consumer-batch",
+                         "consumer-raw", "consumer-raw-batch"):
             with self.subTest(scenario=scenario):
                 candidate = result(scenario=scenario)
                 del candidate["throughput"]["warmup"]

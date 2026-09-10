@@ -206,7 +206,7 @@ internal static class ProducerWorkload
 
     // Timer callbacks can arrive slightly before their nominal duration. Recheck an
     // elapsed monotonic clock instead of counting an early timer as full workload warmup.
-    private static async Task StopIngressAsync(CancellationTokenSource ingress, TimeSpan duration, TimeProvider timeProvider)
+    internal static async Task StopIngressAsync(CancellationTokenSource ingress, TimeSpan duration, TimeProvider timeProvider)
     {
         var started = timeProvider.GetTimestamp();
         try
