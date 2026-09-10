@@ -33,6 +33,14 @@ def benchmark(method='Append', parameters='', mean=100.0, samples=25, allocated=
 
 
 class SelectionTests(unittest.TestCase):
+    def test_share_fetch_response_selects_its_actual_decoder(self):
+        selection = gate.select(['src/Dekaf/Protocol/Messages/ShareFetchResponse.cs'])
+        self.assertEqual(gate.unit('ShareFetchResponseDecodingBenchmarks'), selection['filters'])
+        self.assertIn('*.Unit.PipelinedResponseAllocationBenchmarks.*',
+                      gate.select(['src/Dekaf/Networking/KafkaConnection.cs'])['filters'])
+        self.assertIn('*.Unit.Crc32CBenchmarks.*',
+                      gate.select(['src/Dekaf/Protocol/UnknownResponse.cs'])['filters'])
+
     def test_binary_key_paths_retain_distinct_and_collision_workloads(self):
         for path in ('PartitionMessageKey.cs', 'KeyOrderedPartitionDispatcher.cs'):
             selection = gate.select([f'src/Dekaf/Consumer/{path}'])

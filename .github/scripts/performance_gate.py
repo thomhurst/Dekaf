@@ -35,6 +35,8 @@ TRACE = unit('TraceContextInjectionBenchmarks', 'TraceContextExtractionBenchmark
 # [IterationSetup]/[IterationCleanup], fixed InvocationCount or ColdStart fixtures, because
 # those cannot reach the elapsed warmup floor with the shared BDN settings.
 AREAS = (
+    ('src/Dekaf/Protocol/Messages/ShareFetchResponse.cs', 'share-consumer',
+     unit('ShareFetchResponseDecodingBenchmarks'), None),
     # KafkaConsumer owns both fetching and the offset-store API. The separate
     # partition dispatcher has its own implementation; unknown files retain the
     # directory-wide fallback below.
