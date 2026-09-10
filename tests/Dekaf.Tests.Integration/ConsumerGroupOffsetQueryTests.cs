@@ -100,7 +100,7 @@ public sealed class ConsumerGroupOffsetQueryTests(KafkaTestContainer kafka) : Tr
                     return;
                 }
                 catch (KafkaException exception) when (exception.IsRetriable && exception.ErrorCode is
-                    Protocol.ErrorCode.CoordinatorNotAvailable or Protocol.ErrorCode.CoordinatorLoadInProgress)
+                    Protocol.ErrorCode.CoordinatorNotAvailable or Protocol.ErrorCode.CoordinatorLoadInProgress or Protocol.ErrorCode.NotCoordinator)
                 {
                     lastFailure = exception;
                 }
