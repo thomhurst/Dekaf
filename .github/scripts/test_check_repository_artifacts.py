@@ -20,6 +20,8 @@ class ArtifactPolicyTests(unittest.TestCase):
             'reports/Fixture-report.csv', 'reports/Fixture-report.html',
             'tools/Dekaf.Benchmarks/BenchmarkResults/summary.json',
             r'docs\performance-evidence\plan.md',
+            'tools/Dekaf.Benchmarks/Benchmarks/Unit/ShareConsumerAllocations.md',
+            'tools/Dekaf.Benchmarks/Experiment.md',
         ):
             with self.subTest(path=path):
                 self.assertIsNotNone(policy.violation(path))
@@ -32,9 +34,47 @@ class ArtifactPolicyTests(unittest.TestCase):
             'tools/Dekaf.Benchmarks/Benchmarks/Unit/OutboxBenchmarks.cs',
             'tools/Dekaf.Benchmarks/Dekaf.Benchmarks.csproj',
             'tools/Dekaf.StressTests/Dekaf.StressTests.csproj',
+            'tools/Dekaf.Benchmarks/WORKFLOW.md',
         ):
             with self.subTest(path=path):
                 self.assertIsNone(policy.violation(path))
+
+    def test_shell_scripts_cannot_generate_benchmark_projects(self):
+        for path in ('scripts/Compare.ps1', 'scripts/renamed.sh'):
+            for body in ('<Project Sdk="Microsoft.NET.Sdk"><PackageReference Include="BenchmarkDotNet" /></Project>',
+                         'dotnet new console\ndotnet add package BenchmarkDotNet'):
+                with self.subTest(path=path, body=body):
+                    self.assertIsNotNone(policy.violation(path, body))
+            self.assertIsNone(policy.violation(path,
+                'dotnet run --project tools/Dekaf.Benchmarks -c Release -- --filter "*Case*"'))
+
+    def test_complete_tree_check_finds_unchanged_inherited_outputs(self):
+        original = Path.cwd()
+        with tempfile.TemporaryDirectory() as directory:
+            try:
+                os.chdir(directory)
+                def git(*args):
+                    return subprocess.check_output(['git', *args], stderr=subprocess.DEVNULL).decode().strip()
+                git('init', '-q')
+                git('config', 'user.email', 'policy@example.test')
+                git('config', 'user.name', 'Policy test')
+                Path('inherited.log').write_text('old output')
+                git('add', '.')
+                git('commit', '-qm', 'baseline')
+                base = git('rev-parse', 'HEAD')
+                Path('README.md').write_text('Product documentation')
+                git('add', '.')
+                git('commit', '-qm', 'docs only')
+                with contextlib.redirect_stdout(io.StringIO()) as output:
+                    self.assertEqual(0, policy.main(['--base', base]))
+                    self.assertEqual(1, policy.main(['--all-tracked']))
+                self.assertIn('inherited.log', output.getvalue())
+                git('rm', 'inherited.log')
+                git('commit', '-qm', 'remove inherited output')
+                with contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(0, policy.main(['--all-tracked']))
+            finally:
+                os.chdir(original)
 
     def test_legacy_and_renamed_standalone_projects_are_rejected(self):
         for path in (
@@ -51,6 +91,7 @@ class ArtifactPolicyTests(unittest.TestCase):
                           "<Reference Include='BenchmarkDotNet' />"):
             self.assertIsNotNone(policy.violation('scratch/Runner.csproj', reference))
             self.assertIsNone(policy.violation('tools/Dekaf.Benchmarks/Dekaf.Benchmarks.csproj', reference))
+            self.assertIsNone(policy.violation('tests/Dekaf.DocTests/Dekaf.DocTests.csproj', reference))
         for project in policy.TOOL_PROJECTS:
             self.assertIsNone(policy.violation(project, '<OutputType>Exe</OutputType>'))
 

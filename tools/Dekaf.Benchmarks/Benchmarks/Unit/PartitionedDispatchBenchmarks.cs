@@ -6,7 +6,11 @@ using Dekaf.Serialization;
 
 namespace Dekaf.Benchmarks.Benchmarks.Unit;
 
-/// <summary>Compares the production handler paths over one bounded partition lifetime.</summary>
+/// <summary>
+/// Compares production handlers over one bounded partition lifetime. Per-record results
+/// include amortized lane construction and benchmark coordination; broker I/O and the
+/// outer runtime loop are excluded. These are not end-to-end latency or CPU measurements.
+/// </summary>
 [MemoryDiagnoser]
 public class PartitionedDispatchBenchmarks
 {
