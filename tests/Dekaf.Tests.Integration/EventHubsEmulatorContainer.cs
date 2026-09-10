@@ -31,6 +31,7 @@ public sealed class EventHubsEmulatorContainer : IAsyncInitializer, IAsyncDispos
     public const string OffsetGroup = "dekaf-offset-group";
     public const string BatchGroup = "dekaf-batch-group";
 
+    private const ushort KafkaPort = 9092;
     private const ushort AzuriteBlobPort = 10000;
     private const string AzuriteAlias = "azurite";
     private const string EmulatorAlias = "eventhubs-emulator";
@@ -85,8 +86,8 @@ public sealed class EventHubsEmulatorContainer : IAsyncInitializer, IAsyncDispos
 
     private async Task StartAttemptAsync()
     {
-        var kafkaPort = GetFreeTcpPort();
-        SaslPassword = CreateSaslPassword(kafkaPort);
+        var hostPort = GetFreeTcpPort();
+        SaslPassword = CreateSaslPassword(hostPort);
         _network = new NetworkBuilder()
             .WithName($"dekaf-eventhubs-{Guid.NewGuid():N}")
             .Build();
@@ -103,20 +104,20 @@ public sealed class EventHubsEmulatorContainer : IAsyncInitializer, IAsyncDispos
         _emulator = new ContainerBuilder(EventHubsImage)
             .WithNetwork(_network)
             .WithNetworkAliases(EmulatorAlias)
-            .WithPortBinding(kafkaPort, kafkaPort)
+            .WithPortBinding(hostPort, KafkaPort)
             .WithResourceMapping(EmulatorConfig, ConfigPath)
-            .WithResourceMapping(CreateEndpointsConfig(kafkaPort), EndpointsConfigPath)
+            .WithResourceMapping(CreateEndpointsConfig(KafkaPort), EndpointsConfigPath)
             .WithEnvironment("BLOB_SERVER", AzuriteAlias)
             .WithEnvironment("METADATA_SERVER", AzuriteAlias)
             .WithEnvironment("ACCEPT_EULA", "Y")
             .WithWaitStrategy(Wait.ForUnixContainer()
-                .UntilExternalTcpPortIsAvailable(kafkaPort))
+                .UntilExternalTcpPortIsAvailable(KafkaPort))
             .Build();
 
         try
         {
             await _emulator.StartAsync().ConfigureAwait(false);
-            BootstrapServers = $"{_emulator.Hostname}:{_emulator.GetMappedPublicPort(kafkaPort)}";
+            BootstrapServers = $"{_emulator.Hostname}:{_emulator.GetMappedPublicPort(KafkaPort)}";
             await WaitUntilReadyAsync().ConfigureAwait(false);
         }
         catch (Exception exception)
@@ -226,9 +227,9 @@ public sealed class EventHubsEmulatorContainer : IAsyncInitializer, IAsyncDispos
 
     // The emulator derives the Kafka broker metadata port from this Endpoint. Its documented
     // password omits a port and therefore hardcodes advertised metadata to localhost:9092.
-    // Including the randomized listener port is required for parallel-safe host mappings.
-    private static string CreateSaslPassword(int kafkaPort) =>
-        $"Endpoint=sb://localhost:{kafkaPort};SharedAccessKeyName=RootManageSharedAccessKey;" +
+    // Advertise the mapped host port while keeping the listener inside the container on 9092.
+    private static string CreateSaslPassword(int hostPort) =>
+        $"Endpoint=sb://localhost:{hostPort};SharedAccessKeyName=RootManageSharedAccessKey;" +
         "SharedAccessKey=SAS_KEY_VALUE;UseDevelopmentEmulator=true;";
 
     private static int GetFreeTcpPort()
