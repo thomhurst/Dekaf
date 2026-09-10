@@ -33,6 +33,14 @@ def benchmark(method='Append', parameters='', mean=100.0, samples=25, allocated=
 
 
 class SelectionTests(unittest.TestCase):
+    def test_binary_key_paths_retain_distinct_and_collision_workloads(self):
+        for path in ('PartitionMessageKey.cs', 'KeyOrderedPartitionDispatcher.cs'):
+            selection = gate.select([f'src/Dekaf/Consumer/{path}'])
+            for fixture in gate.unit('BinaryKeyDispatchBenchmarks', 'DistinctBinaryKeyDispatchBenchmarks',
+                                     'SharedSuffixBinaryKeyDispatchBenchmarks'):
+                self.assertIn(fixture, selection['filters'])
+        self.assertIn('*.Unit.KeyOrderedDispatchBenchmarks.*', selection['filters'])
+
     def test_kafka_consumer_retains_all_offset_store_api_coverage(self):
         selection = gate.select(['src/Dekaf/Consumer/KafkaConsumer.cs'])
         self.assertEqual(gate.unit('ConsumerHotPathBenchmarks', 'FetchResponseParsingBenchmarks',
