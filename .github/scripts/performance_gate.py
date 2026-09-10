@@ -47,10 +47,11 @@ AREAS = (
     # partition dispatcher has its own implementation; unknown files retain the
     # directory-wide fallback below.
     ('src/Dekaf/Consumer/KafkaConsumer.cs', 'consumer', unit(
-        'ConsumerHotPathBenchmarks', 'FetchResponseParsingBenchmarks', 'FetchRequestBuildBenchmarks',
+        'ConsumerHotPathBenchmarks', 'ConsumerBatchInterceptorBenchmarks', 'FetchResponseParsingBenchmarks', 'FetchRequestBuildBenchmarks',
         'OffsetStoreBenchmarks', 'ConsumeResultOffsetStoreBenchmarks'), None),
-    ('src/Dekaf/Consumer/IKafkaConsumer.cs', 'consumer', unit('ConsumerHotPathBenchmarks'), None),
-    ('src/Dekaf/Consumer/ConsumeBatch.cs', 'consumer', unit('ConsumerHotPathBenchmarks'), None),
+    ('src/Dekaf/Consumer/IKafkaConsumer.cs', 'consumer', unit('ConsumerHotPathBenchmarks', 'ConsumerBatchInterceptorBenchmarks'), None),
+    ('src/Dekaf/Consumer/IConsumerInterceptor.cs', 'consumer', unit('ConsumerHotPathBenchmarks', 'ConsumerBatchInterceptorBenchmarks'), None),
+    ('src/Dekaf/Consumer/ConsumeBatch.cs', 'consumer', unit('ConsumerHotPathBenchmarks', 'ConsumerBatchInterceptorBenchmarks'), None),
     ('src/Dekaf/Consumer/PartitionedProcessing.cs', 'consumer', unit(
         'PartitionedDispatchBenchmarks', 'KeyOrderedDispatchBenchmarks', 'PartitionedOffsetTrackingBenchmarks'), None),
     ('src/Dekaf/Consumer/CompletedOffsetRanges.cs', 'consumer', unit('PartitionedOffsetTrackingBenchmarks'), None),
@@ -71,7 +72,7 @@ AREAS = (
         'ValueTaskSourcePoolBenchmarks', 'ProduceResponseParsingBenchmarks', 'PartitionQueueAccountingBenchmarks',
         'WaveCoalesceProbeBenchmarks'), None),
     ('src/Dekaf/Consumer/', 'consumer', unit(
-        'ConsumerHotPathBenchmarks', 'FetchResponseParsingBenchmarks', 'FetchRequestBuildBenchmarks',
+        'ConsumerHotPathBenchmarks', 'ConsumerBatchInterceptorBenchmarks', 'FetchResponseParsingBenchmarks', 'FetchRequestBuildBenchmarks',
         'OffsetStoreBenchmarks', 'ConsumeResultOffsetStoreBenchmarks',
         'PartitionedDispatchBenchmarks', 'KeyOrderedDispatchBenchmarks'), None),
     ('src/Dekaf/ShareConsumer/', 'share-consumer', unit(
