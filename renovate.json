@@ -2,6 +2,13 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "packageRules": [
     {
+      "description": "Confluent packages depend on matching client versions; update the release train together",
+      "matchPackageNames": [
+        "/^Confluent\\./"
+      ],
+      "groupName": "Confluent .NET packages"
+    },
+    {
       "description": "EF 8.x train pinned for the net8.0 TFM (Directory.Packages.props conditioned entry); 9+/10+ do not support net8.0",
       "matchPackageNames": [
         "/^Microsoft\\.EntityFrameworkCore\\./"
