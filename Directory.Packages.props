@@ -50,7 +50,7 @@
     <PackageVersion Include="NSubstitute" Version="6.2.0" />
     <PackageVersion Include="OpenTelemetry" Version="1.18.0" />
     <PackageVersion Include="OpenTelemetry.Api" Version="1.18.0" />
-    <PackageVersion Include="Polyfill" Version="11.2.0" />
+    <PackageVersion Include="Polyfill" Version="11.3.0" />
     <PackageVersion Include="protobuf-net.Reflection" Version="3.4.21" />
     <PackageVersion Include="Reservoir" Version="1.8.0" />
     <PackageVersion Include="SharpFuzz" Version="2.3.0" />
