@@ -1322,7 +1322,15 @@ public sealed partial class InMemoryKafkaCluster
             if (_consumerGroupMembers.TryGetValue(groupId, out var members) && members.Count != 0)
                 return ErrorCode.NonEmptyGroup;
 
-            return RemoveConsumerGroupUnderLock(groupId)
+            var hadClassicDescription = false;
+            if (_classicGroupDescriptions is { } classicDescriptions)
+            {
+                if (classicDescriptions.TryGetValue(groupId, out var classic) && classic.Members.Count != 0)
+                    return ErrorCode.NonEmptyGroup;
+                hadClassicDescription = classicDescriptions.Remove(groupId);
+            }
+
+            return RemoveConsumerGroupUnderLock(groupId) || hadClassicDescription
                 ? ErrorCode.None
                 : ErrorCode.GroupIdNotFound;
         }

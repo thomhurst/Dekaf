@@ -1451,9 +1451,12 @@ public sealed class PartitionedConsumerRuntimeTests
             ArgumentNullException.ThrowIfNull(offsets);
             cancellationToken.ThrowIfCancellationRequested();
 
-            CommitStarted?.TrySetResult();
-            if (ReleaseCommit is not null)
-                await ReleaseCommit.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+        // Register cancellation before exposing the barrier. The test can cancel and
+        // release the commit as soon as it observes CommitStarted.
+        var pendingCommit = ReleaseCommit?.Task.WaitAsync(cancellationToken);
+        CommitStarted?.TrySetResult();
+        if (pendingCommit is not null)
+            await pendingCommit.ConfigureAwait(false);
 
             // CommitStarted can let the test cancel and release before WaitAsync
             // registers. A completed task bypasses WaitAsync's cancellation check;

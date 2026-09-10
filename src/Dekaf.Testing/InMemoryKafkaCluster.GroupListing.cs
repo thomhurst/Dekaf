@@ -16,7 +16,10 @@ public sealed partial class InMemoryKafkaCluster
             ids.UnionWith(_consumerGroupGenerations.Keys);
             if (_streamsGroupIds is not null)
                 ids.UnionWith(_streamsGroupIds);
-            var result = new List<GroupListing>(ids.Count);
+            var classicDescriptions = _classicGroupDescriptions;
+            if (classicDescriptions is not null)
+                ids.ExceptWith(classicDescriptions.Keys);
+            var result = new List<GroupListing>(ids.Count + (classicDescriptions?.Count ?? 0));
             foreach (var id in ids)
             {
                 var streams = _streamsGroupIds?.Contains(id) == true;
@@ -35,6 +38,17 @@ public sealed partial class InMemoryKafkaCluster
                     ProtocolType = protocol,
                     State = active ? "Stable" : "Empty"
                 });
+            }
+            if (classicDescriptions is not null)
+            {
+                foreach (var (id, classic) in classicDescriptions)
+                {
+                    ids.Add(id);
+                    result.Add(new GroupListing
+                    {
+                        GroupId = id, GroupType = "classic", ProtocolType = classic.ProtocolType, State = classic.State
+                    });
+                }
             }
             foreach (var share in ListShareGroups())
             {

@@ -1187,11 +1187,11 @@ public sealed partial class AdminClient
         string groupId,
         Protocol.ErrorCode errorCode,
         IReadOnlyDictionary<TopicPartition, StreamsGroupOffsetDescription>? offsets = null) => new()
-    {
-        GroupId = groupId,
-        ErrorCode = errorCode,
-        Offsets = offsets ?? new Dictionary<TopicPartition, StreamsGroupOffsetDescription>()
-    };
+        {
+            GroupId = groupId,
+            ErrorCode = errorCode,
+            Offsets = offsets ?? new Dictionary<TopicPartition, StreamsGroupOffsetDescription>()
+        };
 
     private static StreamsGroupOffsetsResult EmptyGroupOffsetsResult(string groupId) => new()
     {
@@ -1255,10 +1255,10 @@ public sealed partial class AdminClient
     private static DeleteStreamsGroupResult DeleteGroupResult(
         string groupId,
         Protocol.ErrorCode errorCode) => new()
-    {
-        GroupId = groupId,
-        ErrorCode = errorCode
-    };
+        {
+            GroupId = groupId,
+            ErrorCode = errorCode
+        };
 
     private static Protocol.ErrorCode GetRetryErrorCode(Exception exception) =>
         exception is Errors.KafkaException { ErrorCode: { } errorCode }

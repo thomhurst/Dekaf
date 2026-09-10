@@ -5592,26 +5592,49 @@ public sealed partial class AdminClient :
             // Consumer protocol assignment format:
             // Version: int16
             // TopicPartitions: [TopicName: string, Partitions: [int32]]
-            // UserData: bytes (optional)
+            // UserData: nullable bytes (the length field is required)
             var reader = new Protocol.KafkaProtocolReader(assignmentBytes);
 
-            _ = reader.ReadInt16(); // version
+            var version = reader.ReadInt16();
+            if (version < 0)
+                return null;
 
             var topicCount = reader.ReadInt32();
-            var assignments = new List<TopicPartition>();
+            // Each topic needs a non-empty string and a partition-count field.
+            // Bound the topic count by the encoded frame before reading entries.
+            if (topicCount < 0 || topicCount > reader.Remaining / 7)
+                return null;
+            List<TopicPartition>? assignments = null;
 
             for (var i = 0; i < topicCount; i++)
             {
-                var topic = reader.ReadString() ?? string.Empty;
+                var topic = reader.ReadString();
+                if (topic is null || topic.Length == 0)
+                    return null;
                 var partitionCount = reader.ReadInt32();
+                if (partitionCount < 0 || partitionCount > reader.Remaining / sizeof(int))
+                    return null;
+                if (partitionCount == 0)
+                    continue;
+                assignments ??= new List<TopicPartition>(partitionCount);
                 for (var j = 0; j < partitionCount; j++)
                 {
                     var partition = reader.ReadInt32();
+                    if (partition < 0)
+                        return null;
                     assignments.Add(new TopicPartition(topic, partition));
                 }
             }
 
-            return assignments;
+            if (reader.Remaining < sizeof(int))
+                return null;
+            var userDataLength = reader.ReadInt32();
+            if (userDataLength < -1 || userDataLength > reader.Remaining)
+                return null;
+            if (userDataLength > 0)
+                reader.Skip(userDataLength);
+
+            return assignments is null ? Array.Empty<TopicPartition>() : assignments;
         }
         catch
         {
