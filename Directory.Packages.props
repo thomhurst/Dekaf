@@ -14,7 +14,7 @@
     <PackageVersion Include="Azure.Security.KeyVault.Keys" Version="4.10.1" />
     <PackageVersion Include="BenchmarkDotNet" Version="0.15.8" />
     <PackageVersion Include="BenchmarkDotNet.Diagnostics.Windows" Version="0.15.8" />
-    <PackageVersion Include="Confluent.Kafka" Version="2.15.0" />
+    <PackageVersion Include="Confluent.Kafka" Version="2.15.1" />
     <PackageVersion Include="Confluent.SchemaRegistry" Version="2.15.0" />
     <PackageVersion Include="Confluent.SchemaRegistry.Serdes.Avro" Version="2.15.0" />
     <PackageVersion Include="Confluent.SchemaRegistry.Serdes.Json" Version="2.15.0" />
