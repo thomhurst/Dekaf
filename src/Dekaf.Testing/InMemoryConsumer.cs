@@ -353,7 +353,8 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                     {
                         GroupId = _groupId,
                         GenerationId = _consumerGroupGeneration,
-                        MemberId = _memberId
+                        MemberId = _memberId,
+                        GroupInstanceId = _options.GroupInstanceId
                     };
             }
         }
@@ -3329,7 +3330,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             _groupId,
             _memberId,
             _assignment,
-            out _consumerGroupRegistrationId);
+            out _consumerGroupRegistrationId, _options.GroupInstanceId);
     }
 
     private void UnregisterConsumerGroupMemberUnderLock()

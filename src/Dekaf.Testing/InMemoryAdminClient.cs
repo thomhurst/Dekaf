@@ -392,20 +392,32 @@ public sealed partial class InMemoryAdminClient :
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
         var memberList = members.ToArray();
+        if (memberList.Length == 0)
+        {
+            throw new ArgumentException("At least one static member is required.", nameof(members));
+        }
+        // Match the production overload: validate every original member before
+        // duplicate detection, so a later null cannot be hidden by an earlier duplicate.
+        foreach (var member in memberList)
+        {
+            ArgumentNullException.ThrowIfNull(member);
+            ArgumentException.ThrowIfNullOrWhiteSpace(member.GroupInstanceId);
+        }
+
+        var identities = new ConsumerGroupMemberIdentity[memberList.Length];
+        var instanceIds = memberList.Length > 1
+            ? new HashSet<string>(memberList.Length, StringComparer.Ordinal)
+            : null;
+        for (var index = 0; index < memberList.Length; index++)
+        {
+            var instanceId = memberList[index].GroupInstanceId;
+            if (instanceIds is not null && !instanceIds.Add(instanceId))
+                throw new ArgumentException("Static member group.instance.id values must be unique.", nameof(members));
+            identities[index] = new ConsumerGroupMemberIdentity { GroupInstanceId = instanceId };
+        }
         await ApplyAdminFaultAsync(cancellationToken, groupId: groupId).ConfigureAwait(false);
-
-        var results = memberList.Select(member => new ConsumerGroupMemberRemovalResult
-        {
-            GroupInstanceId = member.GroupInstanceId,
-            MemberId = string.Empty,
-            ErrorCode = Protocol.ErrorCode.None
-        }).ToArray();
-
-        return new RemoveMembersFromConsumerGroupResult
-        {
-            GroupId = groupId,
-            Members = results
-        };
+        cancellationToken.ThrowIfCancellationRequested();
+        return _cluster.RemoveConsumerGroupMembers(groupId, identities);
     }
 
     public async ValueTask<IReadOnlyDictionary<TopicPartition, long>> ListConsumerGroupOffsetsAsync(

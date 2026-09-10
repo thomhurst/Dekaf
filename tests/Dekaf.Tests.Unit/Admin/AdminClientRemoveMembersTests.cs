@@ -8,7 +8,7 @@ using NSubstitute;
 
 namespace Dekaf.Tests.Unit.Admin;
 
-public sealed class AdminClientRemoveMembersTests
+public sealed partial class AdminClientRemoveMembersTests
 {
     private const string GroupId = "orders";
 
@@ -41,6 +41,62 @@ public sealed class AdminClientRemoveMembersTests
                 .Throws<ArgumentException>()
                 .WithMessageContaining("must be unique");
         }
+    }
+
+    [Test]
+    public async Task RemoveMembers_ValidatesEveryMemberBeforeCheckingDuplicates()
+    {
+        var (admin, _) = CreateAdmin(leaveGroupMinVersion: 3, leaveGroupMaxVersion: 5);
+        await using (admin)
+        {
+            await Assert.That(async () => await admin.RemoveMembersFromConsumerGroupAsync(GroupId,
+                [
+                    new ConsumerGroupMemberToRemove { GroupInstanceId = "worker-a" },
+                    new ConsumerGroupMemberToRemove { GroupInstanceId = "worker-a" },
+                    null!
+                ]))
+                .Throws<ArgumentNullException>();
+        }
+    }
+
+    [Test]
+    public async Task RemoveMembers_PreservesOrdinalIdentityAndUnexpectedResponseFallback()
+    {
+        var (admin, connection) = CreateAdmin(leaveGroupMinVersion: 3, leaveGroupMaxVersion: 4);
+        SetupCoordinator(connection);
+        connection.SendAsync<LeaveGroupRequest, LeaveGroupResponse>(
+                Arg.Any<LeaveGroupRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(new LeaveGroupResponse
+            {
+                ErrorCode = ErrorCode.None,
+                Members =
+                [
+                    new LeaveGroupResponseMember { MemberId = "unexpected", GroupInstanceId = null },
+                    new LeaveGroupResponseMember { MemberId = "first", GroupInstanceId = null },
+                    new LeaveGroupResponseMember { MemberId = "second", GroupInstanceId = null }
+                ]
+            }));
+
+        await using (admin)
+        {
+            var result = await admin.RemoveMembersFromConsumerGroupAsync(GroupId,
+                [
+                    new ConsumerGroupMemberToRemove { GroupInstanceId = "worker-a" },
+                    new ConsumerGroupMemberToRemove { GroupInstanceId = "WORKER-A" }
+                ], new RemoveMembersFromConsumerGroupOptions { Reason = "not supported in v4" });
+            await Assert.That(result.Members[0].GroupInstanceId).IsEqualTo("worker-a");
+            await Assert.That(result.Members[0].MemberId).IsEqualTo("unexpected");
+            await Assert.That(result.Members[1].GroupInstanceId).IsEqualTo("WORKER-A");
+            await Assert.That(result.Members[1].MemberId).IsEqualTo("first");
+            await Assert.That(result.Members[2].GroupInstanceId).IsEqualTo(string.Empty);
+            await Assert.That(result.Members[2].MemberId).IsEqualTo("second");
+        }
+        await connection.Received(1).SendAsync<LeaveGroupRequest, LeaveGroupResponse>(
+            Arg.Is<LeaveGroupRequest>(request => request.Members.Count == 2
+                && request.Members[0].GroupInstanceId == "worker-a"
+                && request.Members[1].GroupInstanceId == "WORKER-A"
+                && request.Members[0].Reason == null && request.Members[1].Reason == null),
+            4, Arg.Any<CancellationToken>());
     }
 
     [Test]
@@ -238,7 +294,7 @@ public sealed class AdminClientRemoveMembersTests
 
     private static (AdminClient Admin, IKafkaConnection Connection) CreateAdmin(
         short leaveGroupMinVersion,
-        short leaveGroupMaxVersion)
+        short leaveGroupMaxVersion, bool modern = false)
     {
         var connection = Substitute.For<IKafkaConnection>();
         connection.BrokerId.Returns(1);
@@ -257,6 +313,9 @@ public sealed class AdminClientRemoveMembersTests
         metadataManager.Metadata.Update(metadata);
         metadataManager.SetApiVersion(ApiKey.Metadata, 9, 13);
         metadataManager.SetApiVersion(ApiKey.FindCoordinator, 4, 5);
+        metadataManager.SetApiVersion(ApiKey.DescribeGroups, 5, 6);
+        if (modern)
+            metadataManager.SetApiVersion(ApiKey.ConsumerGroupDescribe, 0, 1);
         metadataManager.SetApiVersion(ApiKey.LeaveGroup, leaveGroupMinVersion, leaveGroupMaxVersion);
 
         connection.SendAsync<MetadataRequest, MetadataResponse>(
@@ -275,6 +334,8 @@ public sealed class AdminClientRemoveMembersTests
                 [
                     new ApiVersion(ApiKey.Metadata, 9, 13),
                     new ApiVersion(ApiKey.FindCoordinator, 4, 5),
+                    new ApiVersion(ApiKey.DescribeGroups, 5, 6),
+                    ..(modern ? new[] { new ApiVersion(ApiKey.ConsumerGroupDescribe, 0, 1) } : []),
                     new ApiVersion(ApiKey.LeaveGroup, leaveGroupMinVersion, leaveGroupMaxVersion)
                 ]
             }));
