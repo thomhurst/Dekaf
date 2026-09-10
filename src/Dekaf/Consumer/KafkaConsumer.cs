@@ -1443,7 +1443,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     //      but never acquire _assignmentLock while holding it
     //   4. _autoCommitStartLock / _prefetchStartLock — guard background loop start/stop snapshots;
     //      never held while awaiting. When both are needed, acquire auto-commit before prefetch.
-    //   5. _partitionCacheLock / _fetchCacheLock — guard per-broker partition cache and fetch request
+    //   5. Offset reset acquires _coordinatorRevokedPartitionsPendingFetchClearLock, then
+    //      ClusterMetadata.UpdateLock, then (when invalidating routing) _partitionCacheLock.
+    //      Metadata writers never acquire consumer locks; preserve this direction.
+    //   6. _partitionCacheLock / _fetchCacheLock — guard per-broker partition cache and fetch request
     //      cache respectively; acquired under _assignmentLock (via InvalidatePartitionCache /
     //      InvalidateFetchRequestCache) and independently; never nested with each other
     private readonly SemaphoreSlim _initLock = new(1, 1);
@@ -1526,6 +1529,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private int _lastCoordinatorAssignmentVersion = -1;
     // Deterministic test seam for assignment/revocation snapshot races.
     internal Action? BeforeCoordinatorAssignmentSnapshotForTest { get; set; }
+    // Thread-local storage keeps the production consumer's instance layout unchanged.
+    [ThreadStatic]
+    internal static Action? BeforeOffsetResetCommitForTest;
     // Deterministic test seam for watermark creation/assignment races. Thread-local static
     // storage avoids changing the production consumer's instance layout.
     [ThreadStatic]
@@ -4498,7 +4504,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                             _stuckFetchPositionTracker.Reset(tp);
                             if (partitionResponse.ErrorCode == ErrorCode.OffsetOutOfRange)
                             {
-                                await ResetOffsetOutOfRangeAsync(tp, fetchBufferEpoch, cancellationToken).ConfigureAwait(false);
+                                await HandleFetchOffsetOutOfRangeAsync(
+                                    tp, brokerId, requestMetadataSnapshot, fetchBufferEpoch, cancellationToken).ConfigureAwait(false);
                             }
                             else if (IsLeaderEpochRefreshError(partitionResponse.ErrorCode))
                             {
@@ -10871,7 +10878,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         _stuckFetchPositionTracker.Reset(tp);
                         if (partitionResponse.ErrorCode == ErrorCode.OffsetOutOfRange)
                         {
-                            await ResetOffsetOutOfRangeAsync(tp, fetchBufferEpoch, cancellationToken).ConfigureAwait(false);
+                            await HandleFetchOffsetOutOfRangeAsync(
+                                tp, brokerId, requestMetadataSnapshot, fetchBufferEpoch, cancellationToken).ConfigureAwait(false);
                         }
                         else if (IsLeaderEpochRefreshError(partitionResponse.ErrorCode))
                         {
@@ -11681,18 +11689,82 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             startsBatch);
     }
 
-    private async ValueTask ResetOffsetOutOfRangeAsync(
+    private ValueTask HandleFetchOffsetOutOfRangeAsync(
+        TopicPartition partition,
+        int brokerId,
+        ClusterMetadataSnapshot requestMetadataSnapshot,
+        int fetchBufferEpoch,
+        CancellationToken cancellationToken)
+    {
+        // Replica preferences were already cleared on the error. Classify the actual
+        // destination against the request snapshot, not that mutable preference: a
+        // follower's missing offset requires a leader retry at the unchanged position.
+        if (!requestMetadataSnapshot.PartitionsByTopicIndex.TryGetValue(partition.Topic, out var partitions)
+            || (uint)partition.Partition >= (uint)partitions.Length
+            || partitions[partition.Partition] is not { } requestLeader
+            || requestLeader.LeaderId != brokerId)
+        {
+            // Metadata may change after broker grouping without a preferred replica
+            // to clear. Rebuild routing before retrying the current leader.
+            InvalidatePartitionCache();
+            return default;
+        }
+
+        return ResetOffsetOutOfRangeAsync(
+            partition, fetchBufferEpoch, cancellationToken, expectedLeader: requestLeader,
+            expectedMetadataSnapshot: requestMetadataSnapshot);
+    }
+
+    private ValueTask ResetOffsetOutOfRangeAsync(
         TopicPartition partition,
         int fetchBufferEpoch,
         CancellationToken cancellationToken,
-        long allowedPendingFetchClearVersion = NoPendingFetchClearVersion)
+        long allowedPendingFetchClearVersion = NoPendingFetchClearVersion,
+        PartitionInfo? expectedLeader = null,
+        ClusterMetadataSnapshot? expectedMetadataSnapshot = null)
+    {
+        var policy = _options.AutoOffsetReset;
+        if (policy is not (AutoOffsetReset.Earliest or AutoOffsetReset.Latest))
+        {
+            if (policy == AutoOffsetReset.None)
+            {
+                // Deciding to throw needs the same atomic leader/assignment validation as a reset.
+                TryApplyOffsetReset(partition, fetchBufferEpoch, allowedPendingFetchClearVersion,
+                    resetOffset: null, expectedLeader, expectedMetadataSnapshot);
+                return default;
+            }
+
+            return ResolveOffsetOutOfRangeAsync(
+                partition, fetchBufferEpoch, allowedPendingFetchClearVersion,
+                expectedLeader, cancellationToken);
+        }
+
+        // Immediate resets need no clock or asynchronous lookup. Validate once under
+        // the position-write lock; duration lookups still validate before and after awaiting.
+        var resetOffset = policy == AutoOffsetReset.Earliest ? EarliestOffsetTimestamp : LatestOffsetTimestamp;
+        if (TryApplyOffsetReset(
+                partition, fetchBufferEpoch, allowedPendingFetchClearVersion,
+                resetOffset, expectedLeader, expectedMetadataSnapshot))
+        {
+            LogOffsetOutOfRangeReset(partition.Topic, partition.Partition, GetAutoOffsetResetName());
+        }
+        return default;
+    }
+
+    private async ValueTask ResolveOffsetOutOfRangeAsync(
+        TopicPartition partition,
+        int fetchBufferEpoch,
+        long allowedPendingFetchClearVersion,
+        PartitionInfo? expectedLeader,
+        CancellationToken cancellationToken)
     {
         // Reset fetch position based on auto.offset.reset policy. Without this, the
         // consumer would retry the same invalid offset forever.
         if (ShouldDropOffsetReset(
                 partition,
                 fetchBufferEpoch,
-                allowedPendingFetchClearVersion))
+                allowedPendingFetchClearVersion,
+                expectedLeader))
             return;
 
         var resetTimestamp = AutoOffsetResetStrategy.GetListOffsetsTimestamp(_options, DateTimeOffset.UtcNow, partition);
@@ -11704,7 +11776,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 partition,
                 fetchBufferEpoch,
                 allowedPendingFetchClearVersion,
-                resetOffset))
+                resetOffset,
+                expectedLeader))
             return;
 
         LogOffsetOutOfRangeReset(partition.Topic, partition.Partition, GetAutoOffsetResetName());
@@ -11714,31 +11787,79 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         TopicPartition partition,
         int fetchBufferEpoch,
         long allowedPendingFetchClearVersion,
-        long resetOffset)
+        long? resetOffset,
+        PartitionInfo? expectedLeader,
+        ClusterMetadataSnapshot? expectedMetadataSnapshot = null)
     {
         // Keep the final validation and position write atomic with diverging-epoch staging.
         lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
         {
-            if (ShouldDropOffsetReset(
-                    partition,
-                    fetchBufferEpoch,
-                    allowedPendingFetchClearVersion))
-                return false;
+            // Only an authoritative leader error needs metadata synchronization.
+            // Writers never take the consumer lock, so the order stays one-way.
+            // Successful fetches and follower retries do not enter this reset path.
+            var metadataLock = expectedLeader is null ? null : _metadataManager.Metadata.UpdateLock;
+            var metadataLockTaken = false;
+            try
+            {
+                if (metadataLock is not null)
+                    Monitor.Enter(metadataLock, ref metadataLockTaken);
+                if (ShouldDropOffsetReset(
+                        partition,
+                        fetchBufferEpoch,
+                        allowedPendingFetchClearVersion,
+                        expectedLeader, expectedMetadataSnapshot))
+                    return false;
 
-            _fetchPositions[partition] = resetOffset;
-            SetPosition(partition, resetOffset, dirty: false);
-            ClearLastConsumedLeaderEpoch(partition);
-            return true;
+                BeforeOffsetResetCommitForTest?.Invoke();
+                var offset = resetOffset ?? AutoOffsetResetStrategy.GetListOffsetsTimestamp(
+                    _options, DateTimeOffset.UtcNow, partition);
+                _fetchPositions[partition] = offset;
+                SetPosition(partition, offset, dirty: false);
+                ClearLastConsumedLeaderEpoch(partition);
+                return true;
+            }
+            finally
+            {
+                if (metadataLockTaken)
+                    Monitor.Exit(metadataLock!);
+            }
         }
     }
 
     private bool ShouldDropOffsetReset(
         TopicPartition partition,
         int fetchBufferEpoch,
-        long allowedPendingFetchClearVersion) =>
-        IsFetchBufferEpochStale(partition, fetchBufferEpoch)
-        || PendingFetchClearVersionChanged(partition, allowedPendingFetchClearVersion)
-        || !IsCurrentlyAssigned(partition);
+        long allowedPendingFetchClearVersion,
+        PartitionInfo? expectedLeader,
+        ClusterMetadataSnapshot? expectedMetadataSnapshot = null)
+    {
+        if (IsFetchBufferEpochStale(partition, fetchBufferEpoch)
+            || PendingFetchClearVersionChanged(partition, allowedPendingFetchClearVersion)
+            || !IsCurrentlyAssigned(partition))
+            return true;
+
+        if (expectedLeader is not null
+            && (expectedMetadataSnapshot is null
+                || !ReferenceEquals(_metadataManager.Metadata.CaptureSnapshot(), expectedMetadataSnapshot))
+            && !IsCurrentOffsetResetLeader(partition, expectedLeader))
+        {
+            // A leader change after request construction also invalidates cached
+            // broker grouping, including after an asynchronous duration lookup.
+            InvalidatePartitionCache();
+            return true;
+        }
+
+        return false;
+    }
+
+    private bool IsCurrentOffsetResetLeader(TopicPartition partition, PartitionInfo expectedLeader)
+    {
+        // Recheck after an asynchronous duration-based lookup as well as before it.
+        var current = _metadataManager.Metadata.GetPartitionInfo(partition.Topic, partition.Partition);
+        return current is not null
+            && current.LeaderId == expectedLeader.LeaderId
+            && current.LeaderEpoch == expectedLeader.LeaderEpoch;
+    }
 
     private bool PendingFetchClearVersionChanged(
         TopicPartition partition,

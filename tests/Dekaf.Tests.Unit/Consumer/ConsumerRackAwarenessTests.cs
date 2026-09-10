@@ -10,7 +10,7 @@ using NSubstitute;
 
 namespace Dekaf.Tests.Unit.Consumer;
 
-public sealed class ConsumerRackAwarenessTests
+public sealed partial class ConsumerRackAwarenessTests
 {
     private const string Topic = "rack-aware-topic";
     private static readonly TopicPartition Partition = new(Topic, 0);
@@ -293,13 +293,16 @@ public sealed class ConsumerRackAwarenessTests
     private static KafkaConsumer<string, string> CreateConsumer(
         IConnectionPool pool,
         MetadataManager metadataManager,
-        string? clientRack)
+        string? clientRack,
+        AutoOffsetReset autoOffsetReset = AutoOffsetReset.Latest)
         => new(
             new ConsumerOptions
             {
                 BootstrapServers = ["localhost:9092"],
                 ClientId = "test-consumer",
                 ClientRack = clientRack,
+                AutoOffsetReset = autoOffsetReset,
+                AutoOffsetResetDuration = autoOffsetReset == AutoOffsetReset.ByDuration ? TimeSpan.FromHours(1) : null,
                 EnableFetchSessions = false
             },
             Serializers.String,
