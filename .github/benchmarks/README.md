@@ -5,8 +5,11 @@ See [standard tooling and evidence storage](STANDARD-TOOLS.md) and the repositor
 [performance requirements](../../AGENTS.md).
 
 The [automatic performance gate](../workflows/performance-gate.yml) selects maintained
-fixtures for changed product paths and runs A1/B/A2 sequentially on one hosted Ubuntu
-VM. It retains original exports and the reviewed screen in GitHub job output/artifacts.
+fixtures for changed product paths and divides validated expanded cases into batches
+of at most 48. Each batch runs A1/B/A2 sequentially on one hosted Ubuntu VM; the final
+check requires every batch. Up to four batches run, with two concurrent jobs. Missing
+fixtures and differing A/B case sets fail preparation before acceptance measurement.
+It retains original exports and the reviewed screen in GitHub job output/artifacts.
 For a targeted manual run, dispatch from main with `pr`, exact fresh-main `base_sha`,
 current PR `head_sha` and the affected standard-project `filters`. The workflow rejects
 stale pins and closed PRs. Fresh main, candidate ancestry, identical

@@ -28,6 +28,8 @@ def benchmark(method='Append', parameters='', mean=100.0, samples=25, allocated=
                      for _ in range(samples)]
     metrics = [] if allocated is None else [{'Descriptor': {'Id': 'Allocated Memory'}, 'Value': allocated}]
     return {'Namespace': 'Dekaf.Benchmarks.Benchmarks.Unit', 'Type': 'AppendBenchmarks', 'Method': method,
+            'FullName': f'Dekaf.Benchmarks.Benchmarks.Unit.AppendBenchmarks.{method}'
+                        + (f'({parameters.replace("=", ": ")})' if parameters else ''),
             'Parameters': parameters, 'Statistics': {'Mean': mean, 'StandardDeviation': 1.0, 'N': samples},
             'Metrics': metrics, 'Measurements': measurements}
 
@@ -227,6 +229,21 @@ class SelectionTests(unittest.TestCase):
                 self.assertEqual(1, gate.main(['count', '--execution-log', str(log)]))
                 self.assertEqual(0, gate.main(['count', '--execution-log', str(log), '--max-cases', str(gate.MAX_CASES + 1)]))
 
+    def test_discovery_count_derives_budget_from_both_batch_limits(self):
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / 'dry.log'
+            # Changing either limit must affect discovery without another workflow edit.
+            for per_batch, batches in ((3, 2), (4, 2), (4, 3)):
+                with self.subTest(per_batch=per_batch, batches=batches), \
+                        mock.patch.object(gate, 'MAX_CASES', per_batch), \
+                        mock.patch.object(gate, 'MAX_BATCHES', batches):
+                    for count in (per_batch + 1, per_batch * batches, per_batch * batches + 1):
+                        log.write_text(f'// ***** Found {count} benchmark(s) in total *****\n')
+                        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                            self.assertEqual(int(count > per_batch * batches),
+                                             gate.main(['count', '--execution-log', str(log), '--discovery']))
+                            self.assertEqual(1, gate.main(['count', '--execution-log', str(log)]))
+
     def test_count_command_rejects_empty_and_oversized_selections(self):
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             with mock.patch('sys.stdin', io.StringIO('')):
@@ -238,7 +255,127 @@ class SelectionTests(unittest.TestCase):
                 self.assertEqual(0, gate.main(['count', '--max-cases', str(gate.MAX_CASES + 1)]))
 
 
+class PlanningTests(unittest.TestCase):
+    def test_every_requested_glob_must_match_on_each_revision(self):
+        listing = 'Dekaf.Benchmarks.Benchmarks.Unit.A.Read\n'
+        gate.check_listing(listing, ['*.Unit.A.*'], 'A')
+        with self.assertRaisesRegex(ValueError, r'A:.*Missing'):
+            gate.check_listing(listing, ['*.Unit.A.*', '*.Unit.Missing.*'], 'A')
+        with self.assertRaisesRegex(ValueError, r'B:.*compatible fixtures'):
+            gate.check_listing('', ['*.Unit.A.*'], 'B')
+
+    def test_listing_uses_bdn_globs_not_shell_character_classes(self):
+        listing = 'Dekaf.Benchmarks.Benchmarks.Unit.A.Read[Int32]\n'
+        gate.check_listing(listing, ['*.unit.a.read[Int32]'], 'A')
+        with self.assertRaises(ValueError):
+            gate.check_listing(listing, ['*.Unit.A.Read[I]*'], 'A')
+
+    def test_expanded_179_case_selection_is_partitioned_without_loss_or_overlap(self):
+        cases = [benchmark('Read', f'Size={size}') for size in range(179)]
+        plan = gate.plan_batches(cases, list(reversed(cases)))
+        self.assertEqual(179, plan['case_count'])
+        self.assertEqual([48, 48, 48, 35], [len(batch['cases']) for batch in plan['batches']])
+        self.assertEqual(sorted(gate._case_key(item) for item in cases),
+                         [key for batch in plan['batches'] for key in batch['cases']])
+        self.assertEqual({item['FullName'] for item in cases},
+                         {name for batch in plan['batches'] for name in batch['filters']})
+        self.assertEqual(plan, gate.plan_batches(list(reversed(cases)), cases))
+
+    def test_plan_rejects_missing_or_different_cases_even_when_counts_match(self):
+        for baseline, candidate in (([], []), ([benchmark()], [benchmark('Other')]),
+                                     ([benchmark(parameters='Size=1')], [benchmark(parameters='Size=2')]),
+                                     ([benchmark()], [benchmark(), benchmark()])):
+            with self.subTest(baseline=baseline, candidate=candidate), self.assertRaises(ValueError):
+                gate.plan_batches(baseline, candidate)
+
+    def test_filter_identity_must_be_literal_and_unambiguous(self):
+        for name in (None, '', 'SomethingElse.Read', 'Dekaf.Benchmarks.A.Read(X: *)',
+                     'Dekaf.Benchmarks.A.Read(X: ?)', 'Dekaf.Benchmarks.A.Read\n--job Dry'):
+            item = benchmark() | {'FullName': name}
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                gate.plan_batches([item], [item])
+        cases = [benchmark('Read'), benchmark('read')]
+        with self.assertRaisesRegex(ValueError, 'ambiguous'):
+            gate.plan_batches(cases, cases)
+        with self.assertRaisesRegex(ValueError, 'FullName'):
+            gate.plan_batches([benchmark()], [benchmark() | {'FullName': 'Dekaf.Benchmarks.Other.Read'}])
+
+    def test_total_work_and_batch_size_remain_bounded(self):
+        cases = [benchmark(f'Method{i}') for i in range(gate.MAX_CASES * gate.MAX_BATCHES + 1)]
+        with self.assertRaisesRegex(ValueError, 'narrower filters'):
+            gate.plan_batches(cases, cases)
+        for size in (0, -1, gate.MAX_CASES + 1):
+            with self.subTest(size=size), self.assertRaises(ValueError):
+                gate.plan_batches([benchmark()], [benchmark()], size)
+
+    def test_changed_full_name_diagnostic_identifies_both_filters(self):
+        baseline = benchmark()
+        candidate = baseline | {'FullName': baseline['FullName'].replace('.Append', '.append')}
+        with self.assertRaises(ValueError) as failure:
+            gate.plan_batches([baseline], [candidate])
+        diagnostic = str(failure.exception)
+        self.assertIn(gate._case_key(baseline), diagnostic)
+        self.assertIn(f'A={baseline["FullName"]!r}', diagnostic)
+        self.assertIn(f'B={candidate["FullName"]!r}', diagnostic)
+
+    def test_summary_requires_every_planned_case_and_preserves_verdicts(self):
+        plan = gate.plan_batches([benchmark(), benchmark('Read')], [benchmark(), benchmark('Read')], 1)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for batch in plan['batches']:
+                target = root / f'batch-{batch["id"]}' / 'comparison.json'
+                target.parent.mkdir()
+                target.write_text(json.dumps({'screen': 'PASS', 'baseline_only': [], 'candidate_only': [],
+                                              'cases': [{'case': key} for key in batch['cases']]}))
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual('PASS', gate.summarize_batches(plan, root))
+                target = root / 'batch-2' / 'comparison.json'
+                original = json.loads(target.read_text())
+                for screen in ('INCONCLUSIVE', 'REGRESSION'):
+                    target.write_text(json.dumps(original | {'screen': screen}))
+                    self.assertEqual(screen, gate.summarize_batches(plan, root))
+                for changes in ({'cases': []}, {'cases': [{'case': 'unexpected'}]},
+                                {'cases': original['cases'] * 2}, {'candidate_only': ['new']},
+                                {'baseline_only': ['old']}, {'screen': 'UNKNOWN'}):
+                    target.write_text(json.dumps(original | changes))
+                    with self.subTest(changes=changes), self.assertRaises(ValueError):
+                        gate.summarize_batches(plan, root)
+                target.unlink()
+                with self.assertRaises(FileNotFoundError):
+                    gate.summarize_batches(plan, root)
+
+    def test_plan_command_uses_original_exports(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for role in ('A', 'B'):
+                (root / role).mkdir()
+                (root / role / 'original-report-full.json').write_text(json.dumps(
+                    {'Benchmarks': [benchmark('Read', 'Size=128'), benchmark('Read', 'Size=512')]}))
+            output = root / 'plan.json'
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(0, gate.main(['plan', '--baseline', str(root / 'A'),
+                                               '--candidate', str(root / 'B'), '--output', str(output),
+                                               '--max-cases', '1']))
+            plan = json.loads(output.read_text())
+            self.assertEqual(2, len(plan['batches']))
+            self.assertEqual('Dekaf.Benchmarks.Benchmarks.Unit.AppendBenchmarks.Read(Size: 128)',
+                             plan['batches'][0]['filters'][0])
+
+
 class ValidationTests(unittest.TestCase):
+    def test_exact_case_validation_catches_same_count_substitutions(self):
+        expected = [gate._case_key(benchmark('Read', 'Size=128'))]
+        self.assertEqual([], gate.check_case_set([benchmark('Read', 'Size=128')], expected))
+        self.assertTrue(gate.check_case_set([benchmark('Read', 'Size=512')], expected))
+        self.assertTrue(gate.check_case_set([benchmark('Other', 'Size=128')], expected))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'case-report-full.json').write_text(json.dumps({'Benchmarks': [benchmark('Other')]}))
+            (root / 'expected.json').write_text(json.dumps(expected))
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(1, gate.main(['validate', '--phase', str(root), '--expected', '1',
+                                               '--expected-cases', str(root / 'expected.json')]))
+
     def test_complete_phase_has_no_findings(self):
         fatal, warnings = gate.validate_phase([benchmark(), benchmark('Drain')], 2, 25, 20)
         self.assertEqual(([], []), (fatal, warnings))
@@ -326,12 +463,25 @@ gh() { printf '%s' "$TEST_PR_JSON"; }
 
     def test_gate_workflow_measures_a1_b_a2_on_one_hosted_vm_with_the_shared_screen(self):
         workflow = WORKFLOW.read_text(encoding='utf-8')
+        measurement_job = workflow.split('\n  measure:\n', 1)[1].split('\n  gate:\n', 1)[0]
         self.assertIn('pull_request:', workflow)
         self.assertIn('runs-on: ubuntu-latest', workflow)
-        self.assertIn('for phase in A1 B A2', workflow)
+        self.assertIn('for phase in A1 B A2', measurement_job)
+        self.assertIn('runs-on: ubuntu-latest', measurement_job)
+        self.assertIn('fail-fast: false', measurement_job)
+        self.assertIn('max-parallel: 2', measurement_job)
+        self.assertIn("if: needs.plan.result == 'success' && needs.plan.outputs.applicable == 'true' "
+                      "&& needs.plan.outputs.matrix != ''", measurement_job)
+        self.assertIn('--execution-log "$GATE/dry-$role.log" --discovery', workflow)
+        self.assertNotIn('--max-cases 192', workflow)
+        self.assertIn('--expected-cases "$GATE/expected-cases.json"', measurement_job)
+        self.assertIn('needs: [plan, measure]', workflow)
+        self.assertIn('defaults:\n  run:\n    shell: bash', workflow)
+        self.assertIn('performance_gate.py summarize --plan plan/plan.json', workflow)
+        self.assertIn('"$MEASURE_RESULT" != success', workflow)
         for setting in ('--warmupCount 50', '--iterationCount 25', '--iterationTime 1000', '--launchCount 1',
                         '--outliers DontRemove', '--exporters fulljson'):
-            self.assertIn(setting, workflow, setting)
+            self.assertIn(setting, measurement_job, setting)
         self.assertIn('performance_gate.py select', workflow)
         self.assertIn('performance_gate.py validate', workflow)
         self.assertIn('--argjson alloc_floor 8', workflow)

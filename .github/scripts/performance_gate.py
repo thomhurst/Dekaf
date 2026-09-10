@@ -1,7 +1,8 @@
 """Select, validate and merge BenchmarkDotNet A1/B/A2 evidence for the automatic performance gate.
 
 The gate compares the maintained fixtures in tools/Dekaf.Benchmarks between a PR's merge base
-and its head on one hosted VM. Fixtures are selected from the changed product paths; every
+and its head, with each bounded A1/B/A2 batch on one hosted VM. Fixtures are selected from
+the changed product paths; every
 selected class uses BenchmarkDotNet's throughput strategy with [MemoryDiagnoser], so warmup
 elapsed time, sample counts and allocations are BenchmarkDotNet's own measurements.
 """
@@ -17,6 +18,7 @@ from pathlib import Path
 DEFAULT_ITERATIONS = 25
 DEFAULT_MIN_WARMUP_SECONDS = 20
 MAX_CASES = 48
+MAX_BATCHES = 4
 SOURCE_SUFFIXES = ('.cs', '.csproj', '.props', '.targets', '.proto')
 BUILD_INPUTS = ('Directory.Packages.props', 'Directory.Build.props', 'Directory.Build.targets', 'global.json')
 
@@ -252,6 +254,92 @@ def count_execution_cases(log):
     return int(totals[0])
 
 
+def check_listing(listing, filters, role):
+    """Validate every requested glob, not just the union (BDN silently ignores empty globs)."""
+    names = [line.strip() for line in listing.splitlines()
+             if line.strip().startswith('Dekaf.Benchmarks.')]
+    missing = []
+    for pattern in filters:
+        # BDN GlobFilter recognizes only * and ?, not fnmatch's [character classes].
+        regex = re.compile('^' + re.escape(pattern).replace(r'\*', '.*').replace(r'\?', '.') + '$', re.I)
+        if not any(regex.fullmatch(name) for name in names):
+            missing.append(pattern)
+    if missing:
+        raise ValueError(f'{role}: filters match no benchmark methods: {", ".join(missing)}. '
+                         'Land compatible fixtures on main before comparing, or correct the path map.')
+
+
+def plan_batches(baseline, candidate, max_cases=MAX_CASES):
+    """Partition original BDN full names; each batch will run its own same-VM A1/B/A2."""
+    if not 1 <= max_cases <= MAX_CASES:
+        raise ValueError(f'Batch size must be between 1 and {MAX_CASES}')
+    if not baseline or not candidate:
+        raise ValueError('Both revisions must have validated benchmark cases')
+    cases = []
+    for role, benchmarks in (('A', baseline), ('B', candidate)):
+        keys = [_case_key(item) for item in benchmarks]
+        if len(set(keys)) != len(keys):
+            raise ValueError(f'{role}: duplicate benchmark identities')
+        full_names = [item.get('FullName') for item in benchmarks]
+        if any(not isinstance(name, str) or not name.startswith('Dekaf.Benchmarks.')
+               or any(character in name for character in '*?\r\n') for name in full_names):
+            raise ValueError(f'{role}: missing or non-literal BenchmarkDotNet FullName; cannot safely partition filters')
+        if len({name.casefold() for name in full_names}) != len(full_names):
+            raise ValueError(f'{role}: ambiguous BenchmarkDotNet FullName filters')
+        cases.append(dict(zip(keys, full_names)))
+    if cases[0] != cases[1]:
+        baseline_only = sorted(set(cases[0]) - set(cases[1]))
+        candidate_only = sorted(set(cases[1]) - set(cases[0]))
+        renamed_filters = [f'{key}: A={cases[0][key]!r}, B={cases[1][key]!r}'
+                           for key in sorted(cases[0].keys() & cases[1].keys())
+                           if cases[0][key] != cases[1][key]]
+        raise ValueError('A/B benchmark cases differ. '
+                         f'Baseline only: {baseline_only}; candidate only: {candidate_only}. '
+                         f'FullName differences: {renamed_filters}. '
+                         'Land identical fixture coverage before comparison.')
+    if len(baseline) > max_cases * MAX_BATCHES:
+        raise ValueError(f'{len(baseline)} cases exceed {MAX_BATCHES} batches of {max_cases}; '
+                         'select affected workloads with narrower filters before timing')
+    ordered = sorted(cases[0])
+    batches = []
+    for start in range(0, len(ordered), max_cases):
+        keys = ordered[start:start + max_cases]
+        batches.append({'id': len(batches) + 1, 'cases': keys,
+                        'filters': [cases[0][key] for key in keys]})
+    return {'case_count': len(ordered), 'batches': batches}
+
+
+def check_case_set(benchmarks, expected):
+    actual = [_case_key(item) for item in benchmarks]
+    if len(actual) != len(set(actual)) or sorted(actual) != sorted(expected):
+        return [f'case set differs from plan; missing: {sorted(set(expected) - set(actual))}; '
+                f'unexpected: {sorted(set(actual) - set(expected))}']
+    return []
+
+
+def summarize_batches(plan, directory):
+    """Check complete coverage and combine verdicts only; never compare metrics across VMs."""
+    screens = []
+    for batch in plan['batches']:
+        path = Path(directory) / f'batch-{batch["id"]}' / 'comparison.json'
+        report = json.loads(path.read_text(encoding='utf-8'))
+        actual = [item['case'] for item in report['cases']]
+        if sorted(actual) != sorted(batch['cases']) or report['baseline_only'] or report['candidate_only']:
+            raise ValueError(f'Batch {batch["id"]}: comparison does not cover exactly the planned cases')
+        screen = report['screen']
+        if screen not in ('PASS', 'REGRESSION', 'INCONCLUSIVE'):
+            raise ValueError(f'Batch {batch["id"]}: unknown screen {screen}')
+        print(f'Batch {batch["id"]}: {len(actual)} cases, {screen}')
+        screens.append(screen)
+    if not screens:
+        raise ValueError('No measured batches')
+    if 'REGRESSION' in screens:
+        return 'REGRESSION'
+    if 'INCONCLUSIVE' in screens:
+        return 'INCONCLUSIVE'
+    return 'PASS'
+
+
 def _case_key(benchmark):
     parts = [benchmark.get(field) for field in ('Namespace', 'Type', 'Method', 'Parameters')]
     return ' '.join(str(part) for part in parts if part not in (None, ''))
@@ -319,8 +407,23 @@ def main(argv=None):
     selecting.add_argument('--filters', help='Explicit space-separated BDN globs that replace path selection')
     selecting.add_argument('--output', type=Path, required=True)
     counting = commands.add_parser('count', help='Count listed methods, or expanded cases from an execution log')
-    counting.add_argument('--max-cases', type=int, default=MAX_CASES)
+    count_budget = counting.add_mutually_exclusive_group()
+    count_budget.add_argument('--max-cases', type=int, default=MAX_CASES)
+    count_budget.add_argument('--discovery', action='store_true',
+                              help='Use the combined batch budget for Dry discovery, not measurement')
     counting.add_argument('--execution-log', type=Path, help='Use the BDN declared case total instead of stdin method names')
+    listing = commands.add_parser('check-list', help='Require each selected glob on one revision')
+    listing.add_argument('--listing', type=Path, required=True)
+    listing.add_argument('--selection', type=Path, required=True)
+    listing.add_argument('--role', required=True)
+    planning = commands.add_parser('plan', help='Partition identical Dry-validated cases into bounded A1/B/A2 jobs')
+    planning.add_argument('--baseline', type=Path, required=True)
+    planning.add_argument('--candidate', type=Path, required=True)
+    planning.add_argument('--output', type=Path, required=True)
+    planning.add_argument('--max-cases', type=int, default=MAX_CASES)
+    summarizing = commands.add_parser('summarize', help='Require every planned batch and report the combined screen')
+    summarizing.add_argument('--plan', type=Path, required=True)
+    summarizing.add_argument('--results', type=Path, required=True)
     validating = commands.add_parser('validate', help='Validate one phase and write its merged case array')
     validating.add_argument('--phase', type=Path, required=True)
     validating.add_argument('--expected', type=int)
@@ -329,7 +432,30 @@ def main(argv=None):
     validating.add_argument('--min-warmup', type=float, default=DEFAULT_MIN_WARMUP_SECONDS)
     validating.add_argument('--merged', type=Path)
     validating.add_argument('--cases', type=Path)
+    validating.add_argument('--expected-cases', type=Path, help='Require these exact case identities, not just a count')
     args = parser.parse_args(argv)
+
+    if args.command in ('check-list', 'plan', 'summarize'):
+        try:
+            if args.command == 'check-list':
+                selection = json.loads(args.selection.read_text(encoding='utf-8'))
+                check_listing(args.listing.read_text(encoding='utf-8-sig'), selection['filters'], args.role)
+            elif args.command == 'plan':
+                plan = plan_batches(load_reports(args.baseline), load_reports(args.candidate), args.max_cases)
+                args.output.write_text(json.dumps(plan, indent=2) + '\n', encoding='utf-8')
+                print(f'{plan["case_count"]} cases in {len(plan["batches"])} same-VM A1/B/A2 batch(es)')
+            else:
+                plan = json.loads(args.plan.read_text(encoding='utf-8'))
+                screen = summarize_batches(plan, args.results)
+                print(f'Micro screen: {screen}. Loaded pipeline evidence remains a separate requirement.')
+                if screen == 'REGRESSION':
+                    return 1
+                if screen == 'INCONCLUSIVE':
+                    print('::warning::Micro screen INCONCLUSIVE; review the named cases in the batch job summaries.')
+        except (ValueError, OSError, KeyError) as error:
+            print(f'::error::{error}', file=sys.stderr)
+            return 1
+        return 0
 
     if args.command == 'select':
         if args.filters and args.filters.strip():
@@ -352,8 +478,9 @@ def main(argv=None):
         if count == 0:
             print('The selected filters match no benchmark cases', file=sys.stderr)
             return 1
-        if count > args.max_cases:
-            print(f'{count} cases exceed the {args.max_cases}-case budget '
+        max_cases = MAX_CASES * MAX_BATCHES if args.discovery else args.max_cases
+        if count > max_cases:
+            print(f'{count} cases exceed the {max_cases}-case budget '
                   f'(about {estimate_minutes(count)} minutes); dispatch with narrower filters', file=sys.stderr)
             return 1
         print(count)
@@ -361,6 +488,8 @@ def main(argv=None):
     benchmarks = load_reports(args.phase)
     fatal, warnings = validate_phase(
         benchmarks, args.expected, None if args.dry else args.iterations, 0 if args.dry else args.min_warmup)
+    if args.expected_cases:
+        fatal.extend(check_case_set(benchmarks, json.loads(args.expected_cases.read_text(encoding='utf-8'))))
     for warning in warnings:
         print(f'::warning::{args.phase.name}: {warning}')
     for issue in fatal:

@@ -34,6 +34,9 @@ on:
 permissions:
   contents: read
   pull-requests: read
+defaults:
+  run:
+    shell: bash
 concurrency:
   group: performance-gate-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
@@ -49,11 +52,17 @@ env:
   TOLERANCE: '5'
   MIN_WARMUP: '20'
 jobs:
-  gate:
-    name: Micro A1/B/A2 screen
+  plan:
+    name: Validate and plan benchmark cases
     if: github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
-    timeout-minutes: 330
+    timeout-minutes: 60
+    outputs:
+      base: ${{ steps.pins.outputs.base }}
+      head: ${{ steps.pins.outputs.head }}
+      tooling: ${{ steps.pins.outputs.tooling }}
+      applicable: ${{ steps.select.outputs.applicable }}
+      matrix: ${{ steps.plan.outputs.matrix }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -87,6 +96,7 @@ jobs:
           for sha in "$base" "$head"; do [[ "$sha" =~ ^[0-9a-f]{40}$ ]]; done
           echo "base=$base" >> "$GITHUB_OUTPUT"
           echo "head=$head" >> "$GITHUB_OUTPUT"
+          echo "tooling=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           jq -n --arg base "$base" --arg head "$head" --arg main "$(git rev-parse origin/main)" \
             --arg workflow "$GITHUB_SHA" --arg run "$GITHUB_RUN_ID" \
             '{baseline_sha: $base, candidate_sha: $head, main_at_start: $main, workflow_sha: $workflow, run_id: $run}' \
@@ -139,6 +149,18 @@ jobs:
             echo "::warning::The PR changes tools/Dekaf.Benchmarks; each revision measured its own fixture source. Review the fixture diff before trusting the comparison."
             { echo; echo "Fixture source differs between A and B:"; echo '```'; cat "$GATE/fixture-diff.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           fi
+      - name: Require every selected fixture on both revisions
+        if: steps.select.outputs.applicable == 'true'
+        run: |
+          mapfile -t filters < <(jq -r '.filters[]' "$GATE/selection.json")
+          for role in A B; do
+            (
+              cd "$RUNNER_TEMP/gate-$role/tools/Dekaf.Benchmarks"
+              dotnet run --project Dekaf.Benchmarks.csproj -c Release --no-build -- --list flat --filter "${filters[@]}" > "$GATE/list-$role.txt" 2>&1
+            )
+            python3 .github/scripts/performance_gate.py check-list --listing "$GATE/list-$role.txt" \
+              --selection "$GATE/selection.json" --role "$role"
+          done
       - name: Validate the selected cases on both revisions
         id: dry
         if: steps.select.outputs.applicable == 'true'
@@ -147,24 +169,109 @@ jobs:
           for role in A B; do
             (
               cd "$RUNNER_TEMP/gate-$role/tools/Dekaf.Benchmarks"
-              dotnet run --project Dekaf.Benchmarks.csproj -c Release --no-build -- --list flat --filter "${filters[@]}" > "$GATE/list-$role.txt" 2>&1
-              count=$(python3 "$GITHUB_WORKSPACE/.github/scripts/performance_gate.py" count < "$GATE/list-$role.txt")
               dotnet run --project Dekaf.Benchmarks.csproj -c Release --no-build -- --job Dry --filter "${filters[@]}" --exporters fulljson --buildTimeout 900 --artifacts "$GATE/dry-$role" > "$GATE/dry-$role.log" 2>&1
               # --list flat counts methods; execution expands their parameter combinations.
-              count=$(python3 "$GITHUB_WORKSPACE/.github/scripts/performance_gate.py" count --execution-log "$GATE/dry-$role.log")
+              # Discovery may cover four batches; each measured job still has at most 48 cases.
+              count=$(python3 "$GITHUB_WORKSPACE/.github/scripts/performance_gate.py" count --execution-log "$GATE/dry-$role.log" --discovery)
               echo "$count" > "$GATE/count-$role.txt"
               python3 "$GITHUB_WORKSPACE/.github/scripts/performance_gate.py" validate --dry --phase "$GATE/dry-$role" --expected "$count"
             )
           done
           dotnet build-server shutdown
-          {
-            echo
-            echo "Cases: A $(cat "$GATE/count-A.txt") · B $(cat "$GATE/count-B.txt") · estimated $(python3 -c "import sys; sys.path.insert(0, '.github/scripts'); import performance_gate as g; print(g.estimate_minutes($(cat "$GATE/count-B.txt")))") minutes for A1/B/A2"
-          } >> "$GITHUB_STEP_SUMMARY"
-      - name: Measure A1, B and A2 sequentially on this VM
+      - name: Plan bounded same-VM comparisons
+        id: plan
         if: steps.select.outputs.applicable == 'true'
         run: |
-          mapfile -t filters < <(jq -r '.filters[]' "$GATE/selection.json")
+          python3 .github/scripts/performance_gate.py plan --baseline "$GATE/dry-A" --candidate "$GATE/dry-B" \
+            --output "$GATE/plan.json" | tee -a "$GITHUB_STEP_SUMMARY"
+          matrix=$(jq -c '{include: [.batches[] | {id}]}' "$GATE/plan.json")
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo 'Every selected case is retained. Each batch measures A1, B and A2 on its own Ubuntu VM; metrics are never compared between batches.' >> "$GITHUB_STEP_SUMMARY"
+      - name: Show preparation failure details
+        if: failure()
+        run: |
+          echo '::error::Benchmark preparation failed before acceptance measurement. See the named fixture/build error and retained logs.'
+          for log in "$GATE"/build-*.log "$GATE"/dry-*.log; do
+            if [[ -f "$log" ]]; then echo "::group::$(basename "$log")"; tail -n 60 "$log"; echo '::endgroup::'; fi
+          done
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: performance-gate-plan-${{ github.run_id }}
+          path: gate/
+          include-hidden-files: true
+          retention-days: 90
+
+  measure:
+    name: A1/B/A2 batch ${{ matrix.id }}
+    needs: plan
+    if: needs.plan.result == 'success' && needs.plan.outputs.applicable == 'true' && needs.plan.outputs.matrix != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    env:
+      GATE: ${{ github.workspace }}/gate/batch-${{ matrix.id }}
+      BASE_SHA: ${{ needs.plan.outputs.base }}
+      HEAD_SHA: ${{ needs.plan.outputs.head }}
+      BATCH_ID: ${{ matrix.id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.plan.outputs.tooling }}
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
+        with:
+          global-json-file: global.json
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: performance-gate-plan-${{ github.run_id }}
+          path: plan/
+      - name: Prepare pinned revisions on this VM
+        run: |
+          mkdir -p "$GATE"
+          jq --argjson id "$BATCH_ID" '.batches[] | select(.id == $id)' plan/plan.json > "$GATE/batch.json"
+          jq '.cases' "$GATE/batch.json" > "$GATE/expected-cases.json"
+          cp plan/provenance.json plan/fixture-diff.txt "$GATE/"
+          dotnet --info > "$GATE/runtime.txt"
+          lscpu > "$GATE/cpu.txt"
+          cp /etc/os-release "$GATE/os-release.txt"
+          echo "Batch $BATCH_ID · Baseline A: $BASE_SHA · Candidate B: $HEAD_SHA" >> "$GITHUB_STEP_SUMMARY"
+          echo "Runner: $RUNNER_NAME · Image: $ImageOS $ImageVersion" >> "$GITHUB_STEP_SUMMARY"
+          if [[ -s "$GATE/fixture-diff.txt" ]]; then
+            echo '::warning::Fixture source differs; review the retained fixture diff before trusting this comparison.'
+            cat "$GATE/fixture-diff.txt" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          for role in A B; do
+            sha="$BASE_SHA"; if [[ "$role" == B ]]; then sha="$HEAD_SHA"; fi
+            git fetch --no-tags origin "$sha"
+            git worktree add --detach "$RUNNER_TEMP/gate-$role" "$sha"
+            (
+              cd "$RUNNER_TEMP/gate-$role/tools/Dekaf.Benchmarks"
+              dotnet new sln --name GateBenchmarkExecution --format sln > "$GATE/solution-$role.log" 2>&1
+              dotnet sln GateBenchmarkExecution.sln add Dekaf.Benchmarks.csproj >> "$GATE/solution-$role.log" 2>&1
+              dotnet build Dekaf.Benchmarks.csproj -c Release --disable-build-servers > "$GATE/build-$role.log" 2>&1
+            )
+          done
+      - name: Validate exact batch filters on this VM
+        run: |
+          mapfile -t filters < <(jq -r '.filters[]' "$GATE/batch.json")
+          for role in A B; do
+            (
+              cd "$RUNNER_TEMP/gate-$role/tools/Dekaf.Benchmarks"
+              dotnet run --project Dekaf.Benchmarks.csproj -c Release --no-build -- --job Dry --filter "${filters[@]}" \
+                --exporters fulljson --buildTimeout 900 --artifacts "$GATE/dry-$role" > "$GATE/dry-$role.log" 2>&1
+            )
+            count=$(python3 .github/scripts/performance_gate.py count --execution-log "$GATE/dry-$role.log")
+            python3 .github/scripts/performance_gate.py validate --dry --phase "$GATE/dry-$role" --expected "$count" \
+              --expected-cases "$GATE/expected-cases.json"
+          done
+          dotnet build-server shutdown
+      - name: Measure A1, B and A2 sequentially on this VM
+        run: |
+          mapfile -t filters < <(jq -r '.filters[]' "$GATE/batch.json")
           for phase in A1 B A2; do
             role=A; if [[ "$phase" == B ]]; then role=B; fi
             (
@@ -173,11 +280,10 @@ jobs:
                 --warmupCount 50 --iterationCount 25 --iterationTime 1000 --launchCount 1 --outliers DontRemove \
                 --exporters fulljson --buildTimeout 900 --artifacts "$GATE/$phase" > "$GATE/$phase.log" 2>&1
             )
-            python3 .github/scripts/performance_gate.py validate --phase "$GATE/$phase" --expected "$(cat "$GATE/count-$role.txt")" \
+            python3 .github/scripts/performance_gate.py validate --phase "$GATE/$phase" --expected-cases "$GATE/expected-cases.json" \
               --iterations 25 --min-warmup "$MIN_WARMUP" --merged "$GATE/$phase.json" --cases "$GATE/$phase-cases.json"
           done
       - name: Screen the candidate against both controls
-        if: steps.select.outputs.applicable == 'true'
         run: |
           compare=(jq -nr --slurpfile a1 "$GATE/A1.json" --slurpfile b "$GATE/B.json" --slurpfile a2 "$GATE/A2.json"
                    --argjson tolerance "$TOLERANCE" --argjson alloc_floor 8 --argjson min_warmup 20
@@ -194,11 +300,59 @@ jobs:
       - name: Record final main
         if: always()
         run: git ls-remote origin refs/heads/main > "$GATE/main-at-end.txt" || true
+      - name: Show failed batch logs
+        if: failure()
+        run: |
+          for log in "$GATE"/build-*.log "$GATE"/dry-*.log "$GATE"/A1.log "$GATE"/B.log "$GATE"/A2.log; do
+            if [[ -f "$log" ]]; then echo "::group::$(basename "$log")"; tail -n 60 "$log"; echo '::endgroup::'; fi
+          done
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
-          name: performance-gate-${{ github.event.pull_request.number || github.ref_name }}-${{ github.run_id }}
+          name: performance-gate-batches-${{ github.run_id }}-${{ matrix.id }}
           path: gate/
           include-hidden-files: true
           overwrite: true
           retention-days: 90
+
+  gate:
+    name: Micro A1/B/A2 screen
+    needs: [plan, measure]
+    if: always() && (github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.plan.outputs.tooling || github.sha }}
+      - name: Require successful preparation
+        env:
+          PLAN_RESULT: ${{ needs.plan.result }}
+        run: |
+          if [[ "$PLAN_RESULT" != success ]]; then
+            echo '::error::Benchmark preparation failed. No complete performance verdict is available; inspect Validate and plan benchmark cases.'
+            exit 1
+          fi
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: performance-gate-plan-${{ github.run_id }}
+          path: plan/
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        if: needs.plan.outputs.applicable == 'true'
+        with:
+          pattern: performance-gate-batches-${{ github.run_id }}-*
+          path: results/
+          merge-multiple: true
+      - name: Require every planned comparison
+        env:
+          APPLICABLE: ${{ needs.plan.outputs.applicable }}
+          MEASURE_RESULT: ${{ needs.measure.result }}
+        run: |
+          if [[ "$APPLICABLE" != true ]]; then
+            echo 'No steady-state fixture maps to these changes; nothing was measured. Review the preparation summary for missing coverage.' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          python3 .github/scripts/performance_gate.py summarize --plan plan/plan.json --results results/ | tee -a "$GITHUB_STEP_SUMMARY"
+          if [[ "$MEASURE_RESULT" != success ]]; then
+            echo '::error::At least one batch failed or was cancelled. Partial results cannot establish whole-screen acceptance.'
+            exit 1
+          fi
