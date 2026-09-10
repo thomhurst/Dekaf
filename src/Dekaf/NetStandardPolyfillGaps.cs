@@ -29,6 +29,8 @@ internal sealed class ArrayBufferWriter<T> : IBufferWriter<T>
     public int Capacity => _buffer.Length;
     public int FreeCapacity => _buffer.Length - _index;
 
+    public void ResetWrittenCount() => _index = 0;
+
     public void Advance(int count)
     {
         if ((uint)count > (uint)FreeCapacity)

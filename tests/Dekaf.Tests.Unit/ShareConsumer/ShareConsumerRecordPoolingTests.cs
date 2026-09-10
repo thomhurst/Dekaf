@@ -13,6 +13,66 @@ namespace Dekaf.Tests.Unit.ShareConsumer;
 public sealed class ShareConsumerRecordPoolingTests
 {
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task RawCapture_PreservesNullEmptyAndNonEmptyBytesAcrossBufferGrowth(bool preparationPath)
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var largeValue = new byte[16_384];
+        Array.Fill(largeValue, (byte)'x');
+        using var source = new RecordBatch
+        {
+            BaseOffset = 17,
+            LastOffsetDelta = 2,
+            Records =
+            [
+                new Record { OffsetDelta = 0, IsKeyNull = true, IsValueNull = true },
+                new Record { OffsetDelta = 1, Key = ReadOnlyMemory<byte>.Empty, Value = ReadOnlyMemory<byte>.Empty },
+                new Record { OffsetDelta = 2, Key = "key"u8.ToArray(), Value = largeValue }
+            ]
+        };
+        source.Write(buffer);
+        var options = new ShareConsumerOptions { BootstrapServers = ["localhost:9092"], GroupId = "raw-share" };
+        var pool = Substitute.For<IConnectionPool>();
+        await using var metadata = new MetadataManager(pool, options.BootstrapServers);
+        await using var consumer = new KafkaShareConsumer<string, string>(options, Serializers.String, Serializers.String, pool, metadata);
+        var raw = (IRawShareRecordAccessor)consumer;
+        raw.EnableRawRecordTracking();
+        var partition = new ShareFetchResponsePartition
+        {
+            PartitionIndex = 0, CurrentLeader = new ShareFetchLeaderIdAndEpoch(), RecordBytes = buffer.WrittenMemory,
+            AcquiredRecords = [new ShareFetchAcquiredRecords { FirstOffset = 17, LastOffset = 19, DeliveryCount = 1 }]
+        };
+        var topic = new TopicInfo { Name = "topic", Partitions = [] };
+        if (preparationPath)
+        {
+            var state = new KafkaShareConsumer<string, string>.DeserializerPreparationParserState();
+            try
+            {
+                var pending = consumer.ParsePartitionRecordsWithPreparation(topic, partition, 3, [], ref state, false, null);
+                await Assert.That(pending).IsNull();
+            }
+            finally { state.DisposeCurrentBatch(); }
+        }
+        else
+        {
+            var method = typeof(KafkaShareConsumer<string, string>).GetMethod("ParsePartitionRecords", BindingFlags.Instance | BindingFlags.NonPublic)!;
+            _ = method.Invoke(consumer, [topic, partition, 3]);
+        }
+        await Assert.That(raw.TryGetRawRecord(new TopicPartitionOffset("topic", 0, 17), out var nullKey, out var nullValue)).IsTrue();
+        await Assert.That(nullKey).IsNull();
+        await Assert.That(nullValue).IsNull();
+        await Assert.That(raw.TryGetRawRecord(new TopicPartitionOffset("topic", 0, 18), out var emptyKey, out var emptyValue)).IsTrue();
+        await Assert.That(emptyKey).IsNotNull();
+        await Assert.That(emptyKey!.Length).IsEqualTo(0);
+        await Assert.That(emptyValue).IsNotNull();
+        await Assert.That(emptyValue!.Length).IsEqualTo(0);
+        await Assert.That(raw.TryGetRawRecord(new TopicPartitionOffset("topic", 0, 19), out var key, out var value)).IsTrue();
+        await Assert.That(key!.AsSpan().SequenceEqual("key"u8)).IsTrue();
+        await Assert.That(value!.AsSpan().SequenceEqual(largeValue)).IsTrue();
+    }
+
+    [Test]
     [NotInParallel]
     public async Task ParsePartitionRecords_DeserializerThrows_ReturnsBatchToPool()
     {

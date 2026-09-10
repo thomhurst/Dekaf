@@ -41,6 +41,8 @@ AREAS = (
      unit('OutboxSaveChangesBenchmarks'), None),
     ('src/Dekaf.Outbox.EntityFrameworkCore/OutboxNotificationOptionsExtensions.cs', 'outbox-save',
      unit('OutboxSaveChangesBenchmarks'), None),
+    ('src/Dekaf.Extensions.Hosting/KafkaShareConsumerService', 'hosted-share-consumer',
+     unit('HostedShareConsumerProcessingBenchmarks'), None),
     ('src/Dekaf/Protocol/Messages/ShareFetchResponse.cs', 'share-consumer',
      unit('ShareFetchResponseDecodingBenchmarks'), None),
     # KafkaConsumer owns both fetching and the offset-store API. The separate

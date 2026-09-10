@@ -24,3 +24,5 @@ Dekaf.ShareConsumerBuilder<TKey, TValue>.RegisterMetricForSubscription(Dekaf.Tel
 Dekaf.ShareConsumerBuilder<TKey, TValue>.UnregisterMetricFromSubscription(string! name) -> Dekaf.ShareConsumerBuilder<TKey, TValue>!
 static Dekaf.ShareConsumer.ShareConsumerTelemetryExtensions.RegisterMetricForSubscription<TKey, TValue>(this Dekaf.ShareConsumer.IKafkaShareConsumer<TKey, TValue>! consumer, Dekaf.Telemetry.ApplicationTelemetryMetric! metric) -> void
 static Dekaf.ShareConsumer.ShareConsumerTelemetryExtensions.UnregisterMetricFromSubscription<TKey, TValue>(this Dekaf.ShareConsumer.IKafkaShareConsumer<TKey, TValue>! consumer, string! name) -> void
+Dekaf.ShareConsumer.IShareConsumerConfiguration
+Dekaf.ShareConsumer.IShareConsumerConfiguration.AcknowledgementMode.get -> Dekaf.ShareConsumer.ShareAcknowledgementMode
