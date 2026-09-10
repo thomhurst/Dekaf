@@ -1,7 +1,0 @@
-{
-  "verdict": "INCONCLUSIVE",
-  "errors": [
-    "C:/git/Dekaf-evidence/producer-warmup-20260908/final-smoke: Warmup tail: JIT activity remains; retain samples and investigate or extend all phase warmups"
-  ],
-  "scope": "Warmup/runtime coverage only; this does not establish full performance acceptance."
-}

@@ -19,17 +19,21 @@ on:
       - '.github/scripts/compare_bdn_reports.jq'
   workflow_dispatch:
     inputs:
+      pr:
+        description: 'Open PR number; manual acceptance requires its current exact head and fresh main'
+        required: true
       base_sha:
-        description: 'Exact baseline SHA (default: merge base of the dispatched ref with main)'
-        required: false
+        description: 'Exact fresh main SHA'
+        required: true
       head_sha:
-        description: 'Exact candidate SHA (default: the dispatched ref)'
-        required: false
+        description: 'Exact current PR head SHA containing the baseline'
+        required: true
       filters:
         description: 'Explicit BenchmarkDotNet globs, space separated (default: selected from the changed product paths)'
         required: false
 permissions:
   contents: read
+  pull-requests: read
 concurrency:
   group: performance-gate-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
@@ -54,7 +58,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
-          ref: ${{ github.event.pull_request.head.sha || inputs.head_sha || github.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
         with:
           global-json-file: global.json
@@ -63,9 +67,20 @@ jobs:
         env:
           BASE_INPUT: ${{ inputs.base_sha }}
           HEAD_INPUT: ${{ inputs.head_sha }}
+          PR_INPUT: ${{ inputs.pr }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p "$GATE"
           git fetch --no-tags origin main
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
+            [[ "$PR_INPUT" =~ ^[1-9][0-9]*$ ]]
+            [[ "$BASE_INPUT" =~ ^[0-9a-f]{40}$ && "$HEAD_INPUT" =~ ^[0-9a-f]{40}$ ]]
+            [[ "$BASE_INPUT" == "$(git rev-parse origin/main)" ]]
+            gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_INPUT" > "$GATE/pr.json"
+            jq -e --arg head "$HEAD_INPUT" '.state == "open" and .head.sha == $head' "$GATE/pr.json"
+            [[ "$BASE_INPUT" == "$(git rev-parse HEAD)" ]]
+            git fetch --no-tags origin "$HEAD_INPUT"
+          fi
           head="${HEAD_INPUT:-$(git rev-parse HEAD)}"
           base="${BASE_INPUT:-$(git merge-base "$head" origin/main)}"
           git merge-base --is-ancestor "$base" "$head"
@@ -82,7 +97,7 @@ jobs:
           {
             echo "## Performance gate"
             echo
-            echo "Baseline A: \`$base\` (merge base with main) · Candidate B: \`$head\`"
+            echo "Baseline A: \`$base\` · Candidate B: \`$head\` · Main at start: \`$(git rev-parse origin/main)\`"
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Select fixtures from the changed product paths
         id: select
@@ -112,7 +127,7 @@ jobs:
             git worktree add --detach "$RUNNER_TEMP/gate-$role" "$sha"
             (
               cd "$RUNNER_TEMP/gate-$role/tools/Dekaf.Benchmarks"
-              # Scope BDN project discovery so the bespoke harness's namesake is not ambiguous.
+              # Keep BDN worker project discovery scoped to this project.
               dotnet new sln --name GateBenchmarkExecution --format sln > "$GATE/solution-$role.log" 2>&1
               dotnet sln GateBenchmarkExecution.sln add Dekaf.Benchmarks.csproj >> "$GATE/solution-$role.log" 2>&1
               dotnet build Dekaf.Benchmarks.csproj -c Release --disable-build-servers > "$GATE/build-$role.log" 2>&1

@@ -1,7 +1,0 @@
-{
-  "StartedUtc": "2026-09-07T14:51:11.9791319Z",
-  "Head": "d89815dfe0eab056eacfd4e1e1a0f85e5e212de3",
-  "HistoricalPredecessor": "9f9523cdc308b04ede8bd73371294e93fd4b06d6",
-  "Baseline": "2575669b350a1a9a499a84707bfb43253b08ad7b",
-  "Candidate": "one dictionary probe on enqueue"
-}

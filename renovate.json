@@ -2,11 +2,6 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "packageRules": [
     {
-      "description": "Preserve immutable performance evidence and its recorded dependency versions",
-      "matchFileNames": ["docs/performance-evidence/**"],
-      "enabled": false
-    },
-    {
       "description": "EF 8.x train pinned for the net8.0 TFM (Directory.Packages.props conditioned entry); 9+/10+ do not support net8.0",
       "matchPackageNames": [
         "/^Microsoft\\.EntityFrameworkCore\\./"
