@@ -529,6 +529,8 @@ public readonly struct ConsumeResult<TKey, TValue>
     // Reuse the pooled-count slot when _headers owns the source so deferred snapshots do not
     // enlarge this hot-path struct.
     private const int DeferredHeaderSnapshot = -1;
+    private const byte PartitionEofFlag = 1;
+    private const byte NullKeyFlag = 2;
 
     // Thread-local reusable SerializationContext to avoid per-deserialization allocations
     // Since SerializationContext contains reference types (Topic, Headers), copying it
@@ -576,7 +578,7 @@ public readonly struct ConsumeResult<TKey, TValue>
         Partition = original.Partition;
         Offset = original.Offset;
         LeaderEpoch = original.LeaderEpoch;
-        IsPartitionEof = original.IsPartitionEof;
+        _flags = (byte)((replacement._flags & ~PartitionEofFlag) | (original._flags & PartitionEofFlag));
     }
 
     // A replacement may still borrow the original key/value memory. Preserve the
@@ -685,7 +687,8 @@ public readonly struct ConsumeResult<TKey, TValue>
         PendingFetchData headerOwner,
         long timestampMs,
         TimestampType timestampType,
-        int? leaderEpoch)
+        int? leaderEpoch,
+        bool isKeyNull = false)
     {
         Topic = topic;
         Partition = partition;
@@ -700,7 +703,7 @@ public readonly struct ConsumeResult<TKey, TValue>
         _timestampMs = timestampMs;
         TimestampType = timestampType;
         LeaderEpoch = leaderEpoch;
-        IsPartitionEof = false;
+        _flags = isKeyNull ? NullKeyFlag : (byte)0;
     }
 
     /// <summary>
@@ -718,7 +721,8 @@ public readonly struct ConsumeResult<TKey, TValue>
         long timestampMs,
         TimestampType timestampType,
         int? leaderEpoch,
-        bool deferHeaderSnapshot = false)
+        bool deferHeaderSnapshot = false,
+        bool isKeyNull = false)
     {
         Topic = topic;
         Partition = partition;
@@ -733,7 +737,7 @@ public readonly struct ConsumeResult<TKey, TValue>
         _timestampMs = timestampMs;
         TimestampType = timestampType;
         LeaderEpoch = leaderEpoch;
-        IsPartitionEof = false;
+        _flags = isKeyNull ? NullKeyFlag : (byte)0;
     }
 
     private ConsumeResult(
@@ -767,7 +771,7 @@ public readonly struct ConsumeResult<TKey, TValue>
         _timestampMs = timestampMs;
         TimestampType = timestampType;
         LeaderEpoch = leaderEpoch;
-        IsPartitionEof = isPartitionEof;
+        _flags = (byte)((isPartitionEof ? PartitionEofFlag : 0) | (isKeyNull ? NullKeyFlag : 0));
 
         // Resolve the thread-static address once; each direct field access otherwise
         // emits another TLS lookup before setting or copying the context.
@@ -894,7 +898,8 @@ public readonly struct ConsumeResult<TKey, TValue>
             headerOwner,
             timestampMs,
             timestampType,
-            leaderEpoch);
+            leaderEpoch,
+            isKeyNull);
     }
 
     internal static ConsumeResult<TKey, TValue> CreateWithCallerOwnedHeaders(
@@ -1021,7 +1026,7 @@ public readonly struct ConsumeResult<TKey, TValue>
         _timestampMs = 0;
         TimestampType = TimestampType.NotAvailable;
         LeaderEpoch = null;
-        IsPartitionEof = true;
+        _flags = PartitionEofFlag;
     }
 
     /// <summary>
@@ -1101,7 +1106,18 @@ public readonly struct ConsumeResult<TKey, TValue>
     /// When true, the consumer has reached the end of the partition (caught up to the high watermark).
     /// Key and Value will be default when this is true.
     /// </summary>
-    public bool IsPartitionEof { get; }
+    public bool IsPartitionEof => (_flags & PartitionEofFlag) != 0;
+
+    // Reuse the EOF byte so preserving wire-null identity does not enlarge each result.
+    // A value-type key's default value cannot distinguish a null key from empty bytes.
+    private readonly byte _flags;
+
+    /// <summary>
+    /// Gets whether the Kafka record had a null key, distinct from a non-null key
+    /// deserialized as an empty value or null. Preserve this flag when an interceptor
+    /// constructs a replacement result without changing its key.
+    /// </summary>
+    public bool IsKeyNull => (_flags & NullKeyFlag) != 0;
 
     /// <summary>
     /// Gets the topic-partition-offset.

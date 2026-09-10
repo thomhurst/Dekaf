@@ -38,6 +38,16 @@ class SelectionTests(unittest.TestCase):
     def names(self, selection):
         return [item['name'] for item in selection['classes']]
 
+    def test_partition_message_key_selects_direct_fixture(self):
+        path = 'src/Dekaf/Consumer/PartitionMessageKey.cs'
+        selected = self.names(gate.select([path], root=REPO_ROOT))
+        self.assertIn('PartitionMessageKeyBenchmarks', selected)
+
+    def test_key_ordered_dispatcher_selects_message_key_fixture(self):
+        path = 'src/Dekaf/Consumer/KeyOrderedPartitionDispatcher.cs'
+        selected = self.names(gate.select([path], root=REPO_ROOT))
+        self.assertIn('PartitionMessageKeyBenchmarks', selected)
+
     def test_any_product_change_runs_the_sentinels(self):
         selection = gate.select(['src/Dekaf/Admin/AdminClient.cs'], fixtures=self.fixtures)
         self.assertEqual(sorted(gate.SENTINELS), self.names(selection))

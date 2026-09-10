@@ -7,6 +7,52 @@ namespace Dekaf.Tests.Unit.Consumer;
 public class ConsumeResultTests
 {
     [Test]
+    [Arguments(false, false)]
+    [Arguments(false, true)]
+    [Arguments(true, false)]
+    [Arguments(true, true)]
+    public async Task WireNullAndEofFlags_AreIndependent(bool isKeyNull, bool isPartitionEof)
+    {
+        var result = new ConsumeResult<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>>(
+            "topic", 0, 0, default, isKeyNull, default, false, null, 0,
+            TimestampType.CreateTime, null, Serializers.RawBytes, Serializers.RawBytes, isPartitionEof);
+        await Assert.That(result.IsKeyNull).IsEqualTo(isKeyNull);
+        await Assert.That(result.IsPartitionEof).IsEqualTo(isPartitionEof);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task AlreadyDeserializedConstructors_PreserveWireNull(bool isKeyNull)
+    {
+        using var owner = PendingFetchData.Create("topic", 0, Array.Empty<RecordBatch>());
+        var pooled = new ConsumeResult<ReadOnlyMemory<byte>, string>(
+            "topic", 0, 0, default(ReadOnlyMemory<byte>), "value", null, 0, owner, 0,
+            TimestampType.CreateTime, null, isKeyNull);
+        var callerOwned = new ConsumeResult<ReadOnlyMemory<byte>, string>(
+            "topic", 0, 0, default(ReadOnlyMemory<byte>), "value", null, 0,
+            TimestampType.CreateTime, null, isKeyNull: isKeyNull);
+        await Assert.That(pooled.IsKeyNull).IsEqualTo(isKeyNull);
+        await Assert.That(callerOwned.IsKeyNull).IsEqualTo(isKeyNull);
+        await Assert.That(pooled.IsPartitionEof).IsFalse();
+        await Assert.That(callerOwned.IsPartitionEof).IsFalse();
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task HeaderRoutingConstructor_PreservesWireNull(bool isKeyNull)
+    {
+        using var owner = PendingFetchData.Create("topic", 0, Array.Empty<RecordBatch>());
+        var lookup = default(RecordHeaderRoutingLookup);
+        var result = ConsumeResult<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>>.CreateWithHeaderRouting(
+            "topic", 0, 0, default, isKeyNull, default, false, null, 0, in lookup, owner,
+            0, TimestampType.CreateTime, null, null, Serializers.RawBytes, Serializers.RawBytes);
+        await Assert.That(result.IsKeyNull).IsEqualTo(isKeyNull);
+        await Assert.That(result.IsPartitionEof).IsFalse();
+    }
+
+    [Test]
     public async Task ConsumeResult_DefaultIsPartitionEof_IsFalse()
     {
         var result = new ConsumeResult<string, string>(
@@ -55,6 +101,7 @@ public class ConsumeResultTests
         var result = ConsumeResult<string, string>.CreatePartitionEof("test-topic", 2, 500);
 
         await Assert.That(result.IsPartitionEof).IsTrue();
+        await Assert.That(result.IsKeyNull).IsFalse();
         await Assert.That(result.Topic).IsEqualTo("test-topic");
         await Assert.That(result.Partition).IsEqualTo(2);
         await Assert.That(result.Offset).IsEqualTo(500);
@@ -251,6 +298,27 @@ public class ConsumeResultTests
         await Assert.That(headers[0].Key).IsEqualTo("trace-id");
 
         pending.Dispose();
+    }
+
+    [Test]
+    [Arguments(false, false)]
+    [Arguments(false, true)]
+    [Arguments(true, false)]
+    [Arguments(true, true)]
+    public async Task WithBrokerIdentityFrom_PreservesReplacementNullKeyAndOriginalEof(bool nullKey, bool eof)
+    {
+        var original = new ConsumeResult<string, string>("original", 1, 42,
+            default, !nullKey, default, true, null, 0, TimestampType.CreateTime, 7,
+            null, null, isPartitionEof: eof);
+        var replacement = new ConsumeResult<string, string>("replacement", 2, 99,
+            default, nullKey, default, true, null, 0, TimestampType.CreateTime, 8,
+            null, null, isPartitionEof: !eof);
+
+        var result = replacement.WithBrokerIdentityFrom(in original);
+
+        await Assert.That(result.TopicPartitionOffset).IsEqualTo(original.TopicPartitionOffset);
+        await Assert.That(result.IsPartitionEof).IsEqualTo(eof);
+        await Assert.That(result.IsKeyNull).IsEqualTo(nullKey);
     }
 
     private static PendingFetchData CreatePendingFetchData(Header[] headers)

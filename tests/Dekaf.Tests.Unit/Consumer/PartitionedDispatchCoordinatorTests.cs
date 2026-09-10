@@ -444,7 +444,9 @@ public sealed class PartitionedDispatchCoordinatorTests
         await Assert.ThrowsAsync<OperationCanceledException>(
             async () => await processing.WaitAsync(TimeSpan.FromSeconds(10)));
         await Assert.That(initiallyStarted).IsEqualTo(1);
-        await Assert.That(bufferedKeys).IsEqualTo(4);
+        // Single-record, single-worker dispatch uses one FIFO lane for every key
+        // type. Batched dispatch still queues four independent keyed lanes.
+        await Assert.That(bufferedKeys).IsEqualTo(batchSize == 1 ? 1 : 4);
         await Assert.That(calls).IsEqualTo(2);
         await Assert.That(completed.Count).IsEqualTo(1 + batchSize);
         await Assert.That(first.Observed).IsEqualTo(1);
@@ -532,9 +534,71 @@ public sealed class PartitionedDispatchCoordinatorTests
         await Assert.That(dispatcher.LaneCount).IsEqualTo(0);
     }
 
-    private sealed class TrackedMemory : IPooledMemory
+    [Test]
+    public async Task BinaryHashRebuildFailure_ObservesWorkersAndReleasesEveryOwner()
     {
-        public ReadOnlyMemory<byte> Memory { get; } = new byte[sizeof(int)];
+        const int count = 9;
+        var lane = new PartitionLane<ReadOnlyMemory<byte>, int>(
+            new TopicPartition("dispatch", 0), count,
+            static (_, _) => default, static _ => { }, static (_, _) => { });
+        var storage = new TrackedMemory[count];
+        for (var offset = 0; offset < count; offset++)
+        {
+            var memory = storage[offset] = new TrackedMemory(1024);
+            memory.Bytes[^32] = (byte)offset;
+            var batch = new RecordBatch
+            {
+                BaseOffset = offset, LastOffsetDelta = 0,
+                Records = [new Record { Key = memory.Memory, Value = memory.Memory[..sizeof(int)] }]
+            };
+            using var pending = PendingFetchData.Create("dispatch", 0, [batch], memoryOwner: memory);
+            pending.EagerParseAll();
+            var records = new ConsumeBatch<ReadOnlyMemory<byte>, int>(pending, Serializers.RawBytes, Serializers.Int32).GetEnumerator();
+            await Assert.That(records.MoveNext()).IsTrue();
+            await Assert.That(lane.TryEnqueue(records.Current)).IsTrue();
+        }
+        await lane.StopAsync(PartitionStopPolicy.Drain, Timeout.InfiniteTimeSpan);
+        var workers = new[] { new ObservedCompletion(), new ObservedCompletion(), new ObservedCompletion() };
+        var started = 0;
+        var dispatcher = new KeyOrderedPartitionDispatcher<ReadOnlyMemory<byte>, int>(
+            new PartitionProcessorContext<ReadOnlyMemory<byte>, int>(lane), 1, 3, count,
+            (records, _) =>
+            {
+                var offset = checked((int)records[0].Offset);
+                started++;
+                // Both keys already own different lanes. Mutation makes the later
+                // collision-triggered rebuild encounter duplicate keys after clearing.
+                if (offset == 2)
+                    storage[0].Bytes[^32] = storage[1].Bytes[^32];
+                return workers[offset].Task;
+            }, automaticCompletion: true);
+        var processing = dispatcher.RunAsync(CancellationToken.None).AsTask();
+        try
+        {
+            await Assert.That(started).IsEqualTo(3);
+            await Assert.That(processing.IsCompleted).IsFalse();
+            foreach (var memory in storage)
+                await Assert.That(memory.DisposeCount).IsEqualTo(0);
+        }
+        finally
+        {
+            foreach (var worker in workers)
+                worker.Complete();
+        }
+        var thrown = await Assert.ThrowsAsync<InvalidOperationException>(
+            async () => await processing.WaitAsync(TimeSpan.FromSeconds(5)));
+        await Assert.That(thrown!.InnerException).IsTypeOf<ArgumentException>();
+        foreach (var memory in storage)
+            await Assert.That(memory.DisposeCount).IsEqualTo(1);
+        foreach (var worker in workers)
+            await Assert.That(worker.Observed).IsEqualTo(1);
+        await Assert.That(dispatcher.LaneCount).IsEqualTo(0);
+    }
+
+    private sealed class TrackedMemory(int length = sizeof(int)) : IPooledMemory
+    {
+        internal byte[] Bytes { get; } = new byte[length];
+        public ReadOnlyMemory<byte> Memory => Bytes;
         internal int DisposeCount { get; private set; }
         public void Dispose() => DisposeCount++;
     }

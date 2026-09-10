@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Runtime.ExceptionServices;
+using System.Runtime.InteropServices;
 using System.Threading.Channels;
 using Dekaf.Internal;
 using Microsoft.Extensions.Logging;
@@ -48,11 +49,43 @@ public static class PartitionedConsumerExtensions
     /// <summary>
     /// Runs a record handler for assigned partitions.
     /// </summary>
-    public static async ValueTask RunPartitionedAsync<TKey, TValue>(
+    /// <remarks>
+    /// Key ordering compares byte arrays and byte memory slices by content. Other key types use
+    /// <see cref="EqualityComparer{T}.Default"/>. Key contents must remain stable while their lane is active.
+    /// </remarks>
+    public static ValueTask RunPartitionedAsync<TKey, TValue>(
         this IKafkaConsumer<TKey, TValue> consumer,
         PartitionRecordProcessor<TKey, TValue> processor,
         PartitionedProcessingOptions? options = null,
         CancellationToken cancellationToken = default)
+        => RunRecordsCoreAsync(consumer, processor, options, null, cancellationToken);
+
+    /// <summary>
+    /// Runs a record handler with a custom equality comparer for key-ordered processing.
+    /// </summary>
+    /// <remarks>
+    /// The comparer operates on deserialized keys within each partition. Keys and their hash codes
+    /// must remain stable until their processing lane is idle. Kafka null keys share a separate lane.
+    /// A non-null Kafka key deserialized as null uses another lane without invoking the comparer.
+    /// The comparer is ignored when ordering is by partition.
+    /// </remarks>
+    public static ValueTask RunPartitionedAsync<TKey, TValue>(
+        this IKafkaConsumer<TKey, TValue> consumer,
+        PartitionRecordProcessor<TKey, TValue> processor,
+        PartitionedProcessingOptions? options,
+        IEqualityComparer<TKey> keyComparer,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(keyComparer);
+        return RunRecordsCoreAsync(consumer, processor, options, keyComparer, cancellationToken);
+    }
+
+    private static async ValueTask RunRecordsCoreAsync<TKey, TValue>(
+        IKafkaConsumer<TKey, TValue> consumer,
+        PartitionRecordProcessor<TKey, TValue> processor,
+        PartitionedProcessingOptions? options,
+        IEqualityComparer<TKey>? keyComparer,
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(consumer);
         ArgumentNullException.ThrowIfNull(processor);
@@ -66,7 +99,7 @@ public static class PartitionedConsumerExtensions
             : null;
         var runtime = new PartitionedConsumerRuntime<TKey, TValue>(
             consumer,
-            CreateRecordProcessor(processor, options),
+            CreateRecordProcessor(processor, options, keyComparer),
             options,
             logger);
         await runtime.RunAsync(cancellationToken).ConfigureAwait(false);
@@ -75,11 +108,43 @@ public static class PartitionedConsumerExtensions
     /// <summary>
     /// Runs a batch handler for assigned partitions.
     /// </summary>
-    public static async ValueTask RunPartitionedBatchesAsync<TKey, TValue>(
+    /// <remarks>
+    /// Key ordering compares byte arrays and byte memory slices by content. Other key types use
+    /// <see cref="EqualityComparer{T}.Default"/>. Key contents must remain stable while their lane is active.
+    /// </remarks>
+    public static ValueTask RunPartitionedBatchesAsync<TKey, TValue>(
         this IKafkaConsumer<TKey, TValue> consumer,
         PartitionBatchProcessor<TKey, TValue> processor,
         PartitionedProcessingOptions? options = null,
         CancellationToken cancellationToken = default)
+        => RunBatchesCoreAsync(consumer, processor, options, null, cancellationToken);
+
+    /// <summary>
+    /// Runs a batch handler with a custom equality comparer for key-ordered processing.
+    /// </summary>
+    /// <remarks>
+    /// The comparer operates on deserialized keys within each partition. Keys and their hash codes
+    /// must remain stable until their processing lane is idle. Kafka null keys share a separate lane.
+    /// A non-null Kafka key deserialized as null uses another lane without invoking the comparer.
+    /// The comparer is ignored when ordering is by partition.
+    /// </remarks>
+    public static ValueTask RunPartitionedBatchesAsync<TKey, TValue>(
+        this IKafkaConsumer<TKey, TValue> consumer,
+        PartitionBatchProcessor<TKey, TValue> processor,
+        PartitionedProcessingOptions? options,
+        IEqualityComparer<TKey> keyComparer,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(keyComparer);
+        return RunBatchesCoreAsync(consumer, processor, options, keyComparer, cancellationToken);
+    }
+
+    private static async ValueTask RunBatchesCoreAsync<TKey, TValue>(
+        IKafkaConsumer<TKey, TValue> consumer,
+        PartitionBatchProcessor<TKey, TValue> processor,
+        PartitionedProcessingOptions? options,
+        IEqualityComparer<TKey>? keyComparer,
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(consumer);
         ArgumentNullException.ThrowIfNull(processor);
@@ -93,7 +158,7 @@ public static class PartitionedConsumerExtensions
             : null;
         var runtime = new PartitionedConsumerRuntime<TKey, TValue>(
             consumer,
-            CreateBatchProcessor(processor, options),
+            CreateBatchProcessor(processor, options, keyComparer),
             options,
             logger);
         await runtime.RunAsync(cancellationToken).ConfigureAwait(false);
@@ -101,19 +166,21 @@ public static class PartitionedConsumerExtensions
 
     private static PartitionProcessor<TKey, TValue> CreateRecordProcessor<TKey, TValue>(
         PartitionRecordProcessor<TKey, TValue> processor,
-        PartitionedProcessingOptions options)
+        PartitionedProcessingOptions options,
+        IEqualityComparer<TKey>? keyComparer)
     {
         return options.Ordering == PartitionedProcessingOrder.Key
-            ? (context, cancellationToken) => RunKeyOrderedRecordsAsync(context, processor, options, cancellationToken)
+            ? (context, cancellationToken) => RunKeyOrderedRecordsAsync(context, processor, options, keyComparer, cancellationToken)
             : (context, cancellationToken) => RunPartitionOrderedRecordsAsync(context, processor, cancellationToken);
     }
 
     private static PartitionProcessor<TKey, TValue> CreateBatchProcessor<TKey, TValue>(
         PartitionBatchProcessor<TKey, TValue> processor,
-        PartitionedProcessingOptions options)
+        PartitionedProcessingOptions options,
+        IEqualityComparer<TKey>? keyComparer)
     {
         return options.Ordering == PartitionedProcessingOrder.Key
-            ? (context, cancellationToken) => RunKeyOrderedBatchesAsync(context, processor, options, cancellationToken)
+            ? (context, cancellationToken) => RunKeyOrderedBatchesAsync(context, processor, options, keyComparer, cancellationToken)
             : (context, cancellationToken) => RunPartitionOrderedBatchesAsync(context, processor, options, cancellationToken);
     }
 
@@ -206,6 +273,7 @@ public static class PartitionedConsumerExtensions
         PartitionProcessorContext<TKey, TValue> context,
         PartitionRecordProcessor<TKey, TValue> processor,
         PartitionedProcessingOptions options,
+        IEqualityComparer<TKey>? keyComparer,
         CancellationToken cancellationToken)
     {
         var handlerContext = new PartitionRecordProcessorContext<TKey, TValue>(context);
@@ -215,7 +283,7 @@ public static class PartitionedConsumerExtensions
             options.MaxConcurrentHandlersPerPartition,
             options.MaxBufferedRecordsPerPartition,
             (records, token) => processor(handlerContext, records[0], token),
-            automaticCompletion: true);
+            keyComparer, automaticCompletion: true);
 
         return dispatcher.RunAsync(cancellationToken);
     }
@@ -224,6 +292,7 @@ public static class PartitionedConsumerExtensions
         PartitionProcessorContext<TKey, TValue> context,
         PartitionBatchProcessor<TKey, TValue> processor,
         PartitionedProcessingOptions options,
+        IEqualityComparer<TKey>? keyComparer,
         CancellationToken cancellationToken)
     {
         var handlerContext = new PartitionBatchProcessorContext<TKey, TValue>(context);
@@ -233,7 +302,7 @@ public static class PartitionedConsumerExtensions
             options.MaxConcurrentHandlersPerPartition,
             options.MaxBufferedRecordsPerPartition,
             (records, token) => processor(handlerContext, records, token),
-            automaticCompletion: true);
+            keyComparer, automaticCompletion: true);
 
         return dispatcher.RunAsync(cancellationToken);
     }
@@ -1896,45 +1965,6 @@ internal sealed class PartitionLane<TKey, TValue>
     {
         if (!_stopping.IsCancellationRequested)
             await _stopping.CancelAsync().ConfigureAwait(false);
-    }
-}
-
-internal readonly struct PartitionMessageKey<TKey> : IEquatable<PartitionMessageKey<TKey>>
-{
-    private readonly bool _hasValue;
-    private readonly TKey? _value;
-
-    private PartitionMessageKey(TKey? value, bool hasValue)
-    {
-        _value = value;
-        _hasValue = hasValue;
-    }
-
-    public static PartitionMessageKey<TKey> From(TKey? value)
-    {
-        return value is null
-            ? new PartitionMessageKey<TKey>(default, hasValue: false)
-            : new PartitionMessageKey<TKey>(value, hasValue: true);
-    }
-
-    public bool Equals(PartitionMessageKey<TKey> other)
-    {
-        if (_hasValue != other._hasValue)
-            return false;
-
-        return !_hasValue || EqualityComparer<TKey>.Default.Equals(_value!, other._value!);
-    }
-
-    public override bool Equals(object? obj)
-    {
-        return obj is PartitionMessageKey<TKey> other && Equals(other);
-    }
-
-    public override int GetHashCode()
-    {
-        return _hasValue
-            ? EqualityComparer<TKey>.Default.GetHashCode(_value!)
-            : 0;
     }
 }
 
