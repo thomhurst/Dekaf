@@ -88,7 +88,7 @@ jobs:
 
       - name: Run Claude Code Review
         id: claude-review
-        uses: anthropics/claude-code-action@19dda84776b3518d98b8798e591daee763049ed3 # v1
+        uses: anthropics/claude-code-action@0a8d3c9443bbff909ab973b6a17a340b913f229f # v1
         env:
           REVIEW_RECEIPT: ${{ runner.temp }}/claude-review-${{ github.run_id }}-${{ github.run_attempt }}.json
           REVIEW_HEAD_SHA: ${{ steps.target.outputs.head_sha }}
