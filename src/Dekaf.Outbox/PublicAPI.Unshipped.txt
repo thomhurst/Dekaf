@@ -1,4 +1,8 @@
 #nullable enable
+Dekaf.Outbox.IOutboxNotifier
+Dekaf.Outbox.IOutboxNotifier.NotifyCommitted() -> void
+Dekaf.Outbox.IOutboxNotifier.WaitAsync(System.TimeSpan timeout, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Outbox.OutboxRelayService.OutboxRelayService(Dekaf.Outbox.IOutboxStore! store, Dekaf.Outbox.IOutboxPublisher! publisher, Dekaf.Outbox.OutboxRelayOptions! options, Microsoft.Extensions.Logging.ILogger<Dekaf.Outbox.OutboxRelayService!>! logger, System.TimeProvider? timeProvider, Dekaf.Outbox.IOutboxNotifier? notifier) -> void
 override Dekaf.Outbox.OutboxRelayService.Dispose() -> void
 Dekaf.Outbox.IOutboxLeaseRenewalStore
 Dekaf.Outbox.IOutboxLeaseRenewalStore.RenewBucketLeasesAsync(Dekaf.Outbox.OutboxLeaseRequest! request, System.Collections.Generic.IReadOnlyList<int>! buckets, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<bool>

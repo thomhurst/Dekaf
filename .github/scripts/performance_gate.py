@@ -128,6 +128,8 @@ AREAS = (
     ('src/Dekaf.Testing/', 'testing', unit(
         'InMemoryPendingOffsetQueryBenchmarks', 'InMemoryDeliveryCallbackBenchmarks',
         'InMemoryAdminTimeoutBenchmarks', 'InMemoryConsumerGroupOffsetQueryBenchmarks'), None),
+    ('src/Dekaf.Outbox/OutboxNotifier.cs', 'outbox-notification', unit('OutboxNotificationBenchmarks'), None),
+    ('src/Dekaf.Outbox/IOutboxNotifier.cs', 'outbox-notification', unit('OutboxNotificationBenchmarks'), None),
     ('src/Dekaf.Outbox', 'outbox', [],
      'Outbox lacks mapped steady-state coverage. Add fixtures in tools/Dekaf.Benchmarks and map them '
      'here before performance acceptance; loaded scenarios also need the existing stress project.'),

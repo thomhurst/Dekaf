@@ -15,7 +15,7 @@ Dekaf ships this as two packages:
 ## How Delivery Works
 
 1. Your service serializes the message **once**, inside its own database transaction, and inserts it as an outbox row. If the business transaction rolls back, the message is never sent.
-2. The relay (a hosted service) polls the outbox, publishes each pending row to Kafka with `acks=all` and idempotence enabled, and **deletes rows only after broker acknowledgment**.
+2. After commit, a local notification wakes the relay (a hosted service) to publish pending rows to Kafka with `acks=all` and idempotence enabled. It **deletes rows only after broker acknowledgment**. Polling remains the recovery fallback.
 3. A crash at any point republishes rather than loses: delivery is **at-least-once**. Every record carries an `x-outbox-message-id` header (the row's stable GUID) so consumers can deduplicate for effectively-once processing.
 
 ## Ordering
@@ -70,15 +70,26 @@ Register the store and the relay:
 using Dekaf.Outbox;
 using Dekaf.Outbox.EntityFrameworkCore;
 
-builder.Services.AddDbContextFactory<OrdersContext>(options =>
+builder.Services.AddDekafEntityFrameworkCoreOutboxStore<OrdersContext>((services, options) =>
 {
     // Configure the EF Core provider used by your application here.
     options.EnableDetailedErrors();
 });
-builder.Services.AddDekafEntityFrameworkCoreOutboxStore<OrdersContext>();
 builder.Services.AddDekafOutboxRelay(
     producer => producer.WithBootstrapServers("localhost:9092"));
 ```
+
+This overload registers the context factory and commit interceptors together. If the application already registers its factory (including a pooled factory), keep that registration, add `options.UseDekafOutboxNotifications(services.GetRequiredService<IOutboxNotifier>())` in its options callback, and use the parameterless `AddDekafEntityFrameworkCoreOutboxStore<OrdersContext>()` overload. That parameterless overload does not modify existing context options.
+
+### Commit notifications and fallback polling
+
+The default fallback interval is one second. An idle relay holding buckets makes roughly one pending-message query per second, plus lease maintenance. Successful publication continues draining immediately. Explicit `PollInterval` overrides remain supported; a longer interval is capped by the next lease-renewal deadline.
+
+The EF interceptors wake the local relay only after a successful implicit commit or an explicit EF Core transaction commit. `SaveChanges` and `SaveChangesAsync` inside an explicit transaction do not notify until `Commit` or `CommitAsync`. Ambient transactions notify after successful transaction completion; the database provider must support ambient enlistment. A rollback or failed save does not trigger publication. The caller does not wait for Kafka acknowledgement as part of the notification.
+
+Notifications coalesce and remain pending if a commit races with the relay entering its idle wait. They do not interrupt error backoff, bypass bucket ownership, change ordering, or remove rows before acknowledgement. One notifier belongs to one local relay. A notification received by a relay that does not own the row's bucket cannot wake the remote owner; that owner discovers the row through periodic polling.
+
+External writers, contexts without the interceptors, commits performed directly on an externally owned database transaction, process restarts, and missed notifications all rely on polling. The polling component of discovery latency can therefore approach one second, excluding query and scheduling time, compared with the previous 100 ms default. Normal local writes using the registration above do not wait for that timer. Custom stores can resolve `IOutboxNotifier` and call `NotifyCommitted()` after a confirmed commit; never notify before commit or bypass the relay with an independent publisher.
 
 The relay **enforces** `Acks.All`, idempotence, and a key-respecting partitioner (`Murmur2RandomPartitioner`) on its producer after your `configureProducer` delegate runs — durable acks make prefix deletion safe, idempotence sequences admitted batches, and the partitioner maps equal keys to one partition, so none of them can be downgraded there (any partitioner set in the delegate is overridden). Murmur2-random rather than the stock default because the default sticky-rotates zero-length keys, while the outbox treats an empty serialized key as a real key with an ordering requirement; placement for non-empty keys is identical. These settings do not prevent consumer-visible reordering after partial publish failures. If you need different producer semantics, register your own `IOutboxPublisher` instead (the deliberate opt-out).
 
@@ -221,7 +232,7 @@ var messageId = outboxResult.Headers.FirstOrDefault(h => h.Key == "x-outbox-mess
 |---|---|---|
 | `BucketCount` | 8 | Upper bound on relay parallelism. Must match across all writers and relays. |
 | `BatchSize` | 500 | Rows fetched and published per database round trip. |
-| `PollInterval` | 100 ms | Idle delay when no bucket had work. |
+| `PollInterval` | 1 second | Fallback discovery interval; local commit notifications interrupt idle waiting. |
 | `LeaseDuration` | 30 s | Time until takeover after the last successful renewal. The EF store renews during slow publishes, so the default 120 s producer delivery timeout does not expire an otherwise healthy relay's lease. Longer leases tolerate longer store/process stalls but delay takeover. |
 | `LeaseRenewInterval` | 10 s | Renewal cadence, including pending publishes. Leave enough slack for database latency, scheduling pauses, and clock skew. |
 | `MaxPublishDuration` | `null` | Required only for stores without `IOutboxLeaseRenewalStore`. Bound the **entire** publish call, not one record's delivery timeout. The budget plus a renewal interval must fit inside `LeaseDuration`. |
