@@ -16,11 +16,6 @@ set -euo pipefail
 : "${PR_NUMBER:?PR_NUMBER must be set by the workflow}"
 : "${GH_REPO:?GH_REPO must be set by the workflow}"
 
-body=${1:-}
+: "${REVIEW_RECEIPT:?REVIEW_RECEIPT must be set by the workflow}"
 
-if [[ -z ${body//[[:space:]]/} ]]; then
-  echo "refusing to post an empty review comment" >&2
-  exit 2
-fi
-
-gh pr comment "$PR_NUMBER" --repo "$GH_REPO" --body "$body"
+python3 "$(dirname -- "$0")/pr_review_comment.py" post "${1:-}"
