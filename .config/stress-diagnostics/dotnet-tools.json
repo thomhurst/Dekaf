@@ -24,7 +24,7 @@
       "rollForward": false
     },
     "dotnet-gcdump": {
-      "version": "10.0.731102",
+      "version": "10.0.745401",
       "commands": [
         "dotnet-gcdump"
       ],
