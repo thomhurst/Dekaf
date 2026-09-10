@@ -82,7 +82,8 @@ AREAS = (
         'CachingStringDeserializerBenchmarks', 'ConsumerHotPathBenchmarks'), None),
     ('src/Dekaf/Admin/', 'admin', unit(
         'ControlPlaneProtocolBenchmarks', 'AdminMultiGroupOffsetQueryBenchmarks', 'ListOffsetsProtocolBenchmarks',
-        'DescribeTransactionsProtocolBenchmarks', 'OffsetTopicIdProtocolBenchmarks'), None),
+        'DescribeTransactionsProtocolBenchmarks', 'OffsetTopicIdProtocolBenchmarks',
+        'ConsumerGroupAssignmentBenchmarks'), None),
     ('src/Dekaf/Metadata/', 'metadata', unit(
         'ControllerMetadataRefreshBenchmarks', 'TopicIdentityCheckBenchmarks', 'ProduceTopicCorrelationBenchmarks',
         'DnsPreferenceCacheBenchmarks'), None),

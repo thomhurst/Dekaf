@@ -33,6 +33,11 @@ def benchmark(method='Append', parameters='', mean=100.0, samples=25, allocated=
 
 
 class SelectionTests(unittest.TestCase):
+    def test_admin_changes_cover_consumer_assignment_decoding(self):
+        selection = gate.select(['src/Dekaf/Admin/AdminClient.cs'])
+        self.assertIn('*.Unit.ConsumerGroupAssignmentBenchmarks.*', selection['filters'])
+        self.assertIn('*.Unit.ControlPlaneProtocolBenchmarks.*', selection['filters'])
+
     def test_share_fetch_response_selects_its_actual_decoder(self):
         selection = gate.select(['src/Dekaf/Protocol/Messages/ShareFetchResponse.cs'])
         self.assertEqual(gate.unit('ShareFetchResponseDecodingBenchmarks'), selection['filters'])
