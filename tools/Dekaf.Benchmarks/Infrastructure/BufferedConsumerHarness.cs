@@ -24,6 +24,23 @@ namespace Dekaf.Benchmarks.Infrastructure;
 internal static class BufferedConsumerHarness
 {
     /// <summary>
+    /// Adapts revisions that omit batch callbacks by binding their existing interceptor
+    /// chain for the caller to execute. Native revisions return null. Call only in setup,
+    /// then validate per-record replacements and callback counts before measurement.
+    /// </summary>
+    public static Func<ConsumeResult<TKey, TValue>, ConsumeResult<TKey, TValue>>? BindBaselineBatchInterceptors<TKey, TValue>(
+        KafkaConsumer<TKey, TValue> consumer, bool hasInterceptors)
+    {
+        var consumerType = typeof(KafkaConsumer<TKey, TValue>);
+        if (!hasInterceptors || consumerType.GetField("_onBatchConsume", BindingFlags.Instance | BindingFlags.NonPublic) is not null)
+            return null;
+
+        var method = consumerType.GetMethod("ApplyOnConsumeInterceptorsSlow", BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("The consumer interceptor chain was not found.");
+        return method.CreateDelegate<Func<ConsumeResult<TKey, TValue>, ConsumeResult<TKey, TValue>>>(consumer);
+    }
+
+    /// <summary>
     /// Marks the consumer initialized, assigns the partition, and acknowledges the manual
     /// assignment so the buffered fast path's currency check passes.
     /// </summary>
