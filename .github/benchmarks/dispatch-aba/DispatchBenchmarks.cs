@@ -22,7 +22,7 @@ public class KeyOrderedDispatchBenchmarks
     private PartitionProcessor<int, int> _processor = null!;
     private PartitionLane<int, int> _lane = null!;
 #if COMPLETION_BATCHES
-    private OffsetCompletionBatch _completionBatch = null!;
+    private OffsetCompletionBatch? _completionBatch;
 #endif
     private bool _storageWarmed;
     private int _written;
