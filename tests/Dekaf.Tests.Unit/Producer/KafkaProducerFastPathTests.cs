@@ -777,6 +777,11 @@ public class KafkaProducerFastPathTests
         var topicPartition = new TopicPartition(Topic, 0);
         await Assert.That(() => HasCurrentOrSealedBatch(producer.RecordAccumulator, topicPartition))
             .Eventually(found => found.IsTrue(), TimeSpan.FromSeconds(5));
+        // Publishing CurrentBatch precedes the worker's append. Completing it here
+        // requires the same ownership fence as other asynchronous append tests.
+        await TestWait.UntilAsync(
+            () => GetSlowPathAppendCount(producer.RecordAccumulator, topicPartition) == 0,
+            TimeSpan.FromSeconds(5));
         var readyBatch = CompleteCurrentBatch(producer.RecordAccumulator, topicPartition);
         readyBatch.CompleteSend(baseOffset: 7, DateTimeOffset.UtcNow);
         _ = await produceTask;
