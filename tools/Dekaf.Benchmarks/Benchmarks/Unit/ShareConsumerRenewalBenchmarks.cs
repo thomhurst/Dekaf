@@ -9,6 +9,10 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 [SimpleJob(RunStrategy.Throughput, launchCount: 1, warmupCount: 3, iterationCount: 5)]
 public class ShareConsumerRenewalBenchmarks
 {
+    [Params(false, true)]
+    public bool Hosted { get; set; }
+
+    private Action<string, int, long> _removeRenewedRecord = null!;
     private readonly KafkaShareConsumer<string, string> _consumer = new(
         new ShareConsumerOptions
         {
@@ -29,9 +33,30 @@ public class ShareConsumerRenewalBenchmarks
     };
 
     [GlobalSetup]
-    public void Setup() => _consumer.Acknowledge(_record, AcknowledgeType.Renew);
+    public void Setup()
+    {
+        if (Hosted)
+            ((IHostedShareConsumer)_consumer).ObserveAcknowledgements(static _ => { });
+        _consumer.Acknowledge(_record, AcknowledgeType.Renew);
+        // Keep the dictionary allocated while cycling one record's renewal state.
+        _consumer.Acknowledge(new ShareConsumeResult<string, string>
+        {
+            Topic = _record.Topic, Partition = _record.Partition, Offset = 43, Value = "sentinel", DeliveryCount = 1
+        }, AcknowledgeType.Renew);
+        _removeRenewedRecord = typeof(KafkaShareConsumer<string, string>)
+            .GetMethod("RemoveRenewedRecord", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+            .CreateDelegate<Action<string, int, long>>(_consumer);
+    }
 
     [Benchmark]
     public void AcknowledgeExistingRenewal()
         => _consumer.Acknowledge(_record, AcknowledgeType.Renew);
+
+    // Includes the existing per-renewed-record state allocation; dictionary capacity is steady-state.
+    [Benchmark]
+    public void CreateRenewalState()
+    {
+        _removeRenewedRecord(_record.Topic, _record.Partition, _record.Offset);
+        _consumer.Acknowledge(_record, AcknowledgeType.Renew);
+    }
 }
