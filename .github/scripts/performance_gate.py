@@ -35,6 +35,22 @@ TRACE = unit('TraceContextInjectionBenchmarks', 'TraceContextExtractionBenchmark
 # [IterationSetup]/[IterationCleanup], fixed InvocationCount or ColdStart fixtures, because
 # those cannot reach the elapsed warmup floor with the shared BDN settings.
 AREAS = (
+    # KafkaConsumer owns both fetching and the offset-store API. The separate
+    # partition dispatcher has its own implementation; unknown files retain the
+    # directory-wide fallback below.
+    ('src/Dekaf/Consumer/KafkaConsumer.cs', 'consumer', unit(
+        'ConsumerHotPathBenchmarks', 'FetchResponseParsingBenchmarks', 'FetchRequestBuildBenchmarks',
+        'OffsetStoreBenchmarks', 'ConsumeResultOffsetStoreBenchmarks'), None),
+    ('src/Dekaf/Consumer/IKafkaConsumer.cs', 'consumer', unit('ConsumerHotPathBenchmarks'), None),
+    ('src/Dekaf/Consumer/ConsumeBatch.cs', 'consumer', unit('ConsumerHotPathBenchmarks'), None),
+    ('src/Dekaf/Consumer/PartitionedProcessing.cs', 'consumer', unit(
+        'PartitionedDispatchBenchmarks', 'KeyOrderedDispatchBenchmarks', 'PartitionedOffsetTrackingBenchmarks'), None),
+    ('src/Dekaf/Consumer/CompletedOffsetRanges.cs', 'consumer', unit('PartitionedOffsetTrackingBenchmarks'), None),
+    # Exercise real RecordBatch read/write and lazy slab lifetimes. CRC implementation
+    # and unrelated administrative protocol fixtures belong to the protocol fallback.
+    ('src/Dekaf/Protocol/Records/RecordBatch.cs', 'protocol',
+     unit('ConsumerHotPathBenchmarks', 'ParsedRecordSlabLifecycleBenchmarks')
+     + ['*.Unit.ProtocolBenchmarks.*RecordBatch*'], None),
     ('src/Dekaf/Producer/', 'producer', unit(
         'AccumulatorAppendBenchmarks', 'AccumulatorAdmissionAppendBenchmarks', 'ProducerFireHotPathBenchmarks',
         'PartitionerBenchmarks', 'InflightTrackingBenchmarks', 'BrokerUnackedByteBudgetBenchmarks',
@@ -42,7 +58,8 @@ AREAS = (
         'WaveCoalesceProbeBenchmarks'), None),
     ('src/Dekaf/Consumer/', 'consumer', unit(
         'ConsumerHotPathBenchmarks', 'FetchResponseParsingBenchmarks', 'FetchRequestBuildBenchmarks',
-        'OffsetStoreBenchmarks', 'PartitionedDispatchBenchmarks', 'KeyOrderedDispatchBenchmarks'), None),
+        'OffsetStoreBenchmarks', 'ConsumeResultOffsetStoreBenchmarks',
+        'PartitionedDispatchBenchmarks', 'KeyOrderedDispatchBenchmarks'), None),
     ('src/Dekaf/ShareConsumer/', 'share-consumer', unit(
         'ShareConsumerParsingBenchmarks', 'ShareAcknowledgementTrackingBenchmarks',
         'ShareConsumerPreparationReplayBenchmarks', 'ShareConsumerRenewalBenchmarks'), None),
@@ -144,7 +161,21 @@ def select(changed_files):
 
 def changed_files(base, head):
     output = subprocess.check_output(['git', 'diff', '--name-only', f'{base}..{head}'], text=True)
-    return [line.strip() for line in output.splitlines() if line.strip()]
+    return [path for path in output.splitlines() if path and not _friend_assembly_only(base, head, path)]
+
+
+def _friend_assembly_only(base, head, path):
+    """Ignore only standalone friend-assembly declarations, never build settings or references."""
+    if not path.startswith('src/') or not path.endswith('.csproj'):
+        return False
+    diff = subprocess.check_output([
+        'git', 'diff', '--no-ext-diff', '--unified=0', f'{base}..{head}', '--', path,
+    ], text=True)
+    changes = [line[1:].strip() for line in diff.splitlines()
+               if line.startswith(('+', '-')) and not line.startswith(('+++', '---'))]
+    return bool(changes) and all(re.fullmatch(
+        r'<InternalsVisibleTo Include="Dekaf\.(?:Tests(?:\.[A-Za-z0-9]+)*|Benchmarks|Profiling)"\s*/>',
+        line) for line in changes)
 
 
 def count_listed_cases(listing):

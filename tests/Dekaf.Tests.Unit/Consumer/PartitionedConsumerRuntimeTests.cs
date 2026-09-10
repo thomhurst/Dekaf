@@ -12,6 +12,30 @@ namespace Dekaf.Tests.Unit.Consumer;
 public sealed class PartitionedConsumerRuntimeTests
 {
     [Test]
+    public async Task CommitTestConsumer_CancelledBeforeCompletedWait_DoesNotRecordCommit()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var consumer = new TestConsumer
+        {
+            CommitStarted = new TaskCompletionSource(),
+            ReleaseCommit = new TaskCompletionSource()
+        };
+        // Execute on the commit's stack: cancellation and release both happen
+        // after its initial token check but before it reaches WaitAsync.
+        var shutdown = consumer.CommitStarted.Task.ContinueWith(_ =>
+        {
+            cancellation.Cancel();
+            consumer.ReleaseCommit.SetResult();
+        }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+
+        await Assert.That(async () => await consumer.CommitAsync(
+            [new TopicPartitionOffset("topic", 0, 1)], cancellation.Token))
+            .Throws<OperationCanceledException>();
+        await shutdown;
+        await Assert.That(consumer.CommitCalls).IsEmpty();
+    }
+
+    [Test]
     public async Task StoreOffsets_LegacyConsumerFallback_AcceptsStructBackedList()
     {
         var implementation = new TestConsumer();
@@ -1430,6 +1454,11 @@ public sealed class PartitionedConsumerRuntimeTests
             CommitStarted?.TrySetResult();
             if (ReleaseCommit is not null)
                 await ReleaseCommit.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+
+            // CommitStarted can let the test cancel and release before WaitAsync
+            // registers. A completed task bypasses WaitAsync's cancellation check;
+            // the fake must still observe cancellation before recording a commit.
+            cancellationToken.ThrowIfCancellationRequested();
 
             lock (_gate)
                 CommitCalls.Add(offsets.ToArray());

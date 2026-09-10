@@ -33,6 +33,60 @@ def benchmark(method='Append', parameters='', mean=100.0, samples=25, allocated=
 
 
 class SelectionTests(unittest.TestCase):
+    def test_kafka_consumer_retains_all_offset_store_api_coverage(self):
+        selection = gate.select(['src/Dekaf/Consumer/KafkaConsumer.cs'])
+        self.assertEqual(gate.unit('ConsumerHotPathBenchmarks', 'FetchResponseParsingBenchmarks',
+                                   'FetchRequestBuildBenchmarks', 'OffsetStoreBenchmarks',
+                                   'ConsumeResultOffsetStoreBenchmarks'), selection['filters'])
+        self.assertNotIn('*.Unit.PartitionedDispatchBenchmarks.*', selection['filters'])
+
+    def test_partition_completion_retains_dispatch_and_tracking_coverage(self):
+        selection = gate.select(['src/Dekaf/Consumer/PartitionedProcessing.cs',
+                                 'src/Dekaf/Consumer/CompletedOffsetRanges.cs'])
+        self.assertEqual(gate.unit('PartitionedDispatchBenchmarks', 'KeyOrderedDispatchBenchmarks',
+                                   'PartitionedOffsetTrackingBenchmarks'), selection['filters'])
+
+    def test_record_batch_selects_real_read_write_and_lazy_lifecycle(self):
+        selection = gate.select(['src/Dekaf/Protocol/Records/RecordBatch.cs'])
+        self.assertIn('*.Unit.ProtocolBenchmarks.*RecordBatch*', selection['filters'])
+        self.assertIn('*.Unit.ParsedRecordSlabLifecycleBenchmarks.*', selection['filters'])
+        self.assertNotIn('*.Unit.Crc32CBenchmarks.*', selection['filters'])
+        fallback = gate.select(['src/Dekaf/Protocol/UnknownReader.cs'])
+        self.assertIn('*.Unit.Crc32CBenchmarks.*', fallback['filters'])
+        self.assertIn('*.Unit.KeyOrderedDispatchBenchmarks.*',
+                      gate.select(['src/Dekaf/Consumer/UnknownConsumer.cs'])['filters'])
+
+    def test_only_friend_assembly_edits_can_skip_the_build_input_screen(self):
+        original = Path.cwd()
+        with tempfile.TemporaryDirectory() as directory:
+            try:
+                os.chdir(directory)
+                def git(*args):
+                    return subprocess.check_output(['git', *args], stderr=subprocess.DEVNULL).decode().strip()
+                git('init', '-q')
+                git('config', 'user.email', 'gate@example.test')
+                git('config', 'user.name', 'Gate test')
+                project = Path('src/Dekaf/Dekaf.csproj')
+                project.parent.mkdir(parents=True)
+                before = '<Project>\n<ItemGroup>\n<InternalsVisibleTo Include="Dekaf.Tests.Unit" />\n</ItemGroup>\n</Project>\n'
+                project.write_text(before)
+                git('add', '.')
+                git('commit', '-qm', 'baseline')
+                baseline = git('rev-parse', 'HEAD')
+                for addition, expected in (
+                    ('<InternalsVisibleTo Include="Dekaf.Tests.Aot" />', []),
+                    ('<PackageReference Include="Another.Package" />', [project.as_posix()]),
+                    ('<InternalsVisibleTo Include="Dekaf.Tests.Aot" />\n<Optimize>false</Optimize>', [project.as_posix()]),
+                    ('<InternalsVisibleTo Include="Unknown.Assembly" />', [project.as_posix()]),
+                ):
+                    with self.subTest(addition=addition):
+                        project.write_text(before.replace('</ItemGroup>', addition + '\n</ItemGroup>'))
+                        git('add', '.')
+                        git('commit', '-qm', 'change')
+                        self.assertEqual(expected, gate.changed_files(baseline, 'HEAD'))
+            finally:
+                os.chdir(original)
+
     def test_longest_prefix_selects_the_area_not_the_core_set(self):
         selection = gate.select(['src/Dekaf/Producer/RecordAccumulator.cs'])
         self.assertEqual(['producer'], selection['areas'])
@@ -78,7 +132,8 @@ class SelectionTests(unittest.TestCase):
                 self.assertEqual(1, len(owners), f'{name} must be defined once under tools/Dekaf.Benchmarks/Benchmarks/Unit')
                 text = sources[owners[0]]
                 self.assertIn('MemoryDiagnoser', text, f'{name} needs [MemoryDiagnoser] for 0 B/op evidence')
-                self.assertIsNone(SINGLE_INVOCATION.search(text),
+                code = '\n'.join(line for line in text.splitlines() if not line.lstrip().startswith('//'))
+                self.assertIsNone(SINGLE_INVOCATION.search(code),
                                   f'{owners[0].name} uses a single-invocation fixture and cannot reach the warmup floor')
 
     def test_case_listing_counts_only_benchmark_lines(self):
