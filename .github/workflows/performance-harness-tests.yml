@@ -27,12 +27,12 @@ jobs:
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
         with:
           global-json-file: global.json
-      - name: Test standard benchmark and stress result validation
+      - name: Test benchmark and stress result validation
         run: |
           for test in test_performance_gate.py test_check_repository_artifacts.py test_stress_warmup.py test_stress_aba.py test_stress_aba_startup.py; do
             python3 -m unittest discover -s .github/scripts -p "$test"
           done
-      - name: Verify standard benchmark project and allocation exports
+      - name: Verify the benchmark project exports what the gate screens
         working-directory: tools/Dekaf.Benchmarks
         env:
           MSBUILDDISABLENODEREUSE: '1'
@@ -40,8 +40,7 @@ jobs:
         run: |
           results="$GITHUB_WORKSPACE/.artifacts/bdn-smoke"
           mkdir -p "$results"
-          # BDN searches for a solution to discover the project for its generated worker.
-          # A local solution keeps that search inside this project (see PR #3180).
+          # BDN searches for a solution to discover the project for its generated worker (PR #3180).
           dotnet new sln --name GateBenchmarkExecution --format sln > "$results/solution.log"
           dotnet sln GateBenchmarkExecution.sln add Dekaf.Benchmarks.csproj >> "$results/solution.log"
           dotnet build Dekaf.Benchmarks.csproj -c Release --disable-build-servers > "$results/build.log" 2>&1
@@ -49,66 +48,18 @@ jobs:
             --filter '*.Unit.ValueTaskSourcePoolBenchmarks.RentReturnSameThread' '*.Unit.ConsumerHotPathBenchmarks.ConsumeBatch_String_Deserialize' \
             --warmupCount 3 --iterationCount 3 --iterationTime 100 --launchCount 1 --outliers DontRemove \
             --exporters fulljson --buildTimeout 900 --artifacts "$results/timing" > "$results/timing.log" 2>&1
-          python3 "$GITHUB_WORKSPACE/.github/scripts/performance_gate.py" validate --phase "$results/timing" \
-            --expected 2 --iterations 3 --min-warmup 0 --merged "$results/same.json" --cases "$results/cases.json"
-          jq -e 'length == 2 and any(.[]; any(.Metrics[]; .Descriptor.Id == "Allocated Memory" and .Value == 0)) and any(.[]; any(.Metrics[]; .Descriptor.Id == "Allocated Memory" and .Value > 0))' "$results/same.json"
-          echo 'Standard BenchmarkDotNet project/export correctness smoke passed; this short run is not performance acceptance.' >> "$GITHUB_STEP_SUMMARY"
-      - name: Verify planned filters preserve expanded parameter cases
-        working-directory: tools/Dekaf.Benchmarks
-        env:
-          MSBUILDDISABLENODEREUSE: '1'
-          DOTNET_CLI_USE_MSBUILD_SERVER: '0'
-        run: |
-          results="$GITHUB_WORKSPACE/.artifacts/bdn-smoke/planning"
-          mkdir -p "$results"
-          gate="$GITHUB_WORKSPACE/.github/scripts/performance_gate.py"
-          # Dry exports are discovery/correctness evidence only. Two values of one method
-          # prove that FullName filters preserve parameters rather than rerunning the class.
-          dotnet run --project Dekaf.Benchmarks.csproj -c Release --no-build -- --job Dry \
-            --filter '*.Unit.Crc32CBenchmarks.Software(Size: 128)' '*.Unit.Crc32CBenchmarks.Software(Size: 512)' \
-            --exporters fulljson --buildTimeout 900 --artifacts "$results/discovery" > "$results/discovery.log" 2>&1
-          python3 "$gate" validate --dry --phase "$results/discovery" --expected 2
-          python3 "$gate" plan --baseline "$results/discovery" --candidate "$results/discovery" \
-            --max-cases 1 --output "$results/plan.json"
-          for batch in 1 2; do
-            mapfile -t filters < <(jq -r --argjson id "$batch" '.batches[] | select(.id == $id) | .filters[]' "$results/plan.json")
-            jq --argjson id "$batch" '.batches[] | select(.id == $id) | .cases' "$results/plan.json" > "$results/expected-$batch.json"
-            dotnet run --project Dekaf.Benchmarks.csproj -c Release --no-build -- --job Dry --filter "${filters[@]}" \
-              --exporters fulljson --buildTimeout 900 --artifacts "$results/batch-$batch" > "$results/batch-$batch.log" 2>&1
-            python3 "$gate" validate --dry --phase "$results/batch-$batch" --expected 1 --expected-cases "$results/expected-$batch.json"
-          done
-          echo 'Original parameterized BDN exports round-trip through the batch plan without lost or duplicated cases. This is tooling validation, not performance acceptance.' >> "$GITHUB_STEP_SUMMARY"
-      - name: Verify comparison decisions against original exports
-        run: |
-          results="$GITHUB_WORKSPACE/.artifacts/bdn-smoke"
-          compare=(jq -nr --argjson tolerance 5 -f "$GITHUB_WORKSPACE/.github/scripts/compare_bdn_reports.jq")
-          jq '[.[] | .Statistics.Mean *= 1.1]' "$results/same.json" > "$results/slower.json"
-          jq '[.[] | .Statistics.Mean *= 1.06]' "$results/same.json" > "$results/drifted.json"
-          jq '[.[] | .Statistics.Mean *= 1.03]' "$results/same.json" > "$results/nearer.json"
-          jq '[.[] | (.Metrics[] | select(.Descriptor.Id == "Allocated Memory") | .Value) += 64]' "$results/same.json" > "$results/allocating.json"
-          jq '[.[] | (.Metrics[] | select(.Descriptor.Id == "Allocated Memory") | .Value) += 4]' "$results/same.json" > "$results/nearly_allocating.json"
-          jq '.[:1]' "$results/same.json" > "$results/partial.json"
-          screen() { "${compare[@]}" --arg format json --slurpfile a1 "$results/$1.json" --slurpfile b "$results/$2.json" --slurpfile a2 "$results/$3.json"; }
-          screen same same same | jq -e '.screen == "PASS" and (.cases | length) == 2 and all(.cases[]; .screen == "PASS" and .b_vs_a1_percent == 0 and .drift_percent == 0)'
-          screen same slower same | jq -e '.screen == "REGRESSION" and all(.cases[]; .screen == "REGRESSION")'
-          screen same allocating same | jq -e '.screen == "REGRESSION" and all(.cases[]; .screen == "REGRESSION")'
-          screen same same drifted | jq -e '.screen == "PASS" and all(.cases[]; .screen == "PASS" and .control_drift_exceeds_tolerance)'
-          screen same allocating drifted | jq -e '.screen == "REGRESSION" and all(.cases[]; .control_drift_exceeds_tolerance)'
-          screen same slower allocating | jq -e '.screen == "REGRESSION"'
-          screen same allocating allocating | jq -e '.screen == "PASS" and all(.cases[]; .alloc_bracketed and (.notes | any(contains("allocation bracketed"))))'
-          jq '[.[] | (.Metrics[] | select(.Descriptor.Id == "Allocated Memory") | .Value) += 60]' "$results/same.json" > "$results/allocating_60.json"
-          screen same drifted nearer | jq -e '.screen == "INCONCLUSIVE" and all(.cases[]; .screen == "INCONCLUSIVE" and (.bracketed | not))'
-          screen same drifted slower | jq -e '.screen == "PASS" and all(.cases[]; .screen == "PASS" and .bracketed and (.notes | any(contains("bracketed"))))'
-          screen slower drifted same | jq -e '.screen == "PASS" and all(.cases[]; .screen == "PASS" and .bracketed)'
-          screen slower same slower | jq -e '.screen == "PASS" and all(.cases[]; .screen == "IMPROVEMENT")'
-          if screen same same partial > /dev/null 2>&1; then echo 'Mismatched baseline case sets were compared'; exit 1; fi
-          screen same partial same | jq -e '.screen == "PASS" and (.cases | length) == 1 and (.baseline_only | length) == 1 and (.candidate_only | length) == 0'
-          floor() { "${compare[@]}" --argjson alloc_floor 8 --arg format json --slurpfile a1 "$results/$1.json" --slurpfile b "$results/$2.json" --slurpfile a2 "$results/$3.json"; }
-          floor same nearly_allocating same | jq -e '.screen == "PASS" and all(.cases[]; .screen == "PASS" and (.notes | any(contains("floor"))))'
-          floor same allocating same | jq -e '.screen == "REGRESSION"'
-          floor same allocating allocating_60 | jq -e '.screen == "INCONCLUSIVE" and all(.cases[]; .alloc_bracketed | not)'
-          "${compare[@]}" --argjson min_warmup 20 --arg format json --slurpfile a1 "$results/same.json" --slurpfile b "$results/same.json" --slurpfile a2 "$results/same.json" | jq -e '.screen == "INCONCLUSIVE" and all(.cases[]; .short_warmup == ["A1", "B", "A2"] and (.notes | any(contains("warmup"))))'
-          "${compare[@]}" --arg format markdown --slurpfile a1 "$results/same.json" --slurpfile b "$results/same.json" --slurpfile a2 "$results/same.json" | grep -q 'Micro screen: \*\*PASS\*\*'
+          # Identical exports in every phase must screen PASS with both a 0 B/op and an allocating case.
+          python3 "$GITHUB_WORKSPACE/.github/scripts/performance_gate.py" screen --a1 "$results/timing" --b "$results/timing" \
+            --a2 "$results/timing" --iterations 3 --name smoke --output "$results/same.json" --markdown "$results/same.md"
+          python3 - "$results/same.json" <<'EOF'
+          import json, sys
+          report = json.load(open(sys.argv[1]))
+          assert report['screen'] == 'PASS' and len(report['cases']) == 2, report['screen']
+          allocated = sorted(case['B']['allocated_bytes'] for case in report['cases'])
+          assert allocated[0] == 0 < allocated[1], allocated
+          EOF
+          cat "$results/same.md" >> "$GITHUB_STEP_SUMMARY"
+          echo 'Standard BenchmarkDotNet export smoke passed; this short run is not performance acceptance.' >> "$GITHUB_STEP_SUMMARY"
       - name: Retain original exports and logs
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
