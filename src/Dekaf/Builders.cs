@@ -3495,6 +3495,8 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
     private readonly List<string> _topicsToSubscribe = [];
     private readonly Dictionary<string, ApplicationTelemetryMetric> _applicationMetrics = new(StringComparer.Ordinal);
 
+    internal string? BootstrapServersString => _bootstrapServers.Count == 0 ? null : string.Join(",", _bootstrapServers);
+
     public ShareConsumerBuilder()
     {
     }
@@ -4204,6 +4206,29 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
         }
 
         return consumer;
+    }
+
+    internal ShareConsumerBuilder<TKey, TValue> WithSaslOptions(
+        SaslMechanism mechanism,
+        string? username,
+        string? password,
+        GssapiConfig? gssapiConfig,
+        OAuthBearerConfig? oauthConfig,
+        AwsMskIamConfig? awsMskIamConfig = null,
+        bool saslScramTokenAuth = false,
+        Func<CancellationToken, ValueTask<SaslCredentials>>? credentialProvider = null)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        _saslMechanism = mechanism;
+        _saslUsername = username;
+        _saslPassword = password;
+        _saslCredentialProvider = credentialProvider;
+        _gssapiConfig = gssapiConfig;
+        _oauthConfig = oauthConfig;
+        _saslScramTokenAuth = saslScramTokenAuth;
+        _awsMskIamConfig = awsMskIamConfig ?? (mechanism == SaslMechanism.AwsMskIam ? new AwsMskIamConfig() : null);
+        _oauthTokenProvider = null;
+        return this;
     }
 
     private static IDeserializer<T> GetDefaultDeserializer<T>(string componentName, string configureMethod)

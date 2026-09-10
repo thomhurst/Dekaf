@@ -1019,7 +1019,7 @@ public sealed class AdminClientServiceBuilder
     }
 }
 
-internal static class DekafOptionsBinding
+internal static partial class DekafOptionsBinding
 {
     private delegate TBuilder SaslOptionsApplier<TBuilder>(
         SaslMechanism mechanism,
@@ -1424,6 +1424,12 @@ internal static class DekafOptionsBinding
 [RequiresUnreferencedCode(DekafConfigurationBinding.RequiresUnreferencedCodeMessage)]
 internal static class DekafConfigurationBinding
 {
+    // Keep reflection-only option binding behind a generic boundary, like TryGetValue below.
+    // A concrete Get<ShareConsumerOptions> call would cause the configuration source generator
+    // to traverse runtime-only TLS certificates and callbacks when NativeAOT is enabled.
+    internal static T GetOptions<T>(IConfiguration configuration) where T : class
+        => configuration.Get<T>() ?? throw new InvalidOperationException("Kafka configuration is empty.");
+
     internal const string RequiresDynamicCodeMessage =
         "IConfiguration binding uses Microsoft.Extensions.Configuration.Binder. Use typed options overloads for NativeAOT.";
     internal const string RequiresUnreferencedCodeMessage =

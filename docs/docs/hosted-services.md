@@ -286,3 +286,165 @@ Use a plain `BackgroundService` with `consumer.ConsumeAsync(...)` when you need:
 - Manual offset storage decisions per record (`StoreOffset` on your own schedule)
 
 Everything else — including error handling with DLQ, which is only available through the hosted service — is simpler and safer through `KafkaConsumerService`.
+
+## Hosted Share Consumers
+
+For queue semantics, derive from `KafkaShareConsumerService<TKey, TValue>`. Each record is
+acquired from a Kafka share group and receives an explicit record acknowledgement.
+
+```csharp
+using Dekaf.Consumer.DeadLetter;
+using Dekaf.Extensions.DependencyInjection;
+using Dekaf.Extensions.Hosting;
+using Dekaf.ShareConsumer;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+
+var builder = Host.CreateApplicationBuilder();
+builder.Services.AddDekaf(dekaf => dekaf
+    .AddShareConsumerService<ShareOrderWorker, string, string>(consumer => consumer
+        .WithBootstrapServers("localhost:9092")
+        .WithGroupId("order-workers")));
+await builder.Build().RunAsync();
+
+public sealed class ShareOrderWorker : KafkaShareConsumerService<string, string>
+{
+    public ShareOrderWorker(
+        IKafkaShareConsumer<string, string> consumer,
+        ILogger<ShareOrderWorker> logger,
+        DeadLetterOptions? deadLetterOptions = null)
+        : base(consumer, logger, deadLetterOptions)
+    {
+    }
+
+    protected override IEnumerable<string> Topics => ["orders"];
+
+    protected override ValueTask ProcessAsync(
+        ShareConsumeResult<string, string> record, CancellationToken cancellationToken)
+    {
+        // Complete the application operation before returning successfully.
+        return ValueTask.CompletedTask;
+    }
+}
+```
+
+Fluent hosted registrations start with `ShareAcknowledgementMode.Explicit`. An override that
+selects `Implicit` is rejected at service startup. Typed `ShareConsumerOptions` and
+`IConfiguration` registrations preserve their configured acknowledgement mode: set
+`AcknowledgementMode = ShareAcknowledgementMode.Explicit` explicitly. Custom consumer wrappers
+must expose `IShareConsumerConfiguration`; an unverifiable mode is rejected too.
+
+### Independent Workers and Service Keys
+
+Each registration creates an independent hosted service and consumer, including repeated
+registrations of the same service class. No constructor needs `[FromKeyedServices]`:
+
+```csharp
+builder.Services.AddDekaf(dekaf => dekaf
+    .AddShareConsumerService<ShareOrderWorker, string, string>("worker-a", consumer => consumer
+        .WithBootstrapServers("localhost:9092").WithGroupId("order-workers"))
+    .AddShareConsumerService<ShareOrderWorker, string, string>("worker-b", consumer => consumer
+        .WithBootstrapServers("localhost:9092").WithGroupId("order-workers"))
+    .AddShareConsumerService<ShareOrderWorker, string, string>("audit", consumer => consumer
+        .WithBootstrapServers("localhost:9092").WithGroupId("order-audit")));
+```
+
+`worker-a` and `worker-b` compete for records in `order-workers`. `audit` consumes independently
+in `order-audit`. **DI service keys select local registrations; Kafka group IDs select broker-side
+consumption state.** Different keys do not create independent Kafka subscriptions when the group
+ID is the same. Share workers can compete within a partition; partition count does not impose the
+same parallelism limit as an ordinary consumer group.
+
+Different service classes with the same key/value types also receive independent consumers.
+Registering the same service class with the same service key twice throws before changing any
+existing wiring. Consumer configuration, DLQ options, processing failure state, and shutdown are
+isolated from other share services and ordinary hosted consumers. Public keyed consumer aliases
+resolve the matching registration; use distinct keys when resolving multiple consumers directly.
+
+### Processing, Retries, and Durable Routing
+
+The service handles one delivered record at a time. A successful `ProcessAsync` stages `Accept`.
+In-place retries use `IRetryPolicy.GetNextDelay`; otherwise `DeadLetterOptions.MaxFailures` can
+supply the in-place attempt limit. With retry topics enabled, an exhausted in-place policy advances
+one retry tier per delivery. Retry-topic due times delay processing while the record remains acquired.
+This deliberately holds up this worker; other share workers can continue acquiring work.
+
+Retry controls are honored only for configured retry topics derived from `Topics`. Source-topic
+records cannot supply scheduling or retry-count controls, and routing derives the source topic
+from configuration. Application headers and the original record passed to hooks remain intact.
+
+Configure routing using the same builder as ordinary hosted consumers:
+
+```csharp
+builder.Services.AddDekaf(dekaf => dekaf
+    .AddShareConsumerService<ShareOrderWorker, string, string>("worker-a",
+        consumer => consumer.WithBootstrapServers("localhost:9092").WithGroupId("order-workers"),
+        dlq => dlq.WithMaxFailures(3).WithTopicSuffix(".DLQ")
+            .WithRetryTopics(TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(30))));
+```
+
+The constructor must accept and forward its `DeadLetterOptions` to `base(...)`. The service
+subscribes to source and configured retry topics. Routing copies the original serialized key,
+value (including tombstones), and headers. Raw capture uses reusable storage per poll round;
+failed routing materializes owned byte arrays. Built-in routing requires the built-in consumer's
+raw capture capability. `FireAndForget()` is rejected, and the built-in routing producer always
+uses `Acks.All`, including when `ConfigureProducer` requests weaker acknowledgements. Acceptance
+follows confirmed delivery to a retry topic or DLQ. A crash between durable routing and source
+acknowledgement can still produce duplicates; routing is not a transaction across topics.
+
+Override `OnErrorAsync`, `OnRetryTopicRoutingFailedAsync`, or `OnDeadLetterRoutingFailedAsync` for
+logging and metrics. An optional `IDeadLetterPolicy<TKey, TValue>` controls DLQ selection. When no
+durable outcome is available, `GetFailureDispositionAsync` receives a
+`ShareMessageFailureContext<TKey, TValue>` containing the share record (including `DeliveryCount`),
+processing exception, attempt number, cumulative retry-topic failure count, failure stage, and
+routing exception.
+
+| Terminal decision | Acknowledgement | Service behavior |
+| --- | --- | --- |
+| `MessageFailureDisposition.Retry` (default) | `Release` | Stops with the processing or routing exception; host exception policy applies |
+| `MessageFailureDisposition.Discard` | `Reject` | Continues polling |
+
+Processing cancellation, interrupted routing, failed renewal, or a hook exception never stages
+`Accept`. Final commit submits only explicit outcomes. Failed, released, expired, or unfinished
+acquisitions remain eligible for redelivery, subject to broker delivery-count and retention limits.
+Explicit discard is irreversible for that share group.
+
+### Acquisition Locks and Shutdown
+
+`KafkaShareConsumerServiceOptions` configures `DrainOnShutdown` (default `true`), `ShutdownTimeout`
+(default 30 seconds), and `RenewalInterval` (default 10 seconds). Pass options to the base
+constructor. While asynchronous processing, retries, or routing are pending, the service renews
+the current acquisition. The renewal interval is capped at one third of the latest broker-reported
+acquisition timeout. All polling, acknowledgement submission, renewal, close, and disposal operations
+are serialized. Application overrides must not call the consumer or leave processing tasks running
+in the background.
+
+Renewal requires broker support for **ShareFetch/ShareAcknowledge v2**. On older brokers a required
+renewal fails, cancels processing, and leaves the record for redelivery. Long synchronous handlers
+must yield to permit renewal. The built-in consumer supplies a conservative fetch-start timestamp;
+if its known acquisition deadline has elapsed, the service refuses to process or accept that record.
+Renewal extends only the current record's lock. Other records acquired in the same batch may expire
+while a slow record is processed. Broker failures, lock expiry, and process pauses can all cause
+redelivery; make application effects idempotent. For tightly limited acquisition on v2 brokers,
+configure `WithShareAcquireMode(ShareAcquireMode.RecordLimit)` along with `WithMaxPollRecords(...)`.
+
+On shutdown, polling stops immediately. With draining enabled, only the currently delivered record
+finishes within the shared shutdown budget; the helper does not resume `PollAsync` to discover
+buffered records because that stream can fetch new acquisitions. With draining disabled, processing
+is cancelled immediately. Remaining acquisitions are released on close where possible, or expire on
+the broker. Final acknowledgement submission, session close, and producer flushing use the remaining
+shutdown budget. A cancelled poll may leave acknowledgement submission uncertain, so successful
+processing can be redelivered after shutdown too.
+
+`StopAsync` bounds its wait even if application processing ignores cancellation. Asynchronous
+resource disposal waits for that work to finish before disposing its consumer and producer; it cannot
+force application code to stop. Use asynchronous host/provider disposal and honor the processing token.
+Synchronous `Dispose` requests cancellation and starts the same observed cleanup chain.
+
+### Singleton and Scoped Dependencies
+
+Hosted services and their consumers are singletons. Inject only singleton-safe dependencies directly.
+For scoped dependencies such as `DbContext`, inject `IServiceScopeFactory` and create/dispose an async
+scope inside `ProcessAsync`; await every scoped operation before returning. Never retain a scoped
+service or acquisition in detached work. Scope creation and application serialization can allocate;
+they are separate from the helper's synchronous processing overhead.

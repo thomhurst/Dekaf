@@ -1,54 +1,17 @@
-using Dekaf.Consumer;
+using Dekaf.ShareConsumer;
 
 namespace Dekaf.Extensions.Hosting;
 
 /// <summary>
-/// Determines what a hosted consumer does when message processing cannot complete successfully.
-/// </summary>
-public enum MessageFailureDisposition
-{
-    /// <summary>
-    /// Preserves the message for redelivery by leaving its offset uncommitted, or releasing its share acquisition.
-    /// </summary>
-    Retry,
-
-    /// <summary>
-    /// Discards the failed message and allows consumption to continue. Share consumers use Reject.
-    /// </summary>
-    Discard
-}
-
-/// <summary>
-/// Identifies the operation that left a failed message without a durable outcome.
-/// </summary>
-public enum MessageFailureStage
-{
-    /// <summary>
-    /// Message processing failed and no configured retry or routing operation handled it.
-    /// </summary>
-    Processing,
-
-    /// <summary>
-    /// Producing the message to a retry topic failed.
-    /// </summary>
-    RetryTopicRouting,
-
-    /// <summary>
-    /// Producing the message to a dead letter topic failed or was unavailable.
-    /// </summary>
-    DeadLetterRouting
-}
-
-/// <summary>
 /// Describes a message processing failure that has no durable successful outcome.
 /// </summary>
-public readonly struct MessageFailureContext<TKey, TValue>
+public readonly struct ShareMessageFailureContext<TKey, TValue>
 {
     /// <summary>
     /// Initializes a new failure context.
     /// </summary>
-    public MessageFailureContext(
-        ConsumeResult<TKey, TValue> result,
+    public ShareMessageFailureContext(
+        ShareConsumeResult<TKey, TValue> result,
         Exception processingException,
         int attemptNumber,
         int failureCount,
@@ -66,7 +29,7 @@ public readonly struct MessageFailureContext<TKey, TValue>
     /// <summary>
     /// Gets the failed record.
     /// </summary>
-    public ConsumeResult<TKey, TValue> Result { get; }
+    public ShareConsumeResult<TKey, TValue> Result { get; }
 
     /// <summary>
     /// Gets the exception thrown by message processing.

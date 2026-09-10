@@ -796,6 +796,30 @@ public sealed class ShareConsumerRenewalTests
     }
 
     [Test]
+    [Arguments(AcknowledgeType.Accept)]
+    [Arguments(AcknowledgeType.Release)]
+    [Arguments(AcknowledgeType.Reject)]
+    public async Task HostedTerminalAcknowledgement_RemovesLocalReplayButRetainsPendingSubmission(AcknowledgeType type)
+    {
+        var connection = new CapturingConnection(ApiKey.ShareFetch, 2);
+        await using var fixture = CreateFixture(connection);
+        ((IHostedShareConsumer)fixture.Consumer).ObserveAcknowledgements(static _ => { });
+        var record = CreateRecord();
+        var assignment = new HashSet<TopicPartition> { new("topic", 0) };
+
+        fixture.Consumer.Acknowledge(record, AcknowledgeType.Renew);
+        ApplySuccessfulAcknowledgements(fixture.Consumer, RenewalAcknowledgements());
+        await Assert.That(GetActiveRenewedRecords(fixture.Consumer, assignment)).HasSingleItem();
+
+        fixture.Consumer.Acknowledge(record, type);
+
+        await Assert.That(GetActiveRenewedRecords(fixture.Consumer, assignment)).IsEmpty();
+        var pending = FlushPendingAcknowledgements(fixture.Consumer);
+        await Assert.That(pending[new TopicPartition("topic", 0)].Single().AcknowledgeTypes)
+            .IsEquivalentTo(new byte[] { (byte)type });
+    }
+
+    [Test]
     public async Task RenewedRecord_IsRemovedByRedeliveryOrAssignmentLoss()
     {
         var connection = new CapturingConnection(ApiKey.ShareFetch, 2);

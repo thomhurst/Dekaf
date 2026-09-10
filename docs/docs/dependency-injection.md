@@ -491,3 +491,46 @@ public sealed class OrderProcessorService : KafkaConsumerService<string, Order>
     }
 }
 ```
+
+## Share Consumer Registration
+
+`AddShareConsumer<TKey, TValue>` registers `IKafkaShareConsumer<TKey, TValue>` as a singleton and
+includes it in automatic client initialization. It accepts fluent callbacks, callbacks receiving
+`IServiceProvider`, typed `ShareConsumerOptions`, and `IConfiguration`. Each form has an overload
+with an `object serviceKey` and optional `DeadLetterQueueBuilder` configuration. Direct registrations
+preserve the share consumer's default implicit acknowledgement mode.
+
+```csharp
+services.AddDekaf(dekaf => dekaf
+    .AddShareConsumer<string, string>("orders", (provider, consumer) => consumer
+        .WithBootstrapServers(provider.GetRequiredService<KafkaSettings>().BootstrapServers)
+        .WithGroupId("order-workers")
+        .WithAcknowledgementMode(ShareAcknowledgementMode.Explicit))
+    .AddShareConsumer<string, string>("audit", new ShareConsumerOptions
+    {
+        BootstrapServers = ["localhost:9092"],
+        GroupId = "order-audit",
+        AcknowledgementMode = ShareAcknowledgementMode.Explicit
+    }));
+
+await using var provider = services.BuildServiceProvider();
+var consumer = provider.GetRequiredKeyedService<IKafkaShareConsumer<string, string>>("orders");
+```
+
+Use `AddShareConsumerService<TService, TKey, TValue>` from `Dekaf.Extensions.Hosting` to start a
+polling loop. It injects the registration's own consumer and optional DLQ options without keyed
+constructor attributes. Repeated service classes with distinct keys all start; duplicate class/key
+pairs are rejected before modifying existing registrations. Share DLQ options use a separate key
+namespace from ordinary consumers, even when both use the same service key. The helper forwards
+options automatically; it does not register an unkeyed `DeadLetterOptions` that could leak into
+another service.
+
+DI keys distinguish local service instances. Kafka share group IDs determine which workers compete
+and which consume independently. See [hosted share consumers](hosted-services.md#hosted-share-consumers)
+for minimal and repeated-service examples, delivery semantics, acquisition renewal, shutdown, and
+scoped dependency guidance. Do not concurrently use an injected share consumer from application code
+while its hosted service owns it.
+
+Typed options and fluent overloads preserve static configuration for trimming/NativeAOT. Configuration
+binding overloads carry the same `RequiresDynamicCode` and `RequiresUnreferencedCode` annotations as
+other Dekaf registrations. Hosted service type parameters preserve public constructors for activation.

@@ -29,6 +29,9 @@ namespace Dekaf.ShareConsumer;
 internal sealed partial class KafkaShareConsumer<TKey, TValue> :
     IKafkaShareConsumer<TKey, TValue>,
     IApplicationTelemetryShareConsumer,
+    IShareConsumerConfiguration,
+    IHostedShareConsumer,
+    IRawShareRecordAccessor,
     IKafkaClientInstanceIdentity,
     IKafkaClientStatusProvider
 {
@@ -50,7 +53,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
     private readonly ClientTelemetryManager _telemetryManager;
     private readonly ClientTelemetryMetricCollector _telemetryMetricCollector;
     private readonly ILogger _logger;
-    private readonly ShareAcknowledgementCommitCallback? _acknowledgementCommitCallback;
+    private ShareAcknowledgementCommitCallback? _acknowledgementCommitCallback;
 
     // ThreadStatic reusable SerializationContext to avoid per-record allocations in ParsePartitionRecords.
     // Matches the pattern used by ConsumeResult<TKey, TValue> in the regular consumer.
@@ -306,6 +309,11 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                 await Task.Delay(_options.FetchMaxWaitMs, cancellationToken).ConfigureAwait(false);
                 continue;
             }
+
+            _acquisitionStartedTimestamp = System.Diagnostics.Stopwatch.GetTimestamp();
+            _rawRecords?.Clear();
+            // All readable slices belong to the new poll; overwrite payload bytes as needed.
+            _rawBuffer?.ResetWrittenCount();
 
             // Flush pending acks from previous poll as inline acknowledgements with the fetch
             var pendingAcks = _ackTracker.HasPending ? _ackTracker.Flush() : null;
@@ -809,6 +817,8 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
             await _connectionPool.DisposeAsync().ConfigureAwait(false);
         }
 
+        _rawRecords = null;
+        _rawBuffer = null;
         _initLock.Dispose();
     }
 
@@ -1366,6 +1376,13 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                         Array.Copy(record.Headers, headers, record.HeaderCount);
                     }
 
+                    if (_rawRecords is not null)
+                    {
+                        CaptureRawRecord(new TopicPartitionOffset(topicInfo.Name, partition.PartitionIndex, offset),
+                            record.IsKeyNull ? (ReadOnlyMemory<byte>?)null : record.Key,
+                            record.IsValueNull ? (ReadOnlyMemory<byte>?)null : record.Value);
+                    }
+
                     results.Add(new ShareConsumeResult<TKey, TValue>
                     {
                         Topic = topicInfo.Name,
@@ -1531,6 +1548,13 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                 {
                     headers = new Header[record.HeaderCount];
                     Array.Copy(record.Headers, headers, record.HeaderCount);
+                }
+
+                if (_rawRecords is not null)
+                {
+                    CaptureRawRecord(new TopicPartitionOffset(topicInfo.Name, partition.PartitionIndex, offset),
+                        record.IsKeyNull ? (ReadOnlyMemory<byte>?)null : record.Key,
+                        record.IsValueNull ? (ReadOnlyMemory<byte>?)null : record.Value);
                 }
 
                 results.Add(new ShareConsumeResult<TKey, TValue>
@@ -2027,7 +2051,13 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         AcknowledgeType type)
     {
         if (type != AcknowledgeType.Renew)
+        {
+            // Hosted handlers finish renewed work in place. A terminal disposition must
+            // stop local replay immediately; the ack tracker still retains broker submission.
+            if (_hostedProcessing)
+                RemoveRenewedRecord(record.Topic, record.Partition, record.Offset);
             return;
+        }
 
         var key = new RenewedRecordKey(record.Topic, record.Partition, record.Offset);
         _renewedRecords ??= [];

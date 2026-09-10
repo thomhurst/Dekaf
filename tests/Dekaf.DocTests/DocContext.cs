@@ -5,6 +5,7 @@ using System.Security.Cryptography.X509Certificates;
 using Dekaf;
 using Dekaf.Admin;
 using Dekaf.Consumer;
+using Dekaf.Consumer.DeadLetter;
 using Dekaf.Extensions.Hosting;
 using Dekaf.Outbox;
 using Dekaf.Producer;
@@ -315,6 +316,17 @@ public class OrderConsumerService : KafkaConsumerService<string, string>
     public OrderConsumerService() : base(null!, null!) { }
     protected override IEnumerable<string> Topics => ["orders"];
     protected override ValueTask ProcessAsync(ConsumeResult<string, string> result, CancellationToken cancellationToken) => ValueTask.CompletedTask;
+}
+
+public sealed class ShareOrderWorker : KafkaShareConsumerService<string, string>
+{
+    public ShareOrderWorker(
+        IKafkaShareConsumer<string, string> consumer,
+        ILogger<ShareOrderWorker> logger,
+        DeadLetterOptions? deadLetterOptions = null) : base(consumer, logger, deadLetterOptions) { }
+    protected override IEnumerable<string> Topics => ["orders"];
+    protected override ValueTask ProcessAsync(ShareConsumeResult<string, string> result, CancellationToken cancellationToken)
+        => ValueTask.CompletedTask;
 }
 
 public class OrderProcessorService : KafkaConsumerService<string, Order>
