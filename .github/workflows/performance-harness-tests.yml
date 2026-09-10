@@ -15,10 +15,13 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+defaults:
+  run:
+    shell: bash
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
@@ -50,6 +53,31 @@ jobs:
             --expected 2 --iterations 3 --min-warmup 0 --merged "$results/same.json" --cases "$results/cases.json"
           jq -e 'length == 2 and any(.[]; any(.Metrics[]; .Descriptor.Id == "Allocated Memory" and .Value == 0)) and any(.[]; any(.Metrics[]; .Descriptor.Id == "Allocated Memory" and .Value > 0))' "$results/same.json"
           echo 'Standard BenchmarkDotNet project/export correctness smoke passed; this short run is not performance acceptance.' >> "$GITHUB_STEP_SUMMARY"
+      - name: Verify planned filters preserve expanded parameter cases
+        working-directory: tools/Dekaf.Benchmarks
+        env:
+          MSBUILDDISABLENODEREUSE: '1'
+          DOTNET_CLI_USE_MSBUILD_SERVER: '0'
+        run: |
+          results="$GITHUB_WORKSPACE/.artifacts/bdn-smoke/planning"
+          mkdir -p "$results"
+          gate="$GITHUB_WORKSPACE/.github/scripts/performance_gate.py"
+          # Dry exports are discovery/correctness evidence only. Two values of one method
+          # prove that FullName filters preserve parameters rather than rerunning the class.
+          dotnet run --project Dekaf.Benchmarks.csproj -c Release --no-build -- --job Dry \
+            --filter '*.Unit.Crc32CBenchmarks.Software(Size: 128)' '*.Unit.Crc32CBenchmarks.Software(Size: 512)' \
+            --exporters fulljson --buildTimeout 900 --artifacts "$results/discovery" > "$results/discovery.log" 2>&1
+          python3 "$gate" validate --dry --phase "$results/discovery" --expected 2
+          python3 "$gate" plan --baseline "$results/discovery" --candidate "$results/discovery" \
+            --max-cases 1 --output "$results/plan.json"
+          for batch in 1 2; do
+            mapfile -t filters < <(jq -r --argjson id "$batch" '.batches[] | select(.id == $id) | .filters[]' "$results/plan.json")
+            jq --argjson id "$batch" '.batches[] | select(.id == $id) | .cases' "$results/plan.json" > "$results/expected-$batch.json"
+            dotnet run --project Dekaf.Benchmarks.csproj -c Release --no-build -- --job Dry --filter "${filters[@]}" \
+              --exporters fulljson --buildTimeout 900 --artifacts "$results/batch-$batch" > "$results/batch-$batch.log" 2>&1
+            python3 "$gate" validate --dry --phase "$results/batch-$batch" --expected 1 --expected-cases "$results/expected-$batch.json"
+          done
+          echo 'Original parameterized BDN exports round-trip through the batch plan without lost or duplicated cases. This is tooling validation, not performance acceptance.' >> "$GITHUB_STEP_SUMMARY"
       - name: Verify comparison decisions against original exports
         run: |
           results="$GITHUB_WORKSPACE/.artifacts/bdn-smoke"
