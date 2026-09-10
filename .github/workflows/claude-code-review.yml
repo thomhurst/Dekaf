@@ -35,6 +35,9 @@ jobs:
 
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    outputs:
+      head_sha: ${{ steps.target.outputs.head_sha }}
+      started_at: ${{ steps.target.outputs.started_at }}
     # Minimal by design - see the note on the trigger above. `pull-requests: write`
     # is the only write scope, and it is reached solely through the pinned helper
     # script. Do not add `contents: write` here.
@@ -77,11 +80,18 @@ jobs:
         with:
           bun-version: latest
 
+      - name: Pin the reviewed head and invocation start
+        id: target
+        run: |
+          echo "head_sha=$(git -C pr-head rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
       - name: Run Claude Code Review
         id: claude-review
         uses: anthropics/claude-code-action@19dda84776b3518d98b8798e591daee763049ed3 # v1
         env:
           REVIEW_RECEIPT: ${{ runner.temp }}/claude-review-${{ github.run_id }}-${{ github.run_attempt }}.json
+          REVIEW_HEAD_SHA: ${{ steps.target.outputs.head_sha }}
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # The actor is the PR author, who by definition has no write access on a
@@ -134,7 +144,39 @@ jobs:
             --add-dir pr-head --allowedTools "Read,Glob,Grep,Bash(.github/scripts/pr-review-comment.sh:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*)" --model claude-sonnet-5
           allowed_bots: "dependabot[bot]"
 
-      - name: Require a successfully posted review
+      - name: Retain the untrusted posting receipt
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: review-receipt-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/claude-review-${{ github.run_id }}-${{ github.run_attempt }}.json
+          if-no-files-found: error
+          retention-days: 7
+
+  verify-review:
+    name: Verify posted review
+    needs: claude-review
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      # A separate VM prevents model-writable scripts or receipts from becoming
+      # trusted verification code. Only the receipt crosses the job boundary.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: review-receipt-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/review-receipt
+      - name: Verify the current-head comment through GitHub
         env:
-          REVIEW_RECEIPT: ${{ runner.temp }}/claude-review-${{ github.run_id }}-${{ github.run_attempt }}.json
-        run: python3 .github/scripts/pr_review_comment.py --verify-receipt
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
+          REVIEW_RECEIPT: ${{ runner.temp }}/review-receipt/claude-review-${{ github.run_id }}-${{ github.run_attempt }}.json
+          REVIEW_HEAD_SHA: ${{ needs.claude-review.outputs.head_sha }}
+          REVIEW_STARTED_AT: ${{ needs.claude-review.outputs.started_at }}
+        run: python3 -I .github/scripts/pr_review_comment.py --verify-receipt
