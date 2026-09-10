@@ -129,12 +129,13 @@ public class PartitionedDispatchBenchmarks
     }
 }
 
-/// <summary>Separates partition construction and completion tracking from handler scheduling.</summary>
+/// <summary>Separates partition construction, publication and completion from handler scheduling.</summary>
 [MemoryDiagnoser]
 public class PartitionedOffsetTrackingBenchmarks
 {
     private const int RecordCount = 128;
     private ConsumeResult<int, int>[] _records = null!;
+    private readonly ConsumeResult<int, int>[] _delivered = new ConsumeResult<int, int>[RecordCount];
 
     [GlobalSetup]
     public void Setup() => _records = PartitionedBenchmarkInput.CreateRecords(RecordCount, distinct: false);
@@ -146,8 +147,8 @@ public class PartitionedOffsetTrackingBenchmarks
     [Benchmark(OperationsPerInvoke = RecordCount)]
     public long CompleteInOrder()
     {
-        var lane = PartitionedBenchmarkInput.CreateLane(RecordCount);
-        foreach (var record in _records)
+        var lane = CreateDeliveredLane();
+        foreach (var record in _delivered)
             lane.MarkProcessed(record);
         return CheckCheckpoint(lane);
     }
@@ -155,13 +156,28 @@ public class PartitionedOffsetTrackingBenchmarks
     [Benchmark(OperationsPerInvoke = RecordCount)]
     public long CompleteOutOfOrder()
     {
-        var lane = PartitionedBenchmarkInput.CreateLane(RecordCount);
+        var lane = CreateDeliveredLane();
         // Establish the low watermark, then leave offset 1 outstanding until all later
         // completions have accumulated. This exercises the real gap-tracking collections.
-        lane.MarkProcessed(_records[0]);
+        lane.MarkProcessed(_delivered[0]);
         for (var index = RecordCount - 1; index >= 1; index--)
-            lane.MarkProcessed(_records[index]);
+            lane.MarkProcessed(_delivered[index]);
         return CheckCheckpoint(lane);
+    }
+
+    private PartitionLane<int, int> CreateDeliveredLane()
+    {
+        var lane = PartitionedBenchmarkInput.CreateLane(RecordCount);
+        // Measure publication and queue delivery in both tracking rows so completion
+        // operates on delivered records. The reusable output array is fixture storage
+        // and does not add a per-invocation allocation.
+        PartitionedBenchmarkInput.EnqueueRecords(lane, _records);
+        for (var index = 0; index < RecordCount; index++)
+        {
+            if (!lane.TryReadMessage(out _delivered[index]))
+                throw new InvalidOperationException("Missing published record.");
+        }
+        return lane;
     }
 
     private static long CheckCheckpoint(PartitionLane<int, int> lane)
@@ -178,6 +194,15 @@ internal static class PartitionedBenchmarkInput
     internal static PartitionLane<int, int> CreateLane(int capacity) => new(
         new TopicPartition("dispatch", 0), capacity,
         static (_, _) => default, static _ => { }, static (_, _) => { });
+
+    internal static void EnqueueRecords(PartitionLane<int, int> lane, ConsumeResult<int, int>[] records)
+    {
+        foreach (var record in records)
+        {
+            if (!lane.TryEnqueue(record))
+                throw new InvalidOperationException("The bounded input did not fit in the partition queue.");
+        }
+    }
 
     internal static ConsumeResult<int, int>[] CreateRecords(int count, bool distinct)
     {
