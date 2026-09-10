@@ -24,6 +24,8 @@ public class ShareConsumerParsingBenchmarks
     private readonly TopicInfo _topic = new() { Name = "share-benchmark", Partitions = [] };
     private ShareFetchResponsePartition _partition = null!;
     private List<ShareConsumeResult<int, int>> _retained = null!;
+    private Action _releaseSynchronous = null!;
+    private Action _releasePrepared = null!;
 
     [Params(64, 1024)]
     public int RecordCount { get; set; }
@@ -94,10 +96,33 @@ public class ShareConsumerParsingBenchmarks
             .GetMethod("ParsePartitionRecords", BindingFlags.Instance | BindingFlags.NonPublic)!
             .CreateDelegate<Func<TopicInfo, ShareFetchResponsePartition, int, List<ShareConsumeResult<int, int>>>>(
                 _synchronousConsumer);
+        _releaseSynchronous = BindPollRelease(_synchronousConsumer);
+        _releasePrepared = BindPollRelease(_preparedConsumer);
 
-        _retained = _parse(_topic, _partition, RecordCount);
-        Validate(_retained);
+        var parsed = _parse(_topic, _partition, RecordCount);
+        Validate(parsed);
+        // Retained traversal intentionally outlives a poll. Copy header payloads,
+        // just as callers must do, so it never reads arrays returned to the pool.
+        _retained = new List<ShareConsumeResult<int, int>>(parsed.Count);
+        foreach (var record in parsed)
+        {
+            var headers = new Header[record.Headers.Count];
+            for (var index = 0; index < headers.Length; index++)
+            {
+                var header = record.Headers[index];
+                headers[index] = new Header(header.Key, header.IsValueNull ? null : header.Value.ToArray());
+            }
+            _retained.Add(new ShareConsumeResult<int, int>
+            {
+                Topic = record.Topic, Partition = record.Partition, Offset = record.Offset,
+                Key = record.Key, Value = record.Value, Headers = headers,
+                TimestampMs = record.TimestampMs, DeliveryCount = record.DeliveryCount
+            });
+        }
+        _releaseSynchronous();
         Validate(ParsePrepared());
+        _releasePrepared();
+        Validate(_retained);
     }
 
     [GlobalCleanup]
@@ -108,13 +133,41 @@ public class ShareConsumerParsingBenchmarks
     }
 
     [Benchmark]
-    public long ParseSynchronousBatch() => Traverse(_parse(_topic, _partition, RecordCount));
+    public long ParseSynchronousBatch()
+    {
+        try
+        {
+            return Traverse(_parse(_topic, _partition, RecordCount));
+        }
+        finally
+        {
+            _releaseSynchronous();
+        }
+    }
 
     [Benchmark]
-    public long ParseWarmPreparedBatch() => Traverse(ParsePrepared());
+    public long ParseWarmPreparedBatch()
+    {
+        try
+        {
+            return Traverse(ParsePrepared());
+        }
+        finally
+        {
+            _releasePrepared();
+        }
+    }
 
     [Benchmark]
     public long TraverseRetainedBatch() => Traverse(_retained);
+
+    // Older products release batches inside parsing. Newer products release them
+    // at the poll boundary after traversal. Bind once; both revisions measure the
+    // same parse/traverse/release operation without reflection in the timed body.
+    private static Action BindPollRelease(KafkaShareConsumer<int, int> consumer) =>
+        typeof(KafkaShareConsumer<int, int>)
+            .GetMethod("ReleasePolledBatchOwners", BindingFlags.Instance | BindingFlags.NonPublic)?
+            .CreateDelegate<Action>(consumer) ?? (static () => { });
 
     private List<ShareConsumeResult<int, int>> ParsePrepared()
     {
