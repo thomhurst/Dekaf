@@ -48,6 +48,12 @@ class SelectionTests(unittest.TestCase):
         selected = self.names(gate.select([path], root=REPO_ROOT))
         self.assertIn('PartitionMessageKeyBenchmarks', selected)
 
+    def test_detailed_mutation_paths_select_direct_fixture(self):
+        for path in ('src/Dekaf/Admin/AdminClient.cs', 'src/Dekaf/Admin/AdminClient.DetailedTopicMutations.cs'):
+            with self.subTest(path=path):
+                selected = self.names(gate.select([path], root=REPO_ROOT))
+                self.assertIn('AdminDetailedMutationBenchmarks', selected)
+
     def test_any_product_change_runs_the_sentinels(self):
         selection = gate.select(['src/Dekaf/Admin/AdminClient.cs'], fixtures=self.fixtures)
         self.assertEqual(sorted(gate.SENTINELS), self.names(selection))

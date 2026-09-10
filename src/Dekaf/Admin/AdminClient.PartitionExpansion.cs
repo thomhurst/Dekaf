@@ -22,6 +22,14 @@ public sealed partial class AdminClient
         await CreatePartitionsCoreAsync(topics, timeoutMs, options?.ValidateOnly ?? false, cancellationToken).ConfigureAwait(false);
     }
 
+    internal static Dictionary<string, NewPartitions> BuildPartitionCountTopics(IReadOnlyDictionary<string, int> newPartitionCounts)
+    {
+        var topics = new Dictionary<string, NewPartitions>(newPartitionCounts.Count, StringComparer.Ordinal);
+        foreach (var pair in newPartitionCounts)
+            topics.Add(pair.Key, new() { TotalCount = pair.Value });
+        return topics;
+    }
+
     internal static List<CreatePartitionsTopic> BuildPartitionExpansionTopics(IReadOnlyDictionary<string, NewPartitions> newPartitions)
     {
         var topics = new List<CreatePartitionsTopic>(newPartitions.Count);
