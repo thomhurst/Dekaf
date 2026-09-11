@@ -12,9 +12,8 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 [MemoryDiagnoser]
 public class KeyOrderedDispatchBenchmarks
 {
-    private const int RecordCount = 262144;
     private const int Capacity = 128;
-    private readonly long[] _lastByKey = new long[RecordCount];
+    private long[] _lastByKey = null!;
     private readonly HandlerGate _handlerGate = new();
     private Func<IReadOnlyList<ConsumeResult<int, int>>, CancellationToken, ValueTask> _handler = null!;
     private PartitionLane<int, int> _lane = null!;
@@ -29,9 +28,13 @@ public class KeyOrderedDispatchBenchmarks
     [Params(1, 16)]
     public int BatchSize { get; set; }
 
+    [Params(128, 262144)]
+    public int RecordCount { get; set; }
+
     [GlobalSetup]
     public async Task Setup()
     {
+        _lastByKey = new long[RecordCount];
         _handler = HandleBatch;
         await DispatchLifetime().ConfigureAwait(false);
     }

@@ -1,21 +1,20 @@
 using System.Buffers;
 using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
-using System.Runtime.InteropServices;
 using Dekaf.Internal;
 
 namespace Dekaf.Consumer;
 
 // Only RunAsync owns queues, key membership and commit progress. Handler callbacks
 // publish completed workers to an intrusive stack and wake that single coordinator.
-internal sealed class KeyOrderedPartitionDispatcher<TKey, TValue>
+internal sealed partial class KeyOrderedPartitionDispatcher<TKey, TValue>
 {
     private readonly PartitionProcessorContext<TKey, TValue> _context;
     private readonly Func<IReadOnlyList<ConsumeResult<TKey, TValue>>, CancellationToken, ValueTask> _processor;
     private PendingRecord[] _records;
     private readonly int _maxBufferedRecords;
-    private readonly Dictionary<PartitionMessageKey<TKey>, KeyLane> _lanes;
-    private readonly BinaryPartitionMessageKeyComparer<TKey>? _binaryKeyComparer;
+    private readonly object _lanes;
+    private readonly bool _hasBinaryKeyComparer;
     private readonly Stack<KeyLane> _freeLanes;
     private readonly Queue<KeyLane> _readyLanes;
     private readonly Stack<Worker> _freeWorkers;
@@ -64,15 +63,24 @@ internal sealed class KeyOrderedPartitionDispatcher<TKey, TValue>
         // A batch size is an upper bound. Divide reusable storage across workers so
         // multiplying the two user limits cannot allocate quadratic record storage.
         _batchSize = Math.Min(maxBatchSize, Math.Max(1, maxBufferedRecords / _maxWorkers));
-        IEqualityComparer<PartitionMessageKey<TKey>>? comparer = null;
-        if (_maxWorkers != 1 || _batchSize != 1)
+        if (UseCompactKeys)
         {
-            comparer = keyComparer is null
-                ? PartitionMessageKeyComparer<TKey>.Default
-                : new CustomPartitionMessageKeyComparer<TKey>(keyComparer);
+            var comparer = keyComparer is not null && (_maxWorkers != 1 || _batchSize != 1)
+                ? new CustomUncachedPartitionMessageKeyComparer<TKey>(keyComparer) : null;
+            _lanes = new Dictionary<PartitionMessageKey<TKey>.Uncached, KeyLane>(initialCapacity, comparer);
         }
-        _binaryKeyComparer = comparer as BinaryPartitionMessageKeyComparer<TKey>;
-        _lanes = new Dictionary<PartitionMessageKey<TKey>, KeyLane>(initialCapacity, comparer);
+        else
+        {
+            IEqualityComparer<PartitionMessageKey<TKey>>? comparer = null;
+            if (_maxWorkers != 1 || _batchSize != 1)
+            {
+                comparer = keyComparer is null
+                    ? PartitionMessageKeyComparer<TKey>.Default
+                    : new CustomPartitionMessageKeyComparer<TKey>(keyComparer);
+            }
+            _hasBinaryKeyComparer = comparer is BinaryPartitionMessageKeyComparer<TKey>;
+            _lanes = new Dictionary<PartitionMessageKey<TKey>, KeyLane>(initialCapacity, comparer);
+        }
         _freeLanes = new Stack<KeyLane>(initialCapacity);
         _readyLanes = new Queue<KeyLane>(initialCapacity);
         _freeWorkers = new Stack<Worker>(Math.Min(_maxWorkers, initialCapacity));
@@ -173,9 +181,7 @@ internal sealed class KeyOrderedPartitionDispatcher<TKey, TValue>
                 _records[index] = default;
             }
 
-            foreach (var lane in _lanes.Values)
-                lane?.ReleaseKey();
-            _lanes.Clear();
+            ReleaseLanes();
             if (_failure is not null)
             {
                 // A failed removal can displace another lane. No new dispatch starts
@@ -242,29 +248,31 @@ internal sealed class KeyOrderedPartitionDispatcher<TKey, TValue>
         var key = _maxWorkers == 1 && _batchSize == 1
             ? default
             : PartitionMessageKey<TKey>.From(record.Key, record.IsKeyNull);
-        if (_binaryKeyComparer is not null && key.HasValue)
-            key = key.WithBinaryHashCode(_binaryKeyComparer.GetHashCode(key));
+        var binaryKeyComparer = _hasBinaryKeyComparer
+            ? Unsafe.As<BinaryPartitionMessageKeyComparer<TKey>>(StandardLanes.Comparer) : null;
+        if (binaryKeyComparer is not null && key.HasValue)
+            key = key.WithBinaryHashCode(binaryKeyComparer.GetHashCode(key));
 #if NETSTANDARD2_0
-        if (!_lanes.TryGetValue(key, out var lane))
+        if (!TryGetLane(key, out var lane))
         {
             lane = _freeLanes.Count != 0 ? _freeLanes.Pop() : new KeyLane();
             lane.Key = key;
             lane.KeyStorage = record.RetainStorage();
             try
             {
-                _lanes.Add(key, lane);
+                AddLane(key, lane);
             }
             catch
             {
                 lane.ReleaseKey();
                 throw;
             }
-            Volatile.Write(ref _laneCount, _lanes.Count);
+            Volatile.Write(ref _laneCount, StorageCount);
         }
 #else
         // The coordinator owns membership. Publish the lane before retaining its
         // storage, so shutdown owns cleanup even if initialization fails.
-        ref var entry = ref CollectionsMarshal.GetValueRefOrAddDefault(_lanes, key, out _);
+        ref var entry = ref GetLaneEntry(key);
         var lane = entry;
         if (lane is null)
         {
@@ -272,7 +280,7 @@ internal sealed class KeyOrderedPartitionDispatcher<TKey, TValue>
             entry = lane;
             lane.Key = key;
             lane.KeyStorage = record.RetainStorage();
-            Volatile.Write(ref _laneCount, _lanes.Count);
+            Volatile.Write(ref _laneCount, StorageCount);
         }
 #endif
 
@@ -286,30 +294,31 @@ internal sealed class KeyOrderedPartitionDispatcher<TKey, TValue>
             lane.Scheduled = true;
             _readyLanes.Enqueue(lane);
         }
-        if (_binaryKeyComparer is { NeedsFullHashing: true })
-            StrengthenBinaryHashing();
+        if (binaryKeyComparer is { NeedsFullHashing: true })
+            StrengthenBinaryHashing(binaryKeyComparer);
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private void StrengthenBinaryHashing()
+    private void StrengthenBinaryHashing(BinaryPartitionMessageKeyComparer<TKey> comparer)
     {
         // Rebuild at most once per dispatcher after repeated expensive collisions.
         // Reuse dictionary capacity and rent temporary references; ordinary probes
         // neither allocate another table nor scan the active lanes.
-        var count = _lanes.Count;
+        var dictionary = StandardLanes;
+        var count = dictionary.Count;
         var lanes = ArrayPool<KeyLane>.Shared.Rent(count);
         try
         {
-            _lanes.Values.CopyTo(lanes, 0);
+            dictionary.Values.CopyTo(lanes, 0);
             try
             {
-                _lanes.Clear();
-                _binaryKeyComparer!.EnableFullHashing();
+                dictionary.Clear();
+                comparer.EnableFullHashing();
                 for (var index = 0; index < count; index++)
                 {
                     var lane = lanes[index];
-                    lane.Key = lane.Key.WithBinaryHashCode(_binaryKeyComparer.ComputeHashCode(lane.Key));
-                    _lanes.Add(lane.Key, lane);
+                    lane.Key = lane.Key.WithBinaryHashCode(comparer.ComputeHashCode(lane.Key));
+                    dictionary.Add(lane.Key, lane);
                 }
             }
             catch (Exception error)
@@ -443,10 +452,10 @@ internal sealed class KeyOrderedPartitionDispatcher<TKey, TValue>
             // A mutable user key can make its dictionary entry unreachable.
             // Keep the lane owned until shutdown instead of pooling an alias.
 #if NETSTANDARD2_0
-            if (!_lanes.TryGetValue(lane.Key, out var found) || !ReferenceEquals(found, lane) || !_lanes.Remove(lane.Key))
+            if (!TryGetLane(lane.Key, out var found) || !ReferenceEquals(found, lane) || !RemoveLane(lane.Key))
                 throw new InvalidOperationException("A partition key changed its hash code or equality while being processed.");
 #else
-            if (!_lanes.Remove(lane.Key, out var removed) || !ReferenceEquals(removed, lane))
+            if (!RemoveLane(lane.Key, out var removed) || !ReferenceEquals(removed, lane))
             {
                 // A mutated key may remove a different active lane. Keep its storage
                 // owned until every handler finishes, even though membership is gone.
@@ -459,7 +468,7 @@ internal sealed class KeyOrderedPartitionDispatcher<TKey, TValue>
             lane.Scheduled = false;
             lane.Tail = -1;
             _freeLanes.Push(lane);
-            Volatile.Write(ref _laneCount, _lanes.Count);
+            Volatile.Write(ref _laneCount, StorageCount);
         }
 
         if (frontierChanged)

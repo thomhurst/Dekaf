@@ -72,6 +72,28 @@ internal readonly struct PartitionMessageKey<TKey> : IEquatable<PartitionMessage
         => HasValue ? comparer.GetHashCode(_value!) : 0;
 
     internal bool HasSameKind(PartitionMessageKey<TKey> other) => _kind == other._kind;
+
+    // Scalar dictionary entries do not need the binary hash retained by a lane.
+    // Keep the kind independent of the value so wire null never aliases default(TKey).
+    internal readonly struct Uncached(PartitionMessageKey<TKey> key) : IEquatable<Uncached>
+    {
+        private readonly TKey? _value = key._value;
+        private readonly KeyKind _kind = key._kind;
+
+        public bool Equals(Uncached other) => _kind == other._kind
+            && (_kind != KeyKind.Value || EqualityComparer<TKey>.Default.Equals(_value!, other._value!));
+
+        public override bool Equals(object? obj) => obj is Uncached other && Equals(other);
+
+        public override int GetHashCode() => _kind == KeyKind.Value
+            ? EqualityComparer<TKey>.Default.GetHashCode(_value!) : 0;
+
+        internal bool Equals(Uncached other, IEqualityComparer<TKey> comparer) => _kind == other._kind
+            && (_kind != KeyKind.Value || comparer.Equals(_value!, other._value!));
+
+        internal int GetHashCode(IEqualityComparer<TKey> comparer) => _kind == KeyKind.Value
+            ? comparer.GetHashCode(_value!) : 0;
+    }
 }
 
 internal static class PartitionMessageKeyComparer<TKey>
@@ -179,4 +201,13 @@ internal sealed class CustomPartitionMessageKeyComparer<TKey>(IEqualityComparer<
     public bool Equals(PartitionMessageKey<TKey> x, PartitionMessageKey<TKey> y) => x.Equals(y, comparer);
 
     public int GetHashCode(PartitionMessageKey<TKey> obj) => obj.GetHashCode(comparer);
+}
+
+internal sealed class CustomUncachedPartitionMessageKeyComparer<TKey>(IEqualityComparer<TKey> comparer)
+    : IEqualityComparer<PartitionMessageKey<TKey>.Uncached>
+{
+    public bool Equals(PartitionMessageKey<TKey>.Uncached x, PartitionMessageKey<TKey>.Uncached y)
+        => x.Equals(y, comparer);
+
+    public int GetHashCode(PartitionMessageKey<TKey>.Uncached obj) => obj.GetHashCode(comparer);
 }
