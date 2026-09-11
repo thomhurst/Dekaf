@@ -283,6 +283,67 @@ When pause wins the final delivery check after deserialization or interceptor ex
 Dekaf replays the suppressed record after resume. Deserializers and consume interceptors
 must tolerate running more than once for that record.
 
+## Batch offset checkpoints
+
+Typed `ConsumeBatchAsync` and raw `ConsumeRawBatchAsync` batches expose
+`TryGetNextOffset(out TopicPartitionOffset checkpoint)`. Capture the value after processing
+succeeds and before advancing or disposing the outer batch enumerator. The value includes the
+next offset and its leader epoch, owns no pooled memory, and can be retained after the batch expires.
+
+With `OffsetCommitMode.Manual`, commit the captured checkpoint explicitly:
+
+```csharp
+await foreach (var batch in consumer.ConsumeBatchAsync(cancellationToken))
+{
+    foreach (var record in batch)
+        await ProcessAsync(record, cancellationToken);
+
+    if (batch.TryGetNextOffset(out var checkpoint))
+        await consumer.CommitAsync([checkpoint], cancellationToken);
+}
+```
+
+For a transactional consume/process/produce pipeline, initialize a transactional producer first,
+then send the checkpoint with the output transaction. Use the input consumer's group metadata:
+
+```csharp
+await foreach (var batch in consumer.ConsumeBatchAsync(cancellationToken))
+{
+    await using var transaction = producer.BeginTransaction();
+    foreach (var record in batch)
+    {
+        await transaction.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = "processed",
+            Key = record.Key,
+            Value = record.Value
+        }, cancellationToken);
+    }
+
+    if (batch.TryGetNextOffset(out var checkpoint))
+    {
+        var groupMetadata = consumer.ConsumerGroupMetadata
+            ?? throw new InvalidOperationException("A consumer group is required.");
+        await transaction.SendOffsetsToTransactionAsync([checkpoint], groupMetadata, cancellationToken);
+    }
+    await transaction.CommitAsync(cancellationToken);
+}
+```
+
+The same capture method applies to raw batches; process or copy borrowed bytes before advancing
+the outer enumerator. Checkpoint capture neither stores offsets nor proves application success.
+Do not commit a captured value if processing failed or the consumer no longer owns that partition.
+
+- Before this window advances, capture returns `false`.
+- Partial enumeration covers only delivered or deliberately filtered records, never the undisclosed
+  remainder. `MaxPollRecords` stops checkpoint advancement before the buffered next record.
+- Full enumeration includes trailing compacted offsets, control records, and aborted transactions.
+  A control-only window can therefore expose a checkpoint despite yielding zero records. An empty
+  fetch or EOF notification alone does not create progress.
+- Pause retains already consumed progress. Seek, revocation, pooled-buffer disposal, or requesting
+  another outer batch invalidates further capture from the old batch. Previously captured values
+  remain snapshots; they do not authorize committing after assignment changes.
+
 ## Accessing Metadata
 
 ```csharp

@@ -117,6 +117,7 @@ internal sealed class PendingFetchData : IDisposable
     private int _disposed;
     private int _referenceCount = 1;
     private int _headerGeneration;
+    private object? _checkpointOwner;
     private bool _eagerParsed;
     private bool _hasBufferedCurrent;
 
@@ -170,6 +171,27 @@ internal sealed class PendingFetchData : IDisposable
     /// </summary>
     public long ProvenOffset { get; private set; } = -1;
     public int ProvenLeaderEpoch { get; private set; } = -1;
+
+    internal long CheckpointInitialMessageCount { get; private set; }
+    internal long CheckpointStartOffset => _skipRecordsBelowOffset;
+
+    internal void BeginCheckpointWindow(object owner)
+    {
+        CheckpointInitialMessageCount = MessageCount;
+        // The batch already exists. Its identity cannot wrap or match a stale window.
+        Volatile.Write(ref _checkpointOwner, owner);
+    }
+
+    internal bool IsCheckpointWindowActive(object owner) =>
+        Volatile.Read(ref _disposed) == 0 && ReferenceEquals(Volatile.Read(ref _checkpointOwner), owner);
+
+    internal void EndCheckpointWindow(object? owner)
+    {
+        // A suspended iterator can outlive this pooled instance's original rental.
+        // End only its own window, even if a newer owner begins between checks.
+        if (owner is not null)
+            Interlocked.CompareExchange(ref _checkpointOwner, null, owner);
+    }
 
     /// <summary>
     /// Marks everything yielded so far as processed. Called on the consume paths at the
@@ -923,6 +945,7 @@ internal sealed class PendingFetchData : IDisposable
         CurrentPartitionLeaderEpoch = -1;
         CurrentBaseTimestamp = 0;
         CurrentTimestampType = default;
+        _checkpointOwner = null;
         LastYieldedOffset = -1;
         LastYieldedLeaderEpoch = -1;
         ProvenOffset = -1;
@@ -3590,8 +3613,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 PendingFetchData pending = _pendingFetches.Peek();
                 pending.MarkYieldedProcessed();
                 int pendingFetchesVersion = Volatile.Read(ref _pendingFetchesVersion);
-                var batchYielded = false;
                 var resumedAfterYield = false;
+                ConsumeBatch<TKey, TValue>? batch = null;
                 long? batchProcessingStarted = _adaptiveFetchSizer is not null
                     ? Stopwatch.GetTimestamp() : null;
 
@@ -3607,7 +3630,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
                     // Yield the batch to the caller for synchronous iteration
                     var batchIterationVersion = Volatile.Read(ref _batchIterationEpoch.Version);
-                    ConsumeBatch<TKey, TValue> batch = new(
+                    batch = new ConsumeBatch<TKey, TValue>(
                         pending,
                         _keyDeserializer,
                         _valueDeserializer,
@@ -3622,8 +3645,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         _recordHeaderRoutingPlan,
                         _tryRecordPollFast,
                         _onBatchConsume);
-                    batchYielded = true;
                     yield return batch;
+                    pending.EndCheckpointWindow(batch);
                     // Resumption = the caller requested the next batch, proving this one was
                     // processed. Enumerator disposal skips straight to the finally block.
                     resumedAfterYield = true;
@@ -3631,12 +3654,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 }
                 finally
                 {
+                    if (!resumedAfterYield)
+                        pending.EndCheckpointWindow(batch);
                     CompleteBatchPoll(
                         pending,
                         pendingFetchesVersion,
                         metricsEnabled,
                         batchProcessingStarted,
-                        disposePending: !batchYielded,
+                        disposePending: batch is null,
                         yieldedBatchProcessed: resumedAfterYield);
                 }
             }
@@ -3761,8 +3786,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 PendingFetchData pending = _pendingFetches.Peek();
                 pending.MarkYieldedProcessed();
                 int pendingFetchesVersion = Volatile.Read(ref _pendingFetchesVersion);
-                var batchYielded = false;
                 var resumedAfterYield = false;
+                ConsumeRawBatch? batch = null;
                 long? batchProcessingStarted = _adaptiveFetchSizer is not null
                     ? Stopwatch.GetTimestamp() : null;
 
@@ -3773,7 +3798,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
                     // Yield the raw batch to the caller for synchronous iteration
                     var batchIterationVersion = Volatile.Read(ref _batchIterationEpoch.Version);
-                    ConsumeRawBatch batch = new(
+                    batch = new ConsumeRawBatch(
                         pending,
                         new BatchIterationGuard(
                             _batchIterationEpoch,
@@ -3781,8 +3806,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                             GetBatchIterationStatus),
                         _storeOffsetOnDelivery,
                         _options.MaxPollRecords);
-                    batchYielded = true;
                     yield return batch;
+                    pending.EndCheckpointWindow(batch);
                     // Resumption = the caller requested the next batch, proving this one was
                     // processed. Enumerator disposal skips straight to the finally block.
                     resumedAfterYield = true;
@@ -3790,12 +3815,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 }
                 finally
                 {
+                    if (!resumedAfterYield)
+                        pending.EndCheckpointWindow(batch);
                     CompleteBatchPoll(
                         pending,
                         pendingFetchesVersion,
                         metricsEnabled,
                         batchProcessingStarted,
-                        disposePending: !batchYielded,
+                        disposePending: batch is null,
                         yieldedBatchProcessed: resumedAfterYield);
                 }
             }
