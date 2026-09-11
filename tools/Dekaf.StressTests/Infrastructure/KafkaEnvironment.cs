@@ -182,8 +182,10 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
         _network = network;
     }
 
-    public static async Task<KafkaEnvironment> CreateAsync(int brokerCount = 1)
+    public static async Task<KafkaEnvironment> CreateAsync(int brokerCount = 1, bool enableShareGroups = false)
     {
+        if (enableShareGroups && brokerCount != 1)
+            throw new ArgumentException("The hosted-share lane requires one broker.", nameof(brokerCount));
         var externalBootstrap = Environment.GetEnvironmentVariable("KAFKA_BOOTSTRAP_SERVERS");
         if (!string.IsNullOrEmpty(externalBootstrap))
         {
@@ -196,10 +198,10 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
             return await CreateMultiBrokerAsync(brokerCount).ConfigureAwait(false);
         }
 
-        return await CreateSingleBrokerAsync().ConfigureAwait(false);
+        return await CreateSingleBrokerAsync(enableShareGroups).ConfigureAwait(false);
     }
 
-    private static async Task<KafkaEnvironment> CreateSingleBrokerAsync()
+    private static async Task<KafkaEnvironment> CreateSingleBrokerAsync(bool enableShareGroups)
     {
         Console.WriteLine("Starting Kafka container via Testcontainers...");
         var builder = new KafkaBuilder(KafkaImage);
@@ -207,7 +209,7 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
         {
             ConsensusProtocol.KRaft => builder.WithKRaft(),
             ConsensusProtocol.ZooKeeper => builder,
-            _ => throw new ArgumentOutOfRangeException(nameof(SingleBrokerConsensusProtocol)),
+            _ => throw new InvalidOperationException("Unsupported single-broker consensus protocol."),
         };
 
         builder = builder
@@ -219,6 +221,16 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
             // Explicit log dir so the optional tmpfs mount target always matches
             .WithEnvironment("KAFKA_LOG_DIRS", KafkaLogDir)
             .WithEnvironment("KAFKA_HEAP_OPTS", BrokerHeapOpts);
+
+        if (enableShareGroups)
+        {
+            builder = builder
+                .WithEnvironment("KAFKA_GROUP_SHARE_ENABLE", "true")
+                .WithEnvironment("KAFKA_GROUP_COORDINATOR_REBALANCE_PROTOCOLS", "classic,consumer,share")
+                .WithEnvironment("KAFKA_SHARE_COORDINATOR_STATE_TOPIC_REPLICATION_FACTOR", "1")
+                .WithEnvironment("KAFKA_SHARE_COORDINATOR_STATE_TOPIC_MIN_ISR", "1")
+                .WithEnvironment("KAFKA_SHARE_COORDINATOR_STATE_TOPIC_NUM_PARTITIONS", "3");
+        }
 
         foreach (var (key, value) in RetentionConfig)
         {

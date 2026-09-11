@@ -27,7 +27,7 @@ def budget(matrix, duration_minutes, warmup_seconds, adaptive_connections=False)
             segments += int(lane.get("run_adaptive", False) and not adaptive_connections)
             lane["producer_samples"] = segments
             validation = 0
-        elif str(lane.get("scenario", "")).startswith("consumer"):
+        elif str(lane.get("scenario", "")).startswith("consumer") or lane.get("scenario") == "hosted-share":
             segments = lane.get("paired_samples", 1) * (2 if lane.get("client") == "all" else 1)
             # The existing workflow field gates validation and its expected result count.
             lane["producer_samples"] = segments

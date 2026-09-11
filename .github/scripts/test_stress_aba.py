@@ -94,6 +94,16 @@ class StressAbaComparisonTests(unittest.TestCase):
                 self.assertIn(item["status"], ("recorded", "n/a"), item["key"])
         self.assertIn(metric(comparison, "max")["status"], ("recorded", "n/a"))
 
+    def test_hosted_processing_latency_uses_existing_diagnostics_contract(self):
+        segment = result(scenario="hosted-share", diagnostics=True)
+        segment.pop("deliveredMessages")  # The headline is unique processing completions.
+        segment["idempotent"] = True
+        segment["consumedMessages"] = segment["throughput"]["totalMessages"]
+        self.assert_pass(compare(segment, segment, segment))
+        segment.pop("producerDeliveryDiagnostics")
+        with self.assertRaisesRegex(ValueError, "producerDeliveryDiagnostics"):
+            compare(segment, segment, segment)
+
     def test_maximum_latency_is_recorded_and_never_decides(self):
         for second_candidate in (False, True):
             for count in (10_000, 1_000_000):
@@ -813,10 +823,10 @@ class StressAbaWorkflowTests(unittest.TestCase):
             self.workflow,
         )
         self.assertIn(
-            "Exact-SHA A-B-A requires a duration-based producer lane or a consumer replay lane",
+            "Exact-SHA A-B-A requires a duration-based producer, consumer replay, or hosted-share lane",
             self.workflow,
         )
-        self.assertIn("consumer-1b|consumer-batch-1b|consumer-raw-1b|consumer-raw-batch-1b) ;;", self.workflow)
+        self.assertIn("consumer-1b|consumer-batch-1b|consumer-raw-1b|consumer-raw-batch-1b|hosted-share-1b) ;;", self.workflow)
 
     def test_matrix_forces_three_single_connection_dekaf_segments(self):
         self.assertIn('.baseline_sha = $baseline_sha', self.workflow)

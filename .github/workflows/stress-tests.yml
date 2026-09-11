@@ -29,13 +29,14 @@ on:
           - consumer-batch-1b
           - consumer-raw-1b
           - consumer-raw-batch-1b
+          - hosted-share-1b
           - all
       duration_minutes:
         description: 'Test duration in minutes'
         required: false
         default: '15'
       producer_warmup_seconds:
-        description: 'Identical elapsed workload warmup for producers and consumer replay (minimum 20 seconds; no adaptive extension)'
+        description: 'Identical elapsed workload warmup for producers and consumer replay/hosted share (minimum 20 seconds; no adaptive extension)'
         required: false
         default: '180'
       message_size:
@@ -247,9 +248,9 @@ jobs:
             fi
             case "$lane" in
               producer-1b|producer-3b|producer-idempotent-1b|producer-idempotent-3b|producer-acks-all-1b|producer-acks-all-3b) ;;
-              consumer-1b|consumer-batch-1b|consumer-raw-1b|consumer-raw-batch-1b) ;;
+              consumer-1b|consumer-batch-1b|consumer-raw-1b|consumer-raw-batch-1b|hosted-share-1b) ;;
               *)
-                echo "::error::Exact-SHA A-B-A requires a duration-based producer lane or a consumer replay lane."
+                echo "::error::Exact-SHA A-B-A requires a duration-based producer, consumer replay, or hosted-share lane."
                 exit 1
                 ;;
             esac
@@ -271,7 +272,8 @@ jobs:
             {"lane": "consumer-1b", "scenario": "consumer", "client": "all", "brokers": 1, "timeout_minutes": 90, "name": "Consumer (Paired)"},
             {"lane": "consumer-batch-1b", "scenario": "consumer-batch", "client": "dekaf", "brokers": 1, "timeout_minutes": 60, "name": "Dekaf Consumer Batch"},
             {"lane": "consumer-raw-1b", "scenario": "consumer-raw", "client": "dekaf", "brokers": 1, "timeout_minutes": 60, "name": "Dekaf Consumer Raw"},
-            {"lane": "consumer-raw-batch-1b", "scenario": "consumer-raw-batch", "client": "dekaf", "brokers": 1, "timeout_minutes": 60, "name": "Dekaf Consumer Raw Batch"}
+            {"lane": "consumer-raw-batch-1b", "scenario": "consumer-raw-batch", "client": "dekaf", "brokers": 1, "timeout_minutes": 60, "name": "Dekaf Consumer Raw Batch"},
+            {"lane": "hosted-share-1b", "scenario": "hosted-share", "client": "dekaf", "brokers": 1, "manual_only": true, "timeout_minutes": 60, "name": "Dekaf Hosted Share (Live Producer and Two Workers)"}
           ]
           EOF
 
@@ -295,7 +297,7 @@ jobs:
             def drop_3conn: .run_3conn = false | .artifact_suffix = "";
             def drop_adaptive: .run_adaptive = false;
             {include: [ .[]
-              | select($lane == "all" or .lane == $lane)
+              | select(($lane == "all" and .manual_only != true) or .lane == $lane)
               | segments as $full_segments
               | ((.timeout_minutes / $full_segments) | ceil) as $segment_budget
               | if $client != "" and .client == "all" then
@@ -363,7 +365,7 @@ jobs:
       # two-core consumer runner, creating permanent throughput steps unrelated to
       # either Kafka client. Pin consumer jobs to stable Server GC topology so paired
       # comparisons measure client work; producer jobs retain the runtime default.
-      DOTNET_GCDynamicAdaptationMode: ${{ startsWith(matrix.scenario, 'consumer') && '0' || '1' }}
+      DOTNET_GCDynamicAdaptationMode: ${{ (startsWith(matrix.scenario, 'consumer') || matrix.scenario == 'hosted-share') && '0' || '1' }}
       # Broker log dirs live on tmpfs so disk I/O never caps ingestion. Sized above the
       # worst-case retention overshoot (see KafkaEnvironment.RetentionConfig for the
       # math); a fill halts the broker, so the disk monitor below samples usage during
@@ -454,7 +456,7 @@ jobs:
         run: dotnet build-server shutdown
 
       - name: Start Kafka
-        if: matrix.brokers == 1 && matrix.baseline_sha == ''
+        if: matrix.brokers == 1 && matrix.baseline_sha == '' && matrix.scenario != 'hosted-share'
         run: |
           # Broker pinned to its own cores (client under test gets the rest) and log
           # dir on tmpfs so neither broker CPU starvation nor disk I/O caps ingestion.
@@ -508,7 +510,7 @@ jobs:
         env:
           # A-B-A gets fresh Testcontainers brokers for every process, including 1-broker
           # lanes; retained topics, JVM state and broker caches cannot leak across phases.
-          KAFKA_BOOTSTRAP_SERVERS: ${{ matrix.brokers == 1 && matrix.baseline_sha == '' && 'localhost:9092' || '' }}
+          KAFKA_BOOTSTRAP_SERVERS: ${{ matrix.brokers == 1 && matrix.baseline_sha == '' && matrix.scenario != 'hosted-share' && 'localhost:9092' || '' }}
           # Multi-broker runs start brokers via Testcontainers from inside the client
           # process; these apply the same core pinning and tmpfs as the docker run above.
           STRESS_BROKER_CPUSET: ${{ env.BROKER_CPUS }}
@@ -720,7 +722,7 @@ jobs:
       # such check and would otherwise report near-zero throughput as a valid result;
       # this step also gives a clearer verdict than the client's exception trace.
       - name: Verify Broker Survived
-        if: matrix.brokers == 1 && matrix.baseline_sha == ''
+        if: matrix.brokers == 1 && matrix.baseline_sha == '' && matrix.scenario != 'hosted-share'
         run: |
           status=$(docker inspect -f '{{.State.Status}}' kafka 2>/dev/null || echo "missing")
           if [ "$status" != "running" ]; then
@@ -793,7 +795,7 @@ jobs:
           retention-days: 90
 
       - name: Stop Kafka
-        if: always() && matrix.brokers == 1 && matrix.baseline_sha == ''
+        if: always() && matrix.brokers == 1 && matrix.baseline_sha == '' && matrix.scenario != 'hosted-share'
         run: docker rm -f kafka || true
 
   # Collect all results and generate summary

@@ -18,6 +18,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Dekaf\Dekaf.csproj" />
+    <ProjectReference Include="..\..\src\Dekaf.Extensions.Hosting\Dekaf.Extensions.Hosting.csproj" />
     <ProjectReference Include="..\..\src\Dekaf.Compression.Lz4\Dekaf.Compression.Lz4.csproj" />
     <ProjectReference Include="..\..\src\Dekaf.Compression.Snappy\Dekaf.Compression.Snappy.csproj" />
     <ProjectReference Include="..\..\src\Dekaf.Compression.Zstd\Dekaf.Compression.Zstd.csproj" />
