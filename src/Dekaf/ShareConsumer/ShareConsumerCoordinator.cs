@@ -81,7 +81,7 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
     public CoordinatorState State => _state;
     public TopicPartitionSet Assignment => _assignedPartitions;
 
-    // Allocate only when a poll actually waits without assignments. Subscribe to the
+    // Allocate only when a poll waits for assignment or leader recovery. Subscribe to the
     // signal before rechecking state so updates racing waiter registration cannot be lost.
     internal Task GetAssignmentChangeTask()
     {

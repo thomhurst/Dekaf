@@ -339,7 +339,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
             {
                 // No broker request provided long-poll back-pressure. Refresh missing
                 // leaders and use the configured retry delay only if none is available.
-                await PrepareRequestRetryAsync(0, cancellationToken, assignment).ConfigureAwait(false);
+                await PrepareMissingLeaderRetryAsync(assignment, cancellationToken).ConfigureAwait(false);
                 continue;
             }
 

@@ -324,9 +324,11 @@ public class ShareConsumerPollBenchmarks
     private MetadataResponse? _missingLeader;
     private Timer? _metadataRestoreTimer;
     private TaskCompletionSource<bool>? _metadataRestored;
+    private bool _asynchronousMetadata;
 
-    internal void PrepareMissingLeaderPolling(bool batch)
+    internal void PrepareMissingLeaderPolling(bool batch, bool asynchronousMetadata = false)
     {
+        _asynchronousMetadata = asynchronousMetadata;
         PrepareIdlePolling(batch);
         PublishIdleAssignment();
         _missingLeader = new MetadataResponse
@@ -348,10 +350,12 @@ public class ShareConsumerPollBenchmarks
             try
             {
                 self._metadata.Metadata.Update(self._connection.MetadataResponse);
+                self._connection.PendingMetadata?.TrySetResult(self._connection.MetadataResponse);
                 self._metadataRestored!.TrySetResult(true);
             }
             catch (Exception error)
             {
+                self._connection.PendingMetadata?.TrySetException(error);
                 self._metadataRestored!.TrySetException(error);
             }
         }, this, Timeout.Infinite, Timeout.Infinite);
@@ -362,6 +366,8 @@ public class ShareConsumerPollBenchmarks
         _metadata.Metadata.Update(_missingLeader!);
         var restored = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         _metadataRestored = restored;
+        if (_asynchronousMetadata)
+            _connection.PendingMetadata = new TaskCompletionSource<MetadataResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
         _metadataRestoreTimer!.Change(metadataDelayMs, Timeout.Infinite);
         try
         {
@@ -371,8 +377,12 @@ public class ShareConsumerPollBenchmarks
         {
             // Join the fixture's independent metadata publication before the next
             // operation, including when the client already refreshed it itself.
-            await restored.Task;
-            _metadataRestored = null;
+            try { await restored.Task; }
+            finally
+            {
+                _metadataRestored = null;
+                _connection.PendingMetadata = null;
+            }
         }
     }
     private KafkaShareConsumer<int, int> CreateConsumer(Pool pool, int maxPollRecords = 0)
@@ -403,6 +413,7 @@ public class ShareConsumerPollBenchmarks
         private ManualResetValueTaskSourceCore<ShareFetchResponse> _completion;
         private bool _pending;
         internal MetadataResponse MetadataResponse { get; set; } = null!;
+        internal TaskCompletionSource<MetadataResponse>? PendingMetadata { get; set; }
         internal bool Asynchronous { get; set; } = asynchronous;
         internal int AcknowledgeRequests { get; private set; }
         internal long ReleasedOffsets { get; private set; }
@@ -425,6 +436,8 @@ public class ShareConsumerPollBenchmarks
         public ValueTask<TResponse> SendAsync<TRequest, TResponse>(TRequest request, short version, CancellationToken token = default)
             where TRequest : IKafkaRequest<TResponse> where TResponse : IKafkaResponse
         {
+            if (request is MetadataRequest && PendingMetadata is { } metadata)
+                return AwaitMetadataAsync<TResponse>(metadata.Task, token);
             if (request is ShareAcknowledgeRequest acknowledge)
             {
                 AcknowledgeRequests++;
@@ -465,6 +478,11 @@ public class ShareConsumerPollBenchmarks
             };
             return ValueTask.FromResult((TResponse)response);
         }
+
+        private static async ValueTask<TResponse> AwaitMetadataAsync<TResponse>(
+            Task<MetadataResponse> pending, CancellationToken token)
+            where TResponse : IKafkaResponse
+            => (TResponse)(IKafkaResponse)await pending.WaitAsync(token);
 
         internal void CompletePendingFetch()
         {
