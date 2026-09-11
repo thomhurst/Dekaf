@@ -265,6 +265,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
     public IKafkaShareConsumer<TKey, TValue> Subscribe(params string[] topics)
     {
         _subscriptionSnapshot = new HashSet<string>(topics);
+        _coordinator.NotifyAssignmentChange();
         return this;
     }
 
@@ -282,6 +283,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         _activeShareBatch = null;
         _batchAcknowledgements?.Clear();
         _subscriptionSnapshot = new HashSet<string>();
+        _coordinator.NotifyAssignmentChange();
         _sessionManager.ResetAll();
         ClearRenewedRecords();
         return this;
@@ -297,7 +299,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
 
         while (!cancellationToken.IsCancellationRequested)
         {
-            if (_subscriptionSnapshot.Count == 0)
+            if (_subscriptionSnapshot.Count == 0 || Volatile.Read(ref _closed) != 0 || Volatile.Read(ref _disposed) != 0)
                 yield break;
 
             // Ensure we're part of the share group
@@ -309,10 +311,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
             RemoveRenewedRecordsOutsideAssignment(assignment);
             if (assignment.Count == 0)
             {
-                // No partitions assigned (e.g. rebalance removed them while state is Stable).
-                // Delay to avoid a spin-loop — reuse FetchMaxWaitMs as the broker's natural
-                // back-pressure is absent when no fetch request is issued.
-                await Task.Delay(_options.FetchMaxWaitMs, cancellationToken).ConfigureAwait(false);
+                await WaitForAssignmentChangeAsync(assignment, cancellationToken).ConfigureAwait(false);
                 continue;
             }
 
@@ -797,6 +796,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         await WaitForPendingReleaseAsync(cancellationToken).ConfigureAwait(false);
         if (Interlocked.Exchange(ref _closed, 1) != 0)
             return;
+        _coordinator.NotifyAssignmentChange();
 
         LogClosingShareConsumer();
         ClearRenewedRecords();
@@ -846,6 +846,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
             return;
+        _coordinator.NotifyAssignmentChange();
 
         ClearRenewedRecords();
 

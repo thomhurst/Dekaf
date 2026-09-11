@@ -41,6 +41,7 @@ public class ShareConsumerPollBenchmarks
     [Params(false, true)]
     public bool AsynchronousResponse { get; set; }
 
+    internal int IdleFetchMaxWaitMs { get; set; } = 200;
     internal bool RenewalMode { get; set; }
     internal int ReplayChunkSize { get; set; }
     internal ShareAcquisitionShape AcquisitionShape { get; set; }
@@ -290,11 +291,40 @@ public class ShareConsumerPollBenchmarks
         return _connection.ReleasedOffsets;
     }
 
+    private Action<ShareGroupHeartbeatAssignment>? _publishIdleAssignment;
+    private Func<ValueTask<bool>>? _idleMoveNext;
+    private static readonly ShareGroupHeartbeatAssignment EmptyAssignment = new() { TopicPartitions = [] };
+    private static readonly ShareGroupHeartbeatAssignment AssignedPartition = new()
+    {
+        TopicPartitions = [new ShareGroupHeartbeatTopicPartitions { TopicId = TopicId, Partitions = [0] }]
+    };
+
+    internal void PrepareIdlePolling(bool batch)
+    {
+        var consumer = batch ? _borrowed : _compatibility;
+        const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
+        var coordinator = typeof(KafkaShareConsumer<int, int>).GetField("_coordinator", flags)!.GetValue(consumer)!;
+        _publishIdleAssignment = typeof(ShareConsumerCoordinator)
+            .GetMethod("ProcessShareGroupAssignment", flags)!
+            .CreateDelegate<Action<ShareGroupHeartbeatAssignment>>(coordinator);
+        _idleMoveNext = batch ? _batches.MoveNextAsync : _records.MoveNextAsync;
+        PublishEmptyAssignment();
+    }
+
+    internal ValueTask<bool> BeginIdleRound()
+    {
+        PublishEmptyAssignment();
+        return _idleMoveNext!();
+    }
+
+    internal void PublishIdleAssignment() => _publishIdleAssignment!(AssignedPartition);
+    internal void PublishEmptyAssignment() => _publishIdleAssignment!(EmptyAssignment);
     private KafkaShareConsumer<int, int> CreateConsumer(Pool pool, int maxPollRecords = 0)
     {
         var consumer = new KafkaShareConsumer<int, int>(new ShareConsumerOptions
         {
             BootstrapServers = ["localhost:9092"], GroupId = "share-poll-benchmark",
+            FetchMaxWaitMs = IdleFetchMaxWaitMs,
             MaxPollRecords = maxPollRecords == 0 ? checked(RecordCount * BatchCount) : maxPollRecords,
             AcknowledgementMode = RenewalMode ? ShareAcknowledgementMode.Explicit : ShareAcknowledgementMode.Implicit
         }, Serializers.Int32, Serializers.Int32, pool, _metadata);

@@ -46,6 +46,7 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
     private long _lastSuccessfulHeartbeatTimestamp;
     private string? _lastHeartbeatFailure;
     private int _disposed;
+    private TaskCompletionSource<bool>? _assignmentChanged;
     private readonly Func<int> _getCoordinationConnectionIndex;
 
     private volatile int _heartbeatIntervalMs;
@@ -80,6 +81,25 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
     public CoordinatorState State => _state;
     public TopicPartitionSet Assignment => _assignedPartitions;
 
+    // Allocate only when a poll actually waits without assignments. Subscribe to the
+    // signal before rechecking state so updates racing waiter registration cannot be lost.
+    internal Task GetAssignmentChangeTask()
+    {
+        if (Volatile.Read(ref _disposed) != 0)
+            return Task.CompletedTask;
+        var pending = Volatile.Read(ref _assignmentChanged);
+        if (pending is not null)
+            return pending.Task;
+        var created = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        pending = Interlocked.CompareExchange(ref _assignmentChanged, created, null) ?? created;
+        if (Volatile.Read(ref _disposed) != 0)
+            NotifyAssignmentChange();
+        return pending.Task;
+    }
+
+    internal void NotifyAssignmentChange()
+        => Interlocked.Exchange(ref _assignmentChanged, null)?.TrySetResult(true);
+
     internal ConsumerGroupStatus CaptureGroupStatus()
     {
         var assignment = _assignedPartitions;
@@ -107,6 +127,7 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
     internal void RequestRejoin()
     {
         _state = CoordinatorState.Unjoined;
+        NotifyAssignmentChange();
     }
 
     /// <summary>
@@ -132,6 +153,7 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
     {
         _coordinatorId = -1;
         _state = CoordinatorState.Unjoined;
+        NotifyAssignmentChange();
     }
 
     private static bool IsRetriableCoordinatorError(ErrorCode? errorCode) =>
@@ -299,6 +321,7 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
         _memberEpoch = 0;
         _assignedPartitions = [];
         _state = CoordinatorState.Unjoined;
+        NotifyAssignmentChange();
     }
 
     /// <summary>
@@ -441,6 +464,9 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
     /// </summary>
     private void ProcessShareGroupAssignment(ShareGroupHeartbeatAssignment assignment)
     {
+        if (assignment.TopicPartitions.Count == 0 && _assignedPartitions.Count == 0)
+            return;
+
         var newAssignment = new HashSet<TopicPartition>();
 
         foreach (var tp in assignment.TopicPartitions)
@@ -460,12 +486,12 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
 
         var oldAssignment = _assignedPartitions;
 
-        if (newAssignment.Count != oldAssignment.Count || !newAssignment.SetEquals(oldAssignment))
-        {
-            LogAssignmentUpdate(newAssignment.Count);
-        }
+        if (newAssignment.Count == oldAssignment.Count && newAssignment.SetEquals(oldAssignment))
+            return;
 
+        LogAssignmentUpdate(newAssignment.Count);
         _assignedPartitions = newAssignment;
+        NotifyAssignmentChange();
     }
 
     /// <summary>
@@ -607,6 +633,7 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
                             // see the Unjoined state and trigger a fresh join.
                             _memberEpoch = 0;
                             _state = CoordinatorState.Unjoined;
+                            NotifyAssignmentChange();
                             break;
 
                         case ErrorCode.UnknownMemberId:
@@ -742,6 +769,7 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
             return;
+        NotifyAssignmentChange();
         LogCoordinatorDisposing();
 
         await StopHeartbeatAsync().ConfigureAwait(false);
