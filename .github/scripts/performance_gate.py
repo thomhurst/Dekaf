@@ -44,6 +44,7 @@ SENTINELS = ('AccumulatorAppendBenchmarks', 'ConsumerHotPathBenchmarks',
 COMPONENTS = {
     'src/Dekaf/Consumer/KeyOrderedPartitionDispatcher.cs': ('PartitionMessageKeyBenchmarks',),
     'src/Dekaf/Consumer/PartitionMessageKey.cs': ('PartitionMessageKeyBenchmarks',),
+    'src/Dekaf/Admin/': ('AdminDetailedMutationBenchmarks',),
     'src/Dekaf/Producer/': ('AccumulatorAdmissionAppendBenchmarks', 'ProducerFireHotPathBenchmarks',
                             'PartitionerBenchmarks', 'InflightTrackingBenchmarks', 'PartitionQueueAccountingBenchmarks'),
     'src/Dekaf/Consumer/': ('FetchRequestBuildBenchmarks', 'OffsetStoreBenchmarks', 'PartitionedDispatchBenchmarks',

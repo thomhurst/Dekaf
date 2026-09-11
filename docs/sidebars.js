@@ -84,6 +84,7 @@ const sidebars = {
         'health-checks',
         'admin/topic-identifiers',
         'admin/partition-expansion',
+        'admin/detailed-mutations',
         'admin/transaction-remediation',
         'admin/replica-log-directories',
         'admin/streams-group-management',
