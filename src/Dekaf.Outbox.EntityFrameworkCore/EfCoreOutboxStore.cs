@@ -1,4 +1,6 @@
+using System.Runtime.CompilerServices;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata;
 
 namespace Dekaf.Outbox.EntityFrameworkCore;
 
@@ -25,6 +27,10 @@ public sealed class EfCoreOutboxStore<TContext> : IOutboxStore, IOutboxLeaseRene
     /// many lease durations are removed.
     /// </summary>
     private const int HeartbeatPruneFactor = 10;
+
+    // EF compiled queries are model-specific. Weak model keys support custom mappings
+    // without retaining application models or sharing a delegate across different models.
+    private static readonly ConditionalWeakTable<IModel, Func<TContext, int[], IAsyncEnumerable<int>>> PendingBucketQueries = new();
 
     private readonly IDbContextFactory<TContext> _contextFactory;
     private readonly TimeProvider _timeProvider;
@@ -158,6 +164,25 @@ public sealed class EfCoreOutboxStore<TContext> : IOutboxStore, IOutboxLeaseRene
         var context = await _contextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
         await using var contextDisposal = context.ConfigureAwait(false);
         var bucketArray = buckets as int[] ?? [.. buckets];
+        // Acquired buckets always have a lease row. Probe each of those bounded rows
+        // with EXISTS, allowing the (Bucket, Id) index to stop at the first message.
+        // DISTINCT over messages instead visits the entire owned backlog on some providers.
+        if (_leasesSeeded)
+        {
+            var query = PendingBucketQueries.GetValue(context.Model, static _ => EF.CompileAsyncQuery<TContext, int[], int>(
+                (TContext db, int[] requestedBuckets) => db.Set<OutboxLease>().AsNoTracking()
+                    .Where(lease => requestedBuckets.Contains(lease.Bucket)
+                        && db.Set<OutboxMessage>().Any(message => message.Bucket == lease.Bucket))
+                    .Select(lease => lease.Bucket)
+                    .OrderBy(bucket => bucket)));
+            var pending = new List<int>();
+            await foreach (var bucket in query(context, bucketArray).WithCancellation(cancellationToken).ConfigureAwait(false))
+                pending.Add(bucket);
+            return pending;
+        }
+
+        // Preserve direct pre-acquisition probes for callers inspecting an unseeded store.
+        // The relay always acquires first and never takes this compatibility path.
         return await context.Set<OutboxMessage>().AsNoTracking()
             .Where(m => bucketArray.Contains(m.Bucket))
             .Select(m => m.Bucket)

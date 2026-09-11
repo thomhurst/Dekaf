@@ -15,7 +15,8 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 /// exercise EF async interception, not asynchronous database I/O latency.
 /// Commit cases include notification consumption, detachment and a prepared SQL delete
 /// in the measured operation, keeping every invocation at the same database size.
-/// Allocation scope includes EF/SQLite costs; this is not a Kafka per-message fixture.
+/// Allocation scope includes EF/SQLite costs and commit bucket collection; this is
+/// not a Kafka per-message fixture. Reused contexts exercise cached bucket storage.
 /// </summary>
 [MemoryDiagnoser]
 public class OutboxSaveChangesBenchmarks

@@ -93,6 +93,113 @@ public class OutboxRelayIntegrationTests(KafkaTestContainer kafka) : KafkaIntegr
         }
     }
 
+    [Test]
+    public async Task Backlog_DrainsFairlyAcrossBuckets_WithoutDiscoveryPerBatch()
+    {
+        const int hotRows = 1024;
+        var topic = $"outbox-fair-{Guid.NewGuid():N}";
+        await KafkaContainer.CreateTopicAsync(topic, partitions: 2);
+        var databasePath = Path.Combine(Path.GetTempPath(), $"dekaf-outbox-fair-{Guid.NewGuid():N}.db");
+        try
+        {
+            var contextOptions = new DbContextOptionsBuilder<OutboxContext>()
+                .UseSqlite(new SqliteConnectionStringBuilder { DataSource = databasePath, Pooling = false }.ToString()).Options;
+            IDbContextFactory<OutboxContext> factory = new ContextFactory(contextOptions);
+            await using (var context = await factory.CreateDbContextAsync())
+            {
+                await context.Database.EnsureCreatedAsync();
+                for (var index = 0; index < hotRows; index++)
+                    context.AddOutboxMessage(topic, "hot", index.ToString(), Serializers.String, Serializers.String,
+                        bucketCount: 2, partition: 0);
+                context.AddOutboxMessage(topic, "quiet", "quiet", Serializers.String, Serializers.String,
+                    bucketCount: 2, partition: 1);
+                await context.SaveChangesAsync();
+            }
+            var store = new DrainObservedStore(new EfCoreOutboxStore<OutboxContext>(factory), hotRows + 1);
+            await using var publisher = new DekafOutboxPublisher(OutboxServiceCollectionExtensions.CreateRelayProducerBuilder(
+                builder => builder.WithBootstrapServers(KafkaContainer.BootstrapServers), null).Build());
+            // Freeze only fallback time. The test completes through immediate busy sweeps,
+            // and the quiet bucket must be acknowledged before the hot backlog drains.
+            using var relay = new OutboxRelayService(store, publisher,
+                new OutboxRelayOptions { BucketCount = 2, BatchSize = 64 },
+                GlobalTestSetup.GetLoggerFactory().CreateLogger<OutboxRelayService>(), new FrozenPollingTimeProvider());
+            await relay.StartAsync(CancellationToken.None);
+            try
+            {
+                await store.Completed.Task.WaitAsync(TimeSpan.FromSeconds(60));
+                await Assert.That(store.Batches[0]).IsEqualTo(0);
+                await Assert.That(store.Batches[1]).IsEqualTo(1);
+                await Assert.That(store.ProbesAtCompletion).IsEqualTo(1);
+                await using var context = await factory.CreateDbContextAsync();
+                await Assert.That(await context.Set<OutboxMessage>().CountAsync()).IsEqualTo(0);
+
+                await using var consumer = await Kafka.CreateConsumer<string, string>()
+                    .WithBootstrapServers(KafkaContainer.BootstrapServers).WithGroupId($"outbox-fair-{Guid.NewGuid():N}")
+                    .WithAutoOffsetReset(AutoOffsetReset.Earliest).BuildAsync();
+                consumer.Subscribe(topic);
+                using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+                var hotReceived = 0;
+                var quietReceived = 0;
+                await foreach (var message in consumer.ConsumeAsync(deadline.Token))
+                {
+                    if (message.Key == "hot")
+                    {
+                        await Assert.That(message.Value).IsEqualTo(hotReceived.ToString());
+                        hotReceived++;
+                    }
+                    else
+                        quietReceived++;
+                    if (hotReceived + quietReceived == hotRows + 1)
+                        break;
+                }
+                await Assert.That(hotReceived).IsEqualTo(hotRows);
+                await Assert.That(quietReceived).IsEqualTo(1);
+            }
+            finally
+            {
+                await relay.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(30));
+            }
+        }
+        finally
+        {
+            DeleteDatabaseFiles(databasePath);
+        }
+    }
+
+    private sealed class DrainObservedStore(EfCoreOutboxStore<OutboxContext> inner, int total)
+        : IOutboxStore, IOutboxLeaseRenewalStore
+    {
+        private int _marked;
+        private int _probes;
+        public List<int> Batches { get; } = [];
+        public int ProbesAtCompletion { get; private set; }
+        public TaskCompletionSource Completed { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public ValueTask<IReadOnlyList<int>> AcquireBucketLeasesAsync(OutboxLeaseRequest request,
+            CancellationToken cancellationToken = default) => inner.AcquireBucketLeasesAsync(request, cancellationToken);
+        public ValueTask<bool> RenewBucketLeasesAsync(OutboxLeaseRequest request, IReadOnlyList<int> buckets,
+            CancellationToken cancellationToken = default) => inner.RenewBucketLeasesAsync(request, buckets, cancellationToken);
+        public ValueTask<IReadOnlyList<int>> GetBucketsWithPendingAsync(IReadOnlyList<int> buckets,
+            CancellationToken cancellationToken = default)
+        {
+            _probes++;
+            return inner.GetBucketsWithPendingAsync(buckets, cancellationToken);
+        }
+        public ValueTask<IReadOnlyList<OutboxMessage>> GetNextBatchAsync(int bucket, int maxCount,
+            CancellationToken cancellationToken = default) => inner.GetNextBatchAsync(bucket, maxCount, cancellationToken);
+        public async ValueTask MarkPublishedAsync(int bucket, IReadOnlyList<OutboxMessage> messages,
+            CancellationToken cancellationToken = default)
+        {
+            await inner.MarkPublishedAsync(bucket, messages, cancellationToken);
+            Batches.Add(bucket);
+            _marked += messages.Count;
+            if (_marked == total)
+            {
+                ProbesAtCompletion = _probes;
+                Completed.TrySetResult();
+            }
+        }
+    }
+
     private sealed class FrozenPollingTimeProvider : TimeProvider
     {
         public Channel<TimeSpan> Scheduled { get; } = Channel.CreateUnbounded<TimeSpan>();

@@ -33,6 +33,11 @@ public sealed partial class OutboxRelayService : BackgroundService
 
     private IReadOnlyList<int> _ownedBuckets = [];
     private long _leaseTimestamp;
+    private long _rebalanceTimestamp;
+    private long _probeTimestamp;
+    private int _leaseGeneration;
+    private readonly int[] _pendingBuckets;
+    private int _pendingBucketCount;
     // Only one publisher call is in flight per relay. Its observer writes this
     // before completing the awaited operation, including during a blocked renewal.
     private long _observedPublishFinished;
@@ -79,6 +84,7 @@ public sealed partial class OutboxRelayService : BackgroundService
         _logger = logger;
         _timeProvider = timeProvider ?? TimeProvider.System;
         _notifier = notifier;
+        _pendingBuckets = new int[options.BucketCount];
         _metrics = new OutboxMetricState(options.MetricsName, _timeProvider);
         OutboxMetrics.Register(_metrics);
         _leaseRequest = new OutboxLeaseRequest
@@ -161,7 +167,7 @@ public sealed partial class OutboxRelayService : BackgroundService
                 else
                 {
                     // A long configured poll interval must not let idle leases expire.
-                    var untilRenewal = _options.LeaseRenewInterval - LeaseAge();
+                    var untilRenewal = _options.LeaseRenewInterval - _timeProvider.GetElapsedTime(_rebalanceTimestamp);
                     if (untilRenewal <= TimeSpan.Zero)
                         continue;
                     var delay = untilRenewal < _options.PollInterval
@@ -191,7 +197,7 @@ public sealed partial class OutboxRelayService : BackgroundService
             // The cycle boundary is also the initial lease-age observation.
             var leaseAge = _leaseTimestamp == 0 ? TimeSpan.Zero
                 : _timeProvider.GetElapsedTime(_leaseTimestamp, started);
-            if (_leaseTimestamp == 0 || leaseAge >= _options.LeaseRenewInterval)
+            if (_rebalanceTimestamp == 0 || _timeProvider.GetElapsedTime(_rebalanceTimestamp, started) >= _options.LeaseRenewInterval)
             {
                 await RefreshLeasesAsync(cancellationToken).ConfigureAwait(false);
                 leaseAge = LeaseAge();
@@ -211,13 +217,24 @@ public sealed partial class OutboxRelayService : BackgroundService
             if (_ownedBuckets.Count == 0)
                 return new CycleResult(PublishedAny: false, HadError: false);
 
-            // One probe instead of one query per owned bucket, so an idle relay is cheap.
-            var pendingBuckets = await _store.GetBucketsWithPendingAsync(_ownedBuckets, cancellationToken)
-                .ConfigureAwait(false);
+            // Keep full buckets ready between sweeps, without an extra discovery query
+            // per batch. Poll periodically even while busy to discover newly active buckets.
+            if (_pendingBucketCount == 0 || _timeProvider.GetElapsedTime(_probeTimestamp) >= _options.PollInterval)
+            {
+                var pendingBuckets = await _store.GetBucketsWithPendingAsync(_ownedBuckets, cancellationToken)
+                    .ConfigureAwait(false);
+                _pendingBucketCount = pendingBuckets.Count;
+                for (var index = 0; index < pendingBuckets.Count; index++)
+                    _pendingBuckets[index] = pendingBuckets[index];
+                _probeTimestamp = started;
+            }
 
             var publishedAny = false;
             var hadError = false;
-            for (var bucketIndex = 0; bucketIndex < pendingBuckets.Count; bucketIndex++)
+            var generation = _leaseGeneration;
+            var pendingCount = _pendingBucketCount;
+            var retainedCount = 0;
+            for (var bucketIndex = 0; bucketIndex < pendingCount; bucketIndex++)
             {
                 if (cancellationToken.IsCancellationRequested)
                     break;
@@ -231,30 +248,19 @@ public sealed partial class OutboxRelayService : BackgroundService
                     break;
                 }
 
-                if (_renewalStore is null && !OwnsBucket(pendingBuckets[bucketIndex]))
+                if (_renewalStore is null && !OwnsBucket(_pendingBuckets[bucketIndex]))
                     continue;
 
                 // Keep bucket draining in the cycle state machine. A pending publisher
                 // needs one suspension instead of a second pooled async operation.
-                var bucket = pendingBuckets[bucketIndex];
-                var firstBatch = true;
-
+                var bucket = _pendingBuckets[bucketIndex];
+                // One batch per bucket per sweep when multiple buckets are owned.
                 while (!cancellationToken.IsCancellationRequested)
                 {
-                    // A long backlog must not outlive the lease from inside this loop: stop as soon
-                    // as renewal is due so the next cycle renews before the lease can expire and a
-                    // peer relay could claim the bucket (which would break single-writer ordering).
-                    // Fetch the first batch even after a slow acquisition. PreparePublishLeaseAsync
-                    // then renews or reserves its whole-call budget before publishing begins.
-                    if (!firstBatch && RenewalDue)
-                        break;
-
                     var batch = await _store.GetNextBatchAsync(bucket, _options.BatchSize, cancellationToken)
                         .ConfigureAwait(false);
                     if (batch.Count == 0)
                         break;
-
-                    firstBatch = false;
 
                     if (!await PreparePublishLeaseAsync(bucket, cancellationToken).ConfigureAwait(false))
                     {
@@ -395,11 +401,21 @@ public sealed partial class OutboxRelayService : BackgroundService
                         break;
                     }
 
-                    if (batch.Count < _options.BatchSize)
-                        break;
+                    if (batch.Count == _options.BatchSize)
+                    {
+                        // With only one owned bucket there is no peer to starve. Avoid an
+                        // extra cycle per batch, but still yield for fair-share acquisition.
+                        if (_ownedBuckets.Count == 1 && _timeProvider.GetElapsedTime(_rebalanceTimestamp) < _options.LeaseRenewInterval)
+                            continue;
+                        _pendingBuckets[retainedCount++] = bucket;
+                    }
+                    break;
                 }
             }
 
+            // A legacy store may rebalance during PreparePublishLeaseAsync. Never carry
+            // readiness from an earlier ownership epoch into the next sweep.
+            _pendingBucketCount = !hadError && generation == _leaseGeneration ? retainedCount : 0;
             return new CycleResult(publishedAny, hadError);
         }
         finally
@@ -416,13 +432,11 @@ public sealed partial class OutboxRelayService : BackgroundService
         _ownedBuckets = [];
         Volatile.Write(ref _metrics.OwnedBuckets, 0);
         _leaseTimestamp = 0;
+        _rebalanceTimestamp = 0;
+        _pendingBucketCount = 0;
+        _leaseGeneration++;
+        (_notifier as IOutboxBucketNotifier)?.SetOwnedBuckets(_ownedBuckets);
     }
-
-    /// <summary>
-    /// True once the current leases are due for renewal; the single definition of the
-    /// freshness policy used both by the cycle-level refresh and the drain loop's yield.
-    /// </summary>
-    private bool RenewalDue => _leaseTimestamp == 0 || LeaseAge() >= _options.LeaseRenewInterval;
 
     private async Task RefreshLeasesAsync(CancellationToken cancellationToken)
     {
@@ -440,11 +454,15 @@ public sealed partial class OutboxRelayService : BackgroundService
         if (_ownedBuckets.Count > 0 && LeaseAge() >= _options.LeaseDuration)
             ResetLeaseState();
         _leaseTimestamp = acquisitionTimestamp;
+        _rebalanceTimestamp = acquisitionTimestamp;
+        _pendingBucketCount = 0;
+        _leaseGeneration++;
 
         if (acquired.Count != _ownedBuckets.Count)
             LogLeasesChanged(_options.RelayId, acquired.Count, _options.BucketCount);
 
         _ownedBuckets = acquired;
+        (_notifier as IOutboxBucketNotifier)?.SetOwnedBuckets(acquired);
         Volatile.Write(ref _metrics.OwnedBuckets, acquired.Count);
     }
 

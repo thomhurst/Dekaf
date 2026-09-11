@@ -11,6 +11,79 @@ namespace Dekaf.Tests.Unit.Outbox;
 public class EfCoreOutboxStoreTests
 {
     [Test]
+    public async Task PendingProbe_CompiledQueryIsIsolatedForEachModelOfTheSameContextType()
+    {
+        foreach (var prefix in new[] { "first", "second" })
+        {
+            using var connection = new SqliteConnection("Data Source=:memory:");
+            connection.Open();
+            var options = new DbContextOptionsBuilder<MappedContext>().UseSqlite(connection)
+                .ReplaceService<IModelCacheKeyFactory, MappedModelCacheKeyFactory>().Options;
+            var factory = new MappedContextFactory(options, prefix);
+            await using var context = factory.CreateDbContext();
+            await context.Database.EnsureCreatedAsync();
+            context.AddOutboxMessage(NewRow(0, prefix));
+            await context.SaveChangesAsync();
+            var store = new EfCoreOutboxStore<MappedContext>(factory);
+            await store.AcquireBucketLeasesAsync(Request("relay-a"));
+            await Assert.That(await store.GetBucketsWithPendingAsync([0, 1])).IsEquivalentTo([0]);
+        }
+    }
+
+    public sealed class MappedContext(DbContextOptions<MappedContext> options, string prefix) : DbContext(options)
+    {
+        public string Prefix => prefix;
+        protected override void OnModelCreating(ModelBuilder modelBuilder) => modelBuilder.UseDekafOutbox(new OutboxModelOptions
+        {
+            MessagesTableName = prefix + "_messages", LeasesTableName = prefix + "_leases", RelaysTableName = prefix + "_relays"
+        });
+    }
+
+    public sealed class MappedModelCacheKeyFactory : IModelCacheKeyFactory
+    {
+        public object Create(DbContext context, bool designTime) => (context.GetType(), ((MappedContext)context).Prefix, designTime);
+    }
+
+    private sealed class MappedContextFactory(DbContextOptions<MappedContext> options, string prefix) : IDbContextFactory<MappedContext>
+    {
+        public MappedContext CreateDbContext() => new(options, prefix);
+    }
+
+    [Test]
+    public async Task PendingProbe_BacklogUsesOneCommand_AndEmptyOwnershipUsesNone()
+    {
+        var commands = new ProbeCommands();
+        using var db = new SqliteOutboxDatabase(commands);
+        var store = db.CreateStore();
+        await store.AcquireBucketLeasesAsync(Request("relay-a"));
+        var rows = new OutboxMessage[1000];
+        for (var index = 0; index < rows.Length; index++)
+            rows[index] = NewRow(index % 4, "payload");
+        await db.InsertRowsAsync(rows);
+        commands.Count = 0;
+        var pending = await store.GetBucketsWithPendingAsync([0, 2, 2]);
+        await Assert.That(pending).IsEquivalentTo(BucketsZeroAndTwo);
+        await Assert.That(commands.Count).IsEqualTo(1);
+        await Assert.That(commands.LastSql).Contains("EXISTS");
+        await store.GetBucketsWithPendingAsync([]);
+        await Assert.That(commands.Count).IsEqualTo(1);
+    }
+
+    private sealed class ProbeCommands : DbCommandInterceptor
+    {
+        public int Count { get; set; }
+        public string LastSql { get; private set; } = string.Empty;
+        public override ValueTask<InterceptionResult<System.Data.Common.DbDataReader>> ReaderExecutingAsync(
+            System.Data.Common.DbCommand command, CommandEventData eventData,
+            InterceptionResult<System.Data.Common.DbDataReader> result, CancellationToken cancellationToken = default)
+        {
+            Count++;
+            LastSql = command.CommandText;
+            return new(result);
+        }
+    }
+
+    [Test]
     public async Task PendingMetrics_NonSqliteProviderReturnsOldestTimestampWithoutChangingRows()
     {
         var options = new DbContextOptionsBuilder<OutboxTestContext>()
@@ -190,7 +263,9 @@ public class EfCoreOutboxStoreTests
     }
 
     [Test]
-    public async Task GetBucketsWithPending_ReturnsOnlyRequestedBucketsWithRows()
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task GetBucketsWithPending_ReturnsOnlyRequestedBucketsWithRows(bool acquireFirst)
     {
         using var db = new SqliteOutboxDatabase();
         var store = db.CreateStore();
@@ -199,6 +274,8 @@ public class EfCoreOutboxStoreTests
             NewRow(bucket: 2, value: "b"),
             NewRow(bucket: 3, value: "not-requested"));
 
+        if (acquireFirst)
+            await store.AcquireBucketLeasesAsync(Request("relay-a"));
         var pending = await store.GetBucketsWithPendingAsync([0, 1, 2]);
 
         var sorted = pending.Order().ToArray();
@@ -451,7 +528,7 @@ public class EfCoreOutboxStoreTests
         private readonly SqliteConnection _connection;
         private readonly DbContextOptions<OutboxTestContext> _options;
 
-        public SqliteOutboxDatabase(SaveChangesInterceptor? interceptor = null)
+        public SqliteOutboxDatabase(IInterceptor? interceptor = null)
         {
             _connection = new SqliteConnection("DataSource=:memory:");
             _connection.Open();

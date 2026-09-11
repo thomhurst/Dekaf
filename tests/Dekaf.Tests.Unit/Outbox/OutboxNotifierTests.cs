@@ -5,6 +5,32 @@ namespace Dekaf.Tests.Unit.Outbox;
 public sealed class OutboxNotifierTests
 {
     [Test]
+    public async Task BucketHints_FilterRemoteCommits_ButPreserveFallbackAndUnknownHints()
+    {
+        var time = new ManualTimeProvider();
+        using var notifier = new OutboxNotifier(time);
+        int[] owned = [0, 65];
+        notifier.SetOwnedBuckets(owned);
+        owned[0] = 1; // Ownership is copied, not retained from the caller.
+        using var cancellation = new CancellationTokenSource();
+        var waiting = notifier.WaitAsync(TimeSpan.FromSeconds(1), cancellation.Token);
+        for (var index = 0; index < 100; index++)
+            notifier.NotifyCommitted(new HashSet<int> { 1, 64 });
+        await Assert.That(waiting.IsCompleted).IsFalse();
+        time.Advance(TimeSpan.FromSeconds(1));
+        await waiting.AsTask().WaitAsync(TimeSpan.FromSeconds(30));
+        notifier.NotifyCommitted(new HashSet<int> { 65 });
+        var local = notifier.WaitAsync(TimeSpan.FromSeconds(1));
+        await Assert.That(local.IsCompletedSuccessfully).IsTrue();
+        await local;
+        notifier.SetOwnedBuckets([]);
+        notifier.NotifyCommitted();
+        var unknown = notifier.WaitAsync(TimeSpan.FromSeconds(1));
+        await Assert.That(unknown.IsCompletedSuccessfully).IsTrue();
+        await unknown;
+    }
+
+    [Test]
     public async Task DefaultPollInterval_IsOneSecond_AndCanBeOverridden()
     {
         await Assert.That(new OutboxRelayOptions().PollInterval).IsEqualTo(TimeSpan.FromSeconds(1));
