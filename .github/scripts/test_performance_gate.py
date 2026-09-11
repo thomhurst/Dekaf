@@ -118,6 +118,12 @@ class SelectionTests(unittest.TestCase):
             with self.subTest(path=path):
                 selected = self.names(gate.select([path], root=REPO_ROOT))
                 self.assertIn('InMemoryMemberRegistrationBenchmarks', selected)
+    def test_consumer_paths_select_completion_and_epoch_fixtures(self):
+        for path in ('src/Dekaf/Consumer/CompletedOffsetRanges.cs', 'src/Dekaf/Consumer/PartitionedProcessing.cs', 'src/Dekaf/Consumer/IKafkaConsumer.cs'):
+            with self.subTest(path=path):
+                selected = self.names(gate.select([path], root=REPO_ROOT))
+                for fixture in ('PartitionedOffsetCompletionBenchmarks', 'PartitionedOffsetFragmentationBenchmarks', 'ConsumeResultEpochBenchmarks'):
+                    self.assertIn(fixture, selected)
 
     def test_detailed_share_mutations_select_coordinator_fixture(self):
         for path in ('src/Dekaf/Admin/AdminClient.DetailedMutations.cs', 'src/Dekaf/Admin/AdminClient.DetailedShareGroupOffsets.cs'):

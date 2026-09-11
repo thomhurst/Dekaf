@@ -88,12 +88,30 @@ public class RecordBatchTests
 
         var slab = truncated.GetParsedRecordsArray();
         await Assert.That(truncated.Records.Count).IsEqualTo(1);
+        await Assert.That(pending.GetMaximumRecordCount(int.MaxValue)).IsEqualTo(2);
         await Assert.That(next.GetParsedRecordsArray()).IsSameReferenceAs(slab);
         await Assert.That(next.GetParsedRecordsOffset()).IsEqualTo(3);
         await Assert.That(slab![0].Value.ToArray()).IsEquivalentTo("first"u8.ToArray());
         await Assert.That(slab[1]).IsEqualTo(default(Record));
         await Assert.That(slab[2]).IsEqualTo(default(Record));
         await Assert.That(slab[3].Value.ToArray()).IsEquivalentTo("next"u8.ToArray());
+    }
+
+    [Test]
+    public async Task PendingFetchData_DeclaredRecordCountIsBoundedByAvailableBytes()
+    {
+        var batch = ReadWrittenBatchWithDeclaredRecordCount(new RecordBatch
+        {
+            Records = [new Record { Value = "first"u8.ToArray() }]
+        }, declaredRecordCount: int.MaxValue);
+        using var pending = PendingFetchData.Create("topic", 0, [batch]);
+
+        // Bound the reservation before parsing an untrusted count. This frame
+        // contains fewer than two minimum-size records, regardless of its header.
+        await Assert.That(pending.GetMaximumRecordCount(int.MaxValue)).IsEqualTo(1);
+        pending.EagerParseAll();
+        await Assert.That(batch.Records.Count).IsEqualTo(1);
+        await Assert.That(batch.Records[0].Value.ToArray()).IsEquivalentTo("first"u8.ToArray());
     }
 
     [Test]
@@ -111,6 +129,7 @@ public class RecordBatchTests
         await Assert.That(lazy.GetParsedRecordsArray()).IsNotNull();
         await Assert.That(lazy.GetParsedRecordsOffset()).IsEqualTo(0);
         await Assert.That(assigned.GetParsedRecordsArray()).IsNull();
+        await Assert.That(pending.GetMaximumRecordCount(int.MaxValue)).IsEqualTo(3);
         await Assert.That(assigned.Records[0].Value.ToArray()).IsEquivalentTo("assigned"u8.ToArray());
     }
 

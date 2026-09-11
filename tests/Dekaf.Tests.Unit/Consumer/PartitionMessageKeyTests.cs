@@ -60,7 +60,7 @@ public sealed class PartitionMessageKeyTests
         {
             var key = new byte[65536];
             System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(key.AsSpan(key.Length - 32), offset % keyCount);
-            lane.TryEnqueue(Message(offset, key));
+            lane.TryEnqueueForTest(Message(offset, key));
         }
         await lane.StopAsync(PartitionStopPolicy.Drain, Timeout.InfiniteTimeSpan);
         var running = dispatcher.RunAsync(timeout.Token).AsTask();
@@ -246,10 +246,10 @@ public sealed class PartitionMessageKeyTests
         var running = dispatcher.RunAsync(timeout.Token).AsTask();
         try
         {
-            lane.TryEnqueue(Message(0, keyKind == 1 ? null : keyKind == 2 ? [] : [1, 2, 3]));
+            lane.TryEnqueueForTest(Message(0, keyKind == 1 ? null : keyKind == 2 ? [] : [1, 2, 3]));
             await firstStarted.Task.WaitAsync(timeout.Token);
-            lane.TryEnqueue(Message(1, keyKind == 1 ? null : keyKind == 2 ? [] : [1, 2, 3]));
-            lane.TryEnqueue(Message(2, keyKind == 1 ? [] : [4, 5, 6]));
+            lane.TryEnqueueForTest(Message(1, keyKind == 1 ? null : keyKind == 2 ? [] : [1, 2, 3]));
+            lane.TryEnqueueForTest(Message(2, keyKind == 1 ? [] : [4, 5, 6]));
             // FIFO input guarantees the equal-key record was dispatched before this barrier.
             await differentStarted.Task.WaitAsync(timeout.Token);
             await Assert.That(equalStarted.Task.IsCompleted).IsFalse();
@@ -302,7 +302,7 @@ public sealed class PartitionMessageKeyTests
         for (var offset = 0; offset < 4; offset++)
         {
             byte[] key = offset == 2 ? [2] : [1];
-            lane.TryEnqueue(new ConsumeResult<TKey, string>("topic", 0, offset,
+            lane.TryEnqueueForTest(new ConsumeResult<TKey, string>("topic", 0, offset,
                 key, false, default, false, null, 0, TimestampType.CreateTime, null,
                 deserializer, Serializers.String));
         }
@@ -342,8 +342,8 @@ public sealed class PartitionMessageKeyTests
                 cancellation.Cancel();
                 return default;
             });
-        lane.TryEnqueue(Message(0, [1]));
-        lane.TryEnqueue(Message(1, [2]));
+        lane.TryEnqueueForTest(Message(0, [1]));
+        lane.TryEnqueueForTest(Message(1, [2]));
         await lane.StopAsync(PartitionStopPolicy.Drain, Timeout.InfiniteTimeSpan);
         Exception? observed = null;
         try { await dispatcher.RunAsync(cancellation.Token); }

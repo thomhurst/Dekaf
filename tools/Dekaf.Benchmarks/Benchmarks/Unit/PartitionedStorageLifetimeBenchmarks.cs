@@ -32,6 +32,9 @@ public class PartitionedStorageLifetimeBenchmarks
         _lane = new PartitionLane<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>>(
             new TopicPartition("lifetime", 0), 1024, static (_, _) => default, static _ => { }, static (_, _) => { });
         _context = new PartitionProcessorContext<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>>(_lane);
+        // Automatic processors own progress outside the queue. Keep this storage
+        // transfer fixture steady-state and measure manual reservations separately.
+        _context.EnableAutomaticCompletion();
         _reader = new Thread(ReadConcurrent) { IsBackground = true };
         _reader.Start();
     }
@@ -51,10 +54,12 @@ public class PartitionedStorageLifetimeBenchmarks
     public void QueueAndComplete()
     {
         for (var index = 0; index < 1024; index++)
-            _lane.TryEnqueue(_record);
+            if (!_lane.TryEnqueue(_record, completionBatch: null))
+                throw new InvalidOperationException("The prepared queue could not accept all records.");
         for (var index = 0; index < 1024; index++)
         {
-            _lane.TryReadMessage(out var message);
+            if (!_lane.TryReadMessage(out var message))
+                throw new InvalidOperationException("The queue lost a published record.");
             message.ReleaseStorage();
         }
     }
@@ -65,7 +70,7 @@ public class PartitionedStorageLifetimeBenchmarks
         _start.Set();
         for (var index = 0; index < 1024; index++)
         {
-            while (!_lane.TryEnqueue(_record))
+            while (!_lane.TryEnqueue(_record, completionBatch: null))
                 Thread.SpinWait(1);
         }
         _complete.WaitOne();
@@ -93,7 +98,11 @@ public class PartitionedStorageLifetimeBenchmarks
             {
                 ConsumeResult<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>> message;
                 while (!_lane.TryReadMessage(out message))
+                {
+                    if (Volatile.Read(ref _stopped) != 0)
+                        return;
                     Thread.SpinWait(1);
+                }
                 message.ReleaseStorage();
             }
             _complete.Set();

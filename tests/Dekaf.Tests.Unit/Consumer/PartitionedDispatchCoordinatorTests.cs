@@ -9,6 +9,35 @@ namespace Dekaf.Tests.Unit.Consumer;
 public sealed class PartitionedDispatchCoordinatorTests
 {
     [Test]
+    public async Task AutomaticCompletion_RetiresQueuedReservationsAndSkipsFutureStorage()
+    {
+        var lane = CreateLane(4);
+        var publishing = lane.CreateCompletionBatch(4)!;
+        await Assert.That(lane.TryEnqueue(CreateRecord(0), publishing)).IsTrue();
+        var finished = lane.CreateCompletionBatch(1)!;
+        await Assert.That(lane.TryEnqueue(CreateRecord(1), finished)).IsTrue();
+        lane.EndBatch(finished, 1);
+
+        lane.EnableAutomaticCompletion();
+        await Assert.That(finished.Nodes).IsNull();
+        await Assert.That(publishing.Nodes).IsNotNull();
+        // The writer can still publish from the batch that raced processor startup.
+        await Assert.That(lane.TryEnqueue(CreateRecord(2), publishing)).IsTrue();
+        lane.EndBatch(publishing, 2);
+        await Assert.That(publishing.Nodes).IsNull();
+        var automatic = lane.CreateCompletionBatch(4);
+        await Assert.That(automatic).IsNull();
+        await Assert.That(lane.TryEnqueue(CreateRecord(3), automatic)).IsTrue();
+        lane.EndBatch(automatic, 1);
+        for (var offset = 0; offset < 4; offset++)
+        {
+            await Assert.That(lane.TryReadMessage(out var record)).IsTrue();
+            await Assert.That(record.Offset).IsEqualTo(offset);
+            record.ReleaseStorage();
+        }
+    }
+
+    [Test]
     [Arguments(256, 4, 100, 64)]
     [Arguments(400, 4, 100, 100)]
     [Arguments(8, 3, 4, 2)]
@@ -19,7 +48,7 @@ public sealed class PartitionedDispatchCoordinatorTests
         var count = bufferedRecords + 1;
         var lane = CreateLane(count);
         for (var offset = 0; offset < count; offset++)
-            await Assert.That(lane.TryEnqueue(CreateRecord(offset, keyOverride: 0))).IsTrue();
+            await Assert.That(lane.TryEnqueueForTest(CreateRecord(offset, keyOverride: 0))).IsTrue();
         await lane.StopAsync(PartitionStopPolicy.Drain, Timeout.InfiniteTimeSpan);
         var releaseFirst = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var handled = 0;
@@ -60,7 +89,7 @@ public sealed class PartitionedDispatchCoordinatorTests
         const int count = 257;
         var lane = CreateLane(count);
         for (var offset = 0; offset < count; offset++)
-            await Assert.That(lane.TryEnqueue(CreateRecord(offset, keyOverride: 0))).IsTrue();
+            await Assert.That(lane.TryEnqueueForTest(CreateRecord(offset, keyOverride: 0))).IsTrue();
         await lane.StopAsync(PartitionStopPolicy.Drain, Timeout.InfiniteTimeSpan);
         var releaseFirst = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var handled = 0;
@@ -99,7 +128,7 @@ public sealed class PartitionedDispatchCoordinatorTests
     public async Task LargeConfiguredLimits_AllocateOnlyForActiveWork(int concurrency)
     {
         var lane = CreateLane(1);
-        await Assert.That(lane.TryEnqueue(CreateRecord(0))).IsTrue();
+        await Assert.That(lane.TryEnqueueForTest(CreateRecord(0))).IsTrue();
         await lane.StopAsync(PartitionStopPolicy.Drain, Timeout.InfiniteTimeSpan);
         var handled = 0;
         var dispatcher = new KeyOrderedPartitionDispatcher<int, int>(
@@ -119,7 +148,7 @@ public sealed class PartitionedDispatchCoordinatorTests
     {
         var lane = CreateLane(8);
         for (var index = 0; index < 8; index++)
-            await Assert.That(lane.TryEnqueue(CreateRecord(index))).IsTrue();
+            await Assert.That(lane.TryEnqueueForTest(CreateRecord(index))).IsTrue();
         await lane.StopAsync(PartitionStopPolicy.Drain, Timeout.InfiniteTimeSpan);
         var first = new TaskCompletionSource();
         var failure = new InvalidOperationException("asynchronous handler failed");
@@ -181,7 +210,7 @@ public sealed class PartitionedDispatchCoordinatorTests
         for (var index = 0; index < releases.Length; index++)
         {
             releases[index] = new(TaskCreationOptions.RunContinuationsAsynchronously);
-            await Assert.That(lane.TryEnqueue(CreateRecord(index))).IsTrue();
+            await Assert.That(lane.TryEnqueueForTest(CreateRecord(index))).IsTrue();
         }
         for (var index = 0; index < started.Length; index++)
             started[index] = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -229,7 +258,7 @@ public sealed class PartitionedDispatchCoordinatorTests
         var lane = CreateLane(8);
         long[] offsets = [10, 12, 20, 21, 30, 31];
         foreach (var offset in offsets)
-            await Assert.That(lane.TryEnqueue(CreateRecord(offset))).IsTrue();
+            await Assert.That(lane.TryEnqueueForTest(CreateRecord(offset))).IsTrue();
         await lane.StopAsync(PartitionStopPolicy.Drain, Timeout.InfiniteTimeSpan);
 
         var releaseFirst = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -268,7 +297,7 @@ public sealed class PartitionedDispatchCoordinatorTests
     {
         var lane = CreateLane(4);
         for (var offset = 0; offset < 4; offset++)
-            await Assert.That(lane.TryEnqueue(CreateRecord(offset))).IsTrue();
+            await Assert.That(lane.TryEnqueueForTest(CreateRecord(offset))).IsTrue();
         await lane.StopAsync(PartitionStopPolicy.Drain, Timeout.InfiniteTimeSpan);
 
         var failFirst = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -325,7 +354,7 @@ public sealed class PartitionedDispatchCoordinatorTests
         const int count = 513;
         var lane = CreateLane(count);
         for (var offset = 0; offset < count; offset++)
-            await Assert.That(lane.TryEnqueue(CreateRecord(offset))).IsTrue();
+            await Assert.That(lane.TryEnqueueForTest(CreateRecord(offset))).IsTrue();
         await lane.StopAsync(PartitionStopPolicy.Drain, Timeout.InfiniteTimeSpan);
         var handled = 0;
         var dispatcher = new KeyOrderedPartitionDispatcher<int, int>(
@@ -361,7 +390,7 @@ public sealed class PartitionedDispatchCoordinatorTests
         {
             var record = new ConsumeResult<ThrowingHashKey, int>("dispatch", 0, offset,
                 keys[offset], offset, null, 0, TimestampType.CreateTime, offset);
-            await Assert.That(lane.TryEnqueue(record)).IsTrue();
+            await Assert.That(lane.TryEnqueueForTest(record)).IsTrue();
         }
         await lane.StopAsync(PartitionStopPolicy.Drain, Timeout.InfiniteTimeSpan);
         var first = new ObservedCompletion();
@@ -416,7 +445,7 @@ public sealed class PartitionedDispatchCoordinatorTests
         const int count = 16;
         var lane = CreateLane(count);
         for (var offset = 0; offset < count; offset++)
-            await Assert.That(lane.TryEnqueue(CreateRecord(offset, keyOverride: offset % 4))).IsTrue();
+            await Assert.That(lane.TryEnqueueForTest(CreateRecord(offset, keyOverride: offset % 4))).IsTrue();
         await lane.StopAsync(PartitionStopPolicy.Drain, Timeout.InfiniteTimeSpan);
         using var cancellation = new CancellationTokenSource();
         var first = new ObservedCompletion();
@@ -462,7 +491,7 @@ public sealed class PartitionedDispatchCoordinatorTests
     public async Task AwaiterSetupFailure_ReleasesWorkerAndPropagatesError(bool failStatus, int callbackMode = 0)
     {
         var lane = CreateLane(1);
-        await Assert.That(lane.TryEnqueue(CreateRecord(0))).IsTrue();
+        await Assert.That(lane.TryEnqueueForTest(CreateRecord(0))).IsTrue();
         await lane.StopAsync(PartitionStopPolicy.Drain, Timeout.InfiniteTimeSpan);
         var failure = new InvalidOperationException("awaiter setup failed");
         var source = new ThrowingCompletion(failure, failStatus, callbackMode);
@@ -498,7 +527,7 @@ public sealed class PartitionedDispatchCoordinatorTests
             pending.EagerParseAll();
             var records = new ConsumeBatch<MutableKey, int>(pending, new MutableKeyDeserializer(keys[offset]), Serializers.Int32).GetEnumerator();
             await Assert.That(records.MoveNext()).IsTrue();
-            await Assert.That(lane.TryEnqueue(records.Current)).IsTrue();
+            await Assert.That(lane.TryEnqueueForTest(records.Current)).IsTrue();
         }
         await lane.StopAsync(PartitionStopPolicy.Drain, Timeout.InfiniteTimeSpan);
         var first = new ObservedCompletion();
@@ -555,7 +584,7 @@ public sealed class PartitionedDispatchCoordinatorTests
             pending.EagerParseAll();
             var records = new ConsumeBatch<ReadOnlyMemory<byte>, int>(pending, Serializers.RawBytes, Serializers.Int32).GetEnumerator();
             await Assert.That(records.MoveNext()).IsTrue();
-            await Assert.That(lane.TryEnqueue(records.Current)).IsTrue();
+            await Assert.That(lane.TryEnqueueForTest(records.Current)).IsTrue();
         }
         await lane.StopAsync(PartitionStopPolicy.Drain, Timeout.InfiniteTimeSpan);
         var workers = new[] { new ObservedCompletion(), new ObservedCompletion(), new ObservedCompletion() };

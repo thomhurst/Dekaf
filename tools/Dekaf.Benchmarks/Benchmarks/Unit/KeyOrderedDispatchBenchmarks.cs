@@ -107,7 +107,7 @@ public class KeyOrderedDispatchBenchmarks
         };
         var record = new ConsumeResult<int, int>("key-dispatch", 0, _written++, key, 0,
             null, 0, TimestampType.CreateTime, 7);
-        if (!_lane.TryEnqueue(record))
+        if (!_lane.TryEnqueue(record, completionBatch: null))
             throw new InvalidOperationException("Replenished input exceeded the bounded queue.");
     }
 

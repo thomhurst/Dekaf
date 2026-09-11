@@ -105,15 +105,15 @@ public sealed class PartitionedRecordLifetimeTests
                     rejectedRecords.MoveNext();
                     accepted = acceptedRecords.Current;
 
-                    await Assert.That(lane.TryEnqueue(accepted)).IsTrue();
+                    await Assert.That(lane.TryEnqueueForTest(accepted)).IsTrue();
                     for (var attempt = 0; attempt < 256; attempt++)
-                        await Assert.That(lane.TryEnqueue(rejectedRecords.Current)).IsFalse();
+                        await Assert.That(lane.TryEnqueueForTest(rejectedRecords.Current)).IsFalse();
                 }
                 await Assert.That(rejectedMemory.DisposeCount).IsEqualTo(1);
             }
             await Assert.That(acceptedMemory.DisposeCount).IsEqualTo(0);
             await lane.StopAsync(PartitionStopPolicy.Cancel, TimeSpan.FromSeconds(1));
-            await Assert.That(lane.TryEnqueue(accepted)).IsFalse();
+            await Assert.That(lane.TryEnqueueForTest(accepted)).IsFalse();
             var dequeued = lane.TryReadMessage(out var message);
             if (dequeued)
                 message.ReleaseStorage();
@@ -211,11 +211,13 @@ public sealed class PartitionedRecordLifetimeTests
         consumer.ConsumeBatchAsync(Arg.Any<CancellationToken>()).Returns(call =>
             FetchStrings(pending, handlerStarted, fetchAdvanced, call.Arg<CancellationToken>()));
         var failure = new InvalidOperationException("handler failure");
+        OffsetCompletionBatch? reservation = null;
 
         // Start the operation budget after pooled storage and proxy setup.
         timeout.CancelAfter(TimeSpan.FromSeconds(10));
         var run = consumer.RunPartitionedBatchesAsync(async (_, messages, token) =>
         {
+            reservation = messages[0].ProcessingBatch;
             handlerStarted.TrySetResult();
             await releaseHandler.Task.WaitAsync(token);
             await Assert.That(messages[0].Key).IsEqualTo("key");
@@ -244,6 +246,10 @@ public sealed class PartitionedRecordLifetimeTests
                 await run;
         }
         await Assert.That(memory.DisposeCount).IsEqualTo(1);
+        // Automatic completion may start before routing, or retire the startup
+        // reservation while the first handler is queued. Both release all storage.
+        if (reservation is not null)
+            await Assert.That(reservation.Nodes).IsNull();
     }
 
     private static async IAsyncEnumerable<ConsumeBatch<string, string>> FetchStrings(
