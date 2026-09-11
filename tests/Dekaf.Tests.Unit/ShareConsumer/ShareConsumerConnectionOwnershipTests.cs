@@ -28,12 +28,13 @@ public sealed class ShareConsumerConnectionOwnershipTests
         typeof(ShareConsumerCoordinator).GetField(
             "_coordinatorId",
             BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(coordinator, 1);
+        coordinator.UpdateSubscription(["topic"]);
         var method = typeof(ShareConsumerCoordinator).GetMethod(
             "SendShareGroupHeartbeatAsync",
             BindingFlags.Instance | BindingFlags.NonPublic)!;
         var heartbeat = (ValueTask<bool>)method.Invoke(
             coordinator,
-            [false, CancellationToken.None])!;
+            [CancellationToken.None])!;
 
         await Assert.ThrowsAsync<IOException>(async () => await heartbeat);
 
@@ -62,12 +63,13 @@ public sealed class ShareConsumerConnectionOwnershipTests
         typeof(ShareConsumerCoordinator).GetField(
             "_coordinatorId",
             BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(coordinator, 1);
+        coordinator.UpdateSubscription(["topic"]);
         var method = typeof(ShareConsumerCoordinator).GetMethod(
             "SendShareGroupHeartbeatAsync",
             BindingFlags.Instance | BindingFlags.NonPublic)!;
         var heartbeat = (ValueTask<bool>)method.Invoke(
             coordinator,
-            [false, CancellationToken.None])!;
+            [CancellationToken.None])!;
 
         await Assert.ThrowsAsync<BrokerVersionException>(async () => await heartbeat);
 

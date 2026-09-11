@@ -61,7 +61,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
     [ThreadStatic]
     private static SerializationContext t_serializationContext;
 
-    private volatile StringSet _subscriptionSnapshot = new HashSet<string>();
+    private volatile HashSet<string> _subscriptionSnapshot = new();
     private volatile TopicPartitionSet _assignmentSnapshot = new HashSet<TopicPartition>();
 
     private readonly SemaphoreSlim _initLock = new(1, 1);
@@ -271,9 +271,12 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
 
     public IKafkaShareConsumer<TKey, TValue> Subscribe(params string[] topics)
     {
+        var subscription = new HashSet<string>(topics);
+        if (_subscriptionSnapshot.SetEquals(subscription))
+            return this;
         _recordBatchOwnerPools?.Clear();
-        _subscriptionSnapshot = new HashSet<string>(topics);
-        _coordinator.NotifyAssignmentChange();
+        _subscriptionSnapshot = subscription;
+        _coordinator.UpdateSubscription(subscription);
         return this;
     }
 
@@ -290,9 +293,10 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         _activeShareBatch?.Dispose();
         _activeShareBatch = null;
         _batchAcknowledgements?.Clear();
-        _subscriptionSnapshot = new HashSet<string>();
-        _coordinator.NotifyAssignmentChange();
+        var subscription = new HashSet<string>();
+        _subscriptionSnapshot = subscription;
         _recordBatchOwnerPools?.Clear();
+        _coordinator.UpdateSubscription(subscription);
         _sessionManager.ResetAll();
         ClearRenewedRecords();
         return this;
@@ -313,8 +317,10 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                 yield break;
 
             // Ensure we're part of the share group
-            await _coordinator.EnsureActiveGroupAsync(_subscriptionSnapshot, cancellationToken)
+            await _coordinator.EnsureActiveGroupAsync(cancellationToken)
                 .ConfigureAwait(false);
+            if (_subscriptionSnapshot.Count == 0)
+                yield break;
             _assignmentSnapshot = _coordinator.Assignment;
 
             var assignment = _assignmentSnapshot;

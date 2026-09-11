@@ -301,6 +301,33 @@ public class ShareConsumerPollBenchmarks
         TopicPartitions = [new ShareGroupHeartbeatTopicPartitions { TopicId = TopicId, Partitions = [0] }]
     };
 
+    private Func<bool, CancellationToken, ValueTask<bool>>? _sendLegacyHeartbeat;
+    private Func<CancellationToken, ValueTask<bool>>? _sendHeartbeat;
+
+    internal void PrepareSubscriptionHeartbeats()
+    {
+        const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
+        var coordinator = typeof(KafkaShareConsumer<int, int>).GetField("_coordinator", flags)!.GetValue(_compatibility)!;
+        typeof(ShareConsumerCoordinator).GetField("_coordinatorId", flags)!.SetValue(coordinator, 1);
+        var method = typeof(ShareConsumerCoordinator).GetMethod("SendShareGroupHeartbeatAsync", flags)!;
+        // Keep the same fixture compatible with the baseline's redundant initial-join argument.
+        if (method.GetParameters().Length == 1)
+            _sendHeartbeat = method.CreateDelegate<Func<CancellationToken, ValueTask<bool>>>(coordinator);
+        else
+            _sendLegacyHeartbeat = method.CreateDelegate<Func<bool, CancellationToken, ValueTask<bool>>>(coordinator);
+    }
+
+    internal ValueTask<bool> SendSubscriptionHeartbeat()
+    {
+        var pending = _sendHeartbeat is { } send
+            ? send(CancellationToken.None) : _sendLegacyHeartbeat!(false, CancellationToken.None);
+        _connection.CompleteHeartbeat();
+        return pending;
+    }
+
+    internal void RepeatSubscription(bool batch)
+        => (batch ? _borrowed : _compatibility).Subscribe(Topic);
+
     internal void PrepareIdlePolling(bool batch)
     {
         var consumer = batch ? _borrowed : _compatibility;
@@ -454,10 +481,13 @@ public class ShareConsumerPollBenchmarks
     }
 
     private sealed class Connection(ShareFetchResponse fetch, bool asynchronous)
-        : IKafkaConnection, IKafkaCapabilityProvider, IValueTaskSource<ShareFetchResponse>
+        : IKafkaConnection, IKafkaCapabilityProvider, IValueTaskSource<ShareFetchResponse>, IValueTaskSource<ShareGroupHeartbeatResponse>
     {
         private ManualResetValueTaskSourceCore<ShareFetchResponse> _completion;
         private bool _pending;
+        private ManualResetValueTaskSourceCore<ShareGroupHeartbeatResponse> _heartbeatCompletion;
+        private bool _heartbeatPending;
+        private readonly ShareGroupHeartbeatResponse _heartbeat = new() { ErrorCode = ErrorCode.None, MemberEpoch = 1 };
         internal MetadataResponse MetadataResponse { get; set; } = null!;
         internal TaskCompletionSource<MetadataResponse>? PendingMetadata { get; set; }
         internal bool Asynchronous { get; set; } = asynchronous;
@@ -475,7 +505,7 @@ public class ShareConsumerPollBenchmarks
         public KafkaConnectionCapabilities Capabilities { get; } = KafkaConnectionCapabilities.Create(new ApiVersionsResponse
         {
             ErrorCode = ErrorCode.None,
-            ApiKeys = [new ApiVersion(ApiKey.ShareFetch, 1, 2), new ApiVersion(ApiKey.ShareAcknowledge, 1, 2),
+            ApiKeys = [new ApiVersion(ApiKey.ShareGroupHeartbeat, 0, 1), new ApiVersion(ApiKey.ShareFetch, 1, 2), new ApiVersion(ApiKey.ShareAcknowledge, 1, 2),
                 new ApiVersion(ApiKey.Metadata, MetadataRequest.LowestSupportedVersion, MetadataRequest.HighestSupportedVersion)]
         });
 
@@ -507,6 +537,14 @@ public class ShareConsumerPollBenchmarks
                         ReleasedOffsets += acquired.LastOffset - acquired.FirstOffset + 1;
                 }
             }
+            if (Asynchronous && request is ShareGroupHeartbeatRequest)
+            {
+                if (_heartbeatPending)
+                    throw new InvalidOperationException("The fixture allows one pending heartbeat at a time.");
+                _heartbeatCompletion.Reset();
+                _heartbeatPending = true;
+                return new ValueTask<TResponse>((IValueTaskSource<TResponse>)(object)this, _heartbeatCompletion.Version);
+            }
             if (Asynchronous && request is ShareFetchRequest)
             {
                 if (_pending)
@@ -517,6 +555,7 @@ public class ShareConsumerPollBenchmarks
             }
             IKafkaResponse response = request switch
             {
+                ShareGroupHeartbeatRequest => _heartbeat,
                 ShareFetchRequest => fetch,
                 ShareAcknowledgeRequest => _acknowledge,
                 MetadataRequest => MetadataResponse,
@@ -537,6 +576,18 @@ public class ShareConsumerPollBenchmarks
             _pending = false;
             _completion.SetResult(fetch);
         }
+
+        internal void CompleteHeartbeat()
+        {
+            if (!_heartbeatPending) return;
+            _heartbeatPending = false;
+            _heartbeatCompletion.SetResult(_heartbeat);
+        }
+
+        ShareGroupHeartbeatResponse IValueTaskSource<ShareGroupHeartbeatResponse>.GetResult(short token) => _heartbeatCompletion.GetResult(token);
+        ValueTaskSourceStatus IValueTaskSource<ShareGroupHeartbeatResponse>.GetStatus(short token) => _heartbeatCompletion.GetStatus(token);
+        void IValueTaskSource<ShareGroupHeartbeatResponse>.OnCompleted(Action<object?> continuation, object? state,
+            short token, ValueTaskSourceOnCompletedFlags flags) => _heartbeatCompletion.OnCompleted(continuation, state, token, flags);
 
         ShareFetchResponse IValueTaskSource<ShareFetchResponse>.GetResult(short token) => _completion.GetResult(token);
         ValueTaskSourceStatus IValueTaskSource<ShareFetchResponse>.GetStatus(short token) => _completion.GetStatus(token);

@@ -51,8 +51,10 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
             if (_subscriptionSnapshot.Count == 0 || Volatile.Read(ref _closed) != 0 || Volatile.Read(ref _disposed) != 0)
                 yield break;
             // Ensure we're part of the share group
-            await _coordinator.EnsureActiveGroupAsync(_subscriptionSnapshot, cancellationToken)
+            await _coordinator.EnsureActiveGroupAsync(cancellationToken)
                 .ConfigureAwait(false);
+            if (_subscriptionSnapshot.Count == 0)
+                yield break;
             _assignmentSnapshot = _coordinator.Assignment;
 
             var assignment = _assignmentSnapshot;
