@@ -52,4 +52,8 @@ public sealed class AdminMutationResult
         result.ErrorCode is { } code && code.IsRetriable() &&
         code is Protocol.ErrorCode.NotController or Protocol.ErrorCode.ThrottlingQuotaExceeded;
 
+    internal static bool IsSafeCoordinatorRetry(AdminMutationResult result) =>
+        result.Outcome == AdminMutationOutcome.Failed && result.ErrorCode is { } code && code.IsRetriable() &&
+        code is Protocol.ErrorCode.NotCoordinator or Protocol.ErrorCode.CoordinatorNotAvailable or Protocol.ErrorCode.CoordinatorLoadInProgress;
+
 }

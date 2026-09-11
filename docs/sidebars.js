@@ -85,6 +85,7 @@ const sidebars = {
         'admin/topic-identifiers',
         'admin/partition-expansion',
         'admin/detailed-mutations',
+        'admin/detailed-share-group-offsets',
         'admin/transaction-remediation',
         'admin/replica-log-directories',
         'admin/streams-group-management',

@@ -97,7 +97,8 @@ Outstanding families remain separate work; the parent is not complete until thos
 | Partition expansion, including explicit replicas and validation | `CreatePartitionsDetailedAsync` | Topic name |
 | Partition reassignment/cancellation | `AlterPartitionReassignmentsDetailedAsync` | `TopicPartition` |
 | Consumer-group deletion and offset alteration/deletion | Pending [#3131](https://github.com/thomhurst/Dekaf/issues/3131) | Group / partition |
-| Share-group offset alteration/deletion | Pending [#3132](https://github.com/thomhurst/Dekaf/issues/3132) | Partition |
+| Share-group offset alteration | `AlterShareGroupOffsetsDetailedAsync` | `TopicPartition` |
+| Share-group offset deletion | `DeleteShareGroupOffsetsDetailedAsync` | Topic name (all partition offsets) |
 | Configuration replacement/incremental changes | Pending [#3133](https://github.com/thomhurst/Dekaf/issues/3133) | Resource |
 | Client quota alteration | Pending [#3134](https://github.com/thomhurst/Dekaf/issues/3134) | Quota entity |
 | ACL creation / SCRAM alteration | Pending [#3135](https://github.com/thomhurst/Dekaf/issues/3135) | Binding / user |

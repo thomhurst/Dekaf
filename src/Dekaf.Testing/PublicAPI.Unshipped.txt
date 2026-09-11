@@ -118,3 +118,7 @@ Dekaf.Testing.InMemoryAdminClient.DeleteTopicsDetailedAsync(System.Collections.G
 Dekaf.Testing.InMemoryAdminClient.DeleteTopicsDetailedAsync(System.Collections.Generic.IEnumerable<System.Guid>! topicIds, Dekaf.Admin.DeleteTopicsOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<System.Guid, Dekaf.Admin.AdminMutationResult!>!>
 Dekaf.Testing.InMemoryConsumerOptions.GroupInstanceId.get -> string?
 Dekaf.Testing.InMemoryConsumerOptions.GroupInstanceId.init -> void
+
+
+Dekaf.Testing.InMemoryAdminClient.AlterShareGroupOffsetsDetailedAsync(string! groupId, System.Collections.Generic.IEnumerable<Dekaf.Admin.ShareGroupOffsetAlteration!>! offsets, Dekaf.Admin.ShareGroupOffsetMutationOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<Dekaf.TopicPartition, Dekaf.Admin.AdminMutationResult!>!>
+Dekaf.Testing.InMemoryAdminClient.DeleteShareGroupOffsetsDetailedAsync(string! groupId, System.Collections.Generic.IEnumerable<string!>! topics, Dekaf.Admin.ShareGroupOffsetMutationOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<string!, Dekaf.Admin.AdminMutationResult!>!>
