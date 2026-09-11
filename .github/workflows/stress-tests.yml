@@ -37,7 +37,7 @@ on:
         required: false
         default: '15'
       producer_warmup_seconds:
-        description: 'Identical elapsed workload warmup for producers and consumer replay/hosted share (minimum 20 seconds; no adaptive extension)'
+        description: 'Warmup seconds per workload phase, including each outbox phase (minimum 20 seconds; no adaptive extension)'
         required: false
         default: '180'
       fixed_worker_threads:
@@ -273,7 +273,7 @@ jobs:
           fi
 
           # Base budgets retain the existing lane/profile allowances. The jq below
-          # scales reduced shapes; stress_timeout.py then ensures producer budgets
+          # scales reduced shapes; stress_timeout.py then ensures workload budgets
           # cover every selected client/variant, warmup, drain and setup period.
           cat > lanes.json << 'EOF'
           [
@@ -332,7 +332,9 @@ jobs:
                   | drop_adaptive
                   | .artifact_suffix = "-aba"
                   | .aba_second_candidate = ($aba_segments == 4)
-                  | .timeout_minutes = $segment_budget * $aba_segments
+                  # Outbox uses a whole-job allowance. The Python calculator below
+                  # budgets every measured segment and both correctness preflights.
+                  | if .scenario == "outbox" then . else .timeout_minutes = $segment_budget * $aba_segments end
                 elif $profile_mode != "off" then
                   .client = "dekaf"
                   | .paired_samples = 1
