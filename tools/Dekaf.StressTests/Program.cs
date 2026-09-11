@@ -19,7 +19,7 @@ namespace Dekaf.StressTests;
 /// Options:
 ///   --duration &lt;minutes&gt;    Test duration in minutes (default: 15)
 ///   --message-size &lt;bytes&gt;  Message size in bytes (default: 1000)
-///   --scenario &lt;name&gt;       Run specific scenario: producer, producer-idempotent, producer-acks-all, producer-async, producer-async-idempotent, producer-transactional, producer-roundtrip-steady, consumer, consumer-batch, consumer-raw, consumer-raw-batch, hosted-share, outbox, all (default: all)
+///   --scenario &lt;name&gt;       Run specific scenario: producer, producer-idempotent, producer-acks-all, producer-async, producer-async-idempotent, producer-transactional, producer-roundtrip-steady, consumer, consumer-batch, consumer-raw, consumer-raw-batch, consumer-follower-recovery, hosted-share, outbox, all (default: all)
 ///   --client &lt;name&gt;         Run specific client: dekaf, confluent, all (default: all)
 ///   --output &lt;path&gt;         Output directory for results (default: ./results)
 ///   --brokers &lt;count&gt;      Number of Kafka brokers (default: 1, use 3 for multi-broker)
@@ -161,7 +161,9 @@ public static class Program
         Directory.CreateDirectory(options.OutputPath);
         using var progressWatchdog = new ProgressWatchdog(options.OutputPath);
 
-        await using var kafka = await KafkaEnvironment.CreateAsync(options.Brokers, enableShareGroups: options.Scenario == "hosted-share").ConfigureAwait(false);
+        var followerRecovery = options.Scenario == "consumer-follower-recovery";
+        await using var kafka = await KafkaEnvironment.CreateAsync(options.Brokers,
+            enableShareGroups: options.Scenario == "hosted-share", enableFollowerRecovery: followerRecovery).ConfigureAwait(false);
         var scenarios = GetScenarios(options);
 
         var producerTopic = $"stress-producer-{Guid.NewGuid():N}";
@@ -193,13 +195,16 @@ public static class Program
         }
         // Transaction verification reads from earliest after the workload, while consumer
         // scenarios replay their seeded data. Broker retention must not delete either data set.
-        await kafka.CreateTopicAsync(
-            consumerTopic,
-            options.Partitions,
-            replicationFactor,
-            replayTopicConfigs).ConfigureAwait(false);
+        if (followerRecovery)
+            await kafka.CreateFollowerRecoveryTopicAsync(consumerTopic, options.Partitions, replayTopicConfigs).ConfigureAwait(false);
+        else
+            await kafka.CreateTopicAsync(
+                consumerTopic,
+                options.Partitions,
+                replicationFactor,
+                replayTopicConfigs).ConfigureAwait(false);
 
-        if (options.Scenario is "consumer" or "consumer-batch" or "consumer-raw" or "consumer-raw-batch" or "all")
+        if (options.Scenario is "consumer" or "consumer-batch" or "consumer-raw" or "consumer-raw-batch" or "consumer-follower-recovery" or "all")
         {
             await SeedConsumerTopicAsync(kafka.BootstrapServers, consumerTopic, options).ConfigureAwait(false);
         }
@@ -790,7 +795,7 @@ public static class Program
             .WithLoggerFactory(StressClientLogging.LoggerFactory)
             .WithBootstrapServers(bootstrapServers)
             .WithClientId("stress-seeder")
-            .WithAcks(Acks.Leader)
+            .WithAcks(options.Scenario == "consumer-follower-recovery" ? Acks.All : Acks.Leader)
             .WithLinger(TimeSpan.FromMilliseconds(5))
             .WithBatchSize(ConsumerSeedBatchSizeBytes)
             .BuildAsync();
@@ -827,6 +832,7 @@ public static class Program
                 ? !s.Name.Equals("soak", StringComparison.OrdinalIgnoreCase)
                     && !s.Name.Equals("hosted-share", StringComparison.OrdinalIgnoreCase)
                     && !s.Name.Equals("outbox", StringComparison.OrdinalIgnoreCase)
+                    && !s.Name.Equals("consumer-follower-recovery", StringComparison.OrdinalIgnoreCase)
                 : s.Name.Equals(options.Scenario, StringComparison.OrdinalIgnoreCase))
             .Where(s => options.Client == "all" || s.Client.Equals(options.Client, StringComparison.OrdinalIgnoreCase))
             .ToList();
@@ -863,7 +869,8 @@ public static class Program
             new ConfluentConsumerStressTest(),
             new SoakStressTest(),
             new HostedShareStressTest(),
-            new OutboxStressTest()
+            new OutboxStressTest(),
+            new ConsumerFollowerRecoveryStressTest()
         ];
 
     private static List<IStressTestScenario> ApplyClientOrder(List<IStressTestScenario> scenarios, string requestedClient)
@@ -1128,7 +1135,7 @@ public static class Program
               --duration <minutes>    Test duration in minutes (default: 15)
               --producer-warmup-seconds <n>  Producer and consumer replay workload warmup (default: {ProducerWarmup.DefaultSeconds}; minimum: {ProducerWarmup.MinimumSeconds})
               --message-size <bytes>  Message size in bytes (default: 1000)
-              --scenario <name>       Run specific scenario: producer, producer-idempotent, producer-acks-all, producer-async, producer-async-idempotent, producer-transactional, producer-roundtrip-steady, consumer, consumer-batch, consumer-raw, consumer-raw-batch, hosted-share, outbox, soak, all (default: all; all excludes hosted-share, outbox and soak)
+              --scenario <name>       Run specific scenario: producer, producer-idempotent, producer-acks-all, producer-async, producer-async-idempotent, producer-transactional, producer-roundtrip-steady, consumer, consumer-batch, consumer-raw, consumer-raw-batch, consumer-follower-recovery, hosted-share, outbox, soak, all (default: all; all excludes hosted-share, outbox, consumer-follower-recovery and soak)
               --client <name>         Run specific client: dekaf, confluent, all (default: all)
               --output <path>         Output directory for results (default: ./results)
               --partitions <count>    Number of topic partitions (default: 6)
