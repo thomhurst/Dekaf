@@ -83,6 +83,7 @@ namespace Dekaf.Consumer
             ArgumentOutOfRangeException.ThrowIfLessThan(maxRecords, 1);
             _pendingFetchData = pendingFetchData;
             _iterationGuard = iterationGuard;
+            pendingFetchData.BeginCheckpointWindow(this);
             _storeOffsetOnDelivery = storeOffsetOnDelivery;
             _maxRecords = maxRecords;
         }
@@ -107,6 +108,25 @@ namespace Dekaf.Consumer
         /// This value is only accurate after the batch has been fully enumerated.
         /// </summary>
         public long Count => _count;
+
+        /// <summary>
+        /// Captures the next consumed offset and its leader epoch for this batch window.
+        /// Returns false before any progress, or after seek, revocation, disposal, or advancing
+        /// the outer batch enumerator. A paused partition retains its consumed checkpoint.
+        /// </summary>
+        /// <remarks>
+        /// Partial enumeration covers only delivered or deliberately filtered records. Fully
+        /// traversing the window also includes trailing control, aborted, and compacted offsets.
+        /// MaxPollRecords never includes a buffered, undisclosed record. Empty/control-only
+        /// progress becomes available after enumeration; an EOF notification alone is not progress.
+        /// The returned value owns no pooled storage and remains valid after this batch expires.
+        /// Capture it before requesting another batch and commit only after processing succeeds.
+        /// Calling this method neither stores nor commits offsets and does not prove processing.
+        /// </remarks>
+        /// <param name="checkpoint">A value snapshot suitable for explicit or transactional offset commits.</param>
+        /// <returns>Whether this window has a checkpoint that can currently be captured.</returns>
+        public bool TryGetNextOffset(out TopicPartitionOffset checkpoint) =>
+            BatchCheckpointAccess.TryGetNextOffset(_pendingFetchData, _iterationGuard, this, out checkpoint);
 
         /// <summary>
         /// Indicates whether this zero-record batch marks the current end offset of its partition.

@@ -39,6 +39,10 @@ on:
         description: 'Identical elapsed workload warmup for producers and consumer replay/hosted share (minimum 20 seconds; no adaptive extension)'
         required: false
         default: '180'
+      fixed_worker_threads:
+        description: 'Exact-SHA experiment only: fixed .NET worker pool for both controls and candidate (0 keeps runtime defaults)'
+        required: false
+        default: '0'
       message_size:
         description: 'Message size in bytes'
         required: false
@@ -154,6 +158,7 @@ jobs:
           DURATION_MINUTES: ${{ github.event.inputs.duration_minutes }}
           PRODUCER_WARMUP_SECONDS: ${{ github.event.inputs.producer_warmup_seconds }}
           PROFILE_MODE: ${{ github.event.inputs.profile_mode }}
+          FIXED_WORKER_THREADS: ${{ github.event.inputs.fixed_worker_threads }}
           EVENT_NAME: ${{ github.event_name }}
         run: |
           # The UI enforces the required choice input, but API/CLI dispatches can
@@ -164,6 +169,16 @@ jobs:
             exit 1
           fi
           lane="${LANE:-all}"
+
+          fixed_workers="${FIXED_WORKER_THREADS:-0}"
+          if ! [[ "$fixed_workers" =~ ^(0|[1-9][0-9]{0,3})$ ]] || (( fixed_workers > 1024 )); then
+            echo '::error::fixed_worker_threads must be an integer from 0 to 1024.'
+            exit 1
+          fi
+          if (( fixed_workers != 0 )) && { [ -z "$BASELINE_SHA" ] || [ "$FULL_RUN" = "true" ]; }; then
+            echo '::error::A fixed worker pool requires a non-publishing exact-SHA comparison.'
+            exit 1
+          fi
 
           # Manual full_run is the explicit paid/publishing override: it runs only
           # from main and forces the all-lane paired selection. There is no schedule.
@@ -454,6 +469,22 @@ jobs:
 
       - name: Stop build servers before measurement
         run: dotnet build-server shutdown
+
+      - name: Configure fixed worker-pool experiment
+        if: inputs.fixed_worker_threads != '' && inputs.fixed_worker_threads != '0'
+        env:
+          FIXED_WORKER_THREADS: ${{ inputs.fixed_worker_threads }}
+        run: |
+          # .NET 10 reads these supported runtime settings as hexadecimal values.
+          # Apply them after builds, equally to every validation and A1/B/A2 process.
+          # Runtime sample validation still requires a stable observed thread count.
+          printf -v worker_hex '0x%x' "$FIXED_WORKER_THREADS"
+          {
+            echo "DOTNET_ThreadPool_ForceMinWorkerThreads=$worker_hex"
+            echo "DOTNET_ThreadPool_ForceMaxWorkerThreads=$worker_hex"
+          } >> "$GITHUB_ENV"
+          echo "fixed_worker_threads=$FIXED_WORKER_THREADS min=max=$worker_hex" >> aba-results/provenance.txt
+          echo "Fixed .NET worker pool experiment: $FIXED_WORKER_THREADS workers in both controls and candidate." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Start Kafka
         if: matrix.brokers == 1 && matrix.baseline_sha == '' && matrix.scenario != 'hosted-share'
@@ -757,6 +788,8 @@ jobs:
           git ls-remote origin refs/heads/main > aba-results/main-at-end.txt
           find tools/Dekaf.StressTests/bin/Release baseline-source/tools/Dekaf.StressTests/bin/Release \
             -type f -print0 | sort -z | xargs -0 sha256sum > aba-results/binary-sha256.txt
+          tar -czf aba-results/comparison-binaries.tar.gz \
+            tools/Dekaf.StressTests/bin/Release baseline-source/tools/Dekaf.StressTests/bin/Release
 
       - name: Compare exact baseline A-B-A
         if: always() && matrix.baseline_sha != ''
