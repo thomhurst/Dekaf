@@ -85,6 +85,35 @@ def metric(comparison, key):
 
 
 class StressAbaComparisonTests(unittest.TestCase):
+    def test_validated_startup_does_not_explain_metric_verdict_as_incomplete(self):
+        for candidate, expected in ((100, "pass"), (96, "inconclusive"), (90, "regression")):
+            with self.subTest(verdict=expected):
+                comparison = compare(consumer(throughput=100), consumer(throughput=candidate),
+                                     consumer(throughput=98))
+                self.assertEqual(expected, comparison["verdict"])
+                comparison["startupAssessment"] = {"verdict": "VALIDATED", "errors": []}
+                before = json.dumps(comparison, sort_keys=True)
+
+                report = markdown(comparison, "a", "b")
+
+                self.assertIn("Startup assessment: VALIDATED", report)
+                self.assertIn(f"**Verdict: {expected.upper()}**", report)
+                self.assertNotIn("Incomplete startup assessment", report)
+                self.assertEqual(before, json.dumps(comparison, sort_keys=True))
+
+    def test_incomplete_startup_keeps_warning_and_validation_errors(self):
+        comparison = compare(consumer(), consumer(), consumer())
+        comparison["verdict"] = "inconclusive"
+        comparison["startupAssessment"] = {
+            "verdict": "INCONCLUSIVE", "errors": ["Worker count changed during measurement"]
+        }
+
+        report = markdown(comparison, "a", "b")
+
+        self.assertIn("Startup assessment: INCONCLUSIVE", report)
+        self.assertIn("Incomplete startup assessment prevents acceptance", report)
+        self.assertIn("- Worker count changed during measurement", report)
+
     def assert_pass(self, comparison):
         self.assertEqual("pass", comparison["verdict"])
         for item in comparison["metrics"]:
