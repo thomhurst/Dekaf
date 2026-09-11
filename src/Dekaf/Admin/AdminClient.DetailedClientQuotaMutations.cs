@@ -19,7 +19,7 @@ public sealed partial class AdminClient : IDetailedClientQuotaMutationAdminClien
             new(ApiKey.AlterClientQuotas, AlterClientQuotasRequest.LowestSupportedVersion,
                 AlterClientQuotasRequest.HighestSupportedVersion, nameof(AlterClientQuotasAsync), BrokerOrController: true),
             opts.TimeoutMs,
-            (pending, _) => new() { Entries = pending.Select(BuildAlterClientQuotaEntry).ToArray(), ValidateOnly = opts.ValidateOnly },
+            (pending, _, _) => new() { Entries = pending.Select(BuildAlterClientQuotaEntry).ToArray(), ValidateOnly = opts.ValidateOnly },
             static (_, response) => MapMutationResults(response.Entries, static entry => MapClientQuotaEntity(entry.Entity),
                 static entry => entry.ErrorCode, static entry => entry.ErrorMessage), cancellationToken);
     }

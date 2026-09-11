@@ -96,7 +96,8 @@ Outstanding families remain separate work; the parent is not complete until thos
 | Topic deletion, including topic IDs | `DeleteTopicsDetailedAsync` | Topic name or UUID |
 | Partition expansion, including explicit replicas and validation | `CreatePartitionsDetailedAsync` | Topic name |
 | Partition reassignment/cancellation | `AlterPartitionReassignmentsDetailedAsync` | `TopicPartition` |
-| Consumer-group deletion and offset alteration/deletion | Pending [#3131](https://github.com/thomhurst/Dekaf/issues/3131) | Group / partition |
+| Consumer-group deletion | `DeleteConsumerGroupsDetailedAsync` | Group ID |
+| Consumer-group offset alteration/deletion | `AlterConsumerGroupOffsetsDetailedAsync` / `DeleteConsumerGroupOffsetsDetailedAsync` | `TopicPartition` within the group |
 | Share-group offset alteration | `AlterShareGroupOffsetsDetailedAsync` | `TopicPartition` |
 | Share-group offset deletion | `DeleteShareGroupOffsetsDetailedAsync` | Topic name (all partition offsets) |
 | Configuration replacement/incremental changes | Pending [#3133](https://github.com/thomhurst/Dekaf/issues/3133) | Resource |
@@ -146,6 +147,46 @@ The simulator supports quota set/remove operations, validation-only execution, s
 and per-entity fault outcomes. As with its convenience API, it does not emulate every broker quota
 configuration rule; inject an admin fault to model a broker rejection. Faults are consumed per quota
 entity, and confirmed siblings remain in the returned results.
+
+## Consumer-group mutations
+
+`IDetailedConsumerGroupMutationAdminClient` adds consumer-group deletion and offset mutation
+results through the same optional capability pattern. `ConsumerGroupMutationOptions.TimeoutMs`
+bounds group deletion and offset alteration; offset deletion uses `DeleteConsumerGroupOffsetsOptions`.
+
+Group deletion isolates coordinator discovery, connection and version failures so healthy
+coordinators can still process their groups within the same deadline. OffsetCommit versions
+that require topic IDs leave unmappable topics `NotAttempted` while sending mapped siblings.
+Those local failures remain distinct from `Unknown` outcomes for requests whose responses are lost.
+The deadline includes discovery, sends and retries for the entire call. Group deletion batches
+groups sharing a coordinator. After a rejection it rediscovers and regroups only rejected or
+unsent groups, so a coordinator change cannot replay another group's confirmed deletion.
+Offset requests batch partitions by topic and retry only confirmed coordinator rejections.
+
+These Kafka responses carry error codes but no error-message field, so `ErrorMessage` is null
+for broker responses. Local failures retain an explanatory message and exception. An omitted
+partition, duplicate outcome, lost response or stale topic-ID mapping never confirms success.
+
+```csharp
+var offsets = new[]
+{
+    new TopicPartitionOffset("orders", 0, 120),
+    new TopicPartitionOffset("orders", 1, 240)
+};
+var outcomes = await admin.AlterConsumerGroupOffsetsDetailedAsync("maintenance", offsets);
+var retryOffsets = offsets.Where(offset =>
+{
+    var result = outcomes[new TopicPartition(offset.Topic, offset.Partition)];
+    return result.Outcome == AdminMutationOutcome.Failed &&
+        result.ErrorCode is ErrorCode.NotCoordinator or ErrorCode.CoordinatorNotAvailable
+            or ErrorCode.CoordinatorLoadInProgress;
+}).ToArray();
+var retried = await admin.AlterConsumerGroupOffsetsDetailedAsync("maintenance", retryOffsets);
+```
+
+The client already retries these confirmed rejections within its retry limit and deadline.
+This example starts a new operation for remaining rejections. Inspect `Unknown` results before
+deciding whether replay is appropriate; never include confirmed successes in a retry batch.
 
 ## In-memory behavior
 

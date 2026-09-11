@@ -85,7 +85,7 @@ public sealed partial class InMemoryAdminClient : IDetailedTopicMutationAdminCli
     private async ValueTask<IReadOnlyDictionary<TKey, AdminMutationResult>> ExecuteInMemoryMutationAsync<TItem, TKey>(
         List<TItem> items, Func<TItem, TKey> key, Func<TItem, (string? Topic, int? Partition)> scope,
         Func<TItem, ErrorCode> apply, int timeoutMs, CancellationToken cancellationToken,
-        string? groupId = null, bool allowMissingShareGroup = false,
+        string? shareGroupId = null, bool allowMissingShareGroup = false, Func<TItem, string?>? getGroupId = null,
         Func<TItem, CancellationToken, ValueTask>? applyFault = null) where TKey : notnull
     {
         ThrowIfDisposed();
@@ -96,9 +96,9 @@ public sealed partial class InMemoryAdminClient : IDetailedTopicMutationAdminCli
         if (timeoutMs == 0) deadline.Cancel();
         else deadline.CancelAfter(timeoutMs);
         var token = deadline.Token;
-        if (groupId is not null)
+        if (shareGroupId is not null)
         {
-            var groupResult = await CheckShareGroupMutationAsync(groupId, allowMissingShareGroup, deadline, timeoutMs, cancellationToken).ConfigureAwait(false);
+            var groupResult = await CheckShareGroupMutationAsync(shareGroupId, allowMissingShareGroup, deadline, timeoutMs, cancellationToken).ConfigureAwait(false);
             if (!groupResult.IsSuccess)
             {
                 foreach (var item in items) results.Add(key(item), groupResult);
@@ -119,7 +119,7 @@ public sealed partial class InMemoryAdminClient : IDetailedTopicMutationAdminCli
                     else
                     {
                         var target = scope(item);
-                        await ApplyAdminFaultAsync(token, target.Topic, target.Partition, groupId).ConfigureAwait(false);
+                        await ApplyAdminFaultAsync(token, target.Topic, target.Partition, getGroupId?.Invoke(item) ?? shareGroupId).ConfigureAwait(false);
                     }
                     token.ThrowIfCancellationRequested();
                     result = AdminMutationResult.FromResponse(apply(item), null);
@@ -140,7 +140,7 @@ public sealed partial class InMemoryAdminClient : IDetailedTopicMutationAdminCli
                             "The simulated mutation did not receive a definitive response.", failure);
                 }
                 results[identifier] = result;
-                var canRetry = groupId is null ? AdminMutationResult.IsSafeControllerRetry(result) : AdminMutationResult.IsSafeCoordinatorRetry(result);
+                var canRetry = shareGroupId is null && getGroupId is null ? AdminMutationResult.IsSafeControllerRetry(result) : AdminMutationResult.IsSafeCoordinatorRetry(result);
                 if (!canRetry || attempt >= RetryHelper.MaxRetries || token.IsCancellationRequested) break;
                 try
                 {

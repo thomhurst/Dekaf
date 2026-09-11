@@ -19,7 +19,7 @@ public sealed partial class AdminClient : IDetailedShareGroupOffsetAdminClient
             items, static item => item.TopicPartition,
             new(ApiKey.AlterShareGroupOffsets, AlterShareGroupOffsetsRequest.LowestSupportedVersion,
                 AlterShareGroupOffsetsRequest.HighestSupportedVersion, nameof(AlterShareGroupOffsetsAsync), groupId), timeout,
-            (pending, _) => BuildDetailedShareOffsetAlteration(groupId, pending),
+            (pending, _, _) => BuildDetailedShareOffsetAlteration(groupId, pending),
             static (pending, response) =>
             {
                 if (response.ErrorCode != ErrorCode.None)
@@ -47,7 +47,7 @@ public sealed partial class AdminClient : IDetailedShareGroupOffsetAdminClient
             items, static item => item,
             new(ApiKey.DeleteShareGroupOffsets, DeleteShareGroupOffsetsRequest.LowestSupportedVersion,
                 DeleteShareGroupOffsetsRequest.HighestSupportedVersion, nameof(DeleteShareGroupOffsetsAsync), groupId), timeout,
-            (pending, _) => new() { GroupId = groupId, Topics = pending.Select(static topic => new DeleteShareGroupOffsetsRequestTopic { TopicName = topic }).ToArray() },
+            (pending, _, _) => new() { GroupId = groupId, Topics = pending.Select(static topic => new DeleteShareGroupOffsetsRequestTopic { TopicName = topic }).ToArray() },
             static (pending, response) => response.ErrorCode != ErrorCode.None
                 ? MapGroupMutationError(pending, static topic => topic, response.ErrorCode, response.ErrorMessage)
                 : MapMutationResults(response.Responses, static topic => topic.TopicName,
