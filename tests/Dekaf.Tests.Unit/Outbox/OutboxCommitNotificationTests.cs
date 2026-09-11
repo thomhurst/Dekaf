@@ -12,6 +12,77 @@ namespace Dekaf.Tests.Unit.Outbox;
 public sealed class OutboxCommitNotificationTests
 {
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task BucketHints_AccumulateSaves_AndUseOwnershipAtCommit(bool rollback)
+    {
+        var time = new ManualTimeProvider();
+        using var notifier = new OutboxNotifier(time);
+        notifier.SetOwnedBuckets([7]);
+        using var connection = new SqliteConnection("Data Source=:memory:");
+        connection.Open();
+        var options = new DbContextOptionsBuilder<Context>().UseSqlite(connection)
+            .UseDekafOutboxNotifications(notifier).Options;
+        await using var context = new Context(options);
+        await context.Database.EnsureCreatedAsync();
+        await using var transaction = await context.Database.BeginTransactionAsync();
+        context.AddOutboxMessage(new OutboxMessage { Topic = "test", MessageId = Guid.NewGuid(), CreatedAtUtc = DateTimeOffset.UnixEpoch, Bucket = 1 });
+        await context.SaveChangesAsync();
+        context.AddOutboxMessage(new OutboxMessage { Topic = "test", MessageId = Guid.NewGuid(), CreatedAtUtc = DateTimeOffset.UnixEpoch, Bucket = 2 });
+        await context.SaveChangesAsync();
+        // A later save must not clear the transaction's earlier bucket hint.
+        notifier.SetOwnedBuckets([1]);
+        using var cancellation = new CancellationTokenSource();
+        var waiting = notifier.WaitAsync(TimeSpan.FromSeconds(1), cancellation.Token);
+        await Assert.That(waiting.IsCompleted).IsFalse();
+        if (rollback)
+        {
+            await transaction.RollbackAsync();
+            await Assert.That(waiting.IsCompleted).IsFalse();
+            cancellation.Cancel();
+            await Assert.That(async () => await waiting).Throws<OperationCanceledException>();
+        }
+        else
+        {
+            await transaction.CommitAsync();
+            await waiting.AsTask().WaitAsync(TimeSpan.FromSeconds(30));
+        }
+    }
+
+    [Test]
+    public async Task BucketHints_ImplicitSavesAndAmbientCommits_FilterRemoteBuckets()
+    {
+        var time = new ManualTimeProvider();
+        using var notifier = new OutboxNotifier(time);
+        notifier.SetOwnedBuckets([1]);
+        using var connection = new SqliteConnection("Data Source=:memory:");
+        connection.Open();
+        var options = new DbContextOptionsBuilder<Context>().UseSqlite(connection)
+            .UseDekafOutboxNotifications(notifier).Options;
+        await using var context = new Context(options);
+        await context.Database.EnsureCreatedAsync();
+        using var cancellation = new CancellationTokenSource();
+        var waiting = notifier.WaitAsync(TimeSpan.FromSeconds(1), cancellation.Token);
+        context.AddOutboxMessage(new OutboxMessage { Topic = "test", MessageId = Guid.NewGuid(), CreatedAtUtc = DateTimeOffset.UnixEpoch, Bucket = 2 });
+        await context.SaveChangesAsync();
+        await Assert.That(waiting.IsCompleted).IsFalse();
+        var observer = new OutboxCommitObserver(notifier);
+        using (var remote = new CommittableTransaction())
+        {
+            observer.ObserveAmbientCommit(remote, new HashSet<int> { 2 });
+            remote.Commit();
+        }
+        await Assert.That(waiting.IsCompleted).IsFalse();
+        using (var local = new CommittableTransaction())
+        {
+            observer.ObserveAmbientCommit(local, new HashSet<int> { 2 });
+            observer.ObserveAmbientCommit(local, new HashSet<int> { 1 });
+            local.Commit();
+        }
+        await waiting.AsTask().WaitAsync(TimeSpan.FromSeconds(30));
+    }
+
+    [Test]
     [Arguments(false, false)]
     [Arguments(false, true)]
     [Arguments(true, false)]

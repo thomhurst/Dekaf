@@ -22,3 +22,7 @@ Dekaf.Outbox.OutboxRelayOptions.MetricsCollectionTimeout.get -> System.TimeSpan
 Dekaf.Outbox.OutboxRelayOptions.MetricsCollectionTimeout.init -> void
 Dekaf.Outbox.OutboxRelayOptions.MetricsName.get -> string!
 Dekaf.Outbox.OutboxRelayOptions.MetricsName.init -> void
+Dekaf.Outbox.IOutboxBucketNotifier
+Dekaf.Outbox.IOutboxBucketNotifier.NotifyCommitted(System.Collections.Generic.IReadOnlySet<int>! buckets) -> void
+Dekaf.Outbox.IOutboxBucketNotifier.SetOwnedBuckets(System.Collections.Generic.IReadOnlyList<int>! buckets) -> void
+Dekaf.Outbox.IOutboxBucketNotifier.NotifyCommitted(int bucket) -> void
