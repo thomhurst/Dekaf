@@ -526,11 +526,10 @@ public interface IConsumerOffsets
 /// <typeparam name="TValue">Value type.</typeparam>
 public readonly struct ConsumeResult<TKey, TValue>
 {
-    // Reuse the pooled-count slot when _headers owns the source so deferred snapshots do not
-    // enlarge this hot-path struct.
     private const int DeferredHeaderSnapshot = -1;
     private const byte PartitionEofFlag = 1;
     private const byte NullKeyFlag = 2;
+    private const int CallerOwnedHeaders = -2;
 
     // Thread-local reusable SerializationContext to avoid per-deserialization allocations
     // Since SerializationContext contains reference types (Topic, Headers), copying it
@@ -550,11 +549,22 @@ public readonly struct ConsumeResult<TKey, TValue>
     // DateTimeOffset.FromUnixTimeMilliseconds() construction in the consume loop.
     // The DateTimeOffset is computed on demand via the Timestamp property.
     private readonly long _timestampMs;
-    private readonly IReadOnlyList<Header>? _headers;
-    private readonly Header[]? _pooledHeaders;
+    // Header sources are mutually exclusive: a borrowed Header[] or a caller-owned list.
+    // A negative count distinguishes caller-owned headers when raw payloads still retain a fetch.
+    private readonly IReadOnlyList<Header>? _headerSource;
     private readonly int _pooledHeaderCount;
     private readonly PendingFetchData? _headerOwner;
     private readonly int _headerGeneration;
+    private readonly PackedProcessingEpoch _leaderEpoch;
+
+    // Stamped before channel publication. The index shares the epoch's eight-byte storage;
+    // completion ownership remains independent of borrowed fetch storage.
+    internal int ProcessingIndex
+    {
+        get => _leaderEpoch.Index;
+        init => _leaderEpoch = _leaderEpoch.WithIndex(value);
+    }
+    internal OffsetCompletionBatch? ProcessingBatch { get; init; }
 
     // The fetch owns both the raw deserializer input and lazy headers. Reuse its existing
     // reference instead of enlarging every result or allocating a per-record lease.
@@ -577,24 +587,32 @@ public readonly struct ConsumeResult<TKey, TValue>
         Topic = original.Topic;
         Partition = original.Partition;
         Offset = original.Offset;
-        LeaderEpoch = original.LeaderEpoch;
+        _leaderEpoch = original._leaderEpoch.WithIndex(replacement.ProcessingIndex);
         _flags = (byte)((replacement._flags & ~PartitionEofFlag) | (original._flags & PartitionEofFlag));
     }
 
     // A replacement may still borrow the original key/value memory. Preserve the
     // fetch owner so partitioned handlers can retain that storage while queued.
-    internal ConsumeResult<TKey, TValue> WithStorageOwnerFrom(in ConsumeResult<TKey, TValue> original)
-        => _headerOwner is null && original._headerOwner is { } owner ? new(this, owner) : this;
+    internal static void PreserveStorageOwner(
+        ref ConsumeResult<TKey, TValue> replacement, in ConsumeResult<TKey, TValue> original)
+    {
+        if (replacement._headerOwner is null && original._headerOwner is { } owner)
+            replacement = new(replacement, owner);
+    }
 
     private ConsumeResult(in ConsumeResult<TKey, TValue> replacement, PendingFetchData owner)
     {
         this = replacement;
         _headerOwner = owner;
+        if (_pooledHeaderCount != DeferredHeaderSnapshot)
+            _pooledHeaderCount = CallerOwnedHeaders;
     }
 
     /// <summary>
     /// Creates a new ConsumeResult with eager deserialization.
     /// Deserializes key and value immediately to avoid storing deserializer references in the struct.
+    /// Constructed results have no partition completion ownership. MarkProcessed accepts only
+    /// records delivered by the same manual partition processing context.
     /// </summary>
     public ConsumeResult(
         string topic,
@@ -695,14 +713,13 @@ public readonly struct ConsumeResult<TKey, TValue>
         Offset = offset;
         Key = key;
         Value = value;
-        _headers = null;
-        _pooledHeaders = pooledHeaders;
+        _headerSource = pooledHeaders;
         _pooledHeaderCount = pooledHeaderCount;
         _headerOwner = headerOwner;
         _headerGeneration = headerOwner.HeaderGeneration;
         _timestampMs = timestampMs;
         TimestampType = timestampType;
-        LeaderEpoch = leaderEpoch;
+        _leaderEpoch = PackedProcessingEpoch.FromEpoch(leaderEpoch);
         _flags = isKeyNull ? NullKeyFlag : (byte)0;
     }
 
@@ -729,14 +746,13 @@ public readonly struct ConsumeResult<TKey, TValue>
         Offset = offset;
         Key = key;
         Value = value;
-        _headers = headers;
-        _pooledHeaders = null;
+        _headerSource = headers;
         _pooledHeaderCount = deferHeaderSnapshot ? DeferredHeaderSnapshot : 0;
         _headerOwner = null;
         _headerGeneration = 0;
         _timestampMs = timestampMs;
         TimestampType = timestampType;
-        LeaderEpoch = leaderEpoch;
+        _leaderEpoch = PackedProcessingEpoch.FromEpoch(leaderEpoch);
         _flags = isKeyNull ? NullKeyFlag : (byte)0;
     }
 
@@ -763,22 +779,23 @@ public readonly struct ConsumeResult<TKey, TValue>
         Topic = topic;
         Partition = partition;
         Offset = offset;
-        _headers = headers;
-        _pooledHeaders = pooledHeaders;
+        _headerSource = headers ?? pooledHeaders;
         _pooledHeaderCount = pooledHeaderCount;
         _headerOwner = headerOwner;
         _headerGeneration = headerGeneration;
         _timestampMs = timestampMs;
         TimestampType = timestampType;
-        LeaderEpoch = leaderEpoch;
+        _leaderEpoch = PackedProcessingEpoch.FromEpoch(leaderEpoch);
         _flags = (byte)((isPartitionEof ? PartitionEofFlag : 0) | (isKeyNull ? NullKeyFlag : 0));
 
         // Resolve the thread-static address once; each direct field access otherwise
         // emits another TLS lookup before setting or copying the context.
         ref var serializationContext = ref t_serializationContext;
-        var keyUsesCallerOwnedHeaders = keyDeserializer is not null
+        // With no caller-owned headers, both dispatch paths receive the same
+        // null header context. Avoid repeated capability checks on borrowed records.
+        var keyUsesCallerOwnedHeaders = headers is not null && keyDeserializer is not null
                                         && RecordHeaderDeserializer.UsesCallerOwnedHeaders(keyDeserializer);
-        var valueUsesCallerOwnedHeaders = valueDeserializer is not null
+        var valueUsesCallerOwnedHeaders = headers is not null && valueDeserializer is not null
                                           && RecordHeaderDeserializer.UsesCallerOwnedHeaders(valueDeserializer);
         var serializationHeaders = headers is not null
                                    && (keyUsesCallerOwnedHeaders || valueUsesCallerOwnedHeaders)
@@ -1018,14 +1035,13 @@ public readonly struct ConsumeResult<TKey, TValue>
         Offset = offset;
         Key = default;
         Value = default!;
-        _headers = null;
-        _pooledHeaders = null;
+        _headerSource = null;
         _pooledHeaderCount = 0;
         _headerOwner = null;
         _headerGeneration = 0;
         _timestampMs = 0;
         TimestampType = TimestampType.NotAvailable;
-        LeaderEpoch = null;
+        _leaderEpoch = default;
         _flags = PartitionEofFlag;
     }
 
@@ -1064,15 +1080,17 @@ public readonly struct ConsumeResult<TKey, TValue>
     {
         get
         {
-            if (_headers is { } headers)
+            if (_headerOwner is null || _pooledHeaderCount < 0)
             {
+                if (_headerSource is not { } headers)
+                    return Array.Empty<Header>();
                 return _pooledHeaderCount == DeferredHeaderSnapshot
                     ? LazyConsumeHeaders.CreateSnapshot(headers)
                     : headers;
             }
 
             return LazyConsumeHeaders.Create(
-                _pooledHeaders,
+                (Header[]?)_headerSource,
                 _pooledHeaderCount,
                 _headerOwner,
                 _headerGeneration);
@@ -1099,7 +1117,7 @@ public readonly struct ConsumeResult<TKey, TValue>
     /// <summary>
     /// The leader epoch.
     /// </summary>
-    public int? LeaderEpoch { get; }
+    public int? LeaderEpoch => _leaderEpoch.LeaderEpoch;
 
     /// <summary>
     /// Indicates whether this result represents a partition end-of-file (EOF) event.
@@ -1124,6 +1142,33 @@ public readonly struct ConsumeResult<TKey, TValue>
     /// </summary>
     public TopicPartitionOffset TopicPartitionOffset => new(Topic, Partition, Offset, LeaderEpoch ?? -1);
 
+}
+
+// Keep the nullable epoch and 24-bit processing index in eight bytes without
+// overlapping fields or depending on Nullable<int> padding and byte order.
+internal readonly struct PackedProcessingEpoch
+{
+    private readonly uint _indexAndPresence;
+    private readonly int _epochValue;
+
+    private PackedProcessingEpoch(int epochValue, uint indexAndPresence)
+    {
+        _epochValue = epochValue;
+        _indexAndPresence = indexAndPresence;
+    }
+
+    internal const int IndexCapacity = 1 << 24;
+    // The low byte stores presence directly; the upper 24 bits hold the index.
+    // Ordinary consumption initializes presence without shifting it to the high bit.
+    private const uint HasEpoch = 1;
+
+    internal static PackedProcessingEpoch FromEpoch(int? epoch) =>
+        new(epoch.GetValueOrDefault(), epoch.HasValue ? HasEpoch : 0);
+
+    internal int? LeaderEpoch => (_indexAndPresence & HasEpoch) != 0 ? _epochValue : null;
+    internal int Index => (int)(_indexAndPresence >> 8);
+    internal PackedProcessingEpoch WithIndex(int index) =>
+        new(_epochValue, (_indexAndPresence & HasEpoch) | ((uint)index << 8));
 }
 
 /// <summary>

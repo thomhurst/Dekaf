@@ -551,6 +551,16 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
     internal int UnparsedLazyRecordCount =>
         ReferenceEquals(_records, this) && _parsedRecords is null ? _recordCount : -1;
 
+    // Each encoded record occupies at least MinimumEncodedSize bytes. A malformed declared count
+    // must not turn a small frame into an unbounded completion reservation.
+    internal int RecordCountUpperBound
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        get => ReferenceEquals(_records, this)
+            ? Math.Min(_recordCount, _rawRecordData.Length / Record.MinimumEncodedSize)
+            : _records is Record[] records ? records.Length : _records.Count;
+    }
+
     /// <summary>
     /// Parses this lazy batch's records into <paramref name="records"/> starting at
     /// <paramref name="offset"/> instead of a batch-owned pooled array. The slice must cover the

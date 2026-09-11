@@ -69,6 +69,8 @@ public class ConsumerBatchInterceptorBenchmarks
                 var result = _baselineOnConsume is { } onConsume ? onConsume(record) : record;
                 if (validate)
                 {
+                    if (!ReplaceResult && !result.IsKeyNull)
+                        throw new InvalidOperationException("Pass-through delivery must preserve the wire-null key flag.");
                     var removedBytes = ReplaceResult ? InterceptorCount : 0;
                     if (index >= MessageCount || result.Offset != index ||
                         !result.Value.Span.SequenceEqual(_records[0][index].Value.Span[removedBytes..]))

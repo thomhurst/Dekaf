@@ -193,6 +193,11 @@ internal sealed class PendingFetchData : IDisposable
     /// Using long to prevent overflow in long-running scenarios with large fetches.
     /// </summary>
     public long MessageCount { get; private set; }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal int GetMaximumRecordCount(int limit)
+        => Math.Min(limit, _maximumRecordCount);
+
     internal bool IsExhausted { get; private set; }
     internal long FetchEndOffsetExclusive
     {
@@ -268,8 +273,16 @@ internal sealed class PendingFetchData : IDisposable
                 actualEndOffset);
         }
 
+        // Reuse the owner-attachment traversal. Poll-batch construction and eager
+        // parsing must not add another scan over all record batches.
+        long maximumRecordCount = 0;
         for (var i = 0; i < batches.Count; i++)
-            batches[i].AttachConsumerPoolOwner(instance, instance.HeaderGeneration);
+        {
+            var batch = batches[i];
+            batch.AttachConsumerPoolOwner(instance, instance.HeaderGeneration);
+            maximumRecordCount += batch.RecordCountUpperBound;
+        }
+        instance._maximumRecordCount = (int)Math.Clamp(maximumRecordCount, 1, int.MaxValue);
 
         if (abortedTransactions is { Count: > 0 })
         {
@@ -955,6 +968,7 @@ internal sealed class PendingFetchData : IDisposable
     private int _fetchEndLeaderEpoch = -1;
     private bool _reachedSnapshotEnd;
     private SnapshotConsumeState? _snapshotMarkerState;
+    private int _maximumRecordCount = 1;
 
     private sealed class PendingFetchDataPoolState
     {
@@ -11120,19 +11134,23 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     [MethodImpl(MethodImplOptions.NoInlining)]
     private ConsumeResult<TKey, TValue> ApplyOnConsumeInterceptorsSlow(ConsumeResult<TKey, TValue> result)
     {
+        // Keep chain updates in a local. Writing the by-value struct parameter can
+        // require GC write barriers because its incoming storage is passed by reference.
+        var current = result;
         foreach (var interceptor in _interceptors!)
         {
             try
             {
-                var replacement = interceptor.OnConsume(result);
-                result = replacement.WithStorageOwnerFrom(in result);
+                var replacement = interceptor.OnConsume(current);
+                ConsumeResult<TKey, TValue>.PreserveStorageOwner(ref replacement, in current);
+                current = replacement;
             }
             catch (Exception ex)
             {
                 LogInterceptorOnConsumeError(ex, interceptor.GetType().Name);
             }
         }
-        return result;
+        return current;
     }
 
     /// <summary>

@@ -566,8 +566,11 @@ public class MpscFetchBufferTests
                 IsBackground = true
             };
             timeoutThread.Start();
-            var completion = await continuationFinished.Task.WaitAsync(TimeSpan.FromSeconds(5));
-            await timeoutCallbackExited.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            // The dedicated thread triggers completion deterministically, but delivery
+            // still uses a ThreadPool worker. Allow startup under worker starvation,
+            // but fail with a bounded timeout if completion is genuinely lost.
+            var completion = await continuationFinished.Task.WaitAsync(TimeSpan.FromSeconds(60));
+            await timeoutCallbackExited.Task.WaitAsync(TimeSpan.FromSeconds(60));
 
             await Assert.That(completion.RanInline).IsFalse();
             await Assert.That(completion.Result).IsFalse();

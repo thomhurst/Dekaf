@@ -8,6 +8,34 @@ namespace Dekaf.Tests.Unit.Consumer;
 public class ConsumeBatchTests
 {
     [Test]
+    [Arguments(false, false)]
+    [Arguments(false, true)]
+    [Arguments(true, false)]
+    [Arguments(true, true)]
+    public async Task RawValueFastPath_PreservesWireNullKey(bool nullKey, bool ignoreKeys)
+    {
+        var actual = ignoreKeys
+            ? ReadNullKey(Serializers.Ignore, nullKey)
+            : ReadNullKey(Serializers.RawBytes, nullKey);
+        await Assert.That(actual).IsEqualTo(nullKey);
+
+        static bool ReadNullKey<TKey>(IDeserializer<TKey> keyDeserializer, bool nullKey)
+        {
+            var source = new RecordBatch
+            {
+                Records = [new Record { Key = ReadOnlyMemory<byte>.Empty, IsKeyNull = nullKey, Value = "value"u8.ToArray() }]
+            };
+            using var pending = PendingFetchData.Create("topic", 0, new[] { source });
+            pending.EagerParseAll();
+            var batch = new ConsumeBatch<TKey, ReadOnlyMemory<byte>>(pending, keyDeserializer, Serializers.RawBytes);
+            using var records = batch.GetEnumerator();
+            if (!records.MoveNext())
+                throw new InvalidOperationException("The fixture must deliver its record.");
+            return records.Current.IsKeyNull;
+        }
+    }
+
+    [Test]
     [Arguments(false, true)]
     [Arguments(false, false)]
     [Arguments(true, true)]
@@ -73,6 +101,55 @@ public class ConsumeBatchTests
     private sealed class OddOffsetFilter : IConsumerRecordFilter
     {
         public bool ShouldDeserialize(scoped in ConsumerRecordFilterContext context) => context.Offset % 2 != 0;
+    }
+
+    [Test]
+    [Arguments(true)]
+    [Arguments(false)]
+    public async Task CompletionReservationBound_EmptyFetchReservesOneSlot(bool eagerParse)
+    {
+        using var pending = PendingFetchData.Create("empty", 0, Array.Empty<RecordBatch>());
+        if (eagerParse)
+            pending.EagerParseAll();
+        var batch = new ConsumeBatch<string, string>(pending, Serializers.String, Serializers.String);
+        await Assert.That(batch.MaximumRecordCount).IsEqualTo(1);
+        await Assert.That(batch.GetEnumerator().MoveNext()).IsFalse();
+    }
+
+    [Test]
+    [Arguments(true)]
+    [Arguments(false)]
+    public async Task CompletionReservationBound_DoesNotScanAtPollConstruction(bool eagerParse)
+    {
+        var batches = new CountingBatchList(128);
+        using var pending = PendingFetchData.Create("test-topic", 0, batches);
+        if (eagerParse)
+            pending.EagerParseAll();
+        var accesses = batches.Accesses;
+
+        for (var limit = 1; limit <= 128; limit++)
+        {
+            var batch = new ConsumeBatch<string, string>(pending, Serializers.String, Serializers.String,
+                maxRecords: limit);
+            if (batch.MaximumRecordCount != limit)
+                throw new InvalidOperationException("Cached bound did not respect the poll limit.");
+        }
+
+        await Assert.That(batches.Accesses).IsEqualTo(accesses);
+    }
+
+    [Test]
+    [Arguments(1, 1)]
+    [Arguments(2, 2)]
+    [Arguments(100, 3)]
+    public async Task CompletionReservationBound_SurvivesFetchDisposal(int limit, int expected)
+    {
+        var pending = CreatePendingFetchData("test-topic", partitionIndex: 0, baseOffset: 0, messageCount: 3);
+        var batch = new ConsumeBatch<string, string>(pending, Serializers.String, Serializers.String,
+            maxRecords: limit);
+        pending.Dispose();
+
+        await Assert.That(batch.MaximumRecordCount).IsEqualTo(expected);
     }
 
     [Test]
@@ -387,6 +464,31 @@ public class ConsumeBatchTests
         var pending = PendingFetchData.Create(topic, partitionIndex, new List<RecordBatch> { recordBatch });
         pending.EagerParseAll();
         return pending;
+    }
+
+    private sealed class CountingBatchList : IReadOnlyList<RecordBatch>
+    {
+        private readonly RecordBatch[] _batches;
+        public int Accesses { get; private set; }
+        public int Count => _batches.Length;
+        public RecordBatch this[int index]
+        {
+            get
+            {
+                Accesses++;
+                return _batches[index];
+            }
+        }
+
+        public CountingBatchList(int count)
+        {
+            _batches = new RecordBatch[count];
+            for (var index = 0; index < count; index++)
+                _batches[index] = new RecordBatch { BaseOffset = index, Records = [new Record()] };
+        }
+
+        public IEnumerator<RecordBatch> GetEnumerator() => ((IEnumerable<RecordBatch>)_batches).GetEnumerator();
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
     }
 
     private sealed class CallbackDeserializer(Action callback) : IDeserializer<string>

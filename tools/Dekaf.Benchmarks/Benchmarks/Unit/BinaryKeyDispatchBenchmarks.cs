@@ -61,8 +61,22 @@ public class BinaryKeyDispatchBenchmarks
                     await releaseFirst.Task.ConfigureAwait(false);
                 context.MarkProcessed(batch[0]);
             });
-        for (var i = 0; i < records.Length; i++)
-            lane.TryEnqueue(records[i]);
+        // Reserve before publication, matching the candidate's manual-completion contract.
+        var completionBatch = lane.CreateCompletionBatch(records.Length);
+        var published = 0;
+        try
+        {
+            for (var i = 0; i < records.Length; i++)
+            {
+                if (!lane.TryEnqueue(records[i], completionBatch))
+                    throw new InvalidOperationException("The binary input did not fit in the partition queue.");
+                published++;
+            }
+        }
+        finally
+        {
+            lane.EndBatch(completionBatch, published);
+        }
         await lane.StopAsync(PartitionStopPolicy.Drain, Timeout.InfiniteTimeSpan).ConfigureAwait(false);
         var running = dispatcher.RunAsync(CancellationToken.None);
         var bufferedKeys = dispatcher.LaneCount;

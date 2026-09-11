@@ -69,11 +69,7 @@ public class PartitionedDispatchBenchmarks
         _handled = 0;
         _release = SuspendFirstHandler ? new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously) : null;
         var lane = PartitionedBenchmarkInput.CreateLane(RecordCount);
-        foreach (var record in _records)
-        {
-            if (!lane.TryEnqueue(record))
-                throw new InvalidOperationException("The bounded input did not fit in the partition queue.");
-        }
+        PartitionedBenchmarkInput.EnqueueRecords(lane, _records);
 
         // Complete the input without starting PartitionLane's Task.Run wrapper. The actual
         // processor factories still own handler dispatch, storage release and commit tracking.
@@ -168,9 +164,9 @@ public class PartitionedOffsetTrackingBenchmarks
     private PartitionLane<int, int> CreateDeliveredLane()
     {
         var lane = PartitionedBenchmarkInput.CreateLane(RecordCount);
-        // Measure publication and queue delivery in both tracking rows so completion
-        // operates on delivered records. The reusable output array is fixture storage
-        // and does not add a per-invocation allocation.
+        // Completion requires the owner and predecessor index stamped by publication.
+        // Include reservation and queue delivery in both tracking rows; the reusable
+        // output array is fixture storage and does not add a per-invocation allocation.
         PartitionedBenchmarkInput.EnqueueRecords(lane, _records);
         for (var index = 0; index < RecordCount; index++)
         {
@@ -197,10 +193,20 @@ internal static class PartitionedBenchmarkInput
 
     internal static void EnqueueRecords(PartitionLane<int, int> lane, ConsumeResult<int, int>[] records)
     {
-        foreach (var record in records)
+        var batch = lane.CreateCompletionBatch(records.Length);
+        var published = 0;
+        try
         {
-            if (!lane.TryEnqueue(record))
-                throw new InvalidOperationException("The bounded input did not fit in the partition queue.");
+            foreach (var record in records)
+            {
+                if (!lane.TryEnqueue(record, batch))
+                    throw new InvalidOperationException("The bounded input did not fit in the partition queue.");
+                published++;
+            }
+        }
+        finally
+        {
+            lane.EndBatch(batch, published);
         }
     }
 

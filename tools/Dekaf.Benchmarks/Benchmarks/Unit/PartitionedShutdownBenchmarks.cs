@@ -54,12 +54,22 @@ public class PartitionedShutdownBenchmarks
         var lanes = (Dictionary<TopicPartition, PartitionLane<string, string>>)
             runtimeType.GetField("_lanes", PrivateInstance)!.GetValue(_runtime)!;
         lanes.Add(partition, _lane);
-        for (var index = 0; index < RecordCount; index++)
+        var completionBatch = _lane.CreateCompletionBatch(RecordCount);
+        var published = 0;
+        try
         {
-            var record = new ConsumeResult<string, string>("shutdown", 0, index,
-                default, true, default, true, null, 0, TimestampType.NotAvailable, null, null, null);
-            if (!_lane.TryEnqueue(record))
-                throw new InvalidOperationException("Queue fill failed.");
+            for (var index = 0; index < RecordCount; index++)
+            {
+                var record = new ConsumeResult<string, string>("shutdown", 0, index,
+                    default, true, default, true, null, 0, TimestampType.NotAvailable, null, null, null);
+                if (!_lane.TryEnqueue(record, completionBatch))
+                    throw new InvalidOperationException("Queue fill failed.");
+                published++;
+            }
+        }
+        finally
+        {
+            _lane.EndBatch(completionBatch, published);
         }
 
         _backpressure = _lane.WaitToWriteAsync(CancellationToken.None).AsTask();

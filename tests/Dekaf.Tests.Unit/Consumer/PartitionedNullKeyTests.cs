@@ -62,10 +62,10 @@ public sealed class PartitionedNullKeyTests
         var running = dispatcher.RunAsync(timeout.Token).AsTask();
         try
         {
-            lane.TryEnqueue(Message(0, true, deserializer));
+            lane.TryEnqueueForTest(Message(0, true, deserializer));
             await firstStarted.Task.WaitAsync(timeout.Token);
-            lane.TryEnqueue(Message(1, true, deserializer));
-            lane.TryEnqueue(Message(2, false, deserializer));
+            lane.TryEnqueueForTest(Message(1, true, deserializer));
+            lane.TryEnqueueForTest(Message(2, false, deserializer));
             await nonNullWireStarted.Task.WaitAsync(timeout.Token);
             await Assert.That(secondNullStarted.Task.IsCompleted).IsFalse();
             releaseFirst.TrySetResult();

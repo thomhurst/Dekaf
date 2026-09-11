@@ -131,6 +131,48 @@ public sealed class PartitionedConsumerRuntimeTests
     }
 
     [Test]
+    [Arguments(16)]
+    [Arguments(8192)]
+    public async Task LargeFetch_ReservesCompletionStorageInBoundedChunks(int queueCapacity)
+    {
+        const int count = 4098;
+        var partition = new TopicPartition("topic-a", 0);
+        var consumer = new TestConsumer();
+        consumer.SetAssignment(partition);
+        var records = Enumerable.Range(0, count).Select(index => CreateResult(partition, index * 2L)).ToArray();
+        consumer.Enqueue(records);
+        var completed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var processed = 0;
+        var largestReservation = 0;
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        var running = consumer.RunPartitionedAsync(async (context, token) =>
+        {
+            await foreach (var message in context.Messages.WithCancellation(token))
+            {
+                largestReservation = Math.Max(largestReservation, message.ProcessingBatch!.Nodes!.Length);
+                context.MarkProcessed(message);
+                if (++processed == count)
+                    completed.TrySetResult();
+            }
+        }, new PartitionedProcessingOptions
+        {
+            MaxBufferedRecordsPerPartition = queueCapacity,
+            CommitPolicy = PartitionCommitPolicy.CommitCompletedOnRevoke
+        }, cancellation.Token).AsTask();
+        try
+        {
+            await completed.Task.WaitAsync(cancellation.Token);
+        }
+        finally
+        {
+            await StopRuntimeAsync(cancellation, running);
+        }
+        await Assert.That(processed).IsEqualTo(count);
+        await Assert.That(largestReservation).IsLessThanOrEqualTo(1024);
+        await Assert.That(consumer.CommitCalls.Single().Single().Offset).IsEqualTo((count - 1) * 2L + 1);
+    }
+
+    [Test]
     public async Task RunPartitionedAsync_RoutesViaConsumeBatchAsync()
     {
         var partition = new TopicPartition("topic-a", 0);
@@ -219,7 +261,7 @@ public sealed class PartitionedConsumerRuntimeTests
             _ => Interlocked.Increment(ref callbacks));
 
         for (var offset = 0; offset < 3; offset++)
-            await Assert.That(lane.TryEnqueue(CreateResult(partition, offset))).IsTrue();
+            await Assert.That(lane.TryEnqueueForTest(CreateResult(partition, offset))).IsTrue();
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         await ReadLaneMessagesAsync(lane, count: 3, cts.Token).ConfigureAwait(false);
@@ -238,7 +280,7 @@ public sealed class PartitionedConsumerRuntimeTests
             _ => Interlocked.Increment(ref callbacks));
 
         for (var offset = 0; offset < 4; offset++)
-            await Assert.That(lane.TryEnqueue(CreateResult(partition, offset))).IsTrue();
+            await Assert.That(lane.TryEnqueueForTest(CreateResult(partition, offset))).IsTrue();
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         await ReadLaneMessagesAsync(lane, count: 4, cts.Token).ConfigureAwait(false);
@@ -746,6 +788,29 @@ public sealed class PartitionedConsumerRuntimeTests
     }
 
     [Test]
+    public async Task TestConsumer_CancellationBeforeReleasedCommitWait_DoesNotRecordOffsets()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var release = NewCompletionSource();
+        var consumer = new TestConsumer
+        {
+            ReleaseCommit = release,
+            CommitStartedCallback = () =>
+            {
+                // Reproduce shutdown winning after CommitStarted is signaled but
+                // before the fake observes an already-completed release task.
+                cancellation.Cancel();
+                release.SetResult();
+            }
+        };
+
+        await Assert.That(async () => await consumer.CommitAsync(
+                [new TopicPartitionOffset("cancelled-commit", 0, 1)], cancellation.Token))
+            .Throws<OperationCanceledException>();
+        await Assert.That(consumer.CommitCalls).IsEmpty();
+    }
+
+    [Test]
     public async Task CommitProcessedAsync_CommitsCurrentPartitionOffset()
     {
         var partition = new TopicPartition("topic-a", 0);
@@ -1004,7 +1069,7 @@ public sealed class PartitionedConsumerRuntimeTests
         var runTask = dispatcher.RunAsync(cts.Token).AsTask();
 
         for (var i = 0; i < 20; i++)
-            lane.TryEnqueue(CreateResult(partition, i, key: $"key-{i}"));
+            lane.TryEnqueueForTest(CreateResult(partition, i, key: $"key-{i}"));
 
         await Assert.That(() => Volatile.Read(ref processedCount))
             .Eventually(count => count.IsEqualTo(20), TimeSpan.FromSeconds(5));
@@ -1335,6 +1400,8 @@ public sealed class PartitionedConsumerRuntimeTests
 
         public TaskCompletionSource? ReleaseCommit { get; init; }
 
+        public Action? CommitStartedCallback { get; init; }
+
         public ILoggerFactory? LoggerFactory { get; init; }
 
         public OffsetCommitMode OffsetCommitMode { get; init; } = OffsetCommitMode.Manual;
@@ -1489,9 +1556,13 @@ public sealed class PartitionedConsumerRuntimeTests
             ArgumentNullException.ThrowIfNull(offsets);
             cancellationToken.ThrowIfCancellationRequested();
 
+            // Arm cancellation before telling the test it can cancel and release us.
+            // WaitAsync on an already-completed release task would ignore cancellation.
+            var releaseCommit = ReleaseCommit?.Task.WaitAsync(cancellationToken);
             CommitStarted?.TrySetResult();
-            if (ReleaseCommit is not null)
-                await ReleaseCommit.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+            CommitStartedCallback?.Invoke();
+            if (releaseCommit is not null)
+                await releaseCommit.ConfigureAwait(false);
 
             // CommitStarted can let the test cancel and release before WaitAsync
             // registers. A completed task bypasses WaitAsync's cancellation check;

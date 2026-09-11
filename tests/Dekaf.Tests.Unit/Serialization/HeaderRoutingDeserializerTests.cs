@@ -100,9 +100,12 @@ public sealed class HeaderRoutingDeserializerTests
     }
 
     [Test]
-    [Arguments(false)]
-    [Arguments(true)]
-    public async Task ConsumeResult_RoutingWrapperClearsCallerHeadersBeforeOrdinaryLeaf(bool schemaIdRouter)
+    [Arguments(false, false)]
+    [Arguments(false, true)]
+    [Arguments(true, false)]
+    [Arguments(true, true)]
+    public async Task ConsumeResult_RoutingWrapperClearsCallerHeadersBeforeOrdinaryLeaf(
+        bool schemaIdRouter, bool includeHeaders)
     {
         var headerRouter = new HeaderRoutingDeserializer<string>(
             "event-type",
@@ -118,7 +121,7 @@ public sealed class HeaderRoutingDeserializerTests
                 .Register("header-events", headerRouter)
                 .Freeze();
         var data = schemaIdRouter ? Frame(42, "payload"u8.ToArray()) : "payload"u8.ToArray();
-        Header[] headers = [new Header("event-type", "created"u8.ToArray())];
+        Header[]? headers = includeHeaders ? [new Header("event-type", "created"u8.ToArray())] : null;
 
         var result = new ConsumeResult<string, string>(
             "events",
@@ -136,7 +139,7 @@ public sealed class HeaderRoutingDeserializerTests
             valueDeserializer: wrapper);
 
         await Assert.That(result.Value).IsEqualTo("no-headers");
-        await Assert.That(result.Headers).Count().IsEqualTo(1);
+        await Assert.That(result.Headers).Count().IsEqualTo(includeHeaders ? 1 : 0);
     }
 
     [Test]

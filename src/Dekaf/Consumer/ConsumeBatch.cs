@@ -231,6 +231,8 @@ namespace Dekaf.Consumer
         private readonly PendingFetchData _pendingFetchData;
         private readonly IDeserializer<TKey>? _keyDeserializer;
         private readonly IDeserializer<TValue>? _valueDeserializer;
+        private readonly bool _usesRawValues;
+        private readonly bool _ignoresKeys;
         private readonly bool _hasRecordHeaderDeserializers;
         private readonly RecordHeaderRoutingPlan? _recordHeaderRoutingPlan;
         private readonly Headers? _recordHeaderDeserializationHeaders;
@@ -244,6 +246,7 @@ namespace Dekaf.Consumer
         private readonly int _maxRecords;
         private long _count;
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         internal ConsumeBatch(PendingFetchData pendingFetchData,
             IDeserializer<TKey>? keyDeserializer,
             IDeserializer<TValue>? valueDeserializer,
@@ -260,9 +263,17 @@ namespace Dekaf.Consumer
             _pendingFetchData = pendingFetchData;
             _keyDeserializer = keyDeserializer;
             _valueDeserializer = valueDeserializer;
+            // Resolve built-in selection once per batch; custom deserializers keep
+            // their normal per-record call and SerializationContext behavior.
+            _usesRawValues = typeof(TValue) == typeof(ReadOnlyMemory<byte>)
+                && ReferenceEquals(valueDeserializer, Serializers.RawBytes);
+            _ignoresKeys = keyDeserializer is null
+                || typeof(TKey) == typeof(Ignore) && ReferenceEquals(keyDeserializer, Serializers.Ignore);
             _iterationGuard = iterationGuard;
             _storeOffsetOnDelivery = storeOffsetOnDelivery;
-            _maxRecords = maxRecords;
+            // Capture the bound while the fetch is valid. Routing may run after an
+            // assignment change has invalidated and released the borrowed fetch.
+            _maxRecords = pendingFetchData.GetMaximumRecordCount(maxRecords);
             _rewindAfterDeliveryFailure = rewindAfterDeliveryFailure;
             _recordFilter = recordFilter;
             _tryRecordPollFast = tryRecordPollFast;
@@ -301,6 +312,8 @@ namespace Dekaf.Consumer
         /// This value is only accurate after the batch has been fully enumerated.
         /// </summary>
         public long Count => _count;
+
+        internal int MaximumRecordCount => _maxRecords;
 
         /// <summary>
         /// Indicates whether this zero-record batch marks the current end offset of its partition.
@@ -447,22 +460,34 @@ namespace Dekaf.Consumer
 
                 try
                 {
-                    Current = new ConsumeResult<TKey, TValue>(
-                        topic: pending.Topic,
-                        partition: pending.PartitionIndex,
-                        offset: offset,
-                        keyData: record.Key,
-                        isKeyNull: record.IsKeyNull,
-                        valueData: record.Value,
-                        isValueNull: record.IsValueNull,
-                        pooledHeaders: record.Headers,
-                        pooledHeaderCount: record.HeaderCount,
-                        headerOwner: pending,
-                        timestampMs: timestampMs,
-                        timestampType: timestampType,
-                        leaderEpoch: pending.CurrentPartitionLeaderEpoch >= 0 ? pending.CurrentPartitionLeaderEpoch : null,
-                        keyDeserializer: _batch._keyDeserializer,
-                        valueDeserializer: _batch._valueDeserializer);
+                    if (_batch._usesRawValues && (record.IsKeyNull || _batch._ignoresKeys))
+                    {
+                        var rawValue = record.IsValueNull ? ReadOnlyMemory<byte>.Empty : record.Value;
+                        Current = new ConsumeResult<TKey, TValue>(pending.Topic, pending.PartitionIndex,
+                            offset, default, Unsafe.As<ReadOnlyMemory<byte>, TValue>(ref rawValue),
+                            record.Headers, record.HeaderCount, pending, timestampMs, timestampType,
+                            pending.CurrentPartitionLeaderEpoch >= 0 ? pending.CurrentPartitionLeaderEpoch : null,
+                            isKeyNull: record.IsKeyNull);
+                    }
+                    else
+                    {
+                        Current = new ConsumeResult<TKey, TValue>(
+                            topic: pending.Topic,
+                            partition: pending.PartitionIndex,
+                            offset: offset,
+                            keyData: record.Key,
+                            isKeyNull: record.IsKeyNull,
+                            valueData: record.Value,
+                            isValueNull: record.IsValueNull,
+                            pooledHeaders: record.Headers,
+                            pooledHeaderCount: record.HeaderCount,
+                            headerOwner: pending,
+                            timestampMs: timestampMs,
+                            timestampType: timestampType,
+                            leaderEpoch: pending.CurrentPartitionLeaderEpoch >= 0 ? pending.CurrentPartitionLeaderEpoch : null,
+                            keyDeserializer: _batch._keyDeserializer,
+                            valueDeserializer: _batch._valueDeserializer);
+                    }
                 }
                 catch (Exception ex)
                 {

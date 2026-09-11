@@ -42,6 +42,7 @@ internal static class AotSmoke
 
     public static async Task RunAsync()
     {
+        PackedEpochSmoke.Run();
         RunCompressionSmoke();
         RunJsonSmoke();
         RunSchemaRegistryHttpPipelineConstructionSmoke();

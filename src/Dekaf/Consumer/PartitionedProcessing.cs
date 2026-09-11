@@ -714,6 +714,7 @@ internal enum PartitionStopReason
 
 internal sealed class PartitionedConsumerRuntime<TKey, TValue>
 {
+    private const int MaximumCompletionReservation = 1024;
     private static readonly TimeSpan ConsumePollTimeout = TimeSpan.FromMilliseconds(100);
 
     private readonly IKafkaConsumer<TKey, TValue> _consumer;
@@ -1038,59 +1039,113 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
         ConsumeBatch<TKey, TValue> batch,
         CancellationToken cancellationToken)
     {
+        // EOF batches enumerate no records, so they need no completion reservation.
+        if (batch.IsPartitionEof)
+            return default;
+
         var partition = batch.TopicPartition;
         if (!_lanes.TryGetValue(partition, out var lane))
             return default;
 
         var records = batch.GetEnumerator();
-        while (records.MoveNext())
+        // Filters and assignment changes can leave a non-EOF batch without a
+        // deliverable record. Reserve storage only after the first record exists.
+        if (!records.MoveNext())
+            return default;
+
+        var completionBatch = lane.CreateCompletionBatch(Math.Min(batch.MaximumRecordCount, MaximumCompletionReservation));
+        var published = 0;
+        var publicationContinuesAsync = false;
+        try
         {
-            if (!lane.TryEnqueue(records.Current))
-                return RouteBackpressuredBatchAsync(records, lane, cancellationToken);
+            do
+            {
+                EnsureCompletionCapacity(lane, ref completionBatch, ref published);
+                if (!lane.TryEnqueue(records.Current, completionBatch))
+                {
+                    var continuation = RouteBackpressuredBatchAsync(
+                        records, lane, completionBatch, published, cancellationToken);
+                    publicationContinuesAsync = true;
+                    return continuation;
+                }
 
-            PauseIfNeeded(lane);
+                if (!records.Current.IsPartitionEof)
+                    published++;
+                PauseIfNeeded(lane);
+            }
+            while (records.MoveNext());
+
+            return default;
         }
-
-        return default;
+        finally
+        {
+            if (!publicationContinuesAsync)
+                lane.EndBatch(completionBatch, published);
+        }
     }
 
     private async ValueTask RouteBackpressuredBatchAsync(
         ConsumeBatch<TKey, TValue>.Enumerator records,
         PartitionLane<TKey, TValue> lane,
+        OffsetCompletionBatch? completionBatch,
+        int published,
         CancellationToken cancellationToken)
     {
-        var signal = _capacitySignal;
-        if (signal is null)
+        try
         {
-            signal = new AsyncAutoResetSignal();
-            signal.RegisterShutdownToken(cancellationToken);
-            Volatile.Write(ref _capacitySignal, signal);
-        }
-
-        // Continue from the rejected record in one async state machine per batch.
-        // Publishing the signal before retrying closes the capacity/command race.
-        do
-        {
-            while (!lane.TryEnqueue(records.Current))
+            var signal = _capacitySignal;
+            if (signal is null)
             {
-                PauseIfNeeded(lane);
-                await DrainCommandsAsync(cancellationToken).ConfigureAwait(false);
-                ThrowIfFailed();
-
-                if (lane.IsCompleted
-                    || !_lanes.TryGetValue(lane.TopicPartition, out var currentLane)
-                    || !ReferenceEquals(currentLane, lane))
-                    return;
-
-                if (lane.TryEnqueue(records.Current))
-                    break;
-
-                await signal.WaitAsync(Timeout.Infinite).ConfigureAwait(false);
+                signal = new AsyncAutoResetSignal();
+                signal.RegisterShutdownToken(cancellationToken);
+                Volatile.Write(ref _capacitySignal, signal);
             }
 
-            PauseIfNeeded(lane);
+            // Continue from the rejected record in one async state machine per batch.
+            // Publishing the signal before retrying closes the capacity/command race.
+            do
+            {
+                EnsureCompletionCapacity(lane, ref completionBatch, ref published);
+                while (!lane.TryEnqueue(records.Current, completionBatch))
+                {
+                    PauseIfNeeded(lane);
+                    await DrainCommandsAsync(cancellationToken).ConfigureAwait(false);
+                    ThrowIfFailed();
+
+                    if (lane.IsCompleted
+                        || !_lanes.TryGetValue(lane.TopicPartition, out var currentLane)
+                        || !ReferenceEquals(currentLane, lane))
+                        return;
+
+                    if (lane.TryEnqueue(records.Current, completionBatch))
+                        break;
+
+                    await signal.WaitAsync(Timeout.Infinite).ConfigureAwait(false);
+                }
+
+                if (!records.Current.IsPartitionEof)
+                    published++;
+                PauseIfNeeded(lane);
+            }
+            while (records.MoveNext());
         }
-        while (records.MoveNext());
+        finally
+        {
+            lane.EndBatch(completionBatch, published);
+        }
+    }
+
+    private static void EnsureCompletionCapacity(PartitionLane<TKey, TValue> lane,
+        ref OffsetCompletionBatch? batch, ref int published)
+    {
+        if (batch is null || published < batch.Capacity)
+            return;
+        // Reserve only the next bounded slab as publication reaches it. Allocate
+        // before finishing the old slab so the caller still owns it if allocation fails.
+        var next = lane.CreateCompletionBatch(MaximumCompletionReservation);
+        lane.EndBatch(batch, published);
+        batch = next;
+        published = 0;
     }
 
     private void StartLane(TopicPartition partition)
@@ -1667,15 +1722,13 @@ internal sealed class PartitionLane<TKey, TValue>
     private readonly Action<PartitionLane<TKey, TValue>, Exception> _failed;
     private readonly CancellationTokenSource _stopping = new();
     private readonly PartitionProcessorContext<TKey, TValue> _context;
-    private readonly object _offsetGate = new();
     private readonly int _capacity;
     private Task? _processorTask;
     private int _bufferedCount;
     private int _completed;
-    private readonly SortedSet<long> _completedOffsets = [];
-    private readonly Dictionary<long, int> _leaderEpochs = [];
-    private long? _nextOffsetToCommit;
-    private int _pendingOffsetInitialized;
+    private readonly CompletedOffsetRanges _completedRanges = new();
+    private long _lastEnqueuedOffset = -1;
+    private long _lastCompletedOffset = -1;
     private long? _completedOffset;
     private long? _lastProcessedOffset;
     private int _lastCommittedLeaderEpoch = -1;
@@ -1719,7 +1772,7 @@ internal sealed class PartitionLane<TKey, TValue>
             if (automaticProgress is not null)
                 return automaticProgress.LastProcessedOffset;
 
-            lock (_offsetGate)
+            lock (_completedRanges)
                 return _lastProcessedOffset;
         }
     }
@@ -1757,26 +1810,64 @@ internal sealed class PartitionLane<TKey, TValue>
                 // StopAsync must not release these buffers while user code is running.
                 CompleteWriter();
                 while (_channel.Reader.TryRead(out var abandoned))
+                {
                     abandoned.ReleaseStorage();
+                }
+                lock (_completedRanges)
+                    _completedRanges.Retire();
             }
         });
     }
 
-    public bool TryEnqueue(ConsumeResult<TKey, TValue> result)
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    public bool TryEnqueue(in ConsumeResult<TKey, TValue> result, OffsetCompletionBatch? completionBatch)
     {
         if (Volatile.Read(ref _completed) != 0)
             return false;
 
         result.RetainStorage();
-        if (!_channel.Writer.TryWrite(result))
+        // An automatic processor may start while the writer still owns its first
+        // manual batch. Stop filling that reservation once progress changes hands.
+        if (completionBatch is not null && Volatile.Read(ref _automaticProgress) is not null)
+            completionBatch = null;
+        var isEof = result.IsPartitionEof;
+        var index = isEof || completionBatch is null ? 0 : completionBatch.PrepareRecord(_lastEnqueuedOffset);
+        var queued = result with { ProcessingIndex = index, ProcessingBatch = completionBatch };
+        if (!_channel.Writer.TryWrite(queued))
         {
             result.ReleaseStorage();
             return false;
         }
 
-        TrackPending(result);
+        if (!isEof)
+        {
+            completionBatch?.PublishRecord();
+            _lastEnqueuedOffset = result.Offset;
+        }
         Interlocked.Increment(ref _bufferedCount);
         return true;
+    }
+
+    public OffsetCompletionBatch? CreateCompletionBatch(int capacity)
+    {
+        if (Volatile.Read(ref _automaticProgress) is not null)
+            return null;
+        lock (_completedRanges)
+        {
+            if (_automaticProgress is not null)
+                return null;
+            var batch = new OffsetCompletionBatch(capacity, _completedRanges);
+            _completedRanges.AddReservation(batch);
+            return batch;
+        }
+    }
+
+    public void EndBatch(OffsetCompletionBatch? batch, int published)
+    {
+        if (batch is null)
+            return;
+        lock (_completedRanges)
+            batch.Finish(published);
     }
 
     public ValueTask<bool> WaitToWriteAsync(CancellationToken cancellationToken)
@@ -1803,64 +1894,38 @@ internal sealed class PartitionLane<TKey, TValue>
 
     public void MarkProcessed(ConsumeResult<TKey, TValue> message)
     {
-        var partition = new TopicPartition(message.Topic, message.Partition);
-        if (partition != TopicPartition)
-            throw new InvalidOperationException("Cannot mark a message from another partition as processed.");
+        var completionBatch = message.ProcessingBatch;
+        if (completionBatch is null)
+            throw new InvalidOperationException("Cannot mark a message that was not delivered through manual partition completion tracking as processed.");
+        if (!ReferenceEquals(completionBatch.LaneIdentity, _completedRanges))
+            throw new InvalidOperationException("Cannot mark a message from another partition or processing epoch as processed.");
 
         if (message.IsPartitionEof)
             return;
 
-        lock (_offsetGate)
+        lock (_completedRanges)
         {
-            if (!_nextOffsetToCommit.HasValue)
-                _nextOffsetToCommit = message.Offset;
+            if (_completedRanges.IsRetired)
+                return;
 
             if (!_lastProcessedOffset.HasValue || message.Offset > _lastProcessedOffset.Value)
                 _lastProcessedOffset = message.Offset;
 
-            if (message.Offset < _nextOffsetToCommit.Value)
+            // Duplicate completions and records retained after lane retirement are benign;
+            // their storage may already be returned, unlike a foreign lane identity above.
+            if (message.Offset <= _lastCompletedOffset || completionBatch.Nodes is null)
                 return;
 
-            _leaderEpochs[message.Offset] = message.LeaderEpoch ?? -1;
-            _completedOffsets.Add(message.Offset);
-
-            AdvanceCompletedOffset();
-        }
-    }
-
-    private void TrackPending(ConsumeResult<TKey, TValue> message)
-    {
-        if (message.IsPartitionEof || Volatile.Read(ref _pendingOffsetInitialized) != 0)
-            return;
-
-        lock (_offsetGate)
-        {
-            if (!_nextOffsetToCommit.HasValue)
-                _nextOffsetToCommit = message.Offset;
-            // This lane never resets the pending offset. Subsequent records need no lock
-            // merely to rediscover that initialization has already happened.
-            Volatile.Write(ref _pendingOffsetInitialized, 1);
-        }
-    }
-
-    private void AdvanceCompletedOffset()
-    {
-        while (_nextOffsetToCommit.HasValue && _completedOffsets.Remove(_nextOffsetToCommit.Value))
-        {
-            var completedOffset = _nextOffsetToCommit.Value;
-
-            if (_leaderEpochs.TryGetValue(completedOffset, out var leaderEpoch))
+            var node = completionBatch.GetCompletionNode(message.ProcessingIndex);
+            if (node.Height != -1)
+                return;
+            if (_completedRanges.Complete(completionBatch, node, message.Offset,
+                    message.LeaderEpoch ?? -1, _lastCompletedOffset, out var completed, out var epoch))
             {
-                _lastCommittedLeaderEpoch = leaderEpoch;
-                _leaderEpochs.Remove(completedOffset);
+                _lastCompletedOffset = completed;
+                _completedOffset = completed + 1;
+                _lastCommittedLeaderEpoch = epoch;
             }
-            else
-            {
-                _lastCommittedLeaderEpoch = -1;
-            }
-
-            _completedOffset = completedOffset + 1;
-            _nextOffsetToCommit = _completedOffset;
         }
     }
 
@@ -1870,7 +1935,7 @@ internal sealed class PartitionLane<TKey, TValue>
         if (automaticProgress is not null)
             return automaticProgress.GetCommitOffset();
 
-        lock (_offsetGate)
+        lock (_completedRanges)
         {
             return _completedOffset.HasValue
                 ? new TopicPartitionOffset(
@@ -1885,7 +1950,14 @@ internal sealed class PartitionLane<TKey, TValue>
     internal AutomaticPartitionProgress EnableAutomaticCompletion()
     {
         var progress = new AutomaticPartitionProgress(TopicPartition);
-        Volatile.Write(ref _automaticProgress, progress);
+        lock (_completedRanges)
+        {
+            // Startup may race the first queued batch. Abandon its manual reservations;
+            // a publishing batch keeps its arrays until EndBatch, and future batches
+            // need no completion storage because the coordinator owns progress.
+            _completedRanges.Retire();
+            Volatile.Write(ref _automaticProgress, progress);
+        }
         return progress;
     }
 
