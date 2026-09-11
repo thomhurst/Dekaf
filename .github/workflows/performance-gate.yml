@@ -144,13 +144,18 @@ jobs:
           git fetch --no-tags --depth 1 origin "$BASE_SHA" "$HEAD_SHA"
           git worktree add --detach "$RUNNER_TEMP/gate-A" "$BASE_SHA"
           git worktree add --detach "$RUNNER_TEMP/gate-B" "$HEAD_SHA"
-          build() {
+          prepare() {
             (
               cd "$RUNNER_TEMP/gate-$1/tools/Dekaf.Benchmarks"
               rm -f GateBenchmarkExecution.sln
               # BDN looks for a solution to locate the project for its generated worker (PR #3180).
               dotnet new sln --name GateBenchmarkExecution --format sln > "$GATE/solution-$1.log" 2>&1
               dotnet sln GateBenchmarkExecution.sln add Dekaf.Benchmarks.csproj >> "$GATE/solution-$1.log" 2>&1
+            )
+          }
+          build() {
+            (
+              cd "$RUNNER_TEMP/gate-$1/tools/Dekaf.Benchmarks"
               dotnet build Dekaf.Benchmarks.csproj -c Release --disable-build-servers > "$GATE/build-$1.log" 2>&1
             )
           }
@@ -160,6 +165,11 @@ jobs:
           # no baseline benchmark at all, so only the candidate is measured and reported.
           rm -rf "$RUNNER_TEMP/gate-A/tools/Dekaf.Benchmarks"
           cp -R "$RUNNER_TEMP/gate-B/tools/Dekaf.Benchmarks" "$RUNNER_TEMP/gate-A/tools/Dekaf.Benchmarks"
+          # Complete each SDK's CLI first-use migration before any background build.
+          # dotnet --info does not initialize it; concurrent dotnet new commands can
+          # race while creating the shared NuGet-Migrations mutex on fresh Linux VMs.
+          prepare A
+          prepare B
           build B &
           candidate_build=$!
           if build A; then
@@ -168,6 +178,7 @@ jobs:
             echo '::notice::The PR fixtures do not build against the baseline; the baseline measures its own fixtures. Cases from fixture files that differ are reported, not compared.'
             mv "$GATE/build-A.log" "$GATE/build-A-candidate-fixtures.log"
             (cd "$RUNNER_TEMP/gate-A" && git checkout -- tools/Dekaf.Benchmarks && git clean -fdxq tools/Dekaf.Benchmarks)
+            prepare A
             build A
             touch "$GATE/baseline-fixtures"
             echo 'Baseline built its own fixture source (the candidate fixtures need newer APIs); cases whose fixture file differs are reported, not compared.' >> "$GITHUB_STEP_SUMMARY"
