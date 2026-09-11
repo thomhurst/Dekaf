@@ -1086,7 +1086,8 @@ public sealed partial class ShareConsumerRenewalTests
         CapturingConnection? secondConnection = null,
         ShareAcknowledgementCommitCallback? acknowledgementCommitCallback = null,
         IDeserializer<string>? valueDeserializer = null,
-        Func<CancellationToken, ValueTask<IKafkaConnection>>? leaseHandler = null)
+        Func<CancellationToken, ValueTask<IKafkaConnection>>? leaseHandler = null,
+        int fetchMaxWaitMs = 200)
     {
         var options = new ShareConsumerOptions
         {
@@ -1094,6 +1095,7 @@ public sealed partial class ShareConsumerRenewalTests
             GroupId = "share-group",
             AcknowledgementMode = acknowledgementMode,
             MaxPollRecords = maxPollRecords,
+            FetchMaxWaitMs = fetchMaxWaitMs,
             AcknowledgementCommitCallback = acknowledgementCommitCallback
         };
         var pool = Substitute.For<IConnectionPool>();
