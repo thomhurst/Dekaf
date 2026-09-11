@@ -166,6 +166,8 @@ public sealed class ClientTelemetryReceiverIntegrationTests(TelemetryReceiverKaf
         const string applicationName = "com.example.telemetry.share.processing";
         const string recordsName = "org.apache.kafka.consumer.share.fetch.manager.records.consumed.total";
         const string acknowledgementsName = "org.apache.kafka.consumer.share.fetch.manager.acknowledgements.send.total";
+        const string acknowledgementErrorsName = "org.apache.kafka.consumer.share.fetch.manager.acknowledgements.error.total";
+        const string fetchesName = "org.apache.kafka.consumer.share.fetch.manager.fetch.total";
         var clientId = $"share-builtins-{Guid.NewGuid():N}";
         var group = $"share-builtins-group-{Guid.NewGuid():N}";
         var topic = await kafka.CreateTestTopicAsync(partitions: 1);
@@ -174,7 +176,7 @@ public sealed class ClientTelemetryReceiverIntegrationTests(TelemetryReceiverKaf
         {
             [new ConfigResource { Type = ConfigResourceType.ClientMetrics, Name = clientId }] =
             [
-                ConfigAlter.Set("metrics", $"{applicationName},{recordsName},{acknowledgementsName}"),
+                ConfigAlter.Set("metrics", $"{applicationName},{recordsName},{acknowledgementsName},{acknowledgementErrorsName},{fetchesName}"),
                 ConfigAlter.Set("interval.ms", "1000"),
                 ConfigAlter.Set("match", $"client_id={clientId}")
             ],
@@ -182,15 +184,16 @@ public sealed class ClientTelemetryReceiverIntegrationTests(TelemetryReceiverKaf
                 [ConfigAlter.Set("share.auto.offset.reset", "earliest")]
         }, cancellationToken: cancellationToken);
         await kafka.WaitForSubscriptionAsync(clientId,
-            [applicationName, recordsName, acknowledgementsName], 1000, cancellationToken);
+            [applicationName, recordsName, acknowledgementsName, acknowledgementErrorsName, fetchesName], 1000, cancellationToken);
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers).BuildAsync(cancellationToken);
         await ShareConsumerTestHelper.ProduceAsync(producer, topic, count: 2);
+        var applicationValue = 42;
         await using var consumer = await Kafka.CreateShareConsumer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers).WithClientId(clientId).WithGroupId(group)
             .WithAcknowledgementMode(ShareAcknowledgementMode.Explicit)
             .RegisterMetricForSubscription(new ApplicationTelemetryMetric(applicationName,
-                ApplicationTelemetryMetricKind.Gauge, () => 42))
+                ApplicationTelemetryMetricKind.Gauge, () => Volatile.Read(ref applicationValue)))
             .BuildAsync(cancellationToken);
         consumer.Subscribe(topic);
         var values = new HashSet<string?>();
@@ -231,7 +234,37 @@ public sealed class ClientTelemetryReceiverIntegrationTests(TelemetryReceiverKaf
                 .Gauge.DataPoints.Single().AsDouble).IsEqualTo(42d);
             await Assert.That(decoded.Single(metric => metric.Name == name).Sum.IsMonotonic).IsTrue();
         }
+        // Built-ins are collected before application gauges. The first marker may race with
+        // an earlier collection; observing the second proves a complete subsequent export.
+        // Polling has stopped, so all pre-close fetch deltas must now be at the receiver.
+        foreach (var marker in new[] { 43, 44 })
+        {
+            Volatile.Write(ref applicationValue, marker);
+            await kafka.WaitForPayloadAsync(clientId, payload => !payload.IsTerminating
+                && Decode(payload).Any(metric => metric.Name == applicationName
+                    && metric.Gauge.DataPoints.Single().AsDouble == marker), cancellationToken);
+        }
+        var beforeClose = await kafka.ReadPayloadsAsync(clientId, cancellationToken);
+        var fetchesBeforeClose = ExportedTotal(beforeClose, fetchesName);
+        await Assert.That(fetchesBeforeClose).IsGreaterThan(0d);
+        await consumer.DisposeAsync();
+        var terminating = await kafka.WaitForPayloadAsync(clientId,
+            payload => payload.IsTerminating && Decode(payload).Any(metric => metric.Name == fetchesName), cancellationToken);
+        await Assert.That(terminating.ClientInstanceId).IsEqualTo(identity!.Value);
+        var finalPayloads = await kafka.ReadPayloadsAsync(clientId, cancellationToken);
+        // Sum every delta: a periodic push may export the close fetch before termination.
+        // This single-broker consumer sends exactly one session-close fetch.
+        await Assert.That(ExportedTotal(finalPayloads, fetchesName))
+            .IsEqualTo(fetchesBeforeClose + 1d);
+        await Assert.That(ExportedTotal(finalPayloads, acknowledgementsName))
+            .IsEqualTo(2d);
+        await Assert.That(ExportedTotal(finalPayloads, acknowledgementErrorsName))
+            .IsEqualTo(0d);
     }
+
+    private static double ExportedTotal(IReadOnlyList<ReceivedTelemetry> payloads, string name) => payloads
+        .SelectMany(Decode).Where(metric => metric.Name == name)
+        .Sum(metric => metric.Sum.DataPoints.Single().AsDouble);
 
     private static Metric[] Decode(ReceivedTelemetry payload) => MetricsData.Parser.ParseFrom(payload.Data)
         .ResourceMetrics.SelectMany(resource => resource.ScopeMetrics)

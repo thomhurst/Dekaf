@@ -1,3 +1,4 @@
+using Dekaf.Networking;
 using Dekaf.Protocol.Messages;
 using Dekaf.Telemetry;
 
@@ -46,15 +47,22 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
         metrics.AcknowledgementsFailed(count);
     }
 
-    private void PrepareFetchTelemetry(int brokerId, ShareFetchRequest request)
+    private KafkaRequestWriteContext? PrepareFetchTelemetry(
+        int brokerId, ShareFetchRequest request, KafkaRequestWriteContext? context)
     {
         var metrics = ShareMetrics;
         if (metrics is null || !metrics.Enabled(ShareConsumerTelemetryMetrics.Groups.Fetch
-            | ShareConsumerTelemetryMetrics.Groups.Acknowledgements)) return;
+            | ShareConsumerTelemetryMetrics.Groups.Acknowledgements))
+            return _hostedRequestCancellationToken.CanBeCanceled ? context : null;
+        if (context is null)
+        {
+            context = metrics.GetRequestWriteContext(brokerId);
+            context.Reset();
+        }
         if (!metrics.Enabled(ShareConsumerTelemetryMetrics.Groups.Acknowledgements))
         {
             metrics.StartFetch(brokerId, 0);
-            return;
+            return context;
         }
         long count = 0;
         for (var topicIndex = 0; topicIndex < request.Topics.Count; topicIndex++)
@@ -72,12 +80,20 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
             }
         }
         metrics.StartFetch(brokerId, count);
+        return context;
     }
 
-    private void PrepareAcknowledgementTelemetry(int brokerId, ShareAcknowledgeRequest request)
+    private KafkaRequestWriteContext? PrepareAcknowledgementTelemetry(
+        int brokerId, ShareAcknowledgeRequest request, KafkaRequestWriteContext? context)
     {
         var metrics = ShareMetrics;
-        if (metrics is null || !metrics.Enabled(ShareConsumerTelemetryMetrics.Groups.Acknowledgements)) return;
+        if (metrics is null || !metrics.Enabled(ShareConsumerTelemetryMetrics.Groups.Acknowledgements))
+            return _hostedRequestCancellationToken.CanBeCanceled ? context : null;
+        if (context is null)
+        {
+            context = metrics.GetRequestWriteContext(brokerId);
+            context.Reset();
+        }
         long count = 0;
         for (var topicIndex = 0; topicIndex < request.Topics.Count; topicIndex++)
         {
@@ -93,6 +109,17 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
             }
         }
         metrics.AcknowledgementRequestStarted(brokerId, count);
+        return context;
+    }
+
+    private KafkaRequestWriteContext? PrepareSessionCloseTelemetry(int brokerId)
+    {
+        var metrics = ShareMetrics;
+        if (metrics is null || !metrics.Enabled(ShareConsumerTelemetryMetrics.Groups.Fetch)) return null;
+        var context = metrics.GetRequestWriteContext(brokerId);
+        context.Reset();
+        metrics.StartFetch(brokerId, 0, resetRecords: false);
+        return context;
     }
 
     private static long CountAcknowledgedRecords(long firstOffset, long lastOffset, IReadOnlyList<byte> types)

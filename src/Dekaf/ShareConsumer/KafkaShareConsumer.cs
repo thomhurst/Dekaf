@@ -1133,7 +1133,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                     IsRenewAck = isRenewAck,
                     Topics = BuildShareFetchTopics(partitions, brokerAcks, version)
                 };
-                PrepareFetchTelemetry(brokerId, request);
+                requestContext = PrepareFetchTelemetry(brokerId, request, requestContext);
                 ShareFetchResponse response;
                 try
                 {
@@ -1176,7 +1176,8 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                     ReceivedTimestamp = receivedTimestamp
                 };
             }
-            catch (OperationCanceledException) when (requestContext is { WriteStarted: false }
+            catch (OperationCanceledException) when (_hostedRequestCancellationToken.CanBeCanceled
+                && requestContext is { WriteStarted: false }
                 && cancellationToken.IsCancellationRequested && !_hostedRequestCancellationToken.IsCancellationRequested)
             {
                 return new ShareFetchBrokerResult(brokerId, 0, null, brokerAcks, null, null);
@@ -1252,7 +1253,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         List<TopicPartition> partitions,
         CancellationToken cancellationToken)
     {
-        var submitted = false;
+        var telemetryPrepared = false;
         try
         {
             using var connectionLease = await _connectionPool.LeaseConnectionAsync(brokerId, cancellationToken)
@@ -1275,17 +1276,20 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                 ShareAcquireMode = (sbyte)_options.ShareAcquireMode,
                 Topics = BuildShareFetchTopics(partitions, pendingAcks: null, version)
             };
-            ShareMetrics?.StartFetch(brokerId, 0, resetRecords: false);
-            submitted = true;
-            var response = await connection.SendAsync<ShareFetchRequest, ShareFetchResponse>(
-                request, version, cancellationToken).ConfigureAwait(false);
-            ShareMetrics?.FetchCompleted(brokerId, response.ThrottleTimeMs);
-            submitted = false;
+            var requestContext = PrepareSessionCloseTelemetry(brokerId);
+            telemetryPrepared = requestContext is not null;
+            var response = await SendObservedRequestAsync<ShareFetchRequest, ShareFetchResponse>(
+                connection, request, version, requestContext, cancellationToken).ConfigureAwait(false);
+            if (telemetryPrepared) ShareMetrics?.FetchCompleted(brokerId, response.ThrottleTimeMs);
+            telemetryPrepared = false;
             response.Dispose();
         }
         catch
         {
-            if (submitted) ShareMetrics?.FetchFailed(brokerId);
+            // The broker stream is serialized. Recover its cached marker only on failure;
+            // no extra context reference needs to survive the response await.
+            if (telemetryPrepared && ShareMetrics is { } metrics && metrics.RequestWriteStarted(brokerId))
+                metrics.FetchFailed(brokerId);
             // Best-effort session close
         }
     }
@@ -1329,7 +1333,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                     IsRenewAck = isRenewAck,
                     Topics = topics
                 };
-                PrepareAcknowledgementTelemetry(brokerId, request);
+                requestContext = PrepareAcknowledgementTelemetry(brokerId, request, requestContext);
                 ShareAcknowledgeResponse response;
                 try
                 {
@@ -1434,7 +1438,8 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
             {
                 throw;
             }
-            catch (OperationCanceledException) when (attempt == 0 && requestContext is { WriteStarted: false }
+            catch (OperationCanceledException) when (attempt == 0 && _hostedRequestCancellationToken.CanBeCanceled
+                && requestContext is { WriteStarted: false }
                 && cancellationToken.IsCancellationRequested && !_hostedRequestCancellationToken.IsCancellationRequested)
             {
                 return AcknowledgeBrokerResult.NotSent(pendingAcknowledgements);

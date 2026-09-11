@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Collections.Concurrent;
+using Dekaf.Networking;
 
 namespace Dekaf.Telemetry;
 
@@ -179,6 +180,17 @@ internal sealed class ShareConsumerTelemetryMetrics
     }
 
     internal void FetchStarted(int brokerId) => StartFetch(brokerId, 0);
+
+    internal KafkaRequestWriteContext GetRequestWriteContext(int brokerId)
+    {
+        // Broker requests are serialized, but leases for different brokers may complete together.
+        // Reuse the concurrent sample map and allocate the callback once per observed broker.
+        var sample = _fetchSamples.GetOrAdd(brokerId, static _ => new FetchSample());
+        return sample.WriteContext ??= new KafkaRequestWriteContext(default);
+    }
+
+    internal bool RequestWriteStarted(int brokerId) =>
+        _fetchSamples.TryGetValue(brokerId, out var sample) && sample.WriteContext is { WriteStarted: true };
 
     internal void StartFetch(int brokerId, long acknowledgements, bool resetRecords = true)
     {
@@ -369,6 +381,7 @@ internal sealed class ShareConsumerTelemetryMetrics
     // share consumer. Reuse their request state without growing async state machines.
     internal sealed class FetchSample
     {
+        internal KafkaRequestWriteContext? WriteContext;
         internal int RecordEpoch = -1;
         internal int FetchEpoch = -1;
         internal int FetchAcknowledgementEpoch = -1;
