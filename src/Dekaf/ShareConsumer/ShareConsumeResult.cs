@@ -42,6 +42,10 @@ public sealed class ShareConsumeResult<TKey, TValue>
         _topicOrBatchOwner = owner;
     }
 
+    // Only renewal state and undisclosed buffers may bypass the delivery token:
+    // both already own an independent reference across poll boundaries.
+    internal ShareRecordBatchOwner? RetainedBatchOwner => _topicOrBatchOwner as ShareRecordBatchOwner;
+
     /// <summary>
     /// The topic this record was consumed from.
     /// </summary>

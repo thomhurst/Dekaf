@@ -9,9 +9,6 @@ namespace Dekaf.ShareConsumer;
 internal sealed partial class KafkaShareConsumer<TKey, TValue>
 {
     private long _acquisitionStartedTimestamp;
-    // Only hosted renewal buffering needs this map. Reuse one timestamp per partition
-    // without adding a timestamp field or another allocation to every delivered record.
-    private Dictionary<TopicPartition, long>? _bufferedAcquisitionTimestamps;
     private bool _hostedProcessing;
     private CancellationToken _hostedRequestCancellationToken;
     private Dictionary<int, KafkaRequestWriteContext>? _hostedRequestContexts;

@@ -13,7 +13,9 @@ internal sealed class ShareRecordBatchOwner
     private int _references;
     // A replay snapshot retains each owner once, even when records are interleaved.
     internal bool RenewalPinned;
-    private RecordBatch? _batch;
+    // Generation exhaustion alone can share the storage of a retired owner.
+    // Reuse the batch slot so ordinary owners do not grow.
+    private object? _batchStorage;
     private byte[]? _payload;
     private ArrayPool<byte>? _payloadPool;
     private readonly Pool _pool;
@@ -30,6 +32,43 @@ internal sealed class ShareRecordBatchOwner
     internal int Partition { get; }
     internal uint Generation { get; private set; }
 
+    internal void ReleasePoll()
+    {
+        // Zero permanently invalidates an exhausted owner; no delivered token uses it.
+        if (Generation != 0)
+            Generation = Generation == MaximumGeneration ? 0 : Generation + 1;
+        Release();
+    }
+
+    internal ShareRecordBatchOwner RefreshGeneration()
+    {
+        if (Generation != 0)
+            return this;
+
+        // Transfer one existing parser/renewal/poll reference to a fresh token owner.
+        // Always point directly at the storage root, never build a chain of owners.
+        var storage = _batchStorage as ShareRecordBatchOwner ?? this;
+        storage.Retain();
+        ShareRecordBatchOwner next;
+        try
+        {
+            next = _pool.Rent(null!);
+        }
+        catch
+        {
+            storage.Release();
+            throw;
+        }
+        next._references = 1;
+        next._batchStorage = storage;
+        Release();
+        return next;
+    }
+
+    internal bool SharesStorageWith(ShareRecordBatchOwner owner) =>
+        ReferenceEquals(_batchStorage as ShareRecordBatchOwner ?? this,
+            owner._batchStorage as ShareRecordBatchOwner ?? owner);
+
     internal void Retain()
     {
         // IKafkaShareConsumer requires serialized access to its operations.
@@ -42,9 +81,15 @@ internal sealed class ShareRecordBatchOwner
     {
         if (--_references != 0)
             return;
-        var batch = _batch;
-        _batch = null;
-        batch?.DisposeAndReturnUnownedConsumerBatch();
+        var storage = _batchStorage;
+        _batchStorage = null;
+        if (storage is not null)
+        {
+            if (storage is RecordBatch batch)
+                batch.DisposeAndReturnUnownedConsumerBatch();
+            else
+                ((ShareRecordBatchOwner)storage).Release();
+        }
         var payload = _payload;
         var payloadPool = _payloadPool;
         _payload = null;
@@ -53,7 +98,7 @@ internal sealed class ShareRecordBatchOwner
             payloadPool!.Return(payload);
         // Never wrap the generation: an arbitrarily old result must not become valid
         // again. Only exhaustion of the full generation retires an owner.
-        if (Generation != MaximumGeneration)
+        if (Generation is not (0 or MaximumGeneration))
             _pool.Return(this);
         else
             _pool.RetireOwner();
@@ -61,11 +106,19 @@ internal sealed class ShareRecordBatchOwner
 
     internal void CompleteParsing()
     {
-        var batch = _batch!;
-        _payload = batch.DetachRecordData(out _payloadPool);
-        _batch = null;
-        batch.DisposeAndReturnUnownedConsumerBatch();
+        if (_batchStorage is ShareRecordBatchOwner storage)
+            storage.CompleteBatch();
+        else
+            CompleteBatch();
         Release();
+    }
+
+    private void CompleteBatch()
+    {
+        var batch = (RecordBatch)_batchStorage!;
+        _payload = batch.DetachRecordData(out _payloadPool);
+        _batchStorage = null;
+        batch.DisposeAndReturnUnownedConsumerBatch();
     }
 
     // Consumer operations already serialize owner references and pool access.
@@ -95,7 +148,7 @@ internal sealed class ShareRecordBatchOwner
             }
             owner.Generation++;
             owner._references = 2;
-            owner._batch = batch;
+            owner._batchStorage = batch;
             return owner;
         }
 

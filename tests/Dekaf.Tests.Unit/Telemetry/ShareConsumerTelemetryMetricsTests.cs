@@ -9,6 +9,24 @@ public sealed class ShareConsumerTelemetryMetricsTests
     private const string Coordinator = Prefix + "coordinator.";
 
     [Test]
+    public async Task BufferedPollWait_EndsOnce_ExcludesApplicationTime()
+    {
+        var clock = new Clock();
+        var metrics = new ShareConsumerTelemetryMetrics(clock.Read, 1000);
+        metrics.Subscribe([Prefix]);
+        metrics.PollStarted();
+        metrics.BeginPollWait();
+        clock.Advance(40);
+        metrics.EndPollWait();
+        clock.Advance(30);
+        metrics.EndPollWait();
+        clock.Advance(30);
+        metrics.PollStarted();
+
+        await Assert.That(Value(Collect(metrics), Prefix + "poll.idle.ratio.avg")).IsEqualTo(.4d);
+    }
+
+    [Test]
     public async Task FetchWindows_AccumulateOnceAcrossPartitions_IncludeEmptyRequests()
     {
         var clock = new Clock();
