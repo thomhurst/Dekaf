@@ -30,6 +30,19 @@ internal static class MarkdownReporter
             var label = FormatGroupTitle(FormatScenarioLabel(group.Key.Scenario), group.Key.BrokerCount);
 
             GenerateThroughputTable(sb, title, groupResults);
+            foreach (var result in groupResults)
+            {
+                if (result.Outbox is not { } outbox)
+                    continue;
+                sb.AppendLine($"### EF Outbox Idle - {result.Client}");
+                sb.AppendLine();
+                sb.AppendLine("| Elapsed | CPU (ms/s) | Allocation (B/s) | Empty probes | Published | Errors |");
+                sb.AppendLine("|---------|------------|------------------|--------------|-----------|--------|");
+                sb.AppendLine($"| {outbox.Idle.ElapsedSeconds:F2}s | {outbox.Idle.CpuMillisecondsPerSecond:F3} | {outbox.Idle.AllocatedBytesPerSecond:F1} | {outbox.Idle.Operations.Probes} | {outbox.Idle.Operations.Published} | {outbox.Idle.Operations.Errors} |");
+                sb.AppendLine();
+                sb.AppendLine($"Active phase committed and consumed {outbox.UniqueConsumedMessages:N0} unique records; {outbox.DuplicatePublications:N0} additional at-least-once publications. Idle samples and runtime boundaries are retained in JSON.");
+                sb.AppendLine();
+            }
             GenerateConnectionScaleTimeline(sb, groupResults, label);
             GenerateProducerRequestDiagnostics(sb, groupResults, label);
             GenerateProducerBudgetTimeline(sb, groupResults, label);
@@ -725,6 +738,7 @@ internal static class MarkdownReporter
         "consumer-batch" => "Consumer (Batch) Throughput",
         "consumer-raw" => "Consumer (Raw Bytes) Throughput",
         "consumer-raw-batch" => "Consumer (Raw Batch) Throughput",
+        "outbox" => "EF Outbox Active Delivery Throughput",
         "soak" => "Mixed Produce/Consume Soak",
         _ => $"{scenario} Throughput"
     };
@@ -742,6 +756,7 @@ internal static class MarkdownReporter
         "consumer-batch" => "Consumer (Batch)",
         "consumer-raw" => "Consumer (Raw Bytes)",
         "consumer-raw-batch" => "Consumer (Raw Batch)",
+        "outbox" => "EF Outbox (Active Delivery)",
         "soak" => "Mixed Soak",
         _ => scenario
     };

@@ -19,7 +19,7 @@ namespace Dekaf.StressTests;
 /// Options:
 ///   --duration &lt;minutes&gt;    Test duration in minutes (default: 15)
 ///   --message-size &lt;bytes&gt;  Message size in bytes (default: 1000)
-///   --scenario &lt;name&gt;       Run specific scenario: producer, producer-idempotent, producer-acks-all, producer-async, producer-async-idempotent, producer-transactional, producer-roundtrip-steady, consumer, consumer-batch, consumer-raw, consumer-raw-batch, hosted-share, all (default: all)
+///   --scenario &lt;name&gt;       Run specific scenario: producer, producer-idempotent, producer-acks-all, producer-async, producer-async-idempotent, producer-transactional, producer-roundtrip-steady, consumer, consumer-batch, consumer-raw, consumer-raw-batch, hosted-share, outbox, all (default: all)
 ///   --client &lt;name&gt;         Run specific client: dekaf, confluent, all (default: all)
 ///   --output &lt;path&gt;         Output directory for results (default: ./results)
 ///   --brokers &lt;count&gt;      Number of Kafka brokers (default: 1, use 3 for multi-broker)
@@ -221,6 +221,7 @@ public static class Program
 
         StressTestOptions BuildTestOptions(IStressTestScenario scenario, int connectionsPerBroker, string topic) => new()
         {
+            OutputDirectory = options.OutputPath,
             BootstrapServers = kafka.BootstrapServers,
             Topic = topic,
             DurationMinutes = options.DurationMinutes,
@@ -429,6 +430,7 @@ public static class Program
     private static bool UsesProducerTopic(string scenarioName) =>
         scenarioName.StartsWith("producer", StringComparison.OrdinalIgnoreCase) ||
         scenarioName.Equals("soak", StringComparison.OrdinalIgnoreCase) ||
+        scenarioName.Equals("outbox", StringComparison.OrdinalIgnoreCase) ||
         scenarioName.Equals("hosted-share", StringComparison.OrdinalIgnoreCase);
 
     private static bool IsRoundTripScenario(string scenarioName) =>
@@ -526,7 +528,7 @@ public static class Program
             }
 
             if (StressRunCompletionPolicy.EndedEarly(
-                    result.Throughput.ElapsedSeconds,
+                    result.Throughput.ElapsedSeconds + (result.Outbox?.Idle.ElapsedSeconds ?? 0),
                     result.DurationMinutes,
                     isSelfBounded: result.RoundTripSteadySeconds is not null))
             {
@@ -534,6 +536,13 @@ public static class Program
                 reasons.Add(
                     $"run ended early ({result.Throughput.ElapsedSeconds:N0}s of {expectedSeconds:N0}s)");
             }
+
+            if (result.Outbox is { } outbox
+                && (!outbox.HasCompleteDuration(result.DurationMinutes, result.Throughput.ElapsedSeconds)
+                    || outbox.CommittedMessages != accepted || outbox.UniqueConsumedMessages != accepted
+                    || outbox.ActiveOperations.Published != accepted || outbox.ActiveOperations.Errors != 0
+                    || outbox.Idle.Operations.Published != 0 || outbox.Idle.Operations.Errors != 0))
+                reasons.Add("outbox phases or committed publication/drain counts are incomplete");
 
             var maxStall = MaxConsecutiveZeroSamples(result.Throughput.MessagesPerSecondSamples);
             if (maxStall >= StallThresholdSamples)
@@ -803,7 +812,9 @@ public static class Program
     {
         var scenarios = CreateAllScenarios()
             .Where(s => options.Scenario == "all"
-                ? !s.Name.Equals("soak", StringComparison.OrdinalIgnoreCase) && !s.Name.Equals("hosted-share", StringComparison.OrdinalIgnoreCase)
+                ? !s.Name.Equals("soak", StringComparison.OrdinalIgnoreCase)
+                    && !s.Name.Equals("hosted-share", StringComparison.OrdinalIgnoreCase)
+                    && !s.Name.Equals("outbox", StringComparison.OrdinalIgnoreCase)
                 : s.Name.Equals(options.Scenario, StringComparison.OrdinalIgnoreCase))
             .Where(s => options.Client == "all" || s.Client.Equals(options.Client, StringComparison.OrdinalIgnoreCase))
             .ToList();
@@ -839,7 +850,8 @@ public static class Program
             new ConsumerRawBatchStressTest(),
             new ConfluentConsumerStressTest(),
             new SoakStressTest(),
-            new HostedShareStressTest()
+            new HostedShareStressTest(),
+            new OutboxStressTest()
         ];
 
     private static List<IStressTestScenario> ApplyClientOrder(List<IStressTestScenario> scenarios, string requestedClient)
@@ -1101,7 +1113,7 @@ public static class Program
               --duration <minutes>    Test duration in minutes (default: 15)
               --producer-warmup-seconds <n>  Producer and consumer replay workload warmup (default: {ProducerWarmup.DefaultSeconds}; minimum: {ProducerWarmup.MinimumSeconds})
               --message-size <bytes>  Message size in bytes (default: 1000)
-              --scenario <name>       Run specific scenario: producer, producer-idempotent, producer-acks-all, producer-async, producer-async-idempotent, producer-transactional, producer-roundtrip-steady, consumer, consumer-batch, consumer-raw, consumer-raw-batch, soak, all (default: all; all excludes soak)
+              --scenario <name>       Run specific scenario: producer, producer-idempotent, producer-acks-all, producer-async, producer-async-idempotent, producer-transactional, producer-roundtrip-steady, consumer, consumer-batch, consumer-raw, consumer-raw-batch, hosted-share, outbox, soak, all (default: all; all excludes hosted-share, outbox and soak)
               --client <name>         Run specific client: dekaf, confluent, all (default: all)
               --output <path>         Output directory for results (default: ./results)
               --partitions <count>    Number of topic partitions (default: 6)

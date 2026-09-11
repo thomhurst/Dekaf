@@ -107,7 +107,117 @@ def validate(result):
         raise ValueError("Measured runtime samples do not cover the complete window, including drain")
     # Preserve all measured samples, including both boundaries and drain.
     quiet([start] + [runtime(item.get("runtime")) for item in intervals] + [end], "Measurement")
+    validate_outbox(result)
     return requested
+
+
+OUTBOX_COUNTERS = ("acquisitions", "renewals", "probes", "reads", "marks", "metricQueries", "published", "errors")
+CUMULATIVE_RUNTIME_FIELDS = ("cpuSeconds", "allocatedBytes", "gen0Collections", "gen1Collections",
+                             "gen2Collections", "gcPauseMilliseconds")
+
+
+def _outbox_counts(value):
+    counts = object_value(value, "outbox operations")
+    for field in OUTBOX_COUNTERS:
+        value = number(counts.get(field), f"outbox {field}")
+        if not isinstance(value, int):
+            raise ValueError(f"Outbox {field} must be an integer")
+    return counts
+
+
+def _validate_idle(phase, label, warmup=False):
+    phase = object_value(phase, label)
+    requested = number(phase.get("requestedSeconds"), f"{label} requestedSeconds")
+    elapsed = number(phase.get("elapsedSeconds"), f"{label} elapsedSeconds")
+    if requested <= 0 or elapsed < requested or (warmup and requested < 20):
+        raise ValueError(f"{label} did not complete its declared duration")
+    samples = sample_list(phase.get("samples"), label)
+    times = [number(sample.get("elapsedSeconds"), f"{label} sample time") for sample in samples]
+    if len(times) < 2 or times[0] != 0 or times[-1] != elapsed or any(
+            right < left or right - left > MAX_SAMPLE_GAP_SECONDS for left, right in zip(times, times[1:])):
+        raise ValueError(f"{label} samples do not cover the complete window")
+    observations = [runtime(sample.get("runtime")) for sample in samples]
+    if observations[0] != runtime(phase.get("runtimeStart")) or observations[-1] != runtime(phase.get("runtimeEnd")):
+        raise ValueError(f"{label} runtime boundaries disagree with samples")
+    for previous, current in zip(observations, observations[1:]):
+        if any(current[field] < previous[field] for field in CUMULATIVE_RUNTIME_FIELDS):
+            raise ValueError(f"{label} runtime counters move backwards")
+    counts = [_outbox_counts(sample.get("operations")) for sample in samples]
+    for previous, current in zip(counts, counts[1:]):
+        if any(current[field] < previous[field] for field in OUTBOX_COUNTERS):
+            raise ValueError(f"{label} operation counters move backwards")
+    delta = _outbox_counts(phase.get("operations"))
+    if any(counts[-1][field] - counts[0][field] != delta[field] for field in OUTBOX_COUNTERS):
+        raise ValueError(f"{label} operation totals disagree with samples")
+    if delta["probes"] == 0 or any(sample["published"] or sample["errors"] for sample in counts):
+        raise ValueError(f"{label} must exercise an empty healthy relay")
+    tail = max(index for index, seconds in enumerate(times) if seconds <= elapsed - QUIET_WORKLOAD_SECONDS) if warmup else 0
+    quiet(observations[tail:], label)
+    return {"idleCpu": (observations[-1]["cpuSeconds"] - observations[0]["cpuSeconds"]) * 1000 / elapsed,
+            "idleAlloc": (observations[-1]["allocatedBytes"] - observations[0]["allocatedBytes"]) / elapsed}
+
+
+def validate_outbox(result):
+    """Require complete idle and active evidence; derive idle rates from retained boundaries."""
+    is_outbox = str(result.get("scenario", "")).casefold() == "outbox"
+    if not is_outbox:
+        if result.get("outbox") is not None:
+            raise ValueError("Outbox evidence requires the outbox scenario")
+        return {}
+    outbox = object_value(result.get("outbox"), "outbox")
+    object_value(result.get("latency"), "outbox latency")
+    if result.get("idempotent") is not True or result.get("brokerCount") != 1 or str(result.get("client", "")).casefold() != "dekaf":
+        raise ValueError("Outbox evidence requires one broker and the idempotent Dekaf publisher")
+    _validate_idle(outbox.get("idleWarmup"), "Outbox idle warmup", warmup=True)
+    rates = _validate_idle(outbox.get("idle"), "Outbox idle measurement")
+    throughput = object_value(result.get("throughput"), "throughput")
+    warmup = object_value(throughput.get("warmup"), "warmup")
+    if outbox["idleWarmup"]["requestedSeconds"] != number(warmup.get("requestedSeconds"), "active warmup duration"):
+        raise ValueError("Outbox idle and active warmups must declare the same duration")
+    active = number(outbox.get("activeRequestedSeconds"), "outbox activeRequestedSeconds")
+    duration = number(result.get("durationMinutes"), "durationMinutes") * 60
+    if active <= 0 or abs(outbox["idle"]["requestedSeconds"] + active - duration) > 0.001:
+        raise ValueError("Outbox phase durations must sum to the configured measured duration")
+    workload = number(outbox.get("activeWorkloadSeconds"), "outbox activeWorkloadSeconds")
+    if workload < active or number(throughput.get("elapsedSeconds"), "active elapsedSeconds") < workload:
+        raise ValueError("Outbox active phase did not complete its declared duration")
+    accepted = number(throughput.get("totalMessages"), "outbox completed messages")
+    if not isinstance(accepted, int):
+        raise ValueError("Outbox completed messages must be an integer")
+    operations = _outbox_counts(outbox.get("activeOperations"))
+    if accepted <= 0 or any(number(outbox.get(field), field) != accepted
+                            for field in ("committedMessages", "uniqueConsumedMessages")) or (
+            operations["published"] != accepted or operations["errors"] != 0
+            or number(result.get("consumedMessages"), "consumedMessages") != accepted):
+        raise ValueError("Outbox committed, marked and unique consumed counts must agree without errors")
+    duplicates = number(outbox.get("duplicatePublications"), "duplicatePublications")
+    if not isinstance(duplicates, int):
+        raise ValueError("Outbox duplicate publications must be an integer")
+    return rates
+
+
+def assess_idle_trends(result):
+    """Keep all idle observations, including spikes; use elapsed time instead of fake messages."""
+    samples = result["outbox"]["idle"]["samples"]
+    findings, metrics = [], {"intervals": len(samples) - 1}
+    if len(samples) - 1 < MIN_TREND_INTERVALS:
+        return {"findings": [f"idle requires at least {MIN_TREND_INTERVALS} intervals to assess trends"], "metrics": metrics}
+    third = len(samples) // 3
+    first, last = samples[:third], samples[-third:]
+    for field, label in (("cpuSeconds", "idle CPU per second"), ("allocatedBytes", "idle allocations per second")):
+        rates = [(part[-1]["runtime"][field] - part[0]["runtime"][field]) /
+                 (part[-1]["elapsedSeconds"] - part[0]["elapsedSeconds"]) for part in (first, last)]
+        drift = _percent_change(*rates)
+        metrics[f"{field}DriftPercent"] = drift
+        if drift is None or abs(drift) > TREND_TOLERANCE_PERCENT:
+            findings.append(f"{label} did not settle within the {TREND_TOLERANCE_PERCENT:g}% trend tolerance")
+    for field, label in (("heapBytes", "idle managed heap"), ("workingSetBytes", "idle working set")):
+        levels = [median(sample["runtime"][field] for sample in part) for part in (first, last)]
+        growth = _percent_change(*levels)
+        metrics[f"{field}GrowthPercent"] = growth
+        if growth is None or growth > MEMORY_GROWTH_PERCENT:
+            findings.append(f"{label} grew beyond the {MEMORY_GROWTH_PERCENT:g}% tolerance")
+    return {"findings": findings, "metrics": metrics}
 
 
 def _percent_change(first, last):
@@ -205,6 +315,8 @@ def _assess(label, result, errors, trends, durations):
         errors.append(f"{label}: {error}")
         return
     trends[label] = assess_trends(result)
+    if result.get("outbox") is not None:
+        trends[f"{label} idle"] = assess_idle_trends(result)
 
 
 def assess_results(results):

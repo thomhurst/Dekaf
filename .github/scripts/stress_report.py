@@ -25,6 +25,7 @@ SCENARIO_TITLES = {
     'consumer-batch': 'Consumer (Batch)',
     'consumer-raw': 'Consumer (Raw Bytes)',
     'consumer-raw-batch': 'Consumer (Raw Batch)',
+    'outbox': 'EF Outbox (Active Delivery)',
 }
 
 # Delivery-latency product bars: reported, never gating (see paired_latency_thresholds).
