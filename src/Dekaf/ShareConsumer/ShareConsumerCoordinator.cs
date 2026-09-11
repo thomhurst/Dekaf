@@ -9,10 +9,8 @@ using Dekaf.Protocol.Messages;
 using Dekaf.Retry;
 using Microsoft.Extensions.Logging;
 #if NETSTANDARD2_0
-using StringSet = System.Collections.Generic.IReadOnlyCollection<string>;
 using TopicPartitionSet = System.Collections.Generic.IReadOnlyCollection<Dekaf.TopicPartition>;
 #else
-using StringSet = System.Collections.Generic.IReadOnlySet<string>;
 using TopicPartitionSet = System.Collections.Generic.IReadOnlySet<Dekaf.TopicPartition>;
 #endif
 
@@ -50,8 +48,9 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
     private readonly Func<int> _getCoordinationConnectionIndex;
 
     private volatile int _heartbeatIntervalMs;
-    private int _subscriptionChanged; // 0 = false, 1 = true; use Interlocked.Exchange for atomic snapshot
-    private volatile StringSet? _subscribedTopics;
+    private volatile HashSet<string>? _subscribedTopics;
+    private int _subscriptionVersion;
+    private int _acknowledgedSubscriptionVersion;
 
     internal static int GetCoordinationConnectionIndex(int connectionsPerBroker)
         => connectionsPerBroker - 1;
@@ -100,6 +99,15 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
     internal void NotifyAssignmentChange()
         => Interlocked.Exchange(ref _assignmentChanged, null)?.TrySetResult(true);
 
+    // Subscription snapshots are immutable after publication. The consumer compares
+    // contents on Subscribe, keeping this work out of the stable per-poll path.
+    internal void UpdateSubscription(HashSet<string> topics)
+    {
+        _subscribedTopics = topics;
+        Interlocked.Increment(ref _subscriptionVersion);
+        NotifyAssignmentChange();
+    }
+
     internal ConsumerGroupStatus CaptureGroupStatus()
     {
         var assignment = _assignedPartitions;
@@ -134,7 +142,6 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
     /// Ensures the share consumer has joined the group.
     /// </summary>
     public async ValueTask EnsureActiveGroupAsync(
-        StringSet topics,
         CancellationToken cancellationToken)
     {
         if (Volatile.Read(ref _disposed) != 0)
@@ -143,7 +150,7 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
         if (_state == CoordinatorState.Stable)
             return;
 
-        await EnsureActiveGroupCoreAsync(topics, cancellationToken).ConfigureAwait(false);
+        await EnsureActiveGroupCoreAsync(cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -328,30 +335,35 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
     /// Sends a ShareGroupHeartbeat request and processes the response.
     /// </summary>
     private async ValueTask<bool> SendShareGroupHeartbeatAsync(
-        bool isInitial,
         CancellationToken cancellationToken)
     {
         using var connectionLease = await LeaseHeartbeatConnectionAsync(cancellationToken)
             .ConfigureAwait(false);
         var connection = connectionLease.Connection;
 
+        var memberEpoch = _memberEpoch;
+        // Capture the version before the immutable snapshot. Replacements during this
+        // request remain pending, and failures never acknowledge their version.
+        var subscriptionVersion = Volatile.Read(ref _subscriptionVersion);
+        var subscription = _subscribedTopics;
+        // Unsubscribe may race coordinator discovery or an in-flight join. Kafka rejects
+        // an empty epoch-zero subscription, so let the polling loop observe unsubscribe.
+        if (memberEpoch == 0 && subscription is not { Count: > 0 })
+            return false;
+
         // Share groups always use client-generated UUID v4 member IDs.
         // Generate once when _memberId is null; subsequent heartbeats reuse the stored ID.
         _memberId ??= Guid.NewGuid().ToString();
 
-        var memberEpoch = isInitial ? 0 : _memberEpoch;
-
-        // Atomically snapshot and clear the subscription-changed flag.
-        // Always send topics on initial join — required by the protocol.
-        var subscriptionChanged = Interlocked.Exchange(ref _subscriptionChanged, 0) == 1;
-        var subscribedTopics = (isInitial || subscriptionChanged) ? _subscribedTopics?.ToList() : null;
+        var subscribedTopics = (memberEpoch == 0 || subscriptionVersion != Volatile.Read(ref _acknowledgedSubscriptionVersion))
+            ? subscription?.ToList() : null;
 
         var request = new ShareGroupHeartbeatRequest
         {
             GroupId = _options.GroupId,
             MemberId = _memberId,
             MemberEpoch = memberEpoch,
-            RackId = isInitial ? _options.RackId : null,
+            RackId = memberEpoch == 0 ? _options.RackId : null,
             SubscribedTopicNames = subscribedTopics
         };
 
@@ -385,6 +397,8 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
                 throw;
             }
         }
+
+        Volatile.Write(ref _acknowledgedSubscriptionVersion, subscriptionVersion);
 
         Volatile.Write(ref _lastSuccessfulHeartbeatTimestamp, Stopwatch.GetTimestamp());
         Volatile.Write(ref _lastHeartbeatFailure, null);
@@ -498,12 +512,8 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
     /// Ensures the share consumer has joined the group using the ShareGroupHeartbeat API.
     /// </summary>
     private async ValueTask EnsureActiveGroupCoreAsync(
-        StringSet topics,
         CancellationToken cancellationToken)
     {
-        _subscribedTopics = topics;
-        Interlocked.Exchange(ref _subscriptionChanged, 1);
-
         await _lock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -520,6 +530,9 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
 
             while (_state != CoordinatorState.Stable)
             {
+                if (_subscribedTopics is not { Count: > 0 } && _memberEpoch <= 0)
+                    return;
+
                 if (Stopwatch.GetElapsedTime(startedAt) > timeout)
                 {
                     throw new KafkaTimeoutException(
@@ -539,9 +552,20 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
                     _state = CoordinatorState.Joining;
                     LogCoordinatorStateTransition(CoordinatorState.Joining);
 
-                    var gotAssignment = await SendShareGroupHeartbeatAsync(
-                        isInitial: _memberEpoch <= 0,
-                        cancellationToken).ConfigureAwait(false);
+                    var gotAssignment = await SendShareGroupHeartbeatAsync(cancellationToken).ConfigureAwait(false);
+
+                    if (_subscribedTopics is not { Count: > 0 })
+                    {
+                        // A join accepted before unsubscribe must publish the empty snapshot
+                        // before activation finishes. Failed publication uses the join retries.
+                        if (_memberEpoch > 0 && Volatile.Read(ref _subscriptionVersion) ==
+                            Volatile.Read(ref _acknowledgedSubscriptionVersion))
+                        {
+                            _state = CoordinatorState.Stable;
+                            break;
+                        }
+                        continue;
+                    }
 
                     if (gotAssignment && _assignedPartitions.Count > 0)
                     {
@@ -612,8 +636,7 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
             {
                 await Task.Delay(_heartbeatIntervalMs, cancellationToken).ConfigureAwait(false);
 
-                await SendShareGroupHeartbeatAsync(
-                    isInitial: false, cancellationToken).ConfigureAwait(false);
+                await SendShareGroupHeartbeatAsync(cancellationToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
