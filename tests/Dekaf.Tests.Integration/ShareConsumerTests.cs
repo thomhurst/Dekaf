@@ -286,6 +286,67 @@ public class ShareConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
     }
 
     [Test]
+    public async Task ShareConsumer_SparseCommitOffsetsRemainValidAfterAnotherCommit()
+    {
+        const int messageCount = 64;
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 1);
+        ShareAcknowledgementCommitResult[]? outcomes = null;
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .BuildAsync();
+        await using var consumer = await Kafka.CreateShareConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithGroupId($"share-sparse-offsets-{Guid.NewGuid():N}")
+            .WithAcknowledgementMode(ShareAcknowledgementMode.Explicit)
+            .WithMaxPollRecords(messageCount)
+            .WithAcknowledgementCommitCallback(results => outcomes = results.ToArray())
+            .BuildAsync();
+        consumer.Subscribe(topic);
+        await ShareConsumerTestHelper.PrimeShareConsumerAsync(consumer);
+        await ShareConsumerTestHelper.ProduceAsync(producer, topic, messageCount);
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var received = new List<ShareConsumeResult<string, string>>(messageCount);
+        await foreach (var record in consumer.PollAsync(timeout.Token))
+        {
+            received.Add(record);
+            if (received.Count == messageCount)
+                break;
+        }
+        await Assert.That(received.Count).IsEqualTo(messageCount);
+        received.Sort(static (left, right) => left.Offset.CompareTo(right.Offset));
+
+        // Alternating dispositions create real gaps inside the broker acknowledgement vector.
+        for (var index = 0; index < messageCount; index += 2)
+            consumer.Acknowledge(received[index], AcknowledgeType.Accept);
+        await consumer.CommitAsync(timeout.Token);
+        await Assert.That(outcomes).HasSingleItem();
+        var firstOutcome = outcomes![0];
+        var firstOffsets = firstOutcome.Offsets;
+        await Assert.That(firstOutcome.Succeeded).IsTrue();
+        await Assert.That(firstOffsets.Length).IsEqualTo(messageCount / 2);
+
+        outcomes = null;
+        for (var index = 1; index < messageCount; index += 2)
+            consumer.Acknowledge(received[index], AcknowledgeType.Accept);
+        await consumer.CommitAsync(timeout.Token);
+        await Assert.That(outcomes).HasSingleItem();
+        var secondOutcome = outcomes![0];
+        await Assert.That(secondOutcome.Succeeded).IsTrue();
+        await Assert.That(secondOutcome.Offsets.Length).IsEqualTo(messageCount / 2);
+
+        // Both retained struct copies and property access must survive return of the callback array.
+        var copied = new long[firstOffsets.Length];
+        firstOffsets.CopyTo(copied);
+        for (var index = 0; index < copied.Length; index++)
+        {
+            await Assert.That(copied[index]).IsEqualTo(received[index * 2].Offset);
+            await Assert.That(firstOutcome.Offsets[index]).IsEqualTo(copied[index]);
+            await Assert.That(secondOutcome.Offsets[index]).IsEqualTo(received[index * 2 + 1].Offset);
+        }
+    }
+
+    [Test]
     public async Task ShareConsumer_ExplicitAcknowledgement_DoesNotAutoAcceptPolledRecord()
     {
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 1);

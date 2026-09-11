@@ -22,9 +22,7 @@ public readonly struct ShareAcknowledgedOffsets
             if (firstGap >= 0)
             {
                 hasGaps = true;
-                for (var offset = firstGap; offset < types.Length; offset++)
-                    if (types[offset] == (byte)AcknowledgeType.Gap)
-                        count--;
+                count -= CountGaps(types.AsSpan(firstGap));
             }
             length = checked(length + count);
         }
@@ -42,9 +40,10 @@ public readonly struct ShareAcknowledgedOffsets
     /// Gets the acknowledged offset at the specified index.
     /// </summary>
     /// <remarks>
-    /// Each lookup scans acknowledgement batches from the beginning. With gaps, it also scans
-    /// their offset entries, taking O(n) time per lookup and O(n²) for a full indexed traversal.
-    /// Use <see cref="GetEnumerator"/> or <see cref="CopyTo"/> to traverse the entries once.
+    /// Sparse lookups count blocks of entries to skip acknowledged offsets without building an index.
+    /// Each lookup still takes O(n) time in the worst case, and a full indexed traversal takes O(n²).
+    /// Enumeration and <see cref="CopyTo"/> take O(n) time. Copies retain the same immutable batch data;
+    /// indexing adds no storage, cursor state or pool lifetime requirements.
     /// </remarks>
     public long this[int index]
     {
@@ -53,21 +52,13 @@ public readonly struct ShareAcknowledgedOffsets
             ArgumentOutOfRangeException.ThrowIfNegative(index);
             ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(index, Length);
 
+            if (_hasGaps)
+                return GetSparseOffset(_batches!, index);
+
             var batches = _batches!;
             for (var batchIndex = 0; batchIndex < batches.Count; batchIndex++)
             {
                 var batch = batches[batchIndex];
-                if (_hasGaps)
-                {
-                    for (var offset = 0; offset < batch.AcknowledgeTypes.Length; offset++)
-                    {
-                        if (batch.AcknowledgeTypes[offset] == (byte)AcknowledgeType.Gap)
-                            continue;
-                        if (index-- == 0)
-                            return batch.FirstOffset + offset;
-                    }
-                    continue;
-                }
                 if (index < batch.AcknowledgeTypes.Length)
                     return batch.FirstOffset + index;
 
@@ -76,6 +67,51 @@ public readonly struct ShareAcknowledgedOffsets
 
             throw new InvalidOperationException("Offset index was not present in the acknowledgement batches.");
         }
+    }
+
+    // Pass fields so the JIT can keep the view in registers when inlining the indexer.
+    private static long GetSparseOffset(List<AcknowledgementBatchData> batches, int index)
+    {
+        for (var batchIndex = 0; batchIndex < batches.Count; batchIndex++)
+        {
+            var batch = batches[batchIndex];
+            var types = batch.AcknowledgeTypes;
+            var offset = 0;
+            // Keep short logical suffixes scalar so counting setup stays amortized over a prefix.
+            while (index >= 16 && offset < types.Length)
+            {
+                // At most index + 1 entries cannot pass the requested logical offset.
+                // A match inside this prefix therefore means every entry was acknowledged.
+                var prefixLength = Math.Min(index + 1, types.Length - offset);
+                var acknowledged = prefixLength - CountGaps(types.AsSpan(offset, prefixLength));
+                if (index < acknowledged)
+                    return batch.FirstOffset + offset + index;
+                index -= acknowledged;
+                offset += prefixLength;
+            }
+
+            for (; offset < types.Length; offset++)
+            {
+                if (types[offset] == (byte)AcknowledgeType.Gap)
+                    continue;
+                if (index-- == 0)
+                    return batch.FirstOffset + offset;
+            }
+        }
+
+        throw new InvalidOperationException("Offset index was not present in the acknowledgement batches.");
+    }
+
+    private static int CountGaps(ReadOnlySpan<byte> types)
+    {
+#if NET8_0_OR_GREATER
+        return types.Count((byte)AcknowledgeType.Gap);
+#else
+        var count = 0;
+        for (var index = 0; index < types.Length; index++)
+            count += types[index] == (byte)AcknowledgeType.Gap ? 1 : 0;
+        return count;
+#endif
     }
 
     /// <summary>
