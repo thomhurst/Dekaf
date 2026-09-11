@@ -855,6 +855,25 @@ public ref struct KafkaProtocolReader
         return buffer;
     }
 
+    // Record and header readers construct contiguous-memory readers. Keep their
+    // slicing path small enough to inline without expanding the general reader.
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal ReadOnlyMemory<byte> ReadContiguousMemorySlice(int count)
+    {
+        if (!_isContiguous || !_hasMemory)
+            return ReadMemorySliceFallback(count);
+        if (count == 0)
+            return ReadOnlyMemory<byte>.Empty;
+
+        ValidateReadableLength(count);
+        var result = _memory.Slice(_position, count);
+        _position += count;
+        return result;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private ReadOnlyMemory<byte> ReadMemorySliceFallback(int count) => ReadMemorySlice(count);
+
     /// <summary>
     /// Reads a slice like <see cref="ReadMemorySlice(int)"/>, but fails with
     /// <see cref="InsufficientDataException"/> when the slice would extend past

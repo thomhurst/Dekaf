@@ -6,6 +6,69 @@ namespace Dekaf.Tests.Unit.Protocol;
 public class KafkaProtocolReaderTests
 {
     [Test]
+    [Arguments(-1)]
+    [Arguments(5)]
+    public async Task ReadContiguousMemorySlice_InvalidLength_PreservesCursor(int length)
+    {
+        var reader = new KafkaProtocolReader(new byte[] { 1, 2, 3, 4, 5 });
+        _ = reader.ReadInt8();
+        var rejected = false;
+        try
+        {
+            _ = reader.ReadContiguousMemorySlice(length);
+        }
+        catch (MalformedProtocolDataException)
+        {
+            rejected = true;
+        }
+        var consumed = reader.Consumed;
+        var next = reader.ReadInt8();
+
+        await Assert.That(rejected).IsTrue();
+        await Assert.That(consumed).IsEqualTo(1);
+        await Assert.That(next).IsEqualTo((sbyte)2);
+    }
+
+    [Test]
+    [Arguments(0, false)]
+    [Arguments(1, false)]
+    [Arguments(2, false)]
+    [Arguments(3, false)]
+    [Arguments(4, false)]
+    [Arguments(0, true)]
+    [Arguments(1, true)]
+    [Arguments(2, true)]
+    [Arguments(3, true)]
+    [Arguments(4, true)]
+    public async Task ReadMemorySlice_PreservesBorrowingAndCursor(int inputKind, bool contiguous)
+    {
+        byte[] data = [1, 2, 3, 4, 5];
+        var reader = inputKind switch
+        {
+            0 => new KafkaProtocolReader(data.AsMemory()),
+            1 => new KafkaProtocolReader(data.AsSpan()),
+            2 => new KafkaProtocolReader(new ReadOnlySequence<byte>(data)),
+            3 => new KafkaProtocolReader(SequenceTestHelpers.CreateMultiSegmentSequence(data, splitAt: 2)),
+            _ => new KafkaProtocolReader(SequenceTestHelpers.CreateMultiSegmentSequence(data, splitAt: 4))
+        };
+        _ = reader.ReadInt8();
+        var empty = contiguous ? reader.ReadContiguousMemorySlice(0) : reader.ReadMemorySlice(0);
+        var afterEmpty = reader.Consumed;
+        var slice = contiguous ? reader.ReadContiguousMemorySlice(3) : reader.ReadMemorySlice(3);
+        var afterSlice = reader.Consumed;
+        var remainingByte = reader.ReadInt8();
+        data[1] = 9;
+
+        await Assert.That(empty.IsEmpty).IsTrue();
+        await Assert.That(afterEmpty).IsEqualTo(1);
+        await Assert.That(afterSlice).IsEqualTo(4);
+        await Assert.That(remainingByte).IsEqualTo((sbyte)5);
+        await Assert.That(slice.Length).IsEqualTo(3);
+        await Assert.That(slice.Span[0]).IsEqualTo((byte)(inputKind is 0 or 2 or 4 ? 9 : 2));
+        await Assert.That(slice.Span[2]).IsEqualTo((byte)4);
+    }
+
+    [Test]
     public async Task ReadInt16_ReadsBigEndian()
     {
         var data = new byte[] { 0x01, 0x02 };
