@@ -1,8 +1,12 @@
 import contextlib
 import io
 import json
+import os
 import re
+import shutil
+import subprocess
 import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -12,6 +16,12 @@ import performance_gate as gate
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = REPO_ROOT / '.github' / 'workflows' / 'performance-gate.yml'
+BASH = shutil.which('bash')
+if os.name == 'nt':
+    # Windows' system32/bash.exe launches WSL, not a shell for Windows paths.
+    git = shutil.which('git')
+    git_bash = Path(git).parent.parent / 'bin/bash.exe' if git else None
+    BASH = str(git_bash) if git_bash and git_bash.is_file() else None
 
 
 def benchmark(method='Append', parameters='', median=100.0, samples=15, allocated=0, type_name='AppendBenchmarks'):
@@ -311,6 +321,96 @@ class CommandTests(unittest.TestCase):
 
 
 class WorkflowTests(unittest.TestCase):
+    @unittest.skipUnless(BASH, 'workflow execution requires bash')
+    def test_initialization_finishes_before_parallel_builds(self):
+        result, events, _ = self.run_build_step()
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertEqual(['prepare-A', 'prepare-B'], events[:2])
+        self.assertIn('build-B-background', events)
+        self.assertIn('build-A-foreground', events)
+
+    @unittest.skipUnless(BASH, 'workflow execution requires bash')
+    def test_preparation_failure_stops_before_builds(self):
+        for role in ('A', 'B'):
+            with self.subTest(role=role):
+                result, events, _ = self.run_build_step(fail_prepare=role)
+                self.assertNotEqual(0, result.returncode)
+                self.assertFalse(any(event.startswith('build-') for event in events), events)
+
+    @unittest.skipUnless(BASH, 'workflow execution requires bash')
+    def test_baseline_fallback_prepares_again_and_observes_candidate_failure(self):
+        for fail_candidate in (False, True):
+            with self.subTest(fail_candidate=fail_candidate):
+                result, events, fallback = self.run_build_step(fallback=True, fail_candidate=fail_candidate)
+                self.assertEqual(2, events.count('prepare-A'), events)
+                self.assertEqual(2, events.count('build-A-foreground'), events)
+                self.assertTrue(fallback)
+                self.assertEqual(not fail_candidate, result.returncode == 0, result.stdout + result.stderr)
+                if fail_candidate:
+                    self.assertIn('The candidate fixtures failed to build', result.stdout)
+
+    def run_build_step(self, *, fail_prepare='', fallback=False, fail_candidate=False):
+        workflow = WORKFLOW.read_text(encoding='utf-8')
+        start = re.search(r'^          (?:prepare|build)\(\) \{', workflow, re.MULTILINE).start()
+        end = workflow.index('\n      - name: Measure A1', start)
+        commands = textwrap.dedent(workflow[start:end])
+        # Model a first-use CLI that rejects initialization in a background job.
+        # BASH_SUBSHELL distinguishes the concurrent build from foreground setup
+        # deterministically, without sleeps or depending on scheduler timing.
+        stub = r'''
+            dotnet() {
+              local role=${PWD##*/gate-}
+              role=${role%%/*}
+              case "$1" in
+                new)
+                  if (( BASH_SUBSHELL > 1 )); then
+                    echo 'Concurrent CLI first-use initialization' >&2
+                    return 71
+                  fi
+                  echo "prepare-$role" >> "$EVENTS"
+                  [[ "$FAIL_PREPARE" != "$role" ]] || return 61
+                  touch GateBenchmarkExecution.sln
+                  ;;
+                sln) ;;
+                build)
+                  local execution=foreground
+                  if (( BASH_SUBSHELL > 1 )); then execution=background; fi
+                  echo "build-$role-$execution" >> "$EVENTS"
+                  [[ -f GateBenchmarkExecution.sln ]] || return 62
+                  if [[ "$role" == B && "$FAIL_CANDIDATE" == 1 ]]; then return 63; fi
+                  if [[ "$role" == A && "$FALLBACK" == 1 && ! -f "$RUNNER_TEMP/attempted-A" ]]; then
+                    touch "$RUNNER_TEMP/attempted-A"
+                    return 64
+                  fi
+                  ;;
+                run) echo Dekaf.Benchmarks.Benchmarks.Unit.ExampleBenchmarks.Example ;;
+                build-server) ;;
+                *) return 65 ;;
+              esac
+            }
+            git() {
+              if [[ "$1" == clean ]]; then
+                rm -f tools/Dekaf.Benchmarks/GateBenchmarkExecution.sln
+              fi
+            }
+        '''
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for role in ('A', 'B'):
+                (root / f'gate-{role}/tools/Dekaf.Benchmarks').mkdir(parents=True)
+            (root / 'results').mkdir()
+            events = root / 'events'
+            events.touch()
+            script = root / 'build.sh'
+            script.write_text('set -euo pipefail\n' + textwrap.dedent(stub) + commands, encoding='utf-8')
+            environment = dict(os.environ, RUNNER_TEMP=root.as_posix(), GATE=(root / 'results').as_posix(),
+                               GITHUB_STEP_SUMMARY=(root / 'summary').as_posix(), EVENTS=events.as_posix(),
+                               FAIL_PREPARE=fail_prepare, FALLBACK=str(int(fallback)),
+                               FAIL_CANDIDATE=str(int(fail_candidate)), HEAD_SHA='candidate', FILTER='*')
+            result = subprocess.run([BASH, script.as_posix()], cwd=root, env=environment,
+                                    text=True, capture_output=True, timeout=30)
+            return result, events.read_text().splitlines(), (root / 'results/baseline-fixtures').exists()
+
     def test_gate_workflow_runs_one_same_vm_job_per_class_and_repeats_regressions(self):
         workflow = WORKFLOW.read_text(encoding='utf-8')
         measure = workflow.split('\n  measure:\n', 1)[1].split('\n  gate:\n', 1)[0]
