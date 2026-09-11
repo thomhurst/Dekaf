@@ -187,6 +187,63 @@ public sealed class AdminClientConsumerGroupDescribeTests
             Arg.Any<CancellationToken>());
     }
 
+    [Test]
+    [Arguments(false, (short)0, (short)0)]
+    [Arguments(true, (short)0, (short)0)]
+    [Arguments(true, (short)-1, (short)0)]
+    [Arguments(true, (short)-2, (short)0)]
+    [Arguments(true, short.MinValue, (short)0)]
+    [Arguments(true, (short)0, (short)-1)]
+    [Arguments(true, (short)0, (short)-2)]
+    [Arguments(true, (short)0, short.MinValue)]
+    [Arguments(true, (short)0, (short)1)]
+    [Arguments(true, (short)0, short.MaxValue)]
+    public async Task ClassicFallback_RequiresCompleteAssignmentFields(bool complete, short topicLength, short version)
+    {
+        var (admin, connection) = CreateAdminWithMockConnection();
+        await using var disposal = admin;
+        var assignment = AdminClientClassicGroupDescriptionTests.AssignmentBytes(version);
+        if (topicLength < 0) assignment = AdminClientClassicGroupDescriptionTests.NegativeTopicNameAssignmentBytes(topicLength);
+        if (!complete) assignment = assignment[..^4];
+        connection.SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
+                Arg.Any<FindCoordinatorRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(new FindCoordinatorResponse
+            {
+                Coordinators = [new Coordinator { Key = "classic-group", NodeId = 1, Host = "localhost", Port = 9092 }]
+            }));
+        connection.SendAsync<ConsumerGroupDescribeRequest, ConsumerGroupDescribeResponse>(
+                Arg.Any<ConsumerGroupDescribeRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(new ConsumerGroupDescribeResponse
+            {
+                Groups = [new ConsumerGroupDescribeGroup
+                {
+                    GroupId = "classic-group", ErrorCode = ErrorCode.GroupIdNotFound,
+                    GroupState = "", GroupEpoch = -1, AssignmentEpoch = -1, AssignorName = "", Members = []
+                }]
+            }));
+        connection.SendAsync<DescribeGroupsRequest, DescribeGroupsResponse>(
+                Arg.Any<DescribeGroupsRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(new DescribeGroupsResponse
+            {
+                Groups = [new DescribeGroupsResponseGroup
+                {
+                    GroupId = "classic-group", GroupState = "Stable", ProtocolType = "consumer",
+                    Members = [new DescribeGroupsResponseMember { MemberId = "member", MemberAssignment = assignment }]
+                }]
+            }));
+
+        var description = (await admin.DescribeConsumerGroupsAsync(["classic-group"]))["classic-group"];
+        var member = description.Members.Single();
+        if (complete && topicLength >= 0 && version >= 0)
+            await Assert.That(member.Assignment!).IsEquivalentTo([new TopicPartition("topic", 2)]);
+        else
+            await Assert.That(member.Assignment).IsNull();
+        await connection.Received(1).SendAsync<ConsumerGroupDescribeRequest, ConsumerGroupDescribeResponse>(
+            Arg.Any<ConsumerGroupDescribeRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>());
+        await connection.Received(1).SendAsync<DescribeGroupsRequest, DescribeGroupsResponse>(
+            Arg.Any<DescribeGroupsRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>());
+    }
+
     private static (AdminClient Admin, IKafkaConnection Connection) CreateAdminWithMockConnection()
     {
         var connection = Substitute.For<IKafkaConnection>();

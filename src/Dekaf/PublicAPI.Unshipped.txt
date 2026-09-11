@@ -160,3 +160,57 @@ override Dekaf.ShareConsumer.ShareBatchHeader.GetHashCode() -> int
 static Dekaf.ShareConsumer.ShareBatchHeader.operator !=(Dekaf.ShareConsumer.ShareBatchHeader left, Dekaf.ShareConsumer.ShareBatchHeader right) -> bool
 static Dekaf.ShareConsumer.ShareBatchHeader.operator ==(Dekaf.ShareConsumer.ShareBatchHeader left, Dekaf.ShareConsumer.ShareBatchHeader right) -> bool
 static Dekaf.ShareConsumer.ShareConsumerBatchExtensions.PollBatchesAsync<TKey, TValue>(this Dekaf.ShareConsumer.IKafkaShareConsumer<TKey, TValue>! consumer, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Collections.Generic.IAsyncEnumerable<Dekaf.ShareConsumer.ShareConsumeBatch<TKey, TValue>!>!
+
+Dekaf.Admin.AdminClient.DescribeClassicGroupsAsync(System.Collections.Generic.IEnumerable<string!>! groupIds, Dekaf.Admin.DescribeClassicGroupsOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<string!, Dekaf.Admin.ClassicGroupDescriptionResult!>!>
+Dekaf.Admin.AdminClientClassicGroupDescriptionExtensions
+Dekaf.Admin.ClassicGroupDescription
+Dekaf.Admin.ClassicGroupDescription.AuthorizedOperations.get -> int?
+Dekaf.Admin.ClassicGroupDescription.AuthorizedOperations.init -> void
+Dekaf.Admin.ClassicGroupDescription.ClassicGroupDescription() -> void
+Dekaf.Admin.ClassicGroupDescription.CoordinatorId.get -> int
+Dekaf.Admin.ClassicGroupDescription.CoordinatorId.init -> void
+Dekaf.Admin.ClassicGroupDescription.GroupId.get -> string!
+Dekaf.Admin.ClassicGroupDescription.GroupId.init -> void
+Dekaf.Admin.ClassicGroupDescription.Members.get -> System.Collections.Generic.IReadOnlyList<Dekaf.Admin.ClassicGroupMemberDescription!>!
+Dekaf.Admin.ClassicGroupDescription.Members.init -> void
+Dekaf.Admin.ClassicGroupDescription.ProtocolData.get -> string?
+Dekaf.Admin.ClassicGroupDescription.ProtocolData.init -> void
+Dekaf.Admin.ClassicGroupDescription.ProtocolType.get -> string?
+Dekaf.Admin.ClassicGroupDescription.ProtocolType.init -> void
+Dekaf.Admin.ClassicGroupDescription.State.get -> string!
+Dekaf.Admin.ClassicGroupDescription.State.init -> void
+Dekaf.Admin.ClassicGroupDescriptionResult
+Dekaf.Admin.ClassicGroupDescriptionResult.ClassicGroupDescriptionResult() -> void
+Dekaf.Admin.ClassicGroupDescriptionResult.Description.get -> Dekaf.Admin.ClassicGroupDescription?
+Dekaf.Admin.ClassicGroupDescriptionResult.Description.init -> void
+Dekaf.Admin.ClassicGroupDescriptionResult.ErrorCode.get -> Dekaf.Protocol.ErrorCode
+Dekaf.Admin.ClassicGroupDescriptionResult.ErrorCode.init -> void
+Dekaf.Admin.ClassicGroupDescriptionResult.ErrorMessage.get -> string?
+Dekaf.Admin.ClassicGroupDescriptionResult.ErrorMessage.init -> void
+Dekaf.Admin.ClassicGroupDescriptionResult.GroupId.get -> string!
+Dekaf.Admin.ClassicGroupDescriptionResult.GroupId.init -> void
+Dekaf.Admin.ClassicGroupMemberDescription
+Dekaf.Admin.ClassicGroupMemberDescription.Assignment.get -> System.Collections.Generic.IReadOnlyList<Dekaf.TopicPartition>?
+Dekaf.Admin.ClassicGroupMemberDescription.Assignment.init -> void
+Dekaf.Admin.ClassicGroupMemberDescription.AssignmentData.get -> System.ReadOnlyMemory<byte>
+Dekaf.Admin.ClassicGroupMemberDescription.AssignmentData.init -> void
+Dekaf.Admin.ClassicGroupMemberDescription.ClassicGroupMemberDescription() -> void
+Dekaf.Admin.ClassicGroupMemberDescription.ClientHost.get -> string?
+Dekaf.Admin.ClassicGroupMemberDescription.ClientHost.init -> void
+Dekaf.Admin.ClassicGroupMemberDescription.ClientId.get -> string?
+Dekaf.Admin.ClassicGroupMemberDescription.ClientId.init -> void
+Dekaf.Admin.ClassicGroupMemberDescription.GroupInstanceId.get -> string?
+Dekaf.Admin.ClassicGroupMemberDescription.GroupInstanceId.init -> void
+Dekaf.Admin.ClassicGroupMemberDescription.MemberId.get -> string!
+Dekaf.Admin.ClassicGroupMemberDescription.MemberId.init -> void
+Dekaf.Admin.ClassicGroupMemberDescription.Metadata.get -> System.ReadOnlyMemory<byte>
+Dekaf.Admin.ClassicGroupMemberDescription.Metadata.init -> void
+Dekaf.Admin.DescribeClassicGroupsOptions
+Dekaf.Admin.DescribeClassicGroupsOptions.DescribeClassicGroupsOptions() -> void
+Dekaf.Admin.DescribeClassicGroupsOptions.IncludeAuthorizedOperations.get -> bool
+Dekaf.Admin.DescribeClassicGroupsOptions.IncludeAuthorizedOperations.init -> void
+Dekaf.Admin.DescribeClassicGroupsOptions.TimeoutMs.get -> int
+Dekaf.Admin.DescribeClassicGroupsOptions.TimeoutMs.init -> void
+Dekaf.Admin.IClassicGroupDescriptionAdminClient
+Dekaf.Admin.IClassicGroupDescriptionAdminClient.DescribeClassicGroupsAsync(System.Collections.Generic.IEnumerable<string!>! groupIds, Dekaf.Admin.DescribeClassicGroupsOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<string!, Dekaf.Admin.ClassicGroupDescriptionResult!>!>
+static Dekaf.Admin.AdminClientClassicGroupDescriptionExtensions.DescribeClassicGroupsAsync(this Dekaf.Admin.IAdminClient! adminClient, System.Collections.Generic.IEnumerable<string!>! groupIds, Dekaf.Admin.DescribeClassicGroupsOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<string!, Dekaf.Admin.ClassicGroupDescriptionResult!>!>
