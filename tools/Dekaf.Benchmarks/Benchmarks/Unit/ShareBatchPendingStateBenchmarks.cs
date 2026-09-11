@@ -10,6 +10,9 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 
 /// <summary>Checks pending state across retained renewed batches without changing their lifecycle.</summary>
 [MemoryDiagnoser]
+// This scalar read is smaller than the invocation overhead. Subtraction can clamp
+// valid control samples to zero; compare the same complete invocation on both revisions.
+[EvaluateOverhead(false)]
 public class ShareBatchPendingStateBenchmarks
 {
     private ShareBatchAcknowledgements<int, int> _tracker = null!;
