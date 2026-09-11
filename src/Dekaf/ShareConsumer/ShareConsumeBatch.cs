@@ -46,9 +46,9 @@ public readonly struct ShareBatchHeaders
             if (_remaining == 0)
                 return false;
             var reader = new KafkaProtocolReader(_bytes[_position..]);
-            var key = reader.ReadMemorySlice(reader.ReadVarInt());
+            var key = reader.ReadContiguousMemorySlice(reader.ReadVarInt());
             var valueLength = reader.ReadVarInt();
-            var value = valueLength < 0 ? ReadOnlyMemory<byte>.Empty : reader.ReadMemorySlice(valueLength);
+            var value = valueLength < 0 ? ReadOnlyMemory<byte>.Empty : reader.ReadContiguousMemorySlice(valueLength);
             Current = new ShareBatchHeader(key, value, valueLength < 0);
             _position += checked((int)reader.Consumed);
             _remaining--;

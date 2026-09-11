@@ -19,7 +19,7 @@ internal static class ShareBatchRecordReader
         // tail; an invalid field inside a complete body is protocol corruption.
         if (length > reader.Remaining)
             throw new InsufficientDataException();
-        var body = reader.ReadMemorySlice(length);
+        var body = reader.ReadContiguousMemorySlice(length);
         var bodyReader = new KafkaProtocolReader(body);
         try
         {
@@ -27,9 +27,9 @@ internal static class ShareBatchRecordReader
             var timestampDelta = bodyReader.ReadVarLong();
             var offsetDelta = bodyReader.ReadVarInt();
             var keyLength = bodyReader.ReadVarInt();
-            var key = keyLength < 0 ? ReadOnlyMemory<byte>.Empty : bodyReader.ReadMemorySlice(keyLength);
+            var key = keyLength < 0 ? ReadOnlyMemory<byte>.Empty : bodyReader.ReadContiguousMemorySlice(keyLength);
             var valueLength = bodyReader.ReadVarInt();
-            var value = valueLength < 0 ? ReadOnlyMemory<byte>.Empty : bodyReader.ReadMemorySlice(valueLength);
+            var value = valueLength < 0 ? ReadOnlyMemory<byte>.Empty : bodyReader.ReadContiguousMemorySlice(valueLength);
             var headerCount = bodyReader.ReadVarInt();
             if (headerCount < 0 || headerCount > Record.MaxReasonableHeaderCount
                 || headerCount > bodyReader.Remaining / 2)
