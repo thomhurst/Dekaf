@@ -53,7 +53,10 @@ public sealed class ShareConsumerRecordPoolingTests
                 var pending = consumer.ParsePartitionRecordsWithPreparation(topic, partition, 3, [], ref state, false, null);
                 await Assert.That(pending).IsNull();
             }
-            finally { state.DisposeCurrentBatch(); }
+            finally
+            {
+                state.DisposeCurrentBatch();
+            }
         }
         else
         {
@@ -499,7 +502,11 @@ public sealed class ShareConsumerRecordPoolingTests
 
     [Test]
     [NotInParallel]
-    public async Task ParsePartitionRecords_ReentrantConsumerPreservesOuterRecordHeaders()
+    [Arguments(false, false)]
+    [Arguments(false, true)]
+    [Arguments(true, false)]
+    [Arguments(true, true)]
+    public async Task ParsePartitionRecords_ReentrantConsumerPreservesOuterRecordContext(bool outerPrepared, bool nestedPrepared)
     {
         var nestedBuffer = new ArrayBufferWriter<byte>();
         using var nestedBatch = new RecordBatch
@@ -552,11 +559,12 @@ public sealed class ShareConsumerRecordPoolingTests
         var method = typeof(KafkaShareConsumer<string, string>).GetMethod(
             "ParsePartitionRecords",
             BindingFlags.Instance | BindingFlags.NonPublic)!;
-        var topicInfo = new TopicInfo { Name = "topic", Partitions = [] };
+        var outerTopic = new TopicInfo { Name = "outer-topic", Partitions = [] };
+        var nestedTopic = new TopicInfo { Name = "nested-topic", Partitions = [] };
         var nestedPartition = CreatePartition(nestedBuffer.WrittenMemory);
         var outerValueDeserializer = new HeaderValueCapturingStringDeserializer();
         var outerKeyDeserializer = new CallbackStringDeserializer(() =>
-            _ = method.Invoke(nestedConsumer, [topicInfo, nestedPartition, 1]));
+            Parse(nestedConsumer, nestedTopic, nestedPartition, nestedPrepared));
         await using var outerConsumer = new KafkaShareConsumer<string, string>(
             options,
             outerKeyDeserializer,
@@ -564,15 +572,32 @@ public sealed class ShareConsumerRecordPoolingTests
             pool,
             metadataManager);
 
-        _ = method.Invoke(outerConsumer,
-        [
-            topicInfo,
-            CreatePartition(outerBuffer.WrittenMemory),
-            1
-        ]);
+        Parse(outerConsumer, outerTopic, CreatePartition(outerBuffer.WrittenMemory), outerPrepared);
 
         await Assert.That(nestedValueDeserializer.HeaderValue).IsEqualTo("nested");
         await Assert.That(outerValueDeserializer.HeaderValue).IsEqualTo("outer");
+        await Assert.That(nestedValueDeserializer.Topic).IsEqualTo("nested-topic");
+        await Assert.That(outerValueDeserializer.Topic).IsEqualTo("outer-topic");
+
+        void Parse(KafkaShareConsumer<string, string> consumer, TopicInfo topic,
+            ShareFetchResponsePartition partition, bool prepared)
+        {
+            if (!prepared)
+            {
+                _ = method.Invoke(consumer, [topic, partition, 1]);
+                return;
+            }
+            var state = new KafkaShareConsumer<string, string>.DeserializerPreparationParserState();
+            try
+            {
+                if (consumer.ParsePartitionRecordsWithPreparation(topic, partition, 1, [], ref state, false, null) is not null)
+                    throw new InvalidOperationException("The test deserializers must complete synchronously.");
+            }
+            finally
+            {
+                state.DisposeCurrentBatch();
+            }
+        }
     }
 
     [Test]
@@ -840,9 +865,11 @@ public sealed class ShareConsumerRecordPoolingTests
         public bool ConsumesRecordHeaders => true;
 
         internal string? HeaderValue { get; private set; }
+        internal string? Topic { get; private set; }
 
         public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
         {
+            Topic = context.Topic;
             HeaderValue = context.Headers?[0].GetValueAsString();
             return System.Text.Encoding.UTF8.GetString(data.Span);
         }

@@ -56,11 +56,6 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
     private readonly ILogger _logger;
     private ShareAcknowledgementCommitCallback? _acknowledgementCommitCallback;
 
-    // ThreadStatic reusable SerializationContext to avoid per-record allocations in ParsePartitionRecords.
-    // Matches the pattern used by ConsumeResult<TKey, TValue> in the regular consumer.
-    [ThreadStatic]
-    private static SerializationContext t_serializationContext;
-
     private volatile HashSet<string> _subscriptionSnapshot = new();
     private volatile TopicPartitionSet _assignmentSnapshot = new HashSet<TopicPartition>();
 
@@ -1608,16 +1603,17 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                     parserState.RecordIndex++;
                     continue;
                 }
-                t_serializationContext.Topic = topicInfo.Name;
-                t_serializationContext.Component = SerializationComponent.Key;
-                t_serializationContext.KeyData = ReadOnlyMemory<byte>.Empty;
-                t_serializationContext.IsNull = record.IsKeyNull;
+                // A key deserializer can synchronously poll another consumer on this thread.
+                var serializationContext = new SerializationContext { Topic = topicInfo.Name };
+                serializationContext.Component = SerializationComponent.Key;
+                serializationContext.KeyData = ReadOnlyMemory<byte>.Empty;
+                serializationContext.IsNull = record.IsKeyNull;
                 var headerRouting = record.CreateHeaderRoutingLookup(
                     _recordHeaderRoutingPlan);
                 var materializedHeaders = _recordHeaderDeserializationHeaders;
                 if (materializedHeaders is not null)
                     headerRouting.CopyTo(materializedHeaders);
-                t_serializationContext.Headers = headerRouting.KeyRequiresMaterializedHeaders
+                serializationContext.Headers = headerRouting.KeyRequiresMaterializedHeaders
                     ? materializedHeaders
                     : null;
                 var key = record.IsKeyNull
@@ -1625,15 +1621,15 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                     : RecordHeaderDeserializer.Deserialize(
                         _keyDeserializer,
                         record.Key,
-                        t_serializationContext,
+                        serializationContext,
                         in headerRouting);
 
-                t_serializationContext.Component = SerializationComponent.Value;
-                t_serializationContext.KeyData = SerializationContext.NormalizeKeyData(
+                serializationContext.Component = SerializationComponent.Value;
+                serializationContext.KeyData = SerializationContext.NormalizeKeyData(
                     record.Key,
                     record.IsKeyNull);
-                t_serializationContext.IsNull = record.IsValueNull;
-                t_serializationContext.Headers = headerRouting.ValueRequiresMaterializedHeaders
+                serializationContext.IsNull = record.IsValueNull;
+                serializationContext.Headers = headerRouting.ValueRequiresMaterializedHeaders
                     ? materializedHeaders
                     : null;
                 var value = record.IsValueNull
@@ -1641,7 +1637,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                     : RecordHeaderDeserializer.Deserialize(
                         _valueDeserializer,
                         record.Value,
-                        t_serializationContext,
+                        serializationContext,
                         in headerRouting);
 
                 var headers = Array.Empty<Header>();
@@ -1782,16 +1778,17 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                         continue;
                     }
 
-                    t_serializationContext.Topic = topicInfo.Name;
-                    t_serializationContext.Component = SerializationComponent.Key;
-                    t_serializationContext.KeyData = ReadOnlyMemory<byte>.Empty;
-                    t_serializationContext.IsNull = record.IsKeyNull;
+                    // Keep nested consumer calls from changing this record's context.
+                    var serializationContext = new SerializationContext { Topic = topicInfo.Name };
+                    serializationContext.Component = SerializationComponent.Key;
+                    serializationContext.KeyData = ReadOnlyMemory<byte>.Empty;
+                    serializationContext.IsNull = record.IsKeyNull;
                     var headerRouting = record.CreateHeaderRoutingLookup(
                         _recordHeaderRoutingPlan);
                     var materializedHeaders = _recordHeaderDeserializationHeaders;
                     if (materializedHeaders is not null)
                         headerRouting.CopyTo(materializedHeaders);
-                    t_serializationContext.Headers = headerRouting.KeyRequiresMaterializedHeaders
+                    serializationContext.Headers = headerRouting.KeyRequiresMaterializedHeaders
                         ? materializedHeaders
                         : null;
                     TKey? key = default;
@@ -1806,7 +1803,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                             if (!TryDeserializePrepared(
                                     keyPreparer,
                                     record.Key,
-                                    t_serializationContext,
+                                    serializationContext,
                                     in headerRouting,
                                     out key))
                             {
@@ -1824,17 +1821,17 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                             key = RecordHeaderDeserializer.Deserialize(
                                 _keyDeserializer,
                                 record.Key,
-                                t_serializationContext,
+                                serializationContext,
                                 in headerRouting);
                         }
                     }
 
-                    t_serializationContext.Component = SerializationComponent.Value;
-                    t_serializationContext.KeyData = SerializationContext.NormalizeKeyData(
+                    serializationContext.Component = SerializationComponent.Value;
+                    serializationContext.KeyData = SerializationContext.NormalizeKeyData(
                         record.Key,
                         record.IsKeyNull);
-                    t_serializationContext.IsNull = record.IsValueNull;
-                    t_serializationContext.Headers = headerRouting.ValueRequiresMaterializedHeaders
+                    serializationContext.IsNull = record.IsValueNull;
+                    serializationContext.Headers = headerRouting.ValueRequiresMaterializedHeaders
                         ? materializedHeaders
                         : null;
                     TValue value;
@@ -1847,7 +1844,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                         if (!TryDeserializePrepared(
                                 valuePreparer,
                                 record.Value,
-                                t_serializationContext,
+                                serializationContext,
                                 in headerRouting,
                                 out value))
                         {
@@ -1865,7 +1862,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                         value = RecordHeaderDeserializer.Deserialize(
                             _valueDeserializer,
                             record.Value,
-                            t_serializationContext,
+                            serializationContext,
                             in headerRouting);
                     }
 
