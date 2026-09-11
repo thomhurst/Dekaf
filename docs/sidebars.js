@@ -90,6 +90,7 @@ const sidebars = {
         'admin/streams-group-management',
         'admin/group-listing',
         'admin/share-group-offset-queries',
+        'admin/member-removal',
       ],
     },
     {

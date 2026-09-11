@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using Dekaf.Admin;
 using Dekaf.Consumer;
 using Dekaf.Errors;
@@ -25,6 +26,7 @@ public sealed partial class InMemoryKafkaCluster
     private readonly Dictionary<string, Dictionary<TopicPartition, TopicPartitionOffset>> _consumerGroupOffsets = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Dictionary<TopicPartition, TopicPartitionOffset>> _shareGroupOffsets = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Dictionary<string, ConsumerGroupMemberState>> _consumerGroupMembers = new(StringComparer.Ordinal);
+    private Dictionary<(string GroupId, string InstanceId), string>? _staticConsumerGroupMembers;
     private readonly ConcurrentDictionary<string, int> _consumerGroupGenerations = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Dictionary<string, int>> _shareGroupMembers = new(StringComparer.Ordinal);
     private readonly HashSet<string> _shareGroupsWithMemberHistory = new(StringComparer.Ordinal);
@@ -196,13 +198,17 @@ public sealed partial class InMemoryKafkaCluster
         string groupId,
         string memberId,
         IEnumerable<TopicPartition> subscribedPartitions,
-        out long registrationId)
+        out long registrationId, string? groupInstanceId = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(groupId);
         ArgumentException.ThrowIfNullOrWhiteSpace(memberId);
         ArgumentNullException.ThrowIfNull(subscribedPartitions);
 
-        var partitions = subscribedPartitions.Distinct().ToHashSet();
+        if (groupInstanceId is not null)
+            ArgumentException.ThrowIfNullOrWhiteSpace(groupInstanceId);
+        HashSet<TopicPartition> partitions = groupInstanceId is null
+            ? new HashSet<TopicPartition>(subscribedPartitions)
+            : new StaticMemberPartitions(subscribedPartitions, groupInstanceId);
 
         lock (_gate)
         {
@@ -213,6 +219,18 @@ public sealed partial class InMemoryKafkaCluster
             }
 
             registrationId = ++_nextConsumerGroupRegistrationId;
+            if (_staticConsumerGroupMembers is not null && members.TryGetValue(memberId, out var replaced) &&
+                replaced.GroupInstanceId is { } replacedInstance)
+                _staticConsumerGroupMembers.Remove((groupId, replacedInstance));
+            if (groupInstanceId is not null)
+            {
+                var staticMembers = _staticConsumerGroupMembers ??= new();
+                var identity = (groupId, groupInstanceId);
+                ref var previousMember = ref CollectionsMarshal.GetValueRefOrAddDefault(staticMembers, identity, out var exists);
+                if (exists)
+                    members.Remove(previousMember!);
+                previousMember = memberId;
+            }
             members[memberId] = new ConsumerGroupMemberState(registrationId, partitions);
             var generation = ++_nextConsumerGroupGeneration;
             _consumerGroupGenerations[groupId] = generation;
@@ -240,6 +258,8 @@ public sealed partial class InMemoryKafkaCluster
             }
 
             members.Remove(memberId);
+            if (member.GroupInstanceId is { } instanceId)
+                _staticConsumerGroupMembers!.Remove((groupId, instanceId));
 
             if (members.Count == 0)
             {
@@ -2079,7 +2099,18 @@ public sealed partial class InMemoryKafkaCluster
 
     private readonly record struct ConsumerGroupMemberState(
         long RegistrationId,
-        HashSet<TopicPartition> SubscribedPartitions);
+        HashSet<TopicPartition> SubscribedPartitions)
+    {
+        public string? GroupInstanceId => (SubscribedPartitions as StaticMemberPartitions)?.GroupInstanceId;
+    }
+
+    // Keep dynamic registrations and dictionary entries at their original size.
+    // Only static members need the additional identity reference.
+    private sealed class StaticMemberPartitions(IEnumerable<TopicPartition> partitions, string groupInstanceId)
+        : HashSet<TopicPartition>(partitions)
+    {
+        public string GroupInstanceId { get; } = groupInstanceId;
+    }
 }
 
 internal sealed class ShareGroupMemberRegistration

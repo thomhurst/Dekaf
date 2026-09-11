@@ -33,7 +33,7 @@ public sealed class RemoveMembersFromConsumerGroupResult
 }
 
 /// <summary>
-/// Removal result for one static consumer group member.
+/// Removal result for one consumer group member. GroupInstanceId is empty for dynamic members.
 /// </summary>
 public sealed class ConsumerGroupMemberRemovalResult
 {

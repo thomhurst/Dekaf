@@ -1967,9 +1967,18 @@ public sealed partial class AdminClient :
             ArgumentException.ThrowIfNullOrWhiteSpace(member.GroupInstanceId);
         }
 
-        if (memberList.Select(static member => member.GroupInstanceId).Distinct(StringComparer.Ordinal).Count() != memberList.Length)
+        if (memberList.Length > 1)
         {
-            throw new ArgumentException("Static member group.instance.id values must be unique.", nameof(members));
+#if NETSTANDARD2_0
+            var identities = new HashSet<string>(StringComparer.Ordinal);
+#else
+            var identities = new HashSet<string>(memberList.Length, StringComparer.Ordinal);
+#endif
+            foreach (var member in memberList)
+            {
+                if (!identities.Add(member.GroupInstanceId))
+                    throw new ArgumentException("Static member group.instance.id values must be unique.", nameof(members));
+            }
         }
 
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
@@ -1986,14 +1995,19 @@ public sealed partial class AdminClient :
                 Protocol.ApiKey.LeaveGroup,
                 LeaveGroupRequest.LowestSupportedVersion,
                 LeaveGroupRequest.HighestSupportedVersion);
+            var requestMembers = new LeaveGroupRequestMember[memberList.Length];
+            for (var index = 0; index < memberList.Length; index++)
+            {
+                requestMembers[index] = new LeaveGroupRequestMember
+                {
+                    GroupInstanceId = memberList[index].GroupInstanceId,
+                    Reason = apiVersion >= 5 ? options.Reason : null
+                };
+            }
             var request = new LeaveGroupRequest
             {
                 GroupId = groupId,
-                Members = memberList.Select(member => new LeaveGroupRequestMember
-                {
-                    GroupInstanceId = member.GroupInstanceId,
-                    Reason = apiVersion >= 5 ? options.Reason : null
-                }).ToArray()
+                Members = requestMembers
             };
 
             var response = await connection.SendAsync<LeaveGroupRequest, LeaveGroupResponse>(
@@ -2010,16 +2024,22 @@ public sealed partial class AdminClient :
                 };
             }
 
-            return new RemoveMembersFromConsumerGroupResult
+            var results = new ConsumerGroupMemberRemovalResult[response.Members.Count];
+            for (var index = 0; index < results.Length; index++)
             {
-                GroupId = groupId,
-                Members = response.Members.Select((member, index) => new ConsumerGroupMemberRemovalResult
+                var member = response.Members[index];
+                results[index] = new ConsumerGroupMemberRemovalResult
                 {
                     MemberId = member.MemberId,
                     GroupInstanceId = member.GroupInstanceId
                         ?? (index < memberList.Length ? memberList[index].GroupInstanceId : string.Empty),
                     ErrorCode = member.ErrorCode
-                }).ToArray()
+                };
+            }
+            return new RemoveMembersFromConsumerGroupResult
+            {
+                GroupId = groupId,
+                Members = results
             };
         }, cancellationToken).ConfigureAwait(false);
     }

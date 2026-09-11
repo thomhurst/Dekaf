@@ -699,3 +699,25 @@ static Dekaf.Admin.AdminClientShareGroupOffsetQueryExtensions.ListShareGroupOffs
 static Dekaf.Consumer.PartitionedConsumerExtensions.RunPartitionedAsync<TKey, TValue>(this Dekaf.Consumer.IKafkaConsumer<TKey, TValue>! consumer, Dekaf.Consumer.PartitionRecordProcessor<TKey, TValue>! processor, Dekaf.Consumer.PartitionedProcessingOptions? options, System.Collections.Generic.IEqualityComparer<TKey>! keyComparer, System.Threading.CancellationToken cancellationToken) -> System.Threading.Tasks.ValueTask
 static Dekaf.Consumer.PartitionedConsumerExtensions.RunPartitionedBatchesAsync<TKey, TValue>(this Dekaf.Consumer.IKafkaConsumer<TKey, TValue>! consumer, Dekaf.Consumer.PartitionBatchProcessor<TKey, TValue>! processor, Dekaf.Consumer.PartitionedProcessingOptions? options, System.Collections.Generic.IEqualityComparer<TKey>! keyComparer, System.Threading.CancellationToken cancellationToken) -> System.Threading.Tasks.ValueTask
 Dekaf.Consumer.ConsumeResult<TKey, TValue>.IsKeyNull.get -> bool
+Dekaf.Admin.AdminClientConsumerGroupMemberRemovalExtensions
+Dekaf.Admin.ConsumerGroupMemberIdentity
+Dekaf.Admin.ConsumerGroupMemberIdentity.ConsumerGroupMemberIdentity() -> void
+Dekaf.Admin.ConsumerGroupMemberIdentity.GroupInstanceId.get -> string?
+Dekaf.Admin.ConsumerGroupMemberIdentity.GroupInstanceId.init -> void
+Dekaf.Admin.ConsumerGroupMemberIdentity.MemberId.get -> string?
+Dekaf.Admin.ConsumerGroupMemberIdentity.MemberId.init -> void
+Dekaf.Admin.ConsumerGroupMemberRemovalOptions
+Dekaf.Admin.ConsumerGroupMemberRemovalOptions.ConsumerGroupMemberRemovalOptions() -> void
+Dekaf.Admin.ConsumerGroupMemberRemovalOptions.Members.get -> System.Collections.Generic.IReadOnlyList<Dekaf.Admin.ConsumerGroupMemberIdentity!>!
+Dekaf.Admin.ConsumerGroupMemberRemovalOptions.Members.init -> void
+Dekaf.Admin.ConsumerGroupMemberRemovalOptions.Reason.get -> string?
+Dekaf.Admin.ConsumerGroupMemberRemovalOptions.Reason.init -> void
+Dekaf.Admin.ConsumerGroupMemberRemovalOptions.RemoveAll.get -> bool
+Dekaf.Admin.ConsumerGroupMemberRemovalOptions.RemoveAll.init -> void
+Dekaf.Admin.ConsumerGroupMemberRemovalOptions.TimeoutMs.get -> int
+Dekaf.Admin.ConsumerGroupMemberRemovalOptions.TimeoutMs.init -> void
+Dekaf.Admin.IConsumerGroupMemberRemovalAdminClient
+Dekaf.Admin.IConsumerGroupMemberRemovalAdminClient.RemoveMembersFromConsumerGroupAsync(string! groupId, Dekaf.Admin.ConsumerGroupMemberRemovalOptions! options, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.Admin.RemoveMembersFromConsumerGroupResult!>
+Dekaf.Protocol.Messages.LeaveGroupRequestMember.GroupInstanceId.get -> string?
+static Dekaf.Admin.AdminClientConsumerGroupMemberRemovalExtensions.RemoveMembersFromConsumerGroupAsync(this Dekaf.Admin.IAdminClient! adminClient, string! groupId, Dekaf.Admin.ConsumerGroupMemberRemovalOptions! options, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.Admin.RemoveMembersFromConsumerGroupResult!>
+*REMOVED*Dekaf.Protocol.Messages.LeaveGroupRequestMember.GroupInstanceId.get -> string!
