@@ -600,6 +600,113 @@ public sealed class PartitionedDispatchCoordinatorTests
     }
 
     [Test]
+    public async Task CustomScalarComparerMutation_ReleasesDisplacedLaneAndObservesWorkers()
+    {
+        var (lane, storage) = await CreateOwnedInt32LaneAsync(4);
+        var first = new ObservedCompletion();
+        var second = new ObservedCompletion();
+        var comparer = new MutatingInt32Comparer();
+        var handled = new List<long>();
+        var dispatcher = new KeyOrderedPartitionDispatcher<int, int>(
+            new PartitionProcessorContext<int, int>(lane), 1, 3, 4,
+            (records, _) =>
+            {
+                var offset = records[0].Offset;
+                handled.Add(offset);
+                if (offset == 0) return first.Task;
+                if (offset == 1) return second.Task;
+                if (offset == 2)
+                {
+                    comparer.AliasZeroToOne = true;
+                    first.Complete();
+                }
+                return default;
+            }, comparer, automaticCompletion: true);
+        var processing = dispatcher.RunAsync(CancellationToken.None).AsTask();
+        second.Complete();
+        var thrown = await Assert.ThrowsAsync<InvalidOperationException>(
+            async () => await processing.WaitAsync(TimeSpan.FromSeconds(2)));
+        await Assert.That(thrown!.Message).IsEqualTo("A partition key changed its hash code or equality while being processed.");
+        foreach (var memory in storage)
+            await Assert.That(memory.DisposeCount).IsEqualTo(1);
+        await Assert.That(handled).IsEquivalentTo(new long[] { 0, 1, 2 });
+        await Assert.That(first.Observed).IsEqualTo(1);
+        await Assert.That(second.Observed).IsEqualTo(1);
+        await Assert.That(dispatcher.LaneCount).IsEqualTo(0);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    [Timeout(30_000)]
+    public async Task CompactPool_ReusedLaneKeepsRecordStorage(
+        bool customComparer, CancellationToken cancellationToken)
+    {
+        var (lane, storage) = await CreateOwnedInt32LaneAsync(8);
+        var first = new ObservedCompletion();
+        var second = new ObservedCompletion();
+        var handled = new List<long>();
+        var dispatcher = new KeyOrderedPartitionDispatcher<int, int>(
+            new PartitionProcessorContext<int, int>(lane), 1, 2, 4,
+            (records, _) =>
+            {
+                var offset = records[0].Offset;
+                handled.Add(offset);
+                return offset switch { 0 => first.Task, 1 => second.Task, _ => default };
+            }, customComparer ? new MutatingInt32Comparer() : null, automaticCompletion: true);
+        var processing = dispatcher.RunAsync(cancellationToken).AsTask();
+        try
+        {
+            // Both workers are held while the complete pending window owns lanes.
+            // The remaining input must reuse those lanes as handlers finish.
+            await Assert.That(dispatcher.LaneCount).IsEqualTo(4);
+        }
+        finally
+        {
+            first.Complete();
+            second.Complete();
+            await processing.WaitAsync(cancellationToken);
+        }
+        await Assert.That(handled).IsEquivalentTo(new long[] { 0, 1, 2, 3, 4, 5, 6, 7 });
+        foreach (var memory in storage)
+            await Assert.That(memory.DisposeCount).IsEqualTo(1);
+        await Assert.That(first.Observed).IsEqualTo(1);
+        await Assert.That(second.Observed).IsEqualTo(1);
+        await Assert.That(dispatcher.LaneCount).IsEqualTo(0);
+    }
+
+    private static async Task<(PartitionLane<int, int> Lane, TrackedMemory[] Storage)> CreateOwnedInt32LaneAsync(int count)
+    {
+        var lane = CreateLane(count);
+        var storage = new TrackedMemory[count];
+        for (var offset = 0; offset < count; offset++)
+        {
+            var memory = storage[offset] = new TrackedMemory();
+            System.Buffers.Binary.BinaryPrimitives.WriteInt32BigEndian(memory.Bytes, offset);
+            var batch = new RecordBatch
+            {
+                BaseOffset = offset, LastOffsetDelta = 0,
+                Records = [new Record { Key = memory.Memory, Value = memory.Memory }]
+            };
+            using var pending = PendingFetchData.Create("dispatch", 0, [batch], memoryOwner: memory);
+            pending.EagerParseAll();
+            var records = new ConsumeBatch<int, int>(pending, Serializers.Int32, Serializers.Int32).GetEnumerator();
+            await Assert.That(records.MoveNext()).IsTrue();
+            await Assert.That(lane.TryEnqueueForTest(records.Current)).IsTrue();
+        }
+        await lane.StopAsync(PartitionStopPolicy.Drain, Timeout.InfiniteTimeSpan);
+        return (lane, storage);
+    }
+
+    private sealed class MutatingInt32Comparer : IEqualityComparer<int>
+    {
+        internal bool AliasZeroToOne { get; set; }
+        private int Canonical(int key) => AliasZeroToOne && key == 0 ? 1 : key;
+        public bool Equals(int x, int y) => Canonical(x) == Canonical(y);
+        public int GetHashCode(int key) => Canonical(key);
+    }
+
+    [Test]
     public async Task BinaryHashRebuildFailure_ObservesWorkersAndReleasesEveryOwner()
     {
         const int count = 9;

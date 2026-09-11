@@ -41,7 +41,7 @@ COMMENT = re.compile(r'//[^\n]*|/\*.*?\*/', re.S)
 # finishes in roughly 25 minutes.
 SENTINELS = ('AccumulatorAppendBenchmarks', 'ConsumerHotPathBenchmarks',
              'FetchResponseParsingBenchmarks', 'ProduceResponseParsingBenchmarks')
-KEY_DISPATCH_BENCHMARKS = ('PartitionMessageKeyBenchmarks', 'BinaryKeyDispatchBenchmarks',
+KEY_DISPATCH_BENCHMARKS = ('PartitionMessageKeyBenchmarks', 'CustomKeyOrderedDispatchBenchmarks', 'BinaryKeyDispatchBenchmarks',
                            'DistinctBinaryKeyDispatchBenchmarks', 'SharedSuffixBinaryKeyDispatchBenchmarks')
 COMPONENTS = {
     'src/Dekaf/Consumer/KeyOrderedPartitionDispatcher': KEY_DISPATCH_BENCHMARKS,
