@@ -295,6 +295,53 @@ public sealed class ShareConsumeBatchTests
     }
 
     [Test]
+    [Arguments(false, false)]
+    [Arguments(true, false)]
+    [Arguments(false, true)]
+    [Arguments(true, true)]
+    public async Task Parser_PreparationResumesAcrossAcquisitionGapsAndTruncatedTail(
+        bool prepareKey, bool truncateTail)
+    {
+        var cold = new ColdDeserializer();
+        var synchronous = new CountingDeserializer();
+        await using var consumer = CreateConsumer(ShareAcknowledgementMode.Explicit,
+            prepareKey ? cold : synchronous, prepareKey ? synchronous : cold);
+        using var encoded = CreateSource(5);
+        var raw = encoded.GetUnparsedRecordData();
+        if (truncateTail)
+            raw = raw[..^3];
+        ShareFetchAcquiredRecords[] acquired =
+        [
+            new() { FirstOffset = 101, LastOffset = 101, DeliveryCount = 2 },
+            new() { FirstOffset = 103, LastOffset = 103, DeliveryCount = 3 }
+        ];
+
+        using var batch = await consumer.ParseRecordBatchAsync(
+            new TopicPartition("batch", 0), WrapRawRecords(raw, 5), acquired, 5, default);
+
+        await Assert.That(batch.Count).IsEqualTo(2);
+        await Assert.That(cold.Preparations).IsEqualTo(2);
+        await Assert.That(synchronous.Calls).IsEqualTo(2);
+        var index = 0;
+        foreach (var record in batch)
+        {
+            var expectedKey = 1 + index * 2;
+            await Assert.That(record.Offset).IsEqualTo(100 + expectedKey);
+            await Assert.That(record.Key).IsEqualTo(expectedKey);
+            await Assert.That(record.Value).IsEqualTo(expectedKey + 1);
+            await Assert.That(record.DeliveryCount).IsEqualTo(index + 2);
+            await Assert.That(record.Headers.Count).IsEqualTo(1);
+            var headers = record.Headers.GetEnumerator();
+            await Assert.That(headers.MoveNext()).IsTrue();
+            await Assert.That(headers.Current.KeyUtf8.Span.SequenceEqual("kind"u8)).IsTrue();
+            await Assert.That(headers.Current.Value.Span.SequenceEqual("test"u8)).IsTrue();
+            batch.Acknowledge(record);
+            index++;
+        }
+        await Assert.That(index).IsEqualTo(2);
+    }
+
+    [Test]
     public async Task Tracker_CloseReleasesOnlyDeliveredImplicitRecords()
     {
         await using var consumer = CreateConsumer(ShareAcknowledgementMode.Implicit);

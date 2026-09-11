@@ -369,7 +369,9 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
         where TRecordTelemetry : struct
     {
         var data = source.GetUnparsedRecordData();
-        while (state.ByteOffset < data.Length && storage.Count < capacity
+        var segmentOffset = state.ByteOffset;
+        var reader = new KafkaProtocolReader(data[segmentOffset..]);
+        while (!reader.End && storage.Count < capacity
             && state.ParsedCount < source.UnparsedLazyRecordCount)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -377,7 +379,10 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
             try
             {
                 var startOffset = state.ByteOffset;
-                raw = ReadBorrowedRecord(data, ref state.ByteOffset);
+                raw = ShareBatchRecordReader.Read(ref reader);
+                // Commit only complete records. A cold preparer resumes here with a new
+                // reader; a truncated tail is still classified from the record's start.
+                state.ByteOffset = segmentOffset + checked((int)reader.Consumed);
                 if (typeof(TRecordTelemetry) == typeof(RecordTelemetryEnabled))
                     state.CurrentRecordBytes = state.ByteOffset - startOffset;
             }
@@ -477,14 +482,6 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
         internal SerializationContext Context = context;
         internal TKey? Key = key;
         internal readonly int DeliveryCount = deliveryCount;
-    }
-
-    private static ShareBatchRecordData ReadBorrowedRecord(ReadOnlyMemory<byte> data, ref int byteOffset)
-    {
-        var reader = new KafkaProtocolReader(data[byteOffset..]);
-        var record = ShareBatchRecordReader.Read(ref reader);
-        byteOffset += checked((int)reader.Consumed);
-        return record;
     }
 
     private RecordHeaderRoutingLookup PrepareBatchHeaderRouting(
