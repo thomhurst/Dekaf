@@ -5,6 +5,125 @@ namespace Dekaf.Tests.Unit.ShareConsumer;
 public sealed class ShareAcknowledgedOffsetsTests
 {
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task OffsetView_FirstAccessDoesNotAllocate(bool sparse)
+    {
+        var types = new byte[64];
+        long expectedSum = 0;
+        for (var index = 0; index < types.Length; index++)
+        {
+            types[index] = sparse && index % 2 != 0 ? (byte)0 : (byte)1;
+            if (types[index] != 0)
+                expectedSum += 10 + index;
+        }
+        List<AcknowledgementBatchData> batches = [new(10, 73, types)];
+        var destination = new long[64];
+
+        // Construct this view inside the measured region, without warming an index or cursor.
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        var offsets = new ShareAcknowledgedOffsets(batches);
+        long sum = 0;
+        for (var index = 0; index < offsets.Length; index++)
+            sum += offsets[index];
+        foreach (var offset in offsets)
+            sum += offset;
+        offsets.CopyTo(destination);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        await Assert.That(allocated).IsEqualTo(0);
+        await Assert.That(sum).IsEqualTo(expectedSum * 2);
+    }
+
+    [Test]
+    [Arguments(0)]
+    [Arguments(1)]
+    [Arguments(7)]
+    [Arguments(8)]
+    [Arguments(9)]
+    [Arguments(15)]
+    [Arguments(16)]
+    [Arguments(17)]
+    [Arguments(31)]
+    [Arguments(32)]
+    [Arguments(33)]
+    [Arguments(63)]
+    [Arguments(64)]
+    [Arguments(65)]
+    [Arguments(127)]
+    [Arguments(128)]
+    [Arguments(129)]
+    [Arguments(255)]
+    [Arguments(256)]
+    [Arguments(257)]
+    [Arguments(511)]
+    [Arguments(512)]
+    [Arguments(513)]
+    [Arguments(1024)]
+    [Arguments(1025)]
+    public async Task OffsetView_PreservesSparseAccessOrdersAndCopiedViews(int length)
+    {
+        // Include unknown dispositions and signed-byte boundaries: only Gap is excluded.
+        byte[] dispositions = [1, 2, 3, 127, 128, 255];
+        var random = new Random(3261 + length);
+        foreach (var gapPercent in new[] { 0, 1, 50, 99, 100 })
+        {
+            var batches = new List<AcknowledgementBatchData>();
+            var expected = new List<long>();
+            for (var batchIndex = 0; batchIndex < 4; batchIndex++)
+            {
+                var types = new byte[length];
+                var firstOffset = 10L + batchIndex * (length + 13L);
+                for (var index = 0; index < types.Length; index++)
+                {
+                    types[index] = random.Next(100) < gapPercent
+                        ? (byte)0
+                        : dispositions[random.Next(dispositions.Length)];
+                    if (types[index] != 0)
+                        expected.Add(firstOffset + index);
+                }
+                batches.Add(new AcknowledgementBatchData(firstOffset, firstOffset + length - 1, types));
+                // Empty and gap-only batches must not change logical indices in subsequent batches.
+                batches.Add(new AcknowledgementBatchData(firstOffset + length, firstOffset + length - 1, []));
+                batches.Add(new AcknowledgementBatchData(firstOffset + length, firstOffset + length + 2, [0, 0, 0]));
+            }
+
+            var offsets = new ShareAcknowledgedOffsets(batches);
+            var retainedCopy = offsets;
+            var result = new ShareAcknowledgementCommitResult(default, offsets, null);
+            await Assert.That(offsets.Length).IsEqualTo(expected.Count);
+
+            var ascending = new long[expected.Count];
+            var descending = new long[expected.Count];
+            var shuffled = new long[expected.Count];
+            var order = Enumerable.Range(0, expected.Count).ToArray();
+            random.Shuffle(order);
+            for (var index = 0; index < expected.Count; index++)
+            {
+                ascending[index] = offsets[index];
+                var reverseIndex = expected.Count - index - 1;
+                descending[reverseIndex] = retainedCopy[reverseIndex];
+                shuffled[order[index]] = result.Offsets[order[index]];
+            }
+            await Assert.That(ascending.SequenceEqual(expected)).IsTrue();
+            await Assert.That(descending.SequenceEqual(expected)).IsTrue();
+            await Assert.That(shuffled.SequenceEqual(expected)).IsTrue();
+
+            var copied = new long[expected.Count + 1];
+            copied[^1] = -1;
+            retainedCopy.CopyTo(copied);
+            await Assert.That(copied.Take(expected.Count).SequenceEqual(expected)).IsTrue();
+            await Assert.That(copied[^1]).IsEqualTo(-1);
+            var enumerated = new List<long>();
+            foreach (var offset in result.Offsets)
+                enumerated.Add(offset);
+            await Assert.That(enumerated.SequenceEqual(expected)).IsTrue();
+            await Assert.That(() => offsets[-1]).Throws<ArgumentOutOfRangeException>();
+            await Assert.That(() => offsets[expected.Count]).Throws<ArgumentOutOfRangeException>();
+        }
+    }
+
+    [Test]
     public async Task OffsetView_SkipsGapsAcrossEveryAccessPath()
     {
         var offsets = new ShareAcknowledgedOffsets(
