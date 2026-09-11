@@ -24,7 +24,9 @@ public class ShareConsumerParsingBenchmarks
     private KafkaShareConsumer<int, int> _synchronousConsumer = null!;
     private KafkaShareConsumer<int, int> _preparedConsumer = null!;
     private KafkaShareConsumer<int, int> _coldConsumer = null!;
+    private KafkaShareConsumer<int, int> _coldKeyConsumer = null!;
     private readonly ColdInt32Deserializer _coldDeserializer = new();
+    private readonly ColdInt32Deserializer _coldKeyDeserializer = new();
     private Func<TopicInfo, ShareFetchResponsePartition, int, List<ShareConsumeResult<int, int>>> _parse = null!;
     private readonly TopicInfo _topic = new() { Name = "share-benchmark", Partitions = [] };
     private ShareFetchResponsePartition _partition = null!;
@@ -99,6 +101,7 @@ public class ShareConsumerParsingBenchmarks
         var prepared = new WarmInt32Deserializer();
         _preparedConsumer = new KafkaShareConsumer<int, int>(options, prepared, prepared);
         _coldConsumer = new KafkaShareConsumer<int, int>(options, Serializers.Int32, _coldDeserializer);
+        _coldKeyConsumer = new KafkaShareConsumer<int, int>(options, _coldKeyDeserializer, Serializers.Int32);
         _parse = typeof(KafkaShareConsumer<int, int>)
             .GetMethod("ParsePartitionRecords", BindingFlags.Instance | BindingFlags.NonPublic)!
             .CreateDelegate<Func<TopicInfo, ShareFetchResponsePartition, int, List<ShareConsumeResult<int, int>>>>(
@@ -135,6 +138,8 @@ public class ShareConsumerParsingBenchmarks
         await ValidateBorrowedBatch(_preparedConsumer);
         _coldDeserializer.Reset();
         await ValidateBorrowedBatch(_coldConsumer);
+        _coldKeyDeserializer.Reset();
+        await ValidateBorrowedBatch(_coldKeyConsumer);
         await ValidateColdPreparedBatch();
     }
 
@@ -144,6 +149,7 @@ public class ShareConsumerParsingBenchmarks
         await _synchronousConsumer.DisposeAsync();
         await _preparedConsumer.DisposeAsync();
         await _coldConsumer.DisposeAsync();
+        await _coldKeyConsumer.DisposeAsync();
     }
 
     [Benchmark]
@@ -190,6 +196,12 @@ public class ShareConsumerParsingBenchmarks
     {
         _coldDeserializer.Reset();
         return ParseBorrowedBatch(_coldConsumer);
+    }
+
+    public ValueTask<long> ParseBorrowedColdKeyPreparedBatch()
+    {
+        _coldKeyDeserializer.Reset();
+        return ParseBorrowedBatch(_coldKeyConsumer);
     }
 
     [Benchmark]

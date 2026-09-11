@@ -1,4 +1,6 @@
 using Dekaf.Admin;
+using Dekaf.Producer;
+using Dekaf.Serialization;
 using Dekaf.ShareConsumer;
 
 namespace Dekaf.Tests.Integration;
@@ -8,6 +10,68 @@ namespace Dekaf.Tests.Integration;
 [NotInParallel("ShareConsumerKafka42")]
 public class ShareConsumerBatchTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task ColdPreparation_ResumesWithinProducerBatch(bool prepareKey)
+    {
+        const int messageCount = 16;
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 1);
+        var group = $"share-batch-preparation-{Guid.NewGuid():N}";
+        await ConfigureEarliestAsync(group);
+        await using var producer = await Kafka.CreateProducer<int, int>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLinger(TimeSpan.FromMinutes(1)).WithBatchSize(1024 * 1024).BuildAsync();
+        for (var index = 0; index < messageCount; index++)
+            await producer.FireAsync(new ProducerMessage<int, int>
+            {
+                Topic = topic, Partition = 0, Key = index, Value = index,
+                Headers = Headers.Create("identity", new byte[] { (byte)index })
+            });
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await producer.FlushAsync(timeout.Token);
+
+        var preparer = new MidBatchPreparer();
+        await using var consumer = await Kafka.CreateShareConsumer<int, int>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers).WithGroupId(group)
+            .WithKeyDeserializer(prepareKey ? preparer : Serializers.Int32)
+            .WithValueDeserializer(prepareKey ? Serializers.Int32 : preparer)
+            .WithAcknowledgementMode(ShareAcknowledgementMode.Explicit)
+            .WithMaxPollRecords(messageCount).BuildAsync(timeout.Token);
+        consumer.Subscribe(topic);
+        var received = 0;
+        var largestBatch = 0;
+        await foreach (var batch in consumer.PollBatchesAsync(timeout.Token))
+        {
+            largestBatch = Math.Max(largestBatch, batch.Count);
+            foreach (var record in batch)
+            {
+                await Assert.That(record.Key).IsEqualTo(received);
+                await Assert.That(record.Value).IsEqualTo(received);
+                var identityHeaders = 0;
+                foreach (var header in record.Headers)
+                {
+                    // The producer may also propagate the test runner's trace context.
+                    if (!header.KeyUtf8.Span.SequenceEqual("identity"u8))
+                        continue;
+                    await Assert.That(header.Value.Length).IsEqualTo(1);
+                    await Assert.That(header.Value.Span[0]).IsEqualTo((byte)received);
+                    identityHeaders++;
+                }
+                await Assert.That(identityHeaders).IsEqualTo(1);
+                batch.Acknowledge(record);
+                received++;
+            }
+            await consumer.CommitAsync(timeout.Token);
+            if (received == messageCount)
+                break;
+        }
+        await Assert.That(received).IsEqualTo(messageCount);
+        await Assert.That(largestBatch).IsEqualTo(messageCount);
+        await Assert.That(preparer.Preparations).IsEqualTo(1);
+        await consumer.CloseAsync(timeout.Token);
+    }
+
     [Test]
     public async Task Unsubscribe_RedeliversUnparsedProducerBatchesBeforeLockExpiry()
     {
@@ -239,6 +303,28 @@ public class ShareConsumerBatchTests(KafkaTestContainer kafka) : KafkaIntegratio
         var expected = terminal ? producedValues.Where(value => value != firstValue) : producedValues;
         await Assert.That(values).IsEquivalentTo(expected);
         await second.CommitAsync(timeout.Token);
+    }
+
+    private sealed class MidBatchPreparer : IDeserializer<int>, IAsyncDeserializerPreparer<int>
+    {
+        internal int Preparations;
+
+        public int Deserialize(ReadOnlyMemory<byte> data, SerializationContext context) =>
+            throw new InvalidOperationException("Use the preparation-aware path.");
+
+        public bool TryDeserialize(ReadOnlyMemory<byte> data, SerializationContext context, out int value)
+        {
+            value = Serializers.Int32.Deserialize(data, context);
+            return value != 3 || Preparations != 0;
+        }
+
+        public async ValueTask PrepareAsync(ReadOnlyMemory<byte> data, SerializationContext context,
+            CancellationToken cancellationToken = default)
+        {
+            await Task.Yield();
+            cancellationToken.ThrowIfCancellationRequested();
+            Preparations++;
+        }
     }
 
     private async Task ConfigureEarliestAsync(string group)

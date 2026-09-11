@@ -30,6 +30,11 @@ public class ShareConsumerBorrowedParsingBenchmarks
     [Benchmark]
     public ValueTask<long> ParseBorrowedColdPreparedBatch() => _parsing.ParseBorrowedColdPreparedBatch();
 
+    // A key miss resumes before value deserialization; a value miss retains the key.
+    // Both paths must resume the record reader at the next complete record.
+    [Benchmark]
+    public ValueTask<long> ParseBorrowedColdKeyPreparedBatch() => _parsing.ParseBorrowedColdKeyPreparedBatch();
+
     [GlobalCleanup]
     public ValueTask Cleanup() => _parsing.Cleanup();
 }
