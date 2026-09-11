@@ -255,6 +255,16 @@ Common builder options beyond the connection/TLS/SASL settings shared with other
 | `WithSessionTimeoutMs` | 45000 | Coordinator removes the member without a heartbeat within this window |
 | `WithHeartbeatIntervalMs` | 3000 | Initial heartbeat interval (broker may adjust) |
 
+## Built-in client telemetry
+
+Share consumers publish the KIP-932 client metrics under `org.apache.kafka.consumer.share.` through [broker-side telemetry](../observability#broker-side-telemetry-kip-714). The broker selects metric prefixes. Recording starts when a supported broker subscribes to those metrics; application-only subscriptions leave the built-in recorder inactive.
+
+The built-in metrics cover poll intervals and idle ratio; coordinator heartbeat latency, activity and rebalances; fetch latency, throttling, request counts, serialized bytes and records; and acknowledgement sends and errors. Totals use monotonic OTLP sums with the broker's requested cumulative or delta temporality. Rates measure activity since the previous export of that rate, while averages and maxima retain their observation history. Record and byte averages divide by requests observed while record metrics were selected; fetch-only subscription periods do not dilute those averages. Age gauges report `-1` before the first observed poll or heartbeat. Metric points have no partition or group attributes; the broker associates the push with its assigned client instance identity.
+
+For streaming polling, a poll is one acquisition round. Time between rounds includes application processing; the idle ratio includes coordination, fetching and record preparation, excluding time spent in application code between yields. Record and byte totals count successfully deserialized acquired records, including the prepared portion of a partially consumed batch. A failed parsing window contributes no records or bytes; partial preparation results remain local until the partition parser succeeds. Bytes include the encoded record and its length prefix, excluding record-batch headers and unacquired offsets. Local renewal replay does not increment fetched totals. Acknowledgement totals count submitted records per request attempt, excluding gap placeholders; retry attempts and failed partitions contribute their own send/error counts.
+
+Measurements aggregate per request, partition parsing window or record batch. The recorder keeps a reusable sample per broker and creates exported metric objects only at telemetry collection. Existing classic polling allocations still apply; enabling telemetry does not make the classic API allocation-free.
+
 ## Application telemetry
 
 Share consumers can publish application counters and gauges through [broker-side telemetry](../observability#broker-side-telemetry-kip-714). Register metrics on the builder or on a running consumer:

@@ -1,3 +1,4 @@
+using Dekaf.Admin;
 using Dekaf.Consumer;
 using Dekaf.Producer;
 using Dekaf.Protocol.Messages;
@@ -22,6 +23,19 @@ public sealed class ExactlyOnceCrashAtomicityTests(KafkaTestContainer kafka) : T
     {
         var inputTopic = await KafkaContainer.CreateTestTopicAsync();
         var outputTopic = await KafkaContainer.CreateTestTopicAsync();
+        // The shared broker deletes logs after 30 seconds. Crash/recovery and
+        // coordinator startup can exceed that, so preserve both sides of the
+        // atomicity assertion for longer than this test's maximum lifetime.
+        await using (var admin = KafkaContainer.CreateAdminClient())
+        {
+            await admin.IncrementalAlterConfigsAsync(
+                new Dictionary<ConfigResource, IReadOnlyList<ConfigAlter>>
+                {
+                    [ConfigResource.Topic(inputTopic)] = [ConfigAlter.Set("retention.ms", "600000")],
+                    [ConfigResource.Topic(outputTopic)] = [ConfigAlter.Set("retention.ms", "600000")]
+                },
+                cancellationToken: cancellationToken);
+        }
         var runId = Guid.NewGuid().ToString("N");
         var consumerGroupId = $"eos-crash-group-{runId}";
         var transactionId = $"eos-crash-txn-{runId}";
@@ -171,6 +185,14 @@ public sealed class ExactlyOnceCrashAtomicityTests(KafkaTestContainer kafka) : T
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync(cancellationToken);
 
+        var watermarks = await consumer.QueryWatermarkOffsetsAsync(
+            new TopicPartition(outputTopic, 0), cancellationToken: cancellationToken);
+        if (watermarks.Low != 0)
+        {
+            throw new InvalidOperationException(
+                $"EOS output was truncated before validation: topic={outputTopic}, " +
+                $"log start={watermarks.Low}, log end={watermarks.High}.");
+        }
         consumer.Subscribe(outputTopic);
         var messages = new List<ConsumeResult<string, string>>();
 

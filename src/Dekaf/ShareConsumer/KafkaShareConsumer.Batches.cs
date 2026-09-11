@@ -5,6 +5,7 @@ using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
 using Dekaf.Protocol.Records;
 using Dekaf.Serialization;
+using Dekaf.Telemetry;
 
 namespace Dekaf.ShareConsumer;
 
@@ -50,9 +51,17 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
         {
             if (_subscriptionSnapshot.Count == 0 || Volatile.Read(ref _closed) != 0 || Volatile.Read(ref _disposed) != 0)
                 yield break;
-            // Ensure we're part of the share group
-            await _coordinator.EnsureActiveGroupAsync(cancellationToken)
-                .ConfigureAwait(false);
+            ShareMetrics?.PollStarted();
+            var coordinationStarted = ShareMetrics?.Timestamp(ShareConsumerTelemetryMetrics.Groups.Poll) ?? -1;
+            try
+            {
+                await _coordinator.EnsureActiveGroupAsync(cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            finally
+            {
+                ShareMetrics?.PollWaitCompleted(coordinationStarted);
+            }
             if (_subscriptionSnapshot.Count == 0)
                 yield break;
             _assignmentSnapshot = _coordinator.Assignment;
@@ -61,7 +70,15 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
             acknowledgements.RemoveOutsideAssignment(assignment);
             if (assignment.Count == 0)
             {
-                await WaitForAssignmentChangeAsync(assignment, cancellationToken).ConfigureAwait(false);
+                var idleStarted = ShareMetrics?.Timestamp(ShareConsumerTelemetryMetrics.Groups.Poll) ?? -1;
+                try
+                {
+                    await WaitForAssignmentChangeAsync(assignment, cancellationToken).ConfigureAwait(false);
+                }
+                finally
+                {
+                    ShareMetrics?.PollWaitCompleted(idleStarted);
+                }
                 continue;
             }
 
@@ -101,6 +118,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
                 continue;
             }
 
+            var fetchWaitStarted = ShareMetrics?.Timestamp(ShareConsumerTelemetryMetrics.Groups.Poll) ?? -1;
             var fetchTasks = StartPollFetch(assignment, cancellationToken,
                 out var pendingAcks, out var sentAcknowledgementPartitionCount);
             // Keep response frames valid while parsing producer batches. Parsed
@@ -119,18 +137,31 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
                 InvokeAcknowledgementCommitCallback(pendingAcks, ex);
                 throw;
             }
+            finally
+            {
+                ShareMetrics?.PollWaitCompleted(fetchWaitStarted);
+            }
 
             CompletePollFetch(fetchResults, pendingAcks, sentAcknowledgementPartitionCount);
             if (fetchResults.Length == 0)
             {
                 // No broker request provided long-poll back-pressure. Refresh missing
                 // leaders and use the configured retry delay only if none is available.
-                await PrepareMissingLeaderRetryAsync(assignment, cancellationToken).ConfigureAwait(false);
+                fetchWaitStarted = ShareMetrics?.Timestamp(ShareConsumerTelemetryMetrics.Groups.Poll) ?? -1;
+                try
+                {
+                    await PrepareMissingLeaderRetryAsync(assignment, cancellationToken).ConfigureAwait(false);
+                }
+                finally
+                {
+                    ShareMetrics?.PollWaitCompleted(fetchWaitStarted);
+                }
                 continue;
             }
 
             foreach (var result in fetchResults)
             {
+                _activeTelemetryFetch = ShareMetrics?.GetFetchSample(result.BrokerId);
                 var response = result.Response;
                 if (response is null || response.ErrorCode != ErrorCode.None)
                     continue;
@@ -231,7 +262,13 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
         CancellationToken cancellationToken)
     {
         ShareBatchStorage<TKey, TValue>? storage = null;
-        var state = new BorrowedParserState { PreviousOffsetDelta = -1, AcquiredIndex = acquiredIndex };
+        var parsingStarted = ShareMetrics?.Timestamp(ShareConsumerTelemetryMetrics.Groups.Poll) ?? -1;
+        var telemetryFetch = _activeTelemetryFetch;
+        var state = new BorrowedParserState
+        {
+            PreviousOffsetDelta = -1, AcquiredIndex = acquiredIndex,
+            MeasureBytes = telemetryFetch is not null
+        };
         try
         {
             var data = source.GetUnparsedRecordData();
@@ -287,8 +324,13 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
                 {
                     Raw = pending.Raw, Key = pending.Key, Value = value, DeliveryCount = pending.DeliveryCount
                 };
+                if (telemetryFetch is not null)
+                    state.CompletedBytes += state.CurrentRecordBytes;
             }
-            return new ShareConsumeBatch<TKey, TValue>(storage);
+            var batch = new ShareConsumeBatch<TKey, TValue>(storage);
+            if (telemetryFetch is not null)
+                ShareMetrics!.Parsed(telemetryFetch, state.CompletedBytes, storage.Count);
+            return batch;
         }
         catch
         {
@@ -300,6 +342,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
         }
         finally
         {
+            ShareMetrics?.PollWaitCompleted(parsingStarted);
             if (state.Headers is not null)
                 ArrayPool<Header>.Shared.Return(state.Headers, clearArray: true);
         }
@@ -311,7 +354,19 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
         TopicPartition partition, RecordBatch source, ShareBatchStorage<TKey, TValue> storage,
         IReadOnlyList<ShareFetchAcquiredRecords> acquiredRecords, int capacity,
         CancellationToken cancellationToken, ref BorrowedParserState state,
+        out BorrowedRecordPreparation pending) =>
+        state.MeasureBytes
+            ? ParseBorrowedRecordsCore<RecordTelemetryEnabled>(partition, source, storage, acquiredRecords,
+                capacity, cancellationToken, ref state, out pending)
+            : ParseBorrowedRecordsCore<RecordTelemetryDisabled>(partition, source, storage, acquiredRecords,
+                capacity, cancellationToken, ref state, out pending);
+
+    private bool ParseBorrowedRecordsCore<TRecordTelemetry>(
+        TopicPartition partition, RecordBatch source, ShareBatchStorage<TKey, TValue> storage,
+        IReadOnlyList<ShareFetchAcquiredRecords> acquiredRecords, int capacity,
+        CancellationToken cancellationToken, ref BorrowedParserState state,
         out BorrowedRecordPreparation pending)
+        where TRecordTelemetry : struct
     {
         var data = source.GetUnparsedRecordData();
         while (state.ByteOffset < data.Length && storage.Count < capacity
@@ -321,7 +376,10 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
             ShareBatchRecordData raw;
             try
             {
+                var startOffset = state.ByteOffset;
                 raw = ReadBorrowedRecord(data, ref state.ByteOffset);
+                if (typeof(TRecordTelemetry) == typeof(RecordTelemetryEnabled))
+                    state.CurrentRecordBytes = state.ByteOffset - startOffset;
             }
             catch (Exception exception) when (RecordBatch.IsTruncatedRecordTail(
                 exception, data[state.ByteOffset..], state.ParsedCount, source.UnparsedLazyRecordCount))
@@ -391,6 +449,8 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
             {
                 Raw = raw, Key = key, Value = value, DeliveryCount = deliveryCount
             };
+            if (typeof(TRecordTelemetry) == typeof(RecordTelemetryEnabled))
+                state.CompletedBytes += state.CurrentRecordBytes;
         }
         pending = default;
         return false;
@@ -398,6 +458,9 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
 
     private struct BorrowedParserState
     {
+        internal bool MeasureBytes;
+        internal int CurrentRecordBytes;
+        internal long CompletedBytes;
         internal int ByteOffset;
         internal int ParsedCount;
         internal int AcquiredIndex;
