@@ -82,7 +82,8 @@ public sealed partial class KafkaConnection :
     IKafkaConnectionStatusSource,
     IRetirableKafkaConnection,
     IKafkaPipelinedWriteCompletionConnection,
-    IKafkaRequestWriteObserverConnection
+    IKafkaRequestWriteObserverConnection,
+    IKafkaRequestCancellationConnection
 {
     private readonly string _host;
     private readonly int _port;
@@ -627,7 +628,13 @@ public sealed partial class KafkaConnection :
             cancellationToken,
             requestWriteStarted);
 
-    private async ValueTask<TResponse> SendAsyncCore<TRequest, TResponse>(
+    ValueTask<TResponse> IKafkaRequestCancellationConnection.SendWithResponseCancellationAsync<TRequest, TResponse>(
+        TRequest request, short apiVersion, KafkaRequestWriteContext context,
+        CancellationToken cancellationToken)
+        => SendAsyncCore<TRequest, TResponse, CancellationObservation>(request, apiVersion,
+            requireReady: true, new CancellationObservation(context), cancellationToken);
+
+    private ValueTask<TResponse> SendAsyncCore<TRequest, TResponse>(
         TRequest request,
         short apiVersion,
         bool requireReady,
@@ -635,6 +642,38 @@ public sealed partial class KafkaConnection :
         Action? requestWriteStarted = null)
         where TRequest : IKafkaRequest<TResponse>
         where TResponse : IKafkaResponse
+        => SendAsyncCore<TRequest, TResponse, WriteObservation>(request, apiVersion,
+            requireReady, new WriteObservation(requestWriteStarted), cancellationToken);
+
+    // Both observation structs contain one reference, preserving the ordinary async state's
+    // existing callback slot. Constrained calls avoid boxing and per-request observer objects.
+    private interface IRequestObservation
+    {
+        Action? WriteStartedCallback { get; }
+        CancellationToken AfterWriteStarts(CancellationToken cancellationToken);
+    }
+
+    private readonly struct WriteObservation(Action? callback) : IRequestObservation
+    {
+        public Action? WriteStartedCallback => callback;
+        public CancellationToken AfterWriteStarts(CancellationToken cancellationToken) => cancellationToken;
+    }
+
+    private readonly struct CancellationObservation(KafkaRequestWriteContext context) : IRequestObservation
+    {
+        public Action? WriteStartedCallback => context.WriteStartedCallback;
+        public CancellationToken AfterWriteStarts(CancellationToken cancellationToken) => context.ResponseCancellationToken;
+    }
+
+    private async ValueTask<TResponse> SendAsyncCore<TRequest, TResponse, TObservation>(
+        TRequest request,
+        short apiVersion,
+        bool requireReady,
+        TObservation observation,
+        CancellationToken cancellationToken)
+        where TRequest : IKafkaRequest<TResponse>
+        where TResponse : IKafkaResponse
+        where TObservation : struct, IRequestObservation
     {
         if (Volatile.Read(ref _disposed) != 0)
             throw new ObjectDisposedException(nameof(KafkaConnection));
@@ -688,16 +727,19 @@ public sealed partial class KafkaConnection :
             // Write phase
             LogSendingRequest(KafkaMessageMetadata<TRequest, TResponse>.ApiKey, correlationId, apiVersion, _host, _port);
 
-            await PreSerializeAndWriteAsync<TRequest, TResponse>(
+            await PreSerializeAndWriteCoreAsync<TRequest, TResponse, TObservation>(
                     request,
                     correlationId,
                     apiVersion,
                     headerVersion,
-                    cancellationToken,
-                    requestWriteStarted: requestWriteStarted)
+                    callerOwnsTimeout: false,
+                    observation,
+                    cancellationToken)
                 .ConfigureAwait(false);
 
             LogRequestSentWaitingForResponse(correlationId);
+
+            cancellationToken = observation.AfterWriteStarts(cancellationToken);
 
             // Response phase: await response with timeout and parse
             var response = await AwaitAndParseResponseAsync<TRequest, TResponse>(
@@ -1796,7 +1838,7 @@ public sealed partial class KafkaConnection :
     /// the pre-serialized bytes and flush. This minimizes lock hold time by keeping
     /// CPU-bound serialization out of the critical section.
     /// </summary>
-    private async ValueTask PreSerializeAndWriteAsync<TRequest, TResponse>(
+    private ValueTask PreSerializeAndWriteAsync<TRequest, TResponse>(
         TRequest request,
         int correlationId,
         short apiVersion,
@@ -1806,6 +1848,21 @@ public sealed partial class KafkaConnection :
         Action? requestWriteStarted = null)
         where TRequest : IKafkaRequest<TResponse>
         where TResponse : IKafkaResponse
+        => PreSerializeAndWriteCoreAsync<TRequest, TResponse, WriteObservation>(request,
+            correlationId, apiVersion, headerVersion, callerOwnsTimeout,
+            new WriteObservation(requestWriteStarted), cancellationToken);
+
+    private async ValueTask PreSerializeAndWriteCoreAsync<TRequest, TResponse, TObservation>(
+        TRequest request,
+        int correlationId,
+        short apiVersion,
+        short headerVersion,
+        bool callerOwnsTimeout,
+        TObservation observation,
+        CancellationToken cancellationToken)
+        where TRequest : IKafkaRequest<TResponse>
+        where TResponse : IKafkaResponse
+        where TObservation : struct, IRequestObservation
     {
         if (!_isTls
             && _socket is not null
@@ -1841,12 +1898,12 @@ public sealed partial class KafkaConnection :
                 encodedRecords,
                 suffixOffset,
                 suffixLength,
-                requestWriteStarted);
+                observation.WriteStartedCallback);
             await AwaitBorrowedFrameWriteAsync(
                     segmentedWriteTask,
                     correlationId,
                     callerOwnsTimeout,
-                    cancellationToken)
+                    observation.AfterWriteStarts(cancellationToken))
                 .ConfigureAwait(false);
             return;
         }
@@ -1872,8 +1929,9 @@ public sealed partial class KafkaConnection :
             serializedArray,
             serializedLength,
             clearSerializedArray,
-            requestWriteStarted);
-        await AwaitFrameWriteAsync(writeTask, correlationId, callerOwnsTimeout, cancellationToken).ConfigureAwait(false);
+            observation.WriteStartedCallback);
+        await AwaitFrameWriteAsync(writeTask, correlationId, callerOwnsTimeout,
+            observation.AfterWriteStarts(cancellationToken)).ConfigureAwait(false);
     }
 
     internal bool TryPreSerializeSingleBatchProduceRequest(

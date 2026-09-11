@@ -22,7 +22,7 @@ namespace Dekaf.Tests.Unit.Networking;
 /// Tests for KafkaConnection, particularly the IsConnected fix
 /// that ensures disposed connections report as disconnected.
 /// </summary>
-public sealed class KafkaConnectionTests
+public sealed partial class KafkaConnectionTests
 {
     [Test]
     public async Task IsConnected_BeforeConnect_ReturnsFalse()

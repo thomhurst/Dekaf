@@ -120,12 +120,13 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
             ((AsyncAutoResetSignal)state!).Signal(), _operationCompleted);
         ShareConsumeResult<TKey, TValue>? current = null;
         var initialized = false;
+        Exception? executionFailure = null;
         try
         {
             if (_consumer is not IShareConsumerConfiguration { AcknowledgementMode: ShareAcknowledgementMode.Explicit })
                 throw new InvalidOperationException("Hosted share consumers require verified Explicit acknowledgement mode. Wrappers must implement IShareConsumerConfiguration.");
             if (_consumer is IHostedShareConsumer hostedConsumer)
-                hostedConsumer.ObserveAcknowledgements(ObserveAcknowledgements);
+                hostedConsumer.ObserveAcknowledgements(ObserveAcknowledgements, _shutdownCancellation.Token);
             if (_deadLetterOptions is not null)
             {
                 if (!_deadLetterOptions.AwaitDelivery)
@@ -226,12 +227,14 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
         {
             if (_acknowledgementFailure is { } failure)
             {
+                executionFailure = failure;
                 await OnErrorAsync(failure, current, CancellationToken.None).ConfigureAwait(false);
                 ExceptionDispatchInfo.Capture(failure).Throw();
             }
         }
         catch (Exception exception)
         {
+            executionFailure = exception;
             await OnErrorAsync(exception, current, CancellationToken.None).ConfigureAwait(false);
             throw;
         }
@@ -259,6 +262,7 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
                 }
                 catch (Exception exception)
                 {
+                    _acknowledgementFailure ??= exception;
                     LogFailure(exception, null);
                 }
                 try
@@ -281,6 +285,11 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
                     LogFailure(exception, null);
                 }
             }
+            if (executionFailure is null && _acknowledgementFailure is { } finalAcknowledgementFailure)
+            {
+                await OnErrorAsync(finalAcknowledgementFailure, current, CancellationToken.None).ConfigureAwait(false);
+                ExceptionDispatchInfo.Capture(finalAcknowledgementFailure).Throw();
+            }
         }
     }
 
@@ -290,8 +299,6 @@ public abstract partial class KafkaShareConsumerService<TKey, TValue> : Backgrou
         {
             if (result.Exception is { } exception)
             {
-                if (exception is OperationCanceledException && _pollCancellation.IsCancellationRequested)
-                    continue;
                 _acknowledgementFailure ??= exception;
                 _pollCancellation.Cancel();
             }

@@ -1085,7 +1085,8 @@ public sealed partial class ShareConsumerRenewalTests
         int maxPollRecords = 500,
         CapturingConnection? secondConnection = null,
         ShareAcknowledgementCommitCallback? acknowledgementCommitCallback = null,
-        IDeserializer<string>? valueDeserializer = null)
+        IDeserializer<string>? valueDeserializer = null,
+        Func<CancellationToken, ValueTask<IKafkaConnection>>? leaseHandler = null)
     {
         var options = new ShareConsumerOptions
         {
@@ -1097,6 +1098,9 @@ public sealed partial class ShareConsumerRenewalTests
         };
         var pool = Substitute.For<IConnectionPool>();
         pool.GetConnectionAsync(1, Arg.Any<CancellationToken>()).Returns(connection);
+        if (leaseHandler is not null)
+            pool.GetConnectionAsync(1, Arg.Any<CancellationToken>())
+                .Returns(call => leaseHandler(call.Arg<CancellationToken>()));
         if (secondConnection is not null)
             pool.GetConnectionAsync(2, Arg.Any<CancellationToken>()).Returns(secondConnection);
         var metadataManager = new MetadataManager(pool, options.BootstrapServers);
@@ -1457,7 +1461,8 @@ public sealed partial class ShareConsumerRenewalTests
         bool includeShareAcknowledge = false,
         bool supportShareFetch = false) :
         IKafkaConnection,
-        IKafkaCapabilityProvider
+        IKafkaCapabilityProvider,
+        IKafkaRequestCancellationConnection
     {
         public int BrokerId => brokerId;
         public string Host => "localhost";
@@ -1490,6 +1495,22 @@ public sealed partial class ShareConsumerRenewalTests
         internal Exception? ShareFetchException { get; init; }
         internal Action? OnSend { get; init; }
         internal TaskCompletionSource<ShareAcknowledgeResponse>? DelayedFinalAcknowledgement { get; init; }
+        internal Func<CancellationToken, ValueTask>? BeforeWrite { get; init; }
+        internal Func<ShareFetchRequest, CancellationToken, ValueTask<ShareFetchResponse>>? ShareFetchHandler { get; init; }
+        internal Func<ShareAcknowledgeRequest, CancellationToken, ValueTask<ShareAcknowledgeResponse>>? ShareAcknowledgeHandler { get; init; }
+
+        public async ValueTask<TResponse> SendWithResponseCancellationAsync<TRequest, TResponse>(
+            TRequest request, short apiVersion, KafkaRequestWriteContext context,
+            CancellationToken cancellationToken)
+            where TRequest : IKafkaRequest<TResponse>
+            where TResponse : IKafkaResponse
+        {
+            if (BeforeWrite is not null)
+                await BeforeWrite(cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            context.MarkWriteStarted();
+            return await SendAsync<TRequest, TResponse>(request, apiVersion, context.ResponseCancellationToken);
+        }
 
         public ValueTask<TResponse> SendAsync<TRequest, TResponse>(
             TRequest request,
@@ -1500,6 +1521,19 @@ public sealed partial class ShareConsumerRenewalTests
         {
             SendCount++;
             LastApiVersion = apiVersion;
+            if (request is ShareFetchRequest fetchRequest && ShareFetchHandler is not null)
+            {
+                ShareFetchRequest = fetchRequest;
+                OnSend?.Invoke();
+                return AwaitFetchAsync<TResponse>(ShareFetchHandler(fetchRequest, cancellationToken));
+            }
+            if (request is ShareAcknowledgeRequest acknowledgeRequest && ShareAcknowledgeHandler is not null)
+            {
+                ShareAcknowledgeRequest = acknowledgeRequest;
+                ShareAcknowledgeRequests.Add(acknowledgeRequest);
+                OnSend?.Invoke();
+                return AwaitAcknowledgementAsync<TResponse>(ShareAcknowledgeHandler(acknowledgeRequest, cancellationToken));
+            }
             IKafkaResponse response = request switch
             {
                 ShareFetchRequest fetch => Capture(
@@ -1566,6 +1600,14 @@ public sealed partial class ShareConsumerRenewalTests
             static async Task<TResponse> AwaitResponseAsync(Task<ShareAcknowledgeResponse> pending)
                 => (TResponse)(IKafkaResponse)await pending;
         }
+
+        private static async ValueTask<TResponse> AwaitFetchAsync<TResponse>(ValueTask<ShareFetchResponse> response)
+            where TResponse : IKafkaResponse
+            => (TResponse)(IKafkaResponse)await response;
+
+        private static async ValueTask<TResponse> AwaitAcknowledgementAsync<TResponse>(ValueTask<ShareAcknowledgeResponse> response)
+            where TResponse : IKafkaResponse
+            => (TResponse)(IKafkaResponse)await response;
 
         private ShareFetchResponse Capture(
             ShareFetchRequest request,

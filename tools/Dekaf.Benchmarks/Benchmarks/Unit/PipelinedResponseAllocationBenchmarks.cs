@@ -2,6 +2,8 @@ using System.Buffers;
 using System.Buffers.Binary;
 using System.Net;
 using System.Net.Sockets;
+using System.Linq.Expressions;
+using System.Reflection;
 using BenchmarkDotNet.Attributes;
 using BenchmarkDotNet.Engines;
 using Dekaf.Networking;
@@ -24,6 +26,7 @@ public class PipelinedResponseAllocationBenchmarks
     private KafkaConnection _connection = null!;
     private CancellationTokenSource _serverCancellation = null!;
     private Task _serverTask = null!;
+    private Func<ApiVersionsRequest, short, CancellationToken, ValueTask<ApiVersionsResponse>> _sendObserved = null!;
 
     [GlobalSetup]
     public async Task Setup()
@@ -38,6 +41,43 @@ public class PipelinedResponseAllocationBenchmarks
         _serverCancellation = new CancellationTokenSource();
         _serverTask = RunServerAsync(_serverClient.GetStream(), _serverCancellation.Token);
         await connectTask.ConfigureAwait(false);
+        _sendObserved = CreateObservedSender();
+    }
+
+    private Func<ApiVersionsRequest, short, CancellationToken, ValueTask<ApiVersionsResponse>> CreateObservedSender()
+    {
+        // Bind outside measurement so the same fixture source builds against the baseline,
+        // whose ordinary SendAsync has one cancellation token for the whole request.
+        var assembly = typeof(KafkaConnection).Assembly;
+        var capability = assembly.GetType("Dekaf.Networking.IKafkaRequestCancellationConnection");
+        var contextType = assembly.GetType("Dekaf.Networking.KafkaRequestWriteContext");
+        if (capability is null || contextType is null)
+            return _connection.SendAsync<ApiVersionsRequest, ApiVersionsResponse>;
+        var context = Activator.CreateInstance(contextType, BindingFlags.Instance | BindingFlags.NonPublic,
+            binder: null, args: [_serverCancellation.Token], culture: null)!;
+        var method = capability.GetMethod("SendWithResponseCancellationAsync")!
+            .MakeGenericMethod(typeof(ApiVersionsRequest), typeof(ApiVersionsResponse));
+        var request = Expression.Parameter(typeof(ApiVersionsRequest));
+        var version = Expression.Parameter(typeof(short));
+        var token = Expression.Parameter(typeof(CancellationToken));
+        return Expression.Lambda<Func<ApiVersionsRequest, short, CancellationToken, ValueTask<ApiVersionsResponse>>>(
+            Expression.Call(Expression.Convert(Expression.Constant(_connection), capability), method,
+                request, version, Expression.Constant(context, contextType), token),
+            request, version, token).Compile();
+    }
+
+    [Benchmark]
+    public async ValueTask<ErrorCode> OrdinaryRequest()
+    {
+        var response = await _connection.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(CreateRequest(), 3);
+        return response.ErrorCode;
+    }
+
+    [Benchmark]
+    public async ValueTask<ErrorCode> ObservedRequest()
+    {
+        var response = await _sendObserved(CreateRequest(), 3, CancellationToken.None);
+        return response.ErrorCode;
     }
 
     [Benchmark(Baseline = true)]
