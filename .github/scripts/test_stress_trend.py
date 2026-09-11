@@ -1997,6 +1997,18 @@ class StressTrendTests(unittest.TestCase):
         options = re.findall(r"^\s+- (\S+)$", options_block, re.MULTILINE)
         self.assertEqual(options, lane_ids + ["all"])
 
+    def test_hosted_share_requires_explicit_selection_without_expanding_full_runs(self):
+        workflow = stress_workflow_text()
+        heredoc = re.search(r"cat > lanes\.json << 'EOF'\n(?P<body>.*?)\n\s*EOF\n", workflow, re.DOTALL)
+        lanes = json.loads(heredoc.group("body"))
+        regular = [lane for lane in lanes if not lane.get("manual_only", False)]
+        manual = [lane for lane in lanes if lane.get("manual_only", False)]
+        self.assertEqual(12, len(regular))
+        self.assertEqual(["hosted-share-1b"], [lane["lane"] for lane in manual])
+        self.assertEqual("dekaf", manual[0]["client"])
+        self.assertIn('select(($lane == "all" and .manual_only != true) or .lane == $lane)', workflow)
+        self.assertIn('consumer-raw-batch-1b|hosted-share-1b) ;;', workflow)
+
     def test_history_merge_uses_admin_token(self):
         workflow = stress_workflow_text()
         step = workflow[

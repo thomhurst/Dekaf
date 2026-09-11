@@ -5,8 +5,52 @@ namespace Dekaf.Protocol.Messages;
 /// Contains records fetched from share group topic partitions per KIP-932.
 /// Includes acquired record ranges, acknowledgement results, and node endpoints.
 /// </summary>
-public sealed class ShareFetchResponse : IKafkaResponse
+/// <remarks>
+/// Direct connection callers must dispose the response after consuming all RecordBytes views.
+/// The share consumer manages this lifetime for responses fetched through its polling APIs.
+/// </remarks>
+public sealed class ShareFetchResponse : IKafkaResponse, IDisposable
 {
+    // Successful responses have no error message. Reuse that reference slot for
+    // frame ownership instead of adding 8 B to every response, including empty ones.
+    private object? _errorMessageOrMemoryOwner;
+
+    internal IPooledMemory? PooledMemoryOwner
+    {
+        get => _errorMessageOrMemoryOwner as IPooledMemory;
+        set
+        {
+            var message = ErrorMessage;
+            if (value is null)
+                _errorMessageOrMemoryOwner = message;
+            else if (message is null)
+                _errorMessageOrMemoryOwner = value;
+            else
+                _errorMessageOrMemoryOwner = new ErrorMessageWithMemory(message, value);
+        }
+    }
+
+    /// <summary>Releases the response frame and invalidates all borrowed RecordBytes views.</summary>
+    /// <remarks>Repeated disposal is safe. Copy any data needed beyond this lifetime before disposing.</remarks>
+    public void Dispose()
+    {
+        var state = Volatile.Read(ref _errorMessageOrMemoryOwner);
+        if (state is not IPooledMemory memory)
+            return;
+        var message = (state as ErrorMessageWithMemory)?.Message;
+        if (ReferenceEquals(Interlocked.CompareExchange(ref _errorMessageOrMemoryOwner, message, state), state))
+            memory.Dispose();
+    }
+
+    // Only a response containing both an error message and borrowed records needs
+    // extra storage. Keep its diagnostic message readable after frame disposal.
+    private sealed class ErrorMessageWithMemory(string message, IPooledMemory memory) : IPooledMemory
+    {
+        public string Message => message;
+        public ReadOnlyMemory<byte> Memory => memory.Memory;
+        public void Dispose() => memory.Dispose();
+    }
+
     // Share-fetch entries echo one request/session. These deliberately generous caps
     // bound hostile object amplification without constraining practical workloads.
     internal const int MaxTopicCount = 1_000_000;
@@ -31,7 +75,12 @@ public sealed class ShareFetchResponse : IKafkaResponse
     /// <summary>
     /// The error message, or null if there was no error.
     /// </summary>
-    public string? ErrorMessage { get; init; }
+    public string? ErrorMessage
+    {
+        get => _errorMessageOrMemoryOwner is ErrorMessageWithMemory owned ? owned.Message
+            : _errorMessageOrMemoryOwner as string;
+        init => _errorMessageOrMemoryOwner = value;
+    }
 
     /// <summary>
     /// The acquisition lock timeout in milliseconds (v1+).
@@ -189,6 +238,7 @@ public sealed class ShareFetchResponsePartition
         if (recordsLength > 0)
         {
             recordBytes = reader.ReadMemorySlice(recordsLength);
+            reader.MarkBorrowedMemoryUsed();
         }
 
         var acquiredRecords = reader.ReadCompactArray(

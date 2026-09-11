@@ -1,4 +1,5 @@
 using Dekaf.Networking;
+using Dekaf.Protocol;
 
 namespace Dekaf.Tests.Unit.Networking;
 
@@ -307,6 +308,52 @@ public class ResponseBufferPoolTests
         await Assert.That(secondMemory.Memory.Span[0]).IsEqualTo((byte)123);
 
         secondMemory.Dispose();
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task TransferredMemory_ConcurrentDisposeReleasesReservationOnce(bool nativeStorage)
+    {
+        var pool = new ResponseBufferPool(1024 * 1024, managedArraysPerBucket: 1);
+        using var release = new ManualResetEventSlim();
+        var reservation = new BlockingReservation(release);
+        var frame = nativeStorage
+            ? new PooledResponseBuffer(pool.RentNative(ResponseBufferPool.NativeMemoryThresholdBytes), 1024)
+            : new PooledResponseBuffer(pool.Pool.Rent(1024), 1024, true, pool: pool);
+        var owner = frame.TransferOwnership(reservation);
+        var firstDisposal = Task.Run(owner.Dispose);
+        try
+        {
+            await reservation.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            // The first disposal is still releasing its reservation and cannot
+            // return the owner to the pool until the test opens the barrier.
+            owner.Dispose();
+            await Assert.That(reservation.Disposals).IsEqualTo(1);
+            await Assert.That(() => owner.Memory).Throws<ObjectDisposedException>();
+            if (nativeStorage)
+                await Assert.That(pool.RetainedNativeBufferCount).IsEqualTo(1);
+        }
+        finally
+        {
+            release.Set();
+            await firstDisposal.WaitAsync(TimeSpan.FromSeconds(5));
+            pool.TrimNativeBuffers();
+        }
+    }
+
+    private sealed class BlockingReservation(ManualResetEventSlim release) : IResponseMemoryReservation
+    {
+        private int _disposals;
+        public int Disposals => Volatile.Read(ref _disposals);
+        public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public void Dispose()
+        {
+            Interlocked.Increment(ref _disposals);
+            Entered.TrySetResult();
+            release.Wait();
+        }
     }
 
     [Test]

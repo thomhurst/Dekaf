@@ -35,6 +35,7 @@ class StressTimeoutTests(unittest.TestCase):
         for scenario, client, paired, count in (
             ("consumer", "all", 2, 4), ("consumer-batch", "dekaf", 1, 1),
             ("consumer-raw", "dekaf", 1, 1), ("consumer-raw-batch", "dekaf", 1, 1),
+            ("hosted-share", "dekaf", 1, 1),
         ):
             with self.subTest(scenario=scenario):
                 lane = dict(scenario=scenario, client=client, paired_samples=paired, timeout_minutes=60)

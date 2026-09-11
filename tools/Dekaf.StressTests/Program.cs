@@ -19,7 +19,7 @@ namespace Dekaf.StressTests;
 /// Options:
 ///   --duration &lt;minutes&gt;    Test duration in minutes (default: 15)
 ///   --message-size &lt;bytes&gt;  Message size in bytes (default: 1000)
-///   --scenario &lt;name&gt;       Run specific scenario: producer, producer-idempotent, producer-acks-all, producer-async, producer-async-idempotent, producer-transactional, producer-roundtrip-steady, consumer, consumer-batch, consumer-raw, consumer-raw-batch, all (default: all)
+///   --scenario &lt;name&gt;       Run specific scenario: producer, producer-idempotent, producer-acks-all, producer-async, producer-async-idempotent, producer-transactional, producer-roundtrip-steady, consumer, consumer-batch, consumer-raw, consumer-raw-batch, hosted-share, all (default: all)
 ///   --client &lt;name&gt;         Run specific client: dekaf, confluent, all (default: all)
 ///   --output &lt;path&gt;         Output directory for results (default: ./results)
 ///   --brokers &lt;count&gt;      Number of Kafka brokers (default: 1, use 3 for multi-broker)
@@ -149,7 +149,7 @@ public static class Program
         Directory.CreateDirectory(options.OutputPath);
         using var progressWatchdog = new ProgressWatchdog(options.OutputPath);
 
-        await using var kafka = await KafkaEnvironment.CreateAsync(options.Brokers).ConfigureAwait(false);
+        await using var kafka = await KafkaEnvironment.CreateAsync(options.Brokers, enableShareGroups: options.Scenario == "hosted-share").ConfigureAwait(false);
         var scenarios = GetScenarios(options);
 
         var producerTopic = $"stress-producer-{Guid.NewGuid():N}";
@@ -428,7 +428,8 @@ public static class Program
 
     private static bool UsesProducerTopic(string scenarioName) =>
         scenarioName.StartsWith("producer", StringComparison.OrdinalIgnoreCase) ||
-        scenarioName.Equals("soak", StringComparison.OrdinalIgnoreCase);
+        scenarioName.Equals("soak", StringComparison.OrdinalIgnoreCase) ||
+        scenarioName.Equals("hosted-share", StringComparison.OrdinalIgnoreCase);
 
     private static bool IsRoundTripScenario(string scenarioName) =>
         scenarioName.StartsWith("producer-roundtrip", StringComparison.OrdinalIgnoreCase);
@@ -802,7 +803,7 @@ public static class Program
     {
         var scenarios = CreateAllScenarios()
             .Where(s => options.Scenario == "all"
-                ? !s.Name.Equals("soak", StringComparison.OrdinalIgnoreCase)
+                ? !s.Name.Equals("soak", StringComparison.OrdinalIgnoreCase) && !s.Name.Equals("hosted-share", StringComparison.OrdinalIgnoreCase)
                 : s.Name.Equals(options.Scenario, StringComparison.OrdinalIgnoreCase))
             .Where(s => options.Client == "all" || s.Client.Equals(options.Client, StringComparison.OrdinalIgnoreCase))
             .ToList();
@@ -837,7 +838,8 @@ public static class Program
             new ConsumerRawStressTest(),
             new ConsumerRawBatchStressTest(),
             new ConfluentConsumerStressTest(),
-            new SoakStressTest()
+            new SoakStressTest(),
+            new HostedShareStressTest()
         ];
 
     private static List<IStressTestScenario> ApplyClientOrder(List<IStressTestScenario> scenarios, string requestedClient)

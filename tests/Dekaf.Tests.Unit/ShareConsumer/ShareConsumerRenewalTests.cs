@@ -13,7 +13,7 @@ using NSubstitute;
 
 namespace Dekaf.Tests.Unit.ShareConsumer;
 
-public sealed class ShareConsumerRenewalTests
+public sealed partial class ShareConsumerRenewalTests
 {
     private static readonly Guid TopicId = Guid.Parse("01234567-89ab-cdef-0123-456789abcdef");
 
@@ -1177,6 +1177,7 @@ public sealed class ShareConsumerRenewalTests
         using var batch = new RecordBatch
         {
             BaseOffset = offset,
+            LastOffsetDelta = recordCount - 1,
             Records = Enumerable.Range(0, recordCount).Select(index => new Record { OffsetDelta = index, IsKeyNull = true, Value = "new-value"u8.ToArray() }).ToList()
         };
         batch.Write(buffer);
@@ -1330,7 +1331,8 @@ public sealed class ShareConsumerRenewalTests
             1,
             acknowledgements,
             false,
-            CancellationToken.None)!;
+            CancellationToken.None,
+            false)!;
 
     private static void ApplySuccessfulAcknowledgements(
         KafkaShareConsumer<string, string> consumer,
@@ -1452,6 +1454,7 @@ public sealed class ShareConsumerRenewalTests
         ApiKey apiKey,
         short maximumVersion,
         int brokerId = 1,
+        bool includeShareAcknowledge = false,
         bool supportShareFetch = false) :
         IKafkaConnection,
         IKafkaCapabilityProvider
@@ -1468,6 +1471,7 @@ public sealed class ShareConsumerRenewalTests
                 [
                     new ApiVersion(apiKey, 0, maximumVersion),
                     .. supportShareFetch ? new[] { new ApiVersion(ApiKey.ShareFetch, 0, 2) } : [],
+                    .. includeShareAcknowledge ? new[] { new ApiVersion(ApiKey.ShareAcknowledge, 0, maximumVersion) } : [],
                     new ApiVersion(
                         ApiKey.Metadata,
                         MetadataRequest.LowestSupportedVersion,
@@ -1479,11 +1483,13 @@ public sealed class ShareConsumerRenewalTests
         internal ShareFetchRequest? ShareFetchRequest { get; private set; }
         internal ShareAcknowledgeRequest? ShareAcknowledgeRequest { get; private set; }
         internal ShareFetchResponse? ShareFetchResponse { get; init; }
+        internal Queue<ShareFetchResponse>? ShareFetchResponses { get; init; }
         internal ShareAcknowledgeResponse? ShareAcknowledgeResponse { get; init; }
         internal Queue<ShareAcknowledgeResponse>? ShareAcknowledgeResponses { get; init; }
         internal List<ShareAcknowledgeRequest> ShareAcknowledgeRequests { get; } = [];
         internal Exception? ShareFetchException { get; init; }
         internal Action? OnSend { get; init; }
+        internal TaskCompletionSource<ShareAcknowledgeResponse>? DelayedFinalAcknowledgement { get; init; }
 
         public ValueTask<TResponse> SendAsync<TRequest, TResponse>(
             TRequest request,
@@ -1498,7 +1504,7 @@ public sealed class ShareConsumerRenewalTests
             {
                 ShareFetchRequest fetch => Capture(
                     fetch,
-                    ShareFetchResponse ?? new ShareFetchResponse
+                    ShareFetchResponses is { Count: > 0 } ? ShareFetchResponses.Dequeue() : ShareFetchResponse ?? new ShareFetchResponse
                     {
                         ErrorCode = ErrorCode.None,
                         Responses = [],
@@ -1551,8 +1557,14 @@ public sealed class ShareConsumerRenewalTests
             OnSend?.Invoke();
             if (request is ShareFetchRequest && ShareFetchException is not null)
                 throw ShareFetchException;
+            if (request is ShareAcknowledgeRequest { ShareSessionEpoch: ShareSessionManager.CloseEpoch }
+                && DelayedFinalAcknowledgement is { } delayed)
+                return new ValueTask<TResponse>(AwaitResponseAsync(delayed.Task));
 
             return new ValueTask<TResponse>((TResponse)response);
+
+            static async Task<TResponse> AwaitResponseAsync(Task<ShareAcknowledgeResponse> pending)
+                => (TResponse)(IKafkaResponse)await pending;
         }
 
         private ShareFetchResponse Capture(

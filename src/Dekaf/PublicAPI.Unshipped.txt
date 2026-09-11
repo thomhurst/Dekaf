@@ -1,3 +1,4 @@
+Dekaf.Protocol.Messages.ShareFetchResponse.Dispose() -> void
 Dekaf.Admin.AdminClient.ListGroupsAsync(Dekaf.Admin.ListGroupsOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyList<Dekaf.Admin.GroupListing!>!>
 Dekaf.Admin.AdminClientGroupListingExtensions
 Dekaf.Admin.GroupListing.GroupType.get -> string?
@@ -106,3 +107,56 @@ static Dekaf.Admin.AdminClientDetailedConfigMutationExtensions.AlterConfigsDetai
 Dekaf.Admin.AdminClient.IncrementalAlterConfigsDetailedAsync(System.Collections.Generic.IReadOnlyDictionary<Dekaf.Admin.ConfigResource!, System.Collections.Generic.IReadOnlyList<Dekaf.Admin.ConfigAlter!>!>! configs, Dekaf.Admin.IncrementalAlterConfigsOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<Dekaf.Admin.ConfigResource!, Dekaf.Admin.AdminMutationResult!>!>
 Dekaf.Admin.IDetailedConfigMutationAdminClient.IncrementalAlterConfigsDetailedAsync(System.Collections.Generic.IReadOnlyDictionary<Dekaf.Admin.ConfigResource!, System.Collections.Generic.IReadOnlyList<Dekaf.Admin.ConfigAlter!>!>! configs, Dekaf.Admin.IncrementalAlterConfigsOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<Dekaf.Admin.ConfigResource!, Dekaf.Admin.AdminMutationResult!>!>
 static Dekaf.Admin.AdminClientDetailedConfigMutationExtensions.IncrementalAlterConfigsDetailedAsync(this Dekaf.Admin.IAdminClient! adminClient, System.Collections.Generic.IReadOnlyDictionary<Dekaf.Admin.ConfigResource!, System.Collections.Generic.IReadOnlyList<Dekaf.Admin.ConfigAlter!>!>! configs, Dekaf.Admin.IncrementalAlterConfigsOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<Dekaf.Admin.ConfigResource!, Dekaf.Admin.AdminMutationResult!>!>
+~override Dekaf.ShareConsumer.ShareBatchHeader.Equals(object obj) -> bool
+~override Dekaf.ShareConsumer.ShareBatchHeader.ToString() -> string
+Dekaf.ShareConsumer.IKafkaShareBatchConsumer<TKey, TValue>
+Dekaf.ShareConsumer.IKafkaShareBatchConsumer<TKey, TValue>.PollBatchesAsync(System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Collections.Generic.IAsyncEnumerable<Dekaf.ShareConsumer.ShareConsumeBatch<TKey, TValue>!>!
+Dekaf.ShareConsumer.ShareBatchHeader
+Dekaf.ShareConsumer.ShareBatchHeader.Deconstruct(out System.ReadOnlyMemory<byte> KeyUtf8, out System.ReadOnlyMemory<byte> Value, out bool IsValueNull) -> void
+Dekaf.ShareConsumer.ShareBatchHeader.Equals(Dekaf.ShareConsumer.ShareBatchHeader other) -> bool
+Dekaf.ShareConsumer.ShareBatchHeader.IsValueNull.get -> bool
+Dekaf.ShareConsumer.ShareBatchHeader.IsValueNull.init -> void
+Dekaf.ShareConsumer.ShareBatchHeader.KeyUtf8.get -> System.ReadOnlyMemory<byte>
+Dekaf.ShareConsumer.ShareBatchHeader.KeyUtf8.init -> void
+Dekaf.ShareConsumer.ShareBatchHeader.ShareBatchHeader() -> void
+Dekaf.ShareConsumer.ShareBatchHeader.ShareBatchHeader(System.ReadOnlyMemory<byte> KeyUtf8, System.ReadOnlyMemory<byte> Value, bool IsValueNull) -> void
+Dekaf.ShareConsumer.ShareBatchHeader.Value.get -> System.ReadOnlyMemory<byte>
+Dekaf.ShareConsumer.ShareBatchHeader.Value.init -> void
+Dekaf.ShareConsumer.ShareBatchHeaders
+Dekaf.ShareConsumer.ShareBatchHeaders.Count.get -> int
+Dekaf.ShareConsumer.ShareBatchHeaders.Enumerator
+Dekaf.ShareConsumer.ShareBatchHeaders.Enumerator.Current.get -> Dekaf.ShareConsumer.ShareBatchHeader
+Dekaf.ShareConsumer.ShareBatchHeaders.Enumerator.Enumerator() -> void
+Dekaf.ShareConsumer.ShareBatchHeaders.Enumerator.MoveNext() -> bool
+Dekaf.ShareConsumer.ShareBatchHeaders.GetEnumerator() -> Dekaf.ShareConsumer.ShareBatchHeaders.Enumerator
+Dekaf.ShareConsumer.ShareBatchHeaders.ShareBatchHeaders() -> void
+Dekaf.ShareConsumer.ShareBatchRecord<TKey, TValue>
+Dekaf.ShareConsumer.ShareBatchRecord<TKey, TValue>.DeliveryCount.get -> int
+Dekaf.ShareConsumer.ShareBatchRecord<TKey, TValue>.Headers.get -> Dekaf.ShareConsumer.ShareBatchHeaders
+Dekaf.ShareConsumer.ShareBatchRecord<TKey, TValue>.IsKeyNull.get -> bool
+Dekaf.ShareConsumer.ShareBatchRecord<TKey, TValue>.IsValueNull.get -> bool
+Dekaf.ShareConsumer.ShareBatchRecord<TKey, TValue>.Key.get -> TKey?
+Dekaf.ShareConsumer.ShareBatchRecord<TKey, TValue>.KeyBytes.get -> System.ReadOnlyMemory<byte>
+Dekaf.ShareConsumer.ShareBatchRecord<TKey, TValue>.Offset.get -> long
+Dekaf.ShareConsumer.ShareBatchRecord<TKey, TValue>.Partition.get -> int
+Dekaf.ShareConsumer.ShareBatchRecord<TKey, TValue>.ShareBatchRecord() -> void
+Dekaf.ShareConsumer.ShareBatchRecord<TKey, TValue>.TimestampMs.get -> long
+Dekaf.ShareConsumer.ShareBatchRecord<TKey, TValue>.Topic.get -> string!
+Dekaf.ShareConsumer.ShareBatchRecord<TKey, TValue>.Value.get -> TValue
+Dekaf.ShareConsumer.ShareBatchRecord<TKey, TValue>.ValueBytes.get -> System.ReadOnlyMemory<byte>
+Dekaf.ShareConsumer.ShareConsumeBatch<TKey, TValue>
+Dekaf.ShareConsumer.ShareConsumeBatch<TKey, TValue>.Acknowledge(Dekaf.ShareConsumer.ShareBatchRecord<TKey, TValue> record, Dekaf.ShareConsumer.AcknowledgeType type = Dekaf.ShareConsumer.AcknowledgeType.Accept) -> void
+Dekaf.ShareConsumer.ShareConsumeBatch<TKey, TValue>.Count.get -> int
+Dekaf.ShareConsumer.ShareConsumeBatch<TKey, TValue>.DeliveredCount.get -> int
+Dekaf.ShareConsumer.ShareConsumeBatch<TKey, TValue>.Dispose() -> void
+Dekaf.ShareConsumer.ShareConsumeBatch<TKey, TValue>.Enumerator
+Dekaf.ShareConsumer.ShareConsumeBatch<TKey, TValue>.Enumerator.Current.get -> Dekaf.ShareConsumer.ShareBatchRecord<TKey, TValue>
+Dekaf.ShareConsumer.ShareConsumeBatch<TKey, TValue>.Enumerator.Enumerator() -> void
+Dekaf.ShareConsumer.ShareConsumeBatch<TKey, TValue>.Enumerator.MoveNext() -> bool
+Dekaf.ShareConsumer.ShareConsumeBatch<TKey, TValue>.GetEnumerator() -> Dekaf.ShareConsumer.ShareConsumeBatch<TKey, TValue>.Enumerator
+Dekaf.ShareConsumer.ShareConsumeBatch<TKey, TValue>.TopicPartition.get -> Dekaf.TopicPartition
+Dekaf.ShareConsumer.ShareConsumerBatchExtensions
+override Dekaf.ShareConsumer.ShareBatchHeader.GetHashCode() -> int
+static Dekaf.ShareConsumer.ShareBatchHeader.operator !=(Dekaf.ShareConsumer.ShareBatchHeader left, Dekaf.ShareConsumer.ShareBatchHeader right) -> bool
+static Dekaf.ShareConsumer.ShareBatchHeader.operator ==(Dekaf.ShareConsumer.ShareBatchHeader left, Dekaf.ShareConsumer.ShareBatchHeader right) -> bool
+static Dekaf.ShareConsumer.ShareConsumerBatchExtensions.PollBatchesAsync<TKey, TValue>(this Dekaf.ShareConsumer.IKafkaShareConsumer<TKey, TValue>! consumer, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Collections.Generic.IAsyncEnumerable<Dekaf.ShareConsumer.ShareConsumeBatch<TKey, TValue>!>!
