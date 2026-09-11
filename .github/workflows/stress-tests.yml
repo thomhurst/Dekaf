@@ -26,6 +26,7 @@ on:
           - producer-transactional-3b
           - producer-roundtrip-steady-1b
           - consumer-1b
+          - consumer-keyed-1b
           - consumer-batch-1b
           - consumer-raw-1b
           - consumer-raw-batch-1b
@@ -37,6 +38,16 @@ on:
         description: 'Test duration in minutes'
         required: false
         default: '15'
+      keyed_shape:
+        description: 'consumer-keyed-1b only: one reproducible key shape; 32 keys/partition, 32768 records/partition'
+        required: false
+        type: choice
+        default: scalar
+        options:
+          - scalar
+          - binary
+          - large-distinct
+          - large-colliding
       producer_warmup_seconds:
         description: 'Warmup seconds per workload phase, including each outbox phase (minimum 20 seconds; no adaptive extension)'
         required: false
@@ -151,6 +162,8 @@ jobs:
         id: select
         env:
           LANE: ${{ github.event.inputs.lane }}
+          KEYED_SHAPE: ${{ github.event.inputs.keyed_shape }}
+          MESSAGE_SIZE: ${{ github.event.inputs.message_size }}
           DISPATCH_SHAPE: ${{ github.event.inputs.dispatch_shape }}
           FULL_RUN: ${{ github.event.inputs.full_run }}
           CONSUMER_FETCH_DIAGNOSTICS: ${{ github.event.inputs.consumer_fetch_diagnostics }}
@@ -171,6 +184,24 @@ jobs:
             exit 1
           fi
           lane="${LANE:-all}"
+
+          keyed_shape="${KEYED_SHAPE:-scalar}"
+          case "$keyed_shape" in
+            scalar|binary|large-distinct|large-colliding) ;;
+            *) echo '::error::Unknown keyed_shape.'; exit 1 ;;
+          esac
+          if [ "$keyed_shape" != "scalar" ] && { [ "$lane" != "consumer-keyed-1b" ] || [ "$FULL_RUN" = "true" ]; }; then
+            echo '::error::A non-default keyed_shape requires the explicit consumer-keyed-1b lane.'
+            exit 1
+          fi
+
+          if [ "$lane" = "consumer-keyed-1b" ] && [ "$FULL_RUN" != "true" ]; then
+            keyed_bytes="${MESSAGE_SIZE:-1000}"
+            if ! [[ "$keyed_bytes" =~ ^[0-9]{1,4}$ ]] || (( 10#$keyed_bytes < 8 || 10#$keyed_bytes > 4096 )); then
+              echo '::error::Keyed replay message_size must be 8..4096 bytes.'
+              exit 1
+            fi
+          fi
 
           fixed_workers="${FIXED_WORKER_THREADS:-0}"
           if ! [[ "$fixed_workers" =~ ^0*[0-9]{1,4}$ ]]; then
@@ -271,7 +302,7 @@ jobs:
             fi
             case "$lane" in
               producer-1b|producer-3b|producer-idempotent-1b|producer-idempotent-3b|producer-acks-all-1b|producer-acks-all-3b) ;;
-              consumer-1b|consumer-batch-1b|consumer-raw-1b|consumer-raw-batch-1b|hosted-share-1b|outbox-1b|consumer-follower-recovery-3b) ;;
+              consumer-1b|consumer-keyed-1b|consumer-batch-1b|consumer-raw-1b|consumer-raw-batch-1b|hosted-share-1b|outbox-1b|consumer-follower-recovery-3b) ;;
               *)
                 echo "::error::Exact-SHA A-B-A requires a duration-based producer, consumer replay, hosted-share, or outbox lane."
                 exit 1
@@ -293,6 +324,7 @@ jobs:
             {"lane": "producer-transactional-3b", "scenario": "producer-transactional", "client": "all", "brokers": 3, "timeout_minutes": 150, "name": "Transactional EOS (Paired, 3 Brokers)"},
             {"lane": "producer-roundtrip-steady-1b", "scenario": "producer-roundtrip-steady", "client": "all", "brokers": 1, "message_size": 128, "roundtrip_steady_seconds": 60, "timeout_minutes": 90, "name": "Producer → Consumer Round-Trip Steady State (Paired)"},
             {"lane": "consumer-1b", "scenario": "consumer", "client": "all", "brokers": 1, "timeout_minutes": 90, "name": "Consumer (Paired)"},
+            {"lane": "consumer-keyed-1b", "scenario": "consumer-keyed", "client": "dekaf", "brokers": 1, "manual_only": true, "timeout_minutes": 60, "name": "Dekaf Key-Ordered Consumer"},
             {"lane": "consumer-batch-1b", "scenario": "consumer-batch", "client": "dekaf", "brokers": 1, "timeout_minutes": 60, "name": "Dekaf Consumer Batch"},
             {"lane": "consumer-raw-1b", "scenario": "consumer-raw", "client": "dekaf", "brokers": 1, "timeout_minutes": 60, "name": "Dekaf Consumer Raw"},
             {"lane": "consumer-raw-batch-1b", "scenario": "consumer-raw-batch", "client": "dekaf", "brokers": 1, "timeout_minutes": 60, "name": "Dekaf Consumer Raw Batch"},
@@ -317,12 +349,13 @@ jobs:
           if [ -n "$baseline_sha" ] && [ "$ABA_SECOND_CANDIDATE" = "true" ]; then
             aba_segments=4
           fi
-          matrix=$(jq -c --arg lane "$lane" --arg client "$client" --arg shape "$shape" --arg profile_mode "$profile_mode" --arg baseline_sha "$baseline_sha" --argjson aba_segments "$aba_segments" '
+          matrix=$(jq -c --arg keyed_shape "$keyed_shape" --arg lane "$lane" --arg client "$client" --arg shape "$shape" --arg profile_mode "$profile_mode" --arg baseline_sha "$baseline_sha" --argjson aba_segments "$aba_segments" '
             def segments: ((.paired_samples // 1) * (if .client == "all" then 2 else 1 end)) + (if .run_3conn == true then 1 else 0 end) + (if .run_adaptive == true then 1 else 0 end);
             def drop_3conn: .run_3conn = false | .artifact_suffix = "";
             def drop_adaptive: .run_adaptive = false;
             {include: [ .[]
               | select(($lane == "all" and .manual_only != true) or .lane == $lane)
+              | if .scenario == "consumer-keyed" then .keyed_shape = $keyed_shape else . end
               | segments as $full_segments
               | ((.timeout_minutes / $full_segments) | ceil) as $segment_budget
               | if $client != "" and .client == "all" then
@@ -568,6 +601,7 @@ jobs:
           BASELINE_SHA: ${{ matrix.baseline_sha }}
           PRODUCER_WARMUP_SECONDS: ${{ github.event.inputs.producer_warmup_seconds || '180' }}
           DURATION_MINUTES: ${{ github.event.inputs.duration_minutes || '15' }}
+          KEYED_SHAPE: ${{ matrix.keyed_shape }}
         run: |
           # Background disk monitor: samples every broker's log-dir usage so a tmpfs
           # fill (ingestion outpacing retention — the known broker-halt failure mode)
@@ -599,6 +633,9 @@ jobs:
           # space-separated string as one quoted element would reach the client as a
           # single unparseable argument.
           EXTRA_ARGS=()
+          if [ "${{ matrix.scenario }}" = "consumer-keyed" ]; then
+            EXTRA_ARGS+=(--keyed-shape "$KEYED_SHAPE" --keyed-records-per-partition 32768 --partitions 6)
+          fi
           if ! [[ "$PRODUCER_WARMUP_SECONDS" =~ ^[0-9]{1,6}$ ]] || (( 10#$PRODUCER_WARMUP_SECONDS < 20 )); then
             echo "::error::producer_warmup_seconds must be an integer from 20 to 999999."
             exit 1

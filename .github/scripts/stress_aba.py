@@ -106,11 +106,39 @@ def _identity(result):
         result.get("idempotent"),
         result.get("roundTripSteadySeconds"),
     )
+    if str(result.get("scenario", "")).casefold() == "consumer-keyed":
+        keyed = result["keyedConsumer"]
+        return identity + tuple(keyed[name] for name in KEYED_DIMENSIONS)
     return identity + (
         (outbox.get("idle") or {}).get("requestedSeconds"),
         outbox.get("activeRequestedSeconds"),
         (outbox.get("idleWarmup") or {}).get("requestedSeconds"),
     ) if outbox else identity
+
+
+KEYED_DIMENSIONS = (
+    "shape", "keySizeBytes", "partitions", "keysPerPartition", "recordsPerPartition",
+    "handlerConcurrency", "bufferedRecordsPerPartition", "yieldEveryKeyRecords",
+)
+
+
+def validate_keyed_consumer(result):
+    if str(result.get("scenario", "")).casefold() != "consumer-keyed":
+        return
+    keyed = result.get("keyedConsumer")
+    if not isinstance(keyed, dict) or any(name not in keyed for name in KEYED_DIMENSIONS):
+        raise ValueError("Keyed consumer workload dimensions are missing")
+    sizes = {"scalar": 4, "binary": 16, "large-distinct": 4096, "large-colliding": 4096}
+    if keyed["shape"] not in sizes or keyed["keySizeBytes"] != sizes[keyed["shape"]]:
+        raise ValueError("Invalid keyed consumer shape or size")
+    for name in KEYED_DIMENSIONS[1:] + ("completedPasses", "completedRecords"):
+        if type(keyed.get(name)) is not int or keyed[name] <= 0:
+            raise ValueError(f"Invalid keyed consumer {name}")
+    expected = keyed["completedPasses"] * keyed["partitions"] * keyed["recordsPerPartition"]
+    if keyed["completedRecords"] != expected or expected != result["throughput"].get("totalMessages"):
+        raise ValueError("Keyed consumer replay has an incomplete pass")
+    if result.get("latency") is not None:
+        raise ValueError("Keyed consumer replay does not record delivery latency")
 
 
 def _average_request_kib(result):
@@ -370,6 +398,7 @@ def compare(
                 raise ValueError(f"Expected a {field} object")
         _validate_completed_messages(result)
         validate_outbox(result)
+        validate_keyed_consumer(result)
 
     identities = {
         _identity(baseline_a_result),
@@ -456,6 +485,8 @@ def compare(
         "minimumLatencySamples": MIN_LATENCY_SAMPLES,
         "latencySampleCounts": latency_sample_counts,
         "identity": list(_identity(candidate_result)),
+        **({"keyedConsumer": {name: candidate_result["keyedConsumer"][name] for name in KEYED_DIMENSIONS}}
+           if candidate_result.get("keyedConsumer") else {}),
         "metrics": metrics,
     }
 
@@ -498,6 +529,9 @@ def markdown(comparison, baseline_sha, candidate_sha):
     if comparison.get("validationError"):
         lines.extend(["", f"Evidence validation failed: {comparison['validationError']}"])
         return "\n".join(lines) + "\n"
+    if comparison.get("keyedConsumer"):
+        lines.extend(["", "Keyed consumer workload: " + ", ".join(
+            f"{name}={value}" for name, value in comparison["keyedConsumer"].items()) + "."])
     if comparison.get("startupAssessment"):
         assessment = comparison["startupAssessment"]
         lines.extend(["", f"Startup assessment: {assessment['verdict']}",
