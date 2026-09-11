@@ -15,7 +15,7 @@ internal sealed partial class KeyOrderedPartitionDispatcher<TKey, TValue>
     private readonly int _maxBufferedRecords;
     private readonly object _lanes;
     private readonly bool _hasBinaryKeyComparer;
-    private readonly Stack<KeyLane> _freeLanes;
+    private object? _freeLanes;
     private readonly Queue<KeyLane> _readyLanes;
     private readonly Stack<Worker> _freeWorkers;
     private readonly int _maxWorkers;
@@ -80,8 +80,8 @@ internal sealed partial class KeyOrderedPartitionDispatcher<TKey, TValue>
             }
             _hasBinaryKeyComparer = comparer is BinaryPartitionMessageKeyComparer<TKey>;
             _lanes = new Dictionary<PartitionMessageKey<TKey>, KeyLane>(initialCapacity, comparer);
+            _freeLanes = new Stack<KeyLane>(initialCapacity);
         }
-        _freeLanes = new Stack<KeyLane>(initialCapacity);
         _readyLanes = new Queue<KeyLane>(initialCapacity);
         _freeWorkers = new Stack<Worker>(Math.Min(_maxWorkers, initialCapacity));
         _automaticCompletion = automaticCompletion;
@@ -184,10 +184,9 @@ internal sealed partial class KeyOrderedPartitionDispatcher<TKey, TValue>
             ReleaseLanes();
             if (_failure is not null)
             {
-                // A failed removal can displace another lane. No new dispatch starts
-                // after that failure, so the free stack also holds shutdown ownership.
-                foreach (var lane in _freeLanes)
-                    lane.ReleaseKey();
+                // Failed removal or rebuilding can displace lanes. Their retained
+                // keys remain owned until every in-flight worker has finished.
+                ReleaseFailureLaneKeys();
             }
             Volatile.Write(ref _laneCount, 0);
             registration.Dispose();
@@ -255,9 +254,9 @@ internal sealed partial class KeyOrderedPartitionDispatcher<TKey, TValue>
 #if NETSTANDARD2_0
         if (!TryGetLane(key, out var lane))
         {
-            lane = _freeLanes.Count != 0 ? _freeLanes.Pop() : new KeyLane();
+            lane = RentLane();
             lane.Key = key;
-            lane.KeyStorage = record.RetainStorage();
+            lane.StorageOrNext = record.RetainStorage();
             try
             {
                 AddLane(key, lane);
@@ -276,10 +275,10 @@ internal sealed partial class KeyOrderedPartitionDispatcher<TKey, TValue>
         var lane = entry;
         if (lane is null)
         {
-            lane = _freeLanes.Count != 0 ? _freeLanes.Pop() : new KeyLane();
+            lane = RentLane();
             entry = lane;
             lane.Key = key;
-            lane.KeyStorage = record.RetainStorage();
+            lane.StorageOrNext = record.RetainStorage();
             Volatile.Write(ref _laneCount, StorageCount);
         }
 #endif
@@ -327,7 +326,7 @@ internal sealed partial class KeyOrderedPartitionDispatcher<TKey, TValue>
                 // must retain every key owner until all in-flight handlers complete,
                 // including lanes no longer reachable from the partially rebuilt table.
                 for (var index = 0; index < count; index++)
-                    _freeLanes.Push(lanes[index]);
+                    ReturnLane(lanes[index]);
                 if (error is ArgumentException)
                     throw new InvalidOperationException(
                         "A partition key changed its hash code or equality while being processed.", error);
@@ -460,14 +459,19 @@ internal sealed partial class KeyOrderedPartitionDispatcher<TKey, TValue>
                 // A mutated key may remove a different active lane. Keep its storage
                 // owned until every handler finishes, even though membership is gone.
                 if (removed is not null)
-                    _freeLanes.Push(removed);
+                {
+                    if (UseCompactKeys)
+                        worker.Lane = removed;
+                    else
+                        ReturnLane(removed);
+                }
                 throw new InvalidOperationException("A partition key changed its hash code or equality while being processed.");
             }
 #endif
             lane.ReleaseKey();
             lane.Scheduled = false;
             lane.Tail = -1;
-            _freeLanes.Push(lane);
+            ReturnLane(lane);
             Volatile.Write(ref _laneCount, StorageCount);
         }
 
@@ -555,15 +559,17 @@ internal sealed partial class KeyOrderedPartitionDispatcher<TKey, TValue>
     private sealed class KeyLane
     {
         internal PartitionMessageKey<TKey> Key;
-        internal PendingFetchData? KeyStorage;
+        // Active lanes retain PendingFetchData. A released compact lane reuses
+        // this reference for its free-pool link, without enlarging every lane.
+        internal object? StorageOrNext;
         internal int Head = -1;
         internal int Tail = -1;
         internal bool Scheduled;
 
         internal void ReleaseKey()
         {
-            KeyStorage?.ReleaseAfterProcessing();
-            KeyStorage = null;
+            Unsafe.As<PendingFetchData>(StorageOrNext)?.ReleaseAfterProcessing();
+            StorageOrNext = null;
             Key = default;
         }
     }

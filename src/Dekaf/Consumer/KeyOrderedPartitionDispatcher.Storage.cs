@@ -29,6 +29,52 @@ internal sealed partial class KeyOrderedPartitionDispatcher<TKey, TValue>
 
     private int StorageCount => UseCompactKeys ? CompactLanes.Count : StandardLanes.Count;
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private KeyLane RentLane()
+    {
+        if (UseCompactKeys)
+        {
+            var lane = Unsafe.As<KeyLane>(_freeLanes);
+            if (lane is null) return new KeyLane();
+            _freeLanes = lane.StorageOrNext;
+            lane.StorageOrNext = null;
+            return lane;
+        }
+        var lanes = Unsafe.As<Stack<KeyLane>>(_freeLanes!);
+        return lanes.Count != 0 ? lanes.Pop() : new KeyLane();
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void ReturnLane(KeyLane lane)
+    {
+        if (UseCompactKeys)
+        {
+            // Compact lanes enter this pool only after releasing key ownership.
+            lane.StorageOrNext = _freeLanes;
+            _freeLanes = lane;
+        }
+        else
+        {
+            Unsafe.As<Stack<KeyLane>>(_freeLanes!).Push(lane);
+        }
+    }
+
+    private void ReleaseFailureLaneKeys()
+    {
+        if (UseCompactKeys)
+        {
+            // A displaced compact lane retains storage in the completed worker,
+            // because its storage slot cannot also carry a free-pool link.
+            foreach (var worker in _freeWorkers)
+                worker.Lane?.ReleaseKey();
+        }
+        else
+        {
+            foreach (var lane in Unsafe.As<Stack<KeyLane>>(_freeLanes!))
+                lane.ReleaseKey();
+        }
+    }
+
 #if NETSTANDARD2_0
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool TryGetLane(PartitionMessageKey<TKey> key, out KeyLane lane) => UseCompactKeys

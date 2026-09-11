@@ -68,7 +68,7 @@ class SelectionTests(unittest.TestCase):
     def test_partition_message_key_selects_direct_fixture(self):
         path = 'src/Dekaf/Consumer/PartitionMessageKey.cs'
         selected = self.names(gate.select([path], root=REPO_ROOT))
-        for name in ('PartitionMessageKeyBenchmarks', 'BinaryKeyDispatchBenchmarks',
+        for name in ('PartitionMessageKeyBenchmarks', 'CustomKeyOrderedDispatchBenchmarks', 'BinaryKeyDispatchBenchmarks',
                      'DistinctBinaryKeyDispatchBenchmarks', 'SharedSuffixBinaryKeyDispatchBenchmarks'):
             self.assertIn(name, selected)
 
@@ -77,7 +77,7 @@ class SelectionTests(unittest.TestCase):
                      'src/Dekaf/Consumer/KeyOrderedPartitionDispatcher.Storage.cs'):
             with self.subTest(path=path):
                 selected = self.names(gate.select([path], root=REPO_ROOT))
-                for name in ('PartitionMessageKeyBenchmarks', 'BinaryKeyDispatchBenchmarks',
+                for name in ('PartitionMessageKeyBenchmarks', 'CustomKeyOrderedDispatchBenchmarks', 'BinaryKeyDispatchBenchmarks',
                              'DistinctBinaryKeyDispatchBenchmarks', 'SharedSuffixBinaryKeyDispatchBenchmarks'):
                     self.assertIn(name, selected)
 

@@ -31,6 +31,8 @@ public class KeyOrderedDispatchBenchmarks
     [Params(128, 262144)]
     public int RecordCount { get; set; }
 
+    internal IEqualityComparer<int>? KeyComparer { get; set; }
+
     [GlobalSetup]
     public async Task Setup()
     {
@@ -57,7 +59,7 @@ public class KeyOrderedDispatchBenchmarks
             EnqueueNext();
         var dispatcher = new KeyOrderedPartitionDispatcher<int, int>(
             new PartitionProcessorContext<int, int>(_lane), BatchSize, 2, Capacity,
-            _handler, automaticCompletion: true);
+            _handler, keyComparer: KeyComparer, automaticCompletion: true);
 
         await dispatcher.RunAsync(deadline.Token).ConfigureAwait(false);
         if (_handled != RecordCount
