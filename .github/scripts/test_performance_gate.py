@@ -38,6 +38,13 @@ def phases(a1=100.0, b=100.0, a2=100.0, alloc=(0, 0, 0), **kwargs):
 
 
 class SelectionTests(unittest.TestCase):
+    def test_config_mutations_keep_direct_fixture_coverage(self):
+        for path in ('src/Dekaf/Admin/AdminClient.cs', 'src/Dekaf/Admin/AdminClient.DetailedConfigMutations.cs',
+                     'src/Dekaf/Admin/AdminClient.DetailedMutations.cs'):
+            with self.subTest(path=path):
+                selected = self.names(gate.select([path], root=REPO_ROOT))
+                self.assertIn('AdminDetailedConfigBenchmarks', selected)
+
     fixtures = {'AccumulatorAppendBenchmarks': {'file': 'a.cs', 'steady_state': True},
                 'ConsumerHotPathBenchmarks': {'file': 'b.cs', 'steady_state': True},
                 'FetchResponseParsingBenchmarks': {'file': 'c.cs', 'steady_state': True},

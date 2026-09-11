@@ -100,7 +100,7 @@ Outstanding families remain separate work; the parent is not complete until thos
 | Consumer-group offset alteration/deletion | `AlterConsumerGroupOffsetsDetailedAsync` / `DeleteConsumerGroupOffsetsDetailedAsync` | `TopicPartition` within the group |
 | Share-group offset alteration | `AlterShareGroupOffsetsDetailedAsync` | `TopicPartition` |
 | Share-group offset deletion | `DeleteShareGroupOffsetsDetailedAsync` | Topic name (all partition offsets) |
-| Configuration replacement/incremental changes | Pending [#3133](https://github.com/thomhurst/Dekaf/issues/3133) | Resource |
+| Configuration replacement/incremental changes | `AlterConfigsDetailedAsync` / `IncrementalAlterConfigsDetailedAsync` | `ConfigResource` |
 | Client quota alteration | `AlterClientQuotasDetailedAsync` | Complete `ClientQuotaEntity` |
 | ACL creation / SCRAM alteration | `CreateAclsDetailedAsync` / `AlterUserScramCredentialsDetailedAsync` | Input binding occurrence / user |
 | Member removal, feature updates, Streams offsets and replica log directories | Existing detailed result APIs retained | Existing keys |
@@ -187,6 +187,52 @@ var retried = await admin.AlterConsumerGroupOffsetsDetailedAsync("maintenance", 
 The client already retries these confirmed rejections within its retry limit and deadline.
 This example starts a new operation for remaining rejections. Inspect `Unknown` results before
 deciding whether replay is appropriate; never include confirmed successes in a retry batch.
+
+## Configuration outcomes and routing
+
+`IDetailedConfigMutationAdminClient` adds `AlterConfigsDetailedAsync` and
+`IncrementalAlterConfigsDetailedAsync`, also available as `IAdminClient` extensions. Existing
+convenience methods retain their exception and retry behavior. Custom clients without the
+capability throw `NotSupportedException` from the extensions.
+
+Keys contain the resource type and name: a topic and a group with the same name have distinct
+outcomes. The client snapshots resources and configuration entries before asynchronous work.
+Duplicate keys, unknown resource/operation types, and malformed broker IDs fail validation before
+any request is sent. Empty input returns an empty result without network activity. An empty
+replacement list still sends the resource, allowing the broker to reset its overridden configuration.
+
+Requests are grouped by endpoint. With broker bootstrap, broker-specific and broker-logger changes
+go to the named broker; other resources share a broker request. With controller bootstrap, logger
+changes go to the named physical controller, while other resources go to the active controller.
+All endpoint batches share one `TimeoutMs` deadline. A failure at one endpoint preserves prior
+outcomes and does not suppress other endpoints while time remains.
+
+```csharp
+var changes = new Dictionary<ConfigResource, IReadOnlyList<ConfigAlter>>
+{
+    [ConfigResource.Topic("orders")] = [ConfigAlter.Set("retention.ms", "86400000")],
+    [ConfigResource.Topic("audit")] = [ConfigAlter.Set("retention.ms", "172800000")]
+};
+var results = await admin.IncrementalAlterConfigsDetailedAsync(changes);
+var retry = changes.Where(pair =>
+    results[pair.Key].Outcome == AdminMutationOutcome.Failed &&
+    results[pair.Key].ErrorCode is ErrorCode.NotController or ErrorCode.ThrottlingQuotaExceeded)
+    .ToDictionary(pair => pair.Key, pair => pair.Value);
+if (retry.Count > 0)
+    await admin.IncrementalAlterConfigsDetailedAsync(retry);
+```
+
+The built-in retry policy already retries explicit controller/quota rejections within the original
+deadline. A targeted retry can use a fresh deadline after addressing the rejection. Other broker
+errors require an individual decision. Never replay successful resources, or automatically replay
+`Unknown` outcomes: incremental append/subtract can be unsafe to repeat after an ambiguous send.
+Inspect `DescribeConfigsAsync` and concurrent administrative changes first. Both APIs preserve
+`ValidateOnly`; success then confirms validation without applying the mutation.
+
+The in-memory capability models per-resource faults, retries, cancellation, snapshots, and deadlines.
+As with its existing convenience configuration APIs, it does not store or validate broker
+configuration values; `DescribeConfigsAsync` returns empty entry lists. Use the fault plan to model
+broker rejection, including topic and group scopes, and Kafka integration tests for actual config state.
 
 ## In-memory behavior
 
