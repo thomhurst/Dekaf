@@ -1079,6 +1079,121 @@ public sealed partial class ShareConsumerRenewalTests
         await Assert.That(batch.LastOffset).IsEqualTo(42);
     }
 
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Poll_PreparedParsingFails_ReleasesUndisclosedPayload(bool failDuringPreparation)
+    {
+        var connection = new CapturingConnection(ApiKey.ShareFetch, 2)
+        {
+            ShareFetchResponse = CreateFetchResponse(0, 42, recordCount: 2)
+        };
+        var preparer = new FailingAfterFirstRecordPreparer(failDuringPreparation);
+        await using var fixture = CreateFixture(connection, valueDeserializer: preparer);
+        PrepareForPoll(fixture.Consumer);
+        fixture.Consumer.Subscribe("topic");
+        var owners = (List<ShareRecordBatchOwner>)typeof(KafkaShareConsumer<string, string>)
+            .GetField("_polledBatchOwners", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .GetValue(fixture.Consumer)!;
+        preparer.CaptureOwner = () => owners[0];
+        await using var poll = fixture.Consumer.PollAsync().GetAsyncEnumerator();
+
+        await Assert.That(async () => await poll.MoveNextAsync()).Throws<InvalidOperationException>();
+
+        await Assert.That(owners.Count).IsEqualTo(0);
+        await Assert.That(preparer.UndisclosedOwner).IsNotNull();
+        await Assert.That(() => preparer.UndisclosedOwner!.Retain()).Throws<InvalidOperationException>();
+    }
+
+    [Test]
+    [Arguments(false, false)]
+    [Arguments(false, true)]
+    [Arguments(true, false)]
+    [Arguments(true, true)]
+    public async Task Poll_LaterPartitionFails_ReleasesBufferedOwnersAndPreservesDeliveries(
+        bool buffered, bool failDuringPreparation)
+    {
+        var firstConnection = new CapturingConnection(ApiKey.ShareFetch, 2)
+        {
+            ShareFetchResponse = CreateFetchResponse(0, 100)
+        };
+        var secondConnection = new CapturingConnection(ApiKey.ShareFetch, 2, brokerId: 2)
+        {
+            ShareFetchResponse = CreateFetchResponse(1, 200)
+        };
+        var preparer = new FailingAfterFirstRecordPreparer(failDuringPreparation);
+        await using var fixture = CreateFixture(firstConnection, secondConnection: secondConnection,
+            valueDeserializer: preparer);
+        PrepareForPoll(fixture.Consumer, new TopicPartition("topic", 0), new TopicPartition("topic", 1));
+        fixture.Consumer.Subscribe("topic");
+        var renewed = CreateRecord();
+        if (buffered)
+        {
+            fixture.Consumer.Acknowledge(renewed, AcknowledgeType.Renew);
+            ApplySuccessfulAcknowledgements(fixture.Consumer, RenewalAcknowledgements());
+            FlushPendingAcknowledgements(fixture.Consumer);
+        }
+        var owners = (List<ShareRecordBatchOwner>)typeof(KafkaShareConsumer<string, string>)
+            .GetField("_polledBatchOwners", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .GetValue(fixture.Consumer)!;
+        preparer.CaptureOwner = () => owners[0];
+        await using var poll = fixture.Consumer.PollAsync().GetAsyncEnumerator();
+        ShareConsumeResult<string, string>? delivered = null;
+        if (!buffered)
+        {
+            await Assert.That(await poll.MoveNextAsync()).IsTrue();
+            delivered = poll.Current;
+            await Assert.That(delivered.Offset).IsEqualTo(100);
+        }
+
+        await Assert.That(async () => await poll.MoveNextAsync()).Throws<InvalidOperationException>();
+
+        await Assert.That(preparer.UndisclosedOwner).IsNotNull();
+        await Assert.That(owners.Count).IsEqualTo(buffered ? 0 : 1);
+        if (buffered)
+        {
+            await Assert.That(() => preparer.UndisclosedOwner!.Retain()).Throws<InvalidOperationException>();
+            var active = GetActiveRenewedRecords(fixture.Consumer, new HashSet<TopicPartition> { new("topic", 0) });
+            await Assert.That(active).HasSingleItem();
+            await Assert.That(ReferenceEquals(active[0], renewed)).IsTrue();
+        }
+        else
+        {
+            preparer.UndisclosedOwner!.Retain();
+            preparer.UndisclosedOwner.Release();
+            await Assert.That(delivered!.Value).IsEqualTo("new-value");
+        }
+    }
+
+    private sealed class FailingAfterFirstRecordPreparer(bool failDuringPreparation)
+        : IDeserializer<string>, IAsyncDeserializerPreparer<string>
+    {
+        private int _calls;
+        internal Func<ShareRecordBatchOwner> CaptureOwner { get; set; } = null!;
+        internal ShareRecordBatchOwner? UndisclosedOwner { get; private set; }
+
+        public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context) =>
+            Serializers.String.Deserialize(data, context);
+
+        public bool TryDeserialize(ReadOnlyMemory<byte> data, SerializationContext context, out string value)
+        {
+            if (_calls++ == 0)
+            {
+                value = Deserialize(data, context);
+                return true;
+            }
+            UndisclosedOwner = CaptureOwner();
+            if (!failDuringPreparation)
+                throw new InvalidOperationException("Deserializer failure");
+            value = string.Empty;
+            return false;
+        }
+
+        public ValueTask PrepareAsync(ReadOnlyMemory<byte> data, SerializationContext context,
+            CancellationToken cancellationToken = default) =>
+            ValueTask.FromException(new InvalidOperationException("Preparation failure"));
+    }
+
     private static Fixture CreateFixture(
         CapturingConnection connection,
         ShareAcknowledgementMode acknowledgementMode = ShareAcknowledgementMode.Explicit,
