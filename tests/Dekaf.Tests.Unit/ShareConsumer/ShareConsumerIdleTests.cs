@@ -191,7 +191,7 @@ public sealed partial class ShareConsumerRenewalTests
         {
             ShareFetchResponse = CreateFetchResponse(partition: 0, offset: 42)
         };
-        await using var fixture = CreateFixture(connection);
+        await using var fixture = CreateFixture(connection, retryBackoffMs: 60_000);
         fixture.MetadataManager.Metadata.Update(new MetadataResponse
         {
             Brokers = [new BrokerMetadata { NodeId = 1, Host = "localhost", Port = 9092 }],
@@ -218,6 +218,56 @@ public sealed partial class ShareConsumerRenewalTests
         {
             await Assert.That(await pending).IsTrue();
             await Assert.That(connection.SendCount).IsGreaterThanOrEqualTo(2);
+        }
+        finally
+        {
+            await cancellation.CancelAsync();
+            try { await pending; }
+            catch (OperationCanceledException) { }
+        }
+    }
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task MissingLeader_CancellationInterruptsUnavailableMetadataBackoff(bool batch)
+    {
+        var missing = new MetadataResponse
+        {
+            Brokers = [new BrokerMetadata { NodeId = 1, Host = "localhost", Port = 9092 }],
+            Topics = [new TopicMetadata
+            {
+                ErrorCode = ErrorCode.None, Name = "topic", TopicId = TopicId,
+                Partitions = [new PartitionMetadata
+                {
+                    ErrorCode = ErrorCode.None, PartitionIndex = 0, LeaderId = -1,
+                    ReplicaNodes = [1], IsrNodes = [1]
+                }]
+            }]
+        };
+        var requested = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var connection = new CapturingConnection(ApiKey.ShareFetch, maximumVersion: 2)
+        {
+            MetadataResponse = missing,
+            OnSend = () => requested.TrySetResult()
+        };
+        await using var fixture = CreateFixture(connection, retryBackoffMs: 60_000);
+        fixture.MetadataManager.Metadata.Update(missing);
+        PrepareForPoll(fixture.Consumer);
+        fixture.Consumer.Subscribe("topic");
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await using var records = fixture.Consumer.PollAsync(cancellation.Token).GetAsyncEnumerator();
+        await using var batches = fixture.Consumer.PollBatchesAsync(cancellation.Token).GetAsyncEnumerator();
+        var pending = Task.Run(async () => batch
+            ? await batches.MoveNextAsync()
+            : await records.MoveNextAsync());
+        try
+        {
+            await requested.Task.WaitAsync(TimeSpan.FromSeconds(3));
+            await Assert.That(pending.IsCompleted).IsFalse();
+            await cancellation.CancelAsync();
+            await Assert.That(async () => await pending.WaitAsync(TimeSpan.FromSeconds(3)))
+                .Throws<OperationCanceledException>();
+            await Assert.That(connection.SendCount).IsEqualTo(1);
         }
         finally
         {

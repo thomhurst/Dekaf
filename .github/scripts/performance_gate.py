@@ -55,7 +55,7 @@ COMPONENTS = {
                             'ConsumerBatchInterceptorBenchmarks', 'ConsumerFollowerOffsetRetryBenchmarks'),
     'src/Dekaf/ShareConsumer/': ('ShareConsumerParsingBenchmarks', 'ShareConsumerBorrowedParsingBenchmarks', 'ShareFetchResponseDecodingBenchmarks',
                                  'ShareAcknowledgementTrackingBenchmarks',
-                                 'ShareConsumerPollBenchmarks', 'ShareConsumerUnsubscribeBenchmarks', 'ShareConsumerSparsePollBenchmarks', 'ShareBatchAcknowledgementBenchmarks', 'ShareBatchScalingBenchmarks',
+                                 'ShareConsumerPollBenchmarks', 'ShareConsumerIdleAssignmentBenchmarks', 'ShareConsumerMissingLeaderBenchmarks', 'ShareConsumerUnsubscribeBenchmarks', 'ShareConsumerSparsePollBenchmarks', 'ShareBatchAcknowledgementBenchmarks', 'ShareBatchScalingBenchmarks',
                                  'ShareBatchRenewalPollBenchmarks', 'ShareBatchPendingStateBenchmarks',
                                  'ShareBatchChunkedRenewalBenchmarks'),
     'src/Dekaf/Networking/': ('ResponseFrameReaderBenchmarks', 'PendingRequestTableBenchmarks',

@@ -117,7 +117,7 @@ class SelectionTests(unittest.TestCase):
     def test_share_consumer_selects_polling_and_batch_fixtures(self):
         path = 'src/Dekaf/ShareConsumer/KafkaShareConsumer.cs'
         selected = self.names(gate.select([path], root=REPO_ROOT))
-        for fixture in ('ShareConsumerPollBenchmarks', 'ShareConsumerUnsubscribeBenchmarks', 'ShareConsumerSparsePollBenchmarks', 'ShareConsumerBorrowedParsingBenchmarks',
+        for fixture in ('ShareConsumerPollBenchmarks', 'ShareConsumerIdleAssignmentBenchmarks', 'ShareConsumerMissingLeaderBenchmarks', 'ShareConsumerUnsubscribeBenchmarks', 'ShareConsumerSparsePollBenchmarks', 'ShareConsumerBorrowedParsingBenchmarks',
                         'ShareBatchAcknowledgementBenchmarks', 'ShareBatchScalingBenchmarks',
                         'ShareBatchRenewalPollBenchmarks', 'ShareBatchPendingStateBenchmarks',
                         'ShareBatchChunkedRenewalBenchmarks'):

@@ -1087,7 +1087,8 @@ public sealed partial class ShareConsumerRenewalTests
         ShareAcknowledgementCommitCallback? acknowledgementCommitCallback = null,
         IDeserializer<string>? valueDeserializer = null,
         Func<CancellationToken, ValueTask<IKafkaConnection>>? leaseHandler = null,
-        int fetchMaxWaitMs = 200)
+        int fetchMaxWaitMs = 200,
+        int retryBackoffMs = 100)
     {
         var options = new ShareConsumerOptions
         {
@@ -1096,6 +1097,8 @@ public sealed partial class ShareConsumerRenewalTests
             AcknowledgementMode = acknowledgementMode,
             MaxPollRecords = maxPollRecords,
             FetchMaxWaitMs = fetchMaxWaitMs,
+            RetryBackoffMs = retryBackoffMs,
+            RetryBackoffMaxMs = Math.Max(retryBackoffMs, 1000),
             AcknowledgementCommitCallback = acknowledgementCommitCallback
         };
         var pool = Substitute.For<IConnectionPool>();
@@ -1489,6 +1492,7 @@ public sealed partial class ShareConsumerRenewalTests
         internal short LastApiVersion { get; private set; }
         internal ShareFetchRequest? ShareFetchRequest { get; private set; }
         internal ShareAcknowledgeRequest? ShareAcknowledgeRequest { get; private set; }
+        internal MetadataResponse? MetadataResponse { get; init; }
         internal ShareFetchResponse? ShareFetchResponse { get; init; }
         internal Queue<ShareFetchResponse>? ShareFetchResponses { get; init; }
         internal ShareAcknowledgeResponse? ShareAcknowledgeResponse { get; init; }
@@ -1556,7 +1560,7 @@ public sealed partial class ShareConsumerRenewalTests
                         Responses = [],
                         NodeEndpoints = []
                     }),
-                MetadataRequest => new MetadataResponse
+                MetadataRequest => MetadataResponse ?? new MetadataResponse
                 {
                     Brokers = [new BrokerMetadata { NodeId = 1, Host = "localhost", Port = 9092 }],
                     Topics =

@@ -119,6 +119,13 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
             }
 
             CompletePollFetch(fetchResults, pendingAcks, sentAcknowledgementPartitionCount);
+            if (fetchResults.Length == 0)
+            {
+                // No broker request provided long-poll back-pressure. Refresh missing
+                // leaders and use the configured retry delay only if none is available.
+                await PrepareRequestRetryAsync(0, cancellationToken, assignment).ConfigureAwait(false);
+                continue;
+            }
 
             foreach (var result in fetchResults)
             {

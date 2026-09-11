@@ -335,6 +335,13 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
             }
 
             CompletePollFetch(fetchResults, pendingAcks, sentAcknowledgementPartitionCount);
+            if (fetchResults.Length == 0)
+            {
+                // No broker request provided long-poll back-pressure. Refresh missing
+                // leaders and use the configured retry delay only if none is available.
+                await PrepareRequestRetryAsync(0, cancellationToken, assignment).ConfigureAwait(false);
+                continue;
+            }
 
             // A hosted stop observes every in-flight reply without delivering fetched
             // records or replaying renewed work. Close releases remaining acquisitions.
@@ -1349,7 +1356,10 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         }
     }
 
-    private async ValueTask PrepareRequestRetryAsync(int zeroBasedAttempt, CancellationToken cancellationToken)
+    private async ValueTask PrepareRequestRetryAsync(
+        int zeroBasedAttempt,
+        CancellationToken cancellationToken,
+        TopicPartitionSet? assignmentAwaitingLeader = null)
     {
         try
         {
@@ -1368,6 +1378,14 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
             // Same best-effort behavior for transient transport failures.
         }
 
+        if (assignmentAwaitingLeader is not null)
+        {
+            foreach (var partition in assignmentAwaitingLeader)
+            {
+                if (_metadataManager.Metadata.GetPartitionLeader(partition.Topic, partition.Partition) is not null)
+                    return;
+            }
+        }
         var delayMs = ExponentialRetryBackoff.CalculateDelayMilliseconds(
             _options.RetryBackoffMs,
             _options.RetryBackoffMaxMs,
