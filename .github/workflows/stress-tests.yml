@@ -41,7 +41,7 @@ on:
         required: false
         default: '180'
       fixed_worker_threads:
-        description: 'Exact-SHA experiment only: fixed .NET worker pool for both controls and candidate (0 keeps runtime defaults)'
+        description: 'Exact-SHA experiment only: prestarted, retained .NET workers for both controls and candidate (0 keeps runtime defaults)'
         required: false
         default: '0'
       message_size:
@@ -172,7 +172,13 @@ jobs:
           lane="${LANE:-all}"
 
           fixed_workers="${FIXED_WORKER_THREADS:-0}"
-          if ! [[ "$fixed_workers" =~ ^(0|[1-9][0-9]{0,3})$ ]] || (( fixed_workers > 1024 )); then
+          if ! [[ "$fixed_workers" =~ ^0*[0-9]{1,4}$ ]]; then
+            echo '::error::fixed_worker_threads must be an integer from 0 to 1024.'
+            exit 1
+          fi
+          # Validate decimal digits before arithmetic; leading zeros are not octal.
+          fixed_workers=$((10#$fixed_workers))
+          if (( fixed_workers > 1024 )); then
             echo '::error::fixed_worker_threads must be an integer from 0 to 1024.'
             exit 1
           fi
@@ -479,16 +485,21 @@ jobs:
         env:
           FIXED_WORKER_THREADS: ${{ inputs.fixed_worker_threads }}
         run: |
+          # Normalize decimal input before printf, which otherwise treats leading zeros as octal.
+          worker_count=$((10#$FIXED_WORKER_THREADS))
+          if [ "$worker_count" -eq 0 ]; then exit 0; fi
           # .NET 10 reads these supported runtime settings as hexadecimal values.
           # Apply them after builds, equally to every validation and A1/B/A2 process.
           # Runtime sample validation still requires a stable observed thread count.
-          printf -v worker_hex '0x%x' "$FIXED_WORKER_THREADS"
+          printf -v worker_hex '0x%x' "$worker_count"
           {
             echo "DOTNET_ThreadPool_ForceMinWorkerThreads=$worker_hex"
             echo "DOTNET_ThreadPool_ForceMaxWorkerThreads=$worker_hex"
+            echo "DOTNET_ThreadPool_ThreadTimeoutMs=-1"
+            echo "DEKAF_STRESS_FIXED_WORKER_THREADS=$worker_count"
           } >> "$GITHUB_ENV"
-          echo "fixed_worker_threads=$FIXED_WORKER_THREADS min=max=$worker_hex" >> aba-results/provenance.txt
-          echo "Fixed .NET worker pool experiment: $FIXED_WORKER_THREADS workers in both controls and candidate." >> "$GITHUB_STEP_SUMMARY"
+          echo "fixed_worker_threads=$worker_count min=max=$worker_hex idle_timeout_ms=-1 prestart=required" >> aba-results/provenance.txt
+          echo "Fixed .NET worker pool experiment: $worker_count workers prestarted and retained in both controls and candidate; actual settings recorded in each process's result directory." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Start Kafka
         if: matrix.brokers == 1 && matrix.baseline_sha == '' && matrix.scenario != 'hosted-share'
