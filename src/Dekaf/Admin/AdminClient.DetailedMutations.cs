@@ -14,7 +14,9 @@ public sealed partial class AdminClient
         List<TItem> items, Func<TItem, TKey> getKey, MutationProtocol protocol, int timeoutMs,
         Func<List<TItem>, short, Dictionary<TKey, AdminMutationResult>, TRequest> createRequest,
         Func<List<TItem>, TResponse, Dictionary<TKey, AdminMutationResult>> readResponse,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Func<CancellationToken, ValueTask<KafkaConnectionLease>>? leaseConnection = null,
+        CancellationTokenSource? sharedDeadline = null)
         where TKey : notnull
         where TRequest : IKafkaRequest<TResponse>
         where TResponse : IKafkaResponse
@@ -22,9 +24,13 @@ public sealed partial class AdminClient
         var results = new Dictionary<TKey, AdminMutationResult>(items.Count);
         if (items.Count == 0) return results;
 
-        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        if (timeoutMs == 0) deadline.Cancel();
-        else deadline.CancelAfter(timeoutMs);
+        using var ownedDeadline = sharedDeadline is null ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken) : null;
+        var deadline = sharedDeadline ?? ownedDeadline!;
+        if (ownedDeadline is not null)
+        {
+            if (timeoutMs == 0) deadline.Cancel();
+            else deadline.CancelAfter(timeoutMs);
+        }
         var token = deadline.Token;
         var pending = items;
         try
@@ -36,7 +42,9 @@ public sealed partial class AdminClient
                 KafkaConnectionLease acquiredLease;
                 try
                 {
-                    if (protocol.GroupId is { } groupId)
+                    if (leaseConnection is not null)
+                        acquiredLease = await leaseConnection(token).ConfigureAwait(false);
+                    else if (protocol.GroupId is { } groupId)
                         acquiredLease = await LeaseDetailedGroupCoordinatorAsync(groupId, token).ConfigureAwait(false);
                     else if (protocol.BrokerOrController)
                         acquiredLease = await LeaseBrokerOrControllerConnectionAsync(protocol.ApiKey, token).ConfigureAwait(false);

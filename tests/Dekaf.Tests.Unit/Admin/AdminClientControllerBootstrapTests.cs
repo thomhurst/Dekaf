@@ -493,6 +493,33 @@ public sealed class AdminClientControllerBootstrapTests
             .SendAsync<DescribeConfigsRequest, DescribeConfigsResponse>(default!, default, default);
     }
 
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task DetailedConfigs_RouteBrokerChangesToActiveControllerAndLoggerToPhysicalController(bool incremental)
+    {
+        await using var context = new ControllerAdminContext();
+        ConfigResource[]? activeResources = null;
+        ConfigResource[]? physicalResources = null;
+        AdminClientDetailedConfigTests.Setup(context.ActiveController, incremental, resources =>
+        {
+            activeResources = resources;
+            return AdminClientDetailedConfigTests.Success(resources);
+        });
+        AdminClientDetailedConfigTests.Setup(context.OtherController, incremental, resources =>
+        {
+            physicalResources = resources;
+            return AdminClientDetailedConfigTests.Success(resources);
+        });
+        var broker = ConfigResource.Broker(1);
+        var logger = ConfigResource.BrokerLogger(1);
+        var topic = ConfigResource.Topic("orders");
+        var results = await AdminClientDetailedConfigTests.Invoke(context.Client, incremental, broker, logger, topic);
+        await Assert.That(results.Values.All(static result => result.IsSuccess)).IsTrue();
+        await Assert.That(activeResources!).IsEquivalentTo([broker, topic]);
+        await Assert.That(physicalResources!).IsEquivalentTo([logger]);
+    }
+
     private static DescribeQuorumResponse CreateQuorumResponse(int leaderId) => new()
     {
         ErrorCode = ErrorCode.None,
@@ -586,6 +613,8 @@ public sealed class AdminClientControllerBootstrapTests
             _metadataManager.SetApiVersion(ApiKey.DescribeQuorum, 0, 2);
             _metadataManager.SetApiVersion(ApiKey.CreateTopics, 0, 7);
             _metadataManager.SetApiVersion(ApiKey.DescribeConfigs, 4, 4);
+            _metadataManager.SetApiVersion(ApiKey.AlterConfigs, 0, 2);
+            _metadataManager.SetApiVersion(ApiKey.IncrementalAlterConfigs, 0, 1);
             Client = new AdminClient(
                 new AdminClientOptions
                 {
