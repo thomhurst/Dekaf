@@ -26,83 +26,92 @@ internal static class StressTestHelpers
         throughput.Warmup = await ProducerWarmup.RunAsync(options.ProducerWarmupSeconds,
             async (duration, cycleThroughput, token) =>
             {
-                var cycle = await RunCycleAsync(duration, cycleThroughput, token).ConfigureAwait(false);
+                var cycle = await RunConsumerCycleAsync(options, scenario, consume, connectionsPerBroker,
+                    captureConsumerDiagnostics, duration, cycleThroughput, token).ConfigureAwait(false);
                 return new ProducerWorkloadResult(cycle.WorkloadSeconds, cycle.Result.Throughput, cycle.Result.GcStats);
             }, cancellationToken).ConfigureAwait(false);
-        return (await RunCycleAsync(TimeSpan.FromMinutes(options.DurationMinutes), throughput, cancellationToken).ConfigureAwait(false)).Result;
+        return (await RunConsumerCycleAsync(options, scenario, consume, connectionsPerBroker,
+            captureConsumerDiagnostics, TimeSpan.FromMinutes(options.DurationMinutes), throughput, cancellationToken).ConfigureAwait(false)).Result;
+    }
 
-        async Task<(StressTestResult Result, double WorkloadSeconds)> RunCycleAsync(
-            TimeSpan duration, ThroughputTracker tracker, CancellationToken token)
+    internal static async Task<(StressTestResult Result, double WorkloadSeconds)> RunConsumerCycleAsync(
+        StressTestOptions options, IStressTestScenario scenario,
+        Func<ThroughputTracker, CancellationToken, Task> consume, int connectionsPerBroker,
+        Func<ConsumerDiagnosticSnapshot?>? captureConsumerDiagnostics,
+        TimeSpan duration, ThroughputTracker tracker, CancellationToken token)
+    {
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        GC.Collect();
+        using var gcStats = new GcStats();
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(token);
+        // The duration stops ingress. Observers stay alive until the consumer has
+        // finished its current pass and drained, including any deadline overrun.
+        using var observations = CancellationTokenSource.CreateLinkedTokenSource(token);
+        using var diagnostics = captureConsumerDiagnostics is null ? null
+            : new ConsumerFetchDiagnosticsTracker(options.Topic, enabled: options.EnableConsumerFetchDiagnostics);
+        if (captureConsumerDiagnostics?.Invoke() is { } initial)
+            diagnostics?.Start(initial);
+
+        var startedAt = DateTime.UtcNow;
+        if (tracker.Warmup is not null)
+            Console.WriteLine($"  Running {scenario.Client} {scenario.Name} stress test for {options.DurationMinutes} minutes...");
+        LogResourceUsage("Initial");
+        tracker.Start();
+        var stop = ProducerWorkload.StopIngressAsync(cts, duration, TimeProvider.System);
+        using var watchdog = options.ProgressWatchdog.Track(tracker, scenario.Client, scenario.Name,
+            captureConsumerDiagnostics: captureConsumerDiagnostics);
+        var sampler = RunSamplerAsync(tracker, observations.Token);
+        var resources = RunResourceMonitorAsync(observations.Token);
+        var diagnosticSampler = diagnostics?.RunSamplerAsync(captureConsumerDiagnostics!, observations.Token) ?? Task.CompletedTask;
+        double workloadSeconds;
+        try
         {
-            GC.Collect();
-            GC.WaitForPendingFinalizers();
-            GC.Collect();
-            using var gcStats = new GcStats();
-            using var cts = CancellationTokenSource.CreateLinkedTokenSource(token);
-            using var diagnostics = captureConsumerDiagnostics is null ? null
-                : new ConsumerFetchDiagnosticsTracker(options.Topic, enabled: options.EnableConsumerFetchDiagnostics);
-            if (captureConsumerDiagnostics?.Invoke() is { } initial)
-                diagnostics?.Start(initial);
-
-            var startedAt = DateTime.UtcNow;
-            if (tracker.Warmup is not null)
-                Console.WriteLine($"  Running {scenario.Client} {scenario.Name} stress test for {options.DurationMinutes} minutes...");
-            LogResourceUsage("Initial");
-            tracker.Start();
-            var stop = ProducerWorkload.StopIngressAsync(cts, duration, TimeProvider.System);
-            using var watchdog = options.ProgressWatchdog.Track(tracker, scenario.Client, scenario.Name,
-                captureConsumerDiagnostics: captureConsumerDiagnostics);
-            var sampler = RunSamplerAsync(tracker, cts.Token);
-            var resources = RunResourceMonitorAsync(cts.Token);
-            var diagnosticSampler = diagnostics?.RunSamplerAsync(captureConsumerDiagnostics!, cts.Token) ?? Task.CompletedTask;
-            double workloadSeconds;
-            try
-            {
-                await consume(tracker, cts.Token).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (cts.IsCancellationRequested && !token.IsCancellationRequested)
-            {
-                // The declared workload duration ended; the iterator has unwound.
-            }
-            catch (Exception error) when (!token.IsCancellationRequested)
-            {
-                // Retain the replay failure even if an observer also fails during cleanup.
-                Console.Error.WriteLine($"  {scenario.Client} {scenario.Name} error: {error}");
-                tracker.RecordError(error, $"{scenario.Name} loop");
-            }
-            finally
-            {
-                workloadSeconds = tracker.Elapsed.TotalSeconds;
-                cts.Cancel();
-                await stop.ConfigureAwait(false);
-                try { await Task.WhenAll(sampler, resources, diagnosticSampler).ConfigureAwait(false); }
-                catch (OperationCanceledException) when (cts.IsCancellationRequested) { }
-                tracker.Stop();
-                gcStats.Capture();
-            }
-            token.ThrowIfCancellationRequested();
-            if (captureConsumerDiagnostics is not null)
-                diagnostics?.TryTakeSample(captureConsumerDiagnostics);
-            Console.WriteLine($"  Completed: {tracker.MessageCount:N0} messages, {tracker.GetAverageMessagesPerSecond():N0} msg/sec");
-            LogResourceUsage("Final");
-            return (new StressTestResult
-            {
-                Scenario = scenario.Name,
-                Client = scenario.Client,
-                DurationMinutes = options.DurationMinutes,
-                BrokerCount = options.BrokerCount,
-                MessageSizeBytes = options.MessageSizeBytes,
-                ConsumerSeedBatchSizeBytes = options.ConsumerSeedBatchSizeBytes,
-                ConsumerConnectionsPerBroker = connectionsPerBroker,
-                StartedAtUtc = startedAt,
-                CompletedAtUtc = DateTime.UtcNow,
-                Throughput = tracker.GetSnapshot(),
-                Latency = null,
-                GcStats = gcStats.ToSnapshot(),
-                CpuTimeSeconds = tracker.CpuTimeSeconds,
-                ConsumerFetchDiagnostics = diagnostics?.GetSnapshot()
-            }, workloadSeconds);
+            await consume(tracker, cts.Token).ConfigureAwait(false);
         }
+        catch (OperationCanceledException) when (cts.IsCancellationRequested && !token.IsCancellationRequested)
+        {
+            // The declared workload duration ended; the iterator has unwound.
+        }
+        catch (Exception error) when (!token.IsCancellationRequested)
+        {
+            // Retain the replay failure even if an observer also fails during cleanup.
+            Console.Error.WriteLine($"  {scenario.Client} {scenario.Name} error: {error}");
+            tracker.RecordError(error, $"{scenario.Name} loop");
+        }
+        finally
+        {
+            workloadSeconds = tracker.Elapsed.TotalSeconds;
+            cts.Cancel();
+            observations.Cancel();
+            await stop.ConfigureAwait(false);
+            try { await Task.WhenAll(sampler, resources, diagnosticSampler).ConfigureAwait(false); }
+            catch (OperationCanceledException) when (observations.IsCancellationRequested) { }
+            tracker.Stop();
+            gcStats.Capture();
+        }
+        token.ThrowIfCancellationRequested();
+        if (captureConsumerDiagnostics is not null)
+            diagnostics?.TryTakeSample(captureConsumerDiagnostics);
+        Console.WriteLine($"  Completed: {tracker.MessageCount:N0} messages, {tracker.GetAverageMessagesPerSecond():N0} msg/sec");
+        LogResourceUsage("Final");
+        return (new StressTestResult
+        {
+            Scenario = scenario.Name,
+            Client = scenario.Client,
+            DurationMinutes = options.DurationMinutes,
+            BrokerCount = options.BrokerCount,
+            MessageSizeBytes = options.MessageSizeBytes,
+            ConsumerSeedBatchSizeBytes = options.ConsumerSeedBatchSizeBytes,
+            ConsumerConnectionsPerBroker = connectionsPerBroker,
+            StartedAtUtc = startedAt,
+            CompletedAtUtc = DateTime.UtcNow,
+            Throughput = tracker.GetSnapshot(),
+            Latency = null,
+            GcStats = gcStats.ToSnapshot(),
+            CpuTimeSeconds = tracker.CpuTimeSeconds,
+            ConsumerFetchDiagnostics = diagnostics?.GetSnapshot()
+        }, workloadSeconds);
     }
 
     /// <summary>

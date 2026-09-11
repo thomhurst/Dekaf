@@ -1,6 +1,6 @@
 # Stress runner
 
-For the manual EF outbox workload, see [idle and active outbox coverage](Outbox.md).
+For the manual EF outbox workload, see [idle and active outbox coverage](Outbox.md). For public key-ordered processing, see [keyed consumer replay](KeyedConsumer.md).
 
 `hosted-share` is an explicit manual scenario. It runs an idempotent live producer and two instances of the same hosted share service under distinct DI keys in one Kafka share group. The `hosted-share-1b` workflow lane is excluded from both `lane=all` and `full_run=true`; the existing full matrix remains 12 jobs.
 

@@ -25,7 +25,7 @@ class StressTimeoutTests(unittest.TestCase):
         ):
             with self.subTest(baseline=bool(baseline), segments=segments, warmup=warmup):
                 selected = subprocess.run(
-                    ["jq", "-c", "--arg", "lane", "outbox-1b", "--arg", "client", "dekaf",
+                    ["jq", "-c", "--arg", "keyed_shape", "scalar", "--arg", "lane", "outbox-1b", "--arg", "client", "dekaf",
                      "--arg", "shape", "cheap", "--arg", "profile_mode", "off",
                      "--arg", "baseline_sha", baseline, "--argjson", "aba_segments", str(segments),
                      selection.group("filter")],

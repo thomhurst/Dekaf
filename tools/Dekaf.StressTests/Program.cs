@@ -19,7 +19,7 @@ namespace Dekaf.StressTests;
 /// Options:
 ///   --duration &lt;minutes&gt;    Test duration in minutes (default: 15)
 ///   --message-size &lt;bytes&gt;  Message size in bytes (default: 1000)
-///   --scenario &lt;name&gt;       Run specific scenario: producer, producer-idempotent, producer-acks-all, producer-async, producer-async-idempotent, producer-transactional, producer-roundtrip-steady, consumer, consumer-batch, consumer-raw, consumer-raw-batch, consumer-follower-recovery, hosted-share, outbox, all (default: all)
+///   --scenario &lt;name&gt;       Run specific scenario: producer, producer-idempotent, producer-acks-all, producer-async, producer-async-idempotent, producer-transactional, producer-roundtrip-steady, consumer, consumer-batch, consumer-raw, consumer-raw-batch, consumer-keyed, consumer-follower-recovery, hosted-share, outbox, all (default: all)
 ///   --client &lt;name&gt;         Run specific client: dekaf, confluent, all (default: all)
 ///   --output &lt;path&gt;         Output directory for results (default: ./results)
 ///   --brokers &lt;count&gt;      Number of Kafka brokers (default: 1, use 3 for multi-broker)
@@ -121,6 +121,8 @@ public static class Program
 
     private static async Task<int> RunStressTestsAsync(CliOptions options)
     {
+        if (options.Scenario == "consumer-keyed")
+            KeyedConsumerWorkload.Validate(options.KeyedShape, options.Partitions, options.KeyedRecordsPerPartition, options.MessageSizeBytes);
         Console.WriteLine("Dekaf Stress Test Runner");
         Console.WriteLine($"Duration: {options.DurationMinutes} minutes");
         Console.WriteLine($"Message Size: {options.MessageSizeBytes} bytes");
@@ -209,6 +211,10 @@ public static class Program
             await SeedConsumerTopicAsync(kafka.BootstrapServers, consumerTopic, options).ConfigureAwait(false);
         }
 
+        if (options.Scenario == "consumer-keyed")
+            await KeyedConsumerStressTest.SeedAsync(kafka.BootstrapServers, consumerTopic, options.KeyedShape,
+                options.Partitions, options.KeyedRecordsPerPartition, options.MessageSizeBytes).ConfigureAwait(false);
+
         var results = new List<StressTestResult>();
         var runStartedAt = DateTime.UtcNow;
 
@@ -245,6 +251,8 @@ public static class Program
             ProducerWarmupSeconds = options.ProducerWarmupSeconds,
             MessageSizeBytes = options.MessageSizeBytes,
             Partitions = options.Partitions,
+            KeyedShape = options.KeyedShape,
+            KeyedRecordsPerPartition = options.KeyedRecordsPerPartition,
             LingerMs = options.LingerMs,
             BatchSize = options.BatchSize,
             ConsumerSeedBatchSizeBytes = UsesProducerTopic(scenario.Name) ? null : ConsumerSeedBatchSizeBytes,
@@ -554,6 +562,11 @@ public static class Program
                     $"run ended early ({result.Throughput.ElapsedSeconds:N0}s of {expectedSeconds:N0}s)");
             }
 
+            if (result.Scenario == "consumer-keyed" && (result.KeyedConsumer is not { } keyed
+                || keyed.CompletedPasses <= 0 || keyed.CompletedRecords != accepted
+                || keyed.CompletedRecords != keyed.CompletedPasses * keyed.Partitions * keyed.RecordsPerPartition))
+                reasons.Add("keyed consumer replay did not complete every seeded pass");
+
             if (result.Outbox is { } outbox
                 && (!outbox.HasCompleteDuration(result.DurationMinutes, result.Throughput.ElapsedSeconds)
                     || outbox.CommittedMessages != accepted || outbox.UniqueConsumedMessages != accepted
@@ -833,6 +846,7 @@ public static class Program
                     && !s.Name.Equals("hosted-share", StringComparison.OrdinalIgnoreCase)
                     && !s.Name.Equals("outbox", StringComparison.OrdinalIgnoreCase)
                     && !s.Name.Equals("consumer-follower-recovery", StringComparison.OrdinalIgnoreCase)
+                    && !s.Name.Equals("consumer-keyed", StringComparison.OrdinalIgnoreCase)
                 : s.Name.Equals(options.Scenario, StringComparison.OrdinalIgnoreCase))
             .Where(s => options.Client == "all" || s.Client.Equals(options.Client, StringComparison.OrdinalIgnoreCase))
             .ToList();
@@ -863,6 +877,7 @@ public static class Program
             new ProducerRoundTripStressTest(),
             new ConfluentProducerRoundTripStressTest(),
             new ConsumerStressTest(),
+            new KeyedConsumerStressTest(),
             new ConsumerBatchStressTest(),
             new ConsumerRawStressTest(),
             new ConsumerRawBatchStressTest(),
@@ -959,6 +974,13 @@ public static class Program
                     break;
                 case "--duration":
                     options.DurationMinutes = int.Parse(args[++i]);
+                    break;
+                case "--keyed-shape":
+                    options.KeyedShape = args[++i];
+                    _ = KeyedConsumerWorkload.KeySize(options.KeyedShape);
+                    break;
+                case "--keyed-records-per-partition":
+                    options.KeyedRecordsPerPartition = ParsePositiveInt(args[++i], arg);
                     break;
                 case "--producer-warmup-seconds":
                     options.ProducerWarmupSeconds = ParsePositiveInt(args[++i], "--producer-warmup-seconds");
@@ -1135,7 +1157,7 @@ public static class Program
               --duration <minutes>    Test duration in minutes (default: 15)
               --producer-warmup-seconds <n>  Producer and consumer replay workload warmup (default: {ProducerWarmup.DefaultSeconds}; minimum: {ProducerWarmup.MinimumSeconds})
               --message-size <bytes>  Message size in bytes (default: 1000)
-              --scenario <name>       Run specific scenario: producer, producer-idempotent, producer-acks-all, producer-async, producer-async-idempotent, producer-transactional, producer-roundtrip-steady, consumer, consumer-batch, consumer-raw, consumer-raw-batch, consumer-follower-recovery, hosted-share, outbox, soak, all (default: all; all excludes hosted-share, outbox, consumer-follower-recovery and soak)
+              --scenario <name>       Run specific scenario: producer, producer-idempotent, producer-acks-all, producer-async, producer-async-idempotent, producer-transactional, producer-roundtrip-steady, consumer, consumer-batch, consumer-raw, consumer-raw-batch, consumer-keyed, consumer-follower-recovery, hosted-share, outbox, soak, all (default: all; all excludes consumer-keyed, hosted-share, outbox, consumer-follower-recovery and soak)
               --client <name>         Run specific client: dekaf, confluent, all (default: all)
               --output <path>         Output directory for results (default: ./results)
               --partitions <count>    Number of topic partitions (default: 6)
@@ -1145,6 +1167,8 @@ public static class Program
               --brokers <count>      Number of Kafka brokers (default: 1, use 3 for multi-broker)
               --connections-per-broker <n>  TCP connections per broker (default: 1, pass 3 for multi-connection comparison)
               --adaptive-connections  Keep Dekaf's default adaptive connection scaling (results labelled "Dekaf (adaptive)")
+              --keyed-shape <name>    consumer-keyed only: scalar, binary, large-distinct, large-colliding (default: scalar)
+              --keyed-records-per-partition <n>  Keyed replay size, multiple of 32 (default: 32768; maximum: 65536)
               --seed-messages <count> Messages pre-seeded into the consumer topic (default: 2000000)
               --producer-delivery-diagnostics  Capture Dekaf producer delivery diagnostics on message loss and watchdog stalls
               --consumer-fetch-diagnostics  Capture Dekaf consumer fetch diagnostics (debug runs only; adds Dekaf-only overhead)
@@ -1206,6 +1230,8 @@ public static class Program
         public int ConnectionsPerBroker { get; set; } = 1;
         public bool AdaptiveConnections { get; set; }
         public int SeedMessages { get; set; } = 2_000_000;
+        public string KeyedShape { get; set; } = "scalar";
+        public int KeyedRecordsPerPartition { get; set; } = KeyedConsumerWorkload.DefaultRecordsPerPartition;
         public int RoundTripSteadySeconds { get; set; } = 60;
         public bool EnableProducerDeliveryDiagnostics { get; set; }
         public bool EnableConsumerFetchDiagnostics { get; set; }
