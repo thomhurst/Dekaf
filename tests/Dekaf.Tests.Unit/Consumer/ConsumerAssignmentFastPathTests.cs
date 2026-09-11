@@ -1422,6 +1422,40 @@ public sealed class ConsumerAssignmentFastPathTests
     }
 
     [Test]
+    [Arguments(2)]
+    [Arguments(3)]
+    [Arguments(5)]
+    public async Task WritePrefetchedItemsAsync_OverlappingResponsesPublishEachOffsetOnce(int secondRecordCount)
+    {
+        await using var consumer = CreateConsumer();
+        consumer.IncrementalAssign([new TopicPartitionOffset("test-topic", 0, 0)]);
+        // Both responses finish parsing before either is published, as can happen
+        // when a partition changes its fetch destination from leader to follower.
+        var first = CreateFetchWithRecords(3);
+        var overlapping = CreateFetchWithRecords(secondRecordCount);
+        await WritePrefetchedItemsAsync(consumer, [first]);
+        await WritePrefetchedItemsAsync(consumer, [overlapping]);
+
+        var flushPositions = consumer.GetType().GetMethod("FlushConsumedPositions", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .CreateDelegate<Func<PendingFetchData, bool>>(consumer);
+        var offsets = new List<long>();
+        while (GetPrefetchBuffer(consumer).TryRead(out var pending))
+        {
+            using (pending)
+            {
+                while (pending.MoveNext())
+                    offsets.Add(pending.CurrentBaseOffset + pending.CurrentRecord.OffsetDelta);
+                flushPositions(pending);
+            }
+        }
+        SetPrefetchedBytes(consumer, 0);
+        var expectedCount = Math.Max(3, secondRecordCount);
+        await Assert.That(offsets.SequenceEqual(Enumerable.Range(0, expectedCount).Select(static value => (long)value))).IsTrue();
+        await Assert.That(offsets.Count).IsEqualTo(expectedCount);
+        await Assert.That(consumer.GetPosition(new TopicPartition("test-topic", 0))).IsEqualTo((long)expectedCount);
+    }
+
+    [Test]
     public async Task WritePrefetchedItemsAsync_DropsUnassignedPartitionsBeforeAdvancingFetchPosition()
     {
         await using var consumer = CreateConsumer();
@@ -1529,11 +1563,13 @@ public sealed class ConsumerAssignmentFastPathTests
             cts.Token).AsTask();
         await Assert.That(writeTask.IsCompleted).IsFalse();
 
+        var positionWhileBlocked = GetFetchPositions(consumer)[partition];
         cts.Cancel();
         await Assert.That(async () => await writeTask).Throws<OperationCanceledException>();
 
         await Assert.That(memory.DisposeCount).IsEqualTo(1);
         await Assert.That(GetPrefetchedBytes(consumer)).IsEqualTo(0L);
+        await Assert.That(positionWhileBlocked).IsEqualTo(0L);
     }
 
     [Test]
@@ -3245,6 +3281,7 @@ public sealed class ConsumerAssignmentFastPathTests
             {
                 BaseOffset = 0,
                 BaseTimestamp = 1700000000000L,
+                LastOffsetDelta = recordCount - 1,
                 Attributes = 0,
                 Records = records
             }

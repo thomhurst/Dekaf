@@ -1,5 +1,6 @@
 using Dekaf.Consumer;
 using Dekaf.Producer;
+using Dekaf.Serialization;
 using Microsoft.Extensions.Logging;
 
 namespace Dekaf.Tests.Integration;
@@ -9,6 +10,87 @@ namespace Dekaf.Tests.Integration;
 [ClassDataSource<RackAwareKafkaContainer>(Shared = SharedType.PerTestSession)]
 public sealed class ConsumerRackAwarenessIntegrationTests(RackAwareKafkaContainer kafka)
 {
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task RackAwarePrefetch_PreservesEveryPartitionSequence(bool batch)
+    {
+        const int partitions = 6;
+        const int recordsPerPartition = 10_000;
+        var topic = await kafka.CreateTopicWithRemoteLeaderAndLocalFollowerAsync(partitions);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        await using (var producer = await Kafka.CreateProducer<string, byte[]>()
+            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithAcks(Acks.All)
+            .WithIdempotence(true)
+            .WithBatchSize(1024 * 1024)
+            .BuildAsync(timeout.Token))
+        {
+            var value = new byte[1000];
+            for (var offset = 0; offset < recordsPerPartition; offset++)
+            {
+                for (var partition = 0; partition < partitions; partition++)
+                    await producer.FireAsync(new ProducerMessage<string, byte[]>
+                    {
+                        Topic = topic, Partition = partition, Key = "key", Value = value
+                    });
+            }
+            await producer.FlushAsync(timeout.Token);
+        }
+
+        // Real connections exercise routing changes; no response or connection wrapper.
+        await using var consumer = new KafkaConsumer<string, byte[]>(new ConsumerOptions
+        {
+            BootstrapServers = kafka.BootstrapServers.Split(','),
+            ClientRack = "rack-a",
+            AutoOffsetReset = AutoOffsetReset.None,
+            OffsetCommitMode = OffsetCommitMode.Manual,
+            EnableAutoOffsetStore = false,
+            EnableFetchSessions = false,
+            ConnectionsPerBroker = 3,
+            MaxConnectionsPerBroker = 3,
+            EnableAdaptiveConnections = false,
+            PrefetchPipelineDepth = 5,
+            MaxPartitionFetchBytes = 1024 * 1024,
+            FetchMaxBytes = 16 * 1024 * 1024
+        }, Serializers.String, Serializers.ByteArray);
+        await consumer.InitializeAsync(timeout.Token);
+        consumer.IncrementalAssign(Enumerable.Range(0, partitions)
+            .Select(partition => new TopicPartitionOffset(topic, partition, 0)).ToArray());
+        var nextOffsets = new long[partitions];
+        var consumed = 0;
+
+        void Verify(ConsumeResult<string, byte[]> record)
+        {
+            var expected = nextOffsets[record.Partition];
+            if (record.Offset != expected || expected >= recordsPerPartition)
+                throw new InvalidOperationException($"Partition {record.Partition}: got {record.Offset}, expected {expected}.");
+            nextOffsets[record.Partition]++;
+            consumed++;
+        }
+
+        if (batch)
+        {
+            await foreach (var records in consumer.ConsumeBatchAsync(timeout.Token))
+            {
+                foreach (var record in records)
+                    Verify(record);
+                if (consumed == partitions * recordsPerPartition)
+                    break;
+            }
+        }
+        else
+        {
+            await foreach (var record in consumer.ConsumeAsync(timeout.Token))
+            {
+                Verify(record);
+                if (consumed == partitions * recordsPerPartition)
+                    break;
+            }
+        }
+        await Assert.That(nextOffsets.All(static offset => offset == recordsPerPartition)).IsTrue();
+    }
+
     [Test]
     public async Task Consumer_WithClientRack_FetchesFromPreferredReadReplica()
     {

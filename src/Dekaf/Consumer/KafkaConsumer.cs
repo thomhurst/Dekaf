@@ -257,6 +257,22 @@ internal sealed class PendingFetchData : IDisposable
     /// </summary>
     private long _skipRecordsBelowOffset = -1;
 
+    /// <summary>Raises the publication floor and suppresses progress from fully covered responses.</summary>
+    internal void RaiseStartOffset(long offset)
+    {
+        Debug.Assert(_batchIndex < 0, "The delivery floor must be set before publication.");
+        _skipRecordsBelowOffset = Math.Max(_skipRecordsBelowOffset, offset);
+        if (FetchEndOffsetExclusive >= 0 && FetchEndOffsetExclusive <= _skipRecordsBelowOffset)
+        {
+            // A fully covered response has no new records or position/snapshot progress.
+            // Keep it queued so shared memory is released in publication order.
+            IsExhausted = true;
+            FetchEndOffsetExclusive = -1;
+            FetchEndLeaderEpoch = -1;
+            ReachedSnapshotEnd = false;
+        }
+    }
+
     private PendingFetchData() { }
 
     /// <summary>
@@ -770,17 +786,38 @@ internal sealed class PendingFetchData : IDisposable
     }
 
     /// <summary>
-    /// Advances past leading records below the requested fetch offset. Only the first
-    /// batch of a fetch can straddle the requested offset (batch base offsets increase
-    /// monotonically), so this one-time loop is bounded by a single batch in practice
-    /// and adds no per-record cost to steady-state iteration.
+    /// Advances past leading records below the delivery floor. This can span multiple
+    /// batches when a response overlaps previously published data. It runs only when
+    /// iteration starts and adds no per-record check to steady-state iteration.
+    /// Parsed arrays use lower-bound search; other lists retain sequential fault timing.
     /// </summary>
     [MethodImpl(MethodImplOptions.NoInlining)]
     private bool SkipRecordsBelowStartOffset()
     {
         while (CurrentBaseOffset + CurrentRecord.OffsetDelta < _skipRecordsBelowOffset)
         {
-            _recordIndex++;
+            if (_currentRecordsArray is { } records)
+            {
+                // Kafka offset deltas are ordered but may have gaps after compaction.
+                // Search the parsed batch slice instead of visiting every excluded record.
+                var low = _recordIndex + 1;
+                var high = _currentRecordsCount;
+                while (low < high)
+                {
+                    var middle = low + ((high - low) >> 1);
+                    if (CurrentBaseOffset + records[_currentRecordsArrayOffset + middle].OffsetDelta < _skipRecordsBelowOffset)
+                        low = middle + 1;
+                    else
+                        high = middle;
+                }
+                _recordIndex = low;
+            }
+            else
+            {
+                // Non-array lists retain sequential fault timing: looking ahead could
+                // throw before a valid included record has been delivered.
+                _recordIndex++;
+            }
             if (_recordIndex < _currentRecordsCount)
                 continue;
 
@@ -5135,13 +5172,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         ClearDirtyStoredOffsetIfCommitted(partition, committedOffset);
     }
 
-    private void UpdateFetchPositionsFromPrefetch(PendingFetchData pending, int fetchBufferEpoch)
+    private void UpdateFetchPositionsFromPrefetch(TopicPartition partition, long nextOffset, int fetchBufferEpoch)
     {
-        var nextOffset = pending.FetchEndOffsetExclusive;
         if (nextOffset < 0)
             return;
-
-        var tp = pending.TopicPartition;
 
         // Thread-safe update using ConcurrentDictionary — must use AddOrUpdate (not TryGetValue
         // + indexer) because seek/reset operations on other threads can write to _fetchPositions
@@ -5150,7 +5184,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // Uses the factoryArgument overload with static lambdas to avoid closure allocation.
         var update = (Consumer: this, FetchBufferEpoch: fetchBufferEpoch, NextOffset: nextOffset);
         _fetchPositions.AddOrUpdate(
-            tp,
+            partition,
             static (_, update) => update.NextOffset,
             static (partition, currentPos, update) =>
                 update.Consumer.ShouldDropStaleFetchPartition(partition, update.FetchBufferEpoch)
@@ -8524,12 +8558,22 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         if (!tracked)
                         {
                             TrackPrefetchedBytes(pending, release: false);
-                            UpdateFetchPositionsFromPrefetch(pending, fetchBufferEpoch);
                             tracked = true;
                         }
 
+                        // Replica routing can leave overlapping responses in flight.
+                        // Refresh the floor at publication, after earlier responses have
+                        // advanced the fetch position, including after a full-buffer wait.
+                        var partition = pending.TopicPartition;
+                        pending.RaiseStartOffset(_fetchPositions.GetValueOrDefault(partition, -1));
+                        var nextOffset = pending.FetchEndOffsetExclusive;
                         if (_prefetchBuffer.TryWrite(pending))
+                        {
+                            // The reader can dispose pending immediately after TryWrite.
+                            // Use captured values, and never advance for an unpublished item.
+                            UpdateFetchPositionsFromPrefetch(partition, nextOffset, fetchBufferEpoch);
                             break;
+                        }
                     }
 
                     await _prefetchBuffer.WaitToWriteAsync(cancellationToken).ConfigureAwait(false);

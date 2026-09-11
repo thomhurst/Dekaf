@@ -26,6 +26,7 @@ SCENARIO_TITLES = {
     'consumer-raw': 'Consumer (Raw Bytes)',
     'consumer-raw-batch': 'Consumer (Raw Batch)',
     'outbox': 'EF Outbox (Active Delivery)',
+    'consumer-follower-recovery': 'Consumer (Follower Recovery)',
 }
 
 # Delivery-latency product bars: reported, never gating (see paired_latency_thresholds).
@@ -47,6 +48,7 @@ DOCS_SCENARIO_LABELS = {
     'consumer-batch': 'Consume — batches',
     'consumer-raw': 'Consume — raw bytes',
     'consumer-raw-batch': 'Consume — raw byte batches',
+    'consumer-follower-recovery': 'Consume — follower errors with strict record sequence checks',
 }
 
 # Ratios inside this band read as "on par": same-VM pairing removes most noise,

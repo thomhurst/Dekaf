@@ -182,20 +182,24 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
         _network = network;
     }
 
-    public static async Task<KafkaEnvironment> CreateAsync(int brokerCount = 1, bool enableShareGroups = false)
+    public static async Task<KafkaEnvironment> CreateAsync(int brokerCount = 1, bool enableShareGroups = false, bool enableFollowerRecovery = false)
     {
+        if (enableFollowerRecovery && brokerCount != 3)
+            throw new ArgumentException("Follower recovery requires three brokers.", nameof(brokerCount));
         if (enableShareGroups && brokerCount != 1)
             throw new ArgumentException("The hosted-share lane requires one broker.", nameof(brokerCount));
         var externalBootstrap = Environment.GetEnvironmentVariable("KAFKA_BOOTSTRAP_SERVERS");
         if (!string.IsNullOrEmpty(externalBootstrap))
         {
+            if (enableFollowerRecovery)
+                throw new InvalidOperationException("Follower recovery requires a harness-owned rack-aware cluster.");
             Console.WriteLine($"Using external Kafka at {externalBootstrap}");
             return new KafkaEnvironment(externalBootstrap, null);
         }
 
         if (brokerCount > 1)
         {
-            return await CreateMultiBrokerAsync(brokerCount).ConfigureAwait(false);
+            return await CreateMultiBrokerAsync(brokerCount, enableFollowerRecovery).ConfigureAwait(false);
         }
 
         return await CreateSingleBrokerAsync(enableShareGroups).ConfigureAwait(false);
@@ -254,7 +258,7 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
         return new KafkaEnvironment(bootstrapServers, container);
     }
 
-    private static async Task<KafkaEnvironment> CreateMultiBrokerAsync(int brokerCount)
+    private static async Task<KafkaEnvironment> CreateMultiBrokerAsync(int brokerCount, bool enableFollowerRecovery)
     {
         Console.WriteLine($"Starting {brokerCount}-broker KRaft cluster via Testcontainers...");
 
@@ -298,6 +302,13 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
                 .WithEnvironment("KAFKA_LOG_DIRS", KafkaLogDir)
                 .WithEnvironment("KAFKA_HEAP_OPTS", BrokerHeapOpts)
                 .WithWaitStrategy(BrokerServingWaitStrategy());
+
+            if (enableFollowerRecovery)
+            {
+                containerBuilder = containerBuilder
+                    .WithEnvironment("KAFKA_BROKER_RACK", nodeId == 2 ? "rack-a" : "rack-b")
+                    .WithEnvironment("KAFKA_REPLICA_SELECTOR_CLASS", "org.apache.kafka.common.replica.RackAwareReplicaSelector");
+            }
 
             foreach (var (key, value) in RetentionConfig)
             {
@@ -401,6 +412,32 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
         }
 
         await AdminCreateTopicAsync(BootstrapServers, topic, partitions, replicationFactor, configs).ConfigureAwait(false);
+    }
+
+    public async Task CreateFollowerRecoveryTopicAsync(string topic, int partitions, IReadOnlyDictionary<string, string> configs)
+    {
+        await using var admin = CreateAdminClient(BootstrapServers);
+        var assignments = new Dictionary<int, IReadOnlyList<int>>(partitions);
+        for (var p = 0; p < partitions; p++)
+            assignments.Add(p, [1, 2]);
+        await admin.CreateTopicsAsync([new NewTopic
+        {
+            Name = topic,
+            NumPartitions = -1,
+            ReplicationFactor = -1,
+            ReplicaAssignments = assignments,
+            Configs = configs
+        }]).ConfigureAwait(false);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        while (true)
+        {
+            var descriptions = await admin.DescribeTopicsAsync([topic], timeout.Token).ConfigureAwait(false);
+            if (descriptions[topic].Partitions.Count == partitions
+                && descriptions[topic].Partitions.All(static p => p.LeaderId == 1
+                    && p.ReplicaNodes.SequenceEqual([1, 2]) && p.IsrNodes.Contains(1) && p.IsrNodes.Contains(2)))
+                return;
+            await Task.Delay(250, timeout.Token).ConfigureAwait(false);
+        }
     }
 
     public async Task DeleteTopicAsync(string topic)

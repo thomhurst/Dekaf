@@ -121,10 +121,13 @@ public class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposable
         }
     }
 
-    public async Task<string> CreateTopicWithRemoteLeaderAndLocalFollowerAsync()
+    public async Task<string> CreateTopicWithRemoteLeaderAndLocalFollowerAsync(int partitionCount = 1)
     {
+        ArgumentOutOfRangeException.ThrowIfLessThan(partitionCount, 1);
         var topic = $"rack-aware-{Guid.NewGuid():N}";
         await using var admin = CreateAdminClient();
+        var assignments = Enumerable.Range(0, partitionCount)
+            .ToDictionary(static partition => partition, static _ => (IReadOnlyList<int>)[1, 2]);
 
         await CreateUniqueTopicAsync(
             admin,
@@ -133,17 +136,14 @@ public class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposable
                 Name = topic,
                 NumPartitions = -1,
                 ReplicationFactor = -1,
-                ReplicaAssignments = new Dictionary<int, IReadOnlyList<int>>
-                {
-                    [0] = [1, 2]
-                },
+                ReplicaAssignments = assignments,
                 Configs = new Dictionary<string, string>
                 {
                     ["min.insync.replicas"] = "1"
                 }
             }).ConfigureAwait(false);
 
-        await WaitForTopicAssignmentAsync(admin, topic).ConfigureAwait(false);
+        await WaitForTopicAssignmentAsync(admin, topic, assignments, expectedLeaderId: 1).ConfigureAwait(false);
         return topic;
     }
 
@@ -489,6 +489,7 @@ public class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposable
         IAdminClient admin,
         string topic,
         IReadOnlyDictionary<int, IReadOnlyList<int>> expectedAssignments,
+        int? expectedLeaderId = null,
         CancellationToken cancellationToken = default)
     {
         _ = await PollUntilAsync(
@@ -500,6 +501,7 @@ public class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposable
             partitions => partitions.Count == expectedAssignments.Count
                 && partitions.All(partition =>
                     expectedAssignments.TryGetValue(partition.PartitionIndex, out var expectedReplicas)
+                    && (expectedLeaderId is null || partition.LeaderId == expectedLeaderId)
                     && expectedReplicas.Contains(partition.LeaderId)
                     && partition.ReplicaNodes.SequenceEqual(expectedReplicas)
                     && expectedReplicas.All(partition.IsrNodes.Contains)),
