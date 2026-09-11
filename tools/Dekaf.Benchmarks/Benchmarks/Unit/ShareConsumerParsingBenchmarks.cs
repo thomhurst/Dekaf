@@ -39,6 +39,9 @@ public class ShareConsumerParsingBenchmarks
     [Params(0, 2)]
     public int HeaderCount { get; set; }
 
+    // The separate context fixture exercises serializers that consume topic/key metadata.
+    public bool ContextDependentDeserialization { get; set; }
+
     [GlobalSetup]
     public async ValueTask Setup()
     {
@@ -95,8 +98,9 @@ public class ShareConsumerParsingBenchmarks
             BootstrapServers = ["localhost:9092"],
             GroupId = "share-parsing-benchmark"
         };
-        _synchronousConsumer = new KafkaShareConsumer<int, int>(options, Serializers.Int32, Serializers.Int32);
-        var prepared = new WarmInt32Deserializer();
+        IDeserializer<int> synchronous = ContextDependentDeserialization ? new ContextInt32Deserializer() : Serializers.Int32;
+        _synchronousConsumer = new KafkaShareConsumer<int, int>(options, synchronous, synchronous);
+        IDeserializer<int> prepared = ContextDependentDeserialization ? new ContextInt32Deserializer() : new WarmInt32Deserializer();
         _preparedConsumer = new KafkaShareConsumer<int, int>(options, prepared, prepared);
         _coldConsumer = new KafkaShareConsumer<int, int>(options, Serializers.Int32, _coldDeserializer);
         _parse = typeof(KafkaShareConsumer<int, int>)
@@ -362,6 +366,30 @@ public class ShareConsumerParsingBenchmarks
                     || record.Headers[1].Key != "nullable" || !record.Headers[1].IsValueNull))
                 throw new InvalidOperationException("The parser changed header data or nullability.");
         }
+    }
+
+    private sealed class ContextInt32Deserializer : IDeserializer<int>, IAsyncDeserializerPreparer<int>
+    {
+        public int Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
+        {
+            var value = Serializers.Int32.Deserialize(data, context);
+            // Models topic-aware decoding and key/value correlation without external I/O.
+            if (context.Topic != "share-benchmark" || context.IsNull || context.Headers is not null
+                || (context.Component == SerializationComponent.Key
+                    ? !context.KeyData.IsEmpty
+                    : context.KeyData.Length != 4 || Serializers.Int32.Deserialize(context.KeyData, default) + 1 != value))
+                throw new InvalidOperationException("Deserializer context does not match its record.");
+            return value;
+        }
+
+        public bool TryDeserialize(ReadOnlyMemory<byte> data, SerializationContext context, out int value)
+        {
+            value = Deserialize(data, context);
+            return true;
+        }
+
+        public ValueTask PrepareAsync(ReadOnlyMemory<byte> data, SerializationContext context,
+            CancellationToken cancellationToken = default) => throw new InvalidOperationException("The context deserializer is warm.");
     }
 
     private sealed class WarmInt32Deserializer : IDeserializer<int>, IAsyncDeserializerPreparer<int>
