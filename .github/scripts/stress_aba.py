@@ -534,9 +534,10 @@ def markdown(comparison, baseline_sha, candidate_sha):
             f"{name}={value}" for name, value in comparison["keyedConsumer"].items()) + "."])
     if comparison.get("startupAssessment"):
         assessment = comparison["startupAssessment"]
-        lines.extend(["", f"Startup assessment: {assessment['verdict']}",
-                      "The following raw metric classifications and deltas are diagnostic. "
-                      "Incomplete startup assessment prevents acceptance or a confirmed performance-regression conclusion."])
+        lines.extend(["", f"Startup assessment: {assessment['verdict']}"])
+        if assessment["verdict"] != "VALIDATED":
+            lines.append("The following raw metric classifications and deltas are diagnostic. "
+                         "Incomplete startup assessment prevents acceptance or a confirmed performance-regression conclusion.")
         lines.extend(f"- {error}" for error in assessment["errors"])
     lines.extend([
         "",
