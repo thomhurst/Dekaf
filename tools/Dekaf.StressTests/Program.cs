@@ -74,6 +74,18 @@ public static class Program
                 return await RunReportAsync(options).ConfigureAwait(false);
             }
 
+            var fixedWorkers = FixedWorkerPool.Initialize(options.OutputPath);
+            if (options.IsWorkerPoolCheck)
+            {
+                if (fixedWorkers == 0)
+                    throw new ArgumentException("check-worker-pool requires a positive DEKAF_STRESS_FIXED_WORKER_THREADS value.");
+                // Exceed the runtime's default 20-second idle retirement interval.
+                Thread.Sleep(TimeSpan.FromSeconds(25));
+                FixedWorkerPool.VerifyWorkerCount(fixedWorkers);
+                Console.WriteLine($"Fixed worker pool retained {fixedWorkers} workers after 25 seconds idle.");
+                return 0;
+            }
+
             if (options.IsFaultInjection)
             {
                 var exitCode = await FaultInjectionRunner.RunAsync(new FaultInjectionOptions
@@ -935,6 +947,9 @@ public static class Program
                 case "fault":
                     options.IsFaultInjection = true;
                     break;
+                case "check-worker-pool":
+                    options.IsWorkerPoolCheck = true;
+                    break;
                 case "--duration":
                     options.DurationMinutes = int.Parse(args[++i]);
                     break;
@@ -1136,6 +1151,7 @@ public static class Program
               --max-throughput-decay-percent-per-hour <n> Throughput decay limit (default: 5)
               --roundtrip-steady-seconds <seconds>  Measured producer duration for producer-roundtrip-steady (default: 60)
               report --input <path>   Generate report from existing results
+              check-worker-pool      Verify configured fixed workers survive 25 seconds idle; no Kafka workload
 
             Fault injection:
               fault                    Run fault-injection correctness suite
@@ -1166,6 +1182,7 @@ public static class Program
     private sealed class CliOptions
     {
         public bool IsReport { get; set; }
+        public bool IsWorkerPoolCheck { get; set; }
         public bool IsFaultInjection { get; set; }
         public int DurationMinutes { get; set; } = 15;
         public int ProducerWarmupSeconds { get; set; } = ProducerWarmup.DefaultSeconds;
