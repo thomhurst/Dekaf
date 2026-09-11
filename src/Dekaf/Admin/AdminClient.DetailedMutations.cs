@@ -8,7 +8,7 @@ namespace Dekaf.Admin;
 public sealed partial class AdminClient
 {
     private readonly record struct MutationProtocol(ApiKey ApiKey, short MinimumVersion, short MaximumVersion,
-        string Operation, string? GroupId = null);
+        string Operation, string? GroupId = null, bool BrokerOrController = false);
 
     private async ValueTask<IReadOnlyDictionary<TKey, AdminMutationResult>> ExecuteDetailedMutationAsync<TKey, TItem, TRequest, TResponse>(
         List<TItem> items, Func<TItem, TKey> getKey, MutationProtocol protocol, int timeoutMs,
@@ -36,9 +36,12 @@ public sealed partial class AdminClient
                 KafkaConnectionLease acquiredLease;
                 try
                 {
-                    acquiredLease = protocol.GroupId is { } groupId
-                        ? await LeaseDetailedGroupCoordinatorAsync(groupId, token).ConfigureAwait(false)
-                        : await LeaseDetailedControllerAsync(protocol.ApiKey, token).ConfigureAwait(false);
+                    if (protocol.GroupId is { } groupId)
+                        acquiredLease = await LeaseDetailedGroupCoordinatorAsync(groupId, token).ConfigureAwait(false);
+                    else if (protocol.BrokerOrController)
+                        acquiredLease = await LeaseBrokerOrControllerConnectionAsync(protocol.ApiKey, token).ConfigureAwait(false);
+                    else
+                        acquiredLease = await LeaseDetailedControllerAsync(protocol.ApiKey, token).ConfigureAwait(false);
                 }
                 catch (InvalidOperationException exception)
                 {

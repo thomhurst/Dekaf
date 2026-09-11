@@ -100,9 +100,52 @@ Outstanding families remain separate work; the parent is not complete until thos
 | Share-group offset alteration | `AlterShareGroupOffsetsDetailedAsync` | `TopicPartition` |
 | Share-group offset deletion | `DeleteShareGroupOffsetsDetailedAsync` | Topic name (all partition offsets) |
 | Configuration replacement/incremental changes | Pending [#3133](https://github.com/thomhurst/Dekaf/issues/3133) | Resource |
-| Client quota alteration | Pending [#3134](https://github.com/thomhurst/Dekaf/issues/3134) | Quota entity |
+| Client quota alteration | `AlterClientQuotasDetailedAsync` | Complete `ClientQuotaEntity` |
 | ACL creation / SCRAM alteration | `CreateAclsDetailedAsync` / `AlterUserScramCredentialsDetailedAsync` | Input binding occurrence / user |
 | Member removal, feature updates, Streams offsets and replica log directories | Existing detailed result APIs retained | Existing keys |
+
+## Client quota outcomes
+
+`AlterClientQuotasDetailedAsync` is available through `IDetailedClientQuotaMutationAdminClient`
+and an `IAdminClient` extension. Custom clients without this capability throw
+`NotSupportedException`; their existing `AlterClientQuotasAsync` implementation remains compatible.
+The convenience method retains its existing exception and retry behavior.
+
+Result keys preserve the complete entity: a user alone differs from that user plus a default
+client ID. Component order does not affect equality. A null name identifies a default component;
+an empty string is a distinct name. Inputs are copied before asynchronous work, and returned
+entity components are read-only. Duplicate entities, component types, and operation keys are
+rejected before dispatch. Empty input performs no network activity.
+
+```csharp
+var entity = ClientQuotaEntity.For(
+    ClientQuotaEntityComponent.User("alice"),
+    ClientQuotaEntityComponent.ClientId(null));
+var alterations = new[]
+{
+    ClientQuotaAlteration.Set(entity, "consumer_byte_rate", 4096)
+};
+var results = await admin.AlterClientQuotasDetailedAsync(alterations);
+var retry = alterations.Where(item =>
+    results[item.Entity].Outcome == AdminMutationOutcome.Failed &&
+    results[item.Entity].ErrorCode is ErrorCode.NotController or ErrorCode.ThrottlingQuotaExceeded)
+    .ToArray();
+if (retry.Length > 0)
+    await admin.AlterClientQuotasDetailedAsync(retry);
+```
+
+The client already retries explicit controller/quota rejections within `TimeoutMs`; a targeted
+retry can use a fresh deadline after addressing the rejection. Inspect other errors individually.
+Do not replay successful siblings. For `Unknown`, inspect current quotas with
+`DescribeClientQuotasAsync` and account for concurrent administrators before choosing another
+mutation. Transport errors, missing or duplicate response entries, and ambiguous broker timeouts
+are never automatically replayed. `ValidateOnly = true` returns validation outcomes without
+changing quotas. Broker and direct-controller bootstrap use the same routing as the convenience API.
+
+The simulator supports quota set/remove operations, validation-only execution, snapshots, deadlines,
+and per-entity fault outcomes. As with its convenience API, it does not emulate every broker quota
+configuration rule; inject an admin fault to model a broker rejection. Faults are consumed per quota
+entity, and confirmed siblings remain in the returned results.
 
 ## In-memory behavior
 
