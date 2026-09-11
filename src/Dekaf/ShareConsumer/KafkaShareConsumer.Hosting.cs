@@ -55,9 +55,30 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
         where TRequest : IKafkaRequest<TResponse>
         where TResponse : IKafkaResponse
     {
-        if (context is not null && connection is IKafkaRequestCancellationConnection controlled)
-            return controlled.SendWithResponseCancellationAsync<TRequest, TResponse>(
-                request, version, context, cancellationToken);
+        if (context is not null && context.ResponseCancellationToken.CanBeCanceled)
+        {
+            if (connection is IKafkaRequestCancellationConnection controlled)
+                return controlled.SendWithResponseCancellationAsync<TRequest, TResponse>(
+                    request, version, context, cancellationToken);
+
+            // Custom connections without response-cancellation support use the caller's token.
+            context.MarkWriteStarted();
+            return connection.SendAsync<TRequest, TResponse>(request, version, cancellationToken);
+        }
+
+        return SendObservedRequestAsync<TRequest, TResponse>(connection, request, version, context, cancellationToken);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static ValueTask<TResponse> SendObservedRequestAsync<TRequest, TResponse>(
+        IKafkaConnection connection, TRequest request, short version,
+        KafkaRequestWriteContext? context, CancellationToken cancellationToken)
+        where TRequest : IKafkaRequest<TResponse>
+        where TResponse : IKafkaResponse
+    {
+        if (context is not null && connection is IKafkaRequestWriteObserverConnection observed)
+            return observed.SendWithWriteObservationAsync<TRequest, TResponse>(
+                request, version, context.WriteStartedCallback, cancellationToken);
 
         // Custom connections cannot prove their write boundary. Keep caller cancellation and
         // treat a failure after handing them the request as potentially submitted.

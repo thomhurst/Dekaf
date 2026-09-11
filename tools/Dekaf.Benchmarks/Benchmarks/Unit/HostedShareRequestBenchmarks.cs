@@ -7,6 +7,7 @@ using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
 using Dekaf.Serialization;
 using Dekaf.ShareConsumer;
+using Dekaf.Telemetry;
 
 namespace Dekaf.Benchmarks.Benchmarks.Unit;
 
@@ -20,6 +21,8 @@ public class HostedShareRequestBenchmarks
     [Params(1, 16)]
     public int PartitionCount { get; set; }
 
+    internal ShareRequestTelemetryMode TelemetryMode { get; set; }
+
     private KafkaShareConsumer<string, string> _consumer = null!;
     private MetadataManager _metadata = null!;
     private readonly CancellationTokenSource _shutdown = new();
@@ -30,6 +33,7 @@ public class HostedShareRequestBenchmarks
         CancellationToken, Task> _fetch = null!;
     private Func<int, Dictionary<TopicPartition, List<AcknowledgementBatchData>>, bool,
         CancellationToken, Task> _acknowledge = null!;
+    private Func<int, List<TopicPartition>, CancellationToken, Task> _close = null!;
 
     [GlobalSetup]
     public async Task Setup()
@@ -88,11 +92,17 @@ public class HostedShareRequestBenchmarks
                 hostedOverload.Invoke(_consumer, [observer, _shutdown.Token]);
         }
         const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
+        var collector = (ClientTelemetryMetricCollector)typeof(KafkaShareConsumer<string, string>)
+            .GetField("_telemetryMetricCollector", flags)!.GetValue(_consumer)!;
+        if (TelemetryMode != ShareRequestTelemetryMode.Unsubscribed)
+            collector.ShareConsumerMetrics!.Subscribe(["org.apache.kafka.consumer.share."]);
         typeof(KafkaShareConsumer<string, string>).GetField("_initialized", flags)!.SetValue(_consumer, true);
         var coordinator = typeof(KafkaShareConsumer<string, string>).GetField("_coordinator", flags)!.GetValue(_consumer)!;
         typeof(ShareConsumerCoordinator).GetField("_memberId", flags)!.SetValue(coordinator, "benchmark-member");
         _fetch = typeof(KafkaShareConsumer<string, string>).GetMethod("SendShareFetchForPartitionsAsync", flags)!
             .CreateDelegate<Func<int, List<TopicPartition>, Dictionary<TopicPartition, List<AcknowledgementBatchData>>, CancellationToken, Task>>(_consumer);
+        _close = typeof(KafkaShareConsumer<string, string>).GetMethod("CloseSessionForBrokerAsync", flags)!
+            .CreateDelegate<Func<int, List<TopicPartition>, CancellationToken, Task>>(_consumer);
         // Older products have four parameters; batch-session cleanup adds an optional fifth.
         // Bind the same direct-call adapter on both revisions outside measurement.
         var acknowledge = typeof(KafkaShareConsumer<string, string>).GetMethod("SendAcknowledgeAsync", flags)!;
@@ -115,6 +125,8 @@ public class HostedShareRequestBenchmarks
         await Commit();
         if (connection.RequestCount != 3 || sessions.GetSessionEpoch(1) != 2)
             throw new InvalidOperationException("Commit must submit its tracked acknowledgement outcomes.");
+        if (TelemetryMode == ShareRequestTelemetryMode.Disabled)
+            collector.ShareConsumerMetrics!.Disable();
     }
 
     // Costs are per request with PartitionCount acknowledgement batches. Cached replies exclude
@@ -124,6 +136,8 @@ public class HostedShareRequestBenchmarks
 
     [Benchmark]
     public Task ShareAcknowledge() => _acknowledge(1, _acknowledgements, false, CancellationToken.None);
+
+    internal Task CloseSession() => _close(1, _partitions, CancellationToken.None);
 
     [Benchmark]
     public ValueTask Commit()
@@ -141,13 +155,31 @@ public class HostedShareRequestBenchmarks
         _shutdown.Dispose();
     }
 
-    private sealed class Connection(ShareFetchResponse fetch, ShareAcknowledgeResponse acknowledge) : IKafkaConnection
+    private sealed class Connection(ShareFetchResponse fetch, ShareAcknowledgeResponse acknowledge)
+        : IKafkaConnection, IKafkaRequestWriteObserverConnection, IKafkaRequestCancellationConnection
     {
         internal int RequestCount { get; private set; }
         public int BrokerId => 1;
         public string Host => "localhost";
         public int Port => 9092;
         public bool IsConnected => true;
+        public ValueTask<TResponse> SendWithWriteObservationAsync<TRequest, TResponse>(
+            TRequest request, short version, Action onWriteStarted, CancellationToken token = default)
+            where TRequest : IKafkaRequest<TResponse> where TResponse : IKafkaResponse
+        {
+            onWriteStarted();
+            return SendAsync<TRequest, TResponse>(request, version, token);
+        }
+        public ValueTask<TResponse> SendWithResponseCancellationAsync<TRequest, TResponse>(
+            TRequest request, short version, KafkaRequestWriteContext context, CancellationToken token)
+            where TRequest : IKafkaRequest<TResponse> where TResponse : IKafkaResponse
+        {
+            context.MarkWriteStarted();
+            return SendAsync<TRequest, TResponse>(request, version, context.ResponseCancellationToken);
+        }
+        public ValueTask<PipelinedResponse<TResponse>> SendPipelinedWithWriteObservationAfterWriteAsync<TRequest, TResponse>(
+            TRequest request, short version, Action onWriteStarted, CancellationToken token = default)
+            where TRequest : IKafkaRequest<TResponse> where TResponse : IKafkaResponse => throw new NotSupportedException();
         public ValueTask<TResponse> SendAsync<TRequest, TResponse>(TRequest request, short version, CancellationToken token = default)
             where TRequest : IKafkaRequest<TResponse> where TResponse : IKafkaResponse
         {

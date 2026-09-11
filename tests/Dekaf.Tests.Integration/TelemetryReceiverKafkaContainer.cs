@@ -83,6 +83,23 @@ public sealed class TelemetryReceiverKafkaContainer : KafkaContainerDefault
         }
     }
 
+    internal async Task<IReadOnlyList<ReceivedTelemetry>> ReadPayloadsAsync(
+        string clientId, CancellationToken cancellationToken)
+    {
+        var text = await _http.GetStringAsync("payloads", cancellationToken);
+        var payloads = new List<ReceivedTelemetry>();
+        foreach (var line in text.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var fields = line.Split('\t');
+            if (fields.Length != 5)
+                throw new InvalidDataException("Malformed telemetry receiver output.");
+            if (DecodeText(fields[2]) == clientId)
+                payloads.Add(new ReceivedTelemetry(Guid.Parse(fields[0]), bool.Parse(fields[1]),
+                    DecodeText(fields[3]), Convert.FromBase64String(fields[4])));
+        }
+        return payloads;
+    }
+
     internal async Task<GetTelemetrySubscriptionsResponse> ReadSubscriptionAsync(
         string clientId, CancellationToken cancellationToken)
     {

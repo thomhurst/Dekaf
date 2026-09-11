@@ -1585,7 +1585,8 @@ public sealed partial class ShareConsumerRenewalTests
         bool supportShareFetch = false) :
         IKafkaConnection,
         IKafkaCapabilityProvider,
-        IKafkaRequestCancellationConnection
+        IKafkaRequestCancellationConnection,
+        IKafkaRequestWriteObserverConnection
     {
         public int BrokerId => brokerId;
         public string Host => "localhost";
@@ -1634,10 +1635,49 @@ public sealed partial class ShareConsumerRenewalTests
                 await BeforeWrite(cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
             context.MarkWriteStarted();
-            return await SendAsync<TRequest, TResponse>(request, apiVersion, context.ResponseCancellationToken);
+            return await SendCoreAsync<TRequest, TResponse>(request, apiVersion, context.ResponseCancellationToken);
         }
 
         public ValueTask<TResponse> SendAsync<TRequest, TResponse>(
+            TRequest request, short apiVersion, CancellationToken cancellationToken = default)
+            where TRequest : IKafkaRequest<TResponse>
+            where TResponse : IKafkaResponse
+            => BeforeWrite is null
+                ? SendCoreAsync<TRequest, TResponse>(request, apiVersion, cancellationToken)
+                : SendAfterWriteWaitAsync<TRequest, TResponse>(request, apiVersion, null, cancellationToken);
+
+        public ValueTask<TResponse> SendWithWriteObservationAsync<TRequest, TResponse>(
+            TRequest request, short apiVersion, Action requestWriteStarted,
+            CancellationToken cancellationToken = default)
+            where TRequest : IKafkaRequest<TResponse>
+            where TResponse : IKafkaResponse
+        {
+            if (BeforeWrite is not null)
+                return SendAfterWriteWaitAsync<TRequest, TResponse>(request, apiVersion, requestWriteStarted, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            requestWriteStarted();
+            return SendCoreAsync<TRequest, TResponse>(request, apiVersion, cancellationToken);
+        }
+
+        public ValueTask<PipelinedResponse<TResponse>> SendPipelinedWithWriteObservationAfterWriteAsync<TRequest, TResponse>(
+            TRequest request, short apiVersion, Action requestWriteStarted,
+            CancellationToken cancellationToken = default)
+            where TRequest : IKafkaRequest<TResponse>
+            where TResponse : IKafkaResponse
+            => throw new NotSupportedException();
+
+        private async ValueTask<TResponse> SendAfterWriteWaitAsync<TRequest, TResponse>(
+            TRequest request, short apiVersion, Action? requestWriteStarted, CancellationToken cancellationToken)
+            where TRequest : IKafkaRequest<TResponse>
+            where TResponse : IKafkaResponse
+        {
+            await BeforeWrite!(cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            requestWriteStarted?.Invoke();
+            return await SendCoreAsync<TRequest, TResponse>(request, apiVersion, cancellationToken);
+        }
+
+        private ValueTask<TResponse> SendCoreAsync<TRequest, TResponse>(
             TRequest request,
             short apiVersion,
             CancellationToken cancellationToken = default)
