@@ -333,7 +333,7 @@ public class ShareConsumerParsingBenchmarks
         long checksum = 0;
         foreach (var record in records)
         {
-            checksum += record.Offset + record.Key + record.Value + record.DeliveryCount + record.TimestampMs;
+            checksum += record.Partition + record.Offset + record.Key + record.Value + record.DeliveryCount + record.TimestampMs;
             for (var index = 0; index < record.Headers.Count; index++)
             {
                 var header = record.Headers[index];

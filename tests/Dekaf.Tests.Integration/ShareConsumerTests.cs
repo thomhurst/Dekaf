@@ -21,6 +21,51 @@ namespace Dekaf.Tests.Integration;
 public class ShareConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
+    [Arguments(32)]
+    [Arguments(128 * 1024)]
+    public async Task ShareConsumer_BorrowedPayloadsAndHeaders_SurviveParsingOtherBatches(int payloadSize)
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 1);
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers).BuildAsync();
+        await using var consumer = await Kafka.CreateShareConsumer<string, ReadOnlyMemory<byte>>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers).WithGroupId($"share-borrow-{Guid.NewGuid():N}")
+            .WithValueDeserializer(Serializers.RawBytes)
+            .WithAcknowledgementMode(ShareAcknowledgementMode.Explicit).WithMaxPollRecords(2)
+            .BuildAsync();
+        consumer.Subscribe(topic);
+        await ShareConsumerTestHelper.PrimeShareConsumerAsync(consumer);
+
+        var values = new[] { new string('a', payloadSize), new string('b', payloadSize) };
+        for (var index = 0; index < values.Length; index++)
+        {
+            // Await delivery so each record is a separate broker batch.
+            await producer.ProduceAsync(new ProducerMessage<string, string>
+            {
+                Topic = topic, Partition = 0, Key = index.ToString(), Value = values[index],
+                Headers = Headers.Create("test", values[index])
+            });
+        }
+
+        var received = new HashSet<int>();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await foreach (var record in consumer.PollAsync(timeout.Token))
+        {
+            var index = int.Parse(record.Key!);
+            await Assert.That(received.Add(index)).IsTrue();
+            await Assert.That(System.Text.Encoding.UTF8.GetString(record.Value.Span)).IsEqualTo(values[index]);
+            var header = record.Headers.Single(static header => header.Key == "test");
+            await Assert.That(System.Text.Encoding.UTF8.GetString(header.Value.Span)).IsEqualTo(values[index]);
+            consumer.Acknowledge(record);
+            await consumer.CommitAsync(timeout.Token);
+            await Assert.That(System.Text.Encoding.UTF8.GetString(record.Value.Span)).IsEqualTo(values[index]);
+            if (received.Count == values.Length)
+                break;
+        }
+        await Assert.That(received.Count).IsEqualTo(values.Length);
+    }
+
+    [Test]
     [Arguments(1)]
     [Arguments(4)]
     public async Task ShareConsumer_NativeResponsePayload_RemainsReadable(int messageCount)
@@ -646,8 +691,8 @@ public class ShareConsumerAdminTests(KafkaTestContainer kafka) : KafkaIntegratio
 /// </summary>
 internal static class ShareConsumerTestHelper
 {
-    internal static async Task PrimeShareConsumerAsync(
-        IKafkaShareConsumer<string, string> consumer)
+    internal static async Task PrimeShareConsumerAsync<TKey, TValue>(
+        IKafkaShareConsumer<TKey, TValue> consumer)
     {
         using var pollCts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
         var pollTask = PollUntilCanceledAsync(consumer, pollCts.Token);
@@ -681,8 +726,8 @@ internal static class ShareConsumerTestHelper
         await producer.FlushAsync();
     }
 
-    private static async Task PollUntilCanceledAsync(
-        IKafkaShareConsumer<string, string> consumer, CancellationToken cancellationToken)
+    private static async Task PollUntilCanceledAsync<TKey, TValue>(
+        IKafkaShareConsumer<TKey, TValue> consumer, CancellationToken cancellationToken)
     {
         try
         {
@@ -695,8 +740,8 @@ internal static class ShareConsumerTestHelper
         }
     }
 
-    private static async Task WaitForShareAssignmentAsync(
-        IKafkaShareConsumer<string, string> consumer, TimeSpan timeout)
+    private static async Task WaitForShareAssignmentAsync<TKey, TValue>(
+        IKafkaShareConsumer<TKey, TValue> consumer, TimeSpan timeout)
     {
         var startedAt = Stopwatch.GetTimestamp();
         while (Stopwatch.GetElapsedTime(startedAt) < timeout)

@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Runtime.CompilerServices;
 using BenchmarkDotNet.Attributes;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
@@ -64,8 +65,19 @@ public class ShareBatchPendingStateBenchmarks
             throw new InvalidOperationException("Retained renewal pending state changed.");
     }
 
-    [Benchmark]
-    public bool CheckPending() => _tracker.HasPending;
+    [Benchmark(OperationsPerInvoke = 1024)]
+    public int CheckPending()
+    {
+        var pendingCount = 0;
+        for (var index = 0; index < 1024; index++)
+            pendingCount += ReadPending(_tracker) ? 1 : 0;
+        return pendingCount;
+    }
+
+    // A lone inlined field read vanishes into BenchmarkDotNet's overhead subtraction.
+    // Keep each read observable and normalize the repeated calls per operation.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static bool ReadPending(ShareBatchAcknowledgements<int, int> tracker) => tracker.HasPending;
 
     [GlobalCleanup]
     public async ValueTask Cleanup()

@@ -25,6 +25,13 @@ internal sealed class AcknowledgementTracker
         GetOrAddPartition(tp).TrackRange(firstOffset, lastOffset, ImplicitDelivery);
     }
 
+    // Subscription changes can relinquish whole acquired ranges without allocating one
+    // explicit acknowledgement per undisclosed record. Explicit caller outcomes take priority.
+    internal void ReleaseUndeliveredRecords(TopicPartition tp, long firstOffset, long lastOffset)
+    {
+        GetOrAddPartition(tp).TrackRange(firstOffset, lastOffset, AcknowledgeType.Release);
+    }
+
     /// <summary>
     /// Sets an explicit acknowledgement type for a specific record.
     /// Throws if the record was not delivered by the current poll unless requireTracked is false.

@@ -199,7 +199,9 @@ public sealed class ShareConsumerConnectionOwnershipTests
     }
 
     [Test]
-    public async Task SendShareFetchForPartitionsAsync_RetriesRetriableTopLevelError()
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task SendShareFetchForPartitionsAsync_DisposesRetriableResponseBeforeRefresh(bool cancelDuringRefresh)
     {
         var options = new ShareConsumerOptions
         {
@@ -209,6 +211,16 @@ public sealed class ShareConsumerConnectionOwnershipTests
             RetryBackoffMs = 0,
             RetryBackoffMaxMs = 0
         };
+        using var cancellation = new CancellationTokenSource();
+        var memory = new TrackingMemory();
+        using var rejected = new ShareFetchResponse
+        {
+            ErrorCode = ErrorCode.CoordinatorLoadInProgress,
+            Responses = [],
+            NodeEndpoints = [],
+            PooledMemoryOwner = memory
+        };
+        var disposalsAtRefresh = -1;
         var connection = new LeaseTrackingConnection(
             new ApiVersion(
                 ApiKey.ShareFetch,
@@ -219,14 +231,15 @@ public sealed class ShareConsumerConnectionOwnershipTests
                 MetadataRequest.LowestSupportedVersion,
                 MetadataRequest.HighestSupportedVersion))
         {
+            OnMetadataRequest = () =>
+            {
+                disposalsAtRefresh = memory.Disposals;
+                if (cancelDuringRefresh)
+                    cancellation.Cancel();
+            },
             ShareFetchResponses = new Queue<ShareFetchResponse>(
             [
-                new ShareFetchResponse
-                {
-                    ErrorCode = ErrorCode.CoordinatorLoadInProgress,
-                    Responses = [],
-                    NodeEndpoints = []
-                },
+                rejected,
                 new ShareFetchResponse
                 {
                     ErrorCode = ErrorCode.None,
@@ -248,11 +261,20 @@ public sealed class ShareConsumerConnectionOwnershipTests
             metadataManager);
         SetMemberId(consumer, "member-1");
 
-        var sendTask = InvokeSendShareFetchForPartitionsAsync(consumer);
+        var sendTask = InvokeSendShareFetchForPartitionsAsync(consumer, cancellation.Token);
 
-        await sendTask;
+        if (cancelDuringRefresh)
+            await Assert.That(async () => await sendTask).Throws<OperationCanceledException>();
+        else
+            await sendTask;
 
-        await Assert.That(connection.ShareFetchSendCount).IsEqualTo(2);
+        await Assert.That(disposalsAtRefresh).IsEqualTo(1);
+        await Assert.That(memory.Disposals).IsEqualTo(1);
+        await Assert.That(rejected.PooledMemoryOwner).IsNull();
+        rejected.Dispose();
+        await Assert.That(memory.Disposals).IsEqualTo(1);
+
+        await Assert.That(connection.ShareFetchSendCount).IsEqualTo(cancelDuringRefresh ? 1 : 2);
         await Assert.That(connection.LeaseCount).IsEqualTo(0);
     }
 
@@ -327,7 +349,8 @@ public sealed class ShareConsumerConnectionOwnershipTests
     }
 
     private static Task InvokeSendShareFetchForPartitionsAsync(
-        KafkaShareConsumer<string, string> consumer)
+        KafkaShareConsumer<string, string> consumer,
+        CancellationToken cancellationToken = default)
     {
         var method = typeof(KafkaShareConsumer<string, string>).GetMethod(
             "SendShareFetchForPartitionsAsync",
@@ -338,7 +361,7 @@ public sealed class ShareConsumerConnectionOwnershipTests
                 1,
                 new List<TopicPartition> { new("topic", 0) },
                 null,
-                CancellationToken.None
+                cancellationToken
             ])!;
     }
 
@@ -360,6 +383,13 @@ public sealed class ShareConsumerConnectionOwnershipTests
         GroupId = "share-group",
         ConnectionsPerBroker = 2
     };
+
+    private sealed class TrackingMemory : IPooledMemory
+    {
+        public ReadOnlyMemory<byte> Memory => ReadOnlyMemory<byte>.Empty;
+        public int Disposals { get; private set; }
+        public void Dispose() => Disposals++;
+    }
 
     private sealed class LeaseTrackingConnection(params ApiVersion[] versions) :
         IKafkaConnection,
@@ -383,6 +413,7 @@ public sealed class ShareConsumerConnectionOwnershipTests
         public int LeaseCountDuringSend { get; private set; }
         public int ShareFetchSendCount { get; private set; }
         public int ShareAcknowledgeSendCount { get; private set; }
+        public Action? OnMetadataRequest { get; init; }
         public Queue<ShareFetchResponse>? ShareFetchResponses { get; init; }
         public ShareAcknowledgeResponse? ShareAcknowledgeResponse { get; init; }
 
@@ -418,6 +449,8 @@ public sealed class ShareConsumerConnectionOwnershipTests
             where TResponse : IKafkaResponse
         {
             LeaseCountDuringSend = LeaseCount;
+            if (request is MetadataRequest)
+                OnMetadataRequest?.Invoke();
             IKafkaResponse response = request switch
             {
                 ShareGroupHeartbeatRequest => new ShareGroupHeartbeatResponse

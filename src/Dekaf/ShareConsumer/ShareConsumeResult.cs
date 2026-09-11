@@ -7,17 +7,60 @@ namespace Dekaf.ShareConsumer;
 /// Unlike the regular consumer's <c>ConsumeResult</c> (a readonly struct), this is a class
 /// because the acknowledgement state is mutable between poll and commit.
 /// </summary>
+/// <remarks>
+/// Deserializers that borrow their input, and header value views, remain valid for the
+/// current poll round and after iterator disposal, until the next poll round starts or
+/// the consumer is disposed. Copy them before keeping them beyond that boundary.
+/// Renew acknowledgements made before that boundary retain the payload for subsequent replay delivery.
+/// </remarks>
 public sealed class ShareConsumeResult<TKey, TValue>
 {
+    // The batch owner also stores the topic. Reuse this reference slot so payload
+    // ownership does not add a field/allocation to every delivered record.
+    private object _topicOrBatchOwner = null!;
+    private byte _acknowledgement = (byte)AcknowledgeType.Accept;
+    private int _partitionOrGeneration;
+
+    internal ShareRecordBatchOwner? BatchOwner
+    {
+        get
+        {
+            if (_topicOrBatchOwner is not ShareRecordBatchOwner owner)
+                return null;
+            if (unchecked((uint)~_partitionOrGeneration) != owner.Generation)
+                throw new InvalidOperationException("Cannot renew a record after its borrowed payload lifetime has ended.");
+            return owner;
+        }
+    }
+
+    internal void AttachBatchOwner(ShareRecordBatchOwner owner)
+    {
+        // Owners keep immutable partition metadata, freeing the existing partition
+        // word for a generation without growing any generic record layout. The
+        // complement keeps ordinary nonnegative partition reads on the fast path.
+        _partitionOrGeneration = ~unchecked((int)owner.Generation);
+        _topicOrBatchOwner = owner;
+    }
+
     /// <summary>
     /// The topic this record was consumed from.
     /// </summary>
-    public required string Topic { get; init; }
+    public required string Topic
+    {
+        get => _topicOrBatchOwner is ShareRecordBatchOwner owner ? owner.Topic : (string)_topicOrBatchOwner;
+        init => _topicOrBatchOwner = value;
+    }
 
     /// <summary>
     /// The partition this record was consumed from.
     /// </summary>
-    public required int Partition { get; init; }
+    public required int Partition
+    {
+        get => _partitionOrGeneration < 0 && _topicOrBatchOwner is ShareRecordBatchOwner owner
+            ? owner.Partition
+            : _partitionOrGeneration;
+        init => _partitionOrGeneration = value;
+    }
 
     /// <summary>
     /// The offset of this record within the partition.
@@ -60,5 +103,13 @@ public sealed class ShareConsumeResult<TKey, TValue>
     /// The acknowledgement state for this record. Defaults to Accept.
     /// Updated via <see cref="IKafkaShareConsumer{TKey,TValue}.Acknowledge"/>.
     /// </summary>
-    internal AcknowledgeType AcknowledgeType { get; set; } = AcknowledgeType.Accept;
+    internal AcknowledgeType AcknowledgeType
+    {
+        get => (AcknowledgeType)_acknowledgement;
+        set
+        {
+            System.Diagnostics.Debug.Assert((byte)value <= (byte)AcknowledgeType.Renew);
+            _acknowledgement = (byte)value;
+        }
+    }
 }
