@@ -38,6 +38,16 @@ def phases(a1=100.0, b=100.0, a2=100.0, alloc=(0, 0, 0), **kwargs):
 
 
 class SelectionTests(unittest.TestCase):
+    def test_admin_paths_select_consumer_assignment_parser(self):
+        selected = self.names(gate.select(['src/Dekaf/Admin/AdminClient.cs'], root=REPO_ROOT))
+        self.assertIn('ConsumerGroupAssignmentBenchmarks', selected)
+        self.assertIn('AdminClassicGroupDescriptionBenchmarks', selected)
+
+    def test_inmemory_paths_select_delivery_callbacks(self):
+        selected = self.names(gate.select(['src/Dekaf.Testing/InMemoryKafkaCluster.cs'], root=REPO_ROOT))
+        self.assertIn('InMemoryDeliveryCallbackBenchmarks', selected)
+        self.assertIn('InMemoryClassicGroupDescriptionBenchmarks', selected)
+
     def test_config_mutations_keep_direct_fixture_coverage(self):
         for path in ('src/Dekaf/Admin/AdminClient.cs', 'src/Dekaf/Admin/AdminClient.DetailedConfigMutations.cs',
                      'src/Dekaf/Admin/AdminClient.DetailedMutations.cs'):
