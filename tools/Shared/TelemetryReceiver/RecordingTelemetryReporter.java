@@ -10,7 +10,7 @@ import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.ArrayDeque;
 import org.apache.kafka.common.metrics.KafkaMetric;
 import org.apache.kafka.common.metrics.MetricsReporter;
 import org.apache.kafka.server.telemetry.ClientTelemetry;
@@ -20,14 +20,20 @@ import org.apache.kafka.server.telemetry.ClientTelemetryReceiver;
 // Copy the borrowed payload before returning; HTTP reads never run on Kafka's request thread.
 @SuppressWarnings("removal")
 public final class RecordingTelemetryReporter implements MetricsReporter, ClientTelemetry {
-    private final ConcurrentLinkedQueue<String> payloads = new ConcurrentLinkedQueue<>();
+    private final ArrayDeque<String> payloads = new ArrayDeque<>();
+    // Integration tests retain their existing history; stress runs explicitly bound it.
+    private final int maximumPayloads = Integer.parseInt(System.getenv().getOrDefault("DEKAF_TELEMETRY_MAX_PAYLOADS", "0"));
+    private final int maximumBytes = Integer.parseInt(System.getenv().getOrDefault("DEKAF_TELEMETRY_MAX_BYTES", "0"));
     private HttpServer server;
 
     public void configure(Map<String, ?> configs) {
         try {
             server = HttpServer.create(new InetSocketAddress(8080), 0);
             server.createContext("/payloads", exchange -> {
-                byte[] body = String.join("\n", payloads).getBytes(StandardCharsets.UTF_8);
+                byte[] body;
+                synchronized (payloads) {
+                    body = String.join("\n", payloads).getBytes(StandardCharsets.UTF_8);
+                }
                 exchange.getResponseHeaders().set("Content-Type", "text/plain; charset=utf-8");
                 exchange.sendResponseHeaders(200, body.length);
                 try (var output = exchange.getResponseBody()) { output.write(body); }
@@ -42,12 +48,17 @@ public final class RecordingTelemetryReporter implements MetricsReporter, Client
     public ClientTelemetryReceiver clientReceiver() {
         return (context, payload) -> {
             ByteBuffer data = payload.data().duplicate();
+            if (maximumBytes > 0 && data.remaining() > maximumBytes)
+                throw new IllegalArgumentException("Telemetry payload exceeds receiver bound");
             byte[] copy = new byte[data.remaining()];
             data.get(copy);
             var id = payload.clientInstanceId();
-            payloads.add(new UUID(id.getMostSignificantBits(), id.getLeastSignificantBits()) + "\t"
+            synchronized (payloads) {
+                if (maximumPayloads > 0 && payloads.size() == maximumPayloads) payloads.removeFirst();
+                payloads.addLast(new UUID(id.getMostSignificantBits(), id.getLeastSignificantBits()) + "\t"
                 + payload.isTerminating() + "\t" + encode(context.clientId()) + "\t"
                 + encode(payload.contentType()) + "\t" + Base64.getEncoder().encodeToString(copy));
+            }
         };
     }
 
@@ -60,6 +71,6 @@ public final class RecordingTelemetryReporter implements MetricsReporter, Client
     public void metricRemoval(KafkaMetric metric) { }
     public void close() {
         if (server != null) server.stop(0);
-        payloads.clear();
+        synchronized (payloads) { payloads.clear(); }
     }
 }

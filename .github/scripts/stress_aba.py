@@ -8,6 +8,7 @@ from pathlib import Path
 
 from stress_report import cpu_micros_per_message, effective_rate, median_interval_rate
 from stress_warmup import validate_outbox
+from stress_telemetry import telemetry_identity, validate_telemetry
 
 
 DEFAULT_TOLERANCE_PERCENT = 3.0
@@ -106,6 +107,7 @@ def _identity(result):
         result.get("idempotent"),
         result.get("roundTripSteadySeconds"),
     )
+    identity += telemetry_identity(result)
     if str(result.get("scenario", "")).casefold() == "consumer-keyed":
         keyed = result["keyedConsumer"]
         return identity + tuple(keyed[name] for name in KEYED_DIMENSIONS)
@@ -183,6 +185,7 @@ def _measurements(result, latency_required=True):
         "stability": result.get("steadyStatePeakRatio"),
         "averageRequest": _average_request_kib(result),
     }
+    validate_telemetry(result)
     measurements.update(validate_outbox(result))
     missing = [
         metric.label

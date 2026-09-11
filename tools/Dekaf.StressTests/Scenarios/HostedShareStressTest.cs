@@ -6,6 +6,7 @@ using Dekaf.Extensions.DependencyInjection;
 using Dekaf.Extensions.Hosting;
 using Dekaf.Producer;
 using Dekaf.ShareConsumer;
+using Dekaf.Telemetry;
 using Dekaf.StressTests.Metrics;
 using Dekaf.StressTests.Reporting;
 using Microsoft.Extensions.DependencyInjection;
@@ -19,9 +20,9 @@ namespace Dekaf.StressTests.Scenarios;
 /// Share groups cannot seek a fixed replay corpus. CPU and allocations therefore include
 /// the feeder, serialization and both workers; latency ends at successful processing.
 /// </summary>
-internal sealed class HostedShareStressTest : IStressTestScenario
+internal sealed class HostedShareStressTest(bool telemetryEnabled = false) : IStressTestScenario
 {
-    public string Name => "hosted-share";
+    public string Name => telemetryEnabled ? "hosted-share-telemetry" : "hosted-share";
     public string Client => "Dekaf";
 
     public async Task<StressTestResult> RunAsync(StressTestOptions options, CancellationToken cancellationToken)
@@ -39,13 +40,17 @@ internal sealed class HostedShareStressTest : IStressTestScenario
             }, cancellationToken: cancellationToken).ConfigureAwait(false);
         }
 
+        using var telemetry = telemetryEnabled ? new ShareTelemetryObserver(options.TelemetryReceiverEndpoint
+            ?? throw new ArgumentException("Subscribed stress requires a broker telemetry receiver.")) : null;
+        if (telemetry is not null)
+            await telemetry.ConfigureAsync(options.BootstrapServers, cancellationToken).ConfigureAwait(false);
         var state = new HostedShareWorkloadState(options.Topic, options.MessageSizeBytes);
         var builder = Host.CreateApplicationBuilder();
         builder.Logging.ClearProviders();
         builder.Services.AddSingleton(state);
         builder.Services.AddDekaf(dekaf => dekaf
-            .AddShareConsumerService<Worker, string, byte[]>("first", Configure)
-            .AddShareConsumerService<Worker, string, byte[]>("second", Configure));
+            .AddShareConsumerService<Worker, string, byte[]>("first", consumer => Configure(consumer, 0))
+            .AddShareConsumerService<Worker, string, byte[]>("second", consumer => Configure(consumer, 1)));
         using var host = builder.Build();
         var producerBuilder = Kafka.CreateProducer<string, byte[]>()
             .WithLoggerFactory(StressClientLogging.LoggerFactory)
@@ -61,12 +66,19 @@ internal sealed class HostedShareStressTest : IStressTestScenario
             throw new InvalidOperationException("The two keyed registrations did not create independent workers.");
 
         var measured = new ThroughputTracker();
+        StressTestResult result;
+        var workloadComplete = false;
         try
         {
             await host.StartAsync(cancellationToken).ConfigureAwait(false);
             Console.WriteLine($"  Warming up hosted-share: {options.ProducerWarmupSeconds}s, two keyed workers, {HostedShareWorkloadState.WindowSize} outstanding records maximum.");
             measured.Warmup = await ProducerWarmup.RunAsync(options.ProducerWarmupSeconds,
                 RunCycleAsync, cancellationToken).ConfigureAwait(false);
+            if (telemetry is not null)
+            {
+                for (var i = 0; i < workers.Length; i++) telemetry.ObserveIdentity(i, workers[i].Consumer);
+                await telemetry.VerifyAsync(false, options.OutputDirectory, cancellationToken).ConfigureAwait(false);
+            }
             var warmupProcessed = new[] { workers[0].Processed, workers[1].Processed };
             var started = DateTime.UtcNow;
             var run = await RunCycleAsync(TimeSpan.FromMinutes(options.DurationMinutes), measured, cancellationToken).ConfigureAwait(false);
@@ -81,7 +93,8 @@ internal sealed class HostedShareStressTest : IStressTestScenario
             }
             state.ThrowIfFailed();
             Console.WriteLine($"  Hosted workers stopped after processing {state.Completed:N0} unique records; duplicates={state.Duplicates:N0}.");
-            return CreateResult(options, started, run, measured, state.Latency, producer);
+            result = CreateResult(options, started, run, measured, state.Latency, producer);
+            workloadComplete = true;
         }
         finally
         {
@@ -90,14 +103,29 @@ internal sealed class HostedShareStressTest : IStressTestScenario
             finally
             {
                 // Observe every cleanup even if another worker faults during disposal.
-                await Task.WhenAll(workers.Select(worker => worker.DisposeAsync().AsTask())).ConfigureAwait(false);
+                try { await Task.WhenAll(workers.Select(worker => worker.DisposeAsync().AsTask())).ConfigureAwait(false); }
+                finally
+                {
+                    if (!workloadComplete && telemetry is not null)
+                        await telemetry.CaptureFailureAsync(options.OutputDirectory).ConfigureAwait(false);
+                }
             }
         }
 
-        void Configure(ShareConsumerBuilder<string, byte[]> consumer) => consumer
-            .WithLoggerFactory(StressClientLogging.LoggerFactory)
-            .WithBootstrapServers(options.BootstrapServers).WithGroupId(group)
-            .WithAcknowledgementCommitCallback(state.ObserveAcknowledgements);
+        if (telemetry is not null)
+            result.ShareTelemetry = await telemetry.VerifyAsync(true, options.OutputDirectory, cancellationToken).ConfigureAwait(false);
+        return result;
+
+        void Configure(ShareConsumerBuilder<string, byte[]> consumer, int worker)
+        {
+            consumer.WithLoggerFactory(StressClientLogging.LoggerFactory)
+                .WithBootstrapServers(options.BootstrapServers).WithGroupId(group)
+                .WithAcknowledgementCommitCallback(state.ObserveAcknowledgements);
+            if (telemetry is not null)
+                consumer.WithClientId(telemetry.ClientIds[worker])
+                    .RegisterMetricForSubscription(new ApplicationTelemetryMetric(ShareTelemetryObserver.ApplicationMetric,
+                        ApplicationTelemetryMetricKind.Gauge, () => worker + 1));
+        }
 
         async Task<ProducerWorkloadResult> RunCycleAsync(TimeSpan duration, ThroughputTracker tracker, CancellationToken token)
         {

@@ -2,7 +2,7 @@ using Dekaf.Admin;
 using Dekaf.Diagnostics;
 using Dekaf.Telemetry;
 using Dekaf.ShareConsumer;
-using Dekaf.Tests.Integration.Telemetry;
+using Dekaf.Tools.Telemetry;
 
 namespace Dekaf.Tests.Integration;
 

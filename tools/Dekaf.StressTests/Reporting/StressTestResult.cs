@@ -38,6 +38,7 @@ internal sealed class StressTestResult
     public int? RoundTripSteadySeconds { get; init; }
     public OutboxWorkloadSnapshot? Outbox { get; init; }
     public KeyedConsumerSnapshot? KeyedConsumer { get; set; }
+    public ShareTelemetrySnapshot? ShareTelemetry { get; set; }
 
     /// <summary>
     /// Whether the scenario's producer ran with idempotence enabled. Must mirror the

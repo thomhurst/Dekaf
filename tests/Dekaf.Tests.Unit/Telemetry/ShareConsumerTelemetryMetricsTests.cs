@@ -154,7 +154,7 @@ public sealed class ShareConsumerTelemetryMetricsTests
             [Fetch + "acknowledgements.send.total", Prefix + "last.poll.seconds.ago", "com.example.share."]);
         var provider = new ClientTelemetryPayloadProvider();
         var payload = provider.Collect(subscription, collector.Collect(subscription), false);
-        var decoded = Dekaf.Tests.Integration.Telemetry.MetricsData.Parser.ParseFrom(payload.ToArray())
+        var decoded = Dekaf.Tools.Telemetry.MetricsData.Parser.ParseFrom(payload.ToArray())
             .ResourceMetrics.SelectMany(resource => resource.ScopeMetrics).SelectMany(scope => scope.Metrics).ToArray();
         await Assert.That(decoded.Length).IsEqualTo(3);
         var counter = decoded.Single(metric => metric.Name == Fetch + "acknowledgements.send.total");
