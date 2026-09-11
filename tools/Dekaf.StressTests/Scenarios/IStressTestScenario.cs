@@ -17,6 +17,7 @@ internal sealed class StressTestOptions
 
     public required string BootstrapServers { get; init; }
     public required string Topic { get; init; }
+    public string OutputDirectory { get; init; } = ".";
     public required int DurationMinutes { get; init; }
     public required int MessageSizeBytes { get; init; }
     public int ProducerWarmupSeconds { get; init; } = ProducerWarmup.DefaultSeconds;

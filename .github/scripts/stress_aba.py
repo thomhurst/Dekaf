@@ -7,6 +7,7 @@ from math import isfinite
 from pathlib import Path
 
 from stress_report import cpu_micros_per_message, effective_rate, median_interval_rate
+from stress_warmup import validate_outbox
 
 
 DEFAULT_TOLERANCE_PERCENT = 3.0
@@ -60,6 +61,10 @@ METRICS = (
 )
 
 LATENCY_KEYS = ("p50", "p95", "p99", "max")
+OUTBOX_METRICS = (
+    Metric("idleCpu", "Idle CPU", "ms/s", False),
+    Metric("idleAlloc", "Idle allocation", "B/s", False),
+)
 
 DEFAULT_STABILITY_FLOOR = 0.85
 
@@ -90,7 +95,8 @@ def _single_result(directory):
 
 
 def _identity(result):
-    return (
+    outbox = result.get("outbox") or {}
+    identity = (
         str(result.get("scenario", "")).casefold(),
         str(result.get("client", "")).casefold(),
         result.get("brokerCount"),
@@ -100,6 +106,11 @@ def _identity(result):
         result.get("idempotent"),
         result.get("roundTripSteadySeconds"),
     )
+    return identity + (
+        (outbox.get("idle") or {}).get("requestedSeconds"),
+        outbox.get("activeRequestedSeconds"),
+        (outbox.get("idleWarmup") or {}).get("requestedSeconds"),
+    ) if outbox else identity
 
 
 def _average_request_kib(result):
@@ -144,6 +155,7 @@ def _measurements(result, latency_required=True):
         "stability": result.get("steadyStatePeakRatio"),
         "averageRequest": _average_request_kib(result),
     }
+    measurements.update(validate_outbox(result))
     missing = [
         metric.label
         for metric in METRICS
@@ -357,6 +369,7 @@ def compare(
             if not isinstance(result.get(field), dict):
                 raise ValueError(f"Expected a {field} object")
         _validate_completed_messages(result)
+        validate_outbox(result)
 
     identities = {
         _identity(baseline_a_result),
@@ -399,7 +412,7 @@ def compare(
             floor_status=stability_status if metric.floor else None,
             candidate_b2=None if candidate_b2 is None else candidate_b2[metric.key],
         )
-        for metric in METRICS
+        for metric in METRICS + (OUTBOX_METRICS if candidate_result.get("outbox") is not None else ())
     ]
 
     def latency_count(item):

@@ -35,6 +35,7 @@ internal sealed class StressTestResult
     public RoundTripValidationSnapshot? RoundTripValidation { get; init; }
     public RoundTripPhaseSnapshot? RoundTripPhases { get; init; }
     public int? RoundTripSteadySeconds { get; init; }
+    public OutboxWorkloadSnapshot? Outbox { get; init; }
 
     /// <summary>
     /// Whether the scenario's producer ran with idempotence enabled. Must mirror the

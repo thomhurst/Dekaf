@@ -286,7 +286,7 @@ class StressWarmupTests(unittest.TestCase):
         self.assertIn("--require-startup-assessment", workflow)
         self.assertLess(workflow.index('Build Stress Tests (exact baseline)'), workflow.index('run_aba()'))
         self.assertNotIn("schedule:", workflow)
-        self.assertIn("consumer-1b|consumer-batch-1b|consumer-raw-1b|consumer-raw-batch-1b|hosted-share-1b) ;;", workflow)
+        self.assertIn("consumer-1b|consumer-batch-1b|consumer-raw-1b|consumer-raw-batch-1b|hosted-share-1b|outbox-1b) ;;", workflow)
 
 
 if __name__ == "__main__":
