@@ -5,6 +5,29 @@ namespace Dekaf.Tests.Unit.ShareConsumer;
 public sealed class ShareAcknowledgedOffsetsTests
 {
     [Test]
+    public async Task OffsetView_SkipsGapsAcrossEveryAccessPath()
+    {
+        var offsets = new ShareAcknowledgedOffsets(
+        [
+            new AcknowledgementBatchData(10, 14, [0, 1, 0, 2, 0]),
+            new AcknowledgementBatchData(20, 21, [0, 0]),
+            new AcknowledgementBatchData(30, 30, [3])
+        ]);
+        await Assert.That(offsets.Length).IsEqualTo(3);
+        await Assert.That(offsets[0]).IsEqualTo(11);
+        await Assert.That(offsets[1]).IsEqualTo(13);
+        await Assert.That(offsets[2]).IsEqualTo(30);
+        await Assert.That(() => offsets[3]).Throws<ArgumentOutOfRangeException>();
+        var copy = new long[3];
+        offsets.CopyTo(copy);
+        await Assert.That(copy).IsEquivalentTo(new long[] { 11, 13, 30 });
+        var enumerated = new List<long>();
+        foreach (var offset in offsets)
+            enumerated.Add(offset);
+        await Assert.That(enumerated).IsEquivalentTo(copy);
+    }
+
+    [Test]
     public async Task OffsetView_IndexesCopiesAndEnumeratesAcrossBatches()
     {
         var offsets = new ShareAcknowledgedOffsets(

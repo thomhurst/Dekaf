@@ -62,6 +62,62 @@ await using var consumer = await kafka.CreateShareConsumer<string, string>("orde
 
 Share groups do not support manual partition assignment — `Subscribe` is the only way to receive records. The share group coordinator decides which partitions each member fetches from; the current set is exposed via `consumer.Assignment`.
 
+## Borrowed batch delivery
+
+`PollBatchesAsync` is an optional capability exposed by Dekaf's share consumer through
+`IKafkaShareBatchConsumer<TKey, TValue>`. The extension method on `IKafkaShareConsumer<TKey, TValue>`
+throws `NotSupportedException` for implementations without this capability.
+
+```csharp
+using Dekaf.ShareConsumer;
+
+await foreach (var batch in shareConsumer.PollBatchesAsync(cancellationToken))
+{
+    foreach (var record in batch)
+    {
+        Process(record.Value);
+        batch.Acknowledge(record, AcknowledgeType.Accept);
+    }
+}
+```
+
+The outer iterator fetches batches asynchronously; the inner `foreach` uses a struct enumerator
+and value-type record views. Record views and first-use acknowledgement state live in pooled
+batch storage. Batch wrappers, network requests, and acknowledgement wire vectors have costs
+per batch. Deserializers that create strings or other objects still allocate for those results.
+
+Choose `PollAsync` or `PollBatchesAsync` for a consumer instance. Switching between these polling
+APIs on the same instance throws `InvalidOperationException`. The class-based `PollAsync` API
+continues to return independent record objects with its existing retention behavior.
+
+### Ownership and partial enumeration
+
+A batch lease ends when you dispose it, advance or dispose the outer iterator, close the consumer,
+or unsubscribe. Record payload and offset properties reject access after the lease ends. `KeyBytes`, `ValueBytes`,
+header memory, and deserializer results that borrow their input must be read or copied before
+that boundary; an already copied memory slice cannot check whether the lease has ended.
+
+`record.Headers` enumerates `ShareBatchHeader` values in wire order, preserving duplicate keys and
+null values. Header keys are UTF-8 bytes in `KeyUtf8`, so reading headers does not require allocating
+strings. Call `Encoding.UTF8.GetString(header.KeyUtf8.Span)` only when you need a string key.
+Deserializers that request string-based header context may incur header materialization costs.
+
+Enumeration is forward-only. A new enumerator resumes at the next record, and only enumerated
+records count as delivered. Breaking the inner loop does not acknowledge the remaining records.
+`Count` reports available records; `DeliveredCount` reports how many this lease delivered.
+
+Call `batch.Acknowledge(record, type)` before the lease ends. `CommitAsync` can send those stored
+dispositions afterwards. Disposing a batch releases local ownership without sending or accepting
+records. In implicit mode, the next poll or commit accepts delivered records without an explicit
+disposition. Closing releases implicit dispositions that were never submitted, preserving explicit
+Accept, Release, and Reject decisions and the outcome of a previously attempted request.
+
+Renew requires explicit acknowledgement mode and broker support for ShareFetch/ShareAcknowledge v2.
+A successful Renew retains the acquired payload internally and replays it through a new batch lease
+with the original `DeliveryCount`. Release requests broker redelivery, which increments that count.
+Acknowledgement failures retain pending state for retry; a newer decision overrides an older failed
+request. All batch and consumer operations require the same external synchronization as `PollAsync`.
+
 ## Consuming and Acknowledging
 
 `PollAsync` returns an `IAsyncEnumerable` of acquired records:

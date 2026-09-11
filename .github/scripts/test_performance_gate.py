@@ -107,6 +107,19 @@ class SelectionTests(unittest.TestCase):
             with self.subTest(path=path):
                 selected = self.names(gate.select([path], root=REPO_ROOT))
                 self.assertIn('AdminDetailedShareGroupOffsetBenchmarks', selected)
+    def test_share_consumer_selects_polling_and_batch_fixtures(self):
+        path = 'src/Dekaf/ShareConsumer/KafkaShareConsumer.cs'
+        selected = self.names(gate.select([path], root=REPO_ROOT))
+        for fixture in ('ShareConsumerPollBenchmarks', 'ShareConsumerUnsubscribeBenchmarks', 'ShareConsumerSparsePollBenchmarks', 'ShareConsumerBorrowedParsingBenchmarks',
+                        'ShareBatchAcknowledgementBenchmarks', 'ShareBatchScalingBenchmarks',
+                        'ShareBatchRenewalPollBenchmarks', 'ShareBatchPendingStateBenchmarks',
+                        'ShareBatchChunkedRenewalBenchmarks'):
+            self.assertIn(fixture, selected)
+
+    def test_acknowledged_offsets_selects_indexing_fixture(self):
+        path = 'src/Dekaf/ShareConsumer/ShareAcknowledgedOffsets.cs'
+        selected = self.names(gate.select([path], root=REPO_ROOT))
+        self.assertIn('ShareAcknowledgedOffsetsBenchmarks', selected)
 
     def test_any_product_change_runs_the_sentinels(self):
         selection = gate.select(['src/Dekaf/Admin/AdminClient.cs'], fixtures=self.fixtures)

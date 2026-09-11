@@ -27,7 +27,7 @@ namespace Dekaf.ShareConsumer;
 /// (accepted, released, or rejected).
 /// </summary>
 internal sealed partial class KafkaShareConsumer<TKey, TValue> :
-    IKafkaShareConsumer<TKey, TValue>,
+    IKafkaShareBatchConsumer<TKey, TValue>,
     IApplicationTelemetryShareConsumer,
     IShareConsumerConfiguration,
     IHostedShareConsumer,
@@ -270,13 +270,17 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
 
     public IKafkaShareConsumer<TKey, TValue> Unsubscribe()
     {
+        _batchAcknowledgements?.ReleaseActiveAcquisitions();
         // Release any pending acks back to the group so other members can claim them,
         // rather than waiting for the broker's acquisition lock timeout to expire.
-        if (_ackTracker.HasPending)
+        if (HasPendingAcknowledgements || _assignmentSnapshot.Count != 0)
         {
             ReleasePendingAcks();
         }
 
+        _activeShareBatch?.Dispose();
+        _activeShareBatch = null;
+        _batchAcknowledgements?.Clear();
         _subscriptionSnapshot = new HashSet<string>();
         _sessionManager.ResetAll();
         ClearRenewedRecords();
@@ -288,6 +292,8 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
     {
         ThrowIfDisposed();
         ThrowIfNotInitialized();
+        SelectConsumptionMode(batch: false);
+        await WaitForPendingReleaseAsync(cancellationToken).ConfigureAwait(false);
 
         while (!cancellationToken.IsCancellationRequested)
         {
@@ -310,38 +316,15 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                 continue;
             }
 
-            _bufferedAcquisitionTimestamps?.Clear();
-            _rawRecords?.Clear();
-            // All readable slices belong to the new poll; overwrite payload bytes as needed.
-            _rawBuffer?.ResetWrittenCount();
-
-            // Flush pending acks from previous poll as inline acknowledgements with the fetch
-            var pendingAcks = _ackTracker.HasPending ? _ackTracker.Flush() : null;
-
-            // Group assigned partitions by leader broker
-            var partitionsByBroker = GroupPartitionsByLeader(assignment);
-
-            // Send fetch requests to all brokers concurrently. Session epochs are per-broker
-            // and independent, so parallelism is safe. This avoids waiting for each broker's
-            // MaxWaitMs sequentially when partitions span multiple brokers.
-            var fetchTasks = new List<Task<ShareFetchBrokerResult>>(
-                partitionsByBroker.Count);
-            var sentAcknowledgementPartitionCount = 0;
-
-            foreach (var (brokerId, partitions) in partitionsByBroker)
-            {
-                var brokerAcks = SelectAcknowledgements(pendingAcks, partitions);
-                sentAcknowledgementPartitionCount += brokerAcks?.Count ?? 0;
-                fetchTasks.Add(SendShareFetchForBrokerAsync(
-                    brokerId,
-                    partitions,
-                    brokerAcks,
-                    cancellationToken));
-            }
-
+            var fetchTasks = StartPollFetch(assignment, cancellationToken,
+                out var pendingAcks, out var sentAcknowledgementPartitionCount);
+            // Keep every response frame alive across parsing and yield boundaries.
+            // The scope also releases successful responses when another broker fails.
+            using var responseScope = new ShareFetchResponseScope(fetchTasks);
+            ShareFetchBrokerResult[] fetchResults;
             try
             {
-                await Task.WhenAll(fetchTasks).ConfigureAwait(false);
+                fetchResults = await Task.WhenAll(fetchTasks).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
@@ -352,112 +335,19 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                 throw;
             }
 
-            // Process every response before yielding. Session epochs and inline
-            // acknowledgements must advance even when an earlier broker fills the poll budget.
+            CompletePollFetch(fetchResults, pendingAcks, sentAcknowledgementPartitionCount);
+
             var recordCount = 0;
             List<ShareConsumeResult<TKey, TValue>>? fetchedRecords = _renewedRecords is null
                 ? null
                 : new List<ShareConsumeResult<TKey, TValue>>(_options.MaxPollRecords);
             if (fetchedRecords is not null && _hostedProcessing)
                 _bufferedAcquisitionTimestamps ??= [];
-            Exception? firstFetchError = null;
-            Dictionary<TopicPartition, Exception>? acknowledgementErrors = null;
-            if (pendingAcks is not null && sentAcknowledgementPartitionCount != pendingAcks.Count)
-            {
-                var unsentAcknowledgements = GetUnsentAcknowledgements(pendingAcks, fetchTasks);
-                RequeueAcknowledgements(unsentAcknowledgements);
-                AddAcknowledgementErrors(
-                    ref acknowledgementErrors,
-                    unsentAcknowledgements,
-                    KafkaException.FromErrorCode(
-                        ErrorCode.UnknownTopicOrPartition,
-                        "Inline ShareFetch acknowledgement could not resolve a partition leader."));
-            }
-
-            foreach (var fetchTask in fetchTasks)
-            {
-                var fetchResult = await fetchTask.ConfigureAwait(false);
-                var (brokerId, version, response, sentAcks, error, acknowledgementError) = fetchResult;
-
-                if (error is not null)
-                {
-                    RequeueAcknowledgements(sentAcks);
-                    AddAcknowledgementErrors(ref acknowledgementErrors, sentAcks, acknowledgementError ?? error);
-                    firstFetchError ??= error;
-                    continue;
-                }
-
-                if (response is null)
-                {
-                    RequeueAcknowledgements(sentAcks);
-                    if (acknowledgementError is not null)
-                        AddAcknowledgementErrors(ref acknowledgementErrors, sentAcks, acknowledgementError);
-                    continue;
-                }
-
-                // Handle top-level errors
-                if (response.ErrorCode != ErrorCode.None)
-                {
-                    LogFetchTopLevelError(response.ErrorCode, response.ErrorMessage);
-                    if (response.ErrorCode == ErrorCode.ShareSessionNotFound ||
-                        response.ErrorCode == ErrorCode.InvalidShareSessionEpoch)
-                    {
-                        _sessionManager.ResetSession(brokerId);
-                        // Note: _ackTracker may still hold pending acks from the now-invalid session.
-                        // On next CommitAsync those acks will be sent with epoch 0 (new session).
-                        // Renewal records represent partition locks, not fetch-session membership.
-                        // Keep active records available for replay and pending Renew records ready
-                        // for activation after the new session accepts them.
-                    }
-                    RequeueAcknowledgements(sentAcks);
-                    AddAcknowledgementErrors(
-                        ref acknowledgementErrors,
-                        sentAcks,
-                        KafkaException.FromErrorCode(
-                            response.ErrorCode,
-                            $"Inline ShareFetch acknowledgement failed for broker {brokerId}: " +
-                            $"{response.ErrorCode} - {response.ErrorMessage}"));
-                    continue;
-                }
-
-                // Advance the session epoch BEFORE yielding so that even if
-                // the caller breaks from the async enumerable (disposing the iterator),
-                // the epoch is already correct for a subsequent ShareAcknowledge/CommitAsync.
-                _sessionManager.IncrementEpoch(brokerId);
-                if (version >= 1)
-                    Volatile.Write(ref _acquisitionLockTimeoutMs, response.AcquisitionLockTimeoutMs);
-
-                var acknowledgementFailures = GetAcknowledgementFailures(response, sentAcks);
-                if (acknowledgementFailures is not null)
-                {
-                    SplitAcknowledgements(
-                        sentAcks,
-                        acknowledgementFailures,
-                        out var successfulAcknowledgements,
-                        out var failedAcknowledgements);
-                    ApplySuccessfulAcknowledgements(successfulAcknowledgements, fetchResult.ReceivedTimestamp);
-                    RequeueAcknowledgements(failedAcknowledgements);
-                    AddAcknowledgementErrors(
-                        ref acknowledgementErrors,
-                        acknowledgementFailures.Errors);
-                    LogInlineAcknowledgeFailed(brokerId, acknowledgementFailures.FirstError);
-                }
-                else
-                {
-                    ApplySuccessfulAcknowledgements(sentAcks, fetchResult.ReceivedTimestamp);
-                }
-            }
-
-            InvokeAcknowledgementCommitCallback(pendingAcks, acknowledgementErrors);
-
-            if (firstFetchError is not null)
-                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(firstFetchError).Throw();
 
             // Parse records only after all broker bookkeeping is complete. This second broker scan
             // is per poll, not per message, and avoids buffering records when no renewal is active.
-            foreach (var fetchTask in fetchTasks)
+            foreach (var fetchResult in fetchResults)
             {
-                var fetchResult = await fetchTask.ConfigureAwait(false);
                 var response = fetchResult.Response;
                 if (response is null || response.ErrorCode != ErrorCode.None)
                     continue;
@@ -628,9 +518,148 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         }
     }
 
+    private List<Task<ShareFetchBrokerResult>> StartPollFetch(
+        TopicPartitionSet assignment,
+        CancellationToken cancellationToken,
+        out Dictionary<TopicPartition, List<AcknowledgementBatchData>>? pendingAcks,
+        out int sentAcknowledgementPartitionCount)
+    {
+        _bufferedAcquisitionTimestamps?.Clear();
+        _rawRecords?.Clear();
+        // All readable slices belong to the new poll; overwrite payload bytes as needed.
+        _rawBuffer?.ResetWrittenCount();
+
+        // Flush pending acks from previous poll as inline acknowledgements with the fetch
+        pendingAcks = HasPendingAcknowledgements ? FlushAcknowledgements() : null;
+
+        // Group assigned partitions by leader broker
+        var partitionsByBroker = GroupPartitionsByLeader(assignment);
+
+        // Send fetch requests to all brokers concurrently. Session epochs are per-broker
+        // and independent, so parallelism is safe. This avoids waiting for each broker's
+        // MaxWaitMs sequentially when partitions span multiple brokers.
+        var fetchTasks = new List<Task<ShareFetchBrokerResult>>(
+            partitionsByBroker.Count);
+        sentAcknowledgementPartitionCount = 0;
+
+        foreach (var (brokerId, partitions) in partitionsByBroker)
+        {
+            var brokerAcks = SelectAcknowledgements(pendingAcks, partitions);
+            sentAcknowledgementPartitionCount += brokerAcks?.Count ?? 0;
+            fetchTasks.Add(SendShareFetchForBrokerAsync(
+                brokerId,
+                partitions,
+                brokerAcks,
+                cancellationToken));
+        }
+
+        return fetchTasks;
+    }
+
+    private void CompletePollFetch(
+        ShareFetchBrokerResult[] fetchResults,
+        Dictionary<TopicPartition, List<AcknowledgementBatchData>>? pendingAcks,
+        int sentAcknowledgementPartitionCount)
+    {
+        // Process every response before yielding. Session epochs and inline
+        // acknowledgements must advance even when an earlier broker fills the poll budget.
+        Exception? firstFetchError = null;
+        Dictionary<TopicPartition, Exception>? acknowledgementErrors = null;
+        if (pendingAcks is not null && sentAcknowledgementPartitionCount != pendingAcks.Count)
+        {
+            var unsentAcknowledgements = GetUnsentAcknowledgements(pendingAcks, fetchResults);
+            RequeueAcknowledgements(unsentAcknowledgements);
+            AddAcknowledgementErrors(
+                ref acknowledgementErrors,
+                unsentAcknowledgements,
+                KafkaException.FromErrorCode(
+                    ErrorCode.UnknownTopicOrPartition,
+                    "Inline ShareFetch acknowledgement could not resolve a partition leader."));
+        }
+
+        foreach (var fetchResult in fetchResults)
+        {
+            var (brokerId, version, response, sentAcks, error, acknowledgementError) = fetchResult;
+
+            if (error is not null)
+            {
+                RequeueAcknowledgements(sentAcks);
+                AddAcknowledgementErrors(ref acknowledgementErrors, sentAcks, acknowledgementError ?? error);
+                firstFetchError ??= error;
+                continue;
+            }
+
+            if (response is null)
+            {
+                RequeueAcknowledgements(sentAcks);
+                if (acknowledgementError is not null)
+                    AddAcknowledgementErrors(ref acknowledgementErrors, sentAcks, acknowledgementError);
+                continue;
+            }
+
+            // Handle top-level errors
+            if (response.ErrorCode != ErrorCode.None)
+            {
+                LogFetchTopLevelError(response.ErrorCode, response.ErrorMessage);
+                if (response.ErrorCode == ErrorCode.ShareSessionNotFound ||
+                    response.ErrorCode == ErrorCode.InvalidShareSessionEpoch)
+                {
+                    _sessionManager.ResetSession(brokerId);
+                    // Note: _ackTracker may still hold pending acks from the now-invalid session.
+                    // On next CommitAsync those acks will be sent with epoch 0 (new session).
+                    // Renewal records represent partition locks, not fetch-session membership.
+                    // Keep active records available for replay and pending Renew records ready
+                    // for activation after the new session accepts them.
+                }
+                RequeueAcknowledgements(sentAcks);
+                AddAcknowledgementErrors(
+                    ref acknowledgementErrors,
+                    sentAcks,
+                    KafkaException.FromErrorCode(
+                        response.ErrorCode,
+                        $"Inline ShareFetch acknowledgement failed for broker {brokerId}: " +
+                        $"{response.ErrorCode} - {response.ErrorMessage}"));
+                continue;
+            }
+
+            // Advance the session epoch BEFORE yielding so that even if
+            // the caller breaks from the async enumerable (disposing the iterator),
+            // the epoch is already correct for a subsequent ShareAcknowledge/CommitAsync.
+            _sessionManager.IncrementEpoch(brokerId);
+            if (version >= 1)
+                Volatile.Write(ref _acquisitionLockTimeoutMs, response.AcquisitionLockTimeoutMs);
+
+            var acknowledgementFailures = GetAcknowledgementFailures(response, sentAcks);
+            if (acknowledgementFailures is not null)
+            {
+                SplitAcknowledgements(
+                    sentAcks,
+                    acknowledgementFailures,
+                    out var successfulAcknowledgements,
+                    out var failedAcknowledgements);
+                ApplySuccessfulAcknowledgements(successfulAcknowledgements, fetchResult.ReceivedTimestamp);
+                RequeueAcknowledgements(failedAcknowledgements);
+                AddAcknowledgementErrors(
+                    ref acknowledgementErrors,
+                    acknowledgementFailures.Errors);
+                LogInlineAcknowledgeFailed(brokerId, acknowledgementFailures.FirstError);
+            }
+            else
+            {
+                ApplySuccessfulAcknowledgements(sentAcks, fetchResult.ReceivedTimestamp);
+            }
+        }
+
+        InvokeAcknowledgementCommitCallback(pendingAcks, acknowledgementErrors);
+
+        if (firstFetchError is not null)
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(firstFetchError).Throw();
+    }
+
     public void Acknowledge(ShareConsumeResult<TKey, TValue> record, AcknowledgeType type = AcknowledgeType.Accept)
     {
         ThrowIfDisposed();
+        SelectConsumptionMode(batch: false);
 
         if (type == AcknowledgeType.Renew
             && _options.AcknowledgementMode != ShareAcknowledgementMode.Explicit)
@@ -660,10 +689,10 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
 
     private async ValueTask CommitCoreAsync(CancellationToken cancellationToken, bool releaseImplicit = false)
     {
-        if (!_ackTracker.HasPending)
+        if (!HasPendingAcknowledgements)
             return;
 
-        var pendingAcks = _ackTracker.Flush(releaseImplicit);
+        var pendingAcks = FlushAcknowledgements(releaseImplicit);
         if (pendingAcks.Count == 0)
             return;
 
@@ -746,16 +775,19 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
 
     public async ValueTask CloseAsync(CancellationToken cancellationToken = default)
     {
+        await WaitForPendingReleaseAsync(cancellationToken).ConfigureAwait(false);
         if (Interlocked.Exchange(ref _closed, 1) != 0)
             return;
 
         LogClosingShareConsumer();
         ClearRenewedRecords();
+        _activeShareBatch?.Dispose();
+        _activeShareBatch = null;
 
         // Step 1: Release delivered records that have not reached a poll/commit boundary.
         // Preserve explicit and previously submitted outcomes, including Renew. Closing
         // the share sessions below releases any remaining acquisition locks.
-        if (_ackTracker.HasPending)
+        if (HasPendingAcknowledgements)
         {
             try
             {
@@ -785,6 +817,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         }
         finally
         {
+            _batchAcknowledgements?.Dispose();
             await _telemetryManager.StopAsync(TimeSpan.FromSeconds(5), CancellationToken.None)
                 .ConfigureAwait(false);
         }
@@ -848,10 +881,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
     /// </summary>
     private void ReleasePendingAcks()
     {
-        var pending = _ackTracker.Flush();
-        if (pending.Count == 0)
-            return;
-
+        var pending = FlushAcknowledgements();
         // Override all ack types to Release so the broker redelivers to other members
         var released = new Dictionary<TopicPartition, List<AcknowledgementBatchData>>();
         foreach (var (tp, batches) in pending)
@@ -868,6 +898,15 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
 
         // Best-effort send — fire and forget since Unsubscribe is synchronous
         var acksByBroker = GroupAcksByLeader(released);
+        // A final acknowledgement closes the broker session and releases every
+        // acquisition, including producer batches that have not been parsed yet.
+        // Include assigned brokers even when no local acknowledgement was recorded.
+        foreach (var partition in _assignmentSnapshot)
+        {
+            var leader = _metadataManager.Metadata.GetPartitionLeader(partition.Topic, partition.Partition);
+            if (leader is not null && !acksByBroker.ContainsKey(leader.NodeId))
+                acksByBroker.Add(leader.NodeId, new Dictionary<TopicPartition, List<AcknowledgementBatchData>>());
+        }
         if (acksByBroker.Count == 0)
             return;
 
@@ -875,7 +914,9 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         // Store the task so DisposeAsync can await it before tearing down the connection pool.
         // Chain after any prior release task so DisposeAsync only needs to await the latest reference.
         var prior = _pendingReleaseTask;
-        _pendingReleaseTask = Task.Run(async () =>
+        _pendingReleaseTask = ReleaseAsync();
+
+        async Task ReleaseAsync()
         {
             if (prior is not null)
             {
@@ -891,7 +932,8 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                             brokerId,
                             acks,
                             retryRetriableFailures: false,
-                            cancellationToken: CancellationToken.None)
+                            cancellationToken: CancellationToken.None,
+                            closeSession: true)
                         .ConfigureAwait(false);
                     if (result.Error is not null)
                         LogAcknowledgeRequestFailed(brokerId, result.Error);
@@ -901,7 +943,16 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                     LogAcknowledgeRequestFailed(brokerId, ex);
                 }
             }
-        });
+        }
+    }
+
+    private async ValueTask WaitForPendingReleaseAsync(CancellationToken cancellationToken)
+    {
+        if (_pendingReleaseTask is not { } pending)
+            return;
+        await pending.WaitAsync(cancellationToken).ConfigureAwait(false);
+        if (ReferenceEquals(_pendingReleaseTask, pending))
+            _pendingReleaseTask = null;
     }
 
     private async Task<ShareFetchBrokerResult> SendShareFetchForPartitionsAsync(
@@ -966,6 +1017,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
 
                 if (attempt < RetryHelper.MaxRetries && response.ErrorCode.IsRetriable())
                 {
+                    response.Dispose();
                     var retryError = await PrepareShareFetchRetryAsync(attempt, cancellationToken)
                         .ConfigureAwait(false);
                     if (retryError is not null)
@@ -1080,8 +1132,9 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                 ShareAcquireMode = (sbyte)_options.ShareAcquireMode,
                 Topics = BuildShareFetchTopics(partitions, pendingAcks: null, version)
             };
-            await connection.SendAsync<ShareFetchRequest, ShareFetchResponse>(
+            var response = await connection.SendAsync<ShareFetchRequest, ShareFetchResponse>(
                 request, version, cancellationToken).ConfigureAwait(false);
+            response.Dispose();
         }
         catch
         {
@@ -1093,7 +1146,8 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         int brokerId,
         Dictionary<TopicPartition, List<AcknowledgementBatchData>> topicAcks,
         bool retryRetriableFailures,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool closeSession = false)
     {
         Dictionary<TopicPartition, List<AcknowledgementBatchData>>? successfulAcknowledgements = null;
         Dictionary<TopicPartition, List<AcknowledgementBatchData>>? failedAcknowledgements = null;
@@ -1121,7 +1175,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                 {
                     GroupId = _options.GroupId,
                     MemberId = _coordinator.MemberId!,
-                    ShareSessionEpoch = _sessionManager.GetSessionEpoch(brokerId),
+                    ShareSessionEpoch = closeSession ? ShareSessionManager.CloseEpoch : _sessionManager.GetSessionEpoch(brokerId),
                     IsRenewAck = isRenewAck,
                     Topics = topics
                 };
@@ -1133,12 +1187,12 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
 
                 if (response.ErrorCode != ErrorCode.None)
                 {
-                    if (response.ErrorCode is ErrorCode.ShareSessionNotFound
-                        or ErrorCode.InvalidShareSessionEpoch)
+                    if (!closeSession && response.ErrorCode is (ErrorCode.ShareSessionNotFound
+                        or ErrorCode.InvalidShareSessionEpoch))
                     {
                         _sessionManager.ResetSession(brokerId);
                     }
-                    else
+                    else if (!closeSession)
                     {
                         _sessionManager.IncrementEpoch(brokerId);
                     }
@@ -1147,7 +1201,8 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                         $"ShareAcknowledge failed for broker {brokerId}: {response.ErrorCode} - {response.ErrorMessage}");
                 }
 
-                _sessionManager.IncrementEpoch(brokerId);
+                if (!closeSession)
+                    _sessionManager.IncrementEpoch(brokerId);
 
                 if (isRenewAck)
                     Volatile.Write(ref _acquisitionLockTimeoutMs, response.AcquisitionLockTimeoutMs);
@@ -1811,15 +1866,15 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
 
     private static Dictionary<TopicPartition, List<AcknowledgementBatchData>> GetUnsentAcknowledgements(
         Dictionary<TopicPartition, List<AcknowledgementBatchData>> pendingAcknowledgements,
-        List<Task<ShareFetchBrokerResult>> fetchTasks)
+        ShareFetchBrokerResult[] fetchResults)
     {
         var unsentAcknowledgements = new Dictionary<TopicPartition, List<AcknowledgementBatchData>>();
         foreach (var (topicPartition, batches) in pendingAcknowledgements)
         {
             var sent = false;
-            foreach (var fetchTask in fetchTasks)
+            foreach (var fetchResult in fetchResults)
             {
-                if (fetchTask.Result.SentAcknowledgements?.ContainsKey(topicPartition) != true)
+                if (fetchResult.SentAcknowledgements?.ContainsKey(topicPartition) != true)
                     continue;
 
                 sent = true;
@@ -1867,7 +1922,9 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
     private void RequeueAcknowledgements(
         Dictionary<TopicPartition, List<AcknowledgementBatchData>>? acknowledgements)
     {
-        if (acknowledgements is not null && acknowledgements.Count > 0)
+        if (_batchAcknowledgements is { } batchAcknowledgements)
+            batchAcknowledgements.RequeueAcknowledgements(acknowledgements);
+        else if (acknowledgements is not null && acknowledgements.Count > 0)
             _ackTracker.RequeueAcks(acknowledgements);
     }
 
@@ -2104,6 +2161,11 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         Dictionary<TopicPartition, List<AcknowledgementBatchData>>? acknowledgements,
         long receivedTimestamp = 0)
     {
+        if (_batchAcknowledgements is { } batchAcknowledgements)
+        {
+            batchAcknowledgements.ApplySuccessfulAcknowledgements(acknowledgements);
+            return;
+        }
         if (_renewedRecords is null || acknowledgements is null)
             return;
 
@@ -2386,6 +2448,19 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         Dictionary<TopicPartition, List<AcknowledgementBatchData>>? FailedAcknowledgements,
         Exception? Error,
         Dictionary<TopicPartition, Exception>? Errors);
+
+    private readonly struct ShareFetchResponseScope(List<Task<ShareFetchBrokerResult>> tasks) : IDisposable
+    {
+        public void Dispose()
+        {
+            // Task.WhenAll has observed every task before the poll can leave this scope.
+            foreach (var task in tasks)
+            {
+                if (task.Status == TaskStatus.RanToCompletion)
+                    task.GetAwaiter().GetResult().Response?.Dispose();
+            }
+        }
+    }
 
     private readonly record struct ShareFetchBrokerResult(
         int BrokerId,
