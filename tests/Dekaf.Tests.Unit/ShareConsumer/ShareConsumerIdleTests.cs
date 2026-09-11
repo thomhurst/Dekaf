@@ -182,6 +182,50 @@ public sealed partial class ShareConsumerRenewalTests
         await Assert.That(wait.IsCompletedSuccessfully).IsTrue();
         await wait;
     }
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task MissingLeader_RefreshesMetadataBeforePollingAgain(bool batch)
+    {
+        var connection = new CapturingConnection(ApiKey.ShareFetch, maximumVersion: 2)
+        {
+            ShareFetchResponse = CreateFetchResponse(partition: 0, offset: 42)
+        };
+        await using var fixture = CreateFixture(connection);
+        fixture.MetadataManager.Metadata.Update(new MetadataResponse
+        {
+            Brokers = [new BrokerMetadata { NodeId = 1, Host = "localhost", Port = 9092 }],
+            Topics = [new TopicMetadata
+            {
+                ErrorCode = ErrorCode.None, Name = "topic", TopicId = TopicId,
+                Partitions = [new PartitionMetadata
+                {
+                    ErrorCode = ErrorCode.None, PartitionIndex = 0, LeaderId = -1, ReplicaNodes = [1], IsrNodes = [1]
+                }]
+            }]
+        });
+        PrepareForPoll(fixture.Consumer);
+        fixture.Consumer.Subscribe("topic");
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+        await using var records = fixture.Consumer.PollAsync(cancellation.Token).GetAsyncEnumerator();
+        await using var batches = fixture.Consumer.PollBatchesAsync(cancellation.Token).GetAsyncEnumerator();
+        // The old no-leader path never suspends. A separate worker lets the timeout
+        // bound that regression without blocking the test runner's calling thread.
+        var pending = Task.Run(async () => batch
+            ? await batches.MoveNextAsync()
+            : await records.MoveNextAsync());
+        try
+        {
+            await Assert.That(await pending).IsTrue();
+            await Assert.That(connection.SendCount).IsGreaterThanOrEqualTo(2);
+        }
+        finally
+        {
+            await cancellation.CancelAsync();
+            try { await pending; }
+            catch (OperationCanceledException) { }
+        }
+    }
     private static ShareConsumerCoordinator IdleCoordinator(KafkaShareConsumer<string, string> consumer)
         => (ShareConsumerCoordinator)typeof(KafkaShareConsumer<string, string>)
             .GetField("_coordinator", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(consumer)!;
