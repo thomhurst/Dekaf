@@ -17,7 +17,7 @@ public sealed partial class AdminClient : IDetailedTopicMutationAdminClient
             items, static item => item.Name,
             new(ApiKey.CreateTopics, CreateTopicsRequest.LowestSupportedVersion, CreateTopicsRequest.HighestSupportedVersion, nameof(CreateTopicsAsync)),
             opts.TimeoutMs,
-            (pending, _) => new() { Topics = pending, TimeoutMs = opts.TimeoutMs, ValidateOnly = opts.ValidateOnly },
+            (pending, _, _) => new() { Topics = pending, TimeoutMs = opts.TimeoutMs, ValidateOnly = opts.ValidateOnly },
             static (_, response) => MapMutationResults(response.Topics, static item => item.Name,
                 static item => item.ErrorCode, static item => item.ErrorMessage), cancellationToken);
     }
@@ -34,7 +34,7 @@ public sealed partial class AdminClient : IDetailedTopicMutationAdminClient
             names, static name => name,
             new(ApiKey.DeleteTopics, DeleteTopicsRequest.LowestSupportedVersion, DeleteTopicsRequest.HighestSupportedVersion, nameof(DeleteTopicsAsync)),
             timeout,
-            (pending, version) => version >= 6
+            (pending, version, _) => version >= 6
                 ? new() { Topics = pending.Select(static name => new DeleteTopicState { Name = name }).ToArray(), TimeoutMs = timeout }
                 : new() { TopicNames = pending, TimeoutMs = timeout },
             static (_, response) => MapMutationResults(response.Responses, static item => item.Name ?? string.Empty,
@@ -56,7 +56,7 @@ public sealed partial class AdminClient : IDetailedTopicMutationAdminClient
             ids, static id => id,
             new(ApiKey.DeleteTopics, 6, DeleteTopicsRequest.HighestSupportedVersion, nameof(DeleteTopicsAsync)),
             timeout,
-            (pending, _) => new() { Topics = pending.Select(static id => new DeleteTopicState { TopicId = id }).ToArray(), TimeoutMs = timeout },
+            (pending, _, _) => new() { Topics = pending.Select(static id => new DeleteTopicState { TopicId = id }).ToArray(), TimeoutMs = timeout },
             static (_, response) => MapMutationResults(response.Responses, static item => item.TopicId,
                 static item => item.ErrorCode, static item => item.ErrorMessage), cancellationToken);
     }
@@ -85,7 +85,7 @@ public sealed partial class AdminClient : IDetailedTopicMutationAdminClient
             topics, static item => item.Name,
             new(ApiKey.CreatePartitions, CreatePartitionsRequest.LowestSupportedVersion, CreatePartitionsRequest.HighestSupportedVersion, nameof(CreatePartitionsAsync)),
             opts.TimeoutMs,
-            (pending, _) => new() { Topics = pending, TimeoutMs = opts.TimeoutMs, ValidateOnly = opts.ValidateOnly },
+            (pending, _, _) => new() { Topics = pending, TimeoutMs = opts.TimeoutMs, ValidateOnly = opts.ValidateOnly },
             static (_, response) => MapMutationResults(response.Results, static item => item.Name,
                 static item => item.ErrorCode, static item => item.ErrorMessage), cancellationToken);
     }
@@ -105,7 +105,7 @@ public sealed partial class AdminClient : IDetailedTopicMutationAdminClient
             new(ApiKey.AlterPartitionReassignments, opts.AllowReplicationFactorChange ? (short)0 : (short)1,
                 AlterPartitionReassignmentsRequest.HighestSupportedVersion, nameof(AlterPartitionReassignmentsAsync)),
             opts.TimeoutMs,
-            (pending, _) => new()
+            (pending, _, _) => new()
             {
                 Topics = BuildDetailedReassignmentRequest(pending),
                 TimeoutMs = opts.TimeoutMs,

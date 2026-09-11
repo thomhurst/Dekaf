@@ -20,7 +20,7 @@ public sealed partial class AdminClient : IDetailedSecurityMutationAdminClient
         var results = await ExecuteDetailedMutationAsync<int, IndexedAcl, CreateAclsRequest, CreateAclsResponse>(
             items, static item => item.Index,
             new(ApiKey.CreateAcls, CreateAclsRequest.LowestSupportedVersion, CreateAclsRequest.HighestSupportedVersion, nameof(CreateAclsAsync)),
-            timeout, static (pending, _) => new() { Creations = pending.Select(static item => new AclCreation
+            timeout, static (pending, _, _) => new() { Creations = pending.Select(static item => new AclCreation
             {
                 ResourceType = (sbyte)item.Binding.Pattern.Type, ResourceName = item.Binding.Pattern.Name,
                 ResourcePatternType = (sbyte)item.Binding.Pattern.PatternType, Principal = item.Binding.Entry.Principal,
@@ -96,7 +96,7 @@ public sealed partial class AdminClient : IDetailedSecurityMutationAdminClient
             prepared, static item => item.User,
             new(ApiKey.AlterUserScramCredentials, AlterUserScramCredentialsRequest.LowestSupportedVersion,
                 AlterUserScramCredentialsRequest.HighestSupportedVersion, nameof(AlterUserScramCredentialsAsync)),
-            timeout, static (pending, _) => new()
+            timeout, static (pending, _, _) => new()
             {
                 Deletions = pending.SelectMany(static item => item.Deletions).ToArray(),
                 Upsertions = pending.SelectMany(static item => item.Upsertions).ToArray()

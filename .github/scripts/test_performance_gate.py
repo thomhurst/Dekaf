@@ -90,6 +90,12 @@ class SelectionTests(unittest.TestCase):
                 selected = self.names(gate.select([path], root=REPO_ROOT))
                 self.assertIn('AdminDetailedSecurityBenchmarks', selected)
 
+    def test_consumer_group_mutation_paths_select_direct_fixture(self):
+        for path in ('src/Dekaf/Admin/AdminClient.DetailedConsumerGroupMutations.cs', 'src/Dekaf/Admin/AdminClient.DetailedMutations.cs'):
+            with self.subTest(path=path):
+                selected = self.names(gate.select([path], root=REPO_ROOT))
+                self.assertIn('AdminDetailedConsumerGroupMutationBenchmarks', selected)
+
     def test_member_registration_paths_select_direct_fixture(self):
         for path in ('src/Dekaf.Testing/InMemoryKafkaCluster.cs', 'src/Dekaf.Testing/InMemoryKafkaCluster.MemberRemoval.cs', 'src/Dekaf.Testing/InMemoryConsumer.cs'):
             with self.subTest(path=path):

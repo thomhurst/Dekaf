@@ -12,7 +12,7 @@ public sealed partial class AdminClient
 
     private async ValueTask<IReadOnlyDictionary<TKey, AdminMutationResult>> ExecuteDetailedMutationAsync<TKey, TItem, TRequest, TResponse>(
         List<TItem> items, Func<TItem, TKey> getKey, MutationProtocol protocol, int timeoutMs,
-        Func<List<TItem>, short, TRequest> createRequest,
+        Func<List<TItem>, short, Dictionary<TKey, AdminMutationResult>, TRequest> createRequest,
         Func<List<TItem>, TResponse, Dictionary<TKey, AdminMutationResult>> readResponse,
         CancellationToken cancellationToken)
         where TKey : notnull
@@ -54,7 +54,11 @@ public sealed partial class AdminClient
                 using var lease = acquiredLease;
                 var version = _metadataManager.GetNegotiatedApiVersion(
                     lease.Connection, protocol.ApiKey, protocol.MinimumVersion, protocol.MaximumVersion);
-                var request = createRequest(pending, version);
+                // Builders can record per-entity preflight failures and remove those
+                // items. Only the remaining entities cross the ambiguous send boundary.
+                var request = createRequest(pending, version, results);
+                if (pending.Count == 0)
+                    return;
                 token.ThrowIfCancellationRequested();
 
                 TResponse response;
