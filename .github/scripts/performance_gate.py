@@ -45,7 +45,7 @@ COMPONENTS = {
     'src/Dekaf/Consumer/KeyOrderedPartitionDispatcher.cs': ('PartitionMessageKeyBenchmarks',),
     'src/Dekaf/Consumer/PartitionMessageKey.cs': ('PartitionMessageKeyBenchmarks',),
     'src/Dekaf.Testing/': ('InMemoryMemberRegistrationBenchmarks',),
-    'src/Dekaf/Admin/': ('AdminDetailedMutationBenchmarks', 'AdminMemberRemovalBenchmarks'),
+    'src/Dekaf/Admin/': ('AdminDetailedMutationBenchmarks', 'AdminMemberRemovalBenchmarks', 'AdminDetailedShareGroupOffsetBenchmarks'),
     'src/Dekaf/Producer/': ('AccumulatorAdmissionAppendBenchmarks', 'ProducerFireHotPathBenchmarks',
                             'PartitionerBenchmarks', 'InflightTrackingBenchmarks', 'PartitionQueueAccountingBenchmarks'),
     'src/Dekaf/Consumer/': ('FetchRequestBuildBenchmarks', 'OffsetStoreBenchmarks', 'PartitionedDispatchBenchmarks',

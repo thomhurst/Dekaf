@@ -13,7 +13,7 @@ public sealed partial class AdminClient : IDetailedTopicMutationAdminClient
         var opts = options ?? new CreateTopicsOptions();
         ArgumentOutOfRangeException.ThrowIfNegative(opts.TimeoutMs);
         var items = SnapshotDetailedTopics(topics);
-        return ExecuteControllerMutationAsync<string, CreateTopicData, CreateTopicsRequest, CreateTopicsResponse>(
+        return ExecuteDetailedMutationAsync<string, CreateTopicData, CreateTopicsRequest, CreateTopicsResponse>(
             items, static item => item.Name,
             new(ApiKey.CreateTopics, CreateTopicsRequest.LowestSupportedVersion, CreateTopicsRequest.HighestSupportedVersion, nameof(CreateTopicsAsync)),
             opts.TimeoutMs,
@@ -30,7 +30,7 @@ public sealed partial class AdminClient : IDetailedTopicMutationAdminClient
         var timeout = options?.TimeoutMs ?? 30000;
         ArgumentOutOfRangeException.ThrowIfNegative(timeout);
         var names = SnapshotMutationKeys(topicNames, nameof(topicNames), static name => ArgumentException.ThrowIfNullOrWhiteSpace(name, nameof(topicNames)));
-        return ExecuteControllerMutationAsync<string, string, DeleteTopicsRequest, DeleteTopicsResponse>(
+        return ExecuteDetailedMutationAsync<string, string, DeleteTopicsRequest, DeleteTopicsResponse>(
             names, static name => name,
             new(ApiKey.DeleteTopics, DeleteTopicsRequest.LowestSupportedVersion, DeleteTopicsRequest.HighestSupportedVersion, nameof(DeleteTopicsAsync)),
             timeout,
@@ -52,7 +52,7 @@ public sealed partial class AdminClient : IDetailedTopicMutationAdminClient
         {
             if (id == Guid.Empty) throw new ArgumentException("Topic IDs cannot contain the empty UUID.", nameof(topicIds));
         });
-        return ExecuteControllerMutationAsync<Guid, Guid, DeleteTopicsRequest, DeleteTopicsResponse>(
+        return ExecuteDetailedMutationAsync<Guid, Guid, DeleteTopicsRequest, DeleteTopicsResponse>(
             ids, static id => id,
             new(ApiKey.DeleteTopics, 6, DeleteTopicsRequest.HighestSupportedVersion, nameof(DeleteTopicsAsync)),
             timeout,
@@ -81,7 +81,7 @@ public sealed partial class AdminClient : IDetailedTopicMutationAdminClient
         var opts = options ?? new CreatePartitionsOptions();
         ArgumentOutOfRangeException.ThrowIfNegative(opts.TimeoutMs);
         var topics = BuildPartitionExpansionTopics(newPartitions);
-        return ExecuteControllerMutationAsync<string, CreatePartitionsTopic, CreatePartitionsRequest, CreatePartitionsResponse>(
+        return ExecuteDetailedMutationAsync<string, CreatePartitionsTopic, CreatePartitionsRequest, CreatePartitionsResponse>(
             topics, static item => item.Name,
             new(ApiKey.CreatePartitions, CreatePartitionsRequest.LowestSupportedVersion, CreatePartitionsRequest.HighestSupportedVersion, nameof(CreatePartitionsAsync)),
             opts.TimeoutMs,
@@ -99,7 +99,7 @@ public sealed partial class AdminClient : IDetailedTopicMutationAdminClient
         var opts = options ?? new AlterPartitionReassignmentsOptions();
         ArgumentOutOfRangeException.ThrowIfNegative(opts.TimeoutMs);
         var items = SnapshotDetailedReassignments(reassignments);
-        return ExecuteControllerMutationAsync<TopicPartition, KeyValuePair<TopicPartition, int[]?>,
+        return ExecuteDetailedMutationAsync<TopicPartition, KeyValuePair<TopicPartition, int[]?>,
             AlterPartitionReassignmentsRequest, AlterPartitionReassignmentsResponse>(
             items, static item => item.Key,
             new(ApiKey.AlterPartitionReassignments, opts.AllowReplicationFactorChange ? (short)0 : (short)1,

@@ -7,9 +7,10 @@ namespace Dekaf.Admin;
 
 public sealed partial class AdminClient
 {
-    private readonly record struct MutationProtocol(ApiKey ApiKey, short MinimumVersion, short MaximumVersion, string Operation);
+    private readonly record struct MutationProtocol(ApiKey ApiKey, short MinimumVersion, short MaximumVersion,
+        string Operation, string? GroupId = null);
 
-    private async ValueTask<IReadOnlyDictionary<TKey, AdminMutationResult>> ExecuteControllerMutationAsync<TKey, TItem, TRequest, TResponse>(
+    private async ValueTask<IReadOnlyDictionary<TKey, AdminMutationResult>> ExecuteDetailedMutationAsync<TKey, TItem, TRequest, TResponse>(
         List<TItem> items, Func<TItem, TKey> getKey, MutationProtocol protocol, int timeoutMs,
         Func<List<TItem>, short, TRequest> createRequest,
         Func<List<TItem>, TResponse, Dictionary<TKey, AdminMutationResult>> readResponse,
@@ -35,11 +36,13 @@ public sealed partial class AdminClient
                 KafkaConnectionLease acquiredLease;
                 try
                 {
-                    acquiredLease = await LeaseDetailedControllerAsync(protocol.ApiKey, token).ConfigureAwait(false);
+                    acquiredLease = protocol.GroupId is { } groupId
+                        ? await LeaseDetailedGroupCoordinatorAsync(groupId, token).ConfigureAwait(false)
+                        : await LeaseDetailedControllerAsync(protocol.ApiKey, token).ConfigureAwait(false);
                 }
                 catch (InvalidOperationException exception)
                 {
-                    // Metadata can expose a controller before the pool registers its ID.
+                    // Discovery can expose a broker before the pool registers its ID.
                     // Lease failures have not dispatched this mutation; retain prior outcomes.
                     var failure = MutationFailure(exception, deadline, timeoutMs, protocol.Operation, cancellationToken);
                     AddNotAttemptedMutations(pending, getKey, results, failure);
@@ -77,10 +80,11 @@ public sealed partial class AdminClient
                     var result = responseResults.TryGetValue(key, out var received) ? received
                         : AdminMutationResult.Unconfirmed(AdminMutationOutcome.Unknown, "The response omitted this requested entity.");
                     results[key] = result;
-                    if (AdminMutationResult.IsSafeControllerRetry(result))
+                    if (protocol.GroupId is null ? AdminMutationResult.IsSafeControllerRetry(result)
+                        : AdminMutationResult.IsSafeCoordinatorRetry(result))
                     {
                         (retry ??= new()).Add(item);
-                        retryFailure ??= new KafkaException(result.ErrorCode!.Value, result.ErrorMessage ?? "Controller rejected the mutation.");
+                        retryFailure ??= new KafkaException(result.ErrorCode!.Value, result.ErrorMessage ?? "The broker rejected the mutation.");
                     }
                 }
                 if (retryFailure is not null)
@@ -122,6 +126,12 @@ public sealed partial class AdminClient
         if (controllerId < 0)
             throw new KafkaException(ErrorCode.BrokerNotAvailable, "No controller available.");
         return _connectionPool.LeaseConnectionAsync(controllerId, cancellationToken);
+    }
+
+    private async ValueTask<KafkaConnectionLease> LeaseDetailedGroupCoordinatorAsync(string groupId, CancellationToken token)
+    {
+        var coordinator = await FindGroupCoordinatorAsync(groupId, token).ConfigureAwait(false);
+        return await _connectionPool.LeaseConnectionAsync(coordinator, token).ConfigureAwait(false);
     }
 
     internal static bool IsDetailedMutationFailure(Exception exception) => exception is
