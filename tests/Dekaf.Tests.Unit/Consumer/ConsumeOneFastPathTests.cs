@@ -1031,12 +1031,21 @@ public sealed class ConsumeOneFastPathTests
     {
         await using var consumer = CreateInitializedConsumer(queuedMinMessages: 2, fetchMaxWaitMs: 1);
 
-        var result = await consumer.ConsumeOneAsync(TimeSpan.FromMilliseconds(10), CancellationToken.None);
-
-        await Assert.That(result).IsNull();
+        // Establish the real prefetch lifetime before arming the short poll timeout.
+        // A poll canceled before ConsumeOneCoreAsync starts need not create a loop.
+        var startPrefetch = typeof(KafkaConsumer<string, string>)
+            .GetMethod("StartPrefetch", BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("StartPrefetch method not found.");
+        startPrefetch.Invoke(consumer, null);
         var prefetchCts = GetPrefetchCts(consumer);
         await Assert.That(prefetchCts).IsNotNull();
         await Assert.That(prefetchCts!.IsCancellationRequested).IsFalse();
+
+        var result = await consumer.ConsumeOneAsync(TimeSpan.FromMilliseconds(10), CancellationToken.None);
+
+        await Assert.That(result).IsNull();
+        await Assert.That(GetPrefetchCts(consumer)).IsSameReferenceAs(prefetchCts);
+        await Assert.That(prefetchCts.IsCancellationRequested).IsFalse();
     }
 
     [Test]
