@@ -5,7 +5,7 @@ using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
 using Dekaf.ShareConsumer;
 using Dekaf.Telemetry;
-using Dekaf.Tests.Integration.Telemetry;
+using Dekaf.Tools.Telemetry;
 
 namespace Dekaf.Tests.Unit.Telemetry;
 

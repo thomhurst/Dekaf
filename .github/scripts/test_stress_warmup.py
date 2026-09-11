@@ -281,12 +281,12 @@ class StressWarmupTests(unittest.TestCase):
         self.assertIn('rsync -a --delete --exclude bin --exclude obj', workflow)
         self.assertIn('git merge-base --is-ancestor "$BASELINE_SHA" "$GITHUB_SHA"', workflow)
         self.assertIn('dotnet build-server shutdown', workflow)
-        self.assertIn("matrix.brokers == 1 && matrix.baseline_sha == '' && matrix.scenario != 'hosted-share' && 'localhost:9092' || ''", workflow)
+        self.assertIn("matrix.brokers == 1 && matrix.baseline_sha == '' && !startsWith(matrix.scenario, 'hosted-share') && 'localhost:9092' || ''", workflow)
         self.assertIn('python3 .github/scripts/stress_warmup.py', workflow)
         self.assertIn("--require-startup-assessment", workflow)
         self.assertLess(workflow.index('Build Stress Tests (exact baseline)'), workflow.index('run_aba()'))
         self.assertNotIn("schedule:", workflow)
-        self.assertIn("consumer-1b|consumer-keyed-1b|consumer-batch-1b|consumer-raw-1b|consumer-raw-batch-1b|hosted-share-1b|outbox-1b|consumer-follower-recovery-3b) ;;", workflow)
+        self.assertIn("consumer-1b|consumer-keyed-1b|consumer-batch-1b|consumer-raw-1b|consumer-raw-batch-1b|hosted-share-1b|hosted-share-telemetry-1b|outbox-1b|consumer-follower-recovery-3b) ;;", workflow)
 
 
 if __name__ == "__main__":

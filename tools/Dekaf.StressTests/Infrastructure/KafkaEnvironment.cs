@@ -1,10 +1,12 @@
 using System.Text;
 using Dekaf.Admin;
+using Dekaf.StressTests.Metrics;
 using Docker.DotNet.Models;
 using DotNet.Testcontainers.Builders;
 using DotNet.Testcontainers.Configurations;
 using DotNet.Testcontainers.Containers;
 using DotNet.Testcontainers.Networks;
+using DotNet.Testcontainers.Images;
 using Testcontainers.Kafka;
 
 namespace Dekaf.StressTests.Infrastructure;
@@ -145,6 +147,8 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
 
     public string BootstrapServers { get; }
     private readonly KafkaContainer? _container;
+    private IFutureDockerImage? _telemetryImage;
+    public Uri? TelemetryReceiverEndpoint { get; private init; }
     private readonly List<IContainer>? _clusterContainers;
     private readonly INetwork? _network;
 
@@ -182,10 +186,12 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
         _network = network;
     }
 
-    public static async Task<KafkaEnvironment> CreateAsync(int brokerCount = 1, bool enableShareGroups = false, bool enableFollowerRecovery = false)
+    public static async Task<KafkaEnvironment> CreateAsync(int brokerCount = 1, bool enableShareGroups = false, bool enableFollowerRecovery = false, bool enableTelemetryReceiver = false)
     {
         if (enableFollowerRecovery && brokerCount != 3)
             throw new ArgumentException("Follower recovery requires three brokers.", nameof(brokerCount));
+        if (enableTelemetryReceiver && (!enableShareGroups || brokerCount != 1))
+            throw new ArgumentException("Telemetry stress requires one managed share broker.");
         if (enableShareGroups && brokerCount != 1)
             throw new ArgumentException("The hosted-share lane requires one broker.", nameof(brokerCount));
         var externalBootstrap = Environment.GetEnvironmentVariable("KAFKA_BOOTSTRAP_SERVERS");
@@ -193,6 +199,7 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
         {
             if (enableFollowerRecovery)
                 throw new InvalidOperationException("Follower recovery requires a harness-owned rack-aware cluster.");
+            if (enableTelemetryReceiver) throw new ArgumentException("Telemetry stress requires its managed receiver broker; unset KAFKA_BOOTSTRAP_SERVERS.");
             Console.WriteLine($"Using external Kafka at {externalBootstrap}");
             return new KafkaEnvironment(externalBootstrap, null);
         }
@@ -202,60 +209,90 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
             return await CreateMultiBrokerAsync(brokerCount, enableFollowerRecovery).ConfigureAwait(false);
         }
 
-        return await CreateSingleBrokerAsync(enableShareGroups).ConfigureAwait(false);
+        return await CreateSingleBrokerAsync(enableShareGroups, enableTelemetryReceiver).ConfigureAwait(false);
     }
 
-    private static async Task<KafkaEnvironment> CreateSingleBrokerAsync(bool enableShareGroups)
+    private static async Task<KafkaEnvironment> CreateSingleBrokerAsync(bool enableShareGroups, bool enableTelemetryReceiver)
     {
         Console.WriteLine("Starting Kafka container via Testcontainers...");
-        var builder = new KafkaBuilder(KafkaImage);
-        builder = SingleBrokerConsensusProtocol switch
+        IFutureDockerImage? image = null;
+        KafkaContainer? ownedContainer = null;
+        try
         {
-            ConsensusProtocol.KRaft => builder.WithKRaft(),
-            ConsensusProtocol.ZooKeeper => builder,
-            _ => throw new InvalidOperationException("Unsupported single-broker consensus protocol."),
-        };
+            if (enableTelemetryReceiver)
+            {
+                image = new ImageFromDockerfileBuilder()
+                    .WithName($"apache/kafka:dekaf-stress-telemetry-{Guid.NewGuid():N}")
+                    .WithDockerfileDirectory(Path.Combine(AppContext.BaseDirectory, "TelemetryReceiver"))
+                    .WithBuildArgument("KAFKA_IMAGE", KafkaImage).Build();
+                using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(5));
+                await image.CreateAsync(deadline.Token).ConfigureAwait(false);
+            }
+            var builder = new KafkaBuilder(image?.FullName ?? KafkaImage);
+            if (enableTelemetryReceiver)
+                builder = builder.WithPortBinding(8080, true)
+                    .WithEnvironment("KAFKA_METRIC_REPORTERS", "dekaf.testing.RecordingTelemetryReporter")
+                    .WithEnvironment("DEKAF_TELEMETRY_MAX_PAYLOADS", ShareTelemetryObserver.MaximumPayloads.ToString())
+                    .WithEnvironment("DEKAF_TELEMETRY_MAX_BYTES", ShareTelemetryObserver.MaximumPayloadBytes.ToString());
+            builder = SingleBrokerConsensusProtocol switch
+            {
+                ConsensusProtocol.KRaft => builder.WithKRaft(),
+                ConsensusProtocol.ZooKeeper => builder,
+                _ => throw new InvalidOperationException("Unsupported single-broker consensus protocol."),
+            };
 
-        builder = builder
-            .WithPortBinding(9092, true)
-            .WithResourceMapping(RunWrapperScript, "/etc/kafka/docker/run", 0, 0,
-                UnixFileModes.UserRead | UnixFileModes.UserWrite | UnixFileModes.UserExecute |
-                UnixFileModes.GroupRead | UnixFileModes.GroupExecute |
-                UnixFileModes.OtherRead | UnixFileModes.OtherExecute)
-            // Explicit log dir so the optional tmpfs mount target always matches
-            .WithEnvironment("KAFKA_LOG_DIRS", KafkaLogDir)
-            .WithEnvironment("KAFKA_HEAP_OPTS", BrokerHeapOpts);
-
-        if (enableShareGroups)
-        {
             builder = builder
-                .WithEnvironment("KAFKA_GROUP_SHARE_ENABLE", "true")
-                .WithEnvironment("KAFKA_GROUP_COORDINATOR_REBALANCE_PROTOCOLS", "classic,consumer,share")
-                .WithEnvironment("KAFKA_SHARE_COORDINATOR_STATE_TOPIC_REPLICATION_FACTOR", "1")
-                .WithEnvironment("KAFKA_SHARE_COORDINATOR_STATE_TOPIC_MIN_ISR", "1")
-                .WithEnvironment("KAFKA_SHARE_COORDINATOR_STATE_TOPIC_NUM_PARTITIONS", "3");
-        }
+                .WithPortBinding(9092, true)
+                .WithResourceMapping(RunWrapperScript, "/etc/kafka/docker/run", 0, 0,
+                    UnixFileModes.UserRead | UnixFileModes.UserWrite | UnixFileModes.UserExecute |
+                    UnixFileModes.GroupRead | UnixFileModes.GroupExecute |
+                    UnixFileModes.OtherRead | UnixFileModes.OtherExecute)
+                // Explicit log dir so the optional tmpfs mount target always matches
+                .WithEnvironment("KAFKA_LOG_DIRS", KafkaLogDir)
+                .WithEnvironment("KAFKA_HEAP_OPTS", BrokerHeapOpts);
 
-        foreach (var (key, value) in RetentionConfig)
+            if (enableShareGroups)
+            {
+                builder = builder
+                    .WithEnvironment("KAFKA_GROUP_SHARE_ENABLE", "true")
+                    .WithEnvironment("KAFKA_GROUP_COORDINATOR_REBALANCE_PROTOCOLS", "classic,consumer,share")
+                    .WithEnvironment("KAFKA_SHARE_COORDINATOR_STATE_TOPIC_REPLICATION_FACTOR", "1")
+                    .WithEnvironment("KAFKA_SHARE_COORDINATOR_STATE_TOPIC_MIN_ISR", "1")
+                    .WithEnvironment("KAFKA_SHARE_COORDINATOR_STATE_TOPIC_NUM_PARTITIONS", "3");
+            }
+
+            foreach (var (key, value) in RetentionConfig)
+            {
+                builder = builder.WithEnvironment(key, value);
+            }
+
+            if (BrokerResourceModifier is { } modifier)
+            {
+                builder = builder.WithCreateParameterModifier(modifier);
+            }
+
+            var container = ownedContainer = builder.Build();
+
+            await container.StartAsync().ConfigureAwait(false);
+
+            var bootstrapServers = container.GetBootstrapAddress();
+
+            Console.WriteLine($"Kafka started at {bootstrapServers}");
+            await WaitForKafkaAsync(bootstrapServers).ConfigureAwait(false);
+
+            return new KafkaEnvironment(bootstrapServers, container)
+            {
+                _telemetryImage = image,
+                TelemetryReceiverEndpoint = enableTelemetryReceiver
+                    ? new UriBuilder("http", container.Hostname, container.GetMappedPublicPort(8080)).Uri : null
+            };
+        }
+        catch
         {
-            builder = builder.WithEnvironment(key, value);
+            try { if (ownedContainer is not null) await ownedContainer.DisposeAsync().ConfigureAwait(false); }
+            finally { if (image is not null) await image.DisposeAsync().ConfigureAwait(false); }
+            throw;
         }
-
-        if (BrokerResourceModifier is { } modifier)
-        {
-            builder = builder.WithCreateParameterModifier(modifier);
-        }
-
-        var container = builder.Build();
-
-        await container.StartAsync().ConfigureAwait(false);
-
-        var bootstrapServers = container.GetBootstrapAddress();
-
-        Console.WriteLine($"Kafka started at {bootstrapServers}");
-        await WaitForKafkaAsync(bootstrapServers).ConfigureAwait(false);
-
-        return new KafkaEnvironment(bootstrapServers, container);
     }
 
     private static async Task<KafkaEnvironment> CreateMultiBrokerAsync(int brokerCount, bool enableFollowerRecovery)
@@ -643,9 +680,13 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
     {
         if (_container is not null)
         {
-            await DumpBrokerDiagnosticsAsync(_container, "kafka").ConfigureAwait(false);
-            Console.WriteLine("Stopping Kafka container...");
-            await _container.DisposeAsync().ConfigureAwait(false);
+            try { await DumpBrokerDiagnosticsAsync(_container, "kafka").ConfigureAwait(false); }
+            finally
+            {
+                Console.WriteLine("Stopping Kafka container...");
+                try { await _container.DisposeAsync().ConfigureAwait(false); }
+                finally { if (_telemetryImage is not null) await _telemetryImage.DisposeAsync().ConfigureAwait(false); }
+            }
         }
 
         if (_clusterContainers is not null)

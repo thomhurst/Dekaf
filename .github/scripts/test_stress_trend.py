@@ -2004,10 +2004,10 @@ class StressTrendTests(unittest.TestCase):
         regular = [lane for lane in lanes if not lane.get("manual_only", False)]
         manual = [lane for lane in lanes if lane.get("manual_only", False)]
         self.assertEqual(12, len(regular))
-        self.assertEqual(["consumer-keyed-1b", "hosted-share-1b", "outbox-1b", "consumer-follower-recovery-3b"], [lane["lane"] for lane in manual])
+        self.assertEqual(["consumer-keyed-1b", "hosted-share-1b", "hosted-share-telemetry-1b", "outbox-1b", "consumer-follower-recovery-3b"], [lane["lane"] for lane in manual])
         self.assertEqual("dekaf", manual[0]["client"])
         self.assertIn('select(($lane == "all" and .manual_only != true) or .lane == $lane)', workflow)
-        self.assertIn('consumer-raw-batch-1b|hosted-share-1b|outbox-1b|consumer-follower-recovery-3b) ;;', workflow)
+        self.assertIn('consumer-raw-batch-1b|hosted-share-1b|hosted-share-telemetry-1b|outbox-1b|consumer-follower-recovery-3b) ;;', workflow)
 
     def test_history_merge_uses_admin_token(self):
         workflow = stress_workflow_text()

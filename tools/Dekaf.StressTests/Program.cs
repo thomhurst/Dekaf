@@ -19,7 +19,7 @@ namespace Dekaf.StressTests;
 /// Options:
 ///   --duration &lt;minutes&gt;    Test duration in minutes (default: 15)
 ///   --message-size &lt;bytes&gt;  Message size in bytes (default: 1000)
-///   --scenario &lt;name&gt;       Run specific scenario: producer, producer-idempotent, producer-acks-all, producer-async, producer-async-idempotent, producer-transactional, producer-roundtrip-steady, consumer, consumer-batch, consumer-raw, consumer-raw-batch, consumer-keyed, consumer-follower-recovery, hosted-share, outbox, all (default: all)
+///   --scenario &lt;name&gt;       Run specific scenario: producer, producer-idempotent, producer-acks-all, producer-async, producer-async-idempotent, producer-transactional, producer-roundtrip-steady, consumer, consumer-batch, consumer-raw, consumer-raw-batch, consumer-keyed, consumer-follower-recovery, hosted-share, hosted-share-telemetry, outbox, all (default: all)
 ///   --client &lt;name&gt;         Run specific client: dekaf, confluent, all (default: all)
 ///   --output &lt;path&gt;         Output directory for results (default: ./results)
 ///   --brokers &lt;count&gt;      Number of Kafka brokers (default: 1, use 3 for multi-broker)
@@ -165,7 +165,8 @@ public static class Program
 
         var followerRecovery = options.Scenario == "consumer-follower-recovery";
         await using var kafka = await KafkaEnvironment.CreateAsync(options.Brokers,
-            enableShareGroups: options.Scenario == "hosted-share", enableFollowerRecovery: followerRecovery).ConfigureAwait(false);
+            enableShareGroups: options.Scenario is "hosted-share" or "hosted-share-telemetry",
+            enableFollowerRecovery: followerRecovery, enableTelemetryReceiver: options.Scenario == "hosted-share-telemetry").ConfigureAwait(false);
         var scenarios = GetScenarios(options);
 
         var producerTopic = $"stress-producer-{Guid.NewGuid():N}";
@@ -245,6 +246,7 @@ public static class Program
         StressTestOptions BuildTestOptions(IStressTestScenario scenario, int connectionsPerBroker, string topic) => new()
         {
             OutputDirectory = options.OutputPath,
+            TelemetryReceiverEndpoint = kafka.TelemetryReceiverEndpoint,
             BootstrapServers = kafka.BootstrapServers,
             Topic = topic,
             DurationMinutes = options.DurationMinutes,
@@ -456,7 +458,8 @@ public static class Program
         scenarioName.StartsWith("producer", StringComparison.OrdinalIgnoreCase) ||
         scenarioName.Equals("soak", StringComparison.OrdinalIgnoreCase) ||
         scenarioName.Equals("outbox", StringComparison.OrdinalIgnoreCase) ||
-        scenarioName.Equals("hosted-share", StringComparison.OrdinalIgnoreCase);
+        scenarioName.Equals("hosted-share", StringComparison.OrdinalIgnoreCase) ||
+        scenarioName.Equals("hosted-share-telemetry", StringComparison.OrdinalIgnoreCase);
 
     private static bool IsRoundTripScenario(string scenarioName) =>
         scenarioName.StartsWith("producer-roundtrip", StringComparison.OrdinalIgnoreCase);
@@ -844,6 +847,7 @@ public static class Program
             .Where(s => options.Scenario == "all"
                 ? !s.Name.Equals("soak", StringComparison.OrdinalIgnoreCase)
                     && !s.Name.Equals("hosted-share", StringComparison.OrdinalIgnoreCase)
+                    && !s.Name.Equals("hosted-share-telemetry", StringComparison.OrdinalIgnoreCase)
                     && !s.Name.Equals("outbox", StringComparison.OrdinalIgnoreCase)
                     && !s.Name.Equals("consumer-follower-recovery", StringComparison.OrdinalIgnoreCase)
                     && !s.Name.Equals("consumer-keyed", StringComparison.OrdinalIgnoreCase)
@@ -884,6 +888,7 @@ public static class Program
             new ConfluentConsumerStressTest(),
             new SoakStressTest(),
             new HostedShareStressTest(),
+            new HostedShareStressTest(telemetryEnabled: true),
             new OutboxStressTest(),
             new ConsumerFollowerRecoveryStressTest()
         ];
@@ -1157,7 +1162,7 @@ public static class Program
               --duration <minutes>    Test duration in minutes (default: 15)
               --producer-warmup-seconds <n>  Producer and consumer replay workload warmup (default: {ProducerWarmup.DefaultSeconds}; minimum: {ProducerWarmup.MinimumSeconds})
               --message-size <bytes>  Message size in bytes (default: 1000)
-              --scenario <name>       Run specific scenario: producer, producer-idempotent, producer-acks-all, producer-async, producer-async-idempotent, producer-transactional, producer-roundtrip-steady, consumer, consumer-batch, consumer-raw, consumer-raw-batch, consumer-keyed, consumer-follower-recovery, hosted-share, outbox, soak, all (default: all; all excludes consumer-keyed, hosted-share, outbox, consumer-follower-recovery and soak)
+              --scenario <name>       Run specific scenario: producer, producer-idempotent, producer-acks-all, producer-async, producer-async-idempotent, producer-transactional, producer-roundtrip-steady, consumer, consumer-batch, consumer-raw, consumer-raw-batch, consumer-keyed, consumer-follower-recovery, hosted-share, hosted-share-telemetry, outbox, soak, all (default: all; all excludes consumer-keyed, hosted-share, hosted-share-telemetry, outbox, consumer-follower-recovery and soak)
               --client <name>         Run specific client: dekaf, confluent, all (default: all)
               --output <path>         Output directory for results (default: ./results)
               --partitions <count>    Number of topic partitions (default: 6)

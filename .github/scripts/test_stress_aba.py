@@ -826,7 +826,7 @@ class StressAbaWorkflowTests(unittest.TestCase):
             "Exact-SHA A-B-A requires a duration-based producer, consumer replay, hosted-share, or outbox lane",
             self.workflow,
         )
-        self.assertIn("consumer-1b|consumer-keyed-1b|consumer-batch-1b|consumer-raw-1b|consumer-raw-batch-1b|hosted-share-1b|outbox-1b|consumer-follower-recovery-3b) ;;", self.workflow)
+        self.assertIn("consumer-1b|consumer-keyed-1b|consumer-batch-1b|consumer-raw-1b|consumer-raw-batch-1b|hosted-share-1b|hosted-share-telemetry-1b|outbox-1b|consumer-follower-recovery-3b) ;;", self.workflow)
 
     def test_matrix_forces_three_single_connection_dekaf_segments(self):
         self.assertIn('.baseline_sha = $baseline_sha', self.workflow)

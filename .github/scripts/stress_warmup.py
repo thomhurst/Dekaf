@@ -15,6 +15,8 @@ import math
 from pathlib import Path
 from statistics import median
 
+from stress_telemetry import validate_telemetry
+
 
 QUIET_WORKLOAD_SECONDS = 10
 MAX_SAMPLE_GAP_SECONDS = 2
@@ -108,6 +110,7 @@ def validate(result):
     # Preserve all measured samples, including both boundaries and drain.
     quiet([start] + [runtime(item.get("runtime")) for item in intervals] + [end], "Measurement")
     validate_outbox(result)
+    validate_telemetry(result)
     return requested
 
 

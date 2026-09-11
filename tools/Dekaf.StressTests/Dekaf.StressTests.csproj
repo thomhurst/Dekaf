@@ -31,6 +31,8 @@
 
   <ItemGroup>
     <PackageReference Include="Confluent.Kafka" />
+    <PackageReference Include="Google.Protobuf" />
+    <PackageReference Include="Grpc.Tools" PrivateAssets="All" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" />
     <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" />
     <PackageReference Include="SSH.NET" PrivateAssets="All" />
@@ -41,6 +43,9 @@
   </ItemGroup>
 
   <ItemGroup>
+    <None Include="../Shared/TelemetryReceiver/*" Exclude="../Shared/TelemetryReceiver/*.proto"
+          Link="TelemetryReceiver/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Protobuf Include="../Shared/TelemetryReceiver/telemetry_metrics.proto" GrpcServices="None" />
     <Compile Include="..\Shared\ConfluentProducerBackpressure.cs" Link="Shared\ConfluentProducerBackpressure.cs" />
   </ItemGroup>
 

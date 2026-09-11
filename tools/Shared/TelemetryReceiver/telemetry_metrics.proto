@@ -1,6 +1,6 @@
 syntax = "proto3";
 package dekaf.testing.telemetry;
-option csharp_namespace = "Dekaf.Tests.Integration.Telemetry";
+option csharp_namespace = "Dekaf.Tools.Telemetry";
 
 // Wire-compatible subset of OpenTelemetry MetricsData. Unknown OTLP fields are preserved.
 message MetricsData { repeated ResourceMetrics resource_metrics = 1; }
