@@ -75,6 +75,7 @@ internal sealed class ShareConsumerTelemetryMetrics
     private long _recordFetches;
     private long _lastPoll = -1, _lastHeartbeat = -1;
     private long _pollIdleTicks;
+    private long _activePollWaitStarted = -1;
     private int _enabled;
     private int _recordEpoch;
     private int _fetchEpoch;
@@ -156,6 +157,17 @@ internal sealed class ShareConsumerTelemetryMetrics
     {
         if (started >= 0 && Enabled(Groups.Poll))
             Interlocked.Add(ref _pollIdleTicks, Math.Max(0, _clock() - started));
+    }
+
+    // A share consumer serializes polls and parsing. Keep this wait on the recorder
+    // so poll and buffered preparation awaits do not grow their async state.
+    internal void BeginPollWait() => _activePollWaitStarted = Timestamp(Groups.Poll);
+
+    internal void EndPollWait()
+    {
+        var started = _activePollWaitStarted;
+        _activePollWaitStarted = -1;
+        PollWaitCompleted(started);
     }
 
     internal long HeartbeatStarted()

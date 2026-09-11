@@ -5,6 +5,65 @@ namespace Dekaf.Tests.Unit.ShareConsumer;
 public class AcknowledgementTrackerTests
 {
     [Test]
+    [Arguments(1)]
+    [Arguments(64)]
+    public async Task Flush_ReusedStateDoesNotChangePreviousBatchesOrCarryExplicitOutcomes(int partitionCount)
+    {
+        var tracker = new AcknowledgementTracker();
+        var first = new TopicPartition("first", 0);
+        var second = new TopicPartition("second", 1);
+        tracker.TrackDeliveredRecords(first, 10, 12);
+        tracker.Acknowledge(first, 11, AcknowledgeType.Reject);
+        for (var index = 1; index < partitionCount; index++)
+            tracker.TrackDeliveredRecords(new TopicPartition("first", index), 10, 12);
+        var original = tracker.Flush();
+
+        tracker.TrackDeliveredRecords(second, 40, 42);
+        var released = tracker.Flush(releaseImplicit: true);
+        tracker.TrackDeliveredRecords(first, 50, 50);
+        var final = tracker.Flush();
+
+        await Assert.That(original.Count).IsEqualTo(partitionCount);
+        await Assert.That(original[first][0].FirstOffset).IsEqualTo(10);
+        await Assert.That(original[first][0].LastOffset).IsEqualTo(12);
+        await Assert.That(original[first][0].AcknowledgeTypes[0]).IsEqualTo((byte)AcknowledgeType.Accept);
+        await Assert.That(original[first][0].AcknowledgeTypes[1]).IsEqualTo((byte)AcknowledgeType.Reject);
+        await Assert.That(original[first][0].AcknowledgeTypes[2]).IsEqualTo((byte)AcknowledgeType.Accept);
+        await Assert.That(released.Count).IsEqualTo(1);
+        await Assert.That(released[second][0].AcknowledgeTypes).IsEquivalentTo(new byte[] { 2, 2, 2 });
+        await Assert.That(final.Count).IsEqualTo(1);
+        await Assert.That(final[first][0].FirstOffset).IsEqualTo(50);
+        await Assert.That(final[first][0].AcknowledgeTypes).IsEquivalentTo(new byte[] { 1 });
+        await Assert.That(tracker.HasPending).IsFalse();
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Flush_MaterializationFailureDetachesPendingState(bool shrinkBeforeFailure)
+    {
+        var tracker = new AcknowledgementTracker();
+        if (shrinkBeforeFailure)
+        {
+            for (var index = 0; index < 64; index++)
+                tracker.TrackDeliveredRecords(new TopicPartition("previous", index), 0, 0);
+            tracker.Flush();
+        }
+        var valid = new TopicPartition("valid", 0);
+        var oversized = new TopicPartition("oversized", 1);
+        tracker.TrackDeliveredRecords(valid, 0, 0);
+        tracker.TrackDeliveredRecords(oversized, 0, long.MaxValue);
+        await Assert.That(() => tracker.Flush()).Throws<OverflowException>();
+        await Assert.That(tracker.HasPending).IsFalse();
+
+        tracker.TrackDeliveredRecords(valid, 50, 50);
+        var result = tracker.Flush();
+        await Assert.That(result.Count).IsEqualTo(1);
+        await Assert.That(result[valid][0].FirstOffset).IsEqualTo(50);
+        await Assert.That(result[valid][0].AcknowledgeTypes).IsEquivalentTo(new byte[] { 1 });
+    }
+
+    [Test]
     public async Task CloseFlush_ReleasesImplicitAndPreservesExplicitOutcomes()
     {
         var tracker = new AcknowledgementTracker();

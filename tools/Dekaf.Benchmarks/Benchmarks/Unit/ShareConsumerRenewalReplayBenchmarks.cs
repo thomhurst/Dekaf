@@ -25,7 +25,7 @@ public class ShareConsumerRenewalReplayBenchmarks
     [Params(1, 64)]
     public int RecordsPerBatch { get; set; }
 
-    [Params(1, 16)]
+    [Params(1, 16, 64)]
     public int BatchCount { get; set; }
 
     [GlobalSetup]

@@ -1,3 +1,5 @@
+using System.Buffers;
+using System.Reflection;
 using Dekaf.Protocol.Records;
 using Dekaf.ShareConsumer;
 
@@ -160,6 +162,69 @@ public sealed class ShareRecordBatchOwnerTests
         {
             next.Release();
             next.Release();
+        }
+    }
+
+    [Test]
+    public async Task ExhaustedPollGeneration_RetainsOneStorageRootAndReturnsPayloadOnce()
+    {
+        var buffers = new CountingBufferPool();
+        var payload = buffers.Rent(32);
+        payload[0] = 42;
+        var batch = RecordBatch.RentFromPool();
+        typeof(RecordBatch).GetField("_pooledRecordData", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(batch, payload);
+        typeof(RecordBatch).GetField("_recordDataPool", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(batch, buffers);
+        var pool = new ShareRecordBatchOwner.Pool(new TopicPartition("topic", 0));
+        var root = pool.Rent(batch);
+        var generation = typeof(ShareRecordBatchOwner).GetProperty("Generation",
+            BindingFlags.Instance | BindingFlags.NonPublic)!;
+        generation.SetValue(root, ShareRecordBatchOwner.MaximumGeneration);
+        var stale = CreateRecord(1);
+        stale.AttachBatchOwner(root);
+        root.Retain(); // Renewal keeps a separate reference from parser and poll.
+        root.ReleasePoll();
+        await Assert.That(() => { _ = stale.BatchOwner; }).Throws<InvalidOperationException>();
+
+        var parser = root.RefreshGeneration();
+        parser.Retain(); // Next poll takes its own reference.
+        parser.CompleteParsing();
+        var renewal = root.RefreshGeneration();
+        await Assert.That(parser.SharesStorageWith(renewal)).IsTrue();
+        parser.ReleasePoll();
+        await Assert.That(buffers.Returns).IsEqualTo(0);
+
+        // Exhaust replacement tokens too: their storage references must stay flat.
+        for (var index = 0; index < 3; index++)
+        {
+            generation.SetValue(renewal, ShareRecordBatchOwner.MaximumGeneration);
+            renewal.Retain();
+            renewal.ReleasePoll();
+            renewal = renewal.RefreshGeneration();
+            var storage = typeof(ShareRecordBatchOwner).GetField("_batchStorage",
+                BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(renewal);
+            await Assert.That(storage).IsSameReferenceAs(root);
+            await Assert.That(payload[0]).IsEqualTo((byte)42);
+            await Assert.That(buffers.Returns).IsEqualTo(0);
+        }
+        var unrelated = pool.Rent(RecordBatch.RentFromPool());
+        unrelated.CompleteParsing();
+        await Assert.That(renewal.SharesStorageWith(unrelated)).IsFalse();
+        unrelated.ReleasePoll();
+        renewal.Release();
+        await Assert.That(buffers.Returns).IsEqualTo(1);
+        await Assert.That(root.Retain).Throws<InvalidOperationException>();
+    }
+
+    private sealed class CountingBufferPool : ArrayPool<byte>
+    {
+        internal int Returns { get; private set; }
+        public override byte[] Rent(int minimumLength) => new byte[minimumLength];
+        public override void Return(byte[] array, bool clearArray = false)
+        {
+            Returns++;
+            Array.Fill(array, (byte)0xff);
         }
     }
 

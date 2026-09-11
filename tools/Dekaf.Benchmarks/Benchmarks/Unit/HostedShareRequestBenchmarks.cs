@@ -22,6 +22,7 @@ public class HostedShareRequestBenchmarks
 
     private KafkaShareConsumer<string, string> _consumer = null!;
     private MetadataManager _metadata = null!;
+    private Connection _connection = null!;
     private readonly CancellationTokenSource _shutdown = new();
     private readonly List<TopicPartition> _partitions = [];
     private readonly Dictionary<TopicPartition, List<AcknowledgementBatchData>> _acknowledgements = [];
@@ -66,7 +67,7 @@ public class HostedShareRequestBenchmarks
             Brokers = [new() { NodeId = 1, Host = "localhost", Port = 9092 }],
             Topics = [new() { ErrorCode = ErrorCode.None, Name = "topic", TopicId = topicId, Partitions = metadataPartitions }]
         };
-        var connection = new Connection(
+        var connection = _connection = new Connection(
             new() { ErrorCode = ErrorCode.None, Responses = [new() { TopicId = topicId, Partitions = fetchPartitions }], NodeEndpoints = [] },
             new() { Responses = [new() { TopicId = topicId, Partitions = acknowledgePartitions }], NodeEndpoints = [] });
         var pool = new Pool(connection);
@@ -133,6 +134,23 @@ public class HostedShareRequestBenchmarks
         return _consumer.CommitAsync();
     }
 
+    internal ValueTask CommitWithDeferredReply()
+    {
+        _connection.DeferAcknowledgement = true;
+        try
+        {
+            var pending = Commit();
+            if (pending.IsCompleted)
+                throw new InvalidOperationException("Commit must suspend until the broker reply is released.");
+            _connection.CompleteAcknowledgement();
+            return pending;
+        }
+        finally
+        {
+            _connection.DeferAcknowledgement = false;
+        }
+    }
+
     [GlobalCleanup]
     public async Task Cleanup()
     {
@@ -143,6 +161,8 @@ public class HostedShareRequestBenchmarks
 
     private sealed class Connection(ShareFetchResponse fetch, ShareAcknowledgeResponse acknowledge) : IKafkaConnection
     {
+        private TaskCompletionSource<ShareAcknowledgeResponse>? _pendingAcknowledgement;
+        internal bool DeferAcknowledgement { get; set; }
         internal int RequestCount { get; private set; }
         public int BrokerId => 1;
         public string Host => "localhost";
@@ -152,6 +172,11 @@ public class HostedShareRequestBenchmarks
             where TRequest : IKafkaRequest<TResponse> where TResponse : IKafkaResponse
         {
             RequestCount++;
+            if (DeferAcknowledgement && request is ShareAcknowledgeRequest)
+            {
+                _pendingAcknowledgement = new(TaskCreationOptions.RunContinuationsAsynchronously);
+                return AwaitAcknowledgementAsync<TResponse>(_pendingAcknowledgement.Task);
+            }
             IKafkaResponse response = request switch
             {
                 ShareFetchRequest => fetch,
@@ -160,6 +185,19 @@ public class HostedShareRequestBenchmarks
             };
             return ValueTask.FromResult((TResponse)response);
         }
+
+        internal void CompleteAcknowledgement()
+        {
+            var pending = _pendingAcknowledgement
+                ?? throw new InvalidOperationException("No acknowledgement is awaiting its reply.");
+            _pendingAcknowledgement = null;
+            pending.SetResult(acknowledge);
+        }
+
+        private static async ValueTask<TResponse> AwaitAcknowledgementAsync<TResponse>(Task<ShareAcknowledgeResponse> pending)
+            where TResponse : IKafkaResponse
+            => (TResponse)(IKafkaResponse)await pending.ConfigureAwait(false);
+
         public ValueTask ConnectAsync(CancellationToken token = default) => ValueTask.CompletedTask;
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
         public ValueTask SendFireAndForgetAsync<TRequest, TResponse>(TRequest request, short version, CancellationToken token = default)

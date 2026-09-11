@@ -1053,6 +1053,75 @@ public sealed partial class ShareConsumerRenewalTests
     [Test]
     [Arguments(false)]
     [Arguments(true)]
+    public async Task Poll_OversizedAcquisition_DoesNotDiscardRemainder(bool requiresPreparation)
+    {
+        using var stop = new CancellationTokenSource();
+        var sends = 0;
+        var connection = new CapturingConnection(ApiKey.ShareFetch, 2)
+        {
+            ShareFetchResponses = new Queue<ShareFetchResponse>([CreateFetchResponse(0, 42, recordCount: 5)]),
+            OnSend = () => { if (++sends == 3) stop.Cancel(); }
+        };
+        var preparer = requiresPreparation ? new PausedDeserializerPreparer() : null;
+        preparer?.Release.SetResult();
+        await using var fixture = CreateFixture(connection, maxPollRecords: 2, valueDeserializer: preparer);
+        PrepareForPoll(fixture.Consumer);
+        fixture.Consumer.Subscribe("topic");
+        var offsets = new List<long>();
+        try
+        {
+            await foreach (var record in fixture.Consumer.PollAsync(stop.Token))
+            {
+                offsets.Add(record.Offset);
+                if (offsets.Count == 5) break;
+            }
+        }
+        catch (OperationCanceledException) when (stop.IsCancellationRequested) { }
+
+        await Assert.That(offsets).IsEquivalentTo([42L, 43L, 44L, 45L, 46L]);
+        await Assert.That(connection.ShareFetchRequest!.MaxRecords).IsEqualTo(2);
+    }
+
+    [Test]
+    [Arguments(false, 2)]
+    [Arguments(true, 2)]
+    [Arguments(false, 5)]
+    [Arguments(true, 5)]
+    public async Task Poll_NewEnumerator_ResumesUndisclosedAcquisition(bool requiresPreparation, int recordCount)
+    {
+        using var stop = new CancellationTokenSource();
+        var sends = 0;
+        var connection = new CapturingConnection(ApiKey.ShareFetch, 2)
+        {
+            ShareFetchResponses = new Queue<ShareFetchResponse>([CreateFetchResponse(0, 42, recordCount)]),
+            OnSend = () => { if (++sends == 3) stop.Cancel(); }
+        };
+        var preparer = requiresPreparation ? new PausedDeserializerPreparer() : null;
+        preparer?.Release.SetResult();
+        await using var fixture = CreateFixture(connection, maxPollRecords: 2, valueDeserializer: preparer);
+        PrepareForPoll(fixture.Consumer);
+        fixture.Consumer.Subscribe("topic");
+        var offsets = new List<long>();
+        try
+        {
+            for (var index = 0; index < recordCount; index++)
+            {
+                await using var poll = fixture.Consumer.PollAsync(stop.Token).GetAsyncEnumerator();
+                if (await poll.MoveNextAsync())
+                    offsets.Add(poll.Current.Offset);
+            }
+        }
+        catch (OperationCanceledException) when (stop.IsCancellationRequested) { }
+
+        await Assert.That(offsets.Count).IsEqualTo(recordCount);
+        for (var index = 0; index < recordCount; index++)
+            await Assert.That(offsets[index]).IsEqualTo(42 + index);
+        await Assert.That(sends).IsEqualTo(1);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
     public async Task Poll_PartialEnumeration_DoesNotTrackUnyieldedRecords(bool requiresPreparation)
     {
         var connection = new CapturingConnection(ApiKey.ShareFetch, 2)
@@ -1153,6 +1222,14 @@ public sealed partial class ShareConsumerRenewalTests
 
         await Assert.That(preparer.UndisclosedOwner).IsNotNull();
         await Assert.That(owners.Count).IsEqualTo(buffered ? 0 : 1);
+        var released = FlushPendingAcknowledgements(fixture.Consumer);
+        await Assert.That(released[new("topic", 1)][0].FirstOffset).IsEqualTo(200);
+        await Assert.That(released[new("topic", 1)][0].AcknowledgeTypes)
+            .IsEquivalentTo([(byte)AcknowledgeType.Release]);
+        await Assert.That(released.ContainsKey(new("topic", 0))).IsEqualTo(buffered);
+        if (buffered)
+            await Assert.That(released[new("topic", 0)][0].AcknowledgeTypes)
+                .IsEquivalentTo([(byte)AcknowledgeType.Release]);
         if (buffered)
         {
             await Assert.That(() => preparer.UndisclosedOwner!.Retain()).Throws<InvalidOperationException>();
@@ -1298,16 +1375,27 @@ public sealed partial class ShareConsumerRenewalTests
         }
     }
 
-    private static ShareFetchResponse CreateFetchResponse(int partition, long offset, int recordCount = 1)
+    private static ShareFetchResponse CreateFetchResponse(int partition, long offset, int recordCount = 1,
+        int recordsPerBatch = int.MaxValue, bool withHeaders = false)
     {
         var buffer = new ArrayBufferWriter<byte>();
-        using var batch = new RecordBatch
+        for (var firstIndex = 0; firstIndex < recordCount;)
         {
-            BaseOffset = offset,
-            LastOffsetDelta = recordCount - 1,
-            Records = Enumerable.Range(0, recordCount).Select(index => new Record { OffsetDelta = index, IsKeyNull = true, Value = "new-value"u8.ToArray() }).ToList()
-        };
-        batch.Write(buffer);
+            var batchCount = Math.Min(recordsPerBatch, recordCount - firstIndex);
+            using var batch = new RecordBatch
+            {
+                BaseOffset = offset + firstIndex,
+                LastOffsetDelta = batchCount - 1,
+                Records = Enumerable.Range(0, batchCount).Select(index => new Record
+                {
+                    OffsetDelta = index, IsKeyNull = true, Value = "new-value"u8.ToArray(),
+                    Headers = withHeaders ? [new Header("test", "header"u8.ToArray())] : null,
+                    HeaderCount = withHeaders ? 1 : 0
+                }).ToList()
+            };
+            batch.Write(buffer);
+            firstIndex += batchCount;
+        }
 
         return new ShareFetchResponse
         {
@@ -1609,11 +1697,13 @@ public sealed partial class ShareConsumerRenewalTests
         internal int SendCount { get; private set; }
         internal short LastApiVersion { get; private set; }
         internal ShareFetchRequest? ShareFetchRequest { get; private set; }
+        internal List<ShareFetchRequest> ShareFetchRequests { get; } = [];
         internal ShareAcknowledgeRequest? ShareAcknowledgeRequest { get; private set; }
         internal MetadataResponse? MetadataResponse { get; init; }
         internal Func<CancellationToken, ValueTask<MetadataResponse>>? MetadataHandler { get; init; }
         internal ShareFetchResponse? ShareFetchResponse { get; init; }
         internal Queue<ShareFetchResponse>? ShareFetchResponses { get; init; }
+        internal Task? FirstShareFetchPause { get; init; }
         internal ShareAcknowledgeResponse? ShareAcknowledgeResponse { get; init; }
         internal Queue<ShareAcknowledgeResponse>? ShareAcknowledgeResponses { get; init; }
         internal List<ShareAcknowledgeRequest> ShareAcknowledgeRequests { get; } = [];
@@ -1654,6 +1744,7 @@ public sealed partial class ShareConsumerRenewalTests
             if (request is ShareFetchRequest fetchRequest && ShareFetchHandler is not null)
             {
                 ShareFetchRequest = fetchRequest;
+                ShareFetchRequests.Add(fetchRequest);
                 OnSend?.Invoke();
                 return AwaitFetchAsync<TResponse>(ShareFetchHandler(fetchRequest, cancellationToken));
             }
@@ -1668,7 +1759,9 @@ public sealed partial class ShareConsumerRenewalTests
             {
                 ShareFetchRequest fetch => Capture(
                     fetch,
-                    ShareFetchResponses is { Count: > 0 } ? ShareFetchResponses.Dequeue() : ShareFetchResponse ?? new ShareFetchResponse
+                    ShareFetchResponses is { Count: > 0 }
+                        ? ShareFetchResponses.Dequeue()
+                        : ShareFetchResponse ?? new ShareFetchResponse
                     {
                         ErrorCode = ErrorCode.None,
                         Responses = [],
@@ -1725,6 +1818,9 @@ public sealed partial class ShareConsumerRenewalTests
                 && DelayedFinalAcknowledgement is { } delayed)
                 return new ValueTask<TResponse>(AwaitResponseAsync(delayed.Task));
 
+            if (request is ShareFetchRequest && ShareFetchRequests.Count == 1 && FirstShareFetchPause is { } pause)
+                return new ValueTask<TResponse>(CompletePausedFetchAsync(pause, (TResponse)response, cancellationToken));
+
             return new ValueTask<TResponse>((TResponse)response);
 
             static async Task<TResponse> AwaitResponseAsync(Task<ShareAcknowledgeResponse> pending)
@@ -1743,11 +1839,19 @@ public sealed partial class ShareConsumerRenewalTests
             where TResponse : IKafkaResponse
             => (TResponse)(IKafkaResponse)await pending;
 
+        private static async Task<TResponse> CompletePausedFetchAsync<TResponse>(Task pause, TResponse response,
+            CancellationToken cancellationToken)
+        {
+            await pause.WaitAsync(cancellationToken);
+            return response;
+        }
+
         private ShareFetchResponse Capture(
             ShareFetchRequest request,
             ShareFetchResponse response)
         {
             ShareFetchRequest = request;
+            ShareFetchRequests.Add(request);
             return response;
         }
 

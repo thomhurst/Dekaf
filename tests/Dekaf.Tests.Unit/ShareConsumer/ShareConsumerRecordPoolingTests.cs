@@ -132,7 +132,7 @@ public sealed class ShareConsumerRecordPoolingTests
         {
             var owner = records[index].BatchOwner!;
             var batch = typeof(ShareRecordBatchOwner)
-                .GetField("_batch", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(owner);
+                .GetField("_batchStorage", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(owner);
             await Assert.That(batch).IsNull();
             var expected = index == 0 ? "first" : "other";
             await Assert.That(System.Text.Encoding.UTF8.GetString(records[index].Value.Span)).IsEqualTo(expected);

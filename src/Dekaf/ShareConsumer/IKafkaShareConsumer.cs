@@ -58,6 +58,11 @@ public interface IKafkaShareConsumer<TKey, TValue> : IInitializableKafkaClient, 
     /// <summary>
     /// Polls for records from the share group. Returns an async enumerable of acquired records.
     /// <para>
+    /// Each round yields at most <see cref="ShareConsumerOptions.MaxPollRecords"/> records.
+    /// Acquired records beyond that limit, or left undisclosed when enumeration stops,
+    /// remain available to later polls. Only delivered records participate in implicit acceptance.
+    /// </para>
+    /// <para>
     /// <b>Important:</b> In <see cref="ShareAcknowledgementMode.Implicit"/> mode, records from
     /// the previous poll that were not explicitly acknowledged via <see cref="Acknowledge"/> are
     /// accepted automatically. In <see cref="ShareAcknowledgementMode.Explicit"/> mode, only

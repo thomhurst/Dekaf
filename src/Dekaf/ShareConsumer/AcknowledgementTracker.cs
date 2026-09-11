@@ -1,3 +1,9 @@
+#if NETSTANDARD2_0
+using TopicPartitionSet = System.Collections.Generic.IReadOnlyCollection<Dekaf.TopicPartition>;
+#else
+using TopicPartitionSet = System.Collections.Generic.IReadOnlySet<Dekaf.TopicPartition>;
+#endif
+
 namespace Dekaf.ShareConsumer;
 
 /// <summary>
@@ -16,6 +22,8 @@ internal sealed class AcknowledgementTracker
     private const AcknowledgeType ImplicitDelivery = (AcknowledgeType)byte.MaxValue;
 
     private Dictionary<TopicPartition, PartitionAcknowledgements> _pendingAcks = new();
+    private PartitionAcknowledgements? _freePartitions;
+    private int _peakPendingPartitions;
 
     /// <summary>
     /// Tracks delivered records awaiting implicit acceptance by the next poll or commit.
@@ -23,6 +31,13 @@ internal sealed class AcknowledgementTracker
     internal void TrackDeliveredRecords(TopicPartition tp, long firstOffset, long lastOffset)
     {
         GetOrAddPartition(tp).TrackRange(firstOffset, lastOffset, ImplicitDelivery);
+    }
+
+    // Subscription changes can relinquish whole acquired ranges without allocating one
+    // explicit acknowledgement per undisclosed record. Explicit caller outcomes take priority.
+    internal void ReleaseUndeliveredRecords(TopicPartition tp, long firstOffset, long lastOffset)
+    {
+        GetOrAddPartition(tp).TrackRange(firstOffset, lastOffset, AcknowledgeType.Release);
     }
 
     /// <summary>
@@ -39,7 +54,7 @@ internal sealed class AcknowledgementTracker
                     $"Cannot acknowledge offset {offset} for {tp} — record was not delivered by the current poll.");
             }
 
-            partitionAcks = new PartitionAcknowledgements();
+            partitionAcks = RentPartition();
             _pendingAcks[tp] = partitionAcks;
         }
         else if (requireTracked && !partitionAcks.ContainsOffset(offset))
@@ -56,30 +71,60 @@ internal sealed class AcknowledgementTracker
     /// </summary>
     internal bool HasPending => _pendingAcks.Count > 0;
 
+    // Called after discarded acquisitions or assignment changes, not on ordinary poll windows.
+    internal bool HasPendingOutsideAssignment(TopicPartitionSet assignment)
+    {
+        foreach (var partition in _pendingAcks)
+            if (!assignment.Contains(partition.Key))
+                return true;
+        return false;
+    }
+
     /// <summary>
     /// Flushes all pending acknowledgements, building wire-format batches.
-    /// Atomically swaps the pending dictionary so no acks can be lost.
+    /// Returned batches own their arrays independently of the reusable tracking state.
     /// </summary>
     /// <returns>Per-TopicPartition acknowledgement batches for the wire format.</returns>
     internal Dictionary<TopicPartition, List<AcknowledgementBatchData>> Flush(bool releaseImplicit = false)
     {
-        // Swap to a fresh dictionary so any new acks after this point go into a fresh
-        // bucket — avoids the per-partition TryRemove race of the snapshot-and-remove pattern.
-        var old = _pendingAcks;
-        _pendingAcks = new Dictionary<TopicPartition, PartitionAcknowledgements>();
-
-        Dictionary<TopicPartition, List<AcknowledgementBatchData>> result = new();
-
-        foreach (var (tp, partitionAcks) in old)
+        var pending = _pendingAcks;
+        var count = pending.Count;
+        var reusePending = count >= _peakPendingPartitions / 4;
+        if (!reusePending)
         {
-            var batches = partitionAcks.BuildBatches(releaseImplicit ? AcknowledgeType.Release : AcknowledgeType.Accept);
-            if (batches.Count > 0)
-            {
-                result[tp] = batches;
-            }
+            // A smaller assignment must not keep clearing the old peak dictionary
+            // capacity on every poll. Drop idle scratch at the same boundary.
+            _pendingAcks = new Dictionary<TopicPartition, PartitionAcknowledgements>();
+            _freePartitions = null;
+            _peakPendingPartitions = count;
+        }
+        else if (count > _peakPendingPartitions)
+        {
+            _peakPendingPartitions = count;
         }
 
-        return result;
+        try
+        {
+            var result = new Dictionary<TopicPartition, List<AcknowledgementBatchData>>(count);
+            foreach (var (tp, partitionAcks) in pending)
+            {
+                var batches = partitionAcks.BuildBatches(releaseImplicit ? AcknowledgeType.Release : AcknowledgeType.Accept);
+                if (batches.Count > 0)
+                    result[tp] = batches;
+
+                partitionAcks.Reset();
+                partitionAcks.Next = _freePartitions;
+                _freePartitions = partitionAcks;
+            }
+            return result;
+        }
+        finally
+        {
+            // Flush is synchronous and single-threaded. Detach even when materialization
+            // throws, preserving the previous swap's consumption of the pending state.
+            if (reusePending)
+                pending.Clear();
+        }
     }
 
     /// <summary>
@@ -142,15 +187,34 @@ internal sealed class AcknowledgementTracker
         if (_pendingAcks.TryGetValue(tp, out var partitionAcks))
             return partitionAcks;
 
-        partitionAcks = new PartitionAcknowledgements();
+        partitionAcks = RentPartition();
         _pendingAcks[tp] = partitionAcks;
         return partitionAcks;
+    }
+
+    private PartitionAcknowledgements RentPartition()
+    {
+        var partition = _freePartitions;
+        if (partition is null)
+            return new PartitionAcknowledgements();
+        _freePartitions = partition.Next;
+        partition.Next = null;
+        return partition;
     }
 
     private sealed class PartitionAcknowledgements
     {
         private readonly List<AckRange> _ranges = [];
         private Dictionary<long, AcknowledgeType>? _explicitAcks;
+        internal PartitionAcknowledgements? Next;
+
+        internal void Reset()
+        {
+            _ranges.Clear();
+            // Explicit dictionaries can be large and need not follow a pooled state to
+            // another partition. Retain only the range scratch storage between flushes.
+            _explicitAcks = null;
+        }
 
         internal void TrackRange(long firstOffset, long lastOffset, AcknowledgeType type)
         {
@@ -268,7 +332,7 @@ internal sealed class AcknowledgementTracker
 
         internal List<AcknowledgementBatchData> BuildBatches(AcknowledgeType implicitDisposition)
         {
-            List<AcknowledgementBatchData> batches = [];
+            var batches = new List<AcknowledgementBatchData>(_ranges.Count);
 
             foreach (var range in _ranges)
                 batches.Add(BuildRangeBatch(range, implicitDisposition));
@@ -360,7 +424,7 @@ internal sealed class AcknowledgementTracker
 
         private static List<AcknowledgementBatchData> MergeConsecutiveBatches(List<AcknowledgementBatchData> batches)
         {
-            List<AcknowledgementBatchData> merged = [];
+            var writeIndex = 0;
             var current = batches[0];
 
             for (var i = 1; i < batches.Count; i++)
@@ -368,7 +432,7 @@ internal sealed class AcknowledgementTracker
                 var next = batches[i];
                 if (current.LastOffset + 1 != next.FirstOffset)
                 {
-                    merged.Add(current);
+                    batches[writeIndex++] = current;
                     current = next;
                     continue;
                 }
@@ -379,8 +443,9 @@ internal sealed class AcknowledgementTracker
                 current = new AcknowledgementBatchData(current.FirstOffset, next.LastOffset, combinedTypes);
             }
 
-            merged.Add(current);
-            return merged;
+            batches[writeIndex++] = current;
+            batches.RemoveRange(writeIndex, batches.Count - writeIndex);
+            return batches;
         }
     }
 

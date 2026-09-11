@@ -139,8 +139,8 @@ class SelectionTests(unittest.TestCase):
     def test_share_consumer_selects_polling_and_batch_fixtures(self):
         path = 'src/Dekaf/ShareConsumer/KafkaShareConsumer.cs'
         selected = self.names(gate.select([path], root=REPO_ROOT))
-        for fixture in ('ShareConsumerPollBenchmarks', 'ShareConsumerIdleAssignmentBenchmarks', 'ShareConsumerMissingLeaderBenchmarks', 'ShareConsumerUnsubscribeBenchmarks', 'ShareConsumerSparsePollBenchmarks', 'ShareConsumerBorrowedParsingBenchmarks',
-                        'ShareBatchAcknowledgementBenchmarks', 'ShareBatchScalingBenchmarks',
+        for fixture in ('ShareConsumerPollBenchmarks', 'ShareConsumerPollBufferBenchmarks', 'ShareConsumerResubscribeBenchmarks', 'ShareConsumerIdleAssignmentBenchmarks', 'ShareConsumerMissingLeaderBenchmarks', 'ShareConsumerUnsubscribeBenchmarks', 'ShareConsumerSparsePollBenchmarks', 'ShareConsumerBorrowedParsingBenchmarks',
+                        'ShareAcknowledgementReleaseBenchmarks', 'ShareAcknowledgementShrinkBenchmarks', 'ShareBatchAcknowledgementBenchmarks', 'ShareBatchScalingBenchmarks',
                         'ShareBatchRenewalPollBenchmarks', 'ShareBatchPendingStateBenchmarks',
                         'ShareBatchChunkedRenewalBenchmarks'):
             self.assertIn(fixture, selected)
@@ -150,11 +150,15 @@ class SelectionTests(unittest.TestCase):
         selected = self.names(gate.select([path], root=REPO_ROOT))
         self.assertIn('ShareAcknowledgedOffsetsBenchmarks', selected)
 
-    def test_share_owner_paths_select_multi_batch_fixture(self):
-        for path in ('src/Dekaf/ShareConsumer/ShareRecordBatchOwner.cs', 'src/Dekaf/ShareConsumer/KafkaShareConsumer.cs'):
+    def test_share_owner_paths_select_ownership_fixtures(self):
+        for path in ('src/Dekaf/ShareConsumer/ShareRecordBatchOwner.cs',
+                     'src/Dekaf/ShareConsumer/KafkaShareConsumer.cs',
+                     'src/Dekaf/ShareConsumer/KafkaShareConsumer.BufferedRecords.cs'):
             with self.subTest(path=path):
                 selected = self.names(gate.select([path], root=REPO_ROOT))
-                self.assertIn('ShareConsumerMultiBatchBenchmarks', selected)
+                for fixture in ('ShareConsumerMultiBatchBenchmarks', 'ShareConsumerPartialPollBenchmarks',
+                                'ShareConsumerRenewalReplayBenchmarks'):
+                    self.assertIn(fixture, selected)
 
     def test_any_product_change_runs_the_sentinels(self):
         selection = gate.select(['src/Dekaf/Admin/AdminClient.cs'], fixtures=self.fixtures)
