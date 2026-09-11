@@ -74,14 +74,261 @@ public sealed class ShareConsumerRecordPoolingTests
     }
 
     [Test]
+    public async Task NextPoll_ReusedOwnerRejectsStaleRenewal()
+    {
+        var consumer = CreateBorrowedConsumer(out var metadata);
+        await using var metadataScope = metadata;
+        await using var consumerScope = consumer;
+        ShareConsumeResult<string, ReadOnlyMemory<byte>> original;
+        using (consumer.BeginRecordBatchScope())
+            original = ParseBorrowedRecords(consumer, "first")[0];
+        var owner = original.BatchOwner;
+        using (consumer.BeginRecordBatchScope())
+        {
+            var current = ParseBorrowedRecords(consumer, "other")[0];
+            await Assert.That(current.BatchOwner).IsSameReferenceAs(owner);
+            await Assert.That(original.Topic).IsEqualTo("topic");
+            await Assert.That(original.DeliveryCount).IsEqualTo(1);
+            await Assert.That(() => consumer.Acknowledge(original, AcknowledgeType.Renew))
+                .Throws<InvalidOperationException>();
+            await Assert.That(original.AcknowledgeType).IsEqualTo(AcknowledgeType.Accept);
+            await Assert.That(System.Text.Encoding.UTF8.GetString(current.Value.Span)).IsEqualTo("other");
+            await Assert.That(() => consumer.Acknowledge(current, (AcknowledgeType)255))
+                .Throws<ArgumentOutOfRangeException>();
+            await Assert.That(current.BatchOwner).IsSameReferenceAs(owner);
+            await Assert.That(current.AcknowledgeType).IsEqualTo(AcknowledgeType.Accept);
+            consumer.Acknowledge(current, AcknowledgeType.Renew);
+        }
+    }
+
+    [Test]
     [NotInParallel]
-    public async Task ParsePartitionRecords_DeserializerThrows_ReturnsBatchToPool()
+    public async Task ParsePartitionRecords_TwoBatches_PreservesBorrowedValuesAndHeaders()
+    {
+        var consumer = CreateBorrowedConsumer(out var metadata);
+        await using var metadataScope = metadata;
+        await using var consumerScope = consumer;
+        using var recordScope = consumer.BeginRecordBatchScope();
+        var records = ParseBorrowedRecords(consumer, "first", "other");
+
+        await Assert.That(records.Count).IsEqualTo(2);
+        await Assert.That(System.Text.Encoding.UTF8.GetString(records[0].Value.Span)).IsEqualTo("first");
+        await Assert.That(System.Text.Encoding.UTF8.GetString(records[0].Headers[0].Value.Span)).IsEqualTo("first");
+        await Assert.That(System.Text.Encoding.UTF8.GetString(records[1].Value.Span)).IsEqualTo("other");
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task CompletedParsing_ReleasesMaterializedRecordsButRetainsPayload(bool prepared)
+    {
+        var consumer = CreateBorrowedConsumer(out var metadata);
+        await using var metadataScope = metadata;
+        await using var consumerScope = consumer;
+        using var recordScope = consumer.BeginRecordBatchScope();
+        var records = ParseBorrowedRecords(consumer, prepared, "first", "other");
+
+        for (var index = 0; index < records.Count; index++)
+        {
+            var owner = records[index].BatchOwner!;
+            var batch = typeof(ShareRecordBatchOwner)
+                .GetField("_batch", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(owner);
+            await Assert.That(batch).IsNull();
+            var expected = index == 0 ? "first" : "other";
+            await Assert.That(System.Text.Encoding.UTF8.GetString(records[index].Value.Span)).IsEqualTo(expected);
+            await Assert.That(System.Text.Encoding.UTF8.GetString(records[index].Headers[0].Value.Span)).IsEqualTo(expected);
+        }
+    }
+
+    [Test]
+    public async Task Dispose_ReturnsCachedPayloadsAfterResubscription()
+    {
+        var consumer = CreateBorrowedConsumer(out var metadata);
+        await using var metadataScope = metadata;
+        await using var consumerScope = consumer;
+        using (consumer.BeginRecordBatchScope())
+            _ = ParseBorrowedRecords(consumer, "first");
+        using (consumer.BeginRecordBatchScope()) { }
+        var pool = (ShareRecordBufferPool)consumer.GetType()
+            .GetField("_recordBuffers", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(consumer)!;
+        await Assert.That(pool.RetainedBytes).IsGreaterThan(0);
+        consumer.Subscribe("topic");
+        using (consumer.BeginRecordBatchScope())
+            _ = ParseBorrowedRecords(consumer, "other");
+        await consumer.DisposeAsync();
+        await Assert.That(pool.RetainedBytes).IsEqualTo(0);
+    }
+
+    [Test]
+    [NotInParallel]
+    public async Task RenewedReplay_TerminalAcknowledgement_KeepsPayloadUntilNextPoll()
+    {
+        var consumer = CreateBorrowedConsumer(out var metadata);
+        await using var metadataScope = metadata;
+        await using var consumerScope = consumer;
+        ShareConsumeResult<string, ReadOnlyMemory<byte>> record;
+        using (consumer.BeginRecordBatchScope())
+        {
+            record = ParseBorrowedRecords(consumer, "first")[0];
+        }
+        // Consuming a single record disposes its iterator before acknowledging it.
+        consumer.Acknowledge(record, AcknowledgeType.Renew);
+        ApplyAcknowledgement(consumer, AcknowledgeType.Renew);
+
+        var replayScope = consumer.BeginRecordBatchScope();
+        var buffers = (ShareRecordBufferPool)consumer.GetType()
+            .GetField("_recordBuffers", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(consumer)!;
+        int returnedBeforeScopeEnd;
+        int returnedAtScopeEnd;
+        string payload;
+        try
+        {
+            var getActive = consumer.GetType().GetMethod("GetActiveRenewedRecords",
+                BindingFlags.Instance | BindingFlags.NonPublic)!;
+            var replay = (List<ShareConsumeResult<string, ReadOnlyMemory<byte>>>)getActive.Invoke(consumer,
+                [new HashSet<TopicPartition> { new("topic", 0) }, 10])!;
+            await Assert.That(replay[0]).IsSameReferenceAs(record);
+            try
+            {
+                ApplyAcknowledgement(consumer, AcknowledgeType.Accept);
+                payload = System.Text.Encoding.UTF8.GetString(replay[0].Value.Span);
+            }
+            finally
+            {
+                returnedBeforeScopeEnd = buffers.RetainedBytes;
+            }
+        }
+        finally
+        {
+            replayScope.Dispose();
+            using var nextPoll = consumer.BeginRecordBatchScope();
+            returnedAtScopeEnd = buffers.RetainedBytes;
+        }
+
+        await Assert.That(payload).IsEqualTo("first");
+        await Assert.That(returnedBeforeScopeEnd).IsEqualTo(0);
+        await Assert.That(returnedAtScopeEnd).IsGreaterThan(0);
+        await Assert.That(record.Topic).IsEqualTo("topic");
+    }
+
+    [Test]
+    [NotInParallel]
+    public async Task RenewAfterNextPollStarts_ThrowsWithoutQueueingAcknowledgement()
+    {
+        var consumer = CreateBorrowedConsumer(out var metadata);
+        await using var metadataScope = metadata;
+        await using var consumerScope = consumer;
+        ShareConsumeResult<string, ReadOnlyMemory<byte>> record;
+        using (consumer.BeginRecordBatchScope())
+            record = ParseBorrowedRecords(consumer, "first")[0];
+        using var nextPoll = consumer.BeginRecordBatchScope();
+
+        await Assert.That(() => consumer.Acknowledge(record, AcknowledgeType.Renew))
+            .Throws<InvalidOperationException>();
+        var tracker = (AcknowledgementTracker)consumer.GetType()
+            .GetField("_ackTracker", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(consumer)!;
+        await Assert.That(tracker.HasPending).IsFalse();
+    }
+
+    private static void ApplyAcknowledgement(
+        KafkaShareConsumer<string, ReadOnlyMemory<byte>> consumer, AcknowledgeType type)
+    {
+        var method = consumer.GetType().GetMethod("ApplySuccessfulAcknowledgements",
+            BindingFlags.Instance | BindingFlags.NonPublic)!;
+        Dictionary<TopicPartition, List<AcknowledgementBatchData>> acknowledgements = new()
+        {
+            [new TopicPartition("topic", 0)] = [new AcknowledgementBatchData(0, 0, [(byte)type])]
+        };
+        method.Invoke(consumer, [acknowledgements, 0L]);
+    }
+
+    private static KafkaShareConsumer<string, ReadOnlyMemory<byte>> CreateBorrowedConsumer(
+        out MetadataManager metadata, IDeserializer<ReadOnlyMemory<byte>>? valueDeserializer = null)
+    {
+        var options = new ShareConsumerOptions
+        {
+            BootstrapServers = ["localhost:9092"], GroupId = "share-borrowed-records",
+            AcknowledgementMode = ShareAcknowledgementMode.Explicit
+        };
+        var pool = Substitute.For<IConnectionPool>();
+        metadata = new MetadataManager(pool, options.BootstrapServers);
+        return new KafkaShareConsumer<string, ReadOnlyMemory<byte>>(
+            options, Serializers.String, valueDeserializer ?? Serializers.RawBytes, pool, metadata);
+    }
+
+    private static List<ShareConsumeResult<string, ReadOnlyMemory<byte>>> ParseBorrowedRecords(
+        KafkaShareConsumer<string, ReadOnlyMemory<byte>> consumer, params string[] values)
+        => ParseBorrowedRecords(consumer, false, values);
+
+    private static List<ShareConsumeResult<string, ReadOnlyMemory<byte>>> ParseBorrowedRecords(
+        KafkaShareConsumer<string, ReadOnlyMemory<byte>> consumer, bool prepared, params string[] values)
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        for (var offset = 0; offset < values.Length; offset++)
+        {
+            var payload = System.Text.Encoding.UTF8.GetBytes(values[offset]);
+            using var batch = new RecordBatch
+            {
+                BaseOffset = offset,
+                Records = [new Record
+                {
+                    IsKeyNull = true,
+                    Value = payload,
+                    Headers = [new Header("test", payload)],
+                    HeaderCount = 1
+                }]
+            };
+            batch.Write(buffer);
+        }
+
+        var topic = new TopicInfo { Name = "topic", Partitions = [] };
+        var partition = new ShareFetchResponsePartition
+        {
+            PartitionIndex = 0,
+            CurrentLeader = new ShareFetchLeaderIdAndEpoch(),
+            RecordBytes = buffer.WrittenMemory,
+            AcquiredRecords = [new ShareFetchAcquiredRecords
+            {
+                FirstOffset = 0, LastOffset = values.Length - 1, DeliveryCount = 1
+            }]
+        };
+        if (prepared)
+        {
+            var records = new List<ShareConsumeResult<string, ReadOnlyMemory<byte>>>();
+            var state = new KafkaShareConsumer<string, ReadOnlyMemory<byte>>.DeserializerPreparationParserState();
+            try
+            {
+                if (consumer.ParsePartitionRecordsWithPreparation(topic, partition, values.Length,
+                    records, ref state, false, null) is not null)
+                    throw new InvalidOperationException("The raw deserializer must not require preparation.");
+                return records;
+            }
+            finally
+            {
+                state.DisposeCurrentBatch();
+            }
+        }
+        var parse = typeof(KafkaShareConsumer<string, ReadOnlyMemory<byte>>).GetMethod(
+            "ParsePartitionRecords", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        return (List<ShareConsumeResult<string, ReadOnlyMemory<byte>>>)parse.Invoke(consumer,
+            [topic, partition, values.Length])!;
+    }
+
+    [Test]
+    [Arguments(0)]
+    [Arguments(1)]
+    [NotInParallel]
+    public async Task ParsePartitionRecords_DeserializerThrows_ReturnsBatchToPool(int successfulRecords)
     {
         var buffer = new ArrayBufferWriter<byte>();
         using var source = new RecordBatch
         {
             BaseOffset = 17,
-            Records = [new Record { IsKeyNull = true, Value = "value"u8.ToArray() }]
+            Records =
+            [
+                new Record { IsKeyNull = true, Value = "first"u8.ToArray() },
+                new Record { OffsetDelta = 1, IsKeyNull = true, Value = "second"u8.ToArray() }
+            ]
         };
         source.Write(buffer);
 
@@ -93,10 +340,12 @@ public sealed class ShareConsumerRecordPoolingTests
         var pool = Substitute.For<IConnectionPool>();
         await using var metadataManager = new MetadataManager(pool, options.BootstrapServers);
         var valueDeserializer = Substitute.For<IDeserializer<string>>();
+        var calls = 0;
         valueDeserializer.Deserialize(
                 Arg.Any<ReadOnlyMemory<byte>>(),
                 Arg.Any<SerializationContext>())
-            .Returns(_ => throw new InvalidOperationException("Deserializer failure"));
+            .Returns(_ => calls++ < successfulRecords ? "value"
+                : throw new InvalidOperationException("Deserializer failure"));
         await using var consumer = new KafkaShareConsumer<string, string>(
             options,
             Serializers.String,
@@ -125,12 +374,12 @@ public sealed class ShareConsumerRecordPoolingTests
                         new ShareFetchAcquiredRecords
                         {
                             FirstOffset = 17,
-                            LastOffset = 17,
+                            LastOffset = 18,
                             DeliveryCount = 1
                         }
                     ]
                 },
-                1
+                2
             ]);
         }
         catch (TargetInvocationException exception)
@@ -144,6 +393,48 @@ public sealed class ShareConsumerRecordPoolingTests
 
         await Assert.That(thrown?.InnerException).IsTypeOf<InvalidOperationException>();
         await Assert.That(returnedBatchCount).IsEqualTo(1);
+    }
+
+    [Test]
+    [NotInParallel]
+    public async Task ParsePartitionRecords_LaterBatchFails_ReleasesUndisclosedOwnersOnly()
+    {
+        var valueDeserializer = Substitute.For<IDeserializer<ReadOnlyMemory<byte>>>();
+        valueDeserializer.Deserialize(Arg.Any<ReadOnlyMemory<byte>>(), Arg.Any<SerializationContext>())
+            .Returns(call => call.ArgAt<ReadOnlyMemory<byte>>(0).Span.SequenceEqual("failure"u8)
+                ? throw new InvalidOperationException("Deserializer failure")
+                : call.ArgAt<ReadOnlyMemory<byte>>(0));
+        var consumer = CreateBorrowedConsumer(out var metadata, valueDeserializer);
+        await using var metadataScope = metadata;
+        await using var consumerScope = consumer;
+        var delivered = ParseBorrowedRecords(consumer, "retained")[0];
+
+        TargetInvocationException? thrown = null;
+        int failedCallReturns;
+        RecordBatch.BeginTrackingPoolReturnsForCurrentThread();
+        try
+        {
+            ParseBorrowedRecords(consumer, "first", "failure");
+        }
+        catch (TargetInvocationException exception)
+        {
+            thrown = exception;
+        }
+        finally
+        {
+            failedCallReturns = RecordBatch.EndTrackingPoolReturnsForCurrentThread();
+        }
+
+        await Assert.That(thrown?.InnerException).IsTypeOf<InvalidOperationException>();
+        await Assert.That(failedCallReturns).IsEqualTo(2);
+        await Assert.That(System.Text.Encoding.UTF8.GetString(delivered.Value.Span)).IsEqualTo("retained");
+        await Assert.That(System.Text.Encoding.UTF8.GetString(delivered.Headers[0].Value.Span)).IsEqualTo("retained");
+
+        var buffers = (ShareRecordBufferPool)consumer.GetType()
+            .GetField("_recordBuffers", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(consumer)!;
+        var cachedBeforeNextPoll = buffers.RetainedBytes;
+        using (consumer.BeginRecordBatchScope()) { }
+        await Assert.That(buffers.RetainedBytes).IsGreaterThan(cachedBeforeNextPoll);
     }
 
     [Test]
@@ -363,6 +654,7 @@ public sealed class ShareConsumerRecordPoolingTests
         var parserState = new KafkaShareConsumer<string, string>
             .DeserializerPreparationParserState();
 
+        var recordScope = consumer.BeginRecordBatchScope();
         RecordBatch.BeginTrackingPoolReturnsForCurrentThread();
         int returnedBatchCount;
         try
@@ -406,6 +698,8 @@ public sealed class ShareConsumerRecordPoolingTests
         finally
         {
             parserState.DisposeCurrentBatch();
+            recordScope.Dispose();
+            using var nextPoll = consumer.BeginRecordBatchScope();
             returnedBatchCount = RecordBatch.EndTrackingPoolReturnsForCurrentThread();
         }
 

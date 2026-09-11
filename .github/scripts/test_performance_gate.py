@@ -144,6 +144,12 @@ class SelectionTests(unittest.TestCase):
         selected = self.names(gate.select([path], root=REPO_ROOT))
         self.assertIn('ShareAcknowledgedOffsetsBenchmarks', selected)
 
+    def test_share_owner_paths_select_multi_batch_fixture(self):
+        for path in ('src/Dekaf/ShareConsumer/ShareRecordBatchOwner.cs', 'src/Dekaf/ShareConsumer/KafkaShareConsumer.cs'):
+            with self.subTest(path=path):
+                selected = self.names(gate.select([path], root=REPO_ROOT))
+                self.assertIn('ShareConsumerMultiBatchBenchmarks', selected)
+
     def test_any_product_change_runs_the_sentinels(self):
         selection = gate.select(['src/Dekaf/Admin/AdminClient.cs'], fixtures=self.fixtures)
         self.assertEqual(sorted(gate.SENTINELS), self.names(selection))

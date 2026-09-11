@@ -473,6 +473,7 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
     private IReadOnlyList<Record> _records = null!;
     private ReadOnlyMemory<byte> _rawRecordData;
     private byte[]? _pooledRecordData;
+    private ArrayPool<byte>? _recordDataPool;
     private Record[]? _parsedRecords;
     private int _parsedRecordsOffset;
     private bool _ownsParsedRecords;
@@ -702,7 +703,8 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
         var pooledArray = _pooledRecordData;
         _pooledRecordData = null;
         if (pooledArray is not null)
-            ArrayPool<byte>.Shared.Return(pooledArray, clearArray: false);
+            (_recordDataPool ?? ArrayPool<byte>.Shared).Return(pooledArray, clearArray: false);
+        _recordDataPool = null;
 
         var parsedRecords = _parsedRecords;
         _parsedRecords = null;
@@ -728,6 +730,16 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
         _ownsParsedRecords = false;
         _nextRecordParseOffset = 0;
         _headerRoutingPlan = null;
+    }
+
+    /// <summary>Transfers copied/decompressed payload storage before returning the batch metadata.</summary>
+    internal byte[]? DetachRecordData(out ArrayPool<byte> pool)
+    {
+        var data = _pooledRecordData;
+        pool = _recordDataPool ?? ArrayPool<byte>.Shared;
+        _pooledRecordData = null;
+        _recordDataPool = null;
+        return data;
     }
 
     /// <summary>
@@ -1020,6 +1032,7 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
             item._records = null!;
             item._rawRecordData = default;
             item._pooledRecordData = null;
+            item._recordDataPool = null;
             item._parsedRecords = null;
             item._parsedRecordsOffset = 0;
             item._ownsParsedRecords = false;
@@ -1524,6 +1537,15 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
         CompressionCodecRegistry? codecs,
         int availableBytes,
         bool checkCrcs)
+        => ReadCore(ref reader, codecs, availableBytes, checkCrcs, ArrayPool<byte>.Shared, borrowResponseMemory: true);
+
+    internal static RecordBatch ReadForShareConsumer(
+        ref KafkaProtocolReader reader, CompressionCodecRegistry? codecs, ArrayPool<byte> recordDataPool)
+        => ReadCore(ref reader, codecs, int.MaxValue, false, recordDataPool, borrowResponseMemory: false);
+
+    private static RecordBatch ReadCore(
+        ref KafkaProtocolReader reader, CompressionCodecRegistry? codecs, int availableBytes,
+        bool checkCrcs, ArrayPool<byte> recordDataPool, bool borrowResponseMemory)
     {
         if (availableBytes < TotalBatchHeaderSize)
         {
@@ -1592,13 +1614,13 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
 
         if (compression != CompressionType.None)
         {
-            // Decompress directly into an ArrayPool<byte>.Shared-backed writer, then
+            // Decompress directly into a writer backed by the selected array pool, then
             // detach the array for zero-copy handoff to the pooled RecordBatch.
             // This eliminates the previous decompress-to-scratch-then-copy pattern.
             var registry = codecs ?? CompressionCodecRegistry.Default;
             var codec = registry.GetCodec(compression);
             var estimatedSize = recordsLength * 4; // Estimate 4x expansion
-            using var decompressWriter = DetachableBufferWriter.Rent(ArrayPool<byte>.Shared, estimatedSize);
+            using var decompressWriter = DetachableBufferWriter.Rent(recordDataPool, estimatedSize);
             codec.Decompress(new ReadOnlySequence<byte>(rawRecordData), decompressWriter);
 
             // Transfer ownership of the pooled array — Dispose is a no-op after DetachBuffer.
@@ -1606,7 +1628,7 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
             lazyRecordData = pooledArray.AsMemory(0, writtenLength);
             pooledRecordData = pooledArray;
         }
-        else if (ResponseParsingContext.HasPooledMemory)
+        else if (borrowResponseMemory && ResponseParsingContext.HasPooledMemory)
         {
             // Zero-copy: use the raw data directly from the pooled buffer
             // Mark that at least one batch used the pooled memory, so ownership
@@ -1620,7 +1642,7 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
             // No pooled memory available (legacy path or not from network)
             // Use pooled array to avoid GC allocation from ToArray()
             var length = rawRecordData.Length;
-            var pooledArray = ArrayPool<byte>.Shared.Rent(length);
+            var pooledArray = recordDataPool.Rent(length);
             rawRecordData.Span.CopyTo(pooledArray);
             lazyRecordData = pooledArray.AsMemory(0, length);
             pooledRecordData = pooledArray;
@@ -1640,6 +1662,7 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
         batch.ProducerEpoch = producerEpoch;
         batch.BaseSequence = baseSequence;
         batch.InitializeLazyRecords(lazyRecordData, pooledRecordData, recordCount);
+        batch._recordDataPool = ReferenceEquals(recordDataPool, ArrayPool<byte>.Shared) ? null : recordDataPool;
         return batch;
     }
 

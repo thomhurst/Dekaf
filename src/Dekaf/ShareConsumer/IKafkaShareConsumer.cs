@@ -63,6 +63,12 @@ public interface IKafkaShareConsumer<TKey, TValue> : IInitializableKafkaClient, 
     /// accepted automatically. In <see cref="ShareAcknowledgementMode.Explicit"/> mode, only
     /// records passed to <see cref="Acknowledge"/> are sent to the broker.
     /// </para>
+    /// <para>
+    /// Borrowed key/value memory and header value views remain valid until the next poll
+    /// round starts or this consumer is disposed, including after iterator disposal.
+    /// Acknowledge Renew before that boundary to retain borrowed storage for replay.
+    /// Copy borrowed data that must outlive delivery without renewal.
+    /// </para>
     /// </summary>
     IAsyncEnumerable<ShareConsumeResult<TKey, TValue>> PollAsync(CancellationToken cancellationToken = default);
 
