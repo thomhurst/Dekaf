@@ -1086,7 +1086,9 @@ public sealed partial class ShareConsumerRenewalTests
         CapturingConnection? secondConnection = null,
         ShareAcknowledgementCommitCallback? acknowledgementCommitCallback = null,
         IDeserializer<string>? valueDeserializer = null,
-        Func<CancellationToken, ValueTask<IKafkaConnection>>? leaseHandler = null)
+        Func<CancellationToken, ValueTask<IKafkaConnection>>? leaseHandler = null,
+        int fetchMaxWaitMs = 200,
+        int retryBackoffMs = 100)
     {
         var options = new ShareConsumerOptions
         {
@@ -1094,6 +1096,9 @@ public sealed partial class ShareConsumerRenewalTests
             GroupId = "share-group",
             AcknowledgementMode = acknowledgementMode,
             MaxPollRecords = maxPollRecords,
+            FetchMaxWaitMs = fetchMaxWaitMs,
+            RetryBackoffMs = retryBackoffMs,
+            RetryBackoffMaxMs = Math.Max(retryBackoffMs, 1000),
             AcknowledgementCommitCallback = acknowledgementCommitCallback
         };
         var pool = Substitute.For<IConnectionPool>();
@@ -1487,6 +1492,8 @@ public sealed partial class ShareConsumerRenewalTests
         internal short LastApiVersion { get; private set; }
         internal ShareFetchRequest? ShareFetchRequest { get; private set; }
         internal ShareAcknowledgeRequest? ShareAcknowledgeRequest { get; private set; }
+        internal MetadataResponse? MetadataResponse { get; init; }
+        internal Func<CancellationToken, ValueTask<MetadataResponse>>? MetadataHandler { get; init; }
         internal ShareFetchResponse? ShareFetchResponse { get; init; }
         internal Queue<ShareFetchResponse>? ShareFetchResponses { get; init; }
         internal ShareAcknowledgeResponse? ShareAcknowledgeResponse { get; init; }
@@ -1521,6 +1528,11 @@ public sealed partial class ShareConsumerRenewalTests
         {
             SendCount++;
             LastApiVersion = apiVersion;
+            if (request is MetadataRequest && MetadataHandler is not null)
+            {
+                OnSend?.Invoke();
+                return AwaitMetadataAsync<TResponse>(MetadataHandler(cancellationToken));
+            }
             if (request is ShareFetchRequest fetchRequest && ShareFetchHandler is not null)
             {
                 ShareFetchRequest = fetchRequest;
@@ -1554,7 +1566,7 @@ public sealed partial class ShareConsumerRenewalTests
                         Responses = [],
                         NodeEndpoints = []
                     }),
-                MetadataRequest => new MetadataResponse
+                MetadataRequest => MetadataResponse ?? new MetadataResponse
                 {
                     Brokers = [new BrokerMetadata { NodeId = 1, Host = "localhost", Port = 9092 }],
                     Topics =
@@ -1608,6 +1620,10 @@ public sealed partial class ShareConsumerRenewalTests
         private static async ValueTask<TResponse> AwaitAcknowledgementAsync<TResponse>(ValueTask<ShareAcknowledgeResponse> response)
             where TResponse : IKafkaResponse
             => (TResponse)(IKafkaResponse)await response;
+
+        private static async ValueTask<TResponse> AwaitMetadataAsync<TResponse>(ValueTask<MetadataResponse> pending)
+            where TResponse : IKafkaResponse
+            => (TResponse)(IKafkaResponse)await pending;
 
         private ShareFetchResponse Capture(
             ShareFetchRequest request,

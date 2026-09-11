@@ -41,6 +41,7 @@ public class ShareConsumerPollBenchmarks
     [Params(false, true)]
     public bool AsynchronousResponse { get; set; }
 
+    internal int IdleFetchMaxWaitMs { get; set; } = 200;
     internal bool RenewalMode { get; set; }
     internal int ReplayChunkSize { get; set; }
     internal ShareAcquisitionShape AcquisitionShape { get; set; }
@@ -85,7 +86,7 @@ public class ShareConsumerPollBenchmarks
         _connection = new Connection(response, AsynchronousResponse);
         var pool = new Pool(_connection);
         _metadata = new MetadataManager(pool, ["localhost:9092"]);
-        _metadata.Metadata.Update(new MetadataResponse
+        _connection.MetadataResponse = new MetadataResponse
         {
             Brokers = [new BrokerMetadata { NodeId = 1, Host = "localhost", Port = 9092 }],
             Topics = [new TopicMetadata
@@ -97,7 +98,8 @@ public class ShareConsumerPollBenchmarks
                     ReplicaNodes = [1], IsrNodes = [1]
                 }]
             }]
-        });
+        };
+        _metadata.Metadata.Update(_connection.MetadataResponse);
         _compatibility = CreateConsumer(pool);
         _borrowed = CreateConsumer(pool, ReplayChunkSize);
         _records = _compatibility.PollAsync().GetAsyncEnumerator();
@@ -256,6 +258,7 @@ public class ShareConsumerPollBenchmarks
     [GlobalCleanup]
     public async ValueTask Cleanup()
     {
+        _metadataRestoreTimer?.Dispose();
         _connection.Asynchronous = false;
         await _records.DisposeAsync();
         await _batches.DisposeAsync();
@@ -290,11 +293,150 @@ public class ShareConsumerPollBenchmarks
         return _connection.ReleasedOffsets;
     }
 
+    private Action<ShareGroupHeartbeatAssignment>? _publishIdleAssignment;
+    private Func<ValueTask<bool>>? _idleMoveNext;
+    private static readonly ShareGroupHeartbeatAssignment EmptyAssignment = new() { TopicPartitions = [] };
+    private static readonly ShareGroupHeartbeatAssignment AssignedPartition = new()
+    {
+        TopicPartitions = [new ShareGroupHeartbeatTopicPartitions { TopicId = TopicId, Partitions = [0] }]
+    };
+
+    internal void PrepareIdlePolling(bool batch)
+    {
+        var consumer = batch ? _borrowed : _compatibility;
+        const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
+        var coordinator = typeof(KafkaShareConsumer<int, int>).GetField("_coordinator", flags)!.GetValue(consumer)!;
+        _publishIdleAssignment = typeof(ShareConsumerCoordinator)
+            .GetMethod("ProcessShareGroupAssignment", flags)!
+            .CreateDelegate<Action<ShareGroupHeartbeatAssignment>>(coordinator);
+        _idleMoveNext = batch ? _batches.MoveNextAsync : _records.MoveNextAsync;
+        PublishEmptyAssignment();
+    }
+
+    internal ValueTask<bool> BeginIdleRound()
+    {
+        PublishEmptyAssignment();
+        return _idleMoveNext!();
+    }
+
+    internal void PublishIdleAssignment() => _publishIdleAssignment!(AssignedPartition);
+    internal void PublishEmptyAssignment() => _publishIdleAssignment!(EmptyAssignment);
+    private MetadataResponse? _missingLeader;
+    private Timer? _metadataRestoreTimer;
+    private TaskCompletionSource<bool>? _metadataRestored;
+    private bool _asynchronousMetadata;
+    private MissingLeaderAssignment? _missingLeaderAssignment;
+
+    internal void PrepareMissingLeaderPolling(bool batch, bool asynchronousMetadata = false)
+    {
+        _asynchronousMetadata = asynchronousMetadata;
+        PrepareIdlePolling(batch);
+        PublishIdleAssignment();
+        _missingLeader = new MetadataResponse
+        {
+            Brokers = [new BrokerMetadata { NodeId = 1, Host = "localhost", Port = 9092 }],
+            Topics = [new TopicMetadata
+            {
+                ErrorCode = ErrorCode.None, Name = Topic, TopicId = TopicId,
+                Partitions = [new PartitionMetadata
+                {
+                    ErrorCode = ErrorCode.None, PartitionIndex = 0, LeaderId = -1,
+                    ReplicaNodes = [1], IsrNodes = [1]
+                }]
+            }]
+        };
+        _metadataRestoreTimer = new Timer(static state =>
+        {
+            var self = (ShareConsumerPollBenchmarks)state!;
+            try
+            {
+                self._metadata.Metadata.Update(self._connection.MetadataResponse);
+                self._connection.PendingMetadata?.TrySetResult(self._connection.MetadataResponse);
+                self._metadataRestored!.TrySetResult(true);
+            }
+            catch (Exception error)
+            {
+                self._connection.PendingMetadata?.TrySetException(error);
+                self._metadataRestored!.TrySetException(error);
+            }
+        }, this, Timeout.Infinite, Timeout.Infinite);
+        // The first assignment enumeration in these warmed polls is broker routing.
+        // Arm restoration only after routing has inspected the unavailable leader.
+        // Unlike arming after MoveNextAsync returns, this also lets the old synchronous
+        // spin finish. Subsequent enumerations use the ordinary HashSet enumerator.
+        _missingLeaderAssignment = new MissingLeaderAssignment(this) { new(Topic, 0) };
+        const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
+        var consumer = batch ? _borrowed : _compatibility;
+        var coordinator = typeof(KafkaShareConsumer<int, int>).GetField("_coordinator", flags)!.GetValue(consumer)!;
+        typeof(ShareConsumerCoordinator).GetField("_assignedPartitions", flags)!
+            .SetValue(coordinator, _missingLeaderAssignment);
+    }
+
+    internal async ValueTask<bool> PollWithMissingLeader(int metadataDelayMs)
+    {
+        _metadata.Metadata.Update(_missingLeader!);
+        var restored = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _metadataRestored = restored;
+        if (_asynchronousMetadata)
+            _connection.PendingMetadata = new TaskCompletionSource<MetadataResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _missingLeaderAssignment!.Prepare(metadataDelayMs);
+        try
+        {
+            var delivered = await _idleMoveNext!();
+            if (!_missingLeaderAssignment.ObservedMissingLeader)
+                throw new InvalidOperationException("Polling did not inspect the missing leader.");
+            return delivered;
+        }
+        finally
+        {
+            // Join the fixture's independent metadata publication before the next
+            // operation, including when the client already refreshed it itself.
+            try
+            {
+                if (_missingLeaderAssignment.ObservedMissingLeader)
+                    await restored.Task;
+            }
+            finally
+            {
+                _metadataRestored = null;
+                _connection.PendingMetadata = null;
+            }
+        }
+    }
+
+    private sealed class MissingLeaderAssignment(ShareConsumerPollBenchmarks poll)
+        : HashSet<TopicPartition>, IEnumerable<TopicPartition>
+    {
+        private int _delayMs;
+        internal bool ObservedMissingLeader { get; private set; }
+
+        internal void Prepare(int delayMs)
+        {
+            _delayMs = delayMs;
+            ObservedMissingLeader = false;
+        }
+
+        IEnumerator<TopicPartition> IEnumerable<TopicPartition>.GetEnumerator()
+            => ObservedMissingLeader ? base.GetEnumerator() : ObserveRouting();
+
+        private IEnumerator<TopicPartition> ObserveRouting()
+        {
+            using var partitions = base.GetEnumerator();
+            while (partitions.MoveNext())
+                yield return partitions.Current;
+
+            if (poll._metadata.Metadata.GetPartitionLeader(Topic, 0) is not null)
+                throw new InvalidOperationException("Metadata was restored before missing-leader routing completed.");
+            ObservedMissingLeader = true;
+            poll._metadataRestoreTimer!.Change(_delayMs, Timeout.Infinite);
+        }
+    }
     private KafkaShareConsumer<int, int> CreateConsumer(Pool pool, int maxPollRecords = 0)
     {
         var consumer = new KafkaShareConsumer<int, int>(new ShareConsumerOptions
         {
             BootstrapServers = ["localhost:9092"], GroupId = "share-poll-benchmark",
+            FetchMaxWaitMs = IdleFetchMaxWaitMs,
             MaxPollRecords = maxPollRecords == 0 ? checked(RecordCount * BatchCount) : maxPollRecords,
             AcknowledgementMode = RenewalMode ? ShareAcknowledgementMode.Explicit : ShareAcknowledgementMode.Implicit
         }, Serializers.Int32, Serializers.Int32, pool, _metadata);
@@ -316,6 +458,8 @@ public class ShareConsumerPollBenchmarks
     {
         private ManualResetValueTaskSourceCore<ShareFetchResponse> _completion;
         private bool _pending;
+        internal MetadataResponse MetadataResponse { get; set; } = null!;
+        internal TaskCompletionSource<MetadataResponse>? PendingMetadata { get; set; }
         internal bool Asynchronous { get; set; } = asynchronous;
         internal int AcknowledgeRequests { get; private set; }
         internal long ReleasedOffsets { get; private set; }
@@ -331,12 +475,15 @@ public class ShareConsumerPollBenchmarks
         public KafkaConnectionCapabilities Capabilities { get; } = KafkaConnectionCapabilities.Create(new ApiVersionsResponse
         {
             ErrorCode = ErrorCode.None,
-            ApiKeys = [new ApiVersion(ApiKey.ShareFetch, 1, 2), new ApiVersion(ApiKey.ShareAcknowledge, 1, 2)]
+            ApiKeys = [new ApiVersion(ApiKey.ShareFetch, 1, 2), new ApiVersion(ApiKey.ShareAcknowledge, 1, 2),
+                new ApiVersion(ApiKey.Metadata, MetadataRequest.LowestSupportedVersion, MetadataRequest.HighestSupportedVersion)]
         });
 
         public ValueTask<TResponse> SendAsync<TRequest, TResponse>(TRequest request, short version, CancellationToken token = default)
             where TRequest : IKafkaRequest<TResponse> where TResponse : IKafkaResponse
         {
+            if (request is MetadataRequest && PendingMetadata is { } metadata)
+                return AwaitMetadataAsync<TResponse>(metadata.Task, token);
             if (request is ShareAcknowledgeRequest acknowledge)
             {
                 AcknowledgeRequests++;
@@ -372,10 +519,16 @@ public class ShareConsumerPollBenchmarks
             {
                 ShareFetchRequest => fetch,
                 ShareAcknowledgeRequest => _acknowledge,
+                MetadataRequest => MetadataResponse,
                 _ => throw new NotSupportedException(typeof(TRequest).Name)
             };
             return ValueTask.FromResult((TResponse)response);
         }
+
+        private static async ValueTask<TResponse> AwaitMetadataAsync<TResponse>(
+            Task<MetadataResponse> pending, CancellationToken token)
+            where TResponse : IKafkaResponse
+            => (TResponse)(IKafkaResponse)await pending.WaitAsync(token);
 
         internal void CompletePendingFetch()
         {

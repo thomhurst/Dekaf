@@ -48,7 +48,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
 
         while (!cancellationToken.IsCancellationRequested)
         {
-            if (_subscriptionSnapshot.Count == 0)
+            if (_subscriptionSnapshot.Count == 0 || Volatile.Read(ref _closed) != 0 || Volatile.Read(ref _disposed) != 0)
                 yield break;
             // Ensure we're part of the share group
             await _coordinator.EnsureActiveGroupAsync(_subscriptionSnapshot, cancellationToken)
@@ -59,10 +59,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
             acknowledgements.RemoveOutsideAssignment(assignment);
             if (assignment.Count == 0)
             {
-                // No partitions assigned (e.g. rebalance removed them while state is Stable).
-                // Delay to avoid a spin-loop — reuse FetchMaxWaitMs as the broker's natural
-                // back-pressure is absent when no fetch request is issued.
-                await Task.Delay(_options.FetchMaxWaitMs, cancellationToken).ConfigureAwait(false);
+                await WaitForAssignmentChangeAsync(assignment, cancellationToken).ConfigureAwait(false);
                 continue;
             }
 
@@ -122,6 +119,13 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
             }
 
             CompletePollFetch(fetchResults, pendingAcks, sentAcknowledgementPartitionCount);
+            if (fetchResults.Length == 0)
+            {
+                // No broker request provided long-poll back-pressure. Refresh missing
+                // leaders and use the configured retry delay only if none is available.
+                await PrepareMissingLeaderRetryAsync(assignment, cancellationToken).ConfigureAwait(false);
+                continue;
+            }
 
             foreach (var result in fetchResults)
             {
