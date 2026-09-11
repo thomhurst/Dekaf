@@ -325,6 +325,7 @@ public class ShareConsumerPollBenchmarks
     private Timer? _metadataRestoreTimer;
     private TaskCompletionSource<bool>? _metadataRestored;
     private bool _asynchronousMetadata;
+    private MissingLeaderAssignment? _missingLeaderAssignment;
 
     internal void PrepareMissingLeaderPolling(bool batch, bool asynchronousMetadata = false)
     {
@@ -359,6 +360,16 @@ public class ShareConsumerPollBenchmarks
                 self._metadataRestored!.TrySetException(error);
             }
         }, this, Timeout.Infinite, Timeout.Infinite);
+        // The first assignment enumeration in these warmed polls is broker routing.
+        // Arm restoration only after routing has inspected the unavailable leader.
+        // Unlike arming after MoveNextAsync returns, this also lets the old synchronous
+        // spin finish. Subsequent enumerations use the ordinary HashSet enumerator.
+        _missingLeaderAssignment = new MissingLeaderAssignment(this) { new(Topic, 0) };
+        const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
+        var consumer = batch ? _borrowed : _compatibility;
+        var coordinator = typeof(KafkaShareConsumer<int, int>).GetField("_coordinator", flags)!.GetValue(consumer)!;
+        typeof(ShareConsumerCoordinator).GetField("_assignedPartitions", flags)!
+            .SetValue(coordinator, _missingLeaderAssignment);
     }
 
     internal async ValueTask<bool> PollWithMissingLeader(int metadataDelayMs)
@@ -368,21 +379,56 @@ public class ShareConsumerPollBenchmarks
         _metadataRestored = restored;
         if (_asynchronousMetadata)
             _connection.PendingMetadata = new TaskCompletionSource<MetadataResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
-        _metadataRestoreTimer!.Change(metadataDelayMs, Timeout.Infinite);
+        _missingLeaderAssignment!.Prepare(metadataDelayMs);
         try
         {
-            return await _idleMoveNext!();
+            var delivered = await _idleMoveNext!();
+            if (!_missingLeaderAssignment.ObservedMissingLeader)
+                throw new InvalidOperationException("Polling did not inspect the missing leader.");
+            return delivered;
         }
         finally
         {
             // Join the fixture's independent metadata publication before the next
             // operation, including when the client already refreshed it itself.
-            try { await restored.Task; }
+            try
+            {
+                if (_missingLeaderAssignment.ObservedMissingLeader)
+                    await restored.Task;
+            }
             finally
             {
                 _metadataRestored = null;
                 _connection.PendingMetadata = null;
             }
+        }
+    }
+
+    private sealed class MissingLeaderAssignment(ShareConsumerPollBenchmarks poll)
+        : HashSet<TopicPartition>, IEnumerable<TopicPartition>
+    {
+        private int _delayMs;
+        internal bool ObservedMissingLeader { get; private set; }
+
+        internal void Prepare(int delayMs)
+        {
+            _delayMs = delayMs;
+            ObservedMissingLeader = false;
+        }
+
+        IEnumerator<TopicPartition> IEnumerable<TopicPartition>.GetEnumerator()
+            => ObservedMissingLeader ? base.GetEnumerator() : ObserveRouting();
+
+        private IEnumerator<TopicPartition> ObserveRouting()
+        {
+            using var partitions = base.GetEnumerator();
+            while (partitions.MoveNext())
+                yield return partitions.Current;
+
+            if (poll._metadata.Metadata.GetPartitionLeader(Topic, 0) is not null)
+                throw new InvalidOperationException("Metadata was restored before missing-leader routing completed.");
+            ObservedMissingLeader = true;
+            poll._metadataRestoreTimer!.Change(_delayMs, Timeout.Infinite);
         }
     }
     private KafkaShareConsumer<int, int> CreateConsumer(Pool pool, int maxPollRecords = 0)

@@ -5,7 +5,9 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 /// <summary>
 /// Measures one actual poll with an initially missing leader. Metadata completes
 /// synchronously or after an independent timer, which also updates the cache so the
-/// old spinning poll completes. Both revisions join that timer before the next operation.
+/// old spinning poll completes. The timer starts after the first routing enumeration
+/// observes the missing leader. Both revisions pay for that one fixture observer and
+/// join the timer before the next operation.
 /// Elapsed time therefore includes the fixture delay; this primarily exposes allocation
 /// cost while routing is unavailable, not real broker latency or loaded acceptance.
 /// </summary>
