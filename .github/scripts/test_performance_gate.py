@@ -64,6 +64,20 @@ class SelectionTests(unittest.TestCase):
                 selected = self.names(gate.select([path], root=REPO_ROOT))
                 self.assertIn('AdminDetailedMutationBenchmarks', selected)
 
+    def test_quota_mutations_select_direct_fixture(self):
+        for path in ('src/Dekaf/Admin/AdminClient.DetailedClientQuotaMutations.cs', 'src/Dekaf/Admin/AdminClient.DetailedMutations.cs'):
+            with self.subTest(path=path):
+                selected = self.names(gate.select([path], root=REPO_ROOT))
+                self.assertIn('AdminDetailedClientQuotaBenchmarks', selected)
+
+    def test_inmemory_quota_paths_select_direct_fixture(self):
+        for path in ('src/Dekaf.Testing/InMemoryAdminClient.DetailedClientQuotaMutations.cs',
+                     'src/Dekaf.Testing/InMemoryAdminClient.DetailedMutations.cs',
+                     'src/Dekaf.Testing/InMemoryAdminClient.cs'):
+            with self.subTest(path=path):
+                selected = self.names(gate.select([path], root=REPO_ROOT))
+                self.assertIn('InMemoryDetailedClientQuotaBenchmarks', selected)
+
     def test_member_removal_paths_select_direct_fixture(self):
         for path in ('src/Dekaf/Admin/AdminClient.MemberRemoval.cs', 'src/Dekaf/Admin/AdminClient.cs'):
             with self.subTest(path=path):
