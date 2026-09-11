@@ -101,7 +101,7 @@ Outstanding families remain separate work; the parent is not complete until thos
 | Share-group offset deletion | `DeleteShareGroupOffsetsDetailedAsync` | Topic name (all partition offsets) |
 | Configuration replacement/incremental changes | Pending [#3133](https://github.com/thomhurst/Dekaf/issues/3133) | Resource |
 | Client quota alteration | Pending [#3134](https://github.com/thomhurst/Dekaf/issues/3134) | Quota entity |
-| ACL creation / SCRAM alteration | Pending [#3135](https://github.com/thomhurst/Dekaf/issues/3135) | Binding / user |
+| ACL creation / SCRAM alteration | `CreateAclsDetailedAsync` / `AlterUserScramCredentialsDetailedAsync` | Input binding occurrence / user |
 | Member removal, feature updates, Streams offsets and replica log directories | Existing detailed result APIs retained | Existing keys |
 
 ## In-memory behavior
@@ -120,3 +120,56 @@ actual stored state; validate-only requests leave that state unchanged.
 The simulator applies each mutation directly and does not parse broker responses. Omitted or
 duplicate response entries are therefore covered by the real client's protocol-response fixtures,
 not by the simulator's per-entity mutation tests.
+
+## ACL and SCRAM mutations
+
+`IDetailedSecurityMutationAdminClient` supplies both detailed security methods through
+`IAdminClient` extensions. ACL creation returns an ordered list of `AclCreationOutcome`.
+Each entry contains its original immutable `Binding` and an `AdminMutationResult` in `Result`.
+Duplicate bindings, including repeated references to the same object, retain separate input
+positions. Kafka identifies ACL results only by request position; if the response count differs
+from the sent count, every outcome in that response is `Unknown` because identity cannot be
+confirmed. Successful occurrences from earlier responses survive a retry of rejected occurrences.
+
+```csharp
+using Dekaf.Admin;
+using Dekaf.Protocol;
+
+await using var admin = new AdminClientBuilder().WithBootstrapServers("localhost:9092").Build();
+var outcomes = await admin.CreateAclsDetailedAsync([
+    AclBinding.Allow(ResourcePattern.Topic("orders"), "User:alice", AclOperation.Read),
+    AclBinding.Allow(ResourcePattern.Topic("payments"), "User:bob", AclOperation.Read)]);
+var rejected = outcomes.Where(item => item.Result.Outcome == AdminMutationOutcome.Failed &&
+    item.Result.ErrorCode is ErrorCode.NotController or ErrorCode.ThrottlingQuotaExceeded);
+await admin.CreateAclsDetailedAsync(rejected.Select(item => item.Binding));
+```
+
+SCRAM alteration returns a dictionary keyed by user. Different mechanisms for one user remain
+one atomic unit, including when retrying confirmed controller/quota rejections. A duplicate
+user/mechanism pair (including deletion plus upsertion of the same mechanism) fails input
+validation before any user is sent. Salt arrays are copied; password derivation occurs once per
+upsertion before asynchronous dispatch, and retries reuse the derived credential. The total
+network deadline starts after this local input preparation. Result objects contain user keys and
+outcomes, never the submitted password, salt or salted password. Broker error messages and local
+exceptions retain their original contents; the client does not add credential material to them.
+
+```csharp
+using Dekaf.Admin;
+using Dekaf.Protocol;
+
+await using var admin = new AdminClientBuilder().WithBootstrapServers("localhost:9092").Build();
+UserScramCredentialAlteration[] requested = [
+    new UserScramCredentialDeletion { User = "former-user", Mechanism = ScramMechanism.ScramSha256 },
+    new UserScramCredentialDeletion { User = "former-user", Mechanism = ScramMechanism.ScramSha512 }];
+var outcomes = await admin.AlterUserScramCredentialsDetailedAsync(requested);
+var retryUsers = outcomes.Where(item => item.Value.Outcome == AdminMutationOutcome.Failed &&
+    item.Value.ErrorCode is ErrorCode.NotController or ErrorCode.ThrottlingQuotaExceeded)
+    .Select(item => item.Key).ToHashSet(StringComparer.Ordinal);
+await admin.AlterUserScramCredentialsDetailedAsync(requested.Where(item => retryUsers.Contains(item.User)));
+```
+
+The in-memory implementation follows the existing ACL/SCRAM simulator limits: it does not store
+ACLs or credentials, enforce authorization, or authenticate SCRAM passwords. ACL faults use the
+resource's topic/group scope; SCRAM faults apply once per user using the generic admin scope.
+It models validation, grouped outcomes, selective retries, cancellation and deadlines. Use Kafka
+integration tests for persisted ACL behavior and credential atomicity.

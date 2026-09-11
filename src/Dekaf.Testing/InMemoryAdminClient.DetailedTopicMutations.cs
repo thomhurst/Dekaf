@@ -85,7 +85,8 @@ public sealed partial class InMemoryAdminClient : IDetailedTopicMutationAdminCli
     private async ValueTask<IReadOnlyDictionary<TKey, AdminMutationResult>> ExecuteInMemoryMutationAsync<TItem, TKey>(
         List<TItem> items, Func<TItem, TKey> key, Func<TItem, (string? Topic, int? Partition)> scope,
         Func<TItem, ErrorCode> apply, int timeoutMs, CancellationToken cancellationToken,
-        string? groupId = null, bool allowMissingShareGroup = false) where TKey : notnull
+        string? groupId = null, bool allowMissingShareGroup = false,
+        Func<TItem, CancellationToken, ValueTask>? applyFault = null) where TKey : notnull
     {
         ThrowIfDisposed();
         ArgumentOutOfRangeException.ThrowIfNegative(timeoutMs);
@@ -113,8 +114,13 @@ public sealed partial class InMemoryAdminClient : IDetailedTopicMutationAdminCli
                 try
                 {
                     token.ThrowIfCancellationRequested();
-                    var target = scope(item);
-                    await ApplyAdminFaultAsync(token, target.Topic, target.Partition, groupId).ConfigureAwait(false);
+                    if (applyFault is not null)
+                        await applyFault(item, token).ConfigureAwait(false);
+                    else
+                    {
+                        var target = scope(item);
+                        await ApplyAdminFaultAsync(token, target.Topic, target.Partition, groupId).ConfigureAwait(false);
+                    }
                     token.ThrowIfCancellationRequested();
                     result = AdminMutationResult.FromResponse(apply(item), null);
                 }
