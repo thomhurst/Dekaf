@@ -21,4 +21,8 @@ internal interface IHostedShareConsumer
     // Hosted processing completes renewed work in place: terminal dispositions stop local
     // renewal replay while acknowledgement submission remains tracked independently.
     void ObserveAcknowledgements(ShareAcknowledgementCommitCallback observer);
+    // Poll cancellation stops pre-write work. Started requests remain observed within the
+    // host's shutdown budget, after which acknowledgement outcomes remain unconfirmed.
+    void ObserveAcknowledgements(ShareAcknowledgementCommitCallback observer,
+        CancellationToken requestCancellationToken);
 }

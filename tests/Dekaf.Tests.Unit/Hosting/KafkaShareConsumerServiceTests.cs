@@ -288,6 +288,75 @@ public sealed class KafkaShareConsumerServiceTests
     }
 
     [Test]
+    [Arguments(false, true)]
+    [Arguments(true, false)]
+    [Arguments(true, true)]
+    public async Task Shutdown_FinalAcknowledgementFailureFaultsExecution(bool reportCallback, bool throwFromCommit)
+    {
+        var failure = new InvalidOperationException("Final acknowledgement failed.");
+        var consumer = new TestConsumer(Record(0))
+        {
+            FinalCommitFailure = failure,
+            ReportCommitFailure = reportCallback,
+            ThrowCommitFailure = throwFromCommit
+        };
+        await using var service = new TestService(consumer);
+        await Assert.That(async () => await RunAsync(service)).Throws<InvalidOperationException>();
+        await Assert.That(consumer.Events.Contains("close")).IsTrue();
+        await Assert.That(service.ExecuteTask!.Exception!.InnerException).IsSameReferenceAs(failure);
+    }
+
+    [Test]
+    public async Task Shutdown_RequestBudgetRemainsActiveUntilCallerDeadline()
+    {
+        var entered = Signal();
+        var consumer = new TestConsumer(Record(0));
+        await using var service = new TestService(consumer, async (_, token) =>
+        {
+            entered.SetResult();
+            await Task.Delay(Timeout.InfiniteTimeSpan, token);
+        });
+        using var shutdown = new CancellationTokenSource();
+        await service.StartAsync(default);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        var stop = service.StopAsync(shutdown.Token);
+        try
+        {
+            await Assert.That(consumer.RequestCancellationToken.CanBeCanceled).IsTrue();
+            await Assert.That(consumer.RequestCancellationToken.IsCancellationRequested).IsFalse();
+        }
+        finally
+        {
+            await shutdown.CancelAsync();
+        }
+        await stop.WaitAsync(TimeSpan.FromSeconds(10));
+        await service.ExecuteTask!.WaitAsync(TimeSpan.FromSeconds(10));
+        await Assert.That(consumer.RequestCancellationToken.IsCancellationRequested).IsTrue();
+        await Assert.That(consumer.Acknowledgements.Single().Type).IsEqualTo(AcknowledgeType.Release);
+    }
+
+    [Test]
+    public async Task Shutdown_UnconfirmedAcknowledgementCancellationRemainsFailure()
+    {
+        var entered = Signal();
+        var finish = Signal();
+        var consumer = new TestConsumer(Record(0));
+        await using var service = new TestService(consumer, async (_, token) =>
+        {
+            entered.SetResult();
+            await finish.Task.WaitAsync(token);
+        });
+        await service.StartAsync(default);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        var stop = service.StopAsync(default);
+        consumer.ReportAcknowledgementFailure(new OperationCanceledException("Acknowledgement response unavailable."));
+        finish.TrySetResult();
+        await stop.WaitAsync(TimeSpan.FromSeconds(10));
+        await Assert.That(async () => await service.ExecuteTask!.WaitAsync(TimeSpan.FromSeconds(10)))
+            .Throws<OperationCanceledException>();
+    }
+
+    [Test]
     public async Task ShutdownBudget_CancelsCurrentWorkAndDoesNotRaceDisposal()
     {
         var entered = Signal();
@@ -508,6 +577,9 @@ public sealed class KafkaShareConsumerServiceTests
         public TaskCompletionSource? DisposalGate { get; init; }
         public ShareAcknowledgementMode AcknowledgementMode { get; init; } = ShareAcknowledgementMode.Explicit;
         public bool FailCommit { get; init; }
+        public Exception? FinalCommitFailure { get; init; }
+        public bool ReportCommitFailure { get; init; }
+        public bool ThrowCommitFailure { get; init; }
         public byte[]? RawValue { get; init; } = [1, 2, 3];
         public int Delivered { get; private set; }
         public StringSet Subscription { get; private set; } = new HashSet<string>();
@@ -518,7 +590,17 @@ public sealed class KafkaShareConsumerServiceTests
         public long AcquisitionStartedTimestamp => AcquisitionTimestamp ?? System.Diagnostics.Stopwatch.GetTimestamp();
         public Exception? InlineFailure { get; init; }
         private ShareAcknowledgementCommitCallback? _observer;
-        public void ObserveAcknowledgements(ShareAcknowledgementCommitCallback observer) => _observer = observer;
+        public CancellationToken RequestCancellationToken { get; private set; }
+        public void ObserveAcknowledgements(ShareAcknowledgementCommitCallback observer)
+            => ObserveAcknowledgements(observer, default);
+        public void ObserveAcknowledgements(ShareAcknowledgementCommitCallback observer,
+            CancellationToken requestCancellationToken)
+        {
+            _observer = observer;
+            RequestCancellationToken = requestCancellationToken;
+        }
+        internal void ReportAcknowledgementFailure(Exception exception)
+            => _observer?.Invoke([new ShareAcknowledgementCommitResult(new TopicPartition("orders", 0), default, exception)]);
         public ValueTask InitializeAsync(CancellationToken cancellationToken = default) { Events.Add("initialize"); return ValueTask.CompletedTask; }
         public IKafkaShareConsumer<string, string> Subscribe(params string[] topics) { Subscription = topics.ToHashSet(); Events.Add("subscribe"); return this; }
         public IKafkaShareConsumer<string, string> Unsubscribe() => this;
@@ -542,6 +624,11 @@ public sealed class KafkaShareConsumerServiceTests
         public ValueTask CommitAsync(CancellationToken cancellationToken = default)
         {
             Events.Add("commit");
+            if (FinalCommitFailure is { } failure)
+            {
+                if (ReportCommitFailure) ReportAcknowledgementFailure(failure);
+                if (ThrowCommitFailure) return ValueTask.FromException(failure);
+            }
             return FailCommit ? ValueTask.FromException(new InvalidOperationException("acknowledgement failed")) : ValueTask.CompletedTask;
         }
         public ValueTask CloseAsync(CancellationToken cancellationToken = default) { Events.Add("close"); return ValueTask.CompletedTask; }

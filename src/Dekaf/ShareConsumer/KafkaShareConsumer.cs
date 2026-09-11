@@ -337,6 +337,11 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
 
             CompletePollFetch(fetchResults, pendingAcks, sentAcknowledgementPartitionCount);
 
+            // A hosted stop observes every in-flight reply without delivering fetched
+            // records or replaying renewed work. Close releases remaining acquisitions.
+            if (_hostedProcessing && cancellationToken.IsCancellationRequested)
+                yield break;
+
             var recordCount = 0;
             List<ShareConsumeResult<TKey, TValue>>? fetchedRecords = _renewedRecords is null
                 ? null
@@ -594,6 +599,13 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                 RequeueAcknowledgements(sentAcks);
                 if (acknowledgementError is not null)
                     AddAcknowledgementErrors(ref acknowledgementErrors, sentAcks, acknowledgementError);
+                else if (sentAcks is not null)
+                {
+                    // Cancellation before the write is not an acknowledgement outcome.
+                    // Retain these dispositions for final commit without reporting success.
+                    foreach (var partition in sentAcks.Keys)
+                        pendingAcks!.Remove(partition);
+                }
                 continue;
             }
 
@@ -731,6 +743,13 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         {
             ApplySuccessfulAcknowledgements(result.SuccessfulAcknowledgements);
             RequeueAcknowledgements(result.FailedAcknowledgements);
+            if (result.WasNotSent)
+            {
+                foreach (var partition in result.FailedAcknowledgements!.Keys)
+                    pendingAcks.Remove(partition);
+                firstError ??= new OperationCanceledException(cancellationToken);
+                continue;
+            }
             AddAcknowledgementErrors(ref acknowledgementErrors, result.Errors);
             if (result.Error is not null)
                 AddAcknowledgementErrors(ref acknowledgementErrors, result.FailedAcknowledgements, result.Error);
@@ -980,10 +999,12 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         Dictionary<TopicPartition, List<AcknowledgementBatchData>>? brokerAcks,
         CancellationToken cancellationToken)
     {
+        var requestContext = GetHostedRequestContext(brokerId);
         var isRenewAck = ContainsRenewAcknowledgement(brokerAcks);
 
         for (var attempt = 0; ; attempt++)
         {
+            requestContext?.Reset();
             try
             {
                 using var connectionLease = await _connectionPool.LeaseConnectionAsync(brokerId, cancellationToken)
@@ -1010,8 +1031,8 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                     IsRenewAck = isRenewAck,
                     Topics = BuildShareFetchTopics(partitions, brokerAcks, version)
                 };
-                var response = (ShareFetchResponse)await connection
-                    .SendAsync<ShareFetchRequest, ShareFetchResponse>(request, version, cancellationToken)
+                var response = await SendHostedRequestAsync<ShareFetchRequest, ShareFetchResponse>(
+                        connection, request, version, requestContext, cancellationToken)
                     .ConfigureAwait(false);
                 var receivedTimestamp = System.Diagnostics.Stopwatch.GetTimestamp();
 
@@ -1038,6 +1059,11 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                 {
                     ReceivedTimestamp = receivedTimestamp
                 };
+            }
+            catch (OperationCanceledException) when (requestContext is { WriteStarted: false }
+                && cancellationToken.IsCancellationRequested && !_hostedRequestCancellationToken.IsCancellationRequested)
+            {
+                return new ShareFetchBrokerResult(brokerId, 0, null, brokerAcks, null, null);
             }
             catch (Exception ex) when (ex is OperationCanceledException or BrokerVersionException)
             {
@@ -1149,6 +1175,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         CancellationToken cancellationToken,
         bool closeSession = false)
     {
+        var requestContext = GetHostedRequestContext(brokerId);
         Dictionary<TopicPartition, List<AcknowledgementBatchData>>? successfulAcknowledgements = null;
         Dictionary<TopicPartition, List<AcknowledgementBatchData>>? failedAcknowledgements = null;
         Dictionary<TopicPartition, Exception>? acknowledgementErrors = null;
@@ -1157,6 +1184,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
 
         for (var attempt = 0; ; attempt++)
         {
+            requestContext?.Reset();
             try
             {
                 var topics = BuildShareAcknowledgeTopics(pendingAcknowledgements);
@@ -1179,9 +1207,8 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                     IsRenewAck = isRenewAck,
                     Topics = topics
                 };
-                var response = (ShareAcknowledgeResponse)await connection
-                    .SendAsync<ShareAcknowledgeRequest, ShareAcknowledgeResponse>(
-                        request, shareAckVersion, cancellationToken)
+                var response = await SendHostedRequestAsync<ShareAcknowledgeRequest, ShareAcknowledgeResponse>(
+                        connection, request, shareAckVersion, requestContext, cancellationToken)
                     .ConfigureAwait(false);
                 var receivedTimestamp = System.Diagnostics.Stopwatch.GetTimestamp();
 
@@ -1271,6 +1298,11 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
             catch (BrokerVersionException)
             {
                 throw;
+            }
+            catch (OperationCanceledException) when (attempt == 0 && requestContext is { WriteStarted: false }
+                && cancellationToken.IsCancellationRequested && !_hostedRequestCancellationToken.IsCancellationRequested)
+            {
+                return AcknowledgeBrokerResult.NotSent(pendingAcknowledgements);
             }
             catch (OperationCanceledException ex) when (cancellationToken.IsCancellationRequested)
             {
@@ -2447,7 +2479,17 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         Dictionary<TopicPartition, List<AcknowledgementBatchData>>? SuccessfulAcknowledgements,
         Dictionary<TopicPartition, List<AcknowledgementBatchData>>? FailedAcknowledgements,
         Exception? Error,
-        Dictionary<TopicPartition, Exception>? Errors);
+        Dictionary<TopicPartition, Exception>? Errors)
+    {
+        // Pending acknowledgements without a response or failure were never submitted.
+        // Reuse the existing representation without enlarging every broker result.
+        internal bool WasNotSent => FailedAcknowledgements is not null
+            && SuccessfulAcknowledgements is null && Error is null && Errors is null;
+
+        internal static AcknowledgeBrokerResult NotSent(
+            Dictionary<TopicPartition, List<AcknowledgementBatchData>> acknowledgements)
+            => new(null, acknowledgements, null, null);
+    }
 
     private readonly struct ShareFetchResponseScope(List<Task<ShareFetchBrokerResult>> tasks) : IDisposable
     {

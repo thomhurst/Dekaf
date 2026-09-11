@@ -30,9 +30,11 @@ public class HostedShareConsumerTests(KafkaTestContainer kafka) : KafkaIntegrati
         hostBuilder.Services.AddSingleton(state);
         hostBuilder.Services.AddDekaf(builder => builder
             .AddShareConsumerService<Worker, string, string>("first", c => c
-                .WithBootstrapServers(KafkaContainer.BootstrapServers).WithGroupId(group))
+                .WithBootstrapServers(KafkaContainer.BootstrapServers).WithGroupId(group)
+                .WithAcknowledgementCommitCallback(state.ObserveAcknowledgements))
             .AddShareConsumerService<Worker, string, string>("second", c => c
-                .WithBootstrapServers(KafkaContainer.BootstrapServers).WithGroupId(group)));
+                .WithBootstrapServers(KafkaContainer.BootstrapServers).WithGroupId(group)
+                .WithAcknowledgementCommitCallback(state.ObserveAcknowledgements)));
         using var host = hostBuilder.Build();
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(60));
         await host.StartAsync(timeout.Token);
@@ -57,6 +59,8 @@ public class HostedShareConsumerTests(KafkaTestContainer kafka) : KafkaIntegrati
         await Assert.That(workers.Sum(worker => worker.Processed)).IsGreaterThanOrEqualTo(20);
         await Assert.That(state.Values.Count).IsEqualTo(20);
         await Task.WhenAll(workers.Select(worker => worker.ExecuteTask!)).WaitAsync(timeout.Token);
+        await Assert.That(state.AcknowledgementFailures).IsEmpty();
+        await Assert.That(state.Acknowledged.Count).IsEqualTo(20);
 
         // A sentinel proves a replacement consumer has joined and fetched beyond accepted work.
         await producer.ProduceAsync(topic, "sentinel", "sentinel", timeout.Token);
@@ -67,10 +71,8 @@ public class HostedShareConsumerTests(KafkaTestContainer kafka) : KafkaIntegrati
         await foreach (var record in replacement.PollAsync(timeout.Token))
         {
             replacement.Acknowledge(record);
-            if (record.Value == "sentinel") break;
-            // A cancelled inline acknowledgement can be uncertain on shutdown. Duplicates are
-            // permitted, but only previously processed records may precede the sentinel.
-            await Assert.That(state.Values.ContainsKey(record.Value)).IsTrue();
+            await Assert.That(record.Value).IsEqualTo("sentinel");
+            break;
         }
         await replacement.CommitAsync(timeout.Token);
     }
@@ -201,6 +203,20 @@ public class HostedShareConsumerTests(KafkaTestContainer kafka) : KafkaIntegrati
     {
         public string Topic { get; } = topic;
         public readonly ConcurrentDictionary<string, byte> Values = new();
+        public readonly ConcurrentDictionary<TopicPartitionOffset, byte> Acknowledged = new();
+        public readonly ConcurrentQueue<Exception> AcknowledgementFailures = new();
+        public void ObserveAcknowledgements(ReadOnlySpan<ShareAcknowledgementCommitResult> results)
+        {
+            foreach (ref readonly var result in results)
+            {
+                if (result.Exception is { } failure)
+                    AcknowledgementFailures.Enqueue(failure);
+                else
+                    foreach (var offset in result.Offsets)
+                        Acknowledged.TryAdd(new TopicPartitionOffset(
+                            result.TopicPartition.Topic, result.TopicPartition.Partition, offset), 0);
+            }
+        }
         public readonly TaskCompletionSource FirstWorkerEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly TaskCompletionSource _bothWorkersEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private int _enteredWorkers;
