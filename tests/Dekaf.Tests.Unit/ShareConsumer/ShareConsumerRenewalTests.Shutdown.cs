@@ -119,6 +119,7 @@ public sealed partial class ShareConsumerRenewalTests
         await using var fixture = CreateFixture(connection, leaseHandler: waitForLease
             ? async token => { await WaitBeforeWrite(token); return connection; }
             : null);
+        var metrics = EnableShareTelemetry(fixture.Consumer);
         ((IHostedShareConsumer)fixture.Consumer).ObserveAcknowledgements(results =>
         {
             foreach (ref readonly var result in results)
@@ -141,6 +142,9 @@ public sealed partial class ShareConsumerRenewalTests
                 await Assert.That(await pendingPoll!.WaitAsync(TimeSpan.FromSeconds(10))).IsFalse();
             await Assert.That(callbacks).IsEmpty();
             await Assert.That(connection.SendCount).IsEqualTo(0);
+            await Assert.That(ShareMetricValue(metrics, "fetch.total")).IsEqualTo(0d);
+            await Assert.That(ShareMetricValue(metrics, "acknowledgements.send.total")).IsEqualTo(0d);
+            await Assert.That(ShareMetricValue(metrics, "acknowledgements.error.total")).IsEqualTo(0d);
             await Assert.That(GetSessionEpoch(fixture.Consumer, 1)).IsEqualTo(0);
             await Assert.That(HasPendingAcknowledgements(fixture.Consumer)).IsTrue();
         }

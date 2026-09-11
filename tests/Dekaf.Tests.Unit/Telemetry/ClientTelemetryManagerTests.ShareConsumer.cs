@@ -193,6 +193,31 @@ public sealed partial class ClientTelemetryManagerTests
         await Assert.That(calls).IsEqualTo(0);
     }
 
+    [Test]
+    public async Task ShareConsumer_SubscriptionRefreshDeactivatesUnrequestedBuiltIns()
+    {
+        const string prefix = "org.apache.kafka.consumer.share.";
+        const string applicationName = "com.example.share.refresh";
+        await using var context = new TelemetryTestContext(shareConsumerOptions: ShareOptions(
+            new ApplicationTelemetryMetric(applicationName, ApplicationTelemetryMetricKind.Gauge, () => 42)));
+        var identity = Guid.NewGuid();
+        context.Connection.Enqueue(Subscription(identity, 1, 10, telemetryMaxBytes: 8192, requestedMetrics: [prefix]));
+        context.Connection.Enqueue(new PushTelemetryResponse { ErrorCode = ErrorCode.UnknownSubscriptionId });
+        context.Connection.Enqueue(Subscription(identity, 2, 10, requestedMetrics: [applicationName]));
+        context.Connection.Enqueue(new PushTelemetryResponse { ErrorCode = ErrorCode.None });
+        await context.Manager.StartAsync();
+        var pushes = await context.Connection.WaitForRequestsAsync<PushTelemetryRequest>(2, TimeSpan.FromSeconds(2));
+        await Assert.That(DecodeShareMetrics(pushes[0]).Length).IsEqualTo(28);
+        var refreshed = DecodeShareMetrics(pushes[1]);
+        await Assert.That(refreshed).HasSingleItem();
+        await Assert.That(refreshed[0].Name).IsEqualTo(applicationName);
+        var collector = (ClientTelemetryMetricCollector)typeof(KafkaShareConsumer<string, string>)
+            .GetField("_telemetryMetricCollector", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .GetValue(context.ShareConsumer)!;
+        await Assert.That(collector.ShareConsumerMetrics!.Enabled(ShareConsumerTelemetryMetrics.Groups.Records)).IsFalse();
+        await Assert.That(collector.ShareConsumerMetrics.Enabled(ShareConsumerTelemetryMetrics.Groups.Heartbeat)).IsFalse();
+    }
+
     private static ShareConsumerOptions ShareOptions(params ApplicationTelemetryMetric[] metrics) => new()
     {
         BootstrapServers = ["localhost:9092"], GroupId = "share-telemetry", ApplicationMetrics = metrics

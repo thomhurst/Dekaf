@@ -70,8 +70,12 @@ internal sealed class ClientTelemetryMetricCollector
     private long _connectionCreationTotal;
     private long _connectionCreationDelta;
 
+    internal ShareConsumerTelemetryMetrics? ShareConsumerMetrics { get; }
+
     public ClientTelemetryMetricCollector(ClientTelemetryClientRole role)
     {
+        ShareConsumerMetrics = role == ClientTelemetryClientRole.ShareConsumer
+            ? new ShareConsumerTelemetryMetrics() : null;
         (_connectionCreationTotalName,
             _nodeRequestLatencyAvgName,
             _nodeRequestLatencyMaxName,
@@ -267,6 +271,7 @@ internal sealed class ClientTelemetryMetricCollector
             }
         }
 
+        ShareConsumerMetrics?.Collect(subscription, metrics);
         AddApplicationMetrics(subscription, requestedMetrics, metrics);
 
         return metrics.Count == 0

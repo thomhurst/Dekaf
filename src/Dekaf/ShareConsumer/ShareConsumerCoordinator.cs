@@ -7,6 +7,7 @@ using Dekaf.Networking;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
 using Dekaf.Retry;
+using Dekaf.Telemetry;
 using Microsoft.Extensions.Logging;
 #if NETSTANDARD2_0
 using TopicPartitionSet = System.Collections.Generic.IReadOnlyCollection<Dekaf.TopicPartition>;
@@ -58,13 +59,17 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
     internal static int GetWaitForAssignmentDelayMs(int heartbeatIntervalMs)
         => Math.Max(heartbeatIntervalMs, 1);
 
+    private readonly ShareConsumerTelemetryMetrics? _telemetryMetrics;
+
     public ShareConsumerCoordinator(
         ShareConsumerOptions options,
         IConnectionPool connectionPool,
         MetadataManager metadataManager,
         ILogger? logger = null,
-        Func<int>? getConnectionCount = null)
+        Func<int>? getConnectionCount = null,
+        ShareConsumerTelemetryMetrics? telemetryMetrics = null)
     {
+        _telemetryMetrics = telemetryMetrics;
         _options = options;
         _connectionPool = connectionPool;
         _metadataManager = metadataManager;
@@ -375,8 +380,10 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
                 ApiKey.ShareGroupHeartbeat,
                 ShareGroupHeartbeatRequest.LowestSupportedVersion,
                 ShareGroupHeartbeatRequest.HighestSupportedVersion);
+            var heartbeatStarted = _telemetryMetrics?.HeartbeatStarted() ?? -1;
             response = await connection.SendAsync<ShareGroupHeartbeatRequest, ShareGroupHeartbeatResponse>(
                 request, version, cancellationToken).ConfigureAwait(false);
+            _telemetryMetrics?.HeartbeatCompleted(heartbeatStarted);
         }
         catch (Exception ex) when (
             ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
@@ -501,7 +508,15 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
         var oldAssignment = _assignedPartitions;
 
         if (newAssignment.Count == oldAssignment.Count && newAssignment.SetEquals(oldAssignment))
+        {
+            // A rejoin can complete with the existing assignment. Repeated assignment
+            // payloads while stable are not new rebalances and do not notify waiters.
+            if (_state == CoordinatorState.Joining && newAssignment.Count > 0)
+                _telemetryMetrics?.Rebalanced();
             return;
+        }
+
+        _telemetryMetrics?.Rebalanced();
 
         LogAssignmentUpdate(newAssignment.Count);
         _assignedPartitions = newAssignment;
@@ -722,8 +737,10 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
                 ShareGroupHeartbeatRequest.LowestSupportedVersion,
                 ShareGroupHeartbeatRequest.HighestSupportedVersion);
 
+            var heartbeatStarted = _telemetryMetrics?.HeartbeatStarted() ?? -1;
             var response = await connection.SendAsync<ShareGroupHeartbeatRequest, ShareGroupHeartbeatResponse>(
                 request, version, cancellationToken).ConfigureAwait(false);
+            _telemetryMetrics?.HeartbeatCompleted(heartbeatStarted);
 
             if (response.ErrorCode != ErrorCode.None)
             {

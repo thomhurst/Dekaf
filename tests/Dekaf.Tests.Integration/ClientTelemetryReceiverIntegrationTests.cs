@@ -156,6 +156,83 @@ public sealed class ClientTelemetryReceiverIntegrationTests(TelemetryReceiverKaf
         }
     }
 
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    [Timeout(90_000)]
+    public async Task ShareConsumer_BrokerReceivesBuiltInsDuringFetchAndAcknowledgement(
+        bool batchApi, CancellationToken cancellationToken)
+    {
+        const string applicationName = "com.example.telemetry.share.processing";
+        const string recordsName = "org.apache.kafka.consumer.share.fetch.manager.records.consumed.total";
+        const string acknowledgementsName = "org.apache.kafka.consumer.share.fetch.manager.acknowledgements.send.total";
+        var clientId = $"share-builtins-{Guid.NewGuid():N}";
+        var group = $"share-builtins-group-{Guid.NewGuid():N}";
+        var topic = await kafka.CreateTestTopicAsync(partitions: 1);
+        await using var admin = kafka.CreateAdminClient();
+        await admin.IncrementalAlterConfigsAsync(new Dictionary<ConfigResource, IReadOnlyList<ConfigAlter>>
+        {
+            [new ConfigResource { Type = ConfigResourceType.ClientMetrics, Name = clientId }] =
+            [
+                ConfigAlter.Set("metrics", $"{applicationName},{recordsName},{acknowledgementsName}"),
+                ConfigAlter.Set("interval.ms", "1000"),
+                ConfigAlter.Set("match", $"client_id={clientId}")
+            ],
+            [new ConfigResource { Type = ConfigResourceType.Group, Name = group }] =
+                [ConfigAlter.Set("share.auto.offset.reset", "earliest")]
+        }, cancellationToken: cancellationToken);
+        await kafka.WaitForSubscriptionAsync(clientId,
+            [applicationName, recordsName, acknowledgementsName], 1000, cancellationToken);
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(kafka.BootstrapServers).BuildAsync(cancellationToken);
+        await ShareConsumerTestHelper.ProduceAsync(producer, topic, count: 2);
+        await using var consumer = await Kafka.CreateShareConsumer<string, string>()
+            .WithBootstrapServers(kafka.BootstrapServers).WithClientId(clientId).WithGroupId(group)
+            .WithAcknowledgementMode(ShareAcknowledgementMode.Explicit)
+            .RegisterMetricForSubscription(new ApplicationTelemetryMetric(applicationName,
+                ApplicationTelemetryMetricKind.Gauge, () => 42))
+            .BuildAsync(cancellationToken);
+        consumer.Subscribe(topic);
+        var values = new HashSet<string?>();
+        if (batchApi)
+        {
+            await foreach (var batch in consumer.PollBatchesAsync(cancellationToken))
+            {
+                foreach (var record in batch)
+                {
+                    values.Add(record.Value);
+                    batch.Acknowledge(record);
+                }
+                await consumer.CommitAsync(cancellationToken);
+                if (values.Count == 2) break;
+            }
+        }
+        else
+        {
+            await foreach (var record in consumer.PollAsync(cancellationToken))
+            {
+                values.Add(record.Value);
+                consumer.Acknowledge(record);
+                if (values.Count == 2) break;
+            }
+            await consumer.CommitAsync(cancellationToken);
+        }
+        string?[] expected = ["value-0", "value-1"];
+        await Assert.That(values).IsEquivalentTo(expected);
+        var identity = ((IKafkaClientInstanceIdentity)consumer).ClientInstanceId;
+        foreach (var name in new[] { recordsName, acknowledgementsName })
+        {
+            var received = await kafka.WaitForPayloadAsync(clientId, payload =>
+                !payload.IsTerminating && Decode(payload).Any(metric => metric.Name == name
+                    && metric.Sum.DataPoints.Single().AsDouble > 0), cancellationToken);
+            await Assert.That(received.ClientInstanceId).IsEqualTo(identity!.Value);
+            var decoded = Decode(received);
+            await Assert.That(decoded.Single(metric => metric.Name == applicationName)
+                .Gauge.DataPoints.Single().AsDouble).IsEqualTo(42d);
+            await Assert.That(decoded.Single(metric => metric.Name == name).Sum.IsMonotonic).IsTrue();
+        }
+    }
+
     private static Metric[] Decode(ReceivedTelemetry payload) => MetricsData.Parser.ParseFrom(payload.Data)
         .ResourceMetrics.SelectMany(resource => resource.ScopeMetrics)
         .SelectMany(scope => scope.Metrics).ToArray();

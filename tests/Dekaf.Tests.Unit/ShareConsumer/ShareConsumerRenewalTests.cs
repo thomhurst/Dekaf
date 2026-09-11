@@ -602,6 +602,7 @@ public sealed partial class ShareConsumerRenewalTests
             ])
         };
         await using var fixture = CreateFixture(connection);
+        var metrics = EnableShareTelemetry(fixture.Consumer);
         PrepareForPoll(fixture.Consumer);
         fixture.Consumer.Acknowledge(CreateRecord(partition: 0, offset: 40), AcknowledgeType.Accept);
         fixture.Consumer.Acknowledge(CreateRecord(partition: 1, offset: 41), AcknowledgeType.Renew);
@@ -615,6 +616,8 @@ public sealed partial class ShareConsumerRenewalTests
             .ToArray();
         await Assert.That(retryPartitions).IsEquivalentTo([1]);
         await Assert.That(HasPendingAcknowledgements(fixture.Consumer)).IsFalse();
+        await Assert.That(ShareMetricValue(metrics, "acknowledgements.send.total")).IsEqualTo(3d);
+        await Assert.That(ShareMetricValue(metrics, "acknowledgements.error.total")).IsEqualTo(1d);
     }
 
     [Test]
