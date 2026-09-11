@@ -9,6 +9,42 @@ namespace Dekaf.Tests.Unit.Consumer;
 public sealed class PartitionedDispatchCoordinatorTests
 {
     [Test]
+    public async Task CustomScalarComparer_SerializesEqualKeysWhileDifferentKeysProgress()
+    {
+        var lane = CreateLane(3);
+        await Assert.That(lane.TryEnqueueForTest(CreateRecord(0, keyOverride: 10))).IsTrue();
+        await Assert.That(lane.TryEnqueueForTest(CreateRecord(1, keyOverride: 20))).IsTrue();
+        await Assert.That(lane.TryEnqueueForTest(CreateRecord(2, keyOverride: 11))).IsTrue();
+        await lane.StopAsync(PartitionStopPolicy.Drain, Timeout.InfiniteTimeSpan);
+        var releaseFirst = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var equalStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var differentStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var dispatcher = new KeyOrderedPartitionDispatcher<int, int>(
+            new PartitionProcessorContext<int, int>(lane), 1, 2, 3,
+            (records, _) =>
+            {
+                if (records[0].Offset == 0) return new ValueTask(releaseFirst.Task);
+                if (records[0].Offset == 1) equalStarted.TrySetResult();
+                else differentStarted.TrySetResult();
+                return default;
+            }, new KeyOrderedStorageTests.ModuloTenComparer());
+        var processing = dispatcher.RunAsync(timeout.Token).AsTask();
+        try
+        {
+            await differentStarted.Task.WaitAsync(timeout.Token);
+            await Assert.That(equalStarted.Task.IsCompleted).IsFalse();
+        }
+        finally
+        {
+            releaseFirst.TrySetResult();
+            await processing.WaitAsync(timeout.Token);
+        }
+        await Assert.That(equalStarted.Task.IsCompletedSuccessfully).IsTrue();
+        await Assert.That(dispatcher.LaneCount).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task AutomaticCompletion_RetiresQueuedReservationsAndSkipsFutureStorage()
     {
         var lane = CreateLane(4);

@@ -68,12 +68,18 @@ class SelectionTests(unittest.TestCase):
     def test_partition_message_key_selects_direct_fixture(self):
         path = 'src/Dekaf/Consumer/PartitionMessageKey.cs'
         selected = self.names(gate.select([path], root=REPO_ROOT))
-        self.assertIn('PartitionMessageKeyBenchmarks', selected)
+        for name in ('PartitionMessageKeyBenchmarks', 'BinaryKeyDispatchBenchmarks',
+                     'DistinctBinaryKeyDispatchBenchmarks', 'SharedSuffixBinaryKeyDispatchBenchmarks'):
+            self.assertIn(name, selected)
 
     def test_key_ordered_dispatcher_selects_message_key_fixture(self):
-        path = 'src/Dekaf/Consumer/KeyOrderedPartitionDispatcher.cs'
-        selected = self.names(gate.select([path], root=REPO_ROOT))
-        self.assertIn('PartitionMessageKeyBenchmarks', selected)
+        for path in ('src/Dekaf/Consumer/KeyOrderedPartitionDispatcher.cs',
+                     'src/Dekaf/Consumer/KeyOrderedPartitionDispatcher.Storage.cs'):
+            with self.subTest(path=path):
+                selected = self.names(gate.select([path], root=REPO_ROOT))
+                for name in ('PartitionMessageKeyBenchmarks', 'BinaryKeyDispatchBenchmarks',
+                             'DistinctBinaryKeyDispatchBenchmarks', 'SharedSuffixBinaryKeyDispatchBenchmarks'):
+                    self.assertIn(name, selected)
 
     def test_detailed_mutation_paths_select_direct_fixture(self):
         for path in ('src/Dekaf/Admin/AdminClient.cs', 'src/Dekaf/Admin/AdminClient.DetailedTopicMutations.cs'):
