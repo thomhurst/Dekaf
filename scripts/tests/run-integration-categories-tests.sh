@@ -8,6 +8,51 @@ eventhubs_image="mcr.microsoft.com/azure-messaging/eventhubs-emulator:2.2.1@sha2
 azurite_image="mcr.microsoft.com/azure-storage/azurite:3.36.0@sha256:76b8127d608fab8287a14a4bfeb9a5502cdcffb4bf1e86f09f324ebb0e70edba"
 trap 'rm -rf "$temp_root"' EXIT
 
+# Run against the actual prebuilt executable in CI. Use the production runner
+# so discovery and execution cannot drift to different filters.
+if [ "${1:-}" = "--discovery" ] && [ $# -eq 2 ]; then
+  cd "$repo_root"
+  for category in ShareConsumer ShareConsumerCore ShareConsumerOther; do
+    if ! bash scripts/run-integration-categories.sh "$2" "$category" --list-tests > "$temp_root/$category.txt"; then
+      cat "$temp_root/$category.txt" >&2
+      exit 1
+    fi
+  done
+  python3 - "$temp_root" <<'PY'
+import pathlib
+import re
+import sys
+
+root = pathlib.Path(sys.argv[1])
+
+def discover(category):
+    output = (root / f"{category}.txt").read_text(encoding="utf-8-sig")
+    summary = re.search(r"^Test discovery summary: found (\d+) test\(s\)", output, re.MULTILINE)
+    if summary is None:
+        raise SystemExit(f"{category}: missing discovery summary\n{output}")
+    # MTP lists indented display names before the summary. Reject ambiguous
+    # names and format changes rather than silently collapsing test identities.
+    names = [line.strip() for line in output[:summary.start()].splitlines() if line.startswith("  ")]
+    if not names or len(names) != int(summary[1]) or len(names) != len(set(names)):
+        raise SystemExit(f"{category}: empty, ambiguous, or unrecognized discovery output\n{output}")
+    return set(names)
+
+original = discover("ShareConsumer")
+core = discover("ShareConsumerCore")
+other = discover("ShareConsumerOther")
+overlap = core & other
+missing = original - (core | other)
+extra = (core | other) - original
+if overlap or missing or extra:
+    raise SystemExit(f"Invalid ShareConsumer partition: overlap={sorted(overlap)}, missing={sorted(missing)}, extra={sorted(extra)}")
+print(f"ShareConsumer discovery verified: {len(original)} tests = {len(core)} core + {len(other)} other; no overlap or omissions.")
+PY
+  exit 0
+elif [ $# -ne 0 ]; then
+  echo "Usage: $0 [--discovery <net8.0|net10.0|aot>]" >&2
+  exit 2
+fi
+
 mkdir -p "$temp_root/scripts" \
   "$temp_root/fake-bin" \
   "$temp_root/artifacts/aot/integration" \
@@ -47,6 +92,32 @@ for framework in net10.0 aot; do
   grep -Fq -- '--treenode-filter /**[(Category=ShareConsumer)&(Category=ShareConsumerCore)] --results-directory TestResults/ShareConsumerCore' "$CALLS_FILE"
   grep -Fq -- '--treenode-filter /**[(Category=ShareConsumer)&(Category!=ShareConsumerCore)] --results-directory TestResults/ShareConsumerOther' "$CALLS_FILE"
 done
+
+# Discovery uses the same filters and reaches the runner without executing tests.
+: > "$CALLS_FILE"
+bash scripts/run-integration-categories.sh net10.0 "ShareConsumerCore" --list-tests
+grep -Fq -- '--treenode-filter /**[(Category=ShareConsumer)&(Category=ShareConsumerCore)]' "$CALLS_FILE"
+grep -Fq -- '--list-tests --no-ansi' "$CALLS_FILE"
+if bash scripts/run-integration-categories.sh net10.0 "ShareConsumerCore" --invalid; then
+  echo "Integration runner accepted an unknown discovery option" >&2
+  exit 1
+fi
+
+# The catch-all follows matrix changes, excludes the parent of both share
+# shards, and fails closed if the matrix category map is missing.
+: > "$CALLS_FILE"
+INTEGRATION_TEST_MATRIX_JSON='{"groups":["produce","core","other","future","catch-all"],"categories":{"produce":"Producer","core":"ShareConsumerCore","other":"ShareConsumerOther","future":"FutureCategory","catch-all":"CatchAll"}}' \
+  bash scripts/run-integration-categories.sh net10.0 "CatchAll" --list-tests
+grep -Fq -- '--treenode-filter /**[(Category!=EventHubs)&(Category!=Producer)&(Category!=ShareConsumer)&(Category!=FutureCategory)]' "$CALLS_FILE"
+if INTEGRATION_TEST_MATRIX_JSON= bash scripts/run-integration-categories.sh net10.0 "CatchAll"; then
+  echo "Catch-all accepted a missing matrix category map" >&2
+  exit 1
+fi
+if INTEGRATION_TEST_MATRIX_JSON='{"groups":["catch-all"],"categories":{"produce":"Producer","catch-all":"CatchAll"}}' \
+  bash scripts/run-integration-categories.sh net10.0 "CatchAll"; then
+  echo "Catch-all excluded an unscheduled category" >&2
+  exit 1
+fi
 
 # Test-owned constraints must apply equally to direct runs, managed CI, and AOT.
 for framework in net10.0 aot; do

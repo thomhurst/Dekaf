@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Runs Dekaf integration test categories against prebuilt test binaries.
 #
-# Usage: run-integration-categories.sh <net8.0|net10.0|aot> <comma-separated-categories>
+# Usage: run-integration-categories.sh <net8.0|net10.0|aot> <comma-separated-categories> [--list-tests]
 #
 # Expects binaries at tests/Dekaf.Tests.Integration/bin/Release/<tfm>/ (managed)
 # or artifacts/aot/integration/ (NativeAOT), as produced by the CI build job.
@@ -12,8 +12,8 @@
 # calls this script. Tests declare shared-resource constraints with NotInParallel.
 set -euo pipefail
 
-if [ $# -ne 2 ]; then
-  echo "Usage: $0 <net8.0|net10.0|aot> <comma-separated-categories>" >&2
+if { [ $# -ne 2 ] && [ $# -ne 3 ]; } || { [ $# -eq 3 ] && [ "$3" != "--list-tests" ]; }; then
+  echo "Usage: $0 <net8.0|net10.0|aot> <comma-separated-categories> [--list-tests]" >&2
   exit 2
 fi
 
@@ -59,6 +59,34 @@ for category in "${categories[@]}"; do
     ShareConsumerOther)
       filter="/**[(Category=ShareConsumer)&(Category!=ShareConsumerCore)]"
       ;;
+    CatchAll)
+      # EventHubs has a dedicated CI lane outside this matrix. Expand virtual
+      # ShareConsumer shards to their parent so uncategorized/new tests remain
+      # selected without rerunning anything assigned to another job.
+      covered_categories="$(python3 -c 'import json, sys
+matrix = json.load(sys.stdin)
+groups, categories = matrix["groups"], matrix["categories"]
+if not groups or len(groups) != len(set(groups)) or set(groups) != set(categories):
+    sys.exit("Scheduled matrix groups and category map must match exactly")
+print(",".join(categories[group] for group in groups))' \
+        <<< "${INTEGRATION_TEST_MATRIX_JSON:?CatchAll requires the matrix category map}")"
+      IFS=',' read -ra covered <<< "$covered_categories"
+      filter="/**[(Category!=EventHubs)"
+      for excluded in "${covered[@]}"; do
+        case "$excluded" in
+          CatchAll) continue ;;
+          ShareConsumerCore|ShareConsumerOther) excluded=ShareConsumer ;;
+        esac
+        if [[ ! "$excluded" =~ ^[A-Za-z][A-Za-z0-9]*$ ]]; then
+          echo "Invalid matrix category: $excluded" >&2
+          exit 2
+        fi
+        if [[ "$filter" != *"(Category!=$excluded)"* ]]; then
+          filter+="&(Category!=$excluded)"
+        fi
+      done
+      filter+="]"
+      ;;
   esac
 
   echo "::group::Category $category"
@@ -69,6 +97,9 @@ for category in "${categories[@]}"; do
     --treenode-filter "$filter"
     --results-directory "TestResults/$category"
   )
+  if [ "${3:-}" = "--list-tests" ]; then
+    args+=(--list-tests --no-ansi)
+  fi
   "$exe" "${args[@]}"
   echo "::endgroup::"
 done

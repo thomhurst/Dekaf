@@ -32,30 +32,28 @@ jobs:
     name: ${{ matrix.group }} (${{ inputs.framework }}, Kafka ${{ inputs.kafka-tag }})
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    env:
+      # The catch-all derives exclusions from the same map that selects jobs.
+      INTEGRATION_TEST_MATRIX_JSON: ${{ toJSON(matrix) }}
     strategy:
       fail-fast: ${{ inputs.fail-fast }}
       matrix:
         # Keep the longest groups near seven minutes. ShareConsumer is serial
         # within a runner, so its core and remaining tests need separate VMs.
         # Small connection and transaction categories fill otherwise short jobs.
-        group: [connections, resilience, produce, consume, consumer-groups, share-core, share-other, messaging]
+        group: &integration-groups [connections, resilience, produce, consume, consumer-groups, share-core, share-other, messaging, catch-all]
         include:
-          - group: connections
-            categories: Tls,Authentication,Authorization,NetworkPartition,Retry
-          - group: resilience
-            categories: Resilience
-          - group: produce
-            categories: Producer,MultiInFlightProducer,Backpressure,Compression,Transaction
-          - group: consume
-            categories: Consumer,ConsumerLag,Offsets
-          - group: consumer-groups
-            categories: ConsumerGroup,ShareConsumerAdmin
-          - group: share-core
-            categories: ShareConsumerCore
-          - group: share-other
-            categories: ShareConsumerOther
-          - group: messaging
-            categories: Messaging,MessagingPatterns,MessagingOrdering,Serialization,Interop,Telemetry,Admin
+          - groups: *integration-groups
+            categories:
+              connections: Tls,Authentication,Authorization,NetworkPartition,Retry
+              resilience: Resilience
+              produce: Producer,MultiInFlightProducer,Backpressure,Compression,Transaction
+              consume: Consumer,ConsumerLag,Offsets
+              consumer-groups: ConsumerGroup,ShareConsumerAdmin
+              share-core: ShareConsumerCore
+              share-other: ShareConsumerOther
+              messaging: Messaging,MessagingPatterns,MessagingOrdering,Serialization,Interop,Telemetry,Admin
+              catch-all: CatchAll
 
     steps:
       - name: Add Swap Space
@@ -105,6 +103,12 @@ jobs:
             core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env['ACTIONS_RUNTIME_TOKEN']);
             core.exportVariable('ACTIONS_RESULTS_URL', process.env['ACTIONS_RESULTS_URL']);
 
+      - name: Verify ShareConsumer shard discovery
+        if: matrix.group == 'share-core'
+        env:
+          KAFKA_TEST_IMAGE_TAG: ${{ inputs.kafka-tag }}
+        run: bash scripts/tests/run-integration-categories-tests.sh --discovery ${{ inputs.framework }}
+
       # Keep the Ryuk image aligned with DotNet.Testcontainers in Directory.Packages.props.
       - name: Pre-pull integration images
         run: |
@@ -122,7 +126,7 @@ jobs:
       - name: Run integration tests
         env:
           KAFKA_TEST_IMAGE_TAG: ${{ inputs.kafka-tag }}
-        run: bash scripts/run-integration-categories.sh ${{ inputs.framework }} "${{ matrix.categories }}"
+        run: bash scripts/run-integration-categories.sh ${{ inputs.framework }} "${{ matrix.categories[matrix.group] }}"
 
       - name: Upload Test Results
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
