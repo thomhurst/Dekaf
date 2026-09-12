@@ -265,8 +265,6 @@ internal sealed class ConsumerGroupCrashClientProcess : IAsyncDisposable
 
         startInfo.ArgumentList.Add("--treenode-filter");
         startInfo.ArgumentList.Add("/*/*/ConsumerGroupCrashClient/*");
-        startInfo.ArgumentList.Add("--maximum-parallel-tests");
-        startInfo.ArgumentList.Add("1");
         startInfo.Environment[EnabledVariable] = "1";
         startInfo.Environment[BootstrapServersVariable] = bootstrapServers;
         startInfo.Environment[TopicVariable] = topic;

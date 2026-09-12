@@ -23,8 +23,6 @@ public abstract class RunIntegrationTestsModule : Module<IReadOnlyList<CommandRe
 
     protected virtual TimeSpan ProcessTimeout => TimeSpan.FromMinutes(12);
 
-    protected virtual int? MaximumParallelTests => null;
-
     protected override ModuleConfiguration Configure()
     {
         return new ModuleConfigurationBuilder()
@@ -61,12 +59,6 @@ public abstract class RunIntegrationTestsModule : Module<IReadOnlyList<CommandRe
             "--log-level", "Debug",
             "--treenode-filter", $"/**[Category={Category}]"
         };
-
-        if (MaximumParallelTests is { } maximumParallelTests)
-        {
-            arguments.Add("--maximum-parallel-tests");
-            arguments.Add(maximumParallelTests.ToString(System.Globalization.CultureInfo.InvariantCulture));
-        }
 
         context.Logger.LogInformation("Running integration tests for category: {Category}", Category);
 

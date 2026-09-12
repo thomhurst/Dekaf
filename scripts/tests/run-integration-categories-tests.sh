@@ -34,22 +34,31 @@ grep -q 'Category=Serialization' "$CALLS_FILE"
 : > "$CALLS_FILE"
 bash scripts/run-integration-categories.sh net10.0 "Messaging,Interop,Serialization,EventHubs"
 grep -q 'Category=Interop' "$CALLS_FILE"
-grep -q 'Category=Serialization.*--maximum-parallel-tests 1' "$CALLS_FILE"
-grep -q 'Category=EventHubs.*--maximum-parallel-tests 1' "$CALLS_FILE"
+grep -q 'Category=Serialization' "$CALLS_FILE"
+grep -q 'Category=EventHubs' "$CALLS_FILE"
 
-# Preserve serial execution and the complementary category filters in managed
-# and NativeAOT lanes. The original unsplit category remains available too.
+# Preserve complementary category filters in managed and NativeAOT lanes.
+# The original unsplit category remains available too.
 for framework in net10.0 aot; do
   : > "$CALLS_FILE"
   bash scripts/run-integration-categories.sh "$framework" "ShareConsumer,ShareConsumerCore,ShareConsumerOther"
   [ "$(wc -l < "$CALLS_FILE")" -eq 3 ]
-  grep -Fq -- '--treenode-filter /**[Category=ShareConsumer] --results-directory TestResults/ShareConsumer --maximum-parallel-tests 1' "$CALLS_FILE"
-  grep -Fq -- '--treenode-filter /**[(Category=ShareConsumer)&(Category=ShareConsumerCore)] --results-directory TestResults/ShareConsumerCore --maximum-parallel-tests 1' "$CALLS_FILE"
-  grep -Fq -- '--treenode-filter /**[(Category=ShareConsumer)&(Category!=ShareConsumerCore)] --results-directory TestResults/ShareConsumerOther --maximum-parallel-tests 1' "$CALLS_FILE"
+  grep -Fq -- '--treenode-filter /**[Category=ShareConsumer] --results-directory TestResults/ShareConsumer' "$CALLS_FILE"
+  grep -Fq -- '--treenode-filter /**[(Category=ShareConsumer)&(Category=ShareConsumerCore)] --results-directory TestResults/ShareConsumerCore' "$CALLS_FILE"
+  grep -Fq -- '--treenode-filter /**[(Category=ShareConsumer)&(Category!=ShareConsumerCore)] --results-directory TestResults/ShareConsumerOther' "$CALLS_FILE"
 done
 
-grep -Eq 'MaximumParallelTests[[:space:]]*=>[[:space:]]*4' \
-  "$repo_root/tools/Dekaf.Pipeline/Modules/RunProducerIntegrationTestsModule.cs"
+# Test-owned constraints must apply equally to direct runs, managed CI, and AOT.
+for framework in net10.0 aot; do
+  : > "$CALLS_FILE"
+  bash scripts/run-integration-categories.sh "$framework" "Producer,Compression,EventHubs,NetworkPartition,ShareConsumer,ShareConsumerCore,ShareConsumerOther,ShareConsumerAdmin,Serialization"
+  [ "$(wc -l < "$CALLS_FILE")" -eq 9 ]
+  if grep -Fq -- '--maximum-parallel-tests' "$CALLS_FILE"; then
+    echo "Integration runner overrides test-owned parallelism" >&2
+    exit 1
+  fi
+done
+
 grep -Fq "\"$ryuk_image\"" "$repo_root/.github/workflows/ci.yml"
 grep -Fq "\"$ryuk_image\"" "$repo_root/.github/workflows/integration-groups.yml"
 grep -Fq "\"$eventhubs_image\"" "$repo_root/.github/workflows/ci.yml"

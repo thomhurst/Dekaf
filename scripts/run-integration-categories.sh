@@ -8,8 +8,8 @@
 # Fallback if the apphost lost its executable bit and chmod is unavailable:
 #   dotnet exec tests/Dekaf.Tests.Integration/bin/Release/<tfm>/Dekaf.Tests.Integration.dll <args>
 #
-# Single source of truth for per-category runner arguments (parallelism caps,
-# hang budgets). Every CI lane calls this script, so these settings never drift.
+# Single source of truth for category filters and hang budgets. Every CI lane
+# calls this script. Tests declare shared-resource constraints with NotInParallel.
 set -euo pipefail
 
 if [ $# -ne 2 ]; then
@@ -69,14 +69,6 @@ for category in "${categories[@]}"; do
     --treenode-filter "$filter"
     --results-directory "TestResults/$category"
   )
-  case "$category" in
-    Producer|Compression)
-      args+=(--maximum-parallel-tests 4)
-      ;;
-    EventHubs|NetworkPartition|ShareConsumer|ShareConsumerCore|ShareConsumerOther|ShareConsumerAdmin|Serialization)
-      args+=(--maximum-parallel-tests 1)
-      ;;
-  esac
   "$exe" "${args[@]}"
   echo "::endgroup::"
 done
