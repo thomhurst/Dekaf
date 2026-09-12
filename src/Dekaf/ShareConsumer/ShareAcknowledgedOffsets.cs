@@ -9,7 +9,6 @@ public readonly struct ShareAcknowledgedOffsets
 {
     private readonly List<AcknowledgementBatchData>? _batches;
     private readonly bool _hasGaps;
-    private readonly bool _requiresOffsetScan;
     private readonly bool _hasCompactRanges;
 
     internal ShareAcknowledgedOffsets(List<AcknowledgementBatchData> batches)
@@ -36,7 +35,6 @@ public readonly struct ShareAcknowledgedOffsets
 
         _hasGaps = hasGaps;
         _hasCompactRanges = hasCompactRanges;
-        _requiresOffsetScan = hasGaps || hasCompactRanges;
         Length = length;
     }
 
@@ -61,8 +59,10 @@ public readonly struct ShareAcknowledgedOffsets
             ArgumentOutOfRangeException.ThrowIfNegative(index);
             ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(index, Length);
 
-            if (_requiresOffsetScan)
-                return _hasCompactRanges ? GetRangeOffset(_batches!, index) : GetSparseOffset(_batches!, index);
+            if (_hasCompactRanges)
+                return GetRangeOffset(_batches!, index);
+            if (_hasGaps)
+                return GetSparseOffset(_batches!, index);
 
             var batches = _batches!;
             for (var batchIndex = 0; batchIndex < batches.Count; batchIndex++)
