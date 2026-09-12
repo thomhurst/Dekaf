@@ -48,7 +48,7 @@ public class BinaryKeyDispatchBenchmarks
     }
 
     internal static async Task DispatchAsync<TKey>(ConsumeResult<TKey, string>[] records, int maxConcurrentHandlers,
-        bool holdAllWorkers = false)
+        bool holdAllWorkers = false, int expectedKeyCount = 0)
     {
         var lane = new PartitionLane<TKey, string>(new TopicPartition("topic", 0), records.Length,
             static (_, _) => ValueTask.CompletedTask, static _ => { }, static (_, error) => throw error);
@@ -82,8 +82,8 @@ public class BinaryKeyDispatchBenchmarks
         var bufferedKeys = dispatcher.LaneCount;
         releaseFirst.SetResult();
         await running.ConfigureAwait(false);
-        if (holdAllWorkers && bufferedKeys != records.Length)
-            throw new InvalidOperationException("The shared-suffix fixture did not fill the keyed buffer.");
+        if (holdAllWorkers && bufferedKeys != (expectedKeyCount == 0 ? records.Length : expectedKeyCount))
+            throw new InvalidOperationException("The binary fixture did not fill the expected keyed buffer.");
         if (lane.GetCommitOffset()?.Offset != records.Length)
             throw new InvalidOperationException("The dispatcher did not complete every input record.");
     }
@@ -148,15 +148,19 @@ public class SharedSuffixBinaryKeyDispatchBenchmarks
     [Params(1024, 65536)]
     public int KeySize { get; set; }
 
+    [Params(false, true)]
+    public bool HoldSmallKeys { get; set; }
+
     [GlobalSetup]
     public void Setup()
     {
         _records = new ConsumeResult<ReadOnlyMemory<byte>, string>[RecordCount];
         for (var index = 0; index < _records.Length; index++)
         {
-            var key = new byte[KeySize];
+            var small = HoldSmallKeys && index < 2;
+            var key = new byte[small ? 8 : KeySize];
             key.AsSpan().Fill(0x61);
-            System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(key.AsSpan(KeySize - 32), index);
+            System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(key.AsSpan(small ? key.Length - sizeof(int) : key.Length - 32), index);
             _records[index] = new ConsumeResult<ReadOnlyMemory<byte>, string>("topic", 0, index,
                 key, false, default, false, null, 0, TimestampType.CreateTime, null,
                 Serializers.RawBytes, Serializers.String);
