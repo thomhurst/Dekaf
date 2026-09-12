@@ -16,6 +16,7 @@ namespace Dekaf.Tests.Integration;
 /// them to be within the acquisition window.
 /// </summary>
 [Category("ShareConsumer")]
+[Category("ShareConsumerCore")]
 [SupportsKafka(420)]
 [NotInParallel("ShareConsumerKafka42")]
 public class ShareConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)

@@ -49,19 +49,31 @@ for category in "${categories[@]}"; do
     continue
   fi
 
+  # The two ShareConsumer shards partition the original category. Untagged
+  # future tests automatically join ShareConsumerOther, preserving coverage.
+  filter="/**[Category=$category]"
+  case "$category" in
+    ShareConsumerCore)
+      filter="/**[(Category=ShareConsumer)&(Category=ShareConsumerCore)]"
+      ;;
+    ShareConsumerOther)
+      filter="/**[(Category=ShareConsumer)&(Category!=ShareConsumerCore)]"
+      ;;
+  esac
+
   echo "::group::Category $category"
   args=(
     --hangdump
     --hangdump-timeout 5m
     --log-level Debug
-    --treenode-filter "/**[Category=$category]"
+    --treenode-filter "$filter"
     --results-directory "TestResults/$category"
   )
   case "$category" in
     Producer|Compression)
       args+=(--maximum-parallel-tests 4)
       ;;
-    EventHubs|NetworkPartition|ShareConsumer|ShareConsumerAdmin|Serialization)
+    EventHubs|NetworkPartition|ShareConsumer|ShareConsumerCore|ShareConsumerOther|ShareConsumerAdmin|Serialization)
       args+=(--maximum-parallel-tests 1)
       ;;
   esac

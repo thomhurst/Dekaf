@@ -35,18 +35,25 @@ jobs:
     strategy:
       fail-fast: ${{ inputs.fail-fast }}
       matrix:
-        group: [tls, security, faults, produce, consume, messaging]
+        # Keep the longest groups near seven minutes. ShareConsumer is serial
+        # within a runner, so its core and remaining tests need separate VMs.
+        # Small connection and transaction categories fill otherwise short jobs.
+        group: [connections, resilience, produce, consume, consumer-groups, share-core, share-other, messaging]
         include:
-          - group: tls
-            categories: Tls
-          - group: security
-            categories: Authentication,Authorization
-          - group: faults
-            categories: Transaction,Resilience,NetworkPartition,Retry
+          - group: connections
+            categories: Tls,Authentication,Authorization,NetworkPartition,Retry
+          - group: resilience
+            categories: Resilience
           - group: produce
-            categories: Producer,MultiInFlightProducer,Backpressure,Compression
+            categories: Producer,MultiInFlightProducer,Backpressure,Compression,Transaction
           - group: consume
-            categories: Consumer,ConsumerLag,ConsumerGroup,Offsets,ShareConsumer,ShareConsumerAdmin
+            categories: Consumer,ConsumerLag,Offsets
+          - group: consumer-groups
+            categories: ConsumerGroup,ShareConsumerAdmin
+          - group: share-core
+            categories: ShareConsumerCore
+          - group: share-other
+            categories: ShareConsumerOther
           - group: messaging
             categories: Messaging,MessagingPatterns,MessagingOrdering,Serialization,Interop,Telemetry,Admin
 
@@ -102,11 +109,10 @@ jobs:
       - name: Pre-pull integration images
         run: |
           case "${{ matrix.group }}" in
-            tls|security) kafka_tags=(4.0.2) ;;
-            faults) kafka_tags=("${{ inputs.kafka-tag }}" 4.0.2 4.2.1) ;;
+            connections) kafka_tags=("${{ inputs.kafka-tag }}" 4.0.2) ;;
+            resilience|produce) kafka_tags=("${{ inputs.kafka-tag }}" 4.0.2 4.2.1) ;;
             messaging) kafka_tags=("${{ inputs.kafka-tag }}" 4.0.2) ;;
-            consume) kafka_tags=("${{ inputs.kafka-tag }}" 4.2.1) ;;
-            produce) kafka_tags=("${{ inputs.kafka-tag }}" 4.2.1) ;;
+            consume|consumer-groups) kafka_tags=("${{ inputs.kafka-tag }}" 4.2.1) ;;
             *) kafka_tags=("${{ inputs.kafka-tag }}") ;;
           esac
           bash scripts/prepull-kafka-images.sh \
