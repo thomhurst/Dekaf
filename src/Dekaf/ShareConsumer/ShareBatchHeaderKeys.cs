@@ -15,7 +15,7 @@ internal sealed class ShareBatchHeaderKeys
         {
             var bytes = Encoding.UTF8.GetBytes(name);
             // An unpaired surrogate cannot match its replacement-encoded wire name.
-            if (HeaderProtocol.InternKey(bytes) == name)
+            if (Encoding.UTF8.GetString(bytes) == name)
                 _names.TryAdd(bytes, name);
         }
     }

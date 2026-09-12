@@ -485,8 +485,10 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
         internal readonly int DeliveryCount = deliveryCount;
     }
 
+    // Keep records without routing or headers out of the materialization stack frame.
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private RecordHeaderRoutingLookup PrepareBatchHeaderRouting(
-        ShareBatchRecordData raw, ref Header[]? headers)
+        in ShareBatchRecordData raw, ref Header[]? headers)
     {
         if (_recordHeaderRoutingPlan is null)
             return default;
@@ -494,8 +496,16 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
             return new RecordHeaderRoutingLookup(_recordHeaderRoutingPlan, null, 0, 0, 0,
                 RecordHeaderRoutingPlan.FullyIndexedWithoutTail);
 
-        var tailCapacity = _recordHeaderRoutingPlan.Count > 2
-            ? _recordHeaderRoutingPlan.GetRoutingTailCapacity(raw.HeaderCount)
+        return MaterializeBatchHeaderRouting(in raw, ref headers);
+    }
+
+    private RecordHeaderRoutingLookup MaterializeBatchHeaderRouting(
+        in ShareBatchRecordData raw, ref Header[]? headers)
+    {
+        var plan = _recordHeaderRoutingPlan!;
+
+        var tailCapacity = plan.Count > 2
+            ? plan.GetRoutingTailCapacity(raw.HeaderCount)
             : 0;
         var requiredCapacity = checked(raw.HeaderCount + tailCapacity);
         if (headers is null || headers.Length < requiredCapacity)
@@ -507,14 +517,14 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
         }
 
         var reader = new KafkaProtocolReader(raw.HeaderBytes);
-        if (_recordHeaderRoutingPlan.Count == 0)
+        if (plan.Count == 0)
         {
             for (var index = 0; index < raw.HeaderCount; index++)
                 headers[index] = HeaderProtocol.Read(ref reader, raw.HeaderBytes.Length);
         }
         else
         {
-            var keys = _batchHeaderKeys ??= new ShareBatchHeaderKeys(_recordHeaderRoutingPlan);
+            var keys = _batchHeaderKeys ??= new ShareBatchHeaderKeys(plan);
             for (var index = 0; index < raw.HeaderCount; index++)
             {
                 var key = keys.Get(reader.ReadContiguousMemorySlice(reader.ReadVarInt()));
@@ -524,7 +534,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
             }
         }
         var record = new Record { Headers = headers, HeaderCount = raw.HeaderCount }
-            .IndexPooledHeaders(_recordHeaderRoutingPlan);
-        return record.CreateHeaderRoutingLookup(_recordHeaderRoutingPlan);
+            .IndexPooledHeaders(plan);
+        return record.CreateHeaderRoutingLookup(plan);
     }
 }

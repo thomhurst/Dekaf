@@ -34,6 +34,19 @@ public class ShareBatchHeaderRoutingBenchmarks
         if (FullCache)
             FillHeaderCache();
         var name = new string('r', KeyLength);
+        // The default out-of-process toolchain gives each case its own static cache.
+        // Verify the measured names too, so incompatible execution fails explicitly.
+        if (FullCache)
+            VerifyHeaderCache(name, cached: false);
+        else
+            VerifyHeaderCache("verify-available-cache", cached: true);
+        // Do not prime configured names: consumer-owned retention must also be
+        // measured when no other consumer has admitted the name globally.
+        if (UnrelatedHeader)
+        {
+            for (var index = 0; index < RecordCount; index++)
+                VerifyHeaderCache(FullCache ? $"uncached-{index}" : "unrelated", cached: !FullCache);
+        }
         var router = new HeaderRoutingDeserializer<int>(name, Serializers.Int32,
             new HeaderDeserializerRoute<int>("selected"u8.ToArray(), Serializers.Int32));
         _consumer = new KafkaShareConsumer<int, int>(
@@ -79,6 +92,14 @@ public class ShareBatchHeaderRoutingBenchmarks
         HeaderProtocol.Write(in header, ref writer);
         var reader = new KafkaProtocolReader(output.WrittenMemory);
         return HeaderProtocol.Read(ref reader, output.WrittenCount);
+    }
+
+    private static void VerifyHeaderCache(string name, bool cached)
+    {
+        var first = ReadHeader(name);
+        var second = ReadHeader(name);
+        if (ReferenceEquals(first.Key, second.Key) != cached)
+            throw new InvalidOperationException("The measured header name has an unexpected cache state.");
     }
 
     [Benchmark]

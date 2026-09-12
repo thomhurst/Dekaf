@@ -11,6 +11,31 @@ namespace Dekaf.Tests.Unit.ShareConsumer;
 public sealed class ShareBatchHeaderRoutingTests
 {
     [Test]
+    [NotInParallel]
+    public async Task ConfiguredNames_DoNotPopulateTheSharedHeaderCache()
+    {
+        var prefix = Guid.NewGuid().ToString("N");
+        var names = new byte[129][];
+        IDeserializer<int> router = Serializers.Int32;
+        for (var index = 0; index < names.Length; index++)
+        {
+            var name = $"{prefix}-{index}";
+            names[index] = Encoding.UTF8.GetBytes(name);
+            router = new HeaderRoutingDeserializer<int>(name, Serializers.Int32,
+                new HeaderDeserializerRoute<int>("selected"u8.ToArray(), router));
+        }
+
+        var plan = RecordHeaderRoutingPlan.Create(Serializers.Int32, router)!;
+        var keys = new ShareBatchHeaderKeys(plan);
+        foreach (var name in names)
+        {
+            await Assert.That(HeaderProtocol.TryGetCachedKey(name, out _, out _)).IsFalse();
+            await Assert.That(keys.Get(name)).IsEqualTo(Encoding.UTF8.GetString(name));
+            await Assert.That(HeaderProtocol.TryGetCachedKey(name, out _, out _)).IsFalse();
+        }
+    }
+
+    [Test]
     [Arguments('x', 256)]
     [Arguments('x', 257)]
     [Arguments('x', 512)]
