@@ -31,10 +31,12 @@ public sealed class BatchCheckpointIntegrationTests(KafkaTestContainer kafka) : 
             { Topic = input, Key = "key", Value = "visible" }, cancellationToken);
             await transaction.CommitAsync(cancellationToken);
         }
+        long abortedOffset;
         await using (var transaction = producer.BeginTransaction())
         {
-            await transaction.ProduceAsync(new ProducerMessage<string, string>
+            var result = await transaction.ProduceAsync(new ProducerMessage<string, string>
             { Topic = input, Key = "key", Value = "aborted" }, cancellationToken);
+            abortedOffset = result.Offset;
             await transaction.AbortAsync(cancellationToken);
         }
 
@@ -42,7 +44,16 @@ public sealed class BatchCheckpointIntegrationTests(KafkaTestContainer kafka) : 
         var values = new List<string>();
         await using (var consumer = await CreateConsumerAsync(group, cancellationToken))
         {
-            var end = (await consumer.QueryWatermarkOffsetsAsync(new TopicPartition(input, 0), cancellationToken)).High;
+            // EndTxn can return before the broker writes the abort marker. Wait until the
+            // read-committed watermark includes it, otherwise capture can skip a stale end.
+            var watermarks = await TestWait.WaitForConditionAsync(
+                async () => await consumer.QueryWatermarkOffsetsAsync(new TopicPartition(input, 0), cancellationToken),
+                offsets => offsets.High > abortedOffset + 1,
+                maxRetries: 30,
+                initialDelayMs: 50,
+                description: "abort marker visibility before capturing the batch checkpoint",
+                formatObserved: offsets => $"high watermark {offsets.High}, aborted record offset {abortedOffset}");
+            var end = watermarks.High;
             consumer.Subscribe(input);
             checkpoint = await CaptureAsync(consumer, raw, end, values, cancellationToken);
             await Assert.That(values.Count).IsEqualTo(1);
