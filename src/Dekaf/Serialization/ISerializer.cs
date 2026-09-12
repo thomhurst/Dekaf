@@ -34,6 +34,7 @@ internal sealed class RecordHeaderRoutingPlan
     }
 
     internal int Count => _slots.Count;
+    internal Dictionary<string, int>.KeyCollection HeaderNames => _slots.Keys;
     internal bool KeyRequiresMaterializedHeaders { get; }
     internal bool ValueRequiresMaterializedHeaders { get; }
     internal bool NeedsMaterializedHeaders =>

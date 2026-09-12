@@ -10,8 +10,14 @@ namespace Dekaf.Serialization;
 internal static class HeaderProtocol
 {
     private const int MaxCachedKeys = 128;
-    private const int MaxCachedKeyBytes = 256;
+    internal const int MaxCachedKeyBytes = 256;
     private static readonly Utf8StringInternCache s_keyCache = new(MaxCachedKeys, MaxCachedKeyBytes);
+
+    internal static bool TryGetCachedKey(ReadOnlyMemory<byte> bytes, out string name, out ulong hash) =>
+        s_keyCache.TryGetCached(bytes.Span, out name, out hash);
+
+    internal static string InternUncachedKey(ReadOnlyMemory<byte> bytes, ulong hash) =>
+        s_keyCache.InternUncached(bytes.Span, hash);
 
     [SkipLocalsInit]
     internal static void Write(in Header header, ref KafkaProtocolWriter writer)

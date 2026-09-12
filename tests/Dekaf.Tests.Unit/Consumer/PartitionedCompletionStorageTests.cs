@@ -552,6 +552,7 @@ public class PartitionedCompletionStorageTests
     }
 
     [Test]
+    [NotInParallel]
     [Arguments(34, 2L)]
     [Arguments(258, 2L)]
     [Arguments(4098, 2L)]
@@ -565,10 +566,23 @@ public class PartitionedCompletionStorageTests
             records[index] = Deliver(lane, batch, 10 + index * offsetStep);
         lane.EndBatch(batch, count);
 
-        var before = GC.GetAllocatedBytesForCurrentThread();
-        for (var index = 1; index < count; index += 2)
-            lane.MarkProcessed(records[index]);
-        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+        // Background GC can charge unused allocation-context space to this thread's
+        // counter. Exclude collections from the synchronous measurement, while still
+        // counting every allocation made by the first fragmented completion.
+        if (!GC.TryStartNoGCRegion(16 * 1024 * 1024))
+            throw new InvalidOperationException("Unable to isolate the allocation measurement from GC.");
+        long allocated;
+        try
+        {
+            var before = GC.GetAllocatedBytesForCurrentThread();
+            for (var index = 1; index < count; index += 2)
+                lane.MarkProcessed(records[index]);
+            allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+        }
+        finally
+        {
+            GC.EndNoGCRegion();
+        }
 
         await Assert.That(allocated).IsEqualTo(0);
         await Assert.That(lane.GetCommitOffset()).IsNull();
