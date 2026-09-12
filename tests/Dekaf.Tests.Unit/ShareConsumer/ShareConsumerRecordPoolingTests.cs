@@ -163,8 +163,10 @@ public sealed class ShareConsumerRecordPoolingTests
     }
 
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
     [NotInParallel]
-    public async Task RenewedReplay_TerminalAcknowledgement_KeepsPayloadUntilNextPoll()
+    public async Task RenewedReplay_TerminalAcknowledgement_KeepsPayloadUntilNextPoll(bool exhaustGeneration)
     {
         var consumer = CreateBorrowedConsumer(out var metadata);
         await using var metadataScope = metadata;
@@ -178,6 +180,29 @@ public sealed class ShareConsumerRecordPoolingTests
         consumer.Acknowledge(record, AcknowledgeType.Renew);
         ApplyAcknowledgement(consumer, AcknowledgeType.Renew);
 
+        var getActive = consumer.GetType().GetMethod("GetActiveRenewedRecords",
+            BindingFlags.Instance | BindingFlags.NonPublic)!;
+        for (var round = 0; round < 4; round++)
+        {
+            if (exhaustGeneration && round == 1)
+            {
+                var owner = record.BatchOwner!;
+                typeof(ShareRecordBatchOwner).GetProperty("Generation",
+                    BindingFlags.Instance | BindingFlags.NonPublic)!
+                    .SetValue(owner, ShareRecordBatchOwner.MaximumGeneration);
+                record.AttachBatchOwner(owner);
+            }
+            using var poll = consumer.BeginRecordBatchScope();
+            await Assert.That(() => record.BatchOwner).Throws<InvalidOperationException>();
+            var replay = (List<ShareConsumeResult<string, ReadOnlyMemory<byte>>>)getActive.Invoke(consumer,
+                [new HashSet<TopicPartition> { new("topic", 0) }, 10])!;
+            await Assert.That(replay[0]).IsSameReferenceAs(record);
+            await Assert.That(record.BatchOwner).IsNotNull();
+            await Assert.That(System.Text.Encoding.UTF8.GetString(record.Value.Span)).IsEqualTo("first");
+            consumer.Acknowledge(record, AcknowledgeType.Renew);
+            ApplyAcknowledgement(consumer, AcknowledgeType.Renew);
+        }
+
         var replayScope = consumer.BeginRecordBatchScope();
         var buffers = (ShareRecordBufferPool)consumer.GetType()
             .GetField("_recordBuffers", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(consumer)!;
@@ -186,8 +211,6 @@ public sealed class ShareConsumerRecordPoolingTests
         string payload;
         try
         {
-            var getActive = consumer.GetType().GetMethod("GetActiveRenewedRecords",
-                BindingFlags.Instance | BindingFlags.NonPublic)!;
             var replay = (List<ShareConsumeResult<string, ReadOnlyMemory<byte>>>)getActive.Invoke(consumer,
                 [new HashSet<TopicPartition> { new("topic", 0) }, 10])!;
             await Assert.That(replay[0]).IsSameReferenceAs(record);

@@ -2499,10 +2499,9 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
 
             // A terminal CommitAsync inside the replay handler can remove the
             // renewal state. Keep this delivery's payload alive until the next poll.
-            if (state.Record.RetainedBatchOwner is { } retainedOwner)
+            var record = state.Record;
+            if (record.RefreshRetainedBatchOwner() is { } owner)
             {
-                var owner = retainedOwner.RefreshGeneration();
-                state.Record.AttachBatchOwner(owner);
                 if (!owner.RenewalPinned)
                 {
                     owner.Retain();
@@ -2518,7 +2517,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                     }
                 }
             }
-            records.Add(state.Record);
+            records.Add(record);
             if (records.Count == maxRecords)
                 break;
         }

@@ -46,6 +46,23 @@ public sealed class ShareConsumeResult<TKey, TValue>
     // both already own an independent reference across poll boundaries.
     internal ShareRecordBatchOwner? RetainedBatchOwner => _topicOrBatchOwner as ShareRecordBatchOwner;
 
+    internal ShareRecordBatchOwner? RefreshRetainedBatchOwner()
+    {
+        if (_topicOrBatchOwner is not ShareRecordBatchOwner owner)
+            return null;
+        var generation = owner.Generation;
+        if (generation == 0)
+        {
+            owner = owner.RefreshGeneration();
+            _topicOrBatchOwner = owner;
+            generation = owner.Generation;
+        }
+        // A retained replay refreshes its delivery token every poll. Only generation
+        // exhaustion replaces the owner; ordinary replay needs no reference write.
+        _partitionOrGeneration = ~unchecked((int)generation);
+        return owner;
+    }
+
     /// <summary>
     /// The topic this record was consumed from.
     /// </summary>
