@@ -14,7 +14,7 @@ using AvroSchema = Avro.Schema;
 
 namespace Dekaf.Tests.Unit.SchemaRegistry;
 
-public class AvroInlineRuleValidatorTests
+public partial class AvroInlineRuleValidatorTests
 {
     private static readonly int[] TwoItems = [1, 2];
     private static readonly int[] OnePositiveItem = [3];
