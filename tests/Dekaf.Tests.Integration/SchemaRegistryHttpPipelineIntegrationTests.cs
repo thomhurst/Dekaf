@@ -379,6 +379,7 @@ public sealed class SchemaRegistryTlsIntegrationTests
 
         Func<Task> request = async () => _ = await client.GetAllSubjectsAsync();
         await Assert.That(request).Throws<HttpRequestException>();
+        await Assert.That(async () => await server.Completion).Throws<AuthenticationException>();
     }
 
     [Test]
@@ -405,6 +406,7 @@ public sealed class SchemaRegistryTlsIntegrationTests
 
         Func<Task> request = async () => _ = await client.GetAllSubjectsAsync();
         await Assert.That(request).Throws<HttpRequestException>();
+        await Assert.That(async () => await server.Completion).Throws<AuthenticationException>();
     }
 
     [Test]
@@ -694,6 +696,9 @@ public sealed class SchemaRegistryTlsIntegrationTests
         private async Task ServeAsync()
         {
             using var tcpClient = await _listener.AcceptTcpClientAsync(_stopping.Token);
+            // This server handles one connection. Refuse HTTP retries instead of leaving
+            // them queued without a handler after a rejected TLS handshake.
+            _listener.Stop();
             await using var stream = new SslStream(
                 tcpClient.GetStream(),
                 leaveInnerStreamOpen: false,
