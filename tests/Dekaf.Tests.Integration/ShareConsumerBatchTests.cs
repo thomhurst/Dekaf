@@ -16,6 +16,8 @@ public class ShareConsumerBatchTests(KafkaTestContainer kafka) : KafkaIntegratio
         const int messageCount = 16;
         var name = new string('r', 512);
         var nameBytes = System.Text.Encoding.UTF8.GetBytes(name);
+        var unrelatedName = new string('u', 4096);
+        var unrelatedNameBytes = System.Text.Encoding.UTF8.GetBytes(unrelatedName);
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 1);
         var group = $"share-batch-routing-{Guid.NewGuid():N}";
         await ConfigureEarliestAsync(group);
@@ -26,7 +28,11 @@ public class ShareConsumerBatchTests(KafkaTestContainer kafka) : KafkaIntegratio
             await producer.FireAsync(new ProducerMessage<int, int>
             {
                 Topic = topic, Partition = 0, Key = index, Value = index,
-                Headers = Headers.Create(name, "selected"u8.ToArray())
+                Headers = new Headers
+                {
+                    { unrelatedName, "other"u8.ToArray() },
+                    { name, "selected"u8.ToArray() }
+                }
             });
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         await producer.FlushAsync(timeout.Token);
@@ -45,6 +51,7 @@ public class ShareConsumerBatchTests(KafkaTestContainer kafka) : KafkaIntegratio
             {
                 await Assert.That(record.Value).IsEqualTo(received++);
                 var matched = 0;
+                var unrelated = 0;
                 foreach (var header in record.Headers)
                 {
                     if (header.KeyUtf8.Span.SequenceEqual(nameBytes))
@@ -52,8 +59,14 @@ public class ShareConsumerBatchTests(KafkaTestContainer kafka) : KafkaIntegratio
                         await Assert.That(header.Value.Span.SequenceEqual("selected"u8)).IsTrue();
                         matched++;
                     }
+                    if (header.KeyUtf8.Span.SequenceEqual(unrelatedNameBytes))
+                    {
+                        await Assert.That(header.Value.Span.SequenceEqual("other"u8)).IsTrue();
+                        unrelated++;
+                    }
                 }
                 await Assert.That(matched).IsEqualTo(1);
+                await Assert.That(unrelated).IsEqualTo(1);
                 batch.Acknowledge(record);
             }
             await consumer.CommitAsync(timeout.Token);

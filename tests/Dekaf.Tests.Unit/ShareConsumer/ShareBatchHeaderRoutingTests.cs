@@ -53,6 +53,42 @@ public sealed class ShareBatchHeaderRoutingTests
     }
 
     [Test]
+    [Arguments(8, 257)]
+    [Arguments(512, 257)]
+    [Arguments(512, 512)]
+    [Arguments(512, 4096)]
+    public async Task OversizedUnrelatedNames_PreserveDecodedName(int configuredLength, int unrelatedLength)
+    {
+        var name = new string('r', configuredLength);
+        var router = new HeaderRoutingDeserializer<int>(name, Serializers.Int32,
+            new HeaderDeserializerRoute<int>("selected"u8.ToArray(), Serializers.Int32));
+        var keys = new ShareBatchHeaderKeys(RecordHeaderRoutingPlan.Create(Serializers.Int32, router)!);
+        var unrelated = new string('u', unrelatedLength);
+        var bytes = Encoding.UTF8.GetBytes($"before{unrelated}after");
+
+        await Assert.That(keys.Get(bytes.AsMemory(6, unrelatedLength))).IsEqualTo(unrelated);
+        await Assert.That(ReferenceEquals(keys.Get(Encoding.UTF8.GetBytes(name)), name)).IsTrue();
+    }
+
+    [Test]
+    public async Task OversizedConfiguredNames_UseUtf8LengthsAcrossNestedRoutes()
+    {
+        string[] names = [new('r', 257), new('路', 100), new('s', 512)];
+        IDeserializer<int> router = Serializers.Int32;
+        foreach (var name in names)
+            router = new HeaderRoutingDeserializer<int>(name, Serializers.Int32,
+                new HeaderDeserializerRoute<int>("selected"u8.ToArray(), router));
+        var keys = new ShareBatchHeaderKeys(RecordHeaderRoutingPlan.Create(Serializers.Int32, router)!);
+
+        foreach (var name in names)
+            await Assert.That(ReferenceEquals(keys.Get(Encoding.UTF8.GetBytes(name)), name)).IsTrue();
+
+        // This byte length falls between configured lengths but is not itself configured.
+        var unrelated = new string('u', 400);
+        await Assert.That(keys.Get(Encoding.UTF8.GetBytes(unrelated))).IsEqualTo(unrelated);
+    }
+
+    [Test]
     [NotInParallel]
     public async Task ConfiguredNames_DoNotPopulateTheSharedHeaderCache()
     {

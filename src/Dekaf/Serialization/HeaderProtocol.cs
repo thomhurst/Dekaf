@@ -13,8 +13,6 @@ internal static class HeaderProtocol
     internal const int MaxCachedKeyBytes = 256;
     private static readonly Utf8StringInternCache s_keyCache = new(MaxCachedKeys, MaxCachedKeyBytes);
 
-    internal static string InternKey(ReadOnlyMemory<byte> bytes) => s_keyCache.Intern(bytes);
-
     internal static bool TryGetCachedKey(ReadOnlyMemory<byte> bytes, out string name, out ulong hash) =>
         s_keyCache.TryGetCached(bytes.Span, out name, out hash);
 
