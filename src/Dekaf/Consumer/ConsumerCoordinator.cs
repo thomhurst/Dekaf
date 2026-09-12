@@ -671,6 +671,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
                 if (errorCode != ErrorCode.None)
                 {
+                    if (errorCode == ErrorCode.GroupAuthorizationFailed)
+                        throw KafkaException.FromErrorCode(errorCode, $"FindCoordinator failed: {errorCode}");
+
                     throw new Errors.GroupException(errorCode, $"FindCoordinator failed: {errorCode}")
                     {
                         GroupId = _options.GroupId
@@ -1691,6 +1694,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     {
         throw response.ErrorCode switch
         {
+            ErrorCode.GroupAuthorizationFailed or ErrorCode.TopicAuthorizationFailed or ErrorCode.ClusterAuthorizationFailed
+                => KafkaException.FromErrorCode(response.ErrorCode,
+                    $"ConsumerGroupHeartbeat failed: {response.ErrorCode} - {response.ErrorMessage}"),
+
             ErrorCode.UnknownMemberId => new GroupException(response.ErrorCode,
                 $"ConsumerGroupHeartbeat: unknown member ID (fenced): {response.ErrorMessage}")
             { GroupId = _options.GroupId },
@@ -2000,7 +2007,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 catch (Exception ex) when (
                     ex is ObjectDisposedException ||
                     (ex is Errors.KafkaException ke &&
-                     ke is not Errors.GroupException and not BrokerVersionException &&
+                     ke is not Errors.GroupException and not BrokerVersionException
+                         and not AuthorizationException and not AuthenticationException &&
                      !cancellationToken.IsCancellationRequested))
                 {
                     LogCoordinatorConnectionDisposed();
@@ -2071,9 +2079,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 LogHeartbeatFailed(ex);
                 Volatile.Write(ref _lastHeartbeatFailure, ex.Message);
 
-                if (ex is BrokerVersionException brokerVersionException)
+                if (ex is BrokerVersionException or AuthorizationException or AuthenticationException)
                 {
-                    await StoreFatalHeartbeatExceptionAsync(brokerVersionException).ConfigureAwait(false);
+                    await StoreFatalHeartbeatExceptionAsync((KafkaException)ex).ConfigureAwait(false);
                     break;
                 }
 

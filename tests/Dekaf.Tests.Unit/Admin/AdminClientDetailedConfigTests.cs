@@ -11,6 +11,27 @@ namespace Dekaf.Tests.Unit.Admin;
 public sealed class AdminClientDetailedConfigTests
 {
     [Test]
+    [Arguments(ErrorCode.TopicAuthorizationFailed)]
+    [Arguments(ErrorCode.ClusterAuthorizationFailed)]
+    public async Task AlterConfigs_AuthorizationFailureThrowsTypedException(ErrorCode error)
+    {
+        var (admin, connections) = CreateAdmin();
+        await using var client = admin;
+        var resource = ConfigResource.Topic("denied");
+        Setup(connections[1], false, _ => [(resource, error, "denied")]);
+
+        var exception = await Assert.That(async () => await admin.AlterConfigsAsync(
+            new Dictionary<ConfigResource, IReadOnlyList<ConfigEntry>>
+            {
+                [resource] = [new ConfigEntry { Name = "retention.ms", Value = "1000" }]
+            })).Throws<AuthorizationException>();
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(error);
+        await connections[1].Received(1).SendAsync<AlterConfigsRequest, AlterConfigsResponse>(
+            Arg.Any<AlterConfigsRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>());
+    }
+
+    [Test]
     [Arguments(false)]
     [Arguments(true)]
     public async Task MixedResults_PreserveResourceTypeAndOriginalBrokerError(bool incremental)

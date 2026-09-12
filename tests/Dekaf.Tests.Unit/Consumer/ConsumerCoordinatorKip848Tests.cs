@@ -132,6 +132,31 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
             RetryBackoffMaxMs = retryBackoffMaxMs
         };
 
+    [Test]
+    public async Task FindCoordinator_GroupAuthorizationFailureIsTypedAndNeverRetried()
+    {
+        _connection.SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
+                Arg.Any<FindCoordinatorRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(new FindCoordinatorResponse
+            {
+                Coordinators = [new Coordinator
+                {
+                    Key = "test-group", NodeId = -1, Host = string.Empty, Port = -1,
+                    ErrorCode = ErrorCode.GroupAuthorizationFailed
+                }]
+            }));
+        await using var coordinator = new ConsumerCoordinator(CreateConsumerProtocolOptions(), _connectionPool, _metadataManager);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+
+        var exception = await Assert.That(async () =>
+                await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, timeout.Token))
+            .Throws<AuthorizationException>();
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.GroupAuthorizationFailed);
+        await _connection.Received(1).SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
+            Arg.Any<FindCoordinatorRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>());
+    }
+
     private void SetupFindCoordinator()
     {
         _connection.SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
@@ -3905,6 +3930,8 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
 
     [Test]
     [Arguments(ErrorCode.GroupAuthorizationFailed)]
+    [Arguments(ErrorCode.TopicAuthorizationFailed)]
+    [Arguments(ErrorCode.ClusterAuthorizationFailed)]
     [Arguments(ErrorCode.InvalidGroupId)]
     public async Task ConsumerProtocol_FatalGroupErrorDuringHeartbeat_PropagatesOnNextEnsureActiveGroup(
         ErrorCode errorCode)
@@ -3952,19 +3979,25 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         await InvokeConsumerProtocolHeartbeatLoopAsync(coordinator, CancellationToken.None);
         await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Unjoined);
 
-        GroupException? caught = null;
+        KafkaException? caught = null;
         try
         {
             await coordinator.EnsureActiveGroupAsync(topics, CancellationToken.None);
         }
-        catch (GroupException ex)
+        catch (KafkaException ex)
         {
             caught = ex;
         }
 
         await Assert.That(caught).IsNotNull();
         await Assert.That(caught!.ErrorCode).IsEqualTo(errorCode);
-        await Assert.That(caught.GroupId).IsEqualTo("test-group");
+        if (errorCode == ErrorCode.InvalidGroupId)
+        {
+            await Assert.That(caught).IsTypeOf<GroupException>();
+            await Assert.That(((GroupException)caught).GroupId).IsEqualTo("test-group");
+        }
+        else
+            await Assert.That(caught.GetType()).IsEqualTo(typeof(AuthorizationException));
         await Assert.That(callCount).IsEqualTo(2);
     }
 
