@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.IO.Hashing;
 using System.Text;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
@@ -10,6 +11,47 @@ namespace Dekaf.Tests.Unit.ShareConsumer;
 
 public sealed class ShareBatchHeaderRoutingTests
 {
+    [Test]
+    [Arguments(8)]
+    [Arguments(256)]
+    [Arguments(257)]
+    [Arguments(512)]
+    public async Task ConfiguredNames_ReuseRetainedStringForBorrowedSlices(int nameLength)
+    {
+        var name = new string('r', nameLength);
+        var router = new HeaderRoutingDeserializer<int>(name, Serializers.Int32,
+            new HeaderDeserializerRoute<int>("selected"u8.ToArray(), Serializers.Int32));
+        var keys = new ShareBatchHeaderKeys(RecordHeaderRoutingPlan.Create(Serializers.Int32, router)!);
+        var bytes = Encoding.UTF8.GetBytes($"before{name}after");
+        var slice = bytes.AsMemory(6, nameLength);
+
+        await Assert.That(ReferenceEquals(keys.Get(slice), name)).IsTrue();
+        await Assert.That(ReferenceEquals(keys.Get(slice.ToArray()), name)).IsTrue();
+
+        bytes[6] = (byte)'s';
+        await Assert.That(keys.Get(slice)).IsEqualTo("s" + name[1..]);
+    }
+
+    [Test]
+    public async Task ConfiguredNames_DistinguishCollidingDictionaryHashes()
+    {
+        const string first = "collision-169050";
+        const string second = "collision-178685";
+        var firstBytes = Encoding.UTF8.GetBytes(first);
+        var secondBytes = Encoding.UTF8.GetBytes(second);
+        await Assert.That(unchecked((int)XxHash64.HashToUInt64(firstBytes)))
+            .IsEqualTo(unchecked((int)XxHash64.HashToUInt64(secondBytes)));
+
+        var firstRouter = new HeaderRoutingDeserializer<int>(first, Serializers.Int32,
+            new HeaderDeserializerRoute<int>("selected"u8.ToArray(), Serializers.Int32));
+        var secondRouter = new HeaderRoutingDeserializer<int>(second, Serializers.Int32,
+            new HeaderDeserializerRoute<int>("selected"u8.ToArray(), firstRouter));
+        var keys = new ShareBatchHeaderKeys(RecordHeaderRoutingPlan.Create(Serializers.Int32, secondRouter)!);
+
+        await Assert.That(keys.Get(firstBytes)).IsEqualTo(first);
+        await Assert.That(keys.Get(secondBytes)).IsEqualTo(second);
+    }
+
     [Test]
     [NotInParallel]
     public async Task ConfiguredNames_DoNotPopulateTheSharedHeaderCache()
@@ -36,6 +78,7 @@ public sealed class ShareBatchHeaderRoutingTests
     }
 
     [Test]
+    [Arguments('x', 8)]
     [Arguments('x', 256)]
     [Arguments('x', 257)]
     [Arguments('x', 512)]

@@ -10,7 +10,7 @@ namespace Dekaf.Serialization;
 internal static class HeaderProtocol
 {
     private const int MaxCachedKeys = 128;
-    private const int MaxCachedKeyBytes = 256;
+    internal const int MaxCachedKeyBytes = 256;
     private static readonly Utf8StringInternCache s_keyCache = new(MaxCachedKeys, MaxCachedKeyBytes);
 
     internal static string InternKey(ReadOnlyMemory<byte> bytes) => s_keyCache.Intern(bytes);
