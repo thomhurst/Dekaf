@@ -57,6 +57,17 @@ internal sealed class Utf8StringInternCache
             return entry.Value;
         }
 
+        return InternUncached(utf8Bytes, hash);
+    }
+
+    /// <summary>Decodes a lookup miss using the hash returned by <see cref="TryGetCached"/>.</summary>
+    internal string InternUncached(ReadOnlySpan<byte> utf8Bytes, ulong hash)
+    {
+        if (utf8Bytes.Length == 0)
+            return string.Empty;
+        if (utf8Bytes.Length > _maxCachedBytes)
+            return Decode(utf8Bytes);
+
         var value = Decode(utf8Bytes);
         if (Volatile.Read(ref _count) >= _maxCachedEntries)
             return value;
@@ -68,7 +79,7 @@ internal sealed class Utf8StringInternCache
             if (_cacheLastEntry)
                 Volatile.Write(ref _lastEntry, newEntry);
         }
-        else if (_cache.TryGetValue(hash, out entry) && entry.Matches(utf8Bytes))
+        else if (_cache.TryGetValue(hash, out var entry) && entry.Matches(utf8Bytes))
         {
             if (_cacheLastEntry)
                 Volatile.Write(ref _lastEntry, entry);
@@ -76,6 +87,28 @@ internal sealed class Utf8StringInternCache
         }
 
         return value;
+    }
+
+    /// <summary>Looks up an existing value without decoding or populating the cache.</summary>
+    internal bool TryGetCached(ReadOnlySpan<byte> utf8Bytes, out string value, out ulong hash)
+    {
+        hash = 0;
+        if (utf8Bytes.Length == 0)
+        {
+            value = string.Empty;
+            return true;
+        }
+        if (utf8Bytes.Length <= _maxCachedBytes)
+        {
+            hash = XxHash64.HashToUInt64(utf8Bytes);
+            if (_cache.TryGetValue(hash, out var entry) && entry.Matches(utf8Bytes))
+            {
+                value = entry.Value;
+                return true;
+            }
+        }
+        value = null!;
+        return false;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

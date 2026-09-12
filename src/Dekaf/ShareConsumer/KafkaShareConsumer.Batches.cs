@@ -14,6 +14,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
     private byte _consumptionMode;
     private ShareBatchAcknowledgements<TKey, TValue>? _batchAcknowledgements;
     private ShareConsumeBatch<TKey, TValue>? _activeShareBatch;
+    private ShareBatchHeaderKeys? _batchHeaderKeys;
 
     private bool HasPendingAcknowledgements => _batchAcknowledgements?.HasPending ?? _ackTracker.HasPending;
 
@@ -506,8 +507,22 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
         }
 
         var reader = new KafkaProtocolReader(raw.HeaderBytes);
-        for (var index = 0; index < raw.HeaderCount; index++)
-            headers[index] = HeaderProtocol.Read(ref reader, raw.HeaderBytes.Length);
+        if (_recordHeaderRoutingPlan.Count == 0)
+        {
+            for (var index = 0; index < raw.HeaderCount; index++)
+                headers[index] = HeaderProtocol.Read(ref reader, raw.HeaderBytes.Length);
+        }
+        else
+        {
+            var keys = _batchHeaderKeys ??= new ShareBatchHeaderKeys(_recordHeaderRoutingPlan);
+            for (var index = 0; index < raw.HeaderCount; index++)
+            {
+                var key = keys.Get(reader.ReadContiguousMemorySlice(reader.ReadVarInt()));
+                var valueLength = reader.ReadVarInt();
+                var value = valueLength < 0 ? ReadOnlyMemory<byte>.Empty : reader.ReadContiguousMemorySlice(valueLength);
+                headers[index] = new Header(key, value, isNull: valueLength < 0);
+            }
+        }
         var record = new Record { Headers = headers, HeaderCount = raw.HeaderCount }
             .IndexPooledHeaders(_recordHeaderRoutingPlan);
         return record.CreateHeaderRoutingLookup(_recordHeaderRoutingPlan);
