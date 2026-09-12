@@ -8,6 +8,7 @@ namespace Dekaf.Tests.Integration;
 public sealed class AdminClassicGroupDescriptionTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
+    [SkipWhenNativeAot("Confluent.Kafka native delegate binding requires runtime reflection.")]
     public async Task ConsumerProtocolGroup_IsListedButNotDescribedAsClassic()
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
@@ -44,6 +45,7 @@ public sealed class AdminClassicGroupDescriptionTests(KafkaTestContainer kafka) 
     }
 
     [Test]
+    [SkipWhenNativeAot("Confluent.Kafka native delegate binding requires runtime reflection.")]
     public async Task ClassicConsumer_PreservesMemberAssignmentAndEmptyStateAfterLeave()
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
