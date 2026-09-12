@@ -1,5 +1,5 @@
 name: Stress Tests
-run-name: Producer NuGet 1.15.0 vs current - controlled A1 B1 A2 B2
+run-name: Producer release comparison - whole-core affinity and 8 counterbalanced samples
 on:
   workflow_dispatch:
 permissions:

@@ -1,5 +1,6 @@
 """Independent broker-confirmed offsets, outside the client's CPU affinity/process."""
 import datetime, json, socket, struct, sys, time
+from pathlib import Path
 
 def string(s):
     b = s.encode()
@@ -47,6 +48,10 @@ if __name__ == '__main__':
         try:
             values = offsets()
             row = dict(utc=datetime.datetime.now(datetime.timezone.utc).isoformat(), unix=time.time(), offsets=values, total=sum(values))
+            if Path('/proc/stat').exists():
+                row['cpuTicks'] = {parts[0]: list(map(int, parts[1:])) for line in Path('/proc/stat').read_text().splitlines()
+                    if (parts := line.split()) and parts[0].startswith('cpu')}
+                row['loadavg'] = Path('/proc/loadavg').read_text().strip()
         except Exception as exc:
             row = dict(unix=time.time(), error=str(exc))
         print(json.dumps(row), flush=True)

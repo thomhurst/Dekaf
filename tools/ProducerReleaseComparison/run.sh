@@ -9,6 +9,10 @@ git rev-parse HEAD > "$out/harness-sha.txt"
 git rev-parse HEAD:src > "$out/product-tree.txt"
 dotnet --info > "$out/dotnet-info.txt"
 lscpu > "$out/lscpu.txt"
+lscpu -e > "$out/lscpu-extended.txt"
+python3 tools/ProducerReleaseComparison/topology.py "$out/topology.json" > "$out/affinity.env"
+source "$out/affinity.env"
+cat "$out/topology.json"
 env | sort | grep -E '^(DOTNET_|COMPlus_|Image)' > "$out/runtime-env.txt" || true
 fixture="$RUNNER_TEMP/release-fixture"
 cp -r tools/ProducerReleaseComparison "$fixture"
@@ -22,7 +26,7 @@ cp "$RUNNER_TEMP/candidate-fixture/obj/project.assets.json" "$out/b-assets.json"
 find "$out/a-bin" "$out/b-bin" -name '*.dll' -exec sha256sum {} + > "$out/binary-sha256.txt"
 dotnet build-server shutdown
 start_broker() {
-  docker run -d --name release-comparison-kafka --cpuset-cpus=0-5 \
+  docker run -d --name release-comparison-kafka --cpuset-cpus="$BROKER_CPUS" \
     --tmpfs /var/lib/kafka/data:rw,size=6g,mode=1777 -p 9092:9092 \
     -e KAFKA_HEAP_OPTS='-Xmx2g -Xms2g' \
     -e KAFKA_NODE_ID=1 -e KAFKA_PROCESS_ROLES=broker,controller \
@@ -45,16 +49,16 @@ start_broker() {
   done
   return 1
 }
-for segment in validation-a validation-b A1 B1 A2 B2; do
+for segment in validation-a validation-b A1 B1 B2 A2 B3 A3 A4 B4; do
   mkdir -p "$out/$segment"
   start_broker
   python3 tools/ProducerReleaseComparison/offsets.py --once > "$out/$segment/offset-start.jsonl"
-  taskset -c 0-5 python3 tools/ProducerReleaseComparison/offsets.py > "$out/$segment/offsets.jsonl" &
+  taskset -c "$BROKER_CPUS" python3 tools/ProducerReleaseComparison/offsets.py > "$out/$segment/offsets.jsonl" &
   observer=$!
   case "$segment" in *a|A*) binary=a-bin;; *) binary=b-bin;; esac
-  case "$segment" in validation-*) duration=20; warmup=20;; *) duration=900; warmup=180;; esac
+  case "$segment" in validation-*) duration=20; warmup=20;; *) duration=300; warmup=180;; esac
   echo "Starting $segment: $binary, ${duration}s measured, ${warmup}s warmup"
-  taskset -c 6,7 dotnet "$out/$binary/Dekaf.StressTests.dll" "$duration" "$warmup" "$out/$segment" \
+  taskset -c "$CLIENT_CPUS" dotnet "$out/$binary/Dekaf.StressTests.dll" "$duration" "$warmup" "$out/$segment" \
     2>&1 | tee "$out/$segment/client.log"
   kill "$observer"; wait "$observer" || true
   python3 tools/ProducerReleaseComparison/offsets.py --once > "$out/$segment/offset-end.jsonl"
