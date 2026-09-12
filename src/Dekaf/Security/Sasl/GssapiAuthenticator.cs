@@ -1,5 +1,6 @@
 #if !NETSTANDARD2_0
 using System.Net.Security;
+using System.Buffers;
 #endif
 using Dekaf.Errors;
 
@@ -19,7 +20,7 @@ namespace Dekaf.Security.Sasl;
 /// 1. Client sends SaslHandshake with mechanism "GSSAPI"
 /// 2. Server responds with supported mechanisms
 /// 3. Client initiates GSSAPI token exchange (multi-round)
-/// 4. Once tokens are complete, authentication is established
+/// 4. Exchange the integrity-protected RFC 4752 security-layer offer and selection
 /// </remarks>
 public sealed class GssapiAuthenticator : ISaslAuthenticator, IDisposable
 {
@@ -35,6 +36,7 @@ public sealed class GssapiAuthenticator : ISaslAuthenticator, IDisposable
     {
         Initial,
         TokenExchange,
+        SecurityLayer,
         Complete
     }
 
@@ -93,7 +95,7 @@ public sealed class GssapiAuthenticator : ISaslAuthenticator, IDisposable
 
         if (statusCode == NegotiateAuthenticationStatusCode.Completed)
         {
-            _state = GssapiState.Complete;
+            _state = GssapiState.SecurityLayer;
         }
 
         return outgoingBlob ?? [];
@@ -117,13 +119,32 @@ public sealed class GssapiAuthenticator : ISaslAuthenticator, IDisposable
             return null;
         }
 
+        if (_state == GssapiState.SecurityLayer)
+        {
+            var unwrapped = new ArrayBufferWriter<byte>(4);
+            var unwrapStatus = _auth.Unwrap(challenge, unwrapped, out _);
+            if (unwrapStatus != NegotiateAuthenticationStatusCode.Completed)
+                throw new AuthenticationException($"GSSAPI security-layer offer verification failed: {unwrapStatus}");
+            ValidateSecurityLayerOffer(unwrapped.WrittenSpan);
+
+            // Kafka uses SASL for authentication only. Select no post-authentication
+            // security layer and a zero receive buffer; omit the authorization identity.
+            var wrapped = new ArrayBufferWriter<byte>();
+            var wrapStatus = _auth.Wrap([1, 0, 0, 0], wrapped, requestEncryption: false, out var encrypted);
+            if (wrapStatus != NegotiateAuthenticationStatusCode.Completed || encrypted)
+                throw new AuthenticationException($"GSSAPI security-layer selection failed: {wrapStatus}");
+            _state = GssapiState.Complete;
+            return wrapped.WrittenSpan.ToArray();
+        }
+
         var outgoingBlob = _auth.GetOutgoingBlob(challenge, out var statusCode);
 
         if (statusCode == NegotiateAuthenticationStatusCode.Completed)
         {
-            _state = GssapiState.Complete;
-            // Return any final token if present, otherwise null to indicate completion
-            return outgoingBlob is { Length: > 0 } ? outgoingBlob : null;
+            _state = GssapiState.SecurityLayer;
+            // Even an empty final context token must be sent to obtain the server's
+            // security-layer offer. Kerberos context completion is not SASL completion.
+            return outgoingBlob ?? [];
         }
 
         if (statusCode == NegotiateAuthenticationStatusCode.ContinueNeeded)
@@ -133,6 +154,17 @@ public sealed class GssapiAuthenticator : ISaslAuthenticator, IDisposable
 
         throw new AuthenticationException($"GSSAPI authentication failed: {statusCode}");
 #endif
+    }
+
+    internal static void ValidateSecurityLayerOffer(ReadOnlySpan<byte> offer)
+    {
+        if (offer.Length != 4)
+            throw new AuthenticationException("GSSAPI security-layer offer must contain exactly four bytes.");
+        if ((offer[0] & 1) == 0)
+            throw new AuthenticationException("GSSAPI server does not support authentication without a security layer.");
+        // Kafka's Java SASL server can advertise a nonzero buffer even for auth-only.
+        // We do not use its buffer limit: our selected security layer and receive buffer
+        // are always 1 (no layer) and zero respectively.
     }
 
     /// <inheritdoc />

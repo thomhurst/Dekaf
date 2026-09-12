@@ -91,6 +91,10 @@ for framework in net10.0 aot; do
   grep -Fq -- '--treenode-filter /**[Category=ShareConsumer] --results-directory TestResults/ShareConsumer' "$CALLS_FILE"
   grep -Fq -- '--treenode-filter /**[(Category=ShareConsumer)&(Category=ShareConsumerCore)] --results-directory TestResults/ShareConsumerCore' "$CALLS_FILE"
   grep -Fq -- '--treenode-filter /**[(Category=ShareConsumer)&(Category!=ShareConsumerCore)] --results-directory TestResults/ShareConsumerOther' "$CALLS_FILE"
+  if grep -Fq -- '--ignore-exit-code' "$CALLS_FILE"; then
+    echo "Explicit integration categories must fail when no tests are selected" >&2
+    exit 1
+  fi
 done
 
 # Discovery uses the same filters and reaches the runner without executing tests.
@@ -109,6 +113,7 @@ fi
 INTEGRATION_TEST_MATRIX_JSON='{"groups":["produce","core","other","future","catch-all"],"categories":{"produce":"Producer","core":"ShareConsumerCore","other":"ShareConsumerOther","future":"FutureCategory","catch-all":"CatchAll"}}' \
   bash scripts/run-integration-categories.sh net10.0 "CatchAll" --list-tests
 grep -Fq -- '--treenode-filter /**[(Category!=EventHubs)&(Category!=Producer)&(Category!=ShareConsumer)&(Category!=FutureCategory)]' "$CALLS_FILE"
+grep -Fq -- '--ignore-exit-code 8' "$CALLS_FILE"
 if INTEGRATION_TEST_MATRIX_JSON= bash scripts/run-integration-categories.sh net10.0 "CatchAll"; then
   echo "Catch-all accepted a missing matrix category map" >&2
   exit 1

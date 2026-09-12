@@ -11,6 +11,7 @@ using Dekaf.Security.Sasl;
 namespace Dekaf.Tests.Integration;
 
 [ClassDataSource<KafkaWithSchemaRegistryContainer>(Shared = SharedType.PerTestSession)]
+[Category("Serialization")]
 public sealed class SchemaRegistryHttpPipelineIntegrationTests(KafkaWithSchemaRegistryContainer testInfra)
 {
     [Test]
@@ -130,6 +131,7 @@ public sealed class SchemaRegistryHttpPipelineIntegrationTests(KafkaWithSchemaRe
     }
 }
 
+[Category("Tls")]
 public sealed class SchemaRegistryTlsIntegrationTests
 {
     [Test]

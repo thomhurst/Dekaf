@@ -3,6 +3,7 @@ using Dekaf.Producer;
 
 namespace Dekaf.Tests.Integration;
 
+[Category("Messaging")]
 public sealed class KafkaClientIntegrationTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]

@@ -5,6 +5,7 @@ using Dekaf.Security.Sasl;
 namespace Dekaf.Tests.Integration;
 
 [ClassDataSource<KafkaWithSchemaRegistryContainer>(Shared = SharedType.PerTestSession)]
+[Category("Serialization")]
 public sealed class SchemaRegistryOAuthConcurrencyIntegrationTests(KafkaWithSchemaRegistryContainer testInfra)
 {
     [Test]

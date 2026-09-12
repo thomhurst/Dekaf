@@ -97,6 +97,11 @@ print(",".join(categories[group] for group in groups))' \
     --treenode-filter "$filter"
     --results-directory "TestResults/$category"
   )
+  if [ "$category" = "CatchAll" ]; then
+    # The fallback is empty when every test belongs to an explicit CI category.
+    # MTP exit code 8 means zero tests; assertion and infrastructure failures still fail.
+    args+=(--ignore-exit-code 8)
+  fi
   if [ "${3:-}" = "--list-tests" ]; then
     args+=(--list-tests --no-ansi)
   fi

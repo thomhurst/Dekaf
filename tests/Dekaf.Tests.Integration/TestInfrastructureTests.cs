@@ -2,6 +2,7 @@ using Microsoft.Extensions.Logging;
 
 namespace Dekaf.Tests.Integration;
 
+[Category("Admin")]
 public sealed partial class TestInfrastructureTests
 {
     [Test]

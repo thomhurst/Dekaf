@@ -1,5 +1,6 @@
 namespace Dekaf.Tests.Integration;
 
+[Category("Resilience")]
 public sealed class ReassignmentSequenceOracleTests
 {
     [Test]

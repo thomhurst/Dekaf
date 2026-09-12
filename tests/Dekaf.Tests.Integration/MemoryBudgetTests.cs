@@ -7,6 +7,7 @@ namespace Dekaf.Tests.Integration;
 /// Integration tests verifying that <see cref="Dekaf.Internal.DekafMemoryBudget"/> rebalances
 /// live producer instances when additional producers are built and disposed.
 /// </summary>
+[Category("Producer")]
 public class MemoryBudgetTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     private const ulong ProducerFloorBytes = 32UL * 1024 * 1024;
