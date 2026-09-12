@@ -27,7 +27,9 @@ public class RunBenchmarksModule : Module<CommandResult>
             new DotNetRunOptions
             {
                 Configuration = "Release",
-                Arguments = ["--filter", "*Memory*", "--exporters", "GitHub", "CSV", "HTML"]
+                NoBuild = true,
+                // Match the performance gate's allowance for building the generated benchmark harness.
+                Arguments = ["--filter", "*Memory*", "--exporters", "GitHub", "CSV", "HTML", "--buildTimeout", "900"]
             },
             new CommandExecutionOptions
             {
