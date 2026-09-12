@@ -144,6 +144,9 @@ internal static class ProducerWorkload
         using var watchdog = options.ProgressWatchdog.Track(throughput, client, scenario, captureProducerDiagnostics);
         var sampler = StressTestHelpers.RunSamplerAsync(throughput, sampling.Token);
         var resources = StressTestHelpers.RunResourceMonitorAsync(sampling.Token);
+        // Report from a timer so slow or stalled admission still emits throughput updates.
+        var progress = new PeriodicProgressReporter(throughput);
+        var reporting = StressTestHelpers.RunPeriodicAsync(TimeSpan.FromSeconds(10), progress.RecordMessage, sampling.Token);
         var producing = produce(ingress.Token, delivery.Token);
         double workloadSeconds;
         try
@@ -197,7 +200,7 @@ internal static class ProducerWorkload
                     TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
             sampling.Cancel();
             await stopIngress.ConfigureAwait(false);
-            await Task.WhenAll(sampler, resources).ConfigureAwait(false);
+            await Task.WhenAll(sampler, resources, reporting).ConfigureAwait(false);
             throughput.Stop();
             gc.Capture();
         }
