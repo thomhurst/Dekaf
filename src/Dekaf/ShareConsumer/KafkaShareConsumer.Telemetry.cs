@@ -70,6 +70,11 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
             var partitions = request.Topics[topicIndex].Partitions;
             for (var partitionIndex = 0; partitionIndex < partitions.Count; partitionIndex++)
             {
+                if (partitions[partitionIndex].SingleAcknowledgement is { } single)
+                {
+                    count += CountAcknowledgedRecords(single.FirstOffset, single.LastOffset, single.AcknowledgeTypes);
+                    continue;
+                }
                 var batches = partitions[partitionIndex].AcknowledgementBatches;
                 if (batches is null) continue;
                 for (var index = 0; index < batches.Count; index++)

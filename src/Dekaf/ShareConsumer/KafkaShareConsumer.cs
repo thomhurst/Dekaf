@@ -277,7 +277,16 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         // Cleared windows no longer participate in assignment-revocation cleanup.
         // Recheck their outcomes when the replacement assignment becomes available.
         _hasBufferedAcquisitionReleases |= _ackTracker.HasPending;
-        _recordBatchOwnerPools?.Clear();
+        if (_recordBatchOwnerPools is not null)
+        {
+            List<TopicPartition>? removed = null;
+            foreach (var partition in _recordBatchOwnerPools.Keys)
+                if (!subscription.Contains(partition.Topic))
+                    (removed ??= []).Add(partition);
+            if (removed is not null)
+                foreach (var partition in removed)
+                    _recordBatchOwnerPools.Remove(partition);
+        }
         _subscriptionSnapshot = subscription;
         _coordinator.UpdateSubscription(subscription);
         return this;
@@ -386,10 +395,12 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                 {
                     RequeueAcknowledgements(pendingAcks);
                     InvokeAcknowledgementCommitCallback(pendingAcks, ex);
+                    _ackTracker.ReturnPollBatches(pendingAcks);
                     throw;
                 }
                 finally
                 {
+                    ReturnPollPartitionGroups();
                     ShareMetrics?.EndPollWait();
                 }
 
@@ -400,6 +411,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                 }
                 finally
                 {
+                    _ackTracker.ReturnPollBatches(pendingAcks);
                     // Keep successful acquisitions even when another broker's bookkeeping fails.
                     // A late response after close/disposal remains owned by the response scope.
                     stopped = Volatile.Read(ref _disposed) != 0 || Volatile.Read(ref _closed) != 0;
@@ -531,10 +543,16 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         _rawBuffer?.ResetWrittenCount();
 
         // Flush pending acks from previous poll as inline acknowledgements with the fetch
-        pendingAcks = HasPendingAcknowledgements ? FlushAcknowledgements() : null;
+        pendingAcks = null;
+        if (HasPendingAcknowledgements)
+        {
+            pendingAcks = _batchAcknowledgements is null && _acknowledgementCommitCallback is null
+                ? _ackTracker.FlushForPoll() : FlushAcknowledgements();
+        }
 
         // Group assigned partitions by leader broker
-        var partitionsByBroker = GroupPartitionsByLeader(assignment);
+        var partitionsByBroker = GroupPartitionsByLeader(assignment,
+            _batchAcknowledgements is null ? TakePollPartitionGroups(assignment.Count) : null);
 
         // Send fetch requests to all brokers concurrently. Session epochs are per-broker
         // and independent, so parallelism is safe. This avoids waiting for each broker's
@@ -599,8 +617,11 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                 {
                     // Cancellation before the write is not an acknowledgement outcome.
                     // Retain these dispositions for final commit without reporting success.
-                    foreach (var partition in sentAcks.Keys)
-                        pendingAcks!.Remove(partition);
+                    if (ReferenceEquals(pendingAcks, sentAcks))
+                        pendingAcks!.Clear();
+                    else
+                        foreach (var partition in sentAcks.Keys)
+                            pendingAcks!.Remove(partition);
                 }
                 continue;
             }
@@ -1483,23 +1504,28 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
     /// Groups assigned partitions by their leader broker.
     /// </summary>
     private Dictionary<int, List<TopicPartition>> GroupPartitionsByLeader(
-        TopicPartitionSet assignment)
+        TopicPartitionSet assignment, Dictionary<int, List<TopicPartition>>? reusable = null)
     {
-        var result = new Dictionary<int, List<TopicPartition>>();
+        var result = reusable ?? new Dictionary<int, List<TopicPartition>>();
 
         foreach (var tp in assignment)
         {
-            var topicInfo = _metadataManager.Metadata.GetTopic(tp.Topic);
-            if (topicInfo is null)
-                continue;
-
             var leaderNode = _metadataManager.Metadata.GetPartitionLeader(tp.Topic, tp.Partition);
             if (leaderNode is null)
                 continue;
 
             if (!result.TryGetValue(leaderNode.NodeId, out var list))
             {
-                list = [];
+                if (reusable is not null && _sparePartitionGroups.Count != 0)
+                {
+                    var last = _sparePartitionGroups.Count - 1;
+                    list = _sparePartitionGroups[last];
+                    _sparePartitionGroups.RemoveAt(last);
+                }
+                else
+                {
+                    list = [];
+                }
                 result[leaderNode.NodeId] = list;
             }
             list.Add(tp);
@@ -2053,42 +2079,38 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         short version)
     {
         var topicMap = new Dictionary<string, (Guid TopicId, List<ShareFetchRequestPartition> Partitions)>();
+        string? currentTopic = null;
+        List<ShareFetchRequestPartition>? currentPartitions = null;
 
         foreach (var tp in partitions)
         {
-            var topicInfo = _metadataManager.Metadata.GetTopic(tp.Topic);
-            if (topicInfo is null)
-                continue;
-
-            if (!topicMap.TryGetValue(tp.Topic, out var entry))
+            // Assigned partitions commonly arrive in topic runs. Keep the current
+            // request entry without hashing the same topic for every partition.
+            if (currentPartitions is null || currentTopic != tp.Topic)
             {
-                entry = (topicInfo.TopicId, []);
-                topicMap[tp.Topic] = entry;
-            }
-
-            List<ShareFetchAcknowledgementBatch>? ackBatches = null;
-            if (pendingAcks is not null && pendingAcks.TryGetValue(tp, out var batchDataList))
-            {
-                ackBatches = new List<ShareFetchAcknowledgementBatch>(batchDataList.Count);
-                foreach (var bd in batchDataList)
+                if (!topicMap.TryGetValue(tp.Topic, out var entry))
                 {
-                    ackBatches.Add(new ShareFetchAcknowledgementBatch
-                    {
-                        FirstOffset = bd.FirstOffset,
-                        LastOffset = bd.LastOffset,
-                        AcknowledgeTypes = bd.AcknowledgeTypes
-                    });
+                    var topicInfo = _metadataManager.Metadata.GetTopic(tp.Topic);
+                    if (topicInfo is null)
+                        continue;
+                    entry = (topicInfo.TopicId, []);
+                    topicMap[tp.Topic] = entry;
                 }
+                currentTopic = tp.Topic;
+                currentPartitions = entry.Partitions;
             }
+
+            List<AcknowledgementBatchData>? ackBatches = null;
+            pendingAcks?.TryGetValue(tp, out ackBatches);
 
             var fetchPartition = new ShareFetchRequestPartition
             {
                 PartitionIndex = tp.Partition,
                 PartitionMaxBytes = version == 0 ? _options.MaxPartitionFetchBytes : 0,
-                AcknowledgementBatches = ackBatches
+                AcknowledgementData = ackBatches
             };
 
-            entry.Partitions.Add(fetchPartition);
+            currentPartitions.Add(fetchPartition);
         }
 
         var topics = new List<ShareFetchRequestTopic>(topicMap.Count);
@@ -2111,13 +2133,24 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         if (pendingAcks is null)
             return null;
 
+        // The common single-broker case already owns exactly this snapshot. Reuse it
+        // only after checking membership, including missing leaders and revoked partitions.
+        var matched = 0;
+        foreach (var partition in partitions)
+            if (pendingAcks.ContainsKey(partition))
+                matched++;
+        if (matched == pendingAcks.Count)
+            return pendingAcks;
+        if (matched == 0)
+            return null;
+
         Dictionary<TopicPartition, List<AcknowledgementBatchData>>? selected = null;
         foreach (var partition in partitions)
         {
             if (!pendingAcks.TryGetValue(partition, out var batches))
                 continue;
 
-            selected ??= [];
+            selected ??= new(matched);
             selected[partition] = batches;
         }
 
@@ -2435,13 +2468,13 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         {
             foreach (var batch in batches)
             {
-                for (var i = 0; i < batch.AcknowledgeTypes.Length; i++)
+                for (var i = 0; i < batch.OffsetCount; i++)
                 {
                     var key = new RenewedRecordKey(
                         topicPartition.Topic,
                         topicPartition.Partition,
                         batch.FirstOffset + i);
-                    var type = (AcknowledgeType)batch.AcknowledgeTypes[i];
+                    var type = (AcknowledgeType)batch.GetAcknowledgeType(i);
                     if (type == AcknowledgeType.Renew)
                     {
                         if (_renewedRecords.TryGetValue(key, out var state))
@@ -2711,7 +2744,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                 {
                     FirstOffset = bd.FirstOffset,
                     LastOffset = bd.LastOffset,
-                    AcknowledgeTypes = bd.AcknowledgeTypes
+                    AcknowledgeTypes = bd.PublicAcknowledgeTypes
                 });
             }
 

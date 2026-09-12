@@ -5,6 +5,47 @@ namespace Dekaf.Tests.Unit.ShareConsumer;
 public sealed class ShareAcknowledgedOffsetsTests
 {
     [Test]
+    public async Task OffsetView_EnumeratorSkipsEmptyAndCompactGapBatchesAndStaysExhausted()
+    {
+        List<AcknowledgementBatchData> batches =
+        [
+            new(0, -1, []), new(10, 12, [0]), new(20, 22, [2]),
+            new(30, 32, [0, 1, 0]), new(40, 39, []), new(50, 52, [0])
+        ];
+        var offsets = new ShareAcknowledgedOffsets(batches);
+        long[] expected = [20, 21, 22, 31];
+        var enumerator = offsets.GetEnumerator();
+        foreach (var offset in expected)
+        {
+            await Assert.That(enumerator.MoveNext()).IsTrue();
+            await Assert.That(enumerator.Current).IsEqualTo(offset);
+        }
+        await Assert.That(enumerator.MoveNext()).IsFalse();
+        await Assert.That(enumerator.MoveNext()).IsFalse();
+        var copied = new long[expected.Length];
+        offsets.CopyTo(copied);
+        await Assert.That(copied).IsEquivalentTo(expected);
+    }
+
+    [Test]
+    public async Task OffsetView_CompactRangesPreserveIndexEnumerationAndCopies()
+    {
+        List<AcknowledgementBatchData> batches = [new(10, 12, [2]), new(20, 22, [0]), new(30, 32, [1, 0, 3])];
+        var offsets = new ShareAcknowledgedOffsets(batches);
+        long[] expected = [10, 11, 12, 30, 32];
+        var copy = new long[offsets.Length];
+        offsets.CopyTo(copy);
+        await Assert.That(copy).IsEquivalentTo(expected);
+        var index = 0;
+        foreach (var offset in offsets)
+        {
+            await Assert.That(offset).IsEqualTo(expected[index]);
+            await Assert.That(offsets[index]).IsEqualTo(expected[index++]);
+        }
+        await Assert.That(index).IsEqualTo(expected.Length);
+    }
+
+    [Test]
     [Arguments(false)]
     [Arguments(true)]
     public async Task OffsetView_FirstAccessDoesNotAllocate(bool sparse)

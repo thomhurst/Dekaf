@@ -51,7 +51,7 @@ public class ShareAcknowledgementReleaseBenchmarks
                 var expected = ExplicitOverrides && index == 0 ? AcknowledgeType.Accept
                     : ExplicitOverrides && index == RecordCount - 1 ? AcknowledgeType.Reject
                     : AcknowledgeType.Release;
-                if (types[index] != (byte)expected)
+                if (types[types.Length == 1 ? 0 : index] != (byte)expected)
                     throw new InvalidOperationException("Explicit dispositions must override the released range.");
             }
         }

@@ -9,6 +9,67 @@ namespace Dekaf.Tests.Unit.Protocol;
 /// </summary>
 public sealed class ShareFetchMessageTests
 {
+    [Test]
+    [Arguments((short)0)]
+    [Arguments((short)1)]
+    [Arguments((short)2)]
+    public async Task RequestPartition_InternalAcknowledgementsMatchPublicWireFormat(short version)
+    {
+        var partition = new ShareFetchRequestPartition
+        {
+            PartitionIndex = 3, PartitionMaxBytes = 1024,
+            AcknowledgementData = [new(10, 137, [2]), new(200, 202, [1, 3, 4])]
+        };
+        var direct = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(direct);
+        partition.Write(ref writer, version);
+
+        // Observing the public model must not alter its subsequent serialization.
+        var batches = partition.AcknowledgementBatches!;
+        await Assert.That(batches.Count).IsEqualTo(2);
+        var inspected = new ArrayBufferWriter<byte>();
+        writer = new KafkaProtocolWriter(inspected);
+        partition.Write(ref writer, version);
+        await Assert.That(direct.WrittenSpan.SequenceEqual(inspected.WrittenSpan)).IsTrue();
+
+        var reader = new KafkaProtocolReader(new ReadOnlySequence<byte>(direct.WrittenMemory));
+        var decoded = ShareFetchRequestPartition.Read(ref reader, version);
+        await Assert.That(decoded.AcknowledgementBatches![0].FirstOffset).IsEqualTo(10);
+        await Assert.That(decoded.AcknowledgementBatches[0].LastOffset).IsEqualTo(137);
+        await Assert.That(decoded.AcknowledgementBatches[0].AcknowledgeTypes).IsEquivalentTo(new byte[] { 2 });
+        await Assert.That(decoded.AcknowledgementBatches[1].AcknowledgeTypes).IsEquivalentTo(new byte[] { 1, 3, 4 });
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task RequestPartition_PooledSnapshotRetainsRequestData(bool multipleRanges)
+    {
+        var tracker = new Dekaf.ShareConsumer.AcknowledgementTracker();
+        var topicPartition = new TopicPartition("topic", 0);
+        tracker.TrackDeliveredRecords(topicPartition, 10, 12);
+        if (multipleRanges)
+            tracker.ReleaseUndeliveredRecords(topicPartition, 20, 22);
+        var first = tracker.FlushForPoll();
+        var request = new ShareFetchRequestPartition { AcknowledgementData = first[topicPartition] };
+        tracker.ReturnPollBatches(first);
+        tracker.ReleaseUndeliveredRecords(topicPartition, 100, 200);
+        var second = tracker.FlushForPoll();
+        tracker.ReturnPollBatches(second);
+
+        var batches = request.AcknowledgementBatches!;
+        await Assert.That(batches.Count).IsEqualTo(multipleRanges ? 2 : 1);
+        await Assert.That(batches[0].FirstOffset).IsEqualTo(10);
+        await Assert.That(batches[0].LastOffset).IsEqualTo(12);
+        await Assert.That(batches[0].AcknowledgeTypes).IsEquivalentTo(new byte[] { 1, 1, 1 });
+        if (multipleRanges)
+        {
+            await Assert.That(batches[1].FirstOffset).IsEqualTo(20);
+            await Assert.That(batches[1].LastOffset).IsEqualTo(22);
+            await Assert.That(batches[1].AcknowledgeTypes).IsEquivalentTo(new byte[] { 2 });
+        }
+    }
+
     #region Request Construction
 
     [Test]

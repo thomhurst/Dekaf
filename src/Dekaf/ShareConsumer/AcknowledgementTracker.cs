@@ -1,3 +1,5 @@
+using System.Runtime.CompilerServices;
+
 #if NETSTANDARD2_0
 using TopicPartitionSet = System.Collections.Generic.IReadOnlyCollection<Dekaf.TopicPartition>;
 #else
@@ -24,6 +26,32 @@ internal sealed class AcknowledgementTracker
     private Dictionary<TopicPartition, PartitionAcknowledgements> _pendingAcks = new();
     private PartitionAcknowledgements? _freePartitions;
     private int _peakPendingPartitions;
+    private PollBatchPool? _pollBatchPool;
+
+    private sealed class PollBatchPool(int capacity)
+    {
+        internal readonly Dictionary<TopicPartition, List<AcknowledgementBatchData>> Batches = new(capacity);
+        internal readonly List<List<AcknowledgementBatchData>> Spare = [];
+        internal bool InUse;
+    }
+
+    // Only the callback-free classic fetch path borrows these containers. Request
+    // models copy batch descriptors and keep their immutable disposition arrays.
+    internal Dictionary<TopicPartition, List<AcknowledgementBatchData>> FlushForPoll() => FlushCore(false, reuseForPoll: true);
+
+    internal void ReturnPollBatches(Dictionary<TopicPartition, List<AcknowledgementBatchData>>? batches)
+    {
+        var pool = _pollBatchPool;
+        if (pool is not { InUse: true } || !ReferenceEquals(batches, pool.Batches))
+            return;
+        foreach (var list in batches!.Values)
+        {
+            list.Clear();
+            pool.Spare.Add(list);
+        }
+        batches.Clear();
+        pool.InUse = false;
+    }
 
     /// <summary>
     /// Tracks delivered records awaiting implicit acceptance by the next poll or commit.
@@ -85,6 +113,8 @@ internal sealed class AcknowledgementTracker
     /// Returned batches own their arrays independently of the reusable tracking state.
     /// </summary>
     /// <returns>Per-TopicPartition acknowledgement batches for the wire format.</returns>
+    // Keep the owned path independently inlineable so short-lived trackers can remain stack-allocated.
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal Dictionary<TopicPartition, List<AcknowledgementBatchData>> Flush(bool releaseImplicit = false)
     {
         var pending = _pendingAcks;
@@ -97,6 +127,8 @@ internal sealed class AcknowledgementTracker
             _pendingAcks = new Dictionary<TopicPartition, PartitionAcknowledgements>();
             _freePartitions = null;
             _peakPendingPartitions = count;
+            if (_pollBatchPool is not { InUse: true })
+                _pollBatchPool = null;
         }
         else if (count > _peakPendingPartitions)
         {
@@ -127,6 +159,70 @@ internal sealed class AcknowledgementTracker
         }
     }
 
+    private Dictionary<TopicPartition, List<AcknowledgementBatchData>> FlushCore(bool releaseImplicit, bool reuseForPoll)
+    {
+        var pending = _pendingAcks;
+        var count = pending.Count;
+        var reusePending = count >= _peakPendingPartitions / 4;
+        if (!reusePending)
+        {
+            // A smaller assignment must not keep clearing the old peak dictionary
+            // capacity on every poll. Drop idle scratch at the same boundary.
+            _pendingAcks = new Dictionary<TopicPartition, PartitionAcknowledgements>();
+            _freePartitions = null;
+            _peakPendingPartitions = count;
+            if (_pollBatchPool is not { InUse: true })
+                _pollBatchPool = null;
+        }
+        else if (count > _peakPendingPartitions)
+        {
+            _peakPendingPartitions = count;
+        }
+
+        try
+        {
+            reuseForPoll &= _pollBatchPool is not { InUse: true };
+            PollBatchPool? pool = null;
+            if (reuseForPoll)
+            {
+                pool = _pollBatchPool ??= new(count);
+                pool.InUse = true;
+            }
+            var result = pool?.Batches ?? new Dictionary<TopicPartition, List<AcknowledgementBatchData>>(count);
+            foreach (var (tp, partitionAcks) in pending)
+            {
+                List<AcknowledgementBatchData>? scratch = null;
+                if (pool is not null && pool.Spare.Count != 0)
+                {
+                    var last = pool.Spare.Count - 1;
+                    scratch = pool.Spare[last];
+                    pool.Spare.RemoveAt(last);
+                }
+                var batches = partitionAcks.BuildBatches(releaseImplicit ? AcknowledgeType.Release : AcknowledgeType.Accept, scratch);
+                if (batches.Count > 0)
+                    result[tp] = batches;
+
+                partitionAcks.Reset();
+                partitionAcks.Next = _freePartitions;
+                _freePartitions = partitionAcks;
+            }
+            return result;
+        }
+        catch
+        {
+            if (reuseForPoll)
+                ReturnPollBatches(_pollBatchPool?.Batches);
+            throw;
+        }
+        finally
+        {
+            // Flush is synchronous and single-threaded. Detach even when materialization
+            // throws, preserving the previous swap's consumption of the pending state.
+            if (reusePending)
+                pending.Clear();
+        }
+    }
+
     /// <summary>
     /// Re-queues previously flushed acknowledgement data back into the tracker.
     /// Used when CommitAsync partially fails — the failed partitions' acks are
@@ -144,7 +240,7 @@ internal sealed class AcknowledgementTracker
                 long runEnd = 0;
                 var runType = AcknowledgeType.Accept;
 
-                for (var i = 0; i < batch.AcknowledgeTypes.Length; i++)
+                for (var i = 0; i < batch.OffsetCount; i++)
                 {
                     var offset = batch.FirstOffset + i;
                     // Preserve any acknowledgement tracked after the flush. A newer
@@ -161,7 +257,7 @@ internal sealed class AcknowledgementTracker
                         continue;
                     }
 
-                    var type = (AcknowledgeType)batch.AcknowledgeTypes[i];
+                    var type = (AcknowledgeType)batch.GetAcknowledgeType(i);
                     if (runStart is not null && type == runType && offset == runEnd + 1)
                     {
                         runEnd = offset;
@@ -184,12 +280,17 @@ internal sealed class AcknowledgementTracker
 
     private PartitionAcknowledgements GetOrAddPartition(TopicPartition tp)
     {
+#if NET6_0_OR_GREATER
+        ref var partitionAcks = ref System.Runtime.InteropServices.CollectionsMarshal.GetValueRefOrAddDefault(_pendingAcks, tp, out _);
+        return partitionAcks ??= RentPartition();
+#else
         if (_pendingAcks.TryGetValue(tp, out var partitionAcks))
             return partitionAcks;
 
         partitionAcks = RentPartition();
         _pendingAcks[tp] = partitionAcks;
         return partitionAcks;
+#endif
     }
 
     private PartitionAcknowledgements RentPartition()
@@ -223,20 +324,23 @@ internal sealed class AcknowledgementTracker
 
             var incoming = new AckRange(firstOffset, lastOffset, type);
 
-            if (_ranges.Count > 0)
+            if (_ranges.Count == 0)
             {
-                var last = _ranges[^1];
-                if (last.AcknowledgeType == type && TouchesOrOverlaps(last, incoming))
-                {
-                    _ranges[^1] = Merge(last, incoming);
-                    return;
-                }
+                _ranges.Add(incoming);
+                return;
+            }
 
-                if (firstOffset > last.LastOffset)
-                {
-                    _ranges.Add(incoming);
-                    return;
-                }
+            var last = _ranges[^1];
+            if (last.AcknowledgeType == type && TouchesOrOverlaps(last, incoming))
+            {
+                _ranges[^1] = Merge(last, incoming);
+                return;
+            }
+
+            if (firstOffset > last.LastOffset)
+            {
+                _ranges.Add(incoming);
+                return;
             }
 
             InsertRange(incoming);
@@ -330,9 +434,9 @@ internal sealed class AcknowledgementTracker
             _explicitAcks[offset] = type;
         }
 
-        internal List<AcknowledgementBatchData> BuildBatches(AcknowledgeType implicitDisposition)
+        internal List<AcknowledgementBatchData> BuildBatches(AcknowledgeType implicitDisposition, List<AcknowledgementBatchData>? scratch = null)
         {
-            var batches = new List<AcknowledgementBatchData>(_ranges.Count);
+            var batches = scratch ?? new List<AcknowledgementBatchData>(_ranges.Count);
 
             foreach (var range in _ranges)
                 batches.Add(BuildRangeBatch(range, implicitDisposition));
@@ -350,6 +454,10 @@ internal sealed class AcknowledgementTracker
         private AcknowledgementBatchData BuildRangeBatch(AckRange range, AcknowledgeType implicitDisposition)
         {
             var length = checked((int)(range.LastOffset - range.FirstOffset + 1));
+            // Kafka accepts one disposition for a whole range. Undisclosed acquisitions
+            // need no per-offset storage; explicit outcomes still use the mixed path.
+            if (range.AcknowledgeType == AcknowledgeType.Release && _explicitAcks is null)
+                return new(range.FirstOffset, range.LastOffset, AcknowledgementBatchData.ReleaseTypes);
             var acknowledgeTypes = new byte[length];
             Array.Fill(acknowledgeTypes, (byte)(range.AcknowledgeType == ImplicitDelivery
                 ? implicitDisposition
@@ -437,9 +545,9 @@ internal sealed class AcknowledgementTracker
                     continue;
                 }
 
-                var combinedTypes = new byte[current.AcknowledgeTypes.Length + next.AcknowledgeTypes.Length];
-                Array.Copy(current.AcknowledgeTypes, combinedTypes, current.AcknowledgeTypes.Length);
-                Array.Copy(next.AcknowledgeTypes, 0, combinedTypes, current.AcknowledgeTypes.Length, next.AcknowledgeTypes.Length);
+                var combinedTypes = new byte[checked(current.OffsetCount + next.OffsetCount)];
+                current.CopyTypesTo(combinedTypes.AsSpan(0, current.OffsetCount));
+                next.CopyTypesTo(combinedTypes.AsSpan(current.OffsetCount));
                 current = new AcknowledgementBatchData(current.FirstOffset, next.LastOffset, combinedTypes);
             }
 
@@ -455,4 +563,21 @@ internal sealed class AcknowledgementTracker
 /// <summary>
 /// Wire-format acknowledgement batch data ready for serialization.
 /// </summary>
-internal readonly record struct AcknowledgementBatchData(long FirstOffset, long LastOffset, byte[] AcknowledgeTypes);
+internal readonly record struct AcknowledgementBatchData(long FirstOffset, long LastOffset, byte[] AcknowledgeTypes)
+{
+    internal static readonly byte[] ReleaseTypes = [(byte)AcknowledgeType.Release];
+    private static readonly IReadOnlyList<byte> ReadOnlyReleaseTypes = System.Array.AsReadOnly(ReleaseTypes);
+    internal IReadOnlyList<byte> PublicAcknowledgeTypes => ReferenceEquals(AcknowledgeTypes, ReleaseTypes)
+        ? ReadOnlyReleaseTypes : AcknowledgeTypes;
+    internal int OffsetCount => AcknowledgeTypes.Length == 1
+        ? checked((int)(LastOffset - FirstOffset + 1)) : AcknowledgeTypes.Length;
+    internal byte GetAcknowledgeType(int index) => AcknowledgeTypes.Length == 1 ? AcknowledgeTypes[0] : AcknowledgeTypes[index];
+
+    internal void CopyTypesTo(Span<byte> destination)
+    {
+        if (AcknowledgeTypes.Length == 1)
+            destination.Fill(AcknowledgeTypes[0]);
+        else
+            AcknowledgeTypes.AsSpan().CopyTo(destination);
+    }
+}

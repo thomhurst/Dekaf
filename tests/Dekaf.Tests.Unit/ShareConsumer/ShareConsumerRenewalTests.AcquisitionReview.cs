@@ -9,6 +9,9 @@ namespace Dekaf.Tests.Unit.ShareConsumer;
 
 public sealed partial class ShareConsumerRenewalTests
 {
+    private static IEnumerable<byte> ExpandAcknowledgementTypes(long firstOffset, long lastOffset, IReadOnlyList<byte> types)
+        => types.Count == 1 ? Enumerable.Repeat(types[0], checked((int)(lastOffset - firstOffset + 1))) : types;
+
     [Test]
     [Arguments(false, false, false)]
     [Arguments(true, false, false)]
@@ -67,7 +70,8 @@ public sealed partial class ShareConsumerRenewalTests
         // The first window committed offset 100 before parsing the remaining buffer.
         await Assert.That(released?.FirstOffset ?? inline!.FirstOffset).IsEqualTo(101);
         await Assert.That(released?.LastOffset ?? inline!.LastOffset).IsEqualTo(102);
-        await Assert.That(released?.AcknowledgeTypes ?? inline!.AcknowledgeTypes)
+        await Assert.That(ExpandAcknowledgementTypes(released?.FirstOffset ?? inline!.FirstOffset,
+            released?.LastOffset ?? inline!.LastOffset, released?.AcknowledgeTypes ?? inline!.AcknowledgeTypes))
             .IsEquivalentTo([(byte)AcknowledgeType.Release, (byte)AcknowledgeType.Release]);
     }
 
@@ -98,7 +102,8 @@ public sealed partial class ShareConsumerRenewalTests
         var outcomes = FlushPendingAcknowledgements(fixture.Consumer);
         await Assert.That(outcomes[new("topic", 0)][0].AcknowledgeTypes)
             .IsEquivalentTo([(byte)AcknowledgeType.Accept, (byte)AcknowledgeType.Accept]);
-        await Assert.That(outcomes[new("topic", 1)][0].AcknowledgeTypes)
+        var undisclosed = outcomes[new("topic", 1)][0];
+        await Assert.That(ExpandAcknowledgementTypes(undisclosed.FirstOffset, undisclosed.LastOffset, undisclosed.AcknowledgeTypes))
             .IsEquivalentTo([(byte)AcknowledgeType.Release, (byte)AcknowledgeType.Release]);
     }
 

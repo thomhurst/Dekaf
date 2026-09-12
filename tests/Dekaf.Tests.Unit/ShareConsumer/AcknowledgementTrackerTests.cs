@@ -5,6 +5,83 @@ namespace Dekaf.Tests.Unit.ShareConsumer;
 public class AcknowledgementTrackerTests
 {
     [Test]
+    public async Task Flush_DoesNotBorrowOrClearOutstandingPollContainers()
+    {
+        var tracker = new AcknowledgementTracker();
+        var partition = new TopicPartition("topic", 0);
+        tracker.TrackDeliveredRecords(partition, 10, 12);
+        var poll = tracker.FlushForPoll();
+        tracker.TrackDeliveredRecords(partition, 20, 22);
+        var owned = tracker.Flush();
+        tracker.ReturnPollBatches(owned);
+        await Assert.That(poll[partition][0].FirstOffset).IsEqualTo(10);
+        tracker.ReturnPollBatches(poll);
+        tracker.TrackDeliveredRecords(partition, 30, 32);
+        var nextPoll = tracker.FlushForPoll();
+        tracker.ReturnPollBatches(nextPoll);
+        await Assert.That(owned[partition][0].FirstOffset).IsEqualTo(20);
+        await Assert.That(owned[partition][0].LastOffset).IsEqualTo(22);
+    }
+
+    [Test]
+    public async Task FlushForPoll_DoesNotReuseAnOutstandingSnapshot()
+    {
+        var tracker = new AcknowledgementTracker();
+        var partition = new TopicPartition("topic", 0);
+        tracker.TrackDeliveredRecords(partition, 10, 12);
+        var first = tracker.FlushForPoll();
+        tracker.TrackDeliveredRecords(partition, 20, 22);
+        var second = tracker.FlushForPoll();
+        tracker.ReturnPollBatches(second);
+        await Assert.That(first[partition][0].FirstOffset).IsEqualTo(10);
+        tracker.ReturnPollBatches(first);
+        await Assert.That(second[partition][0].FirstOffset).IsEqualTo(20);
+    }
+
+    [Test]
+    public async Task FlushForPoll_MaterializationFailureReturnsTemporaryContainers()
+    {
+        var tracker = new AcknowledgementTracker();
+        var partition = new TopicPartition("topic", 0);
+        tracker.TrackDeliveredRecords(partition, 0, 1);
+        tracker.TrackDeliveredRecords(new("topic", 1), 0, long.MaxValue);
+        await Assert.That(() => tracker.FlushForPoll()).Throws<OverflowException>();
+        await Assert.That(tracker.HasPending).IsFalse();
+        tracker.TrackDeliveredRecords(partition, 20, 22);
+        var snapshot = tracker.FlushForPoll();
+        await Assert.That(snapshot.Count).IsEqualTo(1);
+        await Assert.That(snapshot[partition][0].FirstOffset).IsEqualTo(20);
+        tracker.ReturnPollBatches(snapshot);
+    }
+
+    [Test]
+    [Arguments(AcknowledgeType.Accept)]
+    [Arguments(AcknowledgeType.Reject)]
+    [Arguments(AcknowledgeType.Renew)]
+    public async Task ReleaseRange_RetryPreservesEveryOffsetAndNewExplicitOutcome(AcknowledgeType outcome)
+    {
+        var tracker = new AcknowledgementTracker();
+        var partition = new TopicPartition("topic", 0);
+        tracker.ReleaseUndeliveredRecords(partition, 100, 227);
+        var submitted = tracker.Flush();
+        var release = submitted[partition][0];
+        await Assert.That(release.AcknowledgeTypes).IsEquivalentTo(new byte[] { 2 });
+        await Assert.That(release.FirstOffset).IsEqualTo(100);
+        await Assert.That(release.LastOffset).IsEqualTo(227);
+
+        tracker.Acknowledge(partition, 150, outcome, requireTracked: false);
+        tracker.RequeueAcks(submitted);
+        var retried = tracker.Flush()[partition];
+        var offsets = new ShareAcknowledgedOffsets(retried);
+        await Assert.That(offsets.Length).IsEqualTo(128);
+        foreach (var batch in retried)
+            for (var index = 0; index < batch.OffsetCount; index++)
+                await Assert.That(batch.GetAcknowledgeType(index)).IsEqualTo(
+                    (byte)(batch.FirstOffset + index == 150 ? outcome : AcknowledgeType.Release));
+        await Assert.That(release.AcknowledgeTypes).IsEquivalentTo(new byte[] { 2 });
+    }
+
+    [Test]
     [Arguments(1)]
     [Arguments(64)]
     public async Task Flush_ReusedStateDoesNotChangePreviousBatchesOrCarryExplicitOutcomes(int partitionCount)
