@@ -4,6 +4,7 @@ namespace Dekaf.Tests.Integration;
 
 [NotInParallel("ControllerOnlyKafkaContainer")]
 [ClassDataSource<ControllerOnlyKafkaContainer>(Shared = SharedType.PerTestSession)]
+[Category("Admin")]
 public sealed class ControllerBootstrapIntegrationTests(ControllerOnlyKafkaContainer kafka)
 {
     [Test]

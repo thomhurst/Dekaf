@@ -10,7 +10,7 @@ namespace Dekaf.Tests.Integration;
 /// not just that the instrument names exist (unit tests cover the buffer gauges,
 /// but the per-broker dictionaries only populate with a live connection).
 /// </summary>
-[Category("ProducerStateGauges")]
+[Category("Telemetry")]
 public sealed class ProducerStateGaugeIntegrationTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     private static readonly string[] BrokerLongGauges =

@@ -8,7 +8,7 @@ using Dekaf.Protocol.Messages;
 
 namespace Dekaf.Tests.Integration;
 
-[Category("Diagnostics")]
+[Category("Telemetry")]
 public sealed class ClientStatusIntegrationTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
@@ -154,7 +154,7 @@ public sealed class ClientStatusIntegrationTests(KafkaTestContainer kafka) : Kaf
     }
 }
 
-[Category("Diagnostics")]
+[Category("Telemetry")]
 [Category("Resilience")]
 [NotInParallel("RackAwareKafkaContainer")]
 [ClassDataSource<RackAwareKafkaContainer>(Shared = SharedType.PerTestSession)]

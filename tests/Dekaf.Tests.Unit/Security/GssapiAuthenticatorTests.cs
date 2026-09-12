@@ -224,7 +224,7 @@ public class GssapiConfigTests
 
         await Assert.That(options.Package).IsEqualTo("Kerberos");
         await Assert.That(options.TargetName).IsEqualTo("kafka/broker.example.com");
-        await Assert.That(options.RequiredProtectionLevel).IsEqualTo(System.Net.Security.ProtectionLevel.None);
+        await Assert.That(options.RequiredProtectionLevel).IsEqualTo(System.Net.Security.ProtectionLevel.Sign);
         await Assert.That(options.Credential).IsNotNull();
     }
 

@@ -105,7 +105,9 @@ public sealed class GssapiConfig
         {
             Package = "Kerberos",
             TargetName = BuildSpn(targetHost),
-            RequiredProtectionLevel = ProtectionLevel.None,
+            // Integrity is required for the RFC 4752 negotiation, even when Kafka traffic
+            // itself does not use a SASL security layer.
+            RequiredProtectionLevel = ProtectionLevel.Sign,
             AllowedImpersonationLevel = TokenImpersonationLevel.Identification
         };
 

@@ -146,6 +146,7 @@ public sealed partial class KafkaConnection :
     private readonly CancellationTokenSourcePool _timeoutCtsPool;
     private readonly ClientTelemetryMetricCollector? _telemetryMetricCollector;
     private readonly SemaphoreSlim _writeLock = new(1, 1);
+    private readonly SaslReauthenticationGate? _reauthenticationGate;
     private readonly SemaphoreSlim _scatterGatherSenderLock = new(1, 1);
     private SocketScatterGatherSender? _scatterGatherSender;
 
@@ -279,6 +280,7 @@ public sealed partial class KafkaConnection :
         _port = port;
         _clientId = clientId;
         _options = options ?? new ConnectionOptions();
+        _reauthenticationGate = _options.SaslMechanism == SaslMechanism.None ? null : new SaslReauthenticationGate();
         var connectionSizes = PoolSizing.ForConnection(_options.MaxInFlightRequestsPerConnection);
         _pendingRequestShards = CreatePendingRequestShards(connectionSizes.PendingRequests);
         _pendingRequestSlots = new SemaphoreSlim(connectionSizes.PendingRequests, connectionSizes.PendingRequests);
@@ -649,20 +651,30 @@ public sealed partial class KafkaConnection :
     // existing callback slot. Constrained calls avoid boxing and per-request observer objects.
     private interface IRequestObservation
     {
+        bool IsReauthentication { get; }
         Action? WriteStartedCallback { get; }
         CancellationToken AfterWriteStarts(CancellationToken cancellationToken);
     }
 
     private readonly struct WriteObservation(Action? callback) : IRequestObservation
     {
+        public bool IsReauthentication => false;
         public Action? WriteStartedCallback => callback;
         public CancellationToken AfterWriteStarts(CancellationToken cancellationToken) => cancellationToken;
     }
 
     private readonly struct CancellationObservation(KafkaRequestWriteContext context) : IRequestObservation
     {
+        public bool IsReauthentication => false;
         public Action? WriteStartedCallback => context.WriteStartedCallback;
         public CancellationToken AfterWriteStarts(CancellationToken cancellationToken) => context.ResponseCancellationToken;
+    }
+
+    private readonly struct ReauthenticationObservation(Action? callback) : IRequestObservation
+    {
+        public bool IsReauthentication => true;
+        public Action? WriteStartedCallback => callback;
+        public CancellationToken AfterWriteStarts(CancellationToken cancellationToken) => cancellationToken;
     }
 
     private async ValueTask<TResponse> SendAsyncCore<TRequest, TResponse, TObservation>(
@@ -686,79 +698,90 @@ public sealed partial class KafkaConnection :
         await _brokerThrottleState.WaitAsync(cancellationToken, _pendingRequestSlotCts.Token)
             .ConfigureAwait(false);
 
-        using var operation = TrackOperation();
-
-        if (requireReady ? !IsConnected : !(_socket?.Connected ?? false))
-            throw new InvalidOperationException("Not connected");
-
-        Touch();
-        var correlationId = Interlocked.Increment(ref s_globalCorrelationId);
-        var headerVersion = KafkaMessageMetadata<TRequest, TResponse>.GetRequestHeaderVersion(apiVersion);
-        var responseHeaderVersion = KafkaMessageMetadata<TRequest, TResponse>.GetResponseHeaderVersion(apiVersion);
-
-        await ReservePendingRequestSlotAsync(cancellationToken).ConfigureAwait(false);
-        var pending = _pendingRequestPool.Rent();
-        var responseMemoryPool = request is FetchRequest fetchRequest
-            ? fetchRequest.ResponseMemoryPool
-            : null;
-        pending.Initialize(
-            responseHeaderVersion,
-            cancellationToken,
-            registerCancellation: false,
-            checkCrcs: request is FetchRequest { CheckCrcs: true },
-            responseMemoryPool: responseMemoryPool);
-        try
-        {
-            AddPendingRequest(correlationId, pending);
-        }
-        catch
-        {
-            ReleasePendingRequestSlot();
-            _pendingRequestPool.Return(pending);
-            throw;
-        }
-
-        ThrowIfDisposedAfterAddingPendingRequest(correlationId);
+        if (_reauthenticationGate is not null && !observation.IsReauthentication)
+            await _reauthenticationGate.EnterAsync(cancellationToken).ConfigureAwait(false);
 
         try
         {
-            var telemetryStartTimestamp = _telemetryMetricCollector is null ? 0 : Stopwatch.GetTimestamp();
+            using var operation = TrackOperation();
 
-            // Write phase
-            LogSendingRequest(KafkaMessageMetadata<TRequest, TResponse>.ApiKey, correlationId, apiVersion, _host, _port);
+            if (requireReady ? !IsConnected : !(_socket?.Connected ?? false))
+                throw new InvalidOperationException("Not connected");
 
-            await PreSerializeAndWriteCoreAsync<TRequest, TResponse, TObservation>(
-                    request,
-                    correlationId,
-                    apiVersion,
-                    headerVersion,
-                    callerOwnsTimeout: false,
-                    observation,
-                    cancellationToken)
-                .ConfigureAwait(false);
+            Touch();
+            var correlationId = Interlocked.Increment(ref s_globalCorrelationId);
+            var headerVersion = KafkaMessageMetadata<TRequest, TResponse>.GetRequestHeaderVersion(apiVersion);
+            var responseHeaderVersion = KafkaMessageMetadata<TRequest, TResponse>.GetResponseHeaderVersion(apiVersion);
 
-            LogRequestSentWaitingForResponse(correlationId);
-
-            cancellationToken = observation.AfterWriteStarts(cancellationToken);
-
-            // Response phase: await response with timeout and parse
-            var response = await AwaitAndParseResponseAsync<TRequest, TResponse>(
-                pending, correlationId, apiVersion, callerOwnsTimeout: false, cancellationToken).ConfigureAwait(false);
-            TouchSuccessful();
-            _telemetryMetricCollector?.RecordRequestLatency(BrokerId, telemetryStartTimestamp);
-            return response;
-        }
-        catch
-        {
-            // Clean up pending request on any failure (write lock cancelled, write failed,
-            // or response error). AwaitAndParseResponseAsync has its own finally that also
-            // tries TryRemove — the second attempt harmlessly returns false.
-            if (TryRemovePendingRequest(correlationId, out var removed))
+            await ReservePendingRequestSlotAsync(cancellationToken).ConfigureAwait(false);
+            var pending = _pendingRequestPool.Rent();
+            var responseMemoryPool = request is FetchRequest fetchRequest
+                ? fetchRequest.ResponseMemoryPool
+                : null;
+            pending.Initialize(
+                responseHeaderVersion,
+                cancellationToken,
+                registerCancellation: false,
+                checkCrcs: request is FetchRequest { CheckCrcs: true },
+                responseMemoryPool: responseMemoryPool);
+            try
             {
-                _pendingRequestPool.Return(removed.Request);
+                AddPendingRequest(correlationId, pending);
+            }
+            catch
+            {
+                ReleasePendingRequestSlot();
+                _pendingRequestPool.Return(pending);
+                throw;
             }
 
-            throw;
+            ThrowIfDisposedAfterAddingPendingRequest(correlationId);
+
+            try
+            {
+                var telemetryStartTimestamp = _telemetryMetricCollector is null ? 0 : Stopwatch.GetTimestamp();
+
+                // Write phase
+                LogSendingRequest(KafkaMessageMetadata<TRequest, TResponse>.ApiKey, correlationId, apiVersion, _host, _port);
+
+                await PreSerializeAndWriteCoreAsync<TRequest, TResponse, TObservation>(
+                        request,
+                        correlationId,
+                        apiVersion,
+                        headerVersion,
+                        callerOwnsTimeout: false,
+                        observation,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+
+                LogRequestSentWaitingForResponse(correlationId);
+
+                cancellationToken = observation.AfterWriteStarts(cancellationToken);
+
+                // Response phase: await response with timeout and parse
+                var response = await AwaitAndParseResponseAsync<TRequest, TResponse>(
+                    pending, correlationId, apiVersion, callerOwnsTimeout: false, cancellationToken).ConfigureAwait(false);
+                TouchSuccessful();
+                _telemetryMetricCollector?.RecordRequestLatency(BrokerId, telemetryStartTimestamp);
+                return response;
+            }
+            catch
+            {
+                // Clean up pending request on any failure (write lock cancelled, write failed,
+                // or response error). AwaitAndParseResponseAsync has its own finally that also
+                // tries TryRemove — the second attempt harmlessly returns false.
+                if (TryRemovePendingRequest(correlationId, out var removed))
+                {
+                    _pendingRequestPool.Return(removed.Request);
+                }
+
+                throw;
+            }
+        }
+        finally
+        {
+            if (_reauthenticationGate is not null && !observation.IsReauthentication)
+                _reauthenticationGate.Exit();
         }
     }
 
@@ -935,24 +958,35 @@ public sealed partial class KafkaConnection :
         await _brokerThrottleState.WaitAsync(cancellationToken, _pendingRequestSlotCts.Token)
             .ConfigureAwait(false);
 
-        using var operation = TrackOperation();
+        if (_reauthenticationGate is not null)
+            await _reauthenticationGate.EnterAsync(cancellationToken).ConfigureAwait(false);
 
-        if (!IsConnected)
-            throw new InvalidOperationException("Not connected");
+        try
+        {
+            using var operation = TrackOperation();
 
-        Touch();
-        var correlationId = Interlocked.Increment(ref s_globalCorrelationId);
-        var headerVersion = KafkaMessageMetadata<TRequest, TResponse>.GetRequestHeaderVersion(apiVersion);
+            if (!IsConnected)
+                throw new InvalidOperationException("Not connected");
 
-        // Don't register a pending request - we won't receive a response
+            Touch();
+            var correlationId = Interlocked.Increment(ref s_globalCorrelationId);
+            var headerVersion = KafkaMessageMetadata<TRequest, TResponse>.GetRequestHeaderVersion(apiVersion);
 
-        LogSendingFireAndForgetRequest(KafkaMessageMetadata<TRequest, TResponse>.ApiKey, correlationId, apiVersion, _host, _port);
+            // Don't register a pending request - we won't receive a response
 
-        await PreSerializeAndWriteAsync<TRequest, TResponse>(request, correlationId, apiVersion, headerVersion, cancellationToken, callerOwnsTimeout)
-            .ConfigureAwait(false);
+            LogSendingFireAndForgetRequest(KafkaMessageMetadata<TRequest, TResponse>.ApiKey, correlationId, apiVersion, _host, _port);
 
-        TouchSuccessful();
-        LogFireAndForgetRequestSent(correlationId);
+            await PreSerializeAndWriteAsync<TRequest, TResponse>(request, correlationId, apiVersion, headerVersion, cancellationToken, callerOwnsTimeout)
+                .ConfigureAwait(false);
+
+            TouchSuccessful();
+            LogFireAndForgetRequestSent(correlationId);
+        }
+        finally
+        {
+            if (_reauthenticationGate is not null)
+                _reauthenticationGate.Exit();
+        }
     }
 
     public Task<TResponse> SendPipelinedAsync<TRequest, TResponse>(
@@ -1061,75 +1095,88 @@ public sealed partial class KafkaConnection :
         await _brokerThrottleState.WaitAsync(cancellationToken, _pendingRequestSlotCts.Token)
             .ConfigureAwait(false);
 
-        using var operation = TrackOperation();
-
-        if (!IsConnected)
-            throw new InvalidOperationException("Not connected");
-
-        Touch();
-        var correlationId = Interlocked.Increment(ref s_globalCorrelationId);
-        var headerVersion = KafkaMessageMetadata<TRequest, TResponse>.GetRequestHeaderVersion(apiVersion);
-        var responseHeaderVersion = KafkaMessageMetadata<TRequest, TResponse>.GetResponseHeaderVersion(apiVersion);
-
-        await ReservePendingRequestSlotAsync(cancellationToken).ConfigureAwait(false);
-        var pending = _pendingRequestPool.Rent();
-        var responseMemoryPool = request is FetchRequest fetchRequest
-            ? fetchRequest.ResponseMemoryPool
-            : null;
-        // The pipelined wrapper performs bounded internal parsing, then only signals the
-        // sender. Resume it in the receive dispatch frame to avoid a ThreadPool round trip.
-        pending.Initialize(
-            responseHeaderVersion,
-            cancellationToken,
-            registerCancellation: false,
-            checkCrcs: request is FetchRequest { CheckCrcs: true },
-            runContinuationsAsynchronously: false,
-            responseMemoryPool: responseMemoryPool);
-        try
-        {
-            AddPendingRequest(correlationId, pending);
-        }
-        catch
-        {
-            ReleasePendingRequestSlot();
-            _pendingRequestPool.Return(pending);
-            throw;
-        }
-
-        ThrowIfDisposedAfterAddingPendingRequest(correlationId);
+        // Admission covers the write only; the response completes separately.
+        // Waiting for a long fetch response here would delay the reauthentication drain.
+        if (_reauthenticationGate is not null)
+            await _reauthenticationGate.EnterAsync(cancellationToken).ConfigureAwait(false);
 
         try
         {
-            var telemetryStartTimestamp = _telemetryMetricCollector is null ? 0 : Stopwatch.GetTimestamp();
+            using var operation = TrackOperation();
 
-            await PreSerializeAndWriteAsync<TRequest, TResponse>(
-                    request,
-                    correlationId,
-                    apiVersion,
-                    headerVersion,
-                    cancellationToken,
-                    callerOwnsTimeout,
-                    requestWriteStarted)
-                .ConfigureAwait(false);
+            if (!IsConnected)
+                throw new InvalidOperationException("Not connected");
 
-            return PooledPipelinedResponse<TRequest, TResponse>.Rent(
-                this,
-                pending,
-                correlationId,
-                apiVersion,
-                callerOwnsTimeout,
-                telemetryStartTimestamp,
-                cancellationToken);
-        }
-        catch
-        {
-            // On failure, ensure we clean up the pending request
-            if (TryRemovePendingRequest(correlationId, out var removed))
+            Touch();
+            var correlationId = Interlocked.Increment(ref s_globalCorrelationId);
+            var headerVersion = KafkaMessageMetadata<TRequest, TResponse>.GetRequestHeaderVersion(apiVersion);
+            var responseHeaderVersion = KafkaMessageMetadata<TRequest, TResponse>.GetResponseHeaderVersion(apiVersion);
+
+            await ReservePendingRequestSlotAsync(cancellationToken).ConfigureAwait(false);
+            var pending = _pendingRequestPool.Rent();
+            var responseMemoryPool = request is FetchRequest fetchRequest
+                ? fetchRequest.ResponseMemoryPool
+                : null;
+            // The pipelined wrapper performs bounded internal parsing, then only signals the
+            // sender. Resume it in the receive dispatch frame to avoid a ThreadPool round trip.
+            pending.Initialize(
+                responseHeaderVersion,
+                cancellationToken,
+                registerCancellation: false,
+                checkCrcs: request is FetchRequest { CheckCrcs: true },
+                runContinuationsAsynchronously: false,
+                responseMemoryPool: responseMemoryPool);
+            try
             {
-                _pendingRequestPool.Return(removed.Request);
+                AddPendingRequest(correlationId, pending);
+            }
+            catch
+            {
+                ReleasePendingRequestSlot();
+                _pendingRequestPool.Return(pending);
+                throw;
             }
 
-            throw;
+            ThrowIfDisposedAfterAddingPendingRequest(correlationId);
+
+            try
+            {
+                var telemetryStartTimestamp = _telemetryMetricCollector is null ? 0 : Stopwatch.GetTimestamp();
+
+                await PreSerializeAndWriteAsync<TRequest, TResponse>(
+                        request,
+                        correlationId,
+                        apiVersion,
+                        headerVersion,
+                        cancellationToken,
+                        callerOwnsTimeout,
+                        requestWriteStarted)
+                    .ConfigureAwait(false);
+
+                return PooledPipelinedResponse<TRequest, TResponse>.Rent(
+                    this,
+                    pending,
+                    correlationId,
+                    apiVersion,
+                    callerOwnsTimeout,
+                    telemetryStartTimestamp,
+                    cancellationToken);
+            }
+            catch
+            {
+                // On failure, ensure we clean up the pending request
+                if (TryRemovePendingRequest(correlationId, out var removed))
+                {
+                    _pendingRequestPool.Return(removed.Request);
+                }
+
+                throw;
+            }
+        }
+        finally
+        {
+            if (_reauthenticationGate is not null)
+                _reauthenticationGate.Exit();
         }
     }
 
@@ -2702,6 +2749,7 @@ public sealed partial class KafkaConnection :
                 Dekaf.MonotonicClock.GetMilliseconds());
         }
 
+        _reauthenticationGate?.Close();
         DisarmReceiveTimeout();
         CancelPendingRequestSlotWaiters();
     }
@@ -3636,9 +3684,11 @@ public sealed partial class KafkaConnection :
                 if (response is null)
                     break;
 
+                // A final client token still needs to reach the broker even if evaluating
+                // the challenge marked the authenticator complete (for example GSSAPI).
                 authBytes = response;
             }
-            while (!authenticator.IsComplete);
+            while (true);
         }
         finally
         {
@@ -3757,8 +3807,8 @@ public sealed partial class KafkaConnection :
     /// <summary>
     /// Performs re-authentication on the existing connection (KIP-368).
     /// Re-authentication uses standard SaslHandshake + SaslAuthenticate API messages sent
-    /// through the normal multiplexed pipeline. The broker handles these in-band with
-    /// other requests per KIP-368.
+    /// through the normal multiplexed pipeline, with application request admission paused
+    /// until the exchange completes, as required by KIP-368.
     /// </summary>
     internal async Task PerformReauthenticationAsync()
     {
@@ -3801,9 +3851,9 @@ public sealed partial class KafkaConnection :
         {
             LogSaslReauthenticationFailed(ex, BrokerId);
 
-            // Don't tear down the connection - let it fail naturally when the broker
-            // rejects requests after session expiry. The connection pool will handle
-            // reconnection at that point.
+            // Credential resolution can fail before the wire exchange starts. The current
+            // session remains usable until expiry. Failures inside the exchange itself
+            // abort the transport before reopening request admission.
         }
         finally
         {
@@ -3828,14 +3878,19 @@ public sealed partial class KafkaConnection :
         var authenticator = await CreateSaslAuthenticatorAsync(cancellationToken).ConfigureAwait(false);
 
         long sessionLifetimeMs = 0;
+        var exchangeStarted = false;
 
         try
         {
-            // Step 1: Send SaslHandshake to negotiate mechanism
-            // Uses the multiplexed pipeline for in-band re-authentication per KIP-368
-            var handshakeResponse = await SendAsync<SaslHandshakeRequest, SaslHandshakeResponse>(
+            await PrepareSaslAuthenticatorAsync(authenticator, cancellationToken).ConfigureAwait(false);
+            if (_reauthenticationGate is not null)
+                await _reauthenticationGate.PauseAsync(cancellationToken).ConfigureAwait(false);
+
+            // A broker expects only SASL messages between handshake and authentication completion.
+            cancellationToken.ThrowIfCancellationRequested();
+            var handshakeResponse = await SendAsyncCore<SaslHandshakeRequest, SaslHandshakeResponse, ReauthenticationObservation>(
                 new SaslHandshakeRequest { Mechanism = authenticator.MechanismName },
-                1,
+                1, requireReady: true, new ReauthenticationObservation(() => exchangeStarted = true),
                 cancellationToken).ConfigureAwait(false);
 
             if (handshakeResponse.ErrorCode != ErrorCode.None)
@@ -3844,9 +3899,6 @@ public sealed partial class KafkaConnection :
                     $"SASL re-auth handshake failed: {handshakeResponse.ErrorCode}. " +
                     $"Supported mechanisms: {string.Join(", ", handshakeResponse.Mechanisms)}");
             }
-
-            // Step 2: Fetch any credentials needed before creating the synchronous initial response.
-            await PrepareSaslAuthenticatorAsync(authenticator, cancellationToken).ConfigureAwait(false);
 
             var authBytes = authenticator.GetInitialResponse();
 
@@ -3857,9 +3909,9 @@ public sealed partial class KafkaConnection :
                 SaslAuthenticateResponse authResponse;
                 try
                 {
-                    authResponse = await SendAsync<SaslAuthenticateRequest, SaslAuthenticateResponse>(
+                    authResponse = await SendAsyncCore<SaslAuthenticateRequest, SaslAuthenticateResponse, ReauthenticationObservation>(
                         new SaslAuthenticateRequest { AuthBytes = sentAuthBytes },
-                        2,
+                        2, requireReady: true, default,
                         cancellationToken).ConfigureAwait(false);
                 }
                 finally
@@ -3886,12 +3938,23 @@ public sealed partial class KafkaConnection :
                 if (response is null)
                     break;
 
+                // A final client token still needs to reach the broker even if evaluating
+                // the challenge marked the authenticator complete (for example GSSAPI).
                 authBytes = response;
             }
-            while (!authenticator.IsComplete);
+            while (true);
+        }
+        catch (Exception ex) when (exchangeStarted)
+        {
+            // Failed or interrupted exchanges cannot safely resume application traffic.
+            // Abort marks the connection disposed, so the outer catch will not log this failure.
+            LogSaslReauthenticationFailed(ex, BrokerId);
+            AbortAfterWriteFailure();
+            throw;
         }
         finally
         {
+            _reauthenticationGate?.Resume();
             (authenticator as IDisposable)?.Dispose();
         }
 
@@ -4425,7 +4488,7 @@ public sealed partial class KafkaConnection :
     [LoggerMessage(Level = LogLevel.Information, Message = "SASL re-authentication successful for broker {BrokerId}. New session lifetime: {SessionLifetimeMs}ms")]
     private partial void LogSaslReauthenticationSuccessful(int brokerId, long sessionLifetimeMs);
 
-    [LoggerMessage(Level = LogLevel.Error, Message = "SASL re-authentication failed for broker {BrokerId}. Connection may be terminated by the broker when the session expires")]
+    [LoggerMessage(Level = LogLevel.Error, Message = "SASL re-authentication failed for broker {BrokerId}")]
     private partial void LogSaslReauthenticationFailed(Exception ex, int brokerId);
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Disposing connection to broker {BrokerId}: {PendingRequestCount} pending requests")]

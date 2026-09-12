@@ -303,6 +303,7 @@ internal sealed class TransactionalCrashClientProcess : IAsyncDisposable
 /// Child-process entry point used by <see cref="TransactionCrashRecoveryTests"/>.
 /// It is inert during ordinary discovery and activated only through the harness environment.
 /// </summary>
+[Category("Transaction")]
 public sealed class TransactionalCrashClient
 {
     [Test]

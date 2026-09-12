@@ -282,6 +282,7 @@ internal sealed class ConsumerGroupCrashClientProcess : IAsyncDisposable
 /// Child-process entry point. The parent kills this process while its consumer is
 /// live, so no graceful group-leave path can run.
 /// </summary>
+[Category("ConsumerGroup")]
 public sealed class ConsumerGroupCrashClient
 {
     [Test]
