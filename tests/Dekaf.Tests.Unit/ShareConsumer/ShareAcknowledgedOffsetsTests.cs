@@ -36,6 +36,71 @@ public sealed class ShareAcknowledgedOffsetsTests
     }
 
     [Test]
+    [Arguments(0, false)]
+    [Arguments(0, true)]
+    [Arguments(17, false)]
+    [Arguments(17, true)]
+    [Arguments(65, false)]
+    [Arguments(65, true)]
+    [Arguments(1025, false)]
+    [Arguments(1025, true)]
+    public async Task OffsetView_FirstAccessAcrossBatchesPreservesOffsetsWithoutAllocating(int length, bool sparse)
+    {
+        // Build an independent scalar oracle before constructing any offset view.
+        byte[] dispositions = [1, 2, 3, 4, 127, 128, 255];
+        var expected = new List<long>();
+        var batches = new List<AcknowledgementBatchData>();
+        for (var batchIndex = 0; batchIndex < 3; batchIndex++)
+        {
+            var firstOffset = 10L + batchIndex * (length + 100L);
+            batches.Add(new AcknowledgementBatchData(firstOffset, firstOffset - 1, []));
+            var types = new byte[length];
+            for (var index = 0; index < length; index++)
+            {
+                if (sparse && index % 3 == 0)
+                    continue;
+                types[index] = dispositions[index % dispositions.Length];
+                expected.Add(firstOffset + index);
+            }
+            batches.Add(new AcknowledgementBatchData(firstOffset, firstOffset + length - 1, types));
+            if (sparse)
+                batches.Add(new AcknowledgementBatchData(firstOffset + length, firstOffset + length + 32, new byte[33]));
+        }
+
+        var expectedOffsets = expected.ToArray();
+        var indexed = new long[expectedOffsets.Length];
+        var enumerated = new long[expectedOffsets.Length];
+        var copied = new long[expectedOffsets.Length + 1];
+        copied[^1] = -1;
+
+        // Include construction and every access path, with no view or cursor warmup.
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        var offsets = new ShareAcknowledgedOffsets(batches);
+        var retainedCopy = offsets;
+        var enumerator = offsets.GetEnumerator();
+        var enumeratedCount = 0;
+        for (var index = expectedOffsets.Length - 1; index >= 0; index--)
+        {
+            // Reverse indexing through a copied view must not move the forward enumerator.
+            indexed[index] = retainedCopy[index];
+            if (enumerator.MoveNext())
+                enumerated[enumeratedCount++] = enumerator.Current;
+        }
+        var exhausted = !enumerator.MoveNext();
+        retainedCopy.CopyTo(copied);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        await Assert.That(allocated).IsEqualTo(0);
+        await Assert.That(offsets.Length).IsEqualTo(expectedOffsets.Length);
+        await Assert.That(enumeratedCount).IsEqualTo(expectedOffsets.Length);
+        await Assert.That(exhausted).IsTrue();
+        await Assert.That(indexed.AsSpan().SequenceEqual(expectedOffsets)).IsTrue();
+        await Assert.That(enumerated.AsSpan().SequenceEqual(expectedOffsets)).IsTrue();
+        await Assert.That(copied.AsSpan(0, expectedOffsets.Length).SequenceEqual(expectedOffsets)).IsTrue();
+        await Assert.That(copied[^1]).IsEqualTo(-1);
+    }
+
+    [Test]
     [Arguments(0)]
     [Arguments(1)]
     [Arguments(7)]
