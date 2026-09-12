@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using Dekaf.Consumer;
 using Dekaf.Serialization;
 using Dekaf.Producer;
@@ -139,6 +140,94 @@ public sealed class PartitionedKeyComparerIntegrationTests(KafkaTestContainer ka
         await Assert.That(emptyKey!.Value.IsKeyNull).IsFalse();
         await Assert.That(nullKey.Value.Key.IsEmpty).IsTrue();
         await Assert.That(emptyKey.Value.Key.IsEmpty).IsTrue();
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public Task PublicHandlers_CollisionTransitionKeepsExistingKeyOrdered(bool rawMemory)
+        => rawMemory ? VerifyCollisionTransitionAsync(Serializers.RawBytes)
+            : VerifyCollisionTransitionAsync(Serializers.ByteArray);
+
+    private async Task VerifyCollisionTransitionAsync<TKey>(IDeserializer<TKey> deserializer)
+    {
+        const int recordCount = 14;
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 1);
+        await using var producer = await Kafka.CreateProducer<byte[], string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers).BuildAsync();
+        for (var offset = 0; offset < recordCount; offset++)
+        {
+            var identity = offset switch { 11 => 0, 12 => 2, _ => offset };
+            var key = new byte[1024];
+            BinaryPrimitives.WriteInt32LittleEndian(key.AsSpan(identity is < 2 or 13 ? 1020 : 992), identity + 1);
+            await producer.ProduceAsync(topic, key, "value");
+        }
+        var allKeysRead = NewSignal();
+        await using var consumer = await Kafka.CreateConsumer<TKey, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithKeyDeserializer(new CountingKeyDeserializer<TKey>(deserializer, recordCount, allKeysRead))
+            .WithValueDeserializer(Serializers.String)
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithOffsetCommitMode(OffsetCommitMode.Manual)
+            .WithQueuedMinMessages(1).BuildAsync();
+        consumer.Assign([new TopicPartition(topic, 0)]);
+        var releaseFirst = NewSignal();
+        var releaseSecond = NewSignal();
+        var equalStarted = NewSignal();
+        var sentinelStarted = NewSignal();
+        var complete = NewSignal();
+        var processed = 0;
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var options = new PartitionedProcessingOptions
+        {
+            Ordering = PartitionedProcessingOrder.Key,
+            MaxConcurrentHandlersPerPartition = 2,
+            MaxHandlerBatchSize = 1,
+            CommitPolicy = PartitionCommitPolicy.UserManaged
+        };
+        var running = consumer.RunPartitionedAsync(async (_, record, cancellationToken) =>
+        {
+            switch (record.Offset)
+            {
+                case 0: await releaseFirst.Task.WaitAsync(cancellationToken); break;
+                case 1: await releaseSecond.Task.WaitAsync(cancellationToken); break;
+                case 11: equalStarted.TrySetResult(); break;
+                case 13: sentinelStarted.TrySetResult(); break;
+            }
+            if (Interlocked.Increment(ref processed) == recordCount) complete.TrySetResult();
+        }, options, timeout.Token).AsTask();
+        try
+        {
+            // Both workers hold their lanes while all nine colliding keys enter
+            // the coordinator. Release only the second worker to drain other keys.
+            await allKeysRead.Task.WaitAsync(timeout.Token);
+            releaseSecond.TrySetResult();
+            await sentinelStarted.Task.WaitAsync(timeout.Token);
+            await Assert.That(equalStarted.Task.IsCompleted).IsFalse();
+            releaseFirst.TrySetResult();
+            await complete.Task.WaitAsync(timeout.Token);
+            await Assert.That(equalStarted.Task.IsCompleted).IsTrue();
+        }
+        finally
+        {
+            releaseFirst.TrySetResult();
+            releaseSecond.TrySetResult();
+            await timeout.CancelAsync();
+            try { await running; }
+            catch (OperationCanceledException) when (timeout.IsCancellationRequested) { }
+        }
+    }
+
+    private sealed class CountingKeyDeserializer<TKey>(IDeserializer<TKey> inner, int expected, TaskCompletionSource complete)
+        : IDeserializer<TKey>
+    {
+        private int _count;
+        public TKey Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
+        {
+            var key = inner.Deserialize(data, context);
+            if (Interlocked.Increment(ref _count) == expected) complete.TrySetResult();
+            return key;
+        }
     }
 
     private async Task VerifyOrderingAsync<TKey>(

@@ -42,7 +42,8 @@ COMMENT = re.compile(r'//[^\n]*|/\*.*?\*/', re.S)
 SENTINELS = ('AccumulatorAppendBenchmarks', 'ConsumerHotPathBenchmarks',
              'FetchResponseParsingBenchmarks', 'ProduceResponseParsingBenchmarks')
 KEY_DISPATCH_BENCHMARKS = ('PartitionMessageKeyBenchmarks', 'CustomKeyOrderedDispatchBenchmarks', 'BinaryKeyDispatchBenchmarks',
-                           'DistinctBinaryKeyDispatchBenchmarks', 'SharedSuffixBinaryKeyDispatchBenchmarks')
+                           'DistinctBinaryKeyDispatchBenchmarks', 'SharedSuffixBinaryKeyDispatchBenchmarks',
+                           'BinaryHashPromotionBenchmarks')
 COMPONENTS = {
     'src/Dekaf/Consumer/KeyOrderedPartitionDispatcher': KEY_DISPATCH_BENCHMARKS,
     'src/Dekaf/Consumer/PartitionMessageKey.cs': KEY_DISPATCH_BENCHMARKS,

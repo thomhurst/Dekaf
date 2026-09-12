@@ -182,6 +182,8 @@ internal sealed partial class KeyOrderedPartitionDispatcher<TKey, TValue>
             }
 
             ReleaseLanes();
+            if (_hasBinaryKeyComparer)
+                Unsafe.As<BinaryPartitionMessageKeyComparer<TKey>>(StandardLanes.Comparer).ReleaseCollisionState();
             if (_failure is not null)
             {
                 // Failed removal or rebuilding can displace lanes. Their retained
@@ -249,13 +251,24 @@ internal sealed partial class KeyOrderedPartitionDispatcher<TKey, TValue>
             : PartitionMessageKey<TKey>.From(record.Key, record.IsKeyNull);
         var binaryKeyComparer = _hasBinaryKeyComparer
             ? Unsafe.As<BinaryPartitionMessageKeyComparer<TKey>>(StandardLanes.Comparer) : null;
-        if (binaryKeyComparer is not null && key.HasValue)
-            key = key.WithBinaryHashCode(binaryKeyComparer.GetHashCode(key));
+        KeyLane? lane = null;
+        var sampledHash = false;
+        if (binaryKeyComparer is not null)
+        {
+            // An existing sampled lane already determines the key's membership.
+            // Only unmatched keys need the full hash after collision promotion.
+            if (binaryKeyComparer.TryGetSampledKey(key, out var sampledKey))
+                StandardLanes.TryGetValue(sampledKey, out lane);
+            if (lane is null && key.HasValue)
+                key = key.WithBinaryHashCode(binaryKeyComparer.ComputeHashCode(key, out sampledHash));
+        }
 #if NETSTANDARD2_0
-        if (!TryGetLane(key, out var lane))
+        if (lane is null && !TryGetLane(key, out lane))
         {
             lane = RentLane();
             lane.Key = key;
+            lane.SampledHash = sampledHash;
+            if (sampledHash) binaryKeyComparer!.AddSampledLane();
             lane.StorageOrNext = record.RetainStorage();
             try
             {
@@ -271,15 +284,20 @@ internal sealed partial class KeyOrderedPartitionDispatcher<TKey, TValue>
 #else
         // The coordinator owns membership. Publish the lane before retaining its
         // storage, so shutdown owns cleanup even if initialization fails.
-        ref var entry = ref GetLaneEntry(key);
-        var lane = entry;
         if (lane is null)
         {
-            lane = RentLane();
-            entry = lane;
-            lane.Key = key;
-            lane.StorageOrNext = record.RetainStorage();
-            Volatile.Write(ref _laneCount, StorageCount);
+            ref var entry = ref GetLaneEntry(key);
+            lane = entry;
+            if (lane is null)
+            {
+                lane = RentLane();
+                entry = lane;
+                lane.Key = key;
+                lane.SampledHash = sampledHash;
+                if (sampledHash) binaryKeyComparer!.AddSampledLane();
+                lane.StorageOrNext = record.RetainStorage();
+                Volatile.Write(ref _laneCount, StorageCount);
+            }
         }
 #endif
 
@@ -294,48 +312,64 @@ internal sealed partial class KeyOrderedPartitionDispatcher<TKey, TValue>
             _readyLanes.Enqueue(lane);
         }
         if (binaryKeyComparer is { NeedsFullHashing: true })
-            StrengthenBinaryHashing(binaryKeyComparer);
+            StrengthenBinaryHashing(binaryKeyComparer, lane);
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private void StrengthenBinaryHashing(BinaryPartitionMessageKeyComparer<TKey> comparer)
+    private void StrengthenBinaryHashing(BinaryPartitionMessageKeyComparer<TKey> comparer, KeyLane triggeringLane)
     {
-        // Rebuild at most once per dispatcher after repeated expensive collisions.
-        // Reuse dictionary capacity and rent temporary references; ordinary probes
-        // neither allocate another table nor scan the active lanes.
+        // Strengthen at most the eight compared keys and the triggering lane.
+        // Unrelated lanes stay in the same table under their cached sample hashes.
         var dictionary = StandardLanes;
-        var count = dictionary.Count;
-        var lanes = ArrayPool<KeyLane>.Shared.Rent(count);
+        var keys = comparer.TakeCollisionKeys(out var count);
+        comparer.EnableFullHashing();
         try
         {
-            dictionary.Values.CopyTo(lanes, 0);
-            try
+            for (var index = 0; index < count; index++)
             {
-                dictionary.Clear();
-                comparer.EnableFullHashing();
-                for (var index = 0; index < count; index++)
-                {
-                    var lane = lanes[index];
-                    lane.Key = lane.Key.WithBinaryHashCode(comparer.ComputeHashCode(lane.Key));
-                    dictionary.Add(lane.Key, lane);
-                }
+                if (dictionary.TryGetValue(keys[index], out var lane) && lane.SampledHash)
+                    StrengthenLane(lane, comparer);
             }
-            catch (Exception error)
-            {
-                // Mutable binary keys can become equal during the rebuild. Shutdown
-                // must retain every key owner until all in-flight handlers complete,
-                // including lanes no longer reachable from the partially rebuilt table.
-                for (var index = 0; index < count; index++)
-                    ReturnLane(lanes[index]);
-                if (error is ArgumentException)
-                    throw new InvalidOperationException(
-                        "A partition key changed its hash code or equality while being processed.", error);
-                throw;
-            }
+            if (triggeringLane.SampledHash) StrengthenLane(triggeringLane, comparer);
         }
         finally
         {
-            ArrayPool<KeyLane>.Shared.Return(lanes, clearArray: true);
+            Array.Clear(keys, 0, count);
+        }
+    }
+
+    private void StrengthenLane(KeyLane lane, BinaryPartitionMessageKeyComparer<TKey> comparer)
+    {
+        var dictionary = StandardLanes;
+        // Preserve ownership before removing a key; hashing or reinsertion can fail
+        // for invalidated backing memory or a mutated key. Failure cleanup joins workers.
+        var key = lane.Key.WithBinaryHashCode(comparer.ComputeHashCode(lane.Key));
+#if NETSTANDARD2_0
+        if (!dictionary.TryGetValue(lane.Key, out var found) || !ReferenceEquals(found, lane) || !dictionary.Remove(lane.Key))
+            throw new InvalidOperationException("A partition key changed its hash code or equality while being processed.");
+#else
+        if (!dictionary.Remove(lane.Key, out var removed) || !ReferenceEquals(removed, lane))
+        {
+            // Mutation can displace another active lane. Retain its storage until
+            // shutdown has observed every worker, just as completion removal does.
+            if (removed is not null) ReturnLane(removed);
+            throw new InvalidOperationException("A partition key changed its hash code or equality while being processed.");
+        }
+#endif
+        lane.Key = key;
+        lane.SampledHash = false;
+        comparer.RemoveSampledLane();
+        try
+        {
+            dictionary.Add(key, lane);
+        }
+        catch (Exception error)
+        {
+            ReturnLane(lane);
+            if (error is ArgumentException)
+                throw new InvalidOperationException(
+                    "A partition key changed its hash code or equality while being processed.", error);
+            throw;
         }
     }
 
@@ -468,6 +502,8 @@ internal sealed partial class KeyOrderedPartitionDispatcher<TKey, TValue>
                 throw new InvalidOperationException("A partition key changed its hash code or equality while being processed.");
             }
 #endif
+            if (lane.SampledHash)
+                Unsafe.As<BinaryPartitionMessageKeyComparer<TKey>>(StandardLanes.Comparer).RemoveSampledLane();
             lane.ReleaseKey();
             lane.Scheduled = false;
             lane.Tail = -1;
@@ -565,12 +601,14 @@ internal sealed partial class KeyOrderedPartitionDispatcher<TKey, TValue>
         internal int Head = -1;
         internal int Tail = -1;
         internal bool Scheduled;
+        internal bool SampledHash;
 
         internal void ReleaseKey()
         {
             Unsafe.As<PendingFetchData>(StorageOrNext)?.ReleaseAfterProcessing();
             StorageOrNext = null;
             Key = default;
+            SampledHash = false;
         }
     }
 
