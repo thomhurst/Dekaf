@@ -20,6 +20,14 @@ public class ShareAcknowledgedOffsetsBenchmarks
         var offsets = new ShareAcknowledgedOffsets(_batches);
         if (offsets.Length != (Sparse ? (RecordCount + 1) / 2 : RecordCount))
             throw new InvalidOperationException("The callback included an unacknowledged offset.");
+        var copy = new long[offsets.Length];
+        offsets.CopyTo(copy);
+        var enumerator = offsets.GetEnumerator();
+        for (var index = 0; index < copy.Length; index++)
+            if (!enumerator.MoveNext() || enumerator.Current != copy[index] || offsets[index] != copy[index])
+                throw new InvalidOperationException("Every access path must preserve batch boundaries.");
+        if (enumerator.MoveNext() || enumerator.MoveNext())
+            throw new InvalidOperationException("An exhausted enumerator must remain exhausted.");
         long expectedSum = 0;
         foreach (var batch in _batches)
             for (var index = 0; index < batch.AcknowledgeTypes.Length; index++)

@@ -151,7 +151,7 @@ public sealed partial class ShareConsumerRenewalTests
             await Assert.That(released).HasSingleItem();
             await Assert.That(released[0].FirstOffset).IsEqualTo(44);
             await Assert.That(released[0].LastOffset).IsEqualTo(46);
-            await Assert.That(released[0].AcknowledgeTypes).IsEquivalentTo([(byte)AcknowledgeType.Release, (byte)AcknowledgeType.Release, (byte)AcknowledgeType.Release]);
+            await Assert.That(ExpandAcknowledgementTypes(released[0].FirstOffset, released[0].LastOffset, released[0].AcknowledgeTypes)).IsEquivalentTo([(byte)AcknowledgeType.Release, (byte)AcknowledgeType.Release, (byte)AcknowledgeType.Release]);
         }
         else
         {
@@ -328,7 +328,7 @@ public sealed partial class ShareConsumerRenewalTests
         var released = first.ShareAcknowledgeRequests[0].Topics[0].Partitions[0].AcknowledgementBatches[0];
         await Assert.That(released.FirstOffset).IsEqualTo(101);
         await Assert.That(released.LastOffset).IsEqualTo(102);
-        await Assert.That(released.AcknowledgeTypes)
+        await Assert.That(ExpandAcknowledgementTypes(released.FirstOffset, released.LastOffset, released.AcknowledgeTypes))
             .IsEquivalentTo([(byte)AcknowledgeType.Release, (byte)AcknowledgeType.Release]);
     }
 
@@ -481,7 +481,7 @@ public sealed partial class ShareConsumerRenewalTests
         var secondPartition = pending[new("topic", 1)];
         await Assert.That(secondPartition[0].FirstOffset).IsEqualTo(200);
         await Assert.That(secondPartition[^1].LastOffset).IsEqualTo(201);
-        await Assert.That(secondPartition.SelectMany(static batch => batch.AcknowledgeTypes))
+        await Assert.That(secondPartition.SelectMany(static batch => ExpandAcknowledgementTypes(batch.FirstOffset, batch.LastOffset, batch.AcknowledgeTypes)))
             .IsEquivalentTo([(byte)AcknowledgeType.Release, (byte)AcknowledgeType.Release]);
         await Assert.That(secondFrame.Disposed).IsTrue();
     }

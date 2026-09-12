@@ -30,6 +30,40 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
     private DeserializerPreparationParserState _pendingParserState;
     private long _pendingPartitionLastParsedOffset = -1;
     private bool _hasBufferedAcquisitionReleases;
+    // Routing scratch is borrowed until every broker task completes, including retries.
+    // Re-resolve leaders on every fetch; only the empty containers are reused.
+    private Dictionary<int, List<TopicPartition>>? _pollPartitionGroups;
+    private readonly List<List<TopicPartition>> _sparePartitionGroups = [];
+    private bool _pollPartitionGroupsInUse;
+    private int _peakGroupedPartitions;
+
+    private Dictionary<int, List<TopicPartition>>? TakePollPartitionGroups(int partitionCount)
+    {
+        if (_pollPartitionGroupsInUse)
+            return null;
+        if (partitionCount < _peakGroupedPartitions / 4)
+        {
+            _pollPartitionGroups = null;
+            _sparePartitionGroups.Clear();
+            _peakGroupedPartitions = partitionCount;
+        }
+        _peakGroupedPartitions = Math.Max(_peakGroupedPartitions, partitionCount);
+        _pollPartitionGroupsInUse = true;
+        return _pollPartitionGroups ??= new();
+    }
+
+    private void ReturnPollPartitionGroups()
+    {
+        if (!_pollPartitionGroupsInUse)
+            return;
+        foreach (var list in _pollPartitionGroups!.Values)
+        {
+            list.Clear();
+            _sparePartitionGroups.Add(list);
+        }
+        _pollPartitionGroups.Clear();
+        _pollPartitionGroupsInUse = false;
+    }
 
     private bool RemoveBufferedRecordsOutsideAssignment(TopicPartitionSet assignment)
     {
@@ -433,7 +467,6 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue>
 
     private void ClearBufferedRecords(bool releaseAcquisitions = false)
     {
-        _spareBufferedRecords = null;
         if (_pendingFetches is not null)
         {
             if (releaseAcquisitions)

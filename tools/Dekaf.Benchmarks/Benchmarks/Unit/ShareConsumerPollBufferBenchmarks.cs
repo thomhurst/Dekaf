@@ -49,6 +49,8 @@ public class ShareConsumerPollBufferBenchmarks
     public bool RenewalBuffering { get; set; }
 
     internal int RecordsPerIteration { get; set; }
+    internal bool CommitCallback { get; set; }
+    internal bool SerializeRequests { get; set; }
 
     [GlobalSetup]
     public async Task Setup()
@@ -94,11 +96,12 @@ public class ShareConsumerPollBufferBenchmarks
                 Partitions = partitionResponses
             }]
         };
-        var pool = new Pool(new Connection(response));
+        var pool = new Pool(new Connection(response, SerializeRequests));
         var options = new ShareConsumerOptions
         {
             BootstrapServers = ["localhost:9092"], GroupId = "poll-buffer-benchmark",
             AcknowledgementMode = ShareAcknowledgementMode.Explicit,
+            AcknowledgementCommitCallback = CommitCallback ? static _ => { } : null,
             MaxPollRecords = Overflow ? 16 : _recordCount
         };
         _windowSize = options.MaxPollRecords;
@@ -202,8 +205,9 @@ public class ShareConsumerPollBufferBenchmarks
             => throw new InvalidOperationException("Benchmark deserializer is already prepared.");
     }
 
-    private sealed class Connection(ShareFetchResponse response) : IKafkaConnection, IKafkaCapabilityProvider
+    private sealed class Connection(ShareFetchResponse response, bool serializeRequests) : IKafkaConnection, IKafkaCapabilityProvider
     {
+        private readonly ArrayBufferWriter<byte> _requestBytes = new();
         public int BrokerId => 1;
         public string Host => "localhost";
         public int Port => 9092;
@@ -213,11 +217,20 @@ public class ShareConsumerPollBufferBenchmarks
             ErrorCode = ErrorCode.None, ApiKeys = [new ApiVersion(ApiKey.ShareFetch, 0, 2)]
         });
         public ValueTask<TResponse> SendAsync<TRequest, TResponse>(TRequest request, short version, CancellationToken token = default)
-            where TRequest : IKafkaRequest<TResponse> where TResponse : IKafkaResponse => request switch
+            where TRequest : IKafkaRequest<TResponse> where TResponse : IKafkaResponse
+        {
+            if (serializeRequests)
+            {
+                _requestBytes.Clear();
+                var writer = new KafkaProtocolWriter(_requestBytes);
+                request.Write(ref writer, version);
+            }
+            return request switch
             {
                 ShareFetchRequest => ValueTask.FromResult((TResponse)(object)response),
                 _ => throw new NotSupportedException()
             };
+        }
         public ValueTask ConnectAsync(CancellationToken token = default) => ValueTask.CompletedTask;
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
         public ValueTask SendFireAndForgetAsync<TRequest, TResponse>(TRequest request, short version, CancellationToken token = default)

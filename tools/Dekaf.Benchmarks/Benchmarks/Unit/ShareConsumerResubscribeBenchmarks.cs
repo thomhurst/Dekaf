@@ -18,12 +18,19 @@ public class ShareConsumerResubscribeBenchmarks
     [Params(false, true)]
     public bool Overflow { get; set; }
 
+    [Params(false, true)]
+    public bool CommitCallback { get; set; }
+
+    [Params(false, true)]
+    public bool SerializeRequests { get; set; }
+
     [GlobalSetup]
     public async Task Setup()
     {
         _poll = new ShareConsumerPollBufferBenchmarks
         {
-            PartitionCount = PartitionCount, Overflow = Overflow
+            PartitionCount = PartitionCount, Overflow = Overflow,
+            CommitCallback = CommitCallback, SerializeRequests = SerializeRequests
         };
         await _poll.Setup();
     }

@@ -389,9 +389,9 @@ internal sealed class ShareBatchAcknowledgements<TKey, TValue> : IDisposable
                 if (record.Storage is null)
                     continue;
                 var typeIndex = record.Offset - batch.FirstOffset;
-                if ((ulong)typeIndex >= (ulong)batch.AcknowledgeTypes.Length)
+                if ((ulong)typeIndex >= (ulong)batch.OffsetCount)
                     continue;
-                var type = batch.AcknowledgeTypes[typeIndex];
+                var type = batch.GetAcknowledgeType((int)typeIndex);
                 if (type != 0)
                 {
                     record.Storage.Complete(record.Index, type, batch.AcknowledgeTypes, successful);

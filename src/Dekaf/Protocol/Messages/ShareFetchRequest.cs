@@ -152,6 +152,39 @@ public sealed class ShareFetchRequestTopic
 /// </summary>
 public sealed class ShareFetchRequestPartition
 {
+    private object? _acknowledgementBatches;
+
+    // Request models own their descriptors after the consumer returns its temporary
+    // snapshot containers. Most partitions need only one acknowledgement batch.
+    internal List<Dekaf.ShareConsumer.AcknowledgementBatchData>? AcknowledgementData
+    {
+        init
+        {
+            if (value is null)
+                return;
+            if (value.Count == 1)
+            {
+                _acknowledgementBatches = CreateAcknowledgementBatch(value[0]);
+                return;
+            }
+            var batches = new ShareFetchAcknowledgementBatch[value.Count];
+            for (var index = 0; index < batches.Length; index++)
+                batches[index] = CreateAcknowledgementBatch(value[index]);
+            _acknowledgementBatches = batches;
+        }
+    }
+
+    internal ShareFetchAcknowledgementBatch? SingleAcknowledgement
+        => _acknowledgementBatches as ShareFetchAcknowledgementBatch;
+
+    private static ShareFetchAcknowledgementBatch CreateAcknowledgementBatch(Dekaf.ShareConsumer.AcknowledgementBatchData batch)
+        => new()
+        {
+            FirstOffset = batch.FirstOffset,
+            LastOffset = batch.LastOffset,
+            AcknowledgeTypes = batch.PublicAcknowledgeTypes
+        };
+
     /// <summary>
     /// Partition index.
     /// </summary>
@@ -165,7 +198,16 @@ public sealed class ShareFetchRequestPartition
     /// <summary>
     /// Acknowledgement batches to include with this fetch.
     /// </summary>
-    public IReadOnlyList<ShareFetchAcknowledgementBatch>? AcknowledgementBatches { get; init; }
+    public IReadOnlyList<ShareFetchAcknowledgementBatch>? AcknowledgementBatches
+    {
+        get
+        {
+            if (_acknowledgementBatches is ShareFetchAcknowledgementBatch batch)
+                _acknowledgementBatches = new[] { batch };
+            return (IReadOnlyList<ShareFetchAcknowledgementBatch>?)_acknowledgementBatches;
+        }
+        init => _acknowledgementBatches = value;
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
@@ -176,9 +218,17 @@ public sealed class ShareFetchRequestPartition
             writer.WriteInt32(PartitionMaxBytes);
         }
 
-        writer.WriteCompactArray(
-            AcknowledgementBatches ?? [],
-            static (ref KafkaProtocolWriter w, ShareFetchAcknowledgementBatch b) => b.Write(ref w));
+        if (SingleAcknowledgement is { } batch)
+        {
+            writer.WriteUnsignedVarInt(2);
+            batch.Write(ref writer);
+        }
+        else
+        {
+            writer.WriteCompactArray(
+                AcknowledgementBatches ?? [],
+                static (ref KafkaProtocolWriter w, ShareFetchAcknowledgementBatch b) => b.Write(ref w));
+        }
 
         writer.WriteEmptyTaggedFields();
     }

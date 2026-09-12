@@ -7,6 +7,7 @@ public readonly struct ShareAcknowledgedOffsets
 {
     private readonly List<AcknowledgementBatchData>? _batches;
     private readonly bool _hasGaps;
+    private readonly bool _requiresOffsetScan;
 
     internal ShareAcknowledgedOffsets(List<AcknowledgementBatchData> batches)
     {
@@ -14,20 +15,24 @@ public readonly struct ShareAcknowledgedOffsets
 
         var length = 0;
         var hasGaps = false;
+        var hasCompactRanges = false;
         for (var i = 0; i < batches.Count; i++)
         {
-            var types = batches[i].AcknowledgeTypes;
-            var count = types.Length;
+            var batch = batches[i];
+            var types = batch.AcknowledgeTypes;
+            var count = batch.OffsetCount;
+            hasCompactRanges |= count != types.Length;
             var firstGap = types.AsSpan().IndexOf((byte)AcknowledgeType.Gap);
             if (firstGap >= 0)
             {
                 hasGaps = true;
-                count -= CountGaps(types.AsSpan(firstGap));
+                count -= types.Length == 1 ? count : CountGaps(types.AsSpan(firstGap));
             }
             length = checked(length + count);
         }
 
         _hasGaps = hasGaps;
+        _requiresOffsetScan = hasGaps || hasCompactRanges;
         Length = length;
     }
 
@@ -52,17 +57,18 @@ public readonly struct ShareAcknowledgedOffsets
             ArgumentOutOfRangeException.ThrowIfNegative(index);
             ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(index, Length);
 
-            if (_hasGaps)
+            if (_requiresOffsetScan)
                 return GetSparseOffset(_batches!, index);
 
             var batches = _batches!;
             for (var batchIndex = 0; batchIndex < batches.Count; batchIndex++)
             {
                 var batch = batches[batchIndex];
-                if (index < batch.AcknowledgeTypes.Length)
+                var count = batch.AcknowledgeTypes.Length;
+                if (index < count)
                     return batch.FirstOffset + index;
 
-                index -= batch.AcknowledgeTypes.Length;
+                index -= count;
             }
 
             throw new InvalidOperationException("Offset index was not present in the acknowledgement batches.");
@@ -76,6 +82,15 @@ public readonly struct ShareAcknowledgedOffsets
         {
             var batch = batches[batchIndex];
             var types = batch.AcknowledgeTypes;
+            if (types.Length == 1)
+            {
+                if (types[0] == (byte)AcknowledgeType.Gap)
+                    continue;
+                if (index < batch.OffsetCount)
+                    return batch.FirstOffset + index;
+                index -= batch.OffsetCount;
+                continue;
+            }
             var offset = 0;
             // Keep short logical suffixes scalar so counting setup stays amortized over a prefix.
             while (index >= 16 && offset < types.Length)
@@ -130,8 +145,19 @@ public readonly struct ShareAcknowledgedOffsets
         for (var batchIndex = 0; batchIndex < batches.Count; batchIndex++)
         {
             var batch = batches[batchIndex];
-            for (var offsetIndex = 0; offsetIndex < batch.AcknowledgeTypes.Length; offsetIndex++)
-                if (!_hasGaps || batch.AcknowledgeTypes[offsetIndex] != (byte)AcknowledgeType.Gap)
+            var types = batch.AcknowledgeTypes;
+            if (types.Length == 1)
+            {
+                if (types[0] != (byte)AcknowledgeType.Gap)
+                {
+                    var count = batch.OffsetCount;
+                    for (var offsetIndex = 0; offsetIndex < count; offsetIndex++)
+                        destination[index++] = batch.FirstOffset + offsetIndex;
+                }
+                continue;
+            }
+            for (var offsetIndex = 0; offsetIndex < types.Length; offsetIndex++)
+                if (!_hasGaps || types[offsetIndex] != (byte)AcknowledgeType.Gap)
                     destination[index++] = batch.FirstOffset + offsetIndex;
         }
     }
@@ -150,6 +176,9 @@ public readonly struct ShareAcknowledgedOffsets
         private readonly bool _hasGaps;
         private int _batchIndex;
         private int _offsetIndex;
+        private int _offsetCount;
+        private long _firstOffset;
+        private byte[]? _types;
 
         internal Enumerator(List<AcknowledgementBatchData>? batches, bool hasGaps)
         {
@@ -157,6 +186,9 @@ public readonly struct ShareAcknowledgedOffsets
             _hasGaps = hasGaps;
             _batchIndex = 0;
             _offsetIndex = -1;
+            _offsetCount = 0;
+            _firstOffset = 0;
+            _types = null;
             Current = default;
         }
 
@@ -170,23 +202,39 @@ public readonly struct ShareAcknowledgedOffsets
         /// </summary>
         public bool MoveNext()
         {
-            var batches = _batches;
-            while (batches is not null && _batchIndex < batches.Count)
+            while (true)
             {
-                var batch = batches[_batchIndex];
-                while (++_offsetIndex < batch.AcknowledgeTypes.Length)
+                while (++_offsetIndex < _offsetCount)
                 {
-                    if (_hasGaps && batch.AcknowledgeTypes[_offsetIndex] == (byte)AcknowledgeType.Gap)
+                    if (_types is not null && _types[_offsetIndex] == (byte)AcknowledgeType.Gap)
                         continue;
-                    Current = batch.FirstOffset + _offsetIndex;
+                    Current = _firstOffset + _offsetIndex;
                     return true;
                 }
 
-                _batchIndex++;
+                if (!MoveToNextBatch())
+                    return false;
+            }
+        }
+
+        // Resolve compact ranges and gap-free batches only at the batch boundary.
+        private bool MoveToNextBatch()
+        {
+            var batches = _batches;
+            if (batches is null || _batchIndex >= batches.Count)
+            {
+                _offsetCount = 0;
                 _offsetIndex = -1;
+                return false;
             }
 
-            return false;
+            var batch = batches[_batchIndex++];
+            var types = batch.AcknowledgeTypes;
+            _offsetCount = types.Length == 1 && types[0] == (byte)AcknowledgeType.Gap ? 0 : batch.OffsetCount;
+            _firstOffset = batch.FirstOffset;
+            _types = _hasGaps && types.Length != 1 ? types : null;
+            _offsetIndex = -1;
+            return true;
         }
     }
 }
