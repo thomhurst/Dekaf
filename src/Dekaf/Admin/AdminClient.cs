@@ -3404,7 +3404,7 @@ public sealed partial class AdminClient :
             {
                 if (resourceResponse.ErrorCode != Protocol.ErrorCode.None)
                 {
-                    throw new KafkaException(resourceResponse.ErrorCode,
+                    throw KafkaException.FromErrorCode(resourceResponse.ErrorCode,
                         $"Failed to incrementally alter configs for {(ConfigResourceType)resourceResponse.ResourceType}:{resourceResponse.ResourceName}: " +
                         $"{resourceResponse.ErrorMessage ?? resourceResponse.ErrorCode.ToString()}");
                 }

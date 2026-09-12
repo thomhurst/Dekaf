@@ -386,7 +386,9 @@ public class AclEnforcementTests(AclKafkaContainer kafka)
     #region Admin ACL Enforcement
 
     [Test]
-    public async Task AdminClient_WithoutAlterPermission_FailsOnConfigChange()
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task AdminClient_WithoutAlterPermission_FailsOnConfigChange(bool incremental)
     {
         // Arrange: create topic as admin
         var topic = await kafka.CreateTestTopicAsync();
@@ -402,15 +404,25 @@ public class AclEnforcementTests(AclKafkaContainer kafka)
         // Act & Assert: altering topic config without ALTER permission should fail
         var exception = await Assert.ThrowsAsync<AuthorizationException>(async () =>
         {
-            var configs = new Dictionary<ConfigResource, IReadOnlyList<ConfigEntry>>
+            if (incremental)
             {
-                [ConfigResource.Topic(topic)] =
-                [
-                    new ConfigEntry { Name = "retention.ms", Value = "3600000" }
-                ]
-            };
-
-            await restrictedAdmin.AlterConfigsAsync(configs);
+                await restrictedAdmin.IncrementalAlterConfigsAsync(
+                    new Dictionary<ConfigResource, IReadOnlyList<ConfigAlter>>
+                    {
+                        [ConfigResource.Topic(topic)] = [ConfigAlter.Set("retention.ms", "3600000")]
+                    });
+            }
+            else
+            {
+                await restrictedAdmin.AlterConfigsAsync(
+                    new Dictionary<ConfigResource, IReadOnlyList<ConfigEntry>>
+                    {
+                        [ConfigResource.Topic(topic)] =
+                        [
+                            new ConfigEntry { Name = "retention.ms", Value = "3600000" }
+                        ]
+                    });
+            }
         });
 
         await Assert.That(exception).IsNotNull();

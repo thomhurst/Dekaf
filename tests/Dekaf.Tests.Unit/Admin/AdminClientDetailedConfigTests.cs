@@ -11,24 +11,41 @@ namespace Dekaf.Tests.Unit.Admin;
 public sealed class AdminClientDetailedConfigTests
 {
     [Test]
-    [Arguments(ErrorCode.TopicAuthorizationFailed)]
-    [Arguments(ErrorCode.ClusterAuthorizationFailed)]
-    public async Task AlterConfigs_AuthorizationFailureThrowsTypedException(ErrorCode error)
+    [Arguments(false, ErrorCode.TopicAuthorizationFailed)]
+    [Arguments(false, ErrorCode.ClusterAuthorizationFailed)]
+    [Arguments(true, ErrorCode.TopicAuthorizationFailed)]
+    [Arguments(true, ErrorCode.ClusterAuthorizationFailed)]
+    public async Task AlterConfigs_AuthorizationFailureThrowsTypedException(bool incremental, ErrorCode error)
     {
         var (admin, connections) = CreateAdmin();
         await using var client = admin;
         var resource = ConfigResource.Topic("denied");
-        Setup(connections[1], false, _ => [(resource, error, "denied")]);
+        Setup(connections[1], incremental, _ => [(resource, error, "denied")]);
 
-        var exception = await Assert.That(async () => await admin.AlterConfigsAsync(
-            new Dictionary<ConfigResource, IReadOnlyList<ConfigEntry>>
+        var exception = await Assert.That(async () =>
+        {
+            var input = Input(resource);
+            if (incremental)
             {
-                [resource] = [new ConfigEntry { Name = "retention.ms", Value = "1000" }]
-            })).Throws<AuthorizationException>();
+                await admin.IncrementalAlterConfigsAsync(input);
+            }
+            else
+            {
+                await admin.AlterConfigsAsync(Replacement(input));
+            }
+        }).Throws<AuthorizationException>();
 
         await Assert.That(exception!.ErrorCode).IsEqualTo(error);
-        await connections[1].Received(1).SendAsync<AlterConfigsRequest, AlterConfigsResponse>(
-            Arg.Any<AlterConfigsRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>());
+        if (incremental)
+        {
+            await connections[1].Received(1).SendAsync<IncrementalAlterConfigsRequest, IncrementalAlterConfigsResponse>(
+                Arg.Any<IncrementalAlterConfigsRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>());
+        }
+        else
+        {
+            await connections[1].Received(1).SendAsync<AlterConfigsRequest, AlterConfigsResponse>(
+                Arg.Any<AlterConfigsRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>());
+        }
     }
 
     [Test]
