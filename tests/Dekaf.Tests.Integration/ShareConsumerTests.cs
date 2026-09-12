@@ -292,6 +292,8 @@ public class ShareConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
         const int messageCount = 64;
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 1);
         ShareAcknowledgementCommitResult[]? outcomes = null;
+        long[] callbackIndexed = [];
+        long[] callbackEnumerated = [];
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .BuildAsync();
@@ -300,7 +302,20 @@ public class ShareConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
             .WithGroupId($"share-sparse-offsets-{Guid.NewGuid():N}")
             .WithAcknowledgementMode(ShareAcknowledgementMode.Explicit)
             .WithMaxPollRecords(messageCount)
-            .WithAcknowledgementCommitCallback(results => outcomes = results.ToArray())
+            .WithAcknowledgementCommitCallback(results =>
+            {
+                outcomes = results.ToArray();
+                if (results.Length != 1)
+                    return;
+                var offsets = results[0].Offsets;
+                callbackIndexed = new long[offsets.Length];
+                callbackEnumerated = new long[offsets.Length];
+                for (var index = 0; index < offsets.Length; index++)
+                    callbackIndexed[index] = offsets[index];
+                var enumeratedCount = 0;
+                foreach (var offset in offsets)
+                    callbackEnumerated[enumeratedCount++] = offset;
+            })
             .BuildAsync();
         consumer.Subscribe(topic);
         await ShareConsumerTestHelper.PrimeShareConsumerAsync(consumer);
@@ -324,6 +339,8 @@ public class ShareConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
         await Assert.That(outcomes).HasSingleItem();
         var firstOutcome = outcomes![0];
         var firstOffsets = firstOutcome.Offsets;
+        var firstCallbackIndexed = callbackIndexed;
+        var firstCallbackEnumerated = callbackEnumerated;
         await Assert.That(firstOutcome.Succeeded).IsTrue();
         await Assert.That(firstOffsets.Length).IsEqualTo(messageCount / 2);
 
@@ -342,8 +359,12 @@ public class ShareConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
         for (var index = 0; index < copied.Length; index++)
         {
             await Assert.That(copied[index]).IsEqualTo(received[index * 2].Offset);
+            await Assert.That(firstCallbackIndexed[index]).IsEqualTo(copied[index]);
+            await Assert.That(firstCallbackEnumerated[index]).IsEqualTo(copied[index]);
             await Assert.That(firstOutcome.Offsets[index]).IsEqualTo(copied[index]);
             await Assert.That(secondOutcome.Offsets[index]).IsEqualTo(received[index * 2 + 1].Offset);
+            await Assert.That(callbackIndexed[index]).IsEqualTo(received[index * 2 + 1].Offset);
+            await Assert.That(callbackEnumerated[index]).IsEqualTo(received[index * 2 + 1].Offset);
         }
     }
 

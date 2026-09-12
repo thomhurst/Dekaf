@@ -5,6 +5,51 @@ namespace Dekaf.Tests.Unit.ShareConsumer;
 public sealed class ShareAcknowledgedOffsetsTests
 {
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task OffsetView_MixedRangesPreserveRandomAccessAndZeroAllocation(bool compactFirst)
+    {
+        var expanded = new byte[65];
+        var expected = new List<long>();
+        for (var index = 0; index < expanded.Length; index++)
+            expanded[index] = index % 2 == 0 ? (byte)255 : (byte)0;
+        var compact = new AcknowledgementBatchData(100, 132, [2]);
+        var sparse = new AcknowledgementBatchData(200, 264, expanded);
+        List<AcknowledgementBatchData> batches = compactFirst ? [compact, sparse] : [sparse, compact];
+        batches.Insert(1, new AcknowledgementBatchData(300, 331, [0]));
+        batches.Add(new AcknowledgementBatchData(400, 400, [3]));
+        foreach (var batch in batches)
+            for (var offset = batch.FirstOffset; offset <= batch.LastOffset; offset++)
+                if (batch.AcknowledgeTypes[batch.AcknowledgeTypes.Length == 1 ? 0 : (int)(offset - batch.FirstOffset)] != 0)
+                    expected.Add(offset);
+
+        var indexed = new long[expected.Count];
+        var copied = new long[expected.Count];
+        var enumerated = new long[expected.Count];
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        var offsets = new ShareAcknowledgedOffsets(batches);
+        var retainedCopy = offsets;
+        var enumerator = offsets.GetEnumerator();
+        for (var index = expected.Count - 1; index >= 0; index--)
+            indexed[index] = retainedCopy[index];
+        var count = 0;
+        while (enumerator.MoveNext())
+            enumerated[count++] = enumerator.Current;
+        var remainsExhausted = !enumerator.MoveNext();
+        offsets.CopyTo(copied);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        await Assert.That(allocated).IsEqualTo(0);
+        await Assert.That(offsets.Length).IsEqualTo(expected.Count);
+        await Assert.That(indexed.SequenceEqual(expected)).IsTrue();
+        await Assert.That(copied.SequenceEqual(expected)).IsTrue();
+        await Assert.That(enumerated.SequenceEqual(expected)).IsTrue();
+        await Assert.That(remainsExhausted).IsTrue();
+        await Assert.That(() => offsets[-1]).Throws<ArgumentOutOfRangeException>();
+        await Assert.That(() => offsets[expected.Count]).Throws<ArgumentOutOfRangeException>();
+    }
+
+    [Test]
     public async Task OffsetView_EnumeratorSkipsEmptyAndCompactGapBatchesAndStaysExhausted()
     {
         List<AcknowledgementBatchData> batches =
