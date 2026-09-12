@@ -7,7 +7,7 @@ using NSubstitute;
 
 namespace Dekaf.Tests.Unit.SchemaRegistry;
 
-public class VaultKmsProviderTests
+public partial class VaultKmsProviderTests
 {
     private const string KeyReference = "https://vault.example:8200/transit/keys/orders-kek";
     private const string NestedMountKeyReference =

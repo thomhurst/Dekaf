@@ -25,6 +25,7 @@
                       ReferenceOutputAssembly="false" />
     <ProjectReference Include="..\..\src\Dekaf.SchemaRegistry.Protobuf\Dekaf.SchemaRegistry.Protobuf.csproj" />
     <ProjectReference Include="..\..\src\Dekaf.Serialization.Json\Dekaf.Serialization.Json.csproj" />
+    <ProjectReference Include="..\..\src\Dekaf.Serialization.Routing\Dekaf.Serialization.Routing.csproj" />
   </ItemGroup>
 
 </Project>

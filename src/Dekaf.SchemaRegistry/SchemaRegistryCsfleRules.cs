@@ -1111,9 +1111,9 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
         {
             var siv = destination.Slice(offset, AesSivLength);
             var ciphertext = destination[(offset + AesSivLength)..];
-            var mac = workspace.GetBlockCipher(dek.KeyMaterial, 0);
-            ComputeSiv(mac, plaintext, ReadOnlySpan<byte>.Empty, siv);
-            AesCtrCrypt(workspace.GetBlockCipher(dek.KeyMaterial, 32), siv, plaintext, ciphertext);
+            var ciphers = workspace.GetSivCiphers(dek.KeyMaterial);
+            ComputeSiv(ciphers, plaintext, siv);
+            AesCtrCrypt(ciphers.Encryption, siv, plaintext, ciphertext);
             return;
         }
 
@@ -1168,11 +1168,18 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
             if (dek.Algorithm == DekAlgorithm.Aes256Siv)
             {
                 var siv = payload[..AesSivLength];
-                AesCtrCrypt(workspace.GetBlockCipher(dek.KeyMaterial, 32), siv, payload[AesSivLength..], destination);
+                var ciphers = workspace.GetSivCiphers(dek.KeyMaterial);
+                AesCtrCrypt(ciphers.Encryption, siv, payload[AesSivLength..], destination);
                 Span<byte> expectedSiv = stackalloc byte[AesSivLength];
-                ComputeSiv(workspace.GetBlockCipher(dek.KeyMaterial, 0), destination, ReadOnlySpan<byte>.Empty, expectedSiv);
-                if (!CryptographicOperations.FixedTimeEquals(expectedSiv, siv))
+                Span<byte> legacySiv = stackalloc byte[AesSivLength];
+                // Authenticate both constructions using a shared CMAC prefix. Legacy reads
+                // must not require a second pass over large messages after correcting writes.
+                ComputeSiv(ciphers, destination, expectedSiv, legacySiv);
+                var valid = CryptographicOperations.FixedTimeEquals(expectedSiv, siv)
+                    | CryptographicOperations.FixedTimeEquals(legacySiv, siv);
+                if (!valid)
                 {
+                    CryptographicOperations.ZeroMemory(destination);
                     throw new SchemaRegistryRuleException(
                         $"Schema Registry rule '{ruleName}' failed to authenticate encrypted payload.");
                 }
@@ -1290,24 +1297,19 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
     }
 
     private static void ComputeSiv(
-        BlockCipher cipher,
+        SivCiphers ciphers,
         ReadOnlySpan<byte> plaintext,
-        ReadOnlySpan<byte> associatedData,
-        Span<byte> destination)
+        Span<byte> destination,
+        Span<byte> legacyDestination = default)
     {
         Span<byte> d = stackalloc byte[16];
-        AesCmac(cipher, ReadOnlySpan<byte>.Empty, ReadOnlySpan<byte>.Empty, d);
-        if (!associatedData.IsEmpty)
-        {
-            DoubleBlock(d);
-            Span<byte> adMac = stackalloc byte[16];
-            AesCmac(cipher, associatedData, ReadOnlySpan<byte>.Empty, adMac);
-            XorInPlace(d, adMac);
-        }
+        Span<byte> legacy = stackalloc byte[16];
+        ciphers.InitialState.CopyTo(d);
+        ciphers.LegacyInitialState.CopyTo(legacy);
 
         if (plaintext.Length >= 16)
         {
-            AesCmac(cipher, plaintext, d, destination);
+            AesCmac(ciphers.Mac, plaintext, d, destination, legacy, legacyDestination);
             return;
         }
 
@@ -1316,36 +1318,63 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
         plaintext.CopyTo(input);
         input[plaintext.Length] = 0x80;
         DoubleBlock(d);
-        XorInPlace(input, d);
-        AesCmac(cipher, input, ReadOnlySpan<byte>.Empty, destination);
+        DoubleBlock(legacy);
+        AesCmac(ciphers.Mac, input, d, destination, legacy, legacyDestination);
     }
 
     private static void AesCmac(
         BlockCipher cipher,
         ReadOnlySpan<byte> message,
         ReadOnlySpan<byte> xorLast16,
-        Span<byte> destination)
+        Span<byte> destination,
+        ReadOnlySpan<byte> alternateXorLast16 = default,
+        Span<byte> alternateDestination = default)
     {
         Span<byte> zero = stackalloc byte[16];
-        Span<byte> l = stackalloc byte[16];
-        cipher.EncryptBlock(zero, l);
-
+        zero.Clear();
         Span<byte> k1 = stackalloc byte[16];
-        l.CopyTo(k1);
+        cipher.EncryptBlock(zero, k1);
         DoubleBlock(k1);
-
         Span<byte> k2 = stackalloc byte[16];
         k1.CopyTo(k2);
         DoubleBlock(k2);
 
+        // The two S2V constructions differ only in their final 16 plaintext bytes.
+        // Process their common prefix once, then finish at most two blocks per tag.
+        var commonBlockCount = Math.Max(0, (message.Length - 16) / 16);
+        Span<byte> state = stackalloc byte[16];
+        state.Clear();
+        Span<byte> block = stackalloc byte[16];
+        for (var index = 0; index < commonBlockCount; index++)
+        {
+            message.Slice(index * 16, 16).CopyTo(block);
+            XorInPlace(block, state);
+            cipher.EncryptBlock(block, state);
+        }
+
+        FinishAesCmac(cipher, message, xorLast16, commonBlockCount, state, k1, k2, destination);
+        if (!alternateDestination.IsEmpty)
+            FinishAesCmac(cipher, message, alternateXorLast16, commonBlockCount, state, k1, k2, alternateDestination);
+    }
+
+    private static void FinishAesCmac(
+        BlockCipher cipher,
+        ReadOnlySpan<byte> message,
+        ReadOnlySpan<byte> xorLast16,
+        int startBlock,
+        ReadOnlySpan<byte> prefixState,
+        ReadOnlySpan<byte> k1,
+        ReadOnlySpan<byte> k2,
+        Span<byte> destination)
+    {
         var blockCount = Math.Max(1, (message.Length + 15) / 16);
         Span<byte> state = stackalloc byte[16];
+        prefixState.CopyTo(state);
         Span<byte> block = stackalloc byte[16];
-
-        for (var blockIndex = 0; blockIndex < blockCount - 1; blockIndex++)
+        for (var index = startBlock; index < blockCount - 1; index++)
         {
-            message.Slice(blockIndex * 16, 16).CopyTo(block);
-            XorSivTail(block, blockIndex * 16, message.Length, xorLast16);
+            message.Slice(index * 16, 16).CopyTo(block);
+            XorSivTail(block, index * 16, message.Length, xorLast16);
             XorInPlace(block, state);
             cipher.EncryptBlock(block, state);
         }
@@ -1353,23 +1382,18 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
         block.Clear();
         var lastOffset = (blockCount - 1) * 16;
         var remaining = message.Length - lastOffset;
-        if (remaining == 16 && message.Length != 0)
+        if (remaining > 0)
         {
-            message.Slice(lastOffset, 16).CopyTo(block);
-            XorSivTail(block, lastOffset, message.Length, xorLast16);
-            XorInPlace(block, k1);
+            message.Slice(lastOffset, remaining).CopyTo(block);
+            XorSivTail(block[..remaining], lastOffset, message.Length, xorLast16);
         }
+        if (remaining == 16)
+            XorInPlace(block, k1);
         else
         {
-            if (remaining > 0)
-            {
-                message.Slice(lastOffset, remaining).CopyTo(block);
-                XorSivTail(block[..remaining], lastOffset, message.Length, xorLast16);
-            }
             block[remaining] = 0x80;
             XorInPlace(block, k2);
         }
-
         XorInPlace(block, state);
         cipher.EncryptBlock(block, destination);
     }
@@ -2112,7 +2136,7 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
             return _overflowGcmCiphers.GetValue(key, static value => new GcmCipher(value));
         }
 
-        public BlockCipher GetBlockCipher(byte[] key, int offset)
+        public SivCiphers GetSivCiphers(byte[] key)
         {
             if (!_sivCiphers.TryGetValue(key, out var ciphers))
             {
@@ -2120,13 +2144,13 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
                 {
                     ciphers = new SivCiphers(key);
                     _sivCiphers.Add(key, ciphers);
-                    return ciphers.Get(offset);
+                    return ciphers;
                 }
 
                 ciphers = _overflowSivCiphers.GetValue(key, static value => new SivCiphers(value));
             }
 
-            return ciphers.Get(offset);
+            return ciphers;
         }
 
         public Span<byte> GetOutputSpan(int slot, int written, int sizeHint)
@@ -2255,15 +2279,25 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
         {
             Mac = new BlockCipher(key.AsSpan(0, 32));
             Encryption = new BlockCipher(key.AsSpan(32, 32));
+            // RFC 5297 S2V starts with CMAC of a zero block and folds in the single
+            // empty associated-data item used by Tink/Confluent. Cache this per key.
+            Span<byte> zero = stackalloc byte[16];
+            zero.Clear();
+            AesCmac(Mac, zero, ReadOnlySpan<byte>.Empty, InitialState);
+            AesCmac(Mac, ReadOnlySpan<byte>.Empty, ReadOnlySpan<byte>.Empty, LegacyInitialState);
+            DoubleBlock(InitialState);
+            XorInPlace(InitialState, LegacyInitialState);
         }
 
-        private BlockCipher Mac { get; }
+        public BlockCipher Mac { get; }
 
-        private BlockCipher Encryption { get; }
+        public BlockCipher Encryption { get; }
+
+        public byte[] InitialState { get; } = new byte[16];
+
+        public byte[] LegacyInitialState { get; } = new byte[16];
 
         ~SivCiphers() => Dispose();
-
-        public BlockCipher Get(int offset) => offset == 0 ? Mac : Encryption;
 
         public void Dispose()
         {
@@ -2271,6 +2305,8 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransfor
             {
                 Mac.Dispose();
                 Encryption.Dispose();
+                CryptographicOperations.ZeroMemory(InitialState);
+                CryptographicOperations.ZeroMemory(LegacyInitialState);
             }
             GC.SuppressFinalize(this);
         }

@@ -15,7 +15,7 @@ using AvroSchema = Avro.Schema;
 
 namespace Dekaf.Tests.Unit.SchemaRegistry;
 
-public sealed class SchemaRegistryCsfleRuleTests
+public sealed partial class SchemaRegistryCsfleRuleTests
 {
     private static readonly byte[] KekMaterial =
     [
@@ -2622,6 +2622,8 @@ public sealed class SchemaRegistryCsfleRuleTests
 
         public TimeSpan RegisterDekDelay { get; set; }
 
+        public Action? BeforeRegisterDek { get; set; }
+
         public int GetKekCallCount
         {
             get
@@ -2787,6 +2789,7 @@ public sealed class SchemaRegistryCsfleRuleTests
             RegisterDekRequest request,
             CancellationToken cancellationToken = default)
         {
+            BeforeRegisterDek?.Invoke();
             if (RegisterDekDelay > TimeSpan.Zero)
                 Thread.Sleep(RegisterDekDelay);
 

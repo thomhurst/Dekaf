@@ -76,7 +76,7 @@ public class AclEnforcementTests(AclKafkaContainer kafka)
         // Act & Assert: producing without WRITE permission should fail. The denial can surface
         // either when the idempotent producer initializes (ClusterAuthorizationFailed) or when it
         // produces to the topic (TopicAuthorizationFailed), so the build is inside the assertion.
-        var exception = await Assert.ThrowsAsync<KafkaException>(async () =>
+        var exception = await Assert.ThrowsAsync<AuthorizationException>(async () =>
         {
             await using var producer = await Kafka.CreateProducer<string, string>()
                 .WithBootstrapServers(kafka.BootstrapServers)
@@ -96,7 +96,6 @@ public class AclEnforcementTests(AclKafkaContainer kafka)
 
         await Assert.That(exception).IsNotNull();
         await Assert.That(
-            exception is AuthorizationException ||
             exception.ErrorCode == Dekaf.Protocol.ErrorCode.TopicAuthorizationFailed ||
             exception.ErrorCode == Dekaf.Protocol.ErrorCode.ClusterAuthorizationFailed
         ).IsTrue();
@@ -216,8 +215,7 @@ public class AclEnforcementTests(AclKafkaContainer kafka)
                 break;
             }
         }
-        catch (KafkaException ex) when (
-            ex is AuthorizationException ||
+        catch (AuthorizationException ex) when (
             ex.ErrorCode == Dekaf.Protocol.ErrorCode.TopicAuthorizationFailed)
         {
             exceptionThrown = true;
@@ -291,9 +289,7 @@ public class AclEnforcementTests(AclKafkaContainer kafka)
                 break;
             }
         }
-        catch (KafkaException ex) when (
-            ex is AuthorizationException ||
-            ex is GroupException ||
+        catch (AuthorizationException ex) when (
             ex.ErrorCode == Dekaf.Protocol.ErrorCode.GroupAuthorizationFailed)
         {
             exceptionThrown = true;
@@ -390,7 +386,9 @@ public class AclEnforcementTests(AclKafkaContainer kafka)
     #region Admin ACL Enforcement
 
     [Test]
-    public async Task AdminClient_WithoutAlterPermission_FailsOnConfigChange()
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task AdminClient_WithoutAlterPermission_FailsOnConfigChange(bool incremental)
     {
         // Arrange: create topic as admin
         var topic = await kafka.CreateTestTopicAsync();
@@ -404,23 +402,31 @@ public class AclEnforcementTests(AclKafkaContainer kafka)
             .Build();
 
         // Act & Assert: altering topic config without ALTER permission should fail
-        var exception = await Assert.ThrowsAsync<KafkaException>(async () =>
+        var exception = await Assert.ThrowsAsync<AuthorizationException>(async () =>
         {
-            var configs = new Dictionary<ConfigResource, IReadOnlyList<ConfigEntry>>
+            if (incremental)
             {
-                [ConfigResource.Topic(topic)] =
-                [
-                    new ConfigEntry { Name = "retention.ms", Value = "3600000" }
-                ]
-            };
-
-            await restrictedAdmin.AlterConfigsAsync(configs);
+                await restrictedAdmin.IncrementalAlterConfigsAsync(
+                    new Dictionary<ConfigResource, IReadOnlyList<ConfigAlter>>
+                    {
+                        [ConfigResource.Topic(topic)] = [ConfigAlter.Set("retention.ms", "3600000")]
+                    });
+            }
+            else
+            {
+                await restrictedAdmin.AlterConfigsAsync(
+                    new Dictionary<ConfigResource, IReadOnlyList<ConfigEntry>>
+                    {
+                        [ConfigResource.Topic(topic)] =
+                        [
+                            new ConfigEntry { Name = "retention.ms", Value = "3600000" }
+                        ]
+                    });
+            }
         });
 
         await Assert.That(exception).IsNotNull();
-        // Should be either AuthorizationException or a KafkaException with authorization error code
         await Assert.That(
-            exception is AuthorizationException ||
             exception.ErrorCode == Dekaf.Protocol.ErrorCode.TopicAuthorizationFailed ||
             exception.ErrorCode == Dekaf.Protocol.ErrorCode.ClusterAuthorizationFailed
         ).IsTrue();
@@ -482,8 +488,7 @@ public class AclEnforcementTests(AclKafkaContainer kafka)
                     Value = "value"
                 }, CancellationToken.None);
             }
-            catch (KafkaException ex) when (
-                ex is AuthorizationException ||
+            catch (AuthorizationException ex) when (
                 ex.ErrorCode == Dekaf.Protocol.ErrorCode.TopicAuthorizationFailed ||
                 ex.ErrorCode == Dekaf.Protocol.ErrorCode.ClusterAuthorizationFailed)
             {
@@ -563,8 +568,7 @@ public class AclEnforcementTests(AclKafkaContainer kafka)
                     Value = "value"
                 }, CancellationToken.None);
             }
-            catch (KafkaException ex) when (
-                ex is AuthorizationException ||
+            catch (AuthorizationException ex) when (
                 ex.ErrorCode == Dekaf.Protocol.ErrorCode.TopicAuthorizationFailed ||
                 ex.ErrorCode == Dekaf.Protocol.ErrorCode.ClusterAuthorizationFailed)
             {

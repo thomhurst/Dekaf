@@ -45,6 +45,7 @@ internal static class AotSmoke
         PackedEpochSmoke.Run();
         RunCompressionSmoke();
         RunJsonSmoke();
+        await SchemaIdRoutingSmoke.RunAsync();
         RunSchemaRegistryHttpPipelineConstructionSmoke();
         await RunSchemaRegistrySmokeAsync();
         await RunSchemaRegistryGuidSmokeAsync();

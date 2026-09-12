@@ -4,7 +4,7 @@ using Dekaf.Security.Sasl;
 namespace Dekaf.Tests.Unit.Security.Sasl;
 
 [NotInParallel("AwsEnvironment")]
-public sealed class AwsMskIamDefaultCredentialsProviderTests
+public sealed partial class AwsMskIamDefaultCredentialsProviderTests
 {
     [Test]
     public async Task GetCredentialsAsync_UsesEnvironmentCredentials()

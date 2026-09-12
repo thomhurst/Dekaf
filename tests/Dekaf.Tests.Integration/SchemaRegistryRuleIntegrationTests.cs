@@ -23,7 +23,9 @@ namespace Dekaf.Tests.Integration;
 public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryContainer testInfra)
 {
     [Test]
-    public async Task RegisteredAvroCsfleRule_ProduceConsume_RoundTripsTaggedField()
+    [Arguments("AES256_GCM")]
+    [Arguments("AES256_SIV")]
+    public async Task RegisteredAvroCsfleRule_ProduceConsume_RoundTripsTaggedField(string algorithm)
     {
         const string schemaText = """
             {
@@ -52,6 +54,7 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
             Parameters = new Dictionary<string, string>(StringComparer.Ordinal)
             {
                 ["encrypt.kek.name"] = $"integration-kek-{Guid.NewGuid():N}",
+                ["encrypt.dek.algorithm"] = algorithm,
                 ["encrypt.kms.type"] = LocalKmsProvider.DefaultType,
                 ["encrypt.kms.key.id"] = "local://integration"
             }
