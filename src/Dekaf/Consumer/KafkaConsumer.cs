@@ -3396,8 +3396,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                             // Store raw byte references for DLQ lazy capture (zero-copy — just memory slices)
                             if (rawTrackingEnabled)
                             {
-                                _currentRawKey = isKeyNull ? ReadOnlyMemory<byte>.Empty : keyData;
-                                _currentRawValue = isValueNull ? ReadOnlyMemory<byte>.Empty : valueData;
+                                _currentRawKey = NormalizeRawRecordBytes(keyData, isKeyNull);
+                                _currentRawValue = NormalizeRawRecordBytes(valueData, isValueNull);
                             }
                         }
                         catch (OperationCanceledException) when (readingProtocolData)
@@ -6170,8 +6170,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
                         if (rawTrackingEnabled)
                         {
-                            _currentRawKey = isKeyNull ? ReadOnlyMemory<byte>.Empty : keyData;
-                            _currentRawValue = isValueNull ? ReadOnlyMemory<byte>.Empty : valueData;
+                            _currentRawKey = NormalizeRawRecordBytes(keyData, isKeyNull);
+                            _currentRawValue = NormalizeRawRecordBytes(valueData, isValueNull);
                         }
 
                         return true;
@@ -6478,8 +6478,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
                         if (rawTrackingEnabled)
                         {
-                            _currentRawKey = isKeyNull ? ReadOnlyMemory<byte>.Empty : keyData;
-                            _currentRawValue = isValueNull ? ReadOnlyMemory<byte>.Empty : valueData;
+                            _currentRawKey = NormalizeRawRecordBytes(keyData, isKeyNull);
+                            _currentRawValue = NormalizeRawRecordBytes(valueData, isValueNull);
                         }
 
                         return result;
@@ -13562,6 +13562,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     #endregion
 
     #region IRawRecordAccessor
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static ReadOnlyMemory<byte> NormalizeRawRecordBytes(ReadOnlyMemory<byte> bytes, bool isNull)
+    {
+        if (isNull)
+            return default;
+        return bytes.IsEmpty ? Array.Empty<byte>() : bytes;
+    }
 
     void DeadLetter.IRawRecordAccessor.EnableRawRecordTracking()
     {

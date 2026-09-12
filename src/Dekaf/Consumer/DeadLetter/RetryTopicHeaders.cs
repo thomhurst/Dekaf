@@ -64,9 +64,11 @@ public static class RetryTopicHeaders
     /// <summary>
     /// Gets the retry due timestamp from retry headers.
     /// </summary>
+    /// <returns>False when the header is missing, malformed, or outside the DateTimeOffset range.</returns>
     public static bool TryGetDueAt(IReadOnlyList<Header>? headers, out DateTimeOffset dueAt)
     {
-        if (TryGetLong(headers, DueTimestampMsKey, out var timestampMs))
+        if (TryGetLong(headers, DueTimestampMsKey, out var timestampMs)
+            && timestampMs is >= -62135596800000L and <= 253402300799999L)
         {
             dueAt = DateTimeOffset.FromUnixTimeMilliseconds(timestampMs);
             return true;

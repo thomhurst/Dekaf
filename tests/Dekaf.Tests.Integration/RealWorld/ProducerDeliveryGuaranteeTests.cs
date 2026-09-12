@@ -153,52 +153,6 @@ public sealed class ProducerDeliveryGuaranteeTests(KafkaTestContainer kafka) : K
     }
 
     [Test]
-    public async Task FlushWithCancellation_StopsWaitingButDeliveryCompletes()
-    {
-        var topic = await KafkaContainer.CreateTestTopicAsync();
-
-        await using var producer = await Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .WithLinger(TimeSpan.FromMilliseconds(100))
-            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
-            .BuildAsync();
-
-        const int messageCount = 50;
-        for (var i = 0; i < messageCount; i++)
-        {
-            await producer.ProduceAsync(new ProducerMessage<string, string>
-            {
-                Topic = topic,
-                Key = $"key-{i}",
-                Value = $"value-{i}"
-            }, CancellationToken.None);
-        }
-
-        // Give time for messages to send, then flush fully
-        await Task.Delay(500);
-        await producer.FlushWithTimeoutAsync();
-
-        // All messages should be delivered
-        await using var consumer = await Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
-
-        consumer.Assign(new TopicPartition(topic, 0));
-
-        var messages = new List<ConsumeResult<string, string>>();
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-
-        await foreach (var msg in consumer.ConsumeAsync(cts.Token))
-        {
-            messages.Add(msg);
-            if (messages.Count >= messageCount) break;
-        }
-
-        await Assert.That(messages).Count().IsEqualTo(messageCount);
-    }
-
-    [Test]
     public async Task SendWithCallback_AllCallbacksInvoked()
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();

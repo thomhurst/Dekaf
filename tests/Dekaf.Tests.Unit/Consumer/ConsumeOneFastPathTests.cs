@@ -14,7 +14,7 @@ using Microsoft.Extensions.Logging;
 
 namespace Dekaf.Tests.Unit.Consumer;
 
-public sealed class ConsumeOneFastPathTests
+public sealed partial class ConsumeOneFastPathTests
 {
     private const string Topic = "test-topic";
     private const int Partition = 0;

@@ -7,6 +7,34 @@ namespace Dekaf.Tests.Unit.Consumer.DeadLetter;
 public sealed class RetryTopicHeadersTests
 {
     [Test]
+    [Arguments(-62135596800000L)]
+    [Arguments(0L)]
+    [Arguments(253402300799999L)]
+    public async Task TryGetDueAt_AcceptsDateTimeOffsetBoundaries(long timestamp)
+    {
+        var headers = new Headers();
+        headers.Add(RetryTopicHeaders.DueTimestampMsKey, timestamp.ToString(System.Globalization.CultureInfo.InvariantCulture));
+
+        await Assert.That(RetryTopicHeaders.TryGetDueAt(headers.ToList(), out var dueAt)).IsTrue();
+        await Assert.That(dueAt.ToUnixTimeMilliseconds()).IsEqualTo(timestamp);
+    }
+
+    [Test]
+    [Arguments("-62135596800001")]
+    [Arguments("253402300800000")]
+    [Arguments("9223372036854775807")]
+    [Arguments("-9223372036854775808")]
+    [Arguments("not-a-date")]
+    public async Task TryGetDueAt_InvalidTimestamp_ReturnsFalse(string timestamp)
+    {
+        var headers = new Headers();
+        headers.Add(RetryTopicHeaders.DueTimestampMsKey, timestamp);
+
+        await Assert.That(RetryTopicHeaders.TryGetDueAt(headers.ToList(), out var dueAt)).IsFalse();
+        await Assert.That(dueAt).IsEqualTo(default(DateTimeOffset));
+    }
+
+    [Test]
     public async Task Build_IncludesRetryMetadata()
     {
         var dueAt = DateTimeOffset.FromUnixTimeMilliseconds(1_700_000_000_000);
