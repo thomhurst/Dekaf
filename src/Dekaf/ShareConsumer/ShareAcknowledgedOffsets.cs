@@ -1,3 +1,5 @@
+using System.Runtime.CompilerServices;
+
 namespace Dekaf.ShareConsumer;
 
 /// <summary>
@@ -8,6 +10,7 @@ public readonly struct ShareAcknowledgedOffsets
     private readonly List<AcknowledgementBatchData>? _batches;
     private readonly bool _hasGaps;
     private readonly bool _requiresOffsetScan;
+    private readonly bool _hasCompactRanges;
 
     internal ShareAcknowledgedOffsets(List<AcknowledgementBatchData> batches)
     {
@@ -32,6 +35,7 @@ public readonly struct ShareAcknowledgedOffsets
         }
 
         _hasGaps = hasGaps;
+        _hasCompactRanges = hasCompactRanges;
         _requiresOffsetScan = hasGaps || hasCompactRanges;
         Length = length;
     }
@@ -58,7 +62,7 @@ public readonly struct ShareAcknowledgedOffsets
             ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(index, Length);
 
             if (_requiresOffsetScan)
-                return GetSparseOffset(_batches!, index);
+                return _hasCompactRanges ? GetRangeOffset(_batches!, index) : GetSparseOffset(_batches!, index);
 
             var batches = _batches!;
             for (var batchIndex = 0; batchIndex < batches.Count; batchIndex++)
@@ -76,7 +80,42 @@ public readonly struct ShareAcknowledgedOffsets
     }
 
     // Pass fields so the JIT can keep the view in registers when inlining the indexer.
+    // Keep the scan out of the caller's traversal loop to avoid inflating its register pressure.
+    [MethodImpl(MethodImplOptions.NoInlining)]
     private static long GetSparseOffset(List<AcknowledgementBatchData> batches, int index)
+    {
+        for (var batchIndex = 0; batchIndex < batches.Count; batchIndex++)
+        {
+            var batch = batches[batchIndex];
+            var types = batch.AcknowledgeTypes;
+            var offset = 0;
+            // Keep short logical suffixes scalar so counting setup stays amortized over a prefix.
+            while (index >= 16 && offset < types.Length)
+            {
+                // At most index + 1 entries cannot pass the requested logical offset.
+                // A match inside this prefix therefore means every entry was acknowledged.
+                var prefixLength = Math.Min(index + 1, types.Length - offset);
+                var acknowledged = prefixLength - CountGaps(types.AsSpan(offset, prefixLength));
+                if (index < acknowledged)
+                    return batch.FirstOffset + offset + index;
+                index -= acknowledged;
+                offset += prefixLength;
+            }
+
+            for (; offset < types.Length; offset++)
+            {
+                if (types[offset] == (byte)AcknowledgeType.Gap)
+                    continue;
+                if (index-- == 0)
+                    return batch.FirstOffset + offset;
+            }
+        }
+
+        throw new InvalidOperationException("Offset index was not present in the acknowledgement batches.");
+    }
+
+    // Keep compact-range branches out of the expanded-vector scan.
+    private static long GetRangeOffset(List<AcknowledgementBatchData> batches, int index)
     {
         for (var batchIndex = 0; batchIndex < batches.Count; batchIndex++)
         {
