@@ -11,7 +11,7 @@ using NSubstitute;
 
 namespace Dekaf.Tests.Unit.Hosting;
 
-public sealed class KafkaConsumerServiceTests
+public sealed partial class KafkaConsumerServiceTests
 {
     #region ExecuteAsync
 

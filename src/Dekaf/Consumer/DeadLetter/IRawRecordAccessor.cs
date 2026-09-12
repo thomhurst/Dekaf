@@ -8,6 +8,7 @@ internal interface IRawRecordAccessor
 {
     /// <summary>
     /// Gets the raw key and value bytes for the most recently yielded record.
+    /// Default memory represents null; non-null empty bytes retain an empty array backing store.
     /// Only valid during the current ProcessAsync scope (before MoveNextAsync advances).
     /// </summary>
     /// <returns>True if raw bytes are available; false if tracking is not enabled or no current record.</returns>
