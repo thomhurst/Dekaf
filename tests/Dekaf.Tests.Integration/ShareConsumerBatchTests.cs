@@ -6,6 +6,7 @@ using Dekaf.ShareConsumer;
 namespace Dekaf.Tests.Integration;
 
 [Category("ShareConsumer")]
+[Category("ShareConsumerCore")]
 [SupportsKafka(420)]
 [NotInParallel("ShareConsumerKafka42")]
 public class ShareConsumerBatchTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)

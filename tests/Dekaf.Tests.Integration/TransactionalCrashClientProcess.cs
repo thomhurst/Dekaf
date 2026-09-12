@@ -264,8 +264,6 @@ internal sealed class TransactionalCrashClientProcess : IAsyncDisposable
 
         startInfo.ArgumentList.Add("--treenode-filter");
         startInfo.ArgumentList.Add("/*/*/TransactionalCrashClient/*");
-        startInfo.ArgumentList.Add("--maximum-parallel-tests");
-        startInfo.ArgumentList.Add("1");
         return startInfo;
     }
 
