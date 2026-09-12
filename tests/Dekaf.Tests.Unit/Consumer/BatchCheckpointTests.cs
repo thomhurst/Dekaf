@@ -89,11 +89,16 @@ public class BatchCheckpointTests
     [Arguments(true)]
     public async Task EndAndDisposal_InvalidateAccessButNotCapturedValue(bool raw)
     {
-        using var pending = CreatePending();
-        var batch = new CheckpointBatch(pending, raw);
-        batch.MoveNext();
-        await Assert.That(batch.Capture(out var checkpoint)).IsTrue();
-        pending.Dispose();
+        CheckpointBatch batch;
+        TopicPartitionOffset checkpoint;
+        // Dispose exactly once before checking the expired window: another test can
+        // rent the returned instance while these assertions await.
+        using (var pending = CreatePending())
+        {
+            batch = new CheckpointBatch(pending, raw);
+            batch.MoveNext();
+            await Assert.That(batch.Capture(out checkpoint)).IsTrue();
+        }
         await Assert.That(batch.Capture(out _)).IsFalse();
         await Assert.That(checkpoint.Offset).IsEqualTo(11);
     }
