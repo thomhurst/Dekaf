@@ -5,6 +5,9 @@ description: "Package targets, tested runtimes, Native AOT coverage, and how Dek
 
 # API and Runtime Compatibility
 
+See the [Kafka feature support matrix](kafka-feature-support.md) for KIP scope,
+broker capabilities, runtime limits, and validation evidence.
+
 ## Package assets and tested runtimes
 
 The `Dekaf` and `Dekaf.Abstractions` packages ship `net10.0` and

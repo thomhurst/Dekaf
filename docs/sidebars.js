@@ -8,6 +8,7 @@ const sidebars = {
         'intro',
         'getting-started',
         'compatibility',
+        'kafka-feature-support',
         'migrating-from-confluent-kafka',
         'configuration/confluent-migration',
       ],
