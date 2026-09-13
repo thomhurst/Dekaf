@@ -80,6 +80,19 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
         _heartbeatIntervalMs = options.HeartbeatIntervalMs;
     }
 
+    // A push samples membership without taking the coordination lock. Suppress identities
+    // during joining, fencing, disposal, or an observed epoch/identity transition.
+    internal string? CaptureTelemetryMemberId()
+    {
+        var epoch = _memberEpoch;
+        var memberId = _memberId;
+        return epoch > 0 && _state == CoordinatorState.Stable &&
+            Volatile.Read(ref _disposed) == 0 && _memberEpoch == epoch &&
+            ReferenceEquals(memberId, _memberId)
+                ? memberId
+                : null;
+    }
+
     public string? MemberId => _memberId;
     public int MemberEpoch => _memberEpoch;
     public CoordinatorState State => _state;

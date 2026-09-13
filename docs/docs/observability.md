@@ -139,6 +139,33 @@ Independently of OpenTelemetry, Dekaf implements [KIP-714 client metrics push te
 
 Applications can also contribute their own metrics to broker subscriptions via `ProducerOptions.ApplicationMetrics` / `ConsumerOptions.ApplicationMetrics` with `ApplicationTelemetryMetric` (name, kind, and an observe callback).
 
+### Client resource attributes
+
+Each nonempty broker telemetry push includes applicable KIP-714 labels in the
+OTLP `ResourceMetrics.resource.attributes` message. These apply to both built-in
+and application metrics; data-point attributes such as `node_id` and application
+labels retain their original scope.
+
+| Attribute | Source |
+| --- | --- |
+| `client_rack` | Producer/consumer `ClientRack`, or share consumer `RackId`, when configured |
+| `group_id` | Consumer or share consumer `GroupId` |
+| `group_instance_id` | Ordinary consumer `GroupInstanceId`, when a group is configured |
+| `group_member_id` | Current joined consumer/share member identity at collection time |
+| `transactional_id` | Producer `TransactionalId`, when configured |
+
+Absent and empty values are omitted. Member identity is sampled once per push;
+joining, fenced, unjoined or disposed coordinators omit it. A later push reflects
+a new member identity without changing earlier snapshots. Share consumers have no
+static-member configuration, and Admin clients supply none of these attributes.
+Collection and encoding costs are per push, with no added per-message work.
+
+The receiving broker plugin supplies connection-derived labels such as
+`client_instance_id`, `client_id`, software name/version, source address/port,
+principal, and receiving `node_id`. Dekaf does not invent these labels or copy
+credentials into resource attributes. A data-point `node_id` still identifies
+the broker measured by that particular metric.
+
 ### Client instance IDs
 
 Built-in producers, consumers, Share Consumers, and Admin clients implement the optional

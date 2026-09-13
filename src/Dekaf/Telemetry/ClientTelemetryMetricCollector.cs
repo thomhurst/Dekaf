@@ -26,10 +26,19 @@ internal sealed record ClientTelemetryMetric(
     double Value,
     IReadOnlyList<ClientTelemetryMetricAttribute> Attributes);
 
+internal readonly record struct ClientTelemetryResourceAttributes(
+    string? ClientRack = null,
+    string? GroupId = null,
+    string? GroupInstanceId = null,
+    string? GroupMemberId = null,
+    string? TransactionalId = null);
+
 internal sealed record ClientTelemetryMetricSnapshot(
     bool DeltaTemporality,
     IReadOnlyList<ClientTelemetryMetric> Metrics)
 {
+    public ClientTelemetryResourceAttributes ResourceAttributes { get; init; }
+
     private static readonly IReadOnlyList<ClientTelemetryMetric> EmptyMetrics = [];
 
     public static ClientTelemetryMetricSnapshot Empty(bool deltaTemporality) =>
@@ -69,6 +78,9 @@ internal sealed class ClientTelemetryMetricCollector
 
     private long _connectionCreationTotal;
     private long _connectionCreationDelta;
+
+    // Assigned during construction; evaluated only for a nonempty telemetry push.
+    internal Func<ClientTelemetryResourceAttributes>? ResourceAttributesProvider { get; set; }
 
     internal ShareConsumerTelemetryMetrics? ShareConsumerMetrics { get; }
 
@@ -276,7 +288,10 @@ internal sealed class ClientTelemetryMetricCollector
 
         return metrics.Count == 0
             ? ClientTelemetryMetricSnapshot.Empty(subscription.DeltaTemporality)
-            : new ClientTelemetryMetricSnapshot(subscription.DeltaTemporality, metrics);
+            : new ClientTelemetryMetricSnapshot(subscription.DeltaTemporality, metrics)
+            {
+                ResourceAttributes = ResourceAttributesProvider?.Invoke() ?? default
+            };
     }
 
     private void RecordRequestLatencyTicks(int brokerId, long elapsedTimestampTicks)

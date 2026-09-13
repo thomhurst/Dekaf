@@ -192,6 +192,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         _compressionCodecs = CompressionCodecRegistry.Default;
         _telemetryMetricCollector = new ClientTelemetryMetricCollector(ClientTelemetryClientRole.ShareConsumer);
         _telemetryMetricCollector.RegisterMetricsForSubscription(options.ApplicationMetrics);
+        _telemetryMetricCollector.ResourceAttributesProvider = CaptureTelemetryResourceAttributes;
         _telemetryManager = new ClientTelemetryManager(
             _connectionPool,
             _metadataManager,
@@ -216,6 +217,12 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
 
     /// <inheritdoc />
     public string? ClusterId => _metadataManager.ClusterId;
+
+    private ClientTelemetryResourceAttributes CaptureTelemetryResourceAttributes() =>
+        new(
+            ClientRack: _options.RackId,
+            GroupId: _options.GroupId,
+            GroupMemberId: _coordinator.CaptureTelemetryMemberId());
 
     /// <inheritdoc />
     public Guid? ClientInstanceId => _telemetryManager.ClientInstanceId;
