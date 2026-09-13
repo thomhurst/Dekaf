@@ -1971,6 +1971,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         _memoryBudget = memoryBudget;
         _telemetryMetricCollector = infrastructure.TelemetryMetricCollector;
         _telemetryMetricCollector.RegisterMetricsForSubscription(options.ApplicationMetrics);
+        _telemetryMetricCollector.ResourceAttributesProvider = CaptureTelemetryResourceAttributes;
         _loggerFactory = loggerFactory;
         _telemetryManager = new ClientTelemetryManager(
             _connectionPool,
@@ -2223,6 +2224,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     /// <inheritdoc />
     public string? ClusterId => _metadataManager.ClusterId;
+
+    private ClientTelemetryResourceAttributes CaptureTelemetryResourceAttributes() =>
+        new(
+            ClientRack: _options.ClientRack,
+            GroupId: _options.GroupId,
+            GroupInstanceId: string.IsNullOrEmpty(_options.GroupId) ? null : _options.GroupInstanceId,
+            GroupMemberId: _coordinator?.CaptureTelemetryMemberId());
 
     /// <inheritdoc />
     public Guid? ClientInstanceId => _telemetryManager.ClientInstanceId;

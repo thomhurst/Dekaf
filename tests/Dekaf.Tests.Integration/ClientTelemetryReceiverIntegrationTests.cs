@@ -1,7 +1,8 @@
 using Dekaf.Admin;
+using Dekaf.Consumer;
 using Dekaf.Diagnostics;
-using Dekaf.Telemetry;
 using Dekaf.ShareConsumer;
+using Dekaf.Telemetry;
 using Dekaf.Tools.Telemetry;
 
 namespace Dekaf.Tests.Integration;
@@ -64,6 +65,8 @@ public sealed class ClientTelemetryReceiverIntegrationTests(TelemetryReceiverKaf
         var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId(clientId)
+            .WithClientRack("producer-rack")
+            .WithTransactionalId(clientId + "-transaction")
             .RegisterMetricForSubscription(new ApplicationTelemetryMetric(
                 applicationName, ApplicationTelemetryMetricKind.Gauge, () => applicationValue))
             .BuildAsync(cancellationToken);
@@ -80,6 +83,12 @@ public sealed class ClientTelemetryReceiverIntegrationTests(TelemetryReceiverKaf
             await Assert.That(received.ClientInstanceId).IsEqualTo(identity!.Value);
             await Assert.That(received.Data.Length).IsGreaterThan(0);
             await Assert.That(received.ContentType).IsEqualTo("OTLP");
+            var resource = ResourceAttributes(received);
+            await Assert.That(resource).IsEquivalentTo(new Dictionary<string, string>
+            {
+                ["client_rack"] = "producer-rack",
+                ["transactional_id"] = clientId + "-transaction"
+            });
             var decoded = Decode(received);
             var application = decoded.Single(metric => metric.Name == applicationName);
             var builtin = decoded.Single(metric => metric.Name == builtinName);
@@ -124,7 +133,8 @@ public sealed class ClientTelemetryReceiverIntegrationTests(TelemetryReceiverKaf
         var consumer = await Kafka.CreateShareConsumer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId(clientId)
-            .WithGroupId($"share-telemetry-{Guid.NewGuid():N}")
+            .WithGroupId(clientId + "-group")
+            .WithRackId("share-rack")
             .RegisterMetricForSubscription(new ApplicationTelemetryMetric(
                 applicationName, ApplicationTelemetryMetricKind.Gauge, () => applicationValue,
                 new Dictionary<string, string> { ["tenant"] = clientId }))
@@ -138,6 +148,11 @@ public sealed class ClientTelemetryReceiverIntegrationTests(TelemetryReceiverKaf
                 cancellationToken);
             await Assert.That(received.ClientInstanceId).IsEqualTo(identity!.Value);
             await Assert.That(received.ContentType).IsEqualTo("OTLP");
+            await Assert.That(ResourceAttributes(received)).IsEquivalentTo(new Dictionary<string, string>
+            {
+                ["client_rack"] = "share-rack",
+                ["group_id"] = clientId + "-group"
+            });
             var application = Decode(received).Single(metric => metric.Name == applicationName);
             var point = application.Gauge.DataPoints.Single();
             await Assert.That(point.AsDouble).IsEqualTo(applicationValue);
@@ -234,6 +249,14 @@ public sealed class ClientTelemetryReceiverIntegrationTests(TelemetryReceiverKaf
                 .Gauge.DataPoints.Single().AsDouble).IsEqualTo(42d);
             await Assert.That(decoded.Single(metric => metric.Name == name).Sum.IsMonotonic).IsTrue();
         }
+        var shareMemberId = consumer.MemberId;
+        await Assert.That(shareMemberId).IsNotNull();
+        var memberPayload = await kafka.WaitForPayloadAsync(clientId,
+            payload => !payload.IsTerminating && ResourceAttributes(payload).GetValueOrDefault("group_member_id") == shareMemberId,
+            cancellationToken);
+        await Assert.That(ResourceAttributes(memberPayload)["group_id"]).IsEqualTo(group);
+        await Assert.That(ResourceAttributes(memberPayload).ContainsKey("group_instance_id")).IsFalse();
+        await Assert.That(ResourceAttributes(memberPayload).ContainsKey("transactional_id")).IsFalse();
         // Built-ins are collected before application gauges. The first marker may race with
         // an earlier collection; observing the second proves a complete subsequent export.
         // Polling has stopped, so all pre-close fetch deltas must now be at the receiver.
@@ -261,6 +284,68 @@ public sealed class ClientTelemetryReceiverIntegrationTests(TelemetryReceiverKaf
         await Assert.That(ExportedTotal(finalPayloads, acknowledgementErrorsName))
             .IsEqualTo(0d);
     }
+
+    [Test]
+    [Timeout(90_000)]
+    public async Task Consumer_BrokerReceivesConfiguredAndCurrentMembershipResources(CancellationToken cancellationToken)
+    {
+        const string metricName = "com.example.telemetry.membership";
+        var clientId = $"resource-consumer-{Guid.NewGuid():N}";
+        var groupId = clientId + "-group";
+        var topic = await kafka.CreateTestTopicAsync(partitions: 1);
+        await using var admin = kafka.CreateAdminClient();
+        await admin.IncrementalAlterConfigsAsync(new Dictionary<ConfigResource, IReadOnlyList<ConfigAlter>>
+        {
+            [new ConfigResource { Type = ConfigResourceType.ClientMetrics, Name = clientId }] =
+            [
+                ConfigAlter.Set("metrics", metricName),
+                ConfigAlter.Set("interval.ms", "500"),
+                ConfigAlter.Set("match", $"client_id={clientId}")
+            ]
+        }, cancellationToken: cancellationToken);
+        await kafka.WaitForSubscriptionAsync(clientId, [metricName], 500, cancellationToken);
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(kafka.BootstrapServers).BuildAsync(cancellationToken);
+        await producer.ProduceAsync(topic, "key", "value", cancellationToken);
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(kafka.BootstrapServers).WithClientId(clientId)
+            .WithGroupId(groupId).WithGroupInstanceId(clientId + "-instance").WithClientRack("consumer-rack")
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .RegisterMetricForSubscription(new(metricName, ApplicationTelemetryMetricKind.Gauge, static () => 1))
+            .BuildAsync(cancellationToken);
+        var beforeJoin = await kafka.WaitForPayloadAsync(clientId,
+            payload => !payload.IsTerminating && Decode(payload).Any(metric => metric.Name == metricName), cancellationToken);
+        await Assert.That(ResourceAttributes(beforeJoin)).IsEquivalentTo(new Dictionary<string, string>
+        {
+            ["client_rack"] = "consumer-rack",
+            ["group_id"] = groupId,
+            ["group_instance_id"] = clientId + "-instance"
+        });
+        consumer.Subscribe(topic);
+        var record = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(15), cancellationToken);
+        await Assert.That(record).IsNotNull();
+        var memberId = consumer.MemberId;
+        await Assert.That(memberId).IsNotNull();
+        var joined = await kafka.WaitForPayloadAsync(clientId,
+            payload => ResourceAttributes(payload).GetValueOrDefault("group_member_id") == memberId, cancellationToken);
+        await Assert.That(ResourceAttributes(joined)).IsEquivalentTo(new Dictionary<string, string>
+        {
+            ["client_rack"] = "consumer-rack",
+            ["group_id"] = groupId,
+            ["group_instance_id"] = clientId + "-instance",
+            ["group_member_id"] = memberId!
+        });
+        await consumer.CloseAsync(new ConsumerCloseOptions
+        {
+            GroupMembershipOperation = ConsumerGroupMembershipOperation.LeaveGroup
+        }, cancellationToken);
+        var terminated = await kafka.WaitForPayloadAsync(clientId, payload => payload.IsTerminating, cancellationToken);
+        await Assert.That(ResourceAttributes(terminated).ContainsKey("group_member_id")).IsFalse();
+    }
+
+    private static Dictionary<string, string> ResourceAttributes(ReceivedTelemetry payload) =>
+        MetricsData.Parser.ParseFrom(payload.Data).ResourceMetrics.Single().Resource?.Attributes
+            .ToDictionary(attribute => attribute.Key, attribute => attribute.Value.StringValue) ?? [];
 
     private static double ExportedTotal(IReadOnlyList<ReceivedTelemetry> payloads, string name) => payloads
         .SelectMany(Decode).Where(metric => metric.Name == name)

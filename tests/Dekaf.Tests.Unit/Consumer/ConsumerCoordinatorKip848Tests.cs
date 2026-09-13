@@ -37,6 +37,28 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         await Assert.That(constructor).IsNotNull();
     }
 
+    [Test]
+    public async Task TelemetryMemberId_OnlyReportsJoinedCurrentIdentity()
+    {
+        await using var coordinator = new ConsumerCoordinator(
+            new ConsumerOptions { BootstrapServers = ["localhost:9092"], GroupId = "telemetry" },
+            _connectionPool, _metadataManager);
+        var flags = BindingFlags.Instance | BindingFlags.NonPublic;
+        var type = typeof(ConsumerCoordinator);
+        type.GetField("_memberId", flags)!.SetValue(coordinator, "old-member");
+        type.GetField("_generationId", flags)!.SetValue(coordinator, 1);
+        await Assert.That(coordinator.CaptureTelemetryMemberId()).IsNull();
+        type.GetField("_state", flags)!.SetValue(coordinator, CoordinatorState.Stable);
+        await Assert.That(coordinator.CaptureTelemetryMemberId()).IsEqualTo("old-member");
+        type.GetField("_generationId", flags)!.SetValue(coordinator, -2);
+        await Assert.That(coordinator.CaptureTelemetryMemberId()).IsNull();
+        type.GetField("_memberId", flags)!.SetValue(coordinator, "new-member");
+        type.GetField("_generationId", flags)!.SetValue(coordinator, 2);
+        await Assert.That(coordinator.CaptureTelemetryMemberId()).IsEqualTo("new-member");
+        await coordinator.DisposeAsync();
+        await Assert.That(coordinator.CaptureTelemetryMemberId()).IsNull();
+    }
+
     private static readonly Guid TestTopicId = Guid.Parse("00000000-0000-0000-0000-000000000001");
 
     private readonly IConnectionPool _connectionPool;

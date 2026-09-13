@@ -163,6 +163,19 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         _lastPollTimestamp = Stopwatch.GetTimestamp();
     }
 
+    // A push samples membership without taking the coordination lock. Suppress identities
+    // during joining, fencing, disposal, or an observed epoch/identity transition.
+    internal string? CaptureTelemetryMemberId()
+    {
+        var epoch = _generationId;
+        var memberId = _memberId;
+        return epoch > 0 && _state == CoordinatorState.Stable &&
+            Volatile.Read(ref _disposed) == 0 && _generationId == epoch &&
+            ReferenceEquals(memberId, _memberId)
+                ? memberId
+                : null;
+    }
+
     public string? MemberId => _memberId;
     public int GenerationId => _generationId;
     public CoordinatorState State => _state;

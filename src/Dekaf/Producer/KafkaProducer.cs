@@ -107,6 +107,11 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     /// <inheritdoc />
     public string? ClusterId => _metadataManager.ClusterId;
 
+    private ClientTelemetryResourceAttributes CaptureTelemetryResourceAttributes() =>
+        new(
+            ClientRack: _options.ClientRack,
+            TransactionalId: _options.TransactionalId);
+
     /// <inheritdoc />
     public Guid? ClientInstanceId => _telemetryManager.ClientInstanceId;
 
@@ -682,6 +687,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         _metadataManager = infrastructure.Metadata;
         _telemetryMetricCollector = infrastructure.TelemetryMetricCollector;
         _telemetryMetricCollector.RegisterMetricsForSubscription(options.ApplicationMetrics);
+        _telemetryMetricCollector.ResourceAttributesProvider = CaptureTelemetryResourceAttributes;
 
         _telemetryManager = new ClientTelemetryManager(
             _connectionPool,

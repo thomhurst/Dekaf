@@ -67,6 +67,7 @@ internal sealed class ClientTelemetryPayloadProvider : IClientTelemetryPayloadPr
         var buffer = new ArrayBufferWriter<byte>();
         WriteMessage(buffer, 1, resourceMetrics =>
         {
+            WriteResource(resourceMetrics, snapshot.ResourceAttributes);
             WriteMessage(resourceMetrics, 2, scopeMetrics =>
             {
                 foreach (var metric in snapshot.Metrics)
@@ -76,6 +77,60 @@ internal sealed class ClientTelemetryPayloadProvider : IClientTelemetryPayloadPr
             });
         });
         return buffer;
+    }
+
+    private static void WriteResource(IBufferWriter<byte> writer, ClientTelemetryResourceAttributes attributes)
+    {
+        var size = ResourceAttributeSize("client_rack", attributes.ClientRack) +
+            ResourceAttributeSize("group_id", attributes.GroupId) +
+            ResourceAttributeSize("group_instance_id", attributes.GroupInstanceId) +
+            ResourceAttributeSize("group_member_id", attributes.GroupMemberId) +
+            ResourceAttributeSize("transactional_id", attributes.TransactionalId);
+        if (size == 0)
+            return;
+
+        // ResourceMetrics.resource = 1. Precompute lengths to write directly into the
+        // existing buffer without a temporary buffer or closure for each attribute.
+        WriteTag(writer, 1, WireLengthDelimited);
+        WriteVarint(writer, (ulong)size);
+        WriteResourceAttribute(writer, "client_rack", attributes.ClientRack);
+        WriteResourceAttribute(writer, "group_id", attributes.GroupId);
+        WriteResourceAttribute(writer, "group_instance_id", attributes.GroupInstanceId);
+        WriteResourceAttribute(writer, "group_member_id", attributes.GroupMemberId);
+        WriteResourceAttribute(writer, "transactional_id", attributes.TransactionalId);
+    }
+
+    private static int ResourceAttributeSize(string name, string? value)
+    {
+        if (value is null || value.Length == 0)
+            return 0;
+
+        var anyValueSize = LengthDelimitedSize(Encoding.UTF8.GetByteCount(value));
+        var keyValueSize = LengthDelimitedSize(Encoding.UTF8.GetByteCount(name)) + LengthDelimitedSize(anyValueSize);
+        return LengthDelimitedSize(keyValueSize);
+    }
+
+    private static int LengthDelimitedSize(int payloadSize)
+    {
+        var lengthSize = 1;
+        for (var remaining = (uint)payloadSize; remaining >= 128; remaining >>= 7)
+            lengthSize++;
+        return 1 + lengthSize + payloadSize;
+    }
+
+    private static void WriteResourceAttribute(IBufferWriter<byte> writer, string name, string? value)
+    {
+        if (value is null || value.Length == 0)
+            return;
+
+        var anyValueSize = LengthDelimitedSize(Encoding.UTF8.GetByteCount(value));
+        var keyValueSize = LengthDelimitedSize(Encoding.UTF8.GetByteCount(name)) + LengthDelimitedSize(anyValueSize);
+        WriteTag(writer, 1, WireLengthDelimited); // Resource.attributes
+        WriteVarint(writer, (ulong)keyValueSize);
+        WriteString(writer, 1, name);
+        WriteTag(writer, 2, WireLengthDelimited); // KeyValue.value
+        WriteVarint(writer, (ulong)anyValueSize);
+        WriteString(writer, 1, value); // AnyValue.string_value
     }
 
     private static void WriteMetric(
