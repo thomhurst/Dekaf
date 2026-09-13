@@ -5,7 +5,10 @@ description: "Which .NET targets each Dekaf package supports, the netstandard2.0
 
 # Compatibility
 
-Dekaf's core package targets `net10.0` and `netstandard2.0`. The extension, serialization, compression, Schema Registry, testing, and tool packages still target `net10.0`.
+See the [Kafka feature support matrix](kafka-feature-support.md) for KIP scope,
+broker capabilities, runtime limits, and validation evidence.
+
+Dekaf's core package targets `net10.0` and `netstandard2.0`. The extension, serialization, compression, Schema Registry, and testing packages target `net8.0` and `net10.0`; tools target `net10.0`.
 
 The project is open to broader target-framework support when it does not regress the `net10.0` performance path. `netstandard2.0` support is tracked by #1224 and split into staged child issues so compatibility work can land without weakening the current package.
 
