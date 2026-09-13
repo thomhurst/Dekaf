@@ -192,11 +192,10 @@ public sealed class ResponseFrameReaderTests
     public async Task ReadFrameAsync_LargeStreamFrame_UsesNativePooledMemory()
     {
 #if NET8_0
-        // The net8 test target consumes Dekaf's netstandard2.0 asset, so this test executes
-        // ReadSourceAsync's NETSTANDARD2_0 native-stream staging branch in CI.
+        // The .NET 8 target must use its dedicated package asset.
         var framework = typeof(ResponseFrameReader).Assembly
             .GetCustomAttribute<TargetFrameworkAttribute>()?.FrameworkName;
-        await Assert.That(framework).IsEqualTo(".NETStandard,Version=v2.0");
+        await Assert.That(framework).IsEqualTo(".NETCoreApp,Version=v8.0");
 #endif
         var frame = BuildFrame(correlationId: 12, payloadSize: ResponseBufferPool.NativeMemoryThresholdBytes);
         using var reader = CreateReader(out _, receiveBufferSize: 4096, chunks: [frame]);

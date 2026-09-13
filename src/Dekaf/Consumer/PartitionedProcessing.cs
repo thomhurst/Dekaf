@@ -5,7 +5,7 @@ using System.Threading.Channels;
 using Dekaf.Internal;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
-#if NETSTANDARD2_0
+#if !NET9_0_OR_GREATER
 using TopicPartitionSet = System.Collections.Generic.IReadOnlyCollection<Dekaf.TopicPartition>;
 #else
 using TopicPartitionSet = System.Collections.Generic.IReadOnlySet<Dekaf.TopicPartition>;

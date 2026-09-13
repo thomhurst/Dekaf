@@ -10,9 +10,9 @@ broker capabilities, runtime limits, and validation evidence.
 
 ## Package assets and tested runtimes
 
-The `Dekaf` and `Dekaf.Abstractions` packages ship `net10.0` and
+The `Dekaf` and `Dekaf.Abstractions` packages ship `net10.0`, `net8.0`, and
 `netstandard2.0` assets. .NET 10 applications select the optimized `net10.0`
-asset; .NET 8 applications use the core's `netstandard2.0` asset. Compatibility
+asset; .NET 8 applications use the dedicated `net8.0` asset. Compatibility
 with .NET Standard alone is not a promise of testing on every implementing
 runtime, identical API shapes or equivalent performance on all runtimes.
 
@@ -31,6 +31,7 @@ to execute the `net8.0` test binaries. The configured CI/release coverage is:
 | --- | --- | --- |
 | Unit tests for code changes | .NET 8 and .NET 10 | No broker required |
 | PR integration tests | .NET 10 | Kafka 4.3.1 |
+| GSSAPI NuGet consumer round trips (Linux) | .NET 8 and .NET 10 | Kafka 4.3.1 |
 | NuGet release integration gate | .NET 8 and .NET 10 | Kafka 4.0.2, 4.1.2, 4.2.1, 4.3.1 |
 | Native AOT core and DI smoke apps | .NET 10, `linux-x64` | No broker required |
 | PR Native AOT integration smoke subset | .NET 10, `linux-x64` | Kafka 4.3.1 |
@@ -40,7 +41,8 @@ Manual non-publishing CI runs also execute ordinary integration tests on both
 .NET 8 and .NET 10. Native AOT coverage validates the scenarios exercised by
 the smoke apps and integration suites; it does not establish support for
 every package API, third-party serializer or target platform. Modern .NET
-library assets enable AOT/trim analyzers. The `netstandard2.0` assets do not,
+library assets enable AOT/trim analyzers, except the core `net8.0` asset, which
+retains reflection-based protocol metadata. The `netstandard2.0` assets do not,
 and third-party dependency warnings still need attention in an application's
 own publish output.
 
@@ -54,7 +56,8 @@ Every shipping project under `src/` uses
 `PublicAPI.Unshipped*.txt` files make additions, removals, nullable annotations,
 generic constraints, parameter names, and other signature changes visible in
 code review. The `Dekaf` and `Dekaf.Abstractions` packages have separate `net10.0` and
-`netstandard2.0` files because those assets intentionally expose a few
+`netstandard2.0` files; the `net8.0` assets share the latter declarations. These
+assets intentionally expose a few
 TFM-specific collection and ref-struct shapes. Other runtime packages share one
 API baseline across `net8.0` and `net10.0`.
 

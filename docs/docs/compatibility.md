@@ -8,7 +8,7 @@ description: "Which .NET targets each Dekaf package supports, the netstandard2.0
 See the [Kafka feature support matrix](kafka-feature-support.md) for KIP scope,
 broker capabilities, runtime limits, and validation evidence.
 
-Dekaf's core package targets `net10.0` and `netstandard2.0`. The extension, serialization, compression, Schema Registry, and testing packages target `net8.0` and `net10.0`; tools target `net10.0`.
+Dekaf's core and Abstractions packages target `net10.0`, `net8.0`, and `netstandard2.0`. The extension, serialization, compression, Schema Registry, and testing packages target `net8.0` and `net10.0`; tools target `net10.0`.
 
 The project is open to broader target-framework support when it does not regress the `net10.0` performance path. `netstandard2.0` support is tracked by #1224 and split into staged child issues so compatibility work can land without weakening the current package.
 
@@ -16,7 +16,7 @@ The project is open to broader target-framework support when it does not regress
 
 | Area | Status |
 | --- | --- |
-| Core package (`Dekaf`) | `net10.0`, `netstandard2.0` |
+| Core and Abstractions packages | `net10.0`, `net8.0`, `netstandard2.0` |
 | Compression packages | `net8.0`, `net10.0` |
 | Serialization packages | `net8.0`, `net10.0` |
 | Schema Registry packages | `net8.0`, `net10.0` |
@@ -25,6 +25,26 @@ The project is open to broader target-framework support when it does not regress
 | Tools, benchmarks, stress tests | `net10.0` |
 
 The `net10.0` target stays the primary optimization target. Protocol serialization, production, and consumption hot paths should continue using modern BCL APIs where they are needed for low allocation and throughput.
+
+## .NET 8 package asset
+
+.NET 8 applications select the dedicated `net8.0` core and Abstractions assets.
+They retain the `IReadOnlyCollection` and serializer contracts previously selected
+through `netstandard2.0`, while enabling the existing managed GSSAPI implementation.
+The optimized `net10.0` asset retains its `IReadOnlySet`, ref-struct, and static
+protocol dispatch paths. No additional authentication package is required.
+
+GSSAPI uses Windows SSPI, Linux Kerberos libraries and credentials, or macOS
+Heimdal. CI exercises a local MIT KDC and authenticated admin/produce/consume
+round trips for clean .NET 8 and .NET 10 NuGet consumers on Linux, including
+rejection of an invalid service identity. Windows and macOS coverage is based on
+the implementation; these Kerberos round trips do not certify those platforms.
+Windows explicit `KeytabPath` remains unsupported; use the Windows credential store
+or run under the desired service identity. See [SASL authentication](security/sasl.md).
+
+The `netstandard2.0` asset still throws `PlatformNotSupportedException` for GSSAPI.
+The .NET 8 asset retains reflection-based protocol metadata and does not declare
+trim/Native AOT compatibility. Use the .NET 10 asset for supported AOT scenarios.
 
 ## netstandard2.0 Goal
 
@@ -126,7 +146,7 @@ Each replacement needs performance review. The `net10.0` hot path should keep mo
 
 Not every package has to multi-target at the same time. The current sequence is:
 
-1. `Dekaf` - shipped as `net10.0` and `netstandard2.0`
+1. `Dekaf` and `Dekaf.Abstractions` - shipped as `net10.0`, `net8.0`, and `netstandard2.0`
 2. serialization and compression packages that can compile without framework-specific hosting dependencies
 3. Schema Registry packages
 4. extensions packages where their `Microsoft.Extensions.*` dependencies support the chosen older target

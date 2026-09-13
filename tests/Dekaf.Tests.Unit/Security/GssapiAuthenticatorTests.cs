@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.Runtime.Versioning;
 using Dekaf.Errors;
 using Dekaf.Security.Sasl;
 
@@ -6,6 +7,14 @@ namespace Dekaf.Tests.Unit.Security;
 
 public class GssapiAuthenticatorTests
 {
+    [Test]
+    public async Task ModernRuntime_SelectsManagedGssapiAsset()
+    {
+        var framework = typeof(GssapiAuthenticator).Assembly.GetCustomAttribute<TargetFrameworkAttribute>();
+        await Assert.That(framework!.FrameworkName).IsEqualTo($".NETCoreApp,Version=v{Environment.Version.Major}.0");
+        await Assert.That(UsesNetStandardGssapiShim()).IsFalse();
+    }
+
     [Test]
     public async Task MechanismName_ReturnsGssapi()
     {

@@ -213,7 +213,7 @@ public interface ISerializer<in T>
     /// <param name="context">Serialization context with topic and header information.</param>
     void Serialize<TWriter>(T value, ref TWriter destination, SerializationContext context)
         where TWriter : IBufferWriter<byte>
-#if !NETSTANDARD2_0
+#if NET9_0_OR_GREATER
         , allows ref struct
 #endif
         ;

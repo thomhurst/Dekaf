@@ -26,6 +26,9 @@ public sealed class GssapiAuthenticationIntegrationTests
             await using var kafka = new KerberosKafkaContainer(realm);
             await kafka.InitializeAsync();
             await realm.RunClientAsync(kafka.BootstrapServers, cancellationToken);
+            var packageClient = Environment.GetEnvironmentVariable("DEKAF_KERBEROS_PACKAGE_CLIENT");
+            if (!string.IsNullOrEmpty(packageClient))
+                await realm.RunPackageClientAsync(packageClient, kafka.BootstrapServers, cancellationToken);
             return;
         }
         var topic = $"kerberos-{Guid.NewGuid():N}";
@@ -56,15 +59,11 @@ public sealed class GssapiAuthenticationIntegrationTests
 }
 
 public sealed class RequiresLocalKerberosAttribute() : SkipAttribute(
-    "The local MIT Kerberos fixture requires Linux and Dekaf's net10.0 asset; netstandard2.0 has no GSSAPI implementation.")
+    "The local MIT Kerberos fixture requires Linux and installed Kerberos tools.")
 {
     public override Task<bool> ShouldSkip(TestRegisteredContext context)
     {
-#if NET8_0
-        return Task.FromResult(true);
-#else
         return Task.FromResult(!OperatingSystem.IsLinux());
-#endif
     }
 }
 
@@ -159,6 +158,14 @@ internal sealed class LocalKerberosRealm : IAsyncDisposable
         info.ArgumentList.Add("/*/*/GssapiAuthenticationIntegrationTests/*");
         info.ArgumentList.Add("--results-directory");
         info.ArgumentList.Add(Path.Combine(_directory.FullName, "results"));
+        info.Environment["DEKAF_KERBEROS_BOOTSTRAP"] = bootstrapServers;
+        info.Environment["KRB5CCNAME"] = $"FILE:{Path.Combine(_directory.FullName, "ccache")}";
+        return RunAsync(info, cancellationToken);
+    }
+
+    public Task RunPackageClientAsync(string assemblyPath, string bootstrapServers, CancellationToken cancellationToken)
+    {
+        var info = StartInfo("dotnet", [Path.GetFullPath(assemblyPath)]);
         info.Environment["DEKAF_KERBEROS_BOOTSTRAP"] = bootstrapServers;
         info.Environment["KRB5CCNAME"] = $"FILE:{Path.Combine(_directory.FullName, "ccache")}";
         return RunAsync(info, cancellationToken);

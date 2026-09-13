@@ -4,7 +4,7 @@
   <PropertyGroup>
     <!-- Directory.Build.props sets a default TargetFramework before project properties; clear it so TargetFrameworks drives package assets. -->
     <TargetFramework></TargetFramework>
-    <TargetFrameworks>net10.0;netstandard2.0</TargetFrameworks>
+    <TargetFrameworks>net10.0;net8.0;netstandard2.0</TargetFrameworks>
     <PackageId>Dekaf</PackageId>
     <Description>High-performance, pure C# Apache Kafka client library for .NET</Description>
     <PackageTags>kafka;messaging;streaming;producer;consumer;pubsub</PackageTags>
@@ -64,9 +64,14 @@
   </ItemGroup>
 
   <!-- The core package intentionally exposes TFM-specific collection/ref-struct shapes. -->
+  <PropertyGroup>
+    <PublicApiTargetFramework>$(TargetFramework)</PublicApiTargetFramework>
+    <PublicApiTargetFramework Condition="'$(TargetFramework)' == 'net8.0'">netstandard2.0</PublicApiTargetFramework>
+  </PropertyGroup>
+
   <ItemGroup Condition="'$(TargetFramework)' != ''">
-    <AdditionalFiles Include="PublicAPI.Shipped.$(TargetFramework).txt" />
-    <AdditionalFiles Include="PublicAPI.Unshipped.$(TargetFramework).txt" />
+    <AdditionalFiles Include="PublicAPI.Shipped.$(PublicApiTargetFramework).txt" />
+    <AdditionalFiles Include="PublicAPI.Unshipped.$(PublicApiTargetFramework).txt" />
   </ItemGroup>
 
   <PropertyGroup Condition="'$(TargetFramework)' == 'netstandard2.0'">
@@ -75,6 +80,19 @@
     <PolyArgumentExceptions>true</PolyArgumentExceptions>
     <PolyUseEmbeddedAttribute>true</PolyUseEmbeddedAttribute>
   </PropertyGroup>
+
+  <!-- The .NET 8 contract retains reflection-based protocol metadata, like netstandard2.0. -->
+  <PropertyGroup Condition="'$(TargetFramework)' == 'net8.0'">
+    <IsAotCompatible>false</IsAotCompatible>
+    <PolyUseEmbeddedAttribute>true</PolyUseEmbeddedAttribute>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' == 'net8.0'">
+    <!-- Internal polyfills do not add BCL type forwarders to the package API. -->
+    <Compile Remove="$(PkgPolyfill)/contentFiles/cs/net8.0/TypeForwardeds.cs" />
+    <PackageReference Include="System.IO.Pipelines" />
+    <PackageReference Include="Polyfill" PrivateAssets="all" GeneratePathProperty="true" />
+  </ItemGroup>
 
   <!-- Compatibility dependencies for the package's netstandard2.0 asset. -->
   <ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.0'">

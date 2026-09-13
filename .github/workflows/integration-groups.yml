@@ -80,7 +80,7 @@ jobs:
           dotnet-version: '8.0.x'
 
       - name: Install local Kerberos test tools
-        if: matrix.group == 'connections' && inputs.framework != 'net8.0'
+        if: matrix.group == 'connections'
         run: |
           sudo apt-get update
           sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y krb5-kdc krb5-admin-server krb5-user

@@ -7055,7 +7055,7 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
 /// Used with thread-local buffers to avoid per-message ArrayPool rentals.
 /// After serialization, ToPooledMemory() copies data to a right-sized pooled buffer.
 /// </summary>
-#if NETSTANDARD2_0
+#if !NET9_0_OR_GREATER
 internal struct ReusableBufferWriter : IBufferWriter<byte>
 #else
 internal ref struct ReusableBufferWriter : IBufferWriter<byte>

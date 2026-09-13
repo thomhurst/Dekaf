@@ -5,7 +5,7 @@ namespace Dekaf.Protocol;
 /// </summary>
 public interface IKafkaMessage
 {
-#if !NETSTANDARD2_0
+#if NET9_0_OR_GREATER
     /// <summary>
     /// The API key for this message type.
     /// </summary>
@@ -34,7 +34,7 @@ public interface IKafkaRequest<TResponse> : IKafkaMessage
     /// </summary>
     void Write(ref KafkaProtocolWriter writer, short version);
 
-#if !NETSTANDARD2_0
+#if NET9_0_OR_GREATER
     /// <summary>
     /// Returns true if this API version uses flexible encoding.
     /// With Kafka 4.0+ all supported versions are flexible.
@@ -68,7 +68,7 @@ internal interface IKafkaRequestBodySizeHint
 /// </summary>
 public interface IKafkaResponse : IKafkaMessage
 {
-#if !NETSTANDARD2_0
+#if NET9_0_OR_GREATER
     /// <summary>
     /// Gets the broker-reported throttle time in milliseconds, or zero when this
     /// response type does not carry quota throttle information.

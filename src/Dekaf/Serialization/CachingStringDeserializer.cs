@@ -101,7 +101,7 @@ internal sealed class CachingStringDeserializer : ISerde<string>
 
     public void Serialize<TWriter>(string value, ref TWriter destination, SerializationContext context)
         where TWriter : System.Buffers.IBufferWriter<byte>
-#if !NETSTANDARD2_0
+#if NET9_0_OR_GREATER
         , allows ref struct
 #endif
     {
@@ -246,7 +246,7 @@ internal sealed class CachingStringDeserializer : ISerde<string>
     {
         public void Serialize<TWriter>(string value, ref TWriter destination, SerializationContext context)
             where TWriter : System.Buffers.IBufferWriter<byte>
-#if !NETSTANDARD2_0
+#if NET9_0_OR_GREATER
             , allows ref struct
 #endif
         {
