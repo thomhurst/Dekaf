@@ -1,3 +1,5 @@
+using System.Collections;
+using System.Collections.Immutable;
 using System.Threading.Channels;
 using Dekaf.Outbox;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -6,6 +8,78 @@ namespace Dekaf.Tests.Unit.Outbox;
 
 public sealed class OutboxNotificationTransportTests
 {
+    [Test]
+    [Arguments(0)]
+    [Arguments(1)]
+    [Arguments(2)]
+    [Arguments(3)]
+    [Arguments(4)]
+    public async Task KnownAndCustomSets_PreservePreciseHintsWithoutAllocation(int kind)
+    {
+        IReadOnlySet<int> buckets = kind switch
+        {
+            0 => new SortedSet<int> { 0, 65 },
+            1 => ImmutableHashSet.Create(0, 65),
+            3 => new SortedSet<int> { 0, 1, 2, 3, 4, 5, 6, 65 },
+            4 => new SortedSet<int> { 65 },
+            _ => new NonEnumeratingSet()
+        };
+        var buffer = new OutboxRemoteNotifications(66);
+        var output = new int[66];
+        for (var index = 0; index < 100; index++)
+        {
+            buffer.Notify(buckets);
+            buffer.ReadAsync(output, default).GetAwaiter().GetResult();
+        }
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var index = 0; index < 1000; index++)
+        {
+            buffer.Notify(buckets);
+            buffer.ReadAsync(output, default).GetAwaiter().GetResult();
+        }
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+        await Assert.That(allocated).IsEqualTo(0);
+        buffer.Notify(buckets);
+        var count = await buffer.ReadAsync(output, default);
+        await Assert.That(count).IsEqualTo(buckets.Count);
+        await Assert.That(output[count - 1]).IsEqualTo(65);
+        for (var index = 0; index < count - 1; index++)
+            await Assert.That(output[index]).IsEqualTo(index);
+    }
+
+    [Test]
+    public async Task CustomSet_InvalidBucketForcesDiscovery_AndEmptySetDoesNotSignal()
+    {
+        var buffer = new OutboxRemoteNotifications(2);
+        var output = new int[2];
+        buffer.Notify(new SortedSet<int> { 0, 99 });
+        await Assert.That(await buffer.ReadAsync(output, default)).IsEqualTo(1);
+        await Assert.That(output[0]).IsEqualTo(-1);
+        buffer.Notify(new NonEnumeratingSet());
+        await Assert.That(await buffer.ReadAsync(output, default)).IsEqualTo(1);
+        await Assert.That(output[0]).IsEqualTo(-1);
+        buffer.Notify(new SortedSet<int>());
+        using var cancellation = new CancellationTokenSource();
+        var read = buffer.ReadAsync(output, cancellation.Token);
+        await Assert.That(read.IsCompleted).IsFalse();
+        cancellation.Cancel();
+        await Assert.That(async () => await read).Throws<OperationCanceledException>();
+    }
+
+    private sealed class NonEnumeratingSet : IReadOnlySet<int>
+    {
+        public int Count => 2;
+        public bool Contains(int item) => item is 0 or 65;
+        public IEnumerator<int> GetEnumerator() => throw new InvalidOperationException("Must not enumerate on commit.");
+        IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
+        public bool IsProperSubsetOf(IEnumerable<int> other) => throw new NotSupportedException();
+        public bool IsProperSupersetOf(IEnumerable<int> other) => throw new NotSupportedException();
+        public bool IsSubsetOf(IEnumerable<int> other) => throw new NotSupportedException();
+        public bool IsSupersetOf(IEnumerable<int> other) => throw new NotSupportedException();
+        public bool Overlaps(IEnumerable<int> other) => throw new NotSupportedException();
+        public bool SetEquals(IEnumerable<int> other) => throw new NotSupportedException();
+    }
+
     [Test]
     public async Task RemoteCommit_WakesOwner_WithoutEchoingReceivedHints()
     {

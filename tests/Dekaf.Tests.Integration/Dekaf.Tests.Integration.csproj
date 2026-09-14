@@ -37,9 +37,18 @@
 
   <ItemGroup Condition="'$(PublishAot)' == 'true'">
     <Compile Remove="OutboxRelayIntegrationTests.cs" />
+    <Compile Remove="OutboxRelationalMetricsTests.cs" />
     <Compile Remove="SchemaRegistrySubjectCompatibilityTests.cs" />
     <Compile Remove="AvroPocoInteropIntegrationTests.cs" />
     <Compile Remove="RoutingSerdeIntegrationTests.cs" />
+  </ItemGroup>
+
+  <!-- Test-only provider, aligned with the centrally selected EF version for each TFM.
+       Keep this dependency out of product and stress/benchmark build inputs. -->
+  <ItemGroup Condition="'$(PublishAot)' != 'true'">
+    <PackageVersion Include="Microsoft.EntityFrameworkCore.SqlServer"
+                    Version="@(PackageVersion->WithMetadataValue('Identity', 'Microsoft.EntityFrameworkCore.Sqlite')->'%(Version)')" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" />
   </ItemGroup>
 
   <ItemGroup>
