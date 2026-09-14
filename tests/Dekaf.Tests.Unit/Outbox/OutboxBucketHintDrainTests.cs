@@ -7,6 +7,75 @@ namespace Dekaf.Tests.Unit.Outbox;
 public sealed class OutboxBucketHintDrainTests
 {
     [Test]
+    public async Task PendingHints_RacingWithDrain_AreConsumedByCurrentOrFollowingDrain()
+    {
+        using var notifier = new OutboxNotifier(new ManualTimeProvider(), 8193);
+        using var barrier = new Barrier(2);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var writer = Task.Factory.StartNew(() =>
+        {
+            for (var iteration = 0; iteration < 1000; iteration++)
+            {
+                barrier.SignalAndWait(timeout.Token);
+                notifier.NotifyCommitted(0);
+                notifier.NotifyCommitted(65);
+                notifier.NotifyCommitted(129);
+                notifier.NotifyCommitted();
+                barrier.SignalAndWait(timeout.Token);
+                barrier.SignalAndWait(timeout.Token);
+            }
+        }, timeout.Token, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+        var reader = Task.Factory.StartNew(() =>
+        {
+            var output = new int[3];
+            var complete = true;
+            for (var iteration = 0; iteration < 1000; iteration++)
+            {
+                barrier.SignalAndWait(timeout.Token);
+                var count = notifier.DrainHints(output, out var unknown);
+                var seen = Seen(output, count);
+                barrier.SignalAndWait(timeout.Token);
+                count = notifier.DrainHints(output, out var followingUnknown);
+                seen |= Seen(output, count);
+                complete &= seen == 7 && (unknown || followingUnknown);
+                barrier.SignalAndWait(timeout.Token);
+            }
+            return complete;
+        }, timeout.Token, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+        await Task.WhenAll(writer, reader);
+        await Assert.That(await reader).IsTrue();
+
+        static int Seen(int[] output, int count)
+        {
+            var mask = 0;
+            for (var index = 0; index < count; index++)
+                mask |= output[index] switch { 0 => 1, 65 => 2, 129 => 4, _ => 0 };
+            return mask;
+        }
+    }
+
+    [Test]
+    public async Task EmptyDrains_DoNotPreventLaterKnownOrUnknownHints()
+    {
+        using var notifier = new OutboxNotifier(new ManualTimeProvider(), 1000001);
+        var output = new int[1];
+        for (var index = 0; index < 10; index++)
+        {
+            await Assert.That(notifier.DrainHints(output, out var emptyUnknown)).IsEqualTo(0);
+            await Assert.That(emptyUnknown).IsFalse();
+        }
+        notifier.NotifyCommitted(1000000);
+        await Assert.That(notifier.DrainHints(output, out var unknown)).IsEqualTo(1);
+        await Assert.That(output[0]).IsEqualTo(1000000);
+        await Assert.That(unknown).IsFalse();
+        notifier.NotifyCommitted();
+        await Assert.That(notifier.DrainHints(output, out unknown)).IsEqualTo(0);
+        await Assert.That(unknown).IsTrue();
+        await Assert.That(notifier.DrainHints(output, out unknown)).IsEqualTo(0);
+        await Assert.That(unknown).IsFalse();
+    }
+
+    [Test]
     public async Task SparseCommit_UsesOnlyFetchAndDelete_AfterInitialDiscovery()
     {
         using var fixture = new Fixture();

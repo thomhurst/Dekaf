@@ -15,8 +15,8 @@ public class OutboxSparseTransportCommitBenchmarks
     [Params(8, 1000001)]
     public int BucketCount { get; set; }
 
-    [Params(false, true)]
-    public bool CustomSet { get; set; }
+    [Params("HashSet", "SortedSet", "CustomSet")]
+    public string SetType { get; set; } = "HashSet";
 
     private IReadOnlySet<int> _committed = null!;
     private Action<IReadOnlySet<int>> _notify = null!;
@@ -25,7 +25,12 @@ public class OutboxSparseTransportCommitBenchmarks
     public void Setup()
     {
         var buckets = new HashSet<int> { 0, BucketCount - 2, BucketCount - 1 };
-        _committed = CustomSet ? new SetAdapter(buckets) : new SortedSet<int>(buckets);
+        _committed = SetType switch
+        {
+            "HashSet" => buckets,
+            "SortedSet" => new SortedSet<int>(buckets),
+            _ => new SetAdapter(buckets)
+        };
         var type = typeof(IOutboxNotificationTransport).Assembly.GetType("Dekaf.Outbox.OutboxRemoteNotifications")!;
         var buffer = Activator.CreateInstance(type, BucketCount)!;
         _notify = type.GetMethod("Notify", [typeof(IReadOnlySet<int>)])!
