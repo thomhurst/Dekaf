@@ -109,6 +109,8 @@ services.AddDekafOutboxNotificationTransport<ApplicationOutboxTransport>();
 
 Commit callbacks only update a bounded, coalescing buffer. Background workers send and receive independently of database commits and Kafka publishing. Coalescing adds no debounce delay. Incoming broadcasts never get rebroadcast, including self-echoes. Send failures drop that advisory batch and apply `ErrorBackoff`; subscription failures or unexpected completion also retry with backoff. Polling always remains enabled, covering startup, lost hints and transport outages. Both methods must honor cancellation, and `ListenAsync` must finish all callbacks before returning. Shutdown observes both workers and does not guarantee delivery of buffered hints.
 
+The transport preserves exact IDs for EF's `HashSet<int>`, `ImmutableHashSet<int>`, individual bucket notifications, and `SortedSet<int>` containing at most two buckets. Other set types and larger sorted sets emit one coalesced unknown-bucket hint, avoiding allocation or a scan of all configured buckets inside the commit callback. That hint makes receiving relays query for pending work in their owned buckets. Custom writers should use `HashSet<int>` or individual bucket notifications when they need exact remote hints without that discovery query.
+
 ### Horizontal scaling
 
 The default eight buckets permit at most eight active draining relays. Extra application pods still maintain membership but own no buckets. Scaling application writers and relay workers separately can bound coordination work; with separate workers, use the optional transport or accept polling discovery latency. Increasing `BucketCount` still requires draining the table first.

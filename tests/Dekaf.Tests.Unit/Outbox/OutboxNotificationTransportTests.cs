@@ -11,18 +11,15 @@ public sealed class OutboxNotificationTransportTests
     [Test]
     [Arguments(0)]
     [Arguments(1)]
-    [Arguments(2)]
-    [Arguments(3)]
     [Arguments(4)]
-    public async Task KnownAndCustomSets_PreservePreciseHintsWithoutAllocation(int kind)
+    public async Task SupportedSets_PreservePreciseHintsWithoutAllocation(int kind)
     {
         IReadOnlySet<int> buckets = kind switch
         {
             0 => new SortedSet<int> { 0, 65 },
             1 => ImmutableHashSet.Create(0, 65),
-            3 => new SortedSet<int> { 0, 1, 2, 3, 4, 5, 6, 65 },
             4 => new SortedSet<int> { 65 },
-            _ => new NonEnumeratingSet()
+            _ => throw new ArgumentOutOfRangeException(nameof(kind))
         };
         var buffer = new OutboxRemoteNotifications(66);
         var output = new int[66];
@@ -48,6 +45,32 @@ public sealed class OutboxNotificationTransportTests
     }
 
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task UnsupportedSets_CoalesceUnknownHintsWithoutProbingOrAllocating(bool sorted)
+    {
+        IReadOnlySet<int> buckets = sorted
+            ? new SortedSet<int> { 0, 999999, 1000000 }
+            : new NonEnumeratingSet();
+        var buffer = new OutboxRemoteNotifications(1000001);
+        var output = new int[3];
+        for (var index = 0; index < 100; index++)
+            buffer.Notify(buckets);
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var index = 0; index < 1000; index++)
+            buffer.Notify(buckets);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+        await Assert.That(allocated).IsEqualTo(0);
+        await Assert.That(await buffer.ReadAsync(output, default)).IsEqualTo(1);
+        await Assert.That(output[0]).IsEqualTo(-1);
+        using var cancellation = new CancellationTokenSource();
+        var next = buffer.ReadAsync(output, cancellation.Token);
+        await Assert.That(next.IsCompleted).IsFalse();
+        cancellation.Cancel();
+        await Assert.That(async () => await next).Throws<OperationCanceledException>();
+    }
+
+    [Test]
     public async Task CustomSet_InvalidBucketForcesDiscovery_AndEmptySetDoesNotSignal()
     {
         var buffer = new OutboxRemoteNotifications(2);
@@ -68,8 +91,8 @@ public sealed class OutboxNotificationTransportTests
 
     private sealed class NonEnumeratingSet : IReadOnlySet<int>
     {
-        public int Count => 2;
-        public bool Contains(int item) => item is 0 or 65;
+        public int Count => 3;
+        public bool Contains(int item) => throw new InvalidOperationException("Must not probe on commit.");
         public IEnumerator<int> GetEnumerator() => throw new InvalidOperationException("Must not enumerate on commit.");
         IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
         public bool IsProperSubsetOf(IEnumerable<int> other) => throw new NotSupportedException();

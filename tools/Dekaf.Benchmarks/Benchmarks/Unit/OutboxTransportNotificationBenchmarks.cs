@@ -67,8 +67,9 @@ public class OutboxTransportNotificationBenchmarks
             .CreateDelegate<DrainHints>(_notifier);
         _localSignal = ((Channel<byte>)_notifier.GetType().GetField("_notifications", BindingFlags.Instance | BindingFlags.NonPublic)!
             .GetValue(_notifier)!).Reader;
-        if (CommitAndDrain().GetAwaiter().GetResult() != CommittedCount)
-            throw new InvalidOperationException("All committed buckets must reach the transport buffer.");
+        var count = CommitAndDrain().GetAwaiter().GetResult();
+        if (count != CommittedCount && !(count == 1 && _remote[0] == -1))
+            throw new InvalidOperationException("Committed buckets must reach the transport buffer as exact or unknown hints.");
     }
 
     [Benchmark]

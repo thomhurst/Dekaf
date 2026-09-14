@@ -34,40 +34,23 @@ internal sealed class OutboxRemoteNotifications(int bucketCount)
             foreach (var bucket in immutable)
                 _hints.Add(bucket);
         }
-        else if (buckets is SortedSet<int> sorted)
+        else if (buckets is SortedSet<int> sorted && sorted.Count <= 2)
         {
-            // Capture the endpoints directly so sparse commits do not scan the gap
-            // before the last bucket. SortedSet's enumerator allocates a traversal stack.
+            // These sets need only their endpoints, without a traversal stack.
             var first = sorted.Min;
             var last = sorted.Max;
             _hints.Add(first);
             if (sorted.Count > 1)
                 _hints.Add(last);
-            if (sorted.Count > 2)
-                AddRemaining(sorted, sorted.Count - 2, first, last);
         }
         else
         {
-            // Probe the configured bucket domain, as local ownership filtering does.
-            // Arbitrary set enumerators can allocate even when their concrete type is
-            // known. Contains preserves precise hints without enumerating the set.
-            AddRemaining(buckets, buckets.Count);
+            // IReadOnlySet has no allocation-free enumeration contract. Keep commit
+            // work constant for unsupported sets; the remote relay discovers its
+            // owned buckets from this coalesced advisory notification.
+            _hints.AddUnknown();
         }
         Signal();
-    }
-
-    private void AddRemaining(IReadOnlySet<int> buckets, int remaining, int first = -1, int last = -1)
-    {
-        for (var bucket = 0; bucket < bucketCount && remaining > 0; bucket++)
-        {
-            if (bucket != first && bucket != last && buckets.Contains(bucket))
-            {
-                _hints.Add(bucket);
-                remaining--;
-            }
-        }
-        if (remaining > 0)
-            _hints.AddUnknown();
     }
 
     private void Signal() => _ready.Writer.TryWrite(0);
