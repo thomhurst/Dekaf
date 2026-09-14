@@ -72,10 +72,30 @@ Malformed challenges, duplicate attributes, unsupported mandatory extensions, in
 
 ## SASL/GSSAPI (Kerberos)
 
+GSSAPI is implemented in the `net8.0` and `net10.0` core package assets using
+`System.Net.Security.NegotiateAuthentication`. No optional authentication package
+is needed. The `netstandard2.0` asset exposes configuration but throws
+`PlatformNotSupportedException` when authentication starts.
+
+| Client OS | Credential backend and requirements |
+| --- | --- |
+| Windows | SSPI and the Windows credential store or process service identity. Explicit `KeytabPath` throws `NotSupportedException` during configuration validation. |
+| Linux | MIT/Heimdal Kerberos libraries (`libgssapi_krb5`) and credentials available through a ticket cache or configured client keytab. |
+| macOS | Platform Heimdal Kerberos and available credentials. |
+
+CI runs local MIT KDC round trips on Linux for clean .NET 8 and .NET 10 package
+consumers. Windows/macOS backend support is established by the implementation;
+those round trips do not validate a Windows domain or macOS deployment.
+Initialize credentials before starting the process (for example, `kinit -kt ...`
+with `KRB5_CONFIG` and `KRB5CCNAME`). Keytab selection is process-wide; different
+keytabs in one process are rejected. `Principal` selects an identity, not a stored
+password, and the platform must be able to obtain credentials for that identity.
+
 For Kerberos authentication:
 
 ```csharp
 using Dekaf;
+using Dekaf.Security.Sasl;
 
 var gssapiConfig = new GssapiConfig
 {

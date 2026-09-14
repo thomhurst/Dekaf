@@ -243,13 +243,19 @@ jobs:
           --treenode-filter
           "/*/*/(ProtocolReaderFuzzCorpusTests|ResponseParserFuzzCorpusTests|RecordBatchFuzzCorpusTests)/*"
 
+      - name: Build clean GSSAPI package consumers
+        shell: pwsh
+        run: ./scripts/Build-GssapiPackageSmoke.ps1
+
       - name: Package test binaries
         run: |
           tar -czf test-binaries.tar.gz \
             tests/Dekaf.Tests.Unit/bin/Release/net8.0 \
             tests/Dekaf.Tests.Unit/bin/Release/net10.0 \
             tests/Dekaf.Tests.Integration/bin/Release/net8.0 \
-            tests/Dekaf.Tests.Integration/bin/Release/net10.0
+            tests/Dekaf.Tests.Integration/bin/Release/net10.0 \
+            artifacts/gssapi-package-smoke/net8.0 \
+            artifacts/gssapi-package-smoke/net10.0
 
       - name: Upload test binaries
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -287,6 +293,42 @@ jobs:
           path: |
             **/*.dmp
           if-no-files-found: ignore
+          retention-days: 7
+
+  gssapi-packages:
+    name: GSSAPI NuGet consumers (.NET 8 and .NET 10)
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: '8.0.x'
+      - name: Install Kerberos tools
+        run: |
+          sudo apt-get update
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y krb5-kdc krb5-admin-server krb5-user
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: test-binaries
+      - name: Run authenticated package round trips
+        run: |
+          tar -xzf test-binaries.tar.gz
+          for framework in net8.0 net10.0; do
+            export DEKAF_KERBEROS_PACKAGE_CLIENT="$PWD/artifacts/gssapi-package-smoke/$framework/Dekaf.PackageSmoke.Gssapi.dll"
+            dotnet "tests/Dekaf.Tests.Integration/bin/Release/$framework/Dekaf.Tests.Integration.dll" \
+              --treenode-filter '/*/*/GssapiAuthenticationIntegrationTests/*' \
+              --minimum-expected-tests 1 --results-directory "TestResults/gssapi-packages/$framework"
+          done
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: test-results-gssapi-packages
+          path: TestResults/gssapi-packages
           retention-days: 7
 
   unit-net8:
@@ -736,7 +778,7 @@ jobs:
   # build job computed.
   publish:
     name: Publish NuGet
-    needs: [build, unit-net8, leak-gates-debug, eventhubs-integration, aot-smoke, aot-integration-publish, release-matrix, release-matrix-aot, code-quality, nuget-audit]
+    needs: [build, gssapi-packages, unit-net8, leak-gates-debug, eventhubs-integration, aot-smoke, aot-integration-publish, release-matrix, release-matrix-aot, code-quality, nuget-audit]
     if: github.event_name == 'workflow_dispatch' && inputs.publish_nuget == true
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -817,7 +859,7 @@ jobs:
   # release-only jobs skip on PR runs).
   ci-passed:
     name: CI Passed
-    needs: [changes, doc-snippets, build, unit-net8, leak-gates-debug, integration, eventhubs-integration, aot-smoke, aot-integration-publish, aot-integration-smoke, release-matrix, release-matrix-aot, publish, code-quality, nuget-audit]
+    needs: [changes, doc-snippets, build, gssapi-packages, unit-net8, leak-gates-debug, integration, eventhubs-integration, aot-smoke, aot-integration-publish, aot-integration-smoke, release-matrix, release-matrix-aot, publish, code-quality, nuget-audit]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5

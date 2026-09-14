@@ -19,7 +19,7 @@ internal interface IAsyncSerializerPreparationAdmission<in T> : IAsyncSerializer
         SerializationContext context,
         in SerializerPreparationAdmission admission)
         where TWriter : IBufferWriter<byte>
-#if !NETSTANDARD2_0
+#if NET9_0_OR_GREATER
         , allows ref struct
 #endif
         ;

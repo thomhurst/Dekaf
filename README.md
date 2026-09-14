@@ -34,11 +34,11 @@ assets and tested runtimes are separate:
 
 | Packages | Target frameworks shipped in NuGet |
 | --- | --- |
-| `Dekaf`, `Dekaf.Abstractions` | `net10.0`, `netstandard2.0` |
+| `Dekaf`, `Dekaf.Abstractions` | `net10.0`, `net8.0`, `netstandard2.0` |
 | `Dekaf.Compression.*`, `Dekaf.Serialization.*`, `Dekaf.SchemaRegistry` and its extensions, `Dekaf.Extensions.*`, `Dekaf.OpenTelemetry`, `Dekaf.Outbox` and its EF Core extension, `Dekaf.Testing` | `net8.0`, `net10.0` |
 
 - **Tested runtimes:** CI runs unit tests on .NET 8 and .NET 10. PR Kafka integration
-  tests run on .NET 10; the NuGet release gate tests both runtimes against Kafka
+  tests run on .NET 10, with GSSAPI package round trips on both runtimes; the NuGet release gate tests both runtimes against Kafka
   4.0.2, 4.1.2, 4.2.1 and 4.3.1.
 - **Development:** use the .NET 10 SDK to build this repository. Running its
   `net8.0` tests also requires the .NET 8 runtime (or SDK).
@@ -48,7 +48,7 @@ assets and tested runtimes are separate:
   4.3.1. This is coverage of those scenarios, not every package/API/platform.
 
 A `netstandard2.0` asset does not mean every compatible runtime is tested or has
-identical APIs and performance. .NET 8 uses the core's `netstandard2.0` asset;
+identical APIs and performance. .NET 8 uses the dedicated `net8.0` asset;
 optional packages require their own compatible assets. See
 [API and runtime compatibility](https://thomhurst.github.io/Dekaf/docs/api-compatibility)
 for asset differences, package validation and AOT limits.

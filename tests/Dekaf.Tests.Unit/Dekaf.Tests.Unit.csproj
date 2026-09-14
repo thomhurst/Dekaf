@@ -70,4 +70,11 @@
     <EmbeddedResource Include="SchemaRegistry\IdentityFixtures\*.json" />
   </ItemGroup>
 
+  <!-- Preserve direct coverage of the netstandard shim after net8.0 selects a modern asset. -->
+  <Target Name="CopyNetStandardCompatibilityFixture" AfterTargets="Build" Condition="'$(TargetFramework)' == 'net8.0'">
+    <MSBuild Projects="../../src/Dekaf/Dekaf.csproj" Targets="Build"
+             Properties="Configuration=$(Configuration);TargetFramework=netstandard2.0" />
+    <Copy SourceFiles="../../src/Dekaf/bin/$(Configuration)/netstandard2.0/Dekaf.dll"
+          DestinationFolder="$(TargetDir)compatibility/netstandard2.0" />
+  </Target>
 </Project>

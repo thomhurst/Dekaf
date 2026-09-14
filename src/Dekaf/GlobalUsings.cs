@@ -13,3 +13,7 @@ global using HMACSHA512 = Dekaf.NetStandard.HMACSHA512Compat;
 global using Rfc2898DeriveBytes = Dekaf.NetStandard.Rfc2898DeriveBytesCompat;
 global using Thread = Dekaf.NetStandard.ThreadCompat;
 #endif
+
+#if NET8_0
+global using Polyfills;
+#endif

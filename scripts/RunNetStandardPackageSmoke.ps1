@@ -85,6 +85,7 @@ Add-Type -AssemblyName System.IO.Compression.FileSystem
 $zip = [System.IO.Compression.ZipFile]::OpenRead($corePackage.FullName)
 try {
     $entries = [string[]]$zip.Entries.FullName
+    Assert-PackageEntry -Entries $entries -Entry 'lib/net8.0/Dekaf.dll' -PackagePath $corePackage.FullName
     Assert-PackageEntry -Entries $entries -Entry 'lib/net10.0/Dekaf.dll' -PackagePath $corePackage.FullName
     Assert-PackageEntry -Entries $entries -Entry 'lib/netstandard2.0/Dekaf.dll' -PackagePath $corePackage.FullName
 
@@ -108,9 +109,9 @@ try {
     $unexpectedAbstractionsDependencies = @(
         $abstractionsDependencies |
             Where-Object { $_.version -ne $expectedDependencyVersion })
-    if ($abstractionsDependencies.Count -ne 2 -or
+    if ($abstractionsDependencies.Count -ne 3 -or
         $unexpectedAbstractionsDependencies.Count -ne 0) {
-        throw "Dekaf must depend on Dekaf.Abstractions $expectedDependencyVersion for both target frameworks."
+        throw "Dekaf must depend on Dekaf.Abstractions $expectedDependencyVersion for all three target frameworks."
     }
 }
 finally {
@@ -126,6 +127,7 @@ if (-not $abstractionsPackage) {
 $abstractionsZip = [System.IO.Compression.ZipFile]::OpenRead($abstractionsPackage.FullName)
 try {
     $abstractionsEntries = [string[]]$abstractionsZip.Entries.FullName
+    Assert-PackageEntry -Entries $abstractionsEntries -Entry 'lib/net8.0/Dekaf.Abstractions.dll' -PackagePath $abstractionsPackage.FullName
     Assert-PackageEntry -Entries $abstractionsEntries -Entry 'lib/net10.0/Dekaf.Abstractions.dll' -PackagePath $abstractionsPackage.FullName
     Assert-PackageEntry -Entries $abstractionsEntries -Entry 'lib/netstandard2.0/Dekaf.Abstractions.dll' -PackagePath $abstractionsPackage.FullName
 }
@@ -156,7 +158,7 @@ if (-not (Test-Path -LiteralPath $smokeProject)) {
 $packageRestoreSources = "$packageSource%3B$($abstractionsPackage.DirectoryName)"
 
 $artifactsDir = Join-Path $repoRoot 'artifacts/package-smoke'
-$nugetPackages = Join-Path $artifactsDir 'nuget-cache'
+$nugetPackages = Join-Path $artifactsDir ('nuget-cache-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Force $nugetPackages | Out-Null
 
 $previousNuGetPackages = $env:NUGET_PACKAGES

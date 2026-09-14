@@ -19,7 +19,7 @@ internal sealed class AsyncOnlySerializerPlaceholder<T> : ISerializer<T>
 
     public void Serialize<TWriter>(T value, ref TWriter destination, SerializationContext context)
         where TWriter : IBufferWriter<byte>
-#if !NETSTANDARD2_0
+#if NET9_0_OR_GREATER
         , allows ref struct
 #endif
         => throw new InvalidOperationException(

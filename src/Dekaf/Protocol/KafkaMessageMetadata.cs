@@ -6,7 +6,7 @@ internal static class KafkaMessageMetadata<TRequest, TResponse>
     where TRequest : IKafkaRequest<TResponse>
     where TResponse : IKafkaResponse
 {
-#if !NETSTANDARD2_0
+#if NET9_0_OR_GREATER
     public static ApiKey ApiKey => TRequest.ApiKey;
 
     public static short LowestSupportedVersion => TRequest.LowestSupportedVersion;

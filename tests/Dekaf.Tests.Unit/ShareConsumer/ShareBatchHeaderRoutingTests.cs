@@ -114,6 +114,8 @@ public sealed class ShareBatchHeaderRoutingTests
     }
 
     [Test]
+    // Shared pools and the global header cache must remain stable during allocation measurement.
+    [NotInParallel]
     [Arguments('x', 8)]
     [Arguments('x', 256)]
     [Arguments('x', 257)]

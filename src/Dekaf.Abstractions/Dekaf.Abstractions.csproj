@@ -2,7 +2,7 @@
 
   <PropertyGroup>
     <TargetFramework></TargetFramework>
-    <TargetFrameworks>net10.0;netstandard2.0</TargetFrameworks>
+    <TargetFrameworks>net10.0;net8.0;netstandard2.0</TargetFrameworks>
     <PackageId>Dekaf.Abstractions</PackageId>
     <PackageValidationBaselineVersion></PackageValidationBaselineVersion>
     <Description>Contracts and shared types for Dekaf integrations</Description>
@@ -45,9 +45,14 @@
     <Compile Include="..\Dekaf\Telemetry\ApplicationTelemetryMetric.cs" Link="Telemetry\ApplicationTelemetryMetric.cs" />
   </ItemGroup>
 
+  <PropertyGroup>
+    <PublicApiTargetFramework>$(TargetFramework)</PublicApiTargetFramework>
+    <PublicApiTargetFramework Condition="'$(TargetFramework)' == 'net8.0'">netstandard2.0</PublicApiTargetFramework>
+  </PropertyGroup>
+
   <ItemGroup Condition="'$(TargetFramework)' != ''">
-    <AdditionalFiles Include="PublicAPI.Shipped.$(TargetFramework).txt" />
-    <AdditionalFiles Include="PublicAPI.Unshipped.$(TargetFramework).txt" />
+    <AdditionalFiles Include="PublicAPI.Shipped.$(PublicApiTargetFramework).txt" />
+    <AdditionalFiles Include="PublicAPI.Unshipped.$(PublicApiTargetFramework).txt" />
   </ItemGroup>
 
   <PropertyGroup Condition="'$(TargetFramework)' == 'netstandard2.0'">
@@ -56,7 +61,8 @@
     <PublishAot>false</PublishAot>
   </PropertyGroup>
 
-  <ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.0'">
+  <!-- Preserve facade dependencies used by adapters compiled against the .NET Standard contract. -->
+  <ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.0' or '$(TargetFramework)' == 'net8.0'">
     <PackageReference Include="Microsoft.Bcl.AsyncInterfaces" />
     <PackageReference Include="System.Memory" />
   </ItemGroup>

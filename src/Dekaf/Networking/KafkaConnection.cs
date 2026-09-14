@@ -3312,7 +3312,7 @@ public sealed partial class KafkaConnection :
 
         if (extension is ".pfx" or ".p12")
         {
-#if NETSTANDARD2_0
+#if !NET9_0_OR_GREATER
 #pragma warning disable SYSLIB0057
             collection.Add(new X509Certificate2(path));
 #pragma warning restore SYSLIB0057
@@ -3356,7 +3356,7 @@ public sealed partial class KafkaConnection :
             X509Certificate2 cert;
             if (extension is ".pfx" or ".p12")
             {
-#if NETSTANDARD2_0
+#if !NET9_0_OR_GREATER
 #pragma warning disable SYSLIB0057
                 cert = string.IsNullOrEmpty(tlsConfig.ClientKeyPassword)
                     ? new X509Certificate2(certPath)
@@ -3422,7 +3422,7 @@ public sealed partial class KafkaConnection :
         try
         {
             pkcs12 = certificate.Export(X509ContentType.Pfx);
-#if NETSTANDARD2_0
+#if !NET9_0_OR_GREATER
 #pragma warning disable SYSLIB0057
             return new X509Certificate2(
                 pkcs12,

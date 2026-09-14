@@ -3,7 +3,7 @@ using Dekaf.Errors;
 #endif
 using Dekaf.Serialization;
 using Dekaf.Telemetry;
-#if NETSTANDARD2_0
+#if !NET9_0_OR_GREATER
 using StringSet = System.Collections.Generic.IReadOnlyCollection<string>;
 using TopicPartitionSet = System.Collections.Generic.IReadOnlyCollection<Dekaf.TopicPartition>;
 #else

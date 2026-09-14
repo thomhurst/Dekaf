@@ -30,6 +30,7 @@ public class SerializerBenchmarks
     private string _smallString = null!;
     private string _mediumString = null!;
     private string _largeString = null!;
+    private string _unicodeString = null!;
     private string[] _batchKeys = null!;
     private byte[] _stringBytes = null!;
     private SerializationContext _context;
@@ -46,6 +47,7 @@ public class SerializerBenchmarks
         _smallString = new string('a', 10);
         _mediumString = new string('a', 100);
         _largeString = new string('a', 1000);
+        _unicodeString = new string('路', 100);
 
         _batchKeys = BenchmarkData.CreateKeys(100);
 
@@ -129,6 +131,17 @@ public class SerializerBenchmarks
     }
 
     // ===== ReusableBufferWriter (production path) vs ArrayBufferWriter =====
+
+    // Covers the generic serializer and reusable-writer contracts shared by .NET 8 and .NET 10.
+    [BenchmarkCategory("Unicode")]
+    [Benchmark(Description = "ReusableBufferWriter Unicode")]
+    public int Serialize_ReusableBufferWriter_Unicode()
+    {
+        var writer = new ReusableBufferWriter(ref _reusableValueBuffer, 512);
+        Serializers.String.Serialize(_unicodeString, ref writer, _context);
+        writer.UpdateBufferRef(ref _reusableValueBuffer);
+        return writer.WrittenCount;
+    }
 
     [BenchmarkCategory("Writer")]
     [Benchmark(Baseline = true, Description = "ArrayBufferWriter + Copy")]

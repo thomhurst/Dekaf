@@ -105,7 +105,7 @@ internal sealed class ByteArraySerde : ISerde<byte[]>, IInputIsolatedDeserialize
 {
     public void Serialize<TWriter>(byte[] value, ref TWriter destination, SerializationContext context)
         where TWriter : IBufferWriter<byte>
-#if !NETSTANDARD2_0
+#if NET9_0_OR_GREATER
         , allows ref struct
 #endif
     {
@@ -124,7 +124,7 @@ internal sealed class StringSerde : ISerde<string>, IInputIsolatedDeserializer
 {
     public void Serialize<TWriter>(string value, ref TWriter destination, SerializationContext context)
         where TWriter : IBufferWriter<byte>
-#if !NETSTANDARD2_0
+#if NET9_0_OR_GREATER
         , allows ref struct
 #endif
     {
@@ -143,7 +143,7 @@ internal sealed class NullableStringSerde : ISerde<string?>, IInputIsolatedDeser
 {
     public void Serialize<TWriter>(string? value, ref TWriter destination, SerializationContext context)
         where TWriter : IBufferWriter<byte>
-#if !NETSTANDARD2_0
+#if NET9_0_OR_GREATER
         , allows ref struct
 #endif
     {
@@ -171,7 +171,7 @@ internal sealed class Int32Serde : ISerde<int>, IInputIsolatedDeserializer
 {
     public void Serialize<TWriter>(int value, ref TWriter destination, SerializationContext context)
         where TWriter : IBufferWriter<byte>
-#if !NETSTANDARD2_0
+#if NET9_0_OR_GREATER
         , allows ref struct
 #endif
     {
@@ -190,7 +190,7 @@ internal sealed class Int64Serde : ISerde<long>, IInputIsolatedDeserializer
 {
     public void Serialize<TWriter>(long value, ref TWriter destination, SerializationContext context)
         where TWriter : IBufferWriter<byte>
-#if !NETSTANDARD2_0
+#if NET9_0_OR_GREATER
         , allows ref struct
 #endif
     {
@@ -209,7 +209,7 @@ internal sealed class GuidSerde : ISerde<Guid>, IInputIsolatedDeserializer
 {
     public void Serialize<TWriter>(Guid value, ref TWriter destination, SerializationContext context)
         where TWriter : IBufferWriter<byte>
-#if !NETSTANDARD2_0
+#if NET9_0_OR_GREATER
         , allows ref struct
 #endif
     {
@@ -228,7 +228,7 @@ internal sealed class DoubleSerde : ISerde<double>, IInputIsolatedDeserializer
 {
     public void Serialize<TWriter>(double value, ref TWriter destination, SerializationContext context)
         where TWriter : IBufferWriter<byte>
-#if !NETSTANDARD2_0
+#if NET9_0_OR_GREATER
         , allows ref struct
 #endif
     {
@@ -247,7 +247,7 @@ internal sealed class FloatSerde : ISerde<float>, IInputIsolatedDeserializer
 {
     public void Serialize<TWriter>(float value, ref TWriter destination, SerializationContext context)
         where TWriter : IBufferWriter<byte>
-#if !NETSTANDARD2_0
+#if NET9_0_OR_GREATER
         , allows ref struct
 #endif
     {
@@ -266,7 +266,7 @@ internal sealed class DateTimeSerde : ISerde<DateTime>, IInputIsolatedDeserializ
 {
     public void Serialize<TWriter>(DateTime value, ref TWriter destination, SerializationContext context)
         where TWriter : IBufferWriter<byte>
-#if !NETSTANDARD2_0
+#if NET9_0_OR_GREATER
         , allows ref struct
 #endif
     {
@@ -286,7 +286,7 @@ internal sealed class DateTimeOffsetSerde : ISerde<DateTimeOffset>, IInputIsolat
 {
     public void Serialize<TWriter>(DateTimeOffset value, ref TWriter destination, SerializationContext context)
         where TWriter : IBufferWriter<byte>
-#if !NETSTANDARD2_0
+#if NET9_0_OR_GREATER
         , allows ref struct
 #endif
     {
@@ -310,7 +310,7 @@ internal sealed class TimeSpanSerde : ISerde<TimeSpan>, IInputIsolatedDeserializ
 {
     public void Serialize<TWriter>(TimeSpan value, ref TWriter destination, SerializationContext context)
         where TWriter : IBufferWriter<byte>
-#if !NETSTANDARD2_0
+#if NET9_0_OR_GREATER
         , allows ref struct
 #endif
     {
@@ -330,7 +330,7 @@ internal sealed class NullSerde<T> : ISerde<T?>, IInputIsolatedDeserializer wher
 {
     public void Serialize<TWriter>(T? value, ref TWriter destination, SerializationContext context)
         where TWriter : IBufferWriter<byte>
-#if !NETSTANDARD2_0
+#if NET9_0_OR_GREATER
         , allows ref struct
 #endif
     {
@@ -347,7 +347,7 @@ internal sealed class IgnoreSerde : ISerde<Ignore>, IInputIsolatedDeserializer
 {
     public void Serialize<TWriter>(Ignore value, ref TWriter destination, SerializationContext context)
         where TWriter : IBufferWriter<byte>
-#if !NETSTANDARD2_0
+#if NET9_0_OR_GREATER
         , allows ref struct
 #endif
     {
@@ -372,7 +372,7 @@ internal sealed class RawBytesSerde : ISerde<ReadOnlyMemory<byte>>
 {
     public void Serialize<TWriter>(ReadOnlyMemory<byte> value, ref TWriter destination, SerializationContext context)
         where TWriter : IBufferWriter<byte>
-#if !NETSTANDARD2_0
+#if NET9_0_OR_GREATER
         , allows ref struct
 #endif
     {
