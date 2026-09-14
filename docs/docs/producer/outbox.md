@@ -97,7 +97,15 @@ The relay **enforces** `Acks.All`, idempotence, and a key-respecting partitioner
 
 ### Optional cross-pod notifications
 
-Applications can implement `IOutboxNotificationTransport` using their existing broadcast infrastructure and register it alongside the relay:
+**For horizontally scaled applications, implement `IOutboxNotificationTransport` when low discovery latency matters across instances.** A commit in pod A can belong to a bucket leased by pod B. The local notifier cannot wake pod B; without a transport, pod B discovers the row on its next poll. This also applies when writers and relay workers run in separate processes. The transport is optional for correctness: polling alone is sufficient if its discovery latency is acceptable.
+
+Cross-process hints provide three benefits:
+
+- The owning relay can discover committed work without waiting for the next polling interval (one second by default). Transport, query, scheduling, and publishing time still apply; this is not a delivery deadline.
+- Exact bucket hints let the owner fetch the indicated bucket directly, avoiding a pending-bucket discovery query for that hint.
+- You can retain the fallback polling interval instead of shortening it across every instance to reduce discovery latency. Periodic queries still run, and notifications add broadcast traffic; they do not eliminate polling or guarantee higher throughput.
+
+Implement the transport as an adapter to your application's broadcast infrastructure, then register it alongside the relay on each participating instance:
 
 ```csharp
 services.AddDekafOutboxNotificationTransport<ApplicationOutboxTransport>();
@@ -105,7 +113,15 @@ services.AddDekafOutboxNotificationTransport<ApplicationOutboxTransport>();
 
 `ApplicationOutboxTransport` is application code implementing the interface; no transport provider is bundled. An existing `IOutboxNotificationTransport` singleton registration is preserved, allowing instance or factory registration. The transport is disposed by the DI container. This integration requires the built-in notifier; custom notifiers can continue using local notifications without registering the transport.
 
-`PublishAsync(ReadOnlyMemory<int>, CancellationToken)` broadcasts committed bucket IDs. A single `-1` requests discovery when the bucket is unknown. `ListenAsync(Action<int>, CancellationToken)` stays subscribed until cancelled and invokes the callback for each received ID. Every relay sharing the table must receive the broadcast: a competing-consumer subscription could deliver a hint to a non-owner. Use a distinct channel per outbox table/environment and the same `BucketCount` on every writer and relay. Only post-commit hints belong on this channel; no payloads or message IDs are sent.
+#### Implementing the transport
+
+1. **Configure broadcast delivery.** Use a distinct channel per outbox table/environment and the same `BucketCount` on every writer and relay. Every relay sharing the table needs its own subscription that receives every broadcast. Do not use a shared competing-consumer subscription: it could deliver the hint to a relay that does not own the bucket.
+2. **Implement `PublishAsync(ReadOnlyMemory<int>, CancellationToken)`.** Encode and broadcast the supplied committed bucket IDs. A single `-1` means the bucket is unknown and requests discovery. Send only these hints, not outbox payloads or message IDs. Consume the supplied memory before the method completes; do not retain it because Dekaf reuses the buffer. Dekaf calls this method from one background sender, never from the application's commit thread.
+3. **Implement `ListenAsync(Action<int>, CancellationToken)`.** Keep the subscription active until cancelled. Decode each broadcast and invoke the callback once for each received bucket ID, including `-1` and remotely owned buckets; Dekaf handles ownership filtering. The adapter owns transport reconnection. If the subscription fails or ends unexpectedly, Dekaf calls `ListenAsync` again after `ErrorBackoff`, so release the previous subscription before returning or throwing.
+4. **Support concurrency and shutdown.** Listening and publishing run concurrently on the singleton transport. Honor cancellation in both methods, unsubscribe during shutdown, and ensure all callbacks have finished before `ListenAsync` completes. Dispose transport resources owned by the adapter through the DI container.
+5. **Connect committed writes to the built-in notifier.** The EF Core registration above already does this. A custom store or writer resolves `IOutboxNotifier` and calls `NotifyCommitted()` only after a confirmed commit. It does not need to implement `IOutboxNotifier` or call the transport directly. When bucket IDs are available, use the built-in notifier's `IOutboxBucketNotifier` capability to preserve exact hints.
+
+Validate the adapter with two relay instances: commit in one instance to a bucket owned by the other and verify that the owner wakes before its fallback poll. Also test duplicate hints, transport disconnection, recovery through polling, and cancellation while callbacks are active. Hints are advisory and may be duplicated, reordered, or lost; they never authorize publication without a bucket lease or change at-least-once delivery guarantees.
 
 Commit callbacks only update a bounded, coalescing buffer. Background workers send and receive independently of database commits and Kafka publishing. Coalescing adds no debounce delay. Incoming broadcasts never get rebroadcast, including self-echoes. Send failures drop that advisory batch and apply `ErrorBackoff`; subscription failures or unexpected completion also retry with backoff. Polling always remains enabled, covering startup, lost hints and transport outages. Both methods must honor cancellation, and `ListenAsync` must finish all callbacks before returning. Shutdown observes both workers and does not guarantee delivery of buffered hints.
 
@@ -113,7 +129,7 @@ The transport preserves exact IDs for EF's `HashSet<int>`, `ImmutableHashSet<int
 
 ### Horizontal scaling
 
-The default eight buckets permit at most eight active draining relays. Extra application pods still maintain membership but own no buckets. Scaling application writers and relay workers separately can bound coordination work; with separate workers, use the optional transport or accept polling discovery latency. Increasing `BucketCount` still requires draining the table first.
+The default eight buckets permit at most eight active draining relays. Extra application pods still maintain membership but own no buckets. Scaling application writers and relay workers separately can bound coordination work. For low discovery latency across pods or separate workers, use [cross-pod notifications](#optional-cross-pod-notifications); otherwise, accept polling discovery latency. Local notifications alone cannot wake a remote bucket owner. Increasing `BucketCount` still requires draining the table first.
 
 To avoid querying the same whole-table backlog from every pod, opt in on **all** relays sharing that store:
 
