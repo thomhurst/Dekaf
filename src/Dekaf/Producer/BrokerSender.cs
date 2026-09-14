@@ -4010,7 +4010,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 // Build coalesced ProduceRequest (reuses pre-allocated scratch structures)
                 if (apiVersion >= ProduceRequest.TopicIdVersion)
                     topicIds = ArrayPool<Guid>.Shared.Rent(count);
-                var request = scratch.Build(batches, generations, topicIds, count, (short)apiVersion, _metadataManager);
+                var request = scratch.Build(batches, generations, topicIds, count, (short)apiVersion,
+                    _metadataManager, StandardTelemetryMetrics, requestStartTime);
+                request.TelemetryMetricCollector = TelemetryMetricCollector;
                 _accumulator.RecordProduceRequest(_brokerId, count, request.RequestBodySizeHint);
 
                 // Handle Acks.None (fire-and-forget)
@@ -4489,6 +4491,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private sealed class LocalTopicIdMissException(string message)
         : KafkaException(Protocol.ErrorCode.UnknownTopicId, message);
 
+    internal Telemetry.ClientTelemetryMetricCollector? TelemetryMetricCollector { get; init; }
+    private Telemetry.StandardClientTelemetryMetrics? StandardTelemetryMetrics => TelemetryMetricCollector?.StandardMetrics;
+
     /// <summary>
     /// Pre-allocated scratch space for building ProduceRequest without per-send allocations.
     /// The send loop is single-threaded; callers keep one scratch per potentially
@@ -4549,7 +4554,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             Guid[]? topicIds,
             int count,
             short apiVersion,
-            MetadataManager metadataManager)
+            MetadataManager metadataManager,
+            Telemetry.StandardClientTelemetryMetrics? telemetryMetrics,
+            long drainedTimestamp)
         {
             // Sort batches by topic name so equal topics are contiguous.
             // Fast-path: skip the O(n log n) sort when count <= 1 or already sorted.
@@ -4599,6 +4606,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             var topicIdx = 0;
             var partIdx = 0;
             var runStart = 0;
+            var queueTimes = telemetryMetrics?.BeginQueueTimeBatch() ?? default;
             var flexible = ProduceRequest.IsFlexibleVersion(apiVersion);
             var requestBodySizeHint = checked(
                 ProduceRequestSizeCalculator.StringSize(_request.TransactionalId, flexible) +
@@ -4650,6 +4658,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 for (var p = 0; p < partCount; p++)
                 {
                     var batch = batchesSpan[runStart + p];
+                    queueTimes.Record(batch.StopwatchCreatedTicks, drainedTimestamp);
                     _recordBatches[partIdx][0] = batch.RecordBatch;
                     var partData = _partitionData[partIdx];
                     partData.Index = batch.TopicPartition.Partition;
@@ -4676,6 +4685,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             _request.RequestBodySizeHint = requestBodySizeHint;
             _lastTopicCount = topicCount;
             _lastPartitionCount = partIdx;
+            queueTimes.Complete();
             return _request;
         }
 
@@ -4685,6 +4695,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         /// </summary>
         public void ClearReferences()
         {
+            _request.TelemetryMetricCollector = null;
             _request.ClearTopicDataScratch();
             _request.RequestBodySizeHint = 0;
             for (var i = 0; i < _lastTopicCount; i++)

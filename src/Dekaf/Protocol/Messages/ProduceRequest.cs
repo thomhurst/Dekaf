@@ -9,8 +9,12 @@ namespace Dekaf.Protocol.Messages;
 /// Produce request (API key 0).
 /// Sends records to topic partitions.
 /// </summary>
-public sealed class ProduceRequest : IKafkaRequest<ProduceResponse>, IKafkaRequestBodySizeHint
+public sealed class ProduceRequest : IKafkaRequest<ProduceResponse>, IKafkaRequestBodySizeHint, Telemetry.IClientTelemetrySource
 {
+    internal Telemetry.ClientTelemetryMetricCollector? TelemetryMetricCollector { get; set; }
+    Telemetry.ClientTelemetryMetricCollector? Telemetry.IClientTelemetrySource.TelemetryMetricCollector
+        => TelemetryMetricCollector;
+
     public static ApiKey ApiKey => ApiKey.Produce;
     public static short LowestSupportedVersion => 3;
     public static short HighestSupportedVersion => 13;

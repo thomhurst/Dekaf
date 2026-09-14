@@ -34,6 +34,7 @@ public sealed partial class ConnectionPool :
     private readonly ResponseBufferPool _responseBufferPool;
     private readonly bool _responseMemoryAdmissionsEnabled;
     private readonly ClientTelemetryMetricCollector? _telemetryMetricCollector;
+    private long _connectionCreationTotal;
     private readonly TimeSpan _idleReapDrainTimeout;
     private readonly OAuthBearerTokenProvider? _sharedOAuthBearerTokenProvider;
     private CancellationTokenSource? _idleReaperCts;
@@ -200,6 +201,8 @@ public sealed partial class ConnectionPool :
         => Math.Min(connectionsPerBroker * 32, 256);
 
     internal ConnectionOptions EffectiveConnectionOptions => _connectionOptions;
+
+    internal long GetConnectionCreationTotal() => Volatile.Read(ref _connectionCreationTotal);
 
     internal bool HasSharedOAuthBearerTokenProvider => _sharedOAuthBearerTokenProvider is not null;
 
@@ -1052,6 +1055,7 @@ public sealed partial class ConnectionPool :
             if (_connectionFactory is not null)
             {
                 var factoryConnection = await _connectionFactory(brokerId, host, port, index, cancellationToken).ConfigureAwait(false);
+                Interlocked.Increment(ref _connectionCreationTotal);
                 LogCreatedConnectionForGroup(index, brokerId, host, port);
                 return factoryConnection;
             }
@@ -1069,6 +1073,8 @@ public sealed partial class ConnectionPool :
                 _metadataClusterIdentity);
 
             await connection.ConnectAsync(connectionSetupTimeout, cancellationToken).ConfigureAwait(false);
+
+            Interlocked.Increment(ref _connectionCreationTotal);
 
             LogCreatedConnectionForGroup(index, brokerId, host, port);
 
@@ -1271,6 +1277,7 @@ public sealed partial class ConnectionPool :
             if (_connectionFactory is not null)
             {
                 var factoryConnection = await _connectionFactory(brokerId, host, port, 0, cancellationToken).ConfigureAwait(false);
+                Interlocked.Increment(ref _connectionCreationTotal);
                 LogCreatedConnection(brokerId, host, port);
                 return factoryConnection;
             }
@@ -1288,6 +1295,8 @@ public sealed partial class ConnectionPool :
                 _metadataClusterIdentity);
 
             await connection.ConnectAsync(connectionSetupTimeout, cancellationToken).ConfigureAwait(false);
+
+            Interlocked.Increment(ref _connectionCreationTotal);
 
             LogCreatedConnection(brokerId, host, port);
 

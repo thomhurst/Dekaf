@@ -1249,6 +1249,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     IConsumerCommittedOffsets,
     IConsumerLag,
     IRequestWriteSequenceSource,
+    IClientTelemetrySource,
     IConsumerPartitions,
     IConsumerOffsets,
     IConsumerRebalanceEventSource,
@@ -1970,8 +1971,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         _ownsInfrastructure = ownsInfrastructure;
         _memoryBudget = memoryBudget;
         _telemetryMetricCollector = infrastructure.TelemetryMetricCollector;
+        if (!ownsInfrastructure && _connectionPool is ConnectionPool sharedPool)
+            _telemetryMetricCollector.ConnectionCreationTotalProvider = sharedPool.GetConnectionCreationTotal;
         _telemetryMetricCollector.RegisterMetricsForSubscription(options.ApplicationMetrics);
         _telemetryMetricCollector.ResourceAttributesProvider = CaptureTelemetryResourceAttributes;
+        if (_telemetryMetricCollector.StandardMetrics is { } standardMetrics)
+            standardMetrics.AssignedPartitionCountProvider = () => _assignmentSnapshot.Count;
         _loggerFactory = loggerFactory;
         _telemetryManager = new ClientTelemetryManager(
             _connectionPool,
@@ -2021,7 +2026,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         assignment,
                         newlyAssigned,
                         StageRebalanceSeek,
-                        GetRebalancePosition));
+                        GetRebalancePosition))
+            {
+                TelemetryMetricCollector = _telemetryMetricCollector
+            };
         }
 
         _tryRecordPollFast = _coordinator is { } coordinator
@@ -5285,6 +5293,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private async ValueTask<bool> WaitForPrefetchDataAsync(CancellationToken cancellationToken)
     {
         _coordinator?.BeginForegroundPollActivity();
+        _telemetryMetricCollector.StandardMetrics?.BeginPollWait();
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -5307,6 +5316,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         finally
         {
             _coordinator?.EndForegroundPollActivity();
+            _telemetryMetricCollector.StandardMetrics?.EndPollWait();
         }
     }
 
@@ -8831,11 +8841,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
 
         request.RequestWriteStarted();
-        return connection.SendAsync<TRequest, TResponse>(request, apiVersion, cancellationToken);
+        return connection.SendWithClientTelemetryAsync<TRequest, TResponse>(request, apiVersion, _telemetryMetricCollector, cancellationToken);
     }
 
     long IRequestWriteSequenceSource.NextRequestWriteSequence() =>
         Interlocked.Increment(ref _watermarkUpdateSequence);
+
+    ClientTelemetryMetricCollector IClientTelemetrySource.TelemetryMetricCollector => _telemetryMetricCollector;
 
     private async ValueTask<(long Offset, int LeaderEpoch, long UpdateSequence)> QueryLatestOffsetCoreAsync(
         TopicPartition topicPartition,
@@ -8956,9 +8968,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     LatestOffsetTimestamp,
                     currentLeaderEpoch);
 
-                var earliestResponseTask = connection.SendAsync<ListOffsetsRequest, ListOffsetsResponse>(
+                var earliestResponseTask = connection.SendWithClientTelemetryAsync<ListOffsetsRequest, ListOffsetsResponse>(
                     earliestRequest,
-                    listOffsetsVersion,
+                    listOffsetsVersion, _telemetryMetricCollector,
                     apiTimeout.Token).AsTask();
 
                 var latestResponseTask = SendWithWatermarkWriteSequenceAsync<ListOffsetsRequest, ListOffsetsResponse>(
@@ -9291,7 +9303,24 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         coordinator?.BeginForegroundPollActivity();
         try
         {
-            await EnsureAssignmentAsync(cancellationToken).ConfigureAwait(false);
+            var assignment = EnsureAssignmentAsync(cancellationToken);
+            if (assignment.IsCompletedSuccessfully)
+            {
+                assignment.GetAwaiter().GetResult();
+                return;
+            }
+
+            // This helper is also reached by buffered asynchronous deserializers.
+            // Record only an actual assignment wait, never a clock read per record.
+            _telemetryMetricCollector.StandardMetrics?.BeginPollWait();
+            try
+            {
+                await assignment.ConfigureAwait(false);
+            }
+            finally
+            {
+                _telemetryMetricCollector.StandardMetrics?.EndPollWait();
+            }
         }
         finally
         {
@@ -9303,6 +9332,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     {
         var coordinator = _coordinator;
         coordinator?.BeginForegroundPollActivity();
+        _telemetryMetricCollector.StandardMetrics?.BeginPollWait();
         try
         {
             await Task.Delay(milliseconds, cancellationToken).ConfigureAwait(false);
@@ -9310,6 +9340,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         finally
         {
             coordinator?.EndForegroundPollActivity();
+            _telemetryMetricCollector.StandardMetrics?.EndPollWait();
         }
     }
 
@@ -9749,9 +9780,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             ListOffsetsResponse response;
             try
             {
-                response = await connection.SendAsync<ListOffsetsRequest, ListOffsetsResponse>(
+                response = await connection.SendWithClientTelemetryAsync<ListOffsetsRequest, ListOffsetsResponse>(
                     request,
-                    listOffsetsVersion,
+                    listOffsetsVersion, _telemetryMetricCollector,
                     cancellationToken).ConfigureAwait(false);
             }
             catch (TimeoutException ex)
@@ -9828,6 +9859,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         try
         {
             _coordinator?.BeginForegroundPollActivity();
+            _telemetryMetricCollector.StandardMetrics?.BeginPollWait();
 
             // Forward outer cancellation into the pooled CTS via registration
             // instead of allocating a LinkedCTS (matches the prefetch path pattern)
@@ -9975,6 +10007,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 consumeCts.Dispose();
             }
             _coordinator?.EndForegroundPollActivity();
+            _telemetryMetricCollector.StandardMetrics?.EndPollWait();
         }
     }
 
@@ -13213,9 +13246,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             Topics = topics
         };
 
-        var response = await connection.SendAsync<ListOffsetsRequest, ListOffsetsResponse>(
+        var response = await connection.SendWithClientTelemetryAsync<ListOffsetsRequest, ListOffsetsResponse>(
             request,
-            listOffsetsVersion,
+            listOffsetsVersion, _telemetryMetricCollector,
             cancellationToken).ConfigureAwait(false);
 
         var results = new Dictionary<TopicPartition, long>();

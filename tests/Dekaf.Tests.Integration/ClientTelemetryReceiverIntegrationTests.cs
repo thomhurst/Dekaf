@@ -92,6 +92,7 @@ public sealed class ClientTelemetryReceiverIntegrationTests(TelemetryReceiverKaf
             var decoded = Decode(received);
             var application = decoded.Single(metric => metric.Name == applicationName);
             var builtin = decoded.Single(metric => metric.Name == builtinName);
+            await Assert.That(builtin.Unit).IsEqualTo("1");
             await Assert.That(application.Gauge.DataPoints.Single().AsDouble).IsEqualTo(applicationValue);
             await Assert.That(builtin.Sum.IsMonotonic).IsTrue();
             await Assert.That(builtin.Sum.DataPoints.Single().AsDouble).IsGreaterThan(0);
@@ -341,6 +342,215 @@ public sealed class ClientTelemetryReceiverIntegrationTests(TelemetryReceiverKaf
         }, cancellationToken);
         var terminated = await kafka.WaitForPayloadAsync(clientId, payload => payload.IsTerminating, cancellationToken);
         await Assert.That(ResourceAttributes(terminated).ContainsKey("group_member_id")).IsFalse();
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    [Timeout(90_000)]
+    public async Task Producer_BrokerReceivesQueueTimeAndConnectionRate(bool sharedClient, CancellationToken cancellationToken)
+    {
+        var clientId = $"standard-producer-{Guid.NewGuid():N}";
+        var topic = await kafka.CreateTestTopicAsync(partitions: 1);
+        string[] names =
+        [
+            StandardClientTelemetryMetrics.QueuePrefix + "avg",
+            StandardClientTelemetryMetrics.QueuePrefix + "max",
+            StandardClientTelemetryMetrics.ProducerPrefix + "connection.creation.rate",
+            ClientTelemetryMetricNames.ProducerConnectionCreationTotal,
+            ClientTelemetryMetricNames.ProducerProduceThrottleTimeMax,
+            ClientTelemetryMetricNames.ProducerProduceThrottleTimeAvg
+        ];
+        var standardNames = names[..^3];
+        await ConfigureStandardMetricsAsync(clientId, names, cancellationToken);
+        await using var rootClient = sharedClient
+            ? Kafka.Connect(kafka.BootstrapServers, builder => builder.WithClientId(clientId)) : null;
+        var producerBuilder = rootClient?.CreateProducer<string, string>()
+            ?? Kafka.CreateProducer<string, string>().WithBootstrapServers(kafka.BootstrapServers);
+        await using var producer = await producerBuilder
+            .WithClientId(clientId)
+            .BuildAsync(cancellationToken);
+        await producer.ProduceAsync(topic, "key", "value", cancellationToken);
+        var received = await kafka.WaitForPayloadAsync(clientId,
+            payload => standardNames.All(name => Decode(payload).Any(metric => metric.Name == name)), cancellationToken);
+        var metrics = Decode(received);
+        await Assert.That(metrics.Length).IsLessThanOrEqualTo(names.Length);
+        var average = metrics.Single(metric => metric.Name == names[0]);
+        var maximum = metrics.Single(metric => metric.Name == names[1]);
+        await Assert.That(average.Unit).IsEqualTo("ms");
+        await Assert.That(average.Gauge.DataPoints.Single().AsDouble).IsGreaterThan(0d);
+        await Assert.That(maximum.Gauge.DataPoints.Single().AsDouble)
+            .IsGreaterThanOrEqualTo(average.Gauge.DataPoints.Single().AsDouble);
+        await Assert.That(metrics.Single(metric => metric.Name == names[2]).Unit).IsEqualTo("1/s");
+        var payloads = await kafka.ReadPayloadsAsync(clientId, cancellationToken);
+        var history = payloads.SelectMany(Decode).ToArray();
+        await Assert.That(ExportedTotal(payloads, names[3])).IsGreaterThan(0d);
+        await Assert.That(history.First(metric => metric.Name == names[4]).Unit).IsEqualTo("ms");
+        await Assert.That(history.First(metric => metric.Name == names[5]).Unit).IsEqualTo("ms");
+        await producer.DisposeAsync();
+        var terminated = await kafka.WaitForPayloadAsync(clientId, payload => payload.IsTerminating, cancellationToken);
+        await Assert.That(Decode(terminated).Any(metric => metric.Name == names[0])).IsTrue();
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    [Timeout(90_000)]
+    public async Task Consumer_BrokerReceivesStandardMetricsAndClearedAssignment(bool sharedClient, CancellationToken cancellationToken)
+    {
+        var clientId = $"standard-consumer-{Guid.NewGuid():N}";
+        var topic = await kafka.CreateTestTopicAsync(partitions: 1);
+        string[] names =
+        [
+            StandardClientTelemetryMetrics.ConsumerPrefix + "connection.creation.rate",
+            StandardClientTelemetryMetrics.PollIdleRatio,
+            StandardClientTelemetryMetrics.CommitPrefix + "avg",
+            StandardClientTelemetryMetrics.CommitPrefix + "max",
+            StandardClientTelemetryMetrics.AssignedPartitions,
+            StandardClientTelemetryMetrics.RebalancePrefix + "avg",
+            StandardClientTelemetryMetrics.RebalancePrefix + "max",
+            StandardClientTelemetryMetrics.RebalancePrefix + "total",
+            StandardClientTelemetryMetrics.FetchPrefix + "avg",
+            StandardClientTelemetryMetrics.FetchPrefix + "max",
+            ClientTelemetryMetricNames.ConsumerConnectionCreationTotal,
+            ClientTelemetryMetricNames.ConsumerFetchThrottleTimeMax,
+            ClientTelemetryMetricNames.ConsumerFetchThrottleTimeAvg
+        ];
+        var standardNames = names[..^3];
+        await ConfigureStandardMetricsAsync(clientId, names, cancellationToken);
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(kafka.BootstrapServers).BuildAsync(cancellationToken);
+        await producer.ProduceAsync(topic, "key", "value", cancellationToken);
+        await using var rootClient = sharedClient
+            ? Kafka.Connect(kafka.BootstrapServers, builder => builder.WithClientId(clientId)) : null;
+        var consumerBuilder = rootClient?.CreateConsumer<string, string>()
+            ?? Kafka.CreateConsumer<string, string>().WithBootstrapServers(kafka.BootstrapServers);
+        await using var consumer = await consumerBuilder
+            .WithClientId(clientId).WithGroupId(clientId + "-group")
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest).BuildAsync(cancellationToken);
+        consumer.Subscribe(topic);
+        var record = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(15), cancellationToken);
+        await Assert.That(record).IsNotNull();
+        await consumer.CommitAsync(cancellationToken);
+        var received = await kafka.WaitForPayloadAsync(clientId,
+            payload => standardNames.All(name => Decode(payload).Any(metric => metric.Name == name)), cancellationToken);
+        var metrics = Decode(received);
+        await Assert.That(metrics.Length).IsLessThanOrEqualTo(names.Length);
+        await Assert.That(metrics.Single(metric => metric.Name == StandardClientTelemetryMetrics.AssignedPartitions)
+            .Gauge.DataPoints.Single().AsDouble).IsEqualTo(1d);
+        var ratio = metrics.Single(metric => metric.Name == StandardClientTelemetryMetrics.PollIdleRatio);
+        await Assert.That(ratio.Unit).IsEqualTo("1");
+        await Assert.That(ratio.Gauge.DataPoints.Single().AsDouble).IsGreaterThanOrEqualTo(0d);
+        await Assert.That(ratio.Gauge.DataPoints.Single().AsDouble).IsLessThanOrEqualTo(1d);
+        foreach (var prefix in new[] { StandardClientTelemetryMetrics.CommitPrefix,
+                     StandardClientTelemetryMetrics.FetchPrefix, StandardClientTelemetryMetrics.RebalancePrefix })
+        {
+            var average = metrics.Single(metric => metric.Name == prefix + "avg");
+            var maximum = metrics.Single(metric => metric.Name == prefix + "max");
+            await Assert.That(average.Unit).IsEqualTo("ms");
+            await Assert.That(average.Gauge.DataPoints.Single().AsDouble).IsGreaterThan(0d);
+            await Assert.That(maximum.Gauge.DataPoints.Single().AsDouble)
+                .IsGreaterThanOrEqualTo(average.Gauge.DataPoints.Single().AsDouble);
+        }
+        var total = metrics.Single(metric => metric.Name == StandardClientTelemetryMetrics.RebalancePrefix + "total");
+        await Assert.That(total.Sum.IsMonotonic).IsTrue();
+        await Assert.That(total.Unit).IsEqualTo("ms");
+        var payloads = await kafka.ReadPayloadsAsync(clientId, cancellationToken);
+        var history = payloads.SelectMany(Decode).ToArray();
+        await Assert.That(ExportedTotal(payloads, ClientTelemetryMetricNames.ConsumerConnectionCreationTotal)).IsGreaterThan(0d);
+        await Assert.That(history.First(metric => metric.Name == ClientTelemetryMetricNames.ConsumerFetchThrottleTimeMax)
+            .Unit).IsEqualTo("ms");
+        await Assert.That(history.First(metric => metric.Name == ClientTelemetryMetricNames.ConsumerFetchThrottleTimeAvg)
+            .Unit).IsEqualTo("ms");
+        await Assert.That(ExportedTotal(payloads, total.Name)).IsGreaterThan(0d);
+        await consumer.CloseAsync(new ConsumerCloseOptions
+        {
+            GroupMembershipOperation = ConsumerGroupMembershipOperation.LeaveGroup
+        }, cancellationToken);
+        var terminated = await kafka.WaitForPayloadAsync(clientId, payload => payload.IsTerminating, cancellationToken);
+        await Assert.That(Decode(terminated).Single(metric => metric.Name == StandardClientTelemetryMetrics.AssignedPartitions)
+            .Gauge.DataPoints.Single().AsDouble).IsEqualTo(0d);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    [Timeout(90_000)]
+    public async Task TransactionInitialization_ExportsNodeLatencyWithoutProducing(bool sharedClient, CancellationToken cancellationToken)
+    {
+        var clientId = $"transaction-telemetry-{Guid.NewGuid():N}";
+        var name = ClientTelemetryMetricNames.ProducerNodeRequestLatencyAvg;
+        await ConfigureStandardMetricsAsync(clientId, [name], cancellationToken);
+        await using var rootClient = sharedClient
+            ? Kafka.Connect(kafka.BootstrapServers, builder => builder.WithClientId(clientId)) : null;
+        var builder = rootClient?.CreateProducer<string, string>()
+            ?? Kafka.CreateProducer<string, string>().WithBootstrapServers(kafka.BootstrapServers);
+        await using var producer = await builder.WithClientId(clientId)
+            .WithTransactionalId(clientId + "-transaction").BuildAsync(cancellationToken);
+        await ReconnectKnownBrokerAsync(producer, typeof(Producer.KafkaProducer<string, string>), cancellationToken);
+        await producer.InitTransactionsAsync(cancellationToken);
+        var received = await kafka.WaitForPayloadAsync(clientId,
+            payload => Decode(payload).Any(metric => metric.Name == name), cancellationToken);
+        var metric = Decode(received).First(metric => metric.Name == name);
+        await Assert.That(metric.Unit).IsEqualTo("ms");
+        await Assert.That(metric.Gauge.DataPoints.Single().AsDouble).IsGreaterThan(0d);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    [Timeout(90_000)]
+    public async Task GroupJoin_ExportsNodeLatencyBeforePolling(bool sharedClient, CancellationToken cancellationToken)
+    {
+        var clientId = $"group-telemetry-{Guid.NewGuid():N}";
+        var topic = await kafka.CreateTestTopicAsync(partitions: 1);
+        var name = ClientTelemetryMetricNames.ConsumerNodeRequestLatencyAvg;
+        await ConfigureStandardMetricsAsync(clientId, [name], cancellationToken);
+        await using var rootClient = sharedClient
+            ? Kafka.Connect(kafka.BootstrapServers, builder => builder.WithClientId(clientId)) : null;
+        var builder = rootClient?.CreateConsumer<string, string>()
+            ?? Kafka.CreateConsumer<string, string>().WithBootstrapServers(kafka.BootstrapServers);
+        await using var consumer = await builder.WithClientId(clientId).WithGroupId(clientId + "-group")
+            .BuildAsync(cancellationToken);
+        consumer.Subscribe(topic);
+        var coordinator = (ConsumerCoordinator)typeof(KafkaConsumer<string, string>).GetField("_coordinator",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(consumer)!;
+        await ReconnectKnownBrokerAsync(coordinator, typeof(ConsumerCoordinator), cancellationToken);
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { topic }, cancellationToken);
+        var received = await kafka.WaitForPayloadAsync(clientId,
+            payload => Decode(payload).Any(metric => metric.Name == name), cancellationToken);
+        var metric = Decode(received).First(metric => metric.Name == name);
+        await Assert.That(metric.Unit).IsEqualTo("ms");
+        await Assert.That(metric.Gauge.DataPoints.Single().AsDouble).IsGreaterThan(0d);
+    }
+
+    private static async Task ReconnectKnownBrokerAsync(object owner,
+        [System.Diagnostics.CodeAnalysis.DynamicallyAccessedMembers(System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.NonPublicFields)] Type ownerType,
+        CancellationToken cancellationToken)
+    {
+        // Replace the ID-less bootstrap connection so node-tagged metrics have a known broker ID.
+        const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+        var pool = (Networking.ConnectionPool)ownerType.GetField("_connectionPool", flags)!.GetValue(owner)!;
+        var metadata = (Metadata.MetadataManager)ownerType.GetField("_metadataManager", flags)!.GetValue(owner)!;
+        var brokerId = metadata.GetEndpointsToTry().First(endpoint => endpoint.BrokerId >= 0).BrokerId;
+        await pool.CloseAllAsync();
+        var connection = await pool.GetConnectionAsync(brokerId, cancellationToken);
+        await Assert.That(connection.BrokerId).IsEqualTo(brokerId);
+    }
+
+    private async Task ConfigureStandardMetricsAsync(string clientId, string[] names, CancellationToken cancellationToken)
+    {
+        await using var admin = kafka.CreateAdminClient();
+        await admin.IncrementalAlterConfigsAsync(new Dictionary<ConfigResource, IReadOnlyList<ConfigAlter>>
+        {
+            [new ConfigResource { Type = ConfigResourceType.ClientMetrics, Name = clientId }] =
+            [
+                ConfigAlter.Set("metrics", string.Join(',', names)),
+                ConfigAlter.Set("interval.ms", "500"),
+                ConfigAlter.Set("match", $"client_id={clientId}")
+            ]
+        }, cancellationToken: cancellationToken);
+        await kafka.WaitForSubscriptionAsync(clientId, names, 500, cancellationToken);
     }
 
     private static Dictionary<string, string> ResourceAttributes(ReceivedTelemetry payload) =>

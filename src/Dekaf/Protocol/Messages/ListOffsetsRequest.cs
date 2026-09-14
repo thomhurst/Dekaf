@@ -4,8 +4,11 @@ namespace Dekaf.Protocol.Messages;
 /// ListOffsets request (API key 2).
 /// Gets the earliest or latest offset for partitions.
 /// </summary>
-public sealed class ListOffsetsRequest : IKafkaRequest<ListOffsetsResponse>, IRequestWriteSequenceTarget
+public sealed class ListOffsetsRequest : IKafkaRequest<ListOffsetsResponse>, IRequestWriteSequenceTarget, Telemetry.IClientTelemetrySource
 {
+    Telemetry.ClientTelemetryMetricCollector? Telemetry.IClientTelemetrySource.TelemetryMetricCollector
+        => (_writeSequenceSource as Telemetry.IClientTelemetrySource)?.TelemetryMetricCollector;
+
     private readonly Action _requestWriteStarted;
     private IRequestWriteSequenceSource? _writeSequenceSource;
     private long _writeSequence;

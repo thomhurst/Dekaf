@@ -1,9 +1,74 @@
+using System.Diagnostics;
+using Dekaf.Protocol;
 using Dekaf.Telemetry;
 
 namespace Dekaf.Tests.Unit.Telemetry;
 
 public sealed class ClientTelemetryMetricCollectorTests
 {
+    [Test]
+    public async Task UnknownBroker_RecordsStandardRequestTimingWithoutNodeMetrics()
+    {
+        var collector = new ClientTelemetryMetricCollector(ClientTelemetryClientRole.Consumer);
+        collector.Subscribe([StandardClientTelemetryMetrics.ConsumerPrefix]);
+        var started = Stopwatch.GetTimestamp();
+        collector.RecordRequestLatency(-1, started, ApiKey.Fetch);
+        collector.RecordRequestLatency(-1, started, ApiKey.OffsetCommit);
+
+        var snapshot = collector.Collect(Subscription(false, StandardClientTelemetryMetrics.ConsumerPrefix));
+        foreach (var prefix in new[] { StandardClientTelemetryMetrics.FetchPrefix, StandardClientTelemetryMetrics.CommitPrefix })
+        {
+            await Assert.That(Metric(snapshot, prefix + "avg").Value).IsGreaterThanOrEqualTo(0d);
+            await Assert.That(Metric(snapshot, prefix + "max").Unit).IsEqualTo("ms");
+        }
+        await Assert.That(snapshot.Metrics.Any(m => m.Name.Contains(".node.", StringComparison.Ordinal))).IsFalse();
+    }
+
+    [Test]
+    public async Task SharedConnectionTotals_KeepIndependentDeltaCursors()
+    {
+        long total = 3;
+        var first = new ClientTelemetryMetricCollector(ClientTelemetryClientRole.Producer)
+        {
+            ConnectionCreationTotalProvider = () => total
+        };
+        var second = new ClientTelemetryMetricCollector(ClientTelemetryClientRole.Producer)
+        {
+            ConnectionCreationTotalProvider = () => total
+        };
+        var name = ClientTelemetryMetricNames.ProducerConnectionCreationTotal;
+        var delta = Subscription(true, name);
+        var cumulative = Subscription(false, name);
+        await Assert.That(Metric(first.Collect(delta), name).Value).IsEqualTo(3d);
+        await Assert.That(Metric(second.Collect(delta), name).Value).IsEqualTo(3d);
+        total = 5;
+        await Assert.That(Metric(first.Collect(cumulative), name).Value).IsEqualTo(5d);
+        await Assert.That(Metric(first.Collect(delta), name).Value).IsEqualTo(2d);
+        await Assert.That(first.Collect(delta).Metrics.Count).IsEqualTo(0);
+        await Assert.That(Metric(second.Collect(delta), name).Value).IsEqualTo(2d);
+    }
+
+    [Test]
+    [Arguments(true)]
+    [Arguments(false)]
+    public async Task Collect_StandardBuiltIns_EmitDocumentedUnits(bool producer)
+    {
+        var collector = new ClientTelemetryMetricCollector(producer
+            ? ClientTelemetryClientRole.Producer : ClientTelemetryClientRole.Consumer);
+        collector.RecordConnectionCreated();
+        collector.RecordRequestLatency(1, TimeSpan.FromMilliseconds(10));
+        collector.RecordBrokerThrottle(5);
+
+        var metrics = collector.Collect(Subscription(deltaTemporality: false, string.Empty)).Metrics;
+
+        await Assert.That(metrics.Count).IsEqualTo(5);
+        foreach (var metric in metrics)
+        {
+            var expected = metric.Kind == ClientTelemetryMetricKind.Counter ? "1" : "ms";
+            await Assert.That(metric.Unit).IsEqualTo(expected);
+        }
+    }
+
     [Test]
     public async Task Collect_CumulativeProducerMetrics_ReturnsRequiredMetrics()
     {

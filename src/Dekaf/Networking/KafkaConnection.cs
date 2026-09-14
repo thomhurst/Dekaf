@@ -618,6 +618,58 @@ public sealed partial class KafkaConnection :
         where TResponse : IKafkaResponse
         => SendAsyncCore<TRequest, TResponse>(request, apiVersion, requireReady: true, cancellationToken);
 
+    internal ValueTask<TResponse> SendWithTelemetryAsync<TRequest, TResponse>(
+        TRequest request, short apiVersion, ClientTelemetryMetricCollector collector,
+        CancellationToken cancellationToken)
+        where TRequest : IKafkaRequest<TResponse>
+        where TResponse : IKafkaResponse
+        => _telemetryMetricCollector is null
+            ? SendAsyncCore<TRequest, TResponse, TelemetryObservation>(request, apiVersion,
+                requireReady: true, new TelemetryObservation(collector), cancellationToken)
+            : SendAsync<TRequest, TResponse>(request, apiVersion, cancellationToken);
+
+    internal ValueTask<TResponse> SendWithTelemetryAsync<TRequest, TResponse>(
+        TRequest request, short apiVersion, ClientTelemetryMetricCollector collector,
+        Action requestWriteStarted, CancellationToken cancellationToken)
+        where TRequest : IKafkaRequest<TResponse>
+        where TResponse : IKafkaResponse
+        => _telemetryMetricCollector is null
+            ? SendAsyncCore<TRequest, TResponse, TelemetryWriteObservation>(request, apiVersion,
+                requireReady: true, new TelemetryWriteObservation(
+                    TelemetryWriteObservationState.Rent(collector, requestWriteStarted)), cancellationToken)
+            : ((IKafkaRequestWriteObserverConnection)this).SendWithWriteObservationAsync<TRequest, TResponse>(
+                request, apiVersion, requestWriteStarted, cancellationToken);
+
+    internal ValueTask<PipelinedResponse<TResponse>> SendPipelinedWithTelemetryAfterWriteAsync<TRequest, TResponse>(
+        TRequest request, short apiVersion, ClientTelemetryMetricCollector collector,
+        Action requestWriteStarted, CancellationToken cancellationToken)
+        where TRequest : IKafkaRequest<TResponse>
+        where TResponse : IKafkaResponse
+        => _telemetryMetricCollector is null
+            ? SendPipelinedAfterWriteCoreAsync<TRequest, TResponse, TelemetryWriteObservation>(request,
+                apiVersion, callerOwnsTimeout: false, new TelemetryWriteObservation(
+                    TelemetryWriteObservationState.Rent(collector, requestWriteStarted)), cancellationToken)
+            : ((IKafkaRequestWriteObserverConnection)this).SendPipelinedWithWriteObservationAfterWriteAsync<TRequest, TResponse>(
+                request, apiVersion, requestWriteStarted, cancellationToken);
+
+    internal ClientTelemetryMetricCollector? GetTelemetryMetricCollector<TRequest>(
+        TRequest request, ClientTelemetryMetricCollector? supplied = null)
+        => _telemetryMetricCollector ?? supplied ?? (request as IClientTelemetrySource)?.TelemetryMetricCollector;
+
+    private void RecordClientTelemetry<TRequest, TResponse>(ClientTelemetryMetricCollector? collector,
+        TResponse response, short apiVersion, long started)
+        where TRequest : IKafkaRequest<TResponse>
+        where TResponse : IKafkaResponse
+    {
+        if (collector is null) return;
+        collector.RecordRequestLatency(BrokerId, started, KafkaMessageMetadata<TRequest, TResponse>.ApiKey);
+        // Owned pools record throttle through BrokerThrottleState. A shared pool
+        // has no collector there; attribute this response to its logical client.
+        if (_telemetryMetricCollector is null && BrokerThrottlePolicy.ShouldClientThrottle(
+                KafkaMessageMetadata<TRequest, TResponse>.ApiKey, apiVersion))
+            collector.RecordBrokerThrottle(KafkaMessageMetadata<TRequest, TResponse>.GetThrottleTimeMs(response));
+    }
+
     ValueTask<TResponse> IKafkaRequestWriteObserverConnection.SendWithWriteObservationAsync<TRequest, TResponse>(
         TRequest request,
         short apiVersion,
@@ -647,10 +699,12 @@ public sealed partial class KafkaConnection :
         => SendAsyncCore<TRequest, TResponse, WriteObservation>(request, apiVersion,
             requireReady, new WriteObservation(requestWriteStarted), cancellationToken);
 
-    // Both observation structs contain one reference, preserving the ordinary async state's
-    // existing callback slot. Constrained calls avoid boxing and per-request observer objects.
+    // Each observation struct contains one reference, preserving the ordinary async state's
+    // existing callback slot. Constrained calls avoid boxing; shared control callbacks use pooled state.
     private interface IRequestObservation
     {
+        void Release();
+        ClientTelemetryMetricCollector? TelemetryMetricCollector { get; }
         bool IsReauthentication { get; }
         Action? WriteStartedCallback { get; }
         CancellationToken AfterWriteStarts(CancellationToken cancellationToken);
@@ -658,6 +712,8 @@ public sealed partial class KafkaConnection :
 
     private readonly struct WriteObservation(Action? callback) : IRequestObservation
     {
+        public void Release() { }
+        public ClientTelemetryMetricCollector? TelemetryMetricCollector => null;
         public bool IsReauthentication => false;
         public Action? WriteStartedCallback => callback;
         public CancellationToken AfterWriteStarts(CancellationToken cancellationToken) => cancellationToken;
@@ -665,6 +721,8 @@ public sealed partial class KafkaConnection :
 
     private readonly struct CancellationObservation(KafkaRequestWriteContext context) : IRequestObservation
     {
+        public void Release() { }
+        public ClientTelemetryMetricCollector? TelemetryMetricCollector => null;
         public bool IsReauthentication => false;
         public Action? WriteStartedCallback => context.WriteStartedCallback;
         public CancellationToken AfterWriteStarts(CancellationToken cancellationToken) => context.ResponseCancellationToken;
@@ -672,8 +730,28 @@ public sealed partial class KafkaConnection :
 
     private readonly struct ReauthenticationObservation(Action? callback) : IRequestObservation
     {
+        public void Release() { }
+        public ClientTelemetryMetricCollector? TelemetryMetricCollector => null;
         public bool IsReauthentication => true;
         public Action? WriteStartedCallback => callback;
+        public CancellationToken AfterWriteStarts(CancellationToken cancellationToken) => cancellationToken;
+    }
+
+    private readonly struct TelemetryObservation(ClientTelemetryMetricCollector collector) : IRequestObservation
+    {
+        public void Release() { }
+        public ClientTelemetryMetricCollector? TelemetryMetricCollector => collector;
+        public bool IsReauthentication => false;
+        public Action? WriteStartedCallback => null;
+        public CancellationToken AfterWriteStarts(CancellationToken cancellationToken) => cancellationToken;
+    }
+
+    private readonly struct TelemetryWriteObservation(TelemetryWriteObservationState state) : IRequestObservation
+    {
+        public void Release() => state.Return();
+        public ClientTelemetryMetricCollector? TelemetryMetricCollector => state.Collector;
+        public bool IsReauthentication => false;
+        public Action? WriteStartedCallback => state.Callback;
         public CancellationToken AfterWriteStarts(CancellationToken cancellationToken) => cancellationToken;
     }
 
@@ -687,101 +765,111 @@ public sealed partial class KafkaConnection :
         where TResponse : IKafkaResponse
         where TObservation : struct, IRequestObservation
     {
-        if (Volatile.Read(ref _disposed) != 0)
-            throw new ObjectDisposedException(nameof(KafkaConnection));
-        if (Volatile.Read(ref _retirementState) >= 2)
-            throw new ObjectDisposedException(nameof(KafkaConnection), "Connection has been retired");
-
-        if (requireReady ? !IsConnected : !(_socket?.Connected ?? false))
-            throw new InvalidOperationException("Not connected");
-
-        await _brokerThrottleState.WaitAsync(cancellationToken, _pendingRequestSlotCts.Token)
-            .ConfigureAwait(false);
-
-        if (_reauthenticationGate is not null && !observation.IsReauthentication)
-            await _reauthenticationGate.EnterAsync(cancellationToken).ConfigureAwait(false);
-
         try
         {
-            using var operation = TrackOperation();
+            if (Volatile.Read(ref _disposed) != 0)
+                throw new ObjectDisposedException(nameof(KafkaConnection));
+            if (Volatile.Read(ref _retirementState) >= 2)
+                throw new ObjectDisposedException(nameof(KafkaConnection), "Connection has been retired");
 
             if (requireReady ? !IsConnected : !(_socket?.Connected ?? false))
                 throw new InvalidOperationException("Not connected");
 
-            Touch();
-            var correlationId = Interlocked.Increment(ref s_globalCorrelationId);
-            var headerVersion = KafkaMessageMetadata<TRequest, TResponse>.GetRequestHeaderVersion(apiVersion);
-            var responseHeaderVersion = KafkaMessageMetadata<TRequest, TResponse>.GetResponseHeaderVersion(apiVersion);
+            await _brokerThrottleState.WaitAsync(cancellationToken, _pendingRequestSlotCts.Token)
+                .ConfigureAwait(false);
 
-            await ReservePendingRequestSlotAsync(cancellationToken).ConfigureAwait(false);
-            var pending = _pendingRequestPool.Rent();
-            var responseMemoryPool = request is FetchRequest fetchRequest
-                ? fetchRequest.ResponseMemoryPool
-                : null;
-            pending.Initialize(
-                responseHeaderVersion,
-                cancellationToken,
-                registerCancellation: false,
-                checkCrcs: request is FetchRequest { CheckCrcs: true },
-                responseMemoryPool: responseMemoryPool);
-            try
-            {
-                AddPendingRequest(correlationId, pending);
-            }
-            catch
-            {
-                ReleasePendingRequestSlot();
-                _pendingRequestPool.Return(pending);
-                throw;
-            }
-
-            ThrowIfDisposedAfterAddingPendingRequest(correlationId);
+            if (_reauthenticationGate is not null && !observation.IsReauthentication)
+                await _reauthenticationGate.EnterAsync(cancellationToken).ConfigureAwait(false);
 
             try
             {
-                var telemetryStartTimestamp = _telemetryMetricCollector is null ? 0 : Stopwatch.GetTimestamp();
+                using var operation = TrackOperation();
 
-                // Write phase
-                LogSendingRequest(KafkaMessageMetadata<TRequest, TResponse>.ApiKey, correlationId, apiVersion, _host, _port);
+                if (requireReady ? !IsConnected : !(_socket?.Connected ?? false))
+                    throw new InvalidOperationException("Not connected");
 
-                await PreSerializeAndWriteCoreAsync<TRequest, TResponse, TObservation>(
-                        request,
-                        correlationId,
-                        apiVersion,
-                        headerVersion,
-                        callerOwnsTimeout: false,
-                        observation,
-                        cancellationToken)
-                    .ConfigureAwait(false);
+                Touch();
+                var correlationId = Interlocked.Increment(ref s_globalCorrelationId);
+                var headerVersion = KafkaMessageMetadata<TRequest, TResponse>.GetRequestHeaderVersion(apiVersion);
+                var responseHeaderVersion = KafkaMessageMetadata<TRequest, TResponse>.GetResponseHeaderVersion(apiVersion);
 
-                LogRequestSentWaitingForResponse(correlationId);
-
-                cancellationToken = observation.AfterWriteStarts(cancellationToken);
-
-                // Response phase: await response with timeout and parse
-                var response = await AwaitAndParseResponseAsync<TRequest, TResponse>(
-                    pending, correlationId, apiVersion, callerOwnsTimeout: false, cancellationToken).ConfigureAwait(false);
-                TouchSuccessful();
-                _telemetryMetricCollector?.RecordRequestLatency(BrokerId, telemetryStartTimestamp);
-                return response;
-            }
-            catch
-            {
-                // Clean up pending request on any failure (write lock cancelled, write failed,
-                // or response error). AwaitAndParseResponseAsync has its own finally that also
-                // tries TryRemove — the second attempt harmlessly returns false.
-                if (TryRemovePendingRequest(correlationId, out var removed))
+                await ReservePendingRequestSlotAsync(cancellationToken).ConfigureAwait(false);
+                var pending = _pendingRequestPool.Rent();
+                var responseMemoryPool = request is FetchRequest fetchRequest
+                    ? fetchRequest.ResponseMemoryPool
+                    : null;
+                pending.Initialize(
+                    responseHeaderVersion,
+                    cancellationToken,
+                    registerCancellation: false,
+                    checkCrcs: request is FetchRequest { CheckCrcs: true },
+                    responseMemoryPool: responseMemoryPool);
+                try
                 {
-                    _pendingRequestPool.Return(removed.Request);
+                    AddPendingRequest(correlationId, pending);
+                }
+                catch
+                {
+                    ReleasePendingRequestSlot();
+                    _pendingRequestPool.Return(pending);
+                    throw;
                 }
 
-                throw;
+                ThrowIfDisposedAfterAddingPendingRequest(correlationId);
+
+                try
+                {
+                    var telemetryStartTimestamp = GetTelemetryMetricCollector(request, observation.TelemetryMetricCollector) is null
+                        ? 0 : Stopwatch.GetTimestamp();
+
+                    // Write phase
+                    LogSendingRequest(KafkaMessageMetadata<TRequest, TResponse>.ApiKey, correlationId, apiVersion, _host, _port);
+
+                    await PreSerializeAndWriteCoreAsync<TRequest, TResponse, TObservation>(
+                            request,
+                            correlationId,
+                            apiVersion,
+                            headerVersion,
+                            callerOwnsTimeout: false,
+                            observation,
+                            cancellationToken)
+                        .ConfigureAwait(false);
+
+                    LogRequestSentWaitingForResponse(correlationId);
+
+                    cancellationToken = observation.AfterWriteStarts(cancellationToken);
+
+                    // Response phase: await response with timeout and parse
+                    var response = await AwaitAndParseResponseAsync<TRequest, TResponse>(
+                        pending, correlationId, apiVersion, callerOwnsTimeout: false, cancellationToken).ConfigureAwait(false);
+                    TouchSuccessful();
+                    RecordClientTelemetry<TRequest, TResponse>(
+                        GetTelemetryMetricCollector(request, observation.TelemetryMetricCollector),
+                        response, apiVersion, telemetryStartTimestamp);
+                    return response;
+                }
+                catch
+                {
+                    // Clean up pending request on any failure (write lock cancelled, write failed,
+                    // or response error). AwaitAndParseResponseAsync has its own finally that also
+                    // tries TryRemove — the second attempt harmlessly returns false.
+                    if (TryRemovePendingRequest(correlationId, out var removed))
+                    {
+                        _pendingRequestPool.Return(removed.Request);
+                    }
+
+                    throw;
+                }
+            }
+            finally
+            {
+                if (_reauthenticationGate is not null && !observation.IsReauthentication)
+                    _reauthenticationGate.Exit();
             }
         }
         finally
         {
-            if (_reauthenticationGate is not null && !observation.IsReauthentication)
-                _reauthenticationGate.Exit();
+            observation.Release();
         }
     }
 
@@ -1075,108 +1163,122 @@ public sealed partial class KafkaConnection :
         return await responseTask.AsValueTask().ConfigureAwait(false);
     }
 
-    private async ValueTask<PipelinedResponse<TResponse>> SendPipelinedAfterWriteCoreAsync<TRequest, TResponse>(
-        TRequest request,
-        short apiVersion,
-        bool callerOwnsTimeout,
-        CancellationToken cancellationToken,
-        Action? requestWriteStarted = null)
+    private ValueTask<PipelinedResponse<TResponse>> SendPipelinedAfterWriteCoreAsync<TRequest, TResponse>(
+        TRequest request, short apiVersion, bool callerOwnsTimeout,
+        CancellationToken cancellationToken, Action? requestWriteStarted = null)
         where TRequest : IKafkaRequest<TResponse>
         where TResponse : IKafkaResponse
+        => SendPipelinedAfterWriteCoreAsync<TRequest, TResponse, WriteObservation>(request,
+            apiVersion, callerOwnsTimeout, new WriteObservation(requestWriteStarted), cancellationToken);
+
+    private async ValueTask<PipelinedResponse<TResponse>> SendPipelinedAfterWriteCoreAsync<TRequest, TResponse, TObservation>(
+        TRequest request, short apiVersion, bool callerOwnsTimeout,
+        TObservation observation, CancellationToken cancellationToken)
+        where TRequest : IKafkaRequest<TResponse>
+        where TResponse : IKafkaResponse
+        where TObservation : struct, IRequestObservation
     {
-        if (Volatile.Read(ref _disposed) != 0)
-            throw new ObjectDisposedException(nameof(KafkaConnection));
-        if (Volatile.Read(ref _retirementState) >= 2)
-            throw new ObjectDisposedException(nameof(KafkaConnection), "Connection has been retired");
-
-        if (!IsConnected)
-            throw new InvalidOperationException("Not connected");
-
-        await _brokerThrottleState.WaitAsync(cancellationToken, _pendingRequestSlotCts.Token)
-            .ConfigureAwait(false);
-
-        // Admission covers the write only; the response completes separately.
-        // Waiting for a long fetch response here would delay the reauthentication drain.
-        if (_reauthenticationGate is not null)
-            await _reauthenticationGate.EnterAsync(cancellationToken).ConfigureAwait(false);
-
         try
         {
-            using var operation = TrackOperation();
+            if (Volatile.Read(ref _disposed) != 0)
+                throw new ObjectDisposedException(nameof(KafkaConnection));
+            if (Volatile.Read(ref _retirementState) >= 2)
+                throw new ObjectDisposedException(nameof(KafkaConnection), "Connection has been retired");
 
             if (!IsConnected)
                 throw new InvalidOperationException("Not connected");
 
-            Touch();
-            var correlationId = Interlocked.Increment(ref s_globalCorrelationId);
-            var headerVersion = KafkaMessageMetadata<TRequest, TResponse>.GetRequestHeaderVersion(apiVersion);
-            var responseHeaderVersion = KafkaMessageMetadata<TRequest, TResponse>.GetResponseHeaderVersion(apiVersion);
+            await _brokerThrottleState.WaitAsync(cancellationToken, _pendingRequestSlotCts.Token)
+                .ConfigureAwait(false);
 
-            await ReservePendingRequestSlotAsync(cancellationToken).ConfigureAwait(false);
-            var pending = _pendingRequestPool.Rent();
-            var responseMemoryPool = request is FetchRequest fetchRequest
-                ? fetchRequest.ResponseMemoryPool
-                : null;
-            // The pipelined wrapper performs bounded internal parsing, then only signals the
-            // sender. Resume it in the receive dispatch frame to avoid a ThreadPool round trip.
-            pending.Initialize(
-                responseHeaderVersion,
-                cancellationToken,
-                registerCancellation: false,
-                checkCrcs: request is FetchRequest { CheckCrcs: true },
-                runContinuationsAsynchronously: false,
-                responseMemoryPool: responseMemoryPool);
-            try
-            {
-                AddPendingRequest(correlationId, pending);
-            }
-            catch
-            {
-                ReleasePendingRequestSlot();
-                _pendingRequestPool.Return(pending);
-                throw;
-            }
-
-            ThrowIfDisposedAfterAddingPendingRequest(correlationId);
+            // Admission covers the write only; the response completes separately.
+            // Waiting for a long fetch response here would delay the reauthentication drain.
+            if (_reauthenticationGate is not null)
+                await _reauthenticationGate.EnterAsync(cancellationToken).ConfigureAwait(false);
 
             try
             {
-                var telemetryStartTimestamp = _telemetryMetricCollector is null ? 0 : Stopwatch.GetTimestamp();
+                using var operation = TrackOperation();
 
-                await PreSerializeAndWriteAsync<TRequest, TResponse>(
-                        request,
-                        correlationId,
-                        apiVersion,
-                        headerVersion,
-                        cancellationToken,
-                        callerOwnsTimeout,
-                        requestWriteStarted)
-                    .ConfigureAwait(false);
+                if (!IsConnected)
+                    throw new InvalidOperationException("Not connected");
 
-                return PooledPipelinedResponse<TRequest, TResponse>.Rent(
-                    this,
-                    pending,
-                    correlationId,
-                    apiVersion,
-                    callerOwnsTimeout,
-                    telemetryStartTimestamp,
-                    cancellationToken);
-            }
-            catch
-            {
-                // On failure, ensure we clean up the pending request
-                if (TryRemovePendingRequest(correlationId, out var removed))
+                Touch();
+                var correlationId = Interlocked.Increment(ref s_globalCorrelationId);
+                var headerVersion = KafkaMessageMetadata<TRequest, TResponse>.GetRequestHeaderVersion(apiVersion);
+                var responseHeaderVersion = KafkaMessageMetadata<TRequest, TResponse>.GetResponseHeaderVersion(apiVersion);
+
+                await ReservePendingRequestSlotAsync(cancellationToken).ConfigureAwait(false);
+                var pending = _pendingRequestPool.Rent();
+                var responseMemoryPool = request is FetchRequest fetchRequest
+                    ? fetchRequest.ResponseMemoryPool
+                    : null;
+                // The pipelined wrapper performs bounded internal parsing, then only signals the
+                // sender. Resume it in the receive dispatch frame to avoid a ThreadPool round trip.
+                pending.Initialize(
+                    responseHeaderVersion,
+                    cancellationToken,
+                    registerCancellation: false,
+                    checkCrcs: request is FetchRequest { CheckCrcs: true },
+                    runContinuationsAsynchronously: false,
+                    responseMemoryPool: responseMemoryPool);
+                try
                 {
-                    _pendingRequestPool.Return(removed.Request);
+                    AddPendingRequest(correlationId, pending);
+                }
+                catch
+                {
+                    ReleasePendingRequestSlot();
+                    _pendingRequestPool.Return(pending);
+                    throw;
                 }
 
-                throw;
+                ThrowIfDisposedAfterAddingPendingRequest(correlationId);
+
+                try
+                {
+                    var telemetryStartTimestamp = GetTelemetryMetricCollector(request, observation.TelemetryMetricCollector) is null ? 0 : Stopwatch.GetTimestamp();
+
+                    await PreSerializeAndWriteCoreAsync<TRequest, TResponse, TObservation>(
+                            request,
+                            correlationId,
+                            apiVersion,
+                            headerVersion,
+                            callerOwnsTimeout,
+                            observation,
+                            cancellationToken)
+                        .ConfigureAwait(false);
+
+                    return PooledPipelinedResponse<TRequest, TResponse>.Rent(
+                        this,
+                        pending,
+                        correlationId,
+                        apiVersion,
+                        callerOwnsTimeout,
+                        telemetryStartTimestamp,
+                        GetTelemetryMetricCollector(request, observation.TelemetryMetricCollector),
+                        cancellationToken);
+                }
+                catch
+                {
+                    // On failure, ensure we clean up the pending request
+                    if (TryRemovePendingRequest(correlationId, out var removed))
+                    {
+                        _pendingRequestPool.Return(removed.Request);
+                    }
+
+                    throw;
+                }
+            }
+            finally
+            {
+                if (_reauthenticationGate is not null)
+                    _reauthenticationGate.Exit();
             }
         }
         finally
         {
-            if (_reauthenticationGate is not null)
-                _reauthenticationGate.Exit();
+            observation.Release();
         }
     }
 
@@ -1243,6 +1345,7 @@ public sealed partial class KafkaConnection :
         private bool _callerOwnsTimeout;
         private bool _canceled;
         private long _telemetryStartTimestamp;
+        private ClientTelemetryMetricCollector? _telemetryMetricCollector;
         private int _consumerState;
         private int _ownershipGeneration;
         // Packs a non-wrapping per-source generation with readiness bits. External release
@@ -1264,6 +1367,7 @@ public sealed partial class KafkaConnection :
             short apiVersion,
             bool callerOwnsTimeout,
             long telemetryStartTimestamp,
+            ClientTelemetryMetricCollector? telemetryMetricCollector,
             CancellationToken cancellationToken)
         {
             var operation = Pool.Rent();
@@ -1276,6 +1380,7 @@ public sealed partial class KafkaConnection :
                 apiVersion,
                 callerOwnsTimeout,
                 telemetryStartTimestamp,
+                telemetryMetricCollector,
                 cancellationToken);
             return new PipelinedResponse<TResponse>(
                 operation,
@@ -1290,6 +1395,7 @@ public sealed partial class KafkaConnection :
             short apiVersion,
             bool callerOwnsTimeout,
             long telemetryStartTimestamp,
+            ClientTelemetryMetricCollector? telemetryMetricCollector,
             CancellationToken cancellationToken)
         {
             _connection = connection;
@@ -1298,6 +1404,7 @@ public sealed partial class KafkaConnection :
             _apiVersion = apiVersion;
             _callerOwnsTimeout = callerOwnsTimeout;
             _telemetryStartTimestamp = telemetryStartTimestamp;
+            _telemetryMetricCollector = telemetryMetricCollector;
             _cancellationToken = cancellationToken;
             _canceled = false;
             _consumerState = ConsumerActive;
@@ -1352,9 +1459,8 @@ public sealed partial class KafkaConnection :
                 connection.ObserveBrokerThrottle<TRequest, TResponse>(response, _apiVersion);
 
                 connection.TouchSuccessful();
-                connection._telemetryMetricCollector?.RecordRequestLatency(
-                    connection.BrokerId,
-                    _telemetryStartTimestamp);
+                connection.RecordClientTelemetry<TRequest, TResponse>(
+                    _telemetryMetricCollector, response, _apiVersion, _telemetryStartTimestamp);
             }
             catch (OperationCanceledException) when (_cancellationToken.IsCancellationRequested)
             {
@@ -1556,6 +1662,7 @@ public sealed partial class KafkaConnection :
             _callerOwnsTimeout = false;
             _canceled = false;
             _telemetryStartTimestamp = 0;
+            _telemetryMetricCollector = null;
 
             if (_ownershipGeneration == MaxOwnershipGeneration)
                 return false;

@@ -650,9 +650,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                     FindCoordinatorRequest.LowestSupportedVersion,
                     FindCoordinatorRequest.HighestSupportedVersion);
 
-                var response = await connection.SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
+                var response = await connection.SendWithClientTelemetryAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
                     request,
-                    findCoordinatorVersion,
+                    findCoordinatorVersion, TelemetryMetricCollector,
                     cancellationToken).ConfigureAwait(false);
 
                 if (response.Coordinators.Count == 0)
@@ -1019,10 +1019,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 };
 
                 ThrowIfMaxPollIntervalExpired();
-                var response = await connection.SendAsync<OffsetCommitRequest, OffsetCommitResponse>(
-                    request,
-                    offsetCommitVersion,
-                    cancellationToken).ConfigureAwait(false);
+                var response = await connection.SendWithClientTelemetryAsync<OffsetCommitRequest, OffsetCommitResponse>(
+                    request, offsetCommitVersion, TelemetryMetricCollector, cancellationToken).ConfigureAwait(false);
 
                 var responseSnapshot = topicIdMap?.CaptureResponseSnapshot();
 
@@ -1190,9 +1188,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                         ]
                     };
 
-                    var response = await connection.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
+                    var response = await connection.SendWithClientTelemetryAsync<OffsetFetchRequest, OffsetFetchResponse>(
                         request,
-                        offsetFetchVersion,
+                        offsetFetchVersion, TelemetryMetricCollector,
                         operationToken).ConfigureAwait(false);
 
                     var responseSnapshot = topicIdMap?.CaptureResponseSnapshot();
@@ -1463,6 +1461,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 cancellationToken).ConfigureAwait(false);
     }
 
+    internal Telemetry.ClientTelemetryMetricCollector? TelemetryMetricCollector { get; init; }
+    private Telemetry.StandardClientTelemetryMetrics? StandardTelemetryMetrics => TelemetryMetricCollector?.StandardMetrics;
+
     private static void CompleteRevocationCommit(ConsumerHeartbeatResult result)
         => result.RevocationCommitCompletion?.TrySetResult(true);
 
@@ -1567,8 +1568,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 TopicPartitions = ownedTopicPartitions
             };
 
-            response = await connection.SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
-                request, version, cancellationToken).ConfigureAwait(false);
+            response = await connection.SendWithClientTelemetryAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
+                request, version, TelemetryMetricCollector, cancellationToken).ConfigureAwait(false);
         }
 
         var assignmentProcessing = BeginAssignmentProcessing(response.Assignment);
@@ -1587,6 +1588,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         }
 
         var rebalanceListenerLockHeld = false;
+        var rebalanceStarted = response.Assignment is not null
+            ? StandardTelemetryMetrics?.RebalanceStarted() ?? -1 : -1;
         ConsumerHeartbeatResult result = default;
         try
         {
@@ -1622,6 +1625,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             // callbacks remain serialized, but no longer suppress buffered polls while awaiting.
             await FireConsumerProtocolRebalanceListenersCoreAsync(result, cancellationToken)
                 .ConfigureAwait(false);
+            if (result.AssignmentChanged)
+                StandardTelemetryMetrics?.RebalanceCompleted(rebalanceStarted);
         }
         finally
         {
@@ -1915,6 +1920,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         UpdateSubscription(topics, subscribedTopicRegex);
 
         ConsumerHeartbeatResult heartbeatResult = default;
+        long rebalanceStarted = -1;
 
         await _lock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -1940,6 +1946,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
             LogEnsureActiveGroupStarted(_options.GroupId!, _state);
             var startedAt = Stopwatch.GetTimestamp();
+            rebalanceStarted = startedAt;
             var rebalanceTimeout = TimeSpan.FromMilliseconds(_options.RebalanceTimeoutMs);
             var retryFailureCount = 0;
 
@@ -2037,6 +2044,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         }
 
         await FireConsumerProtocolRebalanceListenersAsync(heartbeatResult, cancellationToken).ConfigureAwait(false);
+        StandardTelemetryMetrics?.RebalanceCompleted(rebalanceStarted);
 
         if (_state == CoordinatorState.Stable)
         {
@@ -2283,8 +2291,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 ConsumerGroupHeartbeatRequest.LowestSupportedVersion,
                 ConsumerGroupHeartbeatRequest.HighestSupportedVersion);
 
-            var response = await connection.SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
-                request, version, cancellationToken).ConfigureAwait(false);
+            var response = await connection.SendWithClientTelemetryAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
+                request, version, TelemetryMetricCollector, cancellationToken).ConfigureAwait(false);
 
             if (response.ErrorCode != ErrorCode.None)
             {

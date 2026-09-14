@@ -9,6 +9,7 @@ message Resource { repeated KeyValue attributes = 1; }
 message ScopeMetrics { repeated Metric metrics = 2; }
 message Metric {
   string name = 1;
+  string unit = 3;
   oneof data { Gauge gauge = 5; Sum sum = 7; }
 }
 message Gauge { repeated NumberDataPoint data_points = 1; }

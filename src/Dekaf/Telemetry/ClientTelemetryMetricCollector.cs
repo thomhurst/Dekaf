@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Globalization;
+using Dekaf.Protocol;
 
 namespace Dekaf.Telemetry;
 
@@ -18,13 +19,33 @@ internal enum ClientTelemetryMetricKind
     Gauge
 }
 
+internal enum ClientTelemetryMetricUnit : byte
+{
+    None,
+    Milliseconds,
+    PerSecond,
+    Dimensionless
+}
+
 internal readonly record struct ClientTelemetryMetricAttribute(string Name, string Value);
 
 internal sealed record ClientTelemetryMetric(
     string Name,
     ClientTelemetryMetricKind Kind,
     double Value,
-    IReadOnlyList<ClientTelemetryMetricAttribute> Attributes);
+    IReadOnlyList<ClientTelemetryMetricAttribute> Attributes)
+{
+    // A byte fits beside Kind without adding a reference field to every metric,
+    // including existing metrics that do not emit an explicit unit.
+    public ClientTelemetryMetricUnit UnitCode { get; init; }
+    public string? Unit => UnitCode switch
+    {
+        ClientTelemetryMetricUnit.Milliseconds => "ms",
+        ClientTelemetryMetricUnit.PerSecond => "1/s",
+        ClientTelemetryMetricUnit.Dimensionless => "1",
+        _ => null
+    };
+}
 
 internal readonly record struct ClientTelemetryResourceAttributes(
     string? ClientRack = null,
@@ -78,14 +99,36 @@ internal sealed class ClientTelemetryMetricCollector
 
     private long _connectionCreationTotal;
     private long _connectionCreationDelta;
+    private long _sharedConnectionCreationPrevious;
+
+    // Shared clients observe their physical pool; each collector owns its delta cursor.
+    internal Func<long>? ConnectionCreationTotalProvider { get; set; }
+
+    private long GetConnectionCreationTotal()
+        => ConnectionCreationTotalProvider?.Invoke() ?? Volatile.Read(ref _connectionCreationTotal);
 
     // Assigned during construction; evaluated only for a nonempty telemetry push.
     internal Func<ClientTelemetryResourceAttributes>? ResourceAttributesProvider { get; set; }
 
     internal ShareConsumerTelemetryMetrics? ShareConsumerMetrics { get; }
+    internal StandardClientTelemetryMetrics? StandardMetrics { get; }
+
+    internal void Subscribe(IReadOnlyList<string> prefixes)
+    {
+        ShareConsumerMetrics?.Subscribe(prefixes);
+        StandardMetrics?.Subscribe(prefixes, GetConnectionCreationTotal());
+    }
+
+    internal void Disable()
+    {
+        ShareConsumerMetrics?.Disable();
+        StandardMetrics?.Disable();
+    }
 
     public ClientTelemetryMetricCollector(ClientTelemetryClientRole role)
     {
+        StandardMetrics = role is ClientTelemetryClientRole.Producer or ClientTelemetryClientRole.Consumer
+            ? new StandardClientTelemetryMetrics(role == ClientTelemetryClientRole.Producer) : null;
         ShareConsumerMetrics = role == ClientTelemetryClientRole.ShareConsumer
             ? new ShareConsumerTelemetryMetrics() : null;
         (_connectionCreationTotalName,
@@ -141,15 +184,19 @@ internal sealed class ClientTelemetryMetricCollector
         Interlocked.Increment(ref _connectionCreationDelta);
     }
 
-    public void RecordRequestLatency(int brokerId, long startTimestamp)
+    public void RecordRequestLatency(int brokerId, long startTimestamp, ApiKey? apiKey = null)
     {
         if (brokerId < 0)
         {
+            if (apiKey is { } requestApiKey)
+                StandardMetrics?.RecordRequest(requestApiKey, startTimestamp);
             return;
         }
 
         var elapsedTimestampTicks = Math.Max(0, Stopwatch.GetTimestamp() - startTimestamp);
         RecordRequestLatencyTicks(brokerId, elapsedTimestampTicks);
+        if (apiKey is { } key)
+            StandardMetrics?.RecordRequest(key, startTimestamp, elapsedTimestampTicks);
     }
 
     public void RecordBrokerThrottle(int throttleTimeMs)
@@ -200,12 +247,17 @@ internal sealed class ClientTelemetryMetricCollector
             (includeBrokerThrottleTimeMax ? 1 : 0) +
             _applicationMetrics.Count;
         var metrics = new List<ClientTelemetryMetric>(capacity);
+        var connectionCreationTotal = GetConnectionCreationTotal();
 
         if (includeConnectionCreationTotal)
         {
-            var value = subscription.DeltaTemporality
-                ? Interlocked.Exchange(ref _connectionCreationDelta, 0)
-                : Volatile.Read(ref _connectionCreationTotal);
+            var value = connectionCreationTotal;
+            if (subscription.DeltaTemporality)
+            {
+                value = ConnectionCreationTotalProvider is null
+                    ? Interlocked.Exchange(ref _connectionCreationDelta, 0)
+                    : connectionCreationTotal - Interlocked.Exchange(ref _sharedConnectionCreationPrevious, connectionCreationTotal);
+            }
 
             if (value != 0)
             {
@@ -213,7 +265,7 @@ internal sealed class ClientTelemetryMetricCollector
                     _connectionCreationTotalName!,
                     ClientTelemetryMetricKind.Counter,
                     value,
-                    EmptyAttributes));
+                    EmptyAttributes) { UnitCode = ClientTelemetryMetricUnit.Dimensionless });
             }
         }
 
@@ -241,7 +293,7 @@ internal sealed class ClientTelemetryMetricCollector
                         _nodeRequestLatencyAvgName!,
                         ClientTelemetryMetricKind.Gauge,
                         StopwatchTicksToMilliseconds(snapshot.TotalTimestampTicks) / snapshot.Count,
-                        attributes));
+                        attributes) { UnitCode = ClientTelemetryMetricUnit.Milliseconds });
                 }
 
                 if (includeRequestLatencyMax)
@@ -250,7 +302,7 @@ internal sealed class ClientTelemetryMetricCollector
                         _nodeRequestLatencyMaxName!,
                         ClientTelemetryMetricKind.Gauge,
                         StopwatchTicksToMilliseconds(snapshot.MaxTimestampTicks),
-                        attributes));
+                        attributes) { UnitCode = ClientTelemetryMetricUnit.Milliseconds });
                 }
             }
         }
@@ -269,7 +321,7 @@ internal sealed class ClientTelemetryMetricCollector
                         _brokerThrottleTimeAvgName!,
                         ClientTelemetryMetricKind.Gauge,
                         snapshot.Total / (double)snapshot.Count,
-                        EmptyAttributes));
+                        EmptyAttributes) { UnitCode = ClientTelemetryMetricUnit.Milliseconds });
                 }
 
                 if (includeBrokerThrottleTimeMax)
@@ -278,12 +330,13 @@ internal sealed class ClientTelemetryMetricCollector
                         _brokerThrottleTimeMaxName!,
                         ClientTelemetryMetricKind.Gauge,
                         snapshot.Max,
-                        EmptyAttributes));
+                        EmptyAttributes) { UnitCode = ClientTelemetryMetricUnit.Milliseconds });
                 }
             }
         }
 
         ShareConsumerMetrics?.Collect(subscription, metrics);
+        StandardMetrics?.Collect(subscription, metrics, connectionCreationTotal);
         AddApplicationMetrics(subscription, requestedMetrics, metrics);
 
         return metrics.Count == 0

@@ -139,6 +139,77 @@ Independently of OpenTelemetry, Dekaf implements [KIP-714 client metrics push te
 
 Applications can also contribute their own metrics to broker subscriptions via `ProducerOptions.ApplicationMetrics` / `ConsumerOptions.ApplicationMetrics` with `ApplicationTelemetryMetric` (name, kind, and an observe callback).
 
+### Standard producer and consumer metrics
+
+Ordinary producers and consumers export the following metrics when their names match
+a broker subscription prefix. All names below start with `org.apache.kafka.`.
+Share consumer metrics use their separate `consumer.share.` namespace.
+
+Children created through `Kafka.Connect` export these metrics for their logical
+producer or consumer. Connection totals and rates describe the shared physical
+pool for that role; do not sum them across children sharing that pool. Each child
+keeps its own collection cursor. Request timing and throttle samples belong to the
+child issuing the request. Fetch and commit timing also cover bootstrap connections
+whose broker ID is unknown; node latency metrics require a known broker ID.
+Logical request attribution includes transaction coordination, group heartbeats,
+coordinator discovery, and offset queries. Shared root metadata refreshes have no
+individual child owner. Write-observed transaction requests retain their callback
+and collector in pooled state until completion; a pipelined response keeps its own
+collector after the write completes.
+
+| Metric suffix | OTLP kind and unit | Measurement |
+| --- | --- | --- |
+| `producer.connection.creation.total`, `consumer.connection.creation.total` | Monotonic Sum, connections | Successful connection creations |
+| `producer.connection.creation.rate`, `consumer.connection.creation.rate` | Gauge, `1/s` | Connection creations divided by elapsed time since the previous collection |
+| `producer.node.request.latency.avg`, `.max`; `consumer.node.request.latency.avg`, `.max` | Gauge, milliseconds | Request dispatch through parsed response, with a `node_id` data-point attribute |
+| `producer.produce.throttle.time.avg`, `.max`; `consumer.fetch.manager.fetch.throttle.time.avg`, `.max` | Gauge, milliseconds | Broker-reported throttle duration |
+| `producer.record.queue.time.avg`, `.max` | Gauge, `ms` | Batch creation through removal from the send buffer into a produce request |
+| `consumer.coordinator.commit.latency.avg`, `.max` | Gauge, `ms` | OffsetCommit request dispatch through parsed response |
+| `consumer.coordinator.assigned.partitions` | Gauge, `1` | Current local assignment, including manual assignment; zero after clearing it |
+| `consumer.coordinator.rebalance.latency.avg`, `.max` | Gauge, `ms` | Successful group join/rejoin, or changed heartbeat assignment, through rebalance listener completion |
+| `consumer.coordinator.rebalance.latency.total` | Monotonic Sum, `ms` | Total duration of observed successful rebalances |
+| `consumer.fetch.manager.fetch.latency.avg`, `.max` | Gauge, `ms` | Fetch request dispatch through parsed response, including broker long-poll time |
+| `consumer.poll.idle.ratio.avg` | Gauge, `1` | Fraction of elapsed collection time spent in foreground consumer waits |
+
+Queue, commit, fetch and rebalance average/maximum gauges aggregate samples while
+their metric group remains subscribed. They have no value before the first sample;
+collection does not consume their samples. Unsubscribing and later resubscribing
+starts a fresh gauge window. Operations that started before that window are omitted.
+Queue samples are weighted equally per batch, including retry attempts; they are
+not weighted by record count. A retry samples the batch's age at its next send attempt.
+Request construction must succeed before its queue samples are published; an aborted
+build contributes no samples. Samples accumulate per batch and merge once per request.
+Request timing starts after connection admission and before serialization. It includes
+serialization, waiting for the connection's write lock, socket writing, broker time,
+and response parsing. Local send contention therefore contributes to request latency.
+Connection acquisition, broker-throttle waits, reauthentication admission, and pending
+request-slot waits happen before this measurement starts. This dispatch boundary applies
+to both ordinary and pipelined requests. The [Apache Kafka reference implementation](https://github.com/apache/kafka/blob/4.3.0/clients/src/main/java/org/apache/kafka/clients/ClientResponse.java#L104)
+also includes pre-send request time in the latency used by fetch and commit metrics.
+Measurements include parsed error responses but omit transport failures and canceled
+response waits. Rebalance measurements omit failed or canceled rebalances.
+
+Rates always use elapsed collection windows, regardless of the broker's requested
+Sum temporality. Rebalance totals retain the observed cumulative total and use an
+independent cursor for delta pushes. Newly subscribed rates and delta totals exclude
+activity from before that subscription. The original node-latency and throttle
+gauges retain their existing delta/cumulative collection behavior.
+
+Dekaf's asynchronous poll ratio counts foreground waits for assignment, direct
+fetches, prefetched data, and retry/no-assignment delays. Nested waits count once;
+an in-flight wait contributes to each collection window it overlaps. Time outside
+these waits, including application processing, counts toward the denominator only.
+Background prefetch, heartbeat and auto-commit work do not count as foreground idle
+time. This is an elapsed-time-weighted ratio, not an unweighted average of individual
+`poll()` calls. It works across the single-record, stream and batch consumption APIs
+without a clock read per returned record. No ratio is emitted until a subscribed
+foreground wait is observed; a wait begun while unsubscribed is omitted.
+
+Recording costs are amortized per connection, request, batch, foreground wait or
+rebalance. Collection and OTLP encoding allocate per push. Empty and unmatched
+subscriptions produce empty payloads; shutdown emits the final subscribed snapshot
+before disabling recording.
+
 ### Client resource attributes
 
 Each nonempty broker telemetry push includes applicable KIP-714 labels in the
