@@ -70,8 +70,8 @@ public sealed class StallDetectorTests
         {
             var throughput = new ThroughputTracker();
             var captureOrder = new ConcurrentQueue<string>();
-            var producerCaptured = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            var stacksCaptured = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var producerCaptured = new WatchdogTestSignal();
+            var stacksCaptured = new WatchdogTestSignal();
             var unexpectedExit = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
             using var watchdog = new ProgressWatchdog(
                 outputDirectory,
@@ -82,7 +82,7 @@ public sealed class StallDetectorTests
                 captureManagedStackReport: () =>
                 {
                     captureOrder.Enqueue("stacks");
-                    stacksCaptured.TrySetResult();
+                    stacksCaptured.Complete();
                     return "test managed stack";
                 });
             using var registration = watchdog.Track(
@@ -92,12 +92,13 @@ public sealed class StallDetectorTests
                 () =>
                 {
                     captureOrder.Enqueue("producer");
-                    producerCaptured.TrySetResult();
+                    producerCaptured.Complete();
                     return null;
                 });
 
-            await Task.WhenAll(producerCaptured.Task, stacksCaptured.Task)
-                .WaitAsync(TimeSpan.FromSeconds(5));
+            await Task.WhenAll(
+                producerCaptured.WaitAsync(TimeSpan.FromSeconds(5)),
+                stacksCaptured.WaitAsync(TimeSpan.FromSeconds(5)));
             var diagnosticsDirectory = Path.Combine(outputDirectory, ProgressWatchdog.ArtifactsDirectoryName);
             await Assert.That(() => Directory.GetFiles(diagnosticsDirectory, "*-stacks.txt").Length)
                 .Eventually(count => count.IsEqualTo(1), TimeSpan.FromSeconds(5));
@@ -126,17 +127,17 @@ public sealed class StallDetectorTests
         var outputDirectory = CreateOutputDirectory();
         try
         {
-            var exitCode = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var exitCode = new WatchdogTestSignal();
             using var watchdog = new ProgressWatchdog(
                 outputDirectory,
                 captureAfter: TimeSpan.FromMilliseconds(30),
                 exitAfter: TimeSpan.FromMilliseconds(80),
                 pollInterval: TimeSpan.FromMilliseconds(5),
-                exitProcess: code => exitCode.TrySetResult(code),
+                exitProcess: exitCode.Complete,
                 captureManagedStackReport: () => "test managed stack");
             using var registration = watchdog.Track(new ThroughputTracker(), "Dekaf", "consumer");
 
-            var actualExitCode = await exitCode.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            var actualExitCode = await exitCode.WaitAsync(TimeSpan.FromSeconds(5));
 
             await Assert.That(actualExitCode).IsEqualTo(1);
             var diagnosticsDirectory = Path.Combine(outputDirectory, ProgressWatchdog.ArtifactsDirectoryName);
