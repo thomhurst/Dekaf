@@ -17,7 +17,7 @@ public sealed class SoakStressTestTests
 
         try
         {
-            var exited = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var exited = new WatchdogTestSignal();
             var throughput = new ThroughputTracker();
             throughput.Start();
 
@@ -26,7 +26,7 @@ public sealed class SoakStressTestTests
                 captureAfter: TimeSpan.FromMilliseconds(20),
                 exitAfter: TimeSpan.FromMilliseconds(60),
                 pollInterval: TimeSpan.FromMilliseconds(10),
-                exitProcess: code => exited.TrySetResult(code),
+                exitProcess: exited.Complete,
                 captureManagedStackReport: () => "fake managed stack");
             using var registration = new SoakStressTest().TrackMeasurementProgress(
                 watchdog,
@@ -37,7 +37,7 @@ public sealed class SoakStressTestTests
                     CapturedAtUtc = DateTimeOffset.UtcNow
                 });
 
-            await exited.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await exited.WaitAsync(TimeSpan.FromSeconds(5));
 
             var producerArtifact = Directory.GetFiles(
                 Path.Combine(outputDirectory, ProgressWatchdog.ArtifactsDirectoryName),
@@ -59,7 +59,7 @@ public sealed class SoakStressTestTests
 
         try
         {
-            var exited = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var exited = new WatchdogTestSignal();
             var consumerThroughput = new ThroughputTracker();
             consumerThroughput.Start();
 
@@ -68,7 +68,7 @@ public sealed class SoakStressTestTests
                 captureAfter: TimeSpan.FromMilliseconds(20),
                 exitAfter: TimeSpan.FromMilliseconds(60),
                 pollInterval: TimeSpan.FromMilliseconds(10),
-                exitProcess: code => exited.TrySetResult(code),
+                exitProcess: exited.Complete,
                 captureManagedStackReport: () => "fake managed stack");
             using var registration = new SoakStressTest().TrackConsumerMeasurementProgress(
                 watchdog,
@@ -93,7 +93,7 @@ public sealed class SoakStressTestTests
                     AdaptiveFetchMaxBytes = null
                 });
 
-            await exited.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await exited.WaitAsync(TimeSpan.FromSeconds(5));
 
             var consumerArtifact = Directory.GetFiles(
                 Path.Combine(outputDirectory, ProgressWatchdog.ArtifactsDirectoryName),

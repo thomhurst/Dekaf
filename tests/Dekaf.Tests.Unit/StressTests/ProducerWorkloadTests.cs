@@ -192,13 +192,13 @@ public sealed class ProducerWorkloadTests
     {
         var client = confluent ? "Confluent" : "Dekaf";
         var directory = Path.Join(Path.GetTempPath(), "dekaf-workload-" + Guid.NewGuid().ToString("N"));
-        var exited = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var exited = new WatchdogTestSignal();
         using var cancellation = new CancellationTokenSource();
         try
         {
             using var watchdog = new ProgressWatchdog(directory,
                 captureAfter: TimeSpan.FromMilliseconds(20), exitAfter: TimeSpan.FromMilliseconds(60),
-                pollInterval: TimeSpan.FromMilliseconds(10), exitProcess: _ => exited.TrySetResult(),
+                pollInterval: TimeSpan.FromMilliseconds(10), exitProcess: exited.Complete,
                 captureManagedStackReport: () => "controlled stalled producer");
             Task<ProducerWorkloadResult>? run = null;
             try
@@ -231,7 +231,7 @@ public sealed class ProducerWorkloadTests
                     run = ProducerWorkload.RunAsync(producer, options, client, "producer-async-idempotent", new ThroughputTracker(), new LatencyTracker(),
                         TimeSpan.FromMinutes(1), awaitDelivery: true, cancellation.Token);
                 }
-                await exited.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                await exited.WaitAsync(TimeSpan.FromSeconds(5));
                 await Assert.That(watchdog.WaitForWorkerExit(TimeSpan.FromSeconds(5))).IsTrue();
                 var artifacts = Directory.GetFiles(Path.Join(directory, ProgressWatchdog.ArtifactsDirectoryName), "*-stacks.txt");
                 await Assert.That(artifacts.Length).IsEqualTo(2);

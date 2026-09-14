@@ -8,6 +8,59 @@ namespace Dekaf.Tests.Unit.StressTests;
 public sealed class ProgressWatchdogTests
 {
     [Test]
+    [Arguments(4999, false)]
+    [Arguments(5000, true)]
+    [Arguments(5001, true)]
+    public async Task CallbackDeadline_UsesCompletionTimestamp(int elapsedMilliseconds, bool late)
+    {
+        var time = new ManualTimeProvider { Timestamp = 1000 };
+        var signal = new WatchdogTestSignal(time);
+        var wait = signal.WaitAsync(TimeSpan.FromSeconds(5));
+        time.Timestamp += elapsedMilliseconds;
+        signal.Complete(42);
+        // Delayed continuation execution must not change the captured deadline.
+        time.Timestamp += 10000;
+
+        if (late)
+            await Assert.That(async () => await wait).Throws<TimeoutException>();
+        else
+            await Assert.That(await wait).IsEqualTo(42);
+    }
+
+    [Test]
+    public async Task CallbackBeforeWait_AllowsZeroTimeout()
+    {
+        var signal = new WatchdogTestSignal(new ManualTimeProvider());
+        signal.Complete(42);
+        await Assert.That(await signal.WaitAsync(TimeSpan.Zero)).IsEqualTo(42);
+    }
+
+    [Test]
+    public async Task InfiniteDeadline_AllowsDelayedCallback()
+    {
+        var time = new ManualTimeProvider();
+        var signal = new WatchdogTestSignal(time);
+        var wait = signal.WaitAsync(Timeout.InfiniteTimeSpan);
+        time.Timestamp = 10000;
+        signal.Complete(42);
+        await Assert.That(await wait).IsEqualTo(42);
+    }
+
+    private sealed class ManualTimeProvider : TimeProvider
+    {
+        internal long Timestamp { get; set; }
+        public override long TimestampFrequency => 1000;
+        public override long GetTimestamp() => Timestamp;
+    }
+
+    [Test]
+    public async Task ExitSignal_MissingExit_PreservesTimeout()
+    {
+        var exited = new WatchdogTestSignal();
+        await Assert.That(async () => await exited.WaitAsync(TimeSpan.Zero)).Throws<TimeoutException>();
+    }
+
+    [Test]
     public async Task Track_Stall_CapturesStacksAndProducerDiagnosticsThenExits()
     {
         var outputDirectory = CreateOutputDirectory();
@@ -15,8 +68,9 @@ public sealed class ProgressWatchdogTests
         IDisposable? registration = null;
         try
         {
-            var exited = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var exited = new WatchdogTestSignal();
             var exitCount = 0;
+            var exitThreadId = 0;
             var throughput = new ThroughputTracker();
             throughput.Start();
 
@@ -27,8 +81,9 @@ public sealed class ProgressWatchdogTests
                 pollInterval: TimeSpan.FromMilliseconds(10),
                 exitProcess: code =>
                 {
+                    Volatile.Write(ref exitThreadId, Environment.CurrentManagedThreadId);
                     Interlocked.Increment(ref exitCount);
-                    exited.TrySetResult(code);
+                    exited.Complete(code);
                 },
                 captureManagedStackReport: () => "fake managed stack");
             registration = watchdog.Track(
@@ -42,7 +97,8 @@ public sealed class ProgressWatchdogTests
                 },
                 CreateConsumerSnapshot);
 
-            var exitCode = await exited.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            var exitCode = await exited.WaitAsync(TimeSpan.FromSeconds(5));
+            await Assert.That(Environment.CurrentManagedThreadId).IsNotEqualTo(Volatile.Read(ref exitThreadId));
             await Assert.That(watchdog.WaitForWorkerExit(TimeSpan.FromSeconds(5))).IsTrue();
             registration.Dispose();
             registration = null;
@@ -82,7 +138,7 @@ public sealed class ProgressWatchdogTests
         IDisposable? registration = null;
         try
         {
-            var exited = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var exited = new WatchdogTestSignal();
             var throughput = new ThroughputTracker();
             throughput.Start();
 
@@ -91,11 +147,11 @@ public sealed class ProgressWatchdogTests
                 captureAfter: TimeSpan.FromMilliseconds(20),
                 exitAfter: TimeSpan.FromMilliseconds(60),
                 pollInterval: TimeSpan.FromMilliseconds(10),
-                exitProcess: code => exited.TrySetResult(code),
+                exitProcess: exited.Complete,
                 captureManagedStackReport: () => throw new InvalidOperationException("capture unavailable"));
             registration = watchdog.Track(throughput, "Dekaf", "consumer");
 
-            var exitCode = await exited.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            var exitCode = await exited.WaitAsync(TimeSpan.FromSeconds(5));
             registration.Dispose();
             registration = null;
             watchdog.Dispose();
@@ -125,7 +181,7 @@ public sealed class ProgressWatchdogTests
         IDisposable? registration = null;
         try
         {
-            var exited = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var exited = new WatchdogTestSignal();
             var throughput = new ThroughputTracker();
             throughput.Start();
 
@@ -134,7 +190,7 @@ public sealed class ProgressWatchdogTests
                 captureAfter: TimeSpan.FromMilliseconds(20),
                 exitAfter: TimeSpan.FromMilliseconds(100),
                 pollInterval: TimeSpan.FromMilliseconds(10),
-                exitProcess: code => exited.TrySetResult(code),
+                exitProcess: exited.Complete,
                 captureManagedStackReport: () => "fake managed stack",
                 producerDiagnosticsTimeout: TimeSpan.FromMilliseconds(30));
             registration = watchdog.Track(
@@ -148,7 +204,7 @@ public sealed class ProgressWatchdogTests
                     return null;
                 });
 
-            var exitCode = await exited.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            var exitCode = await exited.WaitAsync(TimeSpan.FromSeconds(5));
             registration.Dispose();
             registration = null;
             releaseCapture.Set();
