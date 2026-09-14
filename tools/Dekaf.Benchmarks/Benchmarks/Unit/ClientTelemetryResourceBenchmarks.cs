@@ -38,6 +38,12 @@ public class ClientTelemetryResourceBenchmarks
     [Benchmark]
     public object Collect() => _collector.Collect(_subscription);
 
+    // Keep the metric object's allocation visible when its optional OTLP fields change.
+    [Benchmark]
+    public object MetricObject() => new ClientTelemetryMetric(
+        ClientTelemetryMetricNames.ConsumerConnectionCreationTotal,
+        ClientTelemetryMetricKind.Counter, 1, []);
+
     [Benchmark]
     public ReadOnlyMemory<byte> Encode() => _provider.Collect(_subscription, _snapshot, false);
 }

@@ -554,9 +554,14 @@ public sealed class ConnectionPoolTests
             pool.RegisterBroker(1, "host-a", 9092);
             var original = await pool.GetConnectionAsync(1);
 
+            await Assert.That(pool.GetConnectionCreationTotal()).IsEqualTo(1L);
+            await Assert.That(await pool.GetConnectionAsync(1)).IsSameReferenceAs(original);
+            await Assert.That(pool.GetConnectionCreationTotal()).IsEqualTo(1L);
+
             pool.RegisterBroker(1, "host-b", 9093);
             var replacement = await pool.GetConnectionAsync(1);
 
+            await Assert.That(pool.GetConnectionCreationTotal()).IsEqualTo(2L);
             await Assert.That(replacement).IsNotSameReferenceAs(original);
             await Assert.That(replacement.Host).IsEqualTo("host-b");
             await Assert.That(replacement.Port).IsEqualTo(9093);

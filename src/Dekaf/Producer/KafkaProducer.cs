@@ -686,6 +686,8 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         _connectionPool = infrastructure.Pool;
         _metadataManager = infrastructure.Metadata;
         _telemetryMetricCollector = infrastructure.TelemetryMetricCollector;
+        if (!ownsInfrastructure)
+            _telemetryMetricCollector.ConnectionCreationTotalProvider = _connectionPool.GetConnectionCreationTotal;
         _telemetryMetricCollector.RegisterMetricsForSubscription(options.ApplicationMetrics);
         _telemetryMetricCollector.ResourceAttributesProvider = CaptureTelemetryResourceAttributes;
 
@@ -3107,9 +3109,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
 
         if (requestWriteStarted is null)
         {
-            return await connection.SendAsync<TRequest, TResponse>(
+            return await connection.SendWithClientTelemetryAsync<TRequest, TResponse>(
                 request,
-                apiVersion,
+                apiVersion, _telemetryMetricCollector,
                 cancellationToken).ConfigureAwait(false);
         }
 
@@ -3119,10 +3121,10 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 "The transaction coordinator connection cannot report request write start.");
         }
 
-        return await writeObserverConnection.SendWithWriteObservationAsync<TRequest, TResponse>(
+        return await writeObserverConnection.SendWithClientTelemetryAsync<TRequest, TResponse>(
                 request,
                 apiVersion,
-                requestWriteStarted,
+                requestWriteStarted, _telemetryMetricCollector,
                 cancellationToken)
             .ConfigureAwait(false);
     }
@@ -3772,10 +3774,10 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                     if (afterRequestWrittenAsync is null)
                     {
                         response = await writeObserverConnection
-                            .SendWithWriteObservationAsync<EndTxnRequest, EndTxnResponse>(
+                            .SendWithClientTelemetryAsync<EndTxnRequest, EndTxnResponse>(
                                 request,
                                 apiVersion,
-                                () => endTxnRequestInFlight = true,
+                                () => endTxnRequestInFlight = true, _telemetryMetricCollector,
                                 retryCancellationToken)
                             .ConfigureAwait(false);
                         endTxnRequestInFlight = false;
@@ -3783,10 +3785,10 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                     else
                     {
                         var responseTask = await writeObserverConnection
-                            .SendPipelinedWithWriteObservationAfterWriteAsync<EndTxnRequest, EndTxnResponse>(
+                            .SendPipelinedWithClientTelemetryAsync<EndTxnRequest, EndTxnResponse>(
                                 request,
                                 apiVersion,
-                                () => endTxnRequestInFlight = true,
+                                () => endTxnRequestInFlight = true, _telemetryMetricCollector,
                                 retryCancellationToken)
                             .ConfigureAwait(false);
                         var responseConsumptionStarted = false;
@@ -4095,9 +4097,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 try
                 {
                     txnOffsetCommitResponse = await coordinatorConnection
-                        .SendAsync<TxnOffsetCommitRequest, TxnOffsetCommitResponse>(
+                        .SendWithClientTelemetryAsync<TxnOffsetCommitRequest, TxnOffsetCommitResponse>(
                             txnOffsetCommitRequest,
-                            txnOffsetCommitVersion,
+                            txnOffsetCommitVersion, _telemetryMetricCollector,
                             retryCancellationToken)
                         .ConfigureAwait(false);
                     lastTransportException = null;
@@ -4642,7 +4644,10 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 ? _telemetryMetricCollector.RecordBrokerThrottle
                 : null,
             unackedBudget: _accumulator.GetBrokerUnackedBudget(brokerId),
-            usesTransactionV2: () => _currentTransactionUsesTV2);
+            usesTransactionV2: () => _currentTransactionUsesTV2)
+        {
+            TelemetryMetricCollector = _telemetryMetricCollector
+        };
     }
 
     /// <summary>

@@ -7,8 +7,11 @@ namespace Dekaf.Protocol.Messages;
 /// Fetch request (API key 1).
 /// Fetches records from topic partitions.
 /// </summary>
-public sealed class FetchRequest : IKafkaRequest<FetchResponse>, IRequestWriteSequenceTarget
+public sealed class FetchRequest : IKafkaRequest<FetchResponse>, IRequestWriteSequenceTarget, Telemetry.IClientTelemetrySource
 {
+    Telemetry.ClientTelemetryMetricCollector? Telemetry.IClientTelemetrySource.TelemetryMetricCollector
+        => (_writeSequenceSource as Telemetry.IClientTelemetrySource)?.TelemetryMetricCollector;
+
     // Pool to reuse FetchRequest instances across fetch cycles.
     // One instance per fetch cycle per broker, so a small pool suffices.
     private static readonly FetchRequestPool s_pool = new();

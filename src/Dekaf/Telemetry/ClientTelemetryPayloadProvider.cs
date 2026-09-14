@@ -143,6 +143,8 @@ internal sealed class ClientTelemetryPayloadProvider : IClientTelemetryPayloadPr
         WriteMessage(writer, 2, metricWriter =>
         {
             WriteString(metricWriter, 1, metric.Name);
+            if (metric.Unit is { } unit)
+                WriteString(metricWriter, 3, unit);
 
             if (metric.Kind == ClientTelemetryMetricKind.Counter)
             {

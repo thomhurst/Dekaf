@@ -8,6 +8,7 @@ using Dekaf.Producer;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
 using Dekaf.Protocol.Records;
+using Dekaf.Telemetry;
 using NSubstitute;
 
 namespace Dekaf.Tests.Unit.Producer;
@@ -215,10 +216,22 @@ public sealed class ReadyBatchIncarnationTests
             ]
         });
         var topicIds = new Guid[2];
+        var metrics = new StandardClientTelemetryMetrics(true, static () => 0);
+        metrics.Subscribe([StandardClientTelemetryMetrics.QueuePrefix], 0);
+        var drained = Math.Max(laterTopicBatch.StopwatchCreatedTicks, earlierTopicBatch.StopwatchCreatedTicks)
+            + Stopwatch.Frequency / 1000;
 
         var request = (ProduceRequest)build.Invoke(
             scratch,
-            [batches, generations, topicIds, 2, (short)13, metadataManager])!;
+            [batches, generations, topicIds, 2, (short)13, metadataManager, metrics, drained])!;
+
+        var collected = new List<ClientTelemetryMetric>();
+        metrics.Collect(new ClientTelemetrySubscription(Guid.NewGuid(), 1, 0, 1000, 10000, false,
+            [StandardClientTelemetryMetrics.QueuePrefix]), collected, 0);
+        var expectedAverage = (2 * drained - laterTopicBatch.StopwatchCreatedTicks - earlierTopicBatch.StopwatchCreatedTicks)
+            * (1000d / Stopwatch.Frequency) / 2;
+        await Assert.That(collected.Single(metric => metric.Name == StandardClientTelemetryMetrics.QueuePrefix + "avg").Value)
+            .IsEqualTo(expectedAverage);
 
         await Assert.That(batches[0]).IsSameReferenceAs(earlierTopicBatch);
         await Assert.That(generations[0]).IsEqualTo(earlierTopicBatch.Generation);
@@ -257,13 +270,19 @@ public sealed class ReadyBatchIncarnationTests
             Brokers = [],
             Topics = [CreateTopicMetadata("a-topic", knownTopicId)]
         });
+        var metrics = new StandardClientTelemetryMetrics(true, static () => 0);
+        metrics.Subscribe([StandardClientTelemetryMetrics.QueuePrefix], 0);
+        var subscription = new ClientTelemetrySubscription(Guid.NewGuid(), 1, 0, 1000, 10000, false,
+            [StandardClientTelemetryMetrics.QueuePrefix]);
+        var drained = Math.Max(knownTopicBatch.StopwatchCreatedTicks, missingTopicBatch.StopwatchCreatedTicks)
+            + Stopwatch.Frequency / 1000;
 
         TargetInvocationException? thrown = null;
         try
         {
             build.Invoke(
                 scratch,
-                [batches, generations, new Guid[2], 2, (short)13, metadataManager]);
+                [batches, generations, new Guid[2], 2, (short)13, metadataManager, metrics, drained]);
         }
         catch (TargetInvocationException exception)
         {
@@ -278,6 +297,28 @@ public sealed class ReadyBatchIncarnationTests
         clearReferences.Invoke(scratch, null);
 
         await Assert.That(recordBatches[0][0]).IsNull();
+
+        var collected = new List<ClientTelemetryMetric>();
+        metrics.Collect(subscription, collected, 0);
+        await Assert.That(collected).IsEmpty();
+
+        metadataManager.Metadata.Update(new MetadataResponse
+        {
+            Brokers = [],
+            Topics = [CreateTopicMetadata("a-topic", knownTopicId), CreateTopicMetadata("z-topic", Guid.NewGuid())]
+        });
+        drained += Stopwatch.Frequency;
+        build.Invoke(scratch, [batches, generations, new Guid[2], 2, (short)13, metadataManager, metrics, drained]);
+        metrics.Collect(subscription, collected, 0);
+        var expectedAverage = (2 * drained - knownTopicBatch.StopwatchCreatedTicks - missingTopicBatch.StopwatchCreatedTicks)
+            * (1000d / Stopwatch.Frequency) / 2;
+        await Assert.That(collected.Single(metric => metric.Name == StandardClientTelemetryMetrics.QueuePrefix + "avg").Value)
+            .IsEqualTo(expectedAverage);
+        var expectedMaximum = (drained - Math.Min(knownTopicBatch.StopwatchCreatedTicks, missingTopicBatch.StopwatchCreatedTicks))
+            * (1000d / Stopwatch.Frequency);
+        await Assert.That(collected.Single(metric => metric.Name == StandardClientTelemetryMetrics.QueuePrefix + "max").Value)
+            .IsEqualTo(expectedMaximum);
+        clearReferences.Invoke(scratch, null);
     }
 
     private static TopicMetadata CreateTopicMetadata(string name, Guid topicId) => new()
