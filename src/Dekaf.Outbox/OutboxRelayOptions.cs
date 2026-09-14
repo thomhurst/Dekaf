@@ -99,6 +99,15 @@ public sealed class OutboxRelayOptions
     public TimeSpan MetricsCollectionTimeout { get; init; } = TimeSpan.FromSeconds(5);
 
     /// <summary>
+    /// Samples whole-store backlog metrics only while this relay owns bucket zero.
+    /// Enable on every relay sharing a store to avoid duplicate aggregate queries.
+    /// Defaults to false to preserve per-instance metric availability. Non-owners report
+    /// unavailable backlog metrics; aggregate gauges across pods using maximum, not sum.
+    /// Handover can leave observations unavailable until the next collection interval.
+    /// </summary>
+    public bool CollectMetricsOnBucketZeroOwnerOnly { get; init; }
+
+    /// <summary>
     /// Validates option consistency. Called by the relay at startup.
     /// </summary>
     public void Validate()

@@ -1,4 +1,10 @@
 #nullable enable
+Dekaf.Outbox.IOutboxNotificationTransport
+Dekaf.Outbox.IOutboxNotificationTransport.ListenAsync(System.Action<int>! notifyCommitted, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task!
+Dekaf.Outbox.IOutboxNotificationTransport.PublishAsync(System.ReadOnlyMemory<int> buckets, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Outbox.OutboxRelayOptions.CollectMetricsOnBucketZeroOwnerOnly.get -> bool
+Dekaf.Outbox.OutboxRelayOptions.CollectMetricsOnBucketZeroOwnerOnly.init -> void
+static Dekaf.Outbox.OutboxServiceCollectionExtensions.AddDekafOutboxNotificationTransport<TTransport>(this Microsoft.Extensions.DependencyInjection.IServiceCollection! services) -> Microsoft.Extensions.DependencyInjection.IServiceCollection!
 Dekaf.Outbox.IOutboxNotifier
 Dekaf.Outbox.IOutboxNotifier.NotifyCommitted() -> void
 Dekaf.Outbox.IOutboxNotifier.WaitAsync(System.TimeSpan timeout, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask

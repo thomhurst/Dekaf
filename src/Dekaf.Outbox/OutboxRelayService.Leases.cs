@@ -118,6 +118,7 @@ public sealed partial class OutboxRelayService
         }
 
         _leaseTimestamp = timestamp;
+        UpdateMetricsLease();
         return true;
     }
 

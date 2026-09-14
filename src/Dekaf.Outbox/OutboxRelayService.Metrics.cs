@@ -6,6 +6,48 @@ namespace Dekaf.Outbox;
 public sealed partial class OutboxRelayService
 {
     private readonly OutboxMetricState _metrics;
+    private MetricsLease? _metricsLease;
+    private readonly object _metricsLeaseLock = new();
+
+    private sealed class MetricsLease(long timestamp)
+    {
+        public long Timestamp = timestamp;
+    }
+
+    private void UpdateMetricsLease()
+    {
+        if (!_options.CollectMetricsOnBucketZeroOwnerOnly)
+            return;
+        lock (_metricsLeaseLock)
+        {
+            if (OwnsBucket(0))
+            {
+                if (_metricsLease is null)
+                    Volatile.Write(ref _metricsLease, new MetricsLease(_leaseTimestamp));
+                else
+                    Volatile.Write(ref _metricsLease.Timestamp, _leaseTimestamp);
+            }
+            else
+            {
+                Volatile.Write(ref _metricsLease, null);
+                Volatile.Write(ref _metrics.Pending, null);
+            }
+        }
+    }
+
+    private void ClearMetricsLease()
+    {
+        if (!_options.CollectMetricsOnBucketZeroOwnerOnly)
+            return;
+        lock (_metricsLeaseLock)
+        {
+            Volatile.Write(ref _metricsLease, null);
+            Volatile.Write(ref _metrics.Pending, null);
+        }
+    }
+
+    private bool CanSample(MetricsLease? lease) => !_options.CollectMetricsOnBucketZeroOwnerOnly
+        || (lease is not null && _timeProvider.GetElapsedTime(Volatile.Read(ref lease.Timestamp)) < _options.LeaseDuration);
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -43,7 +85,8 @@ public sealed partial class OutboxRelayService
         {
             while (!stoppingToken.IsCancellationRequested)
             {
-                if (OutboxMetrics.PendingEnabled)
+                var lease = Volatile.Read(ref _metricsLease);
+                if (OutboxMetrics.PendingEnabled && CanSample(lease))
                 {
                     using var timeout = new CancellationTokenSource(_options.MetricsCollectionTimeout, _timeProvider);
                     using var queryCancellation = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken, timeout.Token);
@@ -51,7 +94,16 @@ public sealed partial class OutboxRelayService
                     {
                         var snapshot = await store.GetPendingMetricsAsync(queryCancellation.Token).ConfigureAwait(false);
                         queryCancellation.Token.ThrowIfCancellationRequested();
-                        Volatile.Write(ref _metrics.Pending, snapshot);
+                        if (!_options.CollectMetricsOnBucketZeroOwnerOnly)
+                            Volatile.Write(ref _metrics.Pending, snapshot);
+                        else
+                        {
+                            // Serialize cache publication with ownership loss so an old
+                            // in-flight sample cannot restore a cleared observation.
+                            lock (_metricsLeaseLock)
+                                Volatile.Write(ref _metrics.Pending,
+                                    CanSample(lease) && ReferenceEquals(lease, _metricsLease) ? snapshot : null);
+                        }
                     }
                     catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
                     {

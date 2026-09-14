@@ -54,13 +54,18 @@ public sealed class EfCoreOutboxStore<TContext> : IOutboxStore, IOutboxLeaseRene
         var context = await _contextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
         await using var contextDisposal = context.ConfigureAwait(false);
         var messages = context.Set<OutboxMessage>().AsNoTracking();
-        var count = await messages.LongCountAsync(cancellationToken).ConfigureAwait(false);
-        if (count == 0 || context.Database.ProviderName == "Microsoft.EntityFrameworkCore.Sqlite")
-            return new OutboxPendingMetrics(count, null);
+        if (context.Database.ProviderName == "Microsoft.EntityFrameworkCore.Sqlite")
+            return new OutboxPendingMetrics(await messages.LongCountAsync(cancellationToken).ConfigureAwait(false), null);
 
-        var oldest = await messages.MinAsync(static message => (DateTimeOffset?)message.CreatedAtUtc, cancellationToken)
-            .ConfigureAwait(false);
-        return new OutboxPendingMetrics(count, oldest);
+        // Compute both aggregates in one command/pass without adding an index to every
+        // enqueue/delete. A constant group produces no row for an empty table.
+        var sample = await messages.GroupBy(static _ => 1)
+            .Select(group => new
+            {
+                Count = group.LongCount(),
+                Oldest = group.Min(message => (DateTimeOffset?)message.CreatedAtUtc)
+            }).SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+        return sample is null ? new OutboxPendingMetrics(0, null) : new OutboxPendingMetrics(sample.Count, sample.Oldest);
     }
 
     public async ValueTask<IReadOnlyList<int>> AcquireBucketLeasesAsync(

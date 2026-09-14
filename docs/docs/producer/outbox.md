@@ -87,11 +87,43 @@ The default fallback interval is one second. An idle relay holding buckets makes
 
 The EF interceptors wake the local relay only after a successful implicit commit or an explicit EF Core transaction commit. `SaveChanges` and `SaveChangesAsync` inside an explicit transaction do not notify until `Commit` or `CommitAsync`. Ambient transactions notify after successful transaction completion; the database provider must support ambient enlistment. A rollback or failed save does not trigger publication. The caller does not wait for Kafka acknowledgement as part of the notification.
 
-Notifications coalesce and remain pending if a commit races with the relay entering its idle wait. The built-in notifier implements `IOutboxBucketNotifier`: EF collects distinct bucket IDs from added outbox rows, accumulates them across saves in a transaction, and checks ownership after commit. Commits containing only remotely owned buckets do not wake the local relay. Unknown-bucket notifications from custom writers retain their unconditional wake-up behavior. Ownership changes and missed hints remain covered by acquisition and polling; no debounce delay is added. They do not interrupt error backoff, bypass bucket ownership, change ordering, or remove rows before acknowledgement. One notifier belongs to one local relay. A notification received by a relay that does not own the row's bucket cannot wake the remote owner; that owner discovers the row through periodic polling.
+Notifications coalesce and remain pending if a commit races with the relay entering its idle wait. The built-in notifier implements `IOutboxBucketNotifier`: EF collects distinct bucket IDs from added outbox rows, accumulates them across saves in a transaction, and checks ownership after commit. The relay retains those IDs in bounded storage and fetches hinted owned buckets directly. An isolated partial batch normally needs only a fetch and a bulk delete after initial discovery, without discovery before and after every batch. Periodic discovery keeps its own deadline even when local hints arrive continuously. Unknown-bucket notifications force discovery, and existing custom notifiers keep their discovery behavior. Ownership changes and missed hints remain covered by acquisition and polling; no debounce delay is added. Notifications do not interrupt error backoff, bypass bucket ownership, change ordering, or remove rows before acknowledgement.
+
+One notifier belongs to one local relay. Commits containing only remotely owned buckets do not wake the local relay. Without the optional transport below, the remote owner discovers the row through periodic polling. Relays owning no buckets wait until the next ownership refresh instead of scheduling a polling timer every second; they still heartbeat and participate in fair-share acquisition.
 
 External writers, contexts without the interceptors, commits performed directly on an externally owned database transaction, process restarts, and missed notifications all rely on polling. The polling component of discovery latency can therefore approach one second, excluding query and scheduling time, compared with the previous 100 ms default. Normal local writes using the registration above do not wait for that timer. Custom stores can resolve `IOutboxNotifier` and call `NotifyCommitted()` after a confirmed commit; never notify before commit or bypass the relay with an independent publisher.
 
 The relay **enforces** `Acks.All`, idempotence, and a key-respecting partitioner (`Murmur2RandomPartitioner`) on its producer after your `configureProducer` delegate runs — durable acks make prefix deletion safe, idempotence sequences admitted batches, and the partitioner maps equal keys to one partition, so none of them can be downgraded there (any partitioner set in the delegate is overridden). Murmur2-random rather than the stock default because the default sticky-rotates zero-length keys, while the outbox treats an empty serialized key as a real key with an ordering requirement; placement for non-empty keys is identical. These settings do not prevent consumer-visible reordering after partial publish failures. If you need different producer semantics, register your own `IOutboxPublisher` instead (the deliberate opt-out).
+
+### Optional cross-pod notifications
+
+Applications can implement `IOutboxNotificationTransport` using their existing broadcast infrastructure and register it alongside the relay:
+
+```csharp
+services.AddDekafOutboxNotificationTransport<ApplicationOutboxTransport>();
+```
+
+`ApplicationOutboxTransport` is application code implementing the interface; no transport provider is bundled. An existing `IOutboxNotificationTransport` singleton registration is preserved, allowing instance or factory registration. The transport is disposed by the DI container. This integration requires the built-in notifier; custom notifiers can continue using local notifications without registering the transport.
+
+`PublishAsync(ReadOnlyMemory<int>, CancellationToken)` broadcasts committed bucket IDs. A single `-1` requests discovery when the bucket is unknown. `ListenAsync(Action<int>, CancellationToken)` stays subscribed until cancelled and invokes the callback for each received ID. Every relay sharing the table must receive the broadcast: a competing-consumer subscription could deliver a hint to a non-owner. Use a distinct channel per outbox table/environment and the same `BucketCount` on every writer and relay. Only post-commit hints belong on this channel; no payloads or message IDs are sent.
+
+Commit callbacks only update a bounded, coalescing buffer. Background workers send and receive independently of database commits and Kafka publishing. Coalescing adds no debounce delay. Incoming broadcasts never get rebroadcast, including self-echoes. Send failures drop that advisory batch and apply `ErrorBackoff`; subscription failures or unexpected completion also retry with backoff. Polling always remains enabled, covering startup, lost hints and transport outages. Both methods must honor cancellation, and `ListenAsync` must finish all callbacks before returning. Shutdown observes both workers and does not guarantee delivery of buffered hints.
+
+### Horizontal scaling
+
+The default eight buckets permit at most eight active draining relays. Extra application pods still maintain membership but own no buckets. Scaling application writers and relay workers separately can bound coordination work; with separate workers, use the optional transport or accept polling discovery latency. Increasing `BucketCount` still requires draining the table first.
+
+To avoid querying the same whole-table backlog from every pod, opt in on **all** relays sharing that store:
+
+```csharp
+services.AddDekafOutboxRelay(
+    producer => producer.WithBootstrapServers("localhost:9092"),
+    new OutboxRelayOptions { CollectMetricsOnBucketZeroOwnerOnly = true });
+```
+
+Only the relay holding a locally valid lease for bucket zero samples backlog metrics. Non-owners report unavailable backlog observations. Samples completing after ownership loss are discarded, and a new owner starts sampling on its next collection interval; handover may temporarily leave no sample. Existing leases coordinate sampling without a new table or migration. This is advisory sampling, not a distributed lock for arbitrary work: an already-running query can overlap takeover if its cancellation is delayed. Every sampler retains its query timeout.
+
+The default remains per-relay sampling for compatibility with per-pod dashboards. When coordinating, aggregate backlog count and age across pods using **maximum**, not sum, and handle unavailable observations. Publish counters and owned-bucket gauges remain per relay. A rolling deployment with older or unconfigured relays continues to work but still includes their duplicate metric queries.
 
 ## Database Schema
 
@@ -240,6 +272,7 @@ var messageId = outboxResult.Headers.FirstOrDefault(h => h.Key == "x-outbox-mess
 | `MetricsName` | `outbox` | Stable logical store name in the `outbox.name` metric tag; 1–64 nonblank characters. Use the same name for replicas sharing a store, distinct names for independent stores. |
 | `MetricsCollectionInterval` | 30 s | Minimum delay after each optional backlog query completes. No catch-up bursts. |
 | `MetricsCollectionTimeout` | 5 s | Cancellation deadline for an optional backlog query. The store must honor cancellation. |
+| `CollectMetricsOnBucketZeroOwnerOnly` | `false` | Sample backlog only on the bucket-zero owner; enable across every relay sharing the store. Non-owners report unavailable backlog metrics. |
 
 Pass options at registration:
 
@@ -278,7 +311,7 @@ Backlog sampling is optional. Existing `IOutboxStore` implementations keep worki
 
 The optional collector runs separately from publication, with at most one outstanding query per relay. It queries only while a pending instrument has a listener, then waits `MetricsCollectionInterval` after completion. There is no query per message or per scrape. Sampling is concurrent with ordinary store operations, so implement this capability with a separate database context/connection and honor the supplied cancellation token. A custom store that ignores cancellation can delay shutdown; the relay does not abandon queries and start overlapping replacements.
 
-`EfCoreOutboxStore` implements this capability using a separate context. Each nonempty sample uses a count and, where supported, a server-side minimum timestamp; the two queries are approximate under concurrent writes. SQLite's native `DateTimeOffset` mapping cannot translate timestamp aggregation, so SQLite supplies the count and leaves nonempty age unavailable. No schema conversion or client-side timestamp scan is performed. See the [EF Core SQLite limitations](https://learn.microsoft.com/en-us/ef/core/providers/sqlite/limitations).
+`EfCoreOutboxStore` implements this capability using a separate context. Where supported, one aggregate query computes count and minimum timestamp together rather than issuing two independent queries. It still reads the whole backlog; coordinated sampling reduces duplicate work across relays. No new timestamp index is added to enqueue/delete paths. SQLite's native `DateTimeOffset` mapping cannot translate timestamp aggregation, so SQLite supplies the count and leaves nonempty age unavailable. No schema conversion or client-side timestamp scan is performed. See the [EF Core SQLite limitations](https://learn.microsoft.com/en-us/ef/core/providers/sqlite/limitations).
 
 Custom stores can implement `IOutboxMetricsStore.GetPendingMetricsAsync` alongside `IOutboxStore`, returning `new OutboxPendingMetrics(count, oldestCreatedAtUtc)`. Return `null` if no snapshot is available, or use a null timestamp when only the count is known. The count must be nonnegative. Use a bounded query strategy appropriate to your database and collection interval.
 
