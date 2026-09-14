@@ -396,6 +396,16 @@ public sealed class EncryptingOrderSerde(object keyVault) : IAsyncSerde<Order>
     }
 }
 
+// Compile-only stand-in for the application-supplied transport in the outbox docs.
+public sealed class ApplicationOutboxTransport : IOutboxNotificationTransport
+{
+    public ValueTask PublishAsync(ReadOnlyMemory<int> buckets, CancellationToken cancellationToken = default)
+        => throw new NotSupportedException("Documentation compilation fixture only.");
+
+    public Task ListenAsync(Action<int> notifyCommitted, CancellationToken cancellationToken = default)
+        => throw new NotSupportedException("Documentation compilation fixture only.");
+}
+
 public sealed class DynamoDbOutboxStore : IOutboxStore
 {
     public ValueTask<IReadOnlyList<int>> AcquireBucketLeasesAsync(

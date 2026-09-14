@@ -17,6 +17,7 @@ public class OutboxBucketNotificationBenchmarks
     private static readonly int[] OwnedBuckets = [0, 1];
     private ServiceProvider _provider = null!;
     private Action<IReadOnlySet<int>> _notify = null!;
+    private Action<int> _notifySingle = null!;
     private ChannelReader<byte> _reader = null!;
     private readonly HashSet<int> _local = [0, 1];
     private readonly HashSet<int> _remote = [2, 3];
@@ -28,6 +29,7 @@ public class OutboxBucketNotificationBenchmarks
         services.AddDekafOutboxRelay();
         _provider = services.BuildServiceProvider();
         var notifier = _provider.GetRequiredService<IOutboxNotifier>();
+        _notifySingle = ((IOutboxBucketNotifier)notifier).NotifyCommitted;
         var capability = typeof(IOutboxNotifier).Assembly.GetType("Dekaf.Outbox.IOutboxBucketNotifier");
         if (capability is null)
             _notify = _ => notifier.NotifyCommitted();
@@ -47,6 +49,13 @@ public class OutboxBucketNotificationBenchmarks
     public bool LocalCommit()
     {
         _notify(_local);
+        return _reader.TryRead(out _);
+    }
+
+    [Benchmark]
+    public bool SingleLocalCommit()
+    {
+        _notifySingle(0);
         return _reader.TryRead(out _);
     }
 

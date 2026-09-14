@@ -38,6 +38,10 @@ public sealed partial class OutboxRelayService : BackgroundService
     private int _leaseGeneration;
     private readonly int[] _pendingBuckets;
     private int _pendingBucketCount;
+    private readonly int[]? _hintBuckets;
+    private readonly bool[]? _readyBuckets;
+    private readonly bool[]? _ownedBucketFlags;
+    private bool _discoveryRequired = true;
     // Only one publisher call is in flight per relay. Its observer writes this
     // before completing the awaited operation, including during a blocked renewal.
     private long _observedPublishFinished;
@@ -85,6 +89,12 @@ public sealed partial class OutboxRelayService : BackgroundService
         _timeProvider = timeProvider ?? TimeProvider.System;
         _notifier = notifier;
         _pendingBuckets = new int[options.BucketCount];
+        if (notifier is OutboxNotifier)
+        {
+            _hintBuckets = new int[options.BucketCount];
+            _readyBuckets = new bool[options.BucketCount];
+            _ownedBucketFlags = new bool[options.BucketCount];
+        }
         _metrics = new OutboxMetricState(options.MetricsName, _timeProvider);
         OutboxMetrics.Register(_metrics);
         _leaseRequest = new OutboxLeaseRequest
@@ -170,8 +180,13 @@ public sealed partial class OutboxRelayService : BackgroundService
                     var untilRenewal = _options.LeaseRenewInterval - _timeProvider.GetElapsedTime(_rebalanceTimestamp);
                     if (untilRenewal <= TimeSpan.Zero)
                         continue;
-                    var delay = untilRenewal < _options.PollInterval
-                        ? untilRenewal : _options.PollInterval;
+                    var untilPoll = _options.PollInterval;
+                    if (_notifier is OutboxNotifier && !_discoveryRequired)
+                        untilPoll -= _timeProvider.GetElapsedTime(_probeTimestamp);
+                    var delay = _ownedBuckets.Count == 0 || untilRenewal < untilPoll
+                        ? untilRenewal : untilPoll;
+                    if (delay <= TimeSpan.Zero)
+                        continue;
                     if (_notifier is null)
                         await Task.Delay(delay, _timeProvider, stoppingToken).ConfigureAwait(false);
                     else
@@ -219,7 +234,35 @@ public sealed partial class OutboxRelayService : BackgroundService
 
             // Keep full buckets ready between sweeps, without an extra discovery query
             // per batch. Poll periodically even while busy to discover newly active buckets.
-            if (_pendingBucketCount == 0 || _timeProvider.GetElapsedTime(_probeTimestamp) >= _options.PollInterval)
+            var discover = _discoveryRequired || _timeProvider.GetElapsedTime(_probeTimestamp) >= _options.PollInterval;
+            if (_notifier is OutboxNotifier hints)
+            {
+                var hintCount = hints.DrainHints(_hintBuckets, out var unknown);
+                discover |= unknown;
+                if (!discover && hintCount > 0)
+                {
+                    var readyCount = _pendingBucketCount;
+                    for (var index = 0; index < readyCount; index++)
+                        _readyBuckets![_pendingBuckets[index]] = true;
+                    for (var index = 0; index < hintCount; index++)
+                    {
+                        var bucket = _hintBuckets![index];
+                        if ((uint)bucket < (uint)_options.BucketCount && _ownedBucketFlags![bucket] && !_readyBuckets![bucket])
+                        {
+                            _pendingBuckets[_pendingBucketCount++] = bucket;
+                        }
+                    }
+                    // Hints are already distinct; only the carried readiness needs clearing.
+                    for (var index = 0; index < readyCount; index++)
+                        _readyBuckets![_pendingBuckets[index]] = false;
+                }
+            }
+            else
+            {
+                // Existing custom notifiers carry no consumable bucket identity.
+                discover |= _pendingBucketCount == 0;
+            }
+            if (discover)
             {
                 var pendingBuckets = await _store.GetBucketsWithPendingAsync(_ownedBuckets, cancellationToken)
                     .ConfigureAwait(false);
@@ -227,6 +270,7 @@ public sealed partial class OutboxRelayService : BackgroundService
                 for (var index = 0; index < pendingBuckets.Count; index++)
                     _pendingBuckets[index] = pendingBuckets[index];
                 _probeTimestamp = started;
+                _discoveryRequired = false;
             }
 
             var publishedAny = false;
@@ -416,6 +460,8 @@ public sealed partial class OutboxRelayService : BackgroundService
             // A legacy store may rebalance during PreparePublishLeaseAsync. Never carry
             // readiness from an earlier ownership epoch into the next sweep.
             _pendingBucketCount = !hadError && generation == _leaseGeneration ? retainedCount : 0;
+            if (hadError)
+                _discoveryRequired = true;
             return new CycleResult(publishedAny, hadError);
         }
         finally
@@ -434,6 +480,8 @@ public sealed partial class OutboxRelayService : BackgroundService
         _leaseTimestamp = 0;
         _rebalanceTimestamp = 0;
         _pendingBucketCount = 0;
+        _discoveryRequired = true;
+        ClearMetricsLease();
         _leaseGeneration++;
         (_notifier as IOutboxBucketNotifier)?.SetOwnedBuckets(_ownedBuckets);
     }
@@ -456,12 +504,20 @@ public sealed partial class OutboxRelayService : BackgroundService
         _leaseTimestamp = acquisitionTimestamp;
         _rebalanceTimestamp = acquisitionTimestamp;
         _pendingBucketCount = 0;
+        _discoveryRequired = true;
         _leaseGeneration++;
 
         if (acquired.Count != _ownedBuckets.Count)
             LogLeasesChanged(_options.RelayId, acquired.Count, _options.BucketCount);
 
         _ownedBuckets = acquired;
+        if (_ownedBucketFlags is not null)
+        {
+            Array.Clear(_ownedBucketFlags);
+            for (var index = 0; index < acquired.Count; index++)
+                _ownedBucketFlags[acquired[index]] = true;
+        }
+        UpdateMetricsLease();
         (_notifier as IOutboxBucketNotifier)?.SetOwnedBuckets(acquired);
         Volatile.Write(ref _metrics.OwnedBuckets, acquired.Count);
     }

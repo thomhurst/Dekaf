@@ -5,6 +5,31 @@ namespace Dekaf.Tests.Unit.Outbox;
 public sealed class OutboxNotifierTests
 {
     [Test]
+    public async Task LargeOwnershipSnapshot_FiltersRemoteHints_AndCopiesUnsortedInput()
+    {
+        using var notifier = new OutboxNotifier(new ManualTimeProvider(), 2048);
+        var owned = Enumerable.Range(0, 512).Select(index => 1022 - 2 * index).ToArray();
+        notifier.SetOwnedBuckets(owned);
+        await Assert.That(owned[0]).IsEqualTo(1022);
+        owned[0] = 1023;
+        var output = new int[3];
+        notifier.NotifyReceived(1023);
+        await Assert.That(notifier.DrainHints(output, out _)).IsEqualTo(0);
+        notifier.NotifyReceived(0);
+        notifier.NotifyReceived(512);
+        notifier.NotifyReceived(1022);
+        await Assert.That(notifier.DrainHints(output, out var unknown)).IsEqualTo(3);
+        await Assert.That(unknown).IsFalse();
+        await Assert.That(output).IsEquivalentTo([0, 512, 1022]);
+        notifier.SetOwnedBuckets([]);
+        notifier.NotifyReceived(1022);
+        await Assert.That(notifier.DrainHints(output, out _)).IsEqualTo(0);
+        notifier.NotifyReceived(-1);
+        notifier.DrainHints(output, out unknown);
+        await Assert.That(unknown).IsTrue();
+    }
+
+    [Test]
     public async Task BucketHints_FilterRemoteCommits_ButPreserveFallbackAndUnknownHints()
     {
         var time = new ManualTimeProvider();

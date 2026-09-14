@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using Dekaf.Producer;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -10,6 +11,22 @@ namespace Dekaf.Outbox;
 /// </summary>
 public static class OutboxServiceCollectionExtensions
 {
+    /// <summary>
+    /// Enables optional cross-process post-commit hints using an application-supplied
+    /// broadcast transport. Also register AddDekafOutboxRelay and its built-in notifier.
+    /// The transport is a singleton and is disposed by the container. Existing singleton
+    /// registrations are preserved. No network work runs on the commit thread.
+    /// </summary>
+    public static IServiceCollection AddDekafOutboxNotificationTransport<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] TTransport>(this IServiceCollection services)
+        where TTransport : class, IOutboxNotificationTransport
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        services.TryAddSingleton<IOutboxNotificationTransport, TTransport>();
+        services.AddHostedService<OutboxNotificationService>();
+        return services;
+    }
+
     /// <summary>
     /// Registers the outbox relay hosted service with a dedicated Dekaf producer.
     /// An <see cref="IOutboxStore"/> must be registered separately
@@ -95,7 +112,8 @@ public static class OutboxServiceCollectionExtensions
         // The OutboxRelayService constructor is the single validation gate for the options.
         services.TryAddSingleton(options ?? new OutboxRelayOptions());
         services.TryAddSingleton(TimeProvider.System);
-        services.TryAddSingleton<IOutboxNotifier, OutboxNotifier>();
+        services.TryAddSingleton<IOutboxNotifier>(provider => new OutboxNotifier(
+            provider.GetRequiredService<TimeProvider>(), provider.GetRequiredService<OutboxRelayOptions>().BucketCount));
         services.AddHostedService<OutboxRelayService>();
 
         return services;

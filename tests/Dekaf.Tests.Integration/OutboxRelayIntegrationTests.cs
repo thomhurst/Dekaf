@@ -24,6 +24,113 @@ public class OutboxRelayIntegrationTests(KafkaTestContainer kafka) : KafkaIntegr
     private const int BucketCount = 4;
 
     [Test]
+    public async Task RemoteCommit_WakesBucketOwnerAcrossServiceProviders_WithoutPolling()
+    {
+        var topic = $"outbox-remote-{Guid.NewGuid():N}";
+        await KafkaContainer.CreateTopicAsync(topic, partitions: 1);
+        var databasePath = Path.Combine(Path.GetTempPath(), $"dekaf-outbox-remote-{Guid.NewGuid():N}.db");
+        var connection = new SqliteConnectionStringBuilder { DataSource = databasePath, Pooling = false, DefaultTimeout = 30 }.ToString();
+        var ownerTime = new FrozenPollingTimeProvider();
+        var writerTime = new FrozenPollingTimeProvider();
+        var ownerInbox = Channel.CreateUnbounded<int>();
+        var writerInbox = Channel.CreateUnbounded<int>();
+        var ownerTransport = new BroadcastTransport(ownerInbox, writerInbox);
+        var writerTransport = new BroadcastTransport(writerInbox, ownerInbox);
+        try
+        {
+            await using var owner = BuildPod("a-owner", ownerTime, ownerTransport);
+            await using var writer = BuildPod("z-writer", writerTime, writerTransport);
+            var factory = writer.GetRequiredService<IDbContextFactory<OutboxContext>>();
+            await using (var context = await factory.CreateDbContextAsync())
+                await context.Database.EnsureCreatedAsync();
+            var ownerServices = owner.GetServices<IHostedService>().ToArray();
+            var writerServices = writer.GetServices<IHostedService>().ToArray();
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+            try
+            {
+                foreach (var service in ownerServices)
+                    await service.StartAsync(deadline.Token);
+                await ownerTime.Scheduled.Reader.ReadAsync(deadline.Token);
+                foreach (var service in writerServices)
+                    await service.StartAsync(deadline.Token);
+                await writerTime.Scheduled.Reader.ReadAsync(deadline.Token);
+                await ownerTransport.Listening.Task.WaitAsync(deadline.Token);
+                await writerTransport.Listening.Task.WaitAsync(deadline.Token);
+                await using (var context = await factory.CreateDbContextAsync())
+                {
+                    var lease = await context.Set<OutboxLease>().SingleAsync(deadline.Token);
+                    await Assert.That(lease.Owner).IsEqualTo("a-owner");
+                    // This process owns no buckets. Only the broadcast can wake the owner;
+                    // neither frozen timer can trigger fallback polling.
+                    context.AddOutboxMessage(topic, "remote", "committed", Serializers.String, Serializers.String, bucketCount: 1);
+                    await context.SaveChangesAsync(deadline.Token);
+                }
+                await using var consumer = await Kafka.CreateConsumer<string, string>()
+                    .WithBootstrapServers(KafkaContainer.BootstrapServers).WithGroupId($"outbox-remote-{Guid.NewGuid():N}")
+                    .WithAutoOffsetReset(AutoOffsetReset.Earliest).BuildAsync();
+                consumer.Subscribe(topic);
+                await using var records = consumer.ConsumeAsync(deadline.Token).GetAsyncEnumerator();
+                await Assert.That(await records.MoveNextAsync()).IsTrue();
+                await Assert.That(records.Current.Value).IsEqualTo("committed");
+                await WaitForConditionAsync(() =>
+                {
+                    using var context = factory.CreateDbContext();
+                    return !context.Set<OutboxMessage>().Any();
+                }, TimeSpan.FromSeconds(30));
+                await Assert.That(ownerTransport.Sends).IsEqualTo(0);
+                await Assert.That(writerTransport.Sends).IsEqualTo(1);
+            }
+            finally
+            {
+                for (var index = writerServices.Length - 1; index >= 0; index--)
+                    await writerServices[index].StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(30));
+                for (var index = ownerServices.Length - 1; index >= 0; index--)
+                    await ownerServices[index].StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(30));
+            }
+        }
+        finally
+        {
+            DeleteDatabaseFiles(databasePath);
+        }
+
+        ServiceProvider BuildPod(string relayId, TimeProvider time, BroadcastTransport transport)
+        {
+            var services = new ServiceCollection();
+            services.AddLogging();
+            services.AddSingleton(time);
+            services.AddSingleton<IOutboxNotificationTransport>(transport);
+            services.AddDekafEntityFrameworkCoreOutboxStore<OutboxContext>((_, options) => options.UseSqlite(connection));
+            services.AddDekafOutboxRelay(builder => builder.WithBootstrapServers(KafkaContainer.BootstrapServers),
+                new OutboxRelayOptions { BucketCount = 1, RelayId = relayId });
+            services.AddDekafOutboxNotificationTransport<BroadcastTransport>();
+            return services.BuildServiceProvider();
+        }
+    }
+
+    // Test transport broadcasts to both independently wired processes, including echoes.
+    private sealed class BroadcastTransport(Channel<int> incoming, Channel<int> peer) : IOutboxNotificationTransport
+    {
+        public TaskCompletionSource Listening { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public int Sends;
+        public ValueTask PublishAsync(ReadOnlyMemory<int> buckets, CancellationToken cancellationToken = default)
+        {
+            Interlocked.Increment(ref Sends);
+            foreach (var bucket in buckets.Span)
+            {
+                incoming.Writer.TryWrite(bucket);
+                peer.Writer.TryWrite(bucket);
+            }
+            return default;
+        }
+        public async Task ListenAsync(Action<int> notifyCommitted, CancellationToken cancellationToken = default)
+        {
+            Listening.TrySetResult();
+            await foreach (var bucket in incoming.Reader.ReadAllAsync(cancellationToken))
+                notifyCommitted(bucket);
+        }
+    }
+
+    [Test]
     public async Task Commit_WakesIdleRelay_WhileRollbackNeverPublishes()
     {
         var topic = $"outbox-commit-{Guid.NewGuid():N}";
