@@ -1314,34 +1314,105 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private readonly ConcurrentDictionary<TopicPartition, PartitionSequence> _sequenceNumbers = new();
 
     /// <summary>
-    /// One partition's sequence counter plus the producer ID/epoch under which it was last
-    /// restarted at 0. The stamp lets <see cref="ResetSequencesForPartitions"/> restart a
-    /// partition at most once per producer state: a late epoch-error response for a partition
-    /// whose counter this state already restarted, and whose new-epoch sequences may already be
-    /// in flight, must not zero the counter again. Stamps are written only under the producer's
-    /// epoch bump lock, on recovery paths; the fast path touches <see cref="Next"/> alone.
+    /// One partition's sequence counter plus the producer state under which it was last restarted
+    /// at 0. The broker accepts the first batch of a new producer epoch on a partition only with
+    /// sequence 0 (<c>ProducerAppendInfo.checkSequence</c>), so every partition restarts once per
+    /// producer state, lazily, the first time the send loop stamps a batch under that state
+    /// (Java's <c>maybeUpdateProducerIdAndEpoch</c>); the stamp records which state already did.
+    /// Stamps are written only under <see cref="_sequenceRestartLock"/>; the fast path reads the
+    /// stamp once and touches <see cref="Next"/> alone.
     /// </summary>
     private sealed class PartitionSequence
     {
         public int Next;
-        public long ResetProducerId = -1;
-        public short ResetEpoch = -1;
+
+        /// <summary>
+        /// The state under which <see cref="Next"/> was last restarted at 0, or null while the
+        /// partition has never been restarted (its first batch under any state starts at 0).
+        /// </summary>
+        public ProducerIdAndEpoch? ResetState;
+    }
+
+    // Serializes stamp writes: the producer's publication of a new state and the send loops'
+    // restarts. Taken only when a partition's stamp differs from the state a batch is being
+    // stamped with, never on the steady-state path.
+    private readonly object _sequenceRestartLock = new();
+
+    // The state the producer published last. Only this state may restart a partition: a send
+    // loop that still holds the previous snapshot must not zero a counter that already hands
+    // out sequences under the current one. Null for producers without epoch recovery.
+    private ProducerIdAndEpoch? _currentProducerState;
+
+    /// <summary>
+    /// Records <paramref name="state"/> as the state the producer now publishes to its send loops,
+    /// without touching any counter: partitions restart under it lazily on their next send.
+    /// </summary>
+    internal void PublishProducerState(ProducerIdAndEpoch state)
+    {
+        lock (_sequenceRestartLock)
+            _currentProducerState = state;
     }
 
     /// <summary>
-    /// Gets the next base sequence number for a partition and increments by the record count.
-    /// Fast path: lock-free ConcurrentDictionary.GetOrAdd (existing key) + atomic increment.
+    /// Gets the next base sequence number for a partition and increments by the record count,
+    /// without any producer-state restart: for transactional producers, which run no epoch
+    /// recovery, and for tests and benchmarks that need to manipulate a counter directly.
+    /// </summary>
+    internal int GetAndIncrementSequence(TopicPartition topicPartition, int recordCount)
+        => GetAndIncrementSequence(topicPartition, recordCount, null, out _);
+
+    /// <summary>
+    /// Gets the next base sequence number for a partition and increments by the record count,
+    /// restarting the counter at 0 first when <paramref name="state"/> is the producer's current
+    /// state and the partition was last restarted under an older one (or never): the broker
+    /// requires sequence 0 from every partition it holds state for under a new epoch, so
+    /// continuing the old counter would be rejected as an invalid sequence for the new epoch, and
+    /// every bump would re-stale every other active partition (#3342). The send loop calls this
+    /// for a partition only once nothing it sent under the previous state is pending.
+    /// <paramref name="restarted"/> reports the restart. Fast path: lock-free
+    /// ConcurrentDictionary.GetOrAdd (existing key), one stamp compare, one atomic increment.
     /// Uses Interlocked.Add to be safe during leader migration when two BrokerSender threads
     /// could call this concurrently for the same partition.
     /// </summary>
-    internal int GetAndIncrementSequence(TopicPartition topicPartition, int recordCount)
+    internal int GetAndIncrementSequence(
+        TopicPartition topicPartition, int recordCount, ProducerIdAndEpoch? state, out bool restarted)
     {
         var sequence = _sequenceNumbers.GetOrAdd(topicPartition, static _ => new PartitionSequence());
+        restarted = state is not null
+            && !ReferenceEquals(Volatile.Read(ref sequence.ResetState), state)
+            && TryRestartSequence(sequence, state);
         return Interlocked.Add(ref sequence.Next, recordCount) - recordCount;
     }
 
     /// <summary>
-    /// Resets all sequence numbers. Called after InitTransactionsAsync when epoch changes.
+    /// True when the partition has assigned sequences before and its counter was last restarted
+    /// under a state other than <paramref name="state"/>. A partition never assigned sequences is
+    /// not stale: it has nothing on the wire and starts at 0 under whichever state it first sees.
+    /// Does not create the counter.
+    /// </summary>
+    internal bool HasStaleSequenceState(TopicPartition topicPartition, ProducerIdAndEpoch state)
+        => _sequenceNumbers.TryGetValue(topicPartition, out var sequence)
+            && !ReferenceEquals(Volatile.Read(ref sequence.ResetState), state);
+
+    private bool TryRestartSequence(PartitionSequence sequence, ProducerIdAndEpoch state)
+    {
+        lock (_sequenceRestartLock)
+        {
+            // Already restarted under this state, or the caller read the producer state before
+            // another send loop advanced it and must not zero sequences that may already be in
+            // flight under the newer state.
+            if (ReferenceEquals(sequence.ResetState, state) || !ReferenceEquals(state, _currentProducerState))
+                return false;
+
+            Interlocked.Exchange(ref sequence.Next, 0);
+            Volatile.Write(ref sequence.ResetState, state);
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// Resets all sequence numbers. Called after InitTransactionsAsync when epoch changes; the
+    /// transactional producer runs no epoch recovery, so no producer state is recorded.
     /// Resets values in place rather than clearing the dictionary to avoid re-allocating
     /// ConcurrentDictionary Node and counter objects when sequences are next assigned.
     /// O(n) over tracked partitions; acceptable for this recovery path since n is bounded
@@ -1351,52 +1422,27 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// The dictionary is intentionally append-only — entries are never removed, only zeroed.
     /// This avoids Node/counter churn that causes Gen2 GC pressure under high throughput.
     /// </remarks>
-    internal void ResetSequenceNumbers() => ResetSequenceNumbers(ProducerId, ProducerEpoch);
+    internal void ResetSequenceNumbers() => ResetSequenceNumbers(null);
 
     /// <summary>
-    /// Resets all sequence numbers and stamps every partition as restarted under
-    /// <paramref name="producerId"/>/<paramref name="producerEpoch"/>, the state the caller is
-    /// about to publish. Used when the accumulator's own <see cref="ProducerId"/> and
-    /// <see cref="ProducerEpoch"/> are updated after the reset.
+    /// Resets all sequence numbers and, when <paramref name="state"/> is given, publishes it and
+    /// stamps every partition as restarted under it. Used when the producer ID is replaced: the
+    /// broker holds no state for the new ID, so every partition starts at 0 under it and no lazy
+    /// restart is needed.
     /// </summary>
-    internal void ResetSequenceNumbers(long producerId, short producerEpoch)
+    internal void ResetSequenceNumbers(ProducerIdAndEpoch? state)
     {
-        foreach (var kvp in _sequenceNumbers)
+        lock (_sequenceRestartLock)
         {
-            var sequence = kvp.Value;
-            Interlocked.Exchange(ref sequence.Next, 0);
-            sequence.ResetProducerId = producerId;
-            sequence.ResetEpoch = producerEpoch;
-        }
-    }
+            if (state is not null)
+                _currentProducerState = state;
 
-    /// <summary>
-    /// Restarts the sequence counters of the partitions that triggered
-    /// OOSN/InvalidProducerEpoch/UnknownProducerId at 0 under the producer state
-    /// <paramref name="producerId"/>/<paramref name="producerEpoch"/> (Java-style per-partition
-    /// reset, KIP-360): the broker accepts a new epoch for a partition only when its first batch
-    /// carries sequence 0. Partitions not listed keep their counters.
-    /// A partition already restarted under exactly this state is skipped: several send loops
-    /// can report the same stale epoch for different partitions, and the ones that lose the bump
-    /// race call this after the bump, while a late response for a partition this state already
-    /// re-sequenced must not zero a counter whose new sequences may be in flight or accepted.
-    /// Resets in place via Interlocked.Exchange to avoid node reallocation. Callers serialize
-    /// through the producer's epoch bump lock, which also orders the stamp writes.
-    /// </summary>
-    internal void ResetSequencesForPartitions(
-        IReadOnlyCollection<TopicPartition> partitions, long producerId, short producerEpoch)
-    {
-        foreach (var tp in partitions)
-        {
-            if (!_sequenceNumbers.TryGetValue(tp, out var sequence))
-                continue;
-
-            if (sequence.ResetProducerId == producerId && sequence.ResetEpoch == producerEpoch)
-                continue;
-
-            Interlocked.Exchange(ref sequence.Next, 0);
-            sequence.ResetProducerId = producerId;
-            sequence.ResetEpoch = producerEpoch;
+            foreach (var kvp in _sequenceNumbers)
+            {
+                var sequence = kvp.Value;
+                Interlocked.Exchange(ref sequence.Next, 0);
+                Volatile.Write(ref sequence.ResetState, state);
+            }
         }
     }
 

@@ -162,7 +162,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     // producer ID is replaced because its epoch space is exhausted. _getProducerState returns the
     // producer ID/epoch as one snapshot so stale-batch re-stamping never pairs the ID of one
     // producer session with the epoch of another.
-    private readonly Func<short, IReadOnlyCollection<TopicPartition>, CancellationToken, ValueTask<ProducerIdAndEpoch>>? _bumpEpoch;
+    private readonly Func<short, CancellationToken, ValueTask<ProducerIdAndEpoch>>? _bumpEpoch;
     private readonly Func<ProducerIdAndEpoch>? _getProducerState;
     private readonly ILogger _logger;
     private readonly Action<int>? _onBrokerThrottle;
@@ -170,6 +170,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private readonly Action? _onPipelinedResponseAcquired;
     private readonly Action? _onWaveCoalesceStarted;
     private readonly Action? _onIdleWaitStarted;
+    private readonly Action<TopicPartition>? _onSequenceRestartHeld;
     private readonly Func<long> _getTimestamp;
     private readonly Func<int, CancellationToken, ValueTask> _delayForThrottle;
     private readonly TimeSpan _disposalDrainTimeout;
@@ -767,7 +768,16 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     // Partitions that triggered OOSN/InvalidProducerEpoch and need sequence reset
     // during the next epoch bump (Java-style per-partition reset, KIP-360).
     // Single-threaded send loop — no locks needed.
-    private readonly HashSet<TopicPartition> _partitionsNeedingSequenceReset = new();
+    // The producer ID/epoch snapshot this loop iteration coalesces and stamps under, refreshed
+    // once per iteration (step 4c). Null for producers without epoch recovery.
+    private ProducerIdAndEpoch? _iterationProducerState;
+
+    // Set when the snapshot changes and cleared once no pending request carries a batch stamped
+    // under another state. While set, _partitionsPendingUnderPreviousState is rebuilt each
+    // iteration and CoalesceBatch holds those partitions until their old-state batches are
+    // answered (Java's shouldStopDrainBatchesForPartition) so they can restart at sequence 0.
+    private bool _sequenceRestartHoldArmed;
+    private readonly HashSet<TopicPartition> _partitionsPendingUnderPreviousState = new();
 
     // Partition-affined connections: each partition pins to _pinnedConnections[GetConnectionForPartition(topicPartition)].
     // For single-connection mode (_connectionCount == 1), degenerates to the original pinned behavior.
@@ -958,7 +968,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         Func<ReadyBatch[], int, Action<Exception?>, HashSet<TopicPartition>, HashSet<TopicPartition>,
             TransactionPartitionEnrollmentResult>?
             tryEnsurePartitionsInTransaction,
-        Func<short, IReadOnlyCollection<TopicPartition>, CancellationToken, ValueTask<ProducerIdAndEpoch>>? bumpEpoch,
+        Func<short, CancellationToken, ValueTask<ProducerIdAndEpoch>>? bumpEpoch,
         Func<ProducerIdAndEpoch>? getProducerState,
         Action<ReadyBatch, int>? rerouteBatch,
         Action<TopicPartition, long, DateTimeOffset, int, Exception?>? onAcknowledgement,
@@ -974,6 +984,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         Action? onPipelinedResponseAcquired = null,
         Action? onWaveCoalesceStarted = null,
         Action? onIdleWaitStarted = null,
+        Action<TopicPartition>? onSequenceRestartHeld = null,
         Channel<SendLoopEvent>? eventChannel = null)
     {
         _unackedBudget = unackedBudget;
@@ -1001,6 +1012,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         _onPipelinedResponseAcquired = onPipelinedResponseAcquired;
         _onWaveCoalesceStarted = onWaveCoalesceStarted;
         _onIdleWaitStarted = onIdleWaitStarted;
+        _onSequenceRestartHeld = onSequenceRestartHeld;
         _disposalDrainTimeout = disposalDrainTimeout ?? DisposalDrainTimeout;
 
         _eventChannel = eventChannel ??
@@ -1497,22 +1509,21 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 }
 
                 // ── 4. Epoch bump (Java-style client-side, KIP-360) ──
-                // Usually synchronous: no network call, just epoch+1 + per-partition sequence reset.
-                // The broker accepts the bumped epoch when it sees seq=0 for affected partitions.
-                // When the epoch space of the producer ID is exhausted (short.MaxValue), the
-                // producer replaces the ID through InitProducerId and this await suspends the
-                // send loop until the new ID is known — nothing may be sent under the old one.
-                // The producer is asked even when its epoch already moved past staleEpoch:
-                // another sender's bump restarted only that sender's partitions, and this
-                // sender's still need their sequence counters restarted under the new state.
-                // The producer skips partitions the current state already restarted.
+                // Usually synchronous: no network call, just epoch+1. Every partition restarts
+                // its sequences at 0 on its next send under the new epoch (step 4c/5 hold it
+                // until its old-epoch batches are answered), which is what the broker accepts
+                // as the start of the new epoch. When the epoch space of the producer ID is
+                // exhausted (short.MaxValue), the producer replaces the ID through
+                // InitProducerId and this await suspends the send loop until the new ID is
+                // known — nothing may be sent under the old one. A producer whose epoch already
+                // moved past staleEpoch (another sender bumped, or a successor of an already
+                // recovered batch reports the same rejection) just returns the current state.
                 var staleEpoch = Volatile.Read(ref _epochBumpRequestedForEpoch);
                 if (staleEpoch >= 0 && _bumpEpoch is not null)
                 {
                     try
                     {
-                        await _bumpEpoch((short)staleEpoch, _partitionsNeedingSequenceReset, cancellationToken)
-                            .ConfigureAwait(false);
+                        await _bumpEpoch((short)staleEpoch, cancellationToken).ConfigureAwait(false);
                     }
                     catch (OperationCanceledException)
                     {
@@ -1529,9 +1540,15 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     finally
                     {
                         Interlocked.CompareExchange(ref _epochBumpRequestedForEpoch, -1, staleEpoch);
-                        _partitionsNeedingSequenceReset.Clear();
                     }
                 }
+
+                // ── 4c. Producer state for this iteration ──
+                // One snapshot for coalescing and sending: the hold decision in step 5 and the
+                // stamps in step 6 must agree on the state, or a partition could restart at
+                // sequence 0 under a state newer than the one its pending batches carry.
+                if (_getProducerState is not null)
+                    RefreshIterationProducerState();
 
                 // ── 4b. Adaptive connection scaling ──
                 if (_adaptiveScalingEnabled)
@@ -2462,6 +2479,14 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 }
             }
 
+            // A retry re-stamped under a new epoch restarts its partition at sequence 0 (step 6);
+            // its successors under the old epoch must be answered first.
+            if (ShouldHoldForSequenceRestart(batch.TopicPartition))
+            {
+                HoldForSequenceRestart(batchRef, carryOver, fromCarryOver);
+                return;
+            }
+
             // Retry batch: coalesce it ahead of newer batches.
             // NOTE: Do NOT clear IsRetry or unmute here. These are deferred to
             // FinalizeCoalescedRetries() after the epoch bump check passes.
@@ -2507,6 +2532,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             LogPartitionMuted(_brokerId, batch.TopicPartition.Topic, batch.TopicPartition.Partition);
             batch.AppendDiag('O');
             RequeueBatch(carryOver, batchRef, fromCarryOver);
+            return;
+        }
+
+        if (ShouldHoldForSequenceRestart(batch.TopicPartition))
+        {
+            HoldForSequenceRestart(batchRef, carryOver, fromCarryOver);
             return;
         }
 
@@ -2837,6 +2868,98 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         {
             _partitionLimitedPressureEvents++;
         }
+    }
+
+    /// <summary>
+    /// Assigns the next base sequence for a batch under <paramref name="state"/>, restarting the
+    /// partition at 0 first when it has not produced under that state yet (Java's
+    /// <c>maybeUpdateProducerIdAndEpoch</c>). Step 5 only lets a partition through to here once
+    /// nothing it sent under the previous state is pending, so the restart cannot overtake an
+    /// old-state batch that is still on the wire.
+    /// </summary>
+    private int NextSequence(TopicPartition topicPartition, int recordCount, ProducerIdAndEpoch? state)
+    {
+        var sequence = _accumulator.GetAndIncrementSequence(topicPartition, recordCount, state, out var restarted);
+        if (restarted)
+            LogSequenceRestarted(_brokerId, topicPartition.Topic, topicPartition.Partition, state!.ProducerId, state.Epoch);
+        return sequence;
+    }
+
+    /// <summary>
+    /// Reads the producer state this iteration works under. When it changed, or while a request
+    /// stamped under a previous state is still pending, rebuilds the set of partitions such
+    /// requests carry so <see cref="CoalesceBatch"/> can hold their next batch. Steady state costs
+    /// one delegate call and one reference compare per iteration; the pending scan runs only
+    /// right after a bump, until the old-state requests are answered.
+    /// </summary>
+    private void RefreshIterationProducerState()
+    {
+        var state = _getProducerState!();
+        if (!ReferenceEquals(state, _iterationProducerState))
+        {
+            _iterationProducerState = state;
+            _sequenceRestartHoldArmed = true;
+        }
+
+        if (!_sequenceRestartHoldArmed)
+            return;
+
+        _partitionsPendingUnderPreviousState.Clear();
+        if (state.Epoch >= 0)
+            CollectPartitionsPendingUnderOtherState(state, _partitionsPendingUnderPreviousState);
+        _sequenceRestartHoldArmed = _partitionsPendingUnderPreviousState.Count > 0;
+    }
+
+    /// <summary>
+    /// Adds the partition of every live batch in a pending request whose wire stamp names a
+    /// producer ID/epoch other than <paramref name="state"/>. The stamps are the ones written
+    /// at send time; a pending batch is never re-stamped, so they are exact.
+    /// </summary>
+    private void CollectPartitionsPendingUnderOtherState(
+        ProducerIdAndEpoch state,
+        HashSet<TopicPartition> partitions)
+    {
+        for (var connIdx = 0; connIdx < _pendingResponsesByConnection.Length; connIdx++)
+        {
+            var pendingList = CollectionsMarshal.AsSpan(_pendingResponsesByConnection[connIdx]);
+            for (var i = 0; i < pendingList.Length; i++)
+            {
+                ref readonly var pending = ref pendingList[i];
+                for (var j = 0; j < pending.Count; j++)
+                {
+                    if (!pending.IsSameIncarnation(j))
+                        continue;
+
+                    var batch = pending.Batches[j];
+                    var recordBatch = batch.RecordBatch;
+                    if (recordBatch.ProducerEpoch != state.Epoch || recordBatch.ProducerId != state.ProducerId)
+                        partitions.Add(batch.TopicPartition);
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// True when the partition must restart its sequences under this iteration's producer state
+    /// but a batch it sent under a previous state is still awaiting its response. Sending now
+    /// would put sequence 0 of the new epoch behind an old-epoch batch that may yet be retried,
+    /// and reorder the partition. One bool in steady state.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool ShouldHoldForSequenceRestart(TopicPartition topicPartition)
+        => _sequenceRestartHoldArmed
+            && _partitionsPendingUnderPreviousState.Contains(topicPartition)
+            && _accumulator.HasStaleSequenceState(topicPartition, _iterationProducerState!);
+
+    private void HoldForSequenceRestart(
+        BatchReference batchRef,
+        PartitionCarryOver carryOver,
+        bool fromCarryOver)
+    {
+        var topicPartition = batchRef.Batch.TopicPartition;
+        LogSequenceRestartHeld(_brokerId, topicPartition.Topic, topicPartition.Partition, _iterationProducerState!.Epoch);
+        _onSequenceRestartHeld?.Invoke(topicPartition);
+        RequeueBatch(carryOver, batchRef, fromCarryOver);
     }
 
     /// <summary>
@@ -3747,9 +3870,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             LogEpochBumpSignaled(errorCode, batch.TopicPartition.Topic, batch.TopicPartition.Partition,
                 batch.RecordBatch.BaseSequence);
 
-            // Track which partition needs sequence reset (Java-style per-partition reset)
-            _partitionsNeedingSequenceReset.Add(batch.TopicPartition);
-
             // Signal the send loop to bump the epoch
             Interlocked.CompareExchange(ref _epochBumpRequestedForEpoch,
                 (int)batch.RecordBatch.ProducerEpoch, -1);
@@ -3937,11 +4057,14 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             // but don't use epoch recovery (_getProducerState is null for them).
             if (_isIdempotent) // EnableIdempotence — covers both idempotent and transactional
             {
-                // One snapshot for the whole request: the producer ID and epoch come from the
-                // same publication, so a batch is never stamped with a new ID and an old epoch.
-                var producerState = _getProducerState?.Invoke();
+                // The snapshot this loop iteration coalesced under (step 4c), the same for every
+                // request of the wave: the producer ID and epoch come from the same publication,
+                // so a batch is never stamped with a new ID and an old epoch, and a partition
+                // held in step 5 was held against the state its batches are stamped with here.
+                var producerState = _iterationProducerState;
                 var currentEpoch = producerState?.Epoch ?? (short)-1;
                 var currentPid = currentEpoch >= 0 ? producerState!.ProducerId : -1L;
+                var sequenceState = currentEpoch >= 0 ? producerState : null;
 
                 for (var i = 0; i < count; i++)
                 {
@@ -3962,7 +4085,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         LogStaleEpochResequencing(_brokerId, tp.Topic, tp.Partition,
                             batch.RecordBatch.ProducerEpoch, currentEpoch);
                         CompleteInflightEntry(batch);
-                        var newSeq = _accumulator.GetAndIncrementSequence(tp, recordCount);
+                        var newSeq = NextSequence(tp, recordCount, sequenceState);
                         batch.RecordBatch.ProducerId = currentPid;
                         batch.RecordBatch.ProducerEpoch = currentEpoch;
                         batch.RecordBatch.BaseSequence = newSeq;
@@ -3973,7 +4096,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     else if (batch.RecordBatch.BaseSequence < 0)
                     {
                         // Fresh batch: assign sequence (epoch/PID are already correct)
-                        var newSeq = _accumulator.GetAndIncrementSequence(tp, recordCount);
+                        var newSeq = NextSequence(tp, recordCount, sequenceState);
                         batch.RecordBatch.BaseSequence = newSeq;
                     }
                     else
@@ -6502,6 +6625,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "BrokerSender[{BrokerId}] re-sequencing batch {Topic}-{Partition}: stale epoch {StaleEpoch} -> current {CurrentEpoch}")]
     private partial void LogStaleEpochResequencing(int brokerId, string topic, int partition, short staleEpoch, short currentEpoch);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "BrokerSender[{BrokerId}] restarting sequences of {Topic}-{Partition} at 0 under producer {ProducerId} epoch {Epoch}")]
+    private partial void LogSequenceRestarted(int brokerId, string topic, int partition, long producerId, short epoch);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "BrokerSender[{BrokerId}] holding {Topic}-{Partition}: its sequences must restart under epoch {Epoch} once its batches under the previous epoch are answered")]
+    private partial void LogSequenceRestartHeld(int brokerId, string topic, int partition, short epoch);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "BrokerSender[{BrokerId}] request timeout: disconnecting and failing {PendingCount} pending responses (Java handleTimedOutRequests pattern)")]
     private partial void LogRequestTimeoutDisconnection(int brokerId, int pendingCount);

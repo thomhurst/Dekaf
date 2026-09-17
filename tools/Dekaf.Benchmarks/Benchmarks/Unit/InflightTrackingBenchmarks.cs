@@ -20,6 +20,7 @@ public class InflightTrackingBenchmarks
     private RecordAccumulator _accumulator = null!;
     private TopicPartition[] _partitions = null!;
     private InflightEntry[] _burstEntries = null!;
+    private ProducerIdAndEpoch _producerState = null!;
 
     [Params(1, 10)]
     public int PartitionCount { get; set; }
@@ -44,6 +45,12 @@ public class InflightTrackingBenchmarks
             var entry = _tracker.Register(tp, i * 100, 100);
             _tracker.Complete(entry);
         }
+
+        // Every partition restarted under the published producer state, as after the first send.
+        _producerState = new ProducerIdAndEpoch(1234, 0);
+        _accumulator.PublishProducerState(_producerState);
+        foreach (var tp in _partitions)
+            _accumulator.GetAndIncrementSequence(tp, 1, _producerState, out _);
 
         _burstEntries = new InflightEntry[1100];
     }
@@ -81,6 +88,23 @@ public class InflightTrackingBenchmarks
         {
             var tp = _partitions[i % PartitionCount];
             _accumulator.GetAndIncrementSequence(tp, 100);
+        }
+    }
+
+    /// <summary>
+    /// Send-time sequence assignment for an idempotent producer with epoch recovery: lookup,
+    /// producer-state stamp check, interlocked add. Steady state — every partition already
+    /// restarted under the published state, so the stamp check is a single reference compare
+    /// and the restart path is never taken.
+    /// Expected: zero allocation and the same cost as GetAndIncrementSequence.
+    /// </summary>
+    [Benchmark(OperationsPerInvoke = 100)]
+    public void GetAndIncrementSequence_CurrentProducerState()
+    {
+        for (var i = 0; i < 100; i++)
+        {
+            var tp = _partitions[i % PartitionCount];
+            _accumulator.GetAndIncrementSequence(tp, 100, _producerState, out _);
         }
     }
 

@@ -207,22 +207,28 @@ public sealed class IdempotentProducerTests(KafkaTestContainer kafka) : KafkaInt
         var initialProducerId = kafkaProducer.RecordAccumulator.ProducerId;
         await Assert.That(initialProducerId).IsGreaterThanOrEqualTo(0L);
 
-        // Exhaust the epoch space through the producer's own local bumps without resetting any
-        // partition's sequence counter. The next batch then reaches the broker with epoch
-        // short.MaxValue and a non-zero sequence, which the broker rejects with
-        // OutOfOrderSequenceNumber ("invalid sequence number for new epoch") — the same signal a
-        // real exhaustion produces, and the one that must now replace the producer ID.
+        // Exhaust the epoch space through the producer's own local bumps. The partition restarts
+        // its sequences at 0 under short.MaxValue on its next send, which the broker accepts as a
+        // new epoch; the sequence gap skipped after that batch is then rejected with
+        // OutOfOrderSequenceNumber under an epoch that cannot be bumped any further — the signal
+        // that must now replace the producer ID.
         while (kafkaProducer.RecordAccumulator.ProducerEpoch < short.MaxValue)
         {
             await kafkaProducer.BumpEpochForRecoveryAsync(
                 kafkaProducer.RecordAccumulator.ProducerEpoch,
-                Array.Empty<TopicPartition>(),
                 CancellationToken.None).ConfigureAwait(false);
         }
 
         // Act - deliveries across the exhaustion must all succeed.
         for (var i = messagesBeforeExhaustion; i < messagesBeforeExhaustion + messagesAfterExhaustion; i++)
         {
+            if (i == messagesBeforeExhaustion + 1)
+            {
+                await Assert.That(kafkaProducer.RecordAccumulator.ProducerId).IsEqualTo(initialProducerId);
+                await Assert.That(kafkaProducer.RecordAccumulator.ProducerEpoch).IsEqualTo(short.MaxValue);
+                kafkaProducer.RecordAccumulator.GetAndIncrementSequence(new TopicPartition(topic, 0), 3);
+            }
+
             var metadata = await producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic,
@@ -252,6 +258,79 @@ public sealed class IdempotentProducerTests(KafkaTestContainer kafka) : KafkaInt
             .Select(i => $"key-{i}")
             .ToArray();
         await Assert.That(consumed.Select(message => message.Key ?? "").ToArray()).IsEquivalentTo(expectedKeys);
+    }
+
+    [Test]
+    public async Task IdempotentProducer_EpochBumpOnOnePartition_OtherPartitionsContinueWithoutAnotherBump()
+    {
+        // Regression for #3342: an epoch bump restarted only the rejected partition's sequences.
+        // Every other partition continued its old counter under the new epoch, which the broker
+        // rejects ("Invalid sequence number for new epoch"), so one transient error cascaded into
+        // a bump per active partition. Both partitions must deliver exactly once and in order, and
+        // the producer must bump exactly once.
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 2).ConfigureAwait(false);
+        const int messagesPerPartition = 5;
+        const int faultAtIndex = 2;
+
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("test-idempotent-multi-partition-bump")
+            .WithAcks(Acks.All)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+        var kafkaProducer = (KafkaProducer<string, string>)producer;
+
+        for (var i = 0; i < messagesPerPartition; i++)
+        {
+            for (var partition = 0; partition < 2; partition++)
+            {
+                if (partition == 0 && i == faultAtIndex)
+                {
+                    // Skip sequences on partition 0 only: its next batch is out of order and the
+                    // broker rejects it with OutOfOrderSequenceNumber, which bumps the epoch.
+                    kafkaProducer.RecordAccumulator.GetAndIncrementSequence(new TopicPartition(topic, 0), 3);
+                }
+
+                var metadata = await producer.ProduceAsync(new ProducerMessage<string, string>
+                {
+                    Topic = topic,
+                    Partition = partition,
+                    Key = $"p{partition}-{i}",
+                    Value = $"value-{i}"
+                }, CancellationToken.None).ConfigureAwait(false);
+
+                await Assert.That(metadata.Partition).IsEqualTo(partition);
+                await Assert.That(metadata.Offset).IsEqualTo((long)i);
+
+                // Exactly one bump: partition 1 restarts its sequences under the new epoch on its
+                // own next send instead of being rejected and bumping again.
+                var expectedEpoch = i >= faultAtIndex ? (short)1 : (short)0;
+                await Assert.That(kafkaProducer.RecordAccumulator.ProducerEpoch).IsEqualTo(expectedEpoch);
+            }
+        }
+
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("test-idempotent-multi-partition-bump-consumer")
+            .WithGroupId($"test-group-{Guid.NewGuid():N}")
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
+        consumer.Subscribe(topic);
+
+        var consumed = await ConsumeMessagesAsync(consumer, 2 * messagesPerPartition).ConfigureAwait(false);
+        await Assert.That(consumed).Count().IsEqualTo(2 * messagesPerPartition);
+        for (var partition = 0; partition < 2; partition++)
+        {
+            var keys = consumed
+                .Where(message => message.Partition == partition)
+                .OrderBy(message => message.Offset)
+                .Select(message => message.Key ?? "")
+                .ToArray();
+            var expectedKeys = Enumerable.Range(0, messagesPerPartition)
+                .Select(i => $"p{partition}-{i}")
+                .ToArray();
+            await Assert.That(keys).IsEquivalentTo(expectedKeys);
+        }
     }
 
     [Test]
