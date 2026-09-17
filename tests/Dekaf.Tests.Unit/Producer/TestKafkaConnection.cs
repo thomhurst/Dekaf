@@ -4,11 +4,16 @@ using Dekaf.Protocol.Messages;
 
 namespace Dekaf.Tests.Unit.Producer;
 
+/// <param name="ProducerStamps">
+/// Producer ID, epoch and base sequence of every record batch as they were on the wire. Captured
+/// as values because a completed batch's <c>RecordBatch</c> may be reset and pooled afterwards.
+/// </param>
 internal sealed record CapturedProduceRequest(
     short ApiVersion,
     string Info,
     IReadOnlyList<(string Name, Guid TopicId, int Partition)> Topics,
-    IReadOnlyList<object> RecordBatches);
+    IReadOnlyList<object> RecordBatches,
+    IReadOnlyList<(long ProducerId, short ProducerEpoch, int BaseSequence)> ProducerStamps);
 
 internal sealed class TestKafkaConnection :
     IKafkaConnection,
@@ -167,6 +172,7 @@ internal sealed class TestKafkaConnection :
         if (CaptureProduceRequests && request is ProduceRequest produceRequest)
         {
             var recordBatches = new List<object>();
+            var producerStamps = new List<(long ProducerId, short ProducerEpoch, int BaseSequence)>();
             var topics = new List<(string Name, Guid TopicId, int Partition)>();
             var info = new System.Text.StringBuilder();
             for (var t = 0; t < produceRequest.TopicEntryCount; t++)
@@ -179,6 +185,7 @@ internal sealed class TestKafkaConnection :
                     foreach (var recordBatch in partition.Records)
                     {
                         recordBatches.Add(recordBatch);
+                        producerStamps.Add((recordBatch.ProducerId, recordBatch.ProducerEpoch, recordBatch.BaseSequence));
                         info.Append($"{topic.Name}-{partition.Index}(seq={recordBatch.BaseSequence}) ");
                     }
                 }
@@ -189,7 +196,8 @@ internal sealed class TestKafkaConnection :
                     apiVersion,
                     info.ToString(),
                     topics,
-                    recordBatches));
+                    recordBatches,
+                    producerStamps));
         }
 
         if (PipelinedResponseSource is not null)

@@ -179,6 +179,82 @@ public sealed class IdempotentProducerTests(KafkaTestContainer kafka) : KafkaInt
     }
 
     [Test]
+    public async Task IdempotentProducer_EpochSpaceExhausted_ReplacesProducerIdAndKeepsDelivering()
+    {
+        // Arrange - single partition; the broker must observe sequence state under the first producer ID.
+        var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
+        const int messagesBeforeExhaustion = 5;
+        const int messagesAfterExhaustion = 5;
+
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("test-idempotent-epoch-exhaustion")
+            .WithAcks(Acks.All)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+        var kafkaProducer = (KafkaProducer<string, string>)producer;
+
+        for (var i = 0; i < messagesBeforeExhaustion; i++)
+        {
+            await producer.ProduceAsync(new ProducerMessage<string, string>
+            {
+                Topic = topic,
+                Key = $"key-{i}",
+                Value = $"value-{i}"
+            }, CancellationToken.None).ConfigureAwait(false);
+        }
+
+        var initialProducerId = kafkaProducer.RecordAccumulator.ProducerId;
+        await Assert.That(initialProducerId).IsGreaterThanOrEqualTo(0L);
+
+        // Exhaust the epoch space through the producer's own local bumps without resetting any
+        // partition's sequence counter. The next batch then reaches the broker with epoch
+        // short.MaxValue and a non-zero sequence, which the broker rejects with
+        // OutOfOrderSequenceNumber ("invalid sequence number for new epoch") — the same signal a
+        // real exhaustion produces, and the one that must now replace the producer ID.
+        while (kafkaProducer.RecordAccumulator.ProducerEpoch < short.MaxValue)
+        {
+            await kafkaProducer.BumpEpochForRecoveryAsync(
+                kafkaProducer.RecordAccumulator.ProducerEpoch,
+                Array.Empty<TopicPartition>(),
+                CancellationToken.None).ConfigureAwait(false);
+        }
+
+        // Act - deliveries across the exhaustion must all succeed.
+        for (var i = messagesBeforeExhaustion; i < messagesBeforeExhaustion + messagesAfterExhaustion; i++)
+        {
+            var metadata = await producer.ProduceAsync(new ProducerMessage<string, string>
+            {
+                Topic = topic,
+                Key = $"key-{i}",
+                Value = $"value-{i}"
+            }, CancellationToken.None).ConfigureAwait(false);
+            await Assert.That(metadata.Offset).IsEqualTo((long)i);
+        }
+
+        // Assert - a new producer ID at epoch 0 replaced the exhausted one.
+        await Assert.That(kafkaProducer.RecordAccumulator.ProducerId).IsNotEqualTo(initialProducerId);
+        await Assert.That(kafkaProducer.RecordAccumulator.ProducerId).IsGreaterThanOrEqualTo(0L);
+        await Assert.That(kafkaProducer.RecordAccumulator.ProducerEpoch).IsEqualTo((short)0);
+
+        // Assert - every message exactly once, in order.
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("test-idempotent-epoch-exhaustion-consumer")
+            .WithGroupId($"test-group-{Guid.NewGuid():N}")
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
+        consumer.Subscribe(topic);
+
+        var consumed = await ConsumeMessagesAsync(consumer, messagesBeforeExhaustion + messagesAfterExhaustion)
+            .ConfigureAwait(false);
+        var expectedKeys = Enumerable.Range(0, messagesBeforeExhaustion + messagesAfterExhaustion)
+            .Select(i => $"key-{i}")
+            .ToArray();
+        await Assert.That(consumed.Select(message => message.Key ?? "").ToArray()).IsEquivalentTo(expectedKeys);
+    }
+
+    [Test]
     public async Task IdempotentProducer_LargeVolume_NoDataLoss()
     {
         // Arrange

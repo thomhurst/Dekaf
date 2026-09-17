@@ -87,9 +87,12 @@ internal readonly record struct TransactionPartitionEnrollmentResult(
 /// <see cref="_epochBumpRequestedForEpoch"/> via <c>Interlocked.CompareExchange</c> (CAS from -1
 /// to the stale epoch). The send loop checks this field before coalescing, using
 /// <c>Volatile.Read</c> and, if set, performs the epoch bump before coalescing any batches.
-/// After a successful bump, the flag is cleared via <c>Interlocked.CompareExchange</c> (CAS from
-/// stale epoch back to -1). If a new epoch error arrives concurrently, the CAS fails and the flag
-/// remains set for the next iteration.
+/// The bump is local and synchronous until the epoch reaches <see cref="short.MaxValue"/>; then
+/// the producer replaces its producer ID through <c>InitProducerId</c> and the send loop awaits
+/// that reset so nothing is sent under the exhausted ID. Whether the bump succeeded or failed,
+/// the flag is cleared via <c>Interlocked.CompareExchange</c> (CAS from stale epoch back to -1):
+/// a flag that stayed set would park every coalesced wave and livelock the sender. If a new
+/// epoch error arrives concurrently, the CAS fails and the flag remains set for the next iteration.
 /// </para>
 /// <para>
 /// Memory ordering for <see cref="_epochBumpRequestedForEpoch"/>: All accesses use
@@ -154,8 +157,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private readonly PartitionInflightTracker _inflightTracker;
     private readonly Action<ReadyBatch, int>? _rerouteBatch;
     private readonly Action<TopicPartition, long, DateTimeOffset, int, Exception?>? _onAcknowledgement;
-    private readonly Func<short, IReadOnlyCollection<TopicPartition>, (long ProducerId, short ProducerEpoch)>? _bumpEpoch;
-    private readonly Func<short>? _getCurrentEpoch;
+    // Epoch recovery hooks for idempotent (non-transactional) producers; null otherwise.
+    // _bumpEpoch completes synchronously for a local epoch bump and asynchronously when the
+    // producer ID is replaced because its epoch space is exhausted. _getProducerState returns the
+    // producer ID/epoch as one snapshot so stale-batch re-stamping never pairs the ID of one
+    // producer session with the epoch of another.
+    private readonly Func<short, IReadOnlyCollection<TopicPartition>, CancellationToken, ValueTask<ProducerIdAndEpoch>>? _bumpEpoch;
+    private readonly Func<ProducerIdAndEpoch>? _getProducerState;
     private readonly ILogger _logger;
     private readonly Action<int>? _onBrokerThrottle;
     private readonly Action? _onBlockedBucketRequeued;
@@ -950,8 +958,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         Func<ReadyBatch[], int, Action<Exception?>, HashSet<TopicPartition>, HashSet<TopicPartition>,
             TransactionPartitionEnrollmentResult>?
             tryEnsurePartitionsInTransaction,
-        Func<short, IReadOnlyCollection<TopicPartition>, (long ProducerId, short ProducerEpoch)>? bumpEpoch,
-        Func<short>? getCurrentEpoch,
+        Func<short, IReadOnlyCollection<TopicPartition>, CancellationToken, ValueTask<ProducerIdAndEpoch>>? bumpEpoch,
+        Func<ProducerIdAndEpoch>? getProducerState,
         Action<ReadyBatch, int>? rerouteBatch,
         Action<TopicPartition, long, DateTimeOffset, int, Exception?>? onAcknowledgement,
         ILogger? logger,
@@ -982,7 +990,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         _tryEnsurePartitionsInTransaction = tryEnsurePartitionsInTransaction;
         _usesTransactionV2 = usesTransactionV2 ?? (static () => false);
         _bumpEpoch = bumpEpoch;
-        _getCurrentEpoch = getCurrentEpoch;
+        _getProducerState = getProducerState;
         _rerouteBatch = rerouteBatch;
         _onAcknowledgement = onAcknowledgement;
         _logger = logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance;
@@ -1489,20 +1497,22 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 }
 
                 // ── 4. Epoch bump (Java-style client-side, KIP-360) ──
-                // Synchronous: no network call, just epoch+1 + per-partition sequence reset.
+                // Usually synchronous: no network call, just epoch+1 + per-partition sequence reset.
                 // The broker accepts the bumped epoch when it sees seq=0 for affected partitions.
+                // When the epoch space of the producer ID is exhausted (short.MaxValue), the
+                // producer replaces the ID through InitProducerId and this await suspends the
+                // send loop until the new ID is known — nothing may be sent under the old one.
                 var staleEpoch = Volatile.Read(ref _epochBumpRequestedForEpoch);
                 if (staleEpoch >= 0 && _bumpEpoch is not null)
                 {
                     try
                     {
-                        var currentEpoch = _getCurrentEpoch?.Invoke() ?? -1;
+                        var currentEpoch = _getProducerState?.Invoke().Epoch ?? -1;
                         if (currentEpoch >= 0 && currentEpoch <= (short)staleEpoch)
                         {
-                            _bumpEpoch((short)staleEpoch, _partitionsNeedingSequenceReset);
+                            await _bumpEpoch((short)staleEpoch, _partitionsNeedingSequenceReset, cancellationToken)
+                                .ConfigureAwait(false);
                         }
-
-                        Interlocked.CompareExchange(ref _epochBumpRequestedForEpoch, -1, staleEpoch);
                     }
                     catch (OperationCanceledException)
                     {
@@ -1510,10 +1520,15 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     }
                     catch (Exception ex)
                     {
+                        // The request is still cleared below. A flag that stays set parks every
+                        // coalesced wave at the pre-send epoch check (step 6) and livelocks this
+                        // sender for all partitions. The affected batches keep their retry backoff,
+                        // are re-sent as they are, and re-signal if the broker rejects them again.
                         LogEpochBumpFailed(ex, staleEpoch);
                     }
                     finally
                     {
+                        Interlocked.CompareExchange(ref _epochBumpRequestedForEpoch, -1, staleEpoch);
                         _partitionsNeedingSequenceReset.Clear();
                     }
                 }
@@ -3910,7 +3925,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             // eliminating the race between the accumulator's seal thread and the send
             // loop during epoch bump recovery. Previously, sequences were assigned during
             // PartitionBatch.Seal() on the producer thread, which raced with
-            // ResetSequenceNumbers() called inside BumpEpochAsync — both threads called
+            // ResetSequenceNumbers() called inside the epoch bump — both threads called
             // GetAndIncrementSequence on the same shared counter, causing sequence
             // conflicts that led to OutOfOrderSequenceNumber errors.
             //
@@ -3919,20 +3934,27 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             // This eliminates per-batch ConcurrentDictionary lookups and pool rent/return
             // that previously ran unnecessarily for non-idempotent producers.
             // Note: transactional producers ARE idempotent and need sequence assignment,
-            // but don't use epoch recovery (_getCurrentEpoch is null for them).
+            // but don't use epoch recovery (_getProducerState is null for them).
             if (_isIdempotent) // EnableIdempotence — covers both idempotent and transactional
             {
-                var currentEpoch = _getCurrentEpoch?.Invoke() ?? (short)-1;
-                var currentPid = currentEpoch >= 0 ? _accumulator.ProducerId : -1L;
+                // One snapshot for the whole request: the producer ID and epoch come from the
+                // same publication, so a batch is never stamped with a new ID and an old epoch.
+                var producerState = _getProducerState?.Invoke();
+                var currentEpoch = producerState?.Epoch ?? (short)-1;
+                var currentPid = currentEpoch >= 0 ? producerState!.ProducerId : -1L;
 
                 for (var i = 0; i < count; i++)
                 {
                     var batch = batches[i];
                     var tp = batch.TopicPartition;
                     var recordCount = batch.RecordBatch.Records.Count;
+                    // A batch sealed under an older epoch, or under the previous producer ID after
+                    // an exhausted-epoch reset (including a batch that tore across the accumulator's
+                    // separate ID and epoch writes), must be re-stamped before it goes on the wire.
                     var isStaleEpoch = currentEpoch >= 0
                         && batch.RecordBatch.ProducerEpoch >= 0
-                        && batch.RecordBatch.ProducerEpoch != currentEpoch;
+                        && (batch.RecordBatch.ProducerEpoch != currentEpoch
+                            || batch.RecordBatch.ProducerId != currentPid);
 
                     if (isStaleEpoch)
                     {
@@ -6409,7 +6431,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
     #region Logging
 
-    [LoggerMessage(Level = LogLevel.Warning, Message = "[BrokerSender] Epoch bump failed for stale epoch {Epoch}, will retry next iteration")]
+    [LoggerMessage(Level = LogLevel.Warning, Message = "[BrokerSender] Epoch bump failed for stale epoch {Epoch}; affected batches retry after backoff and re-signal if the broker rejects them again")]
     private partial void LogEpochBumpFailed(Exception ex, int epoch);
 
     [LoggerMessage(Level = LogLevel.Error, Message = "BrokerSender[{BrokerId}] send loop failed")]

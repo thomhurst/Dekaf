@@ -271,7 +271,10 @@ public abstract class ScriptedProduceResponseFixture
         bool usesTransactionV2 = false,
         Func<ReadyBatch[], int, Action<Exception?>, HashSet<TopicPartition>, HashSet<TopicPartition>,
             TransactionPartitionEnrollmentResult>?
-            tryEnsurePartitionsInTransaction = null) =>
+            tryEnsurePartitionsInTransaction = null,
+        Func<short, IReadOnlyCollection<TopicPartition>, CancellationToken, ValueTask<ProducerIdAndEpoch>>? bumpEpoch = null,
+        Func<ProducerIdAndEpoch>? getProducerState = null,
+        Microsoft.Extensions.Logging.ILogger? logger = null) =>
         new(
             brokerId: 1, pool,
             metadataManager ?? new MetadataManager(pool, options.BootstrapServers),
@@ -282,11 +285,11 @@ public abstract class ScriptedProduceResponseFixture
             setProduceApiVersion: _ => { },
             isTransactional: () => isTransactional,
             tryEnsurePartitionsInTransaction: tryEnsurePartitionsInTransaction,
-            bumpEpoch: null,
-            getCurrentEpoch: null,
+            bumpEpoch: bumpEpoch,
+            getProducerState: getProducerState,
             rerouteBatch,
             onAcknowledgement: onAcknowledgement,
-            logger: null,
+            logger: logger,
             onBrokerThrottle: onBrokerThrottle,
             getTimestamp: getTimestamp,
             delayForThrottle: delayForThrottle,

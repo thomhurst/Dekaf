@@ -248,7 +248,7 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
             isTransactional: () => false,
             tryEnsurePartitionsInTransaction: null,
             bumpEpoch: null,
-            getCurrentEpoch: null,
+            getProducerState: null,
             rerouteBatch: rerouteBatch,
             onAcknowledgement: onAcknowledgement,
             logger: logger,

@@ -1229,7 +1229,7 @@ public sealed class EpochBumpRecoveryTests
     [Test]
     public async Task EpochBump_Dedup_AlreadyBumped_SkipsRedundantBump()
     {
-        // Simulates the expectedEpoch dedup logic in BumpEpochAsync:
+        // Simulates the expectedEpoch dedup logic in BumpEpochForRecoveryAsync:
         // When multiple partitions fail with OOSN in the same response,
         // only the first caller bumps, others see epoch already changed.
         var options = new ProducerOptions { BootstrapServers = ["localhost:9092"] };

@@ -79,7 +79,7 @@ public sealed class BrokerSenderTests
             isTransactional: () => false,
             tryEnsurePartitionsInTransaction: null,
             bumpEpoch: null,
-            getCurrentEpoch: null,
+            getProducerState: null,
             rerouteBatch: null,
             onAcknowledgement: null,
             logger: null);
@@ -118,7 +118,7 @@ public sealed class BrokerSenderTests
             isTransactional: () => false,
             tryEnsurePartitionsInTransaction: null,
             bumpEpoch: null,
-            getCurrentEpoch: null,
+            getProducerState: null,
             rerouteBatch: null,
             onAcknowledgement: null,
             logger: null);
@@ -159,7 +159,7 @@ public sealed class BrokerSenderTests
             isTransactional: () => false,
             tryEnsurePartitionsInTransaction: null,
             bumpEpoch: null,
-            getCurrentEpoch: null,
+            getProducerState: null,
             rerouteBatch: null,
             onAcknowledgement: null,
             logger: null);
@@ -197,7 +197,7 @@ public sealed class BrokerSenderTests
                 return TransactionPartitionEnrollmentResult.Enrolled;
             },
             bumpEpoch: null,
-            getCurrentEpoch: null,
+            getProducerState: null,
             rerouteBatch: null,
             onAcknowledgement: null,
             logger: null);
