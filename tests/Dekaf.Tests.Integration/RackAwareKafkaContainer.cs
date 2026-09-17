@@ -352,7 +352,9 @@ public class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposable
 
         // Testcontainers caches the last inspected state. Stopping the already-exited container
         // refreshes that cache so StartBrokerAsync does not skip the restart as "still running".
-        await broker.StopAsync(cancellationToken).ConfigureAwait(false);
+        // The kill has already happened, so this reconciliation runs to completion even when the
+        // caller's token is cancelled; otherwise the stale "Running" state would skip the restart.
+        await broker.StopAsync(CancellationToken.None).ConfigureAwait(false);
     }
 
     public async Task StartBrokerAsync(int nodeId, CancellationToken cancellationToken = default)

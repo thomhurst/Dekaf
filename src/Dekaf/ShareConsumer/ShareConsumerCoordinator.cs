@@ -191,8 +191,8 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
     /// Classifies a failed join attempt. Transport and connection-setup failures (a coordinator
     /// that refuses or resets connections, a socket that died mid-request, DNS, setup timeouts)
     /// are retried with backoff until the join timeout: the coordinator may be restarting or
-    /// may have moved. Typed group errors have dedicated handlers, and broker-version
-    /// failures are fatal.
+    /// may have moved. Typed group errors have dedicated handlers; broker-version,
+    /// authentication and authorization failures are fatal.
     /// </summary>
     private static bool IsRetriableJoinFailure(Exception exception, CancellationToken cancellationToken)
     {
@@ -204,7 +204,8 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
 
         return exception switch
         {
-            GroupException or BrokerVersionException => false,
+            GroupException or BrokerVersionException
+                or AuthorizationException or AuthenticationException => false,
             KafkaException => true,
             IOException or SocketException or TimeoutException or DnsResolutionException => true,
             _ => false,
