@@ -12,8 +12,13 @@ public class MemoryBudgetTests(KafkaTestContainer kafka) : KafkaIntegrationTest(
 {
     private const ulong ProducerFloorBytes = 32UL * 1024 * 1024;
 
+    // The budget is process-wide: every auto-tuned producer another test builds or disposes
+    // while this runs changes producer1's share, so the "shrinks on second build, grows back
+    // on dispose" arithmetic only holds when nothing else runs concurrently (the Producer
+    // category runs up to 16 tests in parallel). A keyed constraint only serializes tests
+    // that share the key.
     [Test]
-    [NotInParallel("DekafMemoryBudget")]
+    [NotInParallel]
     public async Task Producer_AutoTuned_RebalancesOnSecondBuild()
     {
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 1);
