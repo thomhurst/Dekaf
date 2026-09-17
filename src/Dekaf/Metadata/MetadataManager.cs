@@ -675,8 +675,15 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
     /// <summary>
     /// Gets topic metadata, fetching if necessary.
-    /// Retries if the topic is being created (has no partitions or transient error).
+    /// Retries if the topic is being created (has no partitions or transient error), and keeps
+    /// retrying while no broker is reachable.
     /// </summary>
+    /// <remarks>
+    /// When <paramref name="cancellationToken"/> is cancelled while the cluster is still
+    /// unreachable, the <see cref="OperationCanceledException"/> carries the last transport
+    /// failure as its <see cref="Exception.InnerException"/> so the caller can report why its
+    /// wait timed out.
+    /// </remarks>
     public async ValueTask<TopicInfo?> GetTopicMetadataAsync(string topicName, CancellationToken cancellationToken = default)
     {
         // Fast path: check cache synchronously first
@@ -798,43 +805,85 @@ public sealed partial class MetadataManager : IAsyncDisposable
     {
         TopicInfo? topic = null;
         var failureCount = 0;
+        Exception? lastRefreshFailure = null;
 
-        while (!cancellationToken.IsCancellationRequested)
+        int NextRetryDelayMs() => ExponentialRetryBackoff.CalculateDelayMilliseconds(
+            _options.RetryBackoffMs,
+            _options.RetryBackoffMaxMs,
+            ++failureCount);
+
+        try
         {
-            // Refresh metadata for this topic
-            await RefreshMetadataAsyncCore(
-                [topicName],
-                forceRefresh: false,
-                BootstrapResolutionFailureMode.PublicException,
-                allowAutoTopicCreation,
-                cancellationToken).ConfigureAwait(false);
-            topic = _metadata.GetTopic(topicName);
-
-            if (topic is not null && topic.PartitionCount > 0 && topic.ErrorCode == ErrorCode.None)
+            while (!cancellationToken.IsCancellationRequested)
             {
-                return topic;
+                // Refresh metadata for this topic. A broker that resets or refuses connections,
+                // a DNS miss (including bootstrap hostnames that have not resolved yet, which
+                // MetadataFailure reports as a retriable refresh failure rather than the fatal
+                // public BootstrapResolutionException), or a cluster with no reachable broker is
+                // retried within the caller's max.block.ms budget, the same way Java's
+                // waitOnMetadata keeps waiting; only cancellation and fatal (auth, version,
+                // disposal) errors end it. A budget that expires during a failing attempt
+                // surfaces on the delay below.
+                try
+                {
+                    await RefreshMetadataAsyncCore(
+                        [topicName],
+                        forceRefresh: false,
+                        BootstrapResolutionFailureMode.MetadataFailure,
+                        allowAutoTopicCreation,
+                        cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException && !IsFatalMetadataError(ex))
+                {
+                    var retryDelayMs = NextRetryDelayMs();
+                    // Every endpoint already logged its own failure; keep the per-attempt noise
+                    // of a long outage at Debug after the first Warning.
+                    if (lastRefreshFailure is null)
+                        LogTopicMetadataRefreshFailed(ex, topicName, retryDelayMs);
+                    else
+                        LogTopicMetadataRefreshRetry(ex, topicName, retryDelayMs, failureCount);
+
+                    // "Failed to refresh metadata from any broker" wraps the last endpoint's
+                    // transport failure; that failure is the cause worth reporting to the caller.
+                    lastRefreshFailure = ex is InvalidOperationException { InnerException: { } cause } ? cause : ex;
+                    await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
+                    continue;
+                }
+
+                topic = _metadata.GetTopic(topicName);
+
+                if (topic is not null && topic.PartitionCount > 0 && topic.ErrorCode == ErrorCode.None)
+                {
+                    return topic;
+                }
+
+                // Retry for transient states: topic not yet in response (null), being created,
+                // or leader election in progress. These are all expected during topic creation.
+                if (topic is null
+                    || topic.ErrorCode is ErrorCode.LeaderNotAvailable or ErrorCode.UnknownTopicOrPartition)
+                {
+                    await Task.Delay(NextRetryDelayMs(), cancellationToken).ConfigureAwait(false);
+                    continue;
+                }
+
+                // Non-transient error — no point retrying
+                break;
             }
 
-            // Retry for transient states: topic not yet in response (null), being created,
-            // or leader election in progress. These are all expected during topic creation.
-            if (topic is null
-                || topic.ErrorCode is ErrorCode.LeaderNotAvailable or ErrorCode.UnknownTopicOrPartition)
-            {
-                failureCount++;
-                var retryDelayMs = ExponentialRetryBackoff.CalculateDelayMilliseconds(
-                    _options.RetryBackoffMs,
-                    _options.RetryBackoffMaxMs,
-                    failureCount);
-                await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
-                continue;
-            }
-
-            // Non-transient error — no point retrying
-            break;
+            cancellationToken.ThrowIfCancellationRequested();
+            return topic;
         }
-
-        cancellationToken.ThrowIfCancellationRequested();
-        return topic;
+        catch (OperationCanceledException ex) when (lastRefreshFailure is not null
+            && ex.InnerException is null
+            && cancellationToken.IsCancellationRequested)
+        {
+            // The caller's budget expired while the cluster was still unreachable; report the
+            // last transport failure as the cause (see GetTopicMetadataAsync).
+            throw new OperationCanceledException(
+                $"Metadata for topic '{topicName}' was still unavailable when the wait was cancelled.",
+                lastRefreshFailure,
+                cancellationToken);
+        }
     }
 
     /// <summary>
@@ -1891,6 +1940,12 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
     [LoggerMessage(Level = LogLevel.Trace, Message = "Metadata refresh requested")]
     private partial void LogMetadataRefreshRequested();
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Metadata refresh for topic {Topic} failed; retrying in {Delay}ms while the caller's max.block.ms budget lasts")]
+    private partial void LogTopicMetadataRefreshFailed(Exception exception, string topic, int delay);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Metadata refresh for topic {Topic} still failing (attempt {Attempt}); retrying in {Delay}ms")]
+    private partial void LogTopicMetadataRefreshRetry(Exception exception, string topic, int delay, int attempt);
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Metadata refresh skipped — all requested topics already cached")]
     private partial void LogMetadataRefreshSkippedCacheHit();

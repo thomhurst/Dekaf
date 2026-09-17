@@ -2399,12 +2399,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 topicInfo = await _metadataManager.GetTopicMetadataAsync(message.Topic, timeoutCts.Token)
                     .ConfigureAwait(false);
             }
-            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
             {
-                throw new ProduceException(
-                    $"Failed to fetch metadata for topic '{message.Topic}' within max.block.ms ({_options.MaxBlockMs}ms). " +
-                    $"Ensure the topic exists and the Kafka cluster is reachable.")
-                { Topic = message.Topic };
+                throw CreateMetadataTimeoutProduceException(message.Topic, ex);
             }
         }
 
@@ -3079,6 +3076,85 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         throw CreateTransactionException(errorCode, classification, $"{operation} failed: {errorCode}");
     }
 
+    /// <summary>
+    /// Classifies a failed transaction control-plane attempt (coordinator lookup, InitProducerId,
+    /// AddPartitionsToTxn, AddOffsetsToTxn, EndTxn, group coordinator lookup). Transport and
+    /// connection-setup failures (a broker that resets or refuses connections, a DNS miss, a
+    /// connection retired by pool churn) are retried within the max.block.ms budget exactly like
+    /// the retriable broker error codes already are. Typed transaction, timeout, broker-version,
+    /// authentication and authorization failures propagate. The producer-side counterpart of the
+    /// consumer join classifier; the two differ only in their typed exclusions.
+    /// </summary>
+    private bool IsRetriableTransactionTransportFailure(
+        Exception exception,
+        CancellationToken retryCancellationToken)
+    {
+        if (retryCancellationToken.IsCancellationRequested || exception is OperationCanceledException)
+            return false;
+
+        if (IsRetiredConnectionFailure(exception))
+            return true;
+
+        if (exception is ObjectDisposedException or TransactionException or KafkaTimeoutException
+            or BrokerVersionException or AuthenticationException or AuthorizationException)
+        {
+            return false;
+        }
+
+        return RetryHelper.IsRetriableRequestFailure(exception);
+    }
+
+    /// <summary>
+    /// A connection retired by pool churn between lease and send throws
+    /// <see cref="ObjectDisposedException"/>; only this producer's own disposal makes that terminal.
+    /// </summary>
+    private bool IsRetiredConnectionFailure(Exception exception) =>
+        exception is ObjectDisposedException && Volatile.Read(ref _disposed) == 0;
+
+    private enum TransportRetryRecovery
+    {
+        /// <summary>Back off only; the next attempt repeats its own lookup.</summary>
+        None,
+
+        /// <summary>Back off, then re-discover the transaction coordinator.</summary>
+        RediscoverCoordinator,
+
+        /// <summary>Back off, then refresh cluster metadata so a broker that left drops out of the candidates.</summary>
+        RefreshMetadata
+    }
+
+    /// <summary>
+    /// The shared recipe for a control-plane transport failure: consume one attempt of the
+    /// max.block.ms budget, log, back off, then run the recovery step. Returns false when the
+    /// budget is spent; the caller then reports the timeout with the failure as its cause.
+    /// </summary>
+    private async ValueTask<bool> TryPrepareTransportRetryAsync(
+        Exception exception,
+        string operation,
+        int attempt,
+        TransactionRetryBudget retryBudget,
+        TransportRetryRecovery recovery,
+        CancellationToken retryCancellationToken)
+    {
+        if (!TryGetTransactionRetryDelay(attempt, retryBudget, out var retryDelayMs))
+            return false;
+
+        LogControlPlaneTransportRetry(exception, operation, _options.TransactionalId, attempt + 1, retryDelayMs);
+        await Task.Delay(retryDelayMs, retryCancellationToken).ConfigureAwait(false);
+        switch (recovery)
+        {
+            case TransportRetryRecovery.RediscoverCoordinator:
+                await FindTransactionCoordinatorAsync(retryBudget, retryCancellationToken).ConfigureAwait(false);
+                break;
+            case TransportRetryRecovery.RefreshMetadata:
+                await RetryHelper.RefreshMetadataForRetryAsync(_metadataManager, retryCancellationToken)
+                    .ConfigureAwait(false);
+                break;
+        }
+
+        return true;
+    }
+
     private async ValueTask<TResponse> SendWithConnectionLeaseAsync<TRequest, TResponse>(
         int brokerId,
         TRequest request,
@@ -3292,6 +3368,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         using var timeoutCts = CreateTransactionRetryCancellationSource(retryBudget, cancellationToken);
         var retryCancellationToken = timeoutCts.Token;
         var initProducerIdRequestInFlight = false;
+        Exception? lastTransportException = null;
         try
         {
             while (true)
@@ -3309,18 +3386,44 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                     KeepPreparedTransaction = keepPreparedTransaction
                 };
 
-                var response = await SendWithConnectionLeaseAsync<InitProducerIdRequest, InitProducerIdResponse>(
-                        _transactionCoordinatorId,
-                        request,
-                        retryCancellationToken,
-                        minimumRequiredVersion: (_options.EnableTwoPhaseCommit || keepPreparedTransaction)
-                            ? (short)6
-                            : short.MinValue,
-                        captureTransactionFeatures: true,
-                        keepPreparedTransaction: keepPreparedTransaction,
-                        requestWriteStarted: () => initProducerIdRequestInFlight = true)
-                    .ConfigureAwait(false);
-                initProducerIdRequestInFlight = false;
+                InitProducerIdResponse response;
+                try
+                {
+                    response = await SendWithConnectionLeaseAsync<InitProducerIdRequest, InitProducerIdResponse>(
+                            _transactionCoordinatorId,
+                            request,
+                            retryCancellationToken,
+                            minimumRequiredVersion: (_options.EnableTwoPhaseCommit || keepPreparedTransaction)
+                                ? (short)6
+                                : short.MinValue,
+                            captureTransactionFeatures: true,
+                            keepPreparedTransaction: keepPreparedTransaction,
+                            requestWriteStarted: () => initProducerIdRequestInFlight = true)
+                        .ConfigureAwait(false);
+                    initProducerIdRequestInFlight = false;
+                }
+                catch (Exception ex) when (IsRetriableTransactionTransportFailure(ex, retryCancellationToken))
+                {
+                    // The coordinator reset, refused or dropped the connection. Retrying is safe:
+                    // the coordinator accepts InitProducerId from the previous epoch (KIP-360), so a
+                    // request that was already written is simply answered again. The in-flight flag
+                    // is left as it is: if the budget runs out before an answer arrives, the outcome
+                    // of a written request stays ambiguous and is reported as fatal below.
+                    lastTransportException = ex;
+                    if (!await TryPrepareTransportRetryAsync(
+                            ex,
+                            $"InitProducerId on coordinator {_transactionCoordinatorId}",
+                            attempt,
+                            retryBudget,
+                            TransportRetryRecovery.RediscoverCoordinator,
+                            retryCancellationToken).ConfigureAwait(false))
+                    {
+                        break;
+                    }
+
+                    attempt++;
+                    continue;
+                }
 
                 if (response.ErrorCode != ErrorCode.None)
                 {
@@ -3381,19 +3484,27 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         }
         catch (OperationCanceledException)
         {
+            if (cancellationToken.IsCancellationRequested || !timeoutCts.IsCancellationRequested)
+                throw;
+
+            throw CreateTransactionTimeoutException(
+                "InitProducerId", retryBudget, attempt + 1, lastTransportException);
+        }
+        finally
+        {
+            // An InitProducerId request that was written but never answered may have bumped the
+            // epoch on the coordinator, so the cached identity is no longer trustworthy. Every
+            // answered attempt resets the flag; it is still set only when the loop ends (timeout,
+            // cancellation, or a re-discovery that exhausted the budget) with the outcome unknown.
             if (initProducerIdRequestInFlight)
             {
                 _lastTransactionError = ErrorCode.InvalidProducerEpoch;
                 _transactionState = TransactionState.FatalError;
             }
-
-            if (cancellationToken.IsCancellationRequested || !timeoutCts.IsCancellationRequested)
-                throw;
-
-            throw CreateTransactionTimeoutException("InitProducerId", retryBudget, attempt + 1);
         }
 
-        throw CreateTransactionTimeoutException("InitProducerId", retryBudget, attempt + 1);
+        throw CreateTransactionTimeoutException(
+            "InitProducerId", retryBudget, attempt + 1, lastTransportException);
     }
 
     private async ValueTask FindTransactionCoordinatorAsync(
@@ -3416,6 +3527,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             Key = _options.TransactionalId!,
             KeyType = CoordinatorType.Transaction
         };
+        Exception? lastTransportException = null;
 
         try
         {
@@ -3430,16 +3542,46 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                     if (!TryGetTransactionRetryDelay(attempt, retryBudget, out var retryDelayMs))
                         break;
 
-                    await _metadataManager.RefreshMetadataAsync(retryCancellationToken).ConfigureAwait(false);
+                    await RetryHelper.RefreshMetadataForRetryAsync(_metadataManager, retryCancellationToken)
+                        .ConfigureAwait(false);
                     await Task.Delay(retryDelayMs, retryCancellationToken).ConfigureAwait(false);
                     attempt++;
                     continue;
                 }
 
-                var response = await SendWithConnectionLeaseAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
-                    brokers[0].NodeId,
-                    request,
-                    retryCancellationToken).ConfigureAwait(false);
+                // Rotate through the known brokers so one that resets or refuses connections
+                // does not receive every attempt while the rest of the cluster is healthy.
+                var brokerId = brokers[attempt % brokers.Count].NodeId;
+                FindCoordinatorResponse response;
+                try
+                {
+                    response = await SendWithConnectionLeaseAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
+                        brokerId,
+                        request,
+                        retryCancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception ex) when (IsRetriableTransactionTransportFailure(ex, retryCancellationToken))
+                {
+                    lastTransportException = ex;
+                    // The rotation already moves the next attempt to another broker; refresh
+                    // metadata once per full rotation so a broker that left the cluster drops out.
+                    var recovery = (attempt + 1) % brokers.Count == 0
+                        ? TransportRetryRecovery.RefreshMetadata
+                        : TransportRetryRecovery.None;
+                    if (!await TryPrepareTransportRetryAsync(
+                            ex,
+                            $"FindCoordinator for transaction on broker {brokerId}",
+                            attempt,
+                            retryBudget,
+                            recovery,
+                            retryCancellationToken).ConfigureAwait(false))
+                    {
+                        break;
+                    }
+
+                    attempt++;
+                    continue;
+                }
 
                 if (response.Coordinators.Count == 0)
                 {
@@ -3488,13 +3630,15 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             throw CreateTransactionTimeoutException(
                 "FindCoordinator for transaction",
                 retryBudget,
-                attempt + 1);
+                attempt + 1,
+                lastTransportException);
         }
 
         throw CreateTransactionTimeoutException(
             "FindCoordinator for transaction",
             retryBudget,
-            attempt + 1);
+            attempt + 1,
+            lastTransportException);
     }
 
     internal async ValueTask AddPartitionsToTransactionAsync(
@@ -3535,6 +3679,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         var attempt = 0;
         using var timeoutCts = CreateTransactionRetryCancellationSource(retryBudget, cancellationToken);
         var retryCancellationToken = timeoutCts.Token;
+        Exception? lastTransportException = null;
 
         try
         {
@@ -3543,12 +3688,33 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 if (!TryGetTransactionRemainingMilliseconds(retryBudget, out _))
                     break;
 
-                var response = await SendWithConnectionLeaseAsync<AddPartitionsToTxnRequest, AddPartitionsToTxnResponse>(
-                        _transactionCoordinatorId,
-                        request,
-                        retryCancellationToken,
-                        requireTransactionFeatureMatch: true)
-                    .ConfigureAwait(false);
+                AddPartitionsToTxnResponse response;
+                try
+                {
+                    response = await SendWithConnectionLeaseAsync<AddPartitionsToTxnRequest, AddPartitionsToTxnResponse>(
+                            _transactionCoordinatorId,
+                            request,
+                            retryCancellationToken,
+                            requireTransactionFeatureMatch: true)
+                        .ConfigureAwait(false);
+                }
+                catch (Exception ex) when (IsRetriableTransactionTransportFailure(ex, retryCancellationToken))
+                {
+                    lastTransportException = ex;
+                    if (!await TryPrepareTransportRetryAsync(
+                            ex,
+                            $"AddPartitionsToTxn on coordinator {_transactionCoordinatorId}",
+                            attempt,
+                            retryBudget,
+                            TransportRetryRecovery.RediscoverCoordinator,
+                            retryCancellationToken).ConfigureAwait(false))
+                    {
+                        break;
+                    }
+
+                    attempt++;
+                    continue;
+                }
 
                 // Check for retriable errors in the response
                 var hasRetriableError = false;
@@ -3616,10 +3782,12 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         catch (OperationCanceledException) when (
             timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
         {
-            throw CreateTransactionTimeoutException("AddPartitionsToTxn", retryBudget, attempt + 1);
+            throw CreateTransactionTimeoutException(
+                "AddPartitionsToTxn", retryBudget, attempt + 1, lastTransportException);
         }
 
-        throw CreateTransactionTimeoutException("AddPartitionsToTxn", retryBudget, attempt + 1);
+        throw CreateTransactionTimeoutException(
+            "AddPartitionsToTxn", retryBudget, attempt + 1, lastTransportException);
     }
 
     internal ValueTask EndTransactionAsync(bool committed, CancellationToken cancellationToken)
@@ -3743,6 +3911,8 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         using var timeoutCts = CreateTransactionRetryCancellationSource(retryBudget, cancellationToken);
         var retryCancellationToken = timeoutCts.Token;
         var endTxnRequestInFlight = false;
+        var afterRequestWrittenCallbackFaulted = false;
+        Exception? lastTransportException = null;
         try
         {
             while (true)
@@ -3759,10 +3929,11 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 };
 
                 EndTxnResponse response;
-                using (var connectionLease = await _connectionPool.LeaseConnectionAsync(
-                           _transactionCoordinatorId,
-                           retryCancellationToken).ConfigureAwait(false))
+                try
                 {
+                    using var connectionLease = await _connectionPool.LeaseConnectionAsync(
+                        _transactionCoordinatorId,
+                        retryCancellationToken).ConfigureAwait(false);
                     var connection = connectionLease.Connection;
                     EnsureTransactionFeatureMatch();
                     var apiVersion = _metadataManager.GetNegotiatedApiVersion(
@@ -3801,7 +3972,16 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                         {
                             var requestWrittenCallback = afterRequestWrittenAsync;
                             afterRequestWrittenAsync = null;
-                            await requestWrittenCallback().ConfigureAwait(false);
+                            try
+                            {
+                                await requestWrittenCallback().ConfigureAwait(false);
+                            }
+                            catch
+                            {
+                                // A caller callback failure is never a transport failure to retry.
+                                afterRequestWrittenCallbackFaulted = true;
+                                throw;
+                            }
 
                             var responseValueTask = responseTask.AsValueTask();
                             responseConsumptionStarted = true;
@@ -3814,6 +3994,29 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                                 responseTask.Abandon();
                         }
                     }
+                }
+                catch (Exception ex) when (!afterRequestWrittenCallbackFaulted
+                    && IsRetriableTransactionTransportFailure(ex, retryCancellationToken))
+                {
+                    // The coordinator reset, refused or dropped the connection. Retrying EndTxn is
+                    // safe: a coordinator that already completed the transaction answers a repeat
+                    // with the same result (and the bumped identity under TV2). The in-flight flag
+                    // is left as it is so an exhausted budget after a written request is reported
+                    // as fatal, matching the timeout path.
+                    lastTransportException = ex;
+                    if (!await TryPrepareTransportRetryAsync(
+                            ex,
+                            $"EndTxn ({(committed ? "commit" : "abort")}) on coordinator {_transactionCoordinatorId}",
+                            attempt,
+                            retryBudget,
+                            TransportRetryRecovery.RediscoverCoordinator,
+                            retryCancellationToken).ConfigureAwait(false))
+                    {
+                        break;
+                    }
+
+                    attempt++;
+                    continue;
                 }
 
                 if (response.ErrorCode == ErrorCode.None)
@@ -3869,14 +4072,24 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             throw CreateTransactionTimeoutException(
                 $"EndTxn ({(committed ? "commit" : "abort")})",
                 retryBudget,
-                attempt + 1);
+                attempt + 1,
+                lastTransportException);
+        }
+        catch (KafkaTimeoutException)
+        {
+            // Coordinator re-discovery inside the loop exhausted the shared budget.
+            PreserveEndTransactionTimeoutState(endTxnRequestInFlight);
+            throw;
         }
 
-        PreserveEndTransactionTimeoutState(requestInFlight: false);
+        // A retriable response resets the flag; a transport failure after the request was
+        // written leaves it set so the ambiguous outcome is preserved as fatal.
+        PreserveEndTransactionTimeoutState(endTxnRequestInFlight);
         throw CreateTransactionTimeoutException(
             $"EndTxn ({(committed ? "commit" : "abort")})",
             retryBudget,
-            attempt + 1);
+            attempt + 1,
+            lastTransportException);
     }
 
     private void PreserveEndTransactionTimeoutState(bool requestInFlight)
@@ -3957,235 +4170,248 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 if (!TryGetTransactionRemainingMilliseconds(retryBudget, out _))
                     break;
 
-                // TV1 always performs explicit offset enrollment before coordinator discovery.
-                if (!tv2)
-                {
-                    var addOffsetsError = await SendAddOffsetsToTransactionAsync(
-                            consumerGroupId,
-                            retryCancellationToken)
-                        .ConfigureAwait(false);
-                    if (addOffsetsError != ErrorCode.None)
-                    {
-                        if (await PrepareAddOffsetsRetryAsync(
-                                addOffsetsError,
-                                attempt,
-                                retryBudget,
-                                tv2,
-                                retryCancellationToken)
-                            .ConfigureAwait(false))
-                        {
-                            attempt++;
-                            continue;
-                        }
-
-                        break;
-                    }
-                }
-
-                // Find the group coordinator. This remains uncached so NotCoordinator retries
-                // refresh only the affected group coordinator information.
-                var brokers = _metadataManager.Metadata.GetBrokers();
-                if (brokers.Count == 0)
-                {
-                    if (!TryGetTransactionRetryDelay(attempt, retryBudget, out var retryDelayMs))
-                        break;
-
-                    await _metadataManager.RefreshMetadataAsync(retryCancellationToken).ConfigureAwait(false);
-                    await Task.Delay(retryDelayMs, retryCancellationToken).ConfigureAwait(false);
-                    attempt++;
-                    continue;
-                }
-
-                var findCoordRequest = new FindCoordinatorRequest
-                {
-                    Key = consumerGroupId,
-                    KeyType = CoordinatorType.Group
-                };
-
-                var findCoordResponse = await SendWithConnectionLeaseAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
-                        brokers[0].NodeId,
-                        findCoordRequest,
-                        retryCancellationToken)
-                    .ConfigureAwait(false);
-
-                if (findCoordResponse.Coordinators.Count == 0)
-                {
-                    // Treat an empty coordinator set as transiently unavailable and retry.
-                    if (!TryGetTransactionRetryDelay(attempt, retryBudget, out var retryDelayMs))
-                        break;
-                    await Task.Delay(retryDelayMs, retryCancellationToken).ConfigureAwait(false);
-                    attempt++;
-                    continue;
-                }
-
-                var coord = findCoordResponse.Coordinators[0];
-                _connectionPool.RegisterBroker(coord.NodeId, coord.Host, coord.Port);
-
-                if (coord.ErrorCode != ErrorCode.None)
-                {
-                    ThrowIfNonRetriableTransactionError(coord.ErrorCode,
-                        $"FindCoordinator for consumer group '{consumerGroupId}'", tv2);
-                    if (!TryGetTransactionRetryDelay(attempt, retryBudget, out var retryDelayMs))
-                        break;
-                    await Task.Delay(retryDelayMs, retryCancellationToken).ConfigureAwait(false);
-                    attempt++;
-                    continue;
-                }
-
-                using var coordinatorLease = await _connectionPool.LeaseConnectionAsync(
-                    coord.NodeId,
-                    retryCancellationToken).ConfigureAwait(false);
-                EnsureTransactionFeatureMatch();
-                var coordinatorConnection = coordinatorLease.Connection;
-                var highestAllowedVersion = tv2
-                    ? TxnOffsetCommitRequest.HighestSupportedVersion
-                    : (short)4;
-                var txnOffsetCommitVersion = _metadataManager.GetNegotiatedApiVersion(
-                    coordinatorConnection,
-                    ApiKey.TxnOffsetCommit,
-                    TxnOffsetCommitRequest.LowestSupportedVersion,
-                    highestAllowedVersion);
-
-                if (tv2 && txnOffsetCommitVersion < 5)
-                {
-                    var addOffsetsError = await SendAddOffsetsToTransactionAsync(
-                            consumerGroupId,
-                            retryCancellationToken)
-                        .ConfigureAwait(false);
-                    if (addOffsetsError != ErrorCode.None)
-                    {
-                        if (await PrepareAddOffsetsRetryAsync(
-                                addOffsetsError,
-                                attempt,
-                                retryBudget,
-                                tv2,
-                                retryCancellationToken)
-                            .ConfigureAwait(false))
-                        {
-                            attempt++;
-                            continue;
-                        }
-
-                        break;
-                    }
-                }
-
-                OffsetTopicIdRequestMap? topicIdMap = null;
-                List<TxnOffsetCommitRequestTopic> txnTopics;
-                if (txnOffsetCommitVersion >= TxnOffsetCommitRequest.TopicIdVersion)
-                {
-                    (txnTopics, topicIdMap) = await BuildTxnOffsetCommitTopicsAsync(
-                            topicOffsets,
-                            retryCancellationToken)
-                        .ConfigureAwait(false);
-                    if (topicIdMap is null)
-                        txnOffsetCommitVersion = TxnOffsetCommitRequest.TopicIdVersion - 1;
-                }
-                else
-                {
-                    txnTopics = BuildTxnOffsetCommitTopics(topicOffsets, topicIdMap: null);
-                }
-
-                var txnOffsetCommitRequest = new TxnOffsetCommitRequest
-                {
-                    TransactionalId = _options.TransactionalId!,
-                    GroupId = consumerGroupId,
-                    ProducerId = _producerId,
-                    ProducerEpoch = _producerEpoch,
-                    GenerationIdOrMemberEpoch = generationIdOrMemberEpoch,
-                    MemberId = memberId,
-                    GroupInstanceId = groupInstanceId,
-                    Topics = txnTopics
-                };
-
-                TxnOffsetCommitResponse txnOffsetCommitResponse;
                 try
                 {
-                    txnOffsetCommitResponse = await coordinatorConnection
+                    // TV1 always performs explicit offset enrollment before coordinator discovery.
+                    if (!tv2)
+                    {
+                        var addOffsetsError = await SendAddOffsetsToTransactionAsync(
+                                consumerGroupId,
+                                retryBudget,
+                                retryCancellationToken)
+                            .ConfigureAwait(false);
+                        if (addOffsetsError != ErrorCode.None)
+                        {
+                            if (await PrepareAddOffsetsRetryAsync(
+                                    addOffsetsError,
+                                    attempt,
+                                    retryBudget,
+                                    tv2,
+                                    retryCancellationToken)
+                                .ConfigureAwait(false))
+                            {
+                                attempt++;
+                                continue;
+                            }
+
+                            break;
+                        }
+                    }
+
+                    // Find the group coordinator. This remains uncached so NotCoordinator retries
+                    // refresh only the affected group coordinator information.
+                    var brokers = _metadataManager.Metadata.GetBrokers();
+                    if (brokers.Count == 0)
+                    {
+                        if (!TryGetTransactionRetryDelay(attempt, retryBudget, out var retryDelayMs))
+                            break;
+
+                        await RetryHelper.RefreshMetadataForRetryAsync(_metadataManager, retryCancellationToken)
+                            .ConfigureAwait(false);
+                        await Task.Delay(retryDelayMs, retryCancellationToken).ConfigureAwait(false);
+                        attempt++;
+                        continue;
+                    }
+
+                    var findCoordRequest = new FindCoordinatorRequest
+                    {
+                        Key = consumerGroupId,
+                        KeyType = CoordinatorType.Group
+                    };
+
+                    // Rotate through the known brokers so a transport failure on one does not
+                    // pin every attempt to it.
+                    var findCoordResponse = await SendWithConnectionLeaseAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
+                            brokers[attempt % brokers.Count].NodeId,
+                            findCoordRequest,
+                            retryCancellationToken)
+                        .ConfigureAwait(false);
+
+                    if (findCoordResponse.Coordinators.Count == 0)
+                    {
+                        // Treat an empty coordinator set as transiently unavailable and retry.
+                        if (!TryGetTransactionRetryDelay(attempt, retryBudget, out var retryDelayMs))
+                            break;
+                        await Task.Delay(retryDelayMs, retryCancellationToken).ConfigureAwait(false);
+                        attempt++;
+                        continue;
+                    }
+
+                    var coord = findCoordResponse.Coordinators[0];
+                    _connectionPool.RegisterBroker(coord.NodeId, coord.Host, coord.Port);
+
+                    if (coord.ErrorCode != ErrorCode.None)
+                    {
+                        ThrowIfNonRetriableTransactionError(coord.ErrorCode,
+                            $"FindCoordinator for consumer group '{consumerGroupId}'", tv2);
+                        if (!TryGetTransactionRetryDelay(attempt, retryBudget, out var retryDelayMs))
+                            break;
+                        await Task.Delay(retryDelayMs, retryCancellationToken).ConfigureAwait(false);
+                        attempt++;
+                        continue;
+                    }
+
+                    using var coordinatorLease = await _connectionPool.LeaseConnectionAsync(
+                        coord.NodeId,
+                        retryCancellationToken).ConfigureAwait(false);
+                    EnsureTransactionFeatureMatch();
+                    var coordinatorConnection = coordinatorLease.Connection;
+                    var highestAllowedVersion = tv2
+                        ? TxnOffsetCommitRequest.HighestSupportedVersion
+                        : (short)4;
+                    var txnOffsetCommitVersion = _metadataManager.GetNegotiatedApiVersion(
+                        coordinatorConnection,
+                        ApiKey.TxnOffsetCommit,
+                        TxnOffsetCommitRequest.LowestSupportedVersion,
+                        highestAllowedVersion);
+
+                    if (tv2 && txnOffsetCommitVersion < 5)
+                    {
+                        var addOffsetsError = await SendAddOffsetsToTransactionAsync(
+                                consumerGroupId,
+                                retryBudget,
+                                retryCancellationToken)
+                            .ConfigureAwait(false);
+                        if (addOffsetsError != ErrorCode.None)
+                        {
+                            if (await PrepareAddOffsetsRetryAsync(
+                                    addOffsetsError,
+                                    attempt,
+                                    retryBudget,
+                                    tv2,
+                                    retryCancellationToken)
+                                .ConfigureAwait(false))
+                            {
+                                attempt++;
+                                continue;
+                            }
+
+                            break;
+                        }
+                    }
+
+                    OffsetTopicIdRequestMap? topicIdMap = null;
+                    List<TxnOffsetCommitRequestTopic> txnTopics;
+                    if (txnOffsetCommitVersion >= TxnOffsetCommitRequest.TopicIdVersion)
+                    {
+                        (txnTopics, topicIdMap) = await BuildTxnOffsetCommitTopicsAsync(
+                                topicOffsets,
+                                retryCancellationToken)
+                            .ConfigureAwait(false);
+                        if (topicIdMap is null)
+                            txnOffsetCommitVersion = TxnOffsetCommitRequest.TopicIdVersion - 1;
+                    }
+                    else
+                    {
+                        txnTopics = BuildTxnOffsetCommitTopics(topicOffsets, topicIdMap: null);
+                    }
+
+                    var txnOffsetCommitRequest = new TxnOffsetCommitRequest
+                    {
+                        TransactionalId = _options.TransactionalId!,
+                        GroupId = consumerGroupId,
+                        ProducerId = _producerId,
+                        ProducerEpoch = _producerEpoch,
+                        GenerationIdOrMemberEpoch = generationIdOrMemberEpoch,
+                        MemberId = memberId,
+                        GroupInstanceId = groupInstanceId,
+                        Topics = txnTopics
+                    };
+
+                    // A transport failure here is handled by the attempt-level catch below.
+                    var txnOffsetCommitResponse = await coordinatorConnection
                         .SendWithClientTelemetryAsync<TxnOffsetCommitRequest, TxnOffsetCommitResponse>(
                             txnOffsetCommitRequest,
                             txnOffsetCommitVersion, _telemetryMetricCollector,
                             retryCancellationToken)
                         .ConfigureAwait(false);
                     lastTransportException = null;
-                }
-                catch (Exception ex) when (
-                    !retryCancellationToken.IsCancellationRequested
-                    && RetryHelper.IsRetriableRequestFailure(ex))
-                {
-                    lastTransportException = ex;
-                    if (!TryGetTransactionRetryDelay(attempt, retryBudget, out var retryDelayMs))
-                        break;
-                    await Task.Delay(retryDelayMs, retryCancellationToken).ConfigureAwait(false);
-                    attempt++;
-                    continue;
-                }
 
-                ErrorCode? commitError = null;
-                string? commitContext = null;
-                try
-                {
-                    var responseSnapshot = topicIdMap?.CaptureResponseSnapshot();
-                    foreach (var topicResult in txnOffsetCommitResponse.Topics)
+                    ErrorCode? commitError = null;
+                    string? commitContext = null;
+                    try
                     {
-                        var topicName = topicIdMap is null
-                            ? topicResult.Name
-                            : topicIdMap.MatchResponseTopic(
-                                topicResult.TopicId,
-                                responseSnapshot!,
-                                "TxnOffsetCommit",
-                                responseMismatchIsRetriable: true);
-
-                        foreach (var partitionResult in topicResult.Partitions)
+                        var responseSnapshot = topicIdMap?.CaptureResponseSnapshot();
+                        foreach (var topicResult in txnOffsetCommitResponse.Topics)
                         {
-                            if (partitionResult.ErrorCode != ErrorCode.None)
+                            var topicName = topicIdMap is null
+                                ? topicResult.Name
+                                : topicIdMap.MatchResponseTopic(
+                                    topicResult.TopicId,
+                                    responseSnapshot!,
+                                    "TxnOffsetCommit",
+                                    responseMismatchIsRetriable: true);
+
+                            foreach (var partitionResult in topicResult.Partitions)
                             {
-                                commitError = partitionResult.ErrorCode;
-                                commitContext = $"TxnOffsetCommit for {topicName}-{partitionResult.PartitionIndex}";
-                                break;
+                                if (partitionResult.ErrorCode != ErrorCode.None)
+                                {
+                                    commitError = partitionResult.ErrorCode;
+                                    commitContext = $"TxnOffsetCommit for {topicName}-{partitionResult.PartitionIndex}";
+                                    break;
+                                }
                             }
+
+                            if (commitError.HasValue)
+                                break;
                         }
-
-                        if (commitError.HasValue)
-                            break;
                     }
-                }
-                catch (Exception ex) when (
-                    !retryCancellationToken.IsCancellationRequested
-                    && RetryHelper.IsRetriableRequestFailure(ex))
-                {
-                    lastTransportException = ex;
-                    if (!TryGetTransactionRetryDelay(attempt, retryBudget, out var retryDelayMs))
-                        break;
-                    await _metadataManager.RefreshMetadataAsync(
-                            topicOffsets.Keys,
-                            forceRefresh: true,
-                            retryCancellationToken)
-                        .ConfigureAwait(false);
-                    await Task.Delay(retryDelayMs, retryCancellationToken).ConfigureAwait(false);
-                    attempt++;
-                    continue;
-                }
-
-                if (commitError.HasValue)
-                {
-                    ThrowIfNonRetriableTransactionError(commitError.Value, commitContext!, tv2);
-                    if (!TryGetTransactionRetryDelay(attempt, retryBudget, out var retryDelayMs))
-                        break;
-                    if (commitError.Value.RequiresMetadataRefresh())
+                    catch (Exception ex) when (
+                        !retryCancellationToken.IsCancellationRequested
+                        && RetryHelper.IsRetriableRequestFailure(ex))
                     {
+                        lastTransportException = ex;
+                        if (!TryGetTransactionRetryDelay(attempt, retryBudget, out var retryDelayMs))
+                            break;
                         await _metadataManager.RefreshMetadataAsync(
                                 topicOffsets.Keys,
                                 forceRefresh: true,
                                 retryCancellationToken)
                             .ConfigureAwait(false);
+                        await Task.Delay(retryDelayMs, retryCancellationToken).ConfigureAwait(false);
+                        attempt++;
+                        continue;
                     }
-                    await Task.Delay(retryDelayMs, retryCancellationToken).ConfigureAwait(false);
-                    attempt++;
-                    continue;
-                }
 
-                return;
+                    if (commitError.HasValue)
+                    {
+                        ThrowIfNonRetriableTransactionError(commitError.Value, commitContext!, tv2);
+                        if (!TryGetTransactionRetryDelay(attempt, retryBudget, out var retryDelayMs))
+                            break;
+                        if (commitError.Value.RequiresMetadataRefresh())
+                        {
+                            await _metadataManager.RefreshMetadataAsync(
+                                    topicOffsets.Keys,
+                                    forceRefresh: true,
+                                    retryCancellationToken)
+                                .ConfigureAwait(false);
+                        }
+                        await Task.Delay(retryDelayMs, retryCancellationToken).ConfigureAwait(false);
+                        attempt++;
+                        continue;
+                    }
+
+                    return;
+                }
+                catch (Exception ex) when (IsRetriableTransactionTransportFailure(ex, retryCancellationToken))
+                {
+                    // The group coordinator lookup, its connection lease, or a request write failed
+                    // at the transport level. The next attempt looks the group coordinator up again;
+                    // a failed AddOffsetsToTxn already re-discovered the transaction coordinator.
+                    lastTransportException = ex;
+                    if (!await TryPrepareTransportRetryAsync(
+                            ex,
+                            $"SendOffsetsToTransaction for group '{consumerGroupId}'",
+                            attempt,
+                            retryBudget,
+                            TransportRetryRecovery.None,
+                            retryCancellationToken).ConfigureAwait(false))
+                    {
+                        break;
+                    }
+
+                    attempt++;
+                }
             }
         }
         catch (OperationCanceledException) when (
@@ -4271,6 +4497,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
 
     private async ValueTask<ErrorCode> SendAddOffsetsToTransactionAsync(
         string consumerGroupId,
+        TransactionRetryBudget retryBudget,
         CancellationToken cancellationToken)
     {
         var request = new AddOffsetsToTxnRequest
@@ -4281,13 +4508,24 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             GroupId = consumerGroupId
         };
 
-        var response = await SendWithConnectionLeaseAsync<AddOffsetsToTxnRequest, AddOffsetsToTxnResponse>(
-                _transactionCoordinatorId,
-                request,
-                cancellationToken,
-                requireTransactionFeatureMatch: true)
-            .ConfigureAwait(false);
-        return response.ErrorCode;
+        try
+        {
+            var response = await SendWithConnectionLeaseAsync<AddOffsetsToTxnRequest, AddOffsetsToTxnResponse>(
+                    _transactionCoordinatorId,
+                    request,
+                    cancellationToken,
+                    requireTransactionFeatureMatch: true)
+                .ConfigureAwait(false);
+            return response.ErrorCode;
+        }
+        catch (Exception ex) when (IsRetriableTransactionTransportFailure(ex, cancellationToken))
+        {
+            // Re-discover the transaction coordinator here, where the failed target is known;
+            // the caller's loop owns the backoff and the deadline and retries the whole path.
+            LogAddOffsetsToTxnCoordinatorUnreachable(ex, _transactionCoordinatorId, _options.TransactionalId);
+            await FindTransactionCoordinatorAsync(retryBudget, cancellationToken).ConfigureAwait(false);
+            throw;
+        }
     }
 
     private async ValueTask<bool> PrepareAddOffsetsRetryAsync(
@@ -4820,11 +5058,13 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             catch (Exception exception)
             {
                 Action<Exception?>[] waiters;
+                bool transactionAbandoned;
                 lock (_partitionsInTransactionLock)
                 {
                     if (enrollmentGeneration != _partitionEnrollmentGeneration)
                         return;
 
+                    transactionAbandoned = MarkTransactionAbortableAfterEnrollmentFailure(exception);
                     foreach (var partition in partitions)
                     {
                         _transactionPartitionsBeingEnrolled.Remove(partition);
@@ -4834,6 +5074,8 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                     _partitionEnrollmentWaiters.Clear();
                 }
 
+                if (transactionAbandoned)
+                    LogTransactionPartitionEnrollmentAbandoned(exception, _options.TransactionalId);
                 NotifyPartitionEnrollmentWaiters(waiters, null);
                 continue;
             }
@@ -4906,6 +5148,70 @@ public sealed partial class KafkaProducer<TKey, TValue> :
 
     private static bool IsRetriablePartitionEnrollmentException(Exception exception) =>
         RetryHelper.IsRetriableRequestFailure(exception);
+
+    /// <summary>
+    /// The max.block.ms metadata wait expired. The metadata manager reports the last transport
+    /// failure it retried through as the cancellation's inner exception, so the caller can see
+    /// why the cluster was unreachable rather than only that the wait timed out.
+    /// </summary>
+    private ProduceException CreateMetadataTimeoutProduceException(string topic, OperationCanceledException timeout)
+    {
+        var message = MetadataTimeoutMessage(topic) + " Ensure the topic exists and the Kafka cluster is reachable.";
+        return timeout.InnerException is { } cause
+            ? new ProduceException(message, cause) { Topic = topic }
+            : new ProduceException(message) { Topic = topic };
+    }
+
+    private KafkaTimeoutException CreateMetadataTimeoutException(string topic, OperationCanceledException timeout)
+    {
+        var configured = TimeSpan.FromMilliseconds(_options.MaxBlockMs);
+        var message = MetadataTimeoutMessage(topic);
+        return timeout.InnerException is { } cause
+            ? new KafkaTimeoutException(TimeoutKind.Metadata, configured, configured, message, cause)
+            : new KafkaTimeoutException(TimeoutKind.Metadata, configured, configured, message);
+    }
+
+    private string MetadataTimeoutMessage(string topic) =>
+        $"Failed to fetch metadata for topic '{topic}' within max.block.ms ({_options.MaxBlockMs}ms).";
+
+    /// <summary>
+    /// The batches of a partition that could not be enrolled are failed, so their records never
+    /// join the transaction. The transaction must not commit as though they had: it moves to
+    /// AbortableError so produce and commit fail fast until the caller aborts, the same
+    /// transition a typed AddPartitionsToTxn error makes. Java's sender does the same when a
+    /// transactional batch expires. Caller holds <see cref="_partitionsInTransactionLock"/> and
+    /// logs when this returns true.
+    /// </summary>
+    private bool MarkTransactionAbortableAfterEnrollmentFailure(Exception exception)
+    {
+        if (exception is OperationCanceledException || _transactionState != TransactionState.InTransaction)
+            return false;
+
+        MarkTransactionAbortable(exception is KafkaException { ErrorCode: { } errorCode }
+            ? errorCode
+            : ErrorCode.NetworkException);
+        return true;
+    }
+
+    private void MarkTransactionAbortable(ErrorCode errorCode)
+    {
+        _lastTransactionError = errorCode;
+        _transactionState = TransactionState.AbortableError;
+    }
+
+    /// <summary>
+    /// The best-effort abort that <see cref="Transaction{TKey, TValue}.DisposeAsync"/> runs failed
+    /// for a reason the retry loop does not classify (for example a connection pool disposed
+    /// underneath the producer). AbortAsync's finally block has already returned the state to
+    /// Ready, but the broker-side transaction may still be open, so the producer stays unusable
+    /// for a new transaction until the caller aborts explicitly.
+    /// </summary>
+    internal void HandleDisposeAbortFailure(Exception exception)
+    {
+        LogTransactionDisposeAbortFailed(exception, _options.TransactionalId);
+        if (_transactionState is TransactionState.InTransaction or TransactionState.Ready)
+            MarkTransactionAbortable(ErrorCode.UnknownServerError);
+    }
 
     private Action<Exception?>[] ResetPartitionEnrollmentState()
     {
@@ -5137,10 +5443,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 topicInfo = await _metadataManager.GetTopicMetadataAsync(message.Topic, timeoutCts.Token)
                     .ConfigureAwait(false);
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException ex)
             {
-                throw new KafkaTimeoutException(
-                    $"Failed to fetch metadata for topic '{message.Topic}' within max.block.ms ({_options.MaxBlockMs}ms).");
+                throw CreateMetadataTimeoutException(message.Topic, ex);
             }
 
             if (topicInfo is null || topicInfo.PartitionCount == 0)
@@ -5231,10 +5536,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 topicInfo = await _metadataManager.GetTopicMetadataAsync(message.Topic, timeoutCts.Token)
                     .ConfigureAwait(false);
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException ex)
             {
-                throw new KafkaTimeoutException(
-                    $"Failed to fetch metadata for topic '{message.Topic}' within max.block.ms ({_options.MaxBlockMs}ms).");
+                throw CreateMetadataTimeoutException(message.Topic, ex);
             }
 
             if (topicInfo is null || topicInfo.PartitionCount == 0)
@@ -5747,7 +6051,19 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 var brokers = _metadataManager.Metadata.GetBrokers();
                 if (brokers.Count == 0)
                 {
-                    throw new InvalidOperationException("No brokers available for idempotent producer initialization");
+                    // Metadata can transiently name no broker (for example while every broker
+                    // restarts). Refresh and re-read; a still-empty list falls through to the
+                    // backoff below with nothing to try this round.
+                    LogIdempotentInitializationNoBrokers();
+                    await RetryHelper.RefreshMetadataForRetryAsync(_metadataManager, initializationToken)
+                        .ConfigureAwait(false);
+                    brokers = _metadataManager.Metadata.GetBrokers();
+                    if (brokers.Count == 0)
+                    {
+                        lastFailure ??= new KafkaException(
+                            ErrorCode.BrokerNotAvailable,
+                            "No brokers available for idempotent producer initialization");
+                    }
                 }
 
                 for (var brokerIndex = 0; brokerIndex < brokers.Count; brokerIndex++)
@@ -5782,7 +6098,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                         return;
                     }
                     catch (Exception ex) when (!initializationToken.IsCancellationRequested
-                        && RetryHelper.IsRetriableBrokerFailure(ex))
+                        && (RetryHelper.IsRetriableBrokerFailure(ex) || IsRetiredConnectionFailure(ex)))
                     {
                         lastFailure = ex;
                         LogIdempotentInitializationBrokerFailed(ex, brokerId);
@@ -6164,10 +6480,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                     topicInfo = await _metadataManager.GetTopicMetadataAsync(message.Topic, timeoutCts.Token)
                         .ConfigureAwait(false);
                 }
-                catch (OperationCanceledException)
+                catch (OperationCanceledException ex)
                 {
-                    throw new KafkaTimeoutException(
-                        $"Failed to fetch metadata for topic '{message.Topic}' within max.block.ms ({_options.MaxBlockMs}ms).");
+                    throw CreateMetadataTimeoutException(message.Topic, ex);
                 }
             }
 
@@ -6761,6 +7076,21 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     [LoggerMessage(Level = LogLevel.Debug, Message = "Idempotent InitProducerId failed on broker {BrokerId}; trying remaining brokers before retrying")]
     private partial void LogIdempotentInitializationBrokerFailed(Exception exception, int brokerId);
 
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Idempotent InitProducerId found no brokers in metadata; refreshing metadata before retrying")]
+    private partial void LogIdempotentInitializationNoBrokers();
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Transport failure during {Operation} for transactional id {TransactionalId} (attempt {Attempt}); retrying in {Delay}ms")]
+    private partial void LogControlPlaneTransportRetry(Exception exception, string operation, string? transactionalId, int attempt, int delay);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Transaction coordinator {CoordinatorId} for {TransactionalId} is unreachable during AddOffsetsToTxn; re-discovering the coordinator before SendOffsetsToTransaction retries")]
+    private partial void LogAddOffsetsToTxnCoordinatorUnreachable(Exception exception, int coordinatorId, string? transactionalId);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Transaction {TransactionalId} moved to AbortableError: partition enrollment failed permanently and the affected records were not added to the transaction")]
+    private partial void LogTransactionPartitionEnrollmentAbandoned(Exception exception, string? transactionalId);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Best-effort abort of transaction {TransactionalId} during disposal failed; the producer must abort explicitly before beginning another transaction")]
+    private partial void LogTransactionDisposeAbortFailed(Exception exception, string? transactionalId);
+
     [LoggerMessage(Level = LogLevel.Debug, Message = "Bumped producer epoch: ProducerId={ProducerId}, Epoch={Epoch}")]
     private partial void LogProducerEpochBumped(long producerId, short epoch);
 
@@ -7060,6 +7390,13 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
                 // (e.g. InvalidTxnState because no messages were produced), clean up state
                 // and move on. Fatal responses remain sticky.
                 _producer.FinalizeCompletedTransactionState(preserveAbortableError: false);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // Disposal runs at the end of the caller's await-using block, usually while
+                // another exception is already propagating; an unclassified abort failure must
+                // not replace that exception.
+                _producer.HandleDisposeAbortFailure(ex);
             }
         }
     }

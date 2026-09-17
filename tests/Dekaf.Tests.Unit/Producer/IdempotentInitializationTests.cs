@@ -1,14 +1,9 @@
 using System.Net.Sockets;
-using System.Reflection;
 using Dekaf.Errors;
-using Dekaf.Internal;
-using Dekaf.Metadata;
 using Dekaf.Networking;
 using Dekaf.Producer;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
-using Dekaf.Serialization;
-using NSubstitute;
 
 namespace Dekaf.Tests.Unit.Producer;
 
@@ -20,7 +15,7 @@ public sealed class IdempotentInitializationTests
     [Arguments(true)]
     public async Task InitializeAsync_ConnectionFailure_TriesNextBroker(bool dnsFailure, CancellationToken cancellationToken)
     {
-        await using var harness = new Harness();
+        await using var harness = new ProducerInitializationHarness();
         Exception failure = dnsFailure
             ? new DnsResolutionException("offline-broker", 9092, new SocketException((int)SocketError.HostNotFound))
             : new SocketException((int)SocketError.ConnectionRefused);
@@ -32,6 +27,53 @@ public sealed class IdempotentInitializationTests
 
         await Assert.That(harness.ConnectionAttempts.Take(2).ToArray()).IsEquivalentTo(harness.BrokerIds);
         await Assert.That(harness.Requests.Single().BrokerId).IsEqualTo(harness.BrokerIds[1]);
+        await AssertInitializedAsync(harness);
+    }
+
+    [Test]
+    public async Task InitializeAsync_ConnectionDisposedDuringSetup_TriesNextBroker(CancellationToken cancellationToken)
+    {
+        // A connection retired by pool churn between lease and send is a transient failure
+        // of that broker, not of the producer.
+        await using var harness = new ProducerInitializationHarness();
+        harness.Connect = (id, _) => id == harness.BrokerIds[0]
+            ? ValueTask.FromException<IKafkaConnection>(new ObjectDisposedException("KafkaConnection"))
+            : ValueTask.FromResult(harness.Connections[id]);
+
+        await harness.Producer.InitializeAsync(cancellationToken);
+
+        await Assert.That(harness.Requests.Single().BrokerId).IsEqualTo(harness.BrokerIds[1]);
+        await AssertInitializedAsync(harness);
+    }
+
+    [Test]
+    public async Task InitializeAsync_NoBrokersInMetadata_RefreshesAndRetries(CancellationToken cancellationToken)
+    {
+        await using var harness = new ProducerInitializationHarness();
+        var brokers = harness.Metadata.Metadata.GetBrokers()
+            .Select(broker => new BrokerMetadata { NodeId = broker.NodeId, Host = broker.Host, Port = broker.Port })
+            .ToArray();
+        harness.Metadata.Metadata.Update(new MetadataResponse { Brokers = [], Topics = [] });
+        var refreshAttempted = false;
+        harness.Connect = (id, _) =>
+        {
+            if (!refreshAttempted)
+            {
+                // The empty broker list triggers a metadata refresh, which reaches the bootstrap
+                // endpoint first. Restore the brokers as a successful refresh would have.
+                refreshAttempted = true;
+                harness.Metadata.Metadata.Update(new MetadataResponse { Brokers = brokers, Topics = [] });
+                return ValueTask.FromException<IKafkaConnection>(
+                    new SocketException((int)SocketError.ConnectionRefused));
+            }
+
+            return ValueTask.FromResult(harness.Connections[id]);
+        };
+
+        await harness.Producer.InitializeAsync(cancellationToken);
+
+        await Assert.That(refreshAttempted).IsTrue();
+        await Assert.That(harness.Requests.Count).IsEqualTo(1);
         await AssertInitializedAsync(harness);
     }
 
@@ -51,7 +93,7 @@ public sealed class IdempotentInitializationTests
             3 => new KafkaTimeoutException("Request timed out"),
             _ => new TimeoutException("Connection setup timed out")
         };
-        await using var harness = new Harness();
+        await using var harness = new ProducerInitializationHarness();
         harness.Send = (id, _) => id == harness.BrokerIds[0]
             ? ValueTask.FromException<InitProducerIdResponse>(failure)
             : ValueTask.FromResult(Success());
@@ -65,7 +107,7 @@ public sealed class IdempotentInitializationTests
     [Test]
     public async Task InitializeAsync_RetriableResponses_RotatesAndRetriesWholeRound(CancellationToken cancellationToken)
     {
-        await using var harness = new Harness();
+        await using var harness = new ProducerInitializationHarness();
         harness.Send = (_, _) => ValueTask.FromResult(harness.Requests.Count <= 4
             ? new InitProducerIdResponse { ErrorCode = ErrorCode.CoordinatorLoadInProgress }
             : Success());
@@ -84,7 +126,7 @@ public sealed class IdempotentInitializationTests
     [Test]
     public async Task InitializeAsync_MetadataChangesBetweenRounds_UsesCurrentBrokers(CancellationToken cancellationToken)
     {
-        await using var harness = new Harness();
+        await using var harness = new ProducerInitializationHarness();
         var remainingBroker = harness.Metadata.Metadata.GetBrokers()[1];
         harness.Send = (_, _) =>
         {
@@ -117,7 +159,7 @@ public sealed class IdempotentInitializationTests
     [Arguments(ErrorCode.UnsupportedVersion)]
     public async Task InitializeAsync_FatalResponse_DoesNotRetry(ErrorCode errorCode, CancellationToken cancellationToken)
     {
-        await using var harness = new Harness();
+        await using var harness = new ProducerInitializationHarness();
         harness.Send = (_, _) => ValueTask.FromResult(new InitProducerIdResponse { ErrorCode = errorCode });
 
         var exception = await Assert.That(async () => await harness.Producer.InitializeAsync(cancellationToken))
@@ -136,7 +178,7 @@ public sealed class IdempotentInitializationTests
         Exception failure = authenticationFailure
             ? new AuthenticationException("Invalid credentials")
             : new InvalidOperationException("Invalid client state");
-        await using var harness = new Harness();
+        await using var harness = new ProducerInitializationHarness();
         harness.Connect = (_, _) => ValueTask.FromException<IKafkaConnection>(failure);
 
         var exception = await Assert.That(async () => await harness.Producer.InitializeAsync(cancellationToken))
@@ -152,7 +194,7 @@ public sealed class IdempotentInitializationTests
     public async Task InitializeAsync_AllBrokersUnavailable_TimeoutPreservesLastTransportFailure(
         bool dnsFailure, CancellationToken cancellationToken)
     {
-        await using var harness = new Harness(maxBlockMs: 1000, retryBackoffMs: 10_000);
+        await using var harness = new ProducerInitializationHarness(maxBlockMs: 1000, retryBackoffMs: 10_000);
         var firstFailure = new SocketException((int)SocketError.ConnectionRefused);
         Exception lastFailure = dnsFailure
             ? new DnsResolutionException("last-broker", 9093, firstFailure)
@@ -175,7 +217,7 @@ public sealed class IdempotentInitializationTests
     [Test]
     public async Task InitializeAsync_RetriableResponsesUntilDeadline_PreservesErrorCode(CancellationToken cancellationToken)
     {
-        await using var harness = new Harness(maxBlockMs: 1000, retryBackoffMs: 10_000);
+        await using var harness = new ProducerInitializationHarness(maxBlockMs: 1000, retryBackoffMs: 10_000);
         harness.Send = (_, _) => ValueTask.FromResult(new InitProducerIdResponse { ErrorCode = ErrorCode.CoordinatorLoadInProgress });
 
         var exception = await Assert.That(async () => await harness.Producer.InitializeAsync(cancellationToken))
@@ -189,7 +231,7 @@ public sealed class IdempotentInitializationTests
     [Test]
     public async Task InitializeAsync_TransportFailuresRecoverOnNextRound_Succeeds(CancellationToken cancellationToken)
     {
-        await using var harness = new Harness();
+        await using var harness = new ProducerInitializationHarness();
         harness.Connect = (id, _) => harness.ConnectionAttempts.Count <= 2
             ? ValueTask.FromException<IKafkaConnection>(new SocketException((int)SocketError.ConnectionRefused))
             : ValueTask.FromResult(harness.Connections[id]);
@@ -204,7 +246,7 @@ public sealed class IdempotentInitializationTests
     [Test]
     public async Task InitializeAsync_CancelDuringBackoff_DoesNotAttemptAnotherRound(CancellationToken cancellationToken)
     {
-        await using var harness = new Harness(retryBackoffMs: 10_000);
+        await using var harness = new ProducerInitializationHarness(retryBackoffMs: 10_000);
         using var caller = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var requestsObserved = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         harness.Send = (_, _) =>
@@ -228,7 +270,7 @@ public sealed class IdempotentInitializationTests
     [Test]
     public async Task InitializeAsync_TimeoutThenRecovery_CanInitializeAgain(CancellationToken cancellationToken)
     {
-        await using var harness = new Harness(maxBlockMs: 1000, retryBackoffMs: 10_000);
+        await using var harness = new ProducerInitializationHarness(maxBlockMs: 1000, retryBackoffMs: 10_000);
         harness.Send = (_, _) => ValueTask.FromResult(new InitProducerIdResponse { ErrorCode = ErrorCode.CoordinatorLoadInProgress });
         await Assert.That(async () => await harness.Producer.InitializeAsync(cancellationToken)).Throws<KafkaTimeoutException>();
 
@@ -239,13 +281,23 @@ public sealed class IdempotentInitializationTests
     }
 
     [Test]
-    public async Task InitializeAsync_NoKnownBrokers_FailsWithoutConnecting(CancellationToken cancellationToken)
+    public async Task InitializeAsync_NoKnownBrokers_RefreshesMetadataUntilMaxBlock(CancellationToken cancellationToken)
     {
-        await using var harness = new Harness();
+        // An empty broker list is a transient metadata state (every broker restarting), not a
+        // configuration error: refresh and retry until MaxBlockMs, then report the timeout.
+        await using var harness = new ProducerInitializationHarness(maxBlockMs: 200);
         harness.Metadata.Metadata.Update(new MetadataResponse { Brokers = [], Topics = [] });
+        harness.Connect = (_, _) => ValueTask.FromException<IKafkaConnection>(
+            new SocketException((int)SocketError.ConnectionRefused));
 
-        await Assert.That(async () => await harness.Producer.InitializeAsync(cancellationToken)).Throws<InvalidOperationException>();
-        await Assert.That(harness.ConnectionAttempts.Count).IsEqualTo(0);
+        var exception = await Assert.That(async () => await harness.Producer.InitializeAsync(cancellationToken))
+            .Throws<KafkaTimeoutException>();
+
+        await Assert.That(exception!.TimeoutKind).IsEqualTo(TimeoutKind.Api);
+        await Assert.That(exception.InnerException).IsTypeOf<KafkaException>();
+        await Assert.That(((KafkaException)exception.InnerException!).ErrorCode).IsEqualTo(ErrorCode.BrokerNotAvailable);
+        await Assert.That(harness.ConnectionAttempts.Count).IsGreaterThan(0);
+        await Assert.That(harness.Requests.Count).IsEqualTo(0);
     }
 
     [Test]
@@ -253,7 +305,7 @@ public sealed class IdempotentInitializationTests
     [Arguments(true)]
     public async Task InitializeAsync_StalledOperation_RespectsMaxBlock(bool duringConnect, CancellationToken cancellationToken)
     {
-        await using var harness = new Harness(maxBlockMs: 1000);
+        await using var harness = new ProducerInitializationHarness(maxBlockMs: 1000);
         if (duringConnect)
             harness.Connect = async (_, token) =>
             {
@@ -279,7 +331,7 @@ public sealed class IdempotentInitializationTests
     [Arguments(true)]
     public async Task InitializeAsync_CallerCancellation_StopsInFlightOperation(bool duringConnect, CancellationToken cancellationToken)
     {
-        await using var harness = new Harness();
+        await using var harness = new ProducerInitializationHarness();
         using var caller = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         if (duringConnect)
@@ -313,7 +365,7 @@ public sealed class IdempotentInitializationTests
     [Test]
     public async Task InitializeAsync_PreCancelled_DoesNotConnect(CancellationToken cancellationToken)
     {
-        await using var harness = new Harness();
+        await using var harness = new ProducerInitializationHarness();
         using var caller = new CancellationTokenSource();
         caller.Cancel();
 
@@ -324,7 +376,7 @@ public sealed class IdempotentInitializationTests
     [Test]
     public async Task InitializeAsync_ConcurrentCalls_ObtainOnlyOneProducerId(CancellationToken cancellationToken)
     {
-        await using var harness = new Harness();
+        await using var harness = new ProducerInitializationHarness();
         var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         harness.Send = async (_, token) =>
@@ -350,7 +402,7 @@ public sealed class IdempotentInitializationTests
     [Arguments(true, "transactional-producer")]
     public async Task InitializeAsync_NonIdempotentOrTransactional_DoesNotRequestProducerId(bool idempotent, string? transactionalId, CancellationToken cancellationToken)
     {
-        await using var harness = new Harness(idempotent: idempotent, transactionalId: transactionalId);
+        await using var harness = new ProducerInitializationHarness(idempotent: idempotent, transactionalId: transactionalId);
         await harness.Producer.InitializeAsync(cancellationToken);
         await Assert.That(harness.Requests.Count).IsEqualTo(0);
     }
@@ -358,7 +410,7 @@ public sealed class IdempotentInitializationTests
     [Test]
     public async Task BumpEpochForRecovery_BelowMaxValue_BumpsLocallyWithoutRequest(CancellationToken cancellationToken)
     {
-        await using var harness = new Harness();
+        await using var harness = new ProducerInitializationHarness();
         await harness.Producer.InitializeAsync(cancellationToken);
         var accumulator = harness.Producer.RecordAccumulator;
         accumulator.GetAndIncrementSequence(Tp0, 10);
@@ -384,7 +436,7 @@ public sealed class IdempotentInitializationTests
         // Two send loops report epoch 7 for different partitions. The first bump restarts only
         // Tp0; the second call must still restart Tp1 under epoch 8, or its re-stamped batch
         // would carry sequence 20 and be rejected as an invalid sequence for the new epoch.
-        await using var harness = new Harness();
+        await using var harness = new ProducerInitializationHarness();
         await harness.Producer.InitializeAsync(cancellationToken);
         var accumulator = harness.Producer.RecordAccumulator;
         accumulator.GetAndIncrementSequence(Tp0, 10);
@@ -411,7 +463,7 @@ public sealed class IdempotentInitializationTests
         // With several batches in flight, the successors of a rejected batch fail after the bump
         // that their head already triggered. Their stale request must not zero Tp0 again: the
         // re-stamped head already holds sequence 0 under epoch 8.
-        await using var harness = new Harness();
+        await using var harness = new ProducerInitializationHarness();
         await harness.Producer.InitializeAsync(cancellationToken);
         var accumulator = harness.Producer.RecordAccumulator;
         accumulator.GetAndIncrementSequence(Tp0, 10);
@@ -430,7 +482,7 @@ public sealed class IdempotentInitializationTests
     {
         // The replacement ID restarted every partition; a late request for the exhausted epoch
         // naming a partition that already produced under the new ID must leave it alone.
-        await using var harness = new Harness();
+        await using var harness = new ProducerInitializationHarness();
         await harness.Producer.InitializeAsync(cancellationToken);
         var accumulator = harness.Producer.RecordAccumulator;
         await ExhaustEpochSpaceAsync(harness, cancellationToken);
@@ -453,7 +505,7 @@ public sealed class IdempotentInitializationTests
     {
         // Regression: the local bump used to throw "Producer epoch overflow — requires producer
         // restart" at short.MaxValue. Java replaces the producer ID instead (resetIdempotentProducerId).
-        await using var harness = new Harness();
+        await using var harness = new ProducerInitializationHarness();
         await harness.Producer.InitializeAsync(cancellationToken);
         var accumulator = harness.Producer.RecordAccumulator;
         await ExhaustEpochSpaceAsync(harness, cancellationToken);
@@ -480,7 +532,7 @@ public sealed class IdempotentInitializationTests
     [Test]
     public async Task BumpEpochForRecovery_AtMaxValue_ConcurrentSenders_RequestOneProducerId(CancellationToken cancellationToken)
     {
-        await using var harness = new Harness();
+        await using var harness = new ProducerInitializationHarness();
         await harness.Producer.InitializeAsync(cancellationToken);
         await ExhaustEpochSpaceAsync(harness, cancellationToken);
         var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -510,7 +562,7 @@ public sealed class IdempotentInitializationTests
     {
         // A response for a batch sent under the exhausted ID can still arrive after the reset and
         // signal a bump for short.MaxValue; it must not replace the producer ID a second time.
-        await using var harness = new Harness();
+        await using var harness = new ProducerInitializationHarness();
         await harness.Producer.InitializeAsync(cancellationToken);
         await ExhaustEpochSpaceAsync(harness, cancellationToken);
         harness.Send = (_, _) => ValueTask.FromResult(ReplacementProducerId());
@@ -526,7 +578,7 @@ public sealed class IdempotentInitializationTests
     [Test]
     public async Task BumpEpochForRecovery_AtMaxValue_RequestFailure_KeepsStateAndRetriesLater(CancellationToken cancellationToken)
     {
-        await using var harness = new Harness();
+        await using var harness = new ProducerInitializationHarness();
         await harness.Producer.InitializeAsync(cancellationToken);
         var accumulator = harness.Producer.RecordAccumulator;
         await ExhaustEpochSpaceAsync(harness, cancellationToken);
@@ -563,7 +615,7 @@ public sealed class IdempotentInitializationTests
     /// Drives the epoch to <see cref="short.MaxValue"/> through the same local bumps a real
     /// producer performs, without touching any partition's sequence counter or the broker.
     /// </summary>
-    private static async Task ExhaustEpochSpaceAsync(Harness harness, CancellationToken cancellationToken)
+    private static async Task ExhaustEpochSpaceAsync(ProducerInitializationHarness harness, CancellationToken cancellationToken)
     {
         var accumulator = harness.Producer.RecordAccumulator;
         while (accumulator.ProducerEpoch < short.MaxValue)
@@ -577,7 +629,7 @@ public sealed class IdempotentInitializationTests
         await Assert.That(harness.Requests.Count).IsEqualTo(1);
     }
 
-    private static async Task AssertInitializedAsync(Harness harness)
+    private static async Task AssertInitializedAsync(ProducerInitializationHarness harness)
     {
         await Assert.That(harness.Producer.RecordAccumulator.ProducerId).IsEqualTo(1234L);
         await Assert.That(harness.Producer.RecordAccumulator.ProducerEpoch).IsEqualTo((short)7);
@@ -590,83 +642,5 @@ public sealed class IdempotentInitializationTests
         }
     }
 
-    private static InitProducerIdResponse Success() => new()
-    {
-        ErrorCode = ErrorCode.None,
-        ProducerId = 1234,
-        ProducerEpoch = 7
-    };
-
-    private sealed class Harness : IAsyncDisposable
-    {
-        private readonly ConnectionPool _pool;
-        private readonly MetadataManager _metadata;
-        public MetadataManager Metadata => _metadata;
-        public KafkaProducer<string, string> Producer { get; }
-        public Dictionary<int, IKafkaConnection> Connections { get; } = [];
-        public int[] BrokerIds { get; }
-        public List<int> ConnectionAttempts { get; } = [];
-        public List<(int BrokerId, InitProducerIdRequest Request)> Requests { get; } = [];
-        public Func<int, CancellationToken, ValueTask<IKafkaConnection>> Connect { get; set; }
-        public Func<int, CancellationToken, ValueTask<InitProducerIdResponse>> Send { get; set; } = (_, _) => ValueTask.FromResult(Success());
-
-        public Harness(int maxBlockMs = 5000, int retryBackoffMs = 1, bool idempotent = true, string? transactionalId = null)
-        {
-            Connect = (id, _) => ValueTask.FromResult(Connections[id]);
-            _pool = new ConnectionPool("idempotent-init-test", new ConnectionOptions { ReconnectBackoff = TimeSpan.Zero }, 1,
-                (id, _, _, _, token) =>
-                {
-                    ConnectionAttempts.Add(id);
-                    return Connect(id, token);
-                });
-            _metadata = new MetadataManager(_pool, ["localhost:9092"]);
-            _metadata.Metadata.Update(new MetadataResponse
-            {
-                Brokers =
-                [
-                    new BrokerMetadata { NodeId = 1, Host = "localhost", Port = 9092 },
-                    new BrokerMetadata { NodeId = 2, Host = "localhost", Port = 9093 }
-                ],
-                Topics = []
-            });
-            // Skip only metadata bootstrap; exercise the public producer initialization path.
-            typeof(MetadataManager).GetField("_initialized", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(_metadata, true);
-            _metadata.SetApiVersion(ApiKey.InitProducerId, 2, 5);
-            BrokerIds = _metadata.Metadata.GetBrokers().Select(broker => broker.NodeId).ToArray();
-            foreach (var broker in _metadata.Metadata.GetBrokers())
-            {
-                _pool.RegisterBroker(broker.NodeId, broker.Host, broker.Port);
-                var connection = Substitute.For<IKafkaConnection>();
-                connection.BrokerId.Returns(broker.NodeId);
-                connection.Host.Returns(broker.Host);
-                connection.Port.Returns(broker.Port);
-                connection.IsConnected.Returns(true);
-                connection.SendAsync<InitProducerIdRequest, InitProducerIdResponse>(
-                        Arg.Any<InitProducerIdRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
-                    .Returns(call =>
-                    {
-                        Requests.Add((broker.NodeId, call.ArgAt<InitProducerIdRequest>(0)));
-                        return Send(broker.NodeId, call.ArgAt<CancellationToken>(2));
-                    });
-                Connections.Add(broker.NodeId, connection);
-            }
-            Producer = new KafkaProducer<string, string>(new ProducerOptions
-            {
-                BootstrapServers = ["localhost:9092"],
-                EnableIdempotence = idempotent,
-                TransactionalId = transactionalId,
-                MaxBlockMs = maxBlockMs,
-                RetryBackoffMs = retryBackoffMs,
-                RetryBackoffMaxMs = retryBackoffMs,
-                CloseTimeoutMs = 100
-            }, Serializers.String, Serializers.String, _pool, _metadata, DekafMemoryBudget.Global);
-        }
-
-        public async ValueTask DisposeAsync()
-        {
-            await Producer.DisposeAsync();
-            await _metadata.DisposeAsync();
-            await _pool.DisposeAsync();
-        }
-    }
+    private static InitProducerIdResponse Success() => ProducerInitializationHarness.Success();
 }

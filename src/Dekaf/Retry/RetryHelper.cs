@@ -140,7 +140,12 @@ internal static class RetryHelper
             && IsRetriableRequestFailure(exception.InnerException);
     }
 
-    private static async ValueTask RefreshMetadataForRetryAsync(
+    /// <summary>
+    /// Best-effort metadata refresh between retries of another operation. A refresh that fails
+    /// for a transient reason is swallowed so the original operation's typed failure stays the
+    /// final error; cancellation and non-transient failures propagate.
+    /// </summary>
+    internal static async ValueTask RefreshMetadataForRetryAsync(
         MetadataManager metadataManager,
         CancellationToken cancellationToken)
     {

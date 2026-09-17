@@ -216,9 +216,43 @@ public class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposable
         return topic;
     }
 
-    public async Task<int> FindGroupCoordinatorIdAsync(
+    public Task<int> FindGroupCoordinatorIdAsync(
         string groupId,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default) =>
+        FindCoordinatorIdAsync(groupId, CoordinatorType.Group, cancellationToken);
+
+    public Task<int> FindTransactionCoordinatorIdAsync(
+        string transactionalId,
+        CancellationToken cancellationToken = default) =>
+        FindCoordinatorIdAsync(transactionalId, CoordinatorType.Transaction, cancellationToken);
+
+    public Task<int> WaitForTransactionCoordinatorChangeAsync(
+        string transactionalId,
+        int previousCoordinatorId,
+        CancellationToken cancellationToken = default) =>
+        WaitForCoordinatorChangeAsync(
+            token => FindTransactionCoordinatorIdAsync(transactionalId, token),
+            previousCoordinatorId,
+            $"Transactional id '{transactionalId}'",
+            cancellationToken);
+
+    private static Task<int> WaitForCoordinatorChangeAsync(
+        Func<CancellationToken, Task<int>> lookupCoordinatorId,
+        int previousCoordinatorId,
+        string subject,
+        CancellationToken cancellationToken) =>
+        PollUntilAsync(
+            lookupCoordinatorId,
+            coordinatorId => coordinatorId >= 0 && coordinatorId != previousCoordinatorId,
+            maxAttempts: 90,
+            delay: TimeSpan.FromMilliseconds(500),
+            timeoutMessage: $"{subject} did not move from coordinator {previousCoordinatorId}.",
+            cancellationToken: cancellationToken);
+
+    private async Task<int> FindCoordinatorIdAsync(
+        string key,
+        CoordinatorType keyType,
+        CancellationToken cancellationToken)
     {
         await using var pool = new ConnectionPool(
             $"coordinator-probe-{Guid.NewGuid():N}",
@@ -239,8 +273,8 @@ public class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposable
                     var response = await connection.SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
                         new FindCoordinatorRequest
                         {
-                            Key = groupId,
-                            KeyType = CoordinatorType.Group
+                            Key = key,
+                            KeyType = keyType
                         },
                         FindCoordinatorRequest.HighestSupportedVersion,
                         cancellationToken).ConfigureAwait(false);
@@ -249,7 +283,7 @@ public class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposable
                         return coordinator.NodeId;
 
                     lastFailure = new InvalidOperationException(
-                        $"FindCoordinator failed for group '{groupId}': " +
+                        $"FindCoordinator failed for {keyType} key '{key}': " +
                         $"{coordinator?.ErrorCode.ToString() ?? "empty response"}.");
                 }
                 catch (Exception exception) when (
@@ -263,7 +297,7 @@ public class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposable
         }
 
         throw new InvalidOperationException(
-            $"No broker resolved a coordinator for group '{groupId}'.",
+            $"No broker resolved a coordinator for {keyType} key '{key}'.",
             lastFailure);
     }
 
@@ -287,14 +321,11 @@ public class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposable
         string groupId,
         int previousCoordinatorId,
         CancellationToken cancellationToken = default) =>
-        PollUntilAsync(
+        WaitForCoordinatorChangeAsync(
             token => GetGroupCoordinatorIdAsync(groupId, token),
-            coordinatorId => coordinatorId >= 0 && coordinatorId != previousCoordinatorId,
-            maxAttempts: 90,
-            delay: TimeSpan.FromMilliseconds(500),
-            timeoutMessage:
-                $"Group '{groupId}' did not move from coordinator {previousCoordinatorId}.",
-            cancellationToken: cancellationToken);
+            previousCoordinatorId,
+            $"Group '{groupId}'",
+            cancellationToken);
 
     public async Task<string> CreateUncleanElectionTopicAsync()
     {
