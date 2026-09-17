@@ -1,3 +1,4 @@
+using System.Net.Sockets;
 using System.Reflection;
 using Dekaf.Consumer;
 using Dekaf.Errors;
@@ -293,6 +294,81 @@ public sealed class TransactionOffsetCommitTests
     }
 
     [Test]
+    public async Task TV2_GroupCoordinatorLookupTransportFailure_RetriesWithinDeadline()
+    {
+        await using var harness = CreateHarness(
+            transactionVersion: 2,
+            txnOffsetCommitMaxVersion: 5,
+            findCoordinatorFailures: new Queue<Exception>([new IOException("group coordinator connection lost")]));
+
+        await harness.Producer.SendOffsetsToTransactionInternalAsync(
+            [new TopicPartitionOffset("orders", 0, 42)],
+            "group-1",
+            CancellationToken.None);
+
+        await Assert.That(harness.Connection.Requests.Count(static request =>
+            request.ApiKey == ApiKey.FindCoordinator)).IsEqualTo(2);
+        await Assert.That(harness.Connection.CommitRequests).Count().IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task TV2_PersistentGroupCoordinatorLookupTransportFailure_IsPreservedAsTimeoutCause()
+    {
+        var transactionClock = new FakeTransactionClock();
+        await using var harness = CreateHarness(
+            transactionVersion: 2,
+            txnOffsetCommitMaxVersion: 5,
+            findCoordinatorFailures: new Queue<Exception>(
+            [
+                new IOException("group coordinator connection lost"),
+                new IOException("group coordinator connection lost"),
+                new IOException("group coordinator connection lost")
+            ]),
+            maxBlockMs: 2000,
+            transactionClock: transactionClock,
+            transportFailureAdvanceMs: 1000);
+
+        var exception = await Assert.That(() => harness.Producer.SendOffsetsToTransactionInternalAsync(
+                [new TopicPartitionOffset("orders", 0, 42)],
+                "group-1",
+                CancellationToken.None).AsTask())
+            .Throws<KafkaTimeoutException>();
+
+        await Assert.That(exception!.TimeoutKind).IsEqualTo(TimeoutKind.Transaction);
+        await Assert.That(exception.InnerException).IsTypeOf<IOException>();
+        await Assert.That(harness.Connection.Requests.Count(static request =>
+            request.ApiKey == ApiKey.FindCoordinator)).IsEqualTo(2);
+        await Assert.That(harness.Connection.CommitRequests).Count().IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task TV1_AddOffsetsTransportFailure_RediscoversTransactionCoordinatorAndRetries()
+    {
+        await using var harness = CreateHarness(
+            transactionVersion: 1,
+            txnOffsetCommitMaxVersion: 4,
+            addOffsetsFailures: new Queue<Exception>([new SocketException((int)SocketError.ConnectionReset)]));
+
+        await harness.Producer.SendOffsetsToTransactionInternalAsync(
+            [new TopicPartitionOffset("orders", 0, 42)],
+            "group-1",
+            CancellationToken.None);
+
+        await Assert.That(harness.Connection.Requests
+                .Select(static recorded => (recorded.ApiKey, recorded.CoordinatorKey))
+                .SequenceEqual(
+            [
+                (ApiKey.AddOffsetsToTxn, null),
+                (ApiKey.FindCoordinator, "transaction-1"),
+                (ApiKey.AddOffsetsToTxn, null),
+                (ApiKey.FindCoordinator, "group-1"),
+                (ApiKey.TxnOffsetCommit, null)
+            ]))
+            .IsTrue();
+        await Assert.That(harness.Connection.CommitRequests).Count().IsEqualTo(1);
+    }
+
+    [Test]
     public async Task TV2_EmptyCoordinatorResponse_RetriesWithinDeadline()
     {
         await using var harness = CreateHarness(
@@ -358,7 +434,10 @@ public sealed class TransactionOffsetCommitTests
         int retryBackoffMs = 0,
         int maxBlockMs = 1000,
         FakeTransactionClock? transactionClock = null,
-        int commitFailureAdvanceMs = 0)
+        int commitFailureAdvanceMs = 0,
+        Queue<Exception>? findCoordinatorFailures = null,
+        Queue<Exception>? addOffsetsFailures = null,
+        int transportFailureAdvanceMs = 0)
     {
         var connection = new RecordingConnection(
             txnOffsetCommitMaxVersion,
@@ -367,7 +446,10 @@ public sealed class TransactionOffsetCommitTests
             findCoordinatorDelayMs,
             emptyCoordinatorResponsesBeforeSuccess,
             transactionClock,
-            commitFailureAdvanceMs);
+            commitFailureAdvanceMs,
+            findCoordinatorFailures,
+            addOffsetsFailures,
+            transportFailureAdvanceMs);
         var connectionPool = new ConnectionPool(
             "transaction-offset-tests",
             connectionOptions: null,
@@ -461,8 +543,28 @@ public sealed class TransactionOffsetCommitTests
         int findCoordinatorDelayMs,
         int emptyCoordinatorResponsesBeforeSuccess,
         FakeTransactionClock? transactionClock,
-        int commitFailureAdvanceMs) : IKafkaConnection, IKafkaCapabilityProvider
+        int commitFailureAdvanceMs,
+        Queue<Exception>? findCoordinatorFailures,
+        Queue<Exception>? addOffsetsFailures,
+        int transportFailureAdvanceMs) : IKafkaConnection, IKafkaCapabilityProvider
     {
+        /// <summary>
+        /// Dequeues the next scripted transport failure for the request kind, failing the request
+        /// the way a dropped connection would; an empty queue lets the normal response builder run.
+        /// </summary>
+        private bool TryTakeTransportFailure(Queue<Exception>? failures, out Exception failure)
+        {
+            if (failures is { Count: > 0 })
+            {
+                transactionClock?.Advance(transportFailureAdvanceMs);
+                failure = failures.Dequeue();
+                return true;
+            }
+
+            failure = null!;
+            return false;
+        }
+
         private int _findCoordinatorRequests;
         public int BrokerId => 1;
         public string Host => "localhost";
@@ -502,6 +604,12 @@ public sealed class TransactionOffsetCommitTests
                     delayedFindCoordinatorRequest,
                     cancellationToken);
             }
+
+            if (request is FindCoordinatorRequest && TryTakeTransportFailure(findCoordinatorFailures, out var findCoordinatorFailure))
+                return ValueTask.FromException<TResponse>(findCoordinatorFailure);
+
+            if (request is AddOffsetsToTxnRequest && TryTakeTransportFailure(addOffsetsFailures, out var addOffsetsFailure))
+                return ValueTask.FromException<TResponse>(addOffsetsFailure);
 
             IKafkaResponse response = request switch
             {

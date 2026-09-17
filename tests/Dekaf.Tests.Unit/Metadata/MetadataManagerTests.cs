@@ -609,6 +609,71 @@ public class MetadataManagerTests
     }
 
     [Test]
+    [Timeout(10_000)]
+    public async Task GetTopicMetadataAsync_TransportFailure_RetriesUntilCancelledAndReportsCause(
+        CancellationToken cancellationToken)
+    {
+        // A produce to an uncached topic waits on this path for max.block.ms. A broker that
+        // refuses connections used to fault it on the first attempt with a raw
+        // InvalidOperationException instead of retrying for the caller's budget.
+        var attempts = 0;
+        var pool = Substitute.For<IConnectionPool>();
+        pool.GetConnectionAsync("localhost", 9092, Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                Interlocked.Increment(ref attempts);
+                return ValueTask.FromException<IKafkaConnection>(
+                    new SocketException((int)SocketError.ConnectionRefused));
+            });
+        await using var manager = new MetadataManager(
+            pool,
+            ["localhost:9092"],
+            new MetadataOptions
+            {
+                EnableBackgroundRefresh = false,
+                RetryBackoffMs = 5,
+                RetryBackoffMaxMs = 10
+            });
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        budget.CancelAfter(TimeSpan.FromMilliseconds(300));
+
+        var exception = await Assert.That(() => manager.GetTopicMetadataAsync("orders", budget.Token).AsTask())
+            .Throws<OperationCanceledException>();
+
+        await Assert.That(exception!.InnerException).IsTypeOf<SocketException>();
+        await Assert.That(attempts).IsGreaterThan(1);
+    }
+
+    [Test]
+    [Timeout(10_000)]
+    public async Task GetTopicMetadataAsync_FatalFailure_PropagatesWithoutRetry(CancellationToken cancellationToken)
+    {
+        var attempts = 0;
+        var pool = Substitute.For<IConnectionPool>();
+        pool.GetConnectionAsync("localhost", 9092, Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                Interlocked.Increment(ref attempts);
+                return ValueTask.FromException<IKafkaConnection>(
+                    new AuthenticationException("Invalid credentials"));
+            });
+        await using var manager = new MetadataManager(
+            pool,
+            ["localhost:9092"],
+            new MetadataOptions
+            {
+                EnableBackgroundRefresh = false,
+                RetryBackoffMs = 5,
+                RetryBackoffMaxMs = 10
+            });
+
+        await Assert.That(() => manager.GetTopicMetadataAsync("orders", cancellationToken).AsTask())
+            .Throws<AuthenticationException>();
+
+        await Assert.That(attempts).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task InitializeAsync_DefaultRetries_TimeBounded_ThrowsKafkaTimeoutException()
     {
         var pool = CreateFailingConnectionPool();
