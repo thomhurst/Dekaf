@@ -1301,17 +1301,32 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
     // Per-partition sequence numbers for idempotent/transactional producing.
     // The broker requires monotonically increasing BaseSequence per partition.
-    // Uses StrongBox<int> so GetOrAdd returns a mutable reference on the fast path
+    // Uses a mutable reference type so GetOrAdd returns the counter on the fast path
     // (lock-free hash lookup only), avoiding AddOrUpdate's per-call bucket locking.
     // During leader migration, two BrokerSender threads may access the same partition
-    // concurrently, so StrongBox.Value is mutated via Interlocked.Add for atomicity.
+    // concurrently, so Next is mutated via Interlocked.Add for atomicity.
     //
-    // Reset operations use Interlocked.Exchange(ref box.Value, 0) instead of TryRemove
+    // Reset operations use Interlocked.Exchange(ref Next, 0) instead of TryRemove
     // to avoid re-allocating ConcurrentDictionary internal Node objects (~48 bytes) and
-    // StrongBox instances (~24 bytes) per partition. Under epoch bump recovery, TryRemove
+    // counter instances per partition. Under epoch bump recovery, TryRemove
     // followed by GetOrAdd caused these mid-lived objects to survive Gen0, get promoted
     // to Gen2, then die — creating pathological Gen2 GC pressure in idempotent workloads.
-    private readonly ConcurrentDictionary<TopicPartition, StrongBox<int>> _sequenceNumbers = new();
+    private readonly ConcurrentDictionary<TopicPartition, PartitionSequence> _sequenceNumbers = new();
+
+    /// <summary>
+    /// One partition's sequence counter plus the producer ID/epoch under which it was last
+    /// restarted at 0. The stamp lets <see cref="ResetSequencesForPartitions"/> restart a
+    /// partition at most once per producer state: a late epoch-error response for a partition
+    /// whose counter this state already restarted, and whose new-epoch sequences may already be
+    /// in flight, must not zero the counter again. Stamps are written only under the producer's
+    /// epoch bump lock, on recovery paths; the fast path touches <see cref="Next"/> alone.
+    /// </summary>
+    private sealed class PartitionSequence
+    {
+        public int Next;
+        public long ResetProducerId = -1;
+        public short ResetEpoch = -1;
+    }
 
     /// <summary>
     /// Gets the next base sequence number for a partition and increments by the record count.
@@ -1321,41 +1336,67 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// </summary>
     internal int GetAndIncrementSequence(TopicPartition topicPartition, int recordCount)
     {
-        var box = _sequenceNumbers.GetOrAdd(topicPartition, static _ => new StrongBox<int>(0));
-        return Interlocked.Add(ref box.Value, recordCount) - recordCount;
+        var sequence = _sequenceNumbers.GetOrAdd(topicPartition, static _ => new PartitionSequence());
+        return Interlocked.Add(ref sequence.Next, recordCount) - recordCount;
     }
 
     /// <summary>
     /// Resets all sequence numbers. Called after InitTransactionsAsync when epoch changes.
     /// Resets values in place rather than clearing the dictionary to avoid re-allocating
-    /// ConcurrentDictionary Node and StrongBox objects when sequences are next assigned.
+    /// ConcurrentDictionary Node and counter objects when sequences are next assigned.
     /// O(n) over tracked partitions; acceptable for this recovery path since n is bounded
     /// by the partition count the producer writes to.
     /// </summary>
     /// <remarks>
     /// The dictionary is intentionally append-only — entries are never removed, only zeroed.
-    /// This avoids Node/StrongBox churn that causes Gen2 GC pressure under high throughput.
+    /// This avoids Node/counter churn that causes Gen2 GC pressure under high throughput.
     /// </remarks>
-    internal void ResetSequenceNumbers()
+    internal void ResetSequenceNumbers() => ResetSequenceNumbers(ProducerId, ProducerEpoch);
+
+    /// <summary>
+    /// Resets all sequence numbers and stamps every partition as restarted under
+    /// <paramref name="producerId"/>/<paramref name="producerEpoch"/>, the state the caller is
+    /// about to publish. Used when the accumulator's own <see cref="ProducerId"/> and
+    /// <see cref="ProducerEpoch"/> are updated after the reset.
+    /// </summary>
+    internal void ResetSequenceNumbers(long producerId, short producerEpoch)
     {
         foreach (var kvp in _sequenceNumbers)
-            Interlocked.Exchange(ref kvp.Value.Value, 0);
+        {
+            var sequence = kvp.Value;
+            Interlocked.Exchange(ref sequence.Next, 0);
+            sequence.ResetProducerId = producerId;
+            sequence.ResetEpoch = producerEpoch;
+        }
     }
 
     /// <summary>
-    /// Resets sequence numbers for specific partitions only (Java-style per-partition reset).
-    /// Called during client-side epoch bump for idempotent producers — only the partitions
-    /// that triggered OOSN/InvalidProducerEpoch need their sequences reset to 0.
-    /// Unaffected partitions keep their current sequence counters; the broker carries
-    /// forward per-partition sequence state across epoch bumps (KIP-360).
-    /// Resets in place via Interlocked.Exchange to avoid Node/StrongBox reallocation.
+    /// Restarts the sequence counters of the partitions that triggered
+    /// OOSN/InvalidProducerEpoch/UnknownProducerId at 0 under the producer state
+    /// <paramref name="producerId"/>/<paramref name="producerEpoch"/> (Java-style per-partition
+    /// reset, KIP-360): the broker accepts a new epoch for a partition only when its first batch
+    /// carries sequence 0. Partitions not listed keep their counters.
+    /// A partition already restarted under exactly this state is skipped: several send loops
+    /// can report the same stale epoch for different partitions, and the ones that lose the bump
+    /// race call this after the bump, while a late response for a partition this state already
+    /// re-sequenced must not zero a counter whose new sequences may be in flight or accepted.
+    /// Resets in place via Interlocked.Exchange to avoid node reallocation. Callers serialize
+    /// through the producer's epoch bump lock, which also orders the stamp writes.
     /// </summary>
-    internal void ResetSequencesForPartitions(IReadOnlyCollection<TopicPartition> partitions)
+    internal void ResetSequencesForPartitions(
+        IReadOnlyCollection<TopicPartition> partitions, long producerId, short producerEpoch)
     {
         foreach (var tp in partitions)
         {
-            if (_sequenceNumbers.TryGetValue(tp, out var box))
-                Interlocked.Exchange(ref box.Value, 0);
+            if (!_sequenceNumbers.TryGetValue(tp, out var sequence))
+                continue;
+
+            if (sequence.ResetProducerId == producerId && sequence.ResetEpoch == producerEpoch)
+                continue;
+
+            Interlocked.Exchange(ref sequence.Next, 0);
+            sequence.ResetProducerId = producerId;
+            sequence.ResetEpoch = producerEpoch;
         }
     }
 

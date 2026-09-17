@@ -5823,7 +5823,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         lock (_epochBumpLock)
         {
             if (producerId != _producerId)
-                _accumulator.ResetSequenceNumbers();
+                _accumulator.ResetSequenceNumbers(producerId, producerEpoch);
 
             _producerId = producerId;
             _producerEpoch = producerEpoch;
@@ -5834,15 +5834,25 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     }
 
     /// <summary>
+    /// <para>
     /// Epoch recovery for idempotent (non-transactional) producers (Java-style, KIP-360), called by
     /// the send loops when the broker rejects a batch with <c>OutOfOrderSequenceNumber</c>,
     /// <c>InvalidProducerEpoch</c> or <c>UnknownProducerId</c>. Below <see cref="short.MaxValue"/> the
     /// epoch is bumped locally, without a network call, and the result completes synchronously:
-    /// the broker accepts epoch+1 with sequence 0 as a fresh start for the affected partitions, while
-    /// unaffected partitions keep their sequence counters because the broker carries per-partition
-    /// sequence state across epoch bumps. At <see cref="short.MaxValue"/> the epoch space of the
-    /// producer ID is exhausted, and the ID is replaced through <see cref="ResetIdempotentProducerIdAsync"/>
-    /// (Java's <c>resetIdempotentProducerId</c>) instead of failing the producer.
+    /// the broker accepts epoch+1 with sequence 0 as a fresh start for the affected partitions;
+    /// partitions not listed keep their sequence counters. At <see cref="short.MaxValue"/> the epoch
+    /// space of the producer ID is exhausted, and the ID is replaced through
+    /// <see cref="ResetIdempotentProducerIdAsync"/> (Java's <c>resetIdempotentProducerId</c>)
+    /// instead of failing the producer.
+    /// </para>
+    /// <para>
+    /// Several send loops can report the same stale epoch for different partitions. Only the first
+    /// call bumps; every call restarts its own partitions' counters under the resulting state, so a
+    /// loser of the race does not re-stamp its batch with a non-zero sequence the broker would reject
+    /// as an invalid sequence for the new epoch. <see cref="RecordAccumulator.ResetSequencesForPartitions"/>
+    /// restarts a partition at most once per state, which keeps a late response for an already
+    /// re-sequenced partition from zeroing sequences that are in flight.
+    /// </para>
     /// </summary>
     internal ValueTask<ProducerIdAndEpoch> BumpEpochForRecoveryAsync(
         short expectedEpoch,
@@ -5854,10 +5864,13 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         // check-and-increment atomic and prevent double epoch bumps.
         lock (_epochBumpLock)
         {
-            // Already bumped by another BrokerSender — return current state
+            // Already bumped (or the ID replaced) by another BrokerSender. The caller's partitions
+            // were not part of that bump, so restart them under the current state; a partition
+            // this state already restarted is left alone (late response for an in-flight retry).
             if (_producerEpoch != expectedEpoch)
             {
                 LogEpochAlreadyBumped(expectedEpoch, _producerEpoch);
+                _accumulator.ResetSequencesForPartitions(partitionsToReset, _producerId, _producerEpoch);
                 return new ValueTask<ProducerIdAndEpoch>(_idempotentProducerState);
             }
 
@@ -5866,8 +5879,8 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 PublishIdempotentProducerId(_producerId, (short)(_producerEpoch + 1));
 
                 // Per-partition reset: only affected partitions restart at seq=0.
-                // Unaffected partitions continue with current sequences under new epoch.
-                _accumulator.ResetSequencesForPartitions(partitionsToReset);
+                // Partitions not listed keep their current sequence counters.
+                _accumulator.ResetSequencesForPartitions(partitionsToReset, _producerId, _producerEpoch);
 
                 LogProducerEpochBumped(_producerId, _producerEpoch);
                 return new ValueTask<ProducerIdAndEpoch>(_idempotentProducerState);

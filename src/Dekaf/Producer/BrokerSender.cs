@@ -1502,17 +1502,17 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 // When the epoch space of the producer ID is exhausted (short.MaxValue), the
                 // producer replaces the ID through InitProducerId and this await suspends the
                 // send loop until the new ID is known — nothing may be sent under the old one.
+                // The producer is asked even when its epoch already moved past staleEpoch:
+                // another sender's bump restarted only that sender's partitions, and this
+                // sender's still need their sequence counters restarted under the new state.
+                // The producer skips partitions the current state already restarted.
                 var staleEpoch = Volatile.Read(ref _epochBumpRequestedForEpoch);
                 if (staleEpoch >= 0 && _bumpEpoch is not null)
                 {
                     try
                     {
-                        var currentEpoch = _getProducerState?.Invoke().Epoch ?? -1;
-                        if (currentEpoch >= 0 && currentEpoch <= (short)staleEpoch)
-                        {
-                            await _bumpEpoch((short)staleEpoch, _partitionsNeedingSequenceReset, cancellationToken)
-                                .ConfigureAwait(false);
-                        }
+                        await _bumpEpoch((short)staleEpoch, _partitionsNeedingSequenceReset, cancellationToken)
+                            .ConfigureAwait(false);
                     }
                     catch (OperationCanceledException)
                     {

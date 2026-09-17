@@ -379,6 +379,76 @@ public sealed class IdempotentInitializationTests
     }
 
     [Test]
+    public async Task BumpEpochForRecovery_AlreadyBumpedByAnotherSender_RestartsCallersPartitions(CancellationToken cancellationToken)
+    {
+        // Two send loops report epoch 7 for different partitions. The first bump restarts only
+        // Tp0; the second call must still restart Tp1 under epoch 8, or its re-stamped batch
+        // would carry sequence 20 and be rejected as an invalid sequence for the new epoch.
+        await using var harness = new Harness();
+        await harness.Producer.InitializeAsync(cancellationToken);
+        var accumulator = harness.Producer.RecordAccumulator;
+        accumulator.GetAndIncrementSequence(Tp0, 10);
+        accumulator.GetAndIncrementSequence(Tp1, 20);
+        await harness.Producer.BumpEpochForRecoveryAsync(7, [Tp0], cancellationToken);
+        await Assert.That(accumulator.GetAndIncrementSequence(Tp0, 3)).IsEqualTo(0);
+
+        var second = harness.Producer.BumpEpochForRecoveryAsync(7, [Tp1], cancellationToken);
+
+        await Assert.That(second.IsCompletedSuccessfully).IsTrue();
+        var state = await second;
+        await Assert.That(state.ProducerId).IsEqualTo(1234L);
+        await Assert.That(state.Epoch).IsEqualTo((short)8);
+        await Assert.That(accumulator.ProducerEpoch).IsEqualTo((short)8);
+        await Assert.That(accumulator.GetAndIncrementSequence(Tp1, 1)).IsEqualTo(0);
+        // Tp0's sequences under epoch 8 are untouched by the second call.
+        await Assert.That(accumulator.GetAndIncrementSequence(Tp0, 1)).IsEqualTo(3);
+        await Assert.That(harness.Requests.Count).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task BumpEpochForRecovery_LateRequestForResequencedPartition_KeepsNewEpochSequences(CancellationToken cancellationToken)
+    {
+        // With several batches in flight, the successors of a rejected batch fail after the bump
+        // that their head already triggered. Their stale request must not zero Tp0 again: the
+        // re-stamped head already holds sequence 0 under epoch 8.
+        await using var harness = new Harness();
+        await harness.Producer.InitializeAsync(cancellationToken);
+        var accumulator = harness.Producer.RecordAccumulator;
+        accumulator.GetAndIncrementSequence(Tp0, 10);
+        await harness.Producer.BumpEpochForRecoveryAsync(7, [Tp0], cancellationToken);
+        await Assert.That(accumulator.GetAndIncrementSequence(Tp0, 5)).IsEqualTo(0);
+
+        var state = await harness.Producer.BumpEpochForRecoveryAsync(7, [Tp0], cancellationToken);
+
+        await Assert.That(state.Epoch).IsEqualTo((short)8);
+        await Assert.That(accumulator.GetAndIncrementSequence(Tp0, 1)).IsEqualTo(5);
+        await Assert.That(harness.Requests.Count).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task BumpEpochForRecovery_AtMaxValue_AfterReset_LateRequestKeepsNewProducerIdSequences(CancellationToken cancellationToken)
+    {
+        // The replacement ID restarted every partition; a late request for the exhausted epoch
+        // naming a partition that already produced under the new ID must leave it alone.
+        await using var harness = new Harness();
+        await harness.Producer.InitializeAsync(cancellationToken);
+        var accumulator = harness.Producer.RecordAccumulator;
+        await ExhaustEpochSpaceAsync(harness, cancellationToken);
+        accumulator.GetAndIncrementSequence(Tp0, 10);
+        accumulator.GetAndIncrementSequence(Tp1, 20);
+        harness.Send = (_, _) => ValueTask.FromResult(ReplacementProducerId());
+        await harness.Producer.BumpEpochForRecoveryAsync(short.MaxValue, [Tp0], cancellationToken);
+        await Assert.That(accumulator.GetAndIncrementSequence(Tp1, 3)).IsEqualTo(0);
+
+        var state = await harness.Producer.BumpEpochForRecoveryAsync(short.MaxValue, [Tp1], cancellationToken);
+
+        await Assert.That(state.ProducerId).IsEqualTo(5678L);
+        await Assert.That(state.Epoch).IsEqualTo((short)0);
+        await Assert.That(accumulator.GetAndIncrementSequence(Tp1, 1)).IsEqualTo(3);
+        await Assert.That(harness.Requests.Count).IsEqualTo(2);
+    }
+
+    [Test]
     public async Task BumpEpochForRecovery_AtMaxValue_RequestsNewProducerIdAndRestartsAllSequences(CancellationToken cancellationToken)
     {
         // Regression: the local bump used to throw "Producer epoch overflow — requires producer

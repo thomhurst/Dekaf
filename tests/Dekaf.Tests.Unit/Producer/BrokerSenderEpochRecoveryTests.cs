@@ -74,6 +74,69 @@ public sealed class BrokerSenderEpochRecoveryTests : ScriptedProduceResponseFixt
     }
 
     [Test]
+    public async Task EpochAlreadyAdvanced_StillReportsPartitionsToProducer(CancellationToken cancellationToken)
+    {
+        // Another sender bumped the epoch for its own partitions before this sender's
+        // OutOfOrderSequenceNumber was processed. The send loop used to skip the bump call when the
+        // producer was already past the stale epoch, so this sender's partition never had its
+        // sequence counter restarted and its re-stamped batch went out with a non-zero sequence.
+        var firstResponse = NewResponseSource();
+        var secondResponse = NewResponseSource();
+        var (pool, connection) = CreateMockConnection(new Queue<TaskCompletionSource<ProduceResponse>>([firstResponse, secondResponse]));
+        connection.CaptureProduceRequests = true;
+        cancellationToken = GuardUnscriptedSends(cancellationToken);
+        var options = CreateOptions();
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var state = new ProducerIdAndEpoch(1234, 5);
+        var bumpRequests = new List<(short ExpectedEpoch, TopicPartition[] Partitions)>();
+        var sender = CreateSender(
+            pool, options, accumulator, (_, _, _, _, _) => { },
+            bumpEpoch: (expectedEpoch, partitions, _) =>
+            {
+                lock (bumpRequests)
+                    bumpRequests.Add((expectedEpoch, partitions.ToArray()));
+                return new ValueTask<ProducerIdAndEpoch>(Volatile.Read(ref state));
+            },
+            getProducerState: () => Volatile.Read(ref state));
+
+        try
+        {
+            var (batch, delivery) = CreateTrackedBatch(valueTaskSourcePool, producerId: 1234, producerEpoch: 5);
+            sender.Enqueue(batch);
+            await WaitUntilAsync(() => Volatile.Read(ref connection.SendPipelinedAfterWriteCalls) == 1, cancellationToken);
+
+            // Another sender's bump lands before this sender sees its rejection.
+            Volatile.Write(ref state, new ProducerIdAndEpoch(1234, 6));
+            firstResponse.SetResult(CreateErrorResponse(Topic, 0, ErrorCode.OutOfOrderSequenceNumber));
+
+            await WaitUntilAsync(() => Volatile.Read(ref connection.SendPipelinedAfterWriteCalls) == 2, cancellationToken);
+            secondResponse.SetResult(CreateSuccessResponse(Topic, 0, baseOffset: 11));
+            var metadata = await delivery.WaitAsync(cancellationToken);
+            await Assert.That(metadata.Offset).IsEqualTo(11L);
+
+            (short ExpectedEpoch, TopicPartition[] Partitions)[] observedBumpRequests;
+            lock (bumpRequests)
+                observedBumpRequests = bumpRequests.ToArray();
+            await Assert.That(observedBumpRequests.Length).IsEqualTo(1);
+            await Assert.That(observedBumpRequests[0].ExpectedEpoch).IsEqualTo((short)5);
+            await Assert.That(observedBumpRequests[0].Partitions).IsEquivalentTo([Partition0]);
+
+            (long ProducerId, short ProducerEpoch, int BaseSequence)[] secondStamps;
+            lock (connection.CapturedProduceRequests)
+                secondStamps = connection.CapturedProduceRequests[1].ProducerStamps.ToArray();
+            await Assert.That(secondStamps).IsEquivalentTo([(1234L, (short)6, 0)]);
+            await Assert.That(GetEpochBumpRequestedForEpoch(sender)).IsEqualTo(-1);
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
+    [Test]
     public async Task ExhaustedEpoch_AwaitsProducerIdReset_AndResendsUnderNewProducerId(CancellationToken cancellationToken)
     {
         var firstResponse = NewResponseSource();
