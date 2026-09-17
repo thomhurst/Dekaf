@@ -5,6 +5,8 @@ using Dekaf.Errors;
 using Dekaf.Networking;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
+using Docker.DotNet;
+using Docker.DotNet.Models;
 using DotNet.Testcontainers.Builders;
 using DotNet.Testcontainers.Containers;
 using DotNet.Testcontainers.Networks;
@@ -332,6 +334,26 @@ public class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposable
 
     public Task StopBrokerAsync(int nodeId, CancellationToken cancellationToken = default) =>
         GetBroker(nodeId).StopAsync(cancellationToken);
+
+    /// <summary>
+    /// Kills the broker process (SIGKILL) so the container exits without a controlled shutdown.
+    /// Unlike <see cref="StopBrokerAsync"/>, no leadership moves before the process dies: the
+    /// controller only fences the broker after its session times out, so cluster metadata keeps
+    /// naming the dead broker for several seconds while every connection to it is refused.
+    /// </summary>
+    public async Task KillBrokerAsync(int nodeId, CancellationToken cancellationToken = default)
+    {
+        var broker = GetBroker(nodeId);
+        using var dockerClient = new DockerClientBuilder().Build();
+        await dockerClient.Containers.KillContainerAsync(
+            broker.Id,
+            new ContainerKillParameters { Signal = "SIGKILL" },
+            cancellationToken).ConfigureAwait(false);
+
+        // Testcontainers caches the last inspected state. Stopping the already-exited container
+        // refreshes that cache so StartBrokerAsync does not skip the restart as "still running".
+        await broker.StopAsync(cancellationToken).ConfigureAwait(false);
+    }
 
     public async Task StartBrokerAsync(int nodeId, CancellationToken cancellationToken = default)
     {

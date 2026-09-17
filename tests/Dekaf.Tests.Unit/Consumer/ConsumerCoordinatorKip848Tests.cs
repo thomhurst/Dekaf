@@ -3950,6 +3950,135 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
             Arg.Any<CancellationToken>());
     }
 
+    public enum CoordinatorTransportFailure
+    {
+        ConnectionResetDuringTlsHandshake,
+        ConnectionRefused,
+        DnsResolutionFailed,
+        ConnectionSetupTimedOut
+    }
+
+    private static Exception CreateCoordinatorTransportFailure(CoordinatorTransportFailure failure) => failure switch
+    {
+        CoordinatorTransportFailure.ConnectionResetDuringTlsHandshake => new IOException(
+            "Received an unexpected EOF or 0 bytes from the transport stream.",
+            new SocketException((int)SocketError.ConnectionReset)),
+        CoordinatorTransportFailure.ConnectionRefused => new SocketException((int)SocketError.ConnectionRefused),
+        CoordinatorTransportFailure.DnsResolutionFailed => new DnsResolutionException(
+            "broker-1",
+            9092,
+            new SocketException((int)SocketError.HostNotFound)),
+        CoordinatorTransportFailure.ConnectionSetupTimedOut => new TimeoutException("Connection setup timed out."),
+        _ => throw new ArgumentOutOfRangeException(nameof(failure), failure, null)
+    };
+
+    // Regression tests for #3339: a broker that resets or refuses connections while the consumer
+    // joins must not fail the poll. FindCoordinator succeeds on a healthy broker and names a
+    // coordinator whose connection cannot be set up; the join loop must re-discover and retry
+    // instead of propagating the raw transport exception to the caller.
+    [Test]
+    [Arguments(CoordinatorTransportFailure.ConnectionResetDuringTlsHandshake)]
+    [Arguments(CoordinatorTransportFailure.ConnectionRefused)]
+    [Arguments(CoordinatorTransportFailure.DnsResolutionFailed)]
+    [Arguments(CoordinatorTransportFailure.ConnectionSetupTimedOut)]
+    public async Task ConsumerProtocol_Join_CoordinatorConnectionFailure_RediscoversAndRetries(
+        CoordinatorTransportFailure failure)
+    {
+        await using var topology = new SplitCoordinatorTopology();
+        var transportFailure = CreateCoordinatorTransportFailure(failure);
+        topology.FailCoordinatorLease(attempt => attempt == 1 ? transportFailure : null);
+        var options = CreateConsumerProtocolOptions(
+            heartbeatIntervalMs: 60_000,
+            retryBackoffMs: 1,
+            retryBackoffMaxMs: 1);
+        await using var coordinator = new ConsumerCoordinator(options, topology.Pool, topology.MetadataManager);
+
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
+
+        await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Stable);
+        await Assert.That(GetPrivateField<int>(coordinator, "_coordinatorId"))
+            .IsEqualTo(SplitCoordinatorTopology.CoordinatorBrokerId);
+        await Assert.That(topology.CoordinatorLeaseAttempts).IsEqualTo(2);
+        // The coordinator may have moved while it was unreachable, so the retry re-discovers it.
+        await Assert.That(topology.FindCoordinatorCount).IsEqualTo(2);
+        await Assert.That(GetPrivateField<string?>(coordinator, "_lastHeartbeatFailure")).IsNull();
+    }
+
+    [Test]
+    public async Task ConsumerProtocol_Join_HeartbeatTransportFailure_RediscoversAndRetries()
+    {
+        await using var topology = new SplitCoordinatorTopology();
+        var heartbeatCount = 0;
+        topology.CoordinatorConnection.SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
+                Arg.Any<ConsumerGroupHeartbeatRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ => Interlocked.Increment(ref heartbeatCount) == 1
+                ? ValueTask.FromException<ConsumerGroupHeartbeatResponse>(
+                    new IOException("Socket closed while writing a Kafka request frame."))
+                : ValueTask.FromResult(SplitCoordinatorTopology.CreateJoinResponse()));
+        var options = CreateConsumerProtocolOptions(
+            heartbeatIntervalMs: 60_000,
+            retryBackoffMs: 1,
+            retryBackoffMaxMs: 1);
+        await using var coordinator = new ConsumerCoordinator(options, topology.Pool, topology.MetadataManager);
+
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
+
+        await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Stable);
+        await Assert.That(heartbeatCount).IsEqualTo(2);
+        await Assert.That(topology.FindCoordinatorCount).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task ConsumerProtocol_Join_PersistentCoordinatorConnectionFailure_FailsAfterRebalanceTimeout()
+    {
+        await using var topology = new SplitCoordinatorTopology();
+        var transportFailure = new IOException(
+            "Received an unexpected EOF or 0 bytes from the transport stream.",
+            new SocketException((int)SocketError.ConnectionReset));
+        topology.FailCoordinatorLease(_ => transportFailure);
+        var options = CreateConsumerProtocolOptions(
+            heartbeatIntervalMs: 60_000,
+            rebalanceTimeoutMs: 300,
+            retryBackoffMs: 1,
+            retryBackoffMaxMs: 5);
+        await using var coordinator = new ConsumerCoordinator(options, topology.Pool, topology.MetadataManager);
+
+        var exception = await Assert.That(async () =>
+                await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None))
+            .Throws<KafkaTimeoutException>();
+
+        await Assert.That(exception!.TimeoutKind).IsEqualTo(TimeoutKind.Rebalance);
+        await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Unjoined);
+        await Assert.That(topology.CoordinatorLeaseAttempts).IsGreaterThan(1);
+        await Assert.That(GetPrivateField<string?>(coordinator, "_lastHeartbeatFailure"))
+            .IsEqualTo(transportFailure.Message);
+    }
+
+    [Test]
+    public async Task ConsumerProtocol_Join_TlsHandshakeFailure_PropagatesWithoutRetry()
+    {
+        await using var topology = new SplitCoordinatorTopology();
+        var handshakeFailure = AuthenticationException.FromTlsHandshake(
+            "TLS handshake failed: The remote certificate is invalid according to the validation procedure.",
+            new System.Security.Authentication.AuthenticationException("The remote certificate is invalid."));
+        topology.FailCoordinatorLease(_ => handshakeFailure);
+        var options = CreateConsumerProtocolOptions(
+            heartbeatIntervalMs: 60_000,
+            retryBackoffMs: 1,
+            retryBackoffMaxMs: 1);
+        await using var coordinator = new ConsumerCoordinator(options, topology.Pool, topology.MetadataManager);
+
+        var exception = await Assert.That(async () =>
+                await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None))
+            .Throws<AuthenticationException>();
+
+        await Assert.That(exception!.Message).IsEqualTo(handshakeFailure.Message);
+        await Assert.That(topology.CoordinatorLeaseAttempts).IsEqualTo(1);
+        await Assert.That(topology.FindCoordinatorCount).IsEqualTo(1);
+    }
+
     [Test]
     [Arguments(ErrorCode.GroupAuthorizationFailed)]
     [Arguments(ErrorCode.TopicAuthorizationFailed)]
@@ -4658,6 +4787,110 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
             BindingFlags.NonPublic | BindingFlags.Instance)
             ?? throw new InvalidOperationException($"{fieldName} field not found.");
         field.SetValue(coordinator, value);
+    }
+
+    /// <summary>
+    /// Two-broker topology for join transport tests. Broker 0 is always reachable and answers
+    /// FindCoordinator with broker 1; the caller controls whether broker 1's connection lease
+    /// succeeds, mirroring a healthy cluster whose group coordinator is restarting.
+    /// </summary>
+    private sealed class SplitCoordinatorTopology : IAsyncDisposable
+    {
+        public const int MetadataBrokerId = 0;
+        public const int CoordinatorBrokerId = 1;
+
+        private int _findCoordinatorCount;
+        private int _coordinatorLeaseAttempts;
+
+        public IConnectionPool Pool { get; } = Substitute.For<IConnectionPool>();
+        public IKafkaConnection CoordinatorConnection { get; } = Substitute.For<IKafkaConnection>();
+        public MetadataManager MetadataManager { get; }
+        public int FindCoordinatorCount => Volatile.Read(ref _findCoordinatorCount);
+        public int CoordinatorLeaseAttempts => Volatile.Read(ref _coordinatorLeaseAttempts);
+
+        public SplitCoordinatorTopology()
+        {
+            var metadataConnection = Substitute.For<IKafkaConnection>();
+            metadataConnection.SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
+                    Arg.Any<FindCoordinatorRequest>(),
+                    Arg.Any<short>(),
+                    Arg.Any<CancellationToken>())
+                .Returns(_ =>
+                {
+                    Interlocked.Increment(ref _findCoordinatorCount);
+                    return ValueTask.FromResult(new FindCoordinatorResponse
+                    {
+                        Coordinators =
+                        [
+                            new Coordinator
+                            {
+                                Key = "test-group",
+                                NodeId = CoordinatorBrokerId,
+                                Host = "broker-1",
+                                Port = 9092,
+                                ErrorCode = ErrorCode.None
+                            }
+                        ]
+                    });
+                });
+            CoordinatorConnection.SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
+                    Arg.Any<ConsumerGroupHeartbeatRequest>(),
+                    Arg.Any<short>(),
+                    Arg.Any<CancellationToken>())
+                .Returns(ValueTask.FromResult(CreateJoinResponse()));
+
+            Pool.GetConnectionByIndexAsync(
+                    Arg.Is(MetadataBrokerId),
+                    Arg.Any<int>(),
+                    Arg.Any<CancellationToken>())
+                .Returns(ValueTask.FromResult(metadataConnection));
+            FailCoordinatorLease(static _ => null);
+
+            MetadataManager = new MetadataManager(Pool, ["broker-0:9092"]);
+            MetadataManager.SetApiVersion(ApiKey.ConsumerGroupHeartbeat, 0, 0);
+            MetadataManager.SetApiVersion(ApiKey.FindCoordinator, 4, 5);
+            // Broker 0 is registered first so FindCoordinator's broker cycling starts on the
+            // reachable broker and every coordinator lease attempt belongs to the heartbeat.
+            MetadataManager.Metadata.Update(new MetadataResponse
+            {
+                Brokers =
+                [
+                    new BrokerMetadata { NodeId = MetadataBrokerId, Host = "broker-0", Port = 9092 },
+                    new BrokerMetadata { NodeId = CoordinatorBrokerId, Host = "broker-1", Port = 9092 }
+                ],
+                Topics = []
+            });
+        }
+
+        public static ConsumerGroupHeartbeatResponse CreateJoinResponse() => new()
+        {
+            ErrorCode = ErrorCode.None,
+            MemberId = "member-1",
+            MemberEpoch = 1,
+            HeartbeatIntervalMs = 60_000
+        };
+
+        /// <summary>
+        /// Controls the coordinator's connection lease: <paramref name="failureForAttempt"/>
+        /// receives the 1-based attempt number and returns the exception to fault with, or
+        /// null to hand out the coordinator connection.
+        /// </summary>
+        public void FailCoordinatorLease(Func<int, Exception?> failureForAttempt)
+        {
+            Pool.GetConnectionByIndexAsync(
+                    Arg.Is(CoordinatorBrokerId),
+                    Arg.Any<int>(),
+                    Arg.Any<CancellationToken>())
+                .Returns(_ =>
+                {
+                    var failure = failureForAttempt(Interlocked.Increment(ref _coordinatorLeaseAttempts));
+                    return failure is null
+                        ? ValueTask.FromResult(CoordinatorConnection)
+                        : ValueTask.FromException<IKafkaConnection>(failure);
+                });
+        }
+
+        public ValueTask DisposeAsync() => MetadataManager.DisposeAsync();
     }
 
     private sealed class RetirableTestConnection(IKafkaConnection inner) :
