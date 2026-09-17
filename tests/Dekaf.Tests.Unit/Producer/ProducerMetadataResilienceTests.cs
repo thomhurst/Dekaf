@@ -43,6 +43,27 @@ public sealed class ProducerMetadataResilienceTests
     }
 
     [Test]
+    public async Task ProduceAsync_UnresolvedBootstrapHostnameDuringMetadataFetch_ThrowsProduceExceptionAfterMaxBlock(
+        CancellationToken cancellationToken)
+    {
+        // The harness has never completed a refresh, so a DNS miss on the bootstrap endpoint is
+        // the "bootstrap resolution pending" state that the public refresh reports as fatal.
+        await using var harness = CreateHarness(maxBlockMs: 300);
+        harness.Connect = (_, _) => ValueTask.FromException<IKafkaConnection>(
+            new DnsResolutionException("localhost", 9092, new SocketException((int)SocketError.HostNotFound)));
+        await harness.Producer.InitializeAsync(cancellationToken);
+
+        var exception = await Assert.That(() => harness.Producer.ProduceAsync(
+                new ProducerMessage<string, string> { Topic = "orders", Key = "key", Value = "value" },
+                cancellationToken).AsTask())
+            .Throws<ProduceException>();
+
+        await Assert.That(exception!.Topic).IsEqualTo("orders");
+        await Assert.That(exception.InnerException).IsTypeOf<DnsResolutionException>();
+        await Assert.That(harness.ConnectionAttempts.Count).IsGreaterThan(1);
+    }
+
+    [Test]
     public async Task FireAsync_ClusterUnreachableDuringMetadataFetch_ThrowsMetadataTimeoutWithCause(
         CancellationToken cancellationToken)
     {

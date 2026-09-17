@@ -646,6 +646,42 @@ public class MetadataManagerTests
 
     [Test]
     [Timeout(10_000)]
+    public async Task GetTopicMetadataAsync_UnresolvedBootstrapHostname_RetriesUntilCancelledAndReportsCause(
+        CancellationToken cancellationToken)
+    {
+        // Before the first successful refresh, a DNS miss on every bootstrap endpoint is the
+        // "bootstrap resolution pending" state. The public RefreshMetadataAsync reports it as a
+        // fatal BootstrapResolutionException; the metadata wait must keep retrying instead, so
+        // a producer's first produce during a DNS outage waits for max.block.ms.
+        var attempts = 0;
+        var pool = Substitute.For<IConnectionPool>();
+        pool.GetConnectionAsync("localhost", 9092, Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                Interlocked.Increment(ref attempts);
+                return ValueTask.FromException<IKafkaConnection>(CreateDnsFailure("localhost", 9092));
+            });
+        await using var manager = new MetadataManager(
+            pool,
+            ["localhost:9092"],
+            new MetadataOptions
+            {
+                EnableBackgroundRefresh = false,
+                RetryBackoffMs = 5,
+                RetryBackoffMaxMs = 10
+            });
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        budget.CancelAfter(TimeSpan.FromMilliseconds(300));
+
+        var exception = await Assert.That(() => manager.GetTopicMetadataAsync("orders", budget.Token).AsTask())
+            .Throws<OperationCanceledException>();
+
+        await Assert.That(exception!.InnerException).IsTypeOf<DnsResolutionException>();
+        await Assert.That(attempts).IsGreaterThan(1);
+    }
+
+    [Test]
+    [Timeout(10_000)]
     public async Task GetTopicMetadataAsync_FatalFailure_PropagatesWithoutRetry(CancellationToken cancellationToken)
     {
         var attempts = 0;

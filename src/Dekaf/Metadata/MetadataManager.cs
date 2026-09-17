@@ -817,16 +817,19 @@ public sealed partial class MetadataManager : IAsyncDisposable
             while (!cancellationToken.IsCancellationRequested)
             {
                 // Refresh metadata for this topic. A broker that resets or refuses connections,
-                // a DNS miss, or a cluster with no reachable broker is retried within the
-                // caller's max.block.ms budget, the same way Java's waitOnMetadata keeps waiting;
-                // only cancellation and fatal (auth, version, bootstrap, disposal) errors end it.
-                // A budget that expires during a failing attempt surfaces on the delay below.
+                // a DNS miss (including bootstrap hostnames that have not resolved yet, which
+                // MetadataFailure reports as a retriable refresh failure rather than the fatal
+                // public BootstrapResolutionException), or a cluster with no reachable broker is
+                // retried within the caller's max.block.ms budget, the same way Java's
+                // waitOnMetadata keeps waiting; only cancellation and fatal (auth, version,
+                // disposal) errors end it. A budget that expires during a failing attempt
+                // surfaces on the delay below.
                 try
                 {
                     await RefreshMetadataAsyncCore(
                         [topicName],
                         forceRefresh: false,
-                        BootstrapResolutionFailureMode.PublicException,
+                        BootstrapResolutionFailureMode.MetadataFailure,
                         allowAutoTopicCreation,
                         cancellationToken).ConfigureAwait(false);
                 }
