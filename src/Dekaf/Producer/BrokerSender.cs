@@ -769,7 +769,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     // during the next epoch bump (Java-style per-partition reset, KIP-360).
     // Single-threaded send loop — no locks needed.
     // The producer ID/epoch snapshot this loop iteration coalesces and stamps under, refreshed
-    // once per iteration (step 4c). Null for producers without epoch recovery.
+    // once per iteration (step 4a). Null for producers without epoch recovery.
     private ProducerIdAndEpoch? _iterationProducerState;
 
     // Set when the snapshot changes and cleared once no pending request carries a batch stamped
@@ -1510,7 +1510,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                 // ── 4. Epoch bump (Java-style client-side, KIP-360) ──
                 // Usually synchronous: no network call, just epoch+1. Every partition restarts
-                // its sequences at 0 on its next send under the new epoch (step 4c/5 hold it
+                // its sequences at 0 on its next send under the new epoch (steps 4a/5 hold it
                 // until its old-epoch batches are answered), which is what the broker accepts
                 // as the start of the new epoch. When the epoch space of the producer ID is
                 // exhausted (short.MaxValue), the producer replaces the ID through
@@ -1543,7 +1543,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     }
                 }
 
-                // ── 4c. Producer state for this iteration ──
+                // ── 4a. Producer state for this iteration ──
                 // One snapshot for coalescing and sending: the hold decision in step 5 and the
                 // stamps in step 6 must agree on the state, or a partition could restart at
                 // sequence 0 under a state newer than the one its pending batches carry.
@@ -4057,7 +4057,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             // but don't use epoch recovery (_getProducerState is null for them).
             if (_isIdempotent) // EnableIdempotence — covers both idempotent and transactional
             {
-                // The snapshot this loop iteration coalesced under (step 4c), the same for every
+                // The snapshot this loop iteration coalesced under (step 4a), the same for every
                 // request of the wave: the producer ID and epoch come from the same publication,
                 // so a batch is never stamped with a new ID and an old epoch, and a partition
                 // held in step 5 was held against the state its batches are stamped with here.
