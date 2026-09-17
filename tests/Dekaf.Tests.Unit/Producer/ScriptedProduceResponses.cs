@@ -272,8 +272,9 @@ public abstract class ScriptedProduceResponseFixture
         Func<ReadyBatch[], int, Action<Exception?>, HashSet<TopicPartition>, HashSet<TopicPartition>,
             TransactionPartitionEnrollmentResult>?
             tryEnsurePartitionsInTransaction = null,
-        Func<short, IReadOnlyCollection<TopicPartition>, CancellationToken, ValueTask<ProducerIdAndEpoch>>? bumpEpoch = null,
+        Func<short, CancellationToken, ValueTask<ProducerIdAndEpoch>>? bumpEpoch = null,
         Func<ProducerIdAndEpoch>? getProducerState = null,
+        Action<TopicPartition>? onSequenceRestartHeld = null,
         Microsoft.Extensions.Logging.ILogger? logger = null) =>
         new(
             brokerId: 1, pool,
@@ -299,5 +300,6 @@ public abstract class ScriptedProduceResponseFixture
             onPipelinedResponseAcquired: onPipelinedResponseAcquired,
             onWaveCoalesceStarted: onWaveCoalesceStarted,
             onIdleWaitStarted: onIdleWaitStarted,
+            onSequenceRestartHeld: onSequenceRestartHeld,
             eventChannel: eventChannel);
 }

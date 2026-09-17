@@ -56,6 +56,20 @@ internal sealed class TestKafkaConnection :
     /// </summary>
     public List<CapturedProduceRequest> CapturedProduceRequests { get; } = [];
 
+    /// <summary>
+    /// Thread-safe count of <see cref="CapturedProduceRequests"/>. The send counters are
+    /// incremented before a request is captured, so a test that needs the captured request
+    /// itself waits on this count rather than on a counter.
+    /// </summary>
+    public int CapturedProduceRequestCount
+    {
+        get
+        {
+            lock (CapturedProduceRequests)
+                return CapturedProduceRequests.Count;
+        }
+    }
+
     public Func<ValueTask<Task<ProduceResponse>>>? SendProducePipelinedAfterWrite { get; set; }
     public IPipelinedResponseSource<ProduceResponse>? PipelinedResponseSource { get; set; }
     public Func<ValueTask>? SendProduceFireAndForgetWithCallerTimeout { get; set; }

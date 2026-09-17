@@ -6125,27 +6125,33 @@ public sealed partial class KafkaProducer<TKey, TValue> :
 
     /// <summary>
     /// Publishes a producer ID/epoch pair to every reader of the idempotent producer state. The
-    /// accumulator's sequence counters are cleared first: the broker holds no state for a new ID
-    /// (and this is a no-op for the initial ID), so a batch stamped with the new ID must start at
-    /// sequence 0. Then the per-field copies the accumulator stamps onto sealed batches are
-    /// updated, and finally the combined snapshot the send loops key their stale-batch re-stamping
-    /// on. A sealed batch that tore across the per-field writes carries either the old ID or the
-    /// old epoch, so the send loop's comparison against the snapshot catches and re-stamps it.
-    /// Serialized by <see cref="_epochBumpLock"/> (re-entrant for the local bump, which already
-    /// holds it) so a local bump can never interleave with a producer ID reset's publication.
+    /// accumulator learns the new state first, since only the state it holds as current may
+    /// restart a partition's sequence counter: for a new ID every counter is cleared and stamped
+    /// at once (the broker holds no state for a new ID, and this is a no-op for the initial ID),
+    /// while an epoch bump leaves the counters alone and every partition restarts at 0 lazily, in
+    /// the send loop, on its next send under the new state. Then the per-field copies the
+    /// accumulator stamps onto sealed batches are updated, and finally the combined snapshot the
+    /// send loops key their stale-batch re-stamping and sequence restarts on. A sealed batch that
+    /// tore across the per-field writes carries either the old ID or the old epoch, so the send
+    /// loop's comparison against the snapshot catches and re-stamps it. Serialized by
+    /// <see cref="_epochBumpLock"/> (re-entrant for the local bump, which already holds it) so a
+    /// local bump can never interleave with a producer ID reset's publication.
     /// </summary>
     private void PublishIdempotentProducerId(long producerId, short producerEpoch)
     {
         lock (_epochBumpLock)
         {
+            var state = new ProducerIdAndEpoch(producerId, producerEpoch);
             if (producerId != _producerId)
-                _accumulator.ResetSequenceNumbers(producerId, producerEpoch);
+                _accumulator.ResetSequenceNumbers(state);
+            else
+                _accumulator.PublishProducerState(state);
 
             _producerId = producerId;
             _producerEpoch = producerEpoch;
             _accumulator.ProducerId = producerId;
             _accumulator.ProducerEpoch = producerEpoch;
-            _idempotentProducerState = new ProducerIdAndEpoch(producerId, producerEpoch);
+            _idempotentProducerState = state;
         }
     }
 
@@ -6154,25 +6160,25 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     /// Epoch recovery for idempotent (non-transactional) producers (Java-style, KIP-360), called by
     /// the send loops when the broker rejects a batch with <c>OutOfOrderSequenceNumber</c>,
     /// <c>InvalidProducerEpoch</c> or <c>UnknownProducerId</c>. Below <see cref="short.MaxValue"/> the
-    /// epoch is bumped locally, without a network call, and the result completes synchronously:
-    /// the broker accepts epoch+1 with sequence 0 as a fresh start for the affected partitions;
-    /// partitions not listed keep their sequence counters. At <see cref="short.MaxValue"/> the epoch
-    /// space of the producer ID is exhausted, and the ID is replaced through
+    /// epoch is bumped locally, without a network call, and the result completes synchronously.
+    /// The broker accepts a new epoch for a partition only with sequence 0, from every partition
+    /// it holds state for, so no counter is touched here: each partition restarts at 0 in the send
+    /// loop on its next send under the new state, once nothing it sent under the old epoch is still
+    /// on the wire (Java's <c>maybeUpdateProducerIdAndEpoch</c>). Restarting the other partitions
+    /// here would put sequence 0 of the new epoch behind their old-epoch batches still in flight
+    /// and reorder any that is retried. At <see cref="short.MaxValue"/> the epoch space of the
+    /// producer ID is exhausted, and the ID is replaced through
     /// <see cref="ResetIdempotentProducerIdAsync"/> (Java's <c>resetIdempotentProducerId</c>)
     /// instead of failing the producer.
     /// </para>
     /// <para>
-    /// Several send loops can report the same stale epoch for different partitions. Only the first
-    /// call bumps; every call restarts its own partitions' counters under the resulting state, so a
-    /// loser of the race does not re-stamp its batch with a non-zero sequence the broker would reject
-    /// as an invalid sequence for the new epoch. <see cref="RecordAccumulator.ResetSequencesForPartitions"/>
-    /// restarts a partition at most once per state, which keeps a late response for an already
-    /// re-sequenced partition from zeroing sequences that are in flight.
+    /// Several send loops can report the same stale epoch for different partitions, and successors
+    /// of a rejected batch report it after their head already triggered the bump. Only the first
+    /// call bumps; the others receive the state it produced and re-stamp their batches from it.
     /// </para>
     /// </summary>
     internal ValueTask<ProducerIdAndEpoch> BumpEpochForRecoveryAsync(
         short expectedEpoch,
-        IReadOnlyCollection<TopicPartition> partitionsToReset,
         CancellationToken cancellationToken)
     {
         // Multiple BrokerSenders can call this concurrently when different brokers
@@ -6180,24 +6186,16 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         // check-and-increment atomic and prevent double epoch bumps.
         lock (_epochBumpLock)
         {
-            // Already bumped (or the ID replaced) by another BrokerSender. The caller's partitions
-            // were not part of that bump, so restart them under the current state; a partition
-            // this state already restarted is left alone (late response for an in-flight retry).
+            // Already bumped (or the ID replaced) by another BrokerSender.
             if (_producerEpoch != expectedEpoch)
             {
                 LogEpochAlreadyBumped(expectedEpoch, _producerEpoch);
-                _accumulator.ResetSequencesForPartitions(partitionsToReset, _producerId, _producerEpoch);
                 return new ValueTask<ProducerIdAndEpoch>(_idempotentProducerState);
             }
 
             if (_producerEpoch != short.MaxValue)
             {
                 PublishIdempotentProducerId(_producerId, (short)(_producerEpoch + 1));
-
-                // Per-partition reset: only affected partitions restart at seq=0.
-                // Partitions not listed keep their current sequence counters.
-                _accumulator.ResetSequencesForPartitions(partitionsToReset, _producerId, _producerEpoch);
-
                 LogProducerEpochBumped(_producerId, _producerEpoch);
                 return new ValueTask<ProducerIdAndEpoch>(_idempotentProducerState);
             }
