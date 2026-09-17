@@ -230,6 +230,78 @@ public sealed class ConsumerCoordinatorFailoverIntegrationTests(RackAwareKafkaCo
         }
     }
 
+    /// <summary>
+    /// Regression test for #3339. A crashed coordinator (SIGKILL, no controlled shutdown) keeps
+    /// its identity in cluster metadata until its broker session times out, so FindCoordinator
+    /// on a healthy broker keeps naming a broker that refuses every connection. The consumer's
+    /// join path must retry through that window instead of surfacing the transport failure to
+    /// the poll, and must resume consuming once the group moves.
+    /// </summary>
+    [Test]
+    [Timeout(240_000)]
+    public async Task CoordinatorCrash_JoinRetriesThroughStaleMetadataAndResumesConsuming(
+        CancellationToken cancellationToken)
+    {
+        var groupId = $"coordinator-crash-{Guid.NewGuid():N}";
+        var (topic, expectedCoordinatorId) = await CreateScenarioAsync(groupId, cancellationToken)
+            .ConfigureAwait(false);
+        int? crashedBrokerId = null;
+        using var scenarioCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var records = new ConcurrentDictionary<(int Partition, long Offset), int>();
+
+        await using var consumer = await CreateConsumerAsync(groupId, listener: null, cancellationToken)
+            .ConfigureAwait(false);
+        consumer.Subscribe(topic);
+        var consumeTasks = new[] { ConsumeAsync(consumer, records, scenarioCancellation.Token) };
+
+        try
+        {
+            await ProduceRangeAsync(topic, startPerPartition: 0, countPerPartition: 5, cancellationToken)
+                .ConfigureAwait(false);
+            await WaitForProgressOrFailureAsync(
+                    records,
+                    expectedCount: PartitionCount * 5,
+                    consumeTasks,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            crashedBrokerId = await kafka.GetGroupCoordinatorIdAsync(groupId, cancellationToken)
+                .ConfigureAwait(false);
+            AssertExpectedCoordinator(crashedBrokerId.Value, expectedCoordinatorId);
+            await kafka.KillBrokerAsync(crashedBrokerId.Value, cancellationToken).ConfigureAwait(false);
+            _ = await kafka.WaitForGroupCoordinatorChangeAsync(
+                    groupId,
+                    crashedBrokerId.Value,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            await AssertMembersSurviveCoordinatorMoveAsync(
+                    groupId,
+                    consumeTasks,
+                    cancellationToken,
+                    expectedMemberCount: 1)
+                .ConfigureAwait(false);
+
+            await ProduceRangeAsync(topic, startPerPartition: 5, countPerPartition: 15, cancellationToken)
+                .ConfigureAwait(false);
+            await WaitForProgressOrFailureAsync(records, MessageCount, consumeTasks, cancellationToken)
+                .ConfigureAwait(false);
+
+            await kafka.StartBrokerAsync(crashedBrokerId.Value, cancellationToken).ConfigureAwait(false);
+            crashedBrokerId = null;
+
+            scenarioCancellation.Cancel();
+            await ObserveCancellationAsync(consumeTasks).ConfigureAwait(false);
+            AssertNoRecordLoss(records);
+        }
+        finally
+        {
+            scenarioCancellation.Cancel();
+            await ObserveCancellationAsync(consumeTasks).ConfigureAwait(false);
+            if (crashedBrokerId is { } brokerId)
+                await kafka.StartBrokerAsync(brokerId, CancellationToken.None).ConfigureAwait(false);
+        }
+    }
+
     [Test]
     [Timeout(240_000)]
     [SkipWhenNativeAot("Confluent.Kafka native delegate binding requires runtime reflection.")]
@@ -552,6 +624,20 @@ public sealed class ConsumerCoordinatorFailoverIntegrationTests(RackAwareKafkaCo
         await producer.FlushAsync(cancellationToken).ConfigureAwait(false);
     }
 
+    private static async Task ConsumeAsync(
+        IKafkaConsumer<string, string> consumer,
+        ConcurrentDictionary<(int Partition, long Offset), int> records,
+        CancellationToken cancellationToken)
+    {
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(2), cancellationToken)
+                .ConfigureAwait(false);
+            if (result is { } record)
+                records.AddOrUpdate((record.Partition, record.Offset), 1, static (_, count) => count + 1);
+        }
+    }
+
     private static async Task ConsumeAndCommitAsync(
         IKafkaConsumer<string, string> consumer,
         ConcurrentDictionary<(int Partition, long Offset), int> records,
@@ -799,7 +885,8 @@ public sealed class ConsumerCoordinatorFailoverIntegrationTests(RackAwareKafkaCo
     private async Task AssertMembersSurviveCoordinatorMoveAsync(
         string groupId,
         IReadOnlyList<Task> pollTasks,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int expectedMemberCount = 2)
     {
         await using var admin = kafka.CreateAdminClient();
         var startedAt = TimeProvider.System.GetTimestamp();
@@ -814,14 +901,14 @@ public sealed class ConsumerCoordinatorFailoverIntegrationTests(RackAwareKafkaCo
             var groups = await admin.DescribeConsumerGroupsAsync([groupId], cancellationToken)
                 .ConfigureAwait(false);
             memberCount = groups.TryGetValue(groupId, out var group) ? group.Members.Count : 0;
-            if (memberCount == 2)
+            if (memberCount == expectedMemberCount)
                 return;
 
             await Task.Delay(100, cancellationToken).ConfigureAwait(false);
         }
 
         throw new InvalidOperationException(
-            $"Expected both group members to survive coordinator failover; actual count {memberCount}.");
+            $"Expected {expectedMemberCount} group member(s) to survive coordinator failover; actual count {memberCount}.");
     }
 
     private static Task WaitForAssignmentCountAsync(
@@ -856,6 +943,24 @@ public sealed class ConsumerCoordinatorFailoverIntegrationTests(RackAwareKafkaCo
                     throw new InvalidOperationException(
                         $"Expected {partition}:{offset} exactly once; actual count {count}.");
                 }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Every expected record was delivered at least once. Nothing is committed in the crash
+    /// scenario, so a legitimate position reset after the group moves may redeliver; liveness,
+    /// not exactly-once, is the property under test there.
+    /// </summary>
+    private static void AssertNoRecordLoss(
+        IReadOnlyDictionary<(int Partition, long Offset), int> records)
+    {
+        for (var partition = 0; partition < PartitionCount; partition++)
+        {
+            for (var offset = 0; offset < MessagesPerPartition; offset++)
+            {
+                if (!records.ContainsKey((partition, offset)))
+                    throw new InvalidOperationException($"Record {partition}:{offset} was never delivered.");
             }
         }
     }

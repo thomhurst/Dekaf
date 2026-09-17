@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Net.Sockets;
 using Dekaf.Diagnostics;
 using Dekaf.Errors;
 using Dekaf.Metadata;
@@ -550,6 +551,31 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         errorCode is ErrorCode.NotCoordinator
             or ErrorCode.CoordinatorNotAvailable
             or ErrorCode.CoordinatorLoadInProgress;
+
+    /// <summary>
+    /// Classifies a failed join attempt. Transport and connection-setup failures (a coordinator
+    /// that refuses or resets connections, a socket that died mid-request, DNS, setup timeouts)
+    /// are retried with backoff until the rebalance timeout, like the fetch path: the coordinator
+    /// may be restarting or may have moved. Typed group errors have dedicated handlers, and
+    /// broker-version and auth failures are fatal.
+    /// </summary>
+    private static bool IsRetriableJoinFailure(Exception exception, CancellationToken cancellationToken)
+    {
+        if (exception is ObjectDisposedException)
+            return true;
+
+        if (cancellationToken.IsCancellationRequested)
+            return false;
+
+        return exception switch
+        {
+            Errors.GroupException or BrokerVersionException
+                or AuthorizationException or AuthenticationException => false,
+            Errors.KafkaException => true,
+            IOException or SocketException or TimeoutException or DnsResolutionException => true,
+            _ => false,
+        };
+    }
 
     private async ValueTask StoreFatalHeartbeatExceptionAsync(KafkaException exception)
     {
@@ -2024,14 +2050,13 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                     await DelayForJoinRetryAsync(
                         ++retryFailureCount, startedAt, rebalanceTimeout, cancellationToken).ConfigureAwait(false);
                 }
-                catch (Exception ex) when (
-                    ex is ObjectDisposedException ||
-                    (ex is Errors.KafkaException ke &&
-                     ke is not Errors.GroupException and not BrokerVersionException
-                         and not AuthorizationException and not AuthenticationException &&
-                     !cancellationToken.IsCancellationRequested))
+                catch (Exception ex) when (IsRetriableJoinFailure(ex, cancellationToken))
                 {
-                    LogCoordinatorConnectionDisposed();
+                    if (ex is ObjectDisposedException)
+                        LogCoordinatorConnectionDisposed();
+                    else
+                        LogCoordinatorUnreachableDuringJoin(ex, _coordinatorId, _options.GroupId!);
+
                     MarkCoordinatorUnknown();
                     await DelayForJoinRetryAsync(
                         ++retryFailureCount, startedAt, rebalanceTimeout, cancellationToken).ConfigureAwait(false);
@@ -2403,6 +2428,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Coordinator connection disposed, will re-discover coordinator")]
     private partial void LogCoordinatorConnectionDisposed();
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Coordinator {CoordinatorId} unreachable while joining group {GroupId}; re-discovering coordinator and retrying until the rebalance timeout")]
+    private partial void LogCoordinatorUnreachableDuringJoin(Exception exception, int coordinatorId, string groupId);
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Coordinator not available (attempt {Attempt}/{MaxRetries}), retrying in {Delay}ms")]
     private partial void LogCoordinatorNotAvailableRetry(int attempt, int maxRetries, int delay);
