@@ -11,4 +11,16 @@
     <TestingPlatformDotnetTestSupport>true</TestingPlatformDotnetTestSupport>
   </PropertyGroup>
 
+  <!--
+    Verify 33+ ships SponsorCheck in owner mode and fails the build (SC021) unless the consumer
+    declares a sponsorship or a publisher-defined exemption. Dekaf is MIT-licensed open source
+    with no revenue, so it claims the OpenSource exemption. The exemption is time-bounded
+    (at most 12 months out); computing the end month at evaluation time keeps it 6 months in
+    the future on every build, so it never expires and never needs a manual bump.
+  -->
+  <PropertyGroup>
+    <Verify_SponsorshipExemption>OpenSource</Verify_SponsorshipExemption>
+    <Verify_SponsorshipExemptionUntil>$([System.DateTime]::UtcNow.AddMonths(6).ToString('yyyy-MM'))</Verify_SponsorshipExemptionUntil>
+  </PropertyGroup>
+
 </Project>
