@@ -1229,7 +1229,7 @@ public sealed class EpochBumpRecoveryTests
     [Test]
     public async Task EpochBump_Dedup_AlreadyBumped_SkipsRedundantBump()
     {
-        // Simulates the expectedEpoch dedup logic in BumpEpochAsync:
+        // Simulates the expectedEpoch dedup logic in BumpEpochForRecoveryAsync:
         // When multiple partitions fail with OOSN in the same response,
         // only the first caller bumps, others see epoch already changed.
         var options = new ProducerOptions { BootstrapServers = ["localhost:9092"] };
@@ -1356,7 +1356,7 @@ public sealed class EpochBumpRecoveryTests
         accumulator.GetAndIncrementSequence(Tp2, 30); // Tp2 → seq 30
 
         // Reset only Tp0 — simulates OOSN on partition 0 only
-        accumulator.ResetSequencesForPartitions([Tp0]);
+        accumulator.ResetSequencesForPartitions([Tp0], producerId: 1234, producerEpoch: 1);
 
         // Tp0 should restart at 0
         var seqTp0 = accumulator.GetAndIncrementSequence(Tp0, 1);
@@ -1383,7 +1383,7 @@ public sealed class EpochBumpRecoveryTests
         accumulator.GetAndIncrementSequence(Tp2, 30);
 
         // Reset Tp0 and Tp1 — simulates OOSN on both
-        accumulator.ResetSequencesForPartitions([Tp0, Tp1]);
+        accumulator.ResetSequencesForPartitions([Tp0, Tp1], producerId: 1234, producerEpoch: 1);
 
         var seqTp0 = accumulator.GetAndIncrementSequence(Tp0, 1);
         await Assert.That(seqTp0).IsEqualTo(0);
@@ -1408,7 +1408,7 @@ public sealed class EpochBumpRecoveryTests
         accumulator.GetAndIncrementSequence(Tp1, 20);
 
         // Reset no partitions
-        accumulator.ResetSequencesForPartitions([]);
+        accumulator.ResetSequencesForPartitions([], producerId: 1234, producerEpoch: 1);
 
         var seqTp0 = accumulator.GetAndIncrementSequence(Tp0, 1);
         await Assert.That(seqTp0).IsEqualTo(10);
@@ -1429,7 +1429,7 @@ public sealed class EpochBumpRecoveryTests
 
         // Reset a partition that was never used — should not throw
         var unknownTp = new TopicPartition("nonexistent", 99);
-        accumulator.ResetSequencesForPartitions([unknownTp]);
+        accumulator.ResetSequencesForPartitions([unknownTp], producerId: 1234, producerEpoch: 1);
 
         // Tp0 unaffected
         var seqTp0 = accumulator.GetAndIncrementSequence(Tp0, 1);
@@ -1449,7 +1449,7 @@ public sealed class EpochBumpRecoveryTests
         accumulator.GetAndIncrementSequence(Tp0, 5);  // seq=10, next=15
 
         // Reset Tp0
-        accumulator.ResetSequencesForPartitions([Tp0]);
+        accumulator.ResetSequencesForPartitions([Tp0], producerId: 1234, producerEpoch: 1);
 
         // Should restart from 0 and increment normally
         var seq1 = accumulator.GetAndIncrementSequence(Tp0, 3); // seq=0, next=3
@@ -1457,6 +1457,62 @@ public sealed class EpochBumpRecoveryTests
 
         var seq2 = accumulator.GetAndIncrementSequence(Tp0, 7); // seq=3, next=10
         await Assert.That(seq2).IsEqualTo(3);
+
+        await accumulator.DisposeAsync();
+    }
+
+    [Test]
+    public async Task ResetSequencesForPartitions_SameProducerState_RestartsOnce()
+    {
+        // Two send loops can report the same stale epoch for different partitions; the loser of
+        // the bump race still needs its partition restarted, but a late response for a partition
+        // this state already restarted must not zero sequences assigned since.
+        var options = new ProducerOptions { BootstrapServers = ["localhost:9092"] };
+        var accumulator = new RecordAccumulator(options);
+        accumulator.GetAndIncrementSequence(Tp0, 10);
+        accumulator.GetAndIncrementSequence(Tp1, 20);
+
+        accumulator.ResetSequencesForPartitions([Tp0], producerId: 1234, producerEpoch: 1);
+        await Assert.That(accumulator.GetAndIncrementSequence(Tp0, 4)).IsEqualTo(0); // next=4 under epoch 1
+
+        // Late request for Tp0 under the same state: sequences 0..3 stay claimed.
+        accumulator.ResetSequencesForPartitions([Tp0], producerId: 1234, producerEpoch: 1);
+        await Assert.That(accumulator.GetAndIncrementSequence(Tp0, 1)).IsEqualTo(4);
+
+        // A partition the state has not restarted yet is restarted.
+        accumulator.ResetSequencesForPartitions([Tp1], producerId: 1234, producerEpoch: 1);
+        await Assert.That(accumulator.GetAndIncrementSequence(Tp1, 1)).IsEqualTo(0);
+
+        // A newer state restarts the partition again.
+        accumulator.ResetSequencesForPartitions([Tp0], producerId: 1234, producerEpoch: 2);
+        await Assert.That(accumulator.GetAndIncrementSequence(Tp0, 1)).IsEqualTo(0);
+
+        // A replaced producer ID at epoch 0 is a different state from the old ID's epoch 0.
+        accumulator.ResetSequencesForPartitions([Tp0], producerId: 1234, producerEpoch: 0);
+        accumulator.GetAndIncrementSequence(Tp0, 3);
+        accumulator.ResetSequencesForPartitions([Tp0], producerId: 5678, producerEpoch: 0);
+        await Assert.That(accumulator.GetAndIncrementSequence(Tp0, 1)).IsEqualTo(0);
+
+        await accumulator.DisposeAsync();
+    }
+
+    [Test]
+    public async Task ResetSequenceNumbers_StampsEveryPartitionWithPublishedState()
+    {
+        // The full reset that accompanies a replaced producer ID counts as the restart of every
+        // partition under the new state, so a stale request naming any of them is a no-op.
+        var options = new ProducerOptions { BootstrapServers = ["localhost:9092"] };
+        var accumulator = new RecordAccumulator(options);
+        accumulator.GetAndIncrementSequence(Tp0, 10);
+        accumulator.GetAndIncrementSequence(Tp1, 20);
+
+        accumulator.ResetSequenceNumbers(producerId: 5678, producerEpoch: 0);
+        await Assert.That(accumulator.GetAndIncrementSequence(Tp0, 5)).IsEqualTo(0);
+        await Assert.That(accumulator.GetAndIncrementSequence(Tp1, 6)).IsEqualTo(0);
+
+        accumulator.ResetSequencesForPartitions([Tp0, Tp1], producerId: 5678, producerEpoch: 0);
+        await Assert.That(accumulator.GetAndIncrementSequence(Tp0, 1)).IsEqualTo(5);
+        await Assert.That(accumulator.GetAndIncrementSequence(Tp1, 1)).IsEqualTo(6);
 
         await accumulator.DisposeAsync();
     }

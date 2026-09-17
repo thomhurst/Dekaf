@@ -614,7 +614,7 @@ public sealed class AdaptiveScaleDownTests
             isTransactional: () => false,
             tryEnsurePartitionsInTransaction: null,
             bumpEpoch: null,
-            getCurrentEpoch: null,
+            getProducerState: null,
             rerouteBatch: rerouteBatch,
             onAcknowledgement: onAcknowledgement,
             logger: null,

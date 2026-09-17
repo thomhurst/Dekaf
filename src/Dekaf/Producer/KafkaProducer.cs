@@ -229,6 +229,11 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     // any dependent reads, guaranteeing visibility of all prior writes.
     private long _producerId = -1;
     private short _producerEpoch = -1;
+
+    // Combined producer ID/epoch snapshot for the send loops of idempotent (non-transactional)
+    // producers. Replaced as one reference by PublishIdempotentProducerId so a send loop never
+    // pairs a new producer ID with the exhausted epoch of the previous one.
+    private volatile ProducerIdAndEpoch _idempotentProducerState = ProducerIdAndEpoch.None;
     private volatile bool _idempotentInitialized;
     private int _transactionCoordinatorId = -1;
     internal volatile TransactionState _transactionState = TransactionState.Uninitialized;
@@ -4634,8 +4639,8 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             version => Interlocked.CompareExchange(ref _produceApiVersion, version, -1),
             () => _accumulator.IsTransactional,
             TryEnsurePartitionsInTransaction,
-            bumpEpoch: useEpochRecovery ? BumpEpochLocally : null,
-            getCurrentEpoch: useEpochRecovery ? () => _producerEpoch : null,
+            bumpEpoch: useEpochRecovery ? BumpEpochForRecoveryAsync : null,
+            getProducerState: useEpochRecovery ? () => _idempotentProducerState : null,
             RerouteBatchToCurrentLeader,
             _interceptors is not null ? InvokeOnAcknowledgementForBatch : null,
             _logger,
@@ -5705,89 +5710,8 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 return;
             }
 
-            var startedAt = Stopwatch.GetTimestamp();
-            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            timeoutCts.CancelAfter(_options.MaxBlockMs);
-            var initializationToken = timeoutCts.Token;
-            Exception? lastFailure = null;
-            var consecutiveFailures = 0;
-
-            try
-            {
-                while (true)
-                {
-                    initializationToken.ThrowIfCancellationRequested();
-
-                    // Non-transactional IDs can come from any broker. Try every known broker
-                    // before backing off, and pick up metadata changes on the next round.
-                    var brokers = _metadataManager.Metadata.GetBrokers();
-                    if (brokers.Count == 0)
-                    {
-                        throw new InvalidOperationException("No brokers available for idempotent producer initialization");
-                    }
-
-                    for (var brokerIndex = 0; brokerIndex < brokers.Count; brokerIndex++)
-                    {
-                        initializationToken.ThrowIfCancellationRequested();
-                        var brokerId = brokers[brokerIndex].NodeId;
-                        try
-                        {
-                            var request = new InitProducerIdRequest
-                            {
-                                TransactionalId = null,
-                                TransactionTimeoutMs = -1,
-                                ProducerId = _producerId,
-                                ProducerEpoch = _producerEpoch
-                            };
-
-                            var response = await SendWithConnectionLeaseAsync<InitProducerIdRequest, InitProducerIdResponse>(
-                                    brokerId,
-                                    request,
-                                    initializationToken)
-                                .ConfigureAwait(false);
-                            initializationToken.ThrowIfCancellationRequested();
-
-                            if (response.ErrorCode != ErrorCode.None)
-                            {
-                                throw KafkaException.FromErrorCode(response.ErrorCode,
-                                    $"Failed to initialize idempotent producer: {response.ErrorCode}");
-                            }
-
-                            _producerId = response.ProducerId;
-                            _producerEpoch = response.ProducerEpoch;
-
-                            // Wire the producer ID/epoch into the accumulator for RecordBatch headers.
-                            _accumulator.ProducerId = _producerId;
-                            _accumulator.ProducerEpoch = _producerEpoch;
-                            _idempotentInitialized = true;
-
-                            LogIdempotentProducerInitialized(_producerId, _producerEpoch);
-                            return;
-                        }
-                        catch (Exception ex) when (!initializationToken.IsCancellationRequested
-                            && RetryHelper.IsRetriableBrokerFailure(ex))
-                        {
-                            lastFailure = ex;
-                            LogIdempotentInitializationBrokerFailed(ex, brokerId);
-                        }
-                    }
-
-                    var retryDelayMs = ExponentialRetryBackoff.CalculateDelayMilliseconds(
-                        _options.RetryBackoffMs,
-                        _options.RetryBackoffMaxMs,
-                        ++consecutiveFailures);
-                    await Task.Delay(retryDelayMs, initializationToken).ConfigureAwait(false);
-                }
-            }
-            catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested && timeoutCts.IsCancellationRequested)
-            {
-                throw new KafkaTimeoutException(
-                    TimeoutKind.Api,
-                    Stopwatch.GetElapsedTime(startedAt),
-                    TimeSpan.FromMilliseconds(_options.MaxBlockMs),
-                    $"InitProducerId failed to initialize the idempotent producer within MaxBlockMs ({_options.MaxBlockMs}ms).",
-                    lastFailure ?? ex);
-            }
+            await RequestIdempotentProducerIdAsync(cancellationToken).ConfigureAwait(false);
+            LogIdempotentProducerInitialized(_producerId, _producerEpoch);
         }
         finally
         {
@@ -5796,119 +5720,202 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     }
 
     /// <summary>
-    /// Client-side epoch bump for idempotent (non-transactional) producers (Java-style, KIP-360).
-    /// Increments the epoch locally without sending InitProducerIdRequest. The broker accepts
-    /// epoch+1 with sequence=0 as a valid fresh start for the affected partition.
-    /// Only resets sequences for partitions that triggered the error (OOSN, InvalidProducerEpoch).
-    /// Unaffected partitions keep their sequence counters — the broker carries forward
-    /// per-partition sequence state across epoch bumps.
+    /// Obtains a brand-new producer ID (epoch 0) from any broker and wires it into the accumulator.
+    /// Shared by initial idempotent initialization and by <see cref="ResetIdempotentProducerIdAsync"/>,
+    /// which replaces an ID whose epoch space is exhausted. The request never names the current
+    /// producer ID/epoch: the broker allocates a fresh ID for every non-transactional
+    /// <c>InitProducerId</c>, and Java's idempotent producer sends the same shape.
+    /// Bounded by <c>MaxBlockMs</c>. Caller holds <see cref="_transactionLock"/>.
     /// </summary>
-    internal (long ProducerId, short ProducerEpoch) BumpEpochLocally(
-        short expectedEpoch, IReadOnlyCollection<TopicPartition> partitionsToReset)
+    private async ValueTask RequestIdempotentProducerIdAsync(CancellationToken cancellationToken)
     {
-        // Multiple BrokerSenders can call this concurrently when different brokers
-        // return OutOfOrderSequenceNumber simultaneously. Use lock to make the
-        // check-and-increment atomic and prevent double epoch bumps.
-        lock (_epochBumpLock)
-        {
-            // Already bumped by another BrokerSender — return current state
-            if (_producerEpoch != expectedEpoch)
-            {
-                LogEpochAlreadyBumped(expectedEpoch, _producerEpoch);
-                return (_producerId, _producerEpoch);
-            }
+        var startedAt = Stopwatch.GetTimestamp();
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutCts.CancelAfter(_options.MaxBlockMs);
+        var initializationToken = timeoutCts.Token;
+        Exception? lastFailure = null;
+        var consecutiveFailures = 0;
 
-            if (_producerEpoch == short.MaxValue)
-            {
-                throw new KafkaException(ErrorCode.UnknownServerError,
-                    "Producer epoch overflow — requires producer restart");
-            }
-
-            _producerEpoch = (short)(_producerEpoch + 1);
-            _accumulator.ProducerEpoch = _producerEpoch;
-
-            // Per-partition reset: only affected partitions restart at seq=0.
-            // Unaffected partitions continue with current sequences under new epoch.
-            _accumulator.ResetSequencesForPartitions(partitionsToReset);
-
-            LogProducerEpochBumped(_producerId, _producerEpoch);
-            return (_producerId, _producerEpoch);
-        } // lock (_epochBumpLock)
-    }
-
-    /// <summary>
-    /// Server-side epoch bump via InitProducerIdRequest. Used for transactional producers
-    /// and as fallback when client-side bump is not possible (e.g., epoch overflow).
-    /// The broker returns the same PID with an incremented epoch. Resets all partition
-    /// sequence numbers to 0 so subsequent batches use the new epoch.
-    /// Serialized by _transactionLock. The expectedEpoch parameter prevents redundant bumps.
-    /// </summary>
-    internal async ValueTask<(long ProducerId, short ProducerEpoch)> BumpEpochAsync(
-        short expectedEpoch, CancellationToken cancellationToken)
-    {
-        await SemaphoreHelper.AcquireOrThrowDisposedAsync(_transactionLock, nameof(KafkaProducer<TKey, TValue>), cancellationToken).ConfigureAwait(false);
         try
         {
-            // Another thread already bumped — return current state
-            if (_producerEpoch != expectedEpoch)
-            {
-                LogEpochAlreadyBumped(expectedEpoch, _producerEpoch);
-                return (_producerId, _producerEpoch);
-            }
-
-            var consecutiveFailures = 0;
-
             while (true)
             {
-                cancellationToken.ThrowIfCancellationRequested();
+                initializationToken.ThrowIfCancellationRequested();
 
+                // Non-transactional IDs can come from any broker. Try every known broker
+                // before backing off, and pick up metadata changes on the next round.
                 var brokers = _metadataManager.Metadata.GetBrokers();
                 if (brokers.Count == 0)
                 {
-                    throw new InvalidOperationException("No brokers available for epoch bump");
+                    throw new InvalidOperationException("No brokers available for idempotent producer initialization");
                 }
 
-                var request = new InitProducerIdRequest
+                for (var brokerIndex = 0; brokerIndex < brokers.Count; brokerIndex++)
                 {
-                    TransactionalId = null,
-                    TransactionTimeoutMs = -1,
-                    ProducerId = _producerId,
-                    ProducerEpoch = _producerEpoch
-                };
+                    initializationToken.ThrowIfCancellationRequested();
+                    var brokerId = brokers[brokerIndex].NodeId;
+                    try
+                    {
+                        var request = new InitProducerIdRequest
+                        {
+                            TransactionalId = null,
+                            TransactionTimeoutMs = -1,
+                            ProducerId = -1,
+                            ProducerEpoch = -1
+                        };
 
-                var response = await SendWithConnectionLeaseAsync<InitProducerIdRequest, InitProducerIdResponse>(
-                        brokers[0].NodeId,
-                        request,
-                        cancellationToken)
-                    .ConfigureAwait(false);
+                        var response = await SendWithConnectionLeaseAsync<InitProducerIdRequest, InitProducerIdResponse>(
+                                brokerId,
+                                request,
+                                initializationToken)
+                            .ConfigureAwait(false);
+                        initializationToken.ThrowIfCancellationRequested();
 
-                if (response.ErrorCode == ErrorCode.None)
-                {
-                    _producerId = response.ProducerId;
-                    _producerEpoch = response.ProducerEpoch;
+                        if (response.ErrorCode != ErrorCode.None)
+                        {
+                            throw KafkaException.FromErrorCode(response.ErrorCode,
+                                $"Failed to initialize idempotent producer: {response.ErrorCode}");
+                        }
 
-                    _accumulator.ProducerId = _producerId;
-                    _accumulator.ProducerEpoch = _producerEpoch;
-                    _accumulator.ResetSequenceNumbers();
-
-                    LogProducerEpochBumped(_producerId, _producerEpoch);
-                    return (_producerId, _producerEpoch);
-                }
-
-                if (!response.ErrorCode.IsRetriable())
-                {
-                    throw new KafkaException(response.ErrorCode,
-                        $"Failed to bump producer epoch: {response.ErrorCode}");
+                        PublishIdempotentProducerId(response.ProducerId, response.ProducerEpoch);
+                        _idempotentInitialized = true;
+                        return;
+                    }
+                    catch (Exception ex) when (!initializationToken.IsCancellationRequested
+                        && RetryHelper.IsRetriableBrokerFailure(ex))
+                    {
+                        lastFailure = ex;
+                        LogIdempotentInitializationBrokerFailed(ex, brokerId);
+                    }
                 }
 
                 var retryDelayMs = ExponentialRetryBackoff.CalculateDelayMilliseconds(
                     _options.RetryBackoffMs,
                     _options.RetryBackoffMaxMs,
                     ++consecutiveFailures);
-                LogBumpEpochRetriable(response.ErrorCode, retryDelayMs);
-
-                await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
+                await Task.Delay(retryDelayMs, initializationToken).ConfigureAwait(false);
             }
+        }
+        catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested && timeoutCts.IsCancellationRequested)
+        {
+            throw new KafkaTimeoutException(
+                TimeoutKind.Api,
+                Stopwatch.GetElapsedTime(startedAt),
+                TimeSpan.FromMilliseconds(_options.MaxBlockMs),
+                $"InitProducerId failed to initialize the idempotent producer within MaxBlockMs ({_options.MaxBlockMs}ms).",
+                lastFailure ?? ex);
+        }
+    }
+
+    /// <summary>
+    /// Publishes a producer ID/epoch pair to every reader of the idempotent producer state. The
+    /// accumulator's sequence counters are cleared first: the broker holds no state for a new ID
+    /// (and this is a no-op for the initial ID), so a batch stamped with the new ID must start at
+    /// sequence 0. Then the per-field copies the accumulator stamps onto sealed batches are
+    /// updated, and finally the combined snapshot the send loops key their stale-batch re-stamping
+    /// on. A sealed batch that tore across the per-field writes carries either the old ID or the
+    /// old epoch, so the send loop's comparison against the snapshot catches and re-stamps it.
+    /// Serialized by <see cref="_epochBumpLock"/> (re-entrant for the local bump, which already
+    /// holds it) so a local bump can never interleave with a producer ID reset's publication.
+    /// </summary>
+    private void PublishIdempotentProducerId(long producerId, short producerEpoch)
+    {
+        lock (_epochBumpLock)
+        {
+            if (producerId != _producerId)
+                _accumulator.ResetSequenceNumbers(producerId, producerEpoch);
+
+            _producerId = producerId;
+            _producerEpoch = producerEpoch;
+            _accumulator.ProducerId = producerId;
+            _accumulator.ProducerEpoch = producerEpoch;
+            _idempotentProducerState = new ProducerIdAndEpoch(producerId, producerEpoch);
+        }
+    }
+
+    /// <summary>
+    /// <para>
+    /// Epoch recovery for idempotent (non-transactional) producers (Java-style, KIP-360), called by
+    /// the send loops when the broker rejects a batch with <c>OutOfOrderSequenceNumber</c>,
+    /// <c>InvalidProducerEpoch</c> or <c>UnknownProducerId</c>. Below <see cref="short.MaxValue"/> the
+    /// epoch is bumped locally, without a network call, and the result completes synchronously:
+    /// the broker accepts epoch+1 with sequence 0 as a fresh start for the affected partitions;
+    /// partitions not listed keep their sequence counters. At <see cref="short.MaxValue"/> the epoch
+    /// space of the producer ID is exhausted, and the ID is replaced through
+    /// <see cref="ResetIdempotentProducerIdAsync"/> (Java's <c>resetIdempotentProducerId</c>)
+    /// instead of failing the producer.
+    /// </para>
+    /// <para>
+    /// Several send loops can report the same stale epoch for different partitions. Only the first
+    /// call bumps; every call restarts its own partitions' counters under the resulting state, so a
+    /// loser of the race does not re-stamp its batch with a non-zero sequence the broker would reject
+    /// as an invalid sequence for the new epoch. <see cref="RecordAccumulator.ResetSequencesForPartitions"/>
+    /// restarts a partition at most once per state, which keeps a late response for an already
+    /// re-sequenced partition from zeroing sequences that are in flight.
+    /// </para>
+    /// </summary>
+    internal ValueTask<ProducerIdAndEpoch> BumpEpochForRecoveryAsync(
+        short expectedEpoch,
+        IReadOnlyCollection<TopicPartition> partitionsToReset,
+        CancellationToken cancellationToken)
+    {
+        // Multiple BrokerSenders can call this concurrently when different brokers
+        // return OutOfOrderSequenceNumber simultaneously. Use lock to make the
+        // check-and-increment atomic and prevent double epoch bumps.
+        lock (_epochBumpLock)
+        {
+            // Already bumped (or the ID replaced) by another BrokerSender. The caller's partitions
+            // were not part of that bump, so restart them under the current state; a partition
+            // this state already restarted is left alone (late response for an in-flight retry).
+            if (_producerEpoch != expectedEpoch)
+            {
+                LogEpochAlreadyBumped(expectedEpoch, _producerEpoch);
+                _accumulator.ResetSequencesForPartitions(partitionsToReset, _producerId, _producerEpoch);
+                return new ValueTask<ProducerIdAndEpoch>(_idempotentProducerState);
+            }
+
+            if (_producerEpoch != short.MaxValue)
+            {
+                PublishIdempotentProducerId(_producerId, (short)(_producerEpoch + 1));
+
+                // Per-partition reset: only affected partitions restart at seq=0.
+                // Partitions not listed keep their current sequence counters.
+                _accumulator.ResetSequencesForPartitions(partitionsToReset, _producerId, _producerEpoch);
+
+                LogProducerEpochBumped(_producerId, _producerEpoch);
+                return new ValueTask<ProducerIdAndEpoch>(_idempotentProducerState);
+            }
+        } // lock (_epochBumpLock)
+
+        return ResetIdempotentProducerIdAsync(expectedEpoch, cancellationToken);
+    }
+
+    /// <summary>
+    /// Replaces a producer ID whose epoch reached <see cref="short.MaxValue"/> with a brand-new ID
+    /// (epoch 0) from <c>InitProducerId</c>. Every partition's sequence restarts at 0 because the
+    /// broker holds no state for the new ID; batches already sealed under the old ID are re-stamped
+    /// by the send loop's stale-state check before they are sent. Serialized by
+    /// <see cref="_transactionLock"/>; <paramref name="exhaustedEpoch"/> lets a send loop that lost
+    /// the race detect that another one already completed the reset.
+    /// </summary>
+    private async ValueTask<ProducerIdAndEpoch> ResetIdempotentProducerIdAsync(
+        short exhaustedEpoch, CancellationToken cancellationToken)
+    {
+        await SemaphoreHelper.AcquireOrThrowDisposedAsync(_transactionLock, nameof(KafkaProducer<TKey, TValue>), cancellationToken).ConfigureAwait(false);
+        try
+        {
+            // Another BrokerSender completed the reset while this one waited for the lock.
+            if (_producerEpoch != exhaustedEpoch)
+            {
+                LogEpochAlreadyBumped(exhaustedEpoch, _producerEpoch);
+                return _idempotentProducerState;
+            }
+
+            var exhaustedProducerId = _producerId;
+            LogIdempotentProducerEpochExhausted(exhaustedProducerId);
+            await RequestIdempotentProducerIdAsync(cancellationToken).ConfigureAwait(false);
+            LogIdempotentProducerIdReset(exhaustedProducerId, _producerId, _producerEpoch);
+            return _idempotentProducerState;
         }
         finally
         {
@@ -6757,8 +6764,11 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     [LoggerMessage(Level = LogLevel.Debug, Message = "Bumped producer epoch: ProducerId={ProducerId}, Epoch={Epoch}")]
     private partial void LogProducerEpochBumped(long producerId, short epoch);
 
-    [LoggerMessage(Level = LogLevel.Debug, Message = "BumpEpoch InitProducerId returned retriable error {ErrorCode}, retrying in {DelayMs}ms")]
-    private partial void LogBumpEpochRetriable(ErrorCode errorCode, int delayMs);
+    [LoggerMessage(Level = LogLevel.Information, Message = "Producer epoch space exhausted for ProducerId={ProducerId}; requesting a new producer ID")]
+    private partial void LogIdempotentProducerEpochExhausted(long producerId);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Replaced exhausted producer ID {OldProducerId} with ProducerId={ProducerId}, Epoch={Epoch}; all partition sequences restart at 0")]
+    private partial void LogIdempotentProducerIdReset(long oldProducerId, long producerId, short epoch);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Graceful shutdown timed out after {ElapsedMs:F0}ms (budget={Timeout}ms), forcing disposal")]
     private partial void LogGracefulShutdownTimedOut(int timeout, double elapsedMs);
