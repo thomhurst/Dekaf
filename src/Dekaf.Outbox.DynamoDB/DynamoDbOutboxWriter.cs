@@ -168,8 +168,8 @@ public sealed class DynamoDbOutboxWriter : IDynamoDbOutboxWriter
         }
         catch (TransactionCanceledException canceled) when (AreSameMessages(canceled.CancellationReasons, messages))
         {
-            // A retry that outlived the token, or a caller's own retry policy: every put was
-            // refused by the very item an earlier attempt wrote. The messages are stored.
+            // The same request sent again after DynamoDB stopped recognising its token: every
+            // put was refused by the very item an earlier attempt wrote. The messages are stored.
         }
 
         NotifyCommitted(messages);

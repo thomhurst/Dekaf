@@ -40,7 +40,9 @@ using Dekaf.Outbox.EntityFrameworkCore;
 builder.Services.AddDekaf(dekaf => dekaf
     .AddEntityFrameworkCoreOutboxStore<OrdersContext>((services, options) =>
     {
-        // Configure the EF Core provider used by your application here.
+        // Required: your application's EF Core provider, for example
+        //   options.UseNpgsql(connectionString);
+        //   options.UseSqlServer(connectionString);
         options.EnableDetailedErrors();
     })
     .AddOutboxRelay(producer => producer.WithBootstrapServers("localhost:9092")));

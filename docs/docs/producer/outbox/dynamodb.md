@@ -244,7 +244,9 @@ If the transaction fails, the message does not exist. The business table and the
 | `CreateTransactWriteItemAsync(message)` | One message for your own transaction. |
 | `CreateTransactWriteItemsAsync(messages)` | Several messages for your own transaction. One reservation per distinct bucket; messages sharing a bucket keep their list order. |
 | `NotifyCommitted(message)` / `NotifyCommitted(messages)` | Wakes the relay in this process after your transaction committed. **Never call it before the commit.** |
-| `EnqueueAsync(message)` / `EnqueueAsync(messages)` | Writes messages that have no business write, all or nothing, and notifies by itself. At most 100 messages per call. Safe under retries: the transaction carries an idempotency token, and a write refused by the very messages an earlier attempt stored is a success. |
+| `EnqueueAsync(message)` / `EnqueueAsync(messages)` | Writes messages that have no business write, all or nothing, and notifies by itself. At most 100 messages per call. Safe under the AWS SDK's retries: a retried request whose first attempt was applied is a success. |
+
+Retrying at a higher level is different. If `EnqueueAsync`, or your own transaction, fails with an ambiguous error and you run the operation again, the message takes a new sequence number and is stored a second time under the same `MessageId`. Nothing is lost and nothing is reordered for a consumer that [deduplicates on the message id](./index.md#consumer-side-deduplication); that is the same at-least-once contract as a lease takeover. Give your business write its own idempotency (a condition on the business item) if a second copy of it would matter.
 
 `NotifyCommitted` is optional. Without it, or for a bucket that another instance owns, the owner finds the message on its next poll (one second by default) or through a [notification transport](./index.md#optional-cross-pod-notifications).
 

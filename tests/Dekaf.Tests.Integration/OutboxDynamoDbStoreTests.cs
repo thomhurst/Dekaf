@@ -357,6 +357,51 @@ public sealed class OutboxDynamoDbStoreTests(DynamoDbLocalContainer dynamoDb)
         await Assert.That(await billingStore.GetNextBatchAsync(0, 10)).IsEmpty();
     }
 
+    [Test]
+    [Arguments("id", "SK", "S")]
+    [Arguments("PK", "sort", "S")]
+    [Arguments("PK", "SK", "N")]
+    public async Task ExistingTableWithAnotherKeySchema_FailsSetup_InsteadOfEveryLaterRequest(
+        string partitionKey, string sortKey, string sortKeyType)
+    {
+        using var client = dynamoDb.CreateClient();
+        var options = new DynamoDbOutboxOptions { TableName = $"foreign-{Guid.NewGuid():N}" };
+        await client.CreateTableAsync(new CreateTableRequest
+        {
+            TableName = options.TableName,
+            BillingMode = BillingMode.PAY_PER_REQUEST,
+            AttributeDefinitions =
+            [
+                new AttributeDefinition(partitionKey, ScalarAttributeType.S),
+                new AttributeDefinition(sortKey, sortKeyType)
+            ],
+            KeySchema = [new KeySchemaElement(partitionKey, KeyType.HASH), new KeySchemaElement(sortKey, KeyType.RANGE)]
+        });
+
+        await Assert.That(async () => await DynamoDbOutboxTable.CreateIfNotExistsAsync(client, options))
+            .Throws<OutboxMisconfigurationException>()
+            .WithMessageContaining(options.TableName);
+    }
+
+    [Test]
+    public async Task ExistingTableWithTheConfiguredKeyNames_PassesSetup()
+    {
+        using var client = dynamoDb.CreateClient();
+        var options = new DynamoDbOutboxOptions
+        {
+            TableName = $"named-{Guid.NewGuid():N}",
+            PartitionKeyAttributeName = "pk",
+            SortKeyAttributeName = "sk"
+        };
+
+        // Twice: the second call finds the table it made and must accept it.
+        await DynamoDbOutboxTable.CreateIfNotExistsAsync(client, options);
+        await DynamoDbOutboxTable.CreateIfNotExistsAsync(client, options);
+
+        await new DynamoDbOutboxWriter(client, options).EnqueueAsync(Message(1));
+        await Assert.That((await new DynamoDbOutboxStore(client, options).GetNextBatchAsync(1, 10)).Count).IsEqualTo(1);
+    }
+
     private static OutboxMessage Message(
         int bucket, byte[]? key = null, byte[]? value = null, DateTimeOffset? createdAt = null) => new()
     {

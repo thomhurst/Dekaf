@@ -48,11 +48,22 @@ public interface IDynamoDbOutboxWriter
     /// <summary>
     /// Writes one message without a business write and wakes the local relay.
     /// </summary>
+    /// <remarks>
+    /// Safe under the AWS SDK's own retries: a retried request whose first attempt was applied
+    /// is a success. Calling this method again for the same message is a new write under a new
+    /// sequence number: the message is then stored and published twice under one
+    /// <see cref="OutboxMessage.MessageId"/>, which consumers deduplicate like any other
+    /// at-least-once redelivery.
+    /// </remarks>
     ValueTask EnqueueAsync(OutboxMessage message, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Writes the messages in one transaction, all or nothing, and wakes the local relay.
     /// At most <see cref="DynamoDbOutboxWriter.MaxTransactionItems"/> messages.
     /// </summary>
+    /// <remarks>
+    /// The same retry contract as <see cref="EnqueueAsync(OutboxMessage, CancellationToken)"/>;
+    /// the transaction carries an idempotency token for the SDK's retries.
+    /// </remarks>
     ValueTask EnqueueAsync(IReadOnlyList<OutboxMessage> messages, CancellationToken cancellationToken = default);
 }

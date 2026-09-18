@@ -66,11 +66,13 @@ public sealed class OutboxDynamoDbRelayTests(KafkaTestContainer kafka) : KafkaIn
             var records = await ConsumeMessagesAsync(consumer, keys.Length * 20);
 
             await Assert.That(records.Count).IsEqualTo(keys.Length * 20);
+            var expected = string.Join(',', Enumerable.Range(0, 20).Select(sequence => sequence.ToString("D2")));
             foreach (var key in keys)
             {
-                var values = records.Where(record => record.Key == key).Select(record => record.Value).ToArray();
-                await Assert.That(values.SequenceEqual(values.Order(StringComparer.Ordinal))).IsTrue();
-                await Assert.That(values.Length).IsEqualTo(20);
+                // The exact sequence: sorted and counted alone would let a duplicate stand
+                // in for a missing value.
+                var values = records.Where(record => record.Key == key).Select(record => record.Value);
+                await Assert.That(string.Join(',', values)).IsEqualTo(expected);
             }
 
             await WaitForDrainedAsync(store);
