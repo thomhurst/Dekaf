@@ -10,9 +10,12 @@ namespace Dekaf.Pipeline.Modules;
 
 public record PackedProject(string Name, string Version);
 
+// The test dependencies are optional so packaging survives SKIP_UNIT_TESTS=true: when the unit
+// test modules are registered (local runs, the publish job) packing still waits for them, and when
+// they are not, the edge is dropped instead of failing the graph.
 [DependsOn<BuildModule>]
-[DependsOn<RunStressTestsUnitTestsModule>]
-[DependsOn<RunUnitTestsModule>]
+[DependsOn<RunStressTestsUnitTestsModule>(Optional = true)]
+[DependsOn<RunUnitTestsModule>(Optional = true)]
 [DependsOn<GenerateVersionModule>]
 public class PackModule : Module<List<PackedProject>>
 {

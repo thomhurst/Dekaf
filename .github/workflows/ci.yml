@@ -160,11 +160,12 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
-  # The ONLY job that compiles the full solution. Runs net10.0 unit tests inline and
-  # ships the built test binaries to every downstream test job as one tarball
-  # (tar preserves the apphost executable bit; single-file upload is fast).
+  # The ONLY job that compiles the full solution. Every test job downloads the
+  # binaries it needs from here instead of rebuilding, so this job sits on the
+  # critical path and carries no test execution of its own: the net10.0 unit
+  # tests run in `unit-net10`, alongside the integration matrix.
   build:
-    name: Build & Unit Test (net10.0)
+    name: Build & Pack
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
@@ -215,6 +216,10 @@ jobs:
       - name: Run Pipeline
         env:
           NET_VERSION: net10.0
+          # Unit tests run in their own job off this job's critical path, and AOT
+          # and integration have dedicated jobs too. Packaging stays on: the GSSAPI
+          # smoke build below and the nuget-packages artifact both need it.
+          SKIP_UNIT_TESTS: 'true'
           SKIP_INTEGRATION_TESTS: 'true'
           SKIP_AOT_SMOKE_TESTS: 'true'
           # Publishing happens in the gated publish job after the full release
@@ -237,43 +242,61 @@ jobs:
         shell: pwsh
         run: ./scripts/Test-AbstractionsBinaryCompatibility.ps1
 
-      - name: Replay protocol fuzz regression corpora
-        run: >-
-          ./tests/Dekaf.Tests.Unit/bin/Release/net10.0/Dekaf.Tests.Unit
-          --treenode-filter
-          "/*/*/(ProtocolReaderFuzzCorpusTests|ResponseParserFuzzCorpusTests|RecordBatchFuzzCorpusTests)/*"
-
       - name: Build clean GSSAPI package consumers
         shell: pwsh
         run: ./scripts/Build-GssapiPackageSmoke.ps1
 
+      # One tarball per consumer instead of a single 400+ MB tarball that every
+      # test job downloads whole: an integration group no longer fetches and
+      # unpacks the unit binaries and the other framework's copy. tar preserves
+      # the apphost executable bit, and one file per artifact keeps uploads fast.
       - name: Package test binaries
         run: |
-          tar -czf test-binaries.tar.gz \
-            tests/Dekaf.Tests.Unit/bin/Release/net8.0 \
-            tests/Dekaf.Tests.Unit/bin/Release/net10.0 \
-            tests/Dekaf.Tests.Integration/bin/Release/net8.0 \
-            tests/Dekaf.Tests.Integration/bin/Release/net10.0 \
-            artifacts/gssapi-package-smoke/net8.0 \
-            artifacts/gssapi-package-smoke/net10.0
+          tar -czf unit-net8.0.tar.gz tests/Dekaf.Tests.Unit/bin/Release/net8.0
+          tar -czf unit-net10.0.tar.gz tests/Dekaf.Tests.Unit/bin/Release/net10.0 tools/Dekaf.StressTests.Tests/bin/Release/net10.0
+          tar -czf integration-net8.0.tar.gz tests/Dekaf.Tests.Integration/bin/Release/net8.0
+          tar -czf integration-net10.0.tar.gz tests/Dekaf.Tests.Integration/bin/Release/net10.0
+          tar -czf gssapi-package-smoke.tar.gz artifacts/gssapi-package-smoke/net8.0 artifacts/gssapi-package-smoke/net10.0
 
-      - name: Upload test binaries
+      - name: Upload unit test binaries (net8.0)
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: test-binaries
-          path: test-binaries.tar.gz
+          name: test-binaries-unit-net8.0
+          path: unit-net8.0.tar.gz
           if-no-files-found: error
           retention-days: 3
 
-      - name: Upload Test Results
+      - name: Upload unit test binaries (net10.0)
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        if: always()
         with:
-          name: test-results-unit-net10.0
-          path: |
-            **/TestResults/**
-            **/test-results/**
-          retention-days: 7
+          name: test-binaries-unit-net10.0
+          path: unit-net10.0.tar.gz
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Upload integration test binaries (net8.0)
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: test-binaries-integration-net8.0
+          path: integration-net8.0.tar.gz
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Upload integration test binaries (net10.0)
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: test-binaries-integration-net10.0
+          path: integration-net10.0.tar.gz
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Upload GSSAPI package smoke consumers
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: gssapi-package-smoke
+          path: gssapi-package-smoke.tar.gz
+          if-no-files-found: error
+          retention-days: 3
 
       - name: Upload Packages
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -284,16 +307,6 @@ jobs:
             **/bin/Release/*.snupkg
           if-no-files-found: ignore
           retention-days: 30
-
-      - name: Upload HangDump artifacts
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        if: always()
-        with:
-          name: hangdump-artifacts-unit-net10.0
-          path: |
-            **/*.dmp
-          if-no-files-found: ignore
-          retention-days: 7
 
   gssapi-packages:
     name: GSSAPI NuGet consumers (.NET 8 and .NET 10)
@@ -314,10 +327,18 @@ jobs:
           sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y krb5-kdc krb5-admin-server krb5-user
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          name: test-binaries
+          name: test-binaries-integration-net8.0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: test-binaries-integration-net10.0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: gssapi-package-smoke
       - name: Run authenticated package round trips
         run: |
-          tar -xzf test-binaries.tar.gz
+          tar -xzf integration-net8.0.tar.gz
+          tar -xzf integration-net10.0.tar.gz
+          tar -xzf gssapi-package-smoke.tar.gz
           for framework in net8.0 net10.0; do
             export DEKAF_KERBEROS_PACKAGE_CLIENT="$PWD/artifacts/gssapi-package-smoke/$framework/Dekaf.PackageSmoke.Gssapi.dll"
             dotnet "tests/Dekaf.Tests.Integration/bin/Release/$framework/Dekaf.Tests.Integration.dll" \
@@ -329,6 +350,76 @@ jobs:
         with:
           name: test-results-gssapi-packages
           path: TestResults/gssapi-packages
+          retention-days: 7
+
+  # The net10.0 unit suite (and the stress harness's own unit tests) against the
+  # prebuilt binaries. Its own job so it runs alongside the integration matrix
+  # instead of holding every downstream job behind the build.
+  unit-net10:
+    name: Unit Tests (net10.0)
+    needs: [changes, build]
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout  # Verify snapshot files are read from the repo at runtime
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+
+      - name: Download test binaries
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: test-binaries-unit-net10.0
+
+      - name: Extract test binaries
+        run: tar -xzf unit-net10.0.tar.gz
+
+      - name: Expose GitHub Actions Runtime
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        with:
+          script: |
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env['ACTIONS_RUNTIME_TOKEN']);
+            core.exportVariable('ACTIONS_RESULTS_URL', process.env['ACTIONS_RESULTS_URL']);
+
+      - name: Run unit tests
+        env:
+          NET_VERSION: net10.0
+        run: |
+          exe=tests/Dekaf.Tests.Unit/bin/Release/net10.0/Dekaf.Tests.Unit
+          chmod +x "$exe"
+          "$exe" --hangdump --hangdump-timeout 5m --log-level Debug
+
+      - name: Run stress harness unit tests
+        env:
+          NET_VERSION: net10.0
+        run: |
+          exe=tools/Dekaf.StressTests.Tests/bin/Release/net10.0/Dekaf.StressTests.Tests
+          chmod +x "$exe"
+          "$exe" --hangdump --hangdump-timeout 5m --log-level Debug
+
+      - name: Upload Test Results
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: test-results-unit-net10.0
+          path: |
+            **/TestResults/**
+            **/test-results/**
+          retention-days: 7
+
+      - name: Upload HangDump artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: hangdump-artifacts-unit-net10.0
+          path: |
+            **/*.dmp
+          if-no-files-found: ignore
           retention-days: 7
 
   unit-net8:
@@ -350,10 +441,10 @@ jobs:
       - name: Download test binaries
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          name: test-binaries
+          name: test-binaries-unit-net8.0
 
       - name: Extract test binaries
-        run: tar -xzf test-binaries.tar.gz
+        run: tar -xzf unit-net8.0.tar.gz
 
       - name: Expose GitHub Actions Runtime
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
@@ -490,10 +581,10 @@ jobs:
       - name: Download test binaries
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          name: test-binaries
+          name: test-binaries-integration-net10.0
 
       - name: Extract test binaries
-        run: tar -xzf test-binaries.tar.gz
+        run: tar -xzf integration-net10.0.tar.gz
 
       - name: Expose GitHub Actions Runtime
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
@@ -778,7 +869,7 @@ jobs:
   # build job computed.
   publish:
     name: Publish NuGet
-    needs: [build, gssapi-packages, unit-net8, leak-gates-debug, eventhubs-integration, aot-smoke, aot-integration-publish, release-matrix, release-matrix-aot, code-quality, nuget-audit]
+    needs: [build, gssapi-packages, unit-net8, unit-net10, leak-gates-debug, eventhubs-integration, aot-smoke, aot-integration-publish, release-matrix, release-matrix-aot, code-quality, nuget-audit]
     if: github.event_name == 'workflow_dispatch' && inputs.publish_nuget == true
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -859,7 +950,7 @@ jobs:
   # release-only jobs skip on PR runs).
   ci-passed:
     name: CI Passed
-    needs: [changes, doc-snippets, build, gssapi-packages, unit-net8, leak-gates-debug, integration, eventhubs-integration, aot-smoke, aot-integration-publish, aot-integration-smoke, release-matrix, release-matrix-aot, publish, code-quality, nuget-audit]
+    needs: [changes, doc-snippets, build, gssapi-packages, unit-net8, unit-net10, leak-gates-debug, integration, eventhubs-integration, aot-smoke, aot-integration-publish, aot-integration-smoke, release-matrix, release-matrix-aot, publish, code-quality, nuget-audit]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5

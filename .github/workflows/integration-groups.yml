@@ -3,8 +3,9 @@ name: Integration Groups
 # Reusable job matrix that runs all integration test categories, grouped into
 # duration-balanced buckets, against prebuilt test binaries. Called by ci.yml
 # for both the PR/push lanes and the NuGet release gate, so the group
-# definitions cannot drift between lanes. The caller must have uploaded the
-# binaries artifact earlier in the same run.
+# definitions cannot drift between lanes. The caller must have uploaded a
+# `test-binaries-integration-<framework>` artifact holding
+# `integration-<framework>.tar.gz` earlier in the same run.
 
 on:
   workflow_call:
@@ -89,11 +90,11 @@ jobs:
         if: inputs.framework != 'aot'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          name: test-binaries
+          name: test-binaries-integration-${{ inputs.framework }}
 
       - name: Extract test binaries
         if: inputs.framework != 'aot'
-        run: tar -xzf test-binaries.tar.gz
+        run: tar -xzf integration-${{ inputs.framework }}.tar.gz
 
       - name: Download NativeAOT integration executable
         if: inputs.framework == 'aot'
