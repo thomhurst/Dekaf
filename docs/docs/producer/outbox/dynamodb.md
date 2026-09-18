@@ -298,7 +298,7 @@ The bucket is `OutboxBucket.Compute`: Kafka's Murmur2 hash of the serialized key
 
 **Lease** — one per bucket, created by the first relay that claims it. `Owner` (`S`) is the relay id holding the bucket and is absent for a free bucket. `ExpiresAtUtc` (`N`) is the expiry in UTC ticks; it is also the lease's version, which every renewal and release must match, so a request that a relay gave up on cannot land later and undo a newer write. Lease items beyond the current bucket count are ignored.
 
-**Relay heartbeat** — one per relay. `LastSeenUtc` (`N`) is the relay's last round in UTC ticks. A relay counts towards fair share while its heartbeat is younger than `LeaseDuration`. A stopping relay deletes its heartbeat; the survivors delete a dead relay's heartbeat after ten lease durations.
+**Relay heartbeat** — one per relay. `LastSeenUtc` (`N`) is the relay's last round in UTC ticks, and every heartbeat write is conditional on it moving forward, so a request that a relay gave up on cannot put an older round back. A relay counts towards fair share while its heartbeat is younger than `LeaseDuration`. A stopping relay stamps `StoppedAtUtc` (`N`) on the record instead of deleting it, and peers ignore a stamped record from that moment; the record stays because a deleted one leaves no timestamp to refuse the heartbeat of the round the stop cancelled. The survivors delete a stopped record one lease duration later, and a dead relay's after ten.
 
 ## How relays share buckets
 
@@ -314,7 +314,7 @@ Relays that read the same state compute the same plan, so their writes are disjo
 |---|---|---|
 | Steady state | Each relay renews its own leases: one write per owned bucket per `LeaseRenewInterval`. | None |
 | Instance starts, scale out | It owns nothing while its peers hold every bucket. The peers see its heartbeat on their next round and hand back what exceeds their new share; it claims that on its following round. Buckets a peer keeps do not move. | None |
-| Graceful stop, rolling update, scale in | After the publish loop ends, the relay frees its leases (guarded by owner) and deletes its heartbeat. Peers claim the buckets on their next round, not after `LeaseDuration`. | None |
+| Graceful stop, rolling update, scale in | After the publish loop ends, the relay frees its leases (guarded by owner) and stamps its heartbeat record as stopped, re-reading until nothing of it is left. Peers claim the buckets on their next round, not after `LeaseDuration`. | None |
 | Crash, `SIGKILL`, out of memory, node loss | Leases and heartbeat lapse together after `LeaseDuration`. Until then the survivors write nothing to the dead relay's buckets. Then they split them. | None |
 | Whole fleet replaced at once | The new instances wait for the old leases to lapse, then split the buckets. | None |
 | Stop that misses the shutdown deadline | The relay does not release, because it may still be publishing. Same as a crash. | None |
