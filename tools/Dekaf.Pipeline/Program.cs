@@ -19,26 +19,43 @@ var skipAotSmokeTests = string.Equals(
     Environment.GetEnvironmentVariable("SKIP_AOT_SMOKE_TESTS"), "true", StringComparison.OrdinalIgnoreCase);
 var skipIntegrationTests = string.Equals(
     Environment.GetEnvironmentVariable("SKIP_INTEGRATION_TESTS"), "true", StringComparison.OrdinalIgnoreCase);
+var skipPackaging = string.Equals(
+    Environment.GetEnvironmentVariable("SKIP_PACKAGING"), "true", StringComparison.OrdinalIgnoreCase);
 var integrationTestCategory = Environment.GetEnvironmentVariable("INTEGRATION_TEST_CATEGORY");
+
+// Benchmarks are opt-in: they add ~20 minutes to a run and nothing downstream consumes
+// their output, so a plain build-and-test run must not pay for them.
+var runBenchmarks = string.Equals(
+    Environment.GetEnvironmentVariable("RUN_BENCHMARKS"), "true", StringComparison.OrdinalIgnoreCase);
 
 // Core modules - always needed
 builder.Services.AddModule<RestoreModule>();
 builder.Services.AddModule<GenerateVersionModule>();
 builder.Services.AddModule<BuildModule>();
 
-// Unit test, packaging, and benchmark modules
+// Test and packaging modules are gated independently so a caller can drop one without
+// losing the other. CI runs the unit tests in their own job, off the build critical path,
+// while the build job still has to pack.
 if (!skipUnitTests)
 {
     builder.Services.AddModule<RunUnitTestsModule>();
     builder.Services.AddModule<RunStressTestsUnitTestsModule>();
-    if (!skipAotSmokeTests)
-    {
-        builder.Services.AddModule<RunAotSmokeTestsModule>();
-    }
+}
 
+if (!skipAotSmokeTests)
+{
+    builder.Services.AddModule<RunAotSmokeTestsModule>();
+}
+
+if (!skipPackaging)
+{
     builder.Services.AddModule<PackModule>();
     builder.Services.AddModule<UploadToNuGetModule>();
     builder.Services.AddModule<CreateReleaseModule>();
+}
+
+if (runBenchmarks)
+{
     builder.Services.AddModule<RunBenchmarksModule>();
 }
 
