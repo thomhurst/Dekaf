@@ -213,7 +213,70 @@ public class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposable
             }).ConfigureAwait(false);
 
         await WaitForTopicAssignmentAsync(admin, topic, assignments).ConfigureAwait(false);
+        await WaitForTopicMetadataOnAllBrokersAsync(topic, partitionCount).ConfigureAwait(false);
         return topic;
+    }
+
+    /// <summary>
+    /// Waits until every running broker answers a Metadata request for <paramref name="topic"/>
+    /// with <paramref name="expectedPartitionCount"/> partitions that all have a leader.
+    /// </summary>
+    /// <remarks>
+    /// Topic creation is acknowledged by the controller, and the DescribeTopics wait above only
+    /// confirms the metadata served by whichever broker the admin client asked; the other brokers
+    /// apply the topic from the metadata log a little later. A classic (librdkafka) group leader
+    /// computes the assignment from the metadata served by the group coordinator's broker. When
+    /// that broker has not applied the topic yet it answers UnknownTopicOrPartition, the leader
+    /// assigns zero partitions, and the group settles in a steady state with an empty assignment.
+    /// Nothing triggers a rejoin afterwards because the leader's own subscription metadata, fetched
+    /// from a broker that already knew the topic, never changes. Probing each broker directly
+    /// closes that window before any consumer subscribes.
+    /// </remarks>
+    private async Task WaitForTopicMetadataOnAllBrokersAsync(
+        string topic,
+        int expectedPartitionCount,
+        CancellationToken cancellationToken = default)
+    {
+        await using var pool = new ConnectionPool(
+            $"topic-metadata-probe-{Guid.NewGuid():N}",
+            new ConnectionOptions { RequestTimeout = TimeSpan.FromSeconds(5) },
+            loggerFactory: null);
+        var request = new MetadataRequest
+        {
+            Topics = [new MetadataRequestTopic { Name = topic }],
+            AllowAutoTopicCreation = false
+        };
+
+        foreach (var nodeId in AllBrokerNodeIds)
+        {
+            if (GetBroker(nodeId).State != TestcontainersStates.Running)
+                continue;
+
+            var port = _hostPorts[nodeId - 1];
+            _ = await PollUntilAsync(
+                async token =>
+                {
+                    var connection = await pool.GetConnectionAsync("127.0.0.1", port, token)
+                        .ConfigureAwait(false);
+                    var response = await connection.SendAsync<MetadataRequest, MetadataResponse>(
+                        request,
+                        MetadataRequest.HighestSupportedVersion,
+                        token).ConfigureAwait(false);
+                    var metadata = response.Topics.FirstOrDefault(
+                        candidate => string.Equals(candidate.Name, topic, StringComparison.Ordinal));
+                    return metadata is { ErrorCode: ErrorCode.None }
+                        && metadata.Partitions.Count == expectedPartitionCount
+                        && metadata.Partitions.All(
+                            static partition => partition.ErrorCode == ErrorCode.None && partition.LeaderId >= 0);
+                },
+                isComplete: static visible => visible,
+                maxAttempts: 60,
+                delay: TimeSpan.FromMilliseconds(250),
+                timeoutMessage:
+                    $"Broker {nodeId} did not serve metadata for topic '{topic}' " +
+                    $"with {expectedPartitionCount} led partitions.",
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+        }
     }
 
     public Task<int> FindGroupCoordinatorIdAsync(
