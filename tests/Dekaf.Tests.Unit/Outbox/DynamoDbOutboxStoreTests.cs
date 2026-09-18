@@ -21,6 +21,8 @@ public sealed class DynamoDbOutboxStoreTests
 
     private static readonly string LeaseExpiry = Now.AddSeconds(20).UtcTicks.ToString(CultureInfo.InvariantCulture);
 
+    private static readonly string NowTicks = Now.UtcTicks.ToString(CultureInfo.InvariantCulture);
+
     private static readonly OutboxLeaseRequest Request = new()
     {
         RelayId = "relay-a",
@@ -115,7 +117,7 @@ public sealed class DynamoDbOutboxStoreTests
         await client.Received(2).UpdateItemAsync(
             Arg.Is<UpdateItemRequest>(request => request.ConditionExpression
                     == "#owner = :me AND #expires > :now AND #expires <= :expiry"
-                && request.ExpressionAttributeValues[":now"].N == Now.UtcTicks.ToString(CultureInfo.InvariantCulture)
+                && request.ExpressionAttributeValues[":now"].N == NowTicks
                 && request.ExpressionAttributeValues[":expiry"].N
                     == (Now + Request.LeaseDuration).UtcTicks.ToString(CultureInfo.InvariantCulture)),
             Arg.Any<CancellationToken>());
@@ -129,10 +131,14 @@ public sealed class DynamoDbOutboxStoreTests
     }
 
     [Test]
-    public async Task Release_IsGuardedByOwner_SurvivesATakeoverAfterItsRead_AndRemovesTheHeartbeat()
+    public async Task Release_IsGuardedByOwner_SurvivesATakeoverAfterItsRead_AndTombstonesTheHeartbeat()
     {
         var client = Substitute.For<IAmazonDynamoDB>();
-        ReturnCoordination(client, [.. Leases("relay-a", 0, 1), .. Leases("relay-b", 2, 3)]);
+        // The second answer is what the release re-reads: the straggler it guards against did
+        // not land, so nothing of this relay is left.
+        client.QueryAsync(Arg.Any<QueryRequest>(), Arg.Any<CancellationToken>()).Returns(
+            new QueryResponse { Items = [.. Leases("relay-a", 0, 1), .. Leases("relay-b", 2, 3)] },
+            new QueryResponse { Items = [.. Leases("relay-b", 2, 3)] });
         RefuseLeaseWrites(client, bucket: 1);
         var store = new DynamoDbOutboxStore(client, Options, new FixedClock());
 
@@ -146,8 +152,52 @@ public sealed class DynamoDbOutboxStoreTests
                 && request.ExpressionAttributeValues[":seen"].N == LeaseExpiry),
             Arg.Any<CancellationToken>());
         await client.Received(2).UpdateItemAsync(Arg.Any<UpdateItemRequest>(), Arg.Any<CancellationToken>());
-        await client.Received(1).DeleteItemAsync(
-            Arg.Is<DeleteItemRequest>(request => request.Key["SK"].S == "RELAY#relay-a" && request.ConditionExpression == null),
+        // The record stays behind, stamped: a deleted one could not refuse the heartbeat of
+        // the round this stop cancelled, and that heartbeat would revive the relay.
+        await client.Received(1).PutItemAsync(
+            Arg.Is<PutItemRequest>(request => request.Item["SK"].S == "RELAY#relay-a"
+                && request.Item.ContainsKey("StoppedAtUtc")),
+            Arg.Any<CancellationToken>());
+        await client.DidNotReceive().DeleteItemAsync(Arg.Any<DeleteItemRequest>(), Arg.Any<CancellationToken>());
+        // The second read is the one that proves a straggler did not undo the first pass.
+        await client.Received(2).QueryAsync(Arg.Any<QueryRequest>(), Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task Release_RepeatsForAStragglerThatTakesABucketBack_AndStillGivesUpInTheEnd()
+    {
+        var client = Substitute.For<IAmazonDynamoDB>();
+        // Every read names the relay again, as a cancelled round's claim landing after each
+        // pass would. The release must not spin for a stopping host.
+        ReturnCoordination(client, [.. Leases("relay-a", 0, 1)]);
+        var store = new DynamoDbOutboxStore(client, Options, new FixedClock());
+
+        await store.ReleaseBucketLeasesAsync(Request, previousBuckets: [0, 1]);
+
+        await client.Received(3).QueryAsync(Arg.Any<QueryRequest>(), Arg.Any<CancellationToken>());
+        await client.Received(6).UpdateItemAsync(Arg.Any<UpdateItemRequest>(), Arg.Any<CancellationToken>());
+        // The stopped record is written once, not once per pass.
+        await client.Received(1).PutItemAsync(Arg.Any<PutItemRequest>(), Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task Heartbeat_OnlyMovesForward_AndARefusedOneDoesNotFailTheRound()
+    {
+        var client = Substitute.For<IAmazonDynamoDB>();
+        ReturnCoordination(client, [.. Leases("relay-a", 0, 7), Relay("relay-a")]);
+        client.PutItemAsync(Arg.Any<PutItemRequest>(), Arg.Any<CancellationToken>())
+            .Returns<PutItemResponse>(_ => throw new ConditionalCheckFailedException("The conditional request failed"));
+        var store = new DynamoDbOutboxStore(client, Options, new FixedClock());
+
+        // A stopped relay's tombstone refuses this heartbeat. The round carries on: the
+        // leases this relay still holds are renewed, and its peers keep the later record.
+        var owned = await store.AcquireBucketLeasesAsync(Request);
+
+        await Assert.That(string.Join(',', owned)).IsEqualTo("0,1,2,3,4,5,6,7");
+        await client.Received(1).PutItemAsync(
+            Arg.Is<PutItemRequest>(request =>
+                request.ConditionExpression == "attribute_not_exists(#lastSeen) OR #lastSeen <= :now"
+                && request.ExpressionAttributeValues[":now"].N == NowTicks),
             Arg.Any<CancellationToken>());
     }
 

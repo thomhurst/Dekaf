@@ -149,9 +149,61 @@ public sealed class OutboxDynamoDbLeaseTests(DynamoDbLocalContainer dynamoDb)
         await fleet.ReleaseAsync("relay-b");
         await fleet.RoundAsync("relay-a");
 
-        // One round, not LeaseDuration: the leases were freed and the heartbeat is gone, so
-        // the survivor's share is the whole table again.
+        // One round, not LeaseDuration: the leases were freed and the record is stamped as
+        // stopped, so the survivor's share is the whole table again.
         await Assert.That(Join(fleet.Owned("relay-a"))).IsEqualTo("0,1,2,3,4,5,6,7");
+        await Assert.That(fleet.RefusedWrites).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task Release_IsNotUndoneByTheHeartbeatOfTheRoundTheStopCancelled()
+    {
+        using var fleet = await OutboxDynamoDbFleet.CreateAsync(dynamoDb);
+        await ConvergeAsync(fleet, "relay-a", "relay-b");
+        var cancelledRoundStartedAt = fleet.Clock.GetUtcNow();
+
+        fleet.Clock.Advance(TimeSpan.FromSeconds(1));
+        await fleet.ReleaseAsync("relay-b");
+        // The stop cancelled a round mid-flight. Its heartbeat still reaches DynamoDB, and
+        // without the stopped record to refuse it, peers would count a relay that is gone
+        // towards their fair share for a whole lease duration.
+        await Assert.That(await fleet.LandStragglingHeartbeatAsync("relay-b", cancelledRoundStartedAt)).IsFalse();
+
+        await fleet.RoundAsync("relay-a");
+        await Assert.That(Join(fleet.Owned("relay-a"))).IsEqualTo("0,1,2,3,4,5,6,7");
+    }
+
+    [Test]
+    public async Task StoppedRecord_IsPrunedOnceItCouldNoLongerCountAsActive_NotTenLeasesLater()
+    {
+        using var fleet = await OutboxDynamoDbFleet.CreateAsync(dynamoDb);
+        await ConvergeAsync(fleet, "relay-a", "relay-b");
+        await fleet.ReleaseAsync("relay-b");
+
+        // The record is only there to refuse the requests of the round the stop cancelled.
+        // Keeping it for a crashed relay's ten lease durations would leave one item per pod
+        // of every rolling update in the partition that every relay reads each round.
+        fleet.Clock.Advance(OutboxDynamoDbFleet.LeaseDuration * 2);
+        for (var round = 0; round < 10; round++)
+            await fleet.RoundAsync("relay-a");
+
+        await Assert.That(await CountHeartbeatsAsync(fleet)).IsEqualTo(1);
+        await Assert.That(fleet.RefusedWrites).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task RelayThatStartsAgainAfterAGracefulStop_IsNotHeldBackByItsOwnStoppedRecord()
+    {
+        using var fleet = await OutboxDynamoDbFleet.CreateAsync(dynamoDb);
+        await ConvergeAsync(fleet, "relay-a", "relay-b");
+        await fleet.ReleaseAsync("relay-b");
+        fleet.Clock.Advance(OutboxDynamoDbFleet.RenewInterval);
+
+        // A new pod with the same relay id: its heartbeat is later than the record its
+        // predecessor left, so it counts again and takes its range back.
+        await ConvergeAsync(fleet, "relay-a", "relay-b");
+
+        await AssertBalancedAsync(fleet, "relay-a", "relay-b");
         await Assert.That(fleet.RefusedWrites).IsEqualTo(0);
     }
 

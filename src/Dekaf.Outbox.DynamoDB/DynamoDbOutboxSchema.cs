@@ -16,7 +16,9 @@ namespace Dekaf.Outbox.DynamoDB;
 /// <item>Sequences: one counter item per bucket, each in its own partition so the counters do
 /// not share one partition's write capacity.</item>
 /// <item>Leases and relay heartbeats: one coordination partition, so a single strongly
-/// consistent query reads every lease and every heartbeat as one view.</item>
+/// consistent query reads every lease and every heartbeat as one view. A relay that stops
+/// gracefully leaves its heartbeat behind as a tombstone, stamped with
+/// <see cref="StoppedAtUtc"/>, which fences a write from the round its stop cancelled.</item>
 /// </list>
 /// </remarks>
 internal sealed class DynamoDbOutboxSchema
@@ -33,6 +35,7 @@ internal sealed class DynamoDbOutboxSchema
     public const string Owner = "Owner";
     public const string ExpiresAtUtc = "ExpiresAtUtc";
     public const string LastSeenUtc = "LastSeenUtc";
+    public const string StoppedAtUtc = "StoppedAtUtc";
 
     public const string SequenceSortKey = "SEQUENCE";
     public const string LeaseSortKeyPrefix = "LEASE#";
@@ -41,7 +44,7 @@ internal sealed class DynamoDbOutboxSchema
     private static readonly string[] ItemAttributeNames =
     [
         MessageId, Topic, Key, Value, Headers, Partition, CreatedAtUtc, BucketCount, Sequence, Owner,
-        ExpiresAtUtc, LastSeenUtc
+        ExpiresAtUtc, LastSeenUtc, StoppedAtUtc
     ];
 
     private readonly string _messagePartitionPrefix;

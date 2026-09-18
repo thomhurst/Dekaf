@@ -196,6 +196,10 @@ public sealed class OutboxDynamoDbClusterTests(DynamoDbLocalContainer dynamoDb)
         await cluster.StartPodsAsync("pod-a", "pod-b", "pod-c");
         await cluster.WaitForFairSplitAsync(Patience);
         var owners = Describe(await cluster.ReadOwnersAsync());
+        // Pods that start together plan from membership that is still becoming visible, so
+        // the cold start is allowed its refusals, as it is in the twelve-pod scenario. What
+        // this test measures starts here, with a settled fleet.
+        var settledRefusals = cluster.RefusedWrites;
 
         await cluster.RunWritersAsync(writers: 2, keysPerWriter: 6, CancellationToken.None, messagesPerKey: 3);
         await cluster.WaitForDrainedAsync(Patience);
@@ -204,7 +208,7 @@ public sealed class OutboxDynamoDbClusterTests(DynamoDbLocalContainer dynamoDb)
         // No lease was lost: no bucket moved, nothing was published twice, nothing refused.
         await Assert.That(Describe(await cluster.ReadOwnersAsync())).IsEqualTo(owners);
         await Assert.That(cluster.DuplicatePublications()).IsEqualTo(0);
-        await Assert.That(cluster.RefusedWrites).IsEqualTo(0);
+        await Assert.That(cluster.RefusedWrites).IsEqualTo(settledRefusals);
     }
 
     [Test]

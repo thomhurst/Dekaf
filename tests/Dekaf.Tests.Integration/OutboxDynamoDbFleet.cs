@@ -140,6 +140,41 @@ internal sealed class OutboxDynamoDbFleet : IDisposable
         Forget(relayId);
     }
 
+    /// <summary>
+    /// The heartbeat of a round that a stopping host cancelled, reaching DynamoDB after the
+    /// release: the client gave the request up, but the service can still apply it. Written
+    /// here in the store's own shape, with the timestamp the cancelled round carried.
+    /// </summary>
+    /// <returns>Whether DynamoDB applied it.</returns>
+    public async Task<bool> LandStragglingHeartbeatAsync(string relayId, DateTimeOffset roundStartedAt)
+    {
+        var lastSeen = new AttributeValue
+        {
+            N = roundStartedAt.UtcTicks.ToString(System.Globalization.CultureInfo.InvariantCulture)
+        };
+        try
+        {
+            await _client.PutItemAsync(new PutItemRequest
+            {
+                TableName = Options.TableName,
+                Item = new Dictionary<string, AttributeValue>
+                {
+                    ["PK"] = new() { S = "OUTBOX#COORDINATION" },
+                    ["SK"] = new() { S = $"RELAY#{relayId}" },
+                    ["LastSeenUtc"] = lastSeen
+                },
+                ConditionExpression = "attribute_not_exists(#lastSeen) OR #lastSeen <= :now",
+                ExpressionAttributeNames = new Dictionary<string, string> { ["#lastSeen"] = "LastSeenUtc" },
+                ExpressionAttributeValues = new Dictionary<string, AttributeValue> { [":now"] = lastSeen }
+            });
+            return true;
+        }
+        catch (ConditionalCheckFailedException)
+        {
+            return false;
+        }
+    }
+
     /// <summary>A crash: the relay stops without a word. Its leases and heartbeat stay behind.</summary>
     public void Forget(string relayId)
     {

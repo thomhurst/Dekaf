@@ -35,6 +35,13 @@ public sealed partial class DynamoDbOutboxStore : IOutboxStore, IOutboxLeaseRene
     private const int MaxBatchWriteAttempts = 8;
 
     /// <summary>
+    /// How many times a release reads the leases before it gives up on undoing a write that a
+    /// cancelled acquisition round landed after it. The first pass hands the leases back, the
+    /// rest confirm; the bound keeps a stopping host from reading forever.
+    /// </summary>
+    private const int MaxReleaseAttempts = 3;
+
+    /// <summary>
     /// Gaps probed per fetch. Many writers in flight leave many gaps in one batch; the bound
     /// keeps the probes a fraction of the fetch they guard.
     /// </summary>
@@ -160,33 +167,50 @@ public sealed partial class DynamoDbOutboxStore : IOutboxStore, IOutboxLeaseRene
     {
         ArgumentNullException.ThrowIfNull(request);
 
-        // Released by owner, not by previousBuckets: the read also finds leases that an
-        // acquisition claimed before it failed, and stale lease items beyond the bucket count.
-        var now = _timeProvider.GetUtcNow().UtcTicks;
-        var owned = new List<int>();
-        var seenExpiry = new Dictionary<int, long>();
-        await foreach (var item in QueryCoordinationAsync(DynamoDbOutboxSchema.LeaseSortKeyPrefix, cancellationToken)
-            .ConfigureAwait(false))
+        // A stop cancels the acquisition round it interrupts, but a request the client gave up
+        // on can still reach DynamoDB afterwards. A claim that lands then names a relay that
+        // is gone as the owner of a bucket, and its peers wait a whole lease duration for a
+        // handover that already happened. No condition can refuse it, because the lease it
+        // claims is one this release never writes, so the release reads again instead and
+        // hands back whatever a straggler took, until a read comes back clean.
+        for (var attempt = 0; attempt < MaxReleaseAttempts; attempt++)
         {
-            if (TryReadLease(item, out var bucket, out var owner, out var expiresAt) && owner == request.RelayId)
+            // Released by owner, not by previousBuckets: the read also finds leases that an
+            // acquisition claimed before it failed, and stale lease items beyond the bucket count.
+            var now = _timeProvider.GetUtcNow().UtcTicks;
+            var owned = new List<int>();
+            var seenExpiry = new Dictionary<int, long>();
+            await foreach (var item in QueryCoordinationAsync(DynamoDbOutboxSchema.LeaseSortKeyPrefix, cancellationToken)
+                .ConfigureAwait(false))
             {
-                owned.Add(bucket);
-                seenExpiry[bucket] = expiresAt;
+                if (TryReadLease(item, out var bucket, out var owner, out var expiresAt) && owner == request.RelayId)
+                {
+                    owned.Add(bucket);
+                    seenExpiry[bucket] = expiresAt;
+                }
             }
+
+            if (attempt > 0 && owned.Count == 0)
+                return;
+
+            // The owner guard leaves a lease alone that a peer took over after it expired.
+            await WriteLeasesAsync(
+                owned, ReleaseLeaseRequest, bucket => seenExpiry[bucket], new LeaseWrite(request.RelayId, now, now),
+                cancellationToken).ConfigureAwait(false);
+
+            // Peers stop dividing the buckets by a relay count that still includes this one.
+            // The record is stamped rather than deleted, because a heartbeat only moves its
+            // timestamp forward and a deleted record leaves nothing to refuse the heartbeat of
+            // the cancelled round. Written even when the relay has no record yet, so a first
+            // heartbeat still on its way is refused too.
+            if (attempt == 0)
+                await WriteRelayRecordAsync(request.RelayId, now, stopped: true, cancellationToken)
+                    .ConfigureAwait(false);
         }
 
-        // The owner guard leaves a lease alone that a peer took over after it expired.
-        await WriteLeasesAsync(
-            owned, ReleaseLeaseRequest, bucket => seenExpiry[bucket], new LeaseWrite(request.RelayId, now, now),
-            cancellationToken).ConfigureAwait(false);
-
-        // Peers stop dividing the buckets by a relay count that still includes this one.
-        // If this request fails, the heartbeat ages out as it does without a release.
-        await _client.DeleteItemAsync(new DeleteItemRequest
-        {
-            TableName = _schema.TableName,
-            Key = _schema.RelayKey(request.RelayId)
-        }, cancellationToken).ConfigureAwait(false);
+        // Only reached while a straggler keeps taking buckets back. Whatever it holds now is
+        // handed over when the lease expires, as it is for a relay that never released.
+        LogReleaseUnfinished(request.RelayId, request.LeaseDuration);
     }
 
     /// <summary>

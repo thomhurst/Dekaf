@@ -41,11 +41,15 @@ public sealed partial class DynamoDbOutboxStore
             {
                 var relayId = sortKey[DynamoDbOutboxSchema.RelaySortKeyPrefix.Length..];
                 DynamoDbOutboxSchema.TryReadNumber(item, DynamoDbOutboxSchema.LastSeenUtc, out var lastSeen);
+                // A relay that released its buckets is gone from this moment, whatever its
+                // timestamp says: the record only stays behind to fence its own stragglers,
+                // which is why it is also pruned as soon as it could no longer count as active.
+                var stopped = item.ContainsKey(DynamoDbOutboxSchema.StoppedAtUtc);
                 // Strictly newer than the cutoff, as a lease is expired at its expiry tick:
                 // the last round of a dead relay stops counting when its leases free up.
-                if (lastSeen > activeCutoff)
+                if (!stopped && lastSeen > activeCutoff)
                     activeRelayIds.Add(relayId);
-                else if (lastSeen < staleCutoff)
+                else if (lastSeen < (stopped ? activeCutoff : staleCutoff))
                     staleRelayIds.Add(relayId);
             }
             // Lease items beyond the range are left over from a larger bucket count. They
@@ -231,44 +235,100 @@ public sealed partial class DynamoDbOutboxStore
         ["#expires"] = DynamoDbOutboxSchema.ExpiresAtUtc
     };
 
-    // Unconditional: only this relay writes its own heartbeat, so nothing can refuse it.
-    private async Task RecordHeartbeatAsync(string relayId, long now, CancellationToken cancellationToken)
+    private Task RecordHeartbeatAsync(string relayId, long now, CancellationToken cancellationToken) =>
+        WriteRelayRecordAsync(relayId, now, stopped: false, cancellationToken);
+
+    /// <summary>
+    /// Writes this relay's coordination record: its heartbeat, or the stopped record a
+    /// release leaves behind. One writer, so both carry the timestamp peers read.
+    /// </summary>
+    /// <remarks>
+    /// Only this relay writes its own record, so the one condition a heartbeat needs is its
+    /// own clock: the timestamp only ever moves forward. A request that this relay gave up on
+    /// can still reach DynamoDB later, and without the condition it would revive a heartbeat
+    /// that a later round, or the release of a stopping relay, had already replaced. The
+    /// stopped record is written unconditionally: nothing it could lose to is newer.
+    /// </remarks>
+    private async Task WriteRelayRecordAsync(
+        string relayId, long now, bool stopped, CancellationToken cancellationToken)
     {
-        var item = _schema.RelayKey(relayId);
-        item[DynamoDbOutboxSchema.LastSeenUtc] = DynamoDbOutboxSchema.Number(now);
-        await _client.PutItemAsync(new PutItemRequest { TableName = _schema.TableName, Item = item }, cancellationToken)
-            .ConfigureAwait(false);
+        var record = _schema.RelayKey(relayId);
+        record[DynamoDbOutboxSchema.LastSeenUtc] = DynamoDbOutboxSchema.Number(now);
+        if (stopped)
+            record[DynamoDbOutboxSchema.StoppedAtUtc] = DynamoDbOutboxSchema.Number(now);
+
+        var write = new PutItemRequest { TableName = _schema.TableName, Item = record };
+        if (!stopped)
+        {
+            write.ConditionExpression = "attribute_not_exists(#lastSeen) OR #lastSeen <= :now";
+            write.ExpressionAttributeNames = new Dictionary<string, string>(1)
+            {
+                ["#lastSeen"] = DynamoDbOutboxSchema.LastSeenUtc
+            };
+            write.ExpressionAttributeValues = new Dictionary<string, AttributeValue>(1)
+            {
+                [":now"] = DynamoDbOutboxSchema.Number(now)
+            };
+        }
+
+        try
+        {
+            await _client.PutItemAsync(write, cancellationToken).ConfigureAwait(false);
+        }
+        catch (ConditionalCheckFailedException)
+        {
+            // The record already carries a later timestamp. Either this request is the
+            // straggler the condition exists for, and nothing is waiting for it, or two
+            // hosts share one relay id, or this host's clock went backwards: peers then keep
+            // the later timestamp until this relay's clock passes it.
+            LogHeartbeatNotRecorded(relayId);
+        }
     }
 
     private async Task PruneHeartbeatsAsync(
         List<string> staleRelayIds, long now, OutboxLeaseRequest request, CancellationToken cancellationToken)
     {
-        var cutoff = DynamoDbOutboxSchema.Number(now - (request.LeaseDuration.Ticks * HeartbeatPruneFactor));
-        foreach (var relayId in staleRelayIds)
+        var dead = DynamoDbOutboxSchema.Number(now - (request.LeaseDuration.Ticks * HeartbeatPruneFactor));
+        // A stopped record is only there to refuse the requests of the round its stop
+        // cancelled, which are long gone by the time it could no longer count as active.
+        var stopped = DynamoDbOutboxSchema.Number(now - request.LeaseDuration.Ticks);
+        await BoundedConcurrency.ForAsync(staleRelayIds.Count, _options.MaxConcurrency, async (index, token) =>
         {
             try
             {
                 await _client.DeleteItemAsync(new DeleteItemRequest
                 {
                     TableName = _schema.TableName,
-                    Key = _schema.RelayKey(relayId),
+                    Key = _schema.RelayKey(staleRelayIds[index]),
                     // Every relay prunes the same records. The missing-item branch lets the
                     // second delete of a record succeed instead of being refused.
-                    ConditionExpression = "attribute_not_exists(#pk) OR #lastSeen < :cutoff",
+                    ConditionExpression = "attribute_not_exists(#pk) OR #lastSeen < :dead"
+                        + " OR (attribute_exists(#stopped) AND #lastSeen < :stopped)",
                     ExpressionAttributeNames = new Dictionary<string, string>
                     {
                         ["#pk"] = _schema.PartitionKeyName,
-                        ["#lastSeen"] = DynamoDbOutboxSchema.LastSeenUtc
+                        ["#lastSeen"] = DynamoDbOutboxSchema.LastSeenUtc,
+                        ["#stopped"] = DynamoDbOutboxSchema.StoppedAtUtc
                     },
-                    ExpressionAttributeValues = new Dictionary<string, AttributeValue> { [":cutoff"] = cutoff }
-                }, cancellationToken).ConfigureAwait(false);
+                    ExpressionAttributeValues = new Dictionary<string, AttributeValue>(2)
+                    {
+                        [":dead"] = dead,
+                        [":stopped"] = stopped
+                    }
+                }, token).ConfigureAwait(false);
             }
             catch (ConditionalCheckFailedException)
             {
                 // The relay came back after the read.
             }
-        }
+        }, cancellationToken).ConfigureAwait(false);
     }
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Outbox relay {RelayId} did not record its heartbeat: the coordination record already carries a later timestamp. Expected from a request abandoned by a stopping host; otherwise two hosts share this relay id, or this host's clock went backwards")]
+    private partial void LogHeartbeatNotRecorded(string relayId);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Outbox relay {RelayId} still held bucket leases after releasing them repeatedly; a request abandoned by this host keeps taking them back. Peers take over after LeaseDuration ({LeaseDuration})")]
+    private partial void LogReleaseUnfinished(string relayId, TimeSpan leaseDuration);
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Outbox relay {RelayId} did not get bucket {Bucket}: a peer claimed it first. Expected while relay membership is changing")]
     private partial void LogClaimRefused(string relayId, int bucket);
