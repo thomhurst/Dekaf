@@ -21,12 +21,17 @@ var skipIntegrationTests = string.Equals(
     Environment.GetEnvironmentVariable("SKIP_INTEGRATION_TESTS"), "true", StringComparison.OrdinalIgnoreCase);
 var integrationTestCategory = Environment.GetEnvironmentVariable("INTEGRATION_TEST_CATEGORY");
 
+// Benchmarks are opt-in: they add ~20 minutes to a run and nothing downstream consumes
+// their output, so a plain build-and-test run must not pay for them.
+var runBenchmarks = string.Equals(
+    Environment.GetEnvironmentVariable("RUN_BENCHMARKS"), "true", StringComparison.OrdinalIgnoreCase);
+
 // Core modules - always needed
 builder.Services.AddModule<RestoreModule>();
 builder.Services.AddModule<GenerateVersionModule>();
 builder.Services.AddModule<BuildModule>();
 
-// Unit test, packaging, and benchmark modules
+// Unit test and packaging modules
 if (!skipUnitTests)
 {
     builder.Services.AddModule<RunUnitTestsModule>();
@@ -39,6 +44,10 @@ if (!skipUnitTests)
     builder.Services.AddModule<PackModule>();
     builder.Services.AddModule<UploadToNuGetModule>();
     builder.Services.AddModule<CreateReleaseModule>();
+}
+
+if (runBenchmarks)
+{
     builder.Services.AddModule<RunBenchmarksModule>();
 }
 

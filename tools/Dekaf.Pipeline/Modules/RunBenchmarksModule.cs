@@ -2,7 +2,6 @@ using ModularPipelines.Attributes;
 using ModularPipelines.Context;
 using ModularPipelines.DotNet.Extensions;
 using ModularPipelines.DotNet.Options;
-using ModularPipelines.Git.Attributes;
 using ModularPipelines.Git.Extensions;
 using ModularPipelines.Models;
 using ModularPipelines.Modules;
@@ -10,8 +9,10 @@ using ModularPipelines.Options;
 
 namespace Dekaf.Pipeline.Modules;
 
-[RunOnLinuxOnly]
-[RunOnlyOnBranch("main")]
+/// <summary>
+/// Runs the memory benchmarks. Opt-in only: registered when <c>RUN_BENCHMARKS=true</c>, because the
+/// run takes about 20 minutes and no other module or workflow consumes its output.
+/// </summary>
 [DependsOn<BuildModule>]
 public class RunBenchmarksModule : Module<CommandResult>
 {
