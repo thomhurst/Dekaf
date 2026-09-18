@@ -129,7 +129,7 @@ public sealed class DynamoDbOutboxWriter : IDynamoDbOutboxWriter
                 Item = item.Put.Item,
                 ConditionExpression = item.Put.ConditionExpression,
                 ExpressionAttributeNames = item.Put.ExpressionAttributeNames,
-                ReturnValuesOnConditionCheckFailure = ReturnValuesOnConditionCheckFailure.ALL_OLD
+                ReturnValuesOnConditionCheckFailure = item.Put.ReturnValuesOnConditionCheckFailure
             }, cancellationToken).ConfigureAwait(false);
         }
         catch (ConditionalCheckFailedException refused) when (IsSameMessage(refused.Item, message))
@@ -155,9 +155,40 @@ public sealed class DynamoDbOutboxWriter : IDynamoDbOutboxWriter
         }
 
         var items = await CreateTransactWriteItemsAsync(messages, cancellationToken).ConfigureAwait(false);
-        await _client.TransactWriteItemsAsync(new TransactWriteItemsRequest { TransactItems = [.. items] },
-            cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await _client.TransactWriteItemsAsync(new TransactWriteItemsRequest
+            {
+                TransactItems = [.. items],
+                // Set here rather than left to the AWS SDK to fill in: with one token for every
+                // attempt, DynamoDB answers a retry of a transaction it already applied with
+                // success instead of running the conditions again.
+                ClientRequestToken = Guid.NewGuid().ToString("N")
+            }, cancellationToken).ConfigureAwait(false);
+        }
+        catch (TransactionCanceledException canceled) when (AreSameMessages(canceled.CancellationReasons, messages))
+        {
+            // A retry that outlived the token, or a caller's own retry policy: every put was
+            // refused by the very item an earlier attempt wrote. The messages are stored.
+        }
+
         NotifyCommitted(messages);
+    }
+
+    // A transaction is all or nothing, so an applied one leaves every put refused by its own
+    // item. Anything else (another reason, another message in the slot) is a real failure.
+    private static bool AreSameMessages(List<CancellationReason>? reasons, IReadOnlyList<OutboxMessage> messages)
+    {
+        if (reasons is null || reasons.Count != messages.Count)
+            return false;
+
+        for (var index = 0; index < messages.Count; index++)
+        {
+            if (reasons[index].Code != "ConditionalCheckFailed" || !IsSameMessage(reasons[index].Item, messages[index]))
+                return false;
+        }
+
+        return true;
     }
 
     private static bool IsSameMessage(Dictionary<string, AttributeValue>? stored, OutboxMessage message) =>
@@ -205,7 +236,10 @@ public sealed class DynamoDbOutboxWriter : IDynamoDbOutboxWriter
             // A counter that was reset or deleted hands out numbers again. Refusing the write
             // fails the business transaction instead of overwriting a pending message.
             ConditionExpression = "attribute_not_exists(#pk)",
-            ExpressionAttributeNames = new Dictionary<string, string> { ["#pk"] = _schema.PartitionKeyName }
+            ExpressionAttributeNames = new Dictionary<string, string> { ["#pk"] = _schema.PartitionKeyName },
+            // The refusal then says which message holds the number: this one, written by an
+            // earlier attempt, or another one, which is the overwrite the condition prevents.
+            ReturnValuesOnConditionCheckFailure = ReturnValuesOnConditionCheckFailure.ALL_OLD
         }
     };
 }

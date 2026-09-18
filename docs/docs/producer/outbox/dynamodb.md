@@ -244,7 +244,7 @@ If the transaction fails, the message does not exist. The business table and the
 | `CreateTransactWriteItemAsync(message)` | One message for your own transaction. |
 | `CreateTransactWriteItemsAsync(messages)` | Several messages for your own transaction. One reservation per distinct bucket; messages sharing a bucket keep their list order. |
 | `NotifyCommitted(message)` / `NotifyCommitted(messages)` | Wakes the relay in this process after your transaction committed. **Never call it before the commit.** |
-| `EnqueueAsync(message)` / `EnqueueAsync(messages)` | Writes messages that have no business write, all or nothing, and notifies by itself. At most 100 messages per call. Safe under AWS SDK retries: a retried write whose first attempt was applied is a success. |
+| `EnqueueAsync(message)` / `EnqueueAsync(messages)` | Writes messages that have no business write, all or nothing, and notifies by itself. At most 100 messages per call. Safe under retries: the transaction carries an idempotency token, and a write refused by the very messages an earlier attempt stored is a success. |
 
 `NotifyCommitted` is optional. Without it, or for a bucket that another instance owns, the owner finds the message on its next poll (one second by default) or through a [notification transport](./index.md#optional-cross-pod-notifications).
 

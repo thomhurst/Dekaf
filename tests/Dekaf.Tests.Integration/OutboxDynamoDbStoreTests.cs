@@ -137,6 +137,39 @@ public sealed class OutboxDynamoDbStoreTests(DynamoDbLocalContainer dynamoDb)
     }
 
     [Test]
+    public async Task RefusedPut_ReportsTheMessageThatHoldsTheNumber_InsideATransactionToo()
+    {
+        using var client = dynamoDb.CreateClient();
+        var options = await DynamoDbLocalContainer.CreateTableAsync(client);
+        var writer = new DynamoDbOutboxWriter(client, options);
+        OutboxMessage[] messages = [Message(2), Message(5)];
+        var items = await writer.CreateTransactWriteItemsAsync(messages);
+        await client.TransactWriteItemsAsync(new TransactWriteItemsRequest { TransactItems = [.. items] });
+
+        // The same puts again under a new token: what a retry looks like once DynamoDB no
+        // longer recognises it. The writer tells its own retry from an overwrite by the
+        // stored item that each refusal carries, so DynamoDB must really return it.
+        TransactionCanceledException? canceled = null;
+        try
+        {
+            await client.TransactWriteItemsAsync(new TransactWriteItemsRequest { TransactItems = [.. items] });
+        }
+        catch (TransactionCanceledException exception)
+        {
+            canceled = exception;
+        }
+
+        await Assert.That(canceled).IsNotNull();
+        await Assert.That(canceled!.CancellationReasons.Count).IsEqualTo(2);
+        for (var index = 0; index < messages.Length; index++)
+        {
+            await Assert.That(canceled.CancellationReasons[index].Code).IsEqualTo("ConditionalCheckFailed");
+            await Assert.That(Guid.Parse(canceled.CancellationReasons[index].Item["MessageId"].S))
+                .IsEqualTo(messages[index].MessageId);
+        }
+    }
+
+    [Test]
     public async Task ResetSequenceCounter_FailsTheWrite_InsteadOfOverwritingAPendingMessage()
     {
         using var client = dynamoDb.CreateClient();

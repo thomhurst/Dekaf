@@ -159,6 +159,97 @@ public sealed class DynamoDbOutboxWriterTests
     }
 
     [Test]
+    public async Task EnqueueOfSeveral_SendsOneIdempotencyToken_SoARetryOfAnAppliedTransactionSucceeds()
+    {
+        var client = Substitute.For<IAmazonDynamoDB>();
+        CountSequences(client);
+        var tokens = new List<string>();
+        client.TransactWriteItemsAsync(Arg.Do<TransactWriteItemsRequest>(request => tokens.Add(request.ClientRequestToken)),
+            Arg.Any<CancellationToken>()).Returns(new TransactWriteItemsResponse());
+        var writer = new DynamoDbOutboxWriter(client, Options);
+
+        await writer.EnqueueAsync([Message(1), Message(3)]);
+        await writer.EnqueueAsync([Message(1), Message(3)]);
+
+        // Explicit, not left to the SDK: the guarantee must not rest on its defaults. One
+        // token per call, so two calls never collapse into one transaction either.
+        await Assert.That(tokens.Count).IsEqualTo(2);
+        await Assert.That(tokens.All(token => !string.IsNullOrEmpty(token))).IsTrue();
+        await Assert.That(tokens[0]).IsNotEqualTo(tokens[1]);
+    }
+
+    [Test]
+    public async Task EnqueueOfSeveral_TreatsATransactionRefusedByItsOwnItems_AsStored()
+    {
+        var client = Substitute.For<IAmazonDynamoDB>();
+        CountSequences(client);
+        var notifier = Substitute.For<IOutboxBucketNotifier>();
+        var writer = new DynamoDbOutboxWriter(client, Options, notifier);
+        // The first attempt committed and its response was lost; the token has expired or a
+        // retry policy outside the SDK sent the transaction again.
+        client.TransactWriteItemsAsync(Arg.Any<TransactWriteItemsRequest>(), Arg.Any<CancellationToken>())
+            .ThrowsAsync(call => new TransactionCanceledException("Transaction cancelled")
+            {
+                CancellationReasons =
+                [
+                    .. call.Arg<TransactWriteItemsRequest>().TransactItems.Select(item => new CancellationReason
+                    {
+                        Code = "ConditionalCheckFailed",
+                        Item = item.Put.Item
+                    })
+                ]
+            });
+
+        await writer.EnqueueAsync([Message(4), Message(6)]);
+
+        notifier.Received(1).NotifyCommitted(Arg.Is<IReadOnlySet<int>>(buckets => buckets.Count == 2));
+        await client.Received(1).TransactWriteItemsAsync(
+            Arg.Is<TransactWriteItemsRequest>(request => request.TransactItems.All(item =>
+                item.Put.ReturnValuesOnConditionCheckFailure == ReturnValuesOnConditionCheckFailure.ALL_OLD)),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    [Arguments("foreign-item")]
+    [Arguments("other-reason")]
+    [Arguments("partly-refused")]
+    public async Task EnqueueOfSeveral_StillFails_WhenTheTransactionWasNotItsOwnRetry(string scenario)
+    {
+        var client = Substitute.For<IAmazonDynamoDB>();
+        CountSequences(client);
+        var notifier = Substitute.For<IOutboxBucketNotifier>();
+        var writer = new DynamoDbOutboxWriter(client, Options, notifier);
+        client.TransactWriteItemsAsync(Arg.Any<TransactWriteItemsRequest>(), Arg.Any<CancellationToken>())
+            .ThrowsAsync(call =>
+            {
+                var puts = call.Arg<TransactWriteItemsRequest>().TransactItems;
+                var own = new CancellationReason { Code = "ConditionalCheckFailed", Item = puts[0].Put.Item };
+                return new TransactionCanceledException("Transaction cancelled")
+                {
+                    CancellationReasons =
+                    [
+                        own,
+                        scenario switch
+                        {
+                            // A reset counter handed out a number that another message holds.
+                            "foreign-item" => new CancellationReason
+                            {
+                                Code = "ConditionalCheckFailed",
+                                Item = new Dictionary<string, AttributeValue> { ["MessageId"] = new() { S = Guid.NewGuid().ToString() } }
+                            },
+                            "other-reason" => new CancellationReason { Code = "ThrottlingError" },
+                            _ => new CancellationReason { Code = "None" }
+                        }
+                    ]
+                };
+            });
+
+        await Assert.That(async () => await writer.EnqueueAsync([Message(4), Message(6)]))
+            .Throws<TransactionCanceledException>();
+        await Assert.That(notifier.ReceivedCalls()).IsEmpty();
+    }
+
+    [Test]
     public async Task NotifyCommitted_UsesBucketHintsWhereTheNotifierTakesThem()
     {
         var client = Substitute.For<IAmazonDynamoDB>();
