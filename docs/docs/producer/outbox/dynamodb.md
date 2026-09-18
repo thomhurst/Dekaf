@@ -273,7 +273,7 @@ Every item lives under `KeyPrefix` (default `OUTBOX`). A writer in another langu
 | Lease | `OUTBOX#COORDINATION` | `LEASE#{bucket}`, 10 digits, zero padded: `LEASE#0000000003` |
 | Relay heartbeat | `OUTBOX#COORDINATION` | `RELAY#{relayId}` |
 
-`{bucket}` in a partition key is the decimal bucket number without padding. All timestamps are **UTC ticks** as a number (100 ns since 0001-01-01), the encoding the EF Core store uses for its lease and heartbeat columns; convert with `new DateTimeOffset(ticks, TimeSpan.Zero)`.
+`{bucket}` in a partition key is the decimal bucket number without padding. All timestamps are **UTC ticks** as a number (100 ns since 0001-01-01); convert with `new DateTimeOffset(ticks, TimeSpan.Zero)`.
 
 **Message** — one per pending record, deleted after the broker acknowledges it. A strongly consistent query of one partition returns a bucket in enqueue order.
 

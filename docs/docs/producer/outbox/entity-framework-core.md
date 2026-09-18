@@ -51,6 +51,8 @@ This overload registers the context factory and commit interceptors together. If
 
 The EF interceptors wake the local relay only after a successful implicit commit or an explicit EF Core transaction commit. `SaveChanges` and `SaveChangesAsync` inside an explicit transaction do not notify until `Commit` or `CommitAsync`. Ambient transactions notify after successful transaction completion; the database provider must support ambient enlistment. A rollback or failed save does not trigger publication. The caller does not wait for Kafka acknowledgement as part of the notification.
 
+The interceptors collect the distinct bucket IDs of the added outbox rows, accumulate them across saves in a transaction, and hand them to the notifier after commit, so the relay fetches exactly those buckets. Contexts without the interceptors, and commits performed directly on an externally owned database transaction, do not notify; the relay finds those rows by polling.
+
 The relay's side of notifications, fallback polling and cross-pod hints is described on the [overview](./index.md#commit-notifications-and-fallback-polling).
 
 ## Database Schema
