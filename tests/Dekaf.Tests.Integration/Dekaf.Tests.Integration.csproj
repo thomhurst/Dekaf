@@ -33,11 +33,16 @@
     <!-- Entity Framework Core cannot compile under NativeAOT (ILC IL3002 in EF itself);
          the outbox EF store and its end-to-end test are covered by the JIT legs only. -->
     <ProjectReference Include="..\..\src\Dekaf.Outbox.EntityFrameworkCore\Dekaf.Outbox.EntityFrameworkCore.csproj" Condition="'$(PublishAot)' != 'true'" />
+    <!-- The DynamoDB store is exercised against DynamoDB Local on the JIT legs only: the AWS SDK
+         is not part of the verified NativeAOT publish of this project. -->
+    <ProjectReference Include="..\..\src\Dekaf.Outbox.DynamoDB\Dekaf.Outbox.DynamoDB.csproj" Condition="'$(PublishAot)' != 'true'" />
   </ItemGroup>
 
   <ItemGroup Condition="'$(PublishAot)' == 'true'">
     <Compile Remove="OutboxRelayIntegrationTests.cs" />
     <Compile Remove="OutboxRelationalMetricsTests.cs" />
+    <Compile Remove="OutboxDynamoDb*.cs" />
+    <Compile Remove="DynamoDbLocalContainer.cs" />
     <Compile Remove="SchemaRegistrySubjectCompatibilityTests.cs" />
     <Compile Remove="AvroPocoInteropIntegrationTests.cs" />
     <Compile Remove="RoutingSerdeIntegrationTests.cs" />

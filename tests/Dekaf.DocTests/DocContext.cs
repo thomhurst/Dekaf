@@ -406,7 +406,7 @@ public sealed class ApplicationOutboxTransport : IOutboxNotificationTransport
         => throw new NotSupportedException("Documentation compilation fixture only.");
 }
 
-public sealed class DynamoDbOutboxStore : IOutboxStore
+public sealed class CustomOutboxStore : IOutboxStore
 {
     public ValueTask<IReadOnlyList<int>> AcquireBucketLeasesAsync(
         OutboxLeaseRequest request,

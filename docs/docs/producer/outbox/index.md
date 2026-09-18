@@ -1,16 +1,24 @@
 ---
 sidebar_position: 8
-description: "At-least-once publishing from your database to Kafka without distributed transactions, covering schema, ordering, deduplication, tuning, and custom stores."
+sidebar_label: Overview
+slug: /producer/outbox
+description: "At-least-once publishing from your database to Kafka without distributed transactions, covering delivery, ordering, scaling, deduplication, tuning, and metrics for every outbox store."
 ---
 
 # Transactional Outbox
 
 The transactional outbox pattern gives you **at-least-once publishing from a database to Kafka** without distributed transactions. Instead of writing to the database and producing to Kafka as two separate operations (either of which can fail while the other succeeds), the service writes the business row *and* the outgoing message into the same database transaction. A background **relay** then publishes pending messages and removes them once the broker acknowledges delivery.
 
-Dekaf ships this as two packages:
+Dekaf ships the relay and one package per database:
 
-- **`Dekaf.Outbox`** — the relay engine, storage contract, and ordering model. No database dependency.
-- **`Dekaf.Outbox.EntityFrameworkCore`** — an Entity Framework Core store: schema mapping, bucket leases, and enqueue helpers. Works with any relational EF Core provider (PostgreSQL, SQL Server, MySQL, SQLite, ...).
+| Package | What it is | Guide |
+|---|---|---|
+| **`Dekaf.Outbox`** | The relay engine, storage contract, and ordering model. No database dependency. | This page |
+| **`Dekaf.Outbox.EntityFrameworkCore`** | Store for any relational EF Core provider (PostgreSQL, SQL Server, MySQL, SQLite, ...): schema mapping, bucket leases, and enqueue helpers. | [Entity Framework Core](./entity-framework-core.md) |
+| **`Dekaf.Outbox.DynamoDB`** | Store for Amazon DynamoDB: single-table layout, bucket leases, and a writer for `TransactWriteItems`. | [Amazon DynamoDB](./dynamodb.md) |
+| Your own | Anything with an atomic conditional write: Dapper, MongoDB, Cosmos DB, Redis. | [Custom stores](./custom-stores.md) |
+
+Start with the guide for your database: it covers registration, the schema to provision, and how to enqueue. This page describes what every store shares: delivery, ordering, the relay, scaling, deduplication, tuning, and metrics.
 
 ## How Delivery Works
 
@@ -46,46 +54,20 @@ The contract is **ordered submission, front-to-back deletion, and at-least-once 
 
 The built-in publisher retains concurrent sends so Kafka can batch records. It does not wait for one broker round trip per outbox row.
 
-## Setup
+## Running the Relay
 
-Add the outbox model to your `DbContext`:
-
-```csharp
-using Dekaf.Outbox.EntityFrameworkCore;
-
-public class OrdersContext(DbContextOptions<OrdersContext> options) : DbContext(options)
-{
-    public DbSet<Order> Orders => Set<Order>();
-
-    protected override void OnModelCreating(ModelBuilder modelBuilder)
-    {
-        modelBuilder.UseDekafOutbox();  // adds dekaf_outbox_messages, _leases, _relays
-    }
-}
-```
-
-Register the store and the relay:
+The relay is a hosted service. Register it next to the store from your database's guide; every instance of your service can run it:
 
 ```csharp
-using Dekaf.Outbox;
-using Dekaf.Outbox.EntityFrameworkCore;
-
-builder.Services.AddDekafEntityFrameworkCoreOutboxStore<OrdersContext>((services, options) =>
-{
-    // Configure the EF Core provider used by your application here.
-    options.EnableDetailedErrors();
-});
 builder.Services.AddDekafOutboxRelay(
     producer => producer.WithBootstrapServers("localhost:9092"));
 ```
-
-This overload registers the context factory and commit interceptors together. If the application already registers its factory (including a pooled factory), keep that registration, add `options.UseDekafOutboxNotifications(services.GetRequiredService<IOutboxNotifier>())` in its options callback, and use the parameterless `AddDekafEntityFrameworkCoreOutboxStore<OrdersContext>()` overload. That parameterless overload does not modify existing context options.
 
 ### Commit notifications and fallback polling
 
 The default fallback interval is one second. An idle relay holding buckets makes roughly one pending-message query per second, plus lease maintenance. Successful publication continues immediately in bounded sweeps: one batch per ready bucket, so a continuously full bucket cannot starve the others. With one owned bucket, the relay keeps draining until it is empty or rebalancing is due. Full buckets remain ready without another discovery query per batch. While busy, discovery runs at the fallback interval to find newly active buckets. Rebalancing has a separate deadline from in-flight lease renewal and runs after a sweep, even when slow publishes keep extending leases. Explicit `PollInterval` overrides remain supported; a longer interval is capped by the next lease-renewal deadline.
 
-The EF interceptors wake the local relay only after a successful implicit commit or an explicit EF Core transaction commit. `SaveChanges` and `SaveChangesAsync` inside an explicit transaction do not notify until `Commit` or `CommitAsync`. Ambient transactions notify after successful transaction completion; the database provider must support ambient enlistment. A rollback or failed save does not trigger publication. The caller does not wait for Kafka acknowledgement as part of the notification.
+Each store package wakes the local relay after a commit. The EF Core interceptors do it for every committed `SaveChanges` ([details](./entity-framework-core.md#commit-notifications)); on DynamoDB you call `NotifyCommitted` after your transaction ([details](./dynamodb.md#enqueuing-messages)). A rollback or failed write never triggers publication, and the caller does not wait for Kafka acknowledgement as part of the notification.
 
 Notifications coalesce and remain pending if a commit races with the relay entering its idle wait. The built-in notifier implements `IOutboxBucketNotifier`: EF collects distinct bucket IDs from added outbox rows, accumulates them across saves in a transaction, and checks ownership after commit. The relay retains those IDs in bounded storage and fetches hinted owned buckets directly. An isolated partial batch normally needs only a fetch and a bulk delete after initial discovery, without discovery before and after every batch. Periodic discovery keeps its own deadline even when local hints arrive continuously. Unknown-bucket notifications force discovery, and existing custom notifiers keep their discovery behavior. Ownership changes and missed hints remain covered by acquisition and polling; no debounce delay is added. Notifications do not interrupt error backoff, bypass bucket ownership, change ordering, or remove rows before acknowledgement.
 
@@ -143,130 +125,6 @@ Only the relay holding a locally valid lease for bucket zero samples backlog met
 
 The default remains per-relay sampling for compatibility with per-pod dashboards. When coordinating, aggregate backlog count and age across pods using **maximum**, not sum, and handle unavailable observations. Publish counters and owned-bucket gauges remain per relay. A rolling deployment with older or unconfigured relays continues to work but still includes their duplicate metric queries.
 
-## Database Schema
-
-`UseDekafOutbox()` maps three tables. `EnsureCreated()` or an EF Core migration in your project generates them — the entities live in *your* `DbContext` model, so `dotnet ef migrations add` picks them up like any other entity. For DBA review or hand-written DDL, this is the shape:
-
-**`dekaf_outbox_messages`** — pending messages, deleted after broker acknowledgment:
-
-| Column | Type (portable) | Constraints |
-|---|---|---|
-| `Id` | 64-bit integer | Primary key, auto-increment. Submission order within a bucket. |
-| `MessageId` | GUID/UUID | Required. Stable dedup id, stamped as the `x-outbox-message-id` header. |
-| `Bucket` | 32-bit integer | Required. Ordering bucket. |
-| `Topic` | string(249) | Required. |
-| `Key` | binary blob | Nullable (keyless record). |
-| `Value` | binary blob | Nullable (tombstone). |
-| `Headers` | binary blob | Nullable. Versioned header encoding. |
-| `Partition` | 32-bit integer | Nullable (explicit partition override). |
-| `CreatedAtUtc` | provider-native timestamp with offset | Required. |
-
-Index: **`(Bucket, Id)`** — the relay's only read path (oldest rows per bucket). The table stays small in steady state; its size is your publish backlog.
-
-**`dekaf_outbox_leases`** — one row per bucket, single-writer coordination:
-
-| Column | Type (portable) | Constraints |
-|---|---|---|
-| `Bucket` | 32-bit integer | Primary key (not generated). |
-| `Owner` | string(128) | Nullable. Relay id currently holding the lease. |
-| `ExpiresAtUtc` | 64-bit integer | Required. **Stored as UTC ticks**, not a native timestamp, so expiry comparisons run server-side identically on every provider. |
-
-**`dekaf_outbox_relays`** — relay heartbeats driving fair bucket distribution:
-
-| Column | Type (portable) | Constraints |
-|---|---|---|
-| `RelayId` | string(128) | Primary key. |
-| `LastSeenUtc` | 64-bit integer | Required. UTC ticks, same rationale as above. |
-
-The two ticks columns read as raw `long`s in ad-hoc queries; convert with `new DateTimeOffset(ticks, TimeSpan.Zero)` when inspecting during an incident.
-
-### Custom Table Names and Schema
-
-Point the tables anywhere with `OutboxModelOptions`:
-
-```csharp
-public sealed class CustomOutboxContext(DbContextOptions<CustomOutboxContext> options)
-    : DbContext(options)
-{
-    protected override void OnModelCreating(ModelBuilder modelBuilder)
-    {
-        // Every property is optional - omit any property to keep its default.
-        modelBuilder.UseDekafOutbox(new OutboxModelOptions
-        {
-            Schema = "messaging",
-            MessagesTableName = "orders_outbox",
-            LeasesTableName = "orders_outbox_leases",
-            RelaysTableName = "orders_outbox_relays"
-        });
-    }
-}
-```
-
-For anything beyond naming — column names, provider-specific column types, extra indexes — configure the entities *after* the `UseDekafOutbox()` call; later fluent configuration wins in EF Core:
-
-```csharp
-modelBuilder.UseDekafOutbox();
-modelBuilder.Entity<OutboxMessage>()
-    .Property(m => m.Value).HasColumnName("payload").HasColumnType("jsonb");
-```
-
-### Multiple Logical Outboxes
-
-The `AddDekafOutboxRelay` / `AddDekafEntityFrameworkCoreOutboxStore` helpers register **one** unkeyed store, publisher, and relay per host — calling them twice does not create a second pipeline. To run several logical outboxes (e.g. one per bounded context) in one process, wire the additional relays explicitly; every piece has a public constructor:
-
-```csharp
-// Registered (keyed) so the container owns the publisher's disposal - the relay
-// deliberately does not dispose the publisher it is given. CreateRelayProducerBuilder
-// applies the same enforced delivery guarantees (Acks.All, idempotence, key-respecting
-// partitioner) as AddDekafOutboxRelay.
-services.AddKeyedSingleton<IOutboxPublisher>("second-outbox", (provider, _) =>
-    new DekafOutboxPublisher(OutboxServiceCollectionExtensions.CreateRelayProducerBuilder(
-            producer => producer
-                .WithBootstrapServers("localhost:9092")
-                .WithClientId("second-outbox-relay"),
-            provider.GetService<ILoggerFactory>())
-        .Build()));
-
-services.AddSingleton<IHostedService>(provider => new OutboxRelayService(
-    new EfCoreOutboxStore<SecondContext>(
-        provider.GetRequiredService<IDbContextFactory<SecondContext>>()),
-    provider.GetRequiredKeyedService<IOutboxPublisher>("second-outbox"),
-    new OutboxRelayOptions { /* per-outbox tuning */ },
-    provider.GetRequiredService<ILogger<OutboxRelayService>>()));
-```
-
-Each context keeps its own `UseDekafOutbox(...)` table naming, so the outboxes stay fully independent.
-
-## Enqueuing Messages
-
-Write the outbox row in the same transaction as the business change:
-
-```csharp
-using Dekaf.Outbox.EntityFrameworkCore;
-using Dekaf.Serialization;
-
-public sealed class OrderApplicationService(IDbContextFactory<OrdersContext> contextFactory)
-{
-    public async Task PlaceOrderAsync(Order order, CancellationToken cancellationToken)
-    {
-        await using var context = await contextFactory.CreateDbContextAsync(cancellationToken);
-
-        context.Orders.Add(order);
-        context.AddOutboxMessage(
-            topic: "orders",
-            key: order.Id,
-            value: JsonSerializer.Serialize(order),
-            keySerializer: Serializers.String,
-            valueSerializer: Serializers.String);
-
-        // One commit: business row and message are atomic.
-        await context.SaveChangesAsync(cancellationToken);
-    }
-}
-```
-
-Key and value are stored **pre-serialized** — the relay is a byte pass-through and never re-serializes, so serialization cost is paid exactly once, in your transaction.
-
 ## Consumer-Side Deduplication
 
 At-least-once means consumers may see a record twice (crash between broker ack and row deletion, or a lease takeover). Deduplicate on the stamped header:
@@ -283,7 +141,7 @@ var messageId = outboxResult.Headers.FirstOrDefault(h => h.Key == "x-outbox-mess
 | `BucketCount` | 8 | Upper bound on relay parallelism. Must match across all writers and relays. |
 | `BatchSize` | 500 | Rows fetched and published per database round trip. |
 | `PollInterval` | 1 second | Fallback discovery interval; local commit notifications interrupt idle waiting. |
-| `LeaseDuration` | 30 s | Time until takeover after the last successful renewal. The EF store renews during slow publishes, so the default 120 s producer delivery timeout does not expire an otherwise healthy relay's lease. Longer leases tolerate longer store/process stalls but delay takeover of a crashed relay. A gracefully stopped relay [releases its leases](#stable-ownership-and-graceful-handover), so peers take over on their next acquisition. |
+| `LeaseDuration` | 30 s | Time until takeover after the last successful renewal. The EF Core and DynamoDB stores renew during slow publishes, so the default 120 s producer delivery timeout does not expire an otherwise healthy relay's lease. Longer leases tolerate longer store/process stalls but delay takeover of a crashed relay. A gracefully stopped relay [releases its leases](./custom-stores.md#stable-ownership-and-graceful-handover), so peers take over on their next acquisition. |
 | `LeaseRenewInterval` | 10 s | Renewal cadence, including pending publishes. Leave enough slack for database latency, scheduling pauses, and clock skew. |
 | `MaxPublishDuration` | `null` | Required only for stores without `IOutboxLeaseRenewalStore`. Bound the **entire** publish call, not one record's delivery timeout. The budget plus a renewal interval must fit inside `LeaseDuration`. |
 | `MessageIdHeaderName` | `x-outbox-message-id` | Dedup header stamped on every record. |
@@ -365,138 +223,6 @@ histogram_quantile(0.99, sum by (le, outbox_name)
 
 Also alert on a missing scrape target: no series is different from `pending.available == 0`. An unavailable oldest-age series with `pending.available == 1` can mean the store knows the count but cannot provide timestamps. Never replace missing backlog or age with zero in a dashboard.
 
-## Custom Stores (Relational, NoSQL, or Anything Else)
-
-### Lease timing and migration
-
-The EF store implements `IOutboxLeaseRenewalStore`. Its renewal atomically checks ownership and unexpired leases, extends them, and refreshes the relay heartbeat. It does **not** acquire or relinquish buckets while a publish is pending. Fair-share rebalancing resumes after each bounded sweep of ready buckets; in-flight renewal does not reset its deadline. Publication and lease store calls remain serialized: renewal runs alongside the publisher. Optional metrics collection uses a separate context and can run concurrently with these store calls.
-
-Custom stores should implement the same optional capability. Without it, registration must provide `MaxPublishDuration`; an unspecified bound now fails at startup with `OutboxMisconfigurationException`. For example, if measurement establishes that a custom publisher's whole batch completes within two minutes:
-
-```csharp
-var relayOptions = new OutboxRelayOptions
-{
-    MaxPublishDuration = TimeSpan.FromMinutes(2),
-    LeaseDuration = TimeSpan.FromMinutes(3),
-    LeaseRenewInterval = TimeSpan.FromSeconds(10)
-};
-```
-
-The relay measures lease age from **before** acquisition, then rechecks after the pending-bucket probe and batch fetch. Before a legacy-store publish, it reserves the full publish budget plus one renewal interval, renewing first if necessary. If acquisition latency still leaves too little time, it keeps the rows unpublished and logs the configuration problem. `BatchSize`, sequential submission, backpressure and delivery attempts all affect the whole-call bound. Raising a lease above one record's timeout alone does not establish safety.
-
-`MaxPublishDuration` is a timing contract, not a timeout that aborts Kafka delivery. Exceeding it faults the relay instead of repeatedly publishing under an invalid assumption. Custom publishers must yield during asynchronous waits, honor shutdown cancellation, and account for all work covered by their bound.
-
-Renewal cannot protect against a process pause or database outage longer than the remaining lease. After losing a lease during a pending publish, the relay observes the publisher's completion and retains the rows for takeover; it does not start another publish concurrently. Cancellation cannot retract records already appended to Kafka. Such records can still arrive after takeover, so consumer-side message-ID deduplication remains necessary.
-
-### Store contract
-
-`IOutboxStore` is a four-method contract (`AcquireBucketLeasesAsync`, `GetBucketsWithPendingAsync`, `GetNextBatchAsync`, `MarkPublishedAsync`) with **no relational assumptions** — implement it for Dapper, raw ADO.NET, MongoDB, DynamoDB, Cosmos DB, or any storage that offers the two primitives below. The relay engine (`Dekaf.Outbox`) never touches a database API; the EF Core package is just one store.
-
-What a storage technology must provide:
-
-1. **An atomic conditional write** for leases — a SQL guarded `UPDATE ... WHERE owner IS NULL OR expires <= now`, MongoDB `findOneAndUpdate`, DynamoDB conditional `PutItem`, Redis `SET NX PX`. That single primitive is the entire concurrency model; no row locks, transactions across documents, or fencing tokens are required.
-2. **Per-bucket enqueue-order reads** — `GetNextBatchAsync` must return a bucket's pending messages oldest-first. *How* is the store's business: an auto-increment column, a monotonic sequence, a time-ordered document id (e.g. ObjectId), or an explicit counter all satisfy it. The `OutboxMessage.Id` long is a relational convenience, not the contract's identity — non-relational stores may leave it zero.
-
-**Message identity is opaque to the relay.** `MarkPublishedAsync` always receives the *same instances* `GetNextBatchAsync` returned — a contiguous prefix, in order. A store can therefore identify what to delete three ways:
-
-```csharp
-public sealed class MongoOutboxMessage : OutboxMessage
-{
-    public required string DocumentId { get; init; }
-}
-
-public sealed class MongoOutboxStore
-{
-    public ValueTask MarkPublishedAsync(
-        int bucket,
-        IReadOnlyList<OutboxMessage> published,
-        CancellationToken cancellationToken)
-    {
-        // Relational stores can identify rows by Id; any store can use MessageId.
-        var relationalIds = published.Select(message => message.Id);
-        var messageIds = published.Select(message => message.MessageId);
-
-        // A NoSQL store can instead return a subclass carrying its native identifier.
-        var documentIds = published
-            .Cast<MongoOutboxMessage>()
-            .Select(message => message.DocumentId);
-
-        return ValueTask.CompletedTask;
-    }
-}
-```
-
-Subclassing was chosen over a generic `IOutboxStore<TMessage>` deliberately: a generic parameter would ripple through the relay, the publisher, and every DI registration for all users, while buying nothing the instance pass-back doesn't already provide.
-
-The enqueue side is equally storage-agnostic: `OutboxMessage.Create(...)` serializes with Dekaf serializers and computes the bucket; persist the result in your service's native transaction (a MongoDB session, a DynamoDB `TransactWriteItems`) alongside the business write.
-
-Stores without an auto-increment primitive (e.g. DynamoDB) typically reserve a per-bucket sequence number with an atomic counter before the business transaction commits; sequence gaps from abandoned reservations are harmless — the ordering contract only needs monotonicity, not density.
-
-Semantics your implementation must preserve, in exchange for the relay's guarantees: rows are removed only via `MarkPublishedAsync` (never expired away — a TTL on the pending collection would convert at-least-once into loss), lease grants respect fair-share behavior across active relays (or at minimum never grant one bucket to two live relays), and out-of-range buckets should fail loudly rather than sit unclaimed.
-
-### Stable ownership and graceful handover
-
-`AcquireBucketLeasesAsync` receives a relay ID and a bucket count, not the buckets the relay already holds. The relay re-acquires on every `LeaseRenewInterval`, because that is how it notices membership changes. A store that claims buckets with one conditional write per bucket (DynamoDB, Redis) therefore cannot probe its own leases first. A relay whose probe order starts inside a peer's holdings is refused on every cycle, forever, on an idle outbox. Those refusals are harmless but not free: DynamoDB bills a failed conditional write, and the AWS SDK reports it as an error span.
-
-Implement the optional `IOutboxLeaseOwnershipStore` to opt in to two things:
-
-1. **Acquisition with a hint.** The relay calls `AcquireBucketLeasesAsync(request, previousBuckets, cancellationToken)` instead of the `IOutboxStore` method. `previousBuckets` is the result of the relay's last successful acquisition. It is a probe-order hint, never proof of ownership: the relay keeps it across lease expiry and store failures, so the conditional write stays the authority.
-2. **Release on graceful shutdown.** The relay calls `ReleaseBucketLeasesAsync` at most once, from `StopAsync`, after the publish loop has ended and the last publisher call has returned. Free the relay's leases (guarded by owner) and delete its liveness record. Release by owner where the storage allows it, because `previousBuckets` can be stale or incomplete; a store that can only address one bucket at a time releases the listed buckets. Honor the token: it is the host's shutdown deadline, and the relay stops waiting when it fires. Peers then claim the buckets and recompute fair share on their next acquisition, instead of after `LeaseDuration`. If the relay does not stop before the host's shutdown deadline, the relay skips the release: a peer must never be invited onto rows that are still being published. A failed release is logged and the leases expire as before.
-
-Do not release leases from your own hosted service. Ordering it after the relay is easy to get wrong, and a release under a running publisher breaks single-writer ordering.
-
-`OutboxFairShare.Assign` gives the probe order for buckets the relay does not hold yet. It accumulates the `OutboxFairShare.Compute` shares into contiguous ranges, so relays that agree on membership compute disjoint ranges covering every bucket:
-
-```csharp
-public sealed class LeaseProbeOrder
-{
-    public static List<int> Build(
-        OutboxLeaseRequest request,
-        IReadOnlyList<int> previousBuckets,
-        List<string> activeRelayIds)
-    {
-        var order = new List<int>(request.BucketCount);
-        var queued = new bool[request.BucketCount];
-
-        void Queue(IEnumerable<int> buckets)
-        {
-            foreach (var bucket in buckets)
-            {
-                if ((uint)bucket < (uint)queued.Length && !queued[bucket])
-                {
-                    queued[bucket] = true;
-                    order.Add(bucket);
-                }
-            }
-        }
-
-        // 1. Leases this relay already holds: the owner-is-self condition matches.
-        Queue(previousBuckets);
-        // 2. The range that no agreeing peer probes.
-        Queue(OutboxFairShare.Assign(request.BucketCount, activeRelayIds, request.RelayId));
-        // 3. The remainder, for buckets a departed relay left behind.
-        Queue(Enumerable.Range(0, request.BucketCount));
-        return order;
-    }
-}
-```
-
-Claim in that order and stop at the fair share. When the share shrinks below the held count, keep the first buckets and release the rest, as the EF store does. In steady state every relay holds exactly its share from step 1 and makes no failed conditional write, so a failure now signals a real membership disagreement. Relays do not always agree: liveness records become visible with a lag, and a DynamoDB global secondary index cannot be read consistently at all. Ranges can therefore overlap for a cycle, which is why `Assign` orders probes and never replaces the conditional write.
-
-The EF store implements the capability. Its acquisition reads the whole lease table before writing, so it ignores the hint; its release frees every lease of the relay in one guarded statement and deletes the heartbeat row.
-
-### Wiring a Custom Store
-
-Register your store, then add the relay — the EF Core package is not involved:
-
-```csharp
-builder.Services.AddSingleton<IOutboxStore, DynamoDbOutboxStore>();
-builder.Services.AddDekafOutboxRelay(
-    producer => producer.WithBootstrapServers("localhost:9092"));
-```
-
-The relay resolves whatever `IOutboxStore` is registered; `AddDekafEntityFrameworkCoreOutboxStore` is just a convenience registration for the EF implementation.
-
 ## Outbox vs. Kafka Transactions
 
-Kafka [transactions](./transactions.md) make multiple *Kafka* writes atomic; they cannot span your database. The outbox exists precisely for the database-and-Kafka atomicity case. Dekaf also supports two-phase-commit prepared transactions (`PrepareAsync` / `CompletePreparedTransactionAsync`, KIP-939) for coordinator-driven setups, but the outbox is the simpler, broker-version-independent default for service integration.
+Kafka [transactions](../transactions.md) make multiple *Kafka* writes atomic; they cannot span your database. The outbox exists precisely for the database-and-Kafka atomicity case. Dekaf also supports two-phase-commit prepared transactions (`PrepareAsync` / `CompletePreparedTransactionAsync`, KIP-939) for coordinator-driven setups, but the outbox is the simpler, broker-version-independent default for service integration.

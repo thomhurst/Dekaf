@@ -24,7 +24,16 @@ const sidebars = {
         'producer/headers',
         'producer/partitioning',
         'producer/transactions',
-        'producer/outbox',
+        {
+          type: 'category',
+          label: 'Transactional Outbox',
+          link: { type: 'doc', id: 'producer/outbox/index' },
+          items: [
+            'producer/outbox/entity-framework-core',
+            'producer/outbox/dynamodb',
+            'producer/outbox/custom-stores',
+          ],
+        },
       ],
     },
     {

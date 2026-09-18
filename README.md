@@ -35,7 +35,7 @@ assets and tested runtimes are separate:
 | Packages | Target frameworks shipped in NuGet |
 | --- | --- |
 | `Dekaf`, `Dekaf.Abstractions` | `net10.0`, `net8.0`, `netstandard2.0` |
-| `Dekaf.Compression.*`, `Dekaf.Serialization.*`, `Dekaf.SchemaRegistry` and its extensions, `Dekaf.Extensions.*`, `Dekaf.OpenTelemetry`, `Dekaf.Outbox` and its EF Core extension, `Dekaf.Testing` | `net8.0`, `net10.0` |
+| `Dekaf.Compression.*`, `Dekaf.Serialization.*`, `Dekaf.SchemaRegistry` and its extensions, `Dekaf.Extensions.*`, `Dekaf.OpenTelemetry`, `Dekaf.Outbox` and its EF Core and DynamoDB extensions, `Dekaf.Testing` | `net8.0`, `net10.0` |
 
 - **Tested runtimes:** CI runs unit tests on .NET 8 and .NET 10. PR Kafka integration
   tests run on .NET 10, with GSSAPI package round trips on both runtimes; the NuGet release gate tests both runtimes against Kafka
