@@ -19,7 +19,8 @@ namespace Dekaf.Outbox.EntityFrameworkCore;
 /// a Kafka hot path, so EF/LINQ usage here is intentional and fine.</para>
 /// </remarks>
 /// <typeparam name="TContext">The application's context type containing the outbox model.</typeparam>
-public sealed class EfCoreOutboxStore<TContext> : IOutboxStore, IOutboxLeaseRenewalStore, IOutboxMetricsStore
+public sealed class EfCoreOutboxStore<TContext> : IOutboxStore, IOutboxLeaseRenewalStore, IOutboxLeaseOwnershipStore,
+    IOutboxMetricsStore
     where TContext : DbContext
 {
     /// <summary>
@@ -223,6 +224,38 @@ public sealed class EfCoreOutboxStore<TContext> : IOutboxStore, IOutboxLeaseRene
 
         await RecordHeartbeatAsync(context, request, now, cancellationToken).ConfigureAwait(false);
         return true;
+    }
+
+    // Acquisition reads the whole lease table before it writes, so it already keeps this
+    // relay's buckets first and claims only buckets it saw free. The hint adds nothing.
+    ValueTask<IReadOnlyList<int>> IOutboxLeaseOwnershipStore.AcquireBucketLeasesAsync(
+        OutboxLeaseRequest request,
+        IReadOnlyList<int> previousBuckets,
+        CancellationToken cancellationToken) => AcquireBucketLeasesAsync(request, cancellationToken);
+
+    public async ValueTask ReleaseBucketLeasesAsync(
+        OutboxLeaseRequest request,
+        IReadOnlyList<int> previousBuckets,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        var context = await _contextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+        await using var contextDisposal = context.ConfigureAwait(false);
+        var now = _timeProvider.GetUtcNow();
+        // Scoped to the owner, not to previousBuckets: one statement also frees leases that
+        // an acquisition claimed before it failed, and the guard leaves a peer's takeover alone.
+        await context.Set<OutboxLease>()
+            .Where(l => l.Owner == request.RelayId)
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(l => l.Owner, (string?)null)
+                .SetProperty(l => l.ExpiresAtUtc, now), cancellationToken).ConfigureAwait(false);
+
+        // Peers stop dividing the buckets by a relay count that still includes this one.
+        // If this statement fails, the heartbeat ages out as it does without a release.
+        await context.Set<OutboxRelayInstance>()
+            .Where(r => r.RelayId == request.RelayId)
+            .ExecuteDeleteAsync(cancellationToken).ConfigureAwait(false);
     }
 
     public async ValueTask<IReadOnlyList<OutboxMessage>> GetNextBatchAsync(
