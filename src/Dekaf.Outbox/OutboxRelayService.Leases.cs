@@ -41,8 +41,15 @@ public sealed partial class OutboxRelayService
 
         try
         {
-            await _ownershipStore.ReleaseBucketLeasesAsync(_leaseRequest, _previousBuckets, cancellationToken)
-                .ConfigureAwait(false);
+            // Until here the stop was bounded by the shutdown deadline whatever the store does.
+            // A release that ignores its token must not be the first call to hold the host
+            // past it, so the wait is abandoned at the deadline and a late fault stays observed.
+            var release = _ownershipStore.ReleaseBucketLeasesAsync(_leaseRequest, _previousBuckets, cancellationToken)
+                .AsTask();
+            _ = release.ContinueWith(static completed => _ = completed.Exception, CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+            await release.WaitAsync(cancellationToken).ConfigureAwait(false);
             LogLeasesReleased(_options.RelayId);
         }
         catch (Exception ex)

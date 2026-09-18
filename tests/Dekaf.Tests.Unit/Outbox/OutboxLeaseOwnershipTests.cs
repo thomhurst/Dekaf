@@ -112,6 +112,24 @@ public sealed class OutboxLeaseOwnershipTests
     }
 
     [Test]
+    public async Task ReleaseIgnoringCancellation_DoesNotHoldStopPastTheShutdownDeadline()
+    {
+        var time = new ManualTimeProvider();
+        var store = new OwnershipStore { ReleaseNeverCompletes = true };
+        using var relay = CreateRelay(store, new GatedPublisher(), time);
+        await relay.StartAsync(CancellationToken.None);
+        await NextAcquisitionAsync(store);
+        using var shutdownDeadline = new CancellationTokenSource();
+
+        var stop = relay.StopAsync(shutdownDeadline.Token);
+        await store.ReleaseEntered.Task.WaitAsync(SignalTimeout);
+        shutdownDeadline.Cancel();
+
+        await stop.WaitAsync(SignalTimeout);
+        await Assert.That(store.ReleaseCount).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task StopBeforeFirstAcquisition_DoesNotRelease()
     {
         var time = new ManualTimeProvider();
@@ -182,6 +200,8 @@ public sealed class OutboxLeaseOwnershipTests
         internal bool HasPending { get; init; }
         internal bool FailFirstPendingProbe { get; init; }
         internal bool ReleaseThrows { get; init; }
+        internal bool ReleaseNeverCompletes { get; init; }
+        internal TaskCompletionSource ReleaseEntered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         internal ConcurrentQueue<string>? Events { get; init; }
         internal Channel<IReadOnlyList<int>> Acquisitions { get; } = Channel.CreateUnbounded<IReadOnlyList<int>>();
         internal int LegacyAcquisitionCount => Volatile.Read(ref _legacyAcquisitionCount);
@@ -210,6 +230,9 @@ public sealed class OutboxLeaseOwnershipTests
             ReleaseRequest = request;
             Interlocked.Increment(ref _releaseCount);
             Events?.Enqueue("released");
+            ReleaseEntered.TrySetResult();
+            if (ReleaseNeverCompletes)
+                return new ValueTask(new TaskCompletionSource().Task);
             return ReleaseThrows
                 ? ValueTask.FromException(new InvalidOperationException("release failed"))
                 : ValueTask.CompletedTask;

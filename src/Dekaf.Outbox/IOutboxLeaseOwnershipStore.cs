@@ -40,15 +40,20 @@ public interface IOutboxLeaseOwnershipStore
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Releases every lease this relay holds and removes its liveness record, so peers can
-    /// claim its buckets and stop counting it towards fair share on their next acquisition
-    /// instead of after <see cref="OutboxLeaseRequest.LeaseDuration"/>.
+    /// Releases this relay's leases and removes its liveness record, so peers can claim its
+    /// buckets and stop counting it towards fair share on their next acquisition instead of
+    /// after <see cref="OutboxLeaseRequest.LeaseDuration"/>.
     /// </summary>
     /// <param name="request">The parameters of this relay's acquisitions.</param>
     /// <param name="previousBuckets">The buckets this relay's most recent successful
-    /// acquisition returned; the same hint as for acquisition. Leases outside this list, for
-    /// example from an acquisition that failed after claiming, expire normally.</param>
-    /// <param name="cancellationToken">The host's shutdown deadline.</param>
+    /// acquisition returned; the same hint as for acquisition, so it can be stale or
+    /// incomplete, for example after an acquisition that failed after claiming. A store that
+    /// can address leases by owner must release every lease owned by
+    /// <see cref="OutboxLeaseRequest.RelayId"/> and ignore this list. A store that can only
+    /// address one bucket at a time releases the listed buckets; a lease it misses expires
+    /// normally.</param>
+    /// <param name="cancellationToken">The host's shutdown deadline. The relay stops waiting
+    /// when it fires, even if this call ignores it.</param>
     /// <remarks>
     /// <para>The relay calls this at most once, from a graceful stop, and only after its
     /// publish loop has ended and its last publisher call has been observed. No other call
