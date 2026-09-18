@@ -32,3 +32,8 @@ Dekaf.Outbox.IOutboxBucketNotifier
 Dekaf.Outbox.IOutboxBucketNotifier.NotifyCommitted(System.Collections.Generic.IReadOnlySet<int>! buckets) -> void
 Dekaf.Outbox.IOutboxBucketNotifier.SetOwnedBuckets(System.Collections.Generic.IReadOnlyList<int>! buckets) -> void
 Dekaf.Outbox.IOutboxBucketNotifier.NotifyCommitted(int bucket) -> void
+Dekaf.Outbox.IOutboxLeaseOwnershipStore
+Dekaf.Outbox.IOutboxLeaseOwnershipStore.AcquireBucketLeasesAsync(Dekaf.Outbox.OutboxLeaseRequest! request, System.Collections.Generic.IReadOnlyList<int>! previousBuckets, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyList<int>!>
+Dekaf.Outbox.IOutboxLeaseOwnershipStore.ReleaseBucketLeasesAsync(Dekaf.Outbox.OutboxLeaseRequest! request, System.Collections.Generic.IReadOnlyList<int>! previousBuckets, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+override Dekaf.Outbox.OutboxRelayService.StopAsync(System.Threading.CancellationToken cancellationToken) -> System.Threading.Tasks.Task!
+static Dekaf.Outbox.OutboxFairShare.Assign(int bucketCount, System.Collections.Generic.List<string!>! activeRelayIds, string! relayId) -> System.Collections.Generic.IReadOnlyList<int>!

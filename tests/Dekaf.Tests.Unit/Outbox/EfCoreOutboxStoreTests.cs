@@ -164,6 +164,69 @@ public class EfCoreOutboxStoreTests
         await Assert.That(await ((IOutboxLeaseRenewalStore)store).RenewBucketLeasesAsync(request, owned)).IsFalse();
     }
 
+    [Test]
+    public async Task Release_SurvivorClaimsEveryBucketOnItsNextAcquisition()
+    {
+        using var db = new SqliteOutboxDatabase();
+        var store = db.CreateStore();
+        await store.AcquireBucketLeasesAsync(Request("relay-a"));
+        await store.AcquireBucketLeasesAsync(Request("relay-b"));
+        db.Time.Advance(TimeSpan.FromSeconds(10));
+        var kept = await store.AcquireBucketLeasesAsync(Request("relay-a"));
+        await Assert.That((await store.AcquireBucketLeasesAsync(Request("relay-b"))).Count).IsEqualTo(2);
+
+        await store.ReleaseBucketLeasesAsync(Request("relay-a"), kept);
+
+        // No clock advance: relay-a's leases and heartbeat would otherwise stay live for
+        // a whole LeaseDuration and hold relay-b at half the table.
+        await Assert.That(await store.AcquireBucketLeasesAsync(Request("relay-b"))).IsEquivalentTo(AllBuckets);
+    }
+
+    [Test]
+    public async Task Release_StaleHint_StillFreesEveryLeaseOfTheOwner()
+    {
+        using var db = new SqliteOutboxDatabase();
+        var store = db.CreateStore();
+        await store.AcquireBucketLeasesAsync(Request("relay-a"));
+
+        await store.ReleaseBucketLeasesAsync(Request("relay-a"), []);
+
+        await Assert.That(await store.AcquireBucketLeasesAsync(Request("relay-b"))).IsEquivalentTo(AllBuckets);
+    }
+
+    [Test]
+    public async Task Release_AfterPeerTakeover_LeavesPeerLeasesAndHeartbeatAlone()
+    {
+        using var db = new SqliteOutboxDatabase();
+        var store = db.CreateStore();
+        var stalled = await store.AcquireBucketLeasesAsync(Request("relay-a"));
+        db.Time.Advance(TimeSpan.FromSeconds(61));
+        var takenOver = await store.AcquireBucketLeasesAsync(Request("relay-b"));
+
+        await store.ReleaseBucketLeasesAsync(Request("relay-a"), stalled);
+
+        // Checked before any other store call: renewal and acquisition rewrite the heartbeat.
+        await using (var context = db.CreateContext())
+        {
+            var heartbeats = await context.Set<OutboxRelayInstance>().Select(relay => relay.RelayId).ToListAsync();
+            await Assert.That(string.Join(',', heartbeats)).IsEqualTo("relay-b");
+        }
+
+        await Assert.That(await store.RenewBucketLeasesAsync(Request("relay-b"), takenOver)).IsTrue();
+        await Assert.That(await store.AcquireBucketLeasesAsync(Request("relay-b"))).IsEquivalentTo(AllBuckets);
+    }
+
+    [Test]
+    public async Task OwnershipAcquisition_MatchesLegacyAcquisition()
+    {
+        using var db = new SqliteOutboxDatabase();
+        var store = db.CreateStore();
+
+        var owned = await ((IOutboxLeaseOwnershipStore)store).AcquireBucketLeasesAsync(Request("relay-a"), [2]);
+
+        await Assert.That(owned).IsEquivalentTo(AllBuckets);
+    }
+
     private static OutboxLeaseRequest Request(string relayId, int bucketCount = 4) => new()
     {
         RelayId = relayId,

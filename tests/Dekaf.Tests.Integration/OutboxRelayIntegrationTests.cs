@@ -201,6 +201,108 @@ public class OutboxRelayIntegrationTests(KafkaTestContainer kafka) : KafkaIntegr
     }
 
     [Test]
+    public async Task GracefulStop_HandsBucketsToPeer_WithoutWaitingForLeaseExpiry()
+    {
+        var topic = $"outbox-handover-{Guid.NewGuid():N}";
+        await KafkaContainer.CreateTopicAsync(topic, partitions: 1);
+        var databasePath = Path.Combine(Path.GetTempPath(), $"dekaf-outbox-handover-{Guid.NewGuid():N}.db");
+        var connection = new SqliteConnectionStringBuilder { DataSource = databasePath, Pooling = false, DefaultTimeout = 30 }.ToString();
+        try
+        {
+            await using var leaving = BuildPod("a-leaving");
+            await using var survivor = BuildPod("b-survivor");
+            var factory = survivor.GetRequiredService<IDbContextFactory<OutboxContext>>();
+            await using (var context = await factory.CreateDbContextAsync())
+                await context.Database.EnsureCreatedAsync();
+            var leavingServices = leaving.GetServices<IHostedService>().ToArray();
+            var survivorServices = survivor.GetServices<IHostedService>().ToArray();
+            var leavingStopped = false;
+            try
+            {
+                foreach (var service in leavingServices)
+                    await service.StartAsync(CancellationToken.None);
+                await WaitForConditionAsync(() => OwnedBy("a-leaving") == BucketCount, TimeSpan.FromSeconds(30));
+                foreach (var service in survivorServices)
+                    await service.StartAsync(CancellationToken.None);
+                await WaitForConditionAsync(() => OwnedBy("b-survivor") == BucketCount / 2, TimeSpan.FromSeconds(30));
+
+                for (var index = leavingServices.Length - 1; index >= 0; index--)
+                    await leavingServices[index].StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(30));
+                leavingStopped = true;
+
+                // The lease lasts far longer than this wait, so only the release can free
+                // the buckets, and only the deleted heartbeat can raise the survivor's share.
+                await WaitForConditionAsync(() => OwnedBy("b-survivor") == BucketCount, TimeSpan.FromSeconds(30));
+                await using (var context = await factory.CreateDbContextAsync())
+                {
+                    await Assert.That(await context.Set<OutboxRelayInstance>().AnyAsync(relay => relay.RelayId == "a-leaving"))
+                        .IsFalse();
+                    for (var bucket = 0; bucket < BucketCount; bucket++)
+                    {
+                        context.AddOutboxMessage(new OutboxMessage
+                        {
+                            MessageId = Guid.NewGuid(), Bucket = bucket, Topic = topic,
+                            Value = System.Text.Encoding.UTF8.GetBytes($"bucket-{bucket}"),
+                            CreatedAtUtc = DateTimeOffset.UtcNow
+                        });
+                    }
+                    await context.SaveChangesAsync();
+                }
+
+                await using var consumer = await Kafka.CreateConsumer<string, string>()
+                    .WithBootstrapServers(KafkaContainer.BootstrapServers)
+                    .WithGroupId($"outbox-handover-{Guid.NewGuid():N}")
+                    .WithAutoOffsetReset(AutoOffsetReset.Earliest).BuildAsync();
+                consumer.Subscribe(topic);
+                using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+                var delivered = new HashSet<string>();
+                await foreach (var record in consumer.ConsumeAsync(deadline.Token))
+                {
+                    delivered.Add(record.Value);
+                    if (delivered.Count == BucketCount)
+                        break;
+                }
+
+                await Assert.That(delivered.Count).IsEqualTo(BucketCount);
+            }
+            finally
+            {
+                for (var index = survivorServices.Length - 1; index >= 0; index--)
+                    await survivorServices[index].StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(30));
+                if (!leavingStopped)
+                {
+                    for (var index = leavingServices.Length - 1; index >= 0; index--)
+                        await leavingServices[index].StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(30));
+                }
+            }
+
+            int OwnedBy(string relayId)
+            {
+                using var context = factory.CreateDbContext();
+                return context.Set<OutboxLease>().Count(lease => lease.Owner == relayId);
+            }
+        }
+        finally
+        {
+            DeleteDatabaseFiles(databasePath);
+        }
+
+        ServiceProvider BuildPod(string relayId)
+        {
+            var services = new ServiceCollection();
+            services.AddLogging();
+            services.AddDekafEntityFrameworkCoreOutboxStore<OutboxContext>((_, options) => options.UseSqlite(connection));
+            services.AddDekafOutboxRelay(builder => builder.WithBootstrapServers(KafkaContainer.BootstrapServers),
+                new OutboxRelayOptions
+                {
+                    BucketCount = BucketCount, RelayId = relayId,
+                    LeaseDuration = TimeSpan.FromMinutes(10), LeaseRenewInterval = TimeSpan.FromSeconds(1)
+                });
+            return services.BuildServiceProvider();
+        }
+    }
+
+    [Test]
     public async Task Backlog_DrainsFairlyAcrossBuckets_WithoutDiscoveryPerBatch()
     {
         const int hotRows = 1024;

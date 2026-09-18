@@ -40,6 +40,9 @@ public interface IOutboxStore
     /// host clocks must stay synchronized to within the renewal slack
     /// (<c>LeaseDuration - LeaseRenewInterval</c>); larger skew degrades to the documented
     /// duplicates-never-loss takeover window, exactly as a stalled relay would.
+    /// A store that claims buckets one conditional write at a time should also implement
+    /// <see cref="IOutboxLeaseOwnershipStore"/>; the relay then calls that acquisition,
+    /// which carries the buckets it acquired last, instead of this one.
     /// </remarks>
     /// <returns>The buckets this relay currently owns, in ascending order.</returns>
     ValueTask<IReadOnlyList<int>> AcquireBucketLeasesAsync(

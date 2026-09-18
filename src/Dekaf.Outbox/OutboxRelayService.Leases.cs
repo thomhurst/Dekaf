@@ -8,6 +8,50 @@ public sealed partial class OutboxRelayService
     private CancellationTokenSource? _renewalDelayCancellation;
     private long _renewalDelayStarted;
     private TimeSpan _renewalDelayDuration;
+    private int _leasesReleased;
+
+    /// <summary>
+    /// Stops the relay and, for an <see cref="IOutboxLeaseOwnershipStore"/>, hands its leases
+    /// back once the publish loop has ended.
+    /// </summary>
+    public override async Task StopAsync(CancellationToken cancellationToken)
+    {
+        await base.StopAsync(cancellationToken).ConfigureAwait(false);
+        await ReleaseLeasesAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task ReleaseLeasesAsync(CancellationToken cancellationToken)
+    {
+        var executeTask = ExecuteTask;
+        if (_ownershipStore is null || executeTask is null)
+            return;
+
+        // The base stop also returns when the shutdown deadline fires first. A relay that is
+        // still running can still be publishing, and releasing then would invite a peer
+        // onto the same rows. Its leases expire instead, as they would without this capability.
+        if (!executeTask.IsCompleted)
+        {
+            LogLeaseReleaseSkipped(_options.RelayId, _options.LeaseDuration);
+            return;
+        }
+
+        // The completed loop is what makes its state safe to read from the stopping thread.
+        if (!_acquisitionAttempted || Interlocked.Exchange(ref _leasesReleased, 1) != 0)
+            return;
+
+        try
+        {
+            await _ownershipStore.ReleaseBucketLeasesAsync(_leaseRequest, _previousBuckets, cancellationToken)
+                .ConfigureAwait(false);
+            LogLeasesReleased(_options.RelayId);
+        }
+        catch (Exception ex)
+        {
+            // Best effort, including past the shutdown deadline: a failed handover must not
+            // fail host shutdown, and it only delays takeover until the leases expire.
+            LogLeaseReleaseFailed(ex, _options.RelayId, _options.LeaseDuration);
+        }
+    }
 
     public override void Dispose()
     {
@@ -146,4 +190,13 @@ public sealed partial class OutboxRelayService
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Outbox lease lost during publishing; rows retained for at-least-once takeover. Already-appended Kafka records may still be delivered")]
     private partial void LogLeaseLostDuringPublish();
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Outbox relay {RelayId} released its bucket leases")]
+    private partial void LogLeasesReleased(string relayId);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Outbox relay {RelayId} did not stop before the shutdown deadline, so its bucket leases were not released; peers take over after LeaseDuration ({LeaseDuration})")]
+    private partial void LogLeaseReleaseSkipped(string relayId, TimeSpan leaseDuration);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Outbox relay {RelayId} failed to release its bucket leases; peers take over after LeaseDuration ({LeaseDuration})")]
+    private partial void LogLeaseReleaseFailed(Exception ex, string relayId, TimeSpan leaseDuration);
 }

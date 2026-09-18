@@ -283,7 +283,7 @@ var messageId = outboxResult.Headers.FirstOrDefault(h => h.Key == "x-outbox-mess
 | `BucketCount` | 8 | Upper bound on relay parallelism. Must match across all writers and relays. |
 | `BatchSize` | 500 | Rows fetched and published per database round trip. |
 | `PollInterval` | 1 second | Fallback discovery interval; local commit notifications interrupt idle waiting. |
-| `LeaseDuration` | 30 s | Time until takeover after the last successful renewal. The EF store renews during slow publishes, so the default 120 s producer delivery timeout does not expire an otherwise healthy relay's lease. Longer leases tolerate longer store/process stalls but delay takeover. |
+| `LeaseDuration` | 30 s | Time until takeover after the last successful renewal. The EF store renews during slow publishes, so the default 120 s producer delivery timeout does not expire an otherwise healthy relay's lease. Longer leases tolerate longer store/process stalls but delay takeover of a crashed relay. A gracefully stopped relay [releases its leases](#stable-ownership-and-graceful-handover), so peers take over on their next acquisition. |
 | `LeaseRenewInterval` | 10 s | Renewal cadence, including pending publishes. Leave enough slack for database latency, scheduling pauses, and clock skew. |
 | `MaxPublishDuration` | `null` | Required only for stores without `IOutboxLeaseRenewalStore`. Bound the **entire** publish call, not one record's delivery timeout. The budget plus a renewal interval must fit inside `LeaseDuration`. |
 | `MessageIdHeaderName` | `x-outbox-message-id` | Dedup header stamped on every record. |
@@ -433,6 +433,57 @@ The enqueue side is equally storage-agnostic: `OutboxMessage.Create(...)` serial
 Stores without an auto-increment primitive (e.g. DynamoDB) typically reserve a per-bucket sequence number with an atomic counter before the business transaction commits; sequence gaps from abandoned reservations are harmless — the ordering contract only needs monotonicity, not density.
 
 Semantics your implementation must preserve, in exchange for the relay's guarantees: rows are removed only via `MarkPublishedAsync` (never expired away — a TTL on the pending collection would convert at-least-once into loss), lease grants respect fair-share behavior across active relays (or at minimum never grant one bucket to two live relays), and out-of-range buckets should fail loudly rather than sit unclaimed.
+
+### Stable ownership and graceful handover
+
+`AcquireBucketLeasesAsync` receives a relay ID and a bucket count, not the buckets the relay already holds. The relay re-acquires on every `LeaseRenewInterval`, because that is how it notices membership changes. A store that claims buckets with one conditional write per bucket (DynamoDB, Redis) therefore cannot probe its own leases first. A relay whose probe order starts inside a peer's holdings is refused on every cycle, forever, on an idle outbox. Those refusals are harmless but not free: DynamoDB bills a failed conditional write, and the AWS SDK reports it as an error span.
+
+Implement the optional `IOutboxLeaseOwnershipStore` to opt in to two things:
+
+1. **Acquisition with a hint.** The relay calls `AcquireBucketLeasesAsync(request, previousBuckets, cancellationToken)` instead of the `IOutboxStore` method. `previousBuckets` is the result of the relay's last successful acquisition. It is a probe-order hint, never proof of ownership: the relay keeps it across lease expiry and store failures, so the conditional write stays the authority.
+2. **Release on graceful shutdown.** The relay calls `ReleaseBucketLeasesAsync` at most once, from `StopAsync`, after the publish loop has ended and the last publisher call has returned. Free the relay's leases (guarded by owner) and delete its liveness record. Peers then claim the buckets and recompute fair share on their next acquisition, instead of after `LeaseDuration`. If the relay does not stop before the host's shutdown deadline, the relay skips the release: a peer must never be invited onto rows that are still being published. A failed release is logged and the leases expire as before.
+
+Do not release leases from your own hosted service. Ordering it after the relay is easy to get wrong, and a release under a running publisher breaks single-writer ordering.
+
+`OutboxFairShare.Assign` gives the probe order for buckets the relay does not hold yet. It accumulates the `OutboxFairShare.Compute` shares into contiguous ranges, so relays that agree on membership compute disjoint ranges covering every bucket:
+
+```csharp
+public sealed class LeaseProbeOrder
+{
+    public static List<int> Build(
+        OutboxLeaseRequest request,
+        IReadOnlyList<int> previousBuckets,
+        List<string> activeRelayIds)
+    {
+        var order = new List<int>(request.BucketCount);
+        var queued = new bool[request.BucketCount];
+
+        void Queue(IEnumerable<int> buckets)
+        {
+            foreach (var bucket in buckets)
+            {
+                if ((uint)bucket < (uint)queued.Length && !queued[bucket])
+                {
+                    queued[bucket] = true;
+                    order.Add(bucket);
+                }
+            }
+        }
+
+        // 1. Leases this relay already holds: the owner-is-self condition matches.
+        Queue(previousBuckets);
+        // 2. The range that no agreeing peer probes.
+        Queue(OutboxFairShare.Assign(request.BucketCount, activeRelayIds, request.RelayId));
+        // 3. The remainder, for buckets a departed relay left behind.
+        Queue(Enumerable.Range(0, request.BucketCount));
+        return order;
+    }
+}
+```
+
+Claim in that order and stop at the fair share. When the share shrinks below the held count, keep the first buckets and release the rest, as the EF store does. In steady state every relay holds exactly its share from step 1 and makes no failed conditional write, so a failure now signals a real membership disagreement. Relays do not always agree: liveness records become visible with a lag, and a DynamoDB global secondary index cannot be read consistently at all. Ranges can therefore overlap for a cycle, which is why `Assign` orders probes and never replaces the conditional write.
+
+The EF store implements the capability. Its acquisition reads the whole lease table before writing, so it ignores the hint; its release frees every lease of the relay in one guarded statement and deletes the heartbeat row.
 
 ### Wiring a Custom Store
 

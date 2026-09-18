@@ -29,9 +29,14 @@ public sealed partial class OutboxRelayService : BackgroundService
     private readonly ILogger<OutboxRelayService> _logger;
     private readonly OutboxLeaseRequest _leaseRequest;
     private readonly IOutboxLeaseRenewalStore? _renewalStore;
+    private readonly IOutboxLeaseOwnershipStore? _ownershipStore;
     private readonly IOutboxNotifier? _notifier;
 
     private IReadOnlyList<int> _ownedBuckets = [];
+    // The last acquisition's result. Unlike _ownedBuckets it survives ResetLeaseState:
+    // it orders the store's probes and never authorizes publishing.
+    private IReadOnlyList<int> _previousBuckets = [];
+    private bool _acquisitionAttempted;
     private long _leaseTimestamp;
     private long _rebalanceTimestamp;
     private long _probeTimestamp;
@@ -83,6 +88,7 @@ public sealed partial class OutboxRelayService : BackgroundService
         }
 
         _store = store;
+        _ownershipStore = store as IOutboxLeaseOwnershipStore;
         _publisher = publisher;
         _options = options;
         _logger = logger;
@@ -496,7 +502,13 @@ public sealed partial class OutboxRelayService : BackgroundService
         // starts, so a slow acquisition must age the lease, not refresh it. Assigned only
         // after success so a failed call never counts as a renewal.
         var acquisitionTimestamp = _timeProvider.GetTimestamp();
-        var acquired = await _store.AcquireBucketLeasesAsync(_leaseRequest, cancellationToken).ConfigureAwait(false);
+        // Set before the call: a failed acquisition can still have written a heartbeat
+        // or claimed leases that a graceful stop should hand back.
+        _acquisitionAttempted = true;
+        var acquired = _ownershipStore is null
+            ? await _store.AcquireBucketLeasesAsync(_leaseRequest, cancellationToken).ConfigureAwait(false)
+            : await _ownershipStore.AcquireBucketLeasesAsync(_leaseRequest, _previousBuckets, cancellationToken)
+                .ConfigureAwait(false);
         // The old lease can expire during acquisition, including when no buckets are returned.
         // Observe that epoch before replacing either its ownership or timestamp.
         if (_ownedBuckets.Count > 0 && LeaseAge() >= _options.LeaseDuration)
@@ -511,6 +523,7 @@ public sealed partial class OutboxRelayService : BackgroundService
             LogLeasesChanged(_options.RelayId, acquired.Count, _options.BucketCount);
 
         _ownedBuckets = acquired;
+        _previousBuckets = acquired;
         if (_ownedBucketFlags is not null)
         {
             Array.Clear(_ownedBucketFlags);
