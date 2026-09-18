@@ -37,3 +37,7 @@ Dekaf.Outbox.IOutboxLeaseOwnershipStore.AcquireBucketLeasesAsync(Dekaf.Outbox.Ou
 Dekaf.Outbox.IOutboxLeaseOwnershipStore.ReleaseBucketLeasesAsync(Dekaf.Outbox.OutboxLeaseRequest! request, System.Collections.Generic.IReadOnlyList<int>! previousBuckets, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
 override Dekaf.Outbox.OutboxRelayService.StopAsync(System.Threading.CancellationToken cancellationToken) -> System.Threading.Tasks.Task!
 static Dekaf.Outbox.OutboxFairShare.Assign(int bucketCount, System.Collections.Generic.List<string!>! activeRelayIds, string! relayId) -> System.Collections.Generic.IReadOnlyList<int>!
+Dekaf.Outbox.DekafBuilderOutboxExtensions
+static Dekaf.Outbox.DekafBuilderOutboxExtensions.AddOutboxNotificationTransport<TTransport>(this Dekaf.Extensions.DependencyInjection.DekafBuilder! builder) -> Dekaf.Extensions.DependencyInjection.DekafBuilder!
+static Dekaf.Outbox.DekafBuilderOutboxExtensions.AddOutboxRelay(this Dekaf.Extensions.DependencyInjection.DekafBuilder! builder, Dekaf.Outbox.OutboxRelayOptions? options = null) -> Dekaf.Extensions.DependencyInjection.DekafBuilder!
+static Dekaf.Outbox.DekafBuilderOutboxExtensions.AddOutboxRelay(this Dekaf.Extensions.DependencyInjection.DekafBuilder! builder, System.Action<Dekaf.ProducerBuilder<byte[]?, byte[]?>!>! configureProducer, Dekaf.Outbox.OutboxRelayOptions? options = null) -> Dekaf.Extensions.DependencyInjection.DekafBuilder!

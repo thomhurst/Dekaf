@@ -9,6 +9,8 @@
   <ItemGroup>
     <InternalsVisibleTo Include="Dekaf.Tests.Unit" />
     <ProjectReference Include="..\Dekaf\Dekaf.csproj" />
+    <!-- DekafBuilder, so the outbox registers inside AddDekaf next to producers and consumers. -->
+    <ProjectReference Include="..\Dekaf.Extensions.DependencyInjection\Dekaf.Extensions.DependencyInjection.csproj" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" />
     <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />

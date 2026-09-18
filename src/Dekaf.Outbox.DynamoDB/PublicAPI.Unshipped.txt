@@ -1,0 +1,50 @@
+#nullable enable
+const Dekaf.Outbox.DynamoDB.DynamoDbOutboxWriter.MaxTransactionItems = 100 -> int
+Dekaf.Outbox.DynamoDB.DynamoDbOutboxOptions
+Dekaf.Outbox.DynamoDB.DynamoDbOutboxOptions.BucketCount.get -> int
+Dekaf.Outbox.DynamoDB.DynamoDbOutboxOptions.BucketCount.init -> void
+Dekaf.Outbox.DynamoDB.DynamoDbOutboxOptions.DynamoDbOutboxOptions() -> void
+Dekaf.Outbox.DynamoDB.DynamoDbOutboxOptions.KeyPrefix.get -> string!
+Dekaf.Outbox.DynamoDB.DynamoDbOutboxOptions.KeyPrefix.init -> void
+Dekaf.Outbox.DynamoDB.DynamoDbOutboxOptions.MaxConcurrency.get -> int
+Dekaf.Outbox.DynamoDB.DynamoDbOutboxOptions.MaxConcurrency.init -> void
+Dekaf.Outbox.DynamoDB.DynamoDbOutboxOptions.PartitionKeyAttributeName.get -> string!
+Dekaf.Outbox.DynamoDB.DynamoDbOutboxOptions.PartitionKeyAttributeName.init -> void
+Dekaf.Outbox.DynamoDB.DynamoDbOutboxOptions.PendingCountLimit.get -> int
+Dekaf.Outbox.DynamoDB.DynamoDbOutboxOptions.PendingCountLimit.init -> void
+Dekaf.Outbox.DynamoDB.DynamoDbOutboxOptions.SortKeyAttributeName.get -> string!
+Dekaf.Outbox.DynamoDB.DynamoDbOutboxOptions.SortKeyAttributeName.init -> void
+Dekaf.Outbox.DynamoDB.DynamoDbOutboxOptions.TableName.get -> string!
+Dekaf.Outbox.DynamoDB.DynamoDbOutboxOptions.TableName.init -> void
+Dekaf.Outbox.DynamoDB.DynamoDbOutboxOptions.Validate() -> void
+Dekaf.Outbox.DynamoDB.DynamoDbOutboxServiceCollectionExtensions
+Dekaf.Outbox.DynamoDB.DynamoDbOutboxStore
+Dekaf.Outbox.DynamoDB.DynamoDbOutboxStore.AcquireBucketLeasesAsync(Dekaf.Outbox.OutboxLeaseRequest! request, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyList<int>!>
+Dekaf.Outbox.DynamoDB.DynamoDbOutboxStore.DynamoDbOutboxStore(Amazon.DynamoDBv2.IAmazonDynamoDB! client, Dekaf.Outbox.DynamoDB.DynamoDbOutboxOptions! options, System.TimeProvider? timeProvider = null, Microsoft.Extensions.Logging.ILogger<Dekaf.Outbox.DynamoDB.DynamoDbOutboxStore!>? logger = null) -> void
+Dekaf.Outbox.DynamoDB.DynamoDbOutboxStore.GetBucketsWithPendingAsync(System.Collections.Generic.IReadOnlyList<int>! buckets, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyList<int>!>
+Dekaf.Outbox.DynamoDB.DynamoDbOutboxStore.GetNextBatchAsync(int bucket, int maxCount, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyList<Dekaf.Outbox.OutboxMessage!>!>
+Dekaf.Outbox.DynamoDB.DynamoDbOutboxStore.GetPendingMetricsAsync(System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.Outbox.OutboxPendingMetrics?>
+Dekaf.Outbox.DynamoDB.DynamoDbOutboxStore.MarkPublishedAsync(int bucket, System.Collections.Generic.IReadOnlyList<Dekaf.Outbox.OutboxMessage!>! publishedMessages, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Outbox.DynamoDB.DynamoDbOutboxStore.ReleaseBucketLeasesAsync(Dekaf.Outbox.OutboxLeaseRequest! request, System.Collections.Generic.IReadOnlyList<int>! previousBuckets, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Outbox.DynamoDB.DynamoDbOutboxStore.RenewBucketLeasesAsync(Dekaf.Outbox.OutboxLeaseRequest! request, System.Collections.Generic.IReadOnlyList<int>! buckets, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<bool>
+Dekaf.Outbox.DynamoDB.DynamoDbOutboxTable
+Dekaf.Outbox.DynamoDB.DynamoDbOutboxWriter
+Dekaf.Outbox.DynamoDB.DynamoDbOutboxWriter.CreateTransactWriteItemAsync(Dekaf.Outbox.OutboxMessage! message, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Amazon.DynamoDBv2.Model.TransactWriteItem!>
+Dekaf.Outbox.DynamoDB.DynamoDbOutboxWriter.CreateTransactWriteItemsAsync(System.Collections.Generic.IReadOnlyList<Dekaf.Outbox.OutboxMessage!>! messages, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyList<Amazon.DynamoDBv2.Model.TransactWriteItem!>!>
+Dekaf.Outbox.DynamoDB.DynamoDbOutboxWriter.DynamoDbOutboxWriter(Amazon.DynamoDBv2.IAmazonDynamoDB! client, Dekaf.Outbox.DynamoDB.DynamoDbOutboxOptions! options, Dekaf.Outbox.IOutboxNotifier? notifier = null) -> void
+Dekaf.Outbox.DynamoDB.DynamoDbOutboxWriter.EnqueueAsync(Dekaf.Outbox.OutboxMessage! message, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Outbox.DynamoDB.DynamoDbOutboxWriter.EnqueueAsync(System.Collections.Generic.IReadOnlyList<Dekaf.Outbox.OutboxMessage!>! messages, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Outbox.DynamoDB.DynamoDbOutboxWriter.NotifyCommitted(Dekaf.Outbox.OutboxMessage! message) -> void
+Dekaf.Outbox.DynamoDB.DynamoDbOutboxWriter.NotifyCommitted(System.Collections.Generic.IReadOnlyList<Dekaf.Outbox.OutboxMessage!>! messages) -> void
+Dekaf.Outbox.DynamoDB.IDynamoDbOutboxWriter
+Dekaf.Outbox.DynamoDB.IDynamoDbOutboxWriter.CreateTransactWriteItemAsync(Dekaf.Outbox.OutboxMessage! message, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Amazon.DynamoDBv2.Model.TransactWriteItem!>
+Dekaf.Outbox.DynamoDB.IDynamoDbOutboxWriter.CreateTransactWriteItemsAsync(System.Collections.Generic.IReadOnlyList<Dekaf.Outbox.OutboxMessage!>! messages, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyList<Amazon.DynamoDBv2.Model.TransactWriteItem!>!>
+Dekaf.Outbox.DynamoDB.IDynamoDbOutboxWriter.EnqueueAsync(Dekaf.Outbox.OutboxMessage! message, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Outbox.DynamoDB.IDynamoDbOutboxWriter.EnqueueAsync(System.Collections.Generic.IReadOnlyList<Dekaf.Outbox.OutboxMessage!>! messages, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Outbox.DynamoDB.IDynamoDbOutboxWriter.NotifyCommitted(Dekaf.Outbox.OutboxMessage! message) -> void
+Dekaf.Outbox.DynamoDB.IDynamoDbOutboxWriter.NotifyCommitted(System.Collections.Generic.IReadOnlyList<Dekaf.Outbox.OutboxMessage!>! messages) -> void
+static Dekaf.Outbox.DynamoDB.DynamoDbOutboxServiceCollectionExtensions.AddDekafDynamoDbOutboxStore(this Microsoft.Extensions.DependencyInjection.IServiceCollection! services, Dekaf.Outbox.DynamoDB.DynamoDbOutboxOptions! options, System.Func<System.IServiceProvider!, Amazon.DynamoDBv2.IAmazonDynamoDB!>? clientFactory = null) -> Microsoft.Extensions.DependencyInjection.IServiceCollection!
+static Dekaf.Outbox.DynamoDB.DynamoDbOutboxTable.CreateIfNotExistsAsync(Amazon.DynamoDBv2.IAmazonDynamoDB! client, Dekaf.Outbox.DynamoDB.DynamoDbOutboxOptions! options, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task!
+static Dekaf.Outbox.DynamoDB.DynamoDbOutboxTable.CreateTableRequest(Dekaf.Outbox.DynamoDB.DynamoDbOutboxOptions! options) -> Amazon.DynamoDBv2.Model.CreateTableRequest!
+Dekaf.Outbox.DynamoDB.DekafBuilderDynamoDbOutboxExtensions
+static Dekaf.Outbox.DynamoDB.DekafBuilderDynamoDbOutboxExtensions.AddDynamoDbOutboxStore(this Dekaf.Extensions.DependencyInjection.DekafBuilder! builder, Dekaf.Outbox.DynamoDB.DynamoDbOutboxOptions! options, System.Func<System.IServiceProvider!, Amazon.DynamoDBv2.IAmazonDynamoDB!>? clientFactory = null) -> Dekaf.Extensions.DependencyInjection.DekafBuilder!

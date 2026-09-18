@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <PackageId>Dekaf.Outbox.DynamoDB</PackageId>
+    <Description>Amazon DynamoDB outbox store for Dekaf.Outbox - single-table schema, bucket leases, and transactional enqueue helpers</Description>
+    <PackageTags>kafka;outbox;transactional-outbox;dynamodb;aws</PackageTags>
+    <!-- First release: there is no published baseline to validate against yet. -->
+    <PackageValidationBaselineVersion></PackageValidationBaselineVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Dekaf.Tests.Unit" />
+    <ProjectReference Include="..\Dekaf.Outbox\Dekaf.Outbox.csproj" />
+    <PackageReference Include="AWSSDK.DynamoDBv2" />
+  </ItemGroup>
+
+</Project>
