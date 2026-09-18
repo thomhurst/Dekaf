@@ -112,6 +112,27 @@ public sealed class OutboxLeaseOwnershipTests
     }
 
     [Test]
+    public async Task MisconfigurationFault_StillReleasesOnStop()
+    {
+        var time = new ManualTimeProvider();
+        var store = new OwnershipStore { HasPending = true };
+        var publisher = new GatedPublisher { OnPublish = () => time.Advance(TimeSpan.FromSeconds(6)) };
+        publisher.Gate.SetResult();
+        using var relay = new OutboxRelayService(store, publisher,
+            new OutboxRelayOptions { RelayId = "relay-a", BucketCount = 4, MaxPublishDuration = TimeSpan.FromSeconds(5) },
+            NullLogger<OutboxRelayService>.Instance, time);
+        await relay.StartAsync(CancellationToken.None);
+        await Assert.That(async () => await relay.ExecuteTask!.WaitAsync(SignalTimeout))
+            .Throws<OutboxMisconfigurationException>();
+
+        // The faulted loop has ended like a stopped one: nothing is in flight, so the host's
+        // stop after the fault must still hand the leases back.
+        await relay.StopAsync(CancellationToken.None);
+
+        await Assert.That(store.ReleaseCount).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task ReleaseIgnoringCancellation_DoesNotHoldStopPastTheShutdownDeadline()
     {
         var time = new ManualTimeProvider();
@@ -167,6 +188,7 @@ public sealed class OutboxLeaseOwnershipTests
         internal TaskCompletionSource Gate { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         internal ConcurrentQueue<string>? Events { get; init; }
         internal bool BlockInitialization { get; init; }
+        internal Action? OnPublish { get; init; }
 
         public async ValueTask InitializeAsync(CancellationToken cancellationToken = default)
         {
@@ -180,6 +202,7 @@ public sealed class OutboxLeaseOwnershipTests
             string messageIdHeaderName, CancellationToken cancellationToken = default)
         {
             Entered.TrySetResult();
+            OnPublish?.Invoke();
             await Gate.Task;
             Events?.Enqueue("publish-returned");
             return new OutboxPublishResult(messages.Count, null);
