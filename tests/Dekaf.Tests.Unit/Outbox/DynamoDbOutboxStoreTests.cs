@@ -197,25 +197,57 @@ public sealed class DynamoDbOutboxStoreTests
             queries.Add(call.Arg<QueryRequest>());
             return queries.Count switch
             {
-                // A transaction wrote 4 and 5. The first read passed position 4 before the
-                // commit and still returned 5: a query is only read-committed.
-                1 => new QueryResponse { Items = [Message(3), Message(5)] },
-                // The probe of the gap finds message 4.
+                // A transaction wrote 2 and 3. The first read passed position 2 before the
+                // commit and still returned 3: a query is only read-committed.
+                1 => new QueryResponse { Items = [Message(1), Message(3)] },
+                // The probe of the gap finds message 2.
                 2 => new QueryResponse { Count = 1 },
-                _ => new QueryResponse { Items = [Message(3), Message(4), Message(5)] }
+                _ => new QueryResponse { Items = [Message(1), Message(2), Message(3)] }
             };
         });
         var store = new DynamoDbOutboxStore(client, Options, new FixedClock());
 
         var batch = await store.GetNextBatchAsync(4, 100);
 
-        await Assert.That(string.Join(',', batch.Select(message => message.Id))).IsEqualTo("3,4,5");
+        await Assert.That(string.Join(',', batch.Select(message => message.Id))).IsEqualTo("1,2,3");
         await Assert.That(queries.Count).IsEqualTo(3);
         await Assert.That(queries[1].Select).IsEqualTo(Select.COUNT);
         await Assert.That(queries[1].Limit).IsEqualTo(1);
         await Assert.That(queries[1].ConsistentRead == true).IsTrue();
-        await Assert.That(queries[1].ExpressionAttributeValues[":first"].S).IsEqualTo("0000000000000000004");
-        await Assert.That(queries[1].ExpressionAttributeValues[":last"].S).IsEqualTo("0000000000000000004");
+        await Assert.That(queries[1].ExpressionAttributeValues[":first"].S).IsEqualTo("0000000000000000002");
+        await Assert.That(queries[1].ExpressionAttributeValues[":last"].S).IsEqualTo("0000000000000000002");
+    }
+
+    [Test]
+    public async Task FirstFetchOfABucket_ProbesEverythingBelowItsHead_BecauseAHandoverLeavesNoBaseline()
+    {
+        var client = Substitute.For<IAmazonDynamoDB>();
+        var queries = new List<QueryRequest>();
+        client.QueryAsync(Arg.Any<QueryRequest>(), Arg.Any<CancellationToken>()).Returns(call =>
+        {
+            queries.Add(call.Arg<QueryRequest>());
+            return queries.Count switch
+            {
+                // This store has just taken the bucket over. Its peer published up to 9; a
+                // transaction wrote 10 and 11, and the query returned only 11.
+                1 => new QueryResponse { Items = [Message(11)] },
+                2 => new QueryResponse { Count = 1 },
+                3 => new QueryResponse { Items = [Message(10), Message(11)] },
+                // The second fetch of the bucket has a baseline again.
+                4 => new QueryResponse { Items = [Message(12)] },
+                _ => throw new InvalidOperationException("A contiguous batch needs no probe.")
+            };
+        });
+        var store = new DynamoDbOutboxStore(client, Options, new FixedClock());
+
+        var first = await store.GetNextBatchAsync(4, 100);
+        var second = await store.GetNextBatchAsync(4, 100);
+
+        await Assert.That(string.Join(',', first.Select(message => message.Id))).IsEqualTo("10,11");
+        await Assert.That(queries[1].ExpressionAttributeValues[":first"].S).IsEqualTo("0000000000000000001");
+        await Assert.That(queries[1].ExpressionAttributeValues[":last"].S).IsEqualTo("0000000000000000010");
+        await Assert.That(string.Join(',', second.Select(message => message.Id))).IsEqualTo("12");
+        await Assert.That(queries.Count).IsEqualTo(4);
     }
 
     [Test]

@@ -286,14 +286,16 @@ public sealed partial class DynamoDbOutboxStore : IOutboxStore, IOutboxLeaseRene
     /// transaction. Publishing that batch would put n+1 ahead of n. A gap is normal (an
     /// abandoned reservation, a writer that has reserved but not committed), so each gap gets
     /// one cheap range probe, and only a probe that finds a message costs a second fetch.
+    /// A writer that has reserved but not committed is outside this: its message does not
+    /// exist yet, and writers that do not serialize their commits have no order to keep.
     /// </remarks>
     private async Task<bool> HasLateArrivalAsync(int bucket, List<OutboxMessage> messages, CancellationToken cancellationToken)
     {
         // The end of the previous batch is known only while this store keeps reading the
-        // bucket. A stale value after a handover costs one empty probe, never correctness.
-        var expected = bucket < _lastSequence.Length && _lastSequence[bucket] > 0
-            ? _lastSequence[bucket] + 1
-            : messages.Count > 0 ? messages[0].Id : 0;
+        // bucket. After a start or a handover it is not, and everything below the head is
+        // the gap: one probe per bucket for the life of the store. A stale value from an
+        // earlier ownership is merely a wider gap.
+        var expected = bucket < _lastSequence.Length && _lastSequence[bucket] > 0 ? _lastSequence[bucket] + 1 : 1;
         var probes = 0;
         foreach (var message in messages)
         {

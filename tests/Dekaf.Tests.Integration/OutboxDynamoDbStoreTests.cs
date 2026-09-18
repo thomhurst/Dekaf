@@ -216,6 +216,29 @@ public sealed class OutboxDynamoDbStoreTests(DynamoDbLocalContainer dynamoDb)
     }
 
     [Test]
+    public async Task StoreThatTakesABucketOver_FetchesFromADrainedBucketsHead()
+    {
+        using var client = dynamoDb.CreateClient();
+        var options = await DynamoDbLocalContainer.CreateTableAsync(client);
+        var writer = new DynamoDbOutboxWriter(client, options);
+        var previousOwner = new DynamoDbOutboxStore(client, options);
+        for (var index = 0; index < 3; index++)
+            await EnqueueOneAsync(writer, bucket: 6);
+        await previousOwner.MarkPublishedAsync(6, await previousOwner.GetNextBatchAsync(6, 10));
+        var fourth = await EnqueueOneAsync(writer, bucket: 6);
+        var fifth = await EnqueueOneAsync(writer, bucket: 6);
+
+        // A new owner knows no previous batch, so it probes everything below the head for a
+        // message that committed behind its query. Here that range was published and deleted
+        // long ago: the probe finds nothing and the batch stands.
+        var newOwner = new DynamoDbOutboxStore(client, options);
+        var batch = await newOwner.GetNextBatchAsync(6, 10);
+
+        await Assert.That(batch.Select(message => message.MessageId).SequenceEqual([fourth, fifth])).IsTrue();
+        await Assert.That(batch[0].Id).IsEqualTo(4);
+    }
+
+    [Test]
     public async Task MarkPublished_DeletesOnlyThePublishedPrefix_AcrossBatchWriteChunks()
     {
         using var client = dynamoDb.CreateClient();
