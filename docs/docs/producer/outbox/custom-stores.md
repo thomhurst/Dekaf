@@ -131,9 +131,11 @@ The EF store implements the capability. Its acquisition reads the whole lease ta
 Register your store, then add the relay — the EF Core package is not involved:
 
 ```csharp
+using Dekaf.Outbox;
+
 builder.Services.AddSingleton<IOutboxStore, CustomOutboxStore>();
-builder.Services.AddDekafOutboxRelay(
-    producer => producer.WithBootstrapServers("localhost:9092"));
+builder.Services.AddDekaf(dekaf => dekaf
+    .AddOutboxRelay(producer => producer.WithBootstrapServers("localhost:9092")));
 ```
 
-The relay resolves whatever `IOutboxStore` is registered; `AddDekafEntityFrameworkCoreOutboxStore` is just a convenience registration for the EF implementation.
+The relay resolves whatever `IOutboxStore` is registered; `AddEntityFrameworkCoreOutboxStore` and `AddDynamoDbOutboxStore` are convenience registrations for the packaged implementations. A store package of your own can offer the same experience with an extension method on `DekafBuilder` that registers its store through `builder.Services`.

@@ -56,12 +56,17 @@ The built-in publisher retains concurrent sends so Kafka can batch records. It d
 
 ## Running the Relay
 
-The relay is a hosted service. Register it next to the store from your database's guide; every instance of your service can run it:
+The relay is a hosted service. Register it inside `AddDekaf`, next to the store from your database's guide; every instance of your service can run it:
 
 ```csharp
-builder.Services.AddDekafOutboxRelay(
-    producer => producer.WithBootstrapServers("localhost:9092"));
+using Dekaf.Extensions.DependencyInjection;
+using Dekaf.Outbox;
+
+builder.Services.AddDekaf(dekaf => dekaf
+    .AddOutboxRelay(producer => producer.WithBootstrapServers("localhost:9092")));
 ```
+
+The outbox calls chain with `AddProducer`, `AddConsumer` and the rest of the [`AddDekaf` builder](../../dependency-injection.md). Applications that do not use `AddDekaf` can call the equivalent `IServiceCollection` methods instead, which register exactly the same services: `AddDekafOutboxRelay`, `AddDekafOutboxNotificationTransport`, and each store's `AddDekaf…OutboxStore`.
 
 ### Commit notifications and fallback polling
 
@@ -90,7 +95,11 @@ Cross-process hints provide three benefits:
 Implement the transport as an adapter to your application's broadcast infrastructure, then register it alongside the relay on each participating instance:
 
 ```csharp
-services.AddDekafOutboxNotificationTransport<ApplicationOutboxTransport>();
+using Dekaf.Outbox;
+
+services.AddDekaf(dekaf => dekaf
+    .AddOutboxRelay(producer => producer.WithBootstrapServers("localhost:9092"))
+    .AddOutboxNotificationTransport<ApplicationOutboxTransport>());
 ```
 
 `ApplicationOutboxTransport` is application code implementing the interface; no transport provider is bundled. An existing `IOutboxNotificationTransport` singleton registration is preserved, allowing instance or factory registration. The transport is disposed by the DI container. This integration requires the built-in notifier; custom notifiers can continue using local notifications without registering the transport.
@@ -116,9 +125,11 @@ The default eight buckets permit at most eight active draining relays. Extra app
 To avoid querying the same whole-table backlog from every pod, opt in on **all** relays sharing that store:
 
 ```csharp
-services.AddDekafOutboxRelay(
+using Dekaf.Outbox;
+
+services.AddDekaf(dekaf => dekaf.AddOutboxRelay(
     producer => producer.WithBootstrapServers("localhost:9092"),
-    new OutboxRelayOptions { CollectMetricsOnBucketZeroOwnerOnly = true });
+    new OutboxRelayOptions { CollectMetricsOnBucketZeroOwnerOnly = true }));
 ```
 
 Only the relay holding a locally valid lease for bucket zero samples backlog metrics. Non-owners report unavailable backlog observations. Samples completing after ownership loss are discarded, and a new owner starts sampling on its next collection interval; handover may temporarily leave no sample. Existing leases coordinate sampling without a new table or migration. This is advisory sampling, not a distributed lock for arbitrary work: an already-running query can overlap takeover if its cancellation is delayed. Every sampler retains its query timeout.
@@ -153,14 +164,16 @@ var messageId = outboxResult.Headers.FirstOrDefault(h => h.Key == "x-outbox-mess
 Pass options at registration:
 
 ```csharp
-builder.Services.AddDekafOutboxRelay(
+using Dekaf.Outbox;
+
+builder.Services.AddDekaf(dekaf => dekaf.AddOutboxRelay(
     producer => producer.WithBootstrapServers("localhost:9092"),
     new OutboxRelayOptions
     {
         BucketCount = 16,
         BatchSize = 1000,
         PollInterval = TimeSpan.FromMilliseconds(50)
-    });
+    }));
 ```
 
 ## Operational metrics

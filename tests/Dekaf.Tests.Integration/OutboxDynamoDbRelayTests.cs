@@ -1,6 +1,7 @@
 using Amazon.DynamoDBv2;
 using Amazon.DynamoDBv2.Model;
 using Dekaf.Consumer;
+using Dekaf.Extensions.DependencyInjection;
 using Dekaf.Outbox;
 using Dekaf.Outbox.DynamoDB;
 using Dekaf.Serialization;
@@ -143,17 +144,19 @@ public sealed class OutboxDynamoDbRelayTests(KafkaTestContainer kafka) : KafkaIn
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddSingleton(client);
-        services.AddDekafDynamoDbOutboxStore(options);
-        services.AddDekafOutboxRelay(
-            producer => producer.WithBootstrapServers(KafkaContainer.BootstrapServers),
-            new OutboxRelayOptions
-            {
-                BucketCount = options.BucketCount,
-                RelayId = relayId,
-                LeaseDuration = leaseDuration,
-                LeaseRenewInterval = TimeSpan.FromMilliseconds(500),
-                PollInterval = TimeSpan.FromMilliseconds(200)
-            });
+        // Registered the way the documentation shows it, inside AddDekaf.
+        services.AddDekaf(dekaf => dekaf
+            .AddDynamoDbOutboxStore(options)
+            .AddOutboxRelay(
+                producer => producer.WithBootstrapServers(KafkaContainer.BootstrapServers),
+                new OutboxRelayOptions
+                {
+                    BucketCount = options.BucketCount,
+                    RelayId = relayId,
+                    LeaseDuration = leaseDuration,
+                    LeaseRenewInterval = TimeSpan.FromMilliseconds(500),
+                    PollInterval = TimeSpan.FromMilliseconds(200)
+                }));
         return services.BuildServiceProvider();
     }
 

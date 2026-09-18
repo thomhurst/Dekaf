@@ -33,19 +33,20 @@ public class OrdersContext(DbContextOptions<OrdersContext> options) : DbContext(
 Register the store and the relay:
 
 ```csharp
+using Dekaf.Extensions.DependencyInjection;
 using Dekaf.Outbox;
 using Dekaf.Outbox.EntityFrameworkCore;
 
-builder.Services.AddDekafEntityFrameworkCoreOutboxStore<OrdersContext>((services, options) =>
-{
-    // Configure the EF Core provider used by your application here.
-    options.EnableDetailedErrors();
-});
-builder.Services.AddDekafOutboxRelay(
-    producer => producer.WithBootstrapServers("localhost:9092"));
+builder.Services.AddDekaf(dekaf => dekaf
+    .AddEntityFrameworkCoreOutboxStore<OrdersContext>((services, options) =>
+    {
+        // Configure the EF Core provider used by your application here.
+        options.EnableDetailedErrors();
+    })
+    .AddOutboxRelay(producer => producer.WithBootstrapServers("localhost:9092")));
 ```
 
-This overload registers the context factory and commit interceptors together. If the application already registers its factory (including a pooled factory), keep that registration, add `options.UseDekafOutboxNotifications(services.GetRequiredService<IOutboxNotifier>())` in its options callback, and use the parameterless `AddDekafEntityFrameworkCoreOutboxStore<OrdersContext>()` overload. That parameterless overload does not modify existing context options.
+This overload registers the context factory and commit interceptors together. If the application already registers its factory (including a pooled factory), keep that registration, add `options.UseDekafOutboxNotifications(services.GetRequiredService<IOutboxNotifier>())` in its options callback, and use the parameterless `AddEntityFrameworkCoreOutboxStore<OrdersContext>()` overload. That parameterless overload does not modify existing context options.
 
 ### Commit notifications
 
@@ -124,13 +125,13 @@ modelBuilder.Entity<OutboxMessage>()
 
 ### Multiple Logical Outboxes
 
-The `AddDekafOutboxRelay` / `AddDekafEntityFrameworkCoreOutboxStore` helpers register **one** unkeyed store, publisher, and relay per host — calling them twice does not create a second pipeline. To run several logical outboxes (e.g. one per bounded context) in one process, wire the additional relays explicitly; every piece has a public constructor:
+The `AddOutboxRelay` / `AddEntityFrameworkCoreOutboxStore` helpers register **one** unkeyed store, publisher, and relay per host — calling them twice does not create a second pipeline. To run several logical outboxes (e.g. one per bounded context) in one process, wire the additional relays explicitly; every piece has a public constructor:
 
 ```csharp
 // Registered (keyed) so the container owns the publisher's disposal - the relay
 // deliberately does not dispose the publisher it is given. CreateRelayProducerBuilder
 // applies the same enforced delivery guarantees (Acks.All, idempotence, key-respecting
-// partitioner) as AddDekafOutboxRelay.
+// partitioner) as AddOutboxRelay.
 services.AddKeyedSingleton<IOutboxPublisher>("second-outbox", (provider, _) =>
     new DekafOutboxPublisher(OutboxServiceCollectionExtensions.CreateRelayProducerBuilder(
             producer => producer

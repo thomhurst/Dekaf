@@ -26,18 +26,20 @@ The package brings in `Dekaf.Outbox` (the relay) and `AWSSDK.DynamoDBv2`.
 
 ```csharp
 using Amazon.DynamoDBv2;
+using Dekaf.Extensions.DependencyInjection;
 using Dekaf.Outbox;
 using Dekaf.Outbox.DynamoDB;
 
 builder.Services.AddSingleton<IAmazonDynamoDB>(new AmazonDynamoDBClient());
-builder.Services.AddDekafDynamoDbOutboxStore(new DynamoDbOutboxOptions { TableName = "orders-outbox" });
-builder.Services.AddDekafOutboxRelay(
-    producer => producer.WithBootstrapServers("localhost:9092"));
+builder.Services.AddDekaf(dekaf => dekaf
+    .AddDynamoDbOutboxStore(new DynamoDbOutboxOptions { TableName = "orders-outbox" })
+    .AddOutboxRelay(producer => producer.WithBootstrapServers("localhost:9092")));
 ```
 
-- `AddDekafDynamoDbOutboxStore` registers `DynamoDbOutboxStore` as the `IOutboxStore` and `DynamoDbOutboxWriter` as the `IDynamoDbOutboxWriter`. It resolves `IAmazonDynamoDB` from the container, so register the client yourself or with `AWSSDK.Extensions.NETCore.Setup`.
-- `AddDekafOutboxRelay` adds the hosted relay that publishes and deletes the messages. Every instance of your service can run it: the relays [divide the buckets](#how-relays-share-buckets) among themselves.
-- A process that only enqueues (an API that leaves publishing to a worker) registers the store call without `AddDekafOutboxRelay` and injects `IDynamoDbOutboxWriter`.
+- `AddDynamoDbOutboxStore` registers `DynamoDbOutboxStore` as the `IOutboxStore` and `DynamoDbOutboxWriter` as the `IDynamoDbOutboxWriter`. It resolves `IAmazonDynamoDB` from the container, so register the client yourself or with `AWSSDK.Extensions.NETCore.Setup`.
+- `AddOutboxRelay` adds the hosted relay that publishes and deletes the messages. Every instance of your service can run it: the relays [divide the buckets](#how-relays-share-buckets) among themselves.
+- A process that only enqueues (an API that leaves publishing to a worker) registers the store call without `AddOutboxRelay` and injects `IDynamoDbOutboxWriter`.
+- Without `AddDekaf`, call `services.AddDekafDynamoDbOutboxStore(...)` and `services.AddDekafOutboxRelay(...)`; they register exactly the same services.
 
 To give the outbox its own client, for example one with another region, endpoint or retry policy, pass a factory. It runs once per container; the store and the writer share the client it returns, and the container does not dispose it:
 
@@ -46,9 +48,9 @@ using Amazon.DynamoDBv2;
 using Dekaf.Outbox.DynamoDB;
 
 var outboxClient = new AmazonDynamoDBClient(Amazon.RegionEndpoint.EUWest1);
-builder.Services.AddDekafDynamoDbOutboxStore(
+builder.Services.AddDekaf(dekaf => dekaf.AddDynamoDbOutboxStore(
     new DynamoDbOutboxOptions { TableName = "orders-outbox" },
-    _ => outboxClient);
+    _ => outboxClient));
 ```
 
 ### Options
@@ -75,11 +77,11 @@ using Dekaf.Outbox.DynamoDB;
 
 const int BucketCount = 32;
 
-builder.Services.AddDekafDynamoDbOutboxStore(
-    new DynamoDbOutboxOptions { TableName = "orders-outbox", BucketCount = BucketCount });
-builder.Services.AddDekafOutboxRelay(
-    producer => producer.WithBootstrapServers("localhost:9092"),
-    new OutboxRelayOptions { BucketCount = BucketCount });
+builder.Services.AddDekaf(dekaf => dekaf
+    .AddDynamoDbOutboxStore(new DynamoDbOutboxOptions { TableName = "orders-outbox", BucketCount = BucketCount })
+    .AddOutboxRelay(
+        producer => producer.WithBootstrapServers("localhost:9092"),
+        new OutboxRelayOptions { BucketCount = BucketCount }));
 ```
 
 A writer with another count hashes the same key to another bucket, so that key's messages lose their order, and a writer with a larger count fills buckets that no relay claims. DynamoDB cannot list such partitions cheaply, so the writer stamps its count on every message instead. The relay **faults with `OutboxMisconfigurationException`** (under the default host behavior the application stops) when its own count differs from the store's, or when it reads a message stamped with another count. Drain the table before changing the count.
@@ -325,7 +327,7 @@ Lease expiry compares host clocks, as for [every store](./index.md#ordering): ke
 
 ## Multiple outboxes
 
-`AddDekafDynamoDbOutboxStore` and `AddDekafOutboxRelay` register **one** store, writer and relay per host. To run a second logical outbox, give it its own table or its own `KeyPrefix` and wire the additional pieces explicitly; every piece has a public constructor:
+`AddDynamoDbOutboxStore` and `AddOutboxRelay` register **one** store, writer and relay per host. To run a second logical outbox, give it its own table or its own `KeyPrefix` and wire the additional pieces explicitly; every piece has a public constructor:
 
 ```csharp
 using Amazon.DynamoDBv2;
