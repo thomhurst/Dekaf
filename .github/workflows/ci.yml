@@ -661,7 +661,7 @@ jobs:
     name: NativeAOT Smoke
     needs: changes
     if: needs.changes.outputs.code == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
 
     steps:
@@ -717,7 +717,7 @@ jobs:
     name: NativeAOT Integration Publish
     needs: changes
     if: needs.changes.outputs.code == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
 
     steps:
