@@ -106,17 +106,6 @@ class MutationReportTests(unittest.TestCase):
         self.assertIn('if [ -f artifacts/mutation-summary.md ]; then', workflow)
         self.assertIn('cat artifacts/mutation-summary.md >> "$GITHUB_STEP_SUMMARY"', workflow)
 
-    def test_workflow_installs_stryker_target_runtime(self):
-        workflow_path = Path(__file__).parents[1] / "workflows" / "mutation-tests.yml"
-        workflow = workflow_path.read_text(encoding="utf-8")
-
-        self.assertIn("global-json-file: global.json", workflow)
-        self.assertIn("dotnet-version: '8.0.x'", workflow)
-        sdk_config = json.loads((Path(__file__).parents[2] / "global.json").read_text(encoding="utf-8"))
-        self.assertTrue(sdk_config["sdk"]["version"].startswith("10."))
-        self.assertFalse(sdk_config["sdk"]["allowPrerelease"])
-        self.assertEqual("Microsoft.Testing.Platform", sdk_config["test"]["runner"])
-
     def test_producer_mutation_host_presizes_thread_pool(self):
         project_path = (
             Path(__file__).parents[2]

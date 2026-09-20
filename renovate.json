@@ -15,6 +15,13 @@
       ],
       "matchCurrentVersion": "/^8\\./",
       "allowedVersions": "<9"
+    },
+    {
+      "description": "Keep the .NET 8 runtime required by net8.0 tests; global.json controls SDK upgrades",
+      "matchManagers": ["github-actions"],
+      "matchPackageNames": ["dotnet-sdk"],
+      "matchCurrentValue": "/^8\\./",
+      "allowedVersions": "<9"
     }
   ]
 }
