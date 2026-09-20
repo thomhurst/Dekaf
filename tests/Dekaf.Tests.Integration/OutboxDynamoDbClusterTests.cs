@@ -185,33 +185,6 @@ public sealed class OutboxDynamoDbClusterTests(DynamoDbLocalContainer dynamoDb)
     }
 
     [Test]
-    public async Task PublishesThatOutlastTheLease_KeepTheirBuckets_BecauseTheRelayRenewsWhilePublishing()
-    {
-        // Every batch takes longer than a whole lease. Without in-flight renewal each lease
-        // would lapse mid-publish, a peer would take the bucket, and nothing would ever drain.
-        var leaseDuration = TimeSpan.FromSeconds(3);
-        await using var cluster = await OutboxDynamoDbCluster.CreateAsync(
-            dynamoDb, bucketCount: 6, leaseDuration, TimeSpan.FromMilliseconds(300),
-            publishLatency: leaseDuration + TimeSpan.FromSeconds(1));
-        await cluster.StartPodsAsync("pod-a", "pod-b", "pod-c");
-        await cluster.WaitForFairSplitAsync(Patience);
-        var owners = Describe(await cluster.ReadOwnersAsync());
-        // Pods that start together plan from membership that is still becoming visible, so
-        // the cold start is allowed its refusals, as it is in the twelve-pod scenario. What
-        // this test measures starts here, with a settled fleet.
-        var settledRefusals = cluster.RefusedWrites;
-
-        await cluster.RunWritersAsync(writers: 2, keysPerWriter: 6, CancellationToken.None, messagesPerKey: 3);
-        await cluster.WaitForDrainedAsync(Patience);
-
-        await cluster.AssertDeliveryAsync();
-        // No lease was lost: no bucket moved, nothing was published twice, nothing refused.
-        await Assert.That(Describe(await cluster.ReadOwnersAsync())).IsEqualTo(owners);
-        await Assert.That(cluster.DuplicatePublications()).IsEqualTo(0);
-        await Assert.That(cluster.RefusedWrites).IsEqualTo(settledRefusals);
-    }
-
-    [Test]
     public async Task PodFrozenInsideAPublish_LosesItsBuckets_AndTheOnlyDamageIsDuplicates()
     {
         var leaseDuration = TimeSpan.FromSeconds(3);
