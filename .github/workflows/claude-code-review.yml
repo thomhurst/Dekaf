@@ -113,7 +113,7 @@ jobs:
             `pr-head/`. Use `gh pr diff` for the change set.
 
             Instructions:
-            - Apply this repository's own conventions: read CLAUDE.md and review against them (design, development standards, performance, zero-allocation). Flag violations of these project rules.
+            - Apply this repository's own conventions: read AGENTS.md and review against them (design, development standards, performance, zero-allocation). Flag violations of these project rules.
             - Review in priority order, reporting highest-severity first:
               * Correctness bugs and logic errors
               * Security issues

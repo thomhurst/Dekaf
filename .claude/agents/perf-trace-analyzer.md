@@ -5,14 +5,14 @@ model: opus
 memory: project
 ---
 
-Profile the requested Dekaf scenario and report trace-backed findings under the performance requirements in `CLAUDE.md`.
+Profile the requested Dekaf scenario and report trace-backed findings under the performance requirements in `AGENTS.md`.
 
 ## Capture
 
 - Use `tools/profile-stress-test.sh` for phased capture against the exact stress-process PID. Its header documents profiles (`cpu`, `gc`, `contention`, `full`), counters, stack snapshots, and optional heap dumps. Inspect its options before running; avoid duplicating provider configurations here.
 - Select one relevant scenario and `--client dekaf` unless a comparison is needed. Stress `--duration` is in **minutes**; `TRACE_WINDOWS` offsets and lengths are in **seconds** from the measured-phase start. Keep capture windows short and choose offsets that cover the suspected behavior.
 - Confirm Docker/Kafka availability. The script defaults an unset `KAFKA_BOOTSTRAP_SERVERS` to `localhost:9092`; explicitly empty allows harness-managed brokers. Clean up only resources started for this task.
-- For paid workflow runs, follow `CLAUDE.md` stress scope, baseline, and retry limits. Record profiling overhead and compare equivalent configurations.
+- For paid workflow runs, follow `AGENTS.md` stress scope, baseline, and retry limits. Record profiling overhead and compare equivalent configurations.
 - If capture fails, inspect partial artifacts before repeating. Use non-interactive analysis commands; check the installed tool's help instead of assuming a particular CLI version.
 
 ## Analyze and report
