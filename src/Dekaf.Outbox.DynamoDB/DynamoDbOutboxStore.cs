@@ -57,6 +57,22 @@ public sealed partial class DynamoDbOutboxStore : IOutboxStore, IOutboxLeaseRene
     private int _acquisitionRound;
     // Latest timestamp any heartbeat of this store was sent with; see StoppedTimestamp.
     private long _lastHeartbeatSent;
+    // The round that found the relay a distant standby; null otherwise. Only the relay's
+    // acquisitions touch it, and the relay serializes those.
+    private DistantStandby? _distantStandby;
+
+    /// <param name="relayId">Named, so a store that serves a second relay id does not answer
+    /// it from the first one's place in the queue.</param>
+    /// <param name="since">When the round ran, in UTC ticks.</param>
+    private sealed class DistantStandby(string relayId, long since)
+    {
+        public string RelayId { get; } = relayId;
+
+        public long Since { get; } = since;
+
+        /// <summary>The latest acquisition, answered or not, in UTC ticks.</summary>
+        public long LastCall { get; set; } = since;
+    }
 
     /// <summary>
     /// Creates the store. The caller owns <paramref name="client"/>.
@@ -95,6 +111,12 @@ public sealed partial class DynamoDbOutboxStore : IOutboxStore, IOutboxLeaseRene
         // One timestamp for the whole round: a heartbeat and the leases written with it then
         // lapse on the same tick, so a dead relay's share and buckets free up together.
         var now = _timeProvider.GetUtcNow().UtcTicks;
+        if (IsRestingStandby(request, now))
+            return [];
+
+        // A round that fails proves nothing about the queue, so the next one runs in full.
+        var wasDistantStandby = _distantStandby?.RelayId == request.RelayId;
+        _distantStandby = null;
         var expiry = now + request.LeaseDuration.Ticks;
 
         // Before the read, so peers see this relay as early as possible.
@@ -138,8 +160,45 @@ public sealed partial class DynamoDbOutboxStore : IOutboxStore, IOutboxLeaseRene
         if (++_acquisitionRound % HeartbeatPruneFactor == 0)
             await PruneHeartbeatsAsync(coordination.StaleRelayIds, now, request, cancellationToken).ConfigureAwait(false);
 
+        // Not after a refused heartbeat: peers may not count this relay at all, so what it
+        // read about its place in the queue is not what they plan with.
+        if (heartbeatRecorded && plan.StandbyRank >= request.BucketCount)
+        {
+            _distantStandby = new DistantStandby(request.RelayId, now);
+            if (!wasDistantStandby)
+                LogDistantStandby(request.RelayId, plan.StandbyRank);
+        }
+
         owned.Sort();
         return owned;
+    }
+
+    /// <summary>
+    /// Whether this acquisition can be answered without a request. With more relays than
+    /// buckets most relays own nothing, and each of their rounds costs a heartbeat write and a
+    /// coordination read that change nothing. The standbys next in line keep the relay's
+    /// cadence, one per bucket, so that they take over what frees up as promptly as before,
+    /// even if every owner stops at once. A relay behind them is only there to be counted:
+    /// it refreshes its heartbeat often enough to stay active, and finds out that it has moved
+    /// up when it does.
+    /// </summary>
+    private bool IsRestingStandby(OutboxLeaseRequest request, long now)
+    {
+        if (_distantStandby is not { } standby || standby.RelayId != request.RelayId)
+            return false;
+
+        var rested = now - standby.Since;
+        var sinceLastCall = now - standby.LastCall;
+        standby.LastCall = now;
+
+        // The relay calls at its own cadence, which the store is not told, so the time since
+        // the last call stands in for the time until the next one. The heartbeat is refreshed
+        // by the last call that comes within three quarters of the lease duration for which
+        // peers count it: every other round with the default timings, and every round with a
+        // renew interval too long to skip one. A clock that was set back says nothing about
+        // the age of the heartbeat.
+        return rested >= 0 && sinceLastCall >= 0
+            && rested + sinceLastCall < request.LeaseDuration.Ticks / 4 * 3;
     }
 
     /// <inheritdoc />

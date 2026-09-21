@@ -11,13 +11,15 @@ internal readonly record struct DynamoDbLeaseState(string? Owner, bool Expired);
 /// </summary>
 internal sealed class DynamoDbLeasePlan
 {
-    public static readonly DynamoDbLeasePlan Empty = new([], [], []);
+    public static readonly DynamoDbLeasePlan Empty = new([], [], [], standbyRank: -1);
 
-    public DynamoDbLeasePlan(IReadOnlyList<int> keep, IReadOnlyList<int> release, IReadOnlyList<int> claim)
+    public DynamoDbLeasePlan(
+        IReadOnlyList<int> keep, IReadOnlyList<int> release, IReadOnlyList<int> claim, int standbyRank)
     {
         Keep = keep;
         Release = release;
         Claim = claim;
+        StandbyRank = standbyRank;
     }
 
     /// <summary>Leases this relay already owns and renews.</summary>
@@ -28,6 +30,12 @@ internal sealed class DynamoDbLeasePlan
 
     /// <summary>Free leases this relay tries to take.</summary>
     public IReadOnlyList<int> Claim { get; }
+
+    /// <summary>
+    /// <see cref="OutboxFairShare.StandbyRank"/> of a relay that holds nothing and has no
+    /// share; -1 for every other relay.
+    /// </summary>
+    public int StandbyRank { get; }
 }
 
 /// <summary>
@@ -45,6 +53,10 @@ internal sealed class DynamoDbLeasePlan
 /// happen at different moments. The plans can then overlap for a round, the conditional write
 /// refuses the loser, and the next round agrees again. The plan orders writes; it never grants
 /// ownership.</para>
+/// <para>Shares follow what the relays hold (see <see cref="OutboxFairShare"/>), so a relay
+/// that joins a fleet with more relays than buckets takes nothing from an incumbent, and the
+/// ranges follow relay-id order alone, so a peer that is part of the way through its claims
+/// moves nobody's range.</para>
 /// </remarks>
 internal static class DynamoDbLeasePlanner
 {
@@ -59,18 +71,28 @@ internal static class DynamoDbLeasePlanner
         if (leases.Length != bucketCount)
             throw new ArgumentException("One lease state per bucket is required.", nameof(leases));
 
-        // Assign also sorts the membership and adds this relay, for every later call.
-        var range = OutboxFairShare.Assign(bucketCount, activeRelayIds, relayId);
-        var share = range.Count;
-
-        // An expired lease that still names this relay is still this relay's to renew: the
-        // owner condition proves that no peer took it in the meantime.
+        // What every relay holds, as this relay sees it: a lapsed lease is free, except this
+        // relay's own, which the owner condition still lets it renew.
+        var free = new bool[bucketCount];
+        var held = new Dictionary<string, int>(activeRelayIds.Count, StringComparer.Ordinal);
         var owned = new List<int>();
         for (var bucket = 0; bucket < bucketCount; bucket++)
         {
-            if (leases[bucket].Owner == relayId)
+            var lease = leases[bucket];
+            if (lease.Owner is null || (lease.Expired && lease.Owner != relayId))
+            {
+                free[bucket] = true;
+                continue;
+            }
+
+            held[lease.Owner] = held.GetValueOrDefault(lease.Owner) + 1;
+            if (lease.Owner == relayId)
                 owned.Add(bucket);
         }
+
+        // Assign also sorts the membership and adds this relay, for every later call.
+        var range = OutboxFairShare.Assign(bucketCount, activeRelayIds, relayId, held);
+        var share = range.Count;
 
         // Keep the assigned range first. What an over-share relay hands back is then what its
         // peers are assigned, so a joining relay finds its own range free.
@@ -85,39 +107,25 @@ internal static class DynamoDbLeasePlanner
         keep.Sort();
         release.Sort();
 
-        var claim = keepCount < share ? PlanClaims(bucketCount, activeRelayIds, relayId, leases) : [];
-        return new DynamoDbLeasePlan(keep, release, claim);
+        var claim = keepCount < share ? PlanClaims(bucketCount, activeRelayIds, relayId, free, held) : [];
+        var standbyRank = share == 0 && owned.Count == 0
+            ? OutboxFairShare.StandbyRank(bucketCount, activeRelayIds, relayId, held)
+            : -1;
+        return new DynamoDbLeasePlan(keep, release, claim, standbyRank);
     }
 
     private static List<int> PlanClaims(
-        int bucketCount, List<string> sortedRelayIds, string relayId, ReadOnlySpan<DynamoDbLeaseState> leases)
+        int bucketCount, List<string> sortedRelayIds, string relayId, bool[] free, Dictionary<string, int> held)
     {
-        var free = new bool[bucketCount];
-        var anyFree = false;
-        var held = new Dictionary<string, int>(sortedRelayIds.Count, StringComparer.Ordinal);
-        for (var bucket = 0; bucket < bucketCount; bucket++)
-        {
-            var lease = leases[bucket];
-            if (lease.Owner is null || (lease.Expired && lease.Owner != relayId))
-            {
-                free[bucket] = true;
-                anyFree = true;
-            }
-            else
-            {
-                held[lease.Owner] = held.GetValueOrDefault(lease.Owner) + 1;
-            }
-        }
-
         var claims = new List<int>();
-        if (!anyFree)
+        if (Array.IndexOf(free, true) < 0)
             return claims;
 
         var ranges = new IReadOnlyList<int>[sortedRelayIds.Count];
         var deficits = new int[sortedRelayIds.Count];
         for (var rank = 0; rank < sortedRelayIds.Count; rank++)
         {
-            ranges[rank] = OutboxFairShare.Assign(bucketCount, sortedRelayIds, sortedRelayIds[rank]);
+            ranges[rank] = OutboxFairShare.Assign(bucketCount, sortedRelayIds, sortedRelayIds[rank], held);
             deficits[rank] = Math.Max(0, ranges[rank].Count - held.GetValueOrDefault(sortedRelayIds[rank]));
         }
 
@@ -134,8 +142,8 @@ internal static class DynamoDbLeasePlanner
             }
         }
 
-        // Then the buckets nobody is assigned and short of, lowest rank first. A relay is left
-        // short when a peer still holds part of its range from an earlier membership.
+        // Then the buckets nobody is assigned and short of, lowest relay id first. A relay is
+        // left short when a peer still holds part of its range from an earlier membership.
         var next = 0;
         for (var rank = 0; rank < sortedRelayIds.Count; rank++)
         {

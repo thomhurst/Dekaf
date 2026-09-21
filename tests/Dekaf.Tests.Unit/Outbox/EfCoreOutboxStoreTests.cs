@@ -480,6 +480,73 @@ public class EfCoreOutboxStoreTests
     }
 
     [Test]
+    public async Task JoinerIntoAFleetWithMoreRelaysThanBuckets_TakesNothing_WhateverItsId()
+    {
+        using var db = new SqliteOutboxDatabase();
+        var store = db.CreateStore();
+        string[] incumbents = ["relay-m", "relay-n"];
+        for (var round = 0; round < 3; round++)
+        {
+            foreach (var relay in incumbents)
+                await store.AcquireBucketLeasesAsync(Request(relay, bucketCount: 2));
+            db.Time.Advance(TimeSpan.FromSeconds(10));
+        }
+
+        // "relay-a" sorts first. Ranked by id alone it would be given a bucket, and
+        // "relay-n" would hand over one that it is publishing.
+        for (var round = 0; round < 3; round++)
+        {
+            await Assert.That(await store.AcquireBucketLeasesAsync(Request("relay-a", bucketCount: 2))).IsEmpty();
+            foreach (var relay in incumbents)
+                await Assert.That((await store.AcquireBucketLeasesAsync(Request(relay, bucketCount: 2))).Count).IsEqualTo(1);
+            db.Time.Advance(TimeSpan.FromSeconds(10));
+        }
+    }
+
+    [Test]
+    public async Task DistantStandby_RefreshesItsHeartbeatEveryOtherRound_AndStillTakesOver()
+    {
+        using var db = new SqliteOutboxDatabase();
+        // One store per relay, as in separate pods: the standby rests inside its own store.
+        var owner = db.CreateStore();
+        var next = db.CreateStore();
+        var distant = db.CreateStore();
+
+        async Task RoundAsync()
+        {
+            await owner.AcquireBucketLeasesAsync(Request("relay-a", bucketCount: 1));
+            await next.AcquireBucketLeasesAsync(Request("relay-b", bucketCount: 1));
+            await distant.AcquireBucketLeasesAsync(Request("relay-c", bucketCount: 1));
+            db.Time.Advance(TimeSpan.FromSeconds(10));
+        }
+
+        // "relay-b" is the one standby the bucket needs next in line; "relay-c" is behind it.
+        await RoundAsync();
+        var full = await HeartbeatAsync(db, "relay-c");
+        await RoundAsync();
+        await Assert.That(await HeartbeatAsync(db, "relay-c")).IsEqualTo(full);
+        await RoundAsync();
+        await Assert.That(await HeartbeatAsync(db, "relay-c")).IsEqualTo(full + TimeSpan.FromSeconds(20));
+        await Assert.That(await HeartbeatAsync(db, "relay-b")).IsEqualTo(full + TimeSpan.FromSeconds(20));
+
+        // Everybody ahead of it is gone: it moves up and takes the bucket once the lease lapses.
+        IReadOnlyList<int> owned = [];
+        for (var round = 0; round < 6 && owned.Count == 0; round++)
+        {
+            db.Time.Advance(TimeSpan.FromSeconds(10));
+            owned = await distant.AcquireBucketLeasesAsync(Request("relay-c", bucketCount: 1));
+        }
+
+        await Assert.That(owned.Count).IsEqualTo(1);
+    }
+
+    private static async Task<DateTimeOffset> HeartbeatAsync(SqliteOutboxDatabase db, string relayId)
+    {
+        await using var context = db.CreateContext();
+        return (await context.Set<OutboxRelayInstance>().AsNoTracking().SingleAsync(r => r.RelayId == relayId)).LastSeenUtc;
+    }
+
+    [Test]
     public async Task GetNextBatch_ReturnsOldestRowsForBucketOnly()
     {
         using var db = new SqliteOutboxDatabase();

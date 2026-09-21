@@ -405,6 +405,168 @@ public sealed class OutboxDynamoDbLeaseTests(DynamoDbLocalContainer dynamoDb)
     }
 
     [Test]
+    public async Task JoinerIntoAFleetWithMoreRelaysThanBuckets_TakesNothing_WhateverItsId()
+    {
+        using var fleet = await OutboxDynamoDbFleet.CreateAsync(dynamoDb, bucketCount: 2);
+        await ConvergeAsync(fleet, "pod-m", "pod-n");
+        var incumbents = fleet.Describe("pod-m", "pod-n");
+
+        // Pod names decide the rank, and "pod-a" sorts first. Ranked by id alone it would be
+        // given a bucket, and "pod-n" would hand over one that it is publishing.
+        for (var round = 0; round < 4; round++)
+        {
+            await fleet.RoundAsync("pod-a", "pod-m", "pod-n");
+            await Assert.That(fleet.Owned("pod-a")).IsEmpty();
+            await Assert.That(fleet.Describe("pod-m", "pod-n")).IsEqualTo(incumbents);
+        }
+
+        await Assert.That(fleet.RefusedWrites).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task RollingUpdate_OfMoreRelaysThanBuckets_MovesABucketOnlyWhenItsOwnerStops()
+    {
+        using var fleet = await OutboxDynamoDbFleet.CreateAsync(dynamoDb, bucketCount: 2);
+        // The new ReplicaSet sorts before the old one: every surge pod would displace an owner.
+        var live = new List<string> { "rs-z-1", "rs-z-2", "rs-z-3", "rs-z-4" };
+        await ConvergeAsync(fleet, [.. live]);
+
+        for (var index = 1; index <= 4; index++)
+        {
+            var owners = fleet.Describe([.. live]);
+            live.Add($"rs-a-{index}");
+            for (var round = 0; round < 3; round++)
+                await fleet.RoundAsync([.. live]);
+            await Assert.That(fleet.Describe([.. live.SkipLast(1)])).IsEqualTo(owners);
+
+            var stopped = $"rs-z-{index}";
+            await fleet.ReleaseAsync(stopped);
+            live.Remove(stopped);
+            await ConvergeAsync(fleet, [.. live]);
+            await AssertBalancedAsync(fleet, [.. live]);
+        }
+
+        await Assert.That(fleet.RefusedWrites).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task DistantStandby_SendsNothingEveryOtherRound_WhileTheNextInLineKeepsItsCadence()
+    {
+        using var fleet = await OutboxDynamoDbFleet.CreateAsync(dynamoDb, bucketCount: 1);
+        var requests = 0;
+        fleet.BeforeStoreCall = _ =>
+        {
+            Interlocked.Increment(ref requests);
+            return Task.CompletedTask;
+        };
+
+        async Task<int> RequestsOfARoundAsync(string relayId)
+        {
+            var before = Volatile.Read(ref requests);
+            await fleet.AcquireAsync(relayId);
+            return Volatile.Read(ref requests) - before;
+        }
+
+        // One bucket: "relay-b" is the standby it needs next in line, "relay-c" is behind it.
+        await fleet.RoundAsync("relay-a", "relay-b", "relay-c");
+        await Assert.That(Join(fleet.Owned("relay-a"))).IsEqualTo("0");
+
+        await fleet.AcquireAsync("relay-a");
+        await Assert.That(await RequestsOfARoundAsync("relay-b")).IsEqualTo(2);
+        await Assert.That(await RequestsOfARoundAsync("relay-c")).IsEqualTo(0);
+        fleet.Clock.Advance(OutboxDynamoDbFleet.RenewInterval);
+
+        // A third quiet round would leave the heartbeat a whole lease old: it is refreshed
+        // now, long before its peers would stop counting the relay.
+        await fleet.AcquireAsync("relay-a");
+        await Assert.That(await RequestsOfARoundAsync("relay-b")).IsEqualTo(2);
+        await Assert.That(await RequestsOfARoundAsync("relay-c")).IsEqualTo(2);
+        fleet.Clock.Advance(OutboxDynamoDbFleet.RenewInterval);
+
+        // The owner stops: the next in line has the bucket on its very next round.
+        await fleet.ReleaseAsync("relay-a");
+        await fleet.RoundAsync("relay-b", "relay-c");
+        await Assert.That(Join(fleet.Owned("relay-b"))).IsEqualTo("0");
+
+        // And once everybody ahead of it is gone, the distant standby moves up and takes over.
+        await fleet.ReleaseAsync("relay-b");
+        for (var round = 0; round < 3 && fleet.Owned("relay-c").Count == 0; round++)
+            await fleet.RoundAsync("relay-c");
+        await Assert.That(Join(fleet.Owned("relay-c"))).IsEqualTo("0");
+        await Assert.That(fleet.RefusedWrites).IsEqualTo(0);
+    }
+
+    [Test]
+    [Arguments(1)]
+    [Arguments(2)]
+    [Arguments(3)]
+    public async Task FleetWithMoreRelaysThanBuckets_ThroughRandomChurn_NeverSharesABucket_AndRefusesNothing(int seed)
+    {
+        using var fleet = await OutboxDynamoDbFleet.CreateAsync(dynamoDb, bucketCount: 3);
+        var random = new Random(seed);
+        var live = new List<string>();
+        var nextPod = 0;
+        string NewPod() => $"pod-{random.Next(100):D2}-{nextPod++}";
+
+        for (var index = 0; index < 9; index++)
+            live.Add(NewPod());
+        await SettleAsync(fleet, live);
+
+        for (var step = 0; step < 16; step++)
+        {
+            var owners = live.Where(pod => fleet.Owned(pod).Count > 0).ToList();
+            var victim = live[random.Next(live.Count)];
+            switch (random.Next(4))
+            {
+                case 0:
+                    // Scale out, or the surge pod of a rolling update: no owner may move.
+                    var before = fleet.Describe([.. owners]);
+                    live.Add(NewPod());
+                    await SettleAsync(fleet, live);
+                    await Assert.That(fleet.Describe([.. owners])).IsEqualTo(before);
+                    break;
+                case 1 when live.Count > 5:
+                    await fleet.ReleaseAsync(victim);
+                    live.Remove(victim);
+                    break;
+                case 2 when live.Count > 5:
+                    // Killed: leases and heartbeat stay behind until they lapse.
+                    fleet.Forget(victim);
+                    live.Remove(victim);
+                    for (var round = 0; round < 3; round++)
+                        await fleet.RoundAsync([.. live]);
+                    break;
+                default:
+                    await fleet.ConcurrentRoundAsync([.. live]);
+                    break;
+            }
+
+            await SettleAsync(fleet, live);
+            await AssertBalancedAsync(fleet, [.. live]);
+        }
+
+        await Assert.That(fleet.RefusedWrites).IsEqualTo(0);
+    }
+
+    /// <summary>
+    /// Runs rounds until three in a row change nothing. A distant standby answers every other
+    /// round from memory, so one quiet round does not show that it has nothing left to do.
+    /// </summary>
+    private static async Task SettleAsync(OutboxDynamoDbFleet fleet, List<string> live)
+    {
+        var quiet = 0;
+        for (var round = 0; round < 24 && quiet < 3; round++)
+        {
+            var before = fleet.Describe([.. live]);
+            await fleet.RoundAsync([.. live]);
+            quiet = fleet.Describe([.. live]) == before ? quiet + 1 : 0;
+        }
+
+        if (quiet < 3)
+            Assert.Fail($"Ownership did not settle: {fleet.Describe([.. live])}");
+    }
+
+    [Test]
     public async Task StalledRelay_LosesItsBucketsAtExpiry_AndNeverStealsThemBack()
     {
         using var fleet = await OutboxDynamoDbFleet.CreateAsync(dynamoDb);

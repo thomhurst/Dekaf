@@ -332,17 +332,18 @@ public partial class OutboxMetricTests
         CreatedAtUtc = DateTimeOffset.UnixEpoch, Value = [1]
     };
 
-    private static OutboxRelayOptions Options(string name) => new()
+    private static OutboxRelayOptions Options(string name, bool sampleOnEveryRelay = false) => new()
     {
         MetricsName = name, RelayId = "metric-relay", BucketCount = 1, BatchSize = 100,
         LeaseDuration = TimeSpan.FromSeconds(60), LeaseRenewInterval = TimeSpan.FromSeconds(20),
         MaxPublishDuration = TimeSpan.FromSeconds(10), PollInterval = TimeSpan.FromMinutes(1),
-        MetricsCollectionInterval = TimeSpan.FromSeconds(30), MetricsCollectionTimeout = TimeSpan.FromSeconds(5)
+        MetricsCollectionInterval = TimeSpan.FromSeconds(30), MetricsCollectionTimeout = TimeSpan.FromSeconds(5),
+        CollectMetricsOnBucketZeroOwnerOnly = !sampleOnEveryRelay
     };
 
     private static OutboxRelayService Relay(IOutboxStore store, IOutboxPublisher publisher,
-        string name, TimeProvider? time = null) =>
-        new(store, publisher, Options(name), NullLogger<OutboxRelayService>.Instance, time);
+        string name, TimeProvider? time = null, bool sampleOnEveryRelay = false) =>
+        new(store, publisher, Options(name, sampleOnEveryRelay), NullLogger<OutboxRelayService>.Instance, time);
 
     private static Func<CancellationToken, Task> BindCycle(OutboxRelayService relay)
     {

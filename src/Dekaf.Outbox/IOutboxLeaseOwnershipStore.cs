@@ -29,7 +29,8 @@ public interface IOutboxLeaseOwnershipStore
     /// <remarks>
     /// Probe <paramref name="previousBuckets"/> first, up to the fair share, where the
     /// owner-is-self branch of the lease condition matches. Probe unfamiliar buckets only for
-    /// a remaining deficit, preferably in <see cref="OutboxFairShare.Assign"/> order. Relays
+    /// a remaining deficit, preferably in
+    /// <see cref="OutboxFairShare.Assign(int, List{string}, string, IReadOnlyDictionary{string, int})"/> order. Relays
     /// that agree on membership then make no failed conditional write in steady state, so a
     /// failure signals a real membership disagreement.
     /// </remarks>

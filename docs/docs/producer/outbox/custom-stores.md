@@ -88,7 +88,9 @@ Both contracts ask for an atomic owner condition. A store that talks to its data
 
 Do not release leases from your own hosted service. Ordering it after the relay is easy to get wrong, and a release under a running publisher breaks single-writer ordering.
 
-`OutboxFairShare.Assign` gives the probe order for buckets the relay does not hold yet. It accumulates the `OutboxFairShare.Compute` shares into contiguous ranges, so relays that agree on membership compute disjoint ranges covering every bucket:
+`OutboxFairShare.Assign` gives the probe order for buckets the relay does not hold yet. It accumulates the `OutboxFairShare.Compute` shares into contiguous ranges, so relays that agree on membership compute disjoint ranges covering every bucket.
+
+Both methods have an overload that takes `heldBucketCounts`: how many unexpired leases name each relay. **Pass it whenever your store can read the lease table**, as both packaged stores do. Shares then follow what the relays hold: the remainder of an uneven split stays with the relays that already have it, and with more relays than buckets a relay that joins owns nothing and waits, whatever its id sorts as. From membership alone, shares follow the id order, and a new pod whose name sorts early takes a bucket from an incumbent that was publishing it, on every scale-out and rolling update. A store that cannot read the leases (one that only ever probes single buckets) uses the overloads without the counts:
 
 ```csharp
 public sealed class LeaseProbeOrder
@@ -123,6 +125,8 @@ public sealed class LeaseProbeOrder
     }
 }
 ```
+
+`OutboxFairShare.StandbyRank` tells a relay without a share how far back it waits. Relays at the front are handed the next buckets that free up and should keep acquiring on every call. A relay further back than one standby per bucket only needs to stay counted: the packaged stores answer its acquisitions with an empty list, without touching the database, for as long as the acquisition after it still comes within three quarters of a `LeaseDuration` of its last liveness write. Peers count a relay as active for a whole `LeaseDuration`, so it never drops out of the membership, and because shares follow holdings, a standby that did drop out for a round would change nobody's share.
 
 Claim in that order and stop at the fair share. When the share shrinks below the held count, keep the first buckets and release the rest, as the EF store does. In steady state every relay holds exactly its share from step 1 and makes no failed conditional write, so a failure now signals a real membership disagreement. Relays do not always agree: liveness records become visible with a lag, and a DynamoDB global secondary index cannot be read consistently at all. Ranges can therefore overlap for a cycle, which is why `Assign` orders probes and never replaces the conditional write.
 

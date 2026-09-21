@@ -131,21 +131,29 @@ The transport preserves exact IDs for a `HashSet<int>` (what the store packages 
 
 ### Horizontal scaling
 
-The default eight buckets permit at most eight active draining relays. Extra application pods still maintain membership but own no buckets. Scaling application writers and relay workers separately can bound coordination work. For low discovery latency across pods or separate workers, use [cross-pod notifications](#optional-cross-pod-notifications); otherwise, accept polling discovery latency. Local notifications alone cannot wake a remote bucket owner. Increasing `BucketCount` still requires draining the table first.
+The defaults are meant for an application scaled out over many pods, each running the relay; none of the following needs configuration.
 
-To avoid querying the same whole-table backlog from every pod, opt in on **all** relays sharing that store:
+The default eight buckets permit at most eight active draining relays. Extra application pods are **standbys**: they maintain membership, own no buckets, and take over when a bucket frees up. Both packaged stores keep the cost and the churn of a large fleet down:
+
+- **A relay that joins takes nothing from an incumbent.** Shares follow what the relays already hold, not only their ids. With more relays than buckets, a new pod waits as a standby whatever its name sorts as, so a scale-out or the surge pods of a rolling update move no bucket. A bucket changes hands when its owner stops or dies, or when the split is no longer fair (a fifth relay joining four that hold two buckets each).
+- **Standbys far back in line go quiet.** The first standbys, one per bucket, keep the `LeaseRenewInterval` cadence, so a freed bucket is taken over as promptly as before, even if every owner stops at once. A standby behind them refreshes its liveness record every other round instead, with the default timings, and sends nothing in between: always within three quarters of the `LeaseDuration` for which its peers count it. It can take that long to notice that it has moved up.
+- **One relay samples the backlog.** Only the relay holding a locally valid lease for bucket zero queries the whole-store backlog metrics, instead of every pod running the same aggregate query.
+
+Scaling application writers and relay workers separately bounds coordination work further. For low discovery latency across pods or separate workers, use [cross-pod notifications](#optional-cross-pod-notifications); otherwise, accept polling discovery latency. Local notifications alone cannot wake a remote bucket owner. Increasing `BucketCount` still requires draining the table first.
+
+Relays that do not own bucket zero report unavailable backlog observations, so aggregate backlog count and age across pods using **maximum**, and handle unavailable observations. A relay starts sampling as soon as it is handed bucket zero; samples completing after ownership loss are discarded. Existing leases coordinate sampling without a new table or migration. This is advisory sampling, not a distributed lock for arbitrary work: an already-running query can overlap takeover if its cancellation is delayed. Every sampler retains its query timeout. Publish counters and owned-bucket gauges remain per relay.
+
+To sample on every relay instead, for dashboards that read a single pod, opt out on **all** relays sharing the store:
 
 ```csharp
 using Dekaf.Outbox;
 
 services.AddDekaf(dekaf => dekaf.AddOutboxRelay(
     producer => producer.WithBootstrapServers("localhost:9092"),
-    new OutboxRelayOptions { CollectMetricsOnBucketZeroOwnerOnly = true }));
+    new OutboxRelayOptions { CollectMetricsOnBucketZeroOwnerOnly = false }));
 ```
 
-Only the relay holding a locally valid lease for bucket zero samples backlog metrics. Non-owners report unavailable backlog observations. Samples completing after ownership loss are discarded, and a new owner starts sampling on its next collection interval; handover may temporarily leave no sample. Existing leases coordinate sampling without a new table or migration. This is advisory sampling, not a distributed lock for arbitrary work: an already-running query can overlap takeover if its cancellation is delayed. Every sampler retains its query timeout.
-
-The default remains per-relay sampling for compatibility with per-pod dashboards. When coordinating, aggregate backlog count and age across pods using **maximum**, not sum, and handle unavailable observations. Publish counters and owned-bucket gauges remain per relay. A rolling deployment with older or unconfigured relays continues to work but still includes their duplicate metric queries.
+A rolling deployment that mixes relays from before and after these changes keeps working. Older relays still rank by id alone and still sample per pod, so a bucket can move once more than it had to, and their duplicate metric queries continue, until the last of them is replaced.
 
 ## Consumer-Side Deduplication
 
@@ -171,7 +179,7 @@ var messageId = outboxResult.Headers.FirstOrDefault(h => h.Key == "x-outbox-mess
 | `MetricsName` | `outbox` | Stable logical store name in the `outbox.name` metric tag; 1–64 nonblank characters. Use the same name for replicas sharing a store, distinct names for independent stores. |
 | `MetricsCollectionInterval` | 30 s | Minimum delay after each optional backlog query completes. No catch-up bursts. |
 | `MetricsCollectionTimeout` | 5 s | Cancellation deadline for an optional backlog query. The store must honor cancellation. |
-| `CollectMetricsOnBucketZeroOwnerOnly` | `false` | Sample backlog only on the bucket-zero owner; enable across every relay sharing the store. Non-owners report unavailable backlog metrics. |
+| `CollectMetricsOnBucketZeroOwnerOnly` | `true` | Sample backlog only on the bucket-zero owner; non-owners report unavailable backlog metrics. Set `false` on every relay sharing the store to sample per relay. |
 
 Pass options at registration:
 
