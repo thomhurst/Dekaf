@@ -219,7 +219,7 @@ public class EfCoreOutboxStoreTests
     [Test]
     public async Task Release_RepeatsUntilAPassFreesNothing_SoAStragglingClaimDoesNotOutliveIt()
     {
-        var straggler = new StragglingClaim();
+        var straggler = new StragglingStatement();
         using var db = new SqliteOutboxDatabase(straggler);
         var store = db.CreateStore();
         await store.AcquireBucketLeasesAsync(Request("relay-a"));
@@ -228,9 +228,11 @@ public class EfCoreOutboxStoreTests
             // The claim of the round the stop cancelled, run by the server after the release
             // freed the lease it names: a provider that breaks the connection on a slow
             // cancellation leaves such a statement behind.
+            var leases = context.Model.FindEntityType(typeof(OutboxLease))!.GetTableName()!;
+            var expiryTicks = (db.Time.GetUtcNow() + TimeSpan.FromSeconds(30)).UtcTicks;
             straggler.Arm(
-                context.Model.FindEntityType(typeof(OutboxLease))!.GetTableName()!,
-                "relay-a", (db.Time.GetUtcNow() + TimeSpan.FromSeconds(30)).UtcTicks);
+                leases,
+                $"UPDATE \"{leases}\" SET \"Owner\" = 'relay-a', \"ExpiresAtUtc\" = {expiryTicks} WHERE \"Bucket\" = 0");
         }
 
         await store.ReleaseBucketLeasesAsync(Request("relay-a"), AllBuckets);
@@ -238,6 +240,31 @@ public class EfCoreOutboxStoreTests
         await Assert.That(straggler.Landed).IsTrue();
         await using (var context = db.CreateContext())
             await Assert.That(await context.Set<OutboxLease>().CountAsync(lease => lease.Owner == "relay-a")).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task Release_RetiresTheHeartbeatOnEveryPass_SoAStragglingFirstHeartbeatDoesNotOutliveIt()
+    {
+        var straggler = new StragglingStatement();
+        using var db = new SqliteOutboxDatabase(straggler);
+        var store = db.CreateStore();
+        await store.AcquireBucketLeasesAsync(Request("relay-a"));
+        await using (var context = db.CreateContext())
+        {
+            // The first heartbeat insert of the round the stop cancelled, run by the server
+            // after the release deleted the row: left alone it keeps a relay that is gone in
+            // every peer's fair share for a whole LeaseDuration.
+            var relays = context.Model.FindEntityType(typeof(OutboxRelayInstance))!.GetTableName()!;
+            straggler.Arm(
+                context.Model.FindEntityType(typeof(OutboxLease))!.GetTableName()!,
+                $"INSERT INTO \"{relays}\" (\"RelayId\", \"LastSeenUtc\") VALUES ('relay-a', {db.Time.GetUtcNow().UtcTicks})");
+        }
+
+        await store.ReleaseBucketLeasesAsync(Request("relay-a"), AllBuckets);
+
+        await Assert.That(straggler.Landed).IsTrue();
+        await using (var context = db.CreateContext())
+            await Assert.That(await context.Set<OutboxRelayInstance>().CountAsync()).IsEqualTo(0);
     }
 
     [Test]
@@ -329,7 +356,8 @@ public class EfCoreOutboxStoreTests
     }
 
     /// <summary>Runs a claim for a released lease right after the release's first lease statement.</summary>
-    private sealed class StragglingClaim : DbCommandInterceptor
+    /// <summary>Runs one statement right after the first UPDATE of <c>table</c>: the release's first pass.</summary>
+    private sealed class StragglingStatement : DbCommandInterceptor
     {
         private string? _statement;
         private string? _table;
@@ -337,11 +365,10 @@ public class EfCoreOutboxStoreTests
 
         public bool Landed => Volatile.Read(ref _landed) != 0;
 
-        public void Arm(string table, string relayId, long expiryTicks)
+        public void Arm(string table, string statement)
         {
             _table = table;
-            Volatile.Write(ref _statement,
-                $"UPDATE \"{table}\" SET \"Owner\" = '{relayId}', \"ExpiresAtUtc\" = {expiryTicks} WHERE \"Bucket\" = 0");
+            Volatile.Write(ref _statement, statement);
         }
 
         public override async ValueTask<int> NonQueryExecutedAsync(

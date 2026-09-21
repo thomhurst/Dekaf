@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.ExceptionServices;
 using Dekaf.Errors;
 using Dekaf.Metadata;
 
@@ -229,22 +230,7 @@ internal static class RetryHelper
                         retryBackoffMs,
                         retryBackoffMaxMs,
                         attempt + 1);
-                    var elapsed = Stopwatch.GetElapsedTime(startedAt);
-                    if (deadline.Budget != Timeout.InfiniteTimeSpan
-                        && elapsed + TimeSpan.FromMilliseconds(delayMs) >= deadline.Budget)
-                    {
-                        // A typed Kafka failure stays the final error; only a raw transport
-                        // failure needs wrapping.
-                        if (ex is KafkaException)
-                            throw;
-
-                        throw new KafkaTimeoutException(
-                            TimeoutKind.Api,
-                            elapsed,
-                            deadline.Budget,
-                            $"{deadline.Operation} did not complete within {(int)deadline.Budget.TotalMilliseconds}ms: {ex.Message}",
-                            ex);
-                    }
+                    ThrowIfBudgetSpent(ex, delayMs);
 
                     recoveryOwed = true;
                     if (!recovering)
@@ -264,6 +250,11 @@ internal static class RetryHelper
 
                             lastFailure = recoveryFailure;
                         }
+
+                        // The recovery spends the budget too. A caller with no token behind the
+                        // budget (an offset lookup) would otherwise back off and repeat the
+                        // request past its deadline, and could even succeed there.
+                        ThrowIfBudgetSpent(lastFailure, delayMs);
                     }
 
                     await Task.Delay(delayMs, cancellationToken).ConfigureAwait(false);
@@ -279,6 +270,28 @@ internal static class RetryHelper
                 $"{deadline.Operation} was still failing when the wait was cancelled: {lastFailure.Message}",
                 lastFailure,
                 cancellationToken);
+        }
+
+        void ThrowIfBudgetSpent(Exception failure, int delayMs)
+        {
+            var elapsed = Stopwatch.GetElapsedTime(startedAt);
+            if (deadline.Budget == Timeout.InfiniteTimeSpan
+                || elapsed + TimeSpan.FromMilliseconds(delayMs) < deadline.Budget)
+            {
+                return;
+            }
+
+            // A typed Kafka failure stays the final error; only a raw transport failure needs
+            // wrapping.
+            if (failure is KafkaException)
+                ExceptionDispatchInfo.Capture(failure).Throw();
+
+            throw new KafkaTimeoutException(
+                TimeoutKind.Api,
+                elapsed,
+                deadline.Budget,
+                $"{deadline.Operation} did not complete within {(int)deadline.Budget.TotalMilliseconds}ms: {failure.Message}",
+                failure);
         }
 
         async ValueTask RecoverAsync(Exception failure)

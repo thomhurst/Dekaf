@@ -270,23 +270,23 @@ public sealed class EfCoreOutboxStore<TContext> : IOutboxStore, IOutboxLeaseRene
         await using var contextDisposal = context.ConfigureAwait(false);
         var now = _timeProvider.GetUtcNow();
 
-        // Peers stop dividing the buckets by a relay count that still includes this one.
-        // Before the leases, not after: a release cut short by the shutdown deadline then
-        // leaves leases that expire, which costs what no release costs. The other order
-        // leaves freed buckets next to a live heartbeat, and peers keep the fair share of a
-        // relay that is gone unclaimed until the heartbeat ages out.
-        await context.Set<OutboxRelayInstance>()
-            .Where(r => r.RelayId == request.RelayId)
-            .ExecuteDeleteAsync(cancellationToken).ConfigureAwait(false);
-
         // A stop cancels the acquisition round it interrupts. Providers wait for the server
         // to confirm a cancelled statement, so normally nothing of that round is left to
-        // run; one that breaks the connection instead can leave a claim that lands after
-        // the first pass and names a relay that is gone. Its owner guard cannot refuse it,
-        // because a released lease has no owner, so the release repeats until a pass frees
-        // nothing. A healthy release is two statements.
+        // run; one that breaks the connection instead can leave a statement that lands after
+        // the first pass and names a relay that is gone: a claim, whose owner guard cannot
+        // refuse it because a released lease has no owner, or the first heartbeat insert. So
+        // the release repeats until a pass finds nothing. A healthy release is two passes.
         for (var attempt = 0; attempt < MaxReleaseAttempts; attempt++)
         {
+            // Peers stop dividing the buckets by a relay count that still includes this one.
+            // Before the leases, not after: a release cut short by the shutdown deadline then
+            // leaves leases that expire, which costs what no release costs. The other order
+            // leaves freed buckets next to a live heartbeat, and peers keep the fair share of a
+            // relay that is gone unclaimed until the heartbeat ages out.
+            var retired = await context.Set<OutboxRelayInstance>()
+                .Where(r => r.RelayId == request.RelayId)
+                .ExecuteDeleteAsync(cancellationToken).ConfigureAwait(false);
+
             // Scoped to the owner, not to previousBuckets: one statement also frees leases that
             // an acquisition claimed before it failed, and the guard leaves a peer's takeover alone.
             var released = await context.Set<OutboxLease>()
@@ -294,7 +294,7 @@ public sealed class EfCoreOutboxStore<TContext> : IOutboxStore, IOutboxLeaseRene
                 .ExecuteUpdateAsync(setters => setters
                     .SetProperty(l => l.Owner, (string?)null)
                     .SetProperty(l => l.ExpiresAtUtc, now), cancellationToken).ConfigureAwait(false);
-            if (released == 0)
+            if (retired == 0 && released == 0)
                 return;
         }
     }

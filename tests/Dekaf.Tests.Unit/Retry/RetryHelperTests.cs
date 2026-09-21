@@ -365,6 +365,31 @@ public sealed class RetryHelperTests
     }
 
     [Test]
+    public async Task DeadlineMode_RecoverySpendsTheBudget_TheRequestIsNotRepeatedPastTheDeadline()
+    {
+        // No token stands behind the budget here, as for an offset lookup: a recovery that
+        // outlasts it must end the call, not hand over to a backoff and one more request.
+        await using var metadataManager = CreateUnavailableMetadataManager();
+        var failure = new SocketException((int)SocketError.ConnectionRefused);
+        var attempts = 0;
+
+        var exception = await Assert.ThrowsAsync<KafkaTimeoutException>(async () =>
+            await RetryHelper.WithRetryAsync(
+                () => Interlocked.Increment(ref attempts) == 1
+                    ? ValueTask.FromException<int>(failure)
+                    : ValueTask.FromResult(42),
+                metadataManager,
+                CancellationToken.None,
+                retryBackoffMs: 0,
+                retryBackoffMaxMs: 0,
+                onRetry: static async token => await Task.Delay(TimeSpan.FromMilliseconds(400), token),
+                deadline: new RetryDeadline("TestOperation", TimeSpan.FromMilliseconds(200))));
+
+        await Assert.That(exception!.InnerException).IsSameReferenceAs(failure);
+        await Assert.That(attempts).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task DeadlineMode_RetiredConnection_RetriedOnlyWhileTheOwnerIsAlive()
     {
         await using var metadataManager = CreateUnavailableMetadataManager();
