@@ -112,6 +112,38 @@ public sealed class OutboxRelayResilienceTests
     }
 
     [Test]
+    public async Task FruitlessFailures_NeverBackOffPastTheNextRenewal_SoAKeptLeaseDoesNotRunOut()
+    {
+        const int failures = 40;
+        var time = new AutoAdvanceTimeProvider(fireLimit: failures);
+        var store = new RowStore { ProbeAlwaysFails = true, Clock = time };
+        // A renew interval this close to the lease duration leaves no room for a backoff that
+        // ignores how old the kept lease already is: the ceiling alone is a whole interval.
+        var options = new OutboxRelayOptions
+        {
+            RelayId = "relay-backoff", BucketCount = 1, MaxPublishDuration = TimeSpan.FromMilliseconds(500),
+            ErrorBackoff = TimeSpan.FromMilliseconds(500),
+            LeaseRenewInterval = TimeSpan.FromSeconds(29), LeaseDuration = TimeSpan.FromSeconds(30)
+        };
+
+        using var relay = CreateRelay(store, new ConcurrentSendPublisher(), options, time);
+        await relay.StartAsync(CancellationToken.None);
+        await time.LimitReached.Task.WaitAsync(SignalTimeout);
+        await relay.StopAsync(CancellationToken.None).WaitAsync(SignalTimeout);
+
+        var renewals = store.LeaseCallTimestamps.ToArray();
+        await Assert.That(renewals.Length).IsGreaterThan(2);
+        for (var index = 1; index < renewals.Length; index++)
+        {
+            await Assert.That(time.GetElapsedTime(renewals[index - 1], renewals[index]))
+                .IsLessThan(options.LeaseDuration);
+        }
+
+        // Still a backoff: every wait is at least the configured one.
+        await Assert.That(time.Delays.Take(failures).Min()).IsGreaterThanOrEqualTo(options.ErrorBackoff);
+    }
+
+    [Test]
     public async Task BackoffStartsAgainAtTheConfiguredDelay_AfterACycleThatWorked()
     {
         var time = new AutoAdvanceTimeProvider(fireLimit: 5);
@@ -336,6 +368,8 @@ public sealed class OutboxRelayResilienceTests
 
         public bool ProbeAlwaysFails { get; init; }
         public HashSet<int> FailingProbes { get; init; } = [];
+        public TimeProvider? Clock { get; init; }
+        public ConcurrentQueue<long> LeaseCallTimestamps { get; } = [];
         public int LeaseCalls => Volatile.Read(ref _leaseCalls);
         public ConcurrentQueue<long> MarkedIds { get; } = [];
         public ConcurrentQueue<int> FetchSizes { get; } = [];
@@ -373,6 +407,8 @@ public sealed class OutboxRelayResilienceTests
         {
             await Task.Yield();
             Interlocked.Increment(ref _leaseCalls);
+            if (Clock is not null)
+                LeaseCallTimestamps.Enqueue(Clock.GetTimestamp());
             return _ownedBuckets;
         }
 

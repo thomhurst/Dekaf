@@ -277,9 +277,10 @@ public sealed partial class OutboxRelayService : BackgroundService
     /// The delay after a failed cycle. A cycle that still published something waits
     /// <see cref="OutboxRelayOptions.ErrorBackoff"/>, so one failing bucket does not slow the
     /// others. Cycles that fail without publishing anything double the ceiling each time, up
-    /// to <see cref="OutboxRelayOptions.LeaseRenewInterval"/> (the leases must still be renewed
-    /// on time), and wait a random time between the configured backoff and that ceiling, so
-    /// the relays sharing a failing store do not retry in step.
+    /// to <see cref="OutboxRelayOptions.LeaseRenewInterval"/>, and wait a random time between
+    /// the configured backoff and that ceiling, so the relays sharing a failing store do not
+    /// retry in step. While leases are held the wait also ends at their next renewal, as the
+    /// idle wait does, but never sooner than the configured backoff.
     /// </summary>
     private TimeSpan NextErrorBackoff(bool publishedAny)
     {
@@ -295,7 +296,17 @@ public sealed partial class OutboxRelayService : BackgroundService
         // The shift is bounded so the ceiling cannot overflow before it is capped.
         var doublings = Math.Min(failures - 1, 30);
         var ceilingTicks = floor.Ticks > (cap.Ticks >> doublings) ? cap.Ticks : floor.Ticks << doublings;
-        return floor + TimeSpan.FromTicks((long)((ceilingTicks - floor.Ticks) * _backoffJitter.NextDouble()));
+        var backoff = floor + TimeSpan.FromTicks((long)((ceilingTicks - floor.Ticks) * _backoffJitter.NextDouble()));
+        if (_ownedBuckets.Count == 0)
+            return backoff;
+
+        // The ceiling is a whole renew interval, but the kept leases are already part of the
+        // way through theirs: with a renew interval close to the lease duration, a wait that
+        // ignored their age would let them run out, and a peer claim them, before the retry.
+        var untilRenewal = _options.LeaseRenewInterval - _timeProvider.GetElapsedTime(_rebalanceTimestamp);
+        if (untilRenewal >= backoff)
+            return backoff;
+        return untilRenewal > floor ? untilRenewal : floor;
     }
 
     private static int StableSeed(string relayId)
