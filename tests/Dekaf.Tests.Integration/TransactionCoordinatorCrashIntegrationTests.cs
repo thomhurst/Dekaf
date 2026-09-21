@@ -248,13 +248,25 @@ public sealed class TransactionCoordinatorCrashIntegrationTests(RackAwareKafkaCo
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
             }
 
+            // EndTxn returns once the coordinator logs PREPARE_COMMIT; the COMMIT marker reaches
+            // __consumer_offsets afterwards, and later still when that partition's leader has just
+            // moved. Until it lands the offsets are pending and a plain OffsetFetch omits them, so
+            // ask the broker for stable offsets on the exact partitions instead of racing the marker.
+            var topicPartitions = Enumerable.Range(0, PartitionCount)
+                .Select(partition => new TopicPartition(topic, partition))
+                .ToArray();
             await using var admin = kafka.CreateAdminClient();
-            var committed = await admin.ListConsumerGroupOffsetsAsync(groupId, cancellationToken)
+            var committed = await admin.ListConsumerGroupOffsetsAsync(
+                    new Dictionary<string, ListConsumerGroupOffsetsSpec>
+                    {
+                        [groupId] = new() { TopicPartitions = topicPartitions }
+                    },
+                    new ListConsumerGroupOffsetsOptions { RequireStable = true, TimeoutMs = 60_000 },
+                    cancellationToken)
                 .ConfigureAwait(false);
-            for (var partition = 0; partition < PartitionCount; partition++)
+            foreach (var topicPartition in topicPartitions)
             {
-                var topicPartition = new TopicPartition(topic, partition);
-                await Assert.That(committed.TryGetValue(topicPartition, out var offset) ? offset : -1)
+                await Assert.That(committed[groupId].Offsets[topicPartition].Offset?.Offset ?? -1)
                     .IsEqualTo(committedOffset);
             }
 
