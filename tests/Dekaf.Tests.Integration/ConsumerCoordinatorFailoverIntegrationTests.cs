@@ -1088,7 +1088,9 @@ public sealed class ConsumerCoordinatorFailoverIntegrationTests(RackAwareKafkaCo
             cancellationToken);
 
     /// <summary>
-    /// Waits until the two members between them own every partition exactly once. The
+    /// Waits until the two members between them own every partition exactly once, each owning
+    /// at least one. One member owning every partition is the state before the other has
+    /// joined, not a settled split, so it must not end the wait. The
     /// assignment snapshots are taken from the consumers themselves where the client exposes
     /// them, so a missed rebalance callback cannot leave the wait chasing a stale set.
     /// </summary>
@@ -1118,7 +1120,9 @@ public sealed class ConsumerCoordinatorFailoverIntegrationTests(RackAwareKafkaCo
             {
                 var firstAssignment = first();
                 var secondAssignment = second();
-                return firstAssignment.Count + secondAssignment.Count == PartitionCount
+                return firstAssignment.Count > 0
+                       && secondAssignment.Count > 0
+                       && firstAssignment.Count + secondAssignment.Count == PartitionCount
                        && !firstAssignment.Overlaps(secondAssignment);
             },
             () => $"assignment never settled on {PartitionCount} distinct partitions " +
