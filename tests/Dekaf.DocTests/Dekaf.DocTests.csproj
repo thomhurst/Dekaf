@@ -10,8 +10,8 @@
     <PackageReference Include="Confluent.Kafka" />
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp" />
     <PackageReference Include="OpenTelemetry" />
-    <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" VersionOverride="1.19.0" />
-    <PackageReference Include="OpenTelemetry.Extensions.Hosting" VersionOverride="1.19.0" />
+    <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" VersionOverride="1.19.1" />
+    <PackageReference Include="OpenTelemetry.Extensions.Hosting" VersionOverride="1.19.1" />
     <PackageReference Include="System.Text.Json" GeneratePathProperty="true" />
   </ItemGroup>
 
