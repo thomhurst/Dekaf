@@ -1,4 +1,3 @@
-using System.Buffers;
 using System.Reflection;
 using Dekaf.Networking;
 using Dekaf.Producer;
@@ -207,6 +206,59 @@ public sealed class BrokerSenderEpochRecoveryTests : ScriptedProduceResponseFixt
     }
 
     [Test]
+    public async Task ProducerIdReset_StillPendingAtTheDeliveryDeadline_FailsTheBatchOnTime(CancellationToken cancellationToken)
+    {
+        // Replacing an exhausted producer ID is a network round trip the producer retries for up
+        // to max.block.ms. The send loop used to stay suspended on it for all that time, so no
+        // batch of this broker could be expired: delivery.timeout.ms was overrun by up to
+        // max.block.ms. The wait is bounded by the earliest delivery deadline the loop owns.
+        var rejected = NewResponseSource();
+        var (pool, connection) = CreateMockConnection(new Queue<TaskCompletionSource<ProduceResponse>>([rejected]));
+        connection.CaptureProduceRequests = true;
+        cancellationToken = GuardUnscriptedSends(cancellationToken);
+        var options = CreateOptions(deliveryTimeoutMs: 1_000);
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var state = new ProducerIdAndEpoch(1234, short.MaxValue);
+        accumulator.PublishProducerState(state);
+        var resetStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var resetNeverCompletes = new TaskCompletionSource<ProducerIdAndEpoch>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var sender = CreateSender(
+            pool, options, accumulator, (_, _, _, _, _) => { },
+            bumpEpoch: (_, _) =>
+            {
+                resetStarted.TrySetResult();
+                return new ValueTask<ProducerIdAndEpoch>(resetNeverCompletes.Task);
+            },
+            getProducerState: () => state);
+
+        try
+        {
+            var (batch, delivery) = CreateTrackedBatch(valueTaskSourcePool, producerId: 1234, producerEpoch: short.MaxValue);
+            sender.Enqueue(batch);
+            await WaitUntilAsync(() => Volatile.Read(ref connection.SendPipelinedAfterWriteCalls) == 1, cancellationToken);
+            rejected.SetResult(CreateErrorResponse(Topic, 0, ErrorCode.OutOfOrderSequenceNumber));
+            await resetStarted.Task.WaitAsync(cancellationToken);
+
+            var failure = await Assert.That(async () => await delivery.WaitAsync(cancellationToken))
+                .ThrowsExactly<Dekaf.Errors.KafkaTimeoutException>();
+            await Assert.That(failure!.TimeoutKind).IsEqualTo(Dekaf.Errors.TimeoutKind.Delivery);
+            await Assert.That(Volatile.Read(ref connection.SendPipelinedAfterWriteCalls)).IsEqualTo(1);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            Assert.Fail($"A wait was cancelled before the send loop got there. Requests written so far:{Environment.NewLine}{DescribeRequests(connection)}");
+        }
+        finally
+        {
+            resetNeverCompletes.TrySetCanceled(CancellationToken.None);
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
+    [Test]
     public async Task StaleProducerId_WithCurrentEpoch_IsRestampedBeforeSend(CancellationToken cancellationToken)
     {
         // A batch sealed while the accumulator's separate producer ID and epoch writes were in
@@ -408,6 +460,357 @@ public sealed class BrokerSenderEpochRecoveryTests : ScriptedProduceResponseFixt
         }
     }
 
+    [Test]
+    public async Task AmbiguousRetry_OnPartitionThatDidNotTriggerTheBump_KeepsItsStamp_AndHoldsTheRestart(CancellationToken cancellationToken)
+    {
+        // A request whose response is lost may have been appended. Partition 1 did not trigger
+        // the bump, so the broker still holds its epoch 5 entry: the retry must go out as
+        // (epoch 5, sequence 20) and be deduplicated. Re-stamped to (epoch 6, sequence 0) the
+        // broker would accept it as new and append the records a second time. The partition
+        // restarts under epoch 6 only once that retry is answered.
+        var partition0Rejected = NewResponseSource();
+        var partition1Lost = NewResponseSource();
+        var partition0Retried = NewResponseSource();
+        var partition1Retried = NewResponseSource();
+        var partition1Fresh = NewResponseSource();
+        var (pool, connection) = CreateMockConnection(new Queue<TaskCompletionSource<ProduceResponse>>(
+            [partition0Rejected, partition1Lost, partition0Retried, partition1Retried, partition1Fresh]));
+        connection.CaptureProduceRequests = true;
+        cancellationToken = GuardUnscriptedSends(cancellationToken);
+        var options = CreateOptions(maxInFlightRequestsPerConnection: 3);
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var state = new ProducerStateHolder(new ProducerIdAndEpoch(1234, 5));
+        accumulator.PublishProducerState(state.Value);
+        var bumpRequests = new List<short>();
+        var held = new TaskCompletionSource<TopicPartition>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var sender = CreateSender(
+            pool, options, accumulator, (_, _, _, _, _) => { },
+            bumpEpoch: LocalBump(accumulator, bumpRequests, state),
+            getProducerState: () => state.Read(),
+            onSequenceRestartHeld: topicPartition => held.TrySetResult(topicPartition));
+
+        try
+        {
+            // Partition 1 has produced 20 records under epoch 5 before its next batch.
+            await Assert.That(accumulator.GetAndIncrementSequence(Partition1, 20, state.Value, out _)).IsEqualTo(0);
+
+            var (batch0, delivery0) = CreateTrackedBatch(valueTaskSourcePool, Partition0, producerId: 1234, producerEpoch: 5);
+            sender.Enqueue(batch0);
+            await WaitUntilAsync(() => Volatile.Read(ref connection.SendPipelinedAfterWriteCalls) == 1, cancellationToken);
+            var (batch1, delivery1) = CreateTrackedBatch(valueTaskSourcePool, Partition1, producerId: 1234, producerEpoch: 5, recordCount: 3);
+            sender.Enqueue(batch1);
+            await WaitUntilAsync(() => Volatile.Read(ref connection.SendPipelinedAfterWriteCalls) == 2, cancellationToken);
+
+            // Partition 0 triggers the bump; its retry goes out under epoch 6.
+            partition0Rejected.SetResult(CreateErrorResponse(Topic, 0, ErrorCode.OutOfOrderSequenceNumber));
+            await WaitUntilAsync(() => Volatile.Read(ref connection.SendPipelinedAfterWriteCalls) == 3, cancellationToken);
+
+            // A partition 1 batch sealed under epoch 6 waits behind the unanswered epoch 5 request.
+            var (batch1Fresh, delivery1Fresh) = CreateTrackedBatch(valueTaskSourcePool, Partition1, producerId: 1234, producerEpoch: 6, recordCount: 2);
+            sender.Enqueue(batch1Fresh);
+            partition0Retried.SetResult(CreateSuccessResponse(Topic, 0, baseOffset: 0));
+            await delivery0.WaitAsync(cancellationToken);
+            await Assert.That(await held.Task.WaitAsync(cancellationToken)).IsEqualTo(Partition1);
+
+            // The epoch 5 response is lost: the broker may or may not have appended the batch.
+            partition1Lost.SetException(new IOException("connection reset"));
+            await WaitUntilAsync(() => connection.CapturedProduceRequestCount == 4, cancellationToken);
+            (long ProducerId, short ProducerEpoch, int BaseSequence)[] ambiguousRetryStamps;
+            lock (connection.CapturedProduceRequests)
+                ambiguousRetryStamps = connection.CapturedProduceRequests[3].ProducerStamps.ToArray();
+            await Assert.That(ambiguousRetryStamps).IsEquivalentTo([(1234L, (short)5, 20)]);
+            await Assert.That(Volatile.Read(ref connection.SendPipelinedAfterWriteCalls)).IsEqualTo(4);
+
+            // Only once the retry is answered does the partition restart at 0 under epoch 6.
+            partition1Retried.SetResult(CreateSuccessResponse(Topic, 1, baseOffset: 20));
+            await delivery1.WaitAsync(cancellationToken);
+            await WaitUntilAsync(() => connection.CapturedProduceRequestCount == 5, cancellationToken);
+            partition1Fresh.SetResult(CreateSuccessResponse(Topic, 1, baseOffset: 23));
+            await delivery1Fresh.WaitAsync(cancellationToken);
+
+            (long ProducerId, short ProducerEpoch, int BaseSequence)[] freshStamps;
+            lock (connection.CapturedProduceRequests)
+                freshStamps = connection.CapturedProduceRequests[4].ProducerStamps.ToArray();
+            await Assert.That(freshStamps).IsEquivalentTo([(1234L, (short)6, 0)]);
+
+            short[] observedBumpRequests;
+            lock (bumpRequests)
+                observedBumpRequests = bumpRequests.ToArray();
+            await Assert.That(observedBumpRequests).IsEquivalentTo([(short)5]);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            Assert.Fail($"A wait was cancelled before the send loop got there. Requests written so far:{Environment.NewLine}{DescribeRequests(connection)}");
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task UnaffectedPartition_WithRequestPendingUnderOldProducerId_IsHeldUntilItIsAnswered(CancellationToken cancellationToken)
+    {
+        // The producer ID reset is the same transition as a bump: a partition with a request still
+        // pending under the old ID must not send (new ID, sequence 0) ahead of it, or a retry of
+        // the old request lands behind the newer batch and reorders the partition.
+        var partition0Rejected = NewResponseSource();
+        var partition1First = NewResponseSource();
+        var partition0Retried = NewResponseSource();
+        var partition1Second = NewResponseSource();
+        var (pool, connection) = CreateMockConnection(new Queue<TaskCompletionSource<ProduceResponse>>(
+            [partition0Rejected, partition1First, partition0Retried, partition1Second]));
+        connection.CaptureProduceRequests = true;
+        cancellationToken = GuardUnscriptedSends(cancellationToken);
+        var options = CreateOptions(maxInFlightRequestsPerConnection: 3);
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var state = new ProducerStateHolder(new ProducerIdAndEpoch(1234, short.MaxValue));
+        accumulator.PublishProducerState(state.Value);
+        var held = new TaskCompletionSource<TopicPartition>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var (batch1Second, delivery1Second) = CreateTrackedBatch(valueTaskSourcePool, Partition1, producerId: 5678, producerEpoch: 0);
+        BrokerSender sender = null!;
+        sender = CreateSender(
+            pool, options, accumulator, (_, _, _, _, _) => { },
+            bumpEpoch: (_, _) =>
+            {
+                // The producer replaces its exhausted ID (KafkaProducer.PublishIdempotentProducerId).
+                var replaced = new ProducerIdAndEpoch(5678, 0);
+                accumulator.ResetSequenceNumbers(replaced);
+                state.Write(replaced);
+                sender.Enqueue(batch1Second);
+                return new ValueTask<ProducerIdAndEpoch>(replaced);
+            },
+            getProducerState: () => state.Read(),
+            onSequenceRestartHeld: topicPartition => held.TrySetResult(topicPartition));
+
+        try
+        {
+            var (batch0, delivery0) = CreateTrackedBatch(valueTaskSourcePool, Partition0, producerId: 1234, producerEpoch: short.MaxValue);
+            sender.Enqueue(batch0);
+            await WaitUntilAsync(() => Volatile.Read(ref connection.SendPipelinedAfterWriteCalls) == 1, cancellationToken);
+            var (batch1First, delivery1First) = CreateTrackedBatch(valueTaskSourcePool, Partition1, producerId: 1234, producerEpoch: short.MaxValue);
+            sender.Enqueue(batch1First);
+            await WaitUntilAsync(() => Volatile.Read(ref connection.SendPipelinedAfterWriteCalls) == 2, cancellationToken);
+
+            partition0Rejected.SetResult(CreateErrorResponse(Topic, 0, ErrorCode.OutOfOrderSequenceNumber));
+            await Assert.That(await held.Task.WaitAsync(cancellationToken)).IsEqualTo(Partition1);
+            await WaitUntilAsync(() => connection.CapturedProduceRequestCount == 3, cancellationToken);
+            (string Name, Guid TopicId, int Partition)[] retryTopics;
+            lock (connection.CapturedProduceRequests)
+                retryTopics = connection.CapturedProduceRequests[2].Topics.ToArray();
+            await Assert.That(retryTopics).IsEquivalentTo([(Topic, Guid.Empty, 0)]);
+            await Assert.That(Volatile.Read(ref connection.SendPipelinedAfterWriteCalls)).IsEqualTo(3);
+
+            partition1First.SetResult(CreateSuccessResponse(Topic, 1, baseOffset: 0));
+            await WaitUntilAsync(() => Volatile.Read(ref connection.SendPipelinedAfterWriteCalls) == 4, cancellationToken);
+            partition0Retried.SetResult(CreateSuccessResponse(Topic, 0, baseOffset: 0));
+            partition1Second.SetResult(CreateSuccessResponse(Topic, 1, baseOffset: 1));
+            await delivery0.WaitAsync(cancellationToken);
+            await delivery1First.WaitAsync(cancellationToken);
+            await delivery1Second.WaitAsync(cancellationToken);
+
+            (long ProducerId, short ProducerEpoch, int BaseSequence)[] firstStamps, retryStamps, secondStamps;
+            lock (connection.CapturedProduceRequests)
+            {
+                firstStamps = connection.CapturedProduceRequests[1].ProducerStamps.ToArray();
+                retryStamps = connection.CapturedProduceRequests[2].ProducerStamps.ToArray();
+                secondStamps = connection.CapturedProduceRequests[3].ProducerStamps.ToArray();
+            }
+
+            await Assert.That(firstStamps).IsEquivalentTo([(1234L, short.MaxValue, 0)]);
+            await Assert.That(retryStamps).IsEquivalentTo([(5678L, (short)0, 0)]);
+            await Assert.That(secondStamps).IsEquivalentTo([(5678L, (short)0, 0)]);
+            await Assert.That(GetEpochBumpRequestedForEpoch(sender)).IsEqualTo(-1);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            Assert.Fail($"A wait was cancelled before the send loop got there. Requests written so far:{Environment.NewLine}{DescribeRequests(connection)}");
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task CoalescedRetry_PutBackForABump_NeverGoesAheadOfAnOlderRetryQueuedMeanwhile(CancellationToken cancellationToken)
+    {
+        // Responses are processed while a coalesced wave waits for in-flight capacity. Retry B
+        // of partition 0 is parked in that wait when the older batch A, re-sent before it, comes
+        // back with a retriable error in the same response that makes partition 1 request a
+        // bump. The bump sends the wave back to carry-over: B used to go to the FRONT of its
+        // queue, ahead of A. B then restarted the partition under the new epoch, and A, whose
+        // first send the broker may hold, was re-stamped behind it: appended twice and out of
+        // order. B belongs behind A, and A keeps its stamp until it is answered.
+        var partition2 = new TopicPartition(Topic, 2);
+        var responses = Enumerable.Range(0, 6).Select(_ => NewResponseSource()).ToArray();
+        var (pool, connection) = CreateMockConnection(new Queue<TaskCompletionSource<ProduceResponse>>(responses));
+        connection.CaptureProduceRequests = true;
+        cancellationToken = GuardUnscriptedSends(cancellationToken);
+        var options = CreateOptions(maxInFlightRequestsPerConnection: 2, retryBackoffMs: 0);
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var state = new ProducerStateHolder(new ProducerIdAndEpoch(1234, 5));
+        accumulator.PublishProducerState(state.Value);
+        var logger = new CapacityWaitLogger();
+        var held = new TaskCompletionSource<TopicPartition>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var sender = CreateSender(
+            pool, options, accumulator, (_, _, _, _, _) => { },
+            bumpEpoch: (expectedEpoch, _) =>
+            {
+                // Like KafkaProducer.BumpEpochForRecoveryAsync: only the first request for an epoch bumps.
+                var current = state.Read();
+                if (current.Epoch == expectedEpoch)
+                {
+                    current = new ProducerIdAndEpoch(1234, (short)(expectedEpoch + 1));
+                    accumulator.PublishProducerState(current);
+                    state.Write(current);
+                }
+
+                return new ValueTask<ProducerIdAndEpoch>(current);
+            },
+            getProducerState: () => state.Read(),
+            onSequenceRestartHeld: topicPartition => held.TrySetResult(topicPartition),
+            logger: logger);
+
+        try
+        {
+            // A, then B, pipelined on partition 0 under epoch 5.
+            var (batchA, deliveryA) = CreateTrackedBatch(valueTaskSourcePool, Partition0, producerId: 1234, producerEpoch: 5);
+            sender.Enqueue(batchA);
+            await WaitForSendsAsync(connection, 1, cancellationToken);
+            // Two records, so that the requests show which of the two batches they carry.
+            var (batchB, deliveryB) = CreateTrackedBatch(valueTaskSourcePool, Partition0, producerId: 1234, producerEpoch: 5, recordCount: 2);
+            sender.Enqueue(batchB);
+            await WaitForSendsAsync(connection, 2, cancellationToken);
+
+            // B is rejected first: epoch 6. B waits for A, still pending under epoch 5.
+            responses[1].SetResult(CreateErrorResponse(Topic, 0, ErrorCode.OutOfOrderSequenceNumber));
+            await Assert.That(await held.Task.WaitAsync(cancellationToken)).IsEqualTo(Partition0);
+
+            // Z fills the pipeline; X then waits, coalesced, for in-flight capacity.
+            var (batchZ, deliveryZ) = CreateTrackedBatch(valueTaskSourcePool, partition2, producerId: 1234, producerEpoch: 6);
+            sender.Enqueue(batchZ);
+            await WaitForSendsAsync(connection, 3, cancellationToken);
+            var (batchX, deliveryX) = CreateTrackedBatch(valueTaskSourcePool, Partition1, producerId: 1234, producerEpoch: 6);
+            sender.Enqueue(batchX);
+            await logger.WaitForCapacityWaitsAsync(1, cancellationToken);
+
+            // A is rejected too. Its retry and X go out in one request, A as (epoch 6, sequence 0).
+            responses[0].SetResult(CreateErrorResponse(Topic, 0, ErrorCode.OutOfOrderSequenceNumber));
+            await WaitForSendsAsync(connection, 4, cancellationToken);
+            await Assert.That(StampsOf(connection, request: 3)).IsEquivalentTo(
+                [(0, 1, 1234L, (short)6, 0), (1, 1, 1234L, (short)6, 0)]);
+
+            // The pipeline is full again (Z, and A with X), so B's retry waits coalesced.
+            await logger.WaitForCapacityWaitsAsync(2, cancellationToken);
+
+            // One response: A's outcome is unknown, and partition 1 requests the bump to epoch 7.
+            responses[3].SetResult(CreateResponse(
+                (0, ErrorCode.RequestTimedOut, -1L),
+                (1, ErrorCode.OutOfOrderSequenceNumber, -1L)));
+
+            // A goes first and keeps (epoch 6, sequence 0); X restarts partition 1 under epoch 7.
+            await WaitForSendsAsync(connection, 5, cancellationToken);
+            await Assert.That(StampsOf(connection, request: 4)).IsEquivalentTo(
+                [(0, 1, 1234L, (short)6, 0), (1, 1, 1234L, (short)7, 0)]);
+
+            // B restarts partition 0 under epoch 7 only once A is answered.
+            responses[2].SetResult(CreateSuccessResponse(Topic, 2, baseOffset: 0));
+            responses[4].SetResult(CreateResponse((0, ErrorCode.None, 0L), (1, ErrorCode.None, 0L)));
+            await WaitForSendsAsync(connection, 6, cancellationToken);
+            await Assert.That(StampsOf(connection, request: 5)).IsEquivalentTo([(0, 2, 1234L, (short)7, 0)]);
+            responses[5].SetResult(CreateSuccessResponse(Topic, 0, baseOffset: 1));
+
+            await deliveryA.WaitAsync(cancellationToken);
+            await deliveryB.WaitAsync(cancellationToken);
+            await deliveryZ.WaitAsync(cancellationToken);
+            await deliveryX.WaitAsync(cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            Assert.Fail($"A wait was cancelled before the send loop got there. Requests written so far:{Environment.NewLine}{DescribeRequests(connection)}");
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task ExpiredRetry_LeavesItsPartitionMuted_WhileAnotherRetryOfItIsQueued(CancellationToken cancellationToken)
+    {
+        // A retry that runs out of delivery time used to unmute its partition unconditionally.
+        // With another retry of the partition still waiting out its backoff, the next fresh
+        // batch was then sent ahead of that retry; re-stamped under a new epoch the two take
+        // their sequences in send order and the broker appends them swapped.
+        var responses = Enumerable.Range(0, 4).Select(_ => NewResponseSource()).ToArray();
+        var (pool, connection) = CreateMockConnection(new Queue<TaskCompletionSource<ProduceResponse>>(responses));
+        connection.CaptureProduceRequests = true;
+        cancellationToken = GuardUnscriptedSends(cancellationToken);
+        // Long enough that the first retry is still backing off when the fresh batch arrives.
+        var options = CreateOptions(maxInFlightRequestsPerConnection: 2, retryBackoffMs: 500);
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var state = new ProducerIdAndEpoch(1234, 5);
+        accumulator.PublishProducerState(state);
+        var sender = CreateSender(
+            pool, options, accumulator, (_, _, _, _, _) => { },
+            bumpEpoch: (_, _) => new ValueTask<ProducerIdAndEpoch>(state),
+            getProducerState: () => state);
+
+        try
+        {
+            var (first, firstDelivery) = CreateTrackedBatch(valueTaskSourcePool, Partition0, producerId: 1234, producerEpoch: 5);
+            sender.Enqueue(first);
+            await WaitForSendsAsync(connection, 1, cancellationToken);
+            // Already past its delivery deadline: it fails at its first retry decision.
+            var (expired, expiredDelivery) = IdempotentSequenceModelTests.CreateTrackedBatch(
+                valueTaskSourcePool, Partition0, producerId: 1234, producerEpoch: 5, recordCount: 2,
+                createdStopwatchTimestamp: System.Diagnostics.Stopwatch.GetTimestamp() - options.DeliveryTimeoutTicks - 1);
+            sender.Enqueue(expired);
+            await WaitForSendsAsync(connection, 2, cancellationToken);
+
+            // The first batch goes to carry-over with a backoff, then the second expires.
+            responses[0].SetResult(CreateErrorResponse(Topic, 0, ErrorCode.NotLeaderOrFollower));
+            responses[1].SetResult(CreateErrorResponse(Topic, 0, ErrorCode.NotLeaderOrFollower));
+            await Assert.That(async () => await expiredDelivery.WaitAsync(cancellationToken))
+                .ThrowsExactly<Dekaf.Errors.KafkaTimeoutException>();
+
+            var (fresh, freshDelivery) = CreateTrackedBatch(valueTaskSourcePool, Partition0, producerId: 1234, producerEpoch: 5, recordCount: 3);
+            sender.Enqueue(fresh);
+
+            // The retry (one record) is written before the fresh batch (three records).
+            await WaitForSendsAsync(connection, 3, cancellationToken);
+            await Assert.That(StampsOf(connection, request: 2)).IsEquivalentTo([(0, 1, 1234L, (short)5, 0)]);
+            responses[2].SetResult(CreateSuccessResponse(Topic, 0, baseOffset: 0));
+            await WaitForSendsAsync(connection, 4, cancellationToken);
+            await Assert.That(StampsOf(connection, request: 3)).IsEquivalentTo([(0, 3, 1234L, (short)5, 3)]);
+            responses[3].SetResult(CreateSuccessResponse(Topic, 0, baseOffset: 1));
+
+            await firstDelivery.WaitAsync(cancellationToken);
+            await freshDelivery.WaitAsync(cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            Assert.Fail($"A wait was cancelled before the send loop got there. Requests written so far:{Environment.NewLine}{DescribeRequests(connection)}");
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
     /// <summary>
     /// The producer's local bump as the send loop sees it: epoch+1 published to the accumulator
     /// and to <paramref name="state"/>, with <paramref name="afterBump"/> run before the send loop
@@ -442,7 +845,10 @@ public sealed class BrokerSenderEpochRecoveryTests : ScriptedProduceResponseFixt
     private static TaskCompletionSource<ProduceResponse> NewResponseSource() =>
         new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-    private static ProducerOptions CreateOptions(int maxInFlightRequestsPerConnection = 1) => new()
+    private static ProducerOptions CreateOptions(
+        int maxInFlightRequestsPerConnection = 1,
+        int deliveryTimeoutMs = 30_000,
+        int retryBackoffMs = 1) => new()
     {
         BootstrapServers = ["localhost:9092"],
         MaxInFlightRequestsPerConnection = maxInFlightRequestsPerConnection,
@@ -450,10 +856,11 @@ public sealed class BrokerSenderEpochRecoveryTests : ScriptedProduceResponseFixt
         EnableAdaptiveConnections = false,
         EnableIdempotence = true,
         Acks = Acks.All,
-        DeliveryTimeoutMs = 30_000,
+        DeliveryTimeoutMs = deliveryTimeoutMs,
         RequestTimeoutMs = 30_000,
-        RetryBackoffMs = 1,
-        RetryBackoffMaxMs = 1,
+        // 0 disables the backoff and with it the jitter that decides which retries are due together.
+        RetryBackoffMs = retryBackoffMs,
+        RetryBackoffMaxMs = retryBackoffMs,
         LingerMs = 0
     };
 
@@ -471,38 +878,94 @@ public sealed class BrokerSenderEpochRecoveryTests : ScriptedProduceResponseFixt
     }
 
     /// <summary>
-    /// A one-record batch already stamped with the given producer ID and epoch, as the accumulator
-    /// would seal it, with its delivery exposed as a task.
+    /// A batch already stamped with the given producer ID and epoch, as the accumulator would seal
+    /// it, with its delivery exposed as a task. It carries real records, so its sequence advances
+    /// the partition's counter and a wrong non-zero stamp is visible on the wire.
     /// </summary>
     private static (ReadyBatch Batch, Task<RecordMetadata> Delivery) CreateTrackedBatch(
         ValueTaskSourcePool<RecordMetadata> pool, long producerId, short producerEpoch)
         => CreateTrackedBatch(pool, Partition0, producerId, producerEpoch);
 
     private static (ReadyBatch Batch, Task<RecordMetadata> Delivery) CreateTrackedBatch(
-        ValueTaskSourcePool<RecordMetadata> pool, TopicPartition topicPartition, long producerId, short producerEpoch)
+        ValueTaskSourcePool<RecordMetadata> pool, TopicPartition topicPartition, long producerId, short producerEpoch,
+        int recordCount = 1)
+        => IdempotentSequenceModelTests.CreateTrackedBatch(pool, topicPartition, producerId, producerEpoch, recordCount);
+
+    /// <summary>One response for several partitions of <see cref="Topic"/>.</summary>
+    private static ProduceResponse CreateResponse(params (int Partition, ErrorCode ErrorCode, long BaseOffset)[] partitions) =>
+        new()
+        {
+            TopicCount = 1,
+            Responses =
+            [
+                new ProduceResponseTopicData
+                {
+                    Name = Topic,
+                    PartitionCount = partitions.Length,
+                    PartitionResponses = partitions
+                        .Select(partition => new ProduceResponsePartitionData
+                        {
+                            Index = partition.Partition,
+                            ErrorCode = partition.ErrorCode,
+                            BaseOffset = partition.BaseOffset
+                        })
+                        .ToArray()
+                }
+            ]
+        };
+
+    private static Task WaitForSendsAsync(TestKafkaConnection connection, int count, CancellationToken cancellationToken)
+        => WaitUntilAsync(() => connection.CapturedProduceRequestCount >= count, cancellationToken);
+
+    private static (int Partition, int RecordCount, long ProducerId, short ProducerEpoch, int BaseSequence)[] StampsOf(
+        TestKafkaConnection connection, int request)
     {
-        var batch = new ReadyBatch();
-        var source = pool.Rent();
-        var delivery = source.Task.AsTask();
-        var sources = ArrayPool<PooledValueTaskSource<RecordMetadata>>.Shared.Rent(1);
-        sources[0] = source;
-        batch.Initialize(
-            topicPartition,
-            new RecordBatch
-            {
-                Records = Array.Empty<Record>(),
-                ProducerId = producerId,
-                ProducerEpoch = producerEpoch
-            },
-            sources,
-            completionSourcesCount: 1,
-            recordCount: 1,
-            dataSize: 100);
-        // Carry-over only drains wire-ready batches; an unmarked batch would wait for
-        // asynchronous compression that never runs in this harness.
-        batch.MarkPreSerialized();
-        batch.TrySetMemoryReleased();
-        return (batch, delivery);
+        lock (connection.CapturedProduceRequests)
+        {
+            return connection.CapturedProduceRequests[request].Batches
+                .Select(batch => (batch.Partition, batch.RecordCount, batch.ProducerId, batch.ProducerEpoch, batch.BaseSequence))
+                .ToArray();
+        }
+    }
+
+    /// <summary>Every request written so far with its stamps, for the message of a stalled test.</summary>
+    private static string DescribeRequests(TestKafkaConnection connection)
+    {
+        lock (connection.CapturedProduceRequests)
+        {
+            return string.Join(
+                Environment.NewLine,
+                connection.CapturedProduceRequests.Select((request, index) =>
+                    $"  request {index + 1}: " + string.Join(", ", request.Batches.Select(batch =>
+                        $"{batch.Topic}-{batch.Partition} ({batch.ProducerId}, {batch.ProducerEpoch}, {batch.BaseSequence}) x{batch.RecordCount}"))));
+        }
+    }
+
+    /// <summary>
+    /// Signals each time the send loop parks a coalesced wave because every in-flight slot is
+    /// taken: the state in which responses are processed with batches already coalesced.
+    /// </summary>
+    private sealed class CapacityWaitLogger : Microsoft.Extensions.Logging.ILogger
+    {
+        private int _capacityWaits;
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(Microsoft.Extensions.Logging.LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            Microsoft.Extensions.Logging.LogLevel logLevel,
+            Microsoft.Extensions.Logging.EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            if (eventId.Name == "LogWaitingForInFlightCapacity")
+                Interlocked.Increment(ref _capacityWaits);
+        }
+
+        public Task WaitForCapacityWaitsAsync(int count, CancellationToken cancellationToken)
+            => WaitUntilAsync(() => Volatile.Read(ref _capacityWaits) >= count, cancellationToken);
     }
 
     private static ProduceResponse CreateErrorResponse(string topic, int partition, ErrorCode errorCode) =>

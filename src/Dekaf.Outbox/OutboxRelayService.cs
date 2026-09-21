@@ -16,7 +16,9 @@ namespace Dekaf.Outbox;
 /// <para><b>Ordering:</b> within a bucket, rows are submitted in ascending id order and are
 /// marked front-to-back (contiguous acknowledged prefix). Later rows may already be delivered
 /// when an earlier row fails. Retrying the retained rows can reorder consumer-observed first
-/// deliveries; message-id deduplication removes duplicates but does not restore order.</para>
+/// deliveries; message-id deduplication removes duplicates but does not restore order.
+/// After a failed row the relay retries only that row until it goes through, so the rows
+/// behind it are delivered once more at most, however long it keeps failing.</para>
 /// <para>The service does not own the publisher or store; their lifetimes belong to the
 /// dependency injection container (or whoever constructed them).</para>
 /// </remarks>
@@ -50,6 +52,20 @@ public sealed partial class OutboxRelayService : BackgroundService
     // Only one publisher call is in flight per relay. Its observer writes this
     // before completing the awaited operation, including during a blocked renewal.
     private long _observedPublishFinished;
+    // Failed publish attempts of the row at the head of each bucket; zero while the bucket
+    // publishes whole batches. Kept across lease resets: what it records is the row, and a
+    // reacquired bucket that went back to whole batches would deliver the rows behind a
+    // still-failing head once more.
+    private readonly int[] _headRowFailures;
+    private readonly Guid[] _headRowMessageIds;
+    // Cycles in a row that failed without publishing anything. Drives the error backoff.
+    private int _fruitlessCycles;
+    // Seeded from the relay id: relays back off out of step with each other, and one relay
+    // backs off the same way on every run.
+    private readonly Random _backoffJitter;
+    // Set around the store calls that write leases. A failure anywhere else says nothing
+    // about who owns the buckets.
+    private bool _leaseCallInFlight;
 
     public OutboxRelayService(
         IOutboxStore store,
@@ -95,6 +111,9 @@ public sealed partial class OutboxRelayService : BackgroundService
         _timeProvider = timeProvider ?? TimeProvider.System;
         _notifier = notifier;
         _pendingBuckets = new int[options.BucketCount];
+        _headRowFailures = new int[options.BucketCount];
+        _headRowMessageIds = new Guid[options.BucketCount];
+        _backoffJitter = new Random(StableSeed(options.RelayId));
         if (notifier is OutboxNotifier)
         {
             _hintBuckets = new int[options.BucketCount];
@@ -165,10 +184,27 @@ public sealed partial class OutboxRelayService : BackgroundService
             catch (Exception ex)
             {
                 LogRelayCycleFailed(ex);
-                // Lease state is unknown after a failed store call; force re-acquisition.
-                ResetLeaseState();
+                if (_leaseCallInFlight)
+                {
+                    // A lease write that failed may or may not have been applied, so what the
+                    // store holds is unknown; force re-acquisition.
+                    _leaseCallInFlight = false;
+                    ResetLeaseState();
+                }
+                else
+                {
+                    // A failed probe, fetch, publish or delete wrote no lease. Ownership still
+                    // rests on the age of the last confirmed lease, which every publish checks,
+                    // so the leases are kept: reacquiring them would add a heartbeat, a
+                    // coordination read and a write per bucket to every retry, from every
+                    // relay, against a store that is already failing.
+                    ResetDiscoveryState();
+                }
                 cycle = new CycleResult(PublishedAny: false, HadError: true);
             }
+
+            if (!cycle.HadError || cycle.PublishedAny)
+                _fruitlessCycles = 0;
 
             if (cycle.PublishedAny && !cycle.HadError)
                 continue;
@@ -178,7 +214,8 @@ public sealed partial class OutboxRelayService : BackgroundService
                 if (cycle.HadError)
                 {
                     // Commit notifications must never bypass failure backoff.
-                    await Task.Delay(_options.ErrorBackoff, _timeProvider, stoppingToken).ConfigureAwait(false);
+                    await Task.Delay(NextErrorBackoff(cycle.PublishedAny), _timeProvider, stoppingToken)
+                        .ConfigureAwait(false);
                 }
                 else
                 {
@@ -196,7 +233,7 @@ public sealed partial class OutboxRelayService : BackgroundService
                     if (_notifier is null)
                         await Task.Delay(delay, _timeProvider, stoppingToken).ConfigureAwait(false);
                     else
-                        await _notifier.WaitAsync(delay, stoppingToken).ConfigureAwait(false);
+                        await WaitForNotificationAsync(_notifier, delay, stoppingToken).ConfigureAwait(false);
                 }
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
@@ -206,6 +243,66 @@ public sealed partial class OutboxRelayService : BackgroundService
         }
 
         LogRelayStopped(_options.RelayId);
+    }
+
+    /// <summary>
+    /// Notifications are advisory, so a notifier that throws must not end the relay: the wait
+    /// falls back to the timer it would have raced.
+    /// </summary>
+    private async ValueTask WaitForNotificationAsync(IOutboxNotifier notifier, TimeSpan delay, CancellationToken stoppingToken)
+    {
+        try
+        {
+            await notifier.WaitAsync(delay, stoppingToken).ConfigureAwait(false);
+            return;
+        }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            LogNotifierFailed(ex);
+        }
+
+        await Task.Delay(delay, _timeProvider, stoppingToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// The delay after a failed cycle. A cycle that still published something waits
+    /// <see cref="OutboxRelayOptions.ErrorBackoff"/>, so one failing bucket does not slow the
+    /// others. Cycles that fail without publishing anything double the ceiling each time, up
+    /// to <see cref="OutboxRelayOptions.LeaseRenewInterval"/> (the leases must still be renewed
+    /// on time), and wait a random time between the configured backoff and that ceiling, so
+    /// the relays sharing a failing store do not retry in step.
+    /// </summary>
+    private TimeSpan NextErrorBackoff(bool publishedAny)
+    {
+        var floor = _options.ErrorBackoff;
+        if (publishedAny)
+            return floor;
+
+        var failures = ++_fruitlessCycles;
+        var cap = _options.LeaseRenewInterval;
+        if (failures <= 1 || cap <= floor)
+            return floor;
+
+        // The shift is bounded so the ceiling cannot overflow before it is capped.
+        var doublings = Math.Min(failures - 1, 30);
+        var ceilingTicks = floor.Ticks > (cap.Ticks >> doublings) ? cap.Ticks : floor.Ticks << doublings;
+        return floor + TimeSpan.FromTicks((long)((ceilingTicks - floor.Ticks) * _backoffJitter.NextDouble()));
+    }
+
+    private static int StableSeed(string relayId)
+    {
+        // FNV-1a: string.GetHashCode differs per process, which would make a run unrepeatable.
+        unchecked
+        {
+            var hash = 2166136261u;
+            foreach (var character in relayId)
+                hash = (hash ^ character) * 16777619u;
+            return (int)hash;
+        }
     }
 
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
@@ -307,10 +404,19 @@ public sealed partial class OutboxRelayService : BackgroundService
                 // One batch per bucket per sweep when multiple buckets are owned.
                 while (!cancellationToken.IsCancellationRequested)
                 {
-                    var batch = await _store.GetNextBatchAsync(bucket, _options.BatchSize, cancellationToken)
+                    // The publisher starts every row of a batch at once, so the rows behind a
+                    // failed row are delivered although they stay in the store. Fetching them
+                    // again with every retry would deliver them again with every retry, for
+                    // as long as the head row keeps failing. Only that row is retried until
+                    // it goes through.
+                    var headOnly = _headRowFailures[bucket] > 0;
+                    var batch = await _store.GetNextBatchAsync(bucket, headOnly ? 1 : _options.BatchSize, cancellationToken)
                         .ConfigureAwait(false);
                     if (batch.Count == 0)
+                    {
+                        _headRowFailures[bucket] = 0;
                         break;
+                    }
 
                     if (!await PreparePublishLeaseAsync(bucket, cancellationToken).ConfigureAwait(false))
                     {
@@ -327,6 +433,8 @@ public sealed partial class OutboxRelayService : BackgroundService
                     var hadPublishMetrics = measurePublish;
                     var completionObserved = false;
                     Exception? renewalError = null;
+                    var leaseLost = false;
+                    long confirmedLeaseTimestamp = 0;
                     try
                     {
                         try
@@ -343,7 +451,10 @@ public sealed partial class OutboxRelayService : BackgroundService
                                         cancellationToken.ThrowIfCancellationRequested();
                                         var remaining = _options.LeaseDuration - LeaseAge();
                                         if (remaining <= TimeSpan.Zero)
+                                        {
+                                            leaseLost = true;
                                             throw new InvalidOperationException("The outbox lease expired during publishing.");
+                                        }
 
                                         var nextRenewal = GetRenewalDelay(remaining, cancellationToken);
                                         if (await Task.WhenAny(publishTask, nextRenewal).ConfigureAwait(false) == publishTask)
@@ -363,14 +474,23 @@ public sealed partial class OutboxRelayService : BackgroundService
                                             measureDuration = false;
                                         }
                                         if (!await RenewOwnedLeasesAsync(cancellationToken).ConfigureAwait(false))
+                                        {
+                                            leaseLost = true;
                                             throw new InvalidOperationException("The outbox no longer owns all publishing leases.");
+                                        }
                                     }
                                 }
                                 catch (Exception ex)
                                 {
                                     // Store/timer failures must not bypass observation of the in-flight
-                                    // publisher below. Preserve the error and retain rows after it finishes.
+                                    // publisher below. Preserve the error until it finishes.
                                     renewalError = ex;
+                                    // Only a refused renewal or an expired lease proves the lease lost.
+                                    // A renewal that threw, or a stop, leaves the last confirmed lease
+                                    // running on this relay's clock; its start is kept to decide below
+                                    // whether the acknowledged rows may still be marked.
+                                    confirmedLeaseTimestamp = leaseLost ? 0 : _leaseTimestamp;
+                                    _leaseCallInFlight = false;
                                     ResetLeaseState();
                                 }
 
@@ -408,50 +528,80 @@ public sealed partial class OutboxRelayService : BackgroundService
                             OutboxMetrics.RecordDuration(OutboxMetrics.PublishDuration, _metrics, publishStarted, publishFinished);
                     }
 
-                    // Cooperative shutdown retains rows for at-least-once replay instead of
-                    // misclassifying the elapsed publish budget as a fatal configuration error.
-                    cancellationToken.ThrowIfCancellationRequested();
+                    // The lease the publish ran under: the current one, or the one a failed
+                    // renewal or a stop left behind. Zero once the lease is proven lost.
+                    var leaseTimestamp = renewalError is null ? _leaseTimestamp : confirmedLeaseTimestamp;
+                    if (cancellationToken.IsCancellationRequested)
+                    {
+                        // Cooperative shutdown skips the publish budget check instead of
+                        // misclassifying the elapsed budget as a fatal configuration error.
+                        // The rows Kafka acknowledged before the stop are still marked, within
+                        // the shutdown deadline: the graceful release that follows hands the
+                        // bucket to a peer at once, which would publish them all again.
+                        if (result.AckedCount > 0 && leaseTimestamp != 0
+                            && _timeProvider.GetElapsedTime(leaseTimestamp) < _options.LeaseDuration)
+                        {
+                            await MarkPublishedBeforeStopAsync(bucket, AckedPrefix(batch, result.AckedCount))
+                                .ConfigureAwait(false);
+                        }
+
+                        cancellationToken.ThrowIfCancellationRequested();
+                    }
+
                     ValidatePublishDuration(publishStarted, publishFinished);
                     if (renewalError is OutboxMisconfigurationException misconfiguration)
                         throw misconfiguration;
                     // Listener callbacks and concurrent renewal can outlast publishing.
                     // They must not inflate its budget, but lease ownership still ages.
                     var leaseChecked = hadPublishMetrics || completionObserved ? _timeProvider.GetTimestamp() : publishFinished;
-                    if (renewalError is not null
-                        || _timeProvider.GetElapsedTime(_leaseTimestamp, leaseChecked) >= _options.LeaseDuration)
+                    if (leaseTimestamp == 0
+                        || _timeProvider.GetElapsedTime(leaseTimestamp, leaseChecked) >= _options.LeaseDuration)
+                    {
+                        leaseLost = true;
                         result = LostPublishLease(renewalError);
+                    }
+                    else if (renewalError is not null)
+                    {
+                        // The renewal failed, but the publish finished inside the lease it
+                        // could not extend, so its rows are this relay's to mark. Local
+                        // ownership is already dropped; the next cycle reacquires.
+                        LogRenewalFailedDuringPublish(renewalError, bucket);
+                    }
 
                     if (result.AckedCount > 0)
                     {
-                        // The store contract guarantees MarkPublishedAsync receives the same
-                        // instances GetNextBatchAsync returned, as a contiguous prefix, in order.
-                        IReadOnlyList<OutboxMessage> published;
-                        if (result.AckedCount == batch.Count)
-                        {
-                            published = batch;
-                        }
-                        else
-                        {
-                            var prefix = new OutboxMessage[result.AckedCount];
-                            for (var i = 0; i < result.AckedCount; i++)
-                                prefix[i] = batch[i];
-                            published = prefix;
-                        }
-
-                        await _store.MarkPublishedAsync(bucket, published, cancellationToken).ConfigureAwait(false);
+                        await _store.MarkPublishedAsync(bucket, AckedPrefix(batch, result.AckedCount), cancellationToken)
+                            .ConfigureAwait(false);
                         publishedAny = true;
                         LogBatchPublished(bucket, result.AckedCount);
                     }
 
+                    if (headOnly)
+                        OutboxMetrics.Record(OutboxMetrics.HeadRowRetries, _metrics, 1);
+
                     if (result.FirstError is not null)
                     {
-                        // Unacked rows stay in the store; ErrorBackoff applies before the next cycle.
-                        LogBatchPublishFailed(result.FirstError, bucket, batch.Count - result.AckedCount);
+                        // Unacked rows stay in the store; the error backoff applies before the next cycle.
+                        if (leaseLost || result.AckedCount >= batch.Count)
+                            LogBatchPublishFailed(result.FirstError, bucket, batch.Count - result.AckedCount);
+                        else
+                            RecordHeadRowFailure(bucket, batch[result.AckedCount], result.FirstError, batch.Count - result.AckedCount);
                         hadError = true;
                         break;
                     }
 
-                    if (batch.Count == _options.BatchSize)
+                    if (headOnly)
+                        LogHeadRowRecovered(bucket, batch[0].MessageId, _headRowFailures[bucket] + 1);
+                    _headRowFailures[bucket] = 0;
+
+                    if (renewalError is not null)
+                    {
+                        hadError = true;
+                        break;
+                    }
+
+                    // A head row that went through has the rest of its bucket waiting behind it.
+                    if (headOnly || batch.Count == _options.BatchSize)
                     {
                         // With only one owned bucket there is no peer to starve. Avoid an
                         // extra cycle per batch, but still yield for fair-share acquisition.
@@ -485,11 +635,64 @@ public sealed partial class OutboxRelayService : BackgroundService
         Volatile.Write(ref _metrics.OwnedBuckets, 0);
         _leaseTimestamp = 0;
         _rebalanceTimestamp = 0;
-        _pendingBucketCount = 0;
-        _discoveryRequired = true;
+        ResetDiscoveryState();
         ClearMetricsLease();
         _leaseGeneration++;
-        (_notifier as IOutboxBucketNotifier)?.SetOwnedBuckets(_ownedBuckets);
+        PublishOwnedBuckets(_ownedBuckets);
+    }
+
+    /// <summary>
+    /// A cycle that ended in an exception leaves the ready list half rewritten, so the next
+    /// cycle probes instead of trusting it.
+    /// </summary>
+    private void ResetDiscoveryState()
+    {
+        _pendingBucketCount = 0;
+        _discoveryRequired = true;
+    }
+
+    private void PublishOwnedBuckets(IReadOnlyList<int> buckets)
+    {
+        if (_notifier is not IOutboxBucketNotifier bucketNotifier)
+            return;
+
+        try
+        {
+            bucketNotifier.SetOwnedBuckets(buckets);
+        }
+        catch (Exception ex)
+        {
+            // The snapshot only filters wake-ups. A relay that cannot publish it still finds
+            // its rows by polling, and must not stop over a hint.
+            LogNotifierFailed(ex);
+        }
+    }
+
+    private static IReadOnlyList<OutboxMessage> AckedPrefix(IReadOnlyList<OutboxMessage> batch, int ackedCount)
+    {
+        // The store contract guarantees MarkPublishedAsync receives the same instances
+        // GetNextBatchAsync returned, as a contiguous prefix, in order.
+        if (ackedCount == batch.Count)
+            return batch;
+
+        var prefix = new OutboxMessage[ackedCount];
+        for (var i = 0; i < ackedCount; i++)
+            prefix[i] = batch[i];
+        return prefix;
+    }
+
+    private void RecordHeadRowFailure(int bucket, OutboxMessage row, Exception error, int unackedCount)
+    {
+        if (_headRowFailures[bucket] == 0 || _headRowMessageIds[bucket] != row.MessageId)
+        {
+            // First failure of this row: the whole batch was attempted.
+            _headRowFailures[bucket] = 1;
+            _headRowMessageIds[bucket] = row.MessageId;
+            LogBatchPublishFailed(error, bucket, unackedCount);
+            return;
+        }
+
+        LogHeadRowStillFailing(error, bucket, row.MessageId, ++_headRowFailures[bucket]);
     }
 
     private async Task RefreshLeasesAsync(CancellationToken cancellationToken)
@@ -505,10 +708,12 @@ public sealed partial class OutboxRelayService : BackgroundService
         // Set before the call: a failed acquisition can still have written a heartbeat
         // or claimed leases that a graceful stop should hand back.
         _acquisitionAttempted = true;
+        _leaseCallInFlight = true;
         var acquired = _ownershipStore is null
             ? await _store.AcquireBucketLeasesAsync(_leaseRequest, cancellationToken).ConfigureAwait(false)
             : await _ownershipStore.AcquireBucketLeasesAsync(_leaseRequest, _previousBuckets, cancellationToken)
                 .ConfigureAwait(false);
+        _leaseCallInFlight = false;
         // The old lease can expire during acquisition, including when no buckets are returned.
         // Observe that epoch before replacing either its ownership or timestamp.
         if (_ownedBuckets.Count > 0 && LeaseAge() >= _options.LeaseDuration)
@@ -531,7 +736,7 @@ public sealed partial class OutboxRelayService : BackgroundService
                 _ownedBucketFlags[acquired[index]] = true;
         }
         UpdateMetricsLease();
-        (_notifier as IOutboxBucketNotifier)?.SetOwnedBuckets(acquired);
+        PublishOwnedBuckets(acquired);
         Volatile.Write(ref _metrics.OwnedBuckets, acquired.Count);
     }
 
@@ -553,6 +758,15 @@ public sealed partial class OutboxRelayService : BackgroundService
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Publish failed for bucket {Bucket}; {UnackedCount} row(s) will be retried")]
     private partial void LogBatchPublishFailed(Exception ex, int bucket, int unackedCount);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Outbox bucket {Bucket} is blocked by its head row {MessageId}: publish attempt {Attempt} of that row failed. Only that row is retried, so the rows behind it are not delivered again; nothing in this bucket is published until it goes through or is removed from the store")]
+    private partial void LogHeadRowStillFailing(Exception ex, int bucket, Guid messageId, int attempt);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Outbox bucket {Bucket} is publishing again: head row {MessageId} went through on attempt {Attempt}")]
+    private partial void LogHeadRowRecovered(int bucket, Guid messageId, int attempt);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Outbox notifier failed; notifications are advisory, so the relay falls back to polling")]
+    private partial void LogNotifierFailed(Exception ex);
 
     [LoggerMessage(Level = LogLevel.Error, Message = "Outbox relay cycle failed; backing off before retry")]
     private partial void LogRelayCycleFailed(Exception ex);

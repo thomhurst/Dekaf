@@ -426,7 +426,7 @@ public sealed partial class ConnectionPool :
         // Get broker info
         if (!_brokers.TryGetValue(brokerId, out var brokerInfo))
         {
-            throw new InvalidOperationException($"Unknown broker ID: {brokerId}");
+            throw new UnknownBrokerException(brokerId);
         }
 
         var connection = await GetOrCreateConnectionAsync(brokerId, brokerInfo.Host, brokerInfo.Port, cancellationToken)
@@ -441,7 +441,7 @@ public sealed partial class ConnectionPool :
         // Get broker info
         if (!_brokers.TryGetValue(brokerId, out var brokerInfo))
         {
-            throw new InvalidOperationException($"Unknown broker ID: {brokerId}");
+            throw new UnknownBrokerException(brokerId);
         }
 
         // Try to get existing connection group
@@ -496,7 +496,7 @@ public sealed partial class ConnectionPool :
 
         if (!_brokers.TryGetValue(brokerId, out var brokerInfo))
         {
-            throw new InvalidOperationException($"Unknown broker ID: {brokerId}");
+            throw new UnknownBrokerException(brokerId);
         }
 
         // Adaptive scaling can grow a connection group beyond the configured
@@ -706,7 +706,7 @@ public sealed partial class ConnectionPool :
             throw new ObjectDisposedException(nameof(ConnectionPool));
 
         if (!_brokers.TryGetValue(brokerId, out var brokerInfo))
-            throw new InvalidOperationException($"Unknown broker ID: {brokerId}");
+            throw new UnknownBrokerException(brokerId);
 
         // Check current group size without locking
         if (_connectionGroupsById.TryGetValue(brokerId, out var currentGroup) && currentGroup.Length >= newCount)
@@ -1215,7 +1215,7 @@ public sealed partial class ConnectionPool :
                     "Connection closed during setup.");
             }
 
-            throw new InvalidOperationException($"Failed to create connection after {MaxRetries} retries");
+            throw new ConnectionSetupExhaustedException(MaxRetries);
         }
         finally
         {

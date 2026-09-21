@@ -2560,8 +2560,7 @@ public sealed partial class KafkaConnection :
                 {
                     LogReceiveLoopCompleted(_host, _port);
                     MarkDisposed(); // Prevent new requests from being queued on a dead connection
-                    FailAllPendingRequests(new KafkaException(
-                        "Connection closed by remote peer (EOF)"));
+                    FailAllPendingRequests(CreateConnectionClosedException());
                     break;
                 }
 
@@ -2634,8 +2633,7 @@ public sealed partial class KafkaConnection :
                 {
                     LogReceiveLoopCompleted(_host, _port);
                     MarkDisposed();
-                    FailAllPendingRequests(new KafkaException(
-                        "Connection closed by remote peer (EOF)"));
+                    FailAllPendingRequests(CreateConnectionClosedException());
                     break;
                 }
 
@@ -2701,6 +2699,13 @@ public sealed partial class KafkaConnection :
             ErrorCode.RequestTimedOut,
             $"Receive timeout after {(int)_options.RequestTimeout.TotalMilliseconds}ms - connection to broker {BrokerId} failed");
     }
+
+    // A peer that closes the connection is a transport failure, not a protocol answer: the
+    // request may or may not have been processed, and the same request on a new connection
+    // (or another broker) can succeed. Without an error code the exception was not retriable,
+    // so a control-plane request in flight when a broker went away failed on its first attempt.
+    private static KafkaException CreateConnectionClosedException() =>
+        new(ErrorCode.NetworkException, "Connection closed by remote peer (EOF)", isRetriable: true);
 
     private void DispatchResponse(
         int correlationId,

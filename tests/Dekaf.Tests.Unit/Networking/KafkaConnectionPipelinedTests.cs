@@ -342,9 +342,12 @@ public sealed class KafkaConnectionPipelinedTests
 
         var receiveTask = StartReceiveLoop(connection, receiveCts.Token);
 
-        await Assert.That(async () => await requestTask.WaitAsync(TimeSpan.FromSeconds(1)))
+        var exception = await Assert.That(async () => await requestTask.WaitAsync(TimeSpan.FromSeconds(1)))
             .Throws<KafkaException>()
             .WithMessageContaining("Connection closed by remote peer (EOF)");
+        // A closed connection is a transport failure: every retry loop keys on IsRetriable.
+        await Assert.That(exception!.IsRetriable).IsTrue();
+        await Assert.That(exception.ErrorCode).IsEqualTo(ErrorCode.NetworkException);
         await receiveTask.WaitAsync(TimeSpan.FromSeconds(1));
         await Assert.That(TryRemovePendingRequest(connection, correlationId: 1)).IsTrue();
     }

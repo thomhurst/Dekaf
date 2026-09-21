@@ -52,7 +52,7 @@ public sealed partial class DynamoDbOutboxStore : IOutboxStore, IOutboxLeaseRene
     private readonly DynamoDbOutboxSchema _schema;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger _logger;
-    // Last sequence number returned per bucket. The relay serializes fetches, so no lock.
+    // Last sequence number deleted per bucket. The relay serializes fetches and marks, so no lock.
     private readonly long[] _lastSequence;
     private int _acquisitionRound;
 
@@ -107,9 +107,10 @@ public sealed partial class DynamoDbOutboxStore : IOutboxStore, IOutboxLeaseRene
         long SeenExpiry(int bucket) => coordination.SeenExpiry[bucket];
 
         // Renew first: these leases are the ones being published and the closest to expiry.
-        var kept = await WriteLeasesAsync(plan.Keep, KeepLeaseRequest, SeenExpiry, write, cancellationToken)
+        var keep = LeasesThatMoveForward(plan.Keep, coordination.SeenExpiry, expiry, request.RelayId);
+        var kept = await WriteLeasesAsync(keep, KeepLeaseRequest, SeenExpiry, write, cancellationToken)
             .ConfigureAwait(false);
-        Collect(plan.Keep, kept, owned, request.RelayId, claimed: false);
+        Collect(keep, kept, owned, request.RelayId, claimed: false);
 
         await WriteLeasesAsync(plan.Release, ReleaseLeaseRequest, SeenExpiry, write, cancellationToken)
             .ConfigureAwait(false);
@@ -175,9 +176,23 @@ public sealed partial class DynamoDbOutboxStore : IOutboxStore, IOutboxLeaseRene
         // hands back whatever a straggler took, until a read comes back clean.
         for (var attempt = 0; attempt < MaxReleaseAttempts; attempt++)
         {
+            var now = _timeProvider.GetUtcNow().UtcTicks;
+
+            // Peers stop dividing the buckets by a relay count that still includes this one.
+            // The record is stamped rather than deleted, because a heartbeat only moves its
+            // timestamp forward and a deleted record leaves nothing to refuse the heartbeat of
+            // the cancelled round. Written even when the relay has no record yet, so a first
+            // heartbeat still on its way is refused too.
+            // Before the leases, not after: a release that a throttled write or the shutdown
+            // deadline cuts short then leaves leases that expire, which costs what no release
+            // costs. The other order leaves freed buckets next to a live heartbeat, and peers
+            // keep those reserved for a relay that is gone until the heartbeat ages out.
+            if (attempt == 0)
+                await WriteRelayRecordAsync(request.RelayId, now, stopped: true, cancellationToken)
+                    .ConfigureAwait(false);
+
             // Released by owner, not by previousBuckets: the read also finds leases that an
             // acquisition claimed before it failed, and stale lease items beyond the bucket count.
-            var now = _timeProvider.GetUtcNow().UtcTicks;
             var owned = new List<int>();
             var seenExpiry = new Dictionary<int, long>();
             await foreach (var item in QueryCoordinationAsync(DynamoDbOutboxSchema.LeaseSortKeyPrefix, cancellationToken)
@@ -197,15 +212,6 @@ public sealed partial class DynamoDbOutboxStore : IOutboxStore, IOutboxLeaseRene
             await WriteLeasesAsync(
                 owned, ReleaseLeaseRequest, bucket => seenExpiry[bucket], new LeaseWrite(request.RelayId, now, now),
                 cancellationToken).ConfigureAwait(false);
-
-            // Peers stop dividing the buckets by a relay count that still includes this one.
-            // The record is stamped rather than deleted, because a heartbeat only moves its
-            // timestamp forward and a deleted record leaves nothing to refuse the heartbeat of
-            // the cancelled round. Written even when the relay has no record yet, so a first
-            // heartbeat still on its way is refused too.
-            if (attempt == 0)
-                await WriteRelayRecordAsync(request.RelayId, now, stopped: true, cancellationToken)
-                    .ConfigureAwait(false);
         }
 
         // Only reached while a straggler keeps taking buckets back. Whatever it holds now is
@@ -258,8 +264,6 @@ public sealed partial class DynamoDbOutboxStore : IOutboxStore, IOutboxLeaseRene
         if (await HasLateArrivalAsync(bucket, messages, cancellationToken).ConfigureAwait(false))
             messages = await QueryBatchAsync(bucket, maxCount, cancellationToken).ConfigureAwait(false);
 
-        if (messages.Count > 0 && bucket < _lastSequence.Length)
-            _lastSequence[bucket] = messages[^1].Id;
         return messages;
     }
 
@@ -315,10 +319,13 @@ public sealed partial class DynamoDbOutboxStore : IOutboxStore, IOutboxLeaseRene
     /// </remarks>
     private async Task<bool> HasLateArrivalAsync(int bucket, List<OutboxMessage> messages, CancellationToken cancellationToken)
     {
-        // The end of the previous batch is known only while this store keeps reading the
-        // bucket. After a start or a handover it is not, and everything below the head is
-        // the gap: one probe per bucket for the life of the store. A stale value from an
-        // earlier ownership is merely a wider gap.
+        // The baseline is the last message this store deleted, not the last it returned: a
+        // batch that was returned but not marked is read again, and a transaction can commit
+        // into one of its gaps during that second read just as it can during the first.
+        // The baseline is known only while this store keeps publishing the bucket. After a
+        // start or a handover it is not, and everything below the head is the gap: one probe
+        // per fetch until the first batch is marked. A stale value from an earlier ownership
+        // is merely a wider gap.
         var expected = bucket < _lastSequence.Length && _lastSequence[bucket] > 0 ? _lastSequence[bucket] + 1 : 1;
         var probes = 0;
         foreach (var message in messages)
@@ -384,6 +391,10 @@ public sealed partial class DynamoDbOutboxStore : IOutboxStore, IOutboxLeaseRene
             }
 
             await DeleteBatchAsync(deletes, cancellationToken).ConfigureAwait(false);
+
+            // Per chunk: what a failed later chunk leaves behind is read again from here.
+            if ((uint)bucket < (uint)_lastSequence.Length)
+                _lastSequence[bucket] = Math.Max(_lastSequence[bucket], publishedMessages[offset + count - 1].Id);
         }
     }
 

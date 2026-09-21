@@ -1433,10 +1433,12 @@ public sealed class EpochBumpRecoveryTests
     }
 
     [Test]
-    public async Task ResetSequenceNumbers_WithState_PublishesItAndStampsEveryPartition()
+    public async Task ResetSequenceNumbers_WithState_PublishesIt_AndPartitionsRestartLazily()
     {
-        // The full reset that accompanies a replaced producer ID counts as the restart of every
-        // partition under the new state: the broker holds no state for the new ID.
+        // A replaced producer ID is the same transition as a bump: every partition restarts at 0
+        // on its next send under the new state, not at publication. A partition stamped eagerly
+        // would no longer look stale, so the send loop could not hold its first batch under the
+        // new ID behind a request still pending under the old one.
         var options = new ProducerOptions { BootstrapServers = ["localhost:9092"] };
         var accumulator = new RecordAccumulator(options);
         accumulator.GetAndIncrementSequence(Tp0, 10);
@@ -1445,14 +1447,57 @@ public sealed class EpochBumpRecoveryTests
         var replaced = new ProducerIdAndEpoch(5678, 0);
         accumulator.ResetSequenceNumbers(replaced);
 
-        await Assert.That(accumulator.HasStaleSequenceState(Tp0, replaced)).IsFalse();
-        await Assert.That(accumulator.HasStaleSequenceState(Tp1, replaced)).IsFalse();
+        await Assert.That(accumulator.HasStaleSequenceState(Tp0, replaced)).IsTrue();
+        await Assert.That(accumulator.HasStaleSequenceState(Tp1, replaced)).IsTrue();
         await Assert.That(accumulator.GetAndIncrementSequence(Tp0, 5, replaced, out var restarted)).IsEqualTo(0);
-        await Assert.That(restarted).IsFalse();
+        await Assert.That(restarted).IsTrue();
+        await Assert.That(accumulator.HasStaleSequenceState(Tp0, replaced)).IsFalse();
         await Assert.That(accumulator.GetAndIncrementSequence(Tp1, 6, replaced, out restarted)).IsEqualTo(0);
+        await Assert.That(restarted).IsTrue();
+        await Assert.That(accumulator.GetAndIncrementSequence(Tp0, 1, replaced, out restarted)).IsEqualTo(5);
         await Assert.That(restarted).IsFalse();
-        await Assert.That(accumulator.GetAndIncrementSequence(Tp0, 1, replaced, out _)).IsEqualTo(5);
         await Assert.That(accumulator.GetAndIncrementSequence(Tp1, 1, replaced, out _)).IsEqualTo(6);
+
+        await accumulator.DisposeAsync();
+    }
+
+    [Test]
+    public async Task SequenceArithmetic_WrapsAtTheEndOfTheSequenceSpace()
+    {
+        // A KIP-126 split numbers its children from the parent's base sequence, and a reenqueued
+        // batch is ordered by sequence: both must follow the wrap, not overflow or mis-order.
+        await Assert.That(RecordAccumulator.AdvanceSequence(10, 5)).IsEqualTo(15);
+        await Assert.That(RecordAccumulator.AdvanceSequence(int.MaxValue, 1)).IsEqualTo(0);
+        await Assert.That(RecordAccumulator.AdvanceSequence(int.MaxValue - 1, 4)).IsEqualTo(2);
+
+        await Assert.That(RecordAccumulator.IsSequenceAtOrAfter(7, 7)).IsTrue();
+        await Assert.That(RecordAccumulator.IsSequenceAtOrAfter(8, 7)).IsTrue();
+        await Assert.That(RecordAccumulator.IsSequenceAtOrAfter(7, 8)).IsFalse();
+        await Assert.That(RecordAccumulator.IsSequenceAtOrAfter(2, int.MaxValue - 1)).IsTrue();
+        await Assert.That(RecordAccumulator.IsSequenceAtOrAfter(int.MaxValue - 1, 2)).IsFalse();
+    }
+
+    [Test]
+    public async Task GetAndIncrementSequence_AtTheEndOfTheSequenceSpace_WrapsToZero()
+    {
+        // Java DefaultRecordBatch.incrementSequence: sequences live in [0, int.MaxValue] and the
+        // one after int.MaxValue is 0. A negative base sequence is rejected by the broker and
+        // read as "not assigned yet" by the send loop.
+        var options = new ProducerOptions { BootstrapServers = ["localhost:9092"] };
+        var accumulator = new RecordAccumulator(options);
+
+        await Assert.That(accumulator.GetAndIncrementSequence(Tp0, int.MaxValue - 5)).IsEqualTo(0);
+        await Assert.That(accumulator.GetAndIncrementSequence(Tp0, 4)).IsEqualTo(int.MaxValue - 5);
+        // Straddles the end: int.MaxValue - 1, int.MaxValue, 0, 1.
+        await Assert.That(accumulator.GetAndIncrementSequence(Tp0, 4)).IsEqualTo(int.MaxValue - 1);
+        await Assert.That(accumulator.GetAndIncrementSequence(Tp0, 3)).IsEqualTo(2);
+        await Assert.That(accumulator.GetAndIncrementSequence(Tp0, 1)).IsEqualTo(5);
+
+        // Ends exactly on int.MaxValue: the next batch starts at 0.
+        await Assert.That(accumulator.GetAndIncrementSequence(Tp1, int.MaxValue)).IsEqualTo(0);
+        await Assert.That(accumulator.GetAndIncrementSequence(Tp1, 1)).IsEqualTo(int.MaxValue);
+        await Assert.That(accumulator.GetAndIncrementSequence(Tp1, 2)).IsEqualTo(0);
+        await Assert.That(accumulator.GetAndIncrementSequence(Tp1, 1)).IsEqualTo(2);
 
         await accumulator.DisposeAsync();
     }

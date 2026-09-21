@@ -327,6 +327,58 @@ public sealed class IdempotentInitializationTests
     }
 
     [Test]
+    public async Task InitializeAsync_TransportFailureAfterMaxBlockTokenFired_TimesOutWithTransportCause(
+        CancellationToken cancellationToken)
+    {
+        // The socket reports its failure only once the max.block.ms token has fired. The caller
+        // must see the timeout carrying that failure, not the raw transport exception. (Only a
+        // send can surface this: the pool maps a cancelled connection setup itself.)
+        await using var harness = new ProducerInitializationHarness(maxBlockMs: 300);
+        harness.Send = async (_, token) =>
+        {
+            await WaitForCancellationAsync(token);
+            throw new SocketException((int)SocketError.ConnectionReset);
+        };
+
+        var exception = await Assert.That(async () => await harness.Producer.InitializeAsync(cancellationToken))
+            .Throws<KafkaTimeoutException>();
+
+        await Assert.That(exception!.InnerException).IsTypeOf<SocketException>();
+    }
+
+    [Test]
+    public async Task InitializeAsync_TransportFailureAfterCallerCancellation_ThrowsOperationCanceled(
+        CancellationToken cancellationToken)
+    {
+        await using var harness = new ProducerInitializationHarness();
+        using var caller = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        harness.Send = async (_, token) =>
+        {
+            started.SetResult();
+            await WaitForCancellationAsync(token);
+            throw new SocketException((int)SocketError.ConnectionReset);
+        };
+
+        var initialization = harness.Producer.InitializeAsync(caller.Token).AsTask();
+        await started.Task.WaitAsync(cancellationToken);
+        caller.Cancel();
+
+        await Assert.That(() => initialization).Throws<OperationCanceledException>();
+    }
+
+    private static async Task WaitForCancellationAsync(CancellationToken token)
+    {
+        try
+        {
+            await Task.Delay(Timeout.Infinite, token);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
+
+    [Test]
     [Arguments(false)]
     [Arguments(true)]
     public async Task InitializeAsync_CallerCancellation_StopsInFlightOperation(bool duringConnect, CancellationToken cancellationToken)
@@ -475,8 +527,9 @@ public sealed class IdempotentInitializationTests
         accumulator.GetAndIncrementSequence(Tp1, 20);
         harness.Send = (_, _) => ValueTask.FromResult(ReplacementProducerId());
         var replaced = await harness.Producer.BumpEpochForRecoveryAsync(short.MaxValue, cancellationToken);
+        // Partitions restart lazily under the replacement ID, on their first send under it.
         await Assert.That(accumulator.GetAndIncrementSequence(Tp1, 3, replaced, out var restarted)).IsEqualTo(0);
-        await Assert.That(restarted).IsFalse();
+        await Assert.That(restarted).IsTrue();
 
         var state = await harness.Producer.BumpEpochForRecoveryAsync(short.MaxValue, cancellationToken);
 
@@ -507,9 +560,12 @@ public sealed class IdempotentInitializationTests
         await Assert.That(state.Epoch).IsEqualTo((short)0);
         await Assert.That(accumulator.ProducerId).IsEqualTo(5678L);
         await Assert.That(accumulator.ProducerEpoch).IsEqualTo((short)0);
-        // The broker holds no state for the new ID, so every partition restarts at 0, not only Tp0.
-        await Assert.That(accumulator.GetAndIncrementSequence(Tp0, 1)).IsEqualTo(0);
-        await Assert.That(accumulator.GetAndIncrementSequence(Tp1, 1)).IsEqualTo(0);
+        // The broker holds no state for the new ID, so every partition restarts at 0, not only
+        // Tp0: lazily, on its first send under the new ID, like the restart after a bump.
+        await Assert.That(accumulator.GetAndIncrementSequence(Tp0, 1, state, out var restarted)).IsEqualTo(0);
+        await Assert.That(restarted).IsTrue();
+        await Assert.That(accumulator.GetAndIncrementSequence(Tp1, 1, state, out restarted)).IsEqualTo(0);
+        await Assert.That(restarted).IsTrue();
         await Assert.That(harness.Requests.Count).IsEqualTo(2);
         var (_, resetRequest) = harness.Requests[1];
         await Assert.That(resetRequest.TransactionalId).IsNull();

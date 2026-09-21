@@ -47,6 +47,14 @@ internal sealed class FaultWindowRunResult
     public long LiveConsumerMessages { get; set; }
     public bool LiveConsumerRecoveryFailed { get; set; }
     public bool LiveConsumerShutdownFailed { get; set; }
+    public long JoiningConsumerMessages { get; set; }
+    public bool JoiningConsumerRecoveryFailed { get; set; }
+    public int TransactionsCommitted { get; set; }
+    public int TransactionsAborted { get; set; }
+    public int TransactionsUnknown { get; set; }
+    public int TransactionsCommittedAfterHeal { get; set; }
+    public bool TransactionalProducerRecoveryFailed { get; set; }
+    public IReadOnlyList<string> TransactionViolations { get; set; } = [];
     public long UnexplainedLoss { get; set; }
     public long Duplicates { get; set; }
     public long OracleCountMismatch { get; set; }

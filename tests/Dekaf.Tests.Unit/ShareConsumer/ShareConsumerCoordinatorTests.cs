@@ -98,6 +98,104 @@ public sealed class ShareConsumerCoordinatorTests
         await Assert.That(coordinator.CaptureGroupStatus().LastHeartbeatFailure).IsNull();
     }
 
+    // One transport failure used to end the heartbeat loop; only the next poll restarted it. An
+    // application busy in a handler longer than the session timeout was fenced. The loop must
+    // re-discover the coordinator and keep beating on its own.
+    [Test]
+    public async Task HeartbeatLoop_TransportFailure_RediscoversAndKeepsBeating(CancellationToken cancellationToken)
+    {
+        var topicId = Guid.Parse("00000000-0000-0000-0000-000000000001");
+        var options = new ShareConsumerOptions
+        {
+            BootstrapServers = ["broker-0:9092"],
+            GroupId = "share-heartbeat",
+            RetryBackoffMs = 1,
+            RetryBackoffMaxMs = 1
+        };
+        var pool = Substitute.For<IConnectionPool>();
+        var metadataConnection = Substitute.For<IKafkaConnection>();
+        var coordinatorConnection = Substitute.For<IKafkaConnection>();
+        var findCoordinatorCount = 0;
+        var heartbeatCount = 0;
+        var recovered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        metadataConnection.SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
+                Arg.Any<FindCoordinatorRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                Interlocked.Increment(ref findCoordinatorCount);
+                return ValueTask.FromResult(new FindCoordinatorResponse
+                {
+                    Coordinators = [new Coordinator
+                    {
+                        Key = options.GroupId, NodeId = 1, Host = "broker-1", Port = 9092, ErrorCode = ErrorCode.None
+                    }]
+                });
+            });
+        coordinatorConnection.SendAsync<ShareGroupHeartbeatRequest, ShareGroupHeartbeatResponse>(
+                Arg.Any<ShareGroupHeartbeatRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                var call = Interlocked.Increment(ref heartbeatCount);
+                if (call == 2)
+                {
+                    return ValueTask.FromException<ShareGroupHeartbeatResponse>(
+                        new IOException("coordinator connection closed"));
+                }
+
+                if (call == 3)
+                    recovered.TrySetResult(true);
+
+                return ValueTask.FromResult(new ShareGroupHeartbeatResponse
+                {
+                    ErrorCode = ErrorCode.None,
+                    MemberId = "member-1",
+                    MemberEpoch = 1,
+                    // The join answer starts a fast loop; the recovery answer parks it again.
+                    HeartbeatIntervalMs = call == 1 ? 1 : 60_000,
+                    Assignment = call == 1
+                        ? new ShareGroupHeartbeatAssignment
+                        {
+                            TopicPartitions =
+                                [new ShareGroupHeartbeatTopicPartitions { TopicId = topicId, Partitions = [0] }]
+                        }
+                        : null
+                });
+            });
+        pool.GetConnectionByIndexAsync(Arg.Is(0), Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(metadataConnection));
+        pool.GetConnectionByIndexAsync(Arg.Is(1), Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(coordinatorConnection));
+        await using var metadata = new MetadataManager(pool, options.BootstrapServers);
+        metadata.SetApiVersion(ApiKey.ShareGroupHeartbeat, 0, 1);
+        metadata.SetApiVersion(ApiKey.FindCoordinator,
+            FindCoordinatorRequest.LowestSupportedVersion, FindCoordinatorRequest.HighestSupportedVersion);
+        metadata.Metadata.Update(new MetadataResponse
+        {
+            Brokers =
+            [
+                new BrokerMetadata { NodeId = 0, Host = "broker-0", Port = 9092 },
+                new BrokerMetadata { NodeId = 1, Host = "broker-1", Port = 9092 }
+            ],
+            Topics = [new TopicMetadata
+            {
+                ErrorCode = ErrorCode.None, Name = "first", TopicId = topicId,
+                Partitions = [new PartitionMetadata
+                {
+                    ErrorCode = ErrorCode.None, PartitionIndex = 0, LeaderId = 1, ReplicaNodes = [1], IsrNodes = [1]
+                }]
+            }]
+        });
+        await using var coordinator = new ShareConsumerCoordinator(options, pool, metadata);
+        coordinator.UpdateSubscription(["first"]);
+
+        await coordinator.EnsureActiveGroupAsync(cancellationToken);
+        // No further foreground call: only the background loop can send the third heartbeat.
+        await recovered.Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+
+        await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Stable);
+        await Assert.That(Volatile.Read(ref findCoordinatorCount)).IsEqualTo(2);
+    }
+
     // Authentication failures are fatal: a TLS handshake that the coordinator rejects must
     // propagate on the first attempt instead of being retried until the join timeout.
     [Test]

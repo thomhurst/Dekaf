@@ -159,6 +159,41 @@ public sealed partial class DynamoDbOutboxStore
         }
     }
 
+    /// <summary>
+    /// Leaves out the leases this round would move backwards: the host's clock was set back
+    /// by more than a renew interval since the round that wrote them. The relay counts a kept
+    /// lease as valid for a whole lease duration from now, which holds for the expiry this
+    /// round writes but not for an earlier one it left in place, so such a bucket is not
+    /// reported as owned. Its lease still names this relay, so nobody else takes it; it is
+    /// kept again once the clock has caught up, or claimed afresh once it has lapsed. The
+    /// write is not sent at all, because its condition would refuse it.
+    /// </summary>
+    private IReadOnlyList<int> LeasesThatMoveForward(
+        IReadOnlyList<int> keep, long[] seenExpiry, long expiry, string relayId)
+    {
+        List<int>? forward = null;
+        for (var index = 0; index < keep.Count; index++)
+        {
+            var bucket = keep[index];
+            if (seenExpiry[bucket] <= expiry)
+            {
+                forward?.Add(bucket);
+                continue;
+            }
+
+            if (forward is null)
+            {
+                forward = new List<int>(keep.Count);
+                for (var earlier = 0; earlier < index; earlier++)
+                    forward.Add(keep[earlier]);
+            }
+
+            LogLeaseNotMovedBackwards(relayId, bucket);
+        }
+
+        return forward ?? keep;
+    }
+
     // The expiry doubles as the lease's version. A request that this relay gave up on (a
     // cancelled sibling of a failed write, a timed-out attempt) can still reach DynamoDB
     // later. Requiring the expiry that this round read makes such a straggler fail, instead
@@ -169,8 +204,9 @@ public sealed partial class DynamoDbOutboxStore
         Key = _schema.LeaseKey(bucket),
         UpdateExpression = "SET #expires = :expiry",
         // No expiry check against the clock: a lease that lapsed but still names this relay
-        // was taken by nobody.
-        ConditionExpression = "#owner = :me AND #expires = :seen",
+        // was taken by nobody. The expiry only moves forward, as the heartbeat's timestamp
+        // does: peers may already have planned around the later one.
+        ConditionExpression = "#owner = :me AND #expires = :seen AND #expires <= :expiry",
         ExpressionAttributeNames = LeaseAttributeNames(),
         ExpressionAttributeValues = new Dictionary<string, AttributeValue>
         {
@@ -326,6 +362,9 @@ public sealed partial class DynamoDbOutboxStore
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Outbox relay {RelayId} did not record its heartbeat: the coordination record already carries a later timestamp. Expected from a request abandoned by a stopping host; otherwise two hosts share this relay id, or this host's clock went backwards")]
     private partial void LogHeartbeatNotRecorded(string relayId);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Outbox relay {RelayId} did not renew its lease on bucket {Bucket}: this host's clock was set back, so the renewal would have moved the lease's expiry backwards. The bucket is not published by this relay until its clock passes the stored expiry")]
+    private partial void LogLeaseNotMovedBackwards(string relayId, int bucket);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Outbox relay {RelayId} still held bucket leases after releasing them repeatedly; a request abandoned by this host keeps taking them back. Peers take over after LeaseDuration ({LeaseDuration})")]
     private partial void LogReleaseUnfinished(string relayId, TimeSpan leaseDuration);

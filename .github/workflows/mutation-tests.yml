@@ -32,18 +32,35 @@ jobs:
       matrix:
         include:
           - campaign: protocol
+            project_dir: src/Dekaf
             config: stryker-config.json
           # Producer campaign split per mutated file so the legs run on
           # parallel runners; --mutate overrides the config's combined list.
           - campaign: producer-accumulator
+            project_dir: src/Dekaf
             config: stryker-producer-config.json
             extra_args: --mutate "Producer/RecordAccumulator.cs"
           - campaign: producer-sender
+            project_dir: src/Dekaf
             config: stryker-producer-config.json
             extra_args: --mutate "Producer/BrokerSender.cs"
           - campaign: producer-client
+            project_dir: src/Dekaf
             config: stryker-producer-config.json
             extra_args: --mutate "Producer/KafkaProducer.cs"
+          # Retry, backoff and failure classification: small pure files with a
+          # small linked suite, so a surviving mutant costs seconds.
+          - campaign: resilience
+            project_dir: src/Dekaf
+            config: stryker-resilience-config.json
+          # Stryker mutates one project per run, and the two pure outbox files
+          # live in different projects; both legs share one linked test project.
+          - campaign: outbox-fair-share
+            project_dir: src/Dekaf.Outbox
+            config: stryker-config.json
+          - campaign: outbox-lease-planner
+            project_dir: src/Dekaf.Outbox.DynamoDB
+            config: stryker-config.json
 
     steps:
       - name: Checkout
@@ -84,7 +101,7 @@ jobs:
           run-id: ${{ steps.previous-run.outputs.run_id }}
 
       - name: Run focused mutation tests
-        working-directory: src/Dekaf
+        working-directory: ${{ matrix.project_dir }}
         run: >-
           dotnet stryker
           --config-file "${{ matrix.config }}"

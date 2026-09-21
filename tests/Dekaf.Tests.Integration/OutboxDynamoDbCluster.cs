@@ -28,6 +28,8 @@ namespace Dekaf.Tests.Integration;
 internal sealed class OutboxDynamoDbCluster : IAsyncDisposable
 {
     private readonly AmazonDynamoDBClient _client;
+    // What the pods' stores talk to: the client itself, or the faults in front of it.
+    private readonly IAmazonDynamoDB _storeClient;
     private readonly TimeSpan _leaseDuration;
     private readonly TimeSpan _renewInterval;
     private readonly TimeSpan _publishLatency;
@@ -39,15 +41,19 @@ internal sealed class OutboxDynamoDbCluster : IAsyncDisposable
 
     private OutboxDynamoDbCluster(
         AmazonDynamoDBClient client, DynamoDbOutboxOptions options, TimeSpan leaseDuration, TimeSpan renewInterval,
-        TimeSpan publishLatency)
+        TimeSpan publishLatency, OutboxDynamoDbStoreFaults? storeFaults)
     {
         _client = client;
+        _storeClient = storeFaults?.Wrap(client) ?? client;
         Options = options;
         _leaseDuration = leaseDuration;
         _renewInterval = renewInterval;
         _publishLatency = publishLatency;
         _client.ExceptionEvent += OnException;
     }
+
+    /// <summary>Rows per publish: the most that one failed delete can publish a second time.</summary>
+    public const int RelayBatchSize = 25;
 
     public DynamoDbOutboxOptions Options { get; }
 
@@ -61,13 +67,15 @@ internal sealed class OutboxDynamoDbCluster : IAsyncDisposable
     public int EnqueuedCount => _enqueued.Count;
 
     /// <param name="publishLatency">How long the stand-in broker takes to acknowledge a batch.</param>
+    /// <param name="storeFaults">Faults between every pod's store and the table. The writers
+    /// and the checks of this harness reach the table directly.</param>
     public static async Task<OutboxDynamoDbCluster> CreateAsync(
         DynamoDbLocalContainer dynamoDb, int bucketCount, TimeSpan leaseDuration, TimeSpan renewInterval,
-        TimeSpan publishLatency = default)
+        TimeSpan publishLatency = default, OutboxDynamoDbStoreFaults? storeFaults = null)
     {
         var client = dynamoDb.CreateClient();
         var options = await DynamoDbLocalContainer.CreateTableAsync(client, bucketCount);
-        return new OutboxDynamoDbCluster(client, options, leaseDuration, renewInterval, publishLatency);
+        return new OutboxDynamoDbCluster(client, options, leaseDuration, renewInterval, publishLatency, storeFaults);
     }
 
     public async Task<Pod> StartPodAsync(string name)
@@ -278,7 +286,7 @@ internal sealed class OutboxDynamoDbCluster : IAsyncDisposable
             _cluster = cluster;
             Name = name;
             Relay = new OutboxRelayService(
-                new ChaosStore(this, new DynamoDbOutboxStore(cluster._client, cluster.Options)),
+                new ChaosStore(this, new DynamoDbOutboxStore(cluster._storeClient, cluster.Options)),
                 new LedgerPublisher(this),
                 new OutboxRelayOptions
                 {
@@ -288,7 +296,7 @@ internal sealed class OutboxDynamoDbCluster : IAsyncDisposable
                     LeaseRenewInterval = cluster._renewInterval,
                     PollInterval = TimeSpan.FromMilliseconds(200),
                     ErrorBackoff = TimeSpan.FromMilliseconds(100),
-                    BatchSize = 25
+                    BatchSize = RelayBatchSize
                 },
                 NullLogger<OutboxRelayService>.Instance);
         }

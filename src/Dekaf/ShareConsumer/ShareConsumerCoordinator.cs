@@ -48,6 +48,9 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
     private int _disposed;
     private TaskCompletionSource<bool>? _assignmentChanged;
     private readonly Func<int> _getCoordinationConnectionIndex;
+    // Where the next coordinator lookup starts. It rests on the last broker that answered, so a
+    // broker that refuses or black-holes connections is not tried first by every lookup.
+    private int _coordinatorLookupCursor;
 
     private volatile int _heartbeatIntervalMs;
     private volatile HashSet<string>? _subscribedTopics;
@@ -194,23 +197,17 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
     /// may have moved. Typed group errors have dedicated handlers; broker-version,
     /// authentication and authorization failures are fatal.
     /// </summary>
-    private static bool IsRetriableJoinFailure(Exception exception, CancellationToken cancellationToken)
-    {
-        if (exception is ObjectDisposedException)
-            return true;
-
-        if (cancellationToken.IsCancellationRequested)
-            return false;
-
-        return exception switch
-        {
-            GroupException or BrokerVersionException
-                or AuthorizationException or AuthenticationException => false,
-            KafkaException => true,
-            IOException or SocketException or TimeoutException or DnsResolutionException => true,
-            _ => false,
-        };
-    }
+    /// <remarks>
+    /// Does not look at the caller's token: a failure that lands after cancellation must still be
+    /// caught so the loop reports <see cref="OperationCanceledException"/> rather than a raw
+    /// socket exception. A connection retired by pool churn is retried only while this
+    /// coordinator is alive, so the loop cannot spin under the state lock against a disposed pool.
+    /// </remarks>
+    private bool IsRetriableJoinFailure(Exception exception) =>
+        TransportFailureClassifier.IsRetriable(
+            exception,
+            TransportRetryPolicy.GroupJoin,
+            ownerDisposed: Volatile.Read(ref _disposed) != 0);
 
     private async ValueTask FindCoordinatorAsync(CancellationToken cancellationToken)
     {
@@ -227,10 +224,14 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
         };
 
         const int maxRetries = 5;
+        var cursor = Volatile.Read(ref _coordinatorLookupCursor);
 
         for (var attempt = 0; attempt < maxRetries; attempt++)
         {
-            var broker = brokers[attempt % brokers.Count];
+            // The cursor outlives this call: a lookup that fails against a dead broker advances
+            // it, so the join loop's next lookup asks a different broker instead of the same one.
+            var broker = brokers[(int)((uint)(cursor + attempt) % (uint)brokers.Count)];
+            Volatile.Write(ref _coordinatorLookupCursor, cursor + attempt + 1);
             using var connectionLease = await _connectionPool.LeaseConnectionByIndexAsync(
                 broker.NodeId, _getCoordinationConnectionIndex(), cancellationToken)
                 .ConfigureAwait(false);
@@ -281,10 +282,14 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
                 };
             }
 
-            _coordinatorId = nodeId;
+            // Route first, then publish the ID: a concurrent reader of _coordinatorId must never
+            // find the pool still considers the coordinator unknown.
             _connectionPool.RegisterBroker(nodeId, host, port);
+            _coordinatorId = nodeId;
+            // Rest on the broker that answered.
+            Volatile.Write(ref _coordinatorLookupCursor, cursor + attempt);
 
-            LogFoundCoordinator(_coordinatorId, _options.GroupId);
+            LogFoundCoordinator(nodeId, _options.GroupId);
             return;
         }
 
@@ -378,10 +383,16 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
     /// <summary>
     /// Sends a ShareGroupHeartbeat request and processes the response.
     /// </summary>
+    /// <param name="coordinatorId">
+    /// The coordinator the caller discovered, captured by the caller rather than read from
+    /// <see cref="_coordinatorId"/> here: a heartbeat loop that fails concurrently invalidates
+    /// that field, and leasing broker -1 would surface as an unknown-broker failure.
+    /// </param>
     private async ValueTask<bool> SendShareGroupHeartbeatAsync(
+        int coordinatorId,
         CancellationToken cancellationToken)
     {
-        using var connectionLease = await LeaseHeartbeatConnectionAsync(cancellationToken)
+        using var connectionLease = await LeaseHeartbeatConnectionAsync(coordinatorId, cancellationToken)
             .ConfigureAwait(false);
         var connection = connectionLease.Connection;
 
@@ -471,13 +482,14 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
     }
 
     private async ValueTask<KafkaConnectionLease> LeaseHeartbeatConnectionAsync(
+        int coordinatorId,
         CancellationToken cancellationToken)
     {
         var connectionLease = default(KafkaConnectionLease);
         try
         {
             connectionLease = await _connectionPool.LeaseConnectionByIndexAsync(
-                _coordinatorId, _getCoordinationConnectionIndex(), cancellationToken)
+                coordinatorId, _getCoordinationConnectionIndex(), cancellationToken)
                 .ConfigureAwait(false);
             if (!_metadataManager.HasApiKey(connectionLease.Connection, ApiKey.ShareGroupHeartbeat))
             {
@@ -581,6 +593,7 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
             // a reasonable upper bound for how long we should wait for an assignment.
             var timeout = TimeSpan.FromMilliseconds(_options.SessionTimeoutMs);
             var retryFailureCount = 0;
+            Exception? lastJoinFailure = null;
 
             while (_state != CoordinatorState.Stable)
             {
@@ -589,11 +602,13 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
 
                 if (Stopwatch.GetElapsedTime(startedAt) > timeout)
                 {
-                    throw new KafkaTimeoutException(
-                        TimeoutKind.Rebalance,
-                        Stopwatch.GetElapsedTime(startedAt),
-                        timeout,
-                        $"Failed to join share group '{_options.GroupId}' within timeout ({_options.SessionTimeoutMs}ms)");
+                    var message =
+                        $"Failed to join share group '{_options.GroupId}' within timeout ({_options.SessionTimeoutMs}ms)";
+                    throw lastJoinFailure is null
+                        ? new KafkaTimeoutException(
+                            TimeoutKind.Rebalance, Stopwatch.GetElapsedTime(startedAt), timeout, message)
+                        : new KafkaTimeoutException(
+                            TimeoutKind.Rebalance, Stopwatch.GetElapsedTime(startedAt), timeout, message, lastJoinFailure);
                 }
 
                 try
@@ -603,10 +618,24 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
                         await FindCoordinatorAsync(cancellationToken).ConfigureAwait(false);
                     }
 
+                    // A heartbeat loop from the previous membership can still fail and invalidate
+                    // the field after the lookup; join against the coordinator that was found.
+                    var coordinatorId = _coordinatorId;
+                    if (coordinatorId < 0)
+                    {
+                        throw new GroupException(
+                            ErrorCode.CoordinatorNotAvailable,
+                            "Coordinator was invalidated during share group join discovery")
+                        {
+                            GroupId = _options.GroupId
+                        };
+                    }
+
                     _state = CoordinatorState.Joining;
                     LogCoordinatorStateTransition(CoordinatorState.Joining);
 
-                    var gotAssignment = await SendShareGroupHeartbeatAsync(cancellationToken).ConfigureAwait(false);
+                    var gotAssignment = await SendShareGroupHeartbeatAsync(coordinatorId, cancellationToken)
+                        .ConfigureAwait(false);
 
                     if (_subscribedTopics is not { Count: > 0 })
                     {
@@ -651,18 +680,34 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
                 catch (GroupException ex) when (IsRetriableCoordinatorError(ex.ErrorCode))
                 {
                     LogRetriableCoordinatorError(ex.ErrorCode);
+                    lastJoinFailure = ex;
                     MarkCoordinatorUnknown();
                     await DelayForJoinRetryAsync(
                         ++retryFailureCount, startedAt, timeout, cancellationToken).ConfigureAwait(false);
                 }
-                catch (Exception ex) when (IsRetriableJoinFailure(ex, cancellationToken))
+                catch (Exception ex) when (IsRetriableJoinFailure(ex))
                 {
+                    // A failure that lands after the caller cancelled reports the cancellation.
+                    cancellationToken.ThrowIfCancellationRequested();
+
                     if (ex is ObjectDisposedException)
                         LogCoordinatorConnectionDisposed();
-                    else
+                    else if (lastJoinFailure is null)
                         LogCoordinatorUnreachableDuringJoin(ex, _coordinatorId, _options.GroupId);
+                    else
+                        LogCoordinatorStillUnreachableDuringJoin(ex, _coordinatorId, _options.GroupId, retryFailureCount + 1);
 
+                    lastJoinFailure = ex;
                     MarkCoordinatorUnknown();
+
+                    // The pool has no route for the coordinator it was told to use; only newer
+                    // metadata can fix the next attempt.
+                    if (TransportFailureClassifier.RequiresMetadataRefresh(ex))
+                    {
+                        await RetryHelper.RefreshMetadataForRetryAsync(_metadataManager, cancellationToken)
+                            .ConfigureAwait(false);
+                    }
+
                     await DelayForJoinRetryAsync(
                         ++retryFailureCount, startedAt, timeout, cancellationToken).ConfigureAwait(false);
                 }
@@ -684,13 +729,39 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
     /// </summary>
     private async Task HeartbeatLoopAsync(CancellationToken cancellationToken)
     {
+        // Consecutive transient failures (coordinator unreachable or moving). While nonzero the
+        // loop re-discovers the coordinator itself and beats on the retry backoff.
+        var transientFailureCount = 0;
+        var heartbeatCoordinatorId = -1;
+
         while (!cancellationToken.IsCancellationRequested)
         {
             try
             {
-                await Task.Delay(_heartbeatIntervalMs, cancellationToken).ConfigureAwait(false);
+                await Task.Delay(GetHeartbeatDelayMs(transientFailureCount), cancellationToken).ConfigureAwait(false);
 
-                await SendShareGroupHeartbeatAsync(cancellationToken).ConfigureAwait(false);
+                // A foreground rejoin owns the membership once it left Stable.
+                if (transientFailureCount > 0 && _state != CoordinatorState.Stable)
+                    break;
+
+                heartbeatCoordinatorId = _coordinatorId;
+                if (heartbeatCoordinatorId < 0)
+                {
+                    await FindCoordinatorAsync(cancellationToken).ConfigureAwait(false);
+                    heartbeatCoordinatorId = _coordinatorId;
+                    if (heartbeatCoordinatorId < 0)
+                    {
+                        throw new GroupException(
+                            ErrorCode.CoordinatorNotAvailable,
+                            "Coordinator was invalidated during share heartbeat discovery")
+                        {
+                            GroupId = _options.GroupId
+                        };
+                    }
+                }
+
+                await SendShareGroupHeartbeatAsync(heartbeatCoordinatorId, cancellationToken).ConfigureAwait(false);
+                transientFailureCount = 0;
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -698,7 +769,16 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
             }
             catch (Exception ex)
             {
-                LogHeartbeatFailed(ex);
+                if (transientFailureCount == 0)
+                    LogHeartbeatFailed(ex);
+                else
+                    LogHeartbeatStillFailing(ex, transientFailureCount + 1);
+
+                if (TryKeepHeartbeating(ex, heartbeatCoordinatorId))
+                {
+                    transientFailureCount++;
+                    continue;
+                }
 
                 if (ex is GroupException ge)
                 {
@@ -731,14 +811,49 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
                 }
                 else
                 {
-                    // Network errors, ObjectDisposedException, etc. — mark coordinator
-                    // unknown so EnsureActiveGroupAsync re-discovers on next poll.
+                    // The session is lost, or the failure is not one this loop understands —
+                    // mark coordinator unknown so EnsureActiveGroupAsync re-discovers on next poll.
                     MarkCoordinatorUnknown();
                 }
 
                 break;
             }
         }
+    }
+
+    /// <summary>
+    /// Decides whether the heartbeat loop survives <paramref name="exception"/>. A coordinator
+    /// that is unreachable or moving is transient: the loop invalidates the coordinator it used,
+    /// re-discovers it on its next pass and keeps the membership alive, instead of waiting for a
+    /// poll that an application busy in a handler may not make before the session expires. Once
+    /// a whole session timeout has passed without a successful heartbeat the broker has expired
+    /// the member anyway, and the rejoin path takes over.
+    /// </summary>
+    private bool TryKeepHeartbeating(Exception exception, int heartbeatCoordinatorId)
+    {
+        var transient = exception is GroupException groupException
+            ? IsRetriableCoordinatorError(groupException.ErrorCode)
+            : IsRetriableJoinFailure(exception);
+        if (!transient || _state != CoordinatorState.Stable)
+            return false;
+
+        var sinceLastSuccess = Stopwatch.GetElapsedTime(Volatile.Read(ref _lastSuccessfulHeartbeatTimestamp));
+        if (sinceLastSuccess >= TimeSpan.FromMilliseconds(_options.SessionTimeoutMs))
+            return false;
+
+        // Invalidate only the coordinator this heartbeat used. Membership state is untouched.
+        if (_coordinatorId == heartbeatCoordinatorId)
+            _coordinatorId = -1;
+
+        return true;
+    }
+
+    private int GetHeartbeatDelayMs(int transientFailureCount)
+    {
+        var heartbeatDelayMs = _heartbeatIntervalMs;
+        return transientFailureCount > 0
+            ? Math.Min(heartbeatDelayMs, CalculateRequestRetryBackoff(transientFailureCount))
+            : heartbeatDelayMs;
     }
 
     /// <summary>
@@ -870,6 +985,10 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
     [LoggerMessage(Level = LogLevel.Warning, Message = "Coordinator {CoordinatorId} unreachable while joining share group {GroupId}; re-discovering coordinator and retrying until the join timeout")]
     private partial void LogCoordinatorUnreachableDuringJoin(Exception exception, int coordinatorId, string groupId);
 
+    // The first failure of a join is the Warning above; an outage then repeats at Debug.
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Coordinator {CoordinatorId} still unreachable while joining share group {GroupId} (attempt {Attempt})")]
+    private partial void LogCoordinatorStillUnreachableDuringJoin(Exception exception, int coordinatorId, string groupId, int attempt);
+
     [LoggerMessage(Level = LogLevel.Debug, Message = "Coordinator not available (attempt {Attempt}/{MaxRetries}), retrying in {Delay}ms")]
     private partial void LogCoordinatorNotAvailableRetry(int attempt, int maxRetries, int delay);
 
@@ -878,6 +997,10 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Share group heartbeat failed")]
     private partial void LogHeartbeatFailed(Exception exception);
+
+    // The first failure of an outage is the Warning above; the retries repeat at Debug.
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Share group heartbeat still failing (attempt {Attempt}); re-discovering coordinator and retrying")]
+    private partial void LogHeartbeatStillFailing(Exception exception, int attempt);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "LeaveGroup failed with error: {ErrorCode}")]
     private partial void LogLeaveGroupFailed(ErrorCode errorCode);

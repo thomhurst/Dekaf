@@ -1,0 +1,31 @@
+{
+  "stryker-config": {
+    "project": "Dekaf.Outbox.csproj",
+    "test-projects": [
+      "../../tests/Dekaf.Tests.Mutation.Outbox/Dekaf.Tests.Mutation.Outbox.csproj"
+    ],
+    "mutate": [
+      "OutboxFairShare.cs"
+    ],
+    "test-runner": "mtp",
+    "target-framework": "net10.0",
+    "configuration": "Release",
+    "mutation-level": "Standard",
+    "coverage-analysis": "all",
+    "concurrency": 4,
+    "additional-timeout": 10000,
+    "break-on-initial-test-failure": true,
+    "reporters": [
+      "progress",
+      "html",
+      "json",
+      "markdown"
+    ],
+    "report-file-name": "mutation-report",
+    "thresholds": {
+      "high": 80,
+      "low": 60,
+      "break": 0
+    }
+  }
+}

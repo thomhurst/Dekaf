@@ -265,7 +265,7 @@ public sealed class ShareConsumerSubscriptionTests
                 .SetValue(Consumer, true);
         }
         public void ResetMemberEpoch() => Set("_memberEpoch", 0);
-        public ValueTask<bool> Heartbeat() => (ValueTask<bool>)SendHeartbeat.Invoke(Coordinator, [CancellationToken.None])!;
+        public ValueTask<bool> Heartbeat() => (ValueTask<bool>)SendHeartbeat.Invoke(Coordinator, [1, CancellationToken.None])!;
         public static ShareGroupHeartbeatResponse Success() => new() { ErrorCode = ErrorCode.None, MemberEpoch = 1 };
         public async ValueTask DisposeAsync()
         {

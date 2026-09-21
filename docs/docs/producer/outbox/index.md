@@ -54,6 +54,17 @@ The contract is **ordered submission, front-to-back deletion, and at-least-once 
 
 The built-in publisher retains concurrent sends so Kafka can batch records. It does not wait for one broker round trip per outbox row.
 
+### A row that keeps failing
+
+A row that Kafka never accepts (too large for the topic, a topic that does not exist, a write the principal is not authorized for) stops its bucket: rows are only removed front to back, so nothing behind it can be removed either. The relay handles it in two steps:
+
+- The first failed attempt is a whole batch, so the rows behind the failed row may already be delivered, as described above.
+- From then on the relay retries **only the head row** of that bucket until it goes through, and then returns to whole batches. The rows behind it are therefore delivered at most once more, when the bucket resumes, however long the head row was stuck. Other buckets keep publishing.
+
+Each further failed attempt logs a warning with the bucket, the row's message id and the attempt count, and increments `dekaf.outbox.publish.head_row_retries`. A short broker outage looks the same for a few attempts and clears by itself; a count that keeps growing for one message id is a row that needs a decision.
+
+The relay does not make that decision. It has no dead-letter table and no attempt limit, because what to do with the row is yours to choose: skipping it silently would break the ordering of its key, and the outbox cannot know whether a later row depends on it. Fix the cause (raise `max.message.bytes`, create the topic, grant the ACL) and the row goes through on the next attempt, or remove or repair the row in the store yourself, keeping its message id if consumers deduplicate on it.
+
 ## Running the Relay
 
 The relay is a hosted service. Register it inside `AddDekaf`, next to the store from your database's guide; every instance of your service can run it:
@@ -152,7 +163,8 @@ var messageId = outboxResult.Headers.FirstOrDefault(h => h.Key == "x-outbox-mess
 | `BucketCount` | 8 | Upper bound on relay parallelism. Must match across all writers and relays. |
 | `BatchSize` | 500 | Rows fetched and published per database round trip. |
 | `PollInterval` | 1 second | Fallback discovery interval; local commit notifications interrupt idle waiting. |
-| `LeaseDuration` | 30 s | Time until takeover after the last successful renewal. The EF Core and DynamoDB stores renew during slow publishes, so the default 120 s producer delivery timeout does not expire an otherwise healthy relay's lease. Longer leases tolerate longer store/process stalls but delay takeover of a crashed relay. A gracefully stopped relay [releases its leases](./custom-stores.md#stable-ownership-and-graceful-handover), so peers take over on their next acquisition. |
+| `ErrorBackoff` | 1 second | Delay after a failed cycle. While cycles keep failing without publishing anything, the ceiling doubles up to `LeaseRenewInterval` and the relay waits a random time between `ErrorBackoff` and that ceiling, so relays sharing a throttled store do not retry in step. A cycle that published something waits `ErrorBackoff` again. A failed read, publish or delete keeps the relay's leases; only a failed lease write makes it reacquire. |
+| `LeaseDuration` | 30 s | Time until takeover after the last successful renewal. The EF Core and DynamoDB stores renew during slow publishes, so the default 120 s producer delivery timeout does not expire an otherwise healthy relay's lease. A renewal that fails (a throttled or unreachable store) does not by itself cost the batch being published: if Kafka answers inside the lease that was last confirmed, the acknowledged rows are still removed, and the relay reacquires before it publishes anything else. Longer leases tolerate longer store/process stalls but delay takeover of a crashed relay. A gracefully stopped relay [releases its leases](./custom-stores.md#stable-ownership-and-graceful-handover), so peers take over on their next acquisition. |
 | `LeaseRenewInterval` | 10 s | Renewal cadence, including pending publishes. Leave enough slack for database latency, scheduling pauses, and clock skew. |
 | `MaxPublishDuration` | `null` | Required only for stores without `IOutboxLeaseRenewalStore`. Bound the **entire** publish call, not one record's delivery timeout. The budget plus a renewal interval must fit inside `LeaseDuration`. |
 | `MessageIdHeaderName` | `x-outbox-message-id` | Dedup header stamped on every record. |
@@ -187,6 +199,7 @@ Every instrument has only one library tag, `outbox.name`. Do not put message IDs
 | `dekaf.outbox.owned_buckets` | Gauge / buckets | Buckets in the relay's current local lease set. Updated on acquisition or invalidation; this is not a live database ownership query. |
 | `dekaf.outbox.publish.acknowledged` | Counter / messages | Contiguous acknowledged prefix reported by the publisher, counted before lease validation and database deletion. |
 | `dekaf.outbox.publish.failures` | Counter / attempts | Batch publish calls that throw or return `FirstError`, once per attempt. Cooperative shutdown cancellation is excluded. Store query, deletion, and lease errors are not publish failures. |
+| `dekaf.outbox.publish.head_row_retries` | Counter / attempts | Publish attempts limited to a bucket's head row because [that row failed before](#a-row-that-keeps-failing), whether they succeed or not. A steady increase means a bucket is stopped behind one row. |
 | `dekaf.outbox.lease.expirations` | Counter / events | Observed expiry of a nonempty owned lease set, once when that local set is invalidated. This does not count individual buckets or unobserved expiry while the process is stopped. |
 | `dekaf.outbox.publish.duration` | Histogram / seconds | Entire batch publisher call, including failed and cancelled calls. |
 | `dekaf.outbox.cycle.duration` | Histogram / seconds | Acquisition, pending probe, and draining for one relay cycle, including failure paths. Excludes idle delay and error backoff. |
@@ -225,6 +238,9 @@ max by (outbox_name) (dekaf_outbox_pending_messages) > 10000
 
 # No replica has an available backlog sample.
 max by (outbox_name) (dekaf_outbox_pending_available) == 0
+
+# A bucket stopped behind a row that keeps failing: more than a passing broker outage.
+sum by (outbox_name) (increase(dekaf_outbox_publish_head_row_retries_total[15m])) > 10
 
 # An observed lease expiry needs investigation even if publishing later recovers.
 sum by (outbox_name) (increase(dekaf_outbox_lease_expirations_total[5m])) > 0

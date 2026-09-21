@@ -50,6 +50,12 @@ jobs:
             profile: network
             brokers: 1
             allowed_failure_windows: ''
+          # Every broker sits behind its own proxy, so the same TCP faults hit the group and
+          # transaction coordinators and the partition leaders of a replicated cluster.
+          - name: TCP Faults (3 Brokers)
+            profile: network
+            brokers: 3
+            allowed_failure_windows: ''
           - name: Broker Kill and Restart (1 Broker)
             profile: broker
             brokers: 1
@@ -57,9 +63,9 @@ jobs:
           - name: Cluster Failover and Rolling Restart (3 Brokers)
             profile: broker
             brokers: 3
-            # #1639 covers only these two live-consumer recovery windows.
-            # Setup failures and broker-kill-restart remain hard failures.
-            allowed_failure_windows: 'leader-election,rolling-restart'
+            # #1639 is fixed and both live-consumer recovery windows have passed
+            # without the allowance since, so a failure here is a regression.
+            allowed_failure_windows: ''
 
     steps:
       - name: Checkout

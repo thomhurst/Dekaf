@@ -82,6 +82,7 @@ public class FaultWindowVerifierTests
 
     [Test]
     [Arguments("network", 1, 4)]
+    [Arguments("network", 3, 4)]
     [Arguments("broker", 1, 1)]
     [Arguments("broker", 3, 3)]
     [Arguments("all", 3, 7)]

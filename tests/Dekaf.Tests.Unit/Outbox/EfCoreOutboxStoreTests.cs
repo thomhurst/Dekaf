@@ -217,6 +217,110 @@ public class EfCoreOutboxStoreTests
     }
 
     [Test]
+    public async Task Release_RepeatsUntilAPassFreesNothing_SoAStragglingClaimDoesNotOutliveIt()
+    {
+        var straggler = new StragglingClaim();
+        using var db = new SqliteOutboxDatabase(straggler);
+        var store = db.CreateStore();
+        await store.AcquireBucketLeasesAsync(Request("relay-a"));
+        await using (var context = db.CreateContext())
+        {
+            // The claim of the round the stop cancelled, run by the server after the release
+            // freed the lease it names: a provider that breaks the connection on a slow
+            // cancellation leaves such a statement behind.
+            straggler.Arm(
+                context.Model.FindEntityType(typeof(OutboxLease))!.GetTableName()!,
+                "relay-a", (db.Time.GetUtcNow() + TimeSpan.FromSeconds(30)).UtcTicks);
+        }
+
+        await store.ReleaseBucketLeasesAsync(Request("relay-a"), AllBuckets);
+
+        await Assert.That(straggler.Landed).IsTrue();
+        await using (var context = db.CreateContext())
+            await Assert.That(await context.Set<OutboxLease>().CountAsync(lease => lease.Owner == "relay-a")).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task ClockSetBack_DoesNotShortenALease_AndDoesNotReportItOwned()
+    {
+        using var db = new SqliteOutboxDatabase();
+        var store = db.CreateStore();
+        await store.AcquireBucketLeasesAsync(Request("relay-a"));
+        var written = await LeaseExpiriesAsync(db);
+
+        // The host's clock is corrected backwards by more than a renew interval.
+        db.Time.Advance(TimeSpan.FromSeconds(-25));
+        var owned = await store.AcquireBucketLeasesAsync(Request("relay-a"));
+
+        // The relay trusts what it is told for a whole lease duration from now. The expiry
+        // left in place cannot promise that on a peer's clock, so nothing is reported, and
+        // nothing is shortened either: peers may have planned around the later expiry.
+        await Assert.That(owned).IsEmpty();
+        await Assert.That(await LeaseExpiriesAsync(db)).IsEquivalentTo(written);
+
+        db.Time.Advance(TimeSpan.FromSeconds(25));
+        await Assert.That(await store.AcquireBucketLeasesAsync(Request("relay-a"))).IsEquivalentTo(AllBuckets);
+    }
+
+    [Test]
+    public async Task Heartbeat_OnlyMovesForward()
+    {
+        using var db = new SqliteOutboxDatabase();
+        var store = db.CreateStore();
+        await store.AcquireBucketLeasesAsync(Request("relay-a"));
+        var recorded = db.Time.GetUtcNow();
+
+        // A statement of an earlier round that the server runs late carries an earlier time.
+        db.Time.Advance(TimeSpan.FromSeconds(-25));
+        await store.AcquireBucketLeasesAsync(Request("relay-a"));
+
+        await using var context = db.CreateContext();
+        var heartbeat = await context.Set<OutboxRelayInstance>().SingleAsync();
+        await Assert.That(heartbeat.LastSeenUtc).IsEqualTo(recorded);
+    }
+
+    private static async Task<List<DateTimeOffset>> LeaseExpiriesAsync(SqliteOutboxDatabase db)
+    {
+        await using var context = db.CreateContext();
+        return await context.Set<OutboxLease>().OrderBy(lease => lease.Bucket)
+            .Select(lease => lease.ExpiresAtUtc).ToListAsync();
+    }
+
+    /// <summary>Runs a claim for a released lease right after the release's first lease statement.</summary>
+    private sealed class StragglingClaim : DbCommandInterceptor
+    {
+        private string? _statement;
+        private string? _table;
+        private int _landed;
+
+        public bool Landed => Volatile.Read(ref _landed) != 0;
+
+        public void Arm(string table, string relayId, long expiryTicks)
+        {
+            _table = table;
+            Volatile.Write(ref _statement,
+                $"UPDATE \"{table}\" SET \"Owner\" = '{relayId}', \"ExpiresAtUtc\" = {expiryTicks} WHERE \"Bucket\" = 0");
+        }
+
+        public override async ValueTask<int> NonQueryExecutedAsync(
+            System.Data.Common.DbCommand command, CommandExecutedEventData eventData, int result,
+            CancellationToken cancellationToken = default)
+        {
+            if (Volatile.Read(ref _statement) is { } statement
+                && command.CommandText.Contains("UPDATE", StringComparison.Ordinal)
+                && command.CommandText.Contains(_table!, StringComparison.Ordinal)
+                && Interlocked.Exchange(ref _landed, 1) == 0)
+            {
+                using var straggler = command.Connection!.CreateCommand();
+                straggler.CommandText = statement;
+                await straggler.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            return result;
+        }
+    }
+
+    [Test]
     public async Task OwnershipAcquisition_MatchesLegacyAcquisition()
     {
         using var db = new SqliteOutboxDatabase();

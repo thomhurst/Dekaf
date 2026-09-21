@@ -236,6 +236,10 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     private volatile ProducerIdAndEpoch _idempotentProducerState = ProducerIdAndEpoch.None;
     private volatile bool _idempotentInitialized;
     private int _transactionCoordinatorId = -1;
+    // Position in the broker list where the next coordinator lookup starts. Kept across lookups
+    // so a broker that refuses or black-holes connections is not the first target of every
+    // re-discovery; it rests on the last broker that answered.
+    private int _coordinatorLookupCursor;
     internal volatile TransactionState _transactionState = TransactionState.Uninitialized;
     internal PreparedTransactionState _preparedTransactionState = PreparedTransactionState.Empty;
     // The error code that drove the transaction into AbortableError/FatalError, surfaced by
@@ -3082,27 +3086,23 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     /// connection-setup failures (a broker that resets or refuses connections, a DNS miss, a
     /// connection retired by pool churn) are retried within the max.block.ms budget exactly like
     /// the retriable broker error codes already are. Typed transaction, timeout, broker-version,
-    /// authentication and authorization failures propagate. The producer-side counterpart of the
-    /// consumer join classifier; the two differ only in their typed exclusions.
+    /// authentication and authorization failures propagate. The transport rule itself is the
+    /// shared <see cref="TransportFailureClassifier"/>; the consumer join loops differ only in
+    /// their typed exclusions, so a client-side routing failure (an unknown broker ID, a metadata
+    /// refresh that failed on every broker) is retried here as it is there.
+    /// <para>
+    /// Deliberately blind to the retry token: a socket can report its failure after the budget
+    /// (or the caller) already cancelled, and a filter that then declines lets the raw transport
+    /// exception escape instead of the timeout that carries it. The catch always takes the
+    /// failure; <see cref="TryPrepareTransportRetryAsync"/> reports a spent budget and rethrows a
+    /// cancellation, which the loops already map to the timeout or to the caller's cancellation.
+    /// </para>
     /// </summary>
-    private bool IsRetriableTransactionTransportFailure(
-        Exception exception,
-        CancellationToken retryCancellationToken)
-    {
-        if (retryCancellationToken.IsCancellationRequested || exception is OperationCanceledException)
-            return false;
-
-        if (IsRetiredConnectionFailure(exception))
-            return true;
-
-        if (exception is ObjectDisposedException or TransactionException or KafkaTimeoutException
-            or BrokerVersionException or AuthenticationException or AuthorizationException)
-        {
-            return false;
-        }
-
-        return RetryHelper.IsRetriableRequestFailure(exception);
-    }
+    private bool IsRetriableTransactionTransportFailure(Exception exception) =>
+        TransportFailureClassifier.IsRetriable(
+            exception,
+            TransportRetryPolicy.ProducerTransaction,
+            ownerDisposed: Volatile.Read(ref _disposed) != 0);
 
     /// <summary>
     /// A connection retired by pool churn between lease and send throws
@@ -3138,6 +3138,10 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     {
         if (!TryGetTransactionRetryDelay(attempt, retryBudget, out var retryDelayMs))
             return false;
+
+        // The failure may have arrived after the budget token or the caller already cancelled;
+        // there is no retry to announce then, and the caller's handlers map the cancellation.
+        retryCancellationToken.ThrowIfCancellationRequested();
 
         LogControlPlaneTransportRetry(exception, operation, _options.TransactionalId, attempt + 1, retryDelayMs);
         await Task.Delay(retryDelayMs, retryCancellationToken).ConfigureAwait(false);
@@ -3311,18 +3315,36 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+
+        // Linked to the shutdown token as well: once disposal stops the send loops there is
+        // nothing left to retry for, and a loop bound only by max.block.ms would keep retrying
+        // against a producer that is gone for the rest of the budget.
+        CancellationToken shutdownToken;
+        try
+        {
+            shutdownToken = _senderCts.Token;
+        }
+        catch (ObjectDisposedException)
+        {
+            throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
+        }
+
+        var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, shutdownToken);
         var remainingMs = Math.Max(0, retryBudget.DeadlineMs - GetTransactionTimestampMilliseconds());
         timeoutCts.CancelAfter(TimeSpan.FromMilliseconds(remainingMs));
         return timeoutCts;
     }
 
-    private KafkaTimeoutException CreateTransactionTimeoutException(
+    private Exception CreateTransactionTimeoutException(
         string operation,
         TransactionRetryBudget retryBudget,
         int attempts,
         Exception? innerException = null)
     {
+        // The retry token also fires on disposal, which is not a max.block.ms expiry.
+        if (Volatile.Read(ref _disposed) != 0 && TryGetTransactionRemainingMilliseconds(retryBudget, out _))
+            return new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
+
         var elapsedMs = Math.Max(0, GetTransactionTimestampMilliseconds() - retryBudget.StartedAtMs);
         var configured = TimeSpan.FromMilliseconds(_options.MaxBlockMs);
         var message =
@@ -3368,6 +3390,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         using var timeoutCts = CreateTransactionRetryCancellationSource(retryBudget, cancellationToken);
         var retryCancellationToken = timeoutCts.Token;
         var initProducerIdRequestInFlight = false;
+        // An earlier attempt was written and never answered. Sticky across later retriable
+        // answers, which say nothing about whether that attempt bumped the epoch.
+        var initProducerIdOutcomeUnknown = false;
         Exception? lastTransportException = null;
         try
         {
@@ -3402,13 +3427,14 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                         .ConfigureAwait(false);
                     initProducerIdRequestInFlight = false;
                 }
-                catch (Exception ex) when (IsRetriableTransactionTransportFailure(ex, retryCancellationToken))
+                catch (Exception ex) when (IsRetriableTransactionTransportFailure(ex))
                 {
                     // The coordinator reset, refused or dropped the connection. Retrying is safe:
                     // the coordinator accepts InitProducerId from the previous epoch (KIP-360), so a
-                    // request that was already written is simply answered again. The in-flight flag
-                    // is left as it is: if the budget runs out before an answer arrives, the outcome
-                    // of a written request stays ambiguous and is reported as fatal below.
+                    // request that was already written is simply answered again. A written request
+                    // stays recorded as unanswered: if the budget runs out before a final answer
+                    // arrives, its outcome is ambiguous and is reported as fatal below.
+                    initProducerIdOutcomeUnknown |= initProducerIdRequestInFlight;
                     lastTransportException = ex;
                     if (!await TryPrepareTransportRetryAsync(
                             ex,
@@ -3459,10 +3485,13 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                         _transactionState = TransactionState.FatalError;
                     }
 
+                    // A final answer also settles an earlier unanswered attempt.
+                    initProducerIdOutcomeUnknown = false;
                     throw CreateTransactionException(response.ErrorCode, classification,
                         $"InitProducerId failed: {response.ErrorCode}");
                 }
 
+                initProducerIdOutcomeUnknown = false;
                 _producerId = response.ProducerId;
                 _producerEpoch = response.ProducerEpoch;
 
@@ -3493,10 +3522,10 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         finally
         {
             // An InitProducerId request that was written but never answered may have bumped the
-            // epoch on the coordinator, so the cached identity is no longer trustworthy. Every
-            // answered attempt resets the flag; it is still set only when the loop ends (timeout,
-            // cancellation, or a re-discovery that exhausted the budget) with the outcome unknown.
-            if (initProducerIdRequestInFlight)
+            // epoch on the coordinator, so the cached identity is no longer trustworthy. Only a
+            // final answer (success or a non-retriable error) clears that; it is still set when
+            // the loop ends (timeout, cancellation, or a failed re-discovery) with the outcome unknown.
+            if (initProducerIdRequestInFlight || initProducerIdOutcomeUnknown)
             {
                 _lastTransactionError = ErrorCode.InvalidProducerEpoch;
                 _transactionState = TransactionState.FatalError;
@@ -3506,6 +3535,11 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         throw CreateTransactionTimeoutException(
             "InitProducerId", retryBudget, attempt + 1, lastTransportException);
     }
+
+    private BrokerNode GetCoordinatorLookupBroker(IReadOnlyList<BrokerNode> brokers) =>
+        brokers[(int)((uint)Volatile.Read(ref _coordinatorLookupCursor) % (uint)brokers.Count)];
+
+    private void AdvanceCoordinatorLookupCursor() => Interlocked.Increment(ref _coordinatorLookupCursor);
 
     private async ValueTask FindTransactionCoordinatorAsync(
         TransactionRetryBudget retryBudget,
@@ -3550,8 +3584,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 }
 
                 // Rotate through the known brokers so one that resets or refuses connections
-                // does not receive every attempt while the rest of the cluster is healthy.
-                var brokerId = brokers[attempt % brokers.Count].NodeId;
+                // does not receive every attempt while the rest of the cluster is healthy. The
+                // rotation continues where the previous lookup left off (see the cursor).
+                var brokerId = GetCoordinatorLookupBroker(brokers).NodeId;
                 FindCoordinatorResponse response;
                 try
                 {
@@ -3560,9 +3595,10 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                         request,
                         retryCancellationToken).ConfigureAwait(false);
                 }
-                catch (Exception ex) when (IsRetriableTransactionTransportFailure(ex, retryCancellationToken))
+                catch (Exception ex) when (IsRetriableTransactionTransportFailure(ex))
                 {
                     lastTransportException = ex;
+                    AdvanceCoordinatorLookupCursor();
                     // The rotation already moves the next attempt to another broker; refresh
                     // metadata once per full rotation so a broker that left the cluster drops out.
                     var recovery = (attempt + 1) % brokers.Count == 0
@@ -3588,6 +3624,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                     if (!TryGetTransactionRetryDelay(attempt, retryBudget, out var retryDelayMs))
                         break;
 
+                    AdvanceCoordinatorLookupCursor();
                     await Task.Delay(retryDelayMs, retryCancellationToken).ConfigureAwait(false);
                     attempt++;
                     continue;
@@ -3601,6 +3638,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                     if (!TryGetTransactionRetryDelay(attempt, retryBudget, out var retryDelayMs))
                         break;
 
+                    AdvanceCoordinatorLookupCursor();
                     LogTransactionCoordinatorNotAvailable(errorCode, attempt + 1, retryDelayMs);
 
                     await Task.Delay(retryDelayMs, retryCancellationToken).ConfigureAwait(false);
@@ -3698,7 +3736,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                             requireTransactionFeatureMatch: true)
                         .ConfigureAwait(false);
                 }
-                catch (Exception ex) when (IsRetriableTransactionTransportFailure(ex, retryCancellationToken))
+                catch (Exception ex) when (IsRetriableTransactionTransportFailure(ex))
                 {
                     lastTransportException = ex;
                     if (!await TryPrepareTransportRetryAsync(
@@ -3826,6 +3864,8 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             }
         }
 
+        ThrowIfTransactionFailedDuringFlush("Cannot commit transaction");
+
         await EndTransactionAsync(
                 committed: true,
                 _producerId,
@@ -3911,6 +3951,10 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         using var timeoutCts = CreateTransactionRetryCancellationSource(retryBudget, cancellationToken);
         var retryCancellationToken = timeoutCts.Token;
         var endTxnRequestInFlight = false;
+        // An earlier attempt was written and its connection dropped before the answer. Sticky:
+        // a later retriable answer says nothing about that attempt, which the coordinator may
+        // have applied. Only a final answer (success or a non-retriable error) settles it.
+        var endTxnOutcomeUnknown = false;
         var afterRequestWrittenCallbackFaulted = false;
         Exception? lastTransportException = null;
         try
@@ -3996,13 +4040,14 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                     }
                 }
                 catch (Exception ex) when (!afterRequestWrittenCallbackFaulted
-                    && IsRetriableTransactionTransportFailure(ex, retryCancellationToken))
+                    && IsRetriableTransactionTransportFailure(ex))
                 {
                     // The coordinator reset, refused or dropped the connection. Retrying EndTxn is
                     // safe: a coordinator that already completed the transaction answers a repeat
-                    // with the same result (and the bumped identity under TV2). The in-flight flag
-                    // is left as it is so an exhausted budget after a written request is reported
-                    // as fatal, matching the timeout path.
+                    // with the same result (and the bumped identity under TV2). A request that was
+                    // written stays recorded as unanswered so an exhausted budget is reported as
+                    // fatal, matching the timeout path.
+                    endTxnOutcomeUnknown |= endTxnRequestInFlight;
                     lastTransportException = ex;
                     if (!await TryPrepareTransportRetryAsync(
                             ex,
@@ -4038,6 +4083,14 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                     return;
                 }
 
+                // A final answer from the coordinator also settles an earlier unanswered attempt;
+                // a retriable one does not.
+                if (TransactionErrorClassifier.Classify(response.ErrorCode, _currentTransactionUsesTV2)
+                    != TransactionErrorClassification.Retriable)
+                {
+                    endTxnOutcomeUnknown = false;
+                }
+
                 // Fatal or abortable errors transition state and throw the matching typed exception;
                 // this returns only for retriable errors, which are handled with backoff below.
                 ThrowIfNonRetriableTransactionError(response.ErrorCode,
@@ -4064,7 +4117,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         }
         catch (OperationCanceledException)
         {
-            PreserveEndTransactionTimeoutState(endTxnRequestInFlight);
+            PreserveEndTransactionTimeoutState(endTxnRequestInFlight || endTxnOutcomeUnknown);
 
             if (cancellationToken.IsCancellationRequested || !timeoutCts.IsCancellationRequested)
                 throw;
@@ -4078,13 +4131,24 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         catch (KafkaTimeoutException)
         {
             // Coordinator re-discovery inside the loop exhausted the shared budget.
-            PreserveEndTransactionTimeoutState(endTxnRequestInFlight);
+            PreserveEndTransactionTimeoutState(endTxnRequestInFlight || endTxnOutcomeUnknown);
+            throw;
+        }
+        catch (Exception) when ((endTxnRequestInFlight || endTxnOutcomeUnknown)
+            && _transactionState != TransactionState.FatalError)
+        {
+            // Any other exit with a written request still unanswered (a re-discovery that failed
+            // for a non-retriable reason, an authentication failure on the new coordinator, the
+            // caller's after-write callback) leaves the outcome just as unknown as a timeout
+            // does. Without this the callers' finally blocks return the producer to Ready and a
+            // new transaction could begin while the broker may still complete this one.
+            PreserveEndTransactionTimeoutState(requestInFlight: true);
             throw;
         }
 
-        // A retriable response resets the flag; a transport failure after the request was
-        // written leaves it set so the ambiguous outcome is preserved as fatal.
-        PreserveEndTransactionTimeoutState(endTxnRequestInFlight);
+        // A retriable response answers only its own attempt; an earlier request that was
+        // written and never answered keeps the ambiguous outcome, which is preserved as fatal.
+        PreserveEndTransactionTimeoutState(endTxnRequestInFlight || endTxnOutcomeUnknown);
         throw CreateTransactionTimeoutException(
             $"EndTxn ({(committed ? "commit" : "abort")})",
             retryBudget,
@@ -4170,6 +4234,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 if (!TryGetTransactionRemainingMilliseconds(retryBudget, out _))
                     break;
 
+                var lookupInProgress = false;
                 try
                 {
                     // TV1 always performs explicit offset enrollment before coordinator discovery.
@@ -4220,36 +4285,42 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                     };
 
                     // Rotate through the known brokers so a transport failure on one does not
-                    // pin every attempt to it.
+                    // pin every attempt to it; the cursor is shared with the transaction
+                    // coordinator lookup and advanced by the attempt-level catch below.
+                    lookupInProgress = true;
                     var findCoordResponse = await SendWithConnectionLeaseAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
-                            brokers[attempt % brokers.Count].NodeId,
+                            GetCoordinatorLookupBroker(brokers).NodeId,
                             findCoordRequest,
                             retryCancellationToken)
                         .ConfigureAwait(false);
+                    lookupInProgress = false;
 
                     if (findCoordResponse.Coordinators.Count == 0)
                     {
                         // Treat an empty coordinator set as transiently unavailable and retry.
                         if (!TryGetTransactionRetryDelay(attempt, retryBudget, out var retryDelayMs))
                             break;
+                        AdvanceCoordinatorLookupCursor();
                         await Task.Delay(retryDelayMs, retryCancellationToken).ConfigureAwait(false);
                         attempt++;
                         continue;
                     }
 
                     var coord = findCoordResponse.Coordinators[0];
-                    _connectionPool.RegisterBroker(coord.NodeId, coord.Host, coord.Port);
-
                     if (coord.ErrorCode != ErrorCode.None)
                     {
                         ThrowIfNonRetriableTransactionError(coord.ErrorCode,
                             $"FindCoordinator for consumer group '{consumerGroupId}'", tv2);
                         if (!TryGetTransactionRetryDelay(attempt, retryBudget, out var retryDelayMs))
                             break;
+                        AdvanceCoordinatorLookupCursor();
                         await Task.Delay(retryDelayMs, retryCancellationToken).ConfigureAwait(false);
                         attempt++;
                         continue;
                     }
+
+                    // After the error check: an error response names node -1 with an empty host.
+                    _connectionPool.RegisterBroker(coord.NodeId, coord.Host, coord.Port);
 
                     using var coordinatorLease = await _connectionPool.LeaseConnectionAsync(
                         coord.NodeId,
@@ -4363,10 +4434,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                         lastTransportException = ex;
                         if (!TryGetTransactionRetryDelay(attempt, retryBudget, out var retryDelayMs))
                             break;
-                        await _metadataManager.RefreshMetadataAsync(
-                                topicOffsets.Keys,
-                                forceRefresh: true,
-                                retryCancellationToken)
+                        await RefreshTopicMetadataForRetryAsync(topicOffsets.Keys, retryCancellationToken)
                             .ConfigureAwait(false);
                         await Task.Delay(retryDelayMs, retryCancellationToken).ConfigureAwait(false);
                         attempt++;
@@ -4380,10 +4448,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                             break;
                         if (commitError.Value.RequiresMetadataRefresh())
                         {
-                            await _metadataManager.RefreshMetadataAsync(
-                                    topicOffsets.Keys,
-                                    forceRefresh: true,
-                                    retryCancellationToken)
+                            await RefreshTopicMetadataForRetryAsync(topicOffsets.Keys, retryCancellationToken)
                                 .ConfigureAwait(false);
                         }
                         await Task.Delay(retryDelayMs, retryCancellationToken).ConfigureAwait(false);
@@ -4393,12 +4458,14 @@ public sealed partial class KafkaProducer<TKey, TValue> :
 
                     return;
                 }
-                catch (Exception ex) when (IsRetriableTransactionTransportFailure(ex, retryCancellationToken))
+                catch (Exception ex) when (IsRetriableTransactionTransportFailure(ex))
                 {
                     // The group coordinator lookup, its connection lease, or a request write failed
                     // at the transport level. The next attempt looks the group coordinator up again;
                     // a failed AddOffsetsToTxn already re-discovered the transaction coordinator.
                     lastTransportException = ex;
+                    if (lookupInProgress)
+                        AdvanceCoordinatorLookupCursor();
                     if (!await TryPrepareTransportRetryAsync(
                             ex,
                             $"SendOffsetsToTransaction for group '{consumerGroupId}'",
@@ -4429,6 +4496,35 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             retryBudget,
             attempt + 1,
             lastTransportException);
+    }
+
+    /// <summary>
+    /// Topic-scoped counterpart of <see cref="RetryHelper.RefreshMetadataForRetryAsync"/>: the
+    /// refresh between TxnOffsetCommit retries is best-effort, so a refresh that fails on every
+    /// broker leaves the commit's own typed outcome (or the max.block.ms timeout) as the result
+    /// instead of surfacing the metadata manager's unclassified InvalidOperationException.
+    /// Cancellation and fatal failures (authentication, authorization, broker version) propagate.
+    /// </summary>
+    private async ValueTask RefreshTopicMetadataForRetryAsync(
+        IEnumerable<string> topics,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _metadataManager.RefreshMetadataAsync(topics, forceRefresh: true, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (InvalidOperationException ex) when (ex is not ObjectDisposedException)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            LogTransactionMetadataRefreshFailed(ex, _options.TransactionalId);
+        }
+        catch (Exception ex) when (
+            !cancellationToken.IsCancellationRequested
+            && RetryHelper.IsRetriableRequestFailure(ex))
+        {
+            LogTransactionMetadataRefreshFailed(ex, _options.TransactionalId);
+        }
     }
 
     private async ValueTask<(List<TxnOffsetCommitRequestTopic> Topics, OffsetTopicIdRequestMap? TopicIdMap)>
@@ -4518,12 +4614,15 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 .ConfigureAwait(false);
             return response.ErrorCode;
         }
-        catch (Exception ex) when (IsRetriableTransactionTransportFailure(ex, cancellationToken))
+        catch (Exception ex) when (IsRetriableTransactionTransportFailure(ex))
         {
             // Re-discover the transaction coordinator here, where the failed target is known;
             // the caller's loop owns the backoff and the deadline and retries the whole path.
+            // Once the token has fired there is nothing to re-discover for: the rethrown failure
+            // reaches the caller's loop, which reports the timeout (or the cancellation) with it.
             LogAddOffsetsToTxnCoordinatorUnreachable(ex, _transactionCoordinatorId, _options.TransactionalId);
-            await FindTransactionCoordinatorAsync(retryBudget, cancellationToken).ConfigureAwait(false);
+            if (!cancellationToken.IsCancellationRequested)
+                await FindTransactionCoordinatorAsync(retryBudget, cancellationToken).ConfigureAwait(false);
             throw;
         }
     }
@@ -5187,10 +5286,54 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         if (exception is OperationCanceledException || _transactionState != TransactionState.InTransaction)
             return false;
 
-        MarkTransactionAbortable(exception is KafkaException { ErrorCode: { } errorCode }
-            ? errorCode
-            : ErrorCode.NetworkException);
+        MarkTransactionAbortable(GetEnrollmentFailureErrorCode(exception));
         return true;
+    }
+
+    private static ErrorCode GetEnrollmentFailureErrorCode(Exception exception) =>
+        exception is KafkaException { ErrorCode: { } errorCode }
+            ? errorCode
+            : ErrorCode.NetworkException;
+
+    /// <summary>
+    /// The flush that precedes EndTxn(commit) and prepare completes the batches of unawaited
+    /// produces, and can fail them after the state already left InTransaction: a partition whose
+    /// enrollment fails permanently has its batches failed without moving the state (see
+    /// <see cref="MarkTransactionAbortableAfterEnrollmentFailure"/>), and a typed
+    /// AddPartitionsToTxn error moves it on the background path. Completing the transaction
+    /// then would commit it without those records. The enrollment errors are per transaction:
+    /// <see cref="ResetPartitionEnrollmentState"/> clears them when it ends and when the next begins.
+    /// </summary>
+    internal void ThrowIfTransactionFailedDuringFlush(string operation)
+    {
+        ThrowIfFatalTransactionError(operation);
+
+        Exception? enrollmentError = null;
+        lock (_partitionsInTransactionLock)
+        {
+            foreach (var error in _partitionEnrollmentErrors.Values)
+            {
+                enrollmentError = error;
+                break;
+            }
+        }
+
+        if (enrollmentError is null)
+        {
+            ThrowIfAbortableTransactionError(operation);
+            return;
+        }
+
+        if (_transactionState != TransactionState.AbortableError)
+            MarkTransactionAbortable(GetEnrollmentFailureErrorCode(enrollmentError));
+
+        throw new AbortableTransactionException(
+            $"{operation}: partition enrollment failed ({_lastTransactionError}), so the affected records are not " +
+            "part of the transaction and it must be aborted.",
+            enrollmentError)
+        {
+            TransactionalId = _options.TransactionalId
+        };
     }
 
     private void MarkTransactionAbortable(ErrorCode errorCode)
@@ -5410,6 +5553,23 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     {
         throw new FatalTransactionException(_lastTransactionError,
             $"{operation}: the producer is in a fatal error state and must be closed.")
+        {
+            TransactionalId = _options.TransactionalId
+        };
+    }
+
+    /// <summary>
+    /// Commit and prepare must refuse an abortable transaction exactly as produce does: records
+    /// that failed are not part of it, so completing it would commit a partial transaction
+    /// (Java's <c>maybeFailWithError</c>). Only an abort clears the state.
+    /// </summary>
+    internal void ThrowIfAbortableTransactionError(string operation)
+    {
+        if (_transactionState != TransactionState.AbortableError)
+            return;
+
+        throw new AbortableTransactionException(_lastTransactionError,
+            $"{operation}: the current transaction has an abortable error and must be aborted.")
         {
             TransactionalId = _options.TransactionalId
         };
@@ -6097,9 +6257,12 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                         _idempotentInitialized = true;
                         return;
                     }
-                    catch (Exception ex) when (!initializationToken.IsCancellationRequested
-                        && (RetryHelper.IsRetriableBrokerFailure(ex) || IsRetiredConnectionFailure(ex)))
+                    catch (Exception ex) when (RetryHelper.IsRetriableBrokerFailure(ex) || IsRetiredConnectionFailure(ex))
                     {
+                        // Not filtered on the token: a socket can report its failure after
+                        // max.block.ms (or the caller) already cancelled, and the raw transport
+                        // exception would then escape instead of the timeout that carries it. The
+                        // checks at the top of both loops observe the cancellation.
                         lastFailure = ex;
                         LogIdempotentInitializationBrokerFailed(ex, brokerId);
                     }
@@ -6126,10 +6289,11 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     /// <summary>
     /// Publishes a producer ID/epoch pair to every reader of the idempotent producer state. The
     /// accumulator learns the new state first, since only the state it holds as current may
-    /// restart a partition's sequence counter: for a new ID every counter is cleared and stamped
-    /// at once (the broker holds no state for a new ID, and this is a no-op for the initial ID),
-    /// while an epoch bump leaves the counters alone and every partition restarts at 0 lazily, in
-    /// the send loop, on its next send under the new state. Then the per-field copies the
+    /// restart a partition's sequence counter: for a new ID and for an epoch bump alike the
+    /// counters are left alone and every partition restarts at 0 lazily, in the send loop, on its
+    /// first send under the new state, once nothing it sent under the old state is unresolved
+    /// (a retry with an unknown outcome keeps the old stamp the broker can still deduplicate).
+    /// Then the per-field copies the
     /// accumulator stamps onto sealed batches are updated, and finally the combined snapshot the
     /// send loops key their stale-batch re-stamping and sequence restarts on. A sealed batch that
     /// tore across the per-field writes carries either the old ID or the old epoch, so the send
@@ -7083,6 +7247,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     [LoggerMessage(Level = LogLevel.Warning, Message = "Transaction coordinator {CoordinatorId} for {TransactionalId} is unreachable during AddOffsetsToTxn; re-discovering the coordinator before SendOffsetsToTransaction retries")]
     private partial void LogAddOffsetsToTxnCoordinatorUnreachable(Exception exception, int coordinatorId, string? transactionalId);
 
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Best-effort metadata refresh between TxnOffsetCommit retries failed for transactional id {TransactionalId}; retrying the commit with the cached metadata")]
+    private partial void LogTransactionMetadataRefreshFailed(Exception exception, string? transactionalId);
+
     [LoggerMessage(Level = LogLevel.Warning, Message = "Transaction {TransactionalId} moved to AbortableError: partition enrollment failed permanently and the affected records were not added to the transaction")]
     private partial void LogTransactionPartitionEnrollmentAbandoned(Exception exception, string? transactionalId);
 
@@ -7280,6 +7447,9 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
         if (_committed || _aborted)
             throw new InvalidOperationException("Transaction is already completed");
 
+        // Before the state is overwritten below: CommittingTransaction would erase the error.
+        _producer.ThrowIfAbortableTransactionError("Cannot commit transaction");
+
         _producer._transactionState = TransactionState.CommittingTransaction;
 
         try
@@ -7304,7 +7474,10 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
         if (_committed || _aborted)
             throw new InvalidOperationException("Transaction is already completed");
 
+        _producer.ThrowIfAbortableTransactionError("Cannot prepare transaction");
+
         await _producer.FlushAsync(cancellationToken).ConfigureAwait(false);
+        _producer.ThrowIfTransactionFailedDuringFlush("Cannot prepare transaction");
         return _producer.PrepareCurrentTransaction();
     }
 
