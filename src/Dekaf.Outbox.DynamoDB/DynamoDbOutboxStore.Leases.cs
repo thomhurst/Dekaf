@@ -404,6 +404,9 @@ public sealed partial class DynamoDbOutboxStore
     [LoggerMessage(Level = LogLevel.Debug, Message = "Outbox relay {RelayId} did not get bucket {Bucket}: a peer claimed it first. Expected while relay membership is changing")]
     private partial void LogClaimRefused(string relayId, int bucket);
 
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Outbox relay {RelayId} is standby {StandbyRank} of a fleet with more relays than buckets, behind one standby per bucket. It owns nothing and, until it moves up, refreshes its heartbeat less often than the owners renew their leases")]
+    private partial void LogDistantStandby(string relayId, int standbyRank);
+
     [LoggerMessage(Level = LogLevel.Information, Message = "Outbox relay {RelayId} no longer owns bucket {Bucket}: the lease changed after this round read it, normally because a peer took it over after it expired")]
     private partial void LogLeaseTakenOver(string relayId, int bucket);
 }

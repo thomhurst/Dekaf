@@ -44,6 +44,22 @@ public sealed class EfCoreOutboxStore<TContext> : IOutboxStore, IOutboxLeaseRene
     private readonly TimeProvider _timeProvider;
     private volatile bool _leasesSeeded;
     private int _renewalRound;
+    // The round that found the relay a distant standby; null otherwise. Only the relay's
+    // acquisitions touch it, and the relay serializes those.
+    private DistantStandby? _distantStandby;
+
+    /// <param name="relayId">Named, so a store that serves a second relay id does not answer
+    /// it from the first one's place in the queue.</param>
+    /// <param name="since">When the round ran.</param>
+    private sealed class DistantStandby(string relayId, DateTimeOffset since)
+    {
+        public string RelayId { get; } = relayId;
+
+        public DateTimeOffset Since { get; } = since;
+
+        /// <summary>The latest acquisition, answered or not.</summary>
+        public DateTimeOffset LastCall { get; set; } = since;
+    }
 
     public EfCoreOutboxStore(IDbContextFactory<TContext> contextFactory, TimeProvider? timeProvider = null)
     {
@@ -82,9 +98,15 @@ public sealed class EfCoreOutboxStore<TContext> : IOutboxStore, IOutboxLeaseRene
     {
         ArgumentNullException.ThrowIfNull(request);
 
+        var now = _timeProvider.GetUtcNow();
+        if (IsRestingStandby(request, now))
+            return [];
+
+        // A round that fails proves nothing about the queue, so the next one runs in full.
+        _distantStandby = null;
+
         var context = await _contextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
         await using var contextDisposal = context.ConfigureAwait(false);
-        var now = _timeProvider.GetUtcNow();
         var expiry = now + request.LeaseDuration;
         var leases = context.Set<OutboxLease>();
 
@@ -94,15 +116,11 @@ public sealed class EfCoreOutboxStore<TContext> : IOutboxStore, IOutboxLeaseRene
         await ThrowIfRowsOutsideBucketRangeAsync(context, request.BucketCount, cancellationToken)
             .ConfigureAwait(false);
 
-        // Fair share: total buckets split across relays that heartbeated within one lease
-        // duration. The algorithm lives in core (OutboxFairShare) so every store computes
-        // shares identically - the anti-starvation guarantee depends on that.
         var activeCutoff = now - request.LeaseDuration;
         var activeRelayIds = await context.Set<OutboxRelayInstance>()
             .Where(r => r.LastSeenUtc >= activeCutoff)
             .Select(r => r.RelayId)
             .ToListAsync(cancellationToken).ConfigureAwait(false);
-        var fairShare = OutboxFairShare.Compute(request.BucketCount, activeRelayIds, request.RelayId);
 
         // Bounded to the active range: stale lease rows left behind by a larger previous
         // BucketCount must not participate in fair share or be renewed as owned buckets,
@@ -114,12 +132,37 @@ public sealed class EfCoreOutboxStore<TContext> : IOutboxStore, IOutboxLeaseRene
 
         var mine = new List<int>();
         var free = new List<int>();
+        var held = new Dictionary<string, int>(activeRelayIds.Count, StringComparer.Ordinal);
         foreach (var lease in snapshot)
         {
             if (lease.Owner == request.RelayId)
                 mine.Add(lease.Bucket);
             else if (lease.Owner is null || lease.ExpiresAtUtc <= now)
                 free.Add(lease.Bucket);
+            else
+                held[lease.Owner] = held.GetValueOrDefault(lease.Owner) + 1;
+        }
+
+        held[request.RelayId] = mine.Count;
+
+        // Fair share: total buckets split across relays that heartbeated within one lease
+        // duration, leaving what the incumbents hold where it is. The algorithm lives in core
+        // (OutboxFairShare) so every store computes shares identically - the anti-starvation
+        // guarantee depends on that.
+        var fairShare = OutboxFairShare.Compute(request.BucketCount, activeRelayIds, request.RelayId, held);
+
+        // A standby has nothing to renew, hand back or claim, so nothing to read back either.
+        if (fairShare == 0 && mine.Count == 0)
+        {
+            // Not after a refused heartbeat: peers may not count this relay at all, so what
+            // it read about its place in the queue is not what they plan with.
+            if (heartbeatRecorded
+                && OutboxFairShare.StandbyRank(request.BucketCount, activeRelayIds, request.RelayId, held) >= request.BucketCount)
+            {
+                _distantStandby = new DistantStandby(request.RelayId, now);
+            }
+
+            return [];
         }
 
         // Keep (renew) currently-owned buckets first so rebalancing never churns buckets
@@ -179,6 +222,34 @@ public sealed class EfCoreOutboxStore<TContext> : IOutboxStore, IOutboxLeaseRene
             .Select(l => l.Bucket)
             .OrderBy(b => b)
             .ToListAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Whether this acquisition can be answered without a statement. With more relays than
+    /// buckets most relays own nothing, and each of their rounds costs a heartbeat write and
+    /// several reads that change nothing. The standbys next in line keep the relay's cadence,
+    /// one per bucket, so that they take over what frees up as promptly as before, even if
+    /// every owner stops at once. A relay behind them is only there to be counted: it
+    /// refreshes its heartbeat often enough to stay active, and finds out that it has moved up
+    /// when it does.
+    /// </summary>
+    private bool IsRestingStandby(OutboxLeaseRequest request, DateTimeOffset now)
+    {
+        if (_distantStandby is not { } standby || standby.RelayId != request.RelayId)
+            return false;
+
+        var rested = now - standby.Since;
+        var sinceLastCall = now - standby.LastCall;
+        standby.LastCall = now;
+
+        // The relay calls at its own cadence, which the store is not told, so the time since
+        // the last call stands in for the time until the next one. The heartbeat is refreshed
+        // by the last call that comes within three quarters of the lease duration for which
+        // peers count it: every other round with the default timings, and every round with a
+        // renew interval too long to skip one. A clock that was set back says nothing about
+        // the age of the heartbeat.
+        return rested >= TimeSpan.Zero && sinceLastCall >= TimeSpan.Zero
+            && rested + sinceLastCall < request.LeaseDuration * 0.75;
     }
 
     public async ValueTask<IReadOnlyList<int>> GetBucketsWithPendingAsync(

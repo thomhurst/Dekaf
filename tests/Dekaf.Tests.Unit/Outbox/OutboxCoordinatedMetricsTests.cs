@@ -38,6 +38,39 @@ public partial class OutboxMetricTests
     }
 
     [Test]
+    public async Task CoordinatedSampling_StartsWhenTheRelayIsHandedBucketZero_NotAtTheNextInterval()
+    {
+        using var capture = new MetricCapture("coordinated");
+        var time = new ManualTimeProvider();
+        var store = new SamplingStore { Query = static (_, _) => new(new OutboxPendingMetrics(7, null)) };
+        using var relay = CoordinatedRelay(store, time, true);
+        using var cancellation = new CancellationTokenSource();
+        // As in a starting host: the sampler runs before the first acquisition has returned.
+        var sampling = StartSampling(relay, store, cancellation.Token);
+        try
+        {
+            await time.WaitForTimerAsync(TimeSpan.FromSeconds(30));
+            await Assert.That(store.Calls).IsEqualTo(0);
+
+            await BindCycle(relay)(default);
+
+            await store.Started.Reader.ReadAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(30));
+            await Assert.That(store.Calls).IsEqualTo(1);
+        }
+        finally
+        {
+            cancellation.Cancel();
+            await sampling.WaitAsync(TimeSpan.FromSeconds(30));
+        }
+    }
+
+    [Test]
+    public async Task Sampling_IsCoordinatedByDefault()
+    {
+        await Assert.That(new OutboxRelayOptions().CollectMetricsOnBucketZeroOwnerOnly).IsTrue();
+    }
+
+    [Test]
     public async Task CoordinatedSampling_RejectsExpiredOwnership_AndResumesAfterReacquisition()
     {
         using var capture = new MetricCapture("coordinated");

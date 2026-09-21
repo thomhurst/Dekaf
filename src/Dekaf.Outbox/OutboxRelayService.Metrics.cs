@@ -8,6 +8,9 @@ public sealed partial class OutboxRelayService
     private readonly OutboxMetricState _metrics;
     private MetricsLease? _metricsLease;
     private readonly object _metricsLeaseLock = new();
+    // Completed when this relay is handed bucket zero, so an idle sampler starts at once
+    // instead of at its next interval. Null while no sampler is waiting.
+    private TaskCompletionSource? _metricsLeaseGained;
 
     private sealed class MetricsLease(long timestamp)
     {
@@ -23,7 +26,10 @@ public sealed partial class OutboxRelayService
             if (OwnsBucket(0))
             {
                 if (_metricsLease is null)
+                {
                     Volatile.Write(ref _metricsLease, new MetricsLease(_leaseTimestamp));
+                    Interlocked.Exchange(ref _metricsLeaseGained, null)?.TrySetResult();
+                }
                 else
                     Volatile.Write(ref _metricsLease.Timestamp, _leaseTimestamp);
             }
@@ -85,9 +91,19 @@ public sealed partial class OutboxRelayService
         {
             while (!stoppingToken.IsCancellationRequested)
             {
+                // Registered before the lease is read: a handover in between is then seen
+                // by the read, and one after it completes the wait.
+                TaskCompletionSource? leaseGained = null;
+                if (_options.CollectMetricsOnBucketZeroOwnerOnly)
+                {
+                    leaseGained = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                    Volatile.Write(ref _metricsLeaseGained, leaseGained);
+                }
+
                 var lease = Volatile.Read(ref _metricsLease);
                 if (OutboxMetrics.PendingEnabled && CanSample(lease))
                 {
+                    leaseGained = null;
                     using var timeout = new CancellationTokenSource(_options.MetricsCollectionTimeout, _timeProvider);
                     using var queryCancellation = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken, timeout.Token);
                     try
@@ -121,7 +137,12 @@ public sealed partial class OutboxRelayService
                 }
                 // Delay starts after completion: one outstanding query at most, never a
                 // catch-up burst after a slow query or a long process suspension.
-                await Task.Delay(_options.MetricsCollectionInterval, _timeProvider, stoppingToken).ConfigureAwait(false);
+                // Only a wait that followed no query ends early, so the interval still
+                // separates every two queries of this relay.
+                if (leaseGained is null)
+                    await Task.Delay(_options.MetricsCollectionInterval, _timeProvider, stoppingToken).ConfigureAwait(false);
+                else
+                    await WaitForMetricsLeaseAsync(leaseGained.Task, stoppingToken).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
@@ -132,6 +153,19 @@ public sealed partial class OutboxRelayService
         {
             Volatile.Write(ref _metrics.Pending, null);
         }
+    }
+
+    private async Task WaitForMetricsLeaseAsync(Task leaseGained, CancellationToken stoppingToken)
+    {
+        using var delayCancellation = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+        var delay = Task.Delay(_options.MetricsCollectionInterval, _timeProvider, delayCancellation.Token);
+        await Task.WhenAny(delay, leaseGained).ConfigureAwait(false);
+
+        // Releases the timer of a wait that the lease ended early. The delay is observed
+        // either way, so that a cancelled one cannot fault unseen.
+        delayCancellation.Cancel();
+        await delay.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+        stoppingToken.ThrowIfCancellationRequested();
     }
 
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]

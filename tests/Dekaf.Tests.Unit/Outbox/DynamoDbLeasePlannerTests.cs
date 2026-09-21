@@ -98,15 +98,72 @@ public sealed class DynamoDbLeasePlannerTests
     }
 
     [Test]
-    public async Task MoreRelaysThanBuckets_TheSurplusRelayOwnsNothing_AndHandsBackWhatItHeld()
+    public async Task MoreRelaysThanBuckets_TheIncumbentKeepsOneBucket_AndHandsBackTheRest()
     {
         var leases = Leases(2, ("c", 0, 1));
+        List<string> relays = ["a", "b", "c"];
 
-        var plan = Plan(2, ["a", "b", "c"], "c", leases);
+        var plan = Plan(2, relays, "c", leases);
 
-        await Assert.That(plan.Keep).IsEmpty();
-        await Assert.That(Join(plan.Release)).IsEqualTo("0,1");
+        // "c" ranks last, but it is the one publishing: it keeps a bucket, and the other goes
+        // to the first relay that holds nothing.
+        await Assert.That(Join(plan.Keep)).IsEqualTo("1");
+        await Assert.That(Join(plan.Release)).IsEqualTo("0");
         await Assert.That(plan.Claim).IsEmpty();
+
+        leases[0] = default;
+        await Assert.That(Join(Plan(2, relays, "a", leases).Claim)).IsEqualTo("0");
+        await Assert.That(Plan(2, relays, "b", leases).Claim).IsEmpty();
+    }
+
+    [Test]
+    public async Task JoinerIntoAFleetWithMoreRelaysThanBuckets_TakesNothing_WhateverItsId()
+    {
+        // Pod names decide the rank, and a new ReplicaSet can sort before the old one. The
+        // joiner must not push an incumbent out of a split that was already fair.
+        var leases = Leases(4, ("pod-m", 0, 0), ("pod-n", 1, 1), ("pod-o", 2, 2), ("pod-p", 3, 3));
+        List<string> relays = ["pod-m", "pod-n", "pod-o", "pod-p", "pod-q", "pod-a"];
+
+        foreach (var incumbent in new[] { "pod-m", "pod-n", "pod-o", "pod-p" })
+        {
+            var plan = Plan(4, relays, incumbent, leases);
+            await Assert.That(plan.Keep.Count).IsEqualTo(1);
+            await Assert.That(plan.Release.Count + plan.Claim.Count).IsEqualTo(0);
+            await Assert.That(plan.StandbyRank).IsEqualTo(-1);
+        }
+
+        var joiner = Plan(4, relays, "pod-a", leases);
+        await Assert.That(joiner.Keep.Count + joiner.Release.Count + joiner.Claim.Count).IsEqualTo(0);
+        await Assert.That(joiner.StandbyRank).IsEqualTo(0);
+        await Assert.That(Plan(4, relays, "pod-q", leases).StandbyRank).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task FreedBucket_GoesToTheFirstStandby_AndToNobodyElse()
+    {
+        var leases = Leases(4, ("pod-m", 0, 0), ("pod-n", 1, 1), ("pod-p", 3, 3));
+        List<string> relays = ["pod-m", "pod-n", "pod-p", "pod-q", "pod-a"];
+
+        await Assert.That(Join(Plan(4, relays, "pod-a", leases).Claim)).IsEqualTo("2");
+        foreach (var relay in new[] { "pod-m", "pod-n", "pod-p", "pod-q" })
+            await Assert.That(Plan(4, relays, relay, leases).Claim).IsEmpty();
+    }
+
+    [Test]
+    public async Task Joiner_TakesTheRemainderFromNobody_WhenAnIncumbentAlreadyHoldsIt()
+    {
+        // Eight buckets over five relays are 2,2,2,1,1. With a sixth they are 2,2,1,1,1,1:
+        // one bucket has to move. Ranking by id alone would move two, because the joiner
+        // sorts first and would be given one of the remaining pairs.
+        var leases = Leases(8, ("b", 0, 1), ("c", 2, 3), ("d", 4, 5), ("e", 6, 6), ("f", 7, 7));
+        List<string> relays = ["a", "b", "c", "d", "e", "f"];
+
+        var released = 0;
+        foreach (var relay in relays)
+            released += Plan(8, relays, relay, leases).Release.Count;
+
+        await Assert.That(released).IsEqualTo(1);
+        await Assert.That(Plan(8, relays, "d", leases).Release.Count).IsEqualTo(1);
     }
 
     [Test]
@@ -146,7 +203,12 @@ public sealed class DynamoDbLeasePlannerTests
             foreach (var relay in relays)
             {
                 var plan = Plan(bucketCount, relays, relay, leases);
-                var share = OutboxFairShare.Compute(bucketCount, [.. relays], relay);
+                // What the relay sees held: a lapsed lease is free unless it is its own.
+                var held = leases
+                    .Where(lease => lease.Owner is not null && (!lease.Expired || lease.Owner == relay))
+                    .GroupBy(lease => lease.Owner!)
+                    .ToDictionary(group => group.Key, group => group.Count());
+                var share = OutboxFairShare.Compute(bucketCount, [.. relays], relay, held);
 
                 await Assert.That(plan.Keep.Count + plan.Claim.Count).IsLessThanOrEqualTo(share);
                 await Assert.That(plan.Keep.Concat(plan.Release).Order()
