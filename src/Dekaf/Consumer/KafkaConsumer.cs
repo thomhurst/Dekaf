@@ -4368,7 +4368,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 deterministic);
 
             ClearPreferredReadReplicasForBroker(brokerId, partitions, partitionStartIndex, partitionCount);
-            LogPrefetchFromBrokerError(ex, brokerId);
+            var logLevel = !deterministic && TransportFailureClassifier.IsSocketLevelFailure(ex)
+                ? LogLevel.Warning
+                : LogLevel.Error;
+            LogPrefetchFromBrokerError(ex, brokerId, logLevel);
 
             if (decision.IsTerminal)
             {
@@ -13597,8 +13600,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     [LoggerMessage(Level = LogLevel.Error, Message = "Fatal error prefetching from broker {BrokerId}")]
     private partial void LogFatalPrefetchError(Exception exception, int brokerId);
 
-    [LoggerMessage(Level = LogLevel.Error, Message = "Failed to prefetch from broker {BrokerId}")]
-    private partial void LogPrefetchFromBrokerError(Exception exception, int brokerId);
+    [LoggerMessage(Message = "Failed to prefetch from broker {BrokerId}")]
+    private partial void LogPrefetchFromBrokerError(Exception exception, int brokerId, LogLevel logLevel);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "OffsetOutOfRange for {Topic}-{Partition}, resetting to {Reset}")]
     private partial void LogOffsetOutOfRangeReset(string topic, int partition, string reset);
