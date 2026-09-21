@@ -1,8 +1,7 @@
-using System.Reflection;
-using System.Runtime.ExceptionServices;
 using Amazon.DynamoDBv2;
 using Amazon.DynamoDBv2.Model;
 using Amazon.Runtime;
+using Amazon.Runtime.Internal;
 
 namespace Dekaf.Tests.Integration;
 
@@ -22,74 +21,51 @@ internal enum OutboxDynamoDbFault
 }
 
 /// <summary>
-/// Stands between a store and the DynamoDB client, where a network stands in production.
-/// <see cref="IAmazonDynamoDB"/> is far too wide to decorate by hand, and DynamoDB Local
-/// neither throttles nor loses an answer on demand.
+/// Stands between a store and DynamoDB, where a network stands in production: DynamoDB Local
+/// neither throttles nor loses an answer on demand. It is the outermost handler of its
+/// client's request pipeline, so it sees every request whatever the operation, and a fault
+/// it injects reaches the store as thrown, past the SDK's retries and its exception event.
 /// </summary>
-// DispatchProxy derives the proxy type from this class at run time, so it cannot be sealed.
-#pragma warning disable CA1852
-internal class OutboxDynamoDbCallInterceptor : DispatchProxy
-#pragma warning restore CA1852
+/// <remarks>
+/// Not a <see cref="System.Reflection.DispatchProxy"/> over <see cref="IAmazonDynamoDB"/>:
+/// the interface has static abstract members on .NET 8 and later, and the .NET 8 proxy
+/// generator emits a type the runtime refuses to load for such an interface.
+/// </remarks>
+internal sealed class OutboxDynamoDbCallInterceptor(
+    Func<AmazonWebServiceRequest, ValueTask<OutboxDynamoDbFault>> beforeCall) : PipelineHandler
 {
-    private static readonly MethodInfo InterceptedMethod = typeof(OutboxDynamoDbCallInterceptor)
-        .GetMethod(nameof(InterceptedAsync), BindingFlags.NonPublic | BindingFlags.Instance)!;
+    /// <param name="beforeCall">Runs before every request, and decides what becomes of it. It
+    /// may also write to the table itself, through another client, as a request that an
+    /// earlier round abandoned would.</param>
+    public static AmazonDynamoDBClient CreateClient(
+        AWSCredentials credentials, AmazonDynamoDBConfig config,
+        Func<AmazonWebServiceRequest, ValueTask<OutboxDynamoDbFault>> beforeCall) =>
+        new InterceptedClient(credentials, config, beforeCall);
 
-    private IAmazonDynamoDB _inner = null!;
-    private Func<string, AmazonWebServiceRequest, ValueTask<OutboxDynamoDbFault>> _beforeCall = null!;
-
-    /// <param name="inner">The client that reaches the table.</param>
-    /// <param name="beforeCall">Runs before every request, with the method name and the
-    /// request, and decides what becomes of it. It may also write to the table itself, as a
-    /// request that an earlier round abandoned would.</param>
-    public static IAmazonDynamoDB Wrap(
-        IAmazonDynamoDB inner, Func<string, AmazonWebServiceRequest, ValueTask<OutboxDynamoDbFault>> beforeCall)
+    public override async Task<T> InvokeAsync<T>(IExecutionContext executionContext)
     {
-        var proxy = Create<IAmazonDynamoDB, OutboxDynamoDbCallInterceptor>();
-        var interceptor = (OutboxDynamoDbCallInterceptor)proxy;
-        interceptor._inner = inner;
-        interceptor._beforeCall = beforeCall;
-        return proxy;
-    }
-
-    protected override object? Invoke(MethodInfo? targetMethod, object?[]? args)
-    {
-        ArgumentNullException.ThrowIfNull(targetMethod);
-        // The request/response calls a store makes: Task<TResponse> Xxx(TRequest, CancellationToken).
-        if (args is [AmazonWebServiceRequest request, CancellationToken]
-            && targetMethod.ReturnType.IsGenericType
-            && targetMethod.ReturnType.GetGenericTypeDefinition() == typeof(Task<>))
-        {
-            return InterceptedMethod.MakeGenericMethod(targetMethod.ReturnType.GetGenericArguments()[0])
-                .Invoke(this, [targetMethod, args, request]);
-        }
-
-        return Forward(targetMethod, args);
-    }
-
-    private object? Forward(MethodInfo targetMethod, object?[]? args)
-    {
-        try
-        {
-            return targetMethod.Invoke(_inner, args);
-        }
-        catch (TargetInvocationException exception) when (exception.InnerException is not null)
-        {
-            ExceptionDispatchInfo.Throw(exception.InnerException);
-            throw;
-        }
-    }
-
-    private async Task<TResponse> InterceptedAsync<TResponse>(
-        MethodInfo targetMethod, object?[] args, AmazonWebServiceRequest request)
-    {
-        var fault = await _beforeCall(targetMethod.Name, request);
+        var fault = await beforeCall(executionContext.RequestContext.OriginalRequest);
         if (fault == OutboxDynamoDbFault.Throttled)
             throw new ProvisionedThroughputExceededException("Injected: the table is throttled.");
 
-        var response = await (Task<TResponse>)Forward(targetMethod, args)!;
+        var response = await base.InvokeAsync<T>(executionContext);
         if (fault == OutboxDynamoDbFault.AppliedThenLost)
             throw new AmazonServiceException("Injected: the request was applied and its answer was lost.");
 
         return response;
+    }
+
+    private sealed class InterceptedClient(
+        AWSCredentials credentials, AmazonDynamoDBConfig config,
+        Func<AmazonWebServiceRequest, ValueTask<OutboxDynamoDbFault>> beforeCall)
+        : AmazonDynamoDBClient(credentials, config)
+    {
+        // Called by the base constructor. A captured primary constructor parameter is stored
+        // before the base constructor runs, so beforeCall is already there.
+        protected override void CustomizeRuntimePipeline(RuntimePipeline pipeline)
+        {
+            base.CustomizeRuntimePipeline(pipeline);
+            pipeline.AddHandler(new OutboxDynamoDbCallInterceptor(beforeCall));
+        }
     }
 }

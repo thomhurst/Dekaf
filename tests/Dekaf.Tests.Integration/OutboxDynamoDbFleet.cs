@@ -19,23 +19,26 @@ internal sealed class OutboxDynamoDbFleet : IDisposable
     public static readonly TimeSpan RenewInterval = TimeSpan.FromSeconds(10);
 
     private readonly AmazonDynamoDBClient _client;
-    private readonly IAmazonDynamoDB _storeClient;
+    // What the relays' stores talk to: a client of its own, so a scenario can step in.
+    private readonly AmazonDynamoDBClient _storeClient;
     private readonly Dictionary<string, DynamoDbOutboxStore> _stores = new(StringComparer.Ordinal);
     private readonly Dictionary<string, HostClock> _hostClocks = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Holding> _holdings = new(StringComparer.Ordinal);
     private int _refusedWrites;
 
-    private OutboxDynamoDbFleet(AmazonDynamoDBClient client, DynamoDbOutboxOptions options)
+    private OutboxDynamoDbFleet(
+        DynamoDbLocalContainer dynamoDb, AmazonDynamoDBClient client, DynamoDbOutboxOptions options)
     {
         _client = client;
-        _storeClient = OutboxDynamoDbCallInterceptor.Wrap(client, async (method, request) =>
+        _storeClient = dynamoDb.CreateClient(async request =>
         {
             if (BeforeStoreCall is { } beforeStoreCall)
-                await beforeStoreCall(method, request);
+                await beforeStoreCall(request);
             return OutboxDynamoDbFault.None;
         });
         Options = options;
         _client.ExceptionEvent += OnException;
+        _storeClient.ExceptionEvent += OnException;
     }
 
     public DynamoDbOutboxOptions Options { get; }
@@ -44,10 +47,10 @@ internal sealed class OutboxDynamoDbFleet : IDisposable
     public ManualClock Clock { get; } = new();
 
     /// <summary>
-    /// Runs before every request a store sends, with the method name and the request. A
-    /// scenario uses it to land a write between two requests of one store call.
+    /// Runs before every request a store sends. A scenario uses it to land a write between
+    /// two requests of one store call.
     /// </summary>
-    public Func<string, AmazonWebServiceRequest, Task>? BeforeStoreCall { get; set; }
+    public Func<AmazonWebServiceRequest, Task>? BeforeStoreCall { get; set; }
 
     public IAmazonDynamoDB Client => _client;
 
@@ -57,7 +60,8 @@ internal sealed class OutboxDynamoDbFleet : IDisposable
     public static async Task<OutboxDynamoDbFleet> CreateAsync(DynamoDbLocalContainer dynamoDb, int bucketCount = 8)
     {
         var client = dynamoDb.CreateClient();
-        return new OutboxDynamoDbFleet(client, await DynamoDbLocalContainer.CreateTableAsync(client, bucketCount));
+        return new OutboxDynamoDbFleet(
+            dynamoDb, client, await DynamoDbLocalContainer.CreateTableAsync(client, bucketCount));
     }
 
     public OutboxLeaseRequest Request(string relayId) => new()
@@ -355,7 +359,9 @@ internal sealed class OutboxDynamoDbFleet : IDisposable
     public void Dispose()
     {
         _client.ExceptionEvent -= OnException;
+        _storeClient.ExceptionEvent -= OnException;
         _client.Dispose();
+        _storeClient.Dispose();
     }
 
     private void OnException(object sender, ExceptionEventArgs args)
