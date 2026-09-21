@@ -20,6 +20,7 @@ public sealed class TransactionCoordinatorCrashIntegrationTests(RackAwareKafkaCo
 {
     private const int PartitionCount = 3;
     private const int RecordsPerTransaction = 30;
+    private const string OffsetsTopic = "__consumer_offsets";
 
     [Test]
     [Timeout(240_000)]
@@ -290,9 +291,16 @@ public sealed class TransactionCoordinatorCrashIntegrationTests(RackAwareKafkaCo
         // enough to land on a broker other than the transaction coordinator's, as long as those
         // partitions' leaders are spread. The sibling tests in this class SIGKILL brokers, and a
         // restarted broker gets no leadership back until a preferred election runs, so every
-        // __consumer_offsets leader can sit on the one broker this test must avoid. The first
-        // pass that finds nothing elects preferred leaders; later passes wait for it to settle.
-        for (var pass = 0; pass < 10; pass++)
+        // __consumer_offsets leader can sit on the one broker this test must avoid. An election
+        // moves a partition only once its preferred replica is back in the ISR, which a broker
+        // restarted after a SIGKILL rejoins some time after it registers. The preferred replicas
+        // of the three partitions can name as few as two brokers, so the only way off the
+        // avoided broker can be the one a sibling has just restarted, and an election right
+        // away finds nothing to move: every pass that finds no group asks again. Only
+        // __consumer_offsets is elected, which leaves the transaction coordinator where it is.
+        await using var admin = kafka.CreateAdminClient();
+        var offsetsTopicState = "not described";
+        for (var pass = 0; pass < 60; pass++)
         {
             for (var candidate = 0; candidate < 50; candidate++)
             {
@@ -303,18 +311,29 @@ public sealed class TransactionCoordinatorCrashIntegrationTests(RackAwareKafkaCo
                     return (groupId, coordinatorId);
             }
 
-            if (pass == 0)
+            var descriptions = await admin.DescribeTopicsAsync([OffsetsTopic], cancellationToken)
+                .ConfigureAwait(false);
+            var partitions = descriptions[OffsetsTopic].Partitions;
+            var election = await admin.ElectLeadersAsync(
+                    ElectionType.Preferred,
+                    partitions.Select(static partition => new TopicPartition(OffsetsTopic, partition.PartitionIndex)),
+                    cancellationToken: cancellationToken)
+                .ConfigureAwait(false);
+            offsetsTopicState = string.Join("; ", partitions.Select(partition =>
             {
-                await using var admin = kafka.CreateAdminClient();
-                _ = await admin.ElectLeadersAsync(ElectionType.Preferred, cancellationToken: cancellationToken)
-                    .ConfigureAwait(false);
-            }
+                var elected = election.GetValueOrDefault(new TopicPartition(OffsetsTopic, partition.PartitionIndex));
+                return $"partition {partition.PartitionIndex}: leader {partition.LeaderId}, " +
+                    $"replicas [{string.Join(',', partition.ReplicaNodes)}], " +
+                    $"isr [{string.Join(',', partition.IsrNodes)}], " +
+                    $"election {elected?.ErrorCode.ToString() ?? "not reported"}";
+            }));
 
             await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken).ConfigureAwait(false);
         }
 
         throw new InvalidOperationException(
-            $"No candidate group id was coordinated by a broker other than {excludedBrokerId}.");
+            $"No candidate group id was coordinated by a broker other than {excludedBrokerId}. " +
+            $"{OffsetsTopic} before the last preferred election: {offsetsTopicState}.");
     }
 
     private async Task<IKafkaProducer<string, string>> BuildTransactionalProducerAsync(

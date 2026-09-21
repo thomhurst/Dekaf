@@ -1,4 +1,4 @@
-using Amazon.DynamoDBv2;
+using Amazon.DynamoDBv2.Model;
 using Amazon.Runtime;
 
 namespace Dekaf.Tests.Integration;
@@ -34,15 +34,11 @@ internal sealed class OutboxDynamoDbStoreFaults(
     /// <summary>The table recovers: no request is faulted from here on.</summary>
     public void Heal() => _healed = true;
 
-    public IAmazonDynamoDB Wrap(IAmazonDynamoDB client) => OutboxDynamoDbCallInterceptor.Wrap(client, Decide);
-
-    private ValueTask<OutboxDynamoDbFault> Decide(string method, AmazonWebServiceRequest request)
+    /// <summary>What becomes of one request: the callback of a store's client.</summary>
+    public ValueTask<OutboxDynamoDbFault> Decide(AmazonWebServiceRequest request)
     {
-        if (_healed || method is not (nameof(IAmazonDynamoDB.UpdateItemAsync) or nameof(IAmazonDynamoDB.PutItemAsync)
-                or nameof(IAmazonDynamoDB.BatchWriteItemAsync)))
-        {
+        if (_healed || request is not (UpdateItemRequest or PutItemRequest or BatchWriteItemRequest))
             return new(OutboxDynamoDbFault.None);
-        }
 
         lock (_gate)
         {
@@ -54,7 +50,7 @@ internal sealed class OutboxDynamoDbStoreFaults(
             {
                 _throttleBurstRemaining--;
                 _throttled++;
-                if (method == nameof(IAmazonDynamoDB.BatchWriteItemAsync))
+                if (request is BatchWriteItemRequest)
                     _throttledDeletes++;
                 return new(OutboxDynamoDbFault.Throttled);
             }

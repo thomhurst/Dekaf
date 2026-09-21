@@ -28,8 +28,8 @@ namespace Dekaf.Tests.Integration;
 internal sealed class OutboxDynamoDbCluster : IAsyncDisposable
 {
     private readonly AmazonDynamoDBClient _client;
-    // What the pods' stores talk to: the client itself, or the faults in front of it.
-    private readonly IAmazonDynamoDB _storeClient;
+    // What the pods' stores talk to: the client itself, or one with the faults in front of it.
+    private readonly AmazonDynamoDBClient _storeClient;
     private readonly TimeSpan _leaseDuration;
     private readonly TimeSpan _renewInterval;
     private readonly TimeSpan _publishLatency;
@@ -40,16 +40,18 @@ internal sealed class OutboxDynamoDbCluster : IAsyncDisposable
     private int _refusedWrites;
 
     private OutboxDynamoDbCluster(
-        AmazonDynamoDBClient client, DynamoDbOutboxOptions options, TimeSpan leaseDuration, TimeSpan renewInterval,
-        TimeSpan publishLatency, OutboxDynamoDbStoreFaults? storeFaults)
+        AmazonDynamoDBClient client, AmazonDynamoDBClient storeClient, DynamoDbOutboxOptions options,
+        TimeSpan leaseDuration, TimeSpan renewInterval, TimeSpan publishLatency)
     {
         _client = client;
-        _storeClient = storeFaults?.Wrap(client) ?? client;
+        _storeClient = storeClient;
         Options = options;
         _leaseDuration = leaseDuration;
         _renewInterval = renewInterval;
         _publishLatency = publishLatency;
         _client.ExceptionEvent += OnException;
+        if (!ReferenceEquals(_storeClient, _client))
+            _storeClient.ExceptionEvent += OnException;
     }
 
     /// <summary>Rows per publish: the most that one failed delete can publish a second time.</summary>
@@ -75,7 +77,8 @@ internal sealed class OutboxDynamoDbCluster : IAsyncDisposable
     {
         var client = dynamoDb.CreateClient();
         var options = await DynamoDbLocalContainer.CreateTableAsync(client, bucketCount);
-        return new OutboxDynamoDbCluster(client, options, leaseDuration, renewInterval, publishLatency, storeFaults);
+        var storeClient = storeFaults is null ? client : dynamoDb.CreateClient(storeFaults.Decide);
+        return new OutboxDynamoDbCluster(client, storeClient, options, leaseDuration, renewInterval, publishLatency);
     }
 
     public async Task<Pod> StartPodAsync(string name)
@@ -249,7 +252,9 @@ internal sealed class OutboxDynamoDbCluster : IAsyncDisposable
         foreach (var pod in _pods.Values.ToArray())
             await pod.KillAsync();
         _client.ExceptionEvent -= OnException;
+        _storeClient.ExceptionEvent -= OnException;
         _client.Dispose();
+        _storeClient.Dispose();
     }
 
     private List<Guid> MissingMessages()

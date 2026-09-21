@@ -187,9 +187,9 @@ public sealed class OutboxDynamoDbLeaseTests(DynamoDbLocalContainer dynamoDb)
         // the read that confirms it. No condition can refuse a claim of a free lease.
         var reads = 0;
         bool? landed = null;
-        fleet.BeforeStoreCall = async (method, _) =>
+        fleet.BeforeStoreCall = async request =>
         {
-            if (method == nameof(Amazon.DynamoDBv2.IAmazonDynamoDB.QueryAsync) && ++reads == 2)
+            if (request is Amazon.DynamoDBv2.Model.QueryRequest && ++reads == 2)
                 landed = await fleet.LandStragglingClaimAsync("relay-b", bucket, cancelledRoundStartedAt);
         };
         await fleet.ReleaseAsync("relay-b");
