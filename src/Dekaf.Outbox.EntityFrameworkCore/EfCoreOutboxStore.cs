@@ -88,7 +88,8 @@ public sealed class EfCoreOutboxStore<TContext> : IOutboxStore, IOutboxLeaseRene
         var expiry = now + request.LeaseDuration;
         var leases = context.Set<OutboxLease>();
 
-        await RecordHeartbeatAsync(context, request, now, cancellationToken).ConfigureAwait(false);
+        var heartbeatRecorded = await RecordHeartbeatAsync(context, request, now, cancellationToken)
+            .ConfigureAwait(false);
         await EnsureLeasesSeededAsync(context, request.BucketCount, cancellationToken).ConfigureAwait(false);
         await ThrowIfRowsOutsideBucketRangeAsync(context, request.BucketCount, cancellationToken)
             .ConfigureAwait(false);
@@ -150,8 +151,13 @@ public sealed class EfCoreOutboxStore<TContext> : IOutboxStore, IOutboxLeaseRene
         // Claim unowned or expired buckets up to the fair share. The candidate list is
         // pre-limited to the deficit so over-claiming is impossible, and the guarded WHERE
         // re-evaluates per row so a concurrent claimer simply wins some of the candidates.
+        // Not after a refused heartbeat: this host's clock is then behind a timestamp already
+        // written for its relay id, so the expiry of this round is too early. A kept lease is
+        // guarded by the expiry it already stores; a claim has none to compare with, and a peer
+        // could take the bucket the moment it lapses on the peer's clock, while this relay
+        // still counts a whole lease duration.
         var deficit = fairShare - keepCount;
-        if (deficit > 0 && free.Count > 0)
+        if (deficit > 0 && free.Count > 0 && heartbeatRecorded)
         {
             var candidates = free.GetRange(0, Math.Min(deficit, free.Count)).ToArray();
             await leases
@@ -227,8 +233,12 @@ public sealed class EfCoreOutboxStore<TContext> : IOutboxStore, IOutboxLeaseRene
         var now = _timeProvider.GetUtcNow();
         var expiry = now + request.LeaseDuration;
         var bucketArray = buckets as int[] ?? [.. buckets];
+        // The expiry only moves forward, as it does in an acquisition: after this host's clock
+        // was set back, a renewal would shorten the lease while the relay goes on counting a
+        // whole lease duration. Refused, the relay drops the bucket and reacquires it.
         var renewed = await context.Set<OutboxLease>()
-            .Where(lease => lease.Owner == request.RelayId && lease.ExpiresAtUtc > now
+            .Where(lease => lease.Owner == request.RelayId
+                && lease.ExpiresAtUtc > now && lease.ExpiresAtUtc <= expiry
                 && lease.Bucket >= 0 && lease.Bucket < request.BucketCount && bucketArray.Contains(lease.Bucket))
             .ExecuteUpdateAsync(setters => setters.SetProperty(lease => lease.ExpiresAtUtc, expiry), cancellationToken)
             .ConfigureAwait(false);
@@ -324,7 +334,8 @@ public sealed class EfCoreOutboxStore<TContext> : IOutboxStore, IOutboxLeaseRene
             .ExecuteDeleteAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    private async Task RecordHeartbeatAsync(
+    /// <returns>False when the row already carries a later timestamp.</returns>
+    private async Task<bool> RecordHeartbeatAsync(
         TContext context, OutboxLeaseRequest request, DateTimeOffset now, CancellationToken cancellationToken)
     {
         // The timestamp only moves forward: a statement from an earlier round that runs late
@@ -335,7 +346,8 @@ public sealed class EfCoreOutboxStore<TContext> : IOutboxStore, IOutboxLeaseRene
                 .SetProperty(r => r.LastSeenUtc, now), cancellationToken).ConfigureAwait(false);
 
         // No row, or a row that already carries a later timestamp, which stays as it is.
-        if (updated == 0 && !await context.Set<OutboxRelayInstance>()
+        var recorded = updated > 0;
+        if (!recorded && !await context.Set<OutboxRelayInstance>()
                 .AnyAsync(r => r.RelayId == request.RelayId, cancellationToken).ConfigureAwait(false))
         {
             context.Set<OutboxRelayInstance>().Add(new OutboxRelayInstance
@@ -346,6 +358,7 @@ public sealed class EfCoreOutboxStore<TContext> : IOutboxStore, IOutboxLeaseRene
             try
             {
                 await context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+                recorded = true;
             }
             catch (DbUpdateException)
             {
@@ -369,6 +382,8 @@ public sealed class EfCoreOutboxStore<TContext> : IOutboxStore, IOutboxLeaseRene
                 .Where(r => r.LastSeenUtc < pruneCutoff)
                 .ExecuteDeleteAsync(cancellationToken).ConfigureAwait(false);
         }
+
+        return recorded;
     }
 
     private async Task EnsureLeasesSeededAsync(

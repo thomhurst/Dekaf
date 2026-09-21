@@ -1422,9 +1422,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     // fetch position is the consumed position (no prefetch, or just after a seek/reset).
     private readonly ConcurrentDictionary<TopicPartition, int> _lastConsumedLeaderEpochs = new();
     // Leader epoch of the batch that ended at the prefetch position, which runs ahead of the
-    // consumed one. Packed with the low 32 bits of that position (see PackFetchedLeaderEpoch) so
-    // a value recorded for another position is never paired with the current one.
-    private readonly ConcurrentDictionary<TopicPartition, long> _lastFetchedLeaderEpochs = new();
+    // consumed one. Kept with that position (see FetchedLeaderEpoch) so an epoch recorded for
+    // another position is never paired with the current one.
+    private readonly ConcurrentDictionary<TopicPartition, FetchedLeaderEpoch> _lastFetchedLeaderEpochs = new();
     // OffsetFetch snapshots must not replace commits that complete after the request starts.
     private readonly ConcurrentDictionary<TopicPartition, CommittedOffsetCacheEntry> _committed = new();
     private long _committedOffsetGeneration;
@@ -5207,14 +5207,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private void SetFetchPosition(TopicPartition partition, long offset)
     {
         _fetchPositions[partition] = offset;
-        _lastFetchedLeaderEpochs.TryRemove(partition, out _);
+        if (_lastFetchedLeaderEpochs.TryGetValue(partition, out var fetched))
+            fetched.Clear();
     }
-
-    // A long stays an in-place ConcurrentDictionary value update (no node allocation per fetch),
-    // and one atomic value cannot tear between the epoch and the position it belongs to.
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal static long PackFetchedLeaderEpoch(long fetchOffset, int leaderEpoch) =>
-        ((long)leaderEpoch << 32) | (uint)fetchOffset;
 
     /// <summary>
     /// FetchRequest.LastFetchedEpoch is the leader epoch of the record at FetchOffset - 1. The
@@ -5230,12 +5225,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         TopicPartition partition,
         long fetchOffset,
         ConcurrentDictionary<TopicPartition, int>? lastConsumedLeaderEpochs,
-        ConcurrentDictionary<TopicPartition, long>? lastFetchedLeaderEpochs)
+        ConcurrentDictionary<TopicPartition, FetchedLeaderEpoch>? lastFetchedLeaderEpochs)
     {
         if (lastFetchedLeaderEpochs is not null
-            && lastFetchedLeaderEpochs.TryGetValue(partition, out var fetched))
+            && lastFetchedLeaderEpochs.TryGetValue(partition, out var fetched)
+            && fetched.TryResolve(fetchOffset, out var fetchedEpoch))
         {
-            return (uint)fetched == (uint)fetchOffset ? (int)(fetched >> 32) : -1;
+            return fetchedEpoch;
         }
 
         return lastConsumedLeaderEpochs?.GetValueOrDefault(partition, -1) ?? -1;
@@ -5281,9 +5277,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         // Record the epoch only for the position this response produced. A position that stayed
         // further ahead keeps the epoch of the response that moved it there. Once per published
-        // partition response, never per record.
+        // partition response, never per record; the publishing lock keeps records from overlapping.
         if (fetchPosition == nextOffset)
-            _lastFetchedLeaderEpochs[partition] = PackFetchedLeaderEpoch(nextOffset, leaderEpoch);
+        {
+            _lastFetchedLeaderEpochs
+                .GetOrAdd(partition, static _ => new FetchedLeaderEpoch())
+                .Record(nextOffset, leaderEpoch);
+        }
     }
 
     private Errors.ConsumeException? HandleEmptyFetchResponse(
@@ -12589,7 +12589,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         ClusterMetadata? clusterMetadata = null,
         ConcurrentDictionary<TopicPartition, int>? lastConsumedLeaderEpochs = null,
         ClusterMetadataSnapshot? metadataSnapshot = null,
-        ConcurrentDictionary<TopicPartition, long>? lastFetchedLeaderEpochs = null)
+        ConcurrentDictionary<TopicPartition, FetchedLeaderEpoch>? lastFetchedLeaderEpochs = null)
     {
         metadataSnapshot ??= clusterMetadata?.CaptureSnapshot();
         var result = ConsumerFetchPools.RentFetchRequestTopicList(templateDict.Count);
@@ -12644,7 +12644,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         ClusterMetadata? clusterMetadata = null,
         ConcurrentDictionary<TopicPartition, int>? lastConsumedLeaderEpochs = null,
         ClusterMetadataSnapshot? metadataSnapshot = null,
-        ConcurrentDictionary<TopicPartition, long>? lastFetchedLeaderEpochs = null)
+        ConcurrentDictionary<TopicPartition, FetchedLeaderEpoch>? lastFetchedLeaderEpochs = null)
     {
         metadataSnapshot ??= clusterMetadata?.CaptureSnapshot();
         var result = ConsumerFetchPools.RentFetchRequestTopicList(templateDict.Count);
@@ -12676,7 +12676,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         int? adaptivePartitionMaxBytes,
         ClusterMetadataSnapshot? metadataSnapshot,
         ConcurrentDictionary<TopicPartition, int>? lastConsumedLeaderEpochs,
-        ConcurrentDictionary<TopicPartition, long>? lastFetchedLeaderEpochs,
+        ConcurrentDictionary<TopicPartition, FetchedLeaderEpoch>? lastFetchedLeaderEpochs,
         int partitionRotation)
     {
         var partitionList = ConsumerFetchPools.RentFetchRequestPartitionList(cachedPartitions.Count);
@@ -12725,7 +12725,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         int? adaptivePartitionMaxBytes,
         ClusterMetadataSnapshot? metadataSnapshot,
         ConcurrentDictionary<TopicPartition, int>? lastConsumedLeaderEpochs,
-        ConcurrentDictionary<TopicPartition, long>? lastFetchedLeaderEpochs)
+        ConcurrentDictionary<TopicPartition, FetchedLeaderEpoch>? lastFetchedLeaderEpochs)
     {
         var (template, tp) = cachedPartition;
         if (!fetchPositions.TryGetValue(tp, out var fetchOffset))

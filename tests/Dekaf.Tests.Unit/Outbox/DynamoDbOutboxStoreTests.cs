@@ -288,6 +288,56 @@ public sealed class DynamoDbOutboxStoreTests
     }
 
     [Test]
+    public async Task RefusedHeartbeat_ClaimsNothing_AndStillKeepsWhatItHolds()
+    {
+        var client = Substitute.For<IAmazonDynamoDB>();
+        // Buckets 4-7 are free. The refused heartbeat says this host's clock is behind a
+        // timestamp written for its relay id, so a lease claimed now would expire early on a
+        // peer's clock while this relay counted a whole lease duration.
+        ReturnCoordination(client, [.. Leases("relay-a", 0, 3), Relay("relay-a")]);
+        client.PutItemAsync(Arg.Any<PutItemRequest>(), Arg.Any<CancellationToken>())
+            .Returns<PutItemResponse>(_ => throw new ConditionalCheckFailedException("The conditional request failed"));
+        var store = new DynamoDbOutboxStore(client, Options, new FixedClock());
+
+        var owned = await store.AcquireBucketLeasesAsync(Request);
+
+        await Assert.That(string.Join(',', owned)).IsEqualTo("0,1,2,3");
+        await client.Received(4).UpdateItemAsync(Arg.Any<UpdateItemRequest>(), Arg.Any<CancellationToken>());
+        await client.Received(4).UpdateItemAsync(
+            Arg.Is<UpdateItemRequest>(request => request.ConditionExpression == KeepCondition),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    [Arguments(0)]
+    [Arguments(-60)]
+    public async Task StoppedRecord_IsStampedLaterThanEveryHeartbeatThisStoreSent(int clockStepSeconds)
+    {
+        var client = Substitute.For<IAmazonDynamoDB>();
+        var writes = new List<PutItemRequest>();
+        ReturnCoordination(client, [.. Leases("relay-a", 0, 7), Relay("relay-a")]);
+        client.PutItemAsync(Arg.Any<PutItemRequest>(), Arg.Any<CancellationToken>()).Returns(call =>
+        {
+            writes.Add(call.Arg<PutItemRequest>());
+            return new PutItemResponse();
+        });
+        var clock = new SteppedClock();
+        var store = new DynamoDbOutboxStore(client, Options, clock);
+        await store.AcquireBucketLeasesAsync(Request);
+
+        // The stop lands in the tick of the round it cancels, or after the clock was set back.
+        // Either way that round's heartbeat, still on its way, passes "#lastSeen <= :now"
+        // against a record stamped with the clock, and replaces it without the stopped mark.
+        clock.Step(TimeSpan.FromSeconds(clockStepSeconds));
+        await store.ReleaseBucketLeasesAsync(Request, previousBuckets: []);
+
+        var heartbeat = long.Parse(writes[0].Item["LastSeenUtc"].N, CultureInfo.InvariantCulture);
+        var stopped = long.Parse(writes[1].Item["LastSeenUtc"].N, CultureInfo.InvariantCulture);
+        await Assert.That(writes[1].Item.ContainsKey("StoppedAtUtc")).IsTrue();
+        await Assert.That(stopped).IsEqualTo(heartbeat + 1);
+    }
+
+    [Test]
     public async Task Fetch_IsStronglyConsistent_AndThePendingProbeIsACheapOneKeyRead()
     {
         var client = Substitute.For<IAmazonDynamoDB>();
@@ -578,6 +628,15 @@ public sealed class DynamoDbOutboxStoreTests
     private sealed class FixedClock : TimeProvider
     {
         public override DateTimeOffset GetUtcNow() => Now;
+    }
+
+    private sealed class SteppedClock : TimeProvider
+    {
+        private DateTimeOffset _now = Now;
+
+        public void Step(TimeSpan step) => _now += step;
+
+        public override DateTimeOffset GetUtcNow() => _now;
     }
 
     /// <summary>Fires every timer at once, so retry backoff costs the test no time.</summary>

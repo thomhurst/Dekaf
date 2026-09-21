@@ -22,7 +22,7 @@ public class FetchedEpochTrackingBenchmarks
 
     private readonly ConcurrentDictionary<TopicPartition, long> _fetchPositions = new();
     private readonly ConcurrentDictionary<TopicPartition, int> _lastConsumedLeaderEpochs = new();
-    private readonly ConcurrentDictionary<TopicPartition, long> _lastFetchedLeaderEpochs = new();
+    private readonly ConcurrentDictionary<TopicPartition, FetchedLeaderEpoch> _lastFetchedLeaderEpochs = new();
     private readonly Dictionary<string, List<(FetchRequestPartition Partition, TopicPartition TopicPartition)>>
         _templates = [];
     private readonly TopicPartition[] _partitions = new TopicPartition[PartitionCount];
@@ -45,8 +45,7 @@ public class FetchedEpochTrackingBenchmarks
             // The consumed position is still in epoch 5; the prefetch reached epoch 6.
             _fetchPositions[topicPartition] = 1_000 + partition;
             _lastConsumedLeaderEpochs[topicPartition] = 5;
-            _lastFetchedLeaderEpochs[topicPartition] =
-                KafkaConsumer<string, string>.PackFetchedLeaderEpoch(1_000 + partition, 6);
+            _lastFetchedLeaderEpochs[topicPartition] = new FetchedLeaderEpoch(1_000 + partition, 6);
             templates.Add((
                 new FetchRequestPartition
                 {

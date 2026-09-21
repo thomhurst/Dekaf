@@ -4,6 +4,7 @@ using Dekaf.Networking;
 using Dekaf.Producer;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
+using NSubstitute;
 
 namespace Dekaf.Tests.Unit.Producer;
 
@@ -43,6 +44,68 @@ public sealed class IdempotentInitializationTests
         await harness.Producer.InitializeAsync(cancellationToken);
 
         await Assert.That(harness.Requests.Single().BrokerId).IsEqualTo(harness.BrokerIds[1]);
+        await AssertInitializedAsync(harness);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task InitializeAsync_ClientRoutingFailure_TriesNextBroker(bool unknownBroker, CancellationToken cancellationToken)
+    {
+        // The pool reports these as InvalidOperationException subtypes: no endpoint for the
+        // broker yet, or a restarting broker that drops every connection it accepts. Both are
+        // failures of that one broker.
+        await using var harness = new ProducerInitializationHarness();
+        Exception failure = unknownBroker
+            ? new UnknownBrokerException(harness.BrokerIds[0])
+            : new ConnectionSetupExhaustedException(3);
+        harness.Connect = (id, _) => id == harness.BrokerIds[0]
+            ? ValueTask.FromException<IKafkaConnection>(failure)
+            : ValueTask.FromResult(harness.Connections[id]);
+
+        await harness.Producer.InitializeAsync(cancellationToken);
+
+        await Assert.That(harness.Requests.Single().BrokerId).IsEqualTo(harness.BrokerIds[1]);
+        await AssertInitializedAsync(harness);
+    }
+
+    [Test]
+    public async Task InitializeAsync_EveryBrokerUnknownToThePool_RefreshesMetadataBeforeTheNextRound(
+        CancellationToken cancellationToken)
+    {
+        await using var harness = new ProducerInitializationHarness();
+        var refreshAttempted = false;
+        foreach (var connection in harness.Connections.Values)
+        {
+            // A refresh negotiates API versions on a test connection before it asks for metadata.
+            connection.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
+                    Arg.Any<ApiVersionsRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
+                .Returns(_ =>
+                {
+                    refreshAttempted = true;
+                    return ValueTask.FromException<ApiVersionsResponse>(
+                        new SocketException((int)SocketError.ConnectionReset));
+                });
+        }
+
+        var firstRound = harness.BrokerIds.Length;
+        harness.Connect = (id, _) =>
+        {
+            if (firstRound > 0)
+            {
+                firstRound--;
+                return ValueTask.FromException<IKafkaConnection>(new UnknownBrokerException(id));
+            }
+
+            return harness.Connections.TryGetValue(id, out var connection)
+                ? ValueTask.FromResult(connection)
+                : ValueTask.FromException<IKafkaConnection>(new SocketException((int)SocketError.ConnectionRefused));
+        };
+
+        await harness.Producer.InitializeAsync(cancellationToken);
+
+        // Only newer metadata gives the pool an endpoint, so the round is not simply repeated.
+        await Assert.That(refreshAttempted).IsTrue();
         await AssertInitializedAsync(harness);
     }
 

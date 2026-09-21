@@ -6226,6 +6226,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                     }
                 }
 
+                var refreshMetadata = false;
                 for (var brokerIndex = 0; brokerIndex < brokers.Count; brokerIndex++)
                 {
                     initializationToken.ThrowIfCancellationRequested();
@@ -6257,15 +6258,29 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                         _idempotentInitialized = true;
                         return;
                     }
-                    catch (Exception ex) when (RetryHelper.IsRetriableBrokerFailure(ex) || IsRetiredConnectionFailure(ex))
+                    catch (Exception ex) when (RetryHelper.IsRetriableBrokerFailure(ex)
+                        || TransportFailureClassifier.IsClientRoutingFailure(ex)
+                        || IsRetiredConnectionFailure(ex))
                     {
                         // Not filtered on the token: a socket can report its failure after
                         // max.block.ms (or the caller) already cancelled, and the raw transport
                         // exception would then escape instead of the timeout that carries it. The
                         // checks at the top of both loops observe the cancellation.
+                        // A routing failure is the pool's report on this one broker (no endpoint
+                        // for it yet, or a broker that drops every connection while it restarts),
+                        // so the next broker is still worth trying.
                         lastFailure = ex;
+                        refreshMetadata |= TransportFailureClassifier.RequiresMetadataRefresh(ex);
                         LogIdempotentInitializationBrokerFailed(ex, brokerId);
                     }
+                }
+
+                // The pool had no endpoint for a broker the metadata names: only newer metadata
+                // changes what the next round finds.
+                if (refreshMetadata)
+                {
+                    await RetryHelper.RefreshMetadataForRetryAsync(_metadataManager, initializationToken)
+                        .ConfigureAwait(false);
                 }
 
                 var retryDelayMs = ExponentialRetryBackoff.CalculateDelayMilliseconds(

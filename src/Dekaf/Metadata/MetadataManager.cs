@@ -66,6 +66,13 @@ public sealed partial class MetadataManager : IAsyncDisposable
         // Guarded by _sharedTopicFetchLock.
         public int Waiters;
 
+        // Guarded by _sharedTopicFetchLock. Dispose must not run while Cancel does, and the
+        // fetch can finish while its last waiter is still inside Cancel. These hand the source
+        // to whichever of the two is done last; see DisposeWhenUnused.
+        public bool Abandoned;
+        public bool CancelReturned;
+        public bool Finished;
+
         /// <summary>The failure the fetch is currently retrying, for a waiter whose budget ends first.</summary>
         public Exception? LastFailure
         {
@@ -784,6 +791,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
                 if (--fetch.Waiters == 0 && !fetch.Completion.Task.IsCompleted)
                 {
                     RemoveSharedTopicFetch(topicName, fetch);
+                    fetch.Abandoned = true;
                     abandoned = true;
                 }
             }
@@ -795,12 +803,35 @@ public sealed partial class MetadataManager : IAsyncDisposable
                 {
                     fetch.Cancellation.Cancel();
                 }
-                catch (ObjectDisposedException)
+                finally
                 {
-                    // The fetch finished on its own in the meantime.
+                    DisposeWhenUnused(fetch, cancelReturned: true);
                 }
             }
         }
+    }
+
+    /// <summary>
+    /// Disposes the fetch's cancellation source once the fetch has finished and no waiter is
+    /// inside <see cref="CancellationTokenSource.Cancel()"/>. The fetch and the waiter that
+    /// abandoned it each report here once; the second report disposes. A fetch nobody
+    /// abandoned is disposed by its own report.
+    /// </summary>
+    private void DisposeWhenUnused(SharedTopicFetch fetch, bool cancelReturned)
+    {
+        bool dispose;
+        lock (_sharedTopicFetchLock)
+        {
+            if (cancelReturned)
+                fetch.CancelReturned = true;
+            else
+                fetch.Finished = true;
+
+            dispose = fetch.Finished && (!fetch.Abandoned || fetch.CancelReturned);
+        }
+
+        if (dispose)
+            fetch.Cancellation.Dispose();
     }
 
     private async Task RunSharedTopicFetchAsync(string topicName, SharedTopicFetch fetch)
@@ -837,7 +868,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
                 RemoveSharedTopicFetch(topicName, fetch);
             }
 
-            fetch.Cancellation.Dispose();
+            DisposeWhenUnused(fetch, cancelReturned: false);
         }
     }
 

@@ -263,6 +263,48 @@ public class EfCoreOutboxStoreTests
     }
 
     [Test]
+    public async Task ClockSetBack_ClaimsNoFreeBucket()
+    {
+        using var db = new SqliteOutboxDatabase();
+        var store = db.CreateStore();
+        await store.AcquireBucketLeasesAsync(Request("relay-a"));
+        await using (var context = db.CreateContext())
+        {
+            await context.Set<OutboxLease>().Where(lease => lease.Bucket >= 2)
+                .ExecuteUpdateAsync(setters => setters.SetProperty(lease => lease.Owner, (string?)null));
+        }
+
+        // Behind its own heartbeat, the expiry this host computes is too early: a peer could
+        // take a bucket claimed now while this relay still counted a whole lease duration.
+        db.Time.Advance(TimeSpan.FromSeconds(-25));
+        var owned = await store.AcquireBucketLeasesAsync(Request("relay-a"));
+
+        await Assert.That(owned).IsEmpty();
+        await using (var context = db.CreateContext())
+            await Assert.That(await context.Set<OutboxLease>().CountAsync(lease => lease.Owner == null)).IsEqualTo(2);
+
+        db.Time.Advance(TimeSpan.FromSeconds(25));
+        await Assert.That(await store.AcquireBucketLeasesAsync(Request("relay-a"))).IsEquivalentTo(AllBuckets);
+    }
+
+    [Test]
+    public async Task ClockSetBack_RenewalDoesNotShortenALease_AndReportsTheBucketsLost()
+    {
+        using var db = new SqliteOutboxDatabase();
+        var store = db.CreateStore();
+        await store.AcquireBucketLeasesAsync(Request("relay-a"));
+        var written = await LeaseExpiriesAsync(db);
+
+        db.Time.Advance(TimeSpan.FromSeconds(-25));
+        var renewed = await store.RenewBucketLeasesAsync(Request("relay-a"), AllBuckets);
+
+        // The relay reacquires instead of publishing under a lease it believes is longer
+        // than the one its peers read.
+        await Assert.That(renewed).IsFalse();
+        await Assert.That(await LeaseExpiriesAsync(db)).IsEquivalentTo(written);
+    }
+
+    [Test]
     public async Task Heartbeat_OnlyMovesForward()
     {
         using var db = new SqliteOutboxDatabase();

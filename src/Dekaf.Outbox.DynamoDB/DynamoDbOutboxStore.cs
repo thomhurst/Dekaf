@@ -55,6 +55,8 @@ public sealed partial class DynamoDbOutboxStore : IOutboxStore, IOutboxLeaseRene
     // Last sequence number deleted per bucket. The relay serializes fetches and marks, so no lock.
     private readonly long[] _lastSequence;
     private int _acquisitionRound;
+    // Latest timestamp any heartbeat of this store was sent with; see StoppedTimestamp.
+    private long _lastHeartbeatSent;
 
     /// <summary>
     /// Creates the store. The caller owns <paramref name="client"/>.
@@ -96,7 +98,8 @@ public sealed partial class DynamoDbOutboxStore : IOutboxStore, IOutboxLeaseRene
         var expiry = now + request.LeaseDuration.Ticks;
 
         // Before the read, so peers see this relay as early as possible.
-        await RecordHeartbeatAsync(request.RelayId, now, cancellationToken).ConfigureAwait(false);
+        var heartbeatRecorded = await RecordHeartbeatAsync(request.RelayId, now, cancellationToken)
+            .ConfigureAwait(false);
 
         var coordination = await ReadCoordinationAsync(request, now, cancellationToken).ConfigureAwait(false);
         var plan = DynamoDbLeasePlanner.Plan(
@@ -115,9 +118,21 @@ public sealed partial class DynamoDbOutboxStore : IOutboxStore, IOutboxLeaseRene
         await WriteLeasesAsync(plan.Release, ReleaseLeaseRequest, SeenExpiry, write, cancellationToken)
             .ConfigureAwait(false);
 
-        var claimed = await WriteLeasesAsync(plan.Claim, ClaimLeaseRequest, SeenExpiry, write, cancellationToken)
-            .ConfigureAwait(false);
-        Collect(plan.Claim, claimed, owned, request.RelayId, claimed: true);
+        // A refused heartbeat means this host's clock is behind a timestamp already written for
+        // its relay id, so the expiry of this round is too early. A kept lease is guarded by the expiry it
+        // already stores (see LeasesThatMoveForward); a claim has none to compare with, and a
+        // peer could take the bucket the moment it lapses on the peer's clock, while this relay
+        // still counts a whole lease duration. Claim nothing until the clock has caught up.
+        if (heartbeatRecorded)
+        {
+            var claimed = await WriteLeasesAsync(plan.Claim, ClaimLeaseRequest, SeenExpiry, write, cancellationToken)
+                .ConfigureAwait(false);
+            Collect(plan.Claim, claimed, owned, request.RelayId, claimed: true);
+        }
+        else if (plan.Claim.Count > 0)
+        {
+            LogClaimsSkipped(request.RelayId, plan.Claim.Count);
+        }
 
         // Pruning is housekeeping, not correctness; run it occasionally instead of per round.
         if (++_acquisitionRound % HeartbeatPruneFactor == 0)
@@ -188,7 +203,7 @@ public sealed partial class DynamoDbOutboxStore : IOutboxStore, IOutboxLeaseRene
             // costs. The other order leaves freed buckets next to a live heartbeat, and peers
             // keep those reserved for a relay that is gone until the heartbeat ages out.
             if (attempt == 0)
-                await WriteRelayRecordAsync(request.RelayId, now, stopped: true, cancellationToken)
+                await WriteRelayRecordAsync(request.RelayId, StoppedTimestamp(now), stopped: true, cancellationToken)
                     .ConfigureAwait(false);
 
             // Released by owner, not by previousBuckets: the read also finds leases that an

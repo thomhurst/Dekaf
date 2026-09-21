@@ -219,6 +219,36 @@ public sealed class OutboxRelayResilienceTests
         }
     }
 
+    [Test]
+    public async Task NotifierThatFailsLate_FallsBackForTheRestOfTheDelay_NotAllOfItAgain()
+    {
+        var time = new ManualTimeProvider();
+        var left = TimeSpan.FromMilliseconds(1234);
+        var notifier = new LateFailingNotifier(time, left);
+        var options = new OutboxRelayOptions
+        {
+            RelayId = "relay-a",
+            BucketCount = 1,
+            PollInterval = TimeSpan.FromSeconds(5),
+            LeaseRenewInterval = TimeSpan.FromSeconds(10),
+            LeaseDuration = TimeSpan.FromSeconds(30),
+            MaxPublishDuration = TimeSpan.FromSeconds(5)
+        };
+        using var relay = new OutboxRelayService(new RowStore(), new ConcurrentSendPublisher(), options,
+            NullLogger<OutboxRelayService>.Instance, time, notifier);
+        await relay.StartAsync(CancellationToken.None);
+        try
+        {
+            // The delay ends no later than the next renewal. Waiting all of it again after the
+            // notifier used most of it would push the renewal towards the lease's expiry.
+            await time.WaitForTimerAsync(left);
+        }
+        finally
+        {
+            await relay.StopAsync(CancellationToken.None).WaitAsync(SignalTimeout);
+        }
+    }
+
     private static OutboxRelayOptions FastOptions(int bucketCount = 1) => new()
     {
         BucketCount = bucketCount,
@@ -509,6 +539,25 @@ public sealed class OutboxRelayResilienceTests
         {
             Interlocked.Increment(ref _markCount);
             return ValueTask.CompletedTask;
+        }
+    }
+
+    /// <summary>Fails once, when all but <paramref name="left"/> of the wait has passed.</summary>
+    private sealed class LateFailingNotifier(ManualTimeProvider time, TimeSpan left) : IOutboxNotifier
+    {
+        private int _failed;
+
+        public void NotifyCommitted() { }
+
+        public async ValueTask WaitAsync(TimeSpan timeout, CancellationToken cancellationToken = default)
+        {
+            if (Interlocked.Exchange(ref _failed, 1) == 0)
+            {
+                time.Advance(timeout - left);
+                throw new InvalidOperationException("Simulated notifier failure.");
+            }
+
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
         }
     }
 

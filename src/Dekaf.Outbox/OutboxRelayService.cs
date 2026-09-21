@@ -247,10 +247,13 @@ public sealed partial class OutboxRelayService : BackgroundService
 
     /// <summary>
     /// Notifications are advisory, so a notifier that throws must not end the relay: the wait
-    /// falls back to the timer it would have raced.
+    /// falls back to the timer it would have raced, for what is left of the delay. The delay
+    /// ends no later than the next lease renewal, and a notifier that fails late must not
+    /// push the renewal out by a second full wait.
     /// </summary>
     private async ValueTask WaitForNotificationAsync(IOutboxNotifier notifier, TimeSpan delay, CancellationToken stoppingToken)
     {
+        var started = _timeProvider.GetTimestamp();
         try
         {
             await notifier.WaitAsync(delay, stoppingToken).ConfigureAwait(false);
@@ -265,7 +268,9 @@ public sealed partial class OutboxRelayService : BackgroundService
             LogNotifierFailed(ex);
         }
 
-        await Task.Delay(delay, _timeProvider, stoppingToken).ConfigureAwait(false);
+        var remaining = delay - _timeProvider.GetElapsedTime(started);
+        if (remaining > TimeSpan.Zero)
+            await Task.Delay(remaining, _timeProvider, stoppingToken).ConfigureAwait(false);
     }
 
     /// <summary>
