@@ -369,6 +369,48 @@ public sealed class TransactionOffsetCommitTests
     }
 
     [Test]
+    public async Task TV2_GroupCoordinatorErrorResponse_RetriesWithoutRegisteringTheErrorNode()
+    {
+        // An error response names node -1 with an empty host; registering it would leave the
+        // pool with a broker it can never connect to.
+        await using var harness = CreateHarness(
+            transactionVersion: 2,
+            txnOffsetCommitMaxVersion: 5,
+            coordinatorErrorResponsesBeforeSuccess: 1);
+
+        await harness.Producer.SendOffsetsToTransactionInternalAsync(
+            [new TopicPartitionOffset("orders", 0, 42)],
+            "group-1",
+            CancellationToken.None);
+
+        await Assert.That(harness.Connection.CommitRequests).Count().IsEqualTo(1);
+        await Assert.That(harness.IsBrokerRegistered(-1)).IsFalse();
+        await Assert.That(harness.IsBrokerRegistered(1)).IsTrue();
+    }
+
+    [Test]
+    public async Task TV2_MetadataRefreshFailureBetweenCommitRetries_IsBestEffort()
+    {
+        // The refresh between retries only helps the next attempt find the topic. When it fails
+        // for a reason no filter classifies, the commit's own typed outcome must stay the result.
+        var outcomes = new Queue<object>([ErrorCode.UnknownTopicOrPartition, ErrorCode.None]);
+        await using var harness = CreateHarness(
+            transactionVersion: 2,
+            txnOffsetCommitMaxVersion: 5,
+            commitOutcomes: outcomes,
+            failMetadataRefresh: true);
+
+        await harness.Producer.SendOffsetsToTransactionInternalAsync(
+            [new TopicPartitionOffset("orders", 0, 42)],
+            "group-1",
+            CancellationToken.None);
+
+        await Assert.That(harness.Connection.CommitRequests).Count().IsEqualTo(2);
+        await Assert.That(harness.Connection.Requests.Count(static request =>
+            request.ApiKey == ApiKey.Metadata)).IsGreaterThanOrEqualTo(1);
+    }
+
+    [Test]
     public async Task TV2_EmptyCoordinatorResponse_RetriesWithinDeadline()
     {
         await using var harness = CreateHarness(
@@ -437,7 +479,9 @@ public sealed class TransactionOffsetCommitTests
         int commitFailureAdvanceMs = 0,
         Queue<Exception>? findCoordinatorFailures = null,
         Queue<Exception>? addOffsetsFailures = null,
-        int transportFailureAdvanceMs = 0)
+        int transportFailureAdvanceMs = 0,
+        int coordinatorErrorResponsesBeforeSuccess = 0,
+        bool failMetadataRefresh = false)
     {
         var connection = new RecordingConnection(
             txnOffsetCommitMaxVersion,
@@ -449,7 +493,9 @@ public sealed class TransactionOffsetCommitTests
             commitFailureAdvanceMs,
             findCoordinatorFailures,
             addOffsetsFailures,
-            transportFailureAdvanceMs);
+            transportFailureAdvanceMs,
+            coordinatorErrorResponsesBeforeSuccess,
+            failMetadataRefresh);
         var connectionPool = new ConnectionPool(
             "transaction-offset-tests",
             connectionOptions: null,
@@ -518,6 +564,14 @@ public sealed class TransactionOffsetCommitTests
         internal KafkaProducer<string, string> Producer { get; } = producer;
         internal RecordingConnection Connection { get; } = connection;
 
+        internal bool IsBrokerRegistered(int brokerId)
+        {
+            var brokers = (System.Collections.IDictionary)typeof(ConnectionPool)
+                .GetField("_brokers", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .GetValue(connectionPool)!;
+            return brokers.Contains(brokerId);
+        }
+
         public async ValueTask DisposeAsync()
         {
             Producer._transactionState = TransactionState.Ready;
@@ -546,7 +600,9 @@ public sealed class TransactionOffsetCommitTests
         int commitFailureAdvanceMs,
         Queue<Exception>? findCoordinatorFailures,
         Queue<Exception>? addOffsetsFailures,
-        int transportFailureAdvanceMs) : IKafkaConnection, IKafkaCapabilityProvider
+        int transportFailureAdvanceMs,
+        int coordinatorErrorResponsesBeforeSuccess,
+        bool failMetadataRefresh) : IKafkaConnection, IKafkaCapabilityProvider
     {
         /// <summary>
         /// Dequeues the next scripted transport failure for the request kind, failing the request
@@ -611,6 +667,11 @@ public sealed class TransactionOffsetCommitTests
             if (request is AddOffsetsToTxnRequest && TryTakeTransportFailure(addOffsetsFailures, out var addOffsetsFailure))
                 return ValueTask.FromException<TResponse>(addOffsetsFailure);
 
+            // Not a transport failure: the metadata manager wraps it in its own
+            // InvalidOperationException, which no retry filter classifies as transient.
+            if (request is MetadataRequest && failMetadataRefresh)
+                return ValueTask.FromException<TResponse>(new NotSupportedException("metadata refresh rejected"));
+
             IKafkaResponse response = request switch
             {
                 AddOffsetsToTxnRequest => new AddOffsetsToTxnResponse { ErrorCode = ErrorCode.None },
@@ -635,6 +696,25 @@ public sealed class TransactionOffsetCommitTests
         private FindCoordinatorResponse CreateFindCoordinatorResponse(FindCoordinatorRequest request)
         {
             var requestNumber = Interlocked.Increment(ref _findCoordinatorRequests);
+            if (requestNumber <= coordinatorErrorResponsesBeforeSuccess)
+            {
+                // The shape a broker answers with when it cannot name a coordinator yet.
+                return new FindCoordinatorResponse
+                {
+                    Coordinators =
+                    [
+                        new Coordinator
+                        {
+                            Key = request.Key,
+                            NodeId = -1,
+                            Host = string.Empty,
+                            Port = -1,
+                            ErrorCode = ErrorCode.CoordinatorNotAvailable
+                        }
+                    ]
+                };
+            }
+
             return new FindCoordinatorResponse
             {
                 Coordinators = requestNumber <= emptyCoordinatorResponsesBeforeSuccess

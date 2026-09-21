@@ -29,6 +29,13 @@ public sealed class EfCoreOutboxStore<TContext> : IOutboxStore, IOutboxLeaseRene
     /// </summary>
     private const int HeartbeatPruneFactor = 10;
 
+    /// <summary>
+    /// How many times a release frees the relay's leases before it gives up on undoing a
+    /// claim that a cancelled acquisition round landed after it. The first pass hands the
+    /// leases back, the rest confirm; the bound keeps a stopping host from looping forever.
+    /// </summary>
+    private const int MaxReleaseAttempts = 3;
+
     // EF compiled queries are model-specific. Weak model keys support custom mappings
     // without retaining application models or sharing a delegate across different models.
     private static readonly ConditionalWeakTable<IModel, Func<TContext, int[], IAsyncEnumerable<int>>> PendingBucketQueries = new();
@@ -81,7 +88,8 @@ public sealed class EfCoreOutboxStore<TContext> : IOutboxStore, IOutboxLeaseRene
         var expiry = now + request.LeaseDuration;
         var leases = context.Set<OutboxLease>();
 
-        await RecordHeartbeatAsync(context, request, now, cancellationToken).ConfigureAwait(false);
+        var heartbeatRecorded = await RecordHeartbeatAsync(context, request, now, cancellationToken)
+            .ConfigureAwait(false);
         await EnsureLeasesSeededAsync(context, request.BucketCount, cancellationToken).ConfigureAwait(false);
         await ThrowIfRowsOutsideBucketRangeAsync(context, request.BucketCount, cancellationToken)
             .ConfigureAwait(false);
@@ -120,8 +128,12 @@ public sealed class EfCoreOutboxStore<TContext> : IOutboxStore, IOutboxLeaseRene
         if (keepCount > 0)
         {
             var kept = mine.GetRange(0, keepCount).ToArray();
+            // The expiry only moves forward. A statement this relay gave up on (a provider
+            // that breaks the connection when cancellation times out) can still run later,
+            // and a host whose clock was set back computes an earlier expiry than it stored;
+            // either would shorten a lease that peers may already have planned around.
             await leases
-                .Where(l => l.Owner == request.RelayId && kept.Contains(l.Bucket))
+                .Where(l => l.Owner == request.RelayId && kept.Contains(l.Bucket) && l.ExpiresAtUtc <= expiry)
                 .ExecuteUpdateAsync(setters => setters
                     .SetProperty(l => l.ExpiresAtUtc, expiry), cancellationToken).ConfigureAwait(false);
         }
@@ -139,8 +151,13 @@ public sealed class EfCoreOutboxStore<TContext> : IOutboxStore, IOutboxLeaseRene
         // Claim unowned or expired buckets up to the fair share. The candidate list is
         // pre-limited to the deficit so over-claiming is impossible, and the guarded WHERE
         // re-evaluates per row so a concurrent claimer simply wins some of the candidates.
+        // Not after a refused heartbeat: this host's clock is then behind a timestamp already
+        // written for its relay id, so the expiry of this round is too early. A kept lease is
+        // guarded by the expiry it already stores; a claim has none to compare with, and a peer
+        // could take the bucket the moment it lapses on the peer's clock, while this relay
+        // still counts a whole lease duration.
         var deficit = fairShare - keepCount;
-        if (deficit > 0 && free.Count > 0)
+        if (deficit > 0 && free.Count > 0 && heartbeatRecorded)
         {
             var candidates = free.GetRange(0, Math.Min(deficit, free.Count)).ToArray();
             await leases
@@ -152,8 +169,13 @@ public sealed class EfCoreOutboxStore<TContext> : IOutboxStore, IOutboxLeaseRene
 
         // Read back the true owned set: it reflects lost claim races and stolen leases.
         // Same range bound as the snapshot so stale out-of-range leases never reach the relay.
+        // Only leases this round wrote: the relay trusts what it is told for a whole lease
+        // duration from now, which a lease that kept a later expiry (see above) cannot
+        // promise on a peer's clock. Such a lease still names this relay, so nobody else takes
+        // it, and it is kept again once this host's clock has passed it.
         return await leases
-            .Where(l => l.Owner == request.RelayId && l.Bucket >= 0 && l.Bucket < request.BucketCount)
+            .Where(l => l.Owner == request.RelayId && l.ExpiresAtUtc == expiry
+                && l.Bucket >= 0 && l.Bucket < request.BucketCount)
             .Select(l => l.Bucket)
             .OrderBy(b => b)
             .ToListAsync(cancellationToken).ConfigureAwait(false);
@@ -211,8 +233,12 @@ public sealed class EfCoreOutboxStore<TContext> : IOutboxStore, IOutboxLeaseRene
         var now = _timeProvider.GetUtcNow();
         var expiry = now + request.LeaseDuration;
         var bucketArray = buckets as int[] ?? [.. buckets];
+        // The expiry only moves forward, as it does in an acquisition: after this host's clock
+        // was set back, a renewal would shorten the lease while the relay goes on counting a
+        // whole lease duration. Refused, the relay drops the bucket and reacquires it.
         var renewed = await context.Set<OutboxLease>()
-            .Where(lease => lease.Owner == request.RelayId && lease.ExpiresAtUtc > now
+            .Where(lease => lease.Owner == request.RelayId
+                && lease.ExpiresAtUtc > now && lease.ExpiresAtUtc <= expiry
                 && lease.Bucket >= 0 && lease.Bucket < request.BucketCount && bucketArray.Contains(lease.Bucket))
             .ExecuteUpdateAsync(setters => setters.SetProperty(lease => lease.ExpiresAtUtc, expiry), cancellationToken)
             .ConfigureAwait(false);
@@ -243,19 +269,34 @@ public sealed class EfCoreOutboxStore<TContext> : IOutboxStore, IOutboxLeaseRene
         var context = await _contextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
         await using var contextDisposal = context.ConfigureAwait(false);
         var now = _timeProvider.GetUtcNow();
-        // Scoped to the owner, not to previousBuckets: one statement also frees leases that
-        // an acquisition claimed before it failed, and the guard leaves a peer's takeover alone.
-        await context.Set<OutboxLease>()
-            .Where(l => l.Owner == request.RelayId)
-            .ExecuteUpdateAsync(setters => setters
-                .SetProperty(l => l.Owner, (string?)null)
-                .SetProperty(l => l.ExpiresAtUtc, now), cancellationToken).ConfigureAwait(false);
 
-        // Peers stop dividing the buckets by a relay count that still includes this one.
-        // If this statement fails, the heartbeat ages out as it does without a release.
-        await context.Set<OutboxRelayInstance>()
-            .Where(r => r.RelayId == request.RelayId)
-            .ExecuteDeleteAsync(cancellationToken).ConfigureAwait(false);
+        // A stop cancels the acquisition round it interrupts. Providers wait for the server
+        // to confirm a cancelled statement, so normally nothing of that round is left to
+        // run; one that breaks the connection instead can leave a statement that lands after
+        // the first pass and names a relay that is gone: a claim, whose owner guard cannot
+        // refuse it because a released lease has no owner, or the first heartbeat insert. So
+        // the release repeats until a pass finds nothing. A healthy release is two passes.
+        for (var attempt = 0; attempt < MaxReleaseAttempts; attempt++)
+        {
+            // Peers stop dividing the buckets by a relay count that still includes this one.
+            // Before the leases, not after: a release cut short by the shutdown deadline then
+            // leaves leases that expire, which costs what no release costs. The other order
+            // leaves freed buckets next to a live heartbeat, and peers keep the fair share of a
+            // relay that is gone unclaimed until the heartbeat ages out.
+            var retired = await context.Set<OutboxRelayInstance>()
+                .Where(r => r.RelayId == request.RelayId)
+                .ExecuteDeleteAsync(cancellationToken).ConfigureAwait(false);
+
+            // Scoped to the owner, not to previousBuckets: one statement also frees leases that
+            // an acquisition claimed before it failed, and the guard leaves a peer's takeover alone.
+            var released = await context.Set<OutboxLease>()
+                .Where(l => l.Owner == request.RelayId)
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(l => l.Owner, (string?)null)
+                    .SetProperty(l => l.ExpiresAtUtc, now), cancellationToken).ConfigureAwait(false);
+            if (retired == 0 && released == 0)
+                return;
+        }
     }
 
     public async ValueTask<IReadOnlyList<OutboxMessage>> GetNextBatchAsync(
@@ -293,15 +334,21 @@ public sealed class EfCoreOutboxStore<TContext> : IOutboxStore, IOutboxLeaseRene
             .ExecuteDeleteAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    private async Task RecordHeartbeatAsync(
+    /// <returns>False when the row already carries a later timestamp.</returns>
+    private async Task<bool> RecordHeartbeatAsync(
         TContext context, OutboxLeaseRequest request, DateTimeOffset now, CancellationToken cancellationToken)
     {
+        // The timestamp only moves forward: a statement from an earlier round that runs late
+        // must not make a live relay look older, or dead, to its peers.
         var updated = await context.Set<OutboxRelayInstance>()
-            .Where(r => r.RelayId == request.RelayId)
+            .Where(r => r.RelayId == request.RelayId && r.LastSeenUtc <= now)
             .ExecuteUpdateAsync(setters => setters
                 .SetProperty(r => r.LastSeenUtc, now), cancellationToken).ConfigureAwait(false);
 
-        if (updated == 0)
+        // No row, or a row that already carries a later timestamp, which stays as it is.
+        var recorded = updated > 0;
+        if (!recorded && !await context.Set<OutboxRelayInstance>()
+                .AnyAsync(r => r.RelayId == request.RelayId, cancellationToken).ConfigureAwait(false))
         {
             context.Set<OutboxRelayInstance>().Add(new OutboxRelayInstance
             {
@@ -311,6 +358,7 @@ public sealed class EfCoreOutboxStore<TContext> : IOutboxStore, IOutboxLeaseRene
             try
             {
                 await context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+                recorded = true;
             }
             catch (DbUpdateException)
             {
@@ -334,6 +382,8 @@ public sealed class EfCoreOutboxStore<TContext> : IOutboxStore, IOutboxLeaseRene
                 .Where(r => r.LastSeenUtc < pruneCutoff)
                 .ExecuteDeleteAsync(cancellationToken).ConfigureAwait(false);
         }
+
+        return recorded;
     }
 
     private async Task EnsureLeasesSeededAsync(

@@ -950,9 +950,12 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
         { GroupId = GroupId };
     }
 
-    private static bool IsRetriableConnectionFailure(Exception exception) =>
-        RetryHelper.IsRetriableRequestFailure(exception)
-        || exception is ObjectDisposedException;
+    // A connection retired by pool churn is retriable only while this member is alive.
+    private bool IsRetriableConnectionFailure(Exception exception) =>
+        TransportFailureClassifier.IsRetriable(
+            exception,
+            TransportRetryPolicy.Request,
+            ownerDisposed: Volatile.Read(ref _disposed) != 0);
 
     private static void ObserveFault(Task task)
     {

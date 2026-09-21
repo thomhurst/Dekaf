@@ -172,6 +172,276 @@ public sealed class RetryHelperTests
         await Assert.That(attempts).IsEqualTo(1);
     }
 
+    [Test]
+    public async Task DeadlineMode_TransportFailuresBeyondMaxRetries_KeepRetryingUntilTheBrokerReturns()
+    {
+        // A killed broker stays in cluster metadata for seconds; the count-bounded mode burns its
+        // three retries inside that window and surfaces the raw SocketException.
+        await using var metadataManager = CreateUnavailableMetadataManager();
+        var attempts = 0;
+
+        var result = await RetryHelper.WithRetryAsync(
+            () => Interlocked.Increment(ref attempts) <= 10
+                ? ValueTask.FromException<int>(new SocketException((int)SocketError.ConnectionRefused))
+                : ValueTask.FromResult(42),
+            metadataManager,
+            CancellationToken.None,
+            retryBackoffMs: 0,
+            retryBackoffMaxMs: 0,
+            deadline: new RetryDeadline("TestOperation", TimeSpan.FromSeconds(30)));
+
+        await Assert.That(result).IsEqualTo(42);
+        await Assert.That(attempts).IsEqualTo(11);
+    }
+
+    [Test]
+    public async Task CountMode_TransportFailuresBeyondMaxRetries_StillSurfaceTheRawFailure()
+    {
+        // The count-bounded mode is unchanged: AdminClient retries are not idempotent.
+        await using var metadataManager = CreateUnavailableMetadataManager();
+        var attempts = 0;
+
+        await Assert.ThrowsAsync<SocketException>(async () =>
+            await RetryHelper.WithRetryAsync<int>(
+                () =>
+                {
+                    Interlocked.Increment(ref attempts);
+                    return ValueTask.FromException<int>(new SocketException((int)SocketError.ConnectionRefused));
+                },
+                metadataManager,
+                CancellationToken.None,
+                retryBackoffMs: 0,
+                retryBackoffMaxMs: 0));
+
+        await Assert.That(attempts).IsEqualTo(RetryHelper.MaxRetries + 1);
+    }
+
+    [Test]
+    public async Task DeadlineMode_BudgetExhausted_ThrowsTypedTimeoutWithTheTransportCause()
+    {
+        await using var metadataManager = CreateUnavailableMetadataManager();
+        var failure = new SocketException((int)SocketError.ConnectionRefused);
+
+        var exception = await Assert.ThrowsAsync<KafkaTimeoutException>(async () =>
+            await RetryHelper.WithRetryAsync<int>(
+                () => ValueTask.FromException<int>(failure),
+                metadataManager,
+                CancellationToken.None,
+                retryBackoffMs: 5,
+                retryBackoffMaxMs: 5,
+                deadline: new RetryDeadline("TestOperation", TimeSpan.FromMilliseconds(100))));
+
+        await Assert.That(exception!.TimeoutKind).IsEqualTo(TimeoutKind.Api);
+        await Assert.That(exception.InnerException).IsSameReferenceAs(failure);
+        await Assert.That(exception.Message).Contains("TestOperation");
+    }
+
+    [Test]
+    public async Task DeadlineMode_TokenIsTheDeadline_CancellationCarriesTheTransportCause()
+    {
+        await using var metadataManager = CreateUnavailableMetadataManager();
+        using var operationDeadline = new CancellationTokenSource();
+        var failure = new IOException("connection reset");
+        var attempts = 0;
+
+        var exception = await Assert.ThrowsAsync<OperationCanceledException>(async () =>
+            await RetryHelper.WithRetryAsync<int>(
+                () =>
+                {
+                    if (Interlocked.Increment(ref attempts) == 3)
+                        operationDeadline.Cancel();
+                    return ValueTask.FromException<int>(failure);
+                },
+                metadataManager,
+                operationDeadline.Token,
+                retryBackoffMs: 1,
+                retryBackoffMaxMs: 1,
+                deadline: new RetryDeadline("TestOperation", Timeout.InfiniteTimeSpan)));
+
+        await Assert.That(exception!.InnerException).IsSameReferenceAs(failure);
+        await Assert.That(attempts).IsEqualTo(3);
+    }
+
+    [Test]
+    public async Task DeadlineMode_BrokerAnsweredRetriableError_KeepsTheCountBound()
+    {
+        // A retriable error a live broker answered with says nothing about an outage; its typed
+        // failure must reach the caller after the usual retries, not after the whole deadline.
+        await using var metadataManager = CreateUnavailableMetadataManager();
+        var attempts = 0;
+
+        var exception = await Assert.ThrowsAsync<KafkaException>(async () =>
+            await RetryHelper.WithRetryAsync<int>(
+                () =>
+                {
+                    Interlocked.Increment(ref attempts);
+                    return ValueTask.FromException<int>(CreateRequestTimeout());
+                },
+                metadataManager,
+                CancellationToken.None,
+                retryBackoffMs: 0,
+                retryBackoffMaxMs: 0,
+                maxRetries: 2,
+                deadline: new RetryDeadline("TestOperation", TimeSpan.FromSeconds(30))));
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.RequestTimedOut);
+        await Assert.That(attempts).IsEqualTo(3);
+    }
+
+    [Test]
+    public async Task DeadlineMode_PeerClosedConnection_IsTransportLevelNotBrokerAnswered()
+    {
+        // NETWORK_EXCEPTION is the connection's own report that the peer went away before a
+        // response arrived. It carries an error code, but no broker answered: it must ride the
+        // deadline like a socket failure, not stop at the count bound.
+        await using var metadataManager = CreateUnavailableMetadataManager();
+        var attempts = 0;
+
+        var result = await RetryHelper.WithRetryAsync(
+            () => Interlocked.Increment(ref attempts) <= 10
+                ? ValueTask.FromException<int>(new KafkaException(
+                    ErrorCode.NetworkException, "Connection closed by remote peer (EOF)", isRetriable: true))
+                : ValueTask.FromResult(42),
+            metadataManager,
+            CancellationToken.None,
+            retryBackoffMs: 0,
+            retryBackoffMaxMs: 0,
+            maxRetries: 2,
+            deadline: new RetryDeadline("TestOperation", TimeSpan.FromSeconds(30)));
+
+        await Assert.That(result).IsEqualTo(42);
+        await Assert.That(attempts).IsEqualTo(11);
+    }
+
+    [Test]
+    public async Task CountMode_PeerClosedConnection_IsRetried()
+    {
+        // The count-bounded mode follows IsRetriable, so the typed failure is retried there too.
+        await using var metadataManager = CreateUnavailableMetadataManager();
+        var attempts = 0;
+
+        var result = await RetryHelper.WithRetryAsync(
+            () => Interlocked.Increment(ref attempts) == 1
+                ? ValueTask.FromException<int>(new KafkaException(
+                    ErrorCode.NetworkException, "Connection closed by remote peer (EOF)", isRetriable: true))
+                : ValueTask.FromResult(42),
+            metadataManager,
+            CancellationToken.None,
+            retryBackoffMs: 0,
+            retryBackoffMaxMs: 0);
+
+        await Assert.That(result).IsEqualTo(42);
+        await Assert.That(attempts).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task DeadlineMode_RecoveryStepFailsWithTransport_IsRetriedInsteadOfEscaping()
+    {
+        // Re-discovering a coordinator through stale metadata fails the same way the request
+        // did. In count mode that failure escaped the retry loop on the spot.
+        await using var metadataManager = CreateUnavailableMetadataManager();
+        var attempts = 0;
+        var recoveries = 0;
+
+        var result = await RetryHelper.WithRetryAsync(
+            () => Interlocked.Increment(ref attempts) == 1
+                ? ValueTask.FromException<int>(new IOException("connection reset"))
+                : ValueTask.FromResult(42),
+            metadataManager,
+            CancellationToken.None,
+            retryBackoffMs: 0,
+            retryBackoffMaxMs: 0,
+            onRetry: _ => Interlocked.Increment(ref recoveries) <= 2
+                ? ValueTask.FromException(new GroupException(
+                    ErrorCode.CoordinatorNotAvailable,
+                    "FindCoordinator failed after 5 retries",
+                    new SocketException((int)SocketError.ConnectionRefused)))
+                : ValueTask.CompletedTask,
+            deadline: new RetryDeadline("TestOperation", TimeSpan.FromSeconds(30)));
+
+        await Assert.That(result).IsEqualTo(42);
+        await Assert.That(recoveries).IsEqualTo(3);
+        await Assert.That(attempts).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task DeadlineMode_RecoverySpendsTheBudget_TheRequestIsNotRepeatedPastTheDeadline()
+    {
+        // No token stands behind the budget here, as for an offset lookup: a recovery that
+        // outlasts it must end the call, not hand over to a backoff and one more request.
+        await using var metadataManager = CreateUnavailableMetadataManager();
+        var failure = new SocketException((int)SocketError.ConnectionRefused);
+        var attempts = 0;
+
+        var exception = await Assert.ThrowsAsync<KafkaTimeoutException>(async () =>
+            await RetryHelper.WithRetryAsync(
+                () => Interlocked.Increment(ref attempts) == 1
+                    ? ValueTask.FromException<int>(failure)
+                    : ValueTask.FromResult(42),
+                metadataManager,
+                CancellationToken.None,
+                retryBackoffMs: 0,
+                retryBackoffMaxMs: 0,
+                onRetry: static async token => await Task.Delay(TimeSpan.FromMilliseconds(400), token),
+                deadline: new RetryDeadline("TestOperation", TimeSpan.FromMilliseconds(200))));
+
+        await Assert.That(exception!.InnerException).IsSameReferenceAs(failure);
+        await Assert.That(attempts).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task DeadlineMode_RetiredConnection_RetriedOnlyWhileTheOwnerIsAlive()
+    {
+        await using var metadataManager = CreateUnavailableMetadataManager();
+        var attempts = 0;
+        var ownerDisposed = false;
+
+        var result = await RetryHelper.WithRetryAsync(
+            () => Interlocked.Increment(ref attempts) == 1
+                ? ValueTask.FromException<int>(new ObjectDisposedException("KafkaConnection"))
+                : ValueTask.FromResult(42),
+            metadataManager,
+            CancellationToken.None,
+            retryBackoffMs: 0,
+            retryBackoffMaxMs: 0,
+            deadline: new RetryDeadline("TestOperation", TimeSpan.FromSeconds(30), () => ownerDisposed));
+
+        await Assert.That(result).IsEqualTo(42);
+
+        ownerDisposed = true;
+        await Assert.ThrowsAsync<ObjectDisposedException>(async () =>
+            await RetryHelper.WithRetryAsync<int>(
+                () => ValueTask.FromException<int>(new ObjectDisposedException("ConnectionPool")),
+                metadataManager,
+                CancellationToken.None,
+                retryBackoffMs: 0,
+                retryBackoffMaxMs: 0,
+                deadline: new RetryDeadline("TestOperation", TimeSpan.FromSeconds(30), () => ownerDisposed)));
+    }
+
+    [Test]
+    public async Task DeadlineMode_FatalFailure_PropagatesWithoutRetry()
+    {
+        await using var metadataManager = CreateUnavailableMetadataManager();
+        var attempts = 0;
+
+        await Assert.ThrowsAsync<AuthenticationException>(async () =>
+            await RetryHelper.WithRetryAsync<int>(
+                () =>
+                {
+                    Interlocked.Increment(ref attempts);
+                    return ValueTask.FromException<int>(
+                        new AuthenticationException("invalid credentials", new IOException("transport")));
+                },
+                metadataManager,
+                CancellationToken.None,
+                retryBackoffMs: 0,
+                retryBackoffMaxMs: 0,
+                deadline: new RetryDeadline("TestOperation", TimeSpan.FromSeconds(30))));
+
+        await Assert.That(attempts).IsEqualTo(1);
+    }
+
     private static MetadataManager CreateUnavailableMetadataManager()
     {
         var connectionPool = Substitute.For<IConnectionPool>();

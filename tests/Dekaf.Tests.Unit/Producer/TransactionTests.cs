@@ -1077,6 +1077,332 @@ public sealed class TransactionTests
     }
 
     [Test]
+    [Timeout(5_000)]
+    public async Task CommitAsync_InAbortableErrorState_ThrowsWithoutEndTxn_AndAbortRecovers(
+        CancellationToken cancellationToken)
+    {
+        // Records that failed (enrollment, produce error) are not part of the transaction. A
+        // caller that ignored those failures must not be able to commit the rest.
+        await using var harness = BuildPreparedCompletionHarness(
+            PreparedTransactionState.Empty,
+            currentProducerId: 2002,
+            currentProducerEpoch: 9);
+        harness.Producer._transactionState = TransactionState.AbortableError;
+        harness.Producer._lastTransactionError = ErrorCode.NetworkException;
+        await using var transaction = new Transaction<string, string>(harness.Producer);
+
+        var exception = await Assert.That(() => transaction.CommitAsync(cancellationToken).AsTask())
+            .Throws<AbortableTransactionException>();
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.NetworkException);
+        await Assert.That(harness.EndTxnRequests).IsEqualTo(0);
+        await Assert.That(harness.Producer._transactionState).IsEqualTo(TransactionState.AbortableError);
+
+        await transaction.AbortAsync(cancellationToken);
+
+        await Assert.That(harness.EndTxnRequests).IsEqualTo(1);
+        await Assert.That(harness.CapturedRequest.Committed).IsFalse();
+        await Assert.That(harness.Producer._transactionState).IsEqualTo(TransactionState.Ready);
+    }
+
+    [Test]
+    [Timeout(5_000)]
+    public async Task PrepareAsync_InAbortableErrorState_ThrowsAbortableTransactionException(
+        CancellationToken cancellationToken)
+    {
+        await using var harness = BuildPreparedCompletionHarness(
+            PreparedTransactionState.Empty,
+            currentProducerId: 2002,
+            currentProducerEpoch: 9);
+        harness.Producer._transactionState = TransactionState.AbortableError;
+        harness.Producer._lastTransactionError = ErrorCode.NetworkException;
+        var transaction = new Transaction<string, string>(harness.Producer);
+
+        await Assert.That(() => transaction.PrepareAsync(cancellationToken).AsTask())
+            .Throws<AbortableTransactionException>();
+
+        await Assert.That(harness.Producer._transactionState).IsEqualTo(TransactionState.AbortableError);
+        harness.Producer._transactionState = TransactionState.Ready;
+    }
+
+    [Test]
+    [Timeout(15_000)]
+    public async Task CommitAsync_EnrollmentFailedDuringCommitFlush_ThrowsWithoutEndTxn(
+        CancellationToken cancellationToken)
+    {
+        // An unawaited produce can still be enrolling its partition when CommitAsync starts.
+        // If that enrollment fails while the commit flushes, the partition's batches are failed
+        // and EndTxn(commit) would commit the transaction without them.
+        ValueTask AddPartitions(IReadOnlyList<TopicPartition> partitions, CancellationToken token) =>
+            ValueTask.FromException(new AuthenticationException("Invalid credentials."));
+
+        await using var harness = BuildPreparedCompletionHarness(
+            PreparedTransactionState.Empty,
+            currentProducerId: 2002,
+            currentProducerEpoch: 9,
+            transactionFeatureVersion: 1,
+            enableTwoPhaseCommit: false,
+            addPartitionsToTransaction: AddPartitions);
+        harness.Producer._transactionState = TransactionState.CommittingTransaction;
+        var batch = CreateEnrollmentBatch("topic-a", 0);
+        var enrollmentCompleted = new TaskCompletionSource<Exception?>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var pending = harness.Producer.TryEnsurePartitionsInTransaction(
+            [batch],
+            1,
+            enrollmentCompleted.SetResult,
+            [],
+            []);
+        await Assert.That(pending.IsEnrolled).IsFalse();
+        await enrollmentCompleted.Task.WaitAsync(cancellationToken);
+
+        var exception = await Assert.That(
+                () => harness.Producer.CommitTransactionAsync(null, cancellationToken).AsTask())
+            .Throws<AbortableTransactionException>();
+
+        await Assert.That(exception!.InnerException).IsTypeOf<AuthenticationException>();
+        await Assert.That(harness.EndTxnRequests).IsEqualTo(0);
+        await Assert.That(harness.Producer._transactionState).IsEqualTo(TransactionState.AbortableError);
+        harness.Producer._transactionState = TransactionState.Ready;
+    }
+
+    [Test]
+    [Timeout(5_000)]
+    public async Task CommitAsync_RetriableResponseAfterUnansweredWrite_BudgetExpiry_PreservesFatalState(
+        CancellationToken cancellationToken)
+    {
+        // Attempt 1 is written and the connection drops: the coordinator may have committed.
+        // Attempt 2 is answered with a retriable code, which says nothing about attempt 1, so
+        // an exhausted budget must still report the ambiguous outcome as fatal.
+        var transactionClock = new FakeTransactionClock();
+        await using var harness = BuildPreparedCompletionHarness(
+            PreparedTransactionState.Empty,
+            currentProducerId: 2002,
+            currentProducerEpoch: 9,
+            endTxnFailures: new Queue<Exception>([new IOException("Connection reset by peer")]),
+            endTxnFailsAfterWrite: true,
+            endTxnRetriableFailuresBeforeSuccess: 64,
+            transportFailureAdvanceMs: 30_000,
+            endTxnAdvanceMs: 30_000,
+            transactionClock: transactionClock,
+            maxBlockMs: 60_000);
+        harness.Producer._transactionState = TransactionState.InTransaction;
+        await using var transaction = new Transaction<string, string>(harness.Producer);
+
+        var exception = await Assert.That(() => transaction.CommitAsync(cancellationToken).AsTask())
+            .Throws<KafkaTimeoutException>();
+
+        await Assert.That(exception!.InnerException).IsTypeOf<IOException>();
+        await Assert.That(harness.EndTxnRequests).IsEqualTo(2);
+        await Assert.That(harness.Producer._transactionState).IsEqualTo(TransactionState.FatalError);
+        await Assert.That(() => harness.Producer.BeginTransaction()).Throws<FatalTransactionException>();
+    }
+
+    [Test]
+    [Timeout(5_000)]
+    public async Task CommitAsync_RetriableResponseWithoutUnansweredWrite_BudgetExpiry_StaysAbortable(
+        CancellationToken cancellationToken)
+    {
+        // Control for the test above: every attempt was answered, so nothing is ambiguous.
+        var transactionClock = new FakeTransactionClock();
+        await using var harness = BuildPreparedCompletionHarness(
+            PreparedTransactionState.Empty,
+            currentProducerId: 2002,
+            currentProducerEpoch: 9,
+            endTxnRetriableFailuresBeforeSuccess: 64,
+            endTxnAdvanceMs: 30_000,
+            transactionClock: transactionClock,
+            maxBlockMs: 60_000);
+        harness.Producer._transactionState = TransactionState.InTransaction;
+        await using var transaction = new Transaction<string, string>(harness.Producer);
+
+        await Assert.That(() => transaction.CommitAsync(cancellationToken).AsTask())
+            .Throws<KafkaTimeoutException>();
+
+        await Assert.That(harness.Producer._transactionState).IsEqualTo(TransactionState.AbortableError);
+    }
+
+    [Test]
+    [Timeout(5_000)]
+    public async Task ReinitializeProducerIdAsync_RetriableResponseAfterUnansweredWrite_BudgetExpiry_PreservesFatalState(
+        CancellationToken cancellationToken)
+    {
+        var transactionClock = new FakeTransactionClock();
+        await using var harness = BuildPreparedCompletionHarness(
+            PreparedTransactionState.Empty,
+            currentProducerId: 2002,
+            currentProducerEpoch: 9,
+            initProducerIdFailures: new Queue<Exception>([new IOException("Connection reset by peer")]),
+            initProducerIdFailsAfterWrite: true,
+            initProducerIdRetriableFailuresBeforeSuccess: 64,
+            transportFailureAdvanceMs: 30_000,
+            initProducerIdAdvanceMs: 30_000,
+            transactionClock: transactionClock,
+            maxBlockMs: 60_000);
+        harness.Producer._transactionState = TransactionState.Ready;
+
+        await Assert.That(() => harness.Producer.ReinitializeProducerIdAsync(cancellationToken).AsTask())
+            .Throws<KafkaTimeoutException>();
+
+        await Assert.That(harness.InitProducerIdRequests).IsEqualTo(2);
+        await Assert.That(harness.Producer._transactionState).IsEqualTo(TransactionState.FatalError);
+    }
+
+    [Test]
+    [Timeout(5_000)]
+    public async Task CommitAsync_UnansweredWriteThenRediscoveryFailure_PreservesFatalState(
+        CancellationToken cancellationToken)
+    {
+        // The exit is neither a timeout nor a cancellation: re-discovery after the dropped
+        // EndTxn answers with a non-retriable error. The written request is still unanswered,
+        // so the producer must not return to Ready.
+        await using var harness = BuildPreparedCompletionHarness(
+            PreparedTransactionState.Empty,
+            currentProducerId: 2002,
+            currentProducerEpoch: 9,
+            endTxnFailures: new Queue<Exception>([new IOException("Connection reset by peer")]),
+            endTxnFailsAfterWrite: true,
+            findCoordinatorError: ErrorCode.TransactionalIdAuthorizationFailed,
+            maxBlockMs: 60_000);
+        harness.Producer._transactionState = TransactionState.InTransaction;
+        await using var transaction = new Transaction<string, string>(harness.Producer);
+
+        var exception = await Assert.That(() => transaction.CommitAsync(cancellationToken).AsTask())
+            .Throws<TransactionException>();
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.TransactionalIdAuthorizationFailed);
+        await Assert.That(harness.EndTxnRequests).IsEqualTo(1);
+        await Assert.That(harness.Producer._transactionState).IsEqualTo(TransactionState.FatalError);
+        await Assert.That(() => harness.Producer.BeginTransaction()).Throws<FatalTransactionException>();
+    }
+
+    [Test]
+    [Timeout(10_000)]
+    public async Task CommitAsync_TransportFailureAfterBudgetTokenFired_TimesOutWithTransportCause(
+        CancellationToken cancellationToken)
+    {
+        // The budget runs out on its cancellation token (real time), not on the fake clock: the
+        // socket reports its failure after the token fired. The caller must still see the
+        // timeout with the transport cause, not a raw SocketException.
+        await using var harness = BuildPreparedCompletionHarness(
+            PreparedTransactionState.Empty,
+            currentProducerId: 2002,
+            currentProducerEpoch: 9,
+            endTxnFailsAfterCancellation: true,
+            maxBlockMs: 300);
+        harness.Producer._transactionState = TransactionState.InTransaction;
+        await using var transaction = new Transaction<string, string>(harness.Producer);
+
+        var exception = await Assert.That(() => transaction.CommitAsync(cancellationToken).AsTask())
+            .Throws<KafkaTimeoutException>();
+
+        await Assert.That(exception!.TimeoutKind).IsEqualTo(TimeoutKind.Transaction);
+        await Assert.That(exception.InnerException).IsTypeOf<SocketException>();
+        await Assert.That(harness.Producer._transactionState).IsEqualTo(TransactionState.AbortableError);
+    }
+
+    [Test]
+    [Timeout(10_000)]
+    public async Task InitTransactionsAsync_TransportFailureAfterBudgetTokenFired_TimesOutWithTransportCause(
+        CancellationToken cancellationToken)
+    {
+        await using var harness = BuildPreparedCompletionHarness(
+            PreparedTransactionState.Empty,
+            currentProducerId: 2002,
+            currentProducerEpoch: 9,
+            findCoordinatorFailsAfterCancellation: true,
+            maxBlockMs: 300);
+        harness.Producer._transactionState = TransactionState.Uninitialized;
+
+        var exception = await Assert.That(() => harness.Producer.InitTransactionsAsync(cancellationToken).AsTask())
+            .Throws<KafkaTimeoutException>();
+
+        await Assert.That(exception!.TimeoutKind).IsEqualTo(TimeoutKind.Transaction);
+        await Assert.That(exception.InnerException).IsTypeOf<SocketException>();
+    }
+
+    [Test]
+    [Timeout(10_000)]
+    public async Task CommitAsync_TransportFailureAfterCallerCancellation_ThrowsOperationCanceled(
+        CancellationToken cancellationToken)
+    {
+        await using var harness = BuildPreparedCompletionHarness(
+            PreparedTransactionState.Empty,
+            currentProducerId: 2002,
+            currentProducerEpoch: 9,
+            endTxnFailsAfterCancellation: true,
+            maxBlockMs: 60_000);
+        harness.Producer._transactionState = TransactionState.InTransaction;
+        // Not disposed: the best-effort abort would wait out the whole budget on the same fake.
+        var transaction = new Transaction<string, string>(harness.Producer);
+        using var caller = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+
+        var commit = transaction.CommitAsync(caller.Token).AsTask();
+        await harness.EndTxnStarted.WaitAsync(cancellationToken);
+        caller.Cancel();
+
+        await Assert.That(() => commit).Throws<OperationCanceledException>();
+        await Assert.That(harness.Producer._transactionState).IsEqualTo(TransactionState.AbortableError);
+        harness.Producer._transactionState = TransactionState.Ready;
+    }
+
+    [Test]
+    [Timeout(10_000)]
+    public async Task InitTransactionsAsync_SecondCoordinatorLookup_DoesNotRestartAtTheDeadBroker(
+        CancellationToken cancellationToken)
+    {
+        // Every re-discovery used to restart the rotation at the first known broker, so a
+        // black-holed first broker cost each retry of every operation a connection setup.
+        await using var harness = BuildPreparedCompletionHarness(
+            PreparedTransactionState.Empty,
+            currentProducerId: 2002,
+            currentProducerEpoch: 9,
+            brokerCount: 3,
+            maxBlockMs: 60_000);
+        var brokers = harness.Brokers;
+        var deadBrokerId = brokers[0].NodeId;
+        harness.KillBroker(deadBrokerId);
+        harness.CoordinatorNodeId = brokers[1].NodeId;
+        harness.Producer._transactionState = TransactionState.Uninitialized;
+
+        await harness.Producer.InitTransactionsAsync(cancellationToken);
+        await Assert.That(harness.ConnectionAttemptsTo(deadBrokerId)).IsEqualTo(1);
+
+        await harness.Producer.InitTransactionsAsync(cancellationToken);
+
+        await Assert.That(harness.ConnectionAttemptsTo(deadBrokerId)).IsEqualTo(1);
+        await Assert.That(harness.FindCoordinatorRequests).IsEqualTo(2);
+    }
+
+    [Test]
+    [Timeout(10_000)]
+    public async Task DisposeAsync_WhileCommitIsRetrying_EndsTheCommitPromptly(
+        CancellationToken cancellationToken)
+    {
+        // The retry budget is a minute; disposal must not leave CommitAsync retrying against
+        // a producer that is gone for the rest of it.
+        await using var harness = BuildPreparedCompletionHarness(
+            PreparedTransactionState.Empty,
+            currentProducerId: 2002,
+            currentProducerEpoch: 9,
+            endTxnFailures: RepeatedFailures(
+                static () => new SocketException((int)SocketError.ConnectionRefused)),
+            retryBackoffMs: 200,
+            maxBlockMs: 60_000);
+        harness.Producer._transactionState = TransactionState.InTransaction;
+        var transaction = new Transaction<string, string>(harness.Producer);
+
+        var commit = transaction.CommitAsync(cancellationToken).AsTask();
+        await harness.EndTxnStarted.WaitAsync(cancellationToken);
+        await harness.Producer.DisposeAsync();
+
+        var completed = await Task.WhenAny(commit, Task.Delay(TimeSpan.FromSeconds(5), cancellationToken));
+        await Assert.That(completed).IsSameReferenceAs(commit);
+        await Assert.That(commit.IsFaulted || commit.IsCanceled).IsTrue();
+    }
+
+    [Test]
     public async Task DisposeAsync_WhenAbortFailsUnexpectedly_KeepsTransactionAbortableWithoutThrowing()
     {
         await using var harness = BuildPreparedCompletionHarness(
@@ -1763,7 +2089,14 @@ public sealed class TransactionTests
         Queue<Exception>? addPartitionsFailures = null,
         Queue<Exception>? endTxnFailures = null,
         bool endTxnFailsAfterWrite = false,
-        int transportFailureAdvanceMs = 0)
+        int transportFailureAdvanceMs = 0,
+        bool initProducerIdFailsAfterWrite = false,
+        int endTxnAdvanceMs = 0,
+        ErrorCode findCoordinatorError = ErrorCode.None,
+        bool endTxnFailsAfterCancellation = false,
+        bool findCoordinatorFailsAfterCancellation = false,
+        int brokerCount = 1,
+        Func<IReadOnlyList<TopicPartition>, CancellationToken, ValueTask>? addPartitionsToTransaction = null)
     {
         var connection = new LeaseTrackingConnection(
             preparedState,
@@ -1789,16 +2122,32 @@ public sealed class TransactionTests
             addPartitionsFailures: addPartitionsFailures,
             endTxnFailures: endTxnFailures,
             endTxnFailsAfterWrite: endTxnFailsAfterWrite,
-            transportFailureAdvanceMs: transportFailureAdvanceMs);
+            transportFailureAdvanceMs: transportFailureAdvanceMs,
+            initProducerIdFailsAfterWrite: initProducerIdFailsAfterWrite,
+            endTxnAdvanceMs: endTxnAdvanceMs,
+            findCoordinatorError: findCoordinatorError,
+            endTxnFailsAfterCancellation: endTxnFailsAfterCancellation,
+            findCoordinatorFailsAfterCancellation: findCoordinatorFailsAfterCancellation);
 
         var connectionAttempts = new StrongBox<int>();
+        var connectionAttemptBrokerIds = new List<int>();
+        var deadBrokerIds = new HashSet<int>();
         var connectionPool = new ConnectionPool(
             clientId: "test-producer",
             connectionOptions: new ConnectionOptions { ReconnectBackoff = TimeSpan.Zero },
             connectionsPerBroker: 1,
-            connectionFactory: (_, _, _, _, _) =>
+            connectionFactory: (brokerId, _, _, _, _) =>
             {
                 Interlocked.Increment(ref connectionAttempts.Value);
+                lock (connectionAttemptBrokerIds)
+                {
+                    connectionAttemptBrokerIds.Add(brokerId);
+                    if (deadBrokerIds.Contains(brokerId))
+                    {
+                        return ValueTask.FromException<IKafkaConnection>(
+                            new SocketException((int)SocketError.ConnectionRefused));
+                    }
+                }
 
                 // Connection setup failures (refused, reset, DNS, TLS) surface from the pool's
                 // lease exactly as the real connection factory raises them.
@@ -1810,12 +2159,17 @@ public sealed class TransactionTests
 
                 return new ValueTask<IKafkaConnection>(connection);
             });
-        connectionPool.RegisterBroker(1, "localhost", 9092);
+        var brokers = new BrokerMetadata[brokerCount];
+        for (var i = 0; i < brokerCount; i++)
+        {
+            brokers[i] = new BrokerMetadata { NodeId = i + 1, Host = "localhost", Port = 9092 + i };
+            connectionPool.RegisterBroker(brokers[i].NodeId, brokers[i].Host, brokers[i].Port);
+        }
 
         var metadataManager = new MetadataManager(connectionPool, ["localhost:9092"]);
         metadataManager.Metadata.Update(new MetadataResponse
         {
-            Brokers = [new BrokerMetadata { NodeId = 1, Host = "localhost", Port = 9092 }],
+            Brokers = brokers,
             Topics = []
         });
         metadataManager.SetApiVersion(
@@ -1856,6 +2210,7 @@ public sealed class TransactionTests
             connectionPool,
             metadataManager,
             DekafMemoryBudget.Global,
+            addPartitionsToTransaction: addPartitionsToTransaction,
             transactionTimestampProvider: transactionClock is null ? null : transactionClock.GetMilliseconds);
 
         SetInstanceField(producer, "_initialized", true);
@@ -1867,7 +2222,14 @@ public sealed class TransactionTests
         producer._preparedTransactionState = preparedState;
         producer._transactionState = TransactionState.PreparedTransaction;
 
-        return new PreparedCompletionHarness(producer, connectionPool, connection, connectionAttempts);
+        return new PreparedCompletionHarness(
+            producer,
+            connectionPool,
+            metadataManager,
+            connection,
+            connectionAttempts,
+            connectionAttemptBrokerIds,
+            deadBrokerIds);
     }
 
     /// <summary>
@@ -1948,12 +2310,36 @@ public sealed class TransactionTests
     private sealed class PreparedCompletionHarness(
         KafkaProducer<string, string> producer,
         ConnectionPool connectionPool,
+        MetadataManager metadataManager,
         LeaseTrackingConnection connection,
-        StrongBox<int> connectionAttempts) : IAsyncDisposable
+        StrongBox<int> connectionAttempts,
+        List<int> connectionAttemptBrokerIds,
+        HashSet<int> deadBrokerIds) : IAsyncDisposable
     {
         public KafkaProducer<string, string> Producer { get; } = producer;
 
         public int ConnectionAttempts => Volatile.Read(ref connectionAttempts.Value);
+
+        public IReadOnlyList<BrokerNode> Brokers => metadataManager.Metadata.GetBrokers();
+
+        public int CoordinatorNodeId
+        {
+            get => connection.CoordinatorNodeId;
+            set => connection.CoordinatorNodeId = value;
+        }
+
+        public int ConnectionAttemptsTo(int brokerId)
+        {
+            lock (connectionAttemptBrokerIds)
+                return connectionAttemptBrokerIds.Count(id => id == brokerId);
+        }
+
+        /// <summary>Connection setup to this broker is refused from now on.</summary>
+        public void KillBroker(int brokerId)
+        {
+            lock (connectionAttemptBrokerIds)
+                deadBrokerIds.Add(brokerId);
+        }
 
         public EndTxnRequest CapturedRequest => connection.CapturedEndTxnRequest
             ?? throw new InvalidOperationException("EndTxn request was not captured.");
@@ -1998,7 +2384,12 @@ public sealed class TransactionTests
         Queue<Exception>? addPartitionsFailures,
         Queue<Exception>? endTxnFailures,
         bool endTxnFailsAfterWrite,
-        int transportFailureAdvanceMs) : IKafkaConnection, IRetirableKafkaConnection,
+        int transportFailureAdvanceMs,
+        bool initProducerIdFailsAfterWrite,
+        int endTxnAdvanceMs,
+        ErrorCode findCoordinatorError,
+        bool endTxnFailsAfterCancellation,
+        bool findCoordinatorFailsAfterCancellation) : IKafkaConnection, IRetirableKafkaConnection,
         IKafkaPipelinedWriteCompletionConnection, IKafkaRequestWriteObserverConnection
     {
         /// <summary>
@@ -2036,6 +2427,7 @@ public sealed class TransactionTests
                 case EndTxnRequest endTxnRequest:
                     EndTxnRequests++;
                     CapturedEndTxnRequest = endTxnRequest;
+                    _endTxnStarted.TrySetResult();
                     break;
             }
 
@@ -2052,6 +2444,7 @@ public sealed class TransactionTests
         public string Host => "localhost";
         public int Port => 9092;
         public bool IsConnected => true;
+        public int CoordinatorNodeId { get; set; } = 1;
         public EndTxnRequest? CapturedEndTxnRequest { get; private set; }
         public int LeaseCount => Volatile.Read(ref _leaseCount);
         public int LeaseCountDuringRequest => Volatile.Read(ref _leaseCountDuringRequest);
@@ -2102,6 +2495,12 @@ public sealed class TransactionTests
                 CapturedEndTxnRequest = waitingEndTxnRequest;
                 _endTxnStarted.TrySetResult();
                 return WaitForCancellationAsync<TResponse>(cancellationToken);
+            }
+
+            if (request is FindCoordinatorRequest && findCoordinatorFailsAfterCancellation)
+            {
+                FindCoordinatorRequests++;
+                return FailAfterCancellationAsync<TResponse>(cancellationToken);
             }
 
             if (request is FindCoordinatorRequest delayedFindCoordinatorRequest
@@ -2159,10 +2558,19 @@ public sealed class TransactionTests
                 return WaitForCancellationAsync<TResponse>(cancellationToken);
             }
 
+            if (request is EndTxnRequest lateFailingEndTxnRequest && endTxnFailsAfterCancellation)
+            {
+                EndTxnRequests++;
+                CapturedEndTxnRequest = lateFailingEndTxnRequest;
+                _endTxnStarted.TrySetResult();
+                return FailAfterCancellationAsync<TResponse>(cancellationToken);
+            }
+
             // Write-observed requests fail either before the write started (connection setup or
             // a reset on the first byte) or after it (response never arrives), which decides how
             // the producer must treat an exhausted retry budget.
-            var failsAfterWrite = request is EndTxnRequest && endTxnFailsAfterWrite;
+            var failsAfterWrite = request is EndTxnRequest && endTxnFailsAfterWrite
+                || request is InitProducerIdRequest && initProducerIdFailsAfterWrite;
             if (!failsAfterWrite && TryTakeTransportFailure(request, out var failureBeforeWrite))
                 return ValueTask.FromException<TResponse>(failureBeforeWrite);
 
@@ -2178,6 +2586,25 @@ public sealed class TransactionTests
         {
             await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken).ConfigureAwait(false);
             return default!;
+        }
+
+        /// <summary>
+        /// A socket that reports its failure only after the request's token has already fired:
+        /// the retry loop then observes the transport exception, not an
+        /// <see cref="OperationCanceledException"/>, with the budget (or the caller) already cancelled.
+        /// </summary>
+        private static async ValueTask<TResponse> FailAfterCancellationAsync<TResponse>(
+            CancellationToken cancellationToken)
+        {
+            try
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+            }
+
+            throw new SocketException((int)SocketError.ConnectionReset);
         }
 
         private async ValueTask<TResponse> CreateDelayedFindCoordinatorResponseAsync<TResponse>(
@@ -2203,12 +2630,12 @@ public sealed class TransactionTests
                     new Coordinator
                     {
                         Key = request.Key,
-                        NodeId = 1,
+                        NodeId = CoordinatorNodeId,
                         Host = "localhost",
-                        Port = 9092,
+                        Port = 9092 + CoordinatorNodeId - 1,
                         ErrorCode = FindCoordinatorRequests <= coordinatorRetriableFailuresBeforeSuccess
                             ? ErrorCode.CoordinatorNotAvailable
-                            : ErrorCode.None
+                            : findCoordinatorError
                     }
                 ]
             };
@@ -2252,6 +2679,7 @@ public sealed class TransactionTests
         {
             EndTxnRequests++;
             CapturedEndTxnRequest = request;
+            transactionClock?.Advance(endTxnAdvanceMs);
             return new EndTxnResponse
             {
                 ErrorCode = EndTxnRequests <= endTxnRetriableFailuresBeforeSuccess

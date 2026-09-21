@@ -171,6 +171,130 @@ public sealed class ProducerLeaderFailoverIntegrationTests(RackAwareKafkaContain
         }
     }
 
+    [Test]
+    [Timeout(300_000)]
+    public async Task Producer_PipelinedAcrossPartitions_LeaderKilledMidStream_AppendsEachRecordOnceInOrder(
+        CancellationToken cancellationToken)
+    {
+        // The existing failover tests produce one awaited record at a time to one partition and
+        // fault the broker while the producer is idle, so nothing is ever in flight when the
+        // leader goes away. Here every leader has pipelined requests outstanding when one of
+        // them is killed without a controlled shutdown: responses are lost for batches the
+        // broker may or may not have appended, retries and new batches interleave across
+        // partitions, and the logs must still hold every record exactly once and in order.
+        const int partitionCount = 6;
+        const int recordsPerPartition = 600;
+        const int killedBrokerId = 1; // Preferred leader of partitions 0 and 3.
+        var topic = await kafka.CreateDistributedReplicatedTopicAsync(partitionCount).ConfigureAwait(false);
+        var brokerKilled = false;
+        var delivered = 0;
+        var failures = new System.Collections.Concurrent.ConcurrentQueue<Exception>();
+
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithClientId($"pipelined-leader-kill-producer-{Guid.NewGuid():N}")
+            .WithAcks(Acks.All)
+            .WithIdempotence(true)
+            .WithLinger(TimeSpan.FromMilliseconds(2))
+            .WithRequestTimeout(TimeSpan.FromSeconds(5))
+            .WithDeliveryTimeout(TimeSpan.FromSeconds(120))
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        try
+        {
+            for (var value = 0; value < recordsPerPartition; value++)
+            {
+                if (value == recordsPerPartition / 3)
+                {
+                    await kafka.KillBrokerAsync(killedBrokerId, cancellationToken).ConfigureAwait(false);
+                    brokerKilled = true;
+                }
+
+                for (var partition = 0; partition < partitionCount; partition++)
+                {
+                    await producer.FireAsync(
+                        new ProducerMessage<string, string>
+                        {
+                            Topic = topic,
+                            Partition = partition,
+                            Key = value.ToString(),
+                            Value = value.ToString()
+                        },
+                        (_, exception) =>
+                        {
+                            if (exception is null)
+                                Interlocked.Increment(ref delivered);
+                            else
+                                failures.Enqueue(exception);
+                        }).ConfigureAwait(false);
+                }
+            }
+
+            await producer.FlushAsync(cancellationToken).ConfigureAwait(false);
+
+            await Assert.That(failures).IsEmpty();
+            await Assert.That(Volatile.Read(ref delivered)).IsEqualTo(partitionCount * recordsPerPartition);
+            await AssertEachPartitionHoldsEveryRecordOnceInOrderAsync(
+                    topic, partitionCount, recordsPerPartition, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        finally
+        {
+            if (brokerKilled)
+                await kafka.StartBrokerAsync(killedBrokerId, CancellationToken.None).ConfigureAwait(false);
+        }
+    }
+
+    private async Task AssertEachPartitionHoldsEveryRecordOnceInOrderAsync(
+        string topic,
+        int partitionCount,
+        int recordsPerPartition,
+        CancellationToken cancellationToken)
+    {
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithClientId($"pipelined-leader-kill-oracle-{Guid.NewGuid():N}")
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .BuildAsync(cancellationToken)
+            .ConfigureAwait(false);
+        consumer.Assign(Enumerable.Range(0, partitionCount).Select(partition => new TopicPartition(topic, partition)).ToArray());
+
+        var nextExpected = new int[partitionCount];
+        var remaining = partitionCount * recordsPerPartition;
+        while (remaining > 0)
+        {
+            var consumed = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cancellationToken)
+                .ConfigureAwait(false);
+            if (consumed is null)
+            {
+                throw new InvalidOperationException(
+                    $"Timed out with {remaining} records missing; next expected per partition: {string.Join(", ", nextExpected)}.");
+            }
+
+            var result = consumed.Value;
+            var expected = nextExpected[result.Partition];
+            // The log offset equals the value: a duplicate or a reorder breaks it at once.
+            if (result.Value != expected.ToString() || result.Offset != expected)
+            {
+                throw new InvalidOperationException(
+                    $"Partition {result.Partition}: expected value {expected} at offset {expected}, " +
+                    $"found value {result.Value} at offset {result.Offset}.");
+            }
+
+            nextExpected[result.Partition]++;
+            remaining--;
+        }
+
+        var extra = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(2), cancellationToken).ConfigureAwait(false);
+        if (extra is not null)
+        {
+            throw new InvalidOperationException(
+                $"Unexpected duplicate record in partition {extra.Value.Partition} at offset {extra.Value.Offset}: {extra.Value.Value}.");
+        }
+    }
+
     private static async Task ProduceRangeAsync(
         IKafkaProducer<string, string> producer,
         string topic,

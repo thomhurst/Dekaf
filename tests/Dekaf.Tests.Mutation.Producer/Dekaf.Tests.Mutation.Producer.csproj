@@ -42,6 +42,17 @@
     <Compile Include="..\Dekaf.Tests.Unit\Producer\RecordAccumulatorTests.cs" Link="Producer\RecordAccumulatorTests.cs" />
     <Compile Include="..\Dekaf.Tests.Unit\Producer\ShouldFlushTests.cs" Link="Producer\ShouldFlushTests.cs" />
     <Compile Include="..\Dekaf.Tests.Unit\Producer\TestKafkaConnection.cs" Link="Producer\TestKafkaConnection.cs" />
+    <!-- Recovery and control-plane suites: epoch bumps, sequence restarts, transaction state and the
+         retry loops around them. Without these every mutant in that code survives by construction. -->
+    <Compile Include="..\Dekaf.Tests.Unit\Producer\BrokerSenderEpochRecoveryTests.cs" Link="Producer\BrokerSenderEpochRecoveryTests.cs" />
+    <Compile Include="..\Dekaf.Tests.Unit\Producer\EpochBumpRecoveryTests.cs" Link="Producer\EpochBumpRecoveryTests.cs" />
+    <Compile Include="..\Dekaf.Tests.Unit\Producer\IdempotentSequenceModelTests.cs" Link="Producer\IdempotentSequenceModelTests.cs" />
+    <Compile Include="..\Dekaf.Tests.Unit\Producer\SequenceContractBroker.cs" Link="Producer\SequenceContractBroker.cs" />
+    <Compile Include="..\Dekaf.Tests.Unit\Producer\IdempotentInitializationTests.cs" Link="Producer\IdempotentInitializationTests.cs" />
+    <Compile Include="..\Dekaf.Tests.Unit\Producer\ProducerInitializationHarness.cs" Link="Producer\ProducerInitializationHarness.cs" />
+    <Compile Include="..\Dekaf.Tests.Unit\Producer\ProducerMetadataResilienceTests.cs" Link="Producer\ProducerMetadataResilienceTests.cs" />
+    <Compile Include="..\Dekaf.Tests.Unit\Producer\TransactionOffsetCommitTests.cs" Link="Producer\TransactionOffsetCommitTests.cs" />
+    <Compile Include="..\Dekaf.Tests.Unit\Producer\TransactionTests.cs" Link="Producer\TransactionTests.cs" />
   </ItemGroup>
 
   <ItemGroup>

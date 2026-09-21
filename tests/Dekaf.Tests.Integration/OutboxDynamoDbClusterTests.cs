@@ -214,6 +214,55 @@ public sealed class OutboxDynamoDbClusterTests(DynamoDbLocalContainer dynamoDb)
         await Assert.That(cluster.RefusedWrites).IsGreaterThan(0);
     }
 
+    [Test]
+    public async Task Cluster_UnderStoreFaults_NeverLosesOrSharesABucket()
+    {
+        // Every pod's store is throttled in bursts and loses the answer to writes that were
+        // applied, while the fleet goes through a rolling update under load. A lease this long
+        // does not lapse over a burst, so every takeover below is a handover, not an expiry.
+        var faults = new OutboxDynamoDbStoreFaults(seed: 20260920);
+        await using var cluster = await OutboxDynamoDbCluster.CreateAsync(
+            dynamoDb, bucketCount: 12, TimeSpan.FromSeconds(20), TimeSpan.FromMilliseconds(300), storeFaults: faults);
+        var running = new List<OutboxDynamoDbCluster.Pod>();
+        foreach (var name in new[] { "v1-a", "v1-b", "v1-c" })
+            running.Add(await cluster.StartPodAsync(name));
+
+        using var stopWriters = new CancellationTokenSource();
+        var writers = cluster.RunWritersAsync(writers: 3, keysPerWriter: 6, stopWriters.Token);
+        await Task.Delay(TimeSpan.FromSeconds(3));
+
+        for (var index = 0; index < running.Count; index++)
+        {
+            var replacement = await cluster.StartPodAsync($"v2-{(char)('a' + index)}");
+            // A release can be throttled too. The pod still stops; its leases then lapse.
+            await running[index].StopGracefullyAsync();
+            running[index] = replacement;
+            await Task.Delay(TimeSpan.FromSeconds(2));
+        }
+
+        await stopWriters.CancelAsync();
+        await writers;
+        faults.Heal();
+
+        // Once the table recovers the fleet does too: a fair split, an empty table, nothing
+        // lost, every key's first deliveries in order, and no bucket published by two pods.
+        await cluster.WaitForFairSplitAsync(Patience);
+        await cluster.WaitForDrainedAsync(Patience);
+        await cluster.AssertDeliveryAsync();
+
+        Console.WriteLine(
+            $"[outbox-cluster] throttled={faults.Throttled} throttledDeletes={faults.ThrottledDeletes} "
+            + $"lostAnswers={faults.LostAnswers}");
+        await Assert.That(faults.Throttled).IsGreaterThan(0);
+        await Assert.That(faults.LostAnswers).IsGreaterThan(0);
+        // Only a refused delete leaves rows behind that Kafka already has, and it costs that
+        // one batch once more: not a batch per retry, and not a lease. A throttled lease
+        // write, renewal or heartbeat costs nothing, and neither does a lost answer, whose
+        // write was applied. Each stopped pod is allowed the batch it was publishing.
+        await Assert.That(cluster.DuplicatePublications())
+            .IsLessThanOrEqualTo((faults.ThrottledDeletes + running.Count) * OutboxDynamoDbCluster.RelayBatchSize);
+    }
+
     private static async Task WaitUntilAsync(Func<Task<bool>> condition)
     {
         var started = TimeProvider.System.GetTimestamp();

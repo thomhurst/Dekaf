@@ -15,6 +15,10 @@ internal static class FaultInjectionRunner
     private static readonly TimeSpan ProducerFlushTimeout = TimeSpan.FromMinutes(2);
     private static readonly TimeSpan RecoveryTimeout = TimeSpan.FromMinutes(1);
 
+    // Small transactions keep many commit boundaries inside one fault window.
+    internal const int RecordsPerTransaction = 5;
+    private const int RequiredTransactionsAfterHeal = 3;
+
     internal static async Task<int> RunAsync(
         FaultInjectionOptions options,
         CancellationToken cancellationToken = default)
@@ -154,10 +158,19 @@ internal static class FaultInjectionRunner
         await environment.CreateTopicAsync(topic, options.PartitionCount, cancellationToken)
             .ConfigureAwait(false);
 
+        var transactionTopic = $"fault-{definition.Name}-txn-{Guid.NewGuid():N}";
+        await environment.CreateTopicAsync(transactionTopic, options.PartitionCount, cancellationToken)
+            .ConfigureAwait(false);
+
         using var windowCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         windowCts.CancelAfter(OperationTimeout);
         using var liveConsumerCts = CancellationTokenSource.CreateLinkedTokenSource(windowCts.Token);
+        using var joiningConsumerCts = CancellationTokenSource.CreateLinkedTokenSource(windowCts.Token);
         var liveState = new LiveConsumerState();
+        var joiningState = new LiveConsumerState();
+        var stopTransactions = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Task<TransactionalOutcome>? transactionalTask = null;
+        Task? joiningConsumerTask = null;
         var liveConsumerTask = RunLiveConsumerAsync(
             environment.BootstrapServers,
             topic,
@@ -187,6 +200,23 @@ internal static class FaultInjectionRunner
             var faultHealed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             var deliveryErrors = new ConcurrentDictionary<long, string>();
             var callbackCount = 0L;
+
+            // Transactions commit through the whole window on their own topic, so the strict
+            // per-message accounting of the main topic is untouched.
+            transactionalTask = RunTransactionalLoadAsync(
+                environment.BootstrapServers,
+                transactionTopic,
+                definition.Name,
+                faultHealed.Task,
+                stopTransactions.Task,
+                windowCts.Token);
+            // Joins its group while the fault is active; the live consumer above joined before it.
+            joiningConsumerTask = RunJoiningConsumerAsync(
+                environment.BootstrapServers,
+                topic,
+                faultActive.Task,
+                joiningState,
+                joiningConsumerCts.Token);
 
             var produceTask = RunProducerLoadAsync(
                 producer,
@@ -279,6 +309,36 @@ internal static class FaultInjectionRunner
                 consumerExitedBeforeCancellation);
             result.LiveConsumerMessages = Volatile.Read(ref liveState.MessageCount);
 
+            var joiningConsumerFailure = await WaitForLiveConsumerRecoveryAsync(
+                joiningConsumerTask,
+                joiningState,
+                producerOutcome.FirstPostHealMessageId,
+                windowCts.Token,
+                "Joining").ConfigureAwait(false);
+            joiningConsumerCts.Cancel();
+            joiningConsumerFailure ??= await AwaitLiveConsumerShutdownAsync(joiningConsumerTask)
+                .ConfigureAwait(false);
+            result.JoiningConsumerMessages = Volatile.Read(ref joiningState.MessageCount);
+            result.JoiningConsumerRecoveryFailed = joiningConsumerFailure is not null;
+
+            stopTransactions.TrySetResult();
+            var transactionalOutcome = await transactionalTask.ConfigureAwait(false);
+            var visibleTransactionRecords = await ReadCommittedTransactionRecordsWithConfluentAsync(
+                environment.BootstrapServers,
+                transactionTopic,
+                options.PartitionCount,
+                windowCts.Token).ConfigureAwait(false);
+            var transactionVerification = TransactionWindowVerifier.Verify(
+                transactionalOutcome.Outcomes,
+                visibleTransactionRecords,
+                RecordsPerTransaction);
+            result.TransactionsCommitted = transactionVerification.CommittedCount;
+            result.TransactionsAborted = transactionVerification.AbortedCount;
+            result.TransactionsUnknown = transactionVerification.UnknownCount;
+            result.TransactionsCommittedAfterHeal = transactionalOutcome.CommittedAfterHeal;
+            result.TransactionViolations = DescribeTransactionViolations(transactionVerification);
+            result.TransactionalProducerRecoveryFailed = transactionalOutcome.Failure is not null;
+
             var expectedBrokerDeliveryCount = GetExpectedBrokerDeliveryCount(
                 producerOutcome.AcceptedMessages,
                 faultWindowDeliveryErrorIds.Length);
@@ -312,7 +372,11 @@ internal static class FaultInjectionRunner
             result.MissingIds = verification.MissingIds.Take(100).ToArray();
             result.DuplicateIds = verification.DuplicateIds.Take(100).ToArray();
             result.UnexpectedIds = verification.UnexpectedIds.Take(100).ToArray();
-            result.Succeeded = verification.Succeeded && liveConsumerFailureKind == LiveConsumerFailureKind.None;
+            result.Succeeded = verification.Succeeded
+                && liveConsumerFailureKind == LiveConsumerFailureKind.None
+                && joiningConsumerFailure is null
+                && transactionVerification.Succeeded
+                && transactionalOutcome.Failure is null;
 
             Console.WriteLine(
                 $"  accepted={result.AcceptedMessages:N0} errors={result.DeliveryErrors:N0} " +
@@ -321,6 +385,10 @@ internal static class FaultInjectionRunner
             Console.WriteLine(
                 $"  unexplained-loss={result.UnexplainedLoss:N0} duplicates={result.Duplicates:N0} " +
                 $"oracle-mismatch={result.OracleCountMismatch:N0}");
+            Console.WriteLine(
+                $"  transactions committed={result.TransactionsCommitted:N0} aborted={result.TransactionsAborted:N0} " +
+                $"unknown={result.TransactionsUnknown:N0} committed-after-heal={result.TransactionsCommittedAfterHeal:N0} " +
+                $"joining-consumed={result.JoiningConsumerMessages:N0}");
 
             if (brokerDrain.ErrorCount > 0)
             {
@@ -352,11 +420,46 @@ internal static class FaultInjectionRunner
                     "Live Dekaf consumer recovered but failed to stop after the fault window.",
                     liveConsumerShutdownFailure);
             }
+
+            if (joiningConsumerFailure is not null)
+            {
+                throw new InvalidOperationException(
+                    "Dekaf consumer that joined its group during the fault did not recover after it.",
+                    joiningConsumerFailure);
+            }
+
+            if (!transactionVerification.Succeeded)
+            {
+                throw new InvalidOperationException(
+                    "Transactional atomicity failed: " + string.Join("; ", result.TransactionViolations));
+            }
+
+            if (transactionalOutcome.Failure is not null)
+            {
+                throw new InvalidOperationException(
+                    "Transactional Dekaf producer did not recover after the fault window.",
+                    transactionalOutcome.Failure);
+            }
         }
         finally
         {
             liveConsumerCts.Cancel();
+            joiningConsumerCts.Cancel();
             _ = await AwaitLiveConsumerShutdownAsync(liveConsumerTask).ConfigureAwait(false);
+            if (joiningConsumerTask is not null)
+            {
+                _ = await AwaitLiveConsumerShutdownAsync(joiningConsumerTask).ConfigureAwait(false);
+            }
+
+            if (transactionalTask is not null && !transactionalTask.IsCompleted)
+            {
+                // Only reached when the window failed before the transactional load was stopped.
+                windowCts.Cancel();
+                try { _ = await transactionalTask.ConfigureAwait(false); }
+                catch (OperationCanceledException) { }
+                catch (Exception ex) { Console.WriteLine($"  Transactional producer cleanup failed: {ex.Message}"); }
+            }
+
             if (producer is not null)
             {
                 try
@@ -584,7 +687,8 @@ internal static class FaultInjectionRunner
         Task liveConsumerTask,
         LiveConsumerState state,
         long firstPostHealMessageId,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string label = "Live")
     {
         var deadline = DateTime.UtcNow + RecoveryTimeout;
         while (DateTime.UtcNow < deadline)
@@ -594,12 +698,12 @@ internal static class FaultInjectionRunner
             {
                 var failure = await AwaitLiveConsumerShutdownAsync(liveConsumerTask).ConfigureAwait(false);
                 return failure ?? new InvalidOperationException(
-                    "Live Dekaf consumer stopped before observing a post-heal message.");
+                    $"{label} Dekaf consumer stopped before observing a post-heal message.");
             }
 
             if (Volatile.Read(ref state.MaxMessageId) >= firstPostHealMessageId)
             {
-                Console.WriteLine($"  Live consumer recovered through message " +
+                Console.WriteLine($"  {label} consumer recovered through message " +
                     $"{Volatile.Read(ref state.MaxMessageId):N0}");
                 return null;
             }
@@ -608,7 +712,7 @@ internal static class FaultInjectionRunner
         }
 
         return new TimeoutException(
-            $"Live Dekaf consumer did not observe post-heal message {firstPostHealMessageId:N0}.");
+            $"{label} Dekaf consumer did not observe post-heal message {firstPostHealMessageId:N0}.");
     }
 
     private static async Task<Exception?> AwaitLiveConsumerShutdownAsync(Task liveConsumerTask)
@@ -633,6 +737,332 @@ internal static class FaultInjectionRunner
             return ex;
         }
     }
+
+    private static async Task RunJoiningConsumerAsync(
+        string bootstrapServers,
+        string topic,
+        Task faultActive,
+        LiveConsumerState state,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await faultActive.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return;
+        }
+
+        // Built, subscribed and joined while the fault is active: metadata bootstrap, coordinator
+        // discovery, the join heartbeat and the first offset lookups all meet the fault.
+        await RunLiveConsumerAsync(bootstrapServers, topic, state, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task<TransactionalOutcome> RunTransactionalLoadAsync(
+        string bootstrapServers,
+        string topic,
+        string windowName,
+        Task faultHealed,
+        Task stopRequested,
+        CancellationToken cancellationToken)
+    {
+        var transactionalId = $"fault-txn-{windowName}-{Guid.NewGuid():N}";
+        var outcomes = new List<TransactionOutcome>();
+        var committedAfterHeal = 0;
+        long? stopRequestedAt = null;
+        Exception? lastFailure = null;
+        Exception? recoveryFailure = null;
+        IKafkaProducer<string, string>? producer = null;
+        try
+        {
+            for (var transactionId = 0L; ; transactionId++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (stopRequested.IsCompleted)
+                {
+                    if (committedAfterHeal >= RequiredTransactionsAfterHeal)
+                    {
+                        break;
+                    }
+
+                    stopRequestedAt ??= Stopwatch.GetTimestamp();
+                    if (Stopwatch.GetElapsedTime(stopRequestedAt.Value) > RecoveryTimeout)
+                    {
+                        recoveryFailure = new TimeoutException(
+                            $"Only {committedAfterHeal} of {RequiredTransactionsAfterHeal} transactions committed " +
+                            $"within {RecoveryTimeout.TotalSeconds:N0}s of the end of the window.", lastFailure);
+                        break;
+                    }
+                }
+
+                // Sampled before the transaction starts: a transaction that began under the
+                // fault does not count as recovery even if it commits after the heal.
+                var startedAfterHeal = faultHealed.IsCompleted;
+                ITransaction<string, string>? transaction = null;
+                var outcome = TransactionOutcomeKind.Unknown;
+                try
+                {
+                    producer ??= await CreateTransactionalProducerAsync(
+                        bootstrapServers, transactionalId, windowName, cancellationToken).ConfigureAwait(false);
+                    transaction = producer.BeginTransaction();
+                    for (var index = 0; index < RecordsPerTransaction; index++)
+                    {
+                        _ = await transaction.ProduceAsync(
+                            topic,
+                            FormatTransactionRecordKey(transactionId, index),
+                            "transactional",
+                            cancellationToken).ConfigureAwait(false);
+                    }
+
+                    await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                    outcome = TransactionOutcomeKind.Committed;
+                    if (startedAfterHeal)
+                    {
+                        committedAfterHeal++;
+                    }
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    lastFailure = ex;
+                    if (transaction is not null
+                        && await TryAbortAsync(transaction, cancellationToken).ConfigureAwait(false))
+                    {
+                        outcome = TransactionOutcomeKind.Aborted;
+                    }
+                    else
+                    {
+                        // The outcome is unknown and this producer may be fatal. A successor with
+                        // the same transactional id fences it and settles the transaction.
+                        await DisposeQuietlyAsync(producer).ConfigureAwait(false);
+                        producer = null;
+                        await Task.Delay(250, cancellationToken).ConfigureAwait(false);
+                    }
+                }
+                finally
+                {
+                    if (transaction is not null)
+                    {
+                        try { await transaction.DisposeAsync().ConfigureAwait(false); }
+                        catch (Exception ex) { lastFailure = ex; }
+                    }
+                }
+
+                if (transaction is not null)
+                {
+                    outcomes.Add(new TransactionOutcome(transactionId, outcome));
+                }
+            }
+        }
+        finally
+        {
+            await DisposeQuietlyAsync(producer).ConfigureAwait(false);
+        }
+
+        // Leave no transaction open: the read-committed oracle reads to the last stable offset,
+        // and an unsettled transaction would hide every record behind it. InitTransactions on a
+        // successor with the same transactional id settles whatever the last producer left.
+        try
+        {
+            var settler = await CreateTransactionalProducerAsync(
+                bootstrapServers, transactionalId, windowName, cancellationToken).ConfigureAwait(false);
+            await DisposeQuietlyAsync(settler).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            recoveryFailure ??= new InvalidOperationException(
+                "A successor producer could not settle the last transaction after the window.", ex);
+        }
+
+        return new TransactionalOutcome(outcomes, committedAfterHeal, recoveryFailure);
+    }
+
+    private static async Task<IKafkaProducer<string, string>> CreateTransactionalProducerAsync(
+        string bootstrapServers,
+        string transactionalId,
+        string windowName,
+        CancellationToken cancellationToken)
+    {
+        var producer = await Kafka.CreateProducer<string, string>()
+            .WithLoggerFactory(StressClientLogging.LoggerFactory)
+            .WithBootstrapServers(bootstrapServers)
+            .WithClientId($"fault-txn-producer-{windowName}")
+            .WithTransactionalId(transactionalId)
+            .WithAcks(Dekaf.Producer.Acks.All)
+            // Each record is awaited, so lingering would only stretch a transaction; short
+            // transactions put more commit boundaries inside the fault.
+            .WithLinger(TimeSpan.Zero)
+            .WithMaxBlock(TimeSpan.FromSeconds(30))
+            .WithRequestTimeout(TimeSpan.FromSeconds(10))
+            .WithDeliveryTimeout(TimeSpan.FromSeconds(45))
+            .BuildAsync(cancellationToken)
+            .ConfigureAwait(false);
+        try
+        {
+            await producer.InitTransactionsAsync(cancellationToken).ConfigureAwait(false);
+            return producer;
+        }
+        catch
+        {
+            await DisposeQuietlyAsync(producer).ConfigureAwait(false);
+            throw;
+        }
+    }
+
+    private static async Task<bool> TryAbortAsync(
+        ITransaction<string, string> transaction,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await transaction.AbortAsync(cancellationToken).ConfigureAwait(false);
+            return true;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
+    private static async Task DisposeQuietlyAsync(IKafkaProducer<string, string>? producer)
+    {
+        if (producer is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await AwaitProducerDisposalAsync(producer.DisposeAsync(), StressTestHelpers.OperationTimeout)
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"  Transactional producer disposal failed: {ex.Message}");
+        }
+    }
+
+    internal static string FormatTransactionRecordKey(long transactionId, int index) =>
+        string.Create(CultureInfo.InvariantCulture, $"{transactionId}:{index}");
+
+    internal static bool TryParseTransactionRecordKey(string? key, out VisibleTransactionRecord record)
+    {
+        record = default;
+        if (key is null)
+        {
+            return false;
+        }
+
+        var separator = key.IndexOf(':', StringComparison.Ordinal);
+        if (separator <= 0
+            || !long.TryParse(key.AsSpan(0, separator), NumberStyles.None, CultureInfo.InvariantCulture, out var transactionId)
+            || !int.TryParse(key.AsSpan(separator + 1), NumberStyles.None, CultureInfo.InvariantCulture, out var index))
+        {
+            return false;
+        }
+
+        record = new VisibleTransactionRecord(transactionId, index);
+        return true;
+    }
+
+    internal static IReadOnlyList<string> DescribeTransactionViolations(TransactionWindowVerification verification)
+    {
+        ArgumentNullException.ThrowIfNull(verification);
+        var violations = new List<string>();
+        Add("committed but not fully visible", verification.CommittedButIncomplete);
+        Add("aborted but visible", verification.AbortedButVisible);
+        Add("unknown outcome but partly visible", verification.UnknownButPartial);
+        Add("visible more than once", verification.DuplicatedTransactions);
+        Add("visible but never started", verification.UnexpectedTransactions);
+        return violations;
+
+        void Add(string description, IReadOnlyList<long> transactionIds)
+        {
+            if (transactionIds.Count > 0)
+            {
+                violations.Add($"{description}: {string.Join(", ", transactionIds.Take(20))}");
+            }
+        }
+    }
+
+    private static Task<IReadOnlyList<VisibleTransactionRecord>> ReadCommittedTransactionRecordsWithConfluentAsync(
+        string bootstrapServers,
+        string topic,
+        int partitionCount,
+        CancellationToken cancellationToken) =>
+        Task.Run<IReadOnlyList<VisibleTransactionRecord>>(() =>
+        {
+            var config = new ConfluentConsumerConfig
+            {
+                BootstrapServers = bootstrapServers,
+                GroupId = $"fault-txn-oracle-{Guid.NewGuid():N}",
+                EnableAutoCommit = false,
+                EnablePartitionEof = true,
+                IsolationLevel = Confluent.Kafka.IsolationLevel.ReadCommitted,
+                AutoOffsetReset = Confluent.Kafka.AutoOffsetReset.Earliest,
+                SocketTimeoutMs = 10_000
+            };
+            using var consumer = new Confluent.Kafka.ConsumerBuilder<string, string>(config).Build();
+            var assignments = new List<Confluent.Kafka.TopicPartitionOffset>(partitionCount);
+            for (var partition = 0; partition < partitionCount; partition++)
+            {
+                assignments.Add(new Confluent.Kafka.TopicPartitionOffset(
+                    new Confluent.Kafka.TopicPartition(topic, partition),
+                    Confluent.Kafka.Offset.Beginning));
+            }
+
+            consumer.Assign(assignments);
+
+            // Commit and abort markers occupy offsets, so the record count is not known up front.
+            // Every transaction is settled by now, so the end of each partition is its end.
+            var records = new List<VisibleTransactionRecord>();
+            var partitionsAtEnd = new HashSet<int>();
+            var stopwatch = Stopwatch.StartNew();
+            while (partitionsAtEnd.Count < partitionCount)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (stopwatch.Elapsed > OperationTimeout)
+                {
+                    throw new TimeoutException(
+                        $"Read-committed oracle reached the end of {partitionsAtEnd.Count} of {partitionCount} partitions.");
+                }
+
+                var record = consumer.Consume(TimeSpan.FromSeconds(1));
+                if (record is null)
+                {
+                    continue;
+                }
+
+                if (record.IsPartitionEOF)
+                {
+                    partitionsAtEnd.Add(record.Partition.Value);
+                    continue;
+                }
+
+                if (!TryParseTransactionRecordKey(record.Message.Key, out var visible))
+                {
+                    throw new InvalidDataException(
+                        $"Read-committed oracle received invalid transaction record key '{record.Message.Key}'.");
+                }
+
+                records.Add(visible);
+            }
+
+            consumer.Close();
+            return records;
+        }, cancellationToken);
 
     private static Task<IReadOnlyList<long>> ReadBrokerLogWithConfluentAsync(
         string bootstrapServers,
@@ -706,12 +1136,23 @@ internal static class FaultInjectionRunner
     private static bool IsAllowedFailure(
         FaultWindowRunResult window,
         IReadOnlySet<string> allowedFailureWindows) =>
-        window.LiveConsumerRecoveryFailed && allowedFailureWindows.Contains(window.Name);
+        // The allowance covers the live consumer's recovery alone. Every flag is recorded before
+        // the first failure is thrown, so another failure in the same window is never hidden by it.
+        window.LiveConsumerRecoveryFailed
+        && !window.JoiningConsumerRecoveryFailed
+        && !window.TransactionalProducerRecoveryFailed
+        && window.TransactionViolations.Count == 0
+        && allowedFailureWindows.Contains(window.Name);
 
     private sealed record ProducerOutcome(
         long AcceptedMessages,
         long FirstFaultMessageId,
         long FirstPostHealMessageId);
+
+    private sealed record TransactionalOutcome(
+        IReadOnlyCollection<TransactionOutcome> Outcomes,
+        int CommittedAfterHeal,
+        Exception? Failure);
 
     private sealed class LiveConsumerState
     {

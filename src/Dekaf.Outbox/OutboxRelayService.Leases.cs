@@ -9,6 +9,14 @@ public sealed partial class OutboxRelayService
     private long _renewalDelayStarted;
     private TimeSpan _renewalDelayDuration;
     private int _leasesReleased;
+    // The host's shutdown deadline, published before the stopping token fires so the loop
+    // can finish its last store write inside it. Null when the relay is stopped by disposal.
+    private StopDeadline? _stopDeadline;
+
+    private sealed class StopDeadline(CancellationToken token)
+    {
+        internal CancellationToken Token { get; } = token;
+    }
 
     /// <summary>
     /// Stops the relay and, for an <see cref="IOutboxLeaseOwnershipStore"/>, hands its leases
@@ -16,8 +24,37 @@ public sealed partial class OutboxRelayService
     /// </summary>
     public override async Task StopAsync(CancellationToken cancellationToken)
     {
+        Volatile.Write(ref _stopDeadline, new StopDeadline(cancellationToken));
         await base.StopAsync(cancellationToken).ConfigureAwait(false);
         await ReleaseLeasesAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Marks the rows Kafka acknowledged before a stop interrupted their batch. The stopping
+    /// token is already cancelled, so the write runs under the host's shutdown deadline, as
+    /// the release does; without one (a relay stopped by disposal) the rows are retained and
+    /// published again, which is the at-least-once fallback for every failure here.
+    /// </summary>
+    private async ValueTask MarkPublishedBeforeStopAsync(int bucket, IReadOnlyList<OutboxMessage> published)
+    {
+        if (Volatile.Read(ref _stopDeadline) is not { } deadline || deadline.Token.IsCancellationRequested)
+            return;
+
+        try
+        {
+            // A store that ignores its token must not hold the loop, and with it the release,
+            // past the deadline: the wait is abandoned there and a late fault stays observed.
+            var mark = _store.MarkPublishedAsync(bucket, published, deadline.Token).AsTask();
+            _ = mark.ContinueWith(static completed => _ = completed.Exception, CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+            await mark.WaitAsync(deadline.Token).ConfigureAwait(false);
+            LogBatchPublished(bucket, published.Count);
+        }
+        catch (Exception ex)
+        {
+            LogMarkBeforeStopFailed(ex, bucket, published.Count);
+        }
     }
 
     private async Task ReleaseLeasesAsync(CancellationToken cancellationToken)
@@ -36,7 +73,18 @@ public sealed partial class OutboxRelayService
         }
 
         // The completed loop is what makes its state safe to read from the stopping thread.
-        if (!_acquisitionAttempted || Interlocked.Exchange(ref _leasesReleased, 1) != 0)
+        if (!_acquisitionAttempted || Volatile.Read(ref _leasesReleased) != 0)
+            return;
+
+        // A deadline that has already passed fails every request of the release. Nothing is
+        // started, and a later stop that has time left can still hand the leases back.
+        if (cancellationToken.IsCancellationRequested)
+        {
+            LogLeaseReleaseOutOfTime(_options.RelayId, _options.LeaseDuration);
+            return;
+        }
+
+        if (Interlocked.Exchange(ref _leasesReleased, 1) != 0)
             return;
 
         try
@@ -158,8 +206,10 @@ public sealed partial class OutboxRelayService
 
         var previousTimestamp = _leaseTimestamp;
         var timestamp = _timeProvider.GetTimestamp();
+        _leaseCallInFlight = true;
         var renewed = await _renewalStore!.RenewBucketLeasesAsync(_leaseRequest, _ownedBuckets, cancellationToken)
             .ConfigureAwait(false);
+        _leaseCallInFlight = false;
         // A response arriving after the old lease expired cannot prove continuous
         // ownership, even if the database eventually extended that lease successfully.
         if (!renewed || _timeProvider.GetElapsedTime(previousTimestamp) >= _options.LeaseDuration)
@@ -198,11 +248,20 @@ public sealed partial class OutboxRelayService
     [LoggerMessage(Level = LogLevel.Warning, Message = "Outbox lease lost during publishing; rows retained for at-least-once takeover. Already-appended Kafka records may still be delivered")]
     private partial void LogLeaseLostDuringPublish();
 
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Outbox lease renewal failed while bucket {Bucket} was publishing. The publish finished inside the lease that was last confirmed, so its acknowledged rows are marked; the leases are reacquired before anything else is published")]
+    private partial void LogRenewalFailedDuringPublish(Exception ex, int bucket);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Could not mark {Count} acknowledged outbox row(s) of bucket {Bucket} before stopping; they stay in the store and are published again")]
+    private partial void LogMarkBeforeStopFailed(Exception ex, int bucket, int count);
+
     [LoggerMessage(Level = LogLevel.Information, Message = "Outbox relay {RelayId} released its bucket leases")]
     private partial void LogLeasesReleased(string relayId);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Outbox relay {RelayId} did not stop before the shutdown deadline, so its bucket leases were not released; peers take over after LeaseDuration ({LeaseDuration})")]
     private partial void LogLeaseReleaseSkipped(string relayId, TimeSpan leaseDuration);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Outbox relay {RelayId} stopped with no time left before the shutdown deadline, so its bucket leases were not released; peers take over after LeaseDuration ({LeaseDuration})")]
+    private partial void LogLeaseReleaseOutOfTime(string relayId, TimeSpan leaseDuration);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Outbox relay {RelayId} failed to release its bucket leases; peers take over after LeaseDuration ({LeaseDuration})")]
     private partial void LogLeaseReleaseFailed(Exception ex, string relayId, TimeSpan leaseDuration);

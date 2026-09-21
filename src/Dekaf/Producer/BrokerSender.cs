@@ -492,8 +492,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         }
 
         /// <summary>
-        /// Add to front of partition queue (retries, epoch bump — older batches first).
-        /// Matches Java's Deque.addFirst() for reenqueue.
+        /// Puts a batch that was coalesced but not sent (pending epoch bump, broker throttle,
+        /// transaction enrollment) back at the front of its partition's queue, as Java's
+        /// Deque.addFirst() does on reenqueue, but never ahead of an older retry of the
+        /// partition. One can be queued by now: responses are processed while a coalesced wave
+        /// waits for in-flight capacity, and the failed request may carry a batch the send loop
+        /// received before this one. Two retries that are both re-stamped take their sequences in
+        /// the order they are sent, so the broker would accept the swap as the intended order.
         /// </summary>
         public void AddFirst(BatchReference batchRef)
         {
@@ -503,8 +508,29 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 return;
             }
 
-            GetOrCreateQueue(batchRef.Batch.TopicPartition).Insert(0, batchRef);
+            var queue = GetOrCreateQueue(batchRef.Batch.TopicPartition);
+            queue.Insert(IndexAfterOlderRetries(queue, batchRef.Batch.SenderArrivalOrder), batchRef);
             TrackAddedBatch(batchRef);
+        }
+
+        private static int IndexAfterOlderRetries(List<BatchReference> queue, long arrivalOrder)
+        {
+            if (arrivalOrder == 0)
+                return 0;
+
+            var index = 0;
+            for (var i = 0; i < queue.Count; i++)
+            {
+                var queued = queue[i];
+                if (!queued.IsCurrentIncarnation() || !queued.Batch.IsRetry)
+                    continue;
+
+                var queuedArrivalOrder = queued.Batch.SenderArrivalOrder;
+                if (queuedArrivalOrder != 0 && queuedArrivalOrder < arrivalOrder)
+                    index = i + 1;
+            }
+
+            return index;
         }
 
         /// <summary>
@@ -545,9 +571,20 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
             var queue = GetOrCreateQueue(batchRef.Batch.TopicPartition);
 
+            // Responses are processed oldest first, so a retry normally belongs behind the
+            // retries already queued. A retry that was re-sent and failed again is the
+            // exception: a newer retry of its partition may have waited here meanwhile (held
+            // for a sequence restart), and the partition's order is the order in which the
+            // send loop first received its batches.
+            var arrivalOrder = batchRef.Batch.SenderArrivalOrder;
             var insertIdx = 0;
             while (insertIdx < queue.Count && queue[insertIdx].Batch.IsRetry)
+            {
+                var queuedArrivalOrder = queue[insertIdx].Batch.SenderArrivalOrder;
+                if (arrivalOrder != 0 && queuedArrivalOrder != 0 && queuedArrivalOrder > arrivalOrder)
+                    break;
                 insertIdx++;
+            }
 
             queue.Insert(insertIdx, batchRef);
             TrackAddedBatch(batchRef);
@@ -778,6 +815,20 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     // answered (Java's shouldStopDrainBatchesForPartition) so they can restart at sequence 0.
     private bool _sequenceRestartHoldArmed;
     private readonly HashSet<TopicPartition> _partitionsPendingUnderPreviousState = new();
+
+    // Partitions whose oldest retry went back to carry-over in this coalescing pass (backoff, or
+    // held for a sequence restart), with the time before which that retry will not be sent (0 when
+    // something other than backoff blocks it). A later retry of the same partition must not pass
+    // it: two retries that are both re-stamped take their sequences in the order they are sent,
+    // so the broker could not tell the overtake from the intended order. The later retry takes
+    // over the older one's backoff, or its own elapsed one would make ComputeNextWakeupMs
+    // return 0 and spin the loop until the older retry is due. Cleared every pass.
+    private readonly Dictionary<TopicPartition, long> _partitionsWithRequeuedRetry = new();
+
+    // Send-loop-only counters behind ReadyBatch.SenderArrivalOrder: channel arrivals count up
+    // from 1, crash-recovered redeliveries (which predate them all) count up from long.MinValue.
+    private long _nextArrivalOrder;
+    private long _nextRedeliveryArrivalOrder = long.MinValue;
 
     // Partition-affined connections: each partition pins to _pinnedConnections[GetConnectionForPartition(topicPartition)].
     // For single-connection mode (_connectionCount == 1), degenerates to the original pinned behavior.
@@ -1489,7 +1540,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 while (_loopExitRedeliveries.TryDequeue(out var redelivery))
                 {
                     if (redelivery.Batch.IsCurrentIncarnation(redelivery.Generation))
+                    {
+                        // Older than everything this sender took from its channel, in the
+                        // order the redeliveries were queued: negative and increasing.
+                        redelivery.Batch.SenderArrivalOrder = ++_nextRedeliveryArrivalOrder;
                         carryOver.Add(new BatchReference(redelivery.Batch, redelivery.Generation));
+                    }
                     else
                     {
                         LogStaleRetryBatchSkipped(_instanceId, _brokerId);
@@ -1515,7 +1571,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 // as the start of the new epoch. When the epoch space of the producer ID is
                 // exhausted (short.MaxValue), the producer replaces the ID through
                 // InitProducerId and this await suspends the send loop until the new ID is
-                // known — nothing may be sent under the old one. A producer whose epoch already
+                // known or the earliest delivery deadline the loop owns, whichever comes
+                // first (AwaitProducerIdResetAsync). A producer whose epoch already
                 // moved past staleEpoch (another sender bumped, or a successor of an already
                 // recovered batch reports the same rejection) just returns the current state.
                 var staleEpoch = Volatile.Read(ref _epochBumpRequestedForEpoch);
@@ -1523,7 +1580,17 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 {
                     try
                     {
-                        await _bumpEpoch((short)staleEpoch, cancellationToken).ConfigureAwait(false);
+                        // A local bump completes synchronously. Replacing an exhausted producer
+                        // ID is a network round trip the producer retries for up to
+                        // max.block.ms; the loop waits for it no longer than the earliest
+                        // delivery deadline it owns, or delivery.timeout.ms would be overrun
+                        // by up to max.block.ms for every batch of this broker.
+                        var bump = _bumpEpoch((short)staleEpoch, cancellationToken);
+                        if (bump.IsCompleted)
+                            await bump.ConfigureAwait(false);
+                        else
+                            await AwaitProducerIdResetAsync(bump.AsTask(), carryOver, staleEpoch, cancellationToken)
+                                .ConfigureAwait(false);
                     }
                     catch (OperationCanceledException)
                     {
@@ -1548,7 +1615,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 // stamps in step 6 must agree on the state, or a partition could restart at
                 // sequence 0 under a state newer than the one its pending batches carry.
                 if (_getProducerState is not null)
-                    RefreshIterationProducerState();
+                    RefreshIterationProducerState(carryOver);
 
                 // ── 4b. Adaptive connection scaling ──
                 if (_adaptiveScalingEnabled)
@@ -1595,6 +1662,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                 // ── 5. Coalesce ──
                 coalescedPartitions.Clear();
+                if (_partitionsWithRequeuedRetry.Count > 0)
+                    _partitionsWithRequeuedRetry.Clear();
                 coalescedCount = 0;
                 coalescedRequestBudgetUsed = 0;
 
@@ -2418,6 +2487,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
         var batch = batchRef.Batch;
 
+        // First sight of the batch in this send loop: its place in its partition's retry order
+        // (PartitionCarryOver.AddAfterRetries). One increment and one field write per batch.
+        if (!fromCarryOver)
+            batch.SenderArrivalOrder = ++_nextArrivalOrder;
+
         RefreshPartitionRouting();
 
         // Track distinct partitions this broker serves for MicroLinger skip optimization.
@@ -2434,7 +2508,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             if (now >= batch.StopwatchCreatedTicks + _options.DeliveryTimeoutTicks)
             {
                 LogDeliveryTimeoutExceeded(_brokerId, batch.TopicPartition.Topic, batch.TopicPartition.Partition);
-                UnmutePartition(batch.TopicPartition);
+                UnmuteUnlessRetryQueued(batch.TopicPartition, carryOver);
                 var elapsed = Stopwatch.GetElapsedTime(batch.StopwatchCreatedTicks);
                 var configured = TimeSpan.FromMilliseconds(_options.DeliveryTimeoutMs);
                 FailAndCleanupBatch(batch, new KafkaTimeoutException(
@@ -2445,9 +2519,20 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 return;
             }
 
+            // An older retry of this partition went back to carry-over earlier in this pass.
+            if (_partitionsWithRequeuedRetry.Count > 0
+                && _partitionsWithRequeuedRetry.TryGetValue(batch.TopicPartition, out var olderRetryNotBefore))
+            {
+                if (olderRetryNotBefore > batch.RetryNotBefore)
+                    batch.RetryNotBefore = olderRetryNotBefore;
+                RequeueBatch(carryOver, batchRef, fromCarryOver);
+                return;
+            }
+
             // Check backoff — carry over if backoff hasn't elapsed
             if (batch.RetryNotBefore > 0 && now < batch.RetryNotBefore)
             {
+                _partitionsWithRequeuedRetry[batch.TopicPartition] = batch.RetryNotBefore;
                 RequeueBatch(carryOver, batchRef, fromCarryOver);
                 return;
             }
@@ -2457,6 +2542,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             // that same-connection pipeline drains, then order the retry before new work.
             if (!_isIdempotent && HasPendingResponseForPartition(batch.TopicPartition))
             {
+                _partitionsWithRequeuedRetry[batch.TopicPartition] = 0;
                 RequeueBatch(carryOver, batchRef, fromCarryOver);
                 return;
             }
@@ -2481,8 +2567,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
             // A retry re-stamped under a new epoch restarts its partition at sequence 0 (step 6);
             // its successors under the old epoch must be answered first.
-            if (ShouldHoldForSequenceRestart(batch.TopicPartition))
+            if (ShouldHoldForSequenceRestart(batch))
             {
+                _partitionsWithRequeuedRetry[batch.TopicPartition] = 0;
                 HoldForSequenceRestart(batchRef, carryOver, fromCarryOver);
                 return;
             }
@@ -2502,7 +2589,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     carryOver,
                     fromCarryOver,
                     out var batchRequestBodySize))
+            {
+                _partitionsWithRequeuedRetry[batch.TopicPartition] = 0;
                 return;
+            }
 
             if (!coalescedPartitions.Add(batch.TopicPartition))
             {
@@ -2535,7 +2625,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             return;
         }
 
-        if (ShouldHoldForSequenceRestart(batch.TopicPartition))
+        if (ShouldHoldForSequenceRestart(batch))
         {
             HoldForSequenceRestart(batchRef, carryOver, fromCarryOver);
             return;
@@ -2886,13 +2976,100 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     }
 
     /// <summary>
-    /// Reads the producer state this iteration works under. When it changed, or while a request
-    /// stamped under a previous state is still pending, rebuilds the set of partitions such
-    /// requests carry so <see cref="CoalesceBatch"/> can hold their next batch. Steady state costs
-    /// one delegate call and one reference compare per iteration; the pending scan runs only
-    /// right after a bump, until the old-state requests are answered.
+    /// Waits for the producer ID reset, but not past the earliest delivery deadline of a batch
+    /// this loop owns (queued or awaiting a response). When the deadline comes first the loop
+    /// goes on: it expires what is due, keeps processing responses, and sends what it has under
+    /// the old producer state, which is still valid for every partition the broker did not
+    /// reject. The reset continues in the producer; its state is picked up in step 4c when it is
+    /// published, the partitions restart lazily under it, and a batch rejected again meanwhile
+    /// asks for the reset again and joins the one in flight. Cold path: once per exhausted epoch
+    /// space, so the task and timer allocations are per 32767 bumps.
     /// </summary>
-    private void RefreshIterationProducerState()
+    private async ValueTask AwaitProducerIdResetAsync(
+        Task<ProducerIdAndEpoch> reset,
+        PartitionCarryOver carryOver,
+        int staleEpoch,
+        CancellationToken cancellationToken)
+    {
+        var deadlineTicks = GetEarliestDeliveryDeadlineTicks(carryOver);
+        if (deadlineTicks == long.MaxValue)
+        {
+            await reset.ConfigureAwait(false);
+            return;
+        }
+
+        // The deadline is a Stopwatch time and the timer runs on the coarser system tick, which
+        // lets it fire several milliseconds early. Waking before the batch is due would send it
+        // once more instead of expiring it, so wait again until the Stopwatch agrees.
+        var waitedFrom = Stopwatch.GetTimestamp();
+        while (true)
+        {
+            var remainingTicks = deadlineTicks - Stopwatch.GetTimestamp();
+            if (remainingTicks < 0)
+                break;
+
+            var remainingMs = (long)(remainingTicks / StopwatchTicksPerMillisecond) + 1;
+            try
+            {
+                await reset.WaitAsync(TimeSpan.FromMilliseconds(remainingMs), cancellationToken).ConfigureAwait(false);
+                return;
+            }
+            catch (TimeoutException)
+            {
+            }
+        }
+
+        LogProducerIdResetStillPending(
+            _brokerId, staleEpoch, (long)Stopwatch.GetElapsedTime(waitedFrom).TotalMilliseconds);
+        // Nobody awaits the reset any more; its failure is the producer's to report.
+        _ = reset.ContinueWith(
+            static completed => _ = completed.Exception,
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+    }
+
+    private long GetEarliestDeliveryDeadlineTicks(PartitionCarryOver carryOver)
+    {
+        var earliestCreatedTicks = long.MaxValue;
+        foreach (var queue in carryOver.Partitions.Values)
+        {
+            for (var i = 0; i < queue.Count; i++)
+            {
+                var batchRef = queue[i];
+                if (batchRef.IsCurrentIncarnation())
+                    earliestCreatedTicks = Math.Min(earliestCreatedTicks, batchRef.Batch.StopwatchCreatedTicks);
+            }
+        }
+
+        for (var connIdx = 0; connIdx < _pendingResponsesByConnection.Length; connIdx++)
+        {
+            var pendingList = CollectionsMarshal.AsSpan(_pendingResponsesByConnection[connIdx]);
+            for (var i = 0; i < pendingList.Length; i++)
+            {
+                ref readonly var pending = ref pendingList[i];
+                for (var j = 0; j < pending.Count; j++)
+                {
+                    if (pending.IsSameIncarnation(j))
+                        earliestCreatedTicks = Math.Min(earliestCreatedTicks, pending.Batches[j].StopwatchCreatedTicks);
+                }
+            }
+        }
+
+        return earliestCreatedTicks == long.MaxValue
+            ? long.MaxValue
+            : earliestCreatedTicks + _options.DeliveryTimeoutTicks;
+    }
+
+    /// <summary>
+    /// Reads the producer state this iteration works under. When it changed, or while a batch
+    /// stamped under a previous state is unresolved (its request still pending, or queued for a
+    /// retry under that stamp), rebuilds the set of partitions such batches belong to so
+    /// <see cref="CoalesceBatch"/> can hold the batch that would restart the partition. Steady
+    /// state costs one delegate call and one reference compare per iteration; the pending and
+    /// carry-over scans run only from a bump until the old-state batches are resolved.
+    /// </summary>
+    private void RefreshIterationProducerState(PartitionCarryOver carryOver)
     {
         var state = _getProducerState!();
         if (!ReferenceEquals(state, _iterationProducerState))
@@ -2905,9 +3082,76 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             return;
 
         _partitionsPendingUnderPreviousState.Clear();
+        var retryKeepsPreviousStamp = false;
         if (state.Epoch >= 0)
+        {
             CollectPartitionsPendingUnderOtherState(state, _partitionsPendingUnderPreviousState);
-        _sequenceRestartHoldArmed = _partitionsPendingUnderPreviousState.Count > 0;
+            retryKeepsPreviousStamp = CollectPartitionsQueuedUnderOtherState(
+                state, carryOver, _partitionsPendingUnderPreviousState);
+        }
+
+        _sequenceRestartHoldArmed = retryKeepsPreviousStamp || _partitionsPendingUnderPreviousState.Count > 0;
+    }
+
+    /// <summary>
+    /// Adds every partition whose oldest queued batch is a retry that keeps the stamp of a
+    /// previous state (<see cref="KeepsPreviousStateStamp"/>): until that retry is answered the
+    /// partition is as unresolved as if the request were still on the wire, and anything behind
+    /// it that would restart the partition must wait. A kept-stamp retry that is not the oldest
+    /// holds nothing: the batch ahead of it restarts the partition first (it was definitively
+    /// rejected, so nothing after it was appended either), and the retry is re-stamped after it,
+    /// as Java rewrites every in-flight batch of the partition that triggered a bump. Returns
+    /// whether any queued retry keeps such a stamp, so the scan stays armed until none does.
+    /// Runs only while armed, i.e. from a bump until the previous state's batches are resolved.
+    /// </summary>
+    private bool CollectPartitionsQueuedUnderOtherState(
+        ProducerIdAndEpoch state,
+        PartitionCarryOver carryOver,
+        HashSet<TopicPartition> partitions)
+    {
+        if (carryOver.Count == 0)
+            return false;
+
+        var retryKeepsPreviousStamp = false;
+        foreach (var queue in carryOver.Partitions.Values)
+        {
+            var isOldest = true;
+            for (var i = 0; i < queue.Count; i++)
+            {
+                var batchRef = queue[i];
+                if (!batchRef.IsCurrentIncarnation())
+                    continue;
+
+                if (KeepsPreviousStateStamp(batchRef.Batch, state))
+                {
+                    retryKeepsPreviousStamp = true;
+                    if (isOldest)
+                        partitions.Add(batchRef.Batch.TopicPartition);
+                }
+
+                isOldest = false;
+            }
+        }
+
+        return retryKeepsPreviousStamp;
+    }
+
+    /// <summary>
+    /// True for a batch that was handed to the wire under a producer state other than
+    /// <paramref name="state"/>, was not definitively rejected since (its inflight entry is
+    /// completed when the broker answers OutOfOrderSequenceNumber, InvalidProducerEpoch or
+    /// UnknownProducerId), and whose partition has not restarted under <paramref name="state"/>.
+    /// The broker may hold the batch already, so it must be retried under its original stamp.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool KeepsPreviousStateStamp(ReadyBatch batch, ProducerIdAndEpoch state)
+    {
+        var recordBatch = batch.RecordBatch;
+        return batch.InflightEntry is not null
+            && recordBatch.BaseSequence >= 0
+            && recordBatch.ProducerEpoch >= 0
+            && (recordBatch.ProducerEpoch != state.Epoch || recordBatch.ProducerId != state.ProducerId)
+            && _accumulator.HasStaleSequenceState(batch.TopicPartition, state);
     }
 
     /// <summary>
@@ -2940,16 +3184,19 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     }
 
     /// <summary>
-    /// True when the partition must restart its sequences under this iteration's producer state
-    /// but a batch it sent under a previous state is still awaiting its response. Sending now
-    /// would put sequence 0 of the new epoch behind an old-epoch batch that may yet be retried,
-    /// and reorder the partition. One bool in steady state.
+    /// True when sending <paramref name="batch"/> would restart its partition's sequences under
+    /// this iteration's producer state while a batch the partition sent under a previous state is
+    /// unresolved: still awaiting its response, or queued for a retry under its original stamp.
+    /// Sending now would put sequence 0 of the new epoch ahead of an old-epoch batch that may yet
+    /// be retried, and reorder the partition. A retry that keeps its previous stamp restarts
+    /// nothing and is never held (it is what the partition is waiting for). One bool in steady state.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private bool ShouldHoldForSequenceRestart(TopicPartition topicPartition)
+    private bool ShouldHoldForSequenceRestart(ReadyBatch batch)
         => _sequenceRestartHoldArmed
-            && _partitionsPendingUnderPreviousState.Contains(topicPartition)
-            && _accumulator.HasStaleSequenceState(topicPartition, _iterationProducerState!);
+            && _partitionsPendingUnderPreviousState.Contains(batch.TopicPartition)
+            && _accumulator.HasStaleSequenceState(batch.TopicPartition, _iterationProducerState!)
+            && !KeepsPreviousStateStamp(batch, _iterationProducerState!);
 
     private void HoldForSequenceRestart(
         BatchReference batchRef,
@@ -3679,7 +3926,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         // Otherwise, retry (like Java's handleProduceResponse for disconnected requests).
                         if (now >= batch.StopwatchCreatedTicks + deliveryTimeoutTicks)
                         {
-                            UnmutePartition(batch.TopicPartition);
+                            UnmuteUnlessRetryQueued(batch.TopicPartition, carryOver);
                             var elapsed = Stopwatch.GetElapsedTime(batch.StopwatchCreatedTicks);
                             var configured = TimeSpan.FromMilliseconds(_options.DeliveryTimeoutMs);
                             try
@@ -3843,7 +4090,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         if (Stopwatch.GetTimestamp() >= deliveryDeadlineTicks)
         {
             LogDeliveryTimeoutExceeded(_brokerId, batch.TopicPartition.Topic, batch.TopicPartition.Partition);
-            UnmutePartition(batch.TopicPartition);
+            UnmuteUnlessRetryQueued(batch.TopicPartition, carryOver);
             var elapsed = Stopwatch.GetElapsedTime(batch.StopwatchCreatedTicks);
             var configured = TimeSpan.FromMilliseconds(_options.DeliveryTimeoutMs);
             var ex = new KafkaTimeoutException(
@@ -4079,9 +4326,26 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         && (batch.RecordBatch.ProducerEpoch != currentEpoch
                             || batch.RecordBatch.ProducerId != currentPid);
 
-                    if (isStaleEpoch)
+                    if (isStaleEpoch && KeepsPreviousStateStamp(batch, sequenceState!))
                     {
-                        // Stale epoch: complete old inflight, assign fresh sequence, update epoch/PID
+                        // Sent before under the previous state, outcome unknown (lost response,
+                        // request timeout, a retriable error the broker may return after it
+                        // appended). Its partition has not restarted, so the broker still holds
+                        // the previous state's entry and deduplicates this stamp; a fresh stamp
+                        // would be accepted as a new batch and append the records twice (Java
+                        // keeps a partition on its old epoch while it has in-flight batches).
+                        // The hold must be armed again: this request is pending under another
+                        // state from now on, and the partition may not restart ahead of it.
+                        LogPreviousStateStampKept(_brokerId, tp.Topic, tp.Partition,
+                            batch.RecordBatch.ProducerEpoch, batch.RecordBatch.BaseSequence, currentEpoch);
+                        _sequenceRestartHoldArmed = true;
+                    }
+                    else if (isStaleEpoch)
+                    {
+                        // Never sent, or definitively rejected (its inflight entry was completed
+                        // with the rejection), or its partition already restarted under the
+                        // current state so the broker would fence the old stamp: complete old
+                        // inflight, assign fresh sequence, update epoch/PID.
                         LogStaleEpochResequencing(_brokerId, tp.Topic, tp.Partition,
                             batch.RecordBatch.ProducerEpoch, currentEpoch);
                         CompleteInflightEntry(batch);
@@ -5341,6 +5605,20 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Unmutes the partition of a retry that has just expired, unless another retry of the
+    /// partition is still queued. The mute is what keeps newer batches behind the partition's
+    /// retries: lifted while one waits out its backoff or a sequence-restart hold, a fresh batch
+    /// would be sent first and, when the retry is re-stamped under a new epoch, take the lower
+    /// sequence, which the broker accepts as the intended order. The queued retry unmutes the
+    /// partition itself when it is sent (FinalizeCoalescedRetries) or expires. Expiry path only.
+    /// </summary>
+    private void UnmuteUnlessRetryQueued(TopicPartition tp, PartitionCarryOver carryOver)
+    {
+        if (!carryOver.HasRetry(tp))
+            UnmutePartition(tp);
+    }
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void UnmutePartition(TopicPartition tp)
     {
@@ -5427,7 +5705,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 {
                     batch.IsRetry = false;
                     batch.RetryNotBefore = 0;
-                    UnmutePartition(batch.TopicPartition);
+                    UnmuteUnlessRetryQueued(batch.TopicPartition, carryOver);
                 }
 
                 LogDeliveryTimeoutExceeded(_brokerId, batch.TopicPartition.Topic,
@@ -6625,6 +6903,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "BrokerSender[{BrokerId}] re-sequencing batch {Topic}-{Partition}: stale epoch {StaleEpoch} -> current {CurrentEpoch}")]
     private partial void LogStaleEpochResequencing(int brokerId, string topic, int partition, short staleEpoch, short currentEpoch);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "BrokerSender[{BrokerId}] producer ID reset for exhausted epoch {StaleEpoch} still pending after {WaitedMs} ms; the send loop continues so that batches past their delivery timeout can be expired")]
+    private partial void LogProducerIdResetStillPending(int brokerId, int staleEpoch, long waitedMs);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "BrokerSender[{BrokerId}] retrying {Topic}-{Partition} under its original epoch {StampedEpoch} sequence {BaseSequence}: its outcome is unknown and the partition has not restarted under epoch {CurrentEpoch}")]
+    private partial void LogPreviousStateStampKept(int brokerId, string topic, int partition, short stampedEpoch, int baseSequence, short currentEpoch);
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "BrokerSender[{BrokerId}] restarting sequences of {Topic}-{Partition} at 0 under producer {ProducerId} epoch {Epoch}")]
     private partial void LogSequenceRestarted(int brokerId, string topic, int partition, long producerId, short epoch);

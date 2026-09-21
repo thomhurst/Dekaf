@@ -174,6 +174,119 @@ public sealed class OutboxDynamoDbLeaseTests(DynamoDbLocalContainer dynamoDb)
     }
 
     [Test]
+    public async Task Release_IsNotUndoneByAClaimOfTheRoundTheStopCancelled()
+    {
+        using var fleet = await OutboxDynamoDbFleet.CreateAsync(dynamoDb);
+        await ConvergeAsync(fleet, "relay-a", "relay-b");
+        var cancelledRoundStartedAt = fleet.Clock.GetUtcNow();
+        var bucket = fleet.Owned("relay-b")[0];
+        fleet.Clock.Advance(TimeSpan.FromSeconds(1));
+
+        // The stop cancelled a round mid-claim, and the claim reaches DynamoDB after the
+        // release freed the lease it names: between the pass that hands the leases back and
+        // the read that confirms it. No condition can refuse a claim of a free lease.
+        var reads = 0;
+        bool? landed = null;
+        fleet.BeforeStoreCall = async (method, _) =>
+        {
+            if (method == nameof(Amazon.DynamoDBv2.IAmazonDynamoDB.QueryAsync) && ++reads == 2)
+                landed = await fleet.LandStragglingClaimAsync("relay-b", bucket, cancelledRoundStartedAt);
+        };
+        await fleet.ReleaseAsync("relay-b");
+        fleet.BeforeStoreCall = null;
+
+        // Left alone, the lease would name a relay that is gone for a whole lease duration.
+        await Assert.That(landed).IsTrue();
+        await Assert.That(await fleet.ReadNamedAsync("relay-b")).IsEmpty();
+        await fleet.RoundAsync("relay-a");
+        await Assert.That(Join(fleet.Owned("relay-a"))).IsEqualTo("0,1,2,3,4,5,6,7");
+    }
+
+    [Test]
+    public async Task Release_IsNotUndoneByARenewalOfTheRoundTheStopCancelled()
+    {
+        using var fleet = await OutboxDynamoDbFleet.CreateAsync(dynamoDb);
+        await ConvergeAsync(fleet, "relay-a", "relay-b");
+        var cancelledRoundStartedAt = fleet.Clock.GetUtcNow();
+        var bucket = fleet.Owned("relay-b")[0];
+        var seenExpiry = (await fleet.ReadLeaseExpiriesAsync())[bucket];
+
+        fleet.Clock.Advance(TimeSpan.FromSeconds(1));
+        await fleet.ReleaseAsync("relay-b");
+
+        // The renewal names the owner and the expiry its round read. The release changed both.
+        await Assert.That(await fleet.LandStragglingKeepAsync("relay-b", bucket, seenExpiry, cancelledRoundStartedAt))
+            .IsFalse();
+        await Assert.That(await fleet.ReadNamedAsync("relay-b")).IsEmpty();
+        await fleet.RoundAsync("relay-a");
+        await Assert.That(Join(fleet.Owned("relay-a"))).IsEqualTo("0,1,2,3,4,5,6,7");
+    }
+
+    [Test]
+    public async Task Fleet_SkewedClocks_WithinSlack_NeverShareABucket()
+    {
+        using var fleet = await OutboxDynamoDbFleet.CreateAsync(dynamoDb);
+        // Sixteen seconds apart at the most. The documented tolerance is the renewal slack,
+        // LeaseDuration - LeaseRenewInterval, which is twenty.
+        fleet.SetClockOffset("relay-a", TimeSpan.FromSeconds(8));
+        fleet.SetClockOffset("relay-b", TimeSpan.FromSeconds(-8));
+
+        // AcquireAsync asserts on the true time, after every acquisition, that no bucket has
+        // two relays that were told they own it.
+        await ConvergeAsync(fleet, "relay-a", "relay-b", "relay-c");
+        await AssertBalancedAsync(fleet, "relay-a", "relay-b", "relay-c");
+        var settled = fleet.Describe("relay-a", "relay-b", "relay-c");
+        for (var round = 0; round < 6; round++)
+            await fleet.RoundAsync(round % 2 == 0 ? ["relay-c", "relay-b", "relay-a"] : ["relay-a", "relay-c", "relay-b"]);
+        // A fast clock must not take a live peer's lease for an expired one.
+        await Assert.That(fleet.Describe("relay-a", "relay-b", "relay-c")).IsEqualTo(settled);
+
+        // The slow-clocked relay crashes. Its peers see its leases lapse at different
+        // moments, the fast-clocked one first, and still end up with a fair split.
+        fleet.Forget("relay-b");
+        await ConvergeAsync(fleet, "relay-a", "relay-c");
+        await AssertBalancedAsync(fleet, "relay-a", "relay-c");
+
+        // The fast-clocked relay stops gracefully: the expiry it writes lies in its peers'
+        // future, and the lease is free all the same, because it names nobody.
+        await fleet.ReleaseAsync("relay-a");
+        await fleet.RoundAsync("relay-c");
+        await Assert.That(Join(fleet.Owned("relay-c"))).IsEqualTo("0,1,2,3,4,5,6,7");
+
+        // Both come back on their skewed hosts.
+        await ConvergeAsync(fleet, "relay-c", "relay-a", "relay-b");
+        await AssertBalancedAsync(fleet, "relay-a", "relay-b", "relay-c");
+        await Assert.That(fleet.RefusedWrites).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task ClockStepsBackwards_KeepDoesNotShortenLease()
+    {
+        using var fleet = await OutboxDynamoDbFleet.CreateAsync(dynamoDb);
+        await fleet.RoundAsync("relay-a");
+        var written = await fleet.ReadLeaseExpiriesAsync();
+
+        // The host's clock is set back by more than a renew interval, so the expiry this round
+        // computes lies before the one the last round wrote.
+        fleet.SetClockOffset("relay-a", TimeSpan.FromSeconds(-25));
+        var owned = await fleet.AcquireAsync("relay-a");
+
+        // Peers may have planned around the later expiry, so it stays. The relay is told it
+        // owns nothing: it trusts what it is told for a whole lease duration from now, which
+        // the expiry left in place does not promise on a peer's clock.
+        await Assert.That(owned).IsEmpty();
+        await Assert.That(await fleet.ReadLeaseExpiriesAsync()).IsEquivalentTo(written);
+        await Assert.That(Join(await fleet.ReadNamedAsync("relay-a"))).IsEqualTo("0,1,2,3,4,5,6,7");
+        // One refusal, the heartbeat's: its timestamp only moves forward too. The renewals
+        // were not sent, because their condition was known to refuse them.
+        await Assert.That(fleet.RefusedWrites).IsEqualTo(1);
+
+        // Nobody took the leases meanwhile, and the relay has them back once its clock is right.
+        fleet.SetClockOffset("relay-a", TimeSpan.Zero);
+        await Assert.That(Join(await fleet.AcquireAsync("relay-a"))).IsEqualTo("0,1,2,3,4,5,6,7");
+    }
+
+    [Test]
     public async Task StoppedRecord_IsPrunedOnceItCouldNoLongerCountAsActive_NotTenLeasesLater()
     {
         using var fleet = await OutboxDynamoDbFleet.CreateAsync(dynamoDb);

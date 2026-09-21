@@ -221,6 +221,119 @@ public sealed class DynamoDbLeasePlannerTests
         }
     }
 
+    [Test]
+    [Arguments(1)]
+    [Arguments(2)]
+    [Arguments(3)]
+    [Arguments(4)]
+    [Arguments(5)]
+    public async Task DisagreeingMembership_NeverSharesABucket_AndSettlesQuietlyOnceTheRelaysAgree(int seed)
+    {
+        const int bucketCount = 16;
+        var random = new Random(seed);
+        var relays = Enumerable.Range(0, 5).Select(index => $"relay-{index}").ToList();
+        var table = new ConditionalLeaseTable(bucketCount);
+        var believed = relays.ToDictionary(relay => relay, _ => new HashSet<int>());
+        var earlierReads = new Dictionary<string, ConditionalLeaseTable.Snapshot>();
+
+        // While a membership change is becoming visible, every relay plans from the
+        // heartbeats it happens to see, and from a read that peers' writes may have overtaken.
+        for (var step = 0; step < 80; step++)
+        {
+            var relay = relays[random.Next(relays.Count)];
+            var seen = relays.Where(peer => peer == relay || random.Next(2) == 0).ToList();
+            var read = earlierReads.Remove(relay, out var earlier) && random.Next(2) == 0 ? earlier : table.Read();
+            believed[relay] = table.Apply(relay, Plan(bucketCount, seen, relay, read.Leases), read);
+
+            // A peer reads now and writes some steps later.
+            earlierReads[relays[random.Next(relays.Count)]] = table.Read();
+
+            // The plan orders writes and never grants ownership: whatever the relays planned
+            // from, the conditions leave each bucket with one relay that was told it owns it.
+            var told = believed.SelectMany(pair => pair.Value.Select(bucket => (bucket, pair.Key))).ToList();
+            await Assert.That(told.Select(entry => entry.bucket).Distinct().Count()).IsEqualTo(told.Count);
+            await Assert.That(told.All(entry => table.Owner(entry.bucket) == entry.Key)).IsTrue();
+        }
+
+        // The membership has settled: everybody sees everybody and reads before writing.
+        table.Refused = 0;
+        var settledAfter = -1;
+        for (var round = 1; round <= 4 && settledAfter < 0; round++)
+        {
+            var writes = 0;
+            foreach (var relay in relays.OrderBy(_ => random.Next()).ToArray())
+            {
+                var read = table.Read();
+                var plan = Plan(bucketCount, relays, relay, read.Leases);
+                writes += plan.Release.Count + plan.Claim.Count;
+                believed[relay] = table.Apply(relay, plan, read);
+            }
+
+            if (writes == 0)
+                settledAfter = round;
+        }
+
+        await Assert.That(settledAfter).IsGreaterThan(0);
+        await Assert.That(table.Refused).IsEqualTo(0);
+        var counts = relays.Select(relay => believed[relay].Count).ToArray();
+        await Assert.That(counts.Sum()).IsEqualTo(bucketCount);
+        await Assert.That(counts.Max() - counts.Min()).IsLessThanOrEqualTo(1);
+    }
+
+    /// <summary>
+    /// The lease items as DynamoDB keeps them, with the store's conditions: keep and release
+    /// require the owner and the version that was read, claim requires a free lease.
+    /// </summary>
+    private sealed class ConditionalLeaseTable(int bucketCount)
+    {
+        private readonly string?[] _owners = new string?[bucketCount];
+        private readonly int[] _versions = new int[bucketCount];
+
+        public int Refused { get; set; }
+
+        public string? Owner(int bucket) => _owners[bucket];
+
+        public Snapshot Read() => new(
+            [.. _owners.Select(owner => new DynamoDbLeaseState(owner, Expired: false))], [.. _versions]);
+
+        /// <returns>The buckets the relay is told it owns: the writes that were accepted.</returns>
+        public HashSet<int> Apply(string relay, DynamoDbLeasePlan plan, Snapshot read)
+        {
+            var owned = new HashSet<int>();
+            foreach (var bucket in plan.Keep)
+            {
+                if (Write(bucket, _owners[bucket] == relay && _versions[bucket] == read.Versions[bucket], relay))
+                    owned.Add(bucket);
+            }
+
+            foreach (var bucket in plan.Release)
+                Write(bucket, _owners[bucket] == relay && _versions[bucket] == read.Versions[bucket], owner: null);
+
+            foreach (var bucket in plan.Claim)
+            {
+                if (Write(bucket, _owners[bucket] is null, relay))
+                    owned.Add(bucket);
+            }
+
+            return owned;
+        }
+
+        private bool Write(int bucket, bool condition, string? owner)
+        {
+            if (!condition)
+            {
+                Refused++;
+                return false;
+            }
+
+            _owners[bucket] = owner;
+            _versions[bucket]++;
+            return true;
+        }
+
+        public sealed record Snapshot(DynamoDbLeaseState[] Leases, int[] Versions);
+    }
+
     private static DynamoDbLeasePlan Plan(
         int bucketCount, List<string> relays, string relayId, DynamoDbLeaseState[] leases) =>
         // A copy: the planner sorts the membership in place.

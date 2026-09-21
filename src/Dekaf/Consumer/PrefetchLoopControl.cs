@@ -1,4 +1,4 @@
-using Dekaf.Errors;
+using Dekaf.Retry;
 
 namespace Dekaf.Consumer;
 
@@ -22,10 +22,20 @@ internal static class PrefetchLoopControl
     public static bool ShouldBreakOnConsecutiveError(int consecutiveErrors, int threshold)
         => consecutiveErrors >= threshold;
 
+    /// <summary>
+    /// Counts only failures that repeating the loop cannot fix. A broker or coordinator outage
+    /// (reset or refused connections, DNS, a metadata refresh that reached no broker, a group
+    /// join that ran out its rebalance timeout) can outlast any number of iterations, and a
+    /// counter that reaches its limit ends the consumer for good.
+    /// </summary>
     public static int RecordConsecutiveError(int consecutiveErrors, Exception exception)
-        => exception is KafkaException { IsRetriable: true }
+        => IsTransientFailure(exception)
             ? 0
             : consecutiveErrors + 1;
+
+    private static bool IsTransientFailure(Exception exception)
+        => RetryHelper.IsRetriableBrokerFailure(exception)
+           || RetryHelper.IsRetriableRequestFailure(exception);
 
     public static bool ShouldResetConsecutiveErrors(int drained)
         => drained > 0;

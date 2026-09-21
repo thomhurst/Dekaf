@@ -448,7 +448,11 @@ public sealed class Kip126BatchSplittingTests
             Append(sourceBuilder, i, completionSource: null, callback: null);
 
         var source = sourceBuilder.Complete()!;
-        source.RecordBatch.BaseSequence = int.MaxValue;
+        // The split reads its records from this list: the first child is built from readable
+        // records, a later one hits the unreadable record and fails the build.
+        (source.RecordBatch.Records as IDisposable)?.Dispose();
+        source.RecordBatch.Records = new RecordsFailingFrom(readableCount: 5, count: 8);
+        source.RecordBatch.BaseSequence = 0;
         source.MarkAsSplitBatch(maxRecordSize: 1, isRetry: true);
         source.MarkPreSerialized();
         source.TrySetMemoryReleased();
@@ -462,7 +466,7 @@ public sealed class Kip126BatchSplittingTests
                 static () => { }));
 
             await Assert.That(async () => await splitTask.WaitAsync(TimeSpan.FromSeconds(5)))
-                .ThrowsExactly<OverflowException>();
+                .ThrowsExactly<InvalidOperationException>();
         }
         finally
         {
@@ -615,5 +619,21 @@ public sealed class Kip126BatchSplittingTests
             foreach (var segment in source)
                 destination.Write(segment.Span);
         }
+    }
+
+    /// <summary>Records that can be read up to <paramref name="readableCount"/>, then throw.</summary>
+    private sealed class RecordsFailingFrom(int readableCount, int count) : IReadOnlyList<Record>
+    {
+        private static readonly byte[] s_value = new byte[120];
+
+        public int Count => count;
+
+        public Record this[int index] => index < readableCount
+            ? new Record { Value = s_value, OffsetDelta = index }
+            : throw new InvalidOperationException("Injected record read failure.");
+
+        public IEnumerator<Record> GetEnumerator() => throw new NotSupportedException();
+
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
     }
 }

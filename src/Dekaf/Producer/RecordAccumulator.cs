@@ -1373,6 +1373,13 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// ConcurrentDictionary.GetOrAdd (existing key), one stamp compare, one atomic increment.
     /// Uses Interlocked.Add to be safe during leader migration when two BrokerSender threads
     /// could call this concurrently for the same partition.
+    /// <para/>
+    /// Sequences live in [0, int.MaxValue] and the one after int.MaxValue is 0 (Java's
+    /// <c>DefaultRecordBatch.incrementSequence</c>). The counter itself runs through the whole
+    /// 32-bit space and is reduced modulo 2^31 on the way out, which is the same sequence and
+    /// needs no compare-and-swap loop. A partition reaches the end after 2^31 records under one
+    /// epoch; without the wrap its base sequence went negative, which the broker rejects and
+    /// the send loop reads as "not assigned yet".
     /// </summary>
     internal int GetAndIncrementSequence(
         TopicPartition topicPartition, int recordCount, ProducerIdAndEpoch? state, out bool restarted)
@@ -1381,8 +1388,23 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         restarted = state is not null
             && !ReferenceEquals(Volatile.Read(ref sequence.ResetState), state)
             && TryRestartSequence(sequence, state);
-        return Interlocked.Add(ref sequence.Next, recordCount) - recordCount;
+        return unchecked(Interlocked.Add(ref sequence.Next, recordCount) - recordCount) & int.MaxValue;
     }
+
+    /// <summary>
+    /// The sequence <paramref name="offset"/> records after <paramref name="baseSequence"/>,
+    /// wrapping to 0 after int.MaxValue.
+    /// </summary>
+    internal static int AdvanceSequence(int baseSequence, int offset)
+        => unchecked(baseSequence + offset) & int.MaxValue;
+
+    /// <summary>
+    /// True when <paramref name="sequence"/> is <paramref name="other"/> or comes after it in the
+    /// wrapping sequence space. Two sequences of one partition that are compared are never half
+    /// the space apart, so the shorter way round decides.
+    /// </summary>
+    internal static bool IsSequenceAtOrAfter(int sequence, int other)
+        => (unchecked(sequence - other) & int.MaxValue) < (1 << 30);
 
     /// <summary>
     /// True when the partition has assigned sequences before and its counter was last restarted
@@ -1425,23 +1447,30 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     internal void ResetSequenceNumbers() => ResetSequenceNumbers(null);
 
     /// <summary>
-    /// Resets all sequence numbers and, when <paramref name="state"/> is given, publishes it and
-    /// stamps every partition as restarted under it. Used when the producer ID is replaced: the
-    /// broker holds no state for the new ID, so every partition starts at 0 under it and no lazy
-    /// restart is needed.
+    /// Restarts every partition's sequences. With a <paramref name="state"/> (the producer ID was
+    /// replaced) this only publishes it, exactly like <see cref="PublishProducerState"/>: each
+    /// partition restarts at 0 lazily, on its first send under the new ID. Zeroing and stamping
+    /// the counters here would make every partition look already restarted, so the send loop
+    /// could neither hold a partition's first batch under the new ID behind a request still
+    /// pending under the old one (reorder if that request is retried), nor let a retry whose
+    /// outcome is unknown keep the old ID's stamp the broker can still deduplicate. Without a
+    /// state (transactional producers, which run no epoch recovery) every counter is zeroed now.
     /// </summary>
     internal void ResetSequenceNumbers(ProducerIdAndEpoch? state)
     {
         lock (_sequenceRestartLock)
         {
             if (state is not null)
+            {
                 _currentProducerState = state;
+                return;
+            }
 
             foreach (var kvp in _sequenceNumbers)
             {
                 var sequence = kvp.Value;
                 Interlocked.Exchange(ref sequence.Next, 0);
-                Volatile.Write(ref sequence.ResetState, state);
+                Volatile.Write(ref sequence.ResetState, null);
             }
         }
     }
@@ -1689,7 +1718,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             {
                 var existing = _items[(_head + i) % _items.Length]!;
                 if (existing.RecordBatch.BaseSequence < 0 ||
-                    existing.RecordBatch.BaseSequence >= batch.RecordBatch.BaseSequence)
+                    IsSequenceAtOrAfter(existing.RecordBatch.BaseSequence, batch.RecordBatch.BaseSequence))
                 {
                     insertAt = i;
                     break;
@@ -2250,7 +2279,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 building = null;
 
                 if (sourceBaseSequence >= 0)
-                    child.RecordBatch.BaseSequence = checked(sourceBaseSequence + childStartIndex);
+                    child.RecordBatch.BaseSequence = AdvanceSequence(sourceBaseSequence, childStartIndex);
                 child.PreserveDeliveryTimeline(source);
                 child.MarkAsSplitBatch(childMaxRecordSize, isRetry: !reenqueue);
                 if (_options.CompressionType == CompressionType.None)
@@ -9716,6 +9745,14 @@ internal sealed class ReadyBatch
     internal long LoopExitRedeliveryOrder { get; set; }
 
     /// <summary>
+    /// Position in which the owning send loop first took this batch from its channel (0 before
+    /// that). A partition's batches arrive in partition order, so this orders its retries: a
+    /// retry that fails again must go back ahead of a newer retry that was held in carry-over
+    /// meanwhile, not behind it. Written and read by the send loop only.
+    /// </summary>
+    internal long SenderArrivalOrder { get; set; }
+
+    /// <summary>
     /// Stopwatch timestamp before which this retry batch should not be sent (backoff).
     /// Set by ProcessCompletedResponses when a retriable error occurs. The send loop
     /// skips batches where the backoff hasn't elapsed. 0 means no backoff.
@@ -9768,6 +9805,8 @@ internal sealed class ReadyBatch
         StopwatchCreatedTicks = source.StopwatchCreatedTicks;
         StopwatchSealedTicks = source.StopwatchSealedTicks;
         GovernedOriginTicks = source.GovernedOriginTicks;
+        // A split child takes its parent's place in the partition's retry order.
+        SenderArrivalOrder = source.SenderArrivalOrder;
         _createdTimestamp = Stopwatch.GetTimestamp();
     }
 
@@ -10068,6 +10107,7 @@ internal sealed class ReadyBatch
         IsRetry = false;
         Volatile.Write(ref _loopExitRecoveryRegistered, 0);
         LoopExitRedeliveryOrder = 0;
+        SenderArrivalOrder = 0;
         RetryNotBefore = 0;
         RetryFailureCount = 0;
         IsSplitBatch = false;

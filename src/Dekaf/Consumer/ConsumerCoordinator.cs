@@ -84,6 +84,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private string? _lastHeartbeatFailure;
     private int _disposed;
     private readonly Func<int> _getCoordinationConnectionIndex;
+    // Where the next coordinator lookup starts. It rests on the last broker that answered, so a
+    // broker that refuses or black-holes connections is not tried first by every lookup.
+    private int _coordinatorLookupCursor;
+    private readonly Func<bool> _isDisposed;
 
     // KIP-848 consumer protocol state
     private volatile int _heartbeatIntervalMs;
@@ -159,6 +163,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         _getCoordinationConnectionIndex = getConnectionCount is not null
             ? () => GetCoordinationConnectionIndex(getConnectionCount())
             : () => GetCoordinationConnectionIndex(options.ConnectionsPerBroker);
+        _isDisposed = () => Volatile.Read(ref _disposed) != 0;
         _heartbeatIntervalMs = options.HeartbeatIntervalMs;
         _maxPollIntervalStopwatchTicks = options.MaxPollIntervalMs * Stopwatch.Frequency / 1000;
         _lastPollTimestamp = Stopwatch.GetTimestamp();
@@ -559,23 +564,18 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     /// may be restarting or may have moved. Typed group errors have dedicated handlers, and
     /// broker-version and auth failures are fatal.
     /// </summary>
-    private static bool IsRetriableJoinFailure(Exception exception, CancellationToken cancellationToken)
-    {
-        if (exception is ObjectDisposedException)
-            return true;
-
-        if (cancellationToken.IsCancellationRequested)
-            return false;
-
-        return exception switch
-        {
-            Errors.GroupException or BrokerVersionException
-                or AuthorizationException or AuthenticationException => false,
-            Errors.KafkaException => true,
-            IOException or SocketException or TimeoutException or DnsResolutionException => true,
-            _ => false,
-        };
-    }
+    /// <remarks>
+    /// Does not look at the caller's token: a failure that lands after cancellation must still be
+    /// caught so the loop reports <see cref="OperationCanceledException"/> rather than letting a
+    /// raw socket exception escape a consumer that is shutting down during an outage. A
+    /// connection retired by pool churn is retried only while this coordinator is alive, so the
+    /// loop cannot spin under the state lock against a disposed pool.
+    /// </remarks>
+    private bool IsRetriableJoinFailure(Exception exception) =>
+        TransportFailureClassifier.IsRetriable(
+            exception,
+            TransportRetryPolicy.GroupJoin,
+            ownerDisposed: Volatile.Read(ref _disposed) != 0);
 
     private async ValueTask StoreFatalHeartbeatExceptionAsync(KafkaException exception)
     {
@@ -654,14 +654,17 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
         // Retry loop for transient errors (CoordinatorNotAvailable, CoordinatorLoadInProgress)
         const int maxRetries = 5;
+        var cursor = Volatile.Read(ref _coordinatorLookupCursor);
+        var failedLookups = 0;
 
         for (var attempt = 0; attempt < maxRetries; attempt++)
         {
             try
             {
                 // Cycle through brokers on retries to avoid wasting all attempts on one
-                // unavailable broker.
-                var broker = brokers[attempt % brokers.Count];
+                // unavailable broker. The cursor outlives this call, so the next lookup starts
+                // at the broker that answered instead of at a dead first broker again.
+                var broker = brokers[(int)((uint)(cursor + attempt) % (uint)brokers.Count)];
                 using var connectionLease = await _connectionPool.LeaseConnectionByIndexAsync(
                     broker.NodeId,
                     _getCoordinationConnectionIndex(),
@@ -719,16 +722,21 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                     };
                 }
 
-                _coordinatorId = nodeId;
+                // Route first, then publish the ID: a concurrent reader of _coordinatorId must
+                // never find the pool still considers the coordinator unknown.
                 _connectionPool.RegisterBroker(nodeId, host, port);
+                _coordinatorId = nodeId;
+                Volatile.Write(ref _coordinatorLookupCursor, cursor + attempt);
 
-                LogFoundCoordinator(_coordinatorId, _options.GroupId!);
+                LogFoundCoordinator(nodeId, _options.GroupId!);
                 return;
             }
-            catch (Exception ex) when (
-                RetryHelper.IsRetriableRequestFailure(ex) &&
-                !cancellationToken.IsCancellationRequested)
+            catch (Exception ex) when (IsRetriableLookupFailure(ex))
             {
+                // A failure that lands after cancellation reports the cancellation, not a raw
+                // socket exception.
+                cancellationToken.ThrowIfCancellationRequested();
+
                 if (attempt == maxRetries - 1)
                 {
                     throw new Errors.GroupException(
@@ -738,6 +746,17 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                     {
                         GroupId = _options.GroupId
                     };
+                }
+
+                // Every known broker failed once: the broker list itself may be stale (a
+                // broker that left still listed, a replacement not yet known).
+                if (++failedLookups % brokers.Count == 0)
+                {
+                    await RetryHelper.RefreshMetadataForRetryAsync(_metadataManager, cancellationToken)
+                        .ConfigureAwait(false);
+                    var refreshedBrokers = _metadataManager.Metadata.GetBrokers();
+                    if (refreshedBrokers.Count > 0)
+                        brokers = refreshedBrokers;
                 }
 
                 var retryDelayMs = CalculateRequestRetryBackoff(attempt + 1);
@@ -752,6 +771,12 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             GroupId = _options.GroupId
         };
     }
+
+    private bool IsRetriableLookupFailure(Exception exception) =>
+        TransportFailureClassifier.IsRetriable(
+            exception,
+            TransportRetryPolicy.Request,
+            ownerDisposed: Volatile.Read(ref _disposed) != 0);
 
     private int CalculateRequestRetryBackoff(int failureCount) =>
         ExponentialRetryBackoff.CalculateDelayMilliseconds(
@@ -946,8 +971,22 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     /// <summary>
     /// Commits offsets for the group.
     /// </summary>
-    public async ValueTask CommitOffsetsAsync(
+    public ValueTask CommitOffsetsAsync(
         IEnumerable<TopicPartitionOffset> offsets,
+        CancellationToken cancellationToken)
+        => CommitOffsetsAsync(offsets, retryUntilApiTimeout: false, cancellationToken);
+
+    /// <param name="retryUntilApiTimeout">
+    /// True for an application-facing commit that runs under the consumer's aggregate API
+    /// timeout: retriable failures, including a coordinator that refuses connections while
+    /// cluster metadata still names it, are retried for that budget and the final error is always
+    /// a typed <see cref="KafkaException"/>. Background, rebalance and close-path commits keep the
+    /// short count-bounded retry: they swallow the failure, and must not hold the commit lock or
+    /// delay a shutdown for the length of an outage.
+    /// </param>
+    internal async ValueTask CommitOffsetsAsync(
+        IEnumerable<TopicPartitionOffset> offsets,
+        bool retryUntilApiTimeout,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrEmpty(_options.GroupId))
@@ -960,7 +999,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         // which is reused across calls to avoid allocations. With up to 3 retries x ~600ms each,
         // the lock can be held for up to ~1.8 seconds — longer when a StaleMemberEpoch retry waits
         // up to one heartbeat interval for the refreshed epoch. Concurrent callers block for the
-        // full retry duration.
+        // full retry duration. A retryUntilApiTimeout commit can hold it for the API timeout, but
+        // only while the coordinator is unreachable, when every other commit would fail too; each
+        // waiter is bounded by its own token, and the holder finishes within one backoff step of
+        // the coordinator coming back.
         await _commitLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -1088,7 +1130,13 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 }
             }, _metadataManager, cancellationToken, _options.RetryBackoffMs, _options.RetryBackoffMaxMs,
                 onRetry: FindCoordinatorAsync,
-                shouldRefreshMetadata: ShouldRefreshMetadataForGroupRetry).ConfigureAwait(false);
+                shouldRefreshMetadata: ShouldRefreshMetadataForGroupRetry,
+                deadline: retryUntilApiTimeout
+                    ? new RetryDeadline(
+                        $"OffsetCommit for group '{_options.GroupId}'",
+                        TimeSpan.FromMilliseconds(_options.DefaultApiTimeoutMs),
+                        _isDisposed)
+                    : null).ConfigureAwait(false);
         }
         finally
         {
@@ -1327,7 +1375,14 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 _options.RetryBackoffMs,
                 _options.RetryBackoffMaxMs,
                 onRetry: RecoverOffsetFetchAsync,
-                shouldRefreshMetadata: ShouldRefreshMetadataForGroupRetry).ConfigureAwait(false);
+                shouldRefreshMetadata: ShouldRefreshMetadataForGroupRetry,
+                // Position initialization runs on the application's poll: a coordinator that
+                // refuses connections while cluster metadata still names it is retried for the
+                // aggregate deadline above instead of three quick attempts.
+                deadline: new RetryDeadline(
+                    "OffsetFetch",
+                    Timeout.InfiniteTimeSpan,
+                    _isDisposed)).ConfigureAwait(false);
             }
             finally
             {
@@ -1338,10 +1393,11 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             !cancellationToken.IsCancellationRequested
             && timeout.IsCancellationRequested)
         {
+            // A retried fetch reports the failure it was still hitting as the cancellation's cause.
             throw new KafkaTimeoutException(
                 $"OffsetFetch for group '{_options.GroupId}' did not complete within request timeout " +
                 $"({_options.RequestTimeoutMs}ms)",
-                ex);
+                ex.InnerException ?? ex);
         }
     }
 
@@ -1507,7 +1563,13 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     /// <summary>
     /// Sends a ConsumerGroupHeartbeat request and processes the response.
     /// </summary>
+    /// <param name="coordinatorId">
+    /// The coordinator the caller discovered. Captured by the caller rather than read from
+    /// <see cref="_coordinatorId"/> here: a heartbeat loop that fails concurrently invalidates
+    /// that field, and leasing broker -1 would surface as an unknown-broker failure.
+    /// </param>
     private async ValueTask<ConsumerHeartbeatResult> SendConsumerGroupHeartbeatAsync(
+        int coordinatorId,
         bool isInitial,
         bool discardIfMembershipChanged,
         CancellationToken cancellationToken)
@@ -1520,7 +1582,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         IReadOnlyList<ConsumerGroupHeartbeatTopicPartitions>? ownedTopicPartitions;
         string? subscribedTopicRegex;
         using (var connectionLease = await _connectionPool.LeaseConnectionByIndexAsync(
-                   _coordinatorId, _getCoordinationConnectionIndex(), cancellationToken)
+                   coordinatorId, _getCoordinationConnectionIndex(), cancellationToken)
                    .ConfigureAwait(false))
         {
             var connection = connectionLease.Connection;
@@ -1947,6 +2009,15 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
         ConsumerHeartbeatResult heartbeatResult = default;
         long rebalanceStarted = -1;
+        var rebalanceTimeout = TimeSpan.FromMilliseconds(_options.RebalanceTimeoutMs);
+        Exception? lastJoinFailure = null;
+
+        // One attempt can outlast the rebalance timeout on its own: a coordinator lookup is five
+        // connection attempts, each up to the connection-setup timeout against a broker that
+        // black-holes packets. The deadline token bounds every attempt, not just the check
+        // between attempts. Armed once the join actually starts.
+        using var joinDeadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var joinToken = joinDeadline.Token;
 
         await _lock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -1973,25 +2044,32 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             LogEnsureActiveGroupStarted(_options.GroupId!, _state);
             var startedAt = Stopwatch.GetTimestamp();
             rebalanceStarted = startedAt;
-            var rebalanceTimeout = TimeSpan.FromMilliseconds(_options.RebalanceTimeoutMs);
             var retryFailureCount = 0;
+            joinDeadline.CancelAfter(rebalanceTimeout);
 
             while (_state != CoordinatorState.Stable)
             {
                 if (Stopwatch.GetElapsedTime(startedAt) >= rebalanceTimeout)
-                {
-                    throw new KafkaTimeoutException(
-                        TimeoutKind.Rebalance,
-                        Stopwatch.GetElapsedTime(startedAt),
-                        rebalanceTimeout,
-                        $"Failed to join group '{_options.GroupId}' within rebalance timeout ({_options.RebalanceTimeoutMs}ms)");
-                }
+                    throw CreateJoinTimeoutException(startedAt, rebalanceTimeout, lastJoinFailure);
 
                 try
                 {
                     if (_coordinatorId < 0)
                     {
-                        await FindCoordinatorAsync(cancellationToken).ConfigureAwait(false);
+                        await FindCoordinatorAsync(joinToken).ConfigureAwait(false);
+                    }
+
+                    // A heartbeat loop from the previous membership can still fail and invalidate
+                    // the field after the lookup; join against the coordinator that was found.
+                    var coordinatorId = _coordinatorId;
+                    if (coordinatorId < 0)
+                    {
+                        throw new Errors.GroupException(
+                            ErrorCode.CoordinatorNotAvailable,
+                            "Coordinator was invalidated during group join discovery")
+                        {
+                            GroupId = _options.GroupId
+                        };
                     }
 
                     _state = CoordinatorState.Joining;
@@ -2000,12 +2078,13 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                     try
                     {
                         heartbeatResult = await SendConsumerGroupHeartbeatAsync(
+                            coordinatorId,
                             isInitial: _memberId is null || _generationId <= 0,
                             discardIfMembershipChanged: false,
-                            cancellationToken).ConfigureAwait(false);
+                            joinToken).ConfigureAwait(false);
                     }
                     catch (Exception ex) when (
-                        ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+                        ex is not OperationCanceledException || !joinToken.IsCancellationRequested)
                     {
                         Volatile.Write(ref _lastHeartbeatFailure, ex.Message);
                         throw;
@@ -2035,7 +2114,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                     // until the rebalance timeout fires (checked at top of loop)
                     LogRetriableCoordinatorError(ex.ErrorCode);
                     await DelayForJoinRetryAsync(
-                        ++retryFailureCount, startedAt, rebalanceTimeout, cancellationToken).ConfigureAwait(false);
+                        ++retryFailureCount, startedAt, rebalanceTimeout, joinToken).ConfigureAwait(false);
                 }
                 catch (Errors.GroupException ex) when (ex.ErrorCode == ErrorCode.UnknownMemberId)
                 {
@@ -2046,22 +2125,45 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 catch (Errors.GroupException ex) when (IsRetriableCoordinatorError(ex.ErrorCode))
                 {
                     LogRetriableCoordinatorError(ex.ErrorCode);
+                    lastJoinFailure = ex;
                     MarkCoordinatorUnknown();
                     await DelayForJoinRetryAsync(
-                        ++retryFailureCount, startedAt, rebalanceTimeout, cancellationToken).ConfigureAwait(false);
+                        ++retryFailureCount, startedAt, rebalanceTimeout, joinToken).ConfigureAwait(false);
                 }
-                catch (Exception ex) when (IsRetriableJoinFailure(ex, cancellationToken))
+                catch (Exception ex) when (IsRetriableJoinFailure(ex))
                 {
+                    // A failure that lands after the caller cancelled reports the cancellation;
+                    // one that lands after the join deadline reports the timeout at the loop top.
+                    cancellationToken.ThrowIfCancellationRequested();
+
                     if (ex is ObjectDisposedException)
                         LogCoordinatorConnectionDisposed();
-                    else
+                    else if (lastJoinFailure is null)
                         LogCoordinatorUnreachableDuringJoin(ex, _coordinatorId, _options.GroupId!);
+                    else
+                        LogCoordinatorStillUnreachableDuringJoin(ex, _coordinatorId, _options.GroupId!, retryFailureCount + 1);
 
+                    lastJoinFailure = ex;
                     MarkCoordinatorUnknown();
+
+                    // The pool has no route for the coordinator it was told to use; only newer
+                    // metadata can fix the next attempt.
+                    if (TransportFailureClassifier.RequiresMetadataRefresh(ex))
+                    {
+                        await RetryHelper.RefreshMetadataForRetryAsync(_metadataManager, joinToken)
+                            .ConfigureAwait(false);
+                    }
+
                     await DelayForJoinRetryAsync(
-                        ++retryFailureCount, startedAt, rebalanceTimeout, cancellationToken).ConfigureAwait(false);
+                        ++retryFailureCount, startedAt, rebalanceTimeout, joinToken).ConfigureAwait(false);
                 }
             }
+        }
+        catch (OperationCanceledException) when (
+            !cancellationToken.IsCancellationRequested && joinDeadline.IsCancellationRequested)
+        {
+            // The join deadline, not the caller, ended an attempt or a backoff still in flight.
+            throw CreateJoinTimeoutException(rebalanceStarted, rebalanceTimeout, lastJoinFailure);
         }
         finally
         {
@@ -2077,6 +2179,19 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         }
     }
 
+    private KafkaTimeoutException CreateJoinTimeoutException(
+        long startedAt,
+        TimeSpan rebalanceTimeout,
+        Exception? lastJoinFailure)
+    {
+        var message =
+            $"Failed to join group '{_options.GroupId}' within rebalance timeout ({_options.RebalanceTimeoutMs}ms)";
+        var elapsed = Stopwatch.GetElapsedTime(startedAt);
+        return lastJoinFailure is null
+            ? new KafkaTimeoutException(TimeoutKind.Rebalance, elapsed, rebalanceTimeout, message)
+            : new KafkaTimeoutException(TimeoutKind.Rebalance, elapsed, rebalanceTimeout, message, lastJoinFailure);
+    }
+
     private ValueTask StartConsumerProtocolHeartbeatAsync()
         => StartHeartbeatCoreAsync(ConsumerProtocolHeartbeatLoopAsync, _heartbeatIntervalMs);
 
@@ -2086,6 +2201,11 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     /// </summary>
     private async Task ConsumerProtocolHeartbeatLoopAsync(CancellationToken cancellationToken)
     {
+        // Consecutive transient failures (coordinator unreachable or moving). While nonzero the
+        // loop re-discovers the coordinator itself and beats on the retry backoff.
+        var transientFailureCount = 0;
+        var heartbeatCoordinatorId = -1;
+
         while (!cancellationToken.IsCancellationRequested)
         {
             try
@@ -2093,7 +2213,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 // Task.Delay (not PeriodicTimer): the broker controls the interval via each response,
                 // and PeriodicTimer cannot change its period after construction. Wake at the
                 // max.poll deadline when it is sooner so eviction is not heartbeat-interval late.
-                await Task.Delay(GetConsumerProtocolHeartbeatDelay(), cancellationToken).ConfigureAwait(false);
+                await Task.Delay(GetConsumerProtocolHeartbeatDelay(transientFailureCount), cancellationToken)
+                    .ConfigureAwait(false);
 
                 var expiration = await TryExpireMaxPollIntervalAsync(cancellationToken).ConfigureAwait(false);
                 if (expiration.Expired)
@@ -2107,10 +2228,28 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 if (_state != CoordinatorState.Stable)
                     break;
 
+                heartbeatCoordinatorId = _coordinatorId;
+                if (heartbeatCoordinatorId < 0)
+                {
+                    await FindCoordinatorAsync(cancellationToken).ConfigureAwait(false);
+                    heartbeatCoordinatorId = _coordinatorId;
+                    if (heartbeatCoordinatorId < 0)
+                    {
+                        throw new Errors.GroupException(
+                            ErrorCode.CoordinatorNotAvailable,
+                            "Coordinator was invalidated during heartbeat discovery")
+                        {
+                            GroupId = _options.GroupId
+                        };
+                    }
+                }
+
                 await SendConsumerGroupHeartbeatAsync(
+                    heartbeatCoordinatorId,
                     isInitial: false,
                     discardIfMembershipChanged: true,
                     cancellationToken).ConfigureAwait(false);
+                transientFailureCount = 0;
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -2122,13 +2261,22 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             }
             catch (Exception ex)
             {
-                LogHeartbeatFailed(ex);
+                if (transientFailureCount == 0)
+                    LogHeartbeatFailed(ex);
+                else
+                    LogHeartbeatStillFailing(ex, transientFailureCount + 1);
                 Volatile.Write(ref _lastHeartbeatFailure, ex.Message);
 
                 if (ex is BrokerVersionException or AuthorizationException or AuthenticationException)
                 {
                     await StoreFatalHeartbeatExceptionAsync((KafkaException)ex).ConfigureAwait(false);
                     break;
+                }
+
+                if (TryKeepHeartbeating(ex, heartbeatCoordinatorId))
+                {
+                    transientFailureCount++;
+                    continue;
                 }
 
                 if (ex is Errors.GroupException ge)
@@ -2169,17 +2317,57 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                     break;
                 }
 
-                // Transport and connection failures may mean the cached coordinator broker
-                // disappeared. Force FindCoordinator on the next foreground group operation.
+                // The session is lost, or the failure is not one this loop understands. Force
+                // FindCoordinator and a rejoin on the next foreground group operation.
                 MarkCoordinatorUnknown();
                 break;
             }
         }
     }
 
-    private TimeSpan GetConsumerProtocolHeartbeatDelay()
+    /// <summary>
+    /// Decides whether the heartbeat loop survives <paramref name="exception"/>. A coordinator
+    /// that is unreachable or moving is transient: the loop invalidates the coordinator it used,
+    /// re-discovers it on its next pass and keeps the membership alive. Handing the rejoin to the
+    /// next foreground poll instead would fence a member whose application is busy in a handler
+    /// longer than the session timeout while the prefetch loop is parked on a full buffer.
+    /// Once a whole session timeout has passed without a successful heartbeat the broker has
+    /// expired the member anyway, and the foreground rejoin path takes over.
+    /// </summary>
+    private bool TryKeepHeartbeating(Exception exception, int heartbeatCoordinatorId)
+    {
+        var transient = exception is Errors.GroupException groupException
+            ? IsRetriableCoordinatorError(groupException.ErrorCode)
+            : IsRetriableJoinFailure(exception);
+        if (!transient)
+            return false;
+
+        // A foreground rejoin owns coordinator discovery once the member left Stable.
+        if (_state != CoordinatorState.Stable)
+            return false;
+
+        var sinceLastSuccess = Stopwatch.GetElapsedTime(Volatile.Read(ref _lastSuccessfulHeartbeatTimestamp));
+        if (sinceLastSuccess >= TimeSpan.FromMilliseconds(_options.SessionTimeoutMs))
+            return false;
+
+        // Invalidate only the coordinator this heartbeat used, never one a concurrent commit
+        // or offset fetch just discovered. Membership state is untouched.
+        if (_coordinatorId == heartbeatCoordinatorId)
+            _coordinatorId = -1;
+
+        return true;
+    }
+
+    private TimeSpan GetConsumerProtocolHeartbeatDelay(int transientFailureCount = 0)
     {
         var heartbeatDelay = TimeSpan.FromMilliseconds(Math.Max(_heartbeatIntervalMs, 1));
+        if (transientFailureCount > 0)
+        {
+            var retryDelay = TimeSpan.FromMilliseconds(CalculateRequestRetryBackoff(transientFailureCount));
+            if (retryDelay < heartbeatDelay)
+                heartbeatDelay = retryDelay;
+        }
+
         var remaining = TimeSpan.FromMilliseconds(_options.MaxPollIntervalMs)
             - Stopwatch.GetElapsedTime(Volatile.Read(ref _lastPollTimestamp));
 
@@ -2432,6 +2620,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     [LoggerMessage(Level = LogLevel.Warning, Message = "Coordinator {CoordinatorId} unreachable while joining group {GroupId}; re-discovering coordinator and retrying until the rebalance timeout")]
     private partial void LogCoordinatorUnreachableDuringJoin(Exception exception, int coordinatorId, string groupId);
 
+    // The first failure of a join is the Warning above; an outage then repeats at Debug.
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Coordinator {CoordinatorId} still unreachable while joining group {GroupId} (attempt {Attempt})")]
+    private partial void LogCoordinatorStillUnreachableDuringJoin(Exception exception, int coordinatorId, string groupId, int attempt);
+
     [LoggerMessage(Level = LogLevel.Debug, Message = "Coordinator not available (attempt {Attempt}/{MaxRetries}), retrying in {Delay}ms")]
     private partial void LogCoordinatorNotAvailableRetry(int attempt, int maxRetries, int delay);
 
@@ -2440,6 +2632,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Heartbeat failed")]
     private partial void LogHeartbeatFailed(Exception exception);
+
+    // The first failure of an outage is the Warning above; the retries repeat at Debug.
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Heartbeat still failing (attempt {Attempt}); re-discovering coordinator and retrying")]
+    private partial void LogHeartbeatStillFailing(Exception exception, int attempt);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Maximum poll interval of {MaxPollIntervalMs}ms exceeded; leaving consumer group")]
     private partial void LogMaxPollIntervalExceeded(int maxPollIntervalMs);

@@ -10,9 +10,9 @@ using Testcontainers.Toxiproxy;
 namespace Dekaf.Tests.Integration;
 
 /// <summary>
-/// Owns an isolated Kafka/Toxiproxy topology for transaction coordinator fault tests.
-/// Producer and consumer traffic use separate proxy listeners so coordinator faults do not
-/// disrupt the read-committed verification lane or any shared integration-test container.
+/// Owns an isolated Kafka/Toxiproxy topology for transaction coordinator and network fault tests.
+/// Producer and consumer traffic use separate proxy listeners so a fault on one lane does not
+/// disrupt the verification lane or any shared integration-test container.
 /// </summary>
 public sealed class TransactionFaultKafkaContainer : KafkaTestContainer
 {
@@ -38,6 +38,8 @@ public sealed class TransactionFaultKafkaContainer : KafkaTestContainer
     {
         Timeout = TimeSpan.FromSeconds(10),
     };
+    private readonly object _activeToxicsLock = new();
+    private readonly List<(string Proxy, string Toxic)> _activeToxics = [];
     private IContainer? _kafka;
     private bool _faultActive;
 
@@ -114,10 +116,101 @@ public sealed class TransactionFaultKafkaContainer : KafkaTestContainer
         _faultActive = false;
     }
 
+    /// <summary>
+    /// Resets connections on the lane (TCP RST, "connection reset by peer"), including every
+    /// connection opened while the toxic is active. <paramref name="afterMs"/> of 0 resets at once.
+    /// </summary>
+    public Task AddResetPeerAsync(
+        ToxiproxyLane lane,
+        CancellationToken cancellationToken,
+        int afterMs = 0,
+        ToxiproxyDirection direction = ToxiproxyDirection.Downstream) =>
+        AddToxicAsync(lane, "reset_peer", direction, new ToxiproxyToxicAttributes(Timeout: afterMs), cancellationToken);
+
+    /// <summary>
+    /// Black-holes the lane: the proxy still accepts TCP connections but no data gets through, so
+    /// connection setup (ApiVersions) and in-flight requests run into their own timeouts. This is
+    /// the path a killed broker never reaches, because a refused connection fails fast.
+    /// <paramref name="closeAfterMs"/> of 0 keeps connections open until the toxic is removed.
+    /// </summary>
+    public Task AddTimeoutAsync(
+        ToxiproxyLane lane,
+        CancellationToken cancellationToken,
+        int closeAfterMs = 0,
+        ToxiproxyDirection direction = ToxiproxyDirection.Downstream) =>
+        AddToxicAsync(lane, "timeout", direction, new ToxiproxyToxicAttributes(Timeout: closeAfterMs), cancellationToken);
+
+    /// <summary>
+    /// Closes each connection once it has carried <paramref name="bytes"/> in the given direction.
+    /// Downstream with a limit smaller than a response cuts the connection mid-frame.
+    /// </summary>
+    public Task AddLimitDataAsync(
+        ToxiproxyLane lane,
+        long bytes,
+        CancellationToken cancellationToken,
+        ToxiproxyDirection direction = ToxiproxyDirection.Downstream) =>
+        AddToxicAsync(lane, "limit_data", direction, new ToxiproxyToxicAttributes(Bytes: bytes), cancellationToken);
+
+    /// <summary>
+    /// Removes every toxic added through <see cref="AddResetPeerAsync"/>,
+    /// <see cref="AddTimeoutAsync"/> and <see cref="AddLimitDataAsync"/>. Safe to call when none is active.
+    /// </summary>
+    public async Task HealNetworkFaultsAsync(CancellationToken cancellationToken = default)
+    {
+        (string Proxy, string Toxic)[] toxics;
+        lock (_activeToxicsLock)
+        {
+            toxics = [.. _activeToxics];
+        }
+
+        foreach (var (proxy, toxic) in toxics)
+        {
+            using var response = await _toxiproxyClient.DeleteAsync(
+                $"proxies/{proxy}/toxics/{toxic}",
+                cancellationToken).ConfigureAwait(false);
+            // A toxic that is already gone is healed; anything else must not be mistaken for it.
+            if (response.StatusCode != System.Net.HttpStatusCode.NotFound)
+                response.EnsureSuccessStatusCode();
+
+            lock (_activeToxicsLock)
+            {
+                _activeToxics.Remove((proxy, toxic));
+            }
+        }
+    }
+
+    private async Task AddToxicAsync(
+        ToxiproxyLane lane,
+        string type,
+        ToxiproxyDirection direction,
+        ToxiproxyToxicAttributes attributes,
+        CancellationToken cancellationToken)
+    {
+        var proxy = lane == ToxiproxyLane.Producer ? ProducerProxyName : ConsumerProxyName;
+        var streamName = direction == ToxiproxyDirection.Upstream ? "upstream" : "downstream";
+        var name = $"{type}-{streamName}";
+
+        // Tracked before the request so a request that fails after the proxy applied it is still healed.
+        lock (_activeToxicsLock)
+        {
+            if (!_activeToxics.Contains((proxy, name)))
+                _activeToxics.Add((proxy, name));
+        }
+
+        using var response = await _toxiproxyClient.PostAsJsonAsync(
+            $"proxies/{proxy}/toxics",
+            new ToxiproxyToxicConfiguration(name, type, streamName, 1, attributes),
+            ToxiproxyJsonContext.Default.ToxiproxyToxicConfiguration,
+            cancellationToken).ConfigureAwait(false);
+        response.EnsureSuccessStatusCode();
+    }
+
     public override async ValueTask DisposeAsync()
     {
         var cleanup = new CleanupFailureCollector();
         await cleanup.CaptureTaskAsync("coordinator fault cleanup", () => HealCoordinatorAsync())
+            .ConfigureAwait(false);
+        await cleanup.CaptureTaskAsync("network fault cleanup", () => HealNetworkFaultsAsync())
             .ConfigureAwait(false);
         cleanup.Capture("Toxiproxy HTTP client disposal", _toxiproxyClient.Dispose);
 
@@ -217,7 +310,34 @@ internal sealed record ToxiproxyLatencyConfiguration(
 
 internal sealed record ToxiproxyLatencyAttributes(int Latency, int Jitter);
 
+internal sealed record ToxiproxyToxicConfiguration(
+    string Name,
+    string Type,
+    string Stream,
+    double Toxicity,
+    ToxiproxyToxicAttributes Attributes);
+
+/// <summary>Only the attribute the toxic type uses is set; the rest are omitted from the request.</summary>
+internal sealed record ToxiproxyToxicAttributes(
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? Timeout = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] long? Bytes = null);
+
+/// <summary>Which proxied listener a network fault applies to.</summary>
+public enum ToxiproxyLane
+{
+    Producer,
+    Consumer,
+}
+
+/// <summary>Upstream is client to broker (requests); downstream is broker to client (responses).</summary>
+public enum ToxiproxyDirection
+{
+    Upstream,
+    Downstream,
+}
+
 [JsonSourceGenerationOptions(JsonSerializerDefaults.Web)]
 [JsonSerializable(typeof(ToxiproxyProxyConfiguration))]
 [JsonSerializable(typeof(ToxiproxyLatencyConfiguration))]
+[JsonSerializable(typeof(ToxiproxyToxicConfiguration))]
 internal sealed partial class ToxiproxyJsonContext : JsonSerializerContext;

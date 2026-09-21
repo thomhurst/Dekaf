@@ -8,12 +8,28 @@ namespace Dekaf.Tests.Unit.Producer;
 /// Producer ID, epoch and base sequence of every record batch as they were on the wire. Captured
 /// as values because a completed batch's <c>RecordBatch</c> may be reset and pooled afterwards.
 /// </param>
+/// <param name="Batches">
+/// Every record batch of the request with its partition, wire stamp and record count, in request
+/// order. <see cref="CapturedProduceBatch.RecordBatch"/> identifies the batch object for tests
+/// that track which records a request carried.
+/// </param>
 internal sealed record CapturedProduceRequest(
     short ApiVersion,
     string Info,
     IReadOnlyList<(string Name, Guid TopicId, int Partition)> Topics,
     IReadOnlyList<object> RecordBatches,
-    IReadOnlyList<(long ProducerId, short ProducerEpoch, int BaseSequence)> ProducerStamps);
+    IReadOnlyList<(long ProducerId, short ProducerEpoch, int BaseSequence)> ProducerStamps,
+    IReadOnlyList<CapturedProduceBatch> Batches);
+
+/// <summary>One record batch of a produce request as it was on the wire.</summary>
+internal readonly record struct CapturedProduceBatch(
+    string Topic,
+    int Partition,
+    long ProducerId,
+    short ProducerEpoch,
+    int BaseSequence,
+    int RecordCount,
+    object RecordBatch);
 
 internal sealed class TestKafkaConnection :
     IKafkaConnection,
@@ -71,6 +87,13 @@ internal sealed class TestKafkaConnection :
     }
 
     public Func<ValueTask<Task<ProduceResponse>>>? SendProducePipelinedAfterWrite { get; set; }
+
+    /// <summary>
+    /// Request-aware variant of <see cref="SendProducePipelinedAfterWrite"/>: receives the request
+    /// as it was written (captured whether or not <see cref="CaptureProduceRequests"/> is set), so
+    /// a broker double can answer each batch according to its stamp. Takes precedence when set.
+    /// </summary>
+    public Func<CapturedProduceRequest, ValueTask<Task<ProduceResponse>>>? SendProducePipelinedAfterWriteForRequest { get; set; }
     public IPipelinedResponseSource<ProduceResponse>? PipelinedResponseSource { get; set; }
     public Func<ValueTask>? SendProduceFireAndForgetWithCallerTimeout { get; set; }
     public Func<Type, object>? SendResponse { get; set; }
@@ -183,41 +206,28 @@ internal sealed class TestKafkaConnection :
     {
         Interlocked.Increment(ref SendPipelinedAfterWriteCalls);
 
-        if (CaptureProduceRequests && request is ProduceRequest produceRequest)
+        CapturedProduceRequest? captured = null;
+        if ((CaptureProduceRequests || SendProducePipelinedAfterWriteForRequest is not null)
+            && request is ProduceRequest produceRequest)
         {
-            var recordBatches = new List<object>();
-            var producerStamps = new List<(long ProducerId, short ProducerEpoch, int BaseSequence)>();
-            var topics = new List<(string Name, Guid TopicId, int Partition)>();
-            var info = new System.Text.StringBuilder();
-            for (var t = 0; t < produceRequest.TopicEntryCount; t++)
+            captured = Capture(produceRequest, apiVersion);
+            if (CaptureProduceRequests)
             {
-                var topic = produceRequest.GetTopicEntry(t);
-                for (var p = 0; p < topic.PartitionEntryCount; p++)
-                {
-                    var partition = topic.GetPartitionEntry(p);
-                    topics.Add((topic.Name, topic.TopicId, partition.Index));
-                    foreach (var recordBatch in partition.Records)
-                    {
-                        recordBatches.Add(recordBatch);
-                        producerStamps.Add((recordBatch.ProducerId, recordBatch.ProducerEpoch, recordBatch.BaseSequence));
-                        info.Append($"{topic.Name}-{partition.Index}(seq={recordBatch.BaseSequence}) ");
-                    }
-                }
+                lock (CapturedProduceRequests)
+                    CapturedProduceRequests.Add(captured);
             }
-
-            lock (CapturedProduceRequests)
-                CapturedProduceRequests.Add(new CapturedProduceRequest(
-                    apiVersion,
-                    info.ToString(),
-                    topics,
-                    recordBatches,
-                    producerStamps));
         }
 
         if (PipelinedResponseSource is not null)
         {
             var source = (IPipelinedResponseSource<TResponse>)(object)PipelinedResponseSource;
             return new PipelinedResponse<TResponse>(source, token: 0);
+        }
+
+        if (SendProducePipelinedAfterWriteForRequest is not null && captured is not null)
+        {
+            var requestAwareResponseTask = await SendProducePipelinedAfterWriteForRequest(captured).ConfigureAwait(false);
+            return new PipelinedResponse<TResponse>(CastResponseTask<TResponse>(requestAwareResponseTask));
         }
 
         if (SendProducePipelinedAfterWrite is null)
@@ -236,6 +246,46 @@ internal sealed class TestKafkaConnection :
     {
         Interlocked.Increment(ref SendPipelinedWithCallerTimeoutAfterWriteCalls);
         throw new NotSupportedException();
+    }
+
+    private static CapturedProduceRequest Capture(ProduceRequest produceRequest, short apiVersion)
+    {
+        var recordBatches = new List<object>();
+        var producerStamps = new List<(long ProducerId, short ProducerEpoch, int BaseSequence)>();
+        var batches = new List<CapturedProduceBatch>();
+        var topics = new List<(string Name, Guid TopicId, int Partition)>();
+        var info = new System.Text.StringBuilder();
+        for (var t = 0; t < produceRequest.TopicEntryCount; t++)
+        {
+            var topic = produceRequest.GetTopicEntry(t);
+            for (var p = 0; p < topic.PartitionEntryCount; p++)
+            {
+                var partition = topic.GetPartitionEntry(p);
+                topics.Add((topic.Name, topic.TopicId, partition.Index));
+                foreach (var recordBatch in partition.Records)
+                {
+                    recordBatches.Add(recordBatch);
+                    producerStamps.Add((recordBatch.ProducerId, recordBatch.ProducerEpoch, recordBatch.BaseSequence));
+                    batches.Add(new CapturedProduceBatch(
+                        topic.Name,
+                        partition.Index,
+                        recordBatch.ProducerId,
+                        recordBatch.ProducerEpoch,
+                        recordBatch.BaseSequence,
+                        recordBatch.Records.Count,
+                        recordBatch));
+                    info.Append($"{topic.Name}-{partition.Index}(seq={recordBatch.BaseSequence}) ");
+                }
+            }
+        }
+
+        return new CapturedProduceRequest(
+            apiVersion,
+            info.ToString(),
+            topics,
+            recordBatches,
+            producerStamps,
+            batches);
     }
 
     private static async Task<TResponse> CastResponseTask<TResponse>(Task<ProduceResponse> responseTask)

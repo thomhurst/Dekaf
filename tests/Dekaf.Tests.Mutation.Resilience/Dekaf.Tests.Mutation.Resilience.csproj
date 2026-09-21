@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>net10.0</TargetFrameworks>
+    <!-- Keep access to Dekaf internals while compiling the linked unit-test sources. -->
+    <AssemblyName>Dekaf.Tests.Unit</AssemblyName>
+    <RootNamespace>Dekaf.Tests.Unit</RootNamespace>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- MTP cannot yet select covering tests per mutant, so every surviving mutant runs this whole
+         suite: link only the suites that exercise the retry and failure-classification code. -->
+    <Compile Include="..\Dekaf.Tests.Unit\AssemblyInfo.cs" Link="AssemblyInfo.cs" />
+    <Compile Include="..\Dekaf.Tests.Unit\TestWait.cs" Link="TestWait.cs" />
+    <Compile Include="..\Dekaf.Tests.Unit\ThreadPoolConfiguration.cs" Link="ThreadPoolConfiguration.cs" />
+    <Compile Include="..\Dekaf.Tests.Unit\Retry\ExponentialBackoffBoundaryTests.cs" Link="Retry\ExponentialBackoffBoundaryTests.cs" />
+    <Compile Include="..\Dekaf.Tests.Unit\Retry\ExponentialRetryBackoffTests.cs" Link="Retry\ExponentialRetryBackoffTests.cs" />
+    <Compile Include="..\Dekaf.Tests.Unit\Retry\RetryHelperTests.cs" Link="Retry\RetryHelperTests.cs" />
+    <Compile Include="..\Dekaf.Tests.Unit\Retry\RetryPolicyTests.cs" Link="Retry\RetryPolicyTests.cs" />
+    <Compile Include="..\Dekaf.Tests.Unit\Retry\TransportFailureClassifierTests.cs" Link="Retry\TransportFailureClassifierTests.cs" />
+    <Compile Include="..\Dekaf.Tests.Unit\Metadata\MetadataManagerTests.cs" Link="Metadata\MetadataManagerTests.cs" />
+    <Compile Include="..\Dekaf.Tests.Unit\Consumer\ConsumerCoordinatorKip848Tests.cs" Link="Consumer\ConsumerCoordinatorKip848Tests.cs" />
+    <Compile Include="..\Dekaf.Tests.Unit\ShareConsumer\ShareConsumerCoordinatorTests.cs" Link="ShareConsumer\ShareConsumerCoordinatorTests.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Dekaf\Dekaf.csproj" />
+    <PackageReference Include="NSubstitute" />
+    <PackageReference Include="TUnit" />
+  </ItemGroup>
+
+</Project>

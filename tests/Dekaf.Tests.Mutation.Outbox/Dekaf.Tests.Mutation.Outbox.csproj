@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>net10.0</TargetFrameworks>
+    <!-- Keep access to the outbox internals while compiling the linked unit-test sources. -->
+    <AssemblyName>Dekaf.Tests.Unit</AssemblyName>
+    <RootNamespace>Dekaf.Tests.Unit</RootNamespace>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- MTP cannot yet select covering tests per mutant, so every surviving mutant runs this whole
+         suite: link only the pure lease-planning and fair-share suites, which need no store. -->
+    <Compile Include="..\Dekaf.Tests.Unit\AssemblyInfo.cs" Link="AssemblyInfo.cs" />
+    <Compile Include="..\Dekaf.Tests.Unit\Outbox\DynamoDbLeasePlannerTests.cs" Link="Outbox\DynamoDbLeasePlannerTests.cs" />
+    <Compile Include="..\Dekaf.Tests.Unit\Outbox\OutboxFairShareTests.cs" Link="Outbox\OutboxFairShareTests.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Dekaf.Outbox\Dekaf.Outbox.csproj" />
+    <ProjectReference Include="..\..\src\Dekaf.Outbox.DynamoDB\Dekaf.Outbox.DynamoDB.csproj" />
+    <PackageReference Include="TUnit" />
+  </ItemGroup>
+
+</Project>

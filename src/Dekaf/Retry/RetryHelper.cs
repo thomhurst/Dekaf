@@ -1,8 +1,29 @@
+using System.Diagnostics;
+using System.Runtime.ExceptionServices;
 using Dekaf.Errors;
 using Dekaf.Metadata;
-using Dekaf.Networking;
 
 namespace Dekaf.Retry;
+
+/// <summary>
+/// Opts a <see cref="RetryHelper"/> call into deadline mode: instead of giving up after
+/// <see cref="RetryHelper.MaxRetries"/> attempts, transport-level failures are retried with the
+/// same KIP-580 backoff until the operation's deadline.
+/// </summary>
+/// <param name="Operation">Operation name used in the timeout message.</param>
+/// <param name="Budget">
+/// Time allowed for retries, measured from the first attempt.
+/// <see cref="Timeout.InfiniteTimeSpan"/> when the cancellation token already is the operation's
+/// aggregate deadline.
+/// </param>
+/// <param name="IsOwnerDisposed">
+/// Reports whether the calling component is disposed. A connection retired by pool churn
+/// (<see cref="ObjectDisposedException"/>) is retried only while it is not.
+/// </param>
+internal readonly record struct RetryDeadline(
+    string Operation,
+    TimeSpan Budget,
+    Func<bool>? IsOwnerDisposed = null);
 
 /// <summary>
 /// Centralized retry logic for retriable Kafka errors.
@@ -22,6 +43,11 @@ internal static class RetryHelper
     /// <param name="shouldRefreshMetadata">
     /// Optional predicate that suppresses metadata refresh for errors recovered by other means.
     /// </param>
+    /// <param name="deadline">
+    /// Opt-in deadline mode (see <see cref="RetryDeadline"/>): transport-level failures are
+    /// retried until the deadline, while <paramref name="maxRetries"/> still bounds retriable
+    /// errors a broker answered with. Only for operations that are safe to repeat.
+    /// </param>
     internal static async ValueTask WithRetryAsync(
         Func<ValueTask> operation,
         MetadataManager metadataManager,
@@ -30,8 +56,28 @@ internal static class RetryHelper
         int retryBackoffMaxMs = 1000,
         Func<CancellationToken, ValueTask>? onRetry = null,
         int maxRetries = MaxRetries,
-        Func<KafkaException, bool>? shouldRefreshMetadata = null)
+        Func<KafkaException, bool>? shouldRefreshMetadata = null,
+        RetryDeadline? deadline = null)
     {
+        if (deadline is { } retryDeadline)
+        {
+            await WithRetryUntilDeadlineAsync(
+                async () =>
+                {
+                    await operation().ConfigureAwait(false);
+                    return true;
+                },
+                metadataManager,
+                retryBackoffMs,
+                retryBackoffMaxMs,
+                onRetry,
+                maxRetries,
+                shouldRefreshMetadata,
+                retryDeadline,
+                cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
         for (var attempt = 0; ; attempt++)
         {
             try
@@ -68,6 +114,11 @@ internal static class RetryHelper
     /// <param name="shouldRefreshMetadata">
     /// Optional predicate that suppresses metadata refresh for errors recovered by <paramref name="onRetry"/>.
     /// </param>
+    /// <param name="deadline">
+    /// Opt-in deadline mode (see <see cref="RetryDeadline"/>): transport-level failures are
+    /// retried until the deadline, while <paramref name="maxRetries"/> still bounds retriable
+    /// errors a broker answered with. Only for operations that are safe to repeat.
+    /// </param>
     internal static async ValueTask<T> WithRetryAsync<T>(
         Func<ValueTask<T>> operation,
         MetadataManager metadataManager,
@@ -76,8 +127,23 @@ internal static class RetryHelper
         int retryBackoffMaxMs = 1000,
         Func<CancellationToken, ValueTask>? onRetry = null,
         int maxRetries = MaxRetries,
-        Func<KafkaException, bool>? shouldRefreshMetadata = null)
+        Func<KafkaException, bool>? shouldRefreshMetadata = null,
+        RetryDeadline? deadline = null)
     {
+        if (deadline is { } retryDeadline)
+        {
+            return await WithRetryUntilDeadlineAsync(
+                operation,
+                metadataManager,
+                retryBackoffMs,
+                retryBackoffMaxMs,
+                onRetry,
+                maxRetries,
+                shouldRefreshMetadata,
+                retryDeadline,
+                cancellationToken).ConfigureAwait(false);
+        }
+
         for (var attempt = 0; ; attempt++)
         {
             try
@@ -105,6 +171,169 @@ internal static class RetryHelper
     }
 
     /// <summary>
+    /// Deadline mode. A broker that was killed stays in cluster metadata until its session
+    /// expires, so a count-bounded retry burns every attempt inside that window and hands the
+    /// caller a raw socket failure with its API timeout unused. Here a transport-level failure,
+    /// including one from the recovery step, is retried until the budget or the token ends. A
+    /// retriable error a live broker answered with keeps the <paramref name="maxRetries"/> bound:
+    /// it says nothing about an outage, and its typed failure should reach the caller promptly.
+    /// The final error is always typed: the last Kafka failure, or a
+    /// <see cref="KafkaTimeoutException"/> whose inner exception is the last transport failure.
+    /// When the token ends the wait, the <see cref="OperationCanceledException"/> carries that
+    /// failure as its inner exception so the owner of the token can report the cause.
+    /// </summary>
+    private static async ValueTask<T> WithRetryUntilDeadlineAsync<T>(
+        Func<ValueTask<T>> operation,
+        MetadataManager metadataManager,
+        int retryBackoffMs,
+        int retryBackoffMaxMs,
+        Func<CancellationToken, ValueTask>? onRetry,
+        int maxRetries,
+        Func<KafkaException, bool>? shouldRefreshMetadata,
+        RetryDeadline deadline,
+        CancellationToken cancellationToken)
+    {
+        var startedAt = Stopwatch.GetTimestamp();
+        Exception? lastFailure = null;
+        var recoveryOwed = false;
+        var brokerAnsweredRetries = 0;
+
+        try
+        {
+            for (var attempt = 0; ; attempt++)
+            {
+                var recovering = false;
+                try
+                {
+                    if (recoveryOwed)
+                    {
+                        // The recovery before the last backoff failed. The request is not
+                        // repeated until a recovery succeeds: re-discovering a coordinator
+                        // through stale metadata fails the same way the request did, and must
+                        // consume the budget rather than escape it.
+                        recovering = true;
+                        await RecoverAsync(lastFailure!).ConfigureAwait(false);
+                        recovering = false;
+                        recoveryOwed = false;
+                    }
+
+                    return await operation().ConfigureAwait(false);
+                }
+                catch (Exception ex) when (IsRetriableUntilDeadline(ex, deadline))
+                {
+                    if (!HasTransportCause(ex) && ++brokerAnsweredRetries > maxRetries)
+                        throw;
+
+                    lastFailure = ex;
+
+                    var delayMs = ExponentialRetryBackoff.CalculateDelayMilliseconds(
+                        retryBackoffMs,
+                        retryBackoffMaxMs,
+                        attempt + 1);
+                    ThrowIfBudgetSpent(ex, delayMs);
+
+                    recoveryOwed = true;
+                    if (!recovering)
+                    {
+                        // A failed request recovers before backing off, as count mode does: a
+                        // recovery that blocks (a rejoin) must start while the budget still has
+                        // room for it, not after a backoff that may spend the rest of it.
+                        try
+                        {
+                            await RecoverAsync(ex).ConfigureAwait(false);
+                            recoveryOwed = false;
+                        }
+                        catch (Exception recoveryFailure) when (IsRetriableUntilDeadline(recoveryFailure, deadline))
+                        {
+                            if (!HasTransportCause(recoveryFailure) && ++brokerAnsweredRetries > maxRetries)
+                                throw;
+
+                            lastFailure = recoveryFailure;
+                        }
+
+                        // The recovery spends the budget too. A caller with no token behind the
+                        // budget (an offset lookup) would otherwise back off and repeat the
+                        // request past its deadline, and could even succeed there.
+                        ThrowIfBudgetSpent(lastFailure, delayMs);
+                    }
+
+                    await Task.Delay(delayMs, cancellationToken).ConfigureAwait(false);
+                }
+            }
+        }
+        catch (OperationCanceledException ex) when (
+            lastFailure is not null
+            && ex.InnerException is null
+            && cancellationToken.IsCancellationRequested)
+        {
+            throw new OperationCanceledException(
+                $"{deadline.Operation} was still failing when the wait was cancelled: {lastFailure.Message}",
+                lastFailure,
+                cancellationToken);
+        }
+
+        void ThrowIfBudgetSpent(Exception failure, int delayMs)
+        {
+            var elapsed = Stopwatch.GetElapsedTime(startedAt);
+            if (deadline.Budget == Timeout.InfiniteTimeSpan
+                || elapsed + TimeSpan.FromMilliseconds(delayMs) < deadline.Budget)
+            {
+                return;
+            }
+
+            // A typed Kafka failure stays the final error; only a raw transport failure needs
+            // wrapping.
+            if (failure is KafkaException)
+                ExceptionDispatchInfo.Capture(failure).Throw();
+
+            throw new KafkaTimeoutException(
+                TimeoutKind.Api,
+                elapsed,
+                deadline.Budget,
+                $"{deadline.Operation} did not complete within {(int)deadline.Budget.TotalMilliseconds}ms: {failure.Message}",
+                failure);
+        }
+
+        async ValueTask RecoverAsync(Exception failure)
+        {
+            if (failure is not KafkaException kafkaException ||
+                shouldRefreshMetadata?.Invoke(kafkaException) != false)
+            {
+                await RefreshMetadataForRetryAsync(metadataManager, cancellationToken).ConfigureAwait(false);
+            }
+
+            if (onRetry is not null)
+                await onRetry(cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    // True for a transport-level failure and for a Kafka failure that wraps one (a coordinator
+    // lookup that exhausted its own attempts against unreachable brokers). NETWORK_EXCEPTION is
+    // the connection's own report that the peer went away before a response arrived, so no
+    // broker answered it either.
+    private static bool HasTransportCause(Exception exception)
+    {
+        for (var current = exception; current is not null; current = current.InnerException)
+        {
+            if (current is ObjectDisposedException
+                or KafkaException { ErrorCode: Protocol.ErrorCode.NetworkException }
+                || TransportFailureClassifier.IsSocketLevelFailure(current)
+                || TransportFailureClassifier.IsClientRoutingFailure(current))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool IsRetriableUntilDeadline(Exception exception, RetryDeadline deadline) =>
+        TransportFailureClassifier.IsRetriable(
+            exception,
+            TransportRetryPolicy.Request,
+            ownerDisposed: deadline.IsOwnerDisposed?.Invoke() ?? false);
+
+    /// <summary>
     /// Classifies a direct broker-operation failure for failover. Fatal exceptions and
     /// cancellation are not retried, even when they wrap a transient transport failure.
     /// Callers must separately check their cancellation token and remaining retry budget.
@@ -112,10 +341,7 @@ internal static class RetryHelper
     internal static bool IsRetriableBrokerFailure(Exception exception) =>
         exception is KafkaTimeoutException
             or KafkaException { IsRetriable: true }
-            or IOException
-            or System.Net.Sockets.SocketException
-            or TimeoutException
-            or DnsResolutionException;
+        || TransportFailureClassifier.IsSocketLevelFailure(exception);
 
     internal static bool IsRetriableRequestFailure(Exception exception)
     {

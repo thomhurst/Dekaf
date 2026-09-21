@@ -17,7 +17,9 @@ public sealed class DynamoDbOutboxStoreTests
     private static readonly DynamoDbOutboxOptions Options = new() { TableName = "outbox" };
     private static readonly DateTimeOffset Now = new(2026, 9, 1, 8, 0, 0, TimeSpan.Zero);
 
-    private const string KeepCondition = "#owner = :me AND #expires = :seen";
+    private const string KeepCondition = "#owner = :me AND #expires = :seen AND #expires <= :expiry";
+
+    private const string ReleaseCondition = "#owner = :me AND #expires = :seen";
 
     private static readonly string LeaseExpiry = Now.AddSeconds(20).UtcTicks.ToString(CultureInfo.InvariantCulture);
 
@@ -146,7 +148,7 @@ public sealed class DynamoDbOutboxStoreTests
 
         // Only this relay's leases, whatever the hint lists, and each write names the owner.
         await client.Received(2).UpdateItemAsync(
-            Arg.Is<UpdateItemRequest>(request => request.ConditionExpression == KeepCondition
+            Arg.Is<UpdateItemRequest>(request => request.ConditionExpression == ReleaseCondition
                 && request.UpdateExpression == "SET #expires = :now REMOVE #owner"
                 && request.ExpressionAttributeValues[":me"].S == "relay-a"
                 && request.ExpressionAttributeValues[":seen"].N == LeaseExpiry),
@@ -161,6 +163,90 @@ public sealed class DynamoDbOutboxStoreTests
         await client.DidNotReceive().DeleteItemAsync(Arg.Any<DeleteItemRequest>(), Arg.Any<CancellationToken>());
         // The second read is the one that proves a straggler did not undo the first pass.
         await client.Received(2).QueryAsync(Arg.Any<QueryRequest>(), Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task Release_StampsTheRelayStopped_BeforeItTouchesALease_SoAFailedLeaseWriteCannotSkipIt()
+    {
+        var client = Substitute.For<IAmazonDynamoDB>();
+        var calls = new List<string>();
+        ReturnCoordination(client, [.. Leases("relay-a", 0, 1)]);
+        client.PutItemAsync(Arg.Any<PutItemRequest>(), Arg.Any<CancellationToken>()).Returns(call =>
+        {
+            lock (calls)
+                calls.Add(call.Arg<PutItemRequest>().Item.ContainsKey("StoppedAtUtc") ? "stopped" : "heartbeat");
+            return new PutItemResponse();
+        });
+        client.UpdateItemAsync(Arg.Any<UpdateItemRequest>(), Arg.Any<CancellationToken>())
+            .Returns<UpdateItemResponse>(_ =>
+            {
+                lock (calls)
+                    calls.Add("lease");
+                throw new ProvisionedThroughputExceededException("Throttled");
+            });
+        var store = new DynamoDbOutboxStore(client, Options, new FixedClock());
+
+        await Assert.That(async () => await store.ReleaseBucketLeasesAsync(Request, previousBuckets: [0, 1]))
+            .Throws<ProvisionedThroughputExceededException>();
+
+        // Freed or not, the leases end within one lease duration. A heartbeat left alive next
+        // to freed leases is what holds a handover up: peers keep the buckets for its rank.
+        await Assert.That(calls[0]).IsEqualTo("stopped");
+        await Assert.That(calls).Contains("lease");
+    }
+
+    [Test]
+    public async Task ShutdownDeadlineDuringRelease_TombstoneStillWritten()
+    {
+        var client = Substitute.For<IAmazonDynamoDB>();
+        using var deadline = new CancellationTokenSource();
+        var stopped = 0;
+        ReturnCoordination(client, [.. Leases("relay-a", 0, 1)]);
+        client.PutItemAsync(Arg.Any<PutItemRequest>(), Arg.Any<CancellationToken>()).Returns(call =>
+        {
+            if (call.Arg<PutItemRequest>().Item.ContainsKey("StoppedAtUtc"))
+                Interlocked.Increment(ref stopped);
+            return new PutItemResponse();
+        });
+        // The host's shutdown deadline fires while the leases are being handed back.
+        client.UpdateItemAsync(Arg.Any<UpdateItemRequest>(), Arg.Any<CancellationToken>())
+            .Returns<UpdateItemResponse>(call =>
+            {
+                deadline.Cancel();
+                call.Arg<CancellationToken>().ThrowIfCancellationRequested();
+                return new UpdateItemResponse();
+            });
+        var store = new DynamoDbOutboxStore(client, Options, new FixedClock());
+
+        await Assert.That(async () => await store.ReleaseBucketLeasesAsync(Request, [0, 1], deadline.Token))
+            .Throws<OperationCanceledException>();
+
+        await Assert.That(stopped).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task ClockSetBack_DoesNotMoveALeaseBackwards_AndDoesNotReportItOwned()
+    {
+        var client = Substitute.For<IAmazonDynamoDB>();
+        // Bucket 5 was renewed while this host's clock ran 25 s ahead: its expiry lies beyond
+        // anything a round at the corrected time would write.
+        var ahead = Leases("relay-a", 5, 5).Single();
+        ahead["ExpiresAtUtc"] = DynamoDbOutboxSchema.Number(Now.AddSeconds(45).UtcTicks);
+        ReturnCoordination(client, [.. Leases("relay-a", 0, 4), ahead, .. Leases("relay-a", 6, 7), Relay("relay-a")]);
+        var store = new DynamoDbOutboxStore(client, Options, new FixedClock());
+
+        var owned = await store.AcquireBucketLeasesAsync(Request);
+
+        // The relay trusts a kept lease for a whole lease duration from now, which the later
+        // expiry it would leave in place cannot promise on a peer's clock.
+        await Assert.That(string.Join(',', owned)).IsEqualTo("0,1,2,3,4,6,7");
+        // Not sent rather than sent and refused: a refusal is billed and reported as an error.
+        await client.DidNotReceive().UpdateItemAsync(
+            Arg.Is<UpdateItemRequest>(request => request.Key["SK"].S == DynamoDbOutboxSchema.LeaseSortKey(5)),
+            Arg.Any<CancellationToken>());
+        await client.Received(7).UpdateItemAsync(
+            Arg.Is<UpdateItemRequest>(request => request.ConditionExpression == KeepCondition),
+            Arg.Any<CancellationToken>());
     }
 
     [Test]
@@ -199,6 +285,56 @@ public sealed class DynamoDbOutboxStoreTests
                 request.ConditionExpression == "attribute_not_exists(#lastSeen) OR #lastSeen <= :now"
                 && request.ExpressionAttributeValues[":now"].N == NowTicks),
             Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task RefusedHeartbeat_ClaimsNothing_AndStillKeepsWhatItHolds()
+    {
+        var client = Substitute.For<IAmazonDynamoDB>();
+        // Buckets 4-7 are free. The refused heartbeat says this host's clock is behind a
+        // timestamp written for its relay id, so a lease claimed now would expire early on a
+        // peer's clock while this relay counted a whole lease duration.
+        ReturnCoordination(client, [.. Leases("relay-a", 0, 3), Relay("relay-a")]);
+        client.PutItemAsync(Arg.Any<PutItemRequest>(), Arg.Any<CancellationToken>())
+            .Returns<PutItemResponse>(_ => throw new ConditionalCheckFailedException("The conditional request failed"));
+        var store = new DynamoDbOutboxStore(client, Options, new FixedClock());
+
+        var owned = await store.AcquireBucketLeasesAsync(Request);
+
+        await Assert.That(string.Join(',', owned)).IsEqualTo("0,1,2,3");
+        await client.Received(4).UpdateItemAsync(Arg.Any<UpdateItemRequest>(), Arg.Any<CancellationToken>());
+        await client.Received(4).UpdateItemAsync(
+            Arg.Is<UpdateItemRequest>(request => request.ConditionExpression == KeepCondition),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    [Arguments(0)]
+    [Arguments(-60)]
+    public async Task StoppedRecord_IsStampedLaterThanEveryHeartbeatThisStoreSent(int clockStepSeconds)
+    {
+        var client = Substitute.For<IAmazonDynamoDB>();
+        var writes = new List<PutItemRequest>();
+        ReturnCoordination(client, [.. Leases("relay-a", 0, 7), Relay("relay-a")]);
+        client.PutItemAsync(Arg.Any<PutItemRequest>(), Arg.Any<CancellationToken>()).Returns(call =>
+        {
+            writes.Add(call.Arg<PutItemRequest>());
+            return new PutItemResponse();
+        });
+        var clock = new SteppedClock();
+        var store = new DynamoDbOutboxStore(client, Options, clock);
+        await store.AcquireBucketLeasesAsync(Request);
+
+        // The stop lands in the tick of the round it cancels, or after the clock was set back.
+        // Either way that round's heartbeat, still on its way, passes "#lastSeen <= :now"
+        // against a record stamped with the clock, and replaces it without the stopped mark.
+        clock.Step(TimeSpan.FromSeconds(clockStepSeconds));
+        await store.ReleaseBucketLeasesAsync(Request, previousBuckets: []);
+
+        var heartbeat = long.Parse(writes[0].Item["LastSeenUtc"].N, CultureInfo.InvariantCulture);
+        var stopped = long.Parse(writes[1].Item["LastSeenUtc"].N, CultureInfo.InvariantCulture);
+        await Assert.That(writes[1].Item.ContainsKey("StoppedAtUtc")).IsTrue();
+        await Assert.That(stopped).IsEqualTo(heartbeat + 1);
     }
 
     [Test]
@@ -283,14 +419,18 @@ public sealed class DynamoDbOutboxStoreTests
                 1 => new QueryResponse { Items = [Message(11)] },
                 2 => new QueryResponse { Count = 1 },
                 3 => new QueryResponse { Items = [Message(10), Message(11)] },
-                // The second fetch of the bucket has a baseline again.
+                // Once the first batch is marked, the bucket has a baseline again.
                 4 => new QueryResponse { Items = [Message(12)] },
                 _ => throw new InvalidOperationException("A contiguous batch needs no probe.")
             };
         });
         var store = new DynamoDbOutboxStore(client, Options, new FixedClock());
 
+        client.BatchWriteItemAsync(Arg.Any<BatchWriteItemRequest>(), Arg.Any<CancellationToken>())
+            .Returns(new BatchWriteItemResponse());
+
         var first = await store.GetNextBatchAsync(4, 100);
+        await store.MarkPublishedAsync(4, first);
         var second = await store.GetNextBatchAsync(4, 100);
 
         await Assert.That(string.Join(',', first.Select(message => message.Id))).IsEqualTo("10,11");
@@ -318,13 +458,48 @@ public sealed class DynamoDbOutboxStoreTests
         });
         var store = new DynamoDbOutboxStore(client, Options, new FixedClock());
 
-        await store.GetNextBatchAsync(4, 100);
+        client.BatchWriteItemAsync(Arg.Any<BatchWriteItemRequest>(), Arg.Any<CancellationToken>())
+            .Returns(new BatchWriteItemResponse());
+
+        await store.MarkPublishedAsync(4, await store.GetNextBatchAsync(4, 100));
         var batch = await store.GetNextBatchAsync(4, 100);
 
         // One minimal probe for the abandoned number, and no second fetch.
         await Assert.That(string.Join(',', batch.Select(message => message.Id))).IsEqualTo("4,5");
         await Assert.That(queries.Count).IsEqualTo(3);
         await Assert.That(queries[2].ExpressionAttributeValues[":first"].S).IsEqualTo("0000000000000000003");
+    }
+
+    [Test]
+    public async Task RefetchOfAnUnmarkedBatch_ProbesItsGapsAgain_BecauseATransactionCanCommitIntoThemLater()
+    {
+        var client = Substitute.For<IAmazonDynamoDB>();
+        var queries = new List<QueryRequest>();
+        client.QueryAsync(Arg.Any<QueryRequest>(), Arg.Any<CancellationToken>()).Returns(call =>
+        {
+            queries.Add(call.Arg<QueryRequest>());
+            return queries.Count switch
+            {
+                // Sequence 2 is reserved by a transaction that has not committed yet.
+                1 => new QueryResponse { Items = [Message(1), Message(3)] },
+                2 => new QueryResponse { Count = 0 },
+                // The publish failed, so nothing was marked and the batch is read again. The
+                // transaction commits 2 and 4 meanwhile; the read had passed position 2.
+                3 => new QueryResponse { Items = [Message(1), Message(3), Message(4)] },
+                4 => new QueryResponse { Count = 1 },
+                _ => new QueryResponse { Items = [Message(1), Message(2), Message(3), Message(4)] }
+            };
+        });
+        var store = new DynamoDbOutboxStore(client, Options, new FixedClock());
+
+        await store.GetNextBatchAsync(4, 100);
+        var refetched = await store.GetNextBatchAsync(4, 100);
+
+        // A baseline taken from the first read would sit past the gap and hide it: 4 would
+        // be published ahead of 2, out of the order their transaction wrote them in.
+        await Assert.That(string.Join(',', refetched.Select(message => message.Id))).IsEqualTo("1,2,3,4");
+        await Assert.That(queries[3].Select).IsEqualTo(Select.COUNT);
+        await Assert.That(queries[3].ExpressionAttributeValues[":first"].S).IsEqualTo("0000000000000000002");
     }
 
     [Test]
@@ -453,6 +628,15 @@ public sealed class DynamoDbOutboxStoreTests
     private sealed class FixedClock : TimeProvider
     {
         public override DateTimeOffset GetUtcNow() => Now;
+    }
+
+    private sealed class SteppedClock : TimeProvider
+    {
+        private DateTimeOffset _now = Now;
+
+        public void Step(TimeSpan step) => _now += step;
+
+        public override DateTimeOffset GetUtcNow() => _now;
     }
 
     /// <summary>Fires every timer at once, so retry backoff costs the test no time.</summary>
