@@ -107,6 +107,34 @@ public sealed class OutboxFairShareTests
     }
 
     [Test]
+    public async Task ComputeAll_MatchesTheShareAndTheRangeOfEveryRelay()
+    {
+        var random = new Random(3377);
+        for (var iteration = 0; iteration < 500; iteration++)
+        {
+            var bucketCount = random.Next(1, 40);
+            var relays = Enumerable.Range(0, random.Next(1, 12)).Select(index => $"relay-{index:D2}")
+                .OrderBy(_ => random.Next()).ToList();
+            var held = relays.Where(_ => random.Next(2) == 0).ToDictionary(relay => relay, _ => random.Next(0, 6));
+
+            List<string> sorted = [.. relays];
+            var shares = OutboxFairShare.ComputeAll(bucketCount, sorted, held);
+
+            await Assert.That(sorted.SequenceEqual(relays.Order(StringComparer.Ordinal))).IsTrue();
+            var start = 0;
+            for (var rank = 0; rank < sorted.Count; rank++)
+            {
+                await Assert.That(shares[rank]).IsEqualTo(OutboxFairShare.Compute(bucketCount, [.. relays], sorted[rank], held));
+                await Assert.That(string.Join(',', OutboxFairShare.Assign(bucketCount, [.. relays], sorted[rank], held)))
+                    .IsEqualTo(string.Join(',', Enumerable.Range(start, shares[rank])));
+                start += shares[rank];
+            }
+
+            await Assert.That(start).IsEqualTo(bucketCount);
+        }
+    }
+
+    [Test]
     public async Task StandbyRank_CountsTheRelaysWithoutAShare_InIdOrder()
     {
         var held = new Dictionary<string, int> { ["m"] = 1, ["n"] = 1 };
@@ -174,5 +202,9 @@ public sealed class OutboxFairShareTests
         await Assert.That(() => OutboxFairShare.Assign(1, ["a"], "a", null!)).Throws<ArgumentNullException>();
         await Assert.That(() => OutboxFairShare.Compute(1, ["a"], "a", null!)).Throws<ArgumentNullException>();
         await Assert.That(() => OutboxFairShare.StandbyRank(1, ["a"], "a", null!)).Throws<ArgumentNullException>();
+        await Assert.That(() => OutboxFairShare.ComputeAll(1, ["a"], null!)).Throws<ArgumentNullException>();
+        await Assert.That(() => OutboxFairShare.ComputeAll(1, null!, new Dictionary<string, int>())).Throws<ArgumentNullException>();
+        await Assert.That(() => OutboxFairShare.ComputeAll(0, ["a"], new Dictionary<string, int>())).Throws<ArgumentOutOfRangeException>();
+        await Assert.That(() => OutboxFairShare.ComputeAll(1, [], new Dictionary<string, int>())).Throws<ArgumentException>();
     }
 }

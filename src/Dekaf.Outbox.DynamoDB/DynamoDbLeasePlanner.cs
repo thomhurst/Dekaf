@@ -90,15 +90,25 @@ internal static class DynamoDbLeasePlanner
                 owned.Add(bucket);
         }
 
-        // Assign also sorts the membership and adds this relay, for every later call.
-        var range = OutboxFairShare.Assign(bucketCount, activeRelayIds, relayId, held);
-        var share = range.Count;
+        // Every relay's share from one pass, and with it every range: a range starts where
+        // the shares of the relays that sort before it end.
+        if (!activeRelayIds.Contains(relayId))
+            activeRelayIds.Add(relayId);
+        var shares = OutboxFairShare.ComputeAll(bucketCount, activeRelayIds, held);
+        var starts = new int[shares.Length];
+        for (var lower = 1; lower < shares.Length; lower++)
+            starts[lower] = starts[lower - 1] + shares[lower - 1];
+
+        var rank = activeRelayIds.IndexOf(relayId);
+        var share = shares[rank];
+        var first = starts[rank];
+        bool InRange(int bucket) => bucket >= first && bucket < first + share;
 
         // Keep the assigned range first. What an over-share relay hands back is then what its
         // peers are assigned, so a joining relay finds its own range free.
         owned.Sort((left, right) =>
         {
-            var byRange = InRange(range, right).CompareTo(InRange(range, left));
+            var byRange = InRange(right).CompareTo(InRange(left));
             return byRange != 0 ? byRange : left.CompareTo(right);
         });
         var keepCount = Math.Min(owned.Count, share);
@@ -107,36 +117,50 @@ internal static class DynamoDbLeasePlanner
         keep.Sort();
         release.Sort();
 
-        var claim = keepCount < share ? PlanClaims(bucketCount, activeRelayIds, relayId, free, held) : [];
-        var standbyRank = share == 0 && owned.Count == 0
-            ? OutboxFairShare.StandbyRank(bucketCount, activeRelayIds, relayId, held)
-            : -1;
-        return new DynamoDbLeasePlan(keep, release, claim, standbyRank);
+        var claim = keepCount < share ? PlanClaims(activeRelayIds, rank, free, held, shares, starts) : [];
+        return new DynamoDbLeasePlan(keep, release, claim, StandbyRank(shares, rank, owned.Count));
     }
 
+    /// <returns><see cref="OutboxFairShare.StandbyRank"/>, read from the shares this round
+    /// already computed.</returns>
+    private static int StandbyRank(int[] shares, int rank, int ownedCount)
+    {
+        if (shares[rank] > 0 || ownedCount > 0)
+            return -1;
+
+        var standbysBefore = 0;
+        for (var lower = 0; lower < rank; lower++)
+        {
+            if (shares[lower] == 0)
+                standbysBefore++;
+        }
+
+        return standbysBefore;
+    }
+
+    /// <param name="sortedRelayIds">The membership, in the order of <paramref name="shares"/>.</param>
+    /// <param name="ownRank">The requesting relay's position in it.</param>
+    /// <param name="free">Whether each bucket is free. Consumed by the simulation.</param>
+    /// <param name="held">What each relay holds.</param>
+    /// <param name="shares">Every relay's share, by rank.</param>
+    /// <param name="starts">Where every relay's range starts, by rank.</param>
     private static List<int> PlanClaims(
-        int bucketCount, List<string> sortedRelayIds, string relayId, bool[] free, Dictionary<string, int> held)
+        List<string> sortedRelayIds, int ownRank, bool[] free, Dictionary<string, int> held, int[] shares, int[] starts)
     {
         var claims = new List<int>();
         if (Array.IndexOf(free, true) < 0)
             return claims;
 
-        var ranges = new IReadOnlyList<int>[sortedRelayIds.Count];
-        var deficits = new int[sortedRelayIds.Count];
-        for (var rank = 0; rank < sortedRelayIds.Count; rank++)
-        {
-            ranges[rank] = OutboxFairShare.Assign(bucketCount, sortedRelayIds, sortedRelayIds[rank], held);
-            deficits[rank] = Math.Max(0, ranges[rank].Count - held.GetValueOrDefault(sortedRelayIds[rank]));
-        }
+        var deficits = new int[shares.Length];
+        for (var rank = 0; rank < shares.Length; rank++)
+            deficits[rank] = Math.Max(0, shares[rank] - held.GetValueOrDefault(sortedRelayIds[rank]));
 
         // First every relay takes the free buckets of its own range. Ranges are disjoint, so
         // these claims cannot overlap whatever order the relays run in.
-        for (var rank = 0; rank < sortedRelayIds.Count; rank++)
+        for (var rank = 0; rank < shares.Length; rank++)
         {
-            foreach (var bucket in ranges[rank])
+            for (var bucket = starts[rank]; bucket < starts[rank] + shares[rank] && deficits[rank] > 0; bucket++)
             {
-                if (deficits[rank] == 0)
-                    break;
                 if (free[bucket])
                     Take(rank, bucket);
             }
@@ -145,9 +169,9 @@ internal static class DynamoDbLeasePlanner
         // Then the buckets nobody is assigned and short of, lowest relay id first. A relay is
         // left short when a peer still holds part of its range from an earlier membership.
         var next = 0;
-        for (var rank = 0; rank < sortedRelayIds.Count; rank++)
+        for (var rank = 0; rank < shares.Length; rank++)
         {
-            for (; deficits[rank] > 0 && next < bucketCount; next++)
+            for (; deficits[rank] > 0 && next < free.Length; next++)
             {
                 if (free[next])
                     Take(rank, next);
@@ -161,12 +185,8 @@ internal static class DynamoDbLeasePlanner
         {
             free[bucket] = false;
             deficits[rank]--;
-            if (sortedRelayIds[rank] == relayId)
+            if (rank == ownRank)
                 claims.Add(bucket);
         }
     }
-
-    // Ranges are contiguous and ascending.
-    private static bool InRange(IReadOnlyList<int> range, int bucket) =>
-        range.Count > 0 && bucket >= range[0] && bucket <= range[^1];
 }

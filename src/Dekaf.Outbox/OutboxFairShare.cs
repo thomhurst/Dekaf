@@ -55,7 +55,32 @@ public static class OutboxFairShare
     {
         ArgumentNullException.ThrowIfNull(heldBucketCounts);
         var rank = Rank(bucketCount, activeRelayIds, relayId);
-        return Shares(bucketCount, activeRelayIds, heldBucketCounts).At(rank);
+        return Shares(bucketCount, activeRelayIds, heldBucketCounts)[rank];
+    }
+
+    /// <summary>
+    /// Computes the share of every active relay at once, for a store that plans the claims
+    /// of all of them: one call per round instead of one per relay.
+    /// </summary>
+    /// <param name="bucketCount">Total bucket count.</param>
+    /// <param name="activeRelayIds">Ids of relays currently considered active, including the
+    /// requesting relay. Sorted in place (ordinal).</param>
+    /// <param name="heldBucketCounts">How many unexpired leases name each relay, as the caller
+    /// read them. Relays that are missing hold nothing.</param>
+    /// <returns>The shares in the sorted order of <paramref name="activeRelayIds"/>. They sum
+    /// to <paramref name="bucketCount"/>, and the running total up to a relay is where its
+    /// <c>Assign</c> range starts.</returns>
+    public static int[] ComputeAll(
+        int bucketCount, List<string> activeRelayIds, IReadOnlyDictionary<string, int> heldBucketCounts)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(bucketCount, 1);
+        ArgumentNullException.ThrowIfNull(activeRelayIds);
+        ArgumentNullException.ThrowIfNull(heldBucketCounts);
+        if (activeRelayIds.Count == 0)
+            throw new ArgumentException("At least one relay is required.", nameof(activeRelayIds));
+
+        activeRelayIds.Sort(StringComparer.Ordinal);
+        return Shares(bucketCount, activeRelayIds, heldBucketCounts);
     }
 
     /// <summary>
@@ -102,9 +127,9 @@ public static class OutboxFairShare
 
         var start = 0;
         for (var lower = 0; lower < rank; lower++)
-            start += shares.At(lower);
+            start += shares[lower];
 
-        var assigned = new int[shares.At(rank)];
+        var assigned = new int[shares[rank]];
         for (var index = 0; index < assigned.Length; index++)
             assigned[index] = start + index;
         return assigned;
@@ -130,13 +155,13 @@ public static class OutboxFairShare
         ArgumentNullException.ThrowIfNull(heldBucketCounts);
         var rank = Rank(bucketCount, activeRelayIds, relayId);
         var shares = Shares(bucketCount, activeRelayIds, heldBucketCounts);
-        if (shares.At(rank) > 0)
+        if (shares[rank] > 0)
             return -1;
 
         var standbysBefore = 0;
         for (var lower = 0; lower < rank; lower++)
         {
-            if (shares.At(lower) == 0)
+            if (shares[lower] == 0)
                 standbysBefore++;
         }
 
@@ -155,43 +180,36 @@ public static class OutboxFairShare
         return activeRelayIds.IndexOf(relayId);
     }
 
-    private static ShareTable Shares(
+    /// <returns>The share of every relay, by rank: the floor, plus one for some.</returns>
+    private static int[] Shares(
         int bucketCount, List<string> sortedRelayIds, IReadOnlyDictionary<string, int> heldBucketCounts)
     {
         var floor = bucketCount / sortedRelayIds.Count;
-        var remainder = bucketCount % sortedRelayIds.Count;
-        var holdsExtra = new bool[sortedRelayIds.Count];
-        if (remainder == 0)
-            return new ShareTable(floor, holdsExtra);
+        var shares = new int[sortedRelayIds.Count];
+        Array.Fill(shares, floor);
 
         // The remainder goes to the relays that already hold more than the floor, then to the
         // rest, both in id order. Taking it from a holder to give it to a peer that merely
         // sorts earlier would move a bucket that is being published for nothing.
-        var left = remainder;
-        for (var rank = 0; rank < holdsExtra.Length && left > 0; rank++)
+        var left = bucketCount % sortedRelayIds.Count;
+        for (var rank = 0; rank < shares.Length && left > 0; rank++)
         {
             if (heldBucketCounts.TryGetValue(sortedRelayIds[rank], out var held) && held > floor)
             {
-                holdsExtra[rank] = true;
+                shares[rank]++;
                 left--;
             }
         }
 
-        for (var rank = 0; rank < holdsExtra.Length && left > 0; rank++)
+        for (var rank = 0; rank < shares.Length && left > 0; rank++)
         {
-            if (!holdsExtra[rank])
+            if (shares[rank] == floor)
             {
-                holdsExtra[rank] = true;
+                shares[rank]++;
                 left--;
             }
         }
 
-        return new ShareTable(floor, holdsExtra);
-    }
-
-    /// <summary>The share of every relay, by rank: the floor, plus one for some.</summary>
-    private readonly struct ShareTable(int floor, bool[] extra)
-    {
-        public int At(int rank) => floor + (extra[rank] ? 1 : 0);
+        return shares;
     }
 }

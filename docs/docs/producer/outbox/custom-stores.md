@@ -126,6 +126,8 @@ public sealed class LeaseProbeOrder
 }
 ```
 
+A store that plans the claims of every relay, as the DynamoDB store does, gets all shares from one `OutboxFairShare.ComputeAll` call per round; the running total of the shares is where each relay's range starts.
+
 `OutboxFairShare.StandbyRank` tells a relay without a share how far back it waits. Relays at the front are handed the next buckets that free up and should keep acquiring on every call. A relay further back than one standby per bucket only needs to stay counted: the packaged stores answer its acquisitions with an empty list, without touching the database, for as long as the acquisition after it still comes within three quarters of a `LeaseDuration` of its last liveness write. Peers count a relay as active for a whole `LeaseDuration`, so it never drops out of the membership, and because shares follow holdings, a standby that did drop out for a round would change nobody's share.
 
 Claim in that order and stop at the fair share. When the share shrinks below the held count, keep the first buckets and release the rest, as the EF store does. In steady state every relay holds exactly its share from step 1 and makes no failed conditional write, so a failure now signals a real membership disagreement. Relays do not always agree: liveness records become visible with a lag, and a DynamoDB global secondary index cannot be read consistently at all. Ranges can therefore overlap for a cycle, which is why `Assign` orders probes and never replaces the conditional write.
