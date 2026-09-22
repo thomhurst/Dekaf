@@ -672,6 +672,9 @@ internal readonly struct AppendWorkItem
     public readonly PooledValueTaskSource<RecordMetadata> Completion;
     public readonly CancellationToken CancellationToken;
 
+    /// <summary>The <see cref="RecordAccumulator.TransactionalAppendGeneration"/> the produce was admitted in.</summary>
+    public readonly int TransactionalGeneration;
+
     public AppendWorkItem(
         string topic,
         int partition,
@@ -682,8 +685,10 @@ internal readonly struct AppendWorkItem
         Header[]? headers,
         int headerCount,
         PooledValueTaskSource<RecordMetadata> completion,
+        int transactionalGeneration,
         CancellationToken cancellationToken)
     {
+        TransactionalGeneration = transactionalGeneration;
         Topic = topic;
         Partition = partition;
         PartitionCount = partitionCount;
@@ -1281,6 +1286,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     // under the partition lock, next to _disposed, and rejects the record (see
     // CloseTransactionalAppends).
     private int _transactionalAppendsClosed;
+
+    // See TransactionalAppendGeneration.
+    private int _transactionalAppendGeneration;
 
     internal Action? PurgeAppendWaitObservedForTest;
     internal Action? AfterLingerQueueSnapshotForTest;
@@ -3184,6 +3192,17 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             {
                 workItem.CancellationToken.ThrowIfCancellationRequested();
 
+                // Admitted before a transaction abort that has since started: the record belongs
+                // to the aborted transaction and must not join whatever follows it.
+                if (workItem.TransactionalGeneration != Volatile.Read(ref _transactionalAppendGeneration))
+                {
+                    CleanupWorkItemResources(in workItem);
+                    PooledCompletionSource.TrySetException(
+                        workItem.Completion,
+                        CreateStaleTransactionalAppendException());
+                    continue;
+                }
+
                 appendStarted = true;
                 var appendTask = AppendAsync(
                     workItem.Topic,
@@ -3274,12 +3293,14 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         int headerCount,
         PooledValueTaskSource<RecordMetadata> completion,
         CancellationToken cancellationToken,
-        int partitionCount = 0)
+        int partitionCount = 0,
+        int? transactionalGeneration = null)
     {
         EnsureAppendWorkersStarted();
         var workerIndex = (int)((uint)partition % (uint)_appendWorkerCount);
         var workItem = new AppendWorkItem(topic, partition, partitionCount, timestamp, key, value,
-            headers, headerCount, completion, cancellationToken);
+            headers, headerCount, completion,
+            transactionalGeneration ?? TransactionalAppendGeneration, cancellationToken);
 
         IncrementSlowPathAppendCount(topic, partition);
         if (!_appendWorkerChannels[workerIndex].Writer.TryWrite(workItem))
@@ -3310,7 +3331,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         int headerCount,
         PooledValueTaskSource<RecordMetadata> completion,
         CancellationToken cancellationToken,
-        int partitionCount = 0)
+        int partitionCount = 0,
+        int? transactionalGeneration = null)
     {
         var key = PooledMemory.Null;
         var value = PooledMemory.Null;
@@ -3323,7 +3345,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 value = CopySpanToPooledMemory(valueData);
 
             EnqueueAppend(topic, partition, timestamp, key, value, headers, headerCount,
-                completion, cancellationToken, partitionCount);
+                completion, cancellationToken, partitionCount, transactionalGeneration);
         }
         catch
         {
@@ -7214,12 +7236,35 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// purge is a barrier: a record committed before it is purged, and none commits after it. That
     /// covers produces that passed their state check before the abort began, appends waiting for
     /// buffer memory and appends queued to the async serializer workers. The full fence orders the
-    /// write before the purge's scan of the partitions. Abort path only.
+    /// write before the purge's scan of the partitions.
+    /// <para>
+    /// It also advances <see cref="TransactionalAppendGeneration"/>, which fences what the flag
+    /// cannot: a produce admitted before the abort that is still awaiting (serializer preparation,
+    /// topic metadata, an async serializer, a retry delay, a queued append worker item) when the
+    /// abort ends and the flag is cleared. Such a produce carries the generation it was admitted
+    /// in and is rejected with the same error once it resumes. Abort path only.
+    /// </para>
     /// </summary>
-    internal void CloseTransactionalAppends() => Interlocked.Exchange(ref _transactionalAppendsClosed, 1);
+    internal void CloseTransactionalAppends()
+    {
+        Interlocked.Increment(ref _transactionalAppendGeneration);
+        Interlocked.Exchange(ref _transactionalAppendsClosed, 1);
+    }
 
     /// <summary>Ends <see cref="CloseTransactionalAppends"/>.</summary>
     internal void ReopenTransactionalAppends() => Volatile.Write(ref _transactionalAppendsClosed, 0);
+
+    /// <summary>
+    /// Advances once per transaction abort (<see cref="CloseTransactionalAppends"/>). A produce
+    /// that leaves the synchronous path captures it, and its append is rejected with
+    /// <see cref="ProduceErrorKind.TransactionAborted"/> when the value has changed by the time
+    /// the produce resumes. Never changes for a non-transactional producer.
+    /// </summary>
+    internal int TransactionalAppendGeneration => Volatile.Read(ref _transactionalAppendGeneration);
+
+    internal static ProduceException CreateStaleTransactionalAppendException() =>
+        CreateTransactionAbortedException(
+            "The transaction was aborted while this record was waiting to be appended.");
 
     internal static ProduceException CreateTransactionAbortedException(string message) =>
         new(ProduceErrorKind.TransactionAborted, message);

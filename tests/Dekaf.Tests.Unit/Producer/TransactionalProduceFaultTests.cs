@@ -321,6 +321,79 @@ public sealed class TransactionalProduceFaultTests
         await Assert.That(last.BaseSequence).IsEqualTo(0);
     }
 
+    /// <summary>
+    /// A produce that passed its state check before the abort but is still awaiting its async
+    /// serializer when the abort ends belongs to the aborted transaction. Once it resumes it must
+    /// fail with <see cref="ProduceErrorKind.TransactionAborted"/>; it must not be appended after
+    /// the abort reopens appends and then be sent outside the aborted transaction or in the next.
+    /// </summary>
+    [Test]
+    [Arguments((short)1)]
+    [Arguments((short)2)]
+    [Timeout(60_000)]
+    public async Task AbortAsync_ProduceStillSerializingWhenTheAbortEnds_FailsAndIsNeverSent(
+        short transactionVersion,
+        CancellationToken cancellationToken)
+    {
+        var serializer = new HeldAsyncStringSerializer(heldValue: "admitted-before-abort");
+        await using var harness = await TransactionalProduceHarness.CreateAsync(
+            transactionVersion,
+            produceError: static (_, _) => ErrorCode.None,
+            asyncValueSerializer: serializer);
+
+        var aborted = harness.Producer.BeginTransaction();
+        var stale = aborted.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = Topic,
+            Key = "key",
+            Value = "admitted-before-abort",
+            Partition = 0
+        }, cancellationToken).AsTask();
+        await serializer.Entered.WaitAsync(cancellationToken);
+
+        await aborted.AbortAsync(cancellationToken);
+        await aborted.DisposeAsync();
+        var sentBeforeRelease = harness.Broker.ProducedBatches.Count;
+
+        serializer.Release();
+        var exception = await Assert.That(async () => await stale).Throws<ProduceException>();
+        await Assert.That(exception!.Kind).IsEqualTo(ProduceErrorKind.TransactionAborted);
+
+        await harness.CommitOneRecordAsync(partition: 0, cancellationToken);
+        var sentAfterRelease = harness.Broker.ProducedBatches.Skip(sentBeforeRelease).ToArray();
+        await Assert.That(sentAfterRelease.Length).IsEqualTo(1);
+        await Assert.That(sentAfterRelease[0].RecordCount).IsEqualTo(1);
+        await Assert.That(sentAfterRelease[0].BaseSequence).IsEqualTo(0);
+    }
+
+    /// <summary>A UTF-8 string serializer that holds one value until released.</summary>
+    private sealed class HeldAsyncStringSerializer(string heldValue) : IAsyncSerializer<string>
+    {
+        private readonly TaskCompletionSource _entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task Entered => _entered.Task;
+
+        public void Release() => _release.TrySetResult();
+
+        public async ValueTask SerializeAsync(
+            string value,
+            System.Buffers.IBufferWriter<byte> destination,
+            SerializationContext context,
+            CancellationToken cancellationToken = default)
+        {
+            if (value == heldValue)
+            {
+                _entered.TrySetResult();
+                await _release.Task.WaitAsync(cancellationToken);
+            }
+
+            var bytes = System.Text.Encoding.UTF8.GetBytes(value);
+            bytes.CopyTo(destination.GetSpan(bytes.Length));
+            destination.Advance(bytes.Length);
+        }
+    }
+
     private static ProducerMessage<string, string> Message(int partition) => new()
     {
         Topic = Topic,
@@ -354,7 +427,8 @@ public sealed class TransactionalProduceFaultTests
             short transactionVersion,
             Func<int, int, ErrorCode> produceError,
             int deliveryTimeoutMs = 30_000,
-            int lingerMs = 0)
+            int lingerMs = 0,
+            IAsyncSerializer<string>? asyncValueSerializer = null)
         {
             var broker = new ScriptedTransactionalBroker(produceError, bumpsEpochAtEndTxn: transactionVersion >= 2);
             var pool = new ConnectionPool(
@@ -425,7 +499,8 @@ public sealed class TransactionalProduceFaultTests
                 Serializers.String,
                 pool,
                 metadata,
-                DekafMemoryBudget.Global);
+                DekafMemoryBudget.Global,
+                asyncValueSerializer: asyncValueSerializer);
 
             var harness = new TransactionalProduceHarness(pool, metadata, broker, producer);
             await producer.InitializeAsync();

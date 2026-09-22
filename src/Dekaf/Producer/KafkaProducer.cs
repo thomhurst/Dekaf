@@ -1045,10 +1045,12 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         ProduceContinuationMode continuationMode,
         CancellationToken cancellationToken)
     {
+        var transactionalGeneration = CaptureTransactionalAppendGeneration();
         SerializerPreparationLease preparationLease;
         try
         {
             preparationLease = await prepare.ConfigureAwait(false);
+            ThrowIfTransactionAbortedSince(transactionalGeneration);
         }
         catch (Exception ex)
         {
@@ -1327,7 +1329,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         ProduceContinuationMode continuationMode,
         CancellationToken cancellationToken)
     {
+        var transactionalGeneration = CaptureTransactionalAppendGeneration();
         var preparationLease = await prepare.ConfigureAwait(false);
+        ThrowIfTransactionAbortedSince(transactionalGeneration);
 
         return await ProduceAfterPrepare(
             topic,
@@ -1347,11 +1351,17 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         ProduceContinuationMode continuationMode,
         CancellationToken cancellationToken)
     {
+        // Captured before ProduceAsyncCore's state check admits the first attempt. A retry after
+        // an abort started would be admitted again in the next transaction's state.
+        var transactionalGeneration = CaptureTransactionalAppendGeneration();
         var attempt = 0;
         while (true)
         {
             try
             {
+                if (attempt > 0)
+                    ThrowIfTransactionAbortedSince(transactionalGeneration);
+
                 return await ProduceAsyncCore(
                     message,
                     continuationMode,
@@ -1633,6 +1643,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 headers,
                 completion,
                 preparationLease,
+                CaptureTransactionalAppendGeneration(),
                 cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -2148,7 +2159,8 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                     headerCount,
                     completion,
                     cancellationToken,
-                    batchCompletionPartitionCount);
+                    batchCompletionPartitionCount,
+                    CaptureTransactionalAppendGeneration());
                 RestoreCustomPartitionerKeyBuffer(cache, ref customPartitionerKeyBuffer);
                 return;
             }
@@ -2397,6 +2409,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         Headers? headers,
         PooledValueTaskSource<RecordMetadata> completion,
         SerializerPreparationLease preparationLease,
+        int transactionalGeneration,
         CancellationToken cancellationToken)
     {
         // Fast path: thread-local topic cache (three reference compares), then the metadata
@@ -2503,7 +2516,8 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 headerCount,
                 completion,
                 cancellationToken,
-                batchCompletionPartitionCount);
+                batchCompletionPartitionCount,
+                transactionalGeneration);
         }
         catch
         {
@@ -5788,6 +5802,30 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         }
     }
 
+    /// <summary>
+    /// Captures the transactional append generation for a produce that is about to leave the
+    /// synchronous path (to await serializer preparation, topic metadata, an async serializer or a
+    /// retry delay, or to queue for an append worker). When the produce resumes,
+    /// <see cref="ThrowIfTransactionAbortedSince"/> (or the append worker) rejects it with
+    /// <see cref="ProduceErrorKind.TransactionAborted"/> if an abort started in between, so a record
+    /// of the aborted transaction never lands outside it or in the next one after the abort
+    /// reopens appends. The generation is read before the state: an abort writes
+    /// AbortingTransaction before it advances the generation, so a produce that sees any other
+    /// state holds the pre-abort value, and one that sees AbortingTransaction (admitted just before
+    /// the abort began) gets a value that no generation will ever match again. Slow paths only.
+    /// </summary>
+    private int CaptureTransactionalAppendGeneration()
+    {
+        var generation = _accumulator.TransactionalAppendGeneration;
+        return _transactionState == TransactionState.AbortingTransaction ? generation - 1 : generation;
+    }
+
+    private void ThrowIfTransactionAbortedSince(int generation)
+    {
+        if (generation != _accumulator.TransactionalAppendGeneration)
+            throw RecordAccumulator.CreateStaleTransactionalAppendException();
+    }
+
     [MethodImpl(MethodImplOptions.NoInlining)]
     private void ThrowIfTransactionCannotProduce()
     {
@@ -6828,6 +6866,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         var completion = RentCompletion(runContinuationsAsynchronously);
         try
         {
+            var transactionalGeneration = CaptureTransactionalAppendGeneration();
             var preparationLease = _keyPreparer is null && _valuePreparer is null
                 ? default
                 : await PrepareSerializersAsync(
@@ -6841,6 +6880,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 headers,
                 completion,
                 preparationLease,
+                transactionalGeneration,
                 cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)

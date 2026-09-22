@@ -97,6 +97,74 @@ public class AppendWorkerAffinityTests
         await producer.DisposeAsync();
     }
 
+    /// <summary>
+    /// A work item queued by a produce admitted before a transaction abort started carries the
+    /// generation it was admitted in. After the abort (even once it has reopened appends) the
+    /// worker rejects it with TransactionAborted instead of appending it; an item admitted after
+    /// the abort appends normally.
+    /// </summary>
+    [Test]
+    [Timeout(120_000)]
+    public async Task AppendWorker_ItemAdmittedBeforeTransactionAbort_IsRejectedAfterAppendsReopen(
+        CancellationToken cancellationToken)
+    {
+        await using var pool = new ValueTaskSourcePool<RecordMetadata>();
+        await using var producer = (KafkaProducer<string, string>)Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithClientId("append-worker-transaction-generation-test")
+            .WithBufferMemory(ulong.MaxValue)
+            .WithBatchSize(1_048_576)
+            .WithLinger(TimeSpan.Zero)
+            .WithCloseTimeout(TimeSpan.FromMilliseconds(100))
+            .Build();
+        await producer.StopSenderLoopsForTestingAsync();
+
+        var accumulator = producer.RecordAccumulator;
+        var admittedBeforeAbort = accumulator.TransactionalAppendGeneration;
+        accumulator.CloseTransactionalAppends();
+        accumulator.ReopenTransactionalAppends();
+
+        var staleCompletion = pool.Rent();
+        var staleTask = staleCompletion.Task.AsTask();
+        accumulator.EnqueueAppend(
+            "test-topic",
+            partition: 0,
+            timestamp: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            key: PooledMemory.Null,
+            value: LeakGateHarness.RentPooled(16, seed: 1),
+            headers: null,
+            headerCount: 0,
+            completion: staleCompletion,
+            cancellationToken: CancellationToken.None,
+            transactionalGeneration: admittedBeforeAbort);
+
+        var exception = await Assert.That(async () => await staleTask.WaitAsync(cancellationToken))
+            .Throws<Dekaf.Errors.ProduceException>();
+        await Assert.That(exception!.Kind).IsEqualTo(Dekaf.Errors.ProduceErrorKind.TransactionAborted);
+        var deques = GetPartitionDeques(accumulator);
+        var tp = new TopicPartition("test-topic", 0);
+        await Assert.That(HasBatchForPartition(deques, tp)).IsFalse();
+        await TestWait.UntilAsync(() => GetSlowPathAppendCount(deques, tp) == 0, cancellationToken,
+            TimeSpan.FromMilliseconds(1));
+
+        var currentCompletion = pool.Rent();
+        accumulator.EnqueueAppend(
+            "test-topic",
+            partition: 0,
+            timestamp: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            key: PooledMemory.Null,
+            value: LeakGateHarness.RentPooled(16, seed: 2),
+            headers: null,
+            headerCount: 0,
+            completion: currentCompletion,
+            cancellationToken: CancellationToken.None,
+            transactionalGeneration: accumulator.TransactionalAppendGeneration);
+        await TestWait.UntilAsync(() => HasBatchForPartition(deques, tp), cancellationToken,
+            TimeSpan.FromMilliseconds(1));
+
+        await producer.DisposeAsync();
+    }
+
     [Test]
     [Timeout(120_000)]
     public async Task DisposeAsync_FaultsBackpressuredAppendQueueAndClearsOwnership(
