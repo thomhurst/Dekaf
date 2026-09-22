@@ -214,3 +214,6 @@ Dekaf.Admin.DescribeClassicGroupsOptions.TimeoutMs.init -> void
 Dekaf.Admin.IClassicGroupDescriptionAdminClient
 Dekaf.Admin.IClassicGroupDescriptionAdminClient.DescribeClassicGroupsAsync(System.Collections.Generic.IEnumerable<string!>! groupIds, Dekaf.Admin.DescribeClassicGroupsOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<string!, Dekaf.Admin.ClassicGroupDescriptionResult!>!>
 static Dekaf.Admin.AdminClientClassicGroupDescriptionExtensions.DescribeClassicGroupsAsync(this Dekaf.Admin.IAdminClient! adminClient, System.Collections.Generic.IEnumerable<string!>! groupIds, Dekaf.Admin.DescribeClassicGroupsOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<string!, Dekaf.Admin.ClassicGroupDescriptionResult!>!>
+Dekaf.Admin.AdminClientBuilder.WithDefaultApiTimeout(System.TimeSpan timeout) -> Dekaf.Admin.AdminClientBuilder!
+Dekaf.Admin.AdminClientOptions.DefaultApiTimeoutMs.get -> int
+Dekaf.Admin.AdminClientOptions.DefaultApiTimeoutMs.init -> void

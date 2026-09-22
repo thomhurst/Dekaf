@@ -423,6 +423,13 @@ public sealed class AdminClientIdempotentRetryTests
 
     internal static (AdminClient Admin, IKafkaConnection Connection) CreateAdminWithMockConnection(
         params ApiKey[] extraApiKeys)
+        => CreateAdminWithMockConnection(
+            new AdminClientOptions { BootstrapServers = ["localhost:9092"] },
+            extraApiKeys);
+
+    internal static (AdminClient Admin, IKafkaConnection Connection) CreateAdminWithMockConnection(
+        AdminClientOptions options,
+        params ApiKey[] extraApiKeys)
     {
         var connection = Substitute.For<IKafkaConnection>();
         connection.BrokerId.Returns(1);
@@ -466,7 +473,7 @@ public sealed class AdminClientIdempotentRetryTests
             }));
 
         var admin = new AdminClient(
-            new AdminClientOptions { BootstrapServers = ["localhost:9092"] },
+            options,
             pool,
             metadataManager);
 

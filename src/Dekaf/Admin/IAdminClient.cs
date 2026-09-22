@@ -345,7 +345,12 @@ public interface IAdminClient : IAsyncDisposable
     /// <param name="filters">The ACL binding filters to match for deletion.</param>
     /// <param name="options">Optional configuration options.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns>The ACL bindings that were deleted.</returns>
+    /// <returns>
+    /// The ACL bindings the controller reported as deleted. Deletion is safe to repeat, so a
+    /// request whose response was lost is sent again. The replay reports only what it deleted
+    /// itself, so bindings removed by the lost attempt are absent from the result even though
+    /// they are gone. Call <see cref="DescribeAclsAsync"/> when an exact audit is required.
+    /// </returns>
     ValueTask<IReadOnlyList<AclBinding>> DeleteAclsAsync(
         IEnumerable<AclBindingFilter> filters,
         DeleteAclsOptions? options = null,
