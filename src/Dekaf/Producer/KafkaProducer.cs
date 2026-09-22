@@ -3517,11 +3517,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 }
 
                 initProducerIdOutcomeUnknown = false;
-                _producerId = response.ProducerId;
-                _producerEpoch = response.ProducerEpoch;
-
-                _accumulator.ProducerId = _producerId;
-                _accumulator.ProducerEpoch = _producerEpoch;
+                ApplyTransactionalProducerIdentity(response.ProducerId, response.ProducerEpoch);
                 _accumulator.IsTransactional = true;
 
                 _accumulator.ResetSequenceNumbers();
@@ -4092,10 +4088,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                     // drains all in-flight batches, so no BrokerSender is active.
                     if (applyResponseProducerState && _currentTransactionUsesTV2 && response.ProducerId >= 0)
                     {
-                        _producerId = response.ProducerId;
-                        _producerEpoch = response.ProducerEpoch;
-                        _accumulator.ProducerId = _producerId;
-                        _accumulator.ProducerEpoch = _producerEpoch;
+                        ApplyTransactionalProducerIdentity(response.ProducerId, response.ProducerEpoch);
                         _accumulator.ResetSequenceNumbers();
                     }
 
@@ -5412,6 +5405,25 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             MarkTransactionAbortable(errorCode);
             LogTransactionalBatchFailedAbortable(errorCode, _options.TransactionalId);
             return true;
+        }
+    }
+
+    /// <summary>
+    /// Installs the producer ID and epoch a transactional InitProducerId or a TV2 EndTxn returned,
+    /// on the producer and then on the accumulator, under <see cref="_partitionsInTransactionLock"/>.
+    /// <see cref="OnTransactionalBatchFailed"/> compares a failed batch's stamp with this identity
+    /// under the same lock, so it sees the old pair or the new one, never a mix, and the decision
+    /// it returns (current fence, fatal; earlier identity, ignored) is the one the batch's records
+    /// fail with. Transaction control path only.
+    /// </summary>
+    private void ApplyTransactionalProducerIdentity(long producerId, short producerEpoch)
+    {
+        lock (_partitionsInTransactionLock)
+        {
+            Volatile.Write(ref _producerId, producerId);
+            _producerEpoch = producerEpoch;
+            _accumulator.ProducerId = producerId;
+            _accumulator.ProducerEpoch = producerEpoch;
         }
     }
 
