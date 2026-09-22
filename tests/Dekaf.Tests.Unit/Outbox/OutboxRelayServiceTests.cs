@@ -107,16 +107,18 @@ public class OutboxRelayServiceTests
     }
 
     [Test]
-    public async Task CommitNotifications_DoNotInterruptErrorBackoff()
+    public async Task CommitNotifications_DoNotBringAFailedBucketsRetryForward()
     {
         var time = new ManualTimeProvider();
         using var notifier = new OutboxNotifier(time);
         var store = new FakeStore();
         store.Enqueue(Row(1));
         var publisher = new FakePublisher { FailFirstCalls = 1 };
+        // A poll interval past the backoff, so the only timer the relay waits on is the retry.
         var options = new OutboxRelayOptions
         {
-            ErrorBackoff = TimeSpan.FromSeconds(3), MaxPublishDuration = TimeSpan.FromSeconds(5)
+            ErrorBackoff = TimeSpan.FromSeconds(3), PollInterval = TimeSpan.FromMinutes(1),
+            MaxPublishDuration = TimeSpan.FromSeconds(5)
         };
         using var relay = new OutboxRelayService(store, publisher, options,
             NullLogger<OutboxRelayService>.Instance, time, notifier);

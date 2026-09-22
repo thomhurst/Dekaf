@@ -121,6 +121,50 @@ public sealed class OutboxRelayResilienceTests
     }
 
     [Test]
+    public async Task PoisonRowAsTheOnlyWork_ACommitToAnotherBucketStillWakesTheRelay()
+    {
+        // The clock only moves when the test moves it, so a row in bucket 1 is published
+        // before the poison row's backoff ends only if the commit notification ends the wait.
+        var time = new ManualTimeProvider();
+        var store = new RowStore(ownedBuckets: [0, 1]);
+        store.Enqueue(Row(1, bucket: 0));
+        var publisher = new ConcurrentSendPublisher();
+        publisher.Reject(1);
+        var options = new OutboxRelayOptions
+        {
+            BucketCount = 2,
+            PollInterval = TimeSpan.FromMinutes(2),
+            ErrorBackoff = TimeSpan.FromMinutes(1),
+            LeaseRenewInterval = TimeSpan.FromMinutes(5),
+            LeaseDuration = TimeSpan.FromMinutes(10),
+            MaxPublishDuration = TimeSpan.FromSeconds(5),
+            RelayId = "test-relay"
+        };
+        using var notifier = new OutboxNotifier(time, options.BucketCount);
+        using var relay = new OutboxRelayService(store, publisher, options,
+            NullLogger<OutboxRelayService>.Instance, time, notifier);
+        await relay.StartAsync(CancellationToken.None);
+        try
+        {
+            // The relay waits until the poison row is due for its retry.
+            await time.WaitForTimerAsync(options.ErrorBackoff);
+            store.Enqueue(Row(10, bucket: 1));
+            notifier.NotifyCommitted(new HashSet<int> { 1 });
+            await store.WaitForBucketEmptyAsync(1, SignalTimeout);
+            await Assert.That(publisher.RejectedAttempts).IsEqualTo(1);
+
+            // The poison row is still retried once its own backoff has passed.
+            publisher.Accept(1);
+            time.Advance(options.ErrorBackoff);
+            await store.WaitForEmptyAsync(SignalTimeout);
+        }
+        finally
+        {
+            await relay.StopAsync(CancellationToken.None).WaitAsync(SignalTimeout);
+        }
+    }
+
+    [Test]
     public async Task FruitlessFailures_BackOffExponentiallyWithJitter_AndKeepTheLeases()
     {
         const int failures = 14;

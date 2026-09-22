@@ -58,9 +58,11 @@ public sealed partial class OutboxRelayService : BackgroundService
     // still-failing head once more.
     private readonly int[] _headRowFailures;
     private readonly Guid[] _headRowMessageIds;
-    // When the head row of each bucket last failed. A failing bucket waits out ErrorBackoff on
-    // its own, so the other buckets keep draining at full speed in the meantime.
+    // When the head row of each bucket last failed, and how long the bucket waits before its
+    // retry. A failing bucket waits on its own, so the other buckets keep draining at full
+    // speed in the meantime.
     private readonly long[] _headRowFailedAt;
+    private readonly TimeSpan[] _headRowBackoff;
     // Cycles in a row that failed without publishing anything. Drives the error backoff.
     private int _fruitlessCycles;
     // Seeded from the relay id: relays back off out of step with each other, and one relay
@@ -117,6 +119,7 @@ public sealed partial class OutboxRelayService : BackgroundService
         _headRowFailures = new int[options.BucketCount];
         _headRowMessageIds = new Guid[options.BucketCount];
         _headRowFailedAt = new long[options.BucketCount];
+        _headRowBackoff = new TimeSpan[options.BucketCount];
         _backoffJitter = new Random(StableSeed(options.RelayId));
         if (notifier is OutboxNotifier)
         {
@@ -232,6 +235,11 @@ public sealed partial class OutboxRelayService : BackgroundService
                         untilPoll -= _timeProvider.GetElapsedTime(_probeTimestamp);
                     var delay = _ownedBuckets.Count == 0 || untilRenewal < untilPoll
                         ? untilRenewal : untilPoll;
+                    // A bucket backing off from a rejected row is retried when its own backoff
+                    // ends. The wait stays the idle one, so a commit to any other bucket still
+                    // ends it at once.
+                    if (cycle.RetryAfter > TimeSpan.Zero && cycle.RetryAfter < delay)
+                        delay = cycle.RetryAfter;
                     if (delay <= TimeSpan.Zero)
                         continue;
                     if (_notifier is null)
@@ -293,15 +301,8 @@ public sealed partial class OutboxRelayService : BackgroundService
             return floor;
 
         var failures = ++_fruitlessCycles;
-        var cap = _options.LeaseRenewInterval;
-        if (failures <= 1 || cap <= floor)
-            return floor;
-
-        // The shift is bounded so the ceiling cannot overflow before it is capped.
-        var doublings = Math.Min(failures - 1, 30);
-        var ceilingTicks = floor.Ticks > (cap.Ticks >> doublings) ? cap.Ticks : floor.Ticks << doublings;
-        var backoff = floor + TimeSpan.FromTicks((long)((ceilingTicks - floor.Ticks) * _backoffJitter.NextDouble()));
-        if (_ownedBuckets.Count == 0)
+        var backoff = JitteredBackoff(failures);
+        if (failures <= 1 || _ownedBuckets.Count == 0)
             return backoff;
 
         // The ceiling is a whole renew interval, but the kept leases are already part of the
@@ -311,6 +312,24 @@ public sealed partial class OutboxRelayService : BackgroundService
         if (untilRenewal >= backoff)
             return backoff;
         return untilRenewal > floor ? untilRenewal : floor;
+    }
+
+    /// <summary>
+    /// <see cref="OutboxRelayOptions.ErrorBackoff"/> after the first failure. After each
+    /// further one the ceiling doubles, up to <see cref="OutboxRelayOptions.LeaseRenewInterval"/>,
+    /// and the delay is a random time between the configured backoff and that ceiling.
+    /// </summary>
+    private TimeSpan JitteredBackoff(int failures)
+    {
+        var floor = _options.ErrorBackoff;
+        var cap = _options.LeaseRenewInterval;
+        if (failures <= 1 || cap <= floor)
+            return floor;
+
+        // The shift is bounded so the ceiling cannot overflow before it is capped.
+        var doublings = Math.Min(failures - 1, 30);
+        var ceilingTicks = floor.Ticks > (cap.Ticks >> doublings) ? cap.Ticks : floor.Ticks << doublings;
+        return floor + TimeSpan.FromTicks((long)((ceilingTicks - floor.Ticks) * _backoffJitter.NextDouble()));
     }
 
     private static int StableSeed(string relayId)
@@ -399,6 +418,7 @@ public sealed partial class OutboxRelayService : BackgroundService
             var publishedAny = false;
             var hadError = false;
             var backingOff = false;
+            var retryAfter = TimeSpan.MaxValue;
             var generation = _leaseGeneration;
             var pendingCount = _pendingBucketCount;
             var retainedCount = 0;
@@ -422,12 +442,17 @@ public sealed partial class OutboxRelayService : BackgroundService
                 // Keep bucket draining in the cycle state machine. A pending publisher
                 // needs one suspension instead of a second pooled async operation.
                 var bucket = _pendingBuckets[bucketIndex];
-                if (_headRowFailures[bucket] > 0
-                    && _timeProvider.GetElapsedTime(_headRowFailedAt[bucket]) < _options.ErrorBackoff)
+                if (_headRowFailures[bucket] > 0)
                 {
-                    _pendingBuckets[retainedCount++] = bucket;
-                    backingOff = true;
-                    continue;
+                    var backoffLeft = _headRowBackoff[bucket] - _timeProvider.GetElapsedTime(_headRowFailedAt[bucket]);
+                    if (backoffLeft > TimeSpan.Zero)
+                    {
+                        _pendingBuckets[retainedCount++] = bucket;
+                        backingOff = true;
+                        if (backoffLeft < retryAfter)
+                            retryAfter = backoffLeft;
+                        continue;
+                    }
                 }
 
                 // One batch per bucket per sweep when multiple buckets are owned.
@@ -633,11 +658,17 @@ public sealed partial class OutboxRelayService : BackgroundService
 
                         // A row Kafka rejects backs off its own bucket only. Pacing the whole
                         // relay by it would drain every healthy bucket at one batch per
-                        // ErrorBackoff for as long as that row keeps failing.
+                        // ErrorBackoff for as long as that row keeps failing. The bucket's
+                        // backoff grows with the row's failures as the relay's does, so a
+                        // broker that rejects every bucket is still retried less and less often.
                         RecordHeadRowFailure(bucket, batch[result.AckedCount], result.FirstError, batch.Count - result.AckedCount);
+                        var backoff = JitteredBackoff(_headRowFailures[bucket]);
                         _headRowFailedAt[bucket] = _timeProvider.GetTimestamp();
+                        _headRowBackoff[bucket] = backoff;
                         _pendingBuckets[retainedCount++] = bucket;
                         backingOff = true;
+                        if (backoff < retryAfter)
+                            retryAfter = backoff;
                         break;
                     }
 
@@ -666,13 +697,19 @@ public sealed partial class OutboxRelayService : BackgroundService
 
             // A legacy store may rebalance during PreparePublishLeaseAsync. Never carry
             // readiness from an earlier ownership epoch into the next sweep.
-            // A cycle that only met buckets backing off waits like a failed one, and rediscovers
-            // after the wait as a failed one does.
-            var failed = hadError || (backingOff && !publishedAny);
-            _pendingBucketCount = !failed && generation == _leaseGeneration ? retainedCount : 0;
-            if (failed)
+            _pendingBucketCount = !hadError && generation == _leaseGeneration ? retainedCount : 0;
+            if (hadError)
                 _discoveryRequired = true;
-            return new CycleResult(publishedAny, failed);
+            if (hadError || publishedAny || !backingOff)
+                return new CycleResult(publishedAny, hadError);
+
+            // Only buckets backing off from a rejected row are left. That is not a relay-wide
+            // failure: the relay idles until the earliest of their retries, and a commit to
+            // any other bucket still wakes it. They stay ready, so the retry needs no probe,
+            // but a notifier that names no bucket finds new work only by probing.
+            if (_notifier is not OutboxNotifier)
+                _discoveryRequired = true;
+            return new CycleResult(PublishedAny: false, HadError: false, retryAfter);
         }
         finally
         {
@@ -796,7 +833,11 @@ public sealed partial class OutboxRelayService : BackgroundService
 
     private TimeSpan LeaseAge() => _timeProvider.GetElapsedTime(_leaseTimestamp);
 
-    private readonly record struct CycleResult(bool PublishedAny, bool HadError);
+    /// <param name="RetryAfter">
+    /// When positive, the time until the earliest bucket backing off from a rejected row is
+    /// due for its retry. The idle wait after the cycle ends no later than that.
+    /// </param>
+    private readonly record struct CycleResult(bool PublishedAny, bool HadError, TimeSpan RetryAfter = default);
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Outbox relay {RelayId} started with {BucketCount} bucket(s)")]
     private partial void LogRelayStarted(string relayId, int bucketCount);
