@@ -3803,8 +3803,15 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         continue;
                     }
 
+                    // Every error the producer's transaction state treats as fatal (a fence, or a
+                    // transactional-ID, cluster or producer-ID-mapping authorization failure) fails
+                    // the batch with the fatal transaction exception, so the caller sees the same
+                    // category as every later operation. Error path only.
                     KafkaException failureException = transactionalStampRejected
-                        ? CreateTransactionalStampRejectedException(
+                        || (_options.TransactionalId is not null
+                            && TransactionErrorClassifier.ClassifyFailedBatch(partitionResponse.ErrorCode)
+                                == TransactionErrorClassification.Fatal)
+                        ? CreateTransactionalBatchFailureException(
                             partitionResponse.ErrorCode, expectedTopic, expectedPartition, batch)
                         : partitionResponse.ErrorCode == ErrorCode.MessageTooLarge
                         ? new ProduceException(partitionResponse.ErrorCode,
@@ -6121,7 +6128,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         catch (Exception ackEx) { LogBatchCleanupStepFailed(ackEx, _brokerId); }
     }
 
-    private TransactionException CreateTransactionalStampRejectedException(
+    private TransactionException CreateTransactionalBatchFailureException(
         ErrorCode errorCode,
         string topic,
         int partition,
@@ -6140,8 +6147,20 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     errorCode, topic, partition, _options.TransactionalId);
             }
 
-            return new FatalTransactionException(errorCode,
-                $"Produce to {topic}-{partition} failed: {errorCode}. The producer has been fenced and must be closed.")
+            if (errorCode == ErrorCode.ProducerFenced)
+            {
+                return new FatalTransactionException(errorCode,
+                    $"Produce to {topic}-{partition} failed: {errorCode}. The producer has been fenced and must be closed.")
+                {
+                    TransactionalId = _options.TransactionalId
+                };
+            }
+
+            // An authorization or producer-ID-mapping failure: keep the typed broker error
+            // (for example AuthorizationException) as the cause.
+            var message = $"Produce to {topic}-{partition} failed: {errorCode}. The producer must be closed.";
+            return new FatalTransactionException(errorCode, message,
+                KafkaException.FromErrorCode(errorCode, message))
             {
                 TransactionalId = _options.TransactionalId
             };

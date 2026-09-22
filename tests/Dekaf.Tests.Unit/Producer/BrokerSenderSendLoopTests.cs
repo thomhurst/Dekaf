@@ -1541,6 +1541,76 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
     }
 
     /// <summary>
+    /// A produce error that the producer's transaction state treats as fatal, other than a fence,
+    /// must reach the caller as the fatal transaction exception too, with the typed broker error
+    /// kept as its cause. Before, these fell through to <c>KafkaException.FromErrorCode</c>, so
+    /// the caller saw an authorization error for a producer that had already become fatal.
+    /// </summary>
+    [Test]
+    [Arguments(ErrorCode.TransactionalIdAuthorizationFailed, true)]
+    [Arguments(ErrorCode.ClusterAuthorizationFailed, true)]
+    [Arguments(ErrorCode.InvalidProducerIdMapping, false)]
+    [Timeout(30_000)]
+    public async Task SendLoop_TransactionalFatalProduceError_FailsBatchWithFatalTransactionException(
+        ErrorCode errorCode,
+        bool authorizationCause,
+        CancellationToken cancellationToken)
+    {
+        var response = new TaskCompletionSource<ProduceResponse>();
+        var responses = new Queue<TaskCompletionSource<ProduceResponse>>([response]);
+        var sent = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var sendCount = 0;
+        var (pool, _) = CreateMockConnection(responses, () =>
+        {
+            Interlocked.Increment(ref sendCount);
+            sent.TrySetResult();
+        });
+        cancellationToken = GuardUnscriptedSends(cancellationToken);
+        var options = CreateOptions(
+            retryBackoffMs: 0,
+            retryBackoffMaxMs: 0,
+            transactionalId: "test-transaction");
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var acknowledged = new TaskCompletionSource<Exception?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var sender = CreateSender(
+            pool,
+            options,
+            accumulator,
+            (_, _, _, _, exception) => acknowledged.TrySetResult(exception),
+            produceApiVersion: ProduceRequest.ImplicitTransactionPartitionEnrollmentVersion,
+            isTransactional: true,
+            usesTransactionV2: true);
+        accumulator.OnTransactionalBatchFailed = static (_, _, _, _) => true;
+
+        try
+        {
+            var batch = CreateTestBatch(
+                valueTaskSourcePool, "test-topic", partition: 0, failureObserver: accumulator);
+            batch.RecordBatch.ProducerId = 4242;
+            batch.RecordBatch.ProducerEpoch = 7;
+            sender.Enqueue(batch);
+            await sent.Task.WaitAsync(cancellationToken);
+            response.SetResult(CreateErrorResponse("test-topic", partition: 0, errorCode));
+
+            var exception = await acknowledged.Task.WaitAsync(cancellationToken);
+            await Assert.That(exception).IsTypeOf<FatalTransactionException>();
+            var fatal = (FatalTransactionException)exception!;
+            await Assert.That(fatal.ErrorCode).IsEqualTo(errorCode);
+            await Assert.That(fatal.TransactionalId).IsEqualTo("test-transaction");
+            if (authorizationCause)
+                await Assert.That(fatal.InnerException).IsTypeOf<AuthorizationException>();
+            await Assert.That(Volatile.Read(ref sendCount)).IsEqualTo(1);
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
+    /// <summary>
     /// An abort bumped the producer epoch while the batch was in flight, so the broker's
     /// ProducerFenced answers the old stamp of a transaction that has already ended. The producer
     /// ignores that report and stays usable, so the caller must not be told to close it: the batch

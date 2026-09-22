@@ -541,6 +541,11 @@ public sealed class FatalTransactionException : TransactionException
     public FatalTransactionException(ErrorCode errorCode, string message) : base(errorCode, message)
     {
     }
+
+    internal FatalTransactionException(ErrorCode errorCode, string message, Exception innerException)
+        : base(errorCode, message, innerException)
+    {
+    }
 }
 
 /// <summary>
