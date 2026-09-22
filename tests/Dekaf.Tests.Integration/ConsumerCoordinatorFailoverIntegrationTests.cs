@@ -377,6 +377,78 @@ public sealed class ConsumerCoordinatorFailoverIntegrationTests(RackAwareKafkaCo
     }
 
     /// <summary>
+    /// Admin reads issued right after a group coordinator is SIGKILLed. Cluster metadata keeps
+    /// naming the dead broker for several seconds, so the coordinator lookup and the describe
+    /// request fail at the transport. They must retry for the API timeout instead of three quick
+    /// attempts ending in a raw <see cref="System.Net.Sockets.SocketException"/>.
+    /// </summary>
+    [Test]
+    [Timeout(240_000)]
+    public async Task CoordinatorCrash_AdminReadsInsideStaleMetadataWindow_Succeed(
+        CancellationToken cancellationToken)
+    {
+        var groupId = $"coordinator-crash-admin-{Guid.NewGuid():N}";
+        var (topic, expectedCoordinatorId) = await CreateScenarioAsync(groupId, cancellationToken)
+            .ConfigureAwait(false);
+        int? crashedBrokerId = null;
+
+        await using var consumer = await CreateConsumerAsync(groupId, listener: null, cancellationToken)
+            .ConfigureAwait(false);
+        consumer.Subscribe(topic);
+        // Built and used before the crash, so its metadata and connections name the coordinator.
+        await using var admin = kafka.CreateAdminClient();
+
+        try
+        {
+            await ProduceRangeAsync(topic, startPerPartition: 0, MessagesPerPartition, cancellationToken)
+                .ConfigureAwait(false);
+            var nextOffsets = new Dictionary<int, long>();
+            using (var drain = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
+            {
+                drain.CancelAfter(ConvergenceTimeout);
+                var consumed = 0;
+                while (consumed < MessageCount)
+                {
+                    var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(2), drain.Token)
+                        .ConfigureAwait(false);
+                    if (result is not { } record)
+                        continue;
+
+                    nextOffsets[record.Partition] = record.Offset + 1;
+                    consumed++;
+                }
+            }
+
+            await consumer.CommitAsync(
+                    nextOffsets.Select(pair => new TopicPartitionOffset(topic, pair.Key, pair.Value)).ToArray(),
+                    cancellationToken)
+                .ConfigureAwait(false);
+            _ = await admin.DescribeConsumerGroupsAsync([groupId], cancellationToken).ConfigureAwait(false);
+
+            crashedBrokerId = await kafka.GetGroupCoordinatorIdAsync(groupId, cancellationToken)
+                .ConfigureAwait(false);
+            AssertExpectedCoordinator(crashedBrokerId.Value, expectedCoordinatorId);
+            await kafka.KillBrokerAsync(crashedBrokerId.Value, cancellationToken).ConfigureAwait(false);
+
+            // No wait for the coordinator to move: the reads start inside the window.
+            var groups = await admin.DescribeConsumerGroupsAsync([groupId], cancellationToken)
+                .ConfigureAwait(false);
+            if (!groups.ContainsKey(groupId))
+                throw new InvalidOperationException($"DescribeConsumerGroups did not return group {groupId}.");
+
+            await AssertCommittedOffsetsAsync(topic, groupId, cancellationToken).ConfigureAwait(false);
+
+            await kafka.StartBrokerAsync(crashedBrokerId.Value, cancellationToken).ConfigureAwait(false);
+            crashedBrokerId = null;
+        }
+        finally
+        {
+            if (crashedBrokerId is { } brokerId)
+                await kafka.StartBrokerAsync(brokerId, CancellationToken.None).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
     /// A second member joins right after the coordinator is SIGKILLed. Unlike the surviving
     /// member, whose assignment is unchanged, the new member must initialize positions from the
     /// group's committed offsets (OffsetFetch) once it is assigned partitions. It must start at
