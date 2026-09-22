@@ -1661,6 +1661,10 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
                 NotifyBrokerCountDiscovered(response.Brokers.Count);
 
+                // The endpoint that answered the rebootstrap replaces the one that failed or
+                // asked for it; otherwise the next refresh would try the stale endpoint first.
+                RecordRespondingEndpoint(host, port);
+
                 // Success - reset the rebootstrap timer
                 ResetAllBrokersUnavailableTimestamp();
 

@@ -1891,4 +1891,90 @@ public class MetadataManagerTests
         await Assert.That(Volatile.Read(ref silentAttempts)).IsEqualTo(attemptsAfterInitialize);
         await Assert.That(stopwatch.Elapsed).IsLessThan(setupTimeout);
     }
+
+    // A rebootstrap that succeeds through another endpoint must move the preference there.
+    // Otherwise the endpoint that asked for the rebootstrap stays first, and every later
+    // refresh asks it again and triggers another rebootstrap.
+    [Test]
+    [Timeout(30_000)]
+    public async Task RefreshMetadataAsync_AfterRebootstrapThroughAnotherBroker_LaterRefreshesStartThere(
+        CancellationToken cancellationToken)
+    {
+        var misroutedBrokerRequests = 0;
+        var brokerZeroMisrouted = false;
+        var brokerZero = CreateRespondingConnection(0, "10.0.0.1", 9092, () =>
+        {
+            Interlocked.Increment(ref misroutedBrokerRequests);
+            return Volatile.Read(ref brokerZeroMisrouted)
+                ? new MetadataResponse
+                {
+                    ErrorCode = ErrorCode.RebootstrapRequired,
+                    Brokers = [],
+                    Topics = []
+                }
+                : CreateMetadataResponse((0, "10.0.0.1", 9092), (1, "10.0.0.2", 9093));
+        });
+        var brokerOne = CreateRespondingConnection(1, "10.0.0.2", 9093,
+            () => CreateMetadataResponse((0, "10.0.0.1", 9092), (1, "10.0.0.2", 9093)));
+        await using var pool = new ConnectionPool(
+            "metadata-rebootstrap-preference-test",
+            new ConnectionOptions(),
+            connectionsPerBroker: 1,
+            connectionFactory: (_, host, _, _, _) =>
+                ValueTask.FromResult(host == "10.0.0.1" ? brokerZero : brokerOne));
+        await using var manager = new MetadataManager(
+            pool,
+            ["10.0.0.1:9092", "10.0.0.2:9093"],
+            new MetadataOptions
+            {
+                EnableBackgroundRefresh = false,
+                MetadataRecoveryStrategy = MetadataRecoveryStrategy.Rebootstrap
+            });
+
+        await manager.InitializeAsync(cancellationToken);
+        Volatile.Write(ref brokerZeroMisrouted, true);
+
+        // Broker 0 answered last, so it is asked first; it requests a rebootstrap, which it
+        // refuses again, and broker 1 completes the rebootstrap.
+        await manager.RefreshMetadataAsync(cancellationToken);
+        var requestsAfterRebootstrap = Volatile.Read(ref misroutedBrokerRequests);
+
+        await manager.RefreshMetadataAsync(cancellationToken);
+
+        await Assert.That(Volatile.Read(ref misroutedBrokerRequests)).IsEqualTo(requestsAfterRebootstrap);
+    }
+
+    private static IKafkaConnection CreateRespondingConnection(
+        int brokerId,
+        string host,
+        int port,
+        Func<MetadataResponse> metadataResponse)
+    {
+        var connection = Substitute.For<IKafkaConnection>();
+        connection.IsConnected.Returns(true);
+        connection.BrokerId.Returns(brokerId);
+        connection.Host.Returns(host);
+        connection.Port.Returns(port);
+        connection.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
+                Arg.Any<ApiVersionsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new ApiVersionsResponse
+            {
+                ErrorCode = ErrorCode.None,
+                ApiKeys =
+                [
+                    new ApiVersion(
+                        ApiKey.Metadata,
+                        MetadataRequest.LowestSupportedVersion,
+                        MetadataRequest.HighestSupportedVersion)
+                ]
+            });
+        connection.SendAsync<MetadataRequest, MetadataResponse>(
+                Arg.Any<MetadataRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ => metadataResponse());
+        return connection;
+    }
 }
