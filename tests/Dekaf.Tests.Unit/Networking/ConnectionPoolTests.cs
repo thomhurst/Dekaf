@@ -1072,9 +1072,13 @@ public sealed class ConnectionPoolTests
 
         // The pool's disposal, not the semaphore's.
         await Assert.That(exception!.ObjectName).IsEqualTo(nameof(ConnectionPool));
-        await Assert.That(created.Count).IsEqualTo(2);
-        foreach (var connection in created)
-            await Assert.That(connection.DisposeCount).IsGreaterThanOrEqualTo(1);
+
+        // Disposal ends the scale-up without waiting for its factories, so the connections they
+        // return late are disposed as they arrive.
+        using var lateDisposalDeadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        lateDisposalDeadline.CancelAfter(TimeSpan.FromSeconds(5));
+        while (created.Count < 2 || created.Any(static connection => connection.DisposeCount == 0))
+            await Task.Delay(10, lateDisposalDeadline.Token);
     }
 
     // A scale-up that published after disposal began, but before CloseAllAsync walked the groups,
@@ -2596,6 +2600,70 @@ public sealed class ConnectionPoolTests
         }
 
         await pool.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
+    }
+
+    // Group setup (creation, scale-up, slot replacement) must end on pool disposal like the
+    // single-connection path, not leave an uncancellable caller parked until the setup timeout.
+    [Test]
+    [Arguments(GroupSetupPath.Create)]
+    [Arguments(GroupSetupPath.ScaleUp)]
+    [Arguments(GroupSetupPath.ReplaceSlot)]
+    public async Task DisposeAsync_CancelsAnUncancellableCallersConnectionGroupSetup(GroupSetupPath path)
+    {
+        var factoryEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var blockSetups = path != GroupSetupPath.ReplaceSlot;
+        var pool = new ConnectionPool(
+            clientId: "test-client",
+            connectionOptions: new ConnectionOptions
+            {
+                ConnectionTimeout = TimeSpan.FromSeconds(30),
+                ConnectionTimeoutMax = TimeSpan.FromSeconds(60),
+                ReconnectBackoff = TimeSpan.Zero,
+                ReconnectBackoffMax = TimeSpan.Zero
+            },
+            connectionsPerBroker: path == GroupSetupPath.ScaleUp ? 1 : 2,
+            connectionFactory: async (brokerId, host, port, _, cancellationToken) =>
+            {
+                if (!Volatile.Read(ref blockSetups))
+                    return CreateConnectedConnection(brokerId, host, port);
+
+                // A black-holed handshake: the setup only ends when its token is cancelled.
+                factoryEntered.TrySetResult();
+                await Task.Delay(Timeout.Infinite, cancellationToken);
+                throw new InvalidOperationException("unreachable");
+            },
+            randomDouble: static () => 0.5);
+        pool.RegisterBroker(0, "broker-a", 9092);
+
+        Task connect;
+        switch (path)
+        {
+            case GroupSetupPath.Create:
+                connect = pool.GetConnectionAsync(0, CancellationToken.None).AsTask();
+                break;
+            case GroupSetupPath.ScaleUp:
+                connect = pool.ScaleConnectionGroupAsync(0, 2, CancellationToken.None).AsTask();
+                break;
+            default:
+                var stale = await pool.GetConnectionByIndexAsync(0, 1, CancellationToken.None);
+                stale.IsConnected.Returns(false);
+                Volatile.Write(ref blockSetups, true);
+                connect = pool.GetConnectionByIndexAsync(0, 1, CancellationToken.None).AsTask();
+                break;
+        }
+        await factoryEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        await pool.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5));
+
+        await Assert.That(async () => await connect.WaitAsync(TimeSpan.FromSeconds(5)))
+            .Throws<ObjectDisposedException>();
+    }
+
+    public enum GroupSetupPath
+    {
+        Create,
+        ScaleUp,
+        ReplaceSlot
     }
 
     [Test]

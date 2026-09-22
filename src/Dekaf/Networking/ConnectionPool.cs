@@ -589,7 +589,7 @@ public sealed partial class ConnectionPool :
         // KIP-601 progression is per broker setup round, not per physical connection.
         // Every sibling uses one jittered snapshot; the outer catch advances it once.
         var setupTimeout = GetConnectionSetupTimeout(setupKey);
-        using var setupRoundCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        using var setupRoundCts = CreateSetupTokenSource(cancellationToken);
         var setupRoundToken = setupRoundCts.Token;
 
         var success = false;
@@ -697,7 +697,7 @@ public sealed partial class ConnectionPool :
         throw new ObjectDisposedException(nameof(ConnectionPool));
     }
 
-    private static async ValueTask WaitForConnectionGroupSetupAsync(
+    private async ValueTask WaitForConnectionGroupSetupAsync(
         Task<IKafkaConnection>[] tasks,
         TimeSpan operationTimeout,
         CancellationTokenSource setupRoundCts,
@@ -708,14 +708,20 @@ public sealed partial class ConnectionPool :
     {
         try
         {
+            // The round token carries pool disposal as well as the caller's cancellation, so
+            // disposal ends the wait instead of leaving the caller parked until the timeout.
             await Task.WhenAll(tasks)
-                .WaitAsync(operationTimeout, cancellationToken)
+                .WaitAsync(operationTimeout, setupRoundCts.Token)
                 .ConfigureAwait(false);
         }
         catch (TimeoutException)
         {
             setupRoundCts.Cancel();
             throw CreateConnectionSetupTimeoutException(operationTimeout, brokerId, host, port);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && Volatile.Read(ref _disposed) != 0)
+        {
+            throw new ObjectDisposedException(nameof(ConnectionPool));
         }
     }
 
@@ -757,7 +763,7 @@ public sealed partial class ConnectionPool :
             var setupKey = new ConnectionSetupKey(brokerId, brokerInfo.Host, brokerInfo.Port);
             // Scale-up is one logical setup round even when it creates several siblings.
             var setupTimeout = GetConnectionSetupTimeout(setupKey);
-            using var setupRoundCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            using var setupRoundCts = CreateSetupTokenSource(cancellationToken);
             var setupRoundToken = setupRoundCts.Token;
 
             var tasks = new Task<IKafkaConnection>[additionalCount];
@@ -797,7 +803,7 @@ public sealed partial class ConnectionPool :
             {
                 // Close any successfully created connections to avoid leaking TCP handles.
                 await DisposeCompletedTaskConnectionsAsync(tasks).ConfigureAwait(false);
-                if (!cancellationToken.IsCancellationRequested)
+                if (!cancellationToken.IsCancellationRequested && ex is not ObjectDisposedException)
                     RecordConnectionAttemptFailure(
                         setupKey, brokerId, brokerInfo.Host, brokerInfo.Port, ex.Message);
                 throw;
@@ -924,9 +930,8 @@ public sealed partial class ConnectionPool :
     {
         var timeout = _connectionOptions.ConnectionTimeoutMax;
         using var timeoutCts = new CancellationTokenSource(timeout);
-        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(
-            cancellationToken,
-            timeoutCts.Token);
+        // Pool disposal ends the replacement like a caller cancel (see GetOrCreateConnectionAsync).
+        using var linkedCts = CreateSetupTokenSource(cancellationToken, timeoutCts.Token);
         try
         {
             return await ReplaceConnectionInGroupCoreAsync(
@@ -936,6 +941,10 @@ public sealed partial class ConnectionPool :
                     linkedCts.Token,
                     cancellationToken)
                 .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && Volatile.Read(ref _disposed) != 0)
+        {
+            throw new ObjectDisposedException(nameof(ConnectionPool));
         }
         catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
         {
@@ -1228,13 +1237,26 @@ public sealed partial class ConnectionPool :
                     cancellationToken)
                 .ConfigureAwait(false);
         }
-        catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested && Volatile.Read(ref _disposed) != 0)
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && Volatile.Read(ref _disposed) != 0)
         {
-            throw new ObjectDisposedException(nameof(ConnectionPool), ex);
+            throw new ObjectDisposedException(nameof(ConnectionPool));
         }
         catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
         {
             throw CreateConnectionOperationTimeoutException(timeout, brokerId, host, port);
+        }
+    }
+
+    private CancellationTokenSource CreateSetupTokenSource(CancellationToken cancellationToken)
+    {
+        try
+        {
+            return CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _disposeCts.Token);
+        }
+        catch (ObjectDisposedException)
+        {
+            // DisposeAsync finished (and disposed _disposeCts) after the caller's _disposed check.
+            throw new ObjectDisposedException(nameof(ConnectionPool));
         }
     }
 
