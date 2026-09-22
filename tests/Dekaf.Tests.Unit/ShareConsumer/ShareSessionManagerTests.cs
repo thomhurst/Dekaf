@@ -134,10 +134,13 @@ public class ShareSessionManagerTests
     public async Task IncrementAtMaxValue_WrapsToOne()
     {
         var manager = new ShareSessionManager();
-        var epochs = (System.Collections.Concurrent.ConcurrentDictionary<int, int>)typeof(ShareSessionManager)
+        manager.IncrementEpoch(brokerId: 1);
+        var epochs = (System.Collections.IDictionary)typeof(ShareSessionManager)
             .GetField("_sessionEpochs", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
             .GetValue(manager)!;
-        epochs[1] = int.MaxValue;
+        var slot = epochs[1]!;
+        slot.GetType().GetField("Epoch")!.SetValue(slot, int.MaxValue);
+        await Assert.That(manager.GetSessionEpoch(brokerId: 1)).IsEqualTo(int.MaxValue);
 
         manager.IncrementEpoch(brokerId: 1);
 

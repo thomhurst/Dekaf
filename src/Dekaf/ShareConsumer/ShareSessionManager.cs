@@ -15,7 +15,9 @@ namespace Dekaf.ShareConsumer;
 /// </summary>
 internal sealed class ShareSessionManager
 {
-    private readonly ConcurrentDictionary<int, int> _sessionEpochs = new();
+    // One slot per broker, kept across resets: reads and updates of a known broker are lock-free
+    // and allocation-free. A slot is only allocated the first time a broker is seen.
+    private readonly ConcurrentDictionary<int, EpochSlot> _sessionEpochs = new();
 
     /// <summary>
     /// Gets the current session epoch for a broker.
@@ -23,7 +25,7 @@ internal sealed class ShareSessionManager
     /// </summary>
     internal int GetSessionEpoch(int brokerId)
     {
-        return _sessionEpochs.GetValueOrDefault(brokerId, 0);
+        return _sessionEpochs.TryGetValue(brokerId, out var slot) ? Volatile.Read(ref slot.Epoch) : 0;
     }
 
     /// <summary>
@@ -32,10 +34,9 @@ internal sealed class ShareSessionManager
     /// </summary>
     internal void IncrementEpoch(int brokerId)
     {
-        _sessionEpochs.AddOrUpdate(
-            brokerId,
-            1,
-            static (_, epoch) => epoch == int.MaxValue ? 1 : epoch + 1);
+        var slot = _sessionEpochs.GetOrAdd(brokerId, static _ => new EpochSlot());
+        var epoch = Volatile.Read(ref slot.Epoch);
+        Volatile.Write(ref slot.Epoch, epoch == int.MaxValue ? 1 : epoch + 1);
     }
 
     /// <summary>
@@ -45,7 +46,8 @@ internal sealed class ShareSessionManager
     /// </summary>
     internal void ResetSession(int brokerId)
     {
-        _sessionEpochs.TryRemove(brokerId, out _);
+        if (_sessionEpochs.TryGetValue(brokerId, out var slot))
+            Volatile.Write(ref slot.Epoch, 0);
     }
 
     /// <summary>
@@ -59,5 +61,10 @@ internal sealed class ShareSessionManager
     internal void ResetAll()
     {
         _sessionEpochs.Clear();
+    }
+
+    private sealed class EpochSlot
+    {
+        public int Epoch;
     }
 }
