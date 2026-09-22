@@ -17,9 +17,9 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 /// true passes a captured generation through a delegate bound once in setup: on a revision whose
 /// <c>AppendAsync</c> takes <c>transactionalGeneration</c> it binds that overload, otherwise it
 /// binds a non-capturing wrapper around the older overload, so both revisions build this source
-/// and the comparison shows what the generation check costs. A background drainer recycles sealed
-/// batches, so pooled arenas, ready batches and value buffers are reused; nothing is set up per
-/// iteration.
+/// and the comparison shows what the generation check costs. A background drainer recycles
+/// published batches, so pooled arenas, ready batches and value buffers are reused; nothing is set
+/// up per iteration.
 /// </para>
 /// </summary>
 [MemoryDiagnoser]
@@ -153,12 +153,18 @@ public class PooledAppendCommitBenchmarks
         append.AsTask().GetAwaiter().GetResult();
     }
 
+    /// <summary>
+    /// Recycles only published batches (<c>TryDrainPublishedBatch</c>, which exists on main too):
+    /// the deque-polling drain can take a batch before the sealing thread's last touch
+    /// (<c>StartPreSerialization</c>) and return it to the pool under it. The drainer allocates
+    /// nothing per batch, which matters because MemoryDiagnoser counts every thread.
+    /// </summary>
     private void DrainLoop(CancellationToken cancellationToken)
     {
         var spinner = new SpinWait();
         while (!cancellationToken.IsCancellationRequested)
         {
-            if (_accumulator.TryDrainBatch(out var batch))
+            if (_accumulator.TryDrainPublishedBatch(out var batch))
             {
                 _accumulator.OnBatchExitsPipeline(batch);
                 _accumulator.ReleaseMemory(batch.DataSize);

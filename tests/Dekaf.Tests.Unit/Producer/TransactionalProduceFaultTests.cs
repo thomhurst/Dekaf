@@ -423,6 +423,138 @@ public sealed class TransactionalProduceFaultTests
         await Assert.That(sentAfterRelease[0].BaseSequence).IsEqualTo(0);
     }
 
+    /// <summary>
+    /// A produce passes its admission check and then blocks in a synchronous serializer (or an
+    /// interceptor) for the whole abort: close, purge, EndTxn and reopen. The generation read at
+    /// admission reaches the accumulator's commit point, so the record is rejected with
+    /// TransactionAborted instead of being appended after appends reopen and sent outside the
+    /// aborted transaction. Covers the awaited ProduceAsync fast path and the FireAsync path, with
+    /// the block in the serializer or in a serializer preparer (IAsyncSerializerPreparer) that
+    /// completes synchronously.
+    /// </summary>
+    [Test]
+    [Arguments(false, false)]
+    [Arguments(true, false)]
+    [Arguments(false, true)]
+    [Arguments(true, true)]
+    [Timeout(60_000)]
+    public async Task AbortAsync_ProduceBlockedInASynchronousSerializerAcrossTheAbort_FailsAndIsNeverSent(
+        bool fireAndForget,
+        bool blockInPreparer,
+        CancellationToken cancellationToken)
+    {
+        using var serializer = blockInPreparer
+            ? new BlockingPreparedStringSerializer(heldValue: "admitted-before-abort")
+            : new BlockingStringSerializer(heldValue: "admitted-before-abort");
+        await using var harness = await TransactionalProduceHarness.CreateAsync(
+            transactionVersion: 2,
+            produceError: static (_, _) => ErrorCode.None,
+            valueSerializer: serializer);
+
+        var aborted = harness.Producer.BeginTransaction();
+        var stale = new ProducerMessage<string, string>
+        {
+            Topic = Topic,
+            Key = "key",
+            Value = "admitted-before-abort",
+            Partition = 0
+        };
+        var delivery = new TaskCompletionSource<Exception?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var produce = Task.Run(async () =>
+        {
+            if (fireAndForget)
+            {
+                await harness.Producer.FireAsync(stale, (_, error) => delivery.TrySetResult(error));
+                return;
+            }
+
+            try
+            {
+                await aborted.ProduceAsync(stale, cancellationToken);
+                delivery.TrySetResult(null);
+            }
+            catch (Exception ex)
+            {
+                delivery.TrySetResult(ex);
+            }
+        }, cancellationToken);
+        await serializer.Entered.WaitAsync(cancellationToken);
+
+        await aborted.AbortAsync(cancellationToken);
+        await aborted.DisposeAsync();
+        var sentBeforeRelease = harness.Broker.ProducedBatches.Count;
+
+        serializer.Release();
+        await produce.WaitAsync(cancellationToken);
+        var error = await delivery.Task.WaitAsync(cancellationToken);
+        await Assert.That(error).IsTypeOf<ProduceException>();
+        await Assert.That(((ProduceException)error!).Kind).IsEqualTo(ProduceErrorKind.TransactionAborted);
+
+        await harness.CommitOneRecordAsync(partition: 0, cancellationToken);
+        var sentAfterRelease = harness.Broker.ProducedBatches.Skip(sentBeforeRelease).ToArray();
+        await Assert.That(sentAfterRelease.Length).IsEqualTo(1);
+        await Assert.That(sentAfterRelease[0].RecordCount).IsEqualTo(1);
+    }
+
+    /// <summary>A synchronous UTF-8 string serializer that blocks on one value until released.</summary>
+    private class BlockingStringSerializer(string heldValue) : ISerializer<string>, IDisposable
+    {
+        private readonly ManualResetEventSlim _release = new();
+        private readonly TaskCompletionSource _entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task Entered => _entered.Task;
+
+        protected virtual bool BlocksInSerialize => true;
+
+        public void Release() => _release.Set();
+
+        public void Dispose()
+        {
+            _release.Set();
+            _release.Dispose();
+        }
+
+        protected void BlockIfHeld(string value)
+        {
+            if (value != heldValue)
+                return;
+
+            _entered.TrySetResult();
+            _release.Wait(TimeSpan.FromSeconds(30));
+        }
+
+        public void Serialize<TWriter>(string value, ref TWriter destination, SerializationContext context)
+            where TWriter : System.Buffers.IBufferWriter<byte>
+#if NET10_0_OR_GREATER
+            , allows ref struct
+#endif
+        {
+            if (BlocksInSerialize)
+                BlockIfHeld(value);
+
+            Serializers.String.Serialize(value, ref destination, context);
+        }
+    }
+
+    /// <summary>
+    /// A serializer preparer whose PrepareAsync blocks synchronously on one value until released
+    /// (then returns a completed task), before the synchronous serialize runs.
+    /// </summary>
+    private sealed class BlockingPreparedStringSerializer(string heldValue)
+        : BlockingStringSerializer(heldValue), IAsyncSerializerPreparer<string>
+    {
+        protected override bool BlocksInSerialize => false;
+
+        public ValueTask PrepareAsync(
+            string value,
+            SerializationContext context,
+            CancellationToken cancellationToken = default)
+        {
+            BlockIfHeld(value);
+            return ValueTask.CompletedTask;
+        }
+    }
+
     /// <summary>A UTF-8 string serializer that holds one value until released.</summary>
     private sealed class HeldAsyncStringSerializer(string heldValue) : IAsyncSerializer<string>
     {
@@ -485,7 +617,8 @@ public sealed class TransactionalProduceFaultTests
             Func<int, int, ErrorCode> produceError,
             int deliveryTimeoutMs = 30_000,
             int lingerMs = 0,
-            IAsyncSerializer<string>? asyncValueSerializer = null)
+            IAsyncSerializer<string>? asyncValueSerializer = null,
+            ISerializer<string>? valueSerializer = null)
         {
             var broker = new ScriptedTransactionalBroker(produceError, bumpsEpochAtEndTxn: transactionVersion >= 2);
             var pool = new ConnectionPool(
@@ -553,7 +686,7 @@ public sealed class TransactionalProduceFaultTests
                     CloseTimeoutMs = 1_000
                 },
                 Serializers.String,
-                Serializers.String,
+                valueSerializer ?? Serializers.String,
                 pool,
                 metadata,
                 DekafMemoryBudget.Global,

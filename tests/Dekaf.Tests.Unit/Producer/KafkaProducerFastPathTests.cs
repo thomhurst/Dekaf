@@ -1331,16 +1331,21 @@ public class KafkaProducerFastPathTests
                 typeof(ProducerMessage<string, string>),
                 typeof(Headers),
                 typeof(bool),
+                typeof(int),
                 typeof(CancellationToken),
                 typeof(PooledValueTaskSource<RecordMetadata>).MakeByRefType()
             ],
             modifiers: null);
-        object?[] arguments = [message, message.Headers, runContinuationsAsynchronously, CancellationToken.None, null];
+        object?[] arguments =
+        [
+            message, message.Headers, runContinuationsAsynchronously,
+            RecordAccumulator.NoTransactionalGeneration, CancellationToken.None, null
+        ];
 
         try
         {
             var result = (bool)method!.Invoke(producer, arguments)!;
-            completion = (PooledValueTaskSource<RecordMetadata>?)arguments[4];
+            completion = (PooledValueTaskSource<RecordMetadata>?)arguments[5];
             return result;
         }
         catch (TargetInvocationException ex) when (ex.InnerException is not null)

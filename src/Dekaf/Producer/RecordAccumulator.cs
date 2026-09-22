@@ -3761,8 +3761,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     // NoTransactionalGeneration and skip it.
                     if (Volatile.Read(ref _disposed) != 0
                         || Volatile.Read(ref _transactionalAppendsClosed) != 0
-                        || (transactionalGeneration != NoTransactionalGeneration
-                            && transactionalGeneration != Volatile.Read(ref _transactionalAppendGeneration)))
+                        || IsStaleTransactionalGeneration(transactionalGeneration))
                     {
                         batchToReturn = rentedBatch;
                         rentedBatch = null;
@@ -4103,7 +4102,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         Header[]? headers,
         int headerCount,
         PooledValueTaskSource<RecordMetadata> completionSource,
-        int partitionCount = 0)
+        int partitionCount = 0,
+        int transactionalGeneration = NoTransactionalGeneration)
     {
         if (Volatile.Read(ref _disposed) != 0)
             return false;
@@ -4118,7 +4118,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         if (headers is null && headerCount == 0
             && TryAppendFromSpansSingleLock(pd, topic, partition, timestamp, keyData, keyIsNull,
-                valueData, valueIsNull, completionSource, callback: null, recordSize, partitionCount))
+                valueData, valueIsNull, completionSource, callback: null, recordSize, partitionCount,
+                transactionalGeneration))
         {
             return true;
         }
@@ -4128,7 +4129,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         return AppendFromSpansAfterReservationCore(pd, topic, partition, timestamp, keyData, keyIsNull,
             valueData, valueIsNull, headers, headerCount, completionSource, callback: null,
-            recordSize, partitionCount, returnHeadersOnFailure: false, admissionReservation);
+            recordSize, partitionCount, returnHeadersOnFailure: false, admissionReservation,
+            transactionalGeneration);
     }
 
     /// <summary>
@@ -4150,7 +4152,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         int recordSize,
         int partitionCount,
         bool returnHeadersOnFailure,
-        AdmissionReservation admissionReservation)
+        AdmissionReservation admissionReservation,
+        int transactionalGeneration)
     {
         // Headerless records normally commit in TryAppendFromSpansSingleLock; this path runs
         // after that attempt yielded (a two-phase appender held the admission slot, rotation or
@@ -4177,6 +4180,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     recordSize,
                     partitionCount,
                     admissionReservation,
+                    transactionalGeneration,
                     out appendCommitted))
                 {
                     return true;
@@ -4262,7 +4266,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     using var guard = new SpinLockGuard(ref pd.Lock);
 
                     if (Volatile.Read(ref _disposed) != 0
-                        || Volatile.Read(ref _transactionalAppendsClosed) != 0)
+                        || Volatile.Read(ref _transactionalAppendsClosed) != 0
+                        || IsStaleTransactionalGeneration(transactionalGeneration))
                     {
                         batchToReturn = rentedBatch;
                         rentedBatch = null;
@@ -4559,7 +4564,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         int headerCount,
         Action<RecordMetadata, Exception?>? callback,
         CancellationToken cancellationToken,
-        int partitionCount = 0)
+        int partitionCount = 0,
+        int transactionalGeneration = NoTransactionalGeneration)
     {
         if (Volatile.Read(ref _disposed) != 0)
             return new ValueTask<bool>(false);
@@ -4587,7 +4593,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         // machine allocated. An over-budget broker applies the same backpressure as a full buffer.
         if (headers is null && headerCount == 0
             && TryAppendFromSpansSingleLock(pd, topic, partition, timestamp, keyData, keyIsNull,
-                valueData, valueIsNull, completionSource: null, callback, recordSize, partitionCount))
+                valueData, valueIsNull, completionSource: null, callback, recordSize, partitionCount,
+                transactionalGeneration))
         {
             return new ValueTask<bool>(true);
         }
@@ -4595,7 +4602,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         if (TryAdmitAndReserve(pd, topic, partition, recordSize, out var admissionReservation))
             return new ValueTask<bool>(AppendFromSpansAfterReservationCore(pd, topic, partition, timestamp,
                 keyData, keyIsNull, valueData, valueIsNull, headers, headerCount, completionSource: null,
-                callback, recordSize, partitionCount, returnHeadersOnFailure: true, admissionReservation));
+                callback, recordSize, partitionCount, returnHeadersOnFailure: true, admissionReservation,
+                transactionalGeneration));
 
         // Cold path: buffer full. Copy spans to PooledMemory BEFORE the await boundary
         // (ReadOnlySpan<byte> cannot survive across async suspension points).
@@ -4603,7 +4611,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         var valuePooled = valueIsNull ? PooledMemory.Null : CopySpanToPooledMemory(valueData);
 
         return AppendFromSpansSlowPathPooled(topic, partition, timestamp, keyPooled, valuePooled,
-            headers, headerCount, callback, recordSize, partitionCount, cancellationToken);
+            headers, headerCount, callback, recordSize, partitionCount, transactionalGeneration,
+            cancellationToken);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -4723,7 +4732,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         PooledValueTaskSource<RecordMetadata>? completionSource,
         Action<RecordMetadata, Exception?>? callback,
         int recordSize,
-        int partitionCount)
+        int partitionCount,
+        int transactionalGeneration)
     {
         // Queued slow-path appends own the partition until they drain (FIFO). The reservation
         // path also records the admission block and requests a flush when the broker is over
@@ -4751,6 +4761,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             // not committed yet; appending ahead of it would invalidate that decision.
             if (Volatile.Read(ref _disposed) != 0
                 || Volatile.Read(ref _transactionalAppendsClosed) != 0
+                || IsStaleTransactionalGeneration(transactionalGeneration)
                 || pd.RotationInProgress
                 || pd.AppendInProgress
                 || Volatile.Read(ref pd.AdmissionInProgress) != 0
@@ -4851,6 +4862,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         int recordSize,
         int partitionCount,
         AdmissionReservation admissionReservation,
+        int transactionalGeneration,
         out bool appendCommitted)
     {
         appendCommitted = false;
@@ -4863,6 +4875,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
             if (Volatile.Read(ref _disposed) != 0
                 || Volatile.Read(ref _transactionalAppendsClosed) != 0
+                || IsStaleTransactionalGeneration(transactionalGeneration)
                 || pd.RotationInProgress
                 || pd.AppendInProgress
                 || pd.CurrentBatch is not { } currentBatch)
@@ -4932,10 +4945,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         Action<RecordMetadata, Exception?>? callback,
         int recordSize,
         int partitionCount,
+        int transactionalGeneration,
         CancellationToken cancellationToken)
     {
         return AppendSlowPathPooled(topic, partition, timestamp, keyPooled, valuePooled,
-            headers, headerCount, null, callback, recordSize, cancellationToken, partitionCount);
+            headers, headerCount, null, callback, recordSize, cancellationToken, partitionCount,
+            transactionalGeneration);
     }
 
     /// <summary>
@@ -7331,6 +7346,17 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// the produce resumes. Never changes for a non-transactional producer.
     /// </summary>
     internal int TransactionalAppendGeneration => Volatile.Read(ref _transactionalAppendGeneration);
+
+    /// <summary>
+    /// True when an append admitted in <paramref name="transactionalGeneration"/> must be rejected
+    /// because a transaction abort has started since. Checked at every append commit point under
+    /// the partition lock, next to the append-closed flag. A non-transactional append passes
+    /// <see cref="NoTransactionalGeneration"/>: one constant comparison and no shared read.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool IsStaleTransactionalGeneration(int transactionalGeneration) =>
+        transactionalGeneration != NoTransactionalGeneration
+        && transactionalGeneration != Volatile.Read(ref _transactionalAppendGeneration);
 
     internal static ProduceException CreateStaleTransactionalAppendException() =>
         CreateTransactionAbortedException(
