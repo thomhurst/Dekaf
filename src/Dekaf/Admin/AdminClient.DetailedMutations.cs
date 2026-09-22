@@ -35,21 +35,21 @@ public sealed partial class AdminClient
         var pending = items;
         try
         {
-            await WithRetryAsync(async () =>
+            await WithRetryAsync(async attemptToken =>
             {
-                token.ThrowIfCancellationRequested();
-                await EnsureInitializedAsync(token, protocol.Operation).ConfigureAwait(false);
+                attemptToken.ThrowIfCancellationRequested();
+                await EnsureInitializedAsync(attemptToken, protocol.Operation).ConfigureAwait(false);
                 KafkaConnectionLease acquiredLease;
                 try
                 {
                     if (leaseConnection is not null)
-                        acquiredLease = await leaseConnection(token).ConfigureAwait(false);
+                        acquiredLease = await leaseConnection(attemptToken).ConfigureAwait(false);
                     else if (protocol.GroupId is { } groupId)
-                        acquiredLease = await LeaseDetailedGroupCoordinatorAsync(groupId, token).ConfigureAwait(false);
+                        acquiredLease = await LeaseDetailedGroupCoordinatorAsync(groupId, attemptToken).ConfigureAwait(false);
                     else if (protocol.BrokerOrController)
-                        acquiredLease = await LeaseBrokerOrControllerConnectionAsync(protocol.ApiKey, token).ConfigureAwait(false);
+                        acquiredLease = await LeaseBrokerOrControllerConnectionAsync(protocol.ApiKey, attemptToken).ConfigureAwait(false);
                     else
-                        acquiredLease = await LeaseDetailedControllerAsync(protocol.ApiKey, token).ConfigureAwait(false);
+                        acquiredLease = await LeaseDetailedControllerAsync(protocol.ApiKey, attemptToken).ConfigureAwait(false);
                 }
                 catch (InvalidOperationException exception)
                 {
@@ -67,12 +67,12 @@ public sealed partial class AdminClient
                 var request = createRequest(pending, version, results);
                 if (pending.Count == 0)
                     return;
-                token.ThrowIfCancellationRequested();
+                attemptToken.ThrowIfCancellationRequested();
 
                 TResponse response;
                 try
                 {
-                    response = await lease.Connection.SendAsync<TRequest, TResponse>(request, version, token).ConfigureAwait(false);
+                    response = await lease.Connection.SendAsync<TRequest, TResponse>(request, version, attemptToken).ConfigureAwait(false);
                 }
                 catch (Exception exception) when (IsDetailedMutationFailure(exception) || exception is InvalidOperationException or MalformedProtocolDataException)
                 {

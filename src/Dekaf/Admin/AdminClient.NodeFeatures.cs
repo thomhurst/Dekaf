@@ -29,13 +29,13 @@ public sealed partial class AdminClient
                 return await DescribeFeaturesAsync(operationToken).ConfigureAwait(false);
 
             await EnsureInitializedAsync(operationToken, nameof(DescribeFeaturesAsync)).ConfigureAwait(false);
-            return await WithRetryAsync(async () =>
+            return await WithRetryAsync(async attemptToken =>
             {
-                operationToken.ThrowIfCancellationRequested();
-                using var lease = await LeaseFeatureNodeAsync(nodeId, operationToken).ConfigureAwait(false);
+                attemptToken.ThrowIfCancellationRequested();
+                using var lease = await LeaseFeatureNodeAsync(nodeId, attemptToken).ConfigureAwait(false);
                 var request = CreateFeatureRequest(lease.Connection, nodeId, out var apiVersion);
                 var response = await lease.Connection.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
-                    request, apiVersion, operationToken).ConfigureAwait(false);
+                    request, apiVersion, attemptToken).ConfigureAwait(false);
                 return MapFeatureResponse(response);
             }, operationToken).ConfigureAwait(false);
         }

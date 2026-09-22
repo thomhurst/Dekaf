@@ -56,7 +56,7 @@ public sealed partial class AdminClient : IClassicGroupDescriptionAdminClient
         var retryErrors = new Dictionary<string, ClassicGroupDescriptionResult>(StringComparer.Ordinal);
         try
         {
-            await WithRetryAsync(async () =>
+            await WithRetryAsync(async attemptToken =>
             {
                 retryErrors.Clear();
                 Exception? retryFailure = null;
@@ -67,7 +67,7 @@ public sealed partial class AdminClient : IClassicGroupDescriptionAdminClient
                 var discoveries = new ValueTask<int>[groupIds.Length];
                 for (var i = 0; i < groupIds.Length; i++)
                     if (!results.ContainsKey(groupIds[i]))
-                        discoveries[i] = FindGroupCoordinatorAsync(groupIds[i], cancellationToken);
+                        discoveries[i] = FindGroupCoordinatorAsync(groupIds[i], attemptToken);
 
                 for (var i = 0; i < groupIds.Length; i++)
                 {
@@ -87,7 +87,7 @@ public sealed partial class AdminClient : IClassicGroupDescriptionAdminClient
                         results[groupId] = ClassicGroupError(groupId, code, exception.Message);
                     }
                     catch (Exception exception) when (RetryHelper.IsRetriableRequestFailure(exception) &&
-                        !cancellationToken.IsCancellationRequested)
+                        !attemptToken.IsCancellationRequested)
                     {
                         retryErrors[groupId] = ClassicGroupError(groupId, GetRetryErrorCode(exception), exception.Message);
                         retryFailure ??= exception;
@@ -99,13 +99,13 @@ public sealed partial class AdminClient : IClassicGroupDescriptionAdminClient
                 }
                 if (fatalFailure is not null)
                     ExceptionDispatchInfo.Capture(fatalFailure).Throw();
-                cancellationToken.ThrowIfCancellationRequested();
+                attemptToken.ThrowIfCancellationRequested();
 
                 var descriptions = new (int CoordinatorId, List<string> Groups, ValueTask<DescribeGroupsResponse> Operation)[batches.Count];
                 var batchIndex = 0;
                 foreach (var (coordinatorId, batch) in batches)
                     descriptions[batchIndex++] = (coordinatorId, batch,
-                        DescribeClassicGroupBatchAsync(coordinatorId, batch, includeAuthorizedOperations, cancellationToken));
+                        DescribeClassicGroupBatchAsync(coordinatorId, batch, includeAuthorizedOperations, attemptToken));
 
                 foreach (var (coordinatorId, batch, operation) in descriptions)
                 {
@@ -142,7 +142,7 @@ public sealed partial class AdminClient : IClassicGroupDescriptionAdminClient
                             results.TryAdd(groupId, ClassicGroupError(groupId, code, exception.Message));
                     }
                     catch (Exception exception) when (RetryHelper.IsRetriableRequestFailure(exception) &&
-                        !cancellationToken.IsCancellationRequested)
+                        !attemptToken.IsCancellationRequested)
                     {
                         foreach (var groupId in batch)
                             if (!results.ContainsKey(groupId))
@@ -156,7 +156,7 @@ public sealed partial class AdminClient : IClassicGroupDescriptionAdminClient
                 }
                 if (fatalFailure is not null)
                     ExceptionDispatchInfo.Capture(fatalFailure).Throw();
-                cancellationToken.ThrowIfCancellationRequested();
+                attemptToken.ThrowIfCancellationRequested();
                 if (retryFailure is not null)
                     throw retryFailure;
             }, cancellationToken).ConfigureAwait(false);

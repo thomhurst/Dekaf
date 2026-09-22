@@ -171,6 +171,165 @@ public sealed class AdminClientTransportRetryTests
         await Assert.That(calls).IsEqualTo(4);
     }
 
+    [Test]
+    public async Task DescribeAclsAsync_BrokerNeverAnswers_InFlightRequestEndsAtApiTimeout()
+    {
+        // The mocked connection applies no request timeout of its own, standing in for a broker
+        // that accepted the request and stopped answering: only the API timeout can end it.
+        var (admin, connection) = AdminClientIdempotentRetryTests.CreateAdminWithMockConnection(
+            FastRetryOptions(),
+            ApiKey.DescribeAcls);
+        var calls = 0;
+
+        connection.SendAsync<DescribeAclsRequest, DescribeAclsResponse>(
+                Arg.Any<DescribeAclsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                Interlocked.Increment(ref calls);
+                return WaitForCancellationAsync(call.ArgAt<CancellationToken>(2));
+            });
+
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        var exception = await Assert.ThrowsAsync<KafkaTimeoutException>(async () =>
+            await admin.DescribeAclsAsync(new AclBindingFilter(), new DescribeAclsOptions { TimeoutMs = 200 }));
+        stopwatch.Stop();
+
+        await Assert.That(exception!.TimeoutKind).IsEqualTo(TimeoutKind.Api);
+        await Assert.That(exception.Message).Contains(nameof(IAdminClient.DescribeAclsAsync));
+        await Assert.That(calls).IsEqualTo(1);
+        await Assert.That(stopwatch.Elapsed).IsLessThan(TimeSpan.FromSeconds(30));
+
+        static async ValueTask<DescribeAclsResponse> WaitForCancellationAsync(CancellationToken token)
+        {
+            await Task.Delay(Timeout.Infinite, token);
+            throw new System.Diagnostics.UnreachableException();
+        }
+    }
+
+    [Test]
+    public async Task DescribeAclsAsync_CallerCancelsInFlightRequest_ThrowsCancellation()
+    {
+        var (admin, connection) = AdminClientIdempotentRetryTests.CreateAdminWithMockConnection(
+            FastRetryOptions(),
+            ApiKey.DescribeAcls);
+        using var cts = new CancellationTokenSource();
+
+        connection.SendAsync<DescribeAclsRequest, DescribeAclsResponse>(
+                Arg.Any<DescribeAclsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                cts.Cancel();
+                return ValueTask.FromCanceled<DescribeAclsResponse>(call.ArgAt<CancellationToken>(2));
+            });
+
+        await Assert.ThrowsAsync<OperationCanceledException>(async () =>
+            await admin.DescribeAclsAsync(new AclBindingFilter(), cancellationToken: cts.Token));
+    }
+
+    [Test]
+    public async Task DescribeAclsAsync_RetriableEofBeyondRetryCount_RecoversWithinApiTimeout()
+    {
+        var (admin, connection) = AdminClientIdempotentRetryTests.CreateAdminWithMockConnection(
+            FastRetryOptions(),
+            ApiKey.DescribeAcls);
+        var calls = 0;
+
+        connection.SendAsync<DescribeAclsRequest, DescribeAclsResponse>(
+                Arg.Any<DescribeAclsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ => Interlocked.Increment(ref calls) <= FailuresBeyondRetryCount
+                ? throw ConnectionClosedByBroker()
+                : ValueTask.FromResult(new DescribeAclsResponse { Resources = [] }));
+
+        var result = await admin.DescribeAclsAsync(new AclBindingFilter());
+
+        await Assert.That(result).IsEmpty();
+        await Assert.That(calls).IsEqualTo(FailuresBeyondRetryCount + 1);
+    }
+
+    [Test]
+    public async Task DescribeClientQuotasAsync_RetriableEofBeyondRetryCount_RecoversWithinApiTimeout()
+    {
+        var (admin, connection) = AdminClientIdempotentRetryTests.CreateAdminWithMockConnection(
+            FastRetryOptions(),
+            ApiKey.DescribeClientQuotas);
+        var calls = 0;
+
+        connection.SendAsync<DescribeClientQuotasRequest, DescribeClientQuotasResponse>(
+                Arg.Any<DescribeClientQuotasRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ => Interlocked.Increment(ref calls) <= FailuresBeyondRetryCount
+                ? throw ConnectionClosedByBroker()
+                : ValueTask.FromResult(new DescribeClientQuotasResponse { Entries = [] }));
+
+        var result = await admin.DescribeClientQuotasAsync(new ClientQuotaFilter { Components = [] });
+
+        await Assert.That(result).IsEmpty();
+        await Assert.That(calls).IsEqualTo(FailuresBeyondRetryCount + 1);
+    }
+
+    [Test]
+    public async Task ListConsumerGroupOffsetsAsync_RetriableEofBeyondRetryCount_RecoversWithinApiTimeout()
+    {
+        var (admin, connection) = AdminClientIdempotentRetryTests.CreateAdminWithMockConnection(
+            FastRetryOptions(),
+            ApiKey.OffsetFetch);
+        SetupFindCoordinator(connection);
+        var calls = 0;
+
+        connection.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
+                Arg.Any<OffsetFetchRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ => Interlocked.Increment(ref calls) <= FailuresBeyondRetryCount
+                ? throw ConnectionClosedByBroker()
+                : ValueTask.FromResult(new OffsetFetchResponse
+                {
+                    Groups =
+                    [
+                        new OffsetFetchResponseGroup
+                        {
+                            GroupId = GroupId,
+                            ErrorCode = ErrorCode.None,
+                            Topics =
+                            [
+                                new OffsetFetchResponseTopic
+                                {
+                                    Name = "orders",
+                                    Partitions =
+                                    [
+                                        new OffsetFetchResponsePartition
+                                        {
+                                            PartitionIndex = 0,
+                                            CommittedOffset = 42,
+                                            ErrorCode = ErrorCode.None
+                                        }
+                                    ]
+                                }
+                            ]
+                        }
+                    ]
+                }));
+
+        var result = await admin.ListConsumerGroupOffsetsAsync(GroupId);
+
+        await Assert.That(result[new TopicPartition("orders", 0)]).IsEqualTo(42);
+        await Assert.That(calls).IsEqualTo(FailuresBeyondRetryCount + 1);
+    }
+
+    // More consecutive failures than the count-bounded retry (RetryHelper.MaxRetries) allows.
+    private const int FailuresBeyondRetryCount = 6;
+
+    // What a connection reports when the broker closes it before the response arrives.
+    private static KafkaException ConnectionClosedByBroker() =>
+        new(ErrorCode.NetworkException, "Connection closed by the broker (EOF).");
+
     private static void SetupFindCoordinator(IKafkaConnection connection)
     {
         connection.SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(

@@ -82,10 +82,10 @@ public sealed partial class AdminClient : IConsumerGroupMemberRemovalAdminClient
         if (members.Length == 0)
             return new RemoveMembersFromConsumerGroupResult { GroupId = groupId, Members = [] };
 
-        return await WithRetryAsync(async () =>
+        return await WithRetryAsync(async attemptToken =>
         {
-            var coordinatorId = await FindGroupCoordinatorAsync(groupId, cancellationToken).ConfigureAwait(false);
-            using var lease = await _connectionPool.LeaseConnectionAsync(coordinatorId, cancellationToken).ConfigureAwait(false);
+            var coordinatorId = await FindGroupCoordinatorAsync(groupId, attemptToken).ConfigureAwait(false);
+            using var lease = await _connectionPool.LeaseConnectionAsync(coordinatorId, attemptToken).ConfigureAwait(false);
             var connection = lease.Connection;
             var version = _metadataManager.GetNegotiatedApiVersion(connection, ApiKey.LeaveGroup,
                 LeaveGroupRequest.LowestSupportedVersion, LeaveGroupRequest.HighestSupportedVersion);
@@ -103,10 +103,10 @@ public sealed partial class AdminClient : IConsumerGroupMemberRemovalAdminClient
             try
             {
                 response = await connection.SendAsync<LeaveGroupRequest, LeaveGroupResponse>(
-                    new LeaveGroupRequest { GroupId = groupId, Members = requestMembers }, version, cancellationToken).ConfigureAwait(false);
+                    new LeaveGroupRequest { GroupId = groupId, Members = requestMembers }, version, attemptToken).ConfigureAwait(false);
             }
             catch (Exception exception) when (RetryHelper.IsRetriableRequestFailure(exception)
-                && !cancellationToken.IsCancellationRequested)
+                && !attemptToken.IsCancellationRequested)
             {
                 // A lost response cannot prove which members were removed. Replaying a
                 // static selector could also evict a replacement that joined meanwhile.
@@ -114,7 +114,7 @@ public sealed partial class AdminClient : IConsumerGroupMemberRemovalAdminClient
                     "LeaveGroup outcome is unknown after a request failure. Inspect group membership before retrying removal.",
                     isRetriable: false, exception);
             }
-            cancellationToken.ThrowIfCancellationRequested();
+            attemptToken.ThrowIfCancellationRequested();
             if (response.ErrorCode != ErrorCode.None)
                 throw MemberRemovalError(groupId, response.ErrorCode);
 

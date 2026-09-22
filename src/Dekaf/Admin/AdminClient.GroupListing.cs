@@ -26,7 +26,7 @@ public sealed partial class AdminClient : IGroupListingAdminClient
         ValidateGroupFilters(states, types, protocols);
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
 
-        return await WithRetryAsync<IReadOnlyList<GroupListing>>(async () =>
+        return await WithRetryAsync<IReadOnlyList<GroupListing>>(async attemptToken =>
         {
             var brokers = _metadataManager.Metadata.GetBrokers();
             if (brokers.Count == 0)
@@ -35,7 +35,7 @@ public sealed partial class AdminClient : IGroupListingAdminClient
             // Listing is an administrative operation. Fan out once per broker, not per group.
             var pending = new Task<ListGroupsResponse>[brokers.Count];
             for (var i = 0; i < brokers.Count; i++)
-                pending[i] = ListBrokerGroupsAsync(brokers[i].NodeId, states, types, cancellationToken);
+                pending[i] = ListBrokerGroupsAsync(brokers[i].NodeId, states, types, attemptToken);
             var responses = await Task.WhenAll(pending).ConfigureAwait(false);
 
             var capacity = 0;
