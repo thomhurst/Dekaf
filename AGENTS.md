@@ -13,16 +13,12 @@ Dekaf is a high-performance, pure C# Apache Kafka client. Performance is the pro
 
 Every PR that changes `src/`, `tools/Dekaf.Benchmarks/` or the build inputs runs the [performance gate](.github/workflows/performance-gate.yml). It selects benchmark classes with `.github/scripts/performance_gate.py` (four hot-path sentinels for any product change, a few classes per hot component directory, plus every fixture class the PR touches) and runs one `ubuntu-latest` job per class. Each job measures baseline, candidate, baseline (A1/B/A2) back to back on one VM and compares medians. A class finishes in about 10 to 25 minutes, or up to about 50 when a regression is re-measured.
 
-- `REGRESSION` fails the check only when the candidate is slower than both controls beyond the tolerance for that case size (20% under 100 ns, 15% under 1 µs, 10% from 1 µs), or allocates at least 24 B/op and 1% more than both controls, and the loss reproduces on an immediate repeat of those cases. Everything else passes; control drift and one-sided differences are notes. When the PR fixtures do not compile against the baseline, cases from fixture files the PR changed are reported as `NOT COMPARED`, and a class the PR adds is measured on the candidate alone; run them locally against `main` if that comparison matters.
+- `REGRESSION` fails the check only when the candidate is slower than both controls beyond the tolerance for that case size (20% under 100 ns, 15% under 1 µs, 10% from 1 µs), or allocates at least 24 B/op and 1% more than both controls, and the loss reproduces on an immediate repeat of those cases. Everything else passes; control drift and one-sided differences are notes. When the PR fixtures do not compile against the baseline, cases from fixture files the PR changed are reported as `NOT COMPARED`, and a class the PR adds is measured on the candidate alone.
 - Hosted runners drift 10% to 30% between processes on nanosecond cases even for identical binaries. A single delta inside the tolerance is noise, not a win or a loss. Local measurements are diagnostic only.
 - On a red gate, open the job summary table and download the artifact (original BenchmarkDotNet exports and logs), then fix the product or state the tradeoff in the PR for maintainer approval. Do not rerun until green, widen tolerances, add PR-specific rules to `performance_gate.py`, or split fixtures into a separate PR. A `PASS` needs no rerun.
-- Fixtures the gate runs must be steady-state: no `[IterationSetup]`/`[IterationCleanup]`, `InvocationCount` or cold-start strategies (those are skipped with a reason), and under about 16 expanded cases per class. Check a fixture locally before pushing:
-
-  ```powershell
-  dotnet run -c Release --project tools/Dekaf.Benchmarks -- --filter '*.Unit.MyBenchmarks.*' --job Short
-  ```
-
-- Microbenchmarks do not show loaded behaviour. Changes to send/receive loops, batching and linger, fetch scheduling, connection lifecycle, shutdown, or stress-lane defaults also need one stress lane run (below) with `baseline_sha` set; link the run in the PR.
+- Fixtures the gate runs must be steady-state: no `[IterationSetup]`/`[IterationCleanup]`, `InvocationCount` or cold-start strategies (those are skipped with a reason), and under about 16 expanded cases per class.
+- CI runs the benchmarks. Build a new or changed fixture before pushing, but do not run benchmark suites locally for evidence; read the gate's job summary instead.
+- CI also runs the stress tests. Do not dispatch stress-lane runs yourself, and do not block a PR on a manual stress run.
 - Do not commit benchmark outputs, logs, reports, traces or evidence Markdown. Job summaries and artifacts are the evidence store; PR comments link them. The repository artifact-policy check enforces this.
 
 ## Library conventions and contracts
@@ -55,12 +51,10 @@ dotnet test --project tests/Dekaf.Tests.Integration --configuration Release --fr
 
 ## Stress testing (loaded evidence)
 
-Read `.github/workflows/stress-tests.yml` for lanes and inputs before dispatching. Manual runs are Dekaf-only; there are no scheduled runs, so preserve paid-run limits.
+CI runs the stress tests (`.github/workflows/stress-tests.yml`). Agents do not dispatch, rerun or cancel stress-lane runs; they are paid runs owned by the maintainer and CI.
 
-- Pick one lane that exercises the change. Use `duration_minutes=15` or less; reserve 30+ minutes for elapsed-time hypotheses such as leaks or late-run collapse. Duration applies per sample.
-- For acceptance set `baseline_sha` to the fresh-main SHA the PR contains. The workflow runs baseline → candidate → baseline on one `ubuntu-latest` VM; `stress_warmup.py` marks a run that never reaches steady state `INCONCLUSIVE`, and `stress_aba.py` gates throughput, p50/p95/p99, CPU/msg, allocations/msg and stability against both controls with maximum latency informational and latency rows n/a for consumer lanes.
-- Accept `PASS`. A `REGRESSION` needs a product fix or an explicitly recorded maintainer tradeoff. One exact repeat is allowed after an `INCONCLUSIVE`; after a second, change the experiment or ask the maintainer instead of rerunning.
-- Record run URL, lane, dispatch shape, duration and verdict in the PR before merging or dispatching another paid run. `full_run=true` dispatched from `main` is the only run that publishes paired Dekaf/Confluent baselines and history.
+- When a stress run exists, read its verdict. A-B-A runs compare baseline → candidate → baseline on one VM; `stress_warmup.py` marks a run that never reaches steady state `INCONCLUSIVE`, and `stress_aba.py` gates throughput, p50/p95/p99, CPU/msg, allocations/msg and stability against both controls.
+- Accept `PASS`. A `REGRESSION` needs a product fix or an explicitly recorded maintainer tradeoff.
 
 ## Repository map
 
