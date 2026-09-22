@@ -89,8 +89,11 @@ internal sealed class FetchSessionHandler
             return false;
         }
 
-        if (response.SessionId != 0)
-            _sessionId = response.SessionId;
+        // A reply without a session id means the broker holds no session for us: a full
+        // request was served sessionless (for example, its session cache is full) or the
+        // broker closed the session. Keeping the old id would make the next request an
+        // incremental one for a session that no longer exists.
+        _sessionId = response.SessionId;
 
         if (_lastBuildWasFull || _sessionId != 0)
             _sessionPartitions = new Dictionary<TopicPartition, CachedPartitionData>(_lastDesiredPartitions);
