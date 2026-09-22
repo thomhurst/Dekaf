@@ -1980,6 +1980,13 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             {
                 await _rebalanceListenerLock.WaitAsync(cancellationToken).ConfigureAwait(false);
                 rebalanceListenerLockHeld = true;
+
+                // Queued callbacks describe earlier assignments; deliver them while those are
+                // still current, before this response publishes a newer one. Cancellation here
+                // drops the response as the lock wait does, and the entries stay queued.
+                if (Volatile.Read(ref _pendingRebalanceCallbackCount) != 0)
+                    await InvokePendingRebalanceCallbacksCoreAsync(cancellationToken).ConfigureAwait(false);
+
                 await _lock.WaitAsync(cancellationToken).ConfigureAwait(false);
                 try
                 {

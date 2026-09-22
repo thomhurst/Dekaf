@@ -398,6 +398,65 @@ public sealed partial class ConsumerCoordinatorKip848Tests
     }
 
     [Test]
+    public async Task MembershipLoss_DeferredAssignedCallback_RunsBeforeAHeartbeatPublishesANewerAssignment()
+    {
+        var script = new HeartbeatScript(this);
+        var calls = new List<string>();
+        var assignedEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var interruptNextAssigned = 0;
+        ConsumerCoordinator? observed = null;
+        var listener = Substitute.For<IRebalanceListener>();
+        listener.OnPartitionsAssignedAsync(Arg.Any<IEnumerable<TopicPartition>>(), Arg.Any<CancellationToken>())
+            .Returns(callInfo => Interlocked.Exchange(ref interruptNextAssigned, 0) == 1
+                ? WaitForCancellationAsync(callInfo.Arg<CancellationToken>())
+                : RecordAssigned(callInfo.Arg<IEnumerable<TopicPartition>>()!));
+        await using var coordinator = await JoinAsync(script, listener);
+        observed = coordinator;
+        lock (calls)
+            calls.Clear();
+
+        // A fenced member rejoins with [p0]; cancellation interrupts its OnPartitionsAssigned,
+        // which stays queued.
+        typeof(ConsumerCoordinator)
+            .GetMethod("FenceMembership", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(coordinator, [false]);
+        Volatile.Write(ref interruptNextAssigned, 1);
+        script.Respond = (_, _) => Joined("member-1", memberEpoch: 6, CreateAssignment(TestTopicId, 0));
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var caller = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token);
+        var join = coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, caller.Token).AsTask();
+        await assignedEntered.Task.WaitAsync(timeout.Token);
+        caller.Cancel();
+        await Assert.That(async () => await join).Throws<OperationCanceledException>();
+
+        // Before any poll, a steady heartbeat grows the assignment to [p0, p1]. The queued
+        // callback is delivered while [p0] is still the published assignment.
+        script.Respond = (_, _) => Joined("member-1", memberEpoch: 7, CreateAssignment(TestTopicId, 0, 1));
+        await InvokeSteadyConsumerGroupHeartbeatAsync(coordinator);
+
+        await Assert.That(string.Join(" | ", calls))
+            .IsEqualTo("assigned:test-topic-0 owned:test-topic-0 | assigned:test-topic-1 owned:test-topic-0,test-topic-1");
+
+        async ValueTask WaitForCancellationAsync(CancellationToken cancellationToken)
+        {
+            assignedEntered.TrySetResult();
+            await Task.Delay(Timeout.Infinite, cancellationToken);
+        }
+
+        ValueTask RecordAssigned(IEnumerable<TopicPartition> partitions)
+        {
+            var owned = observed?.Assignment ?? (IEnumerable<TopicPartition>)[];
+            lock (calls)
+                calls.Add($"assigned:{Names(partitions)} owned:{Names(owned)}");
+            return ValueTask.CompletedTask;
+        }
+
+        static string Names(IEnumerable<TopicPartition> partitions) => string.Join(',', partitions
+            .OrderBy(static partition => partition.Partition)
+            .Select(static partition => $"{partition.Topic}-{partition.Partition}"));
+    }
+
+    [Test]
     public async Task MembershipLoss_FenceFromAHeartbeatOfTheReplacedMembership_IsIgnored()
     {
         _metadataManager.SetApiVersion(ApiKey.OffsetFetch, 9, 9);
