@@ -101,6 +101,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     // _assignmentStateLock; drained under _rebalanceListenerLock so a rejoin's
     // OnPartitionsAssigned can never overtake them.
     private List<TopicPartition>? _pendingLostPartitions;
+    // Set with the lost partitions; commits stay locally fenced until the consumer has
+    // synchronized the assignment and dropped the offsets stored under the lost membership.
+    private volatile bool _membershipLossCommitFence;
     // Foreground assignment initialization and fetch waits are application poll activity. Track
     // concurrent callers without allocating a scope object on each poll cycle.
     private int _foregroundPollActivityCount;
@@ -292,6 +295,20 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         };
     }
 
+    private void ThrowIfMembershipLost()
+    {
+        if (!_membershipLossCommitFence)
+            return;
+
+        throw new GroupException(
+            ErrorCode.FencedMemberEpoch,
+            "Offset commit rejected because the consumer lost its group membership and its partitions " +
+            "were reported lost; poll to rejoin the group before committing")
+        {
+            GroupId = _options.GroupId
+        };
+    }
+
     private bool IsCurrentPollGenerationExpired() => IsCurrentPollGenerationExpired(Stopwatch.GetTimestamp());
 
     private bool IsCurrentPollGenerationExpired(long timestamp)
@@ -380,6 +397,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     internal void AcknowledgeAssignmentSync(int assignmentVersion)
     {
         if (Volatile.Read(ref _maxPollExpiredAtPollVersion) < 0
+            && !_membershipLossCommitFence
             && _revokedPartitionsSinceLastSync.IsEmpty)
         {
             return;
@@ -388,11 +406,16 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         lock (_assignmentStateLock)
         {
             if (Volatile.Read(ref _assignmentVersion) != assignmentVersion
-                || !_revokedPartitionsSinceLastSync.IsEmpty
-                || Volatile.Read(ref _maxPollExpiredAtPollVersion) == Volatile.Read(ref _pollVersion))
+                || !_revokedPartitionsSinceLastSync.IsEmpty)
             {
                 return;
             }
+
+            // The consumer drained the lost partitions and dropped their stored offsets.
+            _membershipLossCommitFence = false;
+
+            if (Volatile.Read(ref _maxPollExpiredAtPollVersion) == Volatile.Read(ref _pollVersion))
+                return;
 
             Volatile.Write(ref _maxPollExpiredAtPollVersion, -1);
         }
@@ -997,6 +1020,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             return;
 
         ThrowIfMaxPollIntervalExpired();
+        ThrowIfMembershipLost();
 
         LogCommitOffsetsStarted(_options.GroupId!);
         // Lock is intentionally held across retries to protect the shared _commitTopicGroups dictionary,
@@ -1012,8 +1036,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         {
             await RetryHelper.WithRetryAsync(async () =>
             {
-                // Expiration can happen while this call waits for the commit lock.
+                // Expiration or a membership loss can happen while this call waits for the
+                // commit lock or backs off between attempts.
                 ThrowIfMaxPollIntervalExpired();
+                ThrowIfMembershipLost();
 
                 if (_coordinatorId < 0)
                     await FindCoordinatorAsync(cancellationToken).ConfigureAwait(false);
@@ -1114,17 +1140,27 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                             if (staleMemberEpoch)
                             {
                                 // KIP-848: the coordinator bumped the member epoch (e.g. a
-                                // reassignment) after this request was built. The member is
-                                // still in the group; wait for the background heartbeat to
-                                // deliver the refreshed epoch, then retry the commit with it —
-                                // matching the Java client's commit semantics.
-                                await WaitForMemberEpochRefreshAsync(
-                                    request.GenerationIdOrMemberEpoch,
-                                    cancellationToken).ConfigureAwait(false);
+                                // reassignment) after this request was built. While the member
+                                // is active, wait for the background heartbeat to deliver the
+                                // refreshed epoch, then retry the commit with it — matching the
+                                // Java client's commit semantics. Once the heartbeat loop has
+                                // stopped (session lost, fenced, rejoining) no refresh will
+                                // come: fail now instead of retrying until the API timeout.
+                                if (_state == CoordinatorState.Stable)
+                                {
+                                    await WaitForMemberEpochRefreshAsync(
+                                        request.GenerationIdOrMemberEpoch,
+                                        cancellationToken).ConfigureAwait(false);
+                                }
+
+                                staleMemberEpoch = _state == CoordinatorState.Stable;
                             }
 
                             throw new Errors.GroupException(partition.ErrorCode,
-                                $"OffsetCommit failed for {topicName}-{partition.PartitionIndex}: {partition.ErrorCode}",
+                                $"OffsetCommit failed for {topicName}-{partition.PartitionIndex}: {partition.ErrorCode}" +
+                                (partition.ErrorCode == ErrorCode.StaleMemberEpoch && !staleMemberEpoch
+                                    ? "; the consumer is not an active group member, poll to rejoin the group before committing"
+                                    : string.Empty),
                                 isRetriable: staleMemberEpoch || partition.ErrorCode.IsRetriable())
                             {
                                 GroupId = _options.GroupId
@@ -1151,14 +1187,16 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     /// <summary>
     /// Waits for the background heartbeat loop to advance the member epoch past the value a
     /// failed OffsetCommit was sent with. Bounded by one heartbeat interval plus slack: if the
-    /// epoch has not refreshed by then (e.g. the member was reset), the retry proceeds anyway
-    /// and surfaces the coordinator's verdict.
+    /// epoch has not refreshed by then, the retry proceeds anyway and surfaces the coordinator's
+    /// verdict. Stops early when the member leaves the active state (the heartbeat loop stopped).
     /// </summary>
     private async ValueTask WaitForMemberEpochRefreshAsync(int staleEpoch, CancellationToken cancellationToken)
     {
         var maxWait = TimeSpan.FromMilliseconds(_heartbeatIntervalMs + 1_000);
         var startedAt = Stopwatch.GetTimestamp();
-        while (_generationId == staleEpoch && Stopwatch.GetElapsedTime(startedAt) < maxWait)
+        while (_generationId == staleEpoch
+               && _state == CoordinatorState.Stable
+               && Stopwatch.GetElapsedTime(startedAt) < maxWait)
         {
             ThrowIfMaxPollIntervalExpired();
             await Task.Delay(50, cancellationToken).ConfigureAwait(false);
@@ -1459,6 +1497,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         _generationId = -1;
         _state = CoordinatorState.Unjoined;
         ClearAssignment();
+        // A deliberate leave ends the lost membership too; nothing remains to fence.
+        _membershipLossCommitFence = false;
     }
 
     /// <summary>
@@ -1503,6 +1543,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 if (membershipLost)
                 {
                     (_pendingLostPartitions ??= []).AddRange(revoked);
+                    _membershipLossCommitFence = true;
                 }
             }
         }
