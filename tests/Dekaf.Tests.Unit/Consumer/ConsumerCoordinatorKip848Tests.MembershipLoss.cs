@@ -1002,6 +1002,74 @@ public sealed partial class ConsumerCoordinatorKip848Tests
     }
 
     [Test]
+    public async Task MembershipLoss_FenceDuringTheRejoinRetryLoop_LostScopeShowsTheAssignmentItWasQueuedUnder()
+    {
+        var script = new HeartbeatScript(this);
+        var calls = new List<string>();
+        TopicPartition[] scopeAssignment = [];
+        var listener = Substitute.For<IConsumerAwareRebalanceListener>();
+        listener.OnPartitionsLostAsync(
+                Arg.Any<IRebalanceConsumer>(),
+                Arg.Any<IEnumerable<TopicPartition>>(),
+                Arg.Any<CancellationToken>())
+            .Returns(callInfo => Record("lost", callInfo.Arg<IEnumerable<TopicPartition>>()!));
+        listener.OnPartitionsAssignedAsync(
+                Arg.Any<IRebalanceConsumer>(),
+                Arg.Any<IEnumerable<TopicPartition>>(),
+                Arg.Any<CancellationToken>())
+            .Returns(callInfo => Record("assigned", callInfo.Arg<IEnumerable<TopicPartition>>()!));
+        var consumer = Substitute.For<IKafkaConsumer<byte[], byte[]>>();
+        consumer.Positions.Returns(Substitute.For<IConsumerPositions>());
+        SetupFindCoordinator();
+        script.Respond = (_, _) => Joined("member-1", memberEpoch: 5, CreateAssignment(TestTopicId, 0, 1));
+        await using var coordinator = new ConsumerCoordinator(
+            CreateConsumerProtocolOptions(
+                consumerAwareRebalanceListener: listener,
+                retryBackoffMs: 1,
+                retryBackoffMaxMs: 1),
+            _connectionPool,
+            _metadataManager,
+            logger: null,
+            getConnectionCount: null,
+            onPartitionsRevoked: null,
+            onPartitionsRevoking: null,
+            onPartitionsRevokedAsync: null,
+            createRebalanceConsumerScope: (current, added) =>
+            {
+                scopeAssignment = current.ToArray();
+                return new RebalanceConsumerScope<byte[], byte[]>(consumer, current, added);
+            });
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
+        await coordinator.StopHeartbeatAsync();
+        lock (calls)
+            calls.Clear();
+
+        // After a coordinator outage the rejoin's first attempt is fenced, which queues [p0, p1]
+        // as lost; the immediate retry succeeds with [p1] and publishes it before the loss is
+        // delivered.
+        coordinator.RequestRejoin();
+        script.Reset();
+        script.Respond = (count, _) => count == 1
+            ? Error(ErrorCode.FencedMemberEpoch)
+            : Joined("member-1", memberEpoch: 6, CreateAssignment(TestTopicId, 1));
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
+
+        await Assert.That(string.Join(" | ", calls)).IsEqualTo(
+            "lost:test-topic-0,test-topic-1@[] | assigned:test-topic-1@[test-topic-1]");
+
+        ValueTask Record(string callback, IEnumerable<TopicPartition> partitions)
+        {
+            static string Names(IEnumerable<TopicPartition> tps) => string.Join(
+                ',',
+                tps.OrderBy(static partition => partition.Partition)
+                    .Select(static partition => $"{partition.Topic}-{partition.Partition}"));
+            lock (calls)
+                calls.Add($"{callback}:{Names(partitions)}@[{Names(scopeAssignment)}]");
+            return ValueTask.CompletedTask;
+        }
+    }
+
+    [Test]
     public async Task MembershipLoss_CallbacksQueuedBeforeARejoin_SeeTheirOwnAssignment()
     {
         var script = new HeartbeatScript(this);

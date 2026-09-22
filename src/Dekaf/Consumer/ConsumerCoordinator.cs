@@ -943,6 +943,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             CancellationToken,
             ValueTask> consumerAwareCallback,
         IEnumerable<TopicPartition> newlyAssigned,
+        HashSet<TopicPartition> assignment,
         CancellationToken cancellationToken)
     {
         IRebalanceConsumerScope? consumerScope = null;
@@ -950,7 +951,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         {
             LogRebalanceListenerCall(callbackName, partitions.Count);
             consumerScope = _createRebalanceConsumerScope!(
-                _assignedPartitions,
+                assignment,
                 newlyAssigned);
             await consumerAwareCallback(
                 listener,
@@ -1010,6 +1011,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 consumerAwareListener,
                 consumerAwareCallback,
                 newlyAssigned,
+                // A queued callback's scope shows the assignment it was queued under, not one
+                // published since.
+                progress?.Assignment ?? _assignedPartitions,
                 cancellationToken).ConfigureAwait(false);
             progress?.ListenersCompleted = position;
         }
@@ -1057,6 +1061,11 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
         public ConsumerHeartbeatResult Deferred { get; init; }
 
+        // The published assignment when this notification arose, for a consumer-aware
+        // listener's scope. Assignment sets are replaced, never mutated, so the reference is a
+        // stable snapshot.
+        public required HashSet<TopicPartition> Assignment { get; init; }
+
         public bool RevokedDelivered;
 
         public int ListenersCompleted;
@@ -1064,8 +1073,11 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
     private void EnqueuePendingRebalanceCallback(PendingRebalanceCallback callback)
     {
-        _pendingRebalanceCallbacks.Enqueue(callback);
+        // Count first: the stable poll path reads only the count, so it must never see zero
+        // while an entry is queued. A drainer that sees the count before the entry finds the
+        // queue empty and simply returns; the entry is drained by the next check.
         Interlocked.Increment(ref _pendingRebalanceCallbackCount);
+        _pendingRebalanceCallbacks.Enqueue(callback);
     }
 
     /// <summary>
@@ -1640,7 +1652,11 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         Interlocked.Increment(ref _membershipVersion);
         var lost = ClearAssignment();
         if (lost is not null)
-            EnqueuePendingRebalanceCallback(new PendingRebalanceCallback { Lost = lost });
+            EnqueuePendingRebalanceCallback(new PendingRebalanceCallback
+            {
+                Lost = lost,
+                Assignment = _assignedPartitions
+            });
     }
 
     private IReadOnlyList<TopicPartition>? ClearAssignment()
@@ -1764,9 +1780,13 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             EnqueuePendingRebalanceCallback(deferred);
     }
 
-    private static PendingRebalanceCallback? CreateDeferredRebalanceCallback(ConsumerHeartbeatResult result) =>
+    private PendingRebalanceCallback? CreateDeferredRebalanceCallback(ConsumerHeartbeatResult result) =>
         result.AssignmentChanged && (result.Revoked is { Count: > 0 } || result.Assigned is { Count: > 0 })
-            ? new PendingRebalanceCallback { Deferred = result with { RevocationCommitCompletion = null } }
+            ? new PendingRebalanceCallback
+            {
+                Deferred = result with { RevocationCommitCompletion = null },
+                Assignment = _assignedPartitions
+            }
             : null;
 
     private ValueTask InvokePartitionsRevokedListenersAsync(
