@@ -129,4 +129,56 @@ public class ShareSessionManagerTests
 
         await Assert.That(manager.GetSessionEpoch(brokerId: 1)).IsEqualTo(1);
     }
+
+    [Test]
+    public async Task IncrementAtMaxValue_WrapsToOne()
+    {
+        var manager = new ShareSessionManager();
+        var epochs = (System.Collections.Concurrent.ConcurrentDictionary<int, int>)typeof(ShareSessionManager)
+            .GetField("_sessionEpochs", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+            .GetValue(manager)!;
+        epochs[1] = int.MaxValue;
+
+        manager.IncrementEpoch(brokerId: 1);
+
+        await Assert.That(manager.GetSessionEpoch(brokerId: 1)).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task ConcurrentBrokers_KeepEveryBrokersEpoch()
+    {
+        // A commit and a poll send to every broker at once, and each per-broker task
+        // advances or resets its own broker's epoch when its response arrives.
+        const int brokers = 8;
+        const int updates = 20_000;
+        const int lastReset = updates - 1 - ((updates - 1) % 97);
+        var manager = new ShareSessionManager();
+        using var start = new Barrier(brokers);
+
+        var tasks = new Task[brokers];
+        for (var broker = 0; broker < brokers; broker++)
+        {
+            var brokerId = broker;
+            tasks[broker] = Task.Factory.StartNew(() =>
+            {
+                start.SignalAndWait();
+                for (var i = 0; i < updates; i++)
+                {
+                    manager.IncrementEpoch(brokerId);
+                    if (i % 97 == 0)
+                    {
+                        manager.ResetSession(brokerId);
+                        manager.IncrementEpoch(brokerId);
+                    }
+                }
+            }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+        }
+
+        await Task.WhenAll(tasks);
+
+        // The last reset is followed by one increment, then one per remaining iteration.
+        const int expected = 1 + (updates - 1 - lastReset);
+        for (var broker = 0; broker < brokers; broker++)
+            await Assert.That(manager.GetSessionEpoch(broker)).IsEqualTo(expected);
+    }
 }
