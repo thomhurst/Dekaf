@@ -1538,6 +1538,66 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
     }
 
     /// <summary>
+    /// An abort bumped the producer epoch while the batch was in flight, so the broker's
+    /// ProducerFenced answers the old stamp of a transaction that has already ended. The producer
+    /// ignores that report and stays usable, so the caller must not be told to close it: the batch
+    /// fails with the non-fatal transaction exception.
+    /// </summary>
+    [Test]
+    [Timeout(30_000)]
+    public async Task SendLoop_TransactionalFenceForAnEarlierEpoch_FailsBatchWithoutAFatalError(
+        CancellationToken cancellationToken)
+    {
+        var response = new TaskCompletionSource<ProduceResponse>();
+        var responses = new Queue<TaskCompletionSource<ProduceResponse>>([response]);
+        var sent = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var (pool, _) = CreateMockConnection(responses, () => sent.TrySetResult());
+        cancellationToken = GuardUnscriptedSends(cancellationToken);
+        var options = CreateOptions(
+            retryBackoffMs: 0,
+            retryBackoffMaxMs: 0,
+            transactionalId: "test-transaction");
+        var accumulator = new RecordAccumulator(options);
+        accumulator.ProducerId = 4242;
+        accumulator.ProducerEpoch = 7;
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var acknowledged = new TaskCompletionSource<Exception?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var sender = CreateSender(
+            pool,
+            options,
+            accumulator,
+            (_, _, _, _, exception) => acknowledged.TrySetResult(exception),
+            produceApiVersion: ProduceRequest.ImplicitTransactionPartitionEnrollmentVersion,
+            isTransactional: true,
+            usesTransactionV2: true);
+        accumulator.OnTransactionalBatchFailed = static (_, _, _, _) => { };
+
+        try
+        {
+            var batch = CreateTestBatch(
+                valueTaskSourcePool, "test-topic", partition: 0, failureObserver: accumulator);
+            batch.RecordBatch.ProducerId = 4242;
+            batch.RecordBatch.ProducerEpoch = 7;
+            sender.Enqueue(batch);
+            await sent.Task.WaitAsync(cancellationToken);
+
+            // The abort completes and installs the bumped epoch before the answer arrives.
+            accumulator.ProducerEpoch = 8;
+            response.SetResult(CreateErrorResponse("test-topic", partition: 0, ErrorCode.ProducerFenced));
+
+            var exception = await acknowledged.Task.WaitAsync(cancellationToken);
+            await Assert.That(exception).IsTypeOf<AbortableTransactionException>();
+            await Assert.That(((TransactionException)exception!).ErrorCode).IsEqualTo(ErrorCode.ProducerFenced);
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
+    /// <summary>
     /// Any other non-retriable produce error keeps its own exception for the caller, but the
     /// failed records are not part of the transaction, so it must not commit: the producer's
     /// transaction state is told about the failure too.

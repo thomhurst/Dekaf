@@ -3805,7 +3805,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                     KafkaException failureException = transactionalStampRejected
                         ? CreateTransactionalStampRejectedException(
-                            partitionResponse.ErrorCode, expectedTopic, expectedPartition)
+                            partitionResponse.ErrorCode, expectedTopic, expectedPartition, batch)
                         : partitionResponse.ErrorCode == ErrorCode.MessageTooLarge
                         ? new ProduceException(partitionResponse.ErrorCode,
                             $"Produce failed: {partitionResponse.ErrorCode}")
@@ -6124,10 +6124,25 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private TransactionException CreateTransactionalStampRejectedException(
         ErrorCode errorCode,
         string topic,
-        int partition)
+        int partition,
+        ReadyBatch batch)
     {
         if (TransactionErrorClassifier.ClassifyFailedBatch(errorCode) == TransactionErrorClassification.Fatal)
         {
+            // An abort bumped the epoch while this batch was in flight: the fence answers the
+            // old stamp of a transaction that has already ended, and the producer's transaction
+            // state ignores the report (KafkaProducer.OnTransactionalBatchFailed). Telling the
+            // caller to close the healthy producer would be wrong.
+            if (IsStampedWithEarlierProducerIdentity(batch))
+            {
+                return new AbortableTransactionException(errorCode,
+                    $"Produce to {topic}-{partition} failed: {errorCode} for an earlier producer epoch. " +
+                    "The transaction this record belonged to has already ended; the producer is still usable.")
+                {
+                    TransactionalId = _options.TransactionalId
+                };
+            }
+
             return new FatalTransactionException(errorCode,
                 $"Produce to {topic}-{partition} failed: {errorCode}. The producer has been fenced and must be closed.")
             {
@@ -6140,6 +6155,19 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         {
             TransactionalId = _options.TransactionalId
         };
+    }
+
+    /// <summary>
+    /// The batch carries a producer ID or epoch the producer has since replaced (the accumulator
+    /// holds the current identity; an epoch below zero means none has been assigned). Error path only.
+    /// </summary>
+    private bool IsStampedWithEarlierProducerIdentity(ReadyBatch batch)
+    {
+        var currentEpoch = _accumulator.ProducerEpoch;
+        var recordBatch = batch.RecordBatch;
+        return currentEpoch >= 0
+            && recordBatch.ProducerEpoch >= 0
+            && (recordBatch.ProducerEpoch != currentEpoch || recordBatch.ProducerId != _accumulator.ProducerId);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
