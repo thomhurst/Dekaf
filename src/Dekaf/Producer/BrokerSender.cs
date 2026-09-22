@@ -108,9 +108,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// Timeout for SendCoalescedAsync which only does TCP write + response task wiring.
     /// Longer than this indicates a broken/stale connection. Reduced from 5000ms to 1500ms
     /// to bound tail latency: a degraded connection previously held batches for up to 5s
-    /// before timing out, contributing to p99+ spikes.
+    /// before timing out, contributing to p99+ spikes. Connection setup is not under this
+    /// budget: a send that needs a connection only waits this long for the setup that
+    /// <see cref="_pendingConnections"/> keeps running on the sender lifetime token.
     /// </summary>
     private const int SendCoalescedTimeoutMs = 1500;
+
+    private static readonly TimeSpan LeaseRetryDelay = TimeSpan.FromMilliseconds(1);
 
     private const int ResponsePollIntervalMs = 100;
     private const int BlockedBucketPollIntervalMs = 1;
@@ -837,6 +841,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     // Idempotent producers additionally require affinity for per-partition sequence ordering;
     // during routing changes, _migratingPartitions preserves ordering.
     private readonly IKafkaConnection?[] _pinnedConnections;
+
+    // In-flight pool acquisitions per connection slot, started on the sender lifetime token so
+    // a TCP/TLS/SASL setup slower than SendCoalescedTimeoutMs survives the send that gave up
+    // waiting for it. Each later send for the slot waits on the same task instead of
+    // cancelling the setup and starting another one. A slot that leaves the routing width
+    // drops its task (the fault stays observed) so a later scale-up starts fresh. Send-loop owned.
+    private readonly Task<IKafkaConnection>?[] _pendingConnections;
     private int _connectionCount;
     private readonly bool _isIdempotent;
 
@@ -1113,6 +1124,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             ? Math.Max(_connectionCount, _maxConnectionsPerBroker)
             : _connectionCount;
         _pinnedConnections = new IKafkaConnection?[connectionCapacity];
+        _pendingConnections = new Task<IKafkaConnection>?[connectionCapacity];
         _retainedConnectionIndices = new bool[connectionCapacity];
         _pendingResponsesByConnection = new List<PendingResponse>[connectionCapacity];
         _pendingResponseBytesByConnection = new long[connectionCapacity];
@@ -4695,7 +4707,16 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         {
             // Send failed (connection error, timeout, etc.) — retry batches instead of permanently failing.
             // Aligned with Java Kafka's Sender: transient failures cause reenqueue for retry.
-            if (ex is not LocalTopicIdMissException)
+            if (ex is ConnectionNotReadyException notReady)
+            {
+                // Nothing is pinned or broken yet: the setup is still running. Say so once
+                // per setup at Warning, then keep the follow-up waits at Debug.
+                if (notReady.SetupStartedByThisSend)
+                    LogConnectionSetupOutlivesSendBudget(_brokerId, notReady.ConnectionIndex, notReady.WaitedMs);
+                else
+                    LogConnectionSetupStillPending(_brokerId, notReady.ConnectionIndex, notReady.WaitedMs);
+            }
+            else if (ex is not LocalTopicIdMissException)
             {
                 _pinnedConnections[connectionIndex] = null; // Invalidate only the broken connection
                 LogResponseFailed(ex, _brokerId);
@@ -4899,6 +4920,25 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
     private sealed class LocalTopicIdMissException(string message)
         : KafkaException(Protocol.ErrorCode.UnknownTopicId, message);
+
+    /// <summary>
+    /// A send gave up waiting for its connection slot within the send budget while the pool
+    /// is still setting the connection up. The batches retry; the setup is not restarted.
+    /// </summary>
+    private sealed class ConnectionNotReadyException(
+        int brokerId,
+        int connectionIndex,
+        int waitedMs,
+        bool setupStartedByThisSend)
+        : KafkaException(
+            Protocol.ErrorCode.NetworkException,
+            $"Connection {connectionIndex} to broker {brokerId} is not ready after {waitedMs}ms; " +
+            "the connection setup continues and the batches wait for it")
+    {
+        public int ConnectionIndex { get; } = connectionIndex;
+        public int WaitedMs { get; } = waitedMs;
+        public bool SetupStartedByThisSend { get; } = setupStartedByThisSend;
+    }
 
     internal Telemetry.ClientTelemetryMetricCollector? TelemetryMetricCollector { get; init; }
     private Telemetry.StandardClientTelemetryMetrics? StandardTelemetryMetrics => TelemetryMetricCollector?.StandardMetrics;
@@ -5540,14 +5580,59 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         int connIdx,
         CancellationToken cancellationToken)
     {
-        var conn = _pinnedConnections[connIdx];
-        if (conn is not null
-            && conn.IsConnected
-            && KafkaConnectionLease.TryAcquire(conn, out var pinnedLease))
+        while (true)
         {
-            return pinnedLease;
-        }
+            var conn = _pinnedConnections[connIdx];
+            if (conn is not null
+                && conn.IsConnected
+                && KafkaConnectionLease.TryAcquire(conn, out var pinnedLease))
+            {
+                return pinnedLease;
+            }
 
+            var pending = _pendingConnections[connIdx];
+            var startedHere = pending is null;
+            if (pending is null)
+            {
+                pending = StartConnectionAcquisition(connIdx);
+                _pendingConnections[connIdx] = pending;
+            }
+
+            if (!pending.IsCompleted)
+            {
+                try
+                {
+                    await pending.WaitAsync(cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (!pending.IsCompleted)
+                {
+                    // The send budget expired first. The acquisition keeps running on the
+                    // sender lifetime token; the batches retry and the next send resumes
+                    // this wait, so a slow setup is never restarted from scratch.
+                    throw new ConnectionNotReadyException(
+                        _brokerId, connIdx, SendCoalescedTimeoutMs, startedHere);
+                }
+                catch
+                {
+                    // The acquisition itself completed with a failure: report it from the
+                    // task below so the slot is released together with the exception.
+                }
+            }
+
+            _pendingConnections[connIdx] = null;
+            var connection = await pending.ConfigureAwait(false);
+            _pinnedConnections[connIdx] = connection;
+            if (KafkaConnectionLease.TryAcquire(connection, out var lease))
+                return lease;
+
+            // The pool handed out a retiring connection; give it a moment to publish the
+            // replacement before asking again.
+            await Task.Delay(LeaseRetryDelay, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private Task<IKafkaConnection> StartConnectionAcquisition(int connIdx)
+    {
         // Shared pools may retain an expanded group owned by another client. An owning
         // sender also retains a one-slot group after scaling back down. Keep those slots
         // indexed, while preserving the singleton path before this sender first scales up.
@@ -5557,14 +5642,45 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         if (usesIndexedGroup)
             RetainConnectionIndex(connIdx);
 
-        var connectionLease = usesIndexedGroup
-            ? await _connectionPool.LeaseConnectionByIndexAsync(_brokerId, connIdx, cancellationToken)
-                .ConfigureAwait(false)
-            : await _connectionPool.LeaseConnectionAsync(_brokerId, cancellationToken)
-                .ConfigureAwait(false);
+        var acquisition = usesIndexedGroup
+            ? _connectionPool.GetConnectionByIndexAsync(_brokerId, connIdx, _cts.Token).AsTask()
+            : _connectionPool.GetConnectionAsync(_brokerId, _cts.Token).AsTask();
 
-        _pinnedConnections[connIdx] = connectionLease.Connection;
-        return connectionLease;
+        // A setup that fails while no send is waiting for the slot is reported by the next
+        // send; until then, keep its fault observed.
+        _ = acquisition.ContinueWith(
+            static completed => _ = completed.Exception,
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+        return acquisition;
+    }
+
+    /// <summary>
+    /// Observes every pending connection acquisition after the send loop has exited. The
+    /// acquisitions run on the sender lifetime token, so cancelling it in disposal ends them.
+    /// </summary>
+    private async ValueTask ObservePendingConnectionsAsync()
+    {
+        for (var i = 0; i < _pendingConnections.Length; i++)
+        {
+            var pending = _pendingConnections[i];
+            if (pending is null)
+                continue;
+
+            _pendingConnections[i] = null;
+            try
+            {
+                await pending.WaitAsync(_disposalDrainTimeout).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (Exception ex)
+            {
+                LogBatchCleanupStepFailed(ex, _brokerId);
+            }
+        }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -6108,7 +6224,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // If the bounded wait timed out, the send loop still owns this state and must remain
         // its only writer.
         if (_sendLoopTask.IsCompleted)
+        {
             EndPartitionLimitedDiagnosticState(MonotonicClock.GetMilliseconds());
+            await ObservePendingConnectionsAsync().ConfigureAwait(false);
+        }
 
         var deferredPendingCount = Volatile.Read(ref _totalPendingResponseCount);
         if (deferredPendingCount > 0 && !_sendLoopTask.IsCompleted)
@@ -6549,6 +6668,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         if (!_canPhysicallyShrinkConnections)
         {
             _pinnedConnections[targetShrinkCount] = null;
+            _pendingConnections[targetShrinkCount] = null;
             ReleaseConnectionIndex(targetShrinkCount);
             LogAdaptiveScaleDown(_brokerId, targetShrinkCount + 1, targetShrinkCount);
             return targetShrinkCount;
@@ -6656,7 +6776,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // A true singleton comes from the endpoint cache, while the new indexed group owns
         // a different slot 0. Drop the old pin so routing adopts the group's real connection.
         if (slotZeroIdentitySwap)
+        {
             _pinnedConnections[0] = null;
+            _pendingConnections[0] = null;
+        }
 
         _hasScaledConnectionGroup = true;
         _connectionCount = actualCount;
@@ -6759,6 +6882,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             && _pendingResponsesByConnection[_connectionCount].Count == 0)
         {
             _pinnedConnections[_connectionCount] = null;
+            _pendingConnections[_connectionCount] = null;
             _drainingConnection = _retiringConnection;
             _retiringConnection = null;
         }
@@ -6849,6 +6973,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
     [LoggerMessage(Level = LogLevel.Error, Message = "BrokerSender[{BrokerId}] response failed")]
     private partial void LogResponseFailed(Exception ex, int brokerId);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "BrokerSender[{BrokerId}] connection {ConnectionIndex} was not established within {WaitedMs}ms; the setup continues and the batches wait for it")]
+    private partial void LogConnectionSetupOutlivesSendBudget(int brokerId, int connectionIndex, int waitedMs);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "BrokerSender[{BrokerId}] connection {ConnectionIndex} setup is still pending after another {WaitedMs}ms")]
+    private partial void LogConnectionSetupStillPending(int brokerId, int connectionIndex, int waitedMs);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "BS#{InstanceId}[{Topic}-{Partition}] No response (response has {ResponseCount} entries: [{ResponseKeys}], request had {RequestBatchCount} batches, task={TaskId}, trace={DiagTrace})")]
     private partial void LogNoResponseForPartition(int instanceId, string topic, int partition, int responseCount, string responseKeys, int requestBatchCount, int taskId, string diagTrace);
