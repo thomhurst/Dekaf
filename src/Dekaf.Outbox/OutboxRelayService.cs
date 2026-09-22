@@ -58,6 +58,9 @@ public sealed partial class OutboxRelayService : BackgroundService
     // still-failing head once more.
     private readonly int[] _headRowFailures;
     private readonly Guid[] _headRowMessageIds;
+    // When the head row of each bucket last failed. A failing bucket waits out ErrorBackoff on
+    // its own, so the other buckets keep draining at full speed in the meantime.
+    private readonly long[] _headRowFailedAt;
     // Cycles in a row that failed without publishing anything. Drives the error backoff.
     private int _fruitlessCycles;
     // Seeded from the relay id: relays back off out of step with each other, and one relay
@@ -113,6 +116,7 @@ public sealed partial class OutboxRelayService : BackgroundService
         _pendingBuckets = new int[options.BucketCount];
         _headRowFailures = new int[options.BucketCount];
         _headRowMessageIds = new Guid[options.BucketCount];
+        _headRowFailedAt = new long[options.BucketCount];
         _backoffJitter = new Random(StableSeed(options.RelayId));
         if (notifier is OutboxNotifier)
         {
@@ -394,6 +398,7 @@ public sealed partial class OutboxRelayService : BackgroundService
 
             var publishedAny = false;
             var hadError = false;
+            var backingOff = false;
             var generation = _leaseGeneration;
             var pendingCount = _pendingBucketCount;
             var retainedCount = 0;
@@ -417,6 +422,14 @@ public sealed partial class OutboxRelayService : BackgroundService
                 // Keep bucket draining in the cycle state machine. A pending publisher
                 // needs one suspension instead of a second pooled async operation.
                 var bucket = _pendingBuckets[bucketIndex];
+                if (_headRowFailures[bucket] > 0
+                    && _timeProvider.GetElapsedTime(_headRowFailedAt[bucket]) < _options.ErrorBackoff)
+                {
+                    _pendingBuckets[retainedCount++] = bucket;
+                    backingOff = true;
+                    continue;
+                }
+
                 // One batch per bucket per sweep when multiple buckets are owned.
                 while (!cancellationToken.IsCancellationRequested)
                 {
@@ -612,10 +625,19 @@ public sealed partial class OutboxRelayService : BackgroundService
                     {
                         // Unacked rows stay in the store; the error backoff applies before the next cycle.
                         if (leaseLost || result.AckedCount >= batch.Count)
+                        {
                             LogBatchPublishFailed(result.FirstError, bucket, batch.Count - result.AckedCount);
-                        else
-                            RecordHeadRowFailure(bucket, batch[result.AckedCount], result.FirstError, batch.Count - result.AckedCount);
-                        hadError = true;
+                            hadError = true;
+                            break;
+                        }
+
+                        // A row Kafka rejects backs off its own bucket only. Pacing the whole
+                        // relay by it would drain every healthy bucket at one batch per
+                        // ErrorBackoff for as long as that row keeps failing.
+                        RecordHeadRowFailure(bucket, batch[result.AckedCount], result.FirstError, batch.Count - result.AckedCount);
+                        _headRowFailedAt[bucket] = _timeProvider.GetTimestamp();
+                        _pendingBuckets[retainedCount++] = bucket;
+                        backingOff = true;
                         break;
                     }
 
@@ -644,10 +666,13 @@ public sealed partial class OutboxRelayService : BackgroundService
 
             // A legacy store may rebalance during PreparePublishLeaseAsync. Never carry
             // readiness from an earlier ownership epoch into the next sweep.
-            _pendingBucketCount = !hadError && generation == _leaseGeneration ? retainedCount : 0;
-            if (hadError)
+            // A cycle that only met buckets backing off waits like a failed one, and rediscovers
+            // after the wait as a failed one does.
+            var failed = hadError || (backingOff && !publishedAny);
+            _pendingBucketCount = !failed && generation == _leaseGeneration ? retainedCount : 0;
+            if (failed)
                 _discoveryRequired = true;
-            return new CycleResult(publishedAny, hadError);
+            return new CycleResult(publishedAny, failed);
         }
         finally
         {

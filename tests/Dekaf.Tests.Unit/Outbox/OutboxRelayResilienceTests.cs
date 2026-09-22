@@ -75,6 +75,52 @@ public sealed class OutboxRelayResilienceTests
     }
 
     [Test]
+    public async Task PoisonRowInOneBucket_DoesNotPaceTheBacklogOfTheOtherBuckets()
+    {
+        // The clock never moves, so any wait on the error backoff parks the relay for good.
+        var time = new ManualTimeProvider();
+        var store = new RowStore(ownedBuckets: [0, 1]);
+        store.Enqueue(Row(1, bucket: 0));
+        store.Enqueue(Row(10, bucket: 1), Row(11, bucket: 1), Row(12, bucket: 1),
+            Row(13, bucket: 1), Row(14, bucket: 1), Row(15, bucket: 1));
+        var publisher = new ConcurrentSendPublisher();
+        publisher.Reject(1);
+        var options = new OutboxRelayOptions
+        {
+            BucketCount = 2,
+            BatchSize = 2,
+            PollInterval = TimeSpan.FromMinutes(2),
+            ErrorBackoff = TimeSpan.FromMinutes(1),
+            LeaseRenewInterval = TimeSpan.FromMinutes(5),
+            LeaseDuration = TimeSpan.FromMinutes(10),
+            MaxPublishDuration = TimeSpan.FromSeconds(5),
+            RelayId = "test-relay"
+        };
+
+        using var relay = CreateRelay(store, publisher, options, time);
+        await relay.StartAsync(CancellationToken.None);
+        try
+        {
+            // Three batches wait in bucket 1. A poison row in bucket 0 must hold back only
+            // its own bucket: pacing the whole relay by it would drain every healthy bucket at
+            // one batch per ErrorBackoff.
+            await store.WaitForBucketEmptyAsync(1, SignalTimeout);
+            await Assert.That(store.MarkedIds.Order().ToArray()).IsEquivalentTo(new long[] { 10, 11, 12, 13, 14, 15 });
+
+            // The poison row is not retried before its own backoff has passed.
+            await time.WaitForTimerAsync(options.ErrorBackoff);
+            await Assert.That(publisher.RejectedAttempts).IsEqualTo(1);
+            publisher.Accept(1);
+            time.Advance(options.ErrorBackoff);
+            await store.WaitForEmptyAsync(SignalTimeout);
+        }
+        finally
+        {
+            await relay.StopAsync(CancellationToken.None).WaitAsync(SignalTimeout);
+        }
+    }
+
+    [Test]
     public async Task FruitlessFailures_BackOffExponentiallyWithJitter_AndKeepTheLeases()
     {
         const int failures = 14;
@@ -482,6 +528,7 @@ public sealed class OutboxRelayResilienceTests
         public void Reject(long id) => _rejected[id] = 0;
         public void Accept(long id) => _rejected.TryRemove(id, out _);
         public int Deliveries(long id) => _deliveries.GetValueOrDefault(id);
+        public int RejectedAttempts => Volatile.Read(ref _rejectedAttempts);
 
         public ValueTask InitializeAsync(CancellationToken cancellationToken = default) => ValueTask.CompletedTask;
 

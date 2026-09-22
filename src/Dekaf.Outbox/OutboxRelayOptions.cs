@@ -45,7 +45,9 @@ public sealed class OutboxRelayOptions
     /// Delay before retrying after a store or publish failure. While cycles keep failing
     /// without publishing anything, the ceiling doubles per failure up to
     /// <see cref="LeaseRenewInterval"/>, and the relay waits a random time between this value
-    /// and that ceiling, so relays sharing a failing store do not retry in step.
+    /// and that ceiling, so relays sharing a failing store do not retry in step. A row Kafka
+    /// rejects backs off only its own bucket for this long; the relay's other buckets keep
+    /// draining meanwhile.
     /// </summary>
     public TimeSpan ErrorBackoff { get; init; } = TimeSpan.FromSeconds(1);
 
