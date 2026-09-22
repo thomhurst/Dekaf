@@ -1818,4 +1818,77 @@ public class MetadataManagerTests
     }
 
     private sealed record LogEntry(LogLevel Level, string Message);
+
+    // A broker that accepts TCP and then says nothing (a hung JVM, a black-holed route) costs a
+    // full connection setup timeout per attempt. The refresh must not pay that on every pass
+    // when another broker is known to answer: the endpoint that answered last goes first.
+    [Test]
+    [Timeout(30_000)]
+    public async Task RefreshMetadataAsync_SilentFirstBroker_LaterRefreshesGoStraightToTheBrokerThatAnswered(
+        CancellationToken cancellationToken)
+    {
+        var setupTimeout = TimeSpan.FromMilliseconds(600);
+        var silentAttempts = 0;
+        var healthy = Substitute.For<IKafkaConnection>();
+        healthy.IsConnected.Returns(true);
+        healthy.BrokerId.Returns(1);
+        healthy.Host.Returns("broker-1");
+        healthy.Port.Returns(9093);
+        healthy.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
+                Arg.Any<ApiVersionsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new ApiVersionsResponse
+            {
+                ErrorCode = ErrorCode.None,
+                ApiKeys =
+                [
+                    new ApiVersion(
+                        ApiKey.Metadata,
+                        MetadataRequest.LowestSupportedVersion,
+                        MetadataRequest.HighestSupportedVersion)
+                ]
+            });
+        healthy.SendAsync<MetadataRequest, MetadataResponse>(
+                Arg.Any<MetadataRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ => CreateMetadataResponse((0, "broker-0", 9092), (1, "broker-1", 9093)));
+        await using var pool = new ConnectionPool(
+            "metadata-silent-broker-test",
+            new ConnectionOptions
+            {
+                ConnectionTimeout = setupTimeout,
+                ConnectionTimeoutMax = setupTimeout,
+                ReconnectBackoff = TimeSpan.Zero,
+                ReconnectBackoffMax = TimeSpan.Zero
+            },
+            connectionsPerBroker: 1,
+            connectionFactory: async (_, host, _, _, ct) =>
+            {
+                if (host == "broker-1")
+                    return healthy;
+
+                Interlocked.Increment(ref silentAttempts);
+                await Task.Delay(Timeout.Infinite, ct);
+                throw new InvalidOperationException("unreachable");
+            });
+        await using var manager = new MetadataManager(
+            pool,
+            ["broker-0:9092", "broker-1:9093"],
+            new MetadataOptions { EnableBackgroundRefresh = false });
+
+        // The first refresh cannot know broker 0 is silent; it pays one setup timeout.
+        await manager.InitializeAsync(cancellationToken);
+        var attemptsAfterInitialize = Volatile.Read(ref silentAttempts);
+
+        var stopwatch = Stopwatch.StartNew();
+        for (var i = 0; i < 3; i++)
+            await manager.RefreshMetadataAsync(cancellationToken);
+        stopwatch.Stop();
+
+        await Assert.That(attemptsAfterInitialize).IsEqualTo(1);
+        await Assert.That(Volatile.Read(ref silentAttempts)).IsEqualTo(attemptsAfterInitialize);
+        await Assert.That(stopwatch.Elapsed).IsLessThan(setupTimeout);
+    }
 }

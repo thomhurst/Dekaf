@@ -27,6 +27,9 @@ public sealed partial class MetadataManager : IAsyncDisposable
     private List<(int BrokerId, string Host, int Port)>? _cachedEndpoints;
     private int _cachedBrokerHash;
     private readonly object _endpointCacheLock = new();
+    // The endpoint that answered the last successful refresh. Refreshes run under _refreshLock,
+    // so only one writer; the reference is published whole.
+    private volatile RespondingEndpoint? _lastRespondingEndpoint;
 
     private volatile short _metadataApiVersion = -1;
     private readonly ConcurrentDictionary<ApiKey, (short MinVersion, short MaxVersion)> _brokerApiVersions = new();
@@ -1283,8 +1286,18 @@ public sealed partial class MetadataManager : IAsyncDisposable
         // Try each bootstrap server or known broker
         var endpoints = GetEndpointsToTry();
 
-        foreach (var (brokerId, host, port) in endpoints)
+        // The endpoint that answered last goes first. Otherwise a broker that accepts TCP and
+        // then stays silent at the head of the fixed order costs a full connection setup timeout
+        // on every refresh, although another broker is known to answer (Java's least-loaded
+        // node selection avoids the same trap).
+        var preferredIndex = FindLastRespondingEndpointIndex(endpoints);
+        for (var attempt = 0; attempt < endpoints.Count; attempt++)
         {
+            var index = preferredIndex <= 0 ? attempt
+                : attempt == 0 ? preferredIndex
+                : attempt <= preferredIndex ? attempt - 1
+                : attempt;
+            var (brokerId, host, port) = endpoints[index];
             try
             {
                 using var connectionLease = brokerId >= 0
@@ -1369,6 +1382,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
                 LogMetadataRefreshed(response.Brokers.Count, response.Topics.Count);
 
                 NotifyBrokerCountDiscovered(response.Brokers.Count);
+                RecordRespondingEndpoint(host, port);
 
                 // Success - reset the rebootstrap timer
                 ResetAllBrokersUnavailableTimestamp();
@@ -1850,6 +1864,31 @@ public sealed partial class MetadataManager : IAsyncDisposable
         _negotiatedVersionCache.Clear();
         _metadataApiVersion = metadataApiVersion;
     }
+
+    private void RecordRespondingEndpoint(string host, int port)
+    {
+        var current = _lastRespondingEndpoint;
+        if (current is null || current.Port != port || !string.Equals(current.Host, host, StringComparison.Ordinal))
+            _lastRespondingEndpoint = new RespondingEndpoint(host, port);
+    }
+
+    private int FindLastRespondingEndpointIndex(IReadOnlyList<(int BrokerId, string Host, int Port)> endpoints)
+    {
+        var preferred = _lastRespondingEndpoint;
+        if (preferred is null)
+            return -1;
+
+        for (var i = 0; i < endpoints.Count; i++)
+        {
+            var (_, host, port) = endpoints[i];
+            if (port == preferred.Port && string.Equals(host, preferred.Host, StringComparison.Ordinal))
+                return i;
+        }
+
+        return -1;
+    }
+
+    private sealed record RespondingEndpoint(string Host, int Port);
 
     internal IReadOnlyList<(int BrokerId, string Host, int Port)> GetEndpointsToTry()
     {
