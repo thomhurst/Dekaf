@@ -17,7 +17,7 @@ namespace Dekaf.Tests.Unit.Consumer;
 /// Verifies the ConsumerGroupHeartbeat-based state machine, assignment handling,
 /// error recovery, leave, and static membership.
 /// </summary>
-public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
+public sealed partial class ConsumerCoordinatorKip848Tests : IAsyncDisposable
 {
     [Test]
     public async Task PublicConstructor_PreservesSixParameterBinarySignature()

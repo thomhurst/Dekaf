@@ -97,6 +97,14 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private long _maxPollExpiredAtPollVersion = -1;
     private long _maxPollExpirationVersion;
     private int _maxPollLossNotificationPending;
+    // Set when the coordinator fences this member (FENCED_MEMBER_EPOCH or UNKNOWN_MEMBER_ID).
+    // Commits are rejected locally until the member has rejoined: its partitions are lost, and
+    // a commit sent under the reset epoch would only wait for an epoch refresh that no heartbeat
+    // will deliver.
+    private int _membershipFenced;
+    // Assignments cleared by a fence, waiting for OnPartitionsLost. Drained under
+    // _rebalanceListenerLock so a rejoin can never publish OnPartitionsAssigned first.
+    private readonly ConcurrentQueue<IReadOnlyList<TopicPartition>> _pendingPartitionsLost = new();
     // Foreground assignment initialization and fetch waits are application poll activity. Track
     // concurrent callers without allocating a scope object on each poll cycle.
     private int _foregroundPollActivityCount;
@@ -276,6 +284,16 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
     private void ThrowIfMaxPollIntervalExpired()
     {
+        if (Volatile.Read(ref _membershipFenced) != 0)
+        {
+            throw new GroupException(
+                ErrorCode.FencedMemberEpoch,
+                "Offset commit rejected because the group coordinator fenced this member; its partitions were lost and it has not rejoined the group yet")
+            {
+                GroupId = _options.GroupId
+            };
+        }
+
         if (Volatile.Read(ref _maxPollExpiredAtPollVersion) < 0
             && !IsCurrentPollGenerationExpired())
             return;
@@ -1430,7 +1448,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 return true;
 
             case ErrorCode.UnknownMemberId:
-                ResetMemberState();
+                FenceMembership(forgetMember: true);
                 return true;
 
             default:
@@ -1453,7 +1471,34 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         _memberId = null;
         _generationId = -1;
         _state = CoordinatorState.Unjoined;
+        Volatile.Write(ref _membershipFenced, 0);
         ClearAssignment();
+    }
+
+    /// <summary>
+    /// The coordinator fenced this member: it no longer owns its partitions. Clears the
+    /// assignment, queues it for OnPartitionsLost, and fences commits until the member rejoins.
+    /// A member fenced by epoch keeps its member id and rejoins with epoch 0 (-2 for static
+    /// members); an unknown member rejoins from scratch. Matches the Java client, which treats
+    /// both errors as partitions lost.
+    /// </summary>
+    private void FenceMembership(bool forgetMember)
+    {
+        if (forgetMember)
+        {
+            _memberId = null;
+            _generationId = -1;
+        }
+        else
+        {
+            _generationId = _options.GroupInstanceId is not null ? -2 : 0;
+        }
+
+        _state = CoordinatorState.Unjoined;
+        Volatile.Write(ref _membershipFenced, 1);
+        var lost = ClearAssignment();
+        if (lost is not null)
+            _pendingPartitionsLost.Enqueue(lost);
     }
 
     private IReadOnlyList<TopicPartition>? ClearAssignment()
@@ -1491,6 +1536,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         {
             await _rebalanceListenerLock.WaitAsync(cancellationToken).ConfigureAwait(false);
             rebalanceListenerLockHeld = true;
+            await InvokePendingPartitionsLostCoreAsync().ConfigureAwait(false);
             await FireConsumerProtocolRebalanceListenersCoreAsync(
                 result,
                 cancellationToken).ConfigureAwait(false);
@@ -2011,6 +2057,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         long rebalanceStarted = -1;
         var rebalanceTimeout = TimeSpan.FromMilliseconds(_options.RebalanceTimeoutMs);
         Exception? lastJoinFailure = null;
+        var joinFailed = false;
 
         // One attempt can outlast the rebalance timeout on its own: a coordinator lookup is five
         // connection attempts, each up to the connection-setup timeout against a broker that
@@ -2091,6 +2138,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                     }
 
                     _state = CoordinatorState.Stable;
+                    Volatile.Write(ref _membershipFenced, 0);
                     if (Volatile.Read(ref _foregroundPollActivityCount) != 0)
                         RefreshPollDeadline();
 
@@ -2103,10 +2151,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 }
                 catch (Errors.GroupException ex) when (ex.ErrorCode == ErrorCode.FencedMemberEpoch)
                 {
-                    // Stale epoch — reset generation so next attempt sends MemberEpoch=0 (or -2 for static members)
+                    // Stale epoch: the partitions are lost; the next attempt sends MemberEpoch=0
+                    // (or -2 for static members) and owns nothing.
                     LogRetriableCoordinatorError(ex.ErrorCode);
-                    _generationId = _options.GroupInstanceId is not null ? -2 : 0;
-                    _state = CoordinatorState.Unjoined;
+                    FenceMembership(forgetMember: false);
                 }
                 catch (Errors.GroupException ex) when (ex.ErrorCode == ErrorCode.UnreleasedInstanceId)
                 {
@@ -2118,9 +2166,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 }
                 catch (Errors.GroupException ex) when (ex.ErrorCode == ErrorCode.UnknownMemberId)
                 {
-                    // Broker forgot this member (e.g. broker restart after fencing) — full reset and retry
+                    // Broker forgot this member (e.g. its session expired during a coordinator
+                    // outage): the partitions are lost; full reset and retry.
                     LogRetriableCoordinatorError(ex.ErrorCode);
-                    ResetMemberState();
+                    FenceMembership(forgetMember: true);
                 }
                 catch (Errors.GroupException ex) when (IsRetriableCoordinatorError(ex.ErrorCode))
                 {
@@ -2163,11 +2212,22 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             !cancellationToken.IsCancellationRequested && joinDeadline.IsCancellationRequested)
         {
             // The join deadline, not the caller, ended an attempt or a backoff still in flight.
+            joinFailed = true;
             throw CreateJoinTimeoutException(rebalanceStarted, rebalanceTimeout, lastJoinFailure);
+        }
+        catch
+        {
+            joinFailed = true;
+            throw;
         }
         finally
         {
             _lock.Release();
+
+            // A fence can precede a failed attempt; the application still learns its partitions
+            // are gone rather than waiting for the next successful join.
+            if (joinFailed)
+                await InvokePendingPartitionsLostAsync().ConfigureAwait(false);
         }
 
         await FireConsumerProtocolRebalanceListenersAsync(heartbeatResult, cancellationToken).ConfigureAwait(false);
@@ -2284,19 +2344,14 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                     switch (ge.ErrorCode)
                     {
                         case ErrorCode.FencedMemberEpoch:
-                            // Reset generation so next EnsureActiveGroup sends MemberEpoch=0 (or -2 for static)
-                            _generationId = _options.GroupInstanceId is not null ? -2 : 0;
-                            _state = CoordinatorState.Unjoined;
-                            break;
-
                         case ErrorCode.UnknownMemberId:
-                            var lost = _assignedPartitions.ToList();
-                            if (lost.Count > 0)
-                            {
-                                await InvokePartitionsLostAsync(lost).ConfigureAwait(false);
-                            }
+                            // The next EnsureActiveGroup rejoins with MemberEpoch=0 (or -2 for static).
+                            if (!await TryFenceFromHeartbeatAsync(
+                                    forgetMember: ge.ErrorCode == ErrorCode.UnknownMemberId,
+                                    cancellationToken).ConfigureAwait(false))
+                                return;
 
-                            ResetMemberState();
+                            await InvokePendingPartitionsLostAsync().ConfigureAwait(false);
                             break;
 
                         case ErrorCode.UnreleasedInstanceId:
@@ -2437,19 +2492,79 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         await _rebalanceListenerLock.WaitAsync(CancellationToken.None).ConfigureAwait(false);
         try
         {
-            await InvokeRebalanceListenersAsync(
-                "OnPartitionsLost",
-                lost,
-                static (listener, partitions, token) => listener.OnPartitionsLostAsync(partitions, token),
-                static (listener, consumer, partitions, token) =>
-                    listener.OnPartitionsLostAsync(consumer, partitions, token),
-                [],
-                CancellationToken.None).ConfigureAwait(false);
+            await InvokePartitionsLostCoreAsync(lost).ConfigureAwait(false);
         }
         finally
         {
             _rebalanceListenerLock.Release();
         }
+    }
+
+    private ValueTask InvokePartitionsLostCoreAsync(IReadOnlyList<TopicPartition> lost) =>
+        InvokeRebalanceListenersAsync(
+            "OnPartitionsLost",
+            lost,
+            static (listener, partitions, token) => listener.OnPartitionsLostAsync(partitions, token),
+            static (listener, consumer, partitions, token) =>
+                listener.OnPartitionsLostAsync(consumer, partitions, token),
+            [],
+            CancellationToken.None);
+
+    private async ValueTask InvokePendingPartitionsLostAsync()
+    {
+        if (_pendingPartitionsLost.IsEmpty)
+            return;
+
+        await _rebalanceListenerLock.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+        try
+        {
+            await InvokePendingPartitionsLostCoreAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            _rebalanceListenerLock.Release();
+        }
+    }
+
+    // Caller holds _rebalanceListenerLock.
+    private async ValueTask InvokePendingPartitionsLostCoreAsync()
+    {
+        while (_pendingPartitionsLost.TryDequeue(out var lost))
+            await InvokePartitionsLostCoreAsync(lost).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Applies a fence the heartbeat loop observed, under the state lock so it cannot interleave
+    /// with a foreground join or max-poll expiry. Returns false when the loop is being stopped;
+    /// its owner then decides the member's fate.
+    /// </summary>
+    private async ValueTask<bool> TryFenceFromHeartbeatAsync(bool forgetMember, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _lock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            return false;
+        }
+        catch (ObjectDisposedException)
+        {
+            return false;
+        }
+
+        try
+        {
+            // A foreground poll may already have expired or rejoined the member.
+            if (_state == CoordinatorState.Stable)
+                FenceMembership(forgetMember);
+        }
+        finally
+        {
+            _lock.Release();
+        }
+
+        return true;
     }
 
     /// <summary>
