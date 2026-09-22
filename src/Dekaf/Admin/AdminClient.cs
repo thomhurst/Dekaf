@@ -1801,7 +1801,7 @@ public sealed partial class AdminClient :
             }
 
             return result;
-        }, cancellationToken, options is null ? null : OperationTimeoutBudget(options.TimeoutMs)).ConfigureAwait(false);
+        }, cancellationToken, OperationTimeoutBudget(transactionTimeoutMs)).ConfigureAwait(false);
     }
 
     public async ValueTask<ForceTerminateTransactionResultInfo> ForceTerminateTransactionAsync(

@@ -597,6 +597,35 @@ public sealed class AdminClientTransportRetryTests
     }
 
     [Test]
+    [Arguments(nameof(IAdminClient.FenceProducersAsync))]
+    [Arguments(nameof(AdminClient.ForceTerminateTransactionAsync))]
+    public async Task FencingTimeout_OptionsOmitted_BoundedByRequestTimeout(string api)
+    {
+        // Without options the fencing timeout sent to the coordinator is RequestTimeoutMs, so the
+        // call is bounded by that value and not by the separate default API budget.
+        var options = FastRetryOptions();
+        options = new AdminClientOptions
+        {
+            BootstrapServers = options.BootstrapServers,
+            RetryBackoffMs = options.RetryBackoffMs,
+            RetryBackoffMaxMs = options.RetryBackoffMaxMs,
+            RequestTimeoutMs = 400
+        };
+        await using var admin = CreateAdminWithUnreachableBootstrap(defaultApiTimeoutBudgetMs: 5_000, options: options);
+
+        var exception = await Assert.ThrowsAsync<KafkaTimeoutException>(async () =>
+        {
+            if (api == nameof(IAdminClient.FenceProducersAsync))
+                await admin.FenceProducersAsync(["txn-1"]);
+            else
+                await admin.ForceTerminateTransactionAsync("txn-1");
+        });
+
+        await Assert.That(exception!.TimeoutKind).IsEqualTo(TimeoutKind.Api);
+        await Assert.That(exception.Configured).IsEqualTo(TimeSpan.FromMilliseconds(400));
+    }
+
+    [Test]
     public async Task CreateTopicsAsync_ZeroOperationTimeout_StillSendsTheRequest()
     {
         // Zero keeps its broker meaning: start the creation and do not wait for it to complete.
@@ -693,14 +722,16 @@ public sealed class AdminClientTransportRetryTests
                 System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
             .SetValue(admin, budgetMs);
 
-    private static AdminClient CreateAdminWithUnreachableBootstrap(int defaultApiTimeoutBudgetMs = AdminClient.DefaultApiTimeoutMs)
+    private static AdminClient CreateAdminWithUnreachableBootstrap(
+        int defaultApiTimeoutBudgetMs = AdminClient.DefaultApiTimeoutMs,
+        AdminClientOptions? options = null)
     {
         var pool = Substitute.For<IConnectionPool>();
         pool.GetConnectionAsync(Arg.Any<string>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
             .Returns(call => WaitForCancellationAsync(call.ArgAt<CancellationToken>(2)));
         pool.GetConnectionAsync(Arg.Any<int>(), Arg.Any<CancellationToken>())
             .Returns(call => WaitForCancellationAsync(call.ArgAt<CancellationToken>(1)));
-        return new AdminClient(FastRetryOptions(), pool, new MetadataManager(pool, ["localhost:9092"]))
+        return new AdminClient(options ?? FastRetryOptions(), pool, new MetadataManager(pool, ["localhost:9092"]))
         {
             DefaultApiTimeoutBudgetMs = defaultApiTimeoutBudgetMs
         };
