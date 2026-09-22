@@ -1277,6 +1277,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private int _disposed;
     private int _closed;
 
+    // Nonzero while a transaction abort settles its batches: every append commit point checks it
+    // under the partition lock, next to _disposed, and rejects the record (see
+    // CloseTransactionalAppends).
+    private int _transactionalAppendsClosed;
+
     internal Action? PurgeAppendWaitObservedForTest;
     internal Action? AfterLingerQueueSnapshotForTest;
     internal Action<TopicPartition>? AfterFlushPartitionVisitedForTest;
@@ -3709,7 +3714,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 {
                     using var guard = new SpinLockGuard(ref pd.Lock);
 
-                    if (Volatile.Read(ref _disposed) != 0)
+                    if (Volatile.Read(ref _disposed) != 0
+                        || Volatile.Read(ref _transactionalAppendsClosed) != 0)
                     {
                         batchToReturn = rentedBatch;
                         rentedBatch = null;
@@ -3827,8 +3833,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
                 if (batchToFail is not null)
                 {
-                    var disposedException = new ObjectDisposedException(nameof(RecordAccumulator));
-                    batchToFail.Fail(disposedException);
+                    batchToFail.Fail(CreateAppendRejectedException());
                     ReleaseUntrackedBudget(batchToFail);
                     ReleaseBatchMemory(batchToFail);
                 }
@@ -3843,6 +3848,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 if (disposed)
                 {
                     ReleaseOwnedAppendState();
+                    ThrowIfTransactionalAppendRejected();
                     return false;
                 }
 
@@ -4205,7 +4211,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 {
                     using var guard = new SpinLockGuard(ref pd.Lock);
 
-                    if (Volatile.Read(ref _disposed) != 0)
+                    if (Volatile.Read(ref _disposed) != 0
+                        || Volatile.Read(ref _transactionalAppendsClosed) != 0)
                     {
                         batchToReturn = rentedBatch;
                         rentedBatch = null;
@@ -4296,8 +4303,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
                 if (batchToFail is not null)
                 {
-                    var disposedException = new ObjectDisposedException(nameof(RecordAccumulator));
-                    batchToFail.Fail(disposedException);
+                    batchToFail.Fail(CreateAppendRejectedException());
                     ReleaseUntrackedBudget(batchToFail);
                     ReleaseBatchMemory(batchToFail);
                 }
@@ -4403,6 +4409,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 if (disposed)
                 {
                     ReleaseOwnedAppendState();
+                    ThrowIfTransactionalAppendRejected();
                     return false;
                 }
 
@@ -4694,6 +4701,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             // A two-phase appender holding the admission slot has made a lease decision it has
             // not committed yet; appending ahead of it would invalidate that decision.
             if (Volatile.Read(ref _disposed) != 0
+                || Volatile.Read(ref _transactionalAppendsClosed) != 0
                 || pd.RotationInProgress
                 || pd.AppendInProgress
                 || Volatile.Read(ref pd.AdmissionInProgress) != 0
@@ -4807,6 +4815,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             using var guard = new SpinLockGuard(ref pd.Lock);
 
             if (Volatile.Read(ref _disposed) != 0
+                || Volatile.Read(ref _transactionalAppendsClosed) != 0
                 || pd.RotationInProgress
                 || pd.AppendInProgress
                 || pd.CurrentBatch is not { } currentBatch)
@@ -7196,6 +7205,49 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         return purgedCount;
     }
 
+    /// <summary>
+    /// Stops every append from committing a record until <see cref="ReopenTransactionalAppends"/>:
+    /// the record fails with <see cref="ProduceErrorKind.TransactionAborted"/> instead. A transaction
+    /// abort calls this before its <see cref="Purge"/>. Each append commits under its partition
+    /// lock and checks this flag there (a fast path yields to the two-phase path, which rejects),
+    /// while the purge takes the same lock and waits for appends and rotations in progress, so the
+    /// purge is a barrier: a record committed before it is purged, and none commits after it. That
+    /// covers produces that passed their state check before the abort began, appends waiting for
+    /// buffer memory and appends queued to the async serializer workers. The full fence orders the
+    /// write before the purge's scan of the partitions. Abort path only.
+    /// </summary>
+    internal void CloseTransactionalAppends() => Interlocked.Exchange(ref _transactionalAppendsClosed, 1);
+
+    /// <summary>Ends <see cref="CloseTransactionalAppends"/>.</summary>
+    internal void ReopenTransactionalAppends() => Volatile.Write(ref _transactionalAppendsClosed, 0);
+
+    internal static ProduceException CreateTransactionAbortedException(string message) =>
+        new(ProduceErrorKind.TransactionAborted, message);
+
+    /// <summary>
+    /// The failure of a sealed batch that an append commit point rejected: disposal wins over a
+    /// transaction abort.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private Exception CreateAppendRejectedException() =>
+        Volatile.Read(ref _disposed) != 0
+            ? new ObjectDisposedException(nameof(RecordAccumulator))
+            : CreateTransactionAbortedException("The transaction was aborted before this record's batch was sent.");
+
+    /// <summary>
+    /// An append commit point rejected the record: disposal reports it by returning false, a
+    /// transaction abort (<see cref="CloseTransactionalAppends"/>) by this exception.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private void ThrowIfTransactionalAppendRejected()
+    {
+        if (Volatile.Read(ref _disposed) == 0)
+        {
+            throw CreateTransactionAbortedException(
+                "The transaction was aborted before this record was appended.");
+        }
+    }
+
     private int PurgeQueuedBatches(Exception exception, Action<ReadyBatch>? onPurgingBatch)
     {
         var purgedCount = FailPendingAppendsForPurge(exception);
@@ -7213,7 +7265,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 {
                     using var guard = new SpinLockGuard(ref pd.Lock);
 
+                    // A rotation has detached the current batch and enqueues it once sealed;
+                    // wait for it so the sealed batch is purged too.
                     if (pd.AppendInProgress
+                        || pd.RotationInProgress
                         || Volatile.Read(ref pd.AdmissionInProgress) != 0)
                     {
                         waitForAppend = true;

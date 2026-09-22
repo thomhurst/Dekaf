@@ -263,6 +263,23 @@ public sealed class TransactionTests
     /// timeout, an abortable control-plane response). The abortable transition must not
     /// downgrade FatalError: the caller could then abort and reuse a fenced producer.
     /// </summary>
+    /// <summary>
+    /// Once an abort starts, a produce would add records to a transaction that is being thrown
+    /// away (Java refuses send in ABORTING_TRANSACTION too).
+    /// </summary>
+    [Test]
+    public async Task ProduceAsync_WhileAborting_ThrowsInvalidTxnState()
+    {
+        await using var producer = BuildTransactionalProducer(TransactionState.AbortingTransaction);
+        var transaction = new Transaction<string, string>(producer);
+
+        var exception = await Assert.That(
+                () => transaction.ProduceAsync("test-topic", "key", "value").AsTask())
+            .Throws<TransactionException>();
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.InvalidTxnState);
+    }
+
     [Test]
     public async Task MarkTransactionAbortable_AfterConcurrentFatalBatch_KeepsFatalError()
     {

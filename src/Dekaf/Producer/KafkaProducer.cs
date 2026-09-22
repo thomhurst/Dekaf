@@ -3911,37 +3911,49 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     internal async ValueTask AbortTransactionAsync(CancellationToken cancellationToken)
     {
         var retryBudget = CreateTransactionRetryBudget();
-        await DrainBatchesBeforeAbortAsync(retryBudget, cancellationToken).ConfigureAwait(false);
 
-        // After the drain: until EndTxn is sent the broker cannot have bumped the epoch, so a
-        // fence answered while draining is real.
-        SetAbortReplacingProducerIdentity(true);
+        // Until the abort ends, no record commits to the accumulator (produce also refuses in
+        // AbortingTransaction), so nothing appended by a produce that raced the abort is sent
+        // after EndTxn or joins the next transaction.
+        _accumulator.CloseTransactionalAppends();
         try
         {
-            await EndTransactionAsync(
-                    committed: false,
-                    _producerId,
-                    _producerEpoch,
-                    applyResponseProducerState: true,
-                    afterRequestWrittenAsync: null,
-                    retryBudget,
-                    cancellationToken)
-                .ConfigureAwait(false);
+            await DrainBatchesBeforeAbortAsync(retryBudget, cancellationToken).ConfigureAwait(false);
 
-            // TV1: broker doesn't return bumped epoch in EndTxn, so fetch it with the
-            // same max.block.ms budget. TV2 already returned the bumped identity.
-            if (!_currentTransactionUsesTV2)
+            // After the drain: until EndTxn is sent the broker cannot have bumped the epoch, so a
+            // fence answered while draining is real.
+            SetAbortReplacingProducerIdentity(true);
+            try
             {
-                await ReinitializeProducerIdAfterAbortAsync(
-                        keepPreparedTransaction: false,
+                await EndTransactionAsync(
+                        committed: false,
+                        _producerId,
+                        _producerEpoch,
+                        applyResponseProducerState: true,
+                        afterRequestWrittenAsync: null,
                         retryBudget,
                         cancellationToken)
                     .ConfigureAwait(false);
+
+                // TV1: broker doesn't return bumped epoch in EndTxn, so fetch it with the
+                // same max.block.ms budget. TV2 already returned the bumped identity.
+                if (!_currentTransactionUsesTV2)
+                {
+                    await ReinitializeProducerIdAfterAbortAsync(
+                            keepPreparedTransaction: false,
+                            retryBudget,
+                            cancellationToken)
+                        .ConfigureAwait(false);
+                }
+            }
+            finally
+            {
+                SetAbortReplacingProducerIdentity(false);
             }
         }
         finally
         {
-            SetAbortReplacingProducerIdentity(false);
+            _accumulator.ReopenTransactionalAppends();
         }
     }
 
@@ -3977,14 +3989,17 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     /// for their answers within the same max.block.ms budget, so the abort marker and the TV2
     /// sequence reset follow them. Nothing has been written to the coordinator if the budget runs
     /// out here, so the transaction stays abortable and the caller aborts again.
+    /// The caller has closed the accumulator to appends
+    /// (<see cref="RecordAccumulator.CloseTransactionalAppends"/>), so the purge is a barrier: a
+    /// produce that passed its state check before the abort began either committed its record
+    /// before the purge, which fails it, or has it rejected with the same error.
     /// Abort path only: no per-message cost.
     /// </summary>
     private async ValueTask DrainBatchesBeforeAbortAsync(
         TransactionRetryBudget retryBudget,
         CancellationToken cancellationToken)
     {
-        var aborted = new ProduceException(
-            ProduceErrorKind.TransactionAborted,
+        var aborted = RecordAccumulator.CreateTransactionAbortedException(
             "The transaction was aborted before this record's batch was sent.");
         _accumulator.Purge(PurgeOptions.Queue, aborted, CompleteInflightEntry);
 
@@ -3997,7 +4012,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             }
             catch (OperationCanceledException)
             {
+                // Keeps a fatal state that a batch answered while waiting reported.
                 PreserveEndTransactionTimeoutState(requestInFlight: false);
+                ThrowIfFatalTransactionError("Cannot abort transaction");
 
                 if (cancellationToken.IsCancellationRequested || !timeoutCts.IsCancellationRequested)
                     throw;
@@ -4008,10 +4025,6 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                     attempts: 0);
             }
         }
-
-        // A produce that passed its state check just before the abort began can append after the
-        // first pass; its records belong to this transaction as well.
-        _accumulator.Purge(PurgeOptions.Queue, aborted, CompleteInflightEntry);
 
         // A batch answered while draining may have fenced the producer.
         ThrowIfFatalTransactionError("Cannot abort transaction");
@@ -5791,6 +5804,17 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         {
             throw new TransactionException(ErrorCode.InvalidTxnState,
                 "Cannot produce: the current transaction is prepared. Only commit, abort, or complete are permitted.")
+            {
+                TransactionalId = _options.TransactionalId
+            };
+        }
+
+        // Java refuses send while aborting too. The accumulator also rejects an append that
+        // passed this check before the abort began (RecordAccumulator.CloseTransactionalAppends).
+        if (txnState == TransactionState.AbortingTransaction)
+        {
+            throw new TransactionException(ErrorCode.InvalidTxnState,
+                "Cannot produce: the current transaction is being aborted.")
             {
                 TransactionalId = _options.TransactionalId
             };
