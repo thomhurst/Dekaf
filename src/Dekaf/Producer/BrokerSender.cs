@@ -3770,13 +3770,18 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         UnmutePartition(splitTopicPartition);
                     }
 
+                    // A transactional producer cannot bump its own epoch mid-transaction: a fence
+                    // or lost sequence state fails the batch, and the producer moves the transaction
+                    // to FatalError or AbortableError (Java parity) instead of retrying the batch
+                    // with the same stamp until the delivery timeout.
                     if (partitionResponse.ErrorCode.IsRetriable()
                         || (partitionResponse.ErrorCode == ErrorCode.ConcurrentTransactions
                             && _isTransactional()
                             && _usesTransactionV2())
-                        || partitionResponse.ErrorCode == ErrorCode.OutOfOrderSequenceNumber
-                        || partitionResponse.ErrorCode == ErrorCode.InvalidProducerEpoch
-                        || partitionResponse.ErrorCode == ErrorCode.UnknownProducerId)
+                        || (partitionResponse.ErrorCode is ErrorCode.OutOfOrderSequenceNumber
+                                or ErrorCode.InvalidProducerEpoch
+                                or ErrorCode.UnknownProducerId
+                            && !_isTransactional()))
                     {
                         LogRetriableError(partitionResponse.ErrorCode, expectedTopic, expectedPartition,
                             batch.RecordBatch.BaseSequence, batch.RecordBatch.Records.Count,
@@ -4139,19 +4144,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
             // Apply backoff to prevent tight retry loops if the epoch bump doesn't
             // resolve the error (e.g., broker keeps rejecting with OOSN).
-            ApplyRetryBackoff(batch);
-        }
-        else if (isEpochBumpError && _bumpEpoch is null
-            && batch.InflightEntry is not null
-            && _inflightTracker is not null)
-        {
-            // Transactional producer — no epoch bump
-            LogOosnTransactionalReenqueue(batch.TopicPartition.Topic, batch.TopicPartition.Partition,
-                batch.RecordBatch.BaseSequence);
-
-            try { CompleteInflightEntry(batch); }
-            catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
-            batch.InflightEntry = null;
             ApplyRetryBackoff(batch);
         }
         else if (!networkRetryPrepared)
@@ -7012,9 +7004,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "[BrokerSender] {ErrorCode} for {Topic}-{Partition} seq={Seq}, signaling epoch bump to send loop")]
     private partial void LogEpochBumpSignaled(ErrorCode errorCode, string topic, int partition, int seq);
-
-    [LoggerMessage(Level = LogLevel.Debug, Message = "[BrokerSender] OOSN for {Topic}-{Partition} seq={Seq}, re-enqueueing (transactional)")]
-    private partial void LogOosnTransactionalReenqueue(string topic, int partition, int seq);
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "[BrokerSender] Retriable error {ErrorCode} for {Topic}-{Partition}, retrying after {BackoffMs}ms")]
     private partial void LogRetriableErrorWithBackoff(ErrorCode errorCode, string topic, int partition, int backoffMs);
