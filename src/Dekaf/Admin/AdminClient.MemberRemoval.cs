@@ -60,7 +60,7 @@ public sealed partial class AdminClient : IConsumerGroupMemberRemovalAdminClient
         if (options.RemoveAll)
         {
             // Snapshot once outside mutation retries. Concurrent joins are not added to the request.
-            var groups = await DescribeConsumerGroupsAsync([groupId], cancellationToken).ConfigureAwait(false);
+            var groups = await DescribeConsumerGroupsCoreAsync([groupId], Timeout.Infinite, cancellationToken).ConfigureAwait(false);
             // Classic DescribeGroups before v6 represents a missing group as Dead with no error.
             if (!groups.TryGetValue(groupId, out var group) || string.Equals(group.State, "Dead", StringComparison.OrdinalIgnoreCase))
                 throw MemberRemovalError(groupId, ErrorCode.GroupIdNotFound);
@@ -139,7 +139,7 @@ public sealed partial class AdminClient : IConsumerGroupMemberRemovalAdminClient
                 };
             }
             return new RemoveMembersFromConsumerGroupResult { GroupId = groupId, Members = results };
-        }, cancellationToken).ConfigureAwait(false);
+        }, cancellationToken, Timeout.Infinite, nameof(RemoveMembersFromConsumerGroupAsync)).ConfigureAwait(false);
     }
 
     private static GroupException MemberRemovalError(string groupId, ErrorCode errorCode) =>

@@ -344,6 +344,7 @@ public sealed partial class AdminClient :
         CancellationToken cancellationToken = default)
     {
         var opts = options ?? new CreateTopicsOptions();
+        ArgumentOutOfRangeException.ThrowIfNegative(opts.TimeoutMs);
 
         // Materialize before retry to avoid re-enumeration of potentially lazy sequences
         var topicData = topics.Select(t => new CreateTopicData
@@ -431,7 +432,7 @@ public sealed partial class AdminClient :
                 createMayHaveApplied = true;
                 await WaitForTopicLeadersAsync(createdTopicNames, attemptToken).ConfigureAwait(false);
             }
-        }, cancellationToken).ConfigureAwait(false);
+        }, cancellationToken, OperationTimeoutBudget(opts.TimeoutMs)).ConfigureAwait(false);
     }
 
     private async ValueTask WaitForTopicLeadersAsync(
@@ -531,6 +532,7 @@ public sealed partial class AdminClient :
         CancellationToken cancellationToken = default)
     {
         var opts = options ?? new DeleteTopicsOptions();
+        ArgumentOutOfRangeException.ThrowIfNegative(opts.TimeoutMs);
         var names = topicNames.ToList();
         var deleteMayHaveApplied = false;
 
@@ -591,7 +593,7 @@ public sealed partial class AdminClient :
                         $"Failed to delete topic '{topic.Name}': {topic.ErrorMessage ?? topic.ErrorCode.ToString()}");
                 }
             }
-        }, cancellationToken).ConfigureAwait(false);
+        }, cancellationToken, OperationTimeoutBudget(opts.TimeoutMs)).ConfigureAwait(false);
 
         // Refresh metadata so deleted topics are no longer visible in ListTopicsAsync
         await _metadataManager.RefreshMetadataAsync(cancellationToken).ConfigureAwait(false);
@@ -611,6 +613,7 @@ public sealed partial class AdminClient :
             return;
 
         var opts = options ?? new DeleteTopicsOptions();
+        ArgumentOutOfRangeException.ThrowIfNegative(opts.TimeoutMs);
         var unresolvedIds = new HashSet<Guid>(ids);
         var ambiguousIds = new HashSet<Guid>();
 
@@ -683,7 +686,7 @@ public sealed partial class AdminClient :
 
             if (failure is not null)
                 throw failure;
-        }, cancellationToken).ConfigureAwait(false);
+        }, cancellationToken, OperationTimeoutBudget(opts.TimeoutMs)).ConfigureAwait(false);
 
         await _metadataManager.RefreshMetadataAsync(cancellationToken).ConfigureAwait(false);
     }
@@ -943,12 +946,18 @@ public sealed partial class AdminClient :
         };
     }
 
-    public async ValueTask<FeatureMetadata> DescribeFeaturesAsync(
-        CancellationToken cancellationToken = default)
+    public ValueTask<FeatureMetadata> DescribeFeaturesAsync(
+        CancellationToken cancellationToken = default) =>
+        DescribeFeaturesCoreAsync(timeoutMs: null, cancellationToken);
+
+    // An explicitly timed caller (DescribeFeaturesOptions) passes Timeout.Infinite: its token is the deadline.
+    private async ValueTask<FeatureMetadata> DescribeFeaturesCoreAsync(
+        int? timeoutMs,
+        CancellationToken cancellationToken)
     {
         return await WithRetryAsync(async attemptToken =>
         {
-            await EnsureInitializedAsync(attemptToken).ConfigureAwait(false);
+            await EnsureInitializedAsync(attemptToken, nameof(DescribeFeaturesAsync)).ConfigureAwait(false);
             using var connectionLease = _controllerMetadataManager is null
                 ? await LeaseAnyBrokerConnectionAsync(attemptToken).ConfigureAwait(false)
                 : await LeaseControllerAsync(Protocol.ApiKey.ApiVersions, attemptToken).ConfigureAwait(false);
@@ -960,7 +969,7 @@ public sealed partial class AdminClient :
             var response = await connection.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
                 request, apiVersion, attemptToken).ConfigureAwait(false);
             return MapFeatureResponse(response);
-        }, cancellationToken).ConfigureAwait(false);
+        }, cancellationToken, timeoutMs, nameof(DescribeFeaturesAsync)).ConfigureAwait(false);
     }
 
     private ApiVersionsRequest CreateFeatureRequest(
@@ -1099,7 +1108,7 @@ public sealed partial class AdminClient :
                     ErrorMessage = result.ErrorMessage
                 },
                 StringComparer.Ordinal);
-        }, cancellationToken).ConfigureAwait(false);
+        }, cancellationToken, OperationTimeoutBudget(opts.TimeoutMs)).ConfigureAwait(false);
     }
 
     private static void MergeTopicPartitionPage(
@@ -1187,15 +1196,22 @@ public sealed partial class AdminClient :
         return result;
     }
 
-    public async ValueTask<IReadOnlyDictionary<string, GroupDescription>> DescribeConsumerGroupsAsync(
+    public ValueTask<IReadOnlyDictionary<string, GroupDescription>> DescribeConsumerGroupsAsync(
         IEnumerable<string> groupIds,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default) =>
+        DescribeConsumerGroupsCoreAsync(groupIds, timeoutMs: null, cancellationToken);
+
+    // An explicitly timed caller (member removal) passes Timeout.Infinite: its token is the deadline.
+    private async ValueTask<IReadOnlyDictionary<string, GroupDescription>> DescribeConsumerGroupsCoreAsync(
+        IEnumerable<string> groupIds,
+        int? timeoutMs,
+        CancellationToken cancellationToken)
     {
         var groupIdList = groupIds.ToList();
 
         return await WithRetryAsync<IReadOnlyDictionary<string, GroupDescription>>(async attemptToken =>
         {
-            await EnsureInitializedAsync(attemptToken).ConfigureAwait(false);
+            await EnsureInitializedAsync(attemptToken, nameof(DescribeConsumerGroupsAsync)).ConfigureAwait(false);
             // Find coordinator for each group and batch groups by coordinator.
             var groupsByCoordinator = new Dictionary<int, List<string>>();
             foreach (var groupId in groupIdList)
@@ -1212,7 +1228,7 @@ public sealed partial class AdminClient :
             return await DescribeConsumerGroupsWithBestAvailableApiAsync(
                 groupsByCoordinator,
                 attemptToken).ConfigureAwait(false);
-        }, cancellationToken).ConfigureAwait(false);
+        }, cancellationToken, timeoutMs, nameof(DescribeConsumerGroupsAsync)).ConfigureAwait(false);
     }
 
     private async ValueTask<IReadOnlyDictionary<string, GroupDescription>> DescribeConsumerGroupsWithBestAvailableApiAsync(
@@ -1400,15 +1416,15 @@ public sealed partial class AdminClient :
         ListConsumerGroupsOptions? options = null,
         CancellationToken cancellationToken = default)
     {
-        if (options is not null)
-            ArgumentOutOfRangeException.ThrowIfNegative(options.TimeoutMs);
+        var timeoutMs = (options ?? new ListConsumerGroupsOptions()).TimeoutMs;
+        ArgumentOutOfRangeException.ThrowIfNegative(timeoutMs);
 
         return ListGroupsCoreAsync(
             options?.States,
             ConsumerGroupTypes,
             ConsumerProtocolTypes,
             cancellationToken,
-            options?.TimeoutMs,
+            timeoutMs,
             nameof(ListConsumerGroupsAsync));
     }
 
@@ -1697,6 +1713,8 @@ public sealed partial class AdminClient :
             return new Dictionary<string, FenceProducersResultInfo>();
         }
 
+        if (options is not null)
+            ArgumentOutOfRangeException.ThrowIfNegative(options.TimeoutMs);
         var transactionTimeoutMs = options?.TimeoutMs ?? _options.RequestTimeoutMs;
 
         return await WithRetryAsync<IReadOnlyDictionary<string, FenceProducersResultInfo>>(async attemptToken =>
@@ -1769,7 +1787,7 @@ public sealed partial class AdminClient :
             }
 
             return result;
-        }, cancellationToken).ConfigureAwait(false);
+        }, cancellationToken, options is null ? null : OperationTimeoutBudget(options.TimeoutMs)).ConfigureAwait(false);
     }
 
     public async ValueTask<ForceTerminateTransactionResultInfo> ForceTerminateTransactionAsync(
@@ -2372,7 +2390,7 @@ public sealed partial class AdminClient :
                         $"CreatePartitions failed for topic '{topicResult.Name}': {topicResult.ErrorMessage ?? topicResult.ErrorCode.ToString()}");
                 }
             }
-        }, cancellationToken);
+        }, cancellationToken, OperationTimeoutBudget(timeoutMs), nameof(CreatePartitionsAsync));
     }
 
     public async ValueTask AlterPartitionReassignmentsAsync(
@@ -2383,6 +2401,7 @@ public sealed partial class AdminClient :
         ArgumentNullException.ThrowIfNull(reassignments);
 
         var opts = options ?? new AlterPartitionReassignmentsOptions();
+        ArgumentOutOfRangeException.ThrowIfNegative(opts.TimeoutMs);
         var topics = BuildAlterPartitionReassignmentTopics(reassignments);
         if (topics.Count == 0)
         {
@@ -2455,7 +2474,7 @@ public sealed partial class AdminClient :
                         $"{partition.ErrorMessage ?? partition.ErrorCode.ToString()}");
                 }
             }
-        }, cancellationToken).ConfigureAwait(false);
+        }, cancellationToken, OperationTimeoutBudget(opts.TimeoutMs)).ConfigureAwait(false);
     }
 
     public async ValueTask<IReadOnlyDictionary<TopicPartition, PartitionReassignment>> ListPartitionReassignmentsAsync(
@@ -2577,8 +2596,8 @@ public sealed partial class AdminClient :
         DescribeUserScramCredentialsOptions? options = null,
         CancellationToken cancellationToken = default)
     {
-        if (options is not null)
-            ArgumentOutOfRangeException.ThrowIfNegative(options.TimeoutMs);
+        var timeoutMs = (options ?? new DescribeUserScramCredentialsOptions()).TimeoutMs;
+        ArgumentOutOfRangeException.ThrowIfNegative(timeoutMs);
 
         var usersList = users?.Select(u => new UserName { Name = u }).ToList();
 
@@ -2633,7 +2652,7 @@ public sealed partial class AdminClient :
             }
 
             return result;
-        }, cancellationToken, options?.TimeoutMs).ConfigureAwait(false);
+        }, cancellationToken, timeoutMs).ConfigureAwait(false);
     }
 
     public async ValueTask AlterUserScramCredentialsAsync(
@@ -2641,8 +2660,8 @@ public sealed partial class AdminClient :
         AlterUserScramCredentialsOptions? options = null,
         CancellationToken cancellationToken = default)
     {
-        if (options is not null)
-            ArgumentOutOfRangeException.ThrowIfNegative(options.TimeoutMs);
+        var timeoutMs = (options ?? new AlterUserScramCredentialsOptions()).TimeoutMs;
+        ArgumentOutOfRangeException.ThrowIfNegative(timeoutMs);
 
         // Materialize before retry to avoid re-enumeration of potentially lazy sequences
         var deletions = new List<ScramCredentialDeletion>();
@@ -2742,7 +2761,7 @@ public sealed partial class AdminClient :
                         $"AlterUserScramCredentials failed for user '{result.User}': {result.ErrorMessage ?? result.ErrorCode.ToString()}");
                 }
             }
-        }, cancellationToken, options?.TimeoutMs).ConfigureAwait(false);
+        }, cancellationToken, timeoutMs).ConfigureAwait(false);
     }
 
     public async ValueTask<IReadOnlyDictionary<ClientQuotaEntity, IReadOnlyDictionary<string, double>>> DescribeClientQuotasAsync(
@@ -2751,8 +2770,8 @@ public sealed partial class AdminClient :
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(filter);
-        if (options is not null)
-            ArgumentOutOfRangeException.ThrowIfNegative(options.TimeoutMs);
+        var timeoutMs = (options ?? new DescribeClientQuotasOptions()).TimeoutMs;
+        ArgumentOutOfRangeException.ThrowIfNegative(timeoutMs);
 
         var components = BuildDescribeClientQuotaComponents(filter);
 
@@ -2795,7 +2814,7 @@ public sealed partial class AdminClient :
             }
 
             return result;
-        }, cancellationToken, options?.TimeoutMs).ConfigureAwait(false);
+        }, cancellationToken, timeoutMs).ConfigureAwait(false);
     }
 
     public async ValueTask AlterClientQuotasAsync(
@@ -2804,8 +2823,8 @@ public sealed partial class AdminClient :
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(alterations);
-        if (options is not null)
-            ArgumentOutOfRangeException.ThrowIfNegative(options.TimeoutMs);
+        var timeoutMs = (options ?? new AlterClientQuotasOptions()).TimeoutMs;
+        ArgumentOutOfRangeException.ThrowIfNegative(timeoutMs);
 
         var opts = options ?? new AlterClientQuotasOptions();
 
@@ -2851,7 +2870,7 @@ public sealed partial class AdminClient :
                         $"{entry.ErrorMessage ?? entry.ErrorCode.ToString()}");
                 }
             }
-        }, cancellationToken, options?.TimeoutMs).ConfigureAwait(false);
+        }, cancellationToken, timeoutMs).ConfigureAwait(false);
     }
 
     private static List<DescribeClientQuotasRequestComponent> BuildDescribeClientQuotaComponents(ClientQuotaFilter filter)
@@ -3361,8 +3380,8 @@ public sealed partial class AdminClient :
         AlterConfigsOptions? options = null,
         CancellationToken cancellationToken = default)
     {
-        if (options is not null)
-            ArgumentOutOfRangeException.ThrowIfNegative(options.TimeoutMs);
+        var timeoutMs = (options ?? new AlterConfigsOptions()).TimeoutMs;
+        ArgumentOutOfRangeException.ThrowIfNegative(timeoutMs);
 
         var opts = options ?? new AlterConfigsOptions();
 
@@ -3412,7 +3431,7 @@ public sealed partial class AdminClient :
                         $"{resourceResponse.ErrorMessage ?? resourceResponse.ErrorCode.ToString()}");
                 }
             }
-        }, cancellationToken, options?.TimeoutMs).ConfigureAwait(false);
+        }, cancellationToken, timeoutMs).ConfigureAwait(false);
     }
 
     public async ValueTask IncrementalAlterConfigsAsync(
@@ -3420,8 +3439,8 @@ public sealed partial class AdminClient :
         IncrementalAlterConfigsOptions? options = null,
         CancellationToken cancellationToken = default)
     {
-        if (options is not null)
-            ArgumentOutOfRangeException.ThrowIfNegative(options.TimeoutMs);
+        var timeoutMs = (options ?? new IncrementalAlterConfigsOptions()).TimeoutMs;
+        ArgumentOutOfRangeException.ThrowIfNegative(timeoutMs);
 
         var opts = options ?? new IncrementalAlterConfigsOptions();
 
@@ -3475,7 +3494,7 @@ public sealed partial class AdminClient :
                         $"{resourceResponse.ErrorMessage ?? resourceResponse.ErrorCode.ToString()}");
                 }
             }
-        }, cancellationToken, options?.TimeoutMs).ConfigureAwait(false);
+        }, cancellationToken, timeoutMs).ConfigureAwait(false);
     }
 
     public async ValueTask CreateAclsAsync(
@@ -3483,8 +3502,8 @@ public sealed partial class AdminClient :
         CreateAclsOptions? options = null,
         CancellationToken cancellationToken = default)
     {
-        if (options is not null)
-            ArgumentOutOfRangeException.ThrowIfNegative(options.TimeoutMs);
+        var timeoutMs = (options ?? new CreateAclsOptions()).TimeoutMs;
+        ArgumentOutOfRangeException.ThrowIfNegative(timeoutMs);
 
         var bindings = aclBindings.ToList();
         if (bindings.Count == 0)
@@ -3534,7 +3553,7 @@ public sealed partial class AdminClient :
                         $"Failed to create ACL for {binding.Pattern.Type}:{binding.Pattern.Name}: {result.ErrorMessage ?? result.ErrorCode.ToString()}");
                 }
             }
-        }, cancellationToken, options?.TimeoutMs).ConfigureAwait(false);
+        }, cancellationToken, timeoutMs).ConfigureAwait(false);
     }
 
     public async ValueTask<IReadOnlyList<AclBinding>> DeleteAclsAsync(
@@ -3542,8 +3561,8 @@ public sealed partial class AdminClient :
         DeleteAclsOptions? options = null,
         CancellationToken cancellationToken = default)
     {
-        if (options is not null)
-            ArgumentOutOfRangeException.ThrowIfNegative(options.TimeoutMs);
+        var timeoutMs = (options ?? new DeleteAclsOptions()).TimeoutMs;
+        ArgumentOutOfRangeException.ThrowIfNegative(timeoutMs);
 
         var filterList = filters.ToList();
         if (filterList.Count == 0)
@@ -3655,7 +3674,7 @@ public sealed partial class AdminClient :
             }
 
             return deletedBindings;
-        }, cancellationToken, options?.TimeoutMs).ConfigureAwait(false);
+        }, cancellationToken, timeoutMs).ConfigureAwait(false);
     }
 
     public async ValueTask<IReadOnlyList<AclBinding>> DescribeAclsAsync(
@@ -3663,8 +3682,8 @@ public sealed partial class AdminClient :
         DescribeAclsOptions? options = null,
         CancellationToken cancellationToken = default)
     {
-        if (options is not null)
-            ArgumentOutOfRangeException.ThrowIfNegative(options.TimeoutMs);
+        var timeoutMs = (options ?? new DescribeAclsOptions()).TimeoutMs;
+        ArgumentOutOfRangeException.ThrowIfNegative(timeoutMs);
 
         return await WithRetryAsync<IReadOnlyList<AclBinding>>(async attemptToken =>
         {
@@ -3726,7 +3745,7 @@ public sealed partial class AdminClient :
             }
 
             return bindings;
-        }, cancellationToken, options?.TimeoutMs).ConfigureAwait(false);
+        }, cancellationToken, timeoutMs).ConfigureAwait(false);
     }
 
     public async ValueTask DeleteConsumerGroupOffsetsAsync(
@@ -3737,8 +3756,8 @@ public sealed partial class AdminClient :
     {
         ArgumentNullException.ThrowIfNull(groupId);
         ArgumentNullException.ThrowIfNull(partitions);
-        if (options is not null)
-            ArgumentOutOfRangeException.ThrowIfNegative(options.TimeoutMs);
+        var timeoutMs = (options ?? new DeleteConsumerGroupOffsetsOptions()).TimeoutMs;
+        ArgumentOutOfRangeException.ThrowIfNegative(timeoutMs);
 
         // Group partitions by topic — materialize before retry to avoid re-enumeration
         var topicPartitions = partitions
@@ -3816,7 +3835,7 @@ public sealed partial class AdminClient :
                     }
                 }
             }
-        }, cancellationToken, options?.TimeoutMs).ConfigureAwait(false);
+        }, cancellationToken, timeoutMs).ConfigureAwait(false);
     }
 
     public async ValueTask<IReadOnlyDictionary<TopicPartition, ListOffsetsResultInfo>> ListOffsetsAsync(
@@ -3974,6 +3993,7 @@ public sealed partial class AdminClient :
         CancellationToken cancellationToken = default)
     {
         var opts = options ?? new ElectLeadersOptions();
+        ArgumentOutOfRangeException.ThrowIfNegative(opts.TimeoutMs);
 
         // Materialize before retry to avoid re-enumeration of potentially lazy sequences
         IReadOnlyList<ElectLeadersRequestTopic>? topicPartitions = null;
@@ -4044,7 +4064,7 @@ public sealed partial class AdminClient :
             }
 
             return results;
-        }, cancellationToken).ConfigureAwait(false);
+        }, cancellationToken, OperationTimeoutBudget(opts.TimeoutMs)).ConfigureAwait(false);
     }
 
     public async ValueTask<MetadataQuorumDescription> DescribeMetadataQuorumAsync(
@@ -4192,7 +4212,7 @@ public sealed partial class AdminClient :
                     response.ErrorCode,
                     response.ErrorMessage ?? $"AddRaftVoter failed: {response.ErrorCode}");
             }
-        }, cancellationToken).ConfigureAwait(false);
+        }, cancellationToken, OperationTimeoutBudget(opts.TimeoutMs)).ConfigureAwait(false);
     }
 
     public async ValueTask RemoveRaftVoterAsync(
@@ -5427,6 +5447,13 @@ public sealed partial class AdminClient :
     // it is not a public option.
     internal int DefaultApiTimeoutBudgetMs { get; init; } = DefaultApiTimeoutMs;
 
+    // For options whose TimeoutMs is also sent to the broker as the operation timeout. A positive
+    // value bounds the whole call, retries included, as Java's AdminClient does: once the broker
+    // would have given up, retrying longer cannot help. Zero keeps its broker meaning (start the
+    // operation, do not wait for it to complete), so the call keeps the default budget.
+    private static int? OperationTimeoutBudget(int operationTimeoutMs) =>
+        operationTimeoutMs > 0 ? operationTimeoutMs : null;
+
     // Transport failures (a broker that refuses connections or drops them) are retried until
     // the call's API timeout, not for a fixed number of attempts: a broker killed without a
     // clean shutdown stays in cluster metadata until its session expires, and a count-bounded
@@ -5439,7 +5466,9 @@ public sealed partial class AdminClient :
     // are not a message path: the linked source and closures are per call, not per message.
     //
     // timeoutMs is the call's own TimeoutMs option, or null for an API without one (the budget is
-    // then DefaultApiTimeoutBudgetMs); zero is an already-expired deadline. Every caller initializes the
+    // then DefaultApiTimeoutBudgetMs); zero is an already-expired deadline. Timeout.Infinite is for an
+    // explicitly timed operation retrying inside its own deadline: the caller's token already ends
+    // the call, so no second timer is started that could end it early or first. Every caller initializes the
     // client inside its operation with the attempt token, so initialization counts against the
     // same budget, including the default one.
     private async ValueTask WithRetryAsync(

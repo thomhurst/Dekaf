@@ -569,6 +569,251 @@ public sealed class AdminClientTransportRetryTests
         }
     }
 
+    // APIs whose TimeoutMs is also the broker-side operation timeout sent in the request.
+    [Test]
+    [Arguments(nameof(IAdminClient.CreateTopicsAsync))]
+    [Arguments("DeleteTopicsAsync(names)")]
+    [Arguments("DeleteTopicsAsync(ids)")]
+    [Arguments(nameof(IAdminClient.CreatePartitionsAsync))]
+    [Arguments(nameof(IAdminClient.UpdateFeaturesAsync))]
+    [Arguments(nameof(IAdminClient.ElectLeadersAsync))]
+    [Arguments(nameof(IAdminClient.AlterPartitionReassignmentsAsync))]
+    [Arguments(nameof(IAdminClient.AddRaftVoterAsync))]
+    [Arguments(nameof(IAdminClient.FenceProducersAsync))]
+    public async Task OperationTimeout_Positive_BoundsTheWholeCall(string api)
+    {
+        // No broker is reachable to enforce the operation timeout carried in the request, so the
+        // client must stop at it instead of retrying for the default API timeout.
+        await using var admin = CreateAdminWithUnreachableBootstrap();
+
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        var exception = await Assert.ThrowsAsync<KafkaTimeoutException>(async () =>
+            await InvokeWithOperationTimeoutAsync(admin, api, timeoutMs: 300));
+        stopwatch.Stop();
+
+        await Assert.That(exception!.TimeoutKind).IsEqualTo(TimeoutKind.Api);
+        await Assert.That(exception.Configured).IsEqualTo(TimeSpan.FromMilliseconds(300));
+        await Assert.That(stopwatch.Elapsed).IsLessThan(TimeSpan.FromSeconds(20));
+    }
+
+    [Test]
+    public async Task CreateTopicsAsync_ZeroOperationTimeout_StillSendsTheRequest()
+    {
+        // Zero keeps its broker meaning: start the creation and do not wait for it to complete.
+        var (admin, connection) = AdminClientIdempotentRetryTests.CreateAdminWithMockConnection(
+            FastRetryOptions(),
+            ApiKey.CreateTopics);
+        var sentTimeoutMs = -1;
+
+        connection.SendAsync<CreateTopicsRequest, CreateTopicsResponse>(
+                Arg.Any<CreateTopicsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                sentTimeoutMs = call.ArgAt<CreateTopicsRequest>(0).TimeoutMs;
+                return ValueTask.FromResult(new CreateTopicsResponse
+                {
+                    Topics = [new CreateTopicsResponseTopic { Name = "retry-topic", ErrorCode = ErrorCode.None }]
+                });
+            });
+
+        // retry-topic is in the mocked metadata, so the leader wait after creation completes.
+        await admin.CreateTopicsAsync([new NewTopic { Name = "retry-topic" }], new CreateTopicsOptions { TimeoutMs = 0 });
+
+        await Assert.That(sentTimeoutMs).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task AlterConfigsAsync_OptionsOmitted_UsesTheOptionsDefaultTimeout()
+    {
+        // new AlterConfigsOptions() documents 30 s; omitting the options must not select the
+        // longer default budget of APIs without a per-call timeout.
+        await using var admin = CreateAdminWithUnreachableBootstrap(defaultApiTimeoutBudgetMs: 45_000);
+
+        var exception = await Assert.ThrowsAsync<KafkaTimeoutException>(async () =>
+            await admin.AlterConfigsAsync(new Dictionary<ConfigResource, IReadOnlyList<ConfigEntry>>
+            {
+                [ConfigResource.Topic("orders")] = [new ConfigEntry { Name = "retention.ms", Value = "1000" }]
+            }));
+
+        await Assert.That(exception!.Configured)
+            .IsEqualTo(TimeSpan.FromMilliseconds(new AlterConfigsOptions().TimeoutMs));
+    }
+
+    [Test]
+    public async Task DescribeFeaturesAsync_TimeoutLongerThanDefaultBudget_KeepsRetrying()
+    {
+        // An explicitly timed call must not stop at the default budget of its inner retry.
+        var outage = System.Diagnostics.Stopwatch.StartNew();
+        var (admin, _) = AdminClientIdempotentRetryTests.CreateAdminWithConnection(
+            FastRetryOptions(),
+            connection => new FailingUntilConnection(connection, outage, TimeSpan.FromMilliseconds(800)),
+            ApiKey.ApiVersions);
+        await using var disposeAdmin = admin;
+        SetDefaultApiTimeoutBudget(admin, 200);
+
+        var features = await admin.DescribeFeaturesAsync(new DescribeFeaturesOptions { TimeoutMs = 10_000 });
+
+        await Assert.That(features).IsNotNull();
+        await Assert.That(outage.Elapsed).IsGreaterThanOrEqualTo(TimeSpan.FromMilliseconds(800));
+    }
+
+    [Test]
+    public async Task DeleteConsumerGroupsDetailedAsync_TimeoutLongerThanDefaultBudget_KeepsRetrying()
+    {
+        var outage = System.Diagnostics.Stopwatch.StartNew();
+        var (admin, connection) = AdminClientIdempotentRetryTests.CreateAdminWithConnection(
+            FastRetryOptions(),
+            connection => new FailingUntilConnection(connection, outage, TimeSpan.FromMilliseconds(800)),
+            ApiKey.DeleteGroups);
+        await using var disposeAdmin = admin;
+        SetDefaultApiTimeoutBudget(admin, 200);
+        SetupFindCoordinator(connection);
+        connection.SendAsync<DeleteGroupsRequest, DeleteGroupsResponse>(
+                Arg.Any<DeleteGroupsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(new DeleteGroupsResponse
+            {
+                Results = [new DeleteGroupsResponseResult { GroupId = GroupId, ErrorCode = ErrorCode.None }]
+            }));
+
+        var results = await admin.DeleteConsumerGroupsDetailedAsync(
+            [GroupId],
+            new ConsumerGroupMutationOptions { TimeoutMs = 10_000 });
+
+        await Assert.That(results[GroupId].IsSuccess).IsTrue();
+    }
+
+    // The helpers build the client; the budget is an init-only test hook.
+    private static void SetDefaultApiTimeoutBudget(AdminClient admin, int budgetMs) =>
+        typeof(AdminClient)
+            .GetProperty(nameof(AdminClient.DefaultApiTimeoutBudgetMs),
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+            .SetValue(admin, budgetMs);
+
+    private static AdminClient CreateAdminWithUnreachableBootstrap(int defaultApiTimeoutBudgetMs = AdminClient.DefaultApiTimeoutMs)
+    {
+        var pool = Substitute.For<IConnectionPool>();
+        pool.GetConnectionAsync(Arg.Any<string>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(call => WaitForCancellationAsync(call.ArgAt<CancellationToken>(2)));
+        pool.GetConnectionAsync(Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(call => WaitForCancellationAsync(call.ArgAt<CancellationToken>(1)));
+        return new AdminClient(FastRetryOptions(), pool, new MetadataManager(pool, ["localhost:9092"]))
+        {
+            DefaultApiTimeoutBudgetMs = defaultApiTimeoutBudgetMs
+        };
+
+        static async ValueTask<IKafkaConnection> WaitForCancellationAsync(CancellationToken token)
+        {
+            await Task.Delay(Timeout.Infinite, token);
+            throw new System.Diagnostics.UnreachableException();
+        }
+    }
+
+    private static async ValueTask InvokeWithOperationTimeoutAsync(AdminClient admin, string api, int timeoutMs)
+    {
+        switch (api)
+        {
+            case nameof(IAdminClient.CreateTopicsAsync):
+                await admin.CreateTopicsAsync([new NewTopic { Name = "orders" }], new CreateTopicsOptions { TimeoutMs = timeoutMs });
+                break;
+            case "DeleteTopicsAsync(names)":
+                await admin.DeleteTopicsAsync(["orders"], new DeleteTopicsOptions { TimeoutMs = timeoutMs });
+                break;
+            case "DeleteTopicsAsync(ids)":
+                await ((ITopicIdAdminClient)admin).DeleteTopicsAsync([Guid.NewGuid()], new DeleteTopicsOptions { TimeoutMs = timeoutMs });
+                break;
+            case nameof(IAdminClient.CreatePartitionsAsync):
+                await ((IPartitionExpansionAdminClient)admin).CreatePartitionsAsync(
+                    new Dictionary<string, NewPartitions> { ["orders"] = new() { TotalCount = 2 } },
+                    new CreatePartitionsOptions { TimeoutMs = timeoutMs });
+                break;
+            case nameof(IAdminClient.UpdateFeaturesAsync):
+                await admin.UpdateFeaturesAsync(
+                    new Dictionary<string, FeatureUpdate> { ["metadata.version"] = new() { MaxVersionLevel = 1 } },
+                    new UpdateFeaturesOptions { TimeoutMs = timeoutMs });
+                break;
+            case nameof(IAdminClient.ElectLeadersAsync):
+                await admin.ElectLeadersAsync(
+                    ElectionType.Preferred,
+                    [new TopicPartition("orders", 0)],
+                    new ElectLeadersOptions { TimeoutMs = timeoutMs });
+                break;
+            case nameof(IAdminClient.AlterPartitionReassignmentsAsync):
+                await admin.AlterPartitionReassignmentsAsync(
+                    new Dictionary<TopicPartition, Optional<NewPartitionReassignment>>
+                    {
+                        [new TopicPartition("orders", 0)] = Optional.Some(NewPartitionReassignment.ToReplicas(1))
+                    },
+                    new AlterPartitionReassignmentsOptions { TimeoutMs = timeoutMs });
+                break;
+            case nameof(IAdminClient.AddRaftVoterAsync):
+                await admin.AddRaftVoterAsync(
+                    3,
+                    Guid.NewGuid(),
+                    [new RaftVoterEndpoint { Name = "CONTROLLER", Host = "localhost", Port = 9093 }],
+                    new AddRaftVoterOptions { TimeoutMs = timeoutMs });
+                break;
+            case nameof(IAdminClient.FenceProducersAsync):
+                await admin.FenceProducersAsync(["txn-1"], new FenceProducersOptions { TimeoutMs = timeoutMs });
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(api), api, null);
+        }
+    }
+
+    // Fails every send at the transport until the outage ends, then delegates to the substitute.
+    private sealed class FailingUntilConnection(
+        IKafkaConnection inner,
+        System.Diagnostics.Stopwatch clock,
+        TimeSpan outage) : IKafkaConnection
+    {
+        private bool Down => clock.Elapsed < outage;
+
+        public int BrokerId => inner.BrokerId;
+        public string Host => inner.Host;
+        public int Port => inner.Port;
+        public bool IsConnected => inner.IsConnected;
+
+        public ValueTask<TResponse> SendAsync<TRequest, TResponse>(
+            TRequest request, short apiVersion, CancellationToken cancellationToken = default)
+            where TRequest : IKafkaRequest<TResponse>
+            where TResponse : IKafkaResponse =>
+            Down
+                ? ValueTask.FromException<TResponse>(new SocketException((int)SocketError.ConnectionRefused))
+                : inner.SendAsync<TRequest, TResponse>(request, apiVersion, cancellationToken);
+
+        public ValueTask SendFireAndForgetAsync<TRequest, TResponse>(
+            TRequest request, short apiVersion, CancellationToken cancellationToken = default)
+            where TRequest : IKafkaRequest<TResponse>
+            where TResponse : IKafkaResponse =>
+            inner.SendFireAndForgetAsync<TRequest, TResponse>(request, apiVersion, cancellationToken);
+
+        public Task<TResponse> SendPipelinedAsync<TRequest, TResponse>(
+            TRequest request, short apiVersion, CancellationToken cancellationToken = default)
+            where TRequest : IKafkaRequest<TResponse>
+            where TResponse : IKafkaResponse =>
+            inner.SendPipelinedAsync<TRequest, TResponse>(request, apiVersion, cancellationToken);
+
+        public ValueTask SendFireAndForgetWithCallerTimeoutAsync<TRequest, TResponse>(
+            TRequest request, short apiVersion, CancellationToken cancellationToken = default)
+            where TRequest : IKafkaRequest<TResponse>
+            where TResponse : IKafkaResponse =>
+            inner.SendFireAndForgetWithCallerTimeoutAsync<TRequest, TResponse>(request, apiVersion, cancellationToken);
+
+        public Task<TResponse> SendPipelinedWithCallerTimeoutAsync<TRequest, TResponse>(
+            TRequest request, short apiVersion, CancellationToken cancellationToken = default)
+            where TRequest : IKafkaRequest<TResponse>
+            where TResponse : IKafkaResponse =>
+            inner.SendPipelinedWithCallerTimeoutAsync<TRequest, TResponse>(request, apiVersion, cancellationToken);
+
+        public ValueTask ConnectAsync(CancellationToken cancellationToken = default) => inner.ConnectAsync(cancellationToken);
+
+        public ValueTask DisposeAsync() => inner.DisposeAsync();
+    }
+
     private static int SentRequests(IKafkaConnection connection) =>
         connection.ReceivedCalls().Count(static call => call.GetMethodInfo().Name == nameof(IKafkaConnection.SendAsync));
 

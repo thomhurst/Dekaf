@@ -26,7 +26,7 @@ public sealed partial class AdminClient
         try
         {
             if (options.NodeId is not { } nodeId)
-                return await DescribeFeaturesAsync(operationToken).ConfigureAwait(false);
+                return await DescribeFeaturesCoreAsync(Timeout.Infinite, operationToken).ConfigureAwait(false);
 
             await EnsureInitializedAsync(operationToken, nameof(DescribeFeaturesAsync)).ConfigureAwait(false);
             return await WithRetryAsync(async attemptToken =>
@@ -37,7 +37,7 @@ public sealed partial class AdminClient
                 var response = await lease.Connection.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
                     request, apiVersion, attemptToken).ConfigureAwait(false);
                 return MapFeatureResponse(response);
-            }, operationToken).ConfigureAwait(false);
+            }, operationToken, Timeout.Infinite, nameof(DescribeFeaturesAsync)).ConfigureAwait(false);
         }
         catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested && timeout.IsCancellationRequested)
         {

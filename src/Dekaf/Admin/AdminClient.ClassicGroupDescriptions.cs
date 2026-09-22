@@ -159,7 +159,7 @@ public sealed partial class AdminClient : IClassicGroupDescriptionAdminClient
                 attemptToken.ThrowIfCancellationRequested();
                 if (retryFailure is not null)
                     throw retryFailure;
-            }, cancellationToken).ConfigureAwait(false);
+            }, cancellationToken, Timeout.Infinite, nameof(DescribeClassicGroupsAsync)).ConfigureAwait(false);
         }
         catch (Exception exception) when (cancellationToken.IsCancellationRequested &&
             (exception is KafkaException or InvalidOperationException { InnerException: KafkaException } ||

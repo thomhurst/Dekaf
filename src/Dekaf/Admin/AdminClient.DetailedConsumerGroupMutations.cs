@@ -127,7 +127,7 @@ public sealed partial class AdminClient : IDetailedConsumerGroupMutationAdminCli
                     }
                 }
                 if (retryFailure is not null) throw retryFailure;
-            }, token).ConfigureAwait(false);
+            }, token, Timeout.Infinite, operation).ConfigureAwait(false);
         }
         catch (Exception exception) when (IsDetailedMutationFailure(exception) || exception is InvalidOperationException or MalformedProtocolDataException)
         {

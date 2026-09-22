@@ -141,7 +141,7 @@ public sealed partial class AdminClient : IShareGroupOffsetQueryAdminClient
                     else
                         results[groupId] = error;
                 }
-            }, cancellationToken).ConfigureAwait(false);
+            }, cancellationToken, Timeout.Infinite, nameof(ListShareGroupOffsetsAsync)).ConfigureAwait(false);
         }
         catch (Exception exception) when (cancellationToken.IsCancellationRequested &&
             (exception is KafkaException || RetryHelper.IsRetriableRequestFailure(exception)))
