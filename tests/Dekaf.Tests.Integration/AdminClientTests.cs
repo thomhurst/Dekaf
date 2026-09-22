@@ -312,6 +312,40 @@ public class AdminClientTests(KafkaTestContainer kafka) : KafkaIntegrationTest(k
         await Assert.That(retention.Value).IsNotEqualTo("3600000");
     }
 
+    [Test]
+    public async Task IncrementalAlterConfigsAsync_AppendAndSubtractReplayed_AreIdempotent()
+    {
+        // A transport retry can send the same APPEND or SUBTRACT again after the broker applied
+        // it. The controller treats list values as a set, so the replay must be a no-op.
+        var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
+        await using var admin = CreateAdminClient();
+        var resource = ConfigResource.Topic(topic);
+
+        async Task AlterTwiceAndReadAsync(ConfigAlter alter, string retentionMarker, string expectedPolicy)
+        {
+            var alteration = new Dictionary<ConfigResource, IReadOnlyList<ConfigAlter>> { [resource] = [alter] };
+            await admin.IncrementalAlterConfigsAsync(alteration).ConfigureAwait(false);
+            await admin.IncrementalAlterConfigsAsync(alteration).ConfigureAwait(false);
+            // Config changes reach brokers in metadata log order: once the marker is visible,
+            // both replays are too.
+            await admin.IncrementalAlterConfigsAsync(new Dictionary<ConfigResource, IReadOnlyList<ConfigAlter>>
+            {
+                [resource] = [ConfigAlter.Set("retention.ms", retentionMarker)]
+            }).ConfigureAwait(false);
+
+            var configs = await WaitForConditionAsync(
+                async () => (await admin.DescribeConfigsAsync([resource]).ConfigureAwait(false))[resource],
+                entries => entries.First(e => e.Name == "retention.ms").Value == retentionMarker).ConfigureAwait(false);
+
+            await Assert.That(configs.First(e => e.Name == "cleanup.policy").Value).IsEqualTo(expectedPolicy);
+        }
+
+        await AlterTwiceAndReadAsync(ConfigAlter.Append("cleanup.policy", "compact"), "1800001", "delete,compact")
+            .ConfigureAwait(false);
+        await AlterTwiceAndReadAsync(ConfigAlter.Subtract("cleanup.policy", "compact"), "1800002", "delete")
+            .ConfigureAwait(false);
+    }
+
     #endregion
 
     #region ACL Tests

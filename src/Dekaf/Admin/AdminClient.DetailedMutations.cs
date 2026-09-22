@@ -35,21 +35,23 @@ public sealed partial class AdminClient
         var pending = items;
         try
         {
-            await WithRetryAsync(async attemptToken =>
+            // token already carries this call's deadline. The attempt token adds a second API timer, and
+            // an attempt that timer ended first would not be reported as a timeout.
+            await WithRetryAsync(async _ =>
             {
-                attemptToken.ThrowIfCancellationRequested();
-                await EnsureInitializedAsync(attemptToken, protocol.Operation).ConfigureAwait(false);
+                token.ThrowIfCancellationRequested();
+                await EnsureInitializedAsync(token, protocol.Operation).ConfigureAwait(false);
                 KafkaConnectionLease acquiredLease;
                 try
                 {
                     if (leaseConnection is not null)
-                        acquiredLease = await leaseConnection(attemptToken).ConfigureAwait(false);
+                        acquiredLease = await leaseConnection(token).ConfigureAwait(false);
                     else if (protocol.GroupId is { } groupId)
-                        acquiredLease = await LeaseDetailedGroupCoordinatorAsync(groupId, attemptToken).ConfigureAwait(false);
+                        acquiredLease = await LeaseDetailedGroupCoordinatorAsync(groupId, token).ConfigureAwait(false);
                     else if (protocol.BrokerOrController)
-                        acquiredLease = await LeaseBrokerOrControllerConnectionAsync(protocol.ApiKey, attemptToken).ConfigureAwait(false);
+                        acquiredLease = await LeaseBrokerOrControllerConnectionAsync(protocol.ApiKey, token).ConfigureAwait(false);
                     else
-                        acquiredLease = await LeaseDetailedControllerAsync(protocol.ApiKey, attemptToken).ConfigureAwait(false);
+                        acquiredLease = await LeaseDetailedControllerAsync(protocol.ApiKey, token).ConfigureAwait(false);
                 }
                 catch (InvalidOperationException exception)
                 {
@@ -67,12 +69,12 @@ public sealed partial class AdminClient
                 var request = createRequest(pending, version, results);
                 if (pending.Count == 0)
                     return;
-                attemptToken.ThrowIfCancellationRequested();
+                token.ThrowIfCancellationRequested();
 
                 TResponse response;
                 try
                 {
-                    response = await lease.Connection.SendAsync<TRequest, TResponse>(request, version, attemptToken).ConfigureAwait(false);
+                    response = await lease.Connection.SendAsync<TRequest, TResponse>(request, version, token).ConfigureAwait(false);
                 }
                 catch (Exception exception) when (IsDetailedMutationFailure(exception) || exception is InvalidOperationException or MalformedProtocolDataException)
                 {

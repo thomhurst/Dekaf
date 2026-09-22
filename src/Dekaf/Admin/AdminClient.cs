@@ -2468,13 +2468,13 @@ public sealed partial class AdminClient :
         ListPartitionReassignmentsOptions? options = null,
         CancellationToken cancellationToken = default)
     {
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
-
         var opts = options ?? new ListPartitionReassignmentsOptions();
+        ArgumentOutOfRangeException.ThrowIfNegative(opts.TimeoutMs);
         var topics = partitions is null ? null : BuildListPartitionReassignmentTopics(partitions);
 
         return await WithRetryAsync<IReadOnlyDictionary<TopicPartition, PartitionReassignment>>(async attemptToken =>
         {
+            await EnsureInitializedAsync(attemptToken, nameof(ListPartitionReassignmentsAsync)).ConfigureAwait(false);
             using var controllerLease = await LeaseControllerAsync(Protocol.ApiKey.ListPartitionReassignments, attemptToken).ConfigureAwait(false);
             var controller = controllerLease.Connection;
 
@@ -2683,13 +2683,20 @@ public sealed partial class AdminClient :
         }
 
         // A deletion replayed after a lost response finds nothing to delete and the broker
-        // answers RESOURCE_NOT_FOUND for that user. Only a user whose alterations include a
-        // deletion is tolerated, and only after a send that may have applied: the broker applies
-        // a user's alterations atomically, so the earlier request applied all of them. A
-        // credential deleted concurrently by another client is also reported as success.
-        HashSet<string>? usersWithDeletions = null;
+        // answers RESOURCE_NOT_FOUND for that user. That answer is tolerated only after a send
+        // that may have applied, and only for a user whose alterations are all deletions: the
+        // broker rejects a user's alterations together, so for a user that also has an upsertion
+        // it cannot tell "the lost request applied everything" from "the lost request was
+        // rejected and the upsertion never applied". A credential deleted concurrently by another
+        // client is also reported as success.
+        HashSet<string>? deletionOnlyUsers = null;
         foreach (var deletion in deletions)
-            (usersWithDeletions ??= new HashSet<string>(StringComparer.Ordinal)).Add(deletion.Name);
+            (deletionOnlyUsers ??= new HashSet<string>(StringComparer.Ordinal)).Add(deletion.Name);
+        if (deletionOnlyUsers is not null)
+        {
+            foreach (var upsertion in upsertions)
+                deletionOnlyUsers.Remove(upsertion.Name);
+        }
         var alterMayHaveApplied = false;
 
         await WithRetryAsync(async attemptToken =>
@@ -2730,7 +2737,7 @@ public sealed partial class AdminClient :
                 if (result.ErrorCode != Protocol.ErrorCode.None &&
                     !(isRetryAttempt &&
                       result.ErrorCode == Protocol.ErrorCode.ResourceNotFound &&
-                      usersWithDeletions?.Contains(result.User) == true))
+                      deletionOnlyUsers?.Contains(result.User) == true))
                 {
                     throw new KafkaException(result.ErrorCode,
                         $"AlterUserScramCredentials failed for user '{result.User}': {result.ErrorMessage ?? result.ErrorCode.ToString()}");
@@ -3049,6 +3056,9 @@ public sealed partial class AdminClient :
 
         var renewPeriodMs = ToKafkaMilliseconds(renewPeriod, nameof(renewPeriod));
 
+        // A replay after a lost response renews again from the broker's later clock, which is the
+        // result a successful call made at that moment would have had. The broker caps the expiry
+        // at the token's maximum lifetime and the returned expiry is the one in effect.
         return await WithRetryAsync<DateTimeOffset>(async attemptToken =>
         {
             using var controllerLease = await LeaseControllerAsync(Protocol.ApiKey.RenewDelegationToken, attemptToken).ConfigureAwait(false);
@@ -3266,13 +3276,13 @@ public sealed partial class AdminClient :
         DescribeConfigsOptions? options = null,
         CancellationToken cancellationToken = default)
     {
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
-
         var opts = options ?? new DescribeConfigsOptions();
+        ArgumentOutOfRangeException.ThrowIfNegative(opts.TimeoutMs);
         var resourceList = resources.ToList();
 
         return await WithRetryAsync<IReadOnlyDictionary<ConfigResource, IReadOnlyList<ConfigEntry>>>(async attemptToken =>
         {
+            await EnsureInitializedAsync(attemptToken, nameof(DescribeConfigsAsync)).ConfigureAwait(false);
             using var connectionLease = await LeaseConfigEndpointAsync(
                 resourceList,
                 Protocol.ApiKey.DescribeConfigs,
@@ -3410,6 +3420,9 @@ public sealed partial class AdminClient :
 
         var opts = options ?? new IncrementalAlterConfigsOptions();
 
+        // Replaying after a lost response is safe: SET and DELETE are idempotent, and the
+        // controller treats list values as a set, so a replayed APPEND skips values already
+        // present and a replayed SUBTRACT finds nothing more to remove.
         await WithRetryAsync(async attemptToken =>
         {
             using var connectionLease = await LeaseConfigEndpointAsync(
@@ -3521,7 +3534,8 @@ public sealed partial class AdminClient :
         DeleteAclsOptions? options = null,
         CancellationToken cancellationToken = default)
     {
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+        if (options is not null)
+            ArgumentOutOfRangeException.ThrowIfNegative(options.TimeoutMs);
 
         var filterList = filters.ToList();
         if (filterList.Count == 0)
@@ -3540,6 +3554,7 @@ public sealed partial class AdminClient :
 
         return await WithRetryAsync<IReadOnlyList<AclBinding>>(async attemptToken =>
         {
+            await EnsureInitializedAsync(attemptToken, nameof(DeleteAclsAsync)).ConfigureAwait(false);
             using var controllerLease = await LeaseControllerAsync(Protocol.ApiKey.DeleteAcls, attemptToken).ConfigureAwait(false);
             var controller = controllerLease.Connection;
 
@@ -3562,13 +3577,16 @@ public sealed partial class AdminClient :
                     apiVersion,
                     attemptToken).ConfigureAwait(false);
             }
-            catch (Exception exception) when (RetryHelper.IsRetriableRequestFailure(exception)
-                && !attemptToken.IsCancellationRequested)
+            catch (Exception exception) when (!cancellationToken.IsCancellationRequested
+                && (RetryHelper.IsRetriableRequestFailure(exception)
+                    || exception is OperationCanceledException && attemptToken.IsCancellationRequested))
             {
                 // The result is the list of deleted bindings, and only the response that did the
                 // deleting carries it: a replay matches nothing and would return an empty list
-                // while the lost request may have deleted bindings. Failures before the send (no
-                // controller, a refused connection) are still retried above.
+                // while the lost request may have deleted bindings. The API timeout ending a send
+                // still in flight is the same unknown outcome; only the caller's cancellation
+                // surfaces as cancellation. Failures before the send (no controller, a refused
+                // connection) are still retried above.
                 throw new KafkaException((exception as KafkaException)?.ErrorCode ?? Protocol.ErrorCode.NetworkException,
                     "DeleteAcls outcome is unknown after a request failure; the matching ACLs may have been deleted. " +
                     "Describe the ACLs before retrying.",
@@ -3614,7 +3632,7 @@ public sealed partial class AdminClient :
             }
 
             return deletedBindings;
-        }, cancellationToken).ConfigureAwait(false);
+        }, cancellationToken, options?.TimeoutMs ?? DefaultApiTimeoutMs).ConfigureAwait(false);
     }
 
     public async ValueTask<IReadOnlyList<AclBinding>> DescribeAclsAsync(
@@ -3622,10 +3640,12 @@ public sealed partial class AdminClient :
         DescribeAclsOptions? options = null,
         CancellationToken cancellationToken = default)
     {
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+        if (options is not null)
+            ArgumentOutOfRangeException.ThrowIfNegative(options.TimeoutMs);
 
         return await WithRetryAsync<IReadOnlyList<AclBinding>>(async attemptToken =>
         {
+            await EnsureInitializedAsync(attemptToken, nameof(DescribeAclsAsync)).ConfigureAwait(false);
             using var controllerLease = await LeaseControllerAsync(Protocol.ApiKey.DescribeAcls, attemptToken).ConfigureAwait(false);
             var controller = controllerLease.Connection;
 
@@ -3683,7 +3703,7 @@ public sealed partial class AdminClient :
             }
 
             return bindings;
-        }, cancellationToken, options?.TimeoutMs ?? 0).ConfigureAwait(false);
+        }, cancellationToken, options?.TimeoutMs ?? DefaultApiTimeoutMs).ConfigureAwait(false);
     }
 
     public async ValueTask DeleteConsumerGroupOffsetsAsync(
@@ -3780,14 +3800,13 @@ public sealed partial class AdminClient :
         ListOffsetsOptions? options = null,
         CancellationToken cancellationToken = default)
     {
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
-
         var opts = options ?? new ListOffsetsOptions();
         ArgumentOutOfRangeException.ThrowIfNegative(opts.TimeoutMs);
         var specList = specs.ToList();
 
         return await WithRetryAsync(async attemptToken =>
         {
+            await EnsureInitializedAsync(attemptToken, nameof(ListOffsetsAsync)).ConfigureAwait(false);
             // Get partition leaders from metadata and group specs by leader
             var requestsByLeader = new Dictionary<int, ListOffsetsLeaderRequest>();
 
@@ -5404,10 +5423,14 @@ public sealed partial class AdminClient :
     // The operation receives a token that also ends at the API timeout, so an attempt the broker
     // accepted but never answers cannot overrun the budget by up to RequestTimeoutMs. Admin calls
     // are not a message path: the linked source and closures are per call, not per message.
+    //
+    // timeoutMs is the call's own TimeoutMs option, or null for an API without one (the budget is
+    // then DefaultApiTimeoutMs); zero is an already-expired deadline. A caller with a per-call
+    // timeout initializes the client inside its operation, so initialization counts against it.
     private async ValueTask WithRetryAsync(
         Func<CancellationToken, ValueTask> operation,
         CancellationToken cancellationToken,
-        int timeoutMs = 0,
+        int? timeoutMs = null,
         [CallerMemberName] string operationName = "") =>
         await WithRetryAsync<bool>(
             async attemptToken =>
@@ -5422,10 +5445,20 @@ public sealed partial class AdminClient :
     private async ValueTask<T> WithRetryAsync<T>(
         Func<CancellationToken, ValueTask<T>> operation,
         CancellationToken cancellationToken,
-        int timeoutMs = 0,
+        int? timeoutMs = null,
         [CallerMemberName] string operationName = "")
     {
-        var deadline = CreateRetryDeadline(operationName, timeoutMs);
+        if (timeoutMs == 0)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            throw new Errors.KafkaTimeoutException(
+                Errors.TimeoutKind.Api,
+                TimeSpan.Zero,
+                TimeSpan.Zero,
+                $"{operationName} timed out after 0 ms.");
+        }
+
+        var deadline = CreateRetryDeadline(operationName, timeoutMs ?? DefaultApiTimeoutMs);
         var startedAt = System.Diagnostics.Stopwatch.GetTimestamp();
         using var apiTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         apiTimeout.CancelAfter(deadline.Budget);
@@ -5490,7 +5523,7 @@ public sealed partial class AdminClient :
     private RetryDeadline CreateRetryDeadline(string operationName, int timeoutMs) =>
         new(
             operationName,
-            TimeSpan.FromMilliseconds(timeoutMs > 0 ? timeoutMs : DefaultApiTimeoutMs),
+            TimeSpan.FromMilliseconds(timeoutMs),
             _isDisposed ??= () => Volatile.Read(ref _disposed) != 0);
 
     private static void EnsureControllerOperationSupported(string operation)

@@ -1,6 +1,7 @@
 using System.Net.Sockets;
 using Dekaf.Admin;
 using Dekaf.Errors;
+using Dekaf.Metadata;
 using Dekaf.Networking;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
@@ -130,6 +131,66 @@ public sealed class AdminClientTransportRetryTests
         await Assert.That(exception!.InnerException).IsTypeOf<SocketException>();
         // More attempts than the count-bounded retry allows, but bounded by the per-call timeout.
         await Assert.That(calls).IsGreaterThan(4);
+    }
+
+    [Test]
+    public async Task DescribeConfigsAsync_ZeroTimeout_ThrowsWithoutSending()
+    {
+        var (admin, connection) = AdminClientIdempotentRetryTests.CreateAdminWithMockConnection(
+            FastRetryOptions(),
+            ApiKey.DescribeConfigs);
+        var calls = 0;
+
+        connection.SendAsync<DescribeConfigsRequest, DescribeConfigsResponse>(
+                Arg.Any<DescribeConfigsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns<ValueTask<DescribeConfigsResponse>>(_ =>
+            {
+                Interlocked.Increment(ref calls);
+                throw new SocketException((int)SocketError.ConnectionRefused);
+            });
+
+        // An explicit zero is an already-expired deadline, not "use the default timeout".
+        var exception = await Assert.ThrowsAsync<KafkaTimeoutException>(async () =>
+            await admin.DescribeConfigsAsync(
+                [ConfigResource.Topic("orders")],
+                new DescribeConfigsOptions { TimeoutMs = 0 }));
+
+        await Assert.That(exception!.TimeoutKind).IsEqualTo(TimeoutKind.Api);
+        await Assert.That(calls).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task DescribeConfigsAsync_InitializationNeverCompletes_EndsAtApiTimeout()
+    {
+        // A fresh client whose bootstrap broker accepts nothing: initialization counts against
+        // the per-call timeout instead of running to its own, much longer, timeout first.
+        var pool = Substitute.For<IConnectionPool>();
+        pool.GetConnectionAsync(Arg.Any<string>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(call => WaitForCancellationAsync(call.ArgAt<CancellationToken>(2)));
+        pool.GetConnectionAsync(Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(call => WaitForCancellationAsync(call.ArgAt<CancellationToken>(1)));
+        await using var admin = new AdminClient(
+            FastRetryOptions(),
+            pool,
+            new MetadataManager(pool, ["localhost:9092"]));
+
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        var exception = await Assert.ThrowsAsync<KafkaTimeoutException>(async () =>
+            await admin.DescribeConfigsAsync(
+                [ConfigResource.Topic("orders")],
+                new DescribeConfigsOptions { TimeoutMs = 200 }));
+        stopwatch.Stop();
+
+        await Assert.That(exception!.TimeoutKind).IsEqualTo(TimeoutKind.Api);
+        await Assert.That(stopwatch.Elapsed).IsLessThan(TimeSpan.FromSeconds(30));
+
+        static async ValueTask<IKafkaConnection> WaitForCancellationAsync(CancellationToken token)
+        {
+            await Task.Delay(Timeout.Infinite, token);
+            throw new System.Diagnostics.UnreachableException();
+        }
     }
 
     [Test]

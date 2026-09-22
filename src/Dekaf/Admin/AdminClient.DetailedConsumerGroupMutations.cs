@@ -41,10 +41,12 @@ public sealed partial class AdminClient : IDetailedConsumerGroupMutationAdminCli
         }
         try
         {
-            await WithRetryAsync(async attemptToken =>
+            // token already carries this call's deadline. The attempt token adds a second API timer, and
+            // an attempt that timer ended first would not be reported as a timeout.
+            await WithRetryAsync(async _ =>
             {
-                attemptToken.ThrowIfCancellationRequested();
-                await EnsureInitializedAsync(attemptToken, operation).ConfigureAwait(false);
+                token.ThrowIfCancellationRequested();
+                await EnsureInitializedAsync(token, operation).ConfigureAwait(false);
                 var byCoordinator = new Dictionary<int, List<string>>();
                 Exception? retryFailure = null;
                 foreach (var group in groups)
@@ -54,15 +56,15 @@ public sealed partial class AdminClient : IDetailedConsumerGroupMutationAdminCli
                     if (stoppedGroups?.Contains(group) == true ||
                         (results.TryGetValue(group, out var prior) && !AdminMutationResult.IsSafeCoordinatorRetry(prior)))
                         continue;
-                    attemptToken.ThrowIfCancellationRequested();
+                    token.ThrowIfCancellationRequested();
                     int coordinator;
                     try
                     {
-                        coordinator = await FindGroupCoordinatorAsync(group, attemptToken).ConfigureAwait(false);
+                        coordinator = await FindGroupCoordinatorAsync(group, token).ConfigureAwait(false);
                     }
                     catch (Exception exception) when (IsDetailedMutationFailure(exception) || exception is InvalidOperationException or MalformedProtocolDataException)
                     {
-                        attemptToken.ThrowIfCancellationRequested();
+                        token.ThrowIfCancellationRequested();
                         if (RetryHelper.IsRetriableRequestFailure(exception))
                             retryFailure ??= exception;
                         else
@@ -76,19 +78,19 @@ public sealed partial class AdminClient : IDetailedConsumerGroupMutationAdminCli
 
                 foreach (var batch in byCoordinator)
                 {
-                    attemptToken.ThrowIfCancellationRequested();
+                    token.ThrowIfCancellationRequested();
                     KafkaConnectionLease acquiredLease = default;
                     short version;
                     try
                     {
-                        acquiredLease = await _connectionPool.LeaseConnectionAsync(batch.Key, attemptToken).ConfigureAwait(false);
+                        acquiredLease = await _connectionPool.LeaseConnectionAsync(batch.Key, token).ConfigureAwait(false);
                         version = _metadataManager.GetNegotiatedApiVersion(acquiredLease.Connection, ApiKey.DeleteGroups,
                             DeleteGroupsRequest.LowestSupportedVersion, DeleteGroupsRequest.HighestSupportedVersion);
                     }
                     catch (Exception exception) when (IsDetailedMutationFailure(exception) || exception is InvalidOperationException or MalformedProtocolDataException)
                     {
                         acquiredLease.Dispose();
-                        attemptToken.ThrowIfCancellationRequested();
+                        token.ThrowIfCancellationRequested();
                         if (RetryHelper.IsRetriableRequestFailure(exception))
                             retryFailure ??= exception;
                         else
@@ -98,11 +100,11 @@ public sealed partial class AdminClient : IDetailedConsumerGroupMutationAdminCli
                     }
                     using var lease = acquiredLease;
                     var request = new DeleteGroupsRequest { GroupsNames = batch.Value };
-                    attemptToken.ThrowIfCancellationRequested();
+                    token.ThrowIfCancellationRequested();
                     DeleteGroupsResponse response;
                     try
                     {
-                        response = await lease.Connection.SendAsync<DeleteGroupsRequest, DeleteGroupsResponse>(request, version, attemptToken).ConfigureAwait(false);
+                        response = await lease.Connection.SendAsync<DeleteGroupsRequest, DeleteGroupsResponse>(request, version, token).ConfigureAwait(false);
                     }
                     catch (Exception exception) when (IsDetailedMutationFailure(exception) || exception is InvalidOperationException or MalformedProtocolDataException)
                     {

@@ -420,6 +420,60 @@ public sealed class AdminClientIdempotentRetryTests
     }
 
     [Test]
+    public async Task DeleteAclsAsync_ApiTimeoutEndsInFlightSend_ThrowsAmbiguousFailure()
+    {
+        // The controller accepted the deletion and never answered: the API timeout ends the send,
+        // and the outcome is as unknown as after a lost response.
+        var (admin, connection) = CreateAdminWithMockConnection(ApiKey.DeleteAcls);
+        var calls = 0;
+
+        connection.SendAsync<DeleteAclsRequest, DeleteAclsResponse>(
+                Arg.Any<DeleteAclsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                Interlocked.Increment(ref calls);
+                return WaitForCancellationAsync(call.ArgAt<CancellationToken>(2));
+            });
+
+        var exception = await Assert.ThrowsAsync<KafkaException>(async () =>
+            await admin.DeleteAclsAsync([AclBindingFilter.MatchAll()], new DeleteAclsOptions { TimeoutMs = 200 }));
+
+        await Assert.That(exception).IsNotTypeOf<KafkaTimeoutException>();
+        await Assert.That(exception!.IsRetriable).IsFalse();
+        await Assert.That(exception.Message).Contains("may have been deleted");
+        await Assert.That(exception.InnerException).IsAssignableTo<OperationCanceledException>();
+        await Assert.That(calls).IsEqualTo(1);
+
+        static async ValueTask<DeleteAclsResponse> WaitForCancellationAsync(CancellationToken token)
+        {
+            await Task.Delay(Timeout.Infinite, token);
+            throw new System.Diagnostics.UnreachableException();
+        }
+    }
+
+    [Test]
+    public async Task DeleteAclsAsync_CallerCancelsInFlightSend_ThrowsCancellation()
+    {
+        var (admin, connection) = CreateAdminWithMockConnection(ApiKey.DeleteAcls);
+        using var cts = new CancellationTokenSource();
+
+        connection.SendAsync<DeleteAclsRequest, DeleteAclsResponse>(
+                Arg.Any<DeleteAclsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                cts.Cancel();
+                return ValueTask.FromCanceled<DeleteAclsResponse>(call.ArgAt<CancellationToken>(2));
+            });
+
+        await Assert.ThrowsAsync<OperationCanceledException>(async () =>
+            await admin.DeleteAclsAsync([AclBindingFilter.MatchAll()], cancellationToken: cts.Token));
+    }
+
+    [Test]
     public async Task DeleteAclsAsync_ConnectionRefusedBeforeSend_RetriesAndReturnsDeletedBindings()
     {
         var (admin, connection) = CreateAdminWithMockConnection(ApiKey.DeleteAcls);
@@ -706,6 +760,47 @@ public sealed class AdminClientIdempotentRetryTests
             ]));
 
         await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.ResourceNotFound);
+    }
+
+    [Test]
+    public async Task AlterUserScramCredentialsAsync_MixedUserNotFoundOnRetry_Throws()
+    {
+        // "alice" has a deletion and an upsertion. RESOURCE_NOT_FOUND on the replay may mean the
+        // lost request applied both, or that it was rejected as a whole and the upsertion never
+        // applied. The client cannot tell which, so it must not report success.
+        var (admin, connection) = CreateAdminWithMockConnection(ApiKey.AlterUserScramCredentials);
+        var calls = 0;
+
+        connection.SendAsync<AlterUserScramCredentialsRequest, AlterUserScramCredentialsResponse>(
+                Arg.Any<AlterUserScramCredentialsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns<ValueTask<AlterUserScramCredentialsResponse>>(_ =>
+            {
+                if (Interlocked.Increment(ref calls) == 1)
+                    throw new IOException("response lost");
+
+                return ValueTask.FromResult(new AlterUserScramCredentialsResponse
+                {
+                    Results = [new AlterUserScramCredentialsResult { User = "alice", ErrorCode = ErrorCode.ResourceNotFound }]
+                });
+            });
+
+        var exception = await Assert.ThrowsAsync<KafkaException>(async () =>
+            await admin.AlterUserScramCredentialsAsync(
+            [
+                new UserScramCredentialDeletion { User = "alice", Mechanism = ScramMechanism.ScramSha256 },
+                new UserScramCredentialUpsertion
+                {
+                    User = "alice",
+                    Mechanism = ScramMechanism.ScramSha512,
+                    Password = "secret",
+                    Iterations = 4096
+                }
+            ]));
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.ResourceNotFound);
+        await Assert.That(calls).IsEqualTo(2);
     }
 
     private const int VoterId = 3;
