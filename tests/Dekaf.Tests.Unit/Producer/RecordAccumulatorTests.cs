@@ -3675,6 +3675,55 @@ public class RecordAccumulatorTests
     }
 
     [Test]
+    public async Task SweepExpiredInFlightBatches_TransactionalOrphan_ReportsFailureBeforeCompleting()
+    {
+        // An orphaned batch fell out of every BrokerSender structure, so only the sweep can tell
+        // the transaction that its records are gone.
+        var accumulator = new RecordAccumulator(CreateTestOptions());
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
+
+        try
+        {
+            var sources = ArrayPool<PooledValueTaskSource<RecordMetadata>>.Shared.Rent(1);
+            sources[0] = pool.Rent();
+            var completionTask = sources[0].Task;
+            var reports = new List<(long ProducerId, short Epoch, ErrorCode ErrorCode, bool Completed)>();
+            accumulator.OnTransactionalBatchFailed = (producerId, epoch, errorCode, _) =>
+                reports.Add((producerId, epoch, errorCode, completionTask.IsCompleted));
+
+            // As rented from the accumulator's pool: it reports its failure to the accumulator.
+            var batch = new ReadyBatch(accumulator);
+            batch.Initialize(
+                new TopicPartition("test-topic", 0),
+                new RecordBatch
+                {
+                    Records = Array.Empty<Record>(),
+                    ProducerId = 42,
+                    ProducerEpoch = 5,
+                    Attributes = RecordBatchAttributes.IsTransactional
+                },
+                sources,
+                completionSourcesCount: 1,
+                recordCount: 1,
+                dataSize: 100,
+                // Created an hour ago: well past the sweep's 3x delivery timeout.
+                createdStopwatchTimestamp: Stopwatch.GetTimestamp() - Stopwatch.Frequency * 3_600);
+            InvokeOnBatchEntersPipeline(accumulator, batch);
+
+            await Assert.That(accumulator.SweepExpiredInFlightBatches()).IsEqualTo(1);
+
+            await Assert.That(reports).IsEquivalentTo(
+                [(42L, (short)5, ErrorCode.RequestTimedOut, false)]);
+            await Assert.ThrowsAsync<KafkaTimeoutException>(async () => await completionTask);
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+            await pool.DisposeAsync();
+        }
+    }
+
+    [Test]
     public async Task SweepAndBrokerSenderRace_OnlyOneExitsPipeline()
     {
         // Regression test: SweepExpiredInFlightBatches and BrokerSender.CleanupBatch

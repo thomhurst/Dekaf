@@ -223,6 +223,104 @@ public sealed class TransactionalProduceFaultTests
         await Assert.That(async () => await completion).Throws<KafkaException>();
     }
 
+    /// <summary>
+    /// Records of an aborted transaction that the abort finds still buffered fail with it and are
+    /// never sent; records already sent are answered first. Either way the next transaction sends
+    /// only its own record, under the epoch the abort left, from sequence 0.
+    /// </summary>
+    [Test]
+    [Arguments((short)1)]
+    [Arguments((short)2)]
+    [Timeout(60_000)]
+    public async Task AbortAsync_WithUnsentRecords_NeverSendsThemInTheNextTransaction(
+        short transactionVersion,
+        CancellationToken cancellationToken)
+    {
+        await using var harness = await TransactionalProduceHarness.CreateAsync(
+            transactionVersion,
+            produceError: static (_, _) => ErrorCode.None,
+            // Keeps fire-and-forget records buffered until the abort.
+            lingerMs: 60_000);
+
+        var aborted = harness.Producer.BeginTransaction();
+        var abortedDeliveries = new TaskCompletionSource<Exception?>[3];
+        for (var i = 0; i < abortedDeliveries.Length; i++)
+        {
+            var delivery = new TaskCompletionSource<Exception?>(TaskCreationOptions.RunContinuationsAsynchronously);
+            abortedDeliveries[i] = delivery;
+            await harness.Producer.FireAsync(Message(partition: 0), (_, error) => delivery.TrySetResult(error));
+        }
+
+        await aborted.AbortAsync(cancellationToken);
+        await aborted.DisposeAsync();
+
+        // The abort settles every record of the aborted transaction before it completes.
+        foreach (var delivery in abortedDeliveries)
+        {
+            await Assert.That(delivery.Task.IsCompleted).IsTrue();
+            var error = await delivery.Task;
+            if (error is not null)
+            {
+                await Assert.That(error).IsTypeOf<ProduceException>();
+                await Assert.That(((ProduceException)error).Kind).IsEqualTo(ProduceErrorKind.TransactionAborted);
+            }
+        }
+
+        var sentBeforeNext = harness.Broker.ProducedBatches.Count;
+        var epochAfterAbort = harness.Broker.CurrentEpoch;
+        await harness.CommitOneRecordAsync(partition: 0, cancellationToken);
+
+        var sentInNext = harness.Broker.ProducedBatches.Skip(sentBeforeNext).ToArray();
+        await Assert.That(sentInNext.Length).IsEqualTo(1);
+        await Assert.That(sentInNext[0].ProducerEpoch).IsEqualTo(epochAfterAbort);
+        await Assert.That(sentInNext[0].RecordCount).IsEqualTo(1);
+        await Assert.That(sentInNext[0].BaseSequence).IsEqualTo(0);
+    }
+
+    /// <summary>
+    /// A batch in flight when the transaction aborts belongs to it: EndTxn(abort) waits for its
+    /// answer (an abort marker ahead of the batch would leave its records outside the aborted
+    /// transaction, TV1's hanging-transaction risk). The answer here rejects the epoch, which is
+    /// abortable and changes nothing for a transaction already aborting; the abort completes and
+    /// the next transaction starts under the new epoch at sequence 0.
+    /// </summary>
+    [Test]
+    [Arguments((short)1)]
+    [Arguments((short)2)]
+    [Timeout(60_000)]
+    public async Task AbortAsync_WithARequestInFlight_WaitsForItsAnswerAndLeavesTheNextTransactionUsable(
+        short transactionVersion,
+        CancellationToken cancellationToken)
+    {
+        var releaseFirst = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var harness = await TransactionalProduceHarness.CreateAsync(
+            transactionVersion,
+            produceError: static (_, attempt) => attempt == 1 ? ErrorCode.InvalidProducerEpoch : ErrorCode.None,
+            deliveryTimeoutMs: 120_000);
+        harness.Broker.HoldProduceResponse = attempt => attempt == 1 ? releaseFirst.Task : null;
+
+        var aborted = harness.Producer.BeginTransaction();
+        var inFlight = aborted.ProduceAsync(Message(partition: 0), cancellationToken).AsTask();
+        await harness.Broker.WaitForProduceAttemptsAsync(1, cancellationToken);
+        var abort = aborted.AbortAsync(cancellationToken).AsTask();
+
+        // Gives an abort that does not wait for the batch the time to send EndTxn.
+        await Task.Delay(200, cancellationToken);
+        await Assert.That(harness.Broker.AbortRequests).IsEqualTo(0);
+
+        releaseFirst.SetResult();
+        await abort;
+        await aborted.DisposeAsync();
+        await Assert.That(async () => await inFlight).Throws<AbortableTransactionException>();
+        await Assert.That(harness.Broker.AbortRequests).IsEqualTo(1);
+
+        var epochAfterAbort = harness.Broker.CurrentEpoch;
+        await harness.CommitOneRecordAsync(partition: 0, cancellationToken);
+        var last = harness.Broker.ProducedBatches[^1];
+        await Assert.That(last.ProducerEpoch).IsEqualTo(epochAfterAbort);
+        await Assert.That(last.BaseSequence).IsEqualTo(0);
+    }
+
     private static ProducerMessage<string, string> Message(int partition) => new()
     {
         Topic = Topic,
