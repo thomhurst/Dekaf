@@ -1495,6 +1495,15 @@ public sealed partial class ConnectionPool :
                 RecordConnectionAttemptFailure(setupKey, brokerId, host, port, ex.Message);
             throw;
         }
+        finally
+        {
+            // An abandoned setup must see its cancellation. The parent token's callbacks run
+            // newest first, so WaitAsync can fault and this method can dispose linkedCts (which
+            // unregisters it from the parent) before the parent's cancellation reaches it. The
+            // setup would then run on uncancelled, and pool disposal waits for it.
+            if (connectionTask is { IsCompleted: false })
+                linkedCts.Cancel();
+        }
     }
 
     private async ValueTask WaitForConnectionLockAsync(

@@ -2406,6 +2406,48 @@ public sealed class ConnectionPoolTests
             .Throws<ObjectDisposedException>();
     }
 
+    // When the operation deadline and the setup deadline expire together, WaitAsync can fault
+    // before the operation token's cancellation reaches the setup's own linked token; disposing
+    // that token then unregistered it. A factory that honours cancellation ran on forever, and
+    // pool disposal waited for it.
+    [Test]
+    [Timeout(60_000)]
+    public async Task ConnectionSetupTimeout_AbandonedSetupIsCancelled_SoDisposalDoesNotWaitForIt(
+        CancellationToken cancellationToken)
+    {
+        var setupTimeout = TimeSpan.FromMilliseconds(30);
+        var pool = new ConnectionPool(
+            clientId: "test-client",
+            connectionOptions: new ConnectionOptions
+            {
+                ConnectionTimeout = setupTimeout,
+                ConnectionTimeoutMax = setupTimeout,
+                ReconnectBackoff = TimeSpan.Zero,
+                ReconnectBackoffMax = TimeSpan.Zero
+            },
+            connectionsPerBroker: 1,
+            connectionFactory: async (_, _, _, _, ct) =>
+            {
+                await Task.Delay(Timeout.Infinite, ct);
+                throw new InvalidOperationException("unreachable");
+            },
+            randomDouble: static () => 0.5);
+
+        for (var attempt = 0; attempt < 100; attempt++)
+        {
+            try
+            {
+                await pool.GetConnectionAsync("broker-a", 9092, cancellationToken);
+            }
+            catch (KafkaException)
+            {
+                // Setup or operation timeout, both expected.
+            }
+        }
+
+        await pool.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
+    }
+
     [Test]
     public async Task DisposeAsync_DuringSetup_DisposesTheLateConnectionInsteadOfPublishingIt()
     {
