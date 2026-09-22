@@ -279,6 +279,135 @@ public sealed class TransactionTests
     }
 
     /// <summary>
+    /// A send loop fences the producer while the abort's EndTxn is answered with an abortable error.
+    /// The abortable transition is refused, and the caller must see the fence: a fatal exception
+    /// carrying ProducerFenced, not an abortable one that overwrites the fatal error code.
+    /// </summary>
+    [Test]
+    public async Task AbortAsync_AbortableEndTxnErrorAfterConcurrentFence_ThrowsFatalWithTheFenceCode()
+    {
+        var preparedState = new PreparedTransactionState(42, 5);
+        await using var harness = BuildPreparedCompletionHarness(
+            preparedState,
+            currentProducerId: preparedState.ProducerId,
+            currentProducerEpoch: preparedState.ProducerEpoch,
+            endTxnError: ErrorCode.TransactionAbortable);
+        harness.Producer._transactionState = TransactionState.InTransaction;
+        var transaction = new Transaction<string, string>(harness.Producer);
+        harness.BeforeEndTxnResponse = () =>
+            harness.Producer.OnTransactionalBatchFailed(42, 5, ErrorCode.ProducerFenced);
+
+        var exception = await Assert.That(() => transaction.AbortAsync().AsTask())
+            .Throws<FatalTransactionException>();
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.ProducerFenced);
+        await Assert.That(harness.Producer._transactionState).IsEqualTo(TransactionState.FatalError);
+        await Assert.That(harness.Producer._lastTransactionError).IsEqualTo(ErrorCode.ProducerFenced);
+    }
+
+    /// <summary>
+    /// A fatal control-plane answer (here an EndTxn whose outcome is unknown) races a caller's
+    /// abortable transition. Whatever the interleaving, the producer must end fatal: the abortable
+    /// transition must never overwrite a fatal state written concurrently.
+    /// </summary>
+    [Test]
+    [Timeout(60_000)]
+    public async Task FatalTransition_RacingAbortableTransition_AlwaysEndsFatal(CancellationToken cancellationToken)
+    {
+        await using var producer = BuildTransactionalProducer(TransactionState.InTransaction);
+        var preserveTimeoutState = typeof(KafkaProducer<string, string>).GetMethod(
+            "PreserveEndTransactionTimeoutState",
+            BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var markFatal = preserveTimeoutState.CreateDelegate<Action<bool>>(producer);
+
+        var lost = RaceTransactionTransitions(
+            reset: () =>
+            {
+                producer._lastTransactionError = ErrorCode.None;
+                producer._transactionState = TransactionState.InTransaction;
+            },
+            first: () => producer.MarkTransactionAbortable(ErrorCode.NetworkException),
+            second: () => markFatal(true),
+            isValid: () => producer._transactionState == TransactionState.FatalError
+                && producer._lastTransactionError == ErrorCode.RequestTimedOut,
+            cancellationToken);
+
+        await Assert.That(lost).IsEqualTo(0);
+    }
+
+    /// <summary>
+    /// A successful abort finalizes the state while a send loop reports a fenced batch stamped with
+    /// the transaction's identity. The finalizer must not read AbortingTransaction, lose the race to
+    /// the fatal report, and then overwrite FatalError with Ready.
+    /// </summary>
+    [Test]
+    [Timeout(60_000)]
+    public async Task FinalizeAfterAbort_RacingFencedBatchReport_AlwaysEndsFatal(CancellationToken cancellationToken)
+    {
+        await using var producer = BuildTransactionalProducer(TransactionState.AbortingTransaction);
+
+        var lost = RaceTransactionTransitions(
+            reset: () =>
+            {
+                producer._lastTransactionError = ErrorCode.None;
+                producer._transactionState = TransactionState.AbortingTransaction;
+            },
+            first: () => producer.FinalizeCompletedTransactionState(preserveAbortableError: false),
+            second: () => producer.OnTransactionalBatchFailed(42, 5, ErrorCode.ProducerFenced),
+            isValid: () => producer._transactionState == TransactionState.FatalError,
+            cancellationToken);
+
+        await Assert.That(lost).IsEqualTo(0);
+    }
+
+    /// <summary>
+    /// Runs <paramref name="first"/> and <paramref name="second"/> on two threads released together,
+    /// many times, with a varying spin offset so the two sweep across each other's check-then-write
+    /// windows. Returns the number of rounds that ended in a state <paramref name="isValid"/> rejects.
+    /// </summary>
+    private static int RaceTransactionTransitions(
+        Action reset,
+        Action first,
+        Action second,
+        Func<bool> isValid,
+        CancellationToken cancellationToken)
+    {
+        const int rounds = 20_000;
+        var lost = 0;
+        var round = 0;
+        var secondDone = 0;
+
+        var secondThread = new Thread(() =>
+        {
+            for (var i = 1; i <= rounds; i++)
+            {
+                while (Volatile.Read(ref round) < i)
+                    Thread.SpinWait(1);
+                Thread.SpinWait((i / 16) % 16);
+                second();
+                Volatile.Write(ref secondDone, i);
+            }
+        }) { IsBackground = true };
+        secondThread.Start();
+
+        for (var i = 1; i <= rounds && !cancellationToken.IsCancellationRequested; i++)
+        {
+            reset();
+            Volatile.Write(ref round, i);
+            Thread.SpinWait(i % 16);
+            first();
+            while (Volatile.Read(ref secondDone) < i)
+                Thread.SpinWait(1);
+            if (!isValid())
+                lost++;
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        secondThread.Join();
+        return lost;
+    }
+
+    /// <summary>
     /// The flush that precedes EndTxn(commit) runs in CommittingTransaction: a batch failed during
     /// it must stop the commit instead of committing the transaction without its records.
     /// </summary>

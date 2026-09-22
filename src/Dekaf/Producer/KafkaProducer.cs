@@ -2834,10 +2834,15 @@ public sealed partial class KafkaProducer<TKey, TValue> :
 
         RefreshTransactionFeaturesAtBoundary();
 
-        _transactionState = TransactionState.InTransaction;
+        lock (_partitionsInTransactionLock)
+        {
+            // A send loop may have fenced the producer since the checks above.
+            EnterTransactionState(TransactionState.InTransaction, "Cannot begin transaction", refuseAbortable: false);
+            _lastTransactionError = ErrorCode.None;
+            Volatile.Write(ref _transactionBatchFailure, null);
+        }
+
         _preparedTransactionState = PreparedTransactionState.Empty;
-        _lastTransactionError = ErrorCode.None;
-        Volatile.Write(ref _transactionBatchFailure, null);
         NotifyPartitionEnrollmentResetWaiters(ResetPartitionEnrollmentState());
 
         return new Transaction<TKey, TValue>(this);
@@ -2934,9 +2939,10 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             };
         }
 
-        _transactionState = committed
-            ? TransactionState.CommittingTransaction
-            : TransactionState.AbortingTransaction;
+        EnterTransactionState(
+            committed ? TransactionState.CommittingTransaction : TransactionState.AbortingTransaction,
+            "Cannot complete prepared transaction",
+            refuseAbortable: false);
 
         try
         {
@@ -3016,8 +3022,10 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             };
         }
 
+        // A batch failed during the prepare flush after ThrowIfTransactionFailedDuringFlush ran
+        // must still stop the prepare.
+        EnterTransactionState(TransactionState.PreparedTransaction, "Cannot prepare transaction", refuseAbortable: true);
         _preparedTransactionState = preparedState;
-        _transactionState = TransactionState.PreparedTransaction;
         return preparedState;
     }
 
@@ -3036,12 +3044,18 @@ public sealed partial class KafkaProducer<TKey, TValue> :
 
         _preparedTransactionState = PreparedTransactionState.Empty;
 
-        var preserveError = _transactionState == TransactionState.FatalError
-            || preserveAbortableError && _transactionState == TransactionState.AbortableError;
-        if (!preserveError)
+        // Atomic with the batch-failure report and every other error transition: a fatal report
+        // either lands first and is preserved here, or lands after Ready is written.
+        lock (_partitionsInTransactionLock)
         {
-            Volatile.Write(ref _transactionBatchFailure, null);
-            _transactionState = TransactionState.Ready;
+            var state = _transactionState;
+            var preserveError = state == TransactionState.FatalError
+                || preserveAbortableError && state == TransactionState.AbortableError;
+            if (!preserveError)
+            {
+                Volatile.Write(ref _transactionBatchFailure, null);
+                _transactionState = TransactionState.Ready;
+            }
         }
     }
 
@@ -3050,13 +3064,13 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     /// Called after abort to get the bumped epoch (KIP-360), and during initial setup.
     /// </summary>
     /// <summary>
-    /// Builds the transaction exception whose type reflects the KIP-1050 classification, and
-    /// records the error code for the fail-fast produce guard. Does not change transaction state.
+    /// Builds the transaction exception whose type reflects the KIP-1050 classification. Changes
+    /// neither the transaction state nor the recorded error code: <see cref="MarkTransactionFatal"/>
+    /// and <see cref="MarkTransactionAbortable"/> record both under the transition lock.
     /// </summary>
-    private TransactionException CreateTransactionException(
+    private TransactionException NewTransactionException(
         ErrorCode errorCode, TransactionErrorClassification classification, string message)
     {
-        _lastTransactionError = errorCode;
         return classification switch
         {
             TransactionErrorClassification.Fatal =>
@@ -3083,11 +3097,12 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         }
 
         if (classification == TransactionErrorClassification.Fatal)
-            _transactionState = TransactionState.FatalError;
-        else
-            MarkTransactionAbortable(errorCode);
+            MarkTransactionFatal(errorCode);
+        else if (!MarkTransactionAbortable(errorCode))
+            // A send loop fenced the producer concurrently: fatal wins and keeps its error code.
+            ThrowFatalTransactionError(operation);
 
-        throw CreateTransactionException(errorCode, classification, $"{operation} failed: {errorCode}");
+        throw NewTransactionException(errorCode, classification, $"{operation} failed: {errorCode}");
     }
 
     /// <summary>
@@ -3266,8 +3281,8 @@ public sealed partial class KafkaProducer<TKey, TValue> :
 
         if (featureVersion != _currentTransactionFeatureVersion)
         {
-            _transactionState = TransactionState.FatalError;
-            throw CreateTransactionException(
+            MarkTransactionFatal(ErrorCode.UnsupportedVersion);
+            throw NewTransactionException(
                 ErrorCode.UnsupportedVersion,
                 TransactionErrorClassification.Fatal,
                 "The coordinator transaction.version changed after producer initialization. " +
@@ -3492,12 +3507,12 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                     // transition to AbortableError; only fatal errors mark the producer unusable.
                     if (classification == TransactionErrorClassification.Fatal)
                     {
-                        _transactionState = TransactionState.FatalError;
+                        MarkTransactionFatal(response.ErrorCode);
                     }
 
                     // A final answer also settles an earlier unanswered attempt.
                     initProducerIdOutcomeUnknown = false;
-                    throw CreateTransactionException(response.ErrorCode, classification,
+                    throw NewTransactionException(response.ErrorCode, classification,
                         $"InitProducerId failed: {response.ErrorCode}");
                 }
 
@@ -3537,8 +3552,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             // the loop ends (timeout, cancellation, or a failed re-discovery) with the outcome unknown.
             if (initProducerIdRequestInFlight || initProducerIdOutcomeUnknown)
             {
-                _lastTransactionError = ErrorCode.InvalidProducerEpoch;
-                _transactionState = TransactionState.FatalError;
+                MarkTransactionFatal(ErrorCode.InvalidProducerEpoch);
             }
         }
 
@@ -3928,11 +3942,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         {
             // EndTxn has already succeeded before this required TV1 epoch refresh starts.
             // Caller cancellation cannot make the cached producer identity safe to reuse.
-            if (_transactionState != TransactionState.FatalError)
-            {
-                _lastTransactionError = ErrorCode.InvalidProducerEpoch;
-                _transactionState = TransactionState.FatalError;
-            }
+            MarkTransactionFatal(ErrorCode.InvalidProducerEpoch);
 
             throw;
         }
@@ -4173,8 +4183,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             return;
         }
 
-        _lastTransactionError = ErrorCode.RequestTimedOut;
-        _transactionState = TransactionState.FatalError;
+        MarkTransactionFatal(ErrorCode.RequestTimedOut);
     }
 
     internal ValueTask SendOffsetsToTransactionInternalAsync(
@@ -5421,6 +5430,49 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             _lastTransactionError = errorCode;
             _transactionState = TransactionState.AbortableError;
             return true;
+        }
+    }
+
+    /// <summary>
+    /// Moves the producer to FatalError. Written under <see cref="_partitionsInTransactionLock"/>
+    /// like every other transition out of an open transaction, so a concurrent abortable transition
+    /// (<see cref="MarkTransactionAbortable"/>) or a finalizing commit or abort
+    /// (<see cref="FinalizeCompletedTransactionState"/>) cannot read a nonfatal state and then
+    /// overwrite this one. The first fatal error code is kept: it is the cause the caller sees
+    /// from every later operation. Error paths only.
+    /// </summary>
+    private void MarkTransactionFatal(ErrorCode errorCode)
+    {
+        lock (_partitionsInTransactionLock)
+        {
+            if (_transactionState == TransactionState.FatalError)
+                return;
+
+            _lastTransactionError = errorCode;
+            _transactionState = TransactionState.FatalError;
+        }
+    }
+
+    /// <summary>
+    /// Moves the transaction to <paramref name="next"/> (begin, commit, prepare, abort) unless a
+    /// send loop made the producer fatal, or, with <paramref name="refuseAbortable"/>, the
+    /// transaction abortable, since the caller checked. The check and the write share
+    /// <see cref="_partitionsInTransactionLock"/> with the batch-failure report, so the report is
+    /// either seen here or lands after the write; it is never overwritten. Once per transaction
+    /// operation.
+    /// </summary>
+    internal void EnterTransactionState(TransactionState next, string operation, bool refuseAbortable)
+    {
+        lock (_partitionsInTransactionLock)
+        {
+            var state = _transactionState;
+            if (state == TransactionState.FatalError)
+                ThrowFatalTransactionError(operation);
+
+            if (refuseAbortable && state == TransactionState.AbortableError)
+                throw CreateAbortableTransactionError(operation);
+
+            _transactionState = next;
         }
     }
 
@@ -7572,10 +7624,12 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
         if (_committed || _aborted)
             throw new InvalidOperationException("Transaction is already completed");
 
-        // Before the state is overwritten below: CommittingTransaction would erase the error.
-        _producer.ThrowIfAbortableTransactionError("Cannot commit transaction");
-
-        _producer._transactionState = TransactionState.CommittingTransaction;
+        // Refuses an abortable transaction in the same step as the write: CommittingTransaction
+        // would erase the error, including one a send loop reports while the commit starts.
+        _producer.EnterTransactionState(
+            TransactionState.CommittingTransaction,
+            "Cannot commit transaction",
+            refuseAbortable: true);
 
         try
         {
@@ -7624,7 +7678,10 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
         if (_committed || _aborted)
             throw new InvalidOperationException("Transaction is already completed");
 
-        _producer._transactionState = TransactionState.AbortingTransaction;
+        _producer.EnterTransactionState(
+            TransactionState.AbortingTransaction,
+            "Cannot abort transaction",
+            refuseAbortable: false);
 
         try
         {
