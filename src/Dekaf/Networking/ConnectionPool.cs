@@ -2762,7 +2762,8 @@ public sealed partial class ConnectionPool :
         _sharedOAuthBearerTokenProvider?.Dispose();
         _disposeCts.Dispose();
         _disposeLock.Dispose();
-        _scaleLock.Dispose();
+        // _scaleLock is not disposed, for the same reason as the setup locks in CloseAllAsync: a
+        // scale-up or slot replacement still in flight holds it and releases it on the way out.
     }
 
     #region Logging

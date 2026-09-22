@@ -1034,6 +1034,49 @@ public sealed class ConnectionPoolTests
         lease.Dispose();
     }
 
+    // DisposeAsync used to dispose _scaleLock while a scale-up still held it, so the scale-up's
+    // Release threw the semaphore's ObjectDisposedException over its own outcome.
+    [Test]
+    [Timeout(10_000)]
+    public async Task DisposeAsync_WhileScaleUpHoldsScaleLock_ScaleUpFailsAsPoolDisposedAndDisposesItsConnections(
+        CancellationToken cancellationToken)
+    {
+        var created = new System.Collections.Concurrent.ConcurrentBag<TestIdleConnection>();
+        var factoryCalls = 0;
+        var bothFactoriesEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFactory = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var pool = new ConnectionPool(
+            clientId: "test-client",
+            connectionOptions: new ConnectionOptions { ConnectionsMaxIdleMs = -1 },
+            connectionsPerBroker: 1,
+            connectionFactory: async (_, host, port, _, _) =>
+            {
+                if (Interlocked.Increment(ref factoryCalls) == 2)
+                    bothFactoriesEntered.TrySetResult();
+                // Ignores its token, like a handshake that finishes after the pool is gone.
+                await releaseFactory.Task.ConfigureAwait(false);
+                var connection = new TestIdleConnection(1, host, port);
+                created.Add(connection);
+                return connection;
+            });
+        pool.RegisterBroker(1, "host-a", 9092);
+
+        var scaleUp = pool.ScaleConnectionGroupAsync(1, 2, cancellationToken).AsTask();
+        await bothFactoriesEntered.Task.WaitAsync(cancellationToken);
+
+        await pool.DisposeAsync().AsTask().WaitAsync(cancellationToken);
+        releaseFactory.TrySetResult();
+
+        var exception = await Assert.ThrowsAsync<ObjectDisposedException>(async () =>
+            await scaleUp.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken));
+
+        // The pool's disposal, not the semaphore's.
+        await Assert.That(exception!.ObjectName).IsEqualTo(nameof(ConnectionPool));
+        await Assert.That(created.Count).IsEqualTo(2);
+        foreach (var connection in created)
+            await Assert.That(connection.DisposeCount).IsGreaterThanOrEqualTo(1);
+    }
+
     // 1 = single-connection path, 2 = connection-group path.
     [Test]
     [Arguments(1)]
