@@ -468,7 +468,8 @@ public sealed partial class OutboxRelayService : BackgroundService
 
             var publishedAny = false;
             var hadError = false;
-            var backingOff = false;
+            // Ready buckets kept only because they are backing off from a rejected row.
+            var backingOffCount = 0;
             // The earliest retry of a backing-off bucket, measured from the cycle's start.
             var retryAfter = TimeSpan.MaxValue;
             var generation = _leaseGeneration;
@@ -504,7 +505,7 @@ public sealed partial class OutboxRelayService : BackgroundService
                         if (!_headRowRecheck[bucket])
                         {
                             _pendingBuckets[retainedCount++] = bucket;
-                            backingOff = true;
+                            backingOffCount++;
                             if (headRetryDue < retryAfter)
                                 retryAfter = headRetryDue;
                             continue;
@@ -540,7 +541,7 @@ public sealed partial class OutboxRelayService : BackgroundService
                             // Still the row that failed: nobody published it while the bucket
                             // was away, so its backoff stands.
                             _pendingBuckets[retainedCount++] = bucket;
-                            backingOff = true;
+                            backingOffCount++;
                             if (headRetryDue < retryAfter)
                                 retryAfter = headRetryDue;
                             break;
@@ -742,7 +743,7 @@ public sealed partial class OutboxRelayService : BackgroundService
                         _headRowFailedAt[bucket] = failedAt;
                         _headRowBackoff[bucket] = backoff;
                         _pendingBuckets[retainedCount++] = bucket;
-                        backingOff = true;
+                        backingOffCount++;
                         var retryDue = backoff + _timeProvider.GetElapsedTime(started, failedAt);
                         if (retryDue < retryAfter)
                             retryAfter = retryDue;
@@ -777,15 +778,20 @@ public sealed partial class OutboxRelayService : BackgroundService
             _pendingBucketCount = !hadError && generation == _leaseGeneration ? retainedCount : 0;
             if (hadError)
                 _discoveryRequired = true;
-            if (hadError || publishedAny || !backingOff)
+            else if (backingOffCount > 0 && backingOffCount == retainedCount && _notifier is not OutboxNotifier)
+            {
+                // Only buckets backing off from a rejected row are left ready. Without bucket
+                // hints the next cycle would find nothing else to do until a probe, since a
+                // non-empty ready list skips discovery; probe at once instead of spending a
+                // cycle that only skips them again.
+                _discoveryRequired = true;
+            }
+            if (hadError || publishedAny || backingOffCount == 0)
                 return new CycleResult(publishedAny, hadError);
 
             // Only buckets backing off from a rejected row are left. That is not a relay-wide
             // failure: the relay idles until the earliest of their retries, and a commit to
-            // any other bucket still wakes it. They stay ready, so the retry needs no probe,
-            // but a notifier that names no bucket finds new work only by probing.
-            if (_notifier is not OutboxNotifier)
-                _discoveryRequired = true;
+            // any other bucket still wakes it. They stay ready, so the retry needs no probe.
             return new CycleResult(PublishedAny: false, HadError: false, retryAfter, started);
         }
         finally
