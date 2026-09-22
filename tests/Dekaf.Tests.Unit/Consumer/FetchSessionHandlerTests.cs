@@ -153,6 +153,53 @@ public sealed class FetchSessionHandlerTests
     }
 
     [Test]
+    public async Task HandleResponse_FullReplyWithoutSession_AfterInvalidEpoch_DropsTheStaleSessionId()
+    {
+        var handler = new FetchSessionHandler();
+        var topics = Topics(("topic-a", 0, 100, 1024));
+
+        handler.Build(topics, clusterMetadata: null);
+        handler.HandleResponse(Response(sessionId: 42));
+        handler.HandleResponse(Response(sessionId: 42, ErrorCode.InvalidFetchSessionEpoch));
+
+        // The full request that closes session 42 is answered without a new session,
+        // for example because the broker's session cache is full.
+        var retry = handler.Build(topics, clusterMetadata: null);
+        await Assert.That(retry.IsFull).IsTrue();
+        handler.HandleResponse(Response(sessionId: 0));
+
+        var next = handler.Build(topics, clusterMetadata: null);
+
+        await Assert.That(handler.HasActiveSession).IsFalse();
+        await Assert.That(next.SessionId).IsEqualTo(0);
+        await Assert.That(next.SessionEpoch).IsEqualTo(0);
+        await Assert.That(next.IsFull).IsTrue();
+    }
+
+    [Test]
+    public async Task HandleResponse_IncrementalReplyWithoutSession_StartsANewSession()
+    {
+        var handler = new FetchSessionHandler();
+        var topics = Topics(("topic-a", 0, 100, 1024));
+
+        handler.Build(topics, clusterMetadata: null);
+        handler.HandleResponse(Response(sessionId: 42));
+        var incremental = handler.Build(topics, clusterMetadata: null);
+        await Assert.That(incremental.IsFull).IsFalse();
+
+        // A successful reply without a session id means the broker closed the session.
+        handler.HandleResponse(Response(sessionId: 0));
+
+        var next = handler.Build(topics, clusterMetadata: null);
+
+        await Assert.That(handler.HasActiveSession).IsFalse();
+        await Assert.That(next.SessionId).IsEqualTo(0);
+        await Assert.That(next.SessionEpoch).IsEqualTo(0);
+        await Assert.That(next.IsFull).IsTrue();
+        await Assert.That(next.Topics.Count).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task ResponseTopicName_UsesMetadataFromActiveSession()
     {
         var oldTopicId = Guid.NewGuid();

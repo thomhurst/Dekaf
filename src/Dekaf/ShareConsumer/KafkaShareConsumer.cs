@@ -571,6 +571,14 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         foreach (var (brokerId, partitions) in partitionsByBroker)
         {
             var brokerAcks = SelectAcknowledgements(pendingAcks, partitions);
+            if (brokerAcks is not null && _sessionManager.GetSessionEpoch(brokerId) == 0)
+            {
+                // The request that opens a share session cannot carry acknowledgements: the
+                // broker rejects it with INVALID_REQUEST, and resending it would never open the
+                // session. Keep them for the first request of the new session.
+                DeferAcknowledgements(pendingAcks!, brokerAcks);
+                brokerAcks = null;
+            }
             sentAcknowledgementPartitionCount += brokerAcks?.Count ?? 0;
             fetchTasks.Add(SendShareFetchForBrokerAsync(
                 brokerId,
@@ -580,6 +588,23 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         }
 
         return fetchTasks;
+    }
+
+    private void DeferAcknowledgements(
+        Dictionary<TopicPartition, List<AcknowledgementBatchData>> pendingAcks,
+        Dictionary<TopicPartition, List<AcknowledgementBatchData>> deferred)
+    {
+        // Deferred acknowledgements have no outcome yet; the commit callback reports them
+        // when a later request carries them.
+        RequeueAcknowledgements(deferred);
+        if (ReferenceEquals(pendingAcks, deferred))
+        {
+            pendingAcks.Clear();
+            return;
+        }
+
+        foreach (var partition in deferred.Keys)
+            pendingAcks.Remove(partition);
     }
 
     private void CompletePollFetch(
@@ -641,8 +666,8 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                     response.ErrorCode == ErrorCode.InvalidShareSessionEpoch)
                 {
                     _sessionManager.ResetSession(brokerId);
-                    // Note: _ackTracker may still hold pending acks from the now-invalid session.
-                    // On next CommitAsync those acks will be sent with epoch 0 (new session).
+                    // Pending acks from the now-invalid session stay queued. The next poll opens
+                    // a new session without them and the request after it carries them.
                     // Renewal records represent partition locks, not fetch-session membership.
                     // Keep active records available for replay and pending Renew records ready
                     // for activation after the new session accepts them.
@@ -1166,11 +1191,21 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
             }
             catch (Exception ex) when (ex is OperationCanceledException or BrokerVersionException)
             {
+                // A request cancelled after its write can still advance the broker's session.
+                if (ex is OperationCanceledException && (requestContext is null || requestContext.WriteStarted))
+                    _sessionManager.ResetSession(brokerId);
                 return new ShareFetchBrokerResult(brokerId, 0, null, brokerAcks, ex, ex);
             }
             catch (Exception ex)
             {
-                if (attempt < RetryHelper.MaxRetries && RetryHelper.IsRetriableRequestFailure(ex))
+                // The broker drops a share session when its connection closes, and a request
+                // whose response was lost may still have advanced the session epoch. Either way
+                // the next request must open a new session, and that request cannot carry
+                // acknowledgements, so only a fetch without them is retried here.
+                _sessionManager.ResetSession(brokerId);
+                if (brokerAcks is null
+                    && attempt < RetryHelper.MaxRetries
+                    && RetryHelper.IsRetriableRequestFailure(ex))
                 {
                     var retryError = await PrepareShareFetchRetryAsync(attempt, cancellationToken)
                         .ConfigureAwait(false);
@@ -1189,7 +1224,6 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                 }
 
                 LogFetchFailed(brokerId, ex);
-                _sessionManager.ResetSession(brokerId);
                 return new ShareFetchBrokerResult(brokerId, 0, null, brokerAcks, null, ex);
             }
         }
@@ -1293,6 +1327,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         for (var attempt = 0; ; attempt++)
         {
             requestContext?.Reset();
+            var responseReceived = false;
             try
             {
                 var topics = BuildShareAcknowledgeTopics(pendingAcknowledgements);
@@ -1329,6 +1364,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                         ShareMetrics?.AcknowledgementRequestCompleted(brokerId, failed: true);
                     throw;
                 }
+                responseReceived = true;
                 var receivedTimestamp = System.Diagnostics.Stopwatch.GetTimestamp();
                 ShareMetrics?.AcknowledgementRequestCompleted(brokerId, response.ErrorCode != ErrorCode.None);
 
@@ -1428,11 +1464,32 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
             }
             catch (OperationCanceledException ex) when (cancellationToken.IsCancellationRequested)
             {
+                // A request cancelled after its write can still advance the broker's session.
+                if (!responseReceived && !closeSession && (requestContext is null || requestContext.WriteStarted))
+                    _sessionManager.ResetSession(brokerId);
                 MergeAcknowledgements(ref failedAcknowledgements, pendingAcknowledgements);
                 return new AcknowledgeBrokerResult(
                     successfulAcknowledgements,
                     failedAcknowledgements,
                     ex,
+                    acknowledgementErrors);
+            }
+            catch (Exception ex) when (!responseReceived && !closeSession)
+            {
+                // The broker drops a share session when its connection closes, and a request
+                // whose response was lost may still have advanced the session epoch. The next
+                // request must open a new session, which a ShareAcknowledge cannot do, so these
+                // acknowledgements wait for a ShareFetch to open it instead of being retried here.
+                _sessionManager.ResetSession(brokerId);
+                MergeAcknowledgements(ref failedAcknowledgements, pendingAcknowledgements);
+                AddAcknowledgementErrors(
+                    ref acknowledgementErrors,
+                    pendingAcknowledgements,
+                    ex);
+                return new AcknowledgeBrokerResult(
+                    successfulAcknowledgements,
+                    failedAcknowledgements,
+                    firstError ?? ex,
                     acknowledgementErrors);
             }
             catch (Exception ex) when (retryRetriableFailures

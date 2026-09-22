@@ -14,7 +14,7 @@ namespace Dekaf.Tests.Integration;
 /// Producer and consumer traffic use separate proxy listeners so a fault on one lane does not
 /// disrupt the verification lane or any shared integration-test container.
 /// </summary>
-public sealed class TransactionFaultKafkaContainer : KafkaTestContainer
+public class TransactionFaultKafkaContainer : KafkaTestContainer
 {
     private const string KafkaNetworkAlias = "transaction-fault-kafka";
     private const string ProducerProxyName = "transaction-producer";
@@ -225,6 +225,7 @@ public sealed class TransactionFaultKafkaContainer : KafkaTestContainer
         await cleanup.CaptureValueTaskAsync("transaction network disposal", _network.DisposeAsync)
             .ConfigureAwait(false);
         await base.DisposeAsync().ConfigureAwait(false);
+        GC.SuppressFinalize(this);
         cleanup.ThrowIfAny();
     }
 
@@ -233,7 +234,7 @@ public sealed class TransactionFaultKafkaContainer : KafkaTestContainer
         ushort producerPublicPort,
         ushort consumerPublicPort)
     {
-        return new ContainerBuilder("apache/kafka:4.0.2")
+        var builder = new ContainerBuilder(ContainerName)
             .WithNetwork(_network)
             .WithNetworkAliases(KafkaNetworkAlias)
             .WithEnvironment("KAFKA_HEAP_OPTS", "-Xmx512m -Xms512m")
@@ -263,9 +264,13 @@ public sealed class TransactionFaultKafkaContainer : KafkaTestContainer
             .WithEnvironment("KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS", "0")
             .WithEnvironment("CLUSTER_ID", "4L6g3nShT-eMCtK--X86sw")
             .WithWaitStrategy(Wait.ForUnixContainer()
-                .UntilMessageIsLogged(".*Transitioning from RECOVERY to RUNNING.*"))
-            .Build();
+                .UntilMessageIsLogged(".*Transitioning from RECOVERY to RUNNING.*"));
+
+        return ConfigureKafka(builder).Build();
     }
+
+    /// <summary>Adds broker settings a derived topology needs on top of the listeners and quorum.</summary>
+    protected virtual ContainerBuilder ConfigureKafka(ContainerBuilder builder) => builder;
 
     public override IAdminClient CreateAdminClient() => Kafka.CreateAdminClient()
         .WithBootstrapServers(ProducerBootstrapServers)
