@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics.Metrics;
 using Dekaf.Outbox;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -67,6 +68,317 @@ public sealed class OutboxRelayResilienceTests
 
             await Assert.That(store.MarkedIds.Order().ToArray()).IsEquivalentTo(new long[] { 10, 11 });
             await Assert.That(publisher.Deliveries(2)).IsEqualTo(1);
+        }
+        finally
+        {
+            await relay.StopAsync(CancellationToken.None).WaitAsync(SignalTimeout);
+        }
+    }
+
+    [Test]
+    public async Task PoisonRowInOneBucket_DoesNotPaceTheBacklogOfTheOtherBuckets()
+    {
+        // The clock never moves, so any wait on the error backoff parks the relay for good.
+        var time = new ManualTimeProvider();
+        var store = new RowStore(ownedBuckets: [0, 1]);
+        store.Enqueue(Row(1, bucket: 0));
+        store.Enqueue(Row(10, bucket: 1), Row(11, bucket: 1), Row(12, bucket: 1),
+            Row(13, bucket: 1), Row(14, bucket: 1), Row(15, bucket: 1));
+        var publisher = new ConcurrentSendPublisher();
+        publisher.Reject(1);
+        var options = new OutboxRelayOptions
+        {
+            BucketCount = 2,
+            BatchSize = 2,
+            PollInterval = TimeSpan.FromMinutes(2),
+            ErrorBackoff = TimeSpan.FromMinutes(1),
+            LeaseRenewInterval = TimeSpan.FromMinutes(5),
+            LeaseDuration = TimeSpan.FromMinutes(10),
+            MaxPublishDuration = TimeSpan.FromSeconds(5),
+            RelayId = "test-relay"
+        };
+
+        using var relay = CreateRelay(store, publisher, options, time);
+        await relay.StartAsync(CancellationToken.None);
+        try
+        {
+            // Three batches wait in bucket 1. A poison row in bucket 0 must hold back only
+            // its own bucket: pacing the whole relay by it would drain every healthy bucket at
+            // one batch per ErrorBackoff.
+            await store.WaitForBucketEmptyAsync(1, SignalTimeout);
+            await Assert.That(store.MarkedIds.Order().ToArray()).IsEquivalentTo(new long[] { 10, 11, 12, 13, 14, 15 });
+
+            // The poison row is not retried before its own backoff has passed.
+            await time.WaitForTimerAsync(options.ErrorBackoff);
+            await Assert.That(publisher.RejectedAttempts).IsEqualTo(1);
+            publisher.Accept(1);
+            time.Advance(options.ErrorBackoff);
+            await store.WaitForEmptyAsync(SignalTimeout);
+        }
+        finally
+        {
+            await relay.StopAsync(CancellationToken.None).WaitAsync(SignalTimeout);
+        }
+    }
+
+    [Test]
+    public async Task PoisonRowAsTheOnlyWork_ACommitToAnotherBucketStillWakesTheRelay()
+    {
+        // The clock only moves when the test moves it, so a row in bucket 1 is published
+        // before the poison row's backoff ends only if the commit notification ends the wait.
+        var time = new ManualTimeProvider();
+        var store = new RowStore(ownedBuckets: [0, 1]);
+        store.Enqueue(Row(1, bucket: 0));
+        var publisher = new ConcurrentSendPublisher();
+        publisher.Reject(1);
+        var options = new OutboxRelayOptions
+        {
+            BucketCount = 2,
+            PollInterval = TimeSpan.FromMinutes(2),
+            ErrorBackoff = TimeSpan.FromMinutes(1),
+            LeaseRenewInterval = TimeSpan.FromMinutes(5),
+            LeaseDuration = TimeSpan.FromMinutes(10),
+            MaxPublishDuration = TimeSpan.FromSeconds(5),
+            RelayId = "test-relay"
+        };
+        using var notifier = new OutboxNotifier(time, options.BucketCount);
+        using var relay = new OutboxRelayService(store, publisher, options,
+            NullLogger<OutboxRelayService>.Instance, time, notifier);
+        await relay.StartAsync(CancellationToken.None);
+        try
+        {
+            // The relay waits until the poison row is due for its retry.
+            await time.WaitForTimerAsync(options.ErrorBackoff);
+            store.Enqueue(Row(10, bucket: 1));
+            notifier.NotifyCommitted(new HashSet<int> { 1 });
+            await store.WaitForBucketEmptyAsync(1, SignalTimeout);
+            await Assert.That(publisher.RejectedAttempts).IsEqualTo(1);
+
+            // The poison row is still retried once its own backoff has passed.
+            publisher.Accept(1);
+            time.Advance(options.ErrorBackoff);
+            await store.WaitForEmptyAsync(SignalTimeout);
+        }
+        finally
+        {
+            await relay.StopAsync(CancellationToken.None).WaitAsync(SignalTimeout);
+        }
+    }
+
+    [Test]
+    public async Task PoisonRowAsTheOnlyWork_CommitsBehindItDoNotRunACyclePerCommit()
+    {
+        // The clock never moves, so every cycle after the first is one a commit started.
+        var metricsName = "poison-commits-" + Guid.NewGuid().ToString("N");
+        var cycles = 0;
+        using var listener = new MeterListener();
+        listener.InstrumentPublished = (instrument, meterListener) =>
+        {
+            if (instrument.Meter.Name == OutboxDiagnostics.MeterName && instrument.Name == "dekaf.outbox.cycle.duration")
+                meterListener.EnableMeasurementEvents(instrument);
+        };
+        listener.SetMeasurementEventCallback<double>((_, _, tags, _) =>
+        {
+            foreach (var tag in tags)
+            {
+                if (Equals(tag.Value, metricsName))
+                    Interlocked.Increment(ref cycles);
+            }
+        });
+        listener.Start();
+
+        var time = new ManualTimeProvider();
+        var store = new RowStore(ownedBuckets: [0, 1]);
+        store.Enqueue(Row(1, bucket: 0));
+        var publisher = new ConcurrentSendPublisher();
+        publisher.Reject(1);
+        var options = new OutboxRelayOptions
+        {
+            BucketCount = 2,
+            PollInterval = TimeSpan.FromMinutes(2),
+            ErrorBackoff = TimeSpan.FromMinutes(1),
+            LeaseRenewInterval = TimeSpan.FromMinutes(5),
+            LeaseDuration = TimeSpan.FromMinutes(10),
+            MaxPublishDuration = TimeSpan.FromSeconds(5),
+            MetricsName = metricsName,
+            RelayId = "test-relay"
+        };
+        using var notifier = new OutboxNotifier(time, options.BucketCount);
+        using var relay = new OutboxRelayService(store, publisher, options,
+            NullLogger<OutboxRelayService>.Instance, time, notifier);
+        await relay.StartAsync(CancellationToken.None);
+        try
+        {
+            await time.WaitForTimerAsync(options.ErrorBackoff);
+            var cyclesBefore = Volatile.Read(ref cycles);
+
+            // Writers keep committing behind the poison row. Its bucket is still backing off,
+            // so each commit brings the relay nothing to do: it goes back to waiting for the
+            // retry instead of running a cycle that skips the bucket again.
+            for (var commit = 0; commit < 20; commit++)
+            {
+                store.Enqueue(Row(100 + commit, bucket: 0));
+                notifier.NotifyCommitted(new HashSet<int> { 0 });
+                await time.WaitForTimerAsync(options.ErrorBackoff);
+            }
+            await Assert.That(Volatile.Read(ref cycles) - cyclesBefore).IsEqualTo(0);
+            await Assert.That(publisher.RejectedAttempts).IsEqualTo(1);
+
+            // A commit to a healthy bucket still ends the wait at once.
+            store.Enqueue(Row(10, bucket: 1));
+            notifier.NotifyCommitted(new HashSet<int> { 1 });
+            await store.WaitForBucketEmptyAsync(1, SignalTimeout);
+            await time.WaitForTimerAsync(options.ErrorBackoff);
+
+            // The poison row is still retried once its own backoff has passed, and the rows
+            // committed behind it follow.
+            publisher.Accept(1);
+            time.Advance(options.ErrorBackoff);
+            await store.WaitForEmptyAsync(SignalTimeout);
+        }
+        finally
+        {
+            await relay.StopAsync(CancellationToken.None).WaitAsync(SignalTimeout);
+        }
+    }
+
+    [Test]
+    public async Task PoisonRowBucket_LostAndRegained_DoesNotWaitOutTheOldRowsBackoff()
+    {
+        // The backoff outlasts several renewals. While the bucket is away, a peer publishes
+        // the rejected row, so the row this relay backed off for is gone when it comes back.
+        var time = new ManualTimeProvider();
+        var store = new RowStore(ownedBuckets: [0, 1]);
+        store.Enqueue(Row(1, bucket: 0));
+        var publisher = new ConcurrentSendPublisher();
+        publisher.Reject(1);
+        var renewal = TimeSpan.FromMinutes(1);
+        var options = new OutboxRelayOptions
+        {
+            BucketCount = 2,
+            PollInterval = TimeSpan.FromMinutes(2),
+            ErrorBackoff = TimeSpan.FromMinutes(10),
+            LeaseRenewInterval = renewal,
+            LeaseDuration = TimeSpan.FromMinutes(3),
+            MaxPublishDuration = TimeSpan.FromSeconds(5),
+            RelayId = "test-relay"
+        };
+
+        using var relay = CreateRelay(store, publisher, options, time);
+        await relay.StartAsync(CancellationToken.None);
+        try
+        {
+            // The row is rejected, and the relay waits for its next renewal.
+            await time.WaitForTimerAsync(renewal);
+            await Assert.That(publisher.RejectedAttempts).IsEqualTo(1);
+
+            // The bucket moves to a peer, which publishes the rejected row and a new one lands.
+            store.SetOwnedBuckets([1]);
+            time.Advance(renewal);
+            await time.WaitForTimerAsync(renewal);
+            store.Remove(1);
+            store.Enqueue(Row(2, bucket: 0));
+
+            // Back with this relay, the new row goes out at once, long before the old row's
+            // backoff would have ended.
+            store.SetOwnedBuckets([0, 1]);
+            time.Advance(renewal);
+            await store.WaitForBucketEmptyAsync(0, TimeSpan.FromSeconds(10));
+            await Assert.That(store.MarkedIds.ToArray()).IsEquivalentTo(new long[] { 2 });
+        }
+        finally
+        {
+            await relay.StopAsync(CancellationToken.None).WaitAsync(SignalTimeout);
+        }
+    }
+
+    [Test]
+    public async Task PoisonRowBucket_LeftOutOfOneAcquisition_KeepsTheSameRowsBackoff()
+    {
+        // A store can leave a bucket out of one acquisition while its lease still names this
+        // relay, as the EF Core store does with an expiry stored ahead of a clock set back.
+        // Nobody else could publish the row meanwhile, so it must not be retried early.
+        var time = new ManualTimeProvider();
+        var store = new RowStore(ownedBuckets: [0, 1]);
+        store.Enqueue(Row(1, bucket: 0));
+        var publisher = new ConcurrentSendPublisher();
+        publisher.Reject(1);
+        var renewal = TimeSpan.FromMinutes(1);
+        var options = new OutboxRelayOptions
+        {
+            BucketCount = 2,
+            PollInterval = TimeSpan.FromMinutes(2),
+            ErrorBackoff = TimeSpan.FromMinutes(10),
+            LeaseRenewInterval = renewal,
+            LeaseDuration = TimeSpan.FromMinutes(3),
+            MaxPublishDuration = TimeSpan.FromSeconds(5),
+            RelayId = "test-relay"
+        };
+
+        using var relay = CreateRelay(store, publisher, options, time);
+        await relay.StartAsync(CancellationToken.None);
+        try
+        {
+            await time.WaitForTimerAsync(renewal);
+            await Assert.That(publisher.RejectedAttempts).IsEqualTo(1);
+
+            store.SetOwnedBuckets([1]);
+            time.Advance(renewal);
+            await time.WaitForTimerAsync(renewal);
+
+            // Back in the next acquisition with the same row at its head: the relay looks at
+            // the row once and goes back to waiting out its backoff.
+            store.SetOwnedBuckets([0, 1]);
+            time.Advance(renewal);
+            await time.WaitForTimerAsync(renewal);
+            await Assert.That(publisher.RejectedAttempts).IsEqualTo(1);
+            await Assert.That(store.MarkedIds.IsEmpty).IsTrue();
+        }
+        finally
+        {
+            await relay.StopAsync(CancellationToken.None).WaitAsync(SignalTimeout);
+        }
+    }
+
+    [Test]
+    public async Task PoisonRowsInSeveralBuckets_ASlowLaterRejectionDoesNotDelayTheEarlierRetry()
+    {
+        // Bucket 0's row is rejected at once and bucket 1's only after 40 seconds, so bucket
+        // 0 is due again 20 seconds after the cycle ends, not a full backoff after it.
+        var time = new ManualTimeProvider();
+        var store = new RowStore(ownedBuckets: [0, 1]);
+        store.Enqueue(Row(1, bucket: 0), Row(2, bucket: 1));
+        var publisher = new ConcurrentSendPublisher
+        {
+            BeforePublish = id =>
+            {
+                if (id == 2)
+                    time.Advance(TimeSpan.FromSeconds(40));
+            }
+        };
+        publisher.Reject(1);
+        publisher.Reject(2);
+        var options = new OutboxRelayOptions
+        {
+            BucketCount = 2,
+            PollInterval = TimeSpan.FromMinutes(2),
+            ErrorBackoff = TimeSpan.FromMinutes(1),
+            LeaseRenewInterval = TimeSpan.FromMinutes(5),
+            LeaseDuration = TimeSpan.FromMinutes(10),
+            MaxPublishDuration = TimeSpan.FromMinutes(2),
+            RelayId = "test-relay"
+        };
+
+        using var relay = CreateRelay(store, publisher, options, time);
+        await relay.StartAsync(CancellationToken.None);
+        try
+        {
+            await time.WaitForTimerAsync(TimeSpan.FromSeconds(20));
+            await Assert.That(publisher.RejectedAttempts).IsEqualTo(2);
+
+            publisher.Accept(1);
+            time.Advance(TimeSpan.FromSeconds(20));
+            await store.WaitForBucketEmptyAsync(0, SignalTimeout);
         }
         finally
         {
@@ -374,6 +686,21 @@ public sealed class OutboxRelayResilienceTests
         public ConcurrentQueue<long> MarkedIds { get; } = [];
         public ConcurrentQueue<int> FetchSizes { get; } = [];
 
+        private IReadOnlyList<int>? _owned;
+
+        /// <summary>Replaces the buckets the next lease acquisition returns.</summary>
+        public void SetOwnedBuckets(IReadOnlyList<int> buckets) => Volatile.Write(ref _owned, buckets);
+
+        /// <summary>Removes a row as a peer relay that published it would.</summary>
+        public void Remove(long id)
+        {
+            lock (_lock)
+            {
+                foreach (var list in _rows.Values)
+                    list.RemoveAll(row => row.Id == id);
+            }
+        }
+
         public void Enqueue(params OutboxMessage[] rows)
         {
             lock (_lock)
@@ -409,7 +736,7 @@ public sealed class OutboxRelayResilienceTests
             Interlocked.Increment(ref _leaseCalls);
             if (Clock is not null)
                 LeaseCallTimestamps.Enqueue(Clock.GetTimestamp());
-            return _ownedBuckets;
+            return Volatile.Read(ref _owned) ?? _ownedBuckets;
         }
 
         public async ValueTask<IReadOnlyList<int>> GetBucketsWithPendingAsync(
@@ -477,11 +804,13 @@ public sealed class OutboxRelayResilienceTests
         private int _rejectedAttempts;
 
         public int AttemptsToAwait { get; init; } = int.MaxValue;
+        public Action<long>? BeforePublish { get; init; }
         public TaskCompletionSource AttemptsReached { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public void Reject(long id) => _rejected[id] = 0;
         public void Accept(long id) => _rejected.TryRemove(id, out _);
         public int Deliveries(long id) => _deliveries.GetValueOrDefault(id);
+        public int RejectedAttempts => Volatile.Read(ref _rejectedAttempts);
 
         public ValueTask InitializeAsync(CancellationToken cancellationToken = default) => ValueTask.CompletedTask;
 
@@ -494,6 +823,7 @@ public sealed class OutboxRelayResilienceTests
             Exception? firstError = null;
             for (var index = 0; index < messages.Count; index++)
             {
+                BeforePublish?.Invoke(messages[index].Id);
                 if (_rejected.ContainsKey(messages[index].Id))
                 {
                     firstError ??= new InvalidOperationException("Simulated MESSAGE_TOO_LARGE.");

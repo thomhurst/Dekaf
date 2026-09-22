@@ -24,9 +24,12 @@ public partial class OutboxMetricTests
                 return new(result);
             }
         };
-        using var relay = Relay(store, publisher, "partial");
+        var time = new FakeOutboxTimeProvider();
+        using var relay = Relay(store, publisher, "partial", time);
         var cycle = BindCycle(relay);
         await cycle(default);
+        // The rejected row's bucket backs off for ErrorBackoff before its retry.
+        time.Advance(new OutboxRelayOptions().ErrorBackoff);
         await cycle(default);
         await Assert.That(store.Rows.Count).IsEqualTo(0);
         await Assert.That(capture.Counter("dekaf.outbox.publish.acknowledged")).IsEqualTo(3);

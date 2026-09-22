@@ -172,6 +172,8 @@ public sealed class OutboxBucketHintDrainTests
         fixture.Publisher.Fail = true;
         await fixture.Cycle();
         fixture.Publisher.Fail = false;
+        // The failed bucket backs off for ErrorBackoff, as the relay loop's wait after a failed cycle does.
+        fixture.Time.Advance(new OutboxRelayOptions().ErrorBackoff);
         await fixture.Cycle();
         await Assert.That(fixture.Store.Rows[0]).IsEmpty();
         await Assert.That(fixture.Store.Probes).IsEqualTo(2);

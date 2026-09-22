@@ -104,6 +104,29 @@ public sealed class OutboxLeaseOwnershipTests
     }
 
     [Test]
+    public async Task StopDuringTheMark_StillMarksTheAcknowledgedRows_BeforeTheRelease()
+    {
+        var time = new ManualTimeProvider();
+        var events = new ConcurrentQueue<string>();
+        var store = new OwnershipStore
+        {
+            HasPending = true, Events = events, BatchSize = 3, FirstMarkWaitsForCancellation = true
+        };
+        var publisher = new GatedPublisher { Events = events };
+        publisher.Gate.SetResult();
+        using var relay = CreateRelay(store, publisher, time);
+        await relay.StartAsync(CancellationToken.None);
+        await store.MarkEntered.Task.WaitAsync(SignalTimeout);
+
+        // The stop cancels the delete in flight. Kafka already has the rows, and the release
+        // that follows hands the bucket to a peer at once, which would publish them again.
+        await relay.StopAsync(CancellationToken.None).WaitAsync(SignalTimeout);
+
+        await Assert.That(string.Join(',', events))
+            .IsEqualTo("publish-returned,mark-cancelled,marked:1;2;3,released");
+    }
+
+    [Test]
     public async Task StopPastTheShutdownDeadline_LeavesAcknowledgedRowsForTheNextOwner()
     {
         var time = new ManualTimeProvider();
@@ -309,10 +332,14 @@ public sealed class OutboxLeaseOwnershipTests
         private int _acquisitionCount;
         private int _releaseCount;
         private int _pendingProbeCount;
+        private int _markCount;
 
         internal bool HasPending { get; init; }
         internal int BatchSize { get; init; } = 1;
         internal bool FailFirstPendingProbe { get; init; }
+        /// <summary>The first mark waits for its token and then fails as a stopped delete does.</summary>
+        internal bool FirstMarkWaitsForCancellation { get; init; }
+        internal TaskCompletionSource MarkEntered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         /// <summary>The one-based acquisition that throws after recording its hint.</summary>
         internal int FailingAcquisition { get; init; }
         internal int AcquisitionCount => Volatile.Read(ref _acquisitionCount);
@@ -388,11 +415,24 @@ public sealed class OutboxLeaseOwnershipTests
             return ValueTask.FromResult<IReadOnlyList<OutboxMessage>>(batch);
         }
 
-        public ValueTask MarkPublishedAsync(int bucket, IReadOnlyList<OutboxMessage> publishedMessages,
+        public async ValueTask MarkPublishedAsync(int bucket, IReadOnlyList<OutboxMessage> publishedMessages,
             CancellationToken cancellationToken = default)
         {
+            if (FirstMarkWaitsForCancellation && Interlocked.Increment(ref _markCount) == 1)
+            {
+                MarkEntered.TrySetResult();
+                try
+                {
+                    await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                }
+                catch (OperationCanceledException)
+                {
+                    Events?.Enqueue("mark-cancelled");
+                    throw;
+                }
+            }
+
             Events?.Enqueue($"marked:{string.Join(';', publishedMessages.Select(message => message.Id))}");
-            return ValueTask.CompletedTask;
         }
     }
 }
