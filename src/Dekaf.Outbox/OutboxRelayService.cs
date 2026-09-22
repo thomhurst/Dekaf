@@ -586,8 +586,21 @@ public sealed partial class OutboxRelayService : BackgroundService
 
                     if (result.AckedCount > 0)
                     {
-                        await _store.MarkPublishedAsync(bucket, AckedPrefix(batch, result.AckedCount), cancellationToken)
-                            .ConfigureAwait(false);
+                        var published = AckedPrefix(batch, result.AckedCount);
+                        try
+                        {
+                            await _store.MarkPublishedAsync(bucket, published, cancellationToken).ConfigureAwait(false);
+                        }
+                        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                        {
+                            // A stop that lands during the mark cancels it, and the graceful
+                            // release that follows hands the bucket to a peer that would
+                            // publish these rows again. Marking is idempotent, so the rows are
+                            // marked once more within the shutdown deadline, as above.
+                            if (_timeProvider.GetElapsedTime(leaseTimestamp) < _options.LeaseDuration)
+                                await MarkPublishedBeforeStopAsync(bucket, published).ConfigureAwait(false);
+                            throw;
+                        }
                         publishedAny = true;
                         LogBatchPublished(bucket, result.AckedCount);
                     }
