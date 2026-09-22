@@ -672,6 +672,107 @@ public sealed class ConnectionPoolTests
     }
 
     [Test]
+    [Timeout(10_000)]
+    public async Task GetConnectionAsync_StaleSetupFinishesAfterSiblingServedNewEndpoint_KeepsSibling(
+        CancellationToken cancellationToken)
+    {
+        // The stale setup must retire exactly itself: the sibling's connection for the current
+        // endpoint stays published by ID and by endpoint, and the stale socket is disposed.
+        var setupEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseSetup = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var connections = new List<IKafkaConnection>();
+        var pool = new ConnectionPool(
+            clientId: "test-client",
+            connectionOptions: new ConnectionOptions(),
+            connectionsPerBroker: 1,
+            connectionFactory: async (brokerId, host, port, _, factoryToken) =>
+            {
+                var connection = CreateConnectedConnection(brokerId, host, port);
+                connections.Add(connection);
+                if (host == "host-a")
+                {
+                    setupEntered.TrySetResult();
+                    await releaseSetup.Task.WaitAsync(factoryToken);
+                }
+
+                return connection;
+            });
+
+        await using (pool)
+        {
+            pool.RegisterBroker(1, "host-a", 9092);
+            var staleAttempt = pool.GetConnectionAsync(1, cancellationToken).AsTask();
+            await setupEntered.Task.WaitAsync(cancellationToken);
+
+            pool.RegisterBroker(1, "host-b", 9093);
+            var sibling = await pool.GetConnectionAsync(1, cancellationToken);
+            await Assert.That(sibling.Host).IsEqualTo("host-b");
+
+            releaseSetup.SetResult();
+            await Assert.That(async () => await staleAttempt).Throws<BrokerEndpointChangedException>();
+
+            await connections[0].Received(1).DisposeAsync();
+            await sibling.DidNotReceive().DisposeAsync();
+            await Assert.That(await pool.GetConnectionAsync(1, cancellationToken)).IsSameReferenceAs(sibling);
+            await Assert.That(await pool.GetConnectionAsync("host-b", 9093, cancellationToken)).IsSameReferenceAs(sibling);
+            await Assert.That(pool.GetConnectionCreationTotal()).IsEqualTo(2L);
+        }
+    }
+
+    [Test]
+    [Timeout(10_000)]
+    public async Task GetConnectionByIndexAsync_StaleGroupSetupFinishesAfterMove_RetiresItselfAndSiblingCreatesNewGroup(
+        CancellationToken cancellationToken)
+    {
+        // Group creation for one broker ID is serialized, so the sibling for the new endpoint
+        // waits until the stale setup publishes, sees the move and retires its own group.
+        var setupEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseSetup = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var connections = new List<IKafkaConnection>();
+        var pool = new ConnectionPool(
+            clientId: "test-client",
+            connectionOptions: new ConnectionOptions(),
+            connectionsPerBroker: 2,
+            connectionFactory: async (brokerId, host, port, _, factoryToken) =>
+            {
+                var connection = CreateConnectedConnection(brokerId, host, port);
+                lock (connections)
+                    connections.Add(connection);
+                if (host == "host-a")
+                {
+                    setupEntered.TrySetResult();
+                    await releaseSetup.Task.WaitAsync(factoryToken);
+                }
+
+                return connection;
+            });
+
+        await using (pool)
+        {
+            pool.RegisterBroker(1, "host-a", 9092);
+            var staleAttempt = pool.GetConnectionByIndexAsync(1, 0, cancellationToken).AsTask();
+            await setupEntered.Task.WaitAsync(cancellationToken);
+
+            pool.RegisterBroker(1, "host-b", 9093);
+            var siblingAttempt = pool.GetConnectionByIndexAsync(1, 0, cancellationToken).AsTask();
+
+            releaseSetup.SetResult();
+            await Assert.That(async () => await staleAttempt).Throws<BrokerEndpointChangedException>();
+            var sibling = await siblingAttempt;
+            await Assert.That(sibling.Host).IsEqualTo("host-b");
+
+            await sibling.DidNotReceive().DisposeAsync();
+            await Assert.That(await pool.GetConnectionByIndexAsync(1, 0, cancellationToken)).IsSameReferenceAs(sibling);
+            IKafkaConnection[] stale;
+            lock (connections)
+                stale = connections.Where(connection => connection.Host == "host-a").ToArray();
+            await Assert.That(stale).Count().IsGreaterThan(0);
+            foreach (var connection in stale)
+                await connection.Received(1).DisposeAsync();
+        }
+    }
+
+    [Test]
     [NotInParallel]
     [Timeout(10_000)]
     public async Task GetConnectionAsync_SetupPublishesInsideRegistrationWindow_RetiresItself(
