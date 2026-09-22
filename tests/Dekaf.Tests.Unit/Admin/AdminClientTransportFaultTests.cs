@@ -131,6 +131,61 @@ public sealed class AdminClientTransportFaultTests
     }
 
     [Test]
+    public async Task DescribeAclsAsync_BrokerNeverAnswers_InFlightRequestEndsAtApiTimeout()
+    {
+        // The mocked connection applies no request timeout of its own, standing in for a broker
+        // that accepted the request and stopped answering: only the API timeout can end it.
+        var (admin, connection) = CreateAdmin(ApiKey.DescribeAcls, defaultApiTimeoutMs: 200);
+        var calls = 0;
+
+        connection.SendAsync<DescribeAclsRequest, DescribeAclsResponse>(
+                Arg.Any<DescribeAclsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                Interlocked.Increment(ref calls);
+                return WaitForCancellationAsync(call.ArgAt<CancellationToken>(2));
+            });
+
+        var stopwatch = Stopwatch.StartNew();
+        var exception = await Assert.ThrowsAsync<KafkaTimeoutException>(async () =>
+            await admin.DescribeAclsAsync(new AclBindingFilter()));
+        stopwatch.Stop();
+
+        await Assert.That(exception!.TimeoutKind).IsEqualTo(TimeoutKind.Api);
+        await Assert.That(exception.Message).Contains(nameof(IAdminClient.DescribeAclsAsync));
+        await Assert.That(calls).IsEqualTo(1);
+        await Assert.That(stopwatch.Elapsed).IsLessThan(TimeSpan.FromSeconds(30));
+
+        static async ValueTask<DescribeAclsResponse> WaitForCancellationAsync(CancellationToken token)
+        {
+            await Task.Delay(Timeout.Infinite, token);
+            throw new UnreachableException();
+        }
+    }
+
+    [Test]
+    public async Task DescribeAclsAsync_CallerCancelsInFlightRequest_ThrowsCancellation()
+    {
+        var (admin, connection) = CreateAdmin(ApiKey.DescribeAcls);
+        using var cts = new CancellationTokenSource();
+
+        connection.SendAsync<DescribeAclsRequest, DescribeAclsResponse>(
+                Arg.Any<DescribeAclsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                cts.Cancel();
+                return ValueTask.FromCanceled<DescribeAclsResponse>(call.ArgAt<CancellationToken>(2));
+            });
+
+        await Assert.ThrowsAsync<OperationCanceledException>(async () =>
+            await admin.DescribeAclsAsync(new AclBindingFilter(), cancellationToken: cts.Token));
+    }
+
+    [Test]
     public async Task DescribeAclsAsync_RetriableBrokerError_KeepsTheBoundedRetryCount()
     {
         var (admin, connection) = CreateAdmin(ApiKey.DescribeAcls);
@@ -269,20 +324,33 @@ public sealed class AdminClientTransportFaultTests
     {
         var (admin, connection) = CreateAdmin(ApiKey.ExpireDelegationToken);
         var calls = 0;
+        var lostAttemptAt = default(DateTimeOffset);
+        var replayAt = default(DateTimeOffset);
 
         connection.SendAsync<ExpireDelegationTokenRequest, ExpireDelegationTokenResponse>(
                 Arg.Any<ExpireDelegationTokenRequest>(),
                 Arg.Any<short>(),
                 Arg.Any<CancellationToken>())
-            .Returns(_ => Interlocked.Increment(ref calls) == 1
-                ? throw new IOException("response lost")
-                : ValueTask.FromResult(new ExpireDelegationTokenResponse { ErrorCode = ErrorCode.DelegationTokenNotFound }));
+            .Returns(_ =>
+            {
+                if (Interlocked.Increment(ref calls) == 1)
+                {
+                    lostAttemptAt = DateTimeOffset.UtcNow;
+                    throw new IOException("response lost");
+                }
+
+                replayAt = DateTimeOffset.UtcNow;
+                return ValueTask.FromResult(new ExpireDelegationTokenResponse { ErrorCode = ErrorCode.DelegationTokenNotFound });
+            });
 
         var before = DateTimeOffset.UtcNow;
         var expiry = await admin.ExpireDelegationTokenAsync([1, 2, 3]);
 
+        // The result is when the lost attempt was sent, not when the replay found the token gone.
         await Assert.That(calls).IsEqualTo(2);
-        await Assert.That(expiry).IsGreaterThanOrEqualTo(before.AddSeconds(-1));
+        await Assert.That(expiry).IsGreaterThanOrEqualTo(before);
+        await Assert.That(expiry).IsLessThanOrEqualTo(lostAttemptAt);
+        await Assert.That(expiry).IsLessThan(replayAt);
     }
 
     [Test]

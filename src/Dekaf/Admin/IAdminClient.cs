@@ -275,7 +275,13 @@ public interface IAdminClient : IAsyncDisposable
     /// <param name="hmac">The token HMAC returned by CreateDelegationToken or DescribeDelegationTokens.</param>
     /// <param name="expiryTimePeriod">The expiry time period, or null to use the broker default.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns>The token expiry timestamp.</returns>
+    /// <returns>
+    /// The token expiry timestamp reported by the broker. A request whose response was lost is
+    /// sent again. When a negative <paramref name="expiryTimePeriod"/> already removed the token,
+    /// the replay finds nothing to expire and the broker's timestamp cannot be recovered; the
+    /// result is then the client clock time at which the lost request was sent, the earliest
+    /// moment the removal could have happened.
+    /// </returns>
     ValueTask<DateTimeOffset> ExpireDelegationTokenAsync(
         byte[] hmac,
         TimeSpan? expiryTimePeriod = null,
