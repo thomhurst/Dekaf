@@ -237,9 +237,14 @@ public sealed partial class OutboxRelayService : BackgroundService
                         ? untilRenewal : untilPoll;
                     // A bucket backing off from a rejected row is retried when its own backoff
                     // ends. The wait stays the idle one, so a commit to any other bucket still
-                    // ends it at once.
-                    if (cycle.RetryAfter > TimeSpan.Zero && cycle.RetryAfter < delay)
-                        delay = cycle.RetryAfter;
+                    // ends it at once. The retry counts from the cycle's start, so a later
+                    // bucket's slow publish does not push an earlier bucket's retry back.
+                    if (cycle.RetryAfter > TimeSpan.Zero)
+                    {
+                        var untilRetry = cycle.RetryAfter - _timeProvider.GetElapsedTime(cycle.Started);
+                        if (untilRetry < delay)
+                            delay = untilRetry;
+                    }
                     if (delay <= TimeSpan.Zero)
                         continue;
                     if (_notifier is null)
@@ -418,6 +423,7 @@ public sealed partial class OutboxRelayService : BackgroundService
             var publishedAny = false;
             var hadError = false;
             var backingOff = false;
+            // The earliest retry of a backing-off bucket, measured from the cycle's start.
             var retryAfter = TimeSpan.MaxValue;
             var generation = _leaseGeneration;
             var pendingCount = _pendingBucketCount;
@@ -444,13 +450,13 @@ public sealed partial class OutboxRelayService : BackgroundService
                 var bucket = _pendingBuckets[bucketIndex];
                 if (_headRowFailures[bucket] > 0)
                 {
-                    var backoffLeft = _headRowBackoff[bucket] - _timeProvider.GetElapsedTime(_headRowFailedAt[bucket]);
-                    if (backoffLeft > TimeSpan.Zero)
+                    var retryDue = _headRowBackoff[bucket] - _timeProvider.GetElapsedTime(_headRowFailedAt[bucket], started);
+                    if (retryDue > _timeProvider.GetElapsedTime(started))
                     {
                         _pendingBuckets[retainedCount++] = bucket;
                         backingOff = true;
-                        if (backoffLeft < retryAfter)
-                            retryAfter = backoffLeft;
+                        if (retryDue < retryAfter)
+                            retryAfter = retryDue;
                         continue;
                     }
                 }
@@ -663,12 +669,14 @@ public sealed partial class OutboxRelayService : BackgroundService
                         // broker that rejects every bucket is still retried less and less often.
                         RecordHeadRowFailure(bucket, batch[result.AckedCount], result.FirstError, batch.Count - result.AckedCount);
                         var backoff = JitteredBackoff(_headRowFailures[bucket]);
-                        _headRowFailedAt[bucket] = _timeProvider.GetTimestamp();
+                        var failedAt = _timeProvider.GetTimestamp();
+                        _headRowFailedAt[bucket] = failedAt;
                         _headRowBackoff[bucket] = backoff;
                         _pendingBuckets[retainedCount++] = bucket;
                         backingOff = true;
-                        if (backoff < retryAfter)
-                            retryAfter = backoff;
+                        var retryDue = backoff + _timeProvider.GetElapsedTime(started, failedAt);
+                        if (retryDue < retryAfter)
+                            retryAfter = retryDue;
                         break;
                     }
 
@@ -709,7 +717,7 @@ public sealed partial class OutboxRelayService : BackgroundService
             // but a notifier that names no bucket finds new work only by probing.
             if (_notifier is not OutboxNotifier)
                 _discoveryRequired = true;
-            return new CycleResult(PublishedAny: false, HadError: false, retryAfter);
+            return new CycleResult(PublishedAny: false, HadError: false, retryAfter, started);
         }
         finally
         {
@@ -834,10 +842,12 @@ public sealed partial class OutboxRelayService : BackgroundService
     private TimeSpan LeaseAge() => _timeProvider.GetElapsedTime(_leaseTimestamp);
 
     /// <param name="RetryAfter">
-    /// When positive, the time until the earliest bucket backing off from a rejected row is
-    /// due for its retry. The idle wait after the cycle ends no later than that.
+    /// When positive, the time from <paramref name="Started"/> until the earliest bucket backing
+    /// off from a rejected row is due for its retry. The idle wait after the cycle ends no later
+    /// than that.
     /// </param>
-    private readonly record struct CycleResult(bool PublishedAny, bool HadError, TimeSpan RetryAfter = default);
+    /// <param name="Started">The cycle's start timestamp, which <paramref name="RetryAfter"/> counts from.</param>
+    private readonly record struct CycleResult(bool PublishedAny, bool HadError, TimeSpan RetryAfter = default, long Started = 0);
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Outbox relay {RelayId} started with {BucketCount} bucket(s)")]
     private partial void LogRelayStarted(string relayId, int bucketCount);

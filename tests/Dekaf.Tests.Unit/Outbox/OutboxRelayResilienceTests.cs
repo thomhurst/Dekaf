@@ -165,6 +165,52 @@ public sealed class OutboxRelayResilienceTests
     }
 
     [Test]
+    public async Task PoisonRowsInSeveralBuckets_ASlowLaterRejectionDoesNotDelayTheEarlierRetry()
+    {
+        // Bucket 0's row is rejected at once and bucket 1's only after 40 seconds, so bucket
+        // 0 is due again 20 seconds after the cycle ends, not a full backoff after it.
+        var time = new ManualTimeProvider();
+        var store = new RowStore(ownedBuckets: [0, 1]);
+        store.Enqueue(Row(1, bucket: 0), Row(2, bucket: 1));
+        var publisher = new ConcurrentSendPublisher
+        {
+            BeforePublish = id =>
+            {
+                if (id == 2)
+                    time.Advance(TimeSpan.FromSeconds(40));
+            }
+        };
+        publisher.Reject(1);
+        publisher.Reject(2);
+        var options = new OutboxRelayOptions
+        {
+            BucketCount = 2,
+            PollInterval = TimeSpan.FromMinutes(2),
+            ErrorBackoff = TimeSpan.FromMinutes(1),
+            LeaseRenewInterval = TimeSpan.FromMinutes(5),
+            LeaseDuration = TimeSpan.FromMinutes(10),
+            MaxPublishDuration = TimeSpan.FromMinutes(2),
+            RelayId = "test-relay"
+        };
+
+        using var relay = CreateRelay(store, publisher, options, time);
+        await relay.StartAsync(CancellationToken.None);
+        try
+        {
+            await time.WaitForTimerAsync(TimeSpan.FromSeconds(20));
+            await Assert.That(publisher.RejectedAttempts).IsEqualTo(2);
+
+            publisher.Accept(1);
+            time.Advance(TimeSpan.FromSeconds(20));
+            await store.WaitForBucketEmptyAsync(0, SignalTimeout);
+        }
+        finally
+        {
+            await relay.StopAsync(CancellationToken.None).WaitAsync(SignalTimeout);
+        }
+    }
+
+    [Test]
     public async Task FruitlessFailures_BackOffExponentiallyWithJitter_AndKeepTheLeases()
     {
         const int failures = 14;
@@ -567,6 +613,7 @@ public sealed class OutboxRelayResilienceTests
         private int _rejectedAttempts;
 
         public int AttemptsToAwait { get; init; } = int.MaxValue;
+        public Action<long>? BeforePublish { get; init; }
         public TaskCompletionSource AttemptsReached { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public void Reject(long id) => _rejected[id] = 0;
@@ -585,6 +632,7 @@ public sealed class OutboxRelayResilienceTests
             Exception? firstError = null;
             for (var index = 0; index < messages.Count; index++)
             {
+                BeforePublish?.Invoke(messages[index].Id);
                 if (_rejected.ContainsKey(messages[index].Id))
                 {
                     firstError ??= new InvalidOperationException("Simulated MESSAGE_TOO_LARGE.");
