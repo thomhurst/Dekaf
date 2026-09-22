@@ -3911,6 +3911,10 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     internal async ValueTask AbortTransactionAsync(CancellationToken cancellationToken)
     {
         var retryBudget = CreateTransactionRetryBudget();
+        await DrainBatchesBeforeAbortAsync(retryBudget, cancellationToken).ConfigureAwait(false);
+
+        // After the drain: until EndTxn is sent the broker cannot have bumped the epoch, so a
+        // fence answered while draining is real.
         SetAbortReplacingProducerIdentity(true);
         try
         {
@@ -3959,6 +3963,58 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             _abortReplacedProducerId = replacing ? Volatile.Read(ref _producerId) : -1;
             _abortReplacedProducerEpoch = replacing ? _producerEpoch : (short)-1;
         }
+    }
+
+    /// <summary>
+    /// Settles every batch of the aborting transaction before EndTxn(abort), as Java's sender does
+    /// (<c>RecordAccumulator.abortUndrainedBatches</c>, then EndTxn only once no batch is
+    /// incomplete). Records still in the accumulator (open batches, sealed batches no sender has
+    /// drained, appends waiting for buffer memory) fail with
+    /// <see cref="ProduceErrorKind.TransactionAborted"/> and are never sent. Left behind, an open
+    /// batch keeps the aborted epoch's stamp and takes the next transaction's records with it, and
+    /// any leftover batch draws sequence numbers from the counters the new epoch restarts at 0.
+    /// Batches already handed to a sender belong to the aborted transaction too; the abort waits
+    /// for their answers within the same max.block.ms budget, so the abort marker and the TV2
+    /// sequence reset follow them. Nothing has been written to the coordinator if the budget runs
+    /// out here, so the transaction stays abortable and the caller aborts again.
+    /// Abort path only: no per-message cost.
+    /// </summary>
+    private async ValueTask DrainBatchesBeforeAbortAsync(
+        TransactionRetryBudget retryBudget,
+        CancellationToken cancellationToken)
+    {
+        var aborted = new ProduceException(
+            ProduceErrorKind.TransactionAborted,
+            "The transaction was aborted before this record's batch was sent.");
+        _accumulator.Purge(PurgeOptions.Queue, aborted, CompleteInflightEntry);
+
+        if (_accumulator.InFlightBatchCount > 0)
+        {
+            using var timeoutCts = CreateTransactionRetryCancellationSource(retryBudget, cancellationToken);
+            try
+            {
+                await _accumulator.WaitForInFlightBatchesAsync(timeoutCts.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                PreserveEndTransactionTimeoutState(requestInFlight: false);
+
+                if (cancellationToken.IsCancellationRequested || !timeoutCts.IsCancellationRequested)
+                    throw;
+
+                throw CreateTransactionTimeoutException(
+                    "Wait for in-flight batches before EndTxn (abort)",
+                    retryBudget,
+                    attempts: 0);
+            }
+        }
+
+        // A produce that passed its state check just before the abort began can append after the
+        // first pass; its records belong to this transaction as well.
+        _accumulator.Purge(PurgeOptions.Queue, aborted, CompleteInflightEntry);
+
+        // A batch answered while draining may have fenced the producer.
+        ThrowIfFatalTransactionError("Cannot abort transaction");
     }
 
     private async ValueTask ReinitializeProducerIdAfterAbortAsync(
@@ -4124,8 +4180,11 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                     // TV2 (v5+): broker returns bumped ProducerId/Epoch in EndTxn response.
                     // Apply them so the next transaction uses the new identity without
                     // a separate InitProducerId round-trip.
-                    // Safe without _epochBumpLock: EndTxn is called only after FlushAsync
-                    // drains all in-flight batches, so no BrokerSender is active.
+                    // Safe without _epochBumpLock, and restarting every partition at sequence 0
+                    // is correct: EndTxn(commit) runs after FlushAsync and EndTxn(abort) after
+                    // DrainBatchesBeforeAbortAsync, so no batch of the ended transaction is left
+                    // to draw a sequence or carry the old epoch. A prepared transaction was
+                    // flushed by PrepareAsync and refuses produce.
                     if (applyResponseProducerState && _currentTransactionUsesTV2 && response.ProducerId >= 0)
                     {
                         ApplyTransactionalProducerIdentity(response.ProducerId, response.ProducerEpoch);

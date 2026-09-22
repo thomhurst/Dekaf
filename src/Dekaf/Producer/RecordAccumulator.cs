@@ -7453,6 +7453,19 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     }
 
     /// <summary>
+    /// Waits until every sealed batch has left the pipeline. Unlike <see cref="FlushAsync"/> it
+    /// does not seal open batches: a transaction abort fails those first (<see cref="Purge"/>)
+    /// and then waits here for the batches already handed to the senders.
+    /// </summary>
+    internal ValueTask WaitForInFlightBatchesAsync(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return Volatile.Read(ref _inFlightBatchCount) == 0
+            ? default
+            : WaitForAllBatchesCompleteAsync(cancellationToken);
+    }
+
+    /// <summary>
     /// Waits for all in-flight batches to complete.
     /// Uses TaskCompletionSource for true async waiting without polling or ThreadPool starvation.
     /// </summary>
