@@ -1712,28 +1712,42 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             throw;
         }
 
-        if (!result.AssignmentChanged)
+        if (CreateDeferredRebalanceCallback(result) is not { } progress)
             return;
 
-        if (result.Revoked is { Count: > 0 } revoked)
+        // The assignment is already published, so a cancelled callback is queued with its
+        // progress and resumed by the next drain instead of dropped. Allocated once per
+        // assignment change, never per message.
+        try
         {
-            try
+            if (result.Revoked is { Count: > 0 } revoked)
             {
-                if (_onPartitionsRevokedAsync is not null)
-                    await _onPartitionsRevokedAsync(revoked, cancellationToken).ConfigureAwait(false);
-            }
-            finally
-            {
-                CompleteRevocationCommit(result);
+                try
+                {
+                    if (_onPartitionsRevokedAsync is not null)
+                        await _onPartitionsRevokedAsync(revoked, cancellationToken).ConfigureAwait(false);
+                }
+                finally
+                {
+                    CompleteRevocationCommit(result);
+                }
+
+                await InvokePartitionsRevokedListenersAsync(revoked, progress, cancellationToken)
+                    .ConfigureAwait(false);
             }
 
-            await InvokePartitionsRevokedListenersAsync(revoked, progress: null, cancellationToken)
-                .ConfigureAwait(false);
+            progress.RevokedDelivered = true;
+            progress.ListenersCompleted = 0;
+
+            if (result.Assigned is { Count: > 0 } assigned)
+                await InvokePartitionsAssignedListenersAsync(assigned, progress, cancellationToken)
+                    .ConfigureAwait(false);
         }
-
-        if (result.Assigned is { Count: > 0 } assigned)
-            await InvokePartitionsAssignedListenersAsync(assigned, progress: null, cancellationToken)
-                .ConfigureAwait(false);
+        catch (OperationCanceledException)
+        {
+            EnqueuePendingRebalanceCallback(progress);
+            throw;
+        }
     }
 
     /// <summary>
@@ -1743,15 +1757,14 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     /// </summary>
     private void DeferRebalanceCallbacks(ConsumerHeartbeatResult result)
     {
-        if (result.AssignmentChanged &&
-            (result.Revoked is { Count: > 0 } || result.Assigned is { Count: > 0 }))
-        {
-            EnqueuePendingRebalanceCallback(new PendingRebalanceCallback
-            {
-                Deferred = result with { RevocationCommitCompletion = null }
-            });
-        }
+        if (CreateDeferredRebalanceCallback(result) is { } deferred)
+            EnqueuePendingRebalanceCallback(deferred);
     }
+
+    private static PendingRebalanceCallback? CreateDeferredRebalanceCallback(ConsumerHeartbeatResult result) =>
+        result.AssignmentChanged && (result.Revoked is { Count: > 0 } || result.Assigned is { Count: > 0 })
+            ? new PendingRebalanceCallback { Deferred = result with { RevocationCommitCompletion = null } }
+            : null;
 
     private ValueTask InvokePartitionsRevokedListenersAsync(
         IReadOnlyList<TopicPartition> revoked,

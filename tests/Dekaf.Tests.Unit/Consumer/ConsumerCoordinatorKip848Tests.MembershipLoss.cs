@@ -339,6 +339,65 @@ public sealed partial class ConsumerCoordinatorKip848Tests
     }
 
     [Test]
+    public async Task MembershipLoss_AssignedCallbackCancelledAfterTheJoin_IsResumedByTheNextPoll()
+    {
+        var script = new HeartbeatScript(this);
+        var (recording, calls) = CreateRecordingListener();
+        var assignedEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var interruptNextAssigned = 0;
+        var firstAssignedCount = 0;
+        var first = Substitute.For<IRebalanceListener>();
+        first.OnPartitionsAssignedAsync(Arg.Any<IEnumerable<TopicPartition>>(), Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                Interlocked.Increment(ref firstAssignedCount);
+                return ValueTask.CompletedTask;
+            });
+        var second = Substitute.For<IRebalanceListener>();
+        second.OnPartitionsLostAsync(Arg.Any<IEnumerable<TopicPartition>>(), Arg.Any<CancellationToken>())
+            .Returns(callInfo => recording.OnPartitionsLostAsync(
+                callInfo.Arg<IEnumerable<TopicPartition>>()!,
+                callInfo.Arg<CancellationToken>()));
+        second.OnPartitionsAssignedAsync(Arg.Any<IEnumerable<TopicPartition>>(), Arg.Any<CancellationToken>())
+            .Returns(callInfo => Interlocked.Exchange(ref interruptNextAssigned, 0) == 1
+                ? WaitForCancellationAsync(callInfo.Arg<CancellationToken>())
+                : recording.OnPartitionsAssignedAsync(
+                    callInfo.Arg<IEnumerable<TopicPartition>>()!,
+                    callInfo.Arg<CancellationToken>()));
+        await using var coordinator = await JoinAsync(script, first, additionalRebalanceListeners: [second]);
+        calls.Clear();
+        Interlocked.Exchange(ref firstAssignedCount, 0);
+
+        // A fenced member rejoins; the loss is delivered, then the caller cancels while the
+        // second listener runs OnPartitionsAssigned for the assignment the join made current.
+        typeof(ConsumerCoordinator)
+            .GetMethod("FenceMembership", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(coordinator, [false]);
+        Volatile.Write(ref interruptNextAssigned, 1);
+        script.Respond = (_, _) => Joined("member-1", memberEpoch: 6, CreateAssignment(TestTopicId, 0));
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var caller = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token);
+        var join = coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, caller.Token).AsTask();
+        await assignedEntered.Task.WaitAsync(timeout.Token);
+        caller.Cancel();
+        await Assert.That(async () => await join).Throws<OperationCanceledException>();
+        await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Stable);
+        await Assert.That(Volatile.Read(ref firstAssignedCount)).IsEqualTo(1);
+
+        // The next poll resumes at the interrupted listener without repeating the first.
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, timeout.Token);
+
+        await Assert.That(Volatile.Read(ref firstAssignedCount)).IsEqualTo(1);
+        await Assert.That(string.Join(" | ", calls)).IsEqualTo("lost:test-topic-0,test-topic-1 | assigned:test-topic-0");
+
+        async ValueTask WaitForCancellationAsync(CancellationToken cancellationToken)
+        {
+            assignedEntered.TrySetResult();
+            await Task.Delay(Timeout.Infinite, cancellationToken);
+        }
+    }
+
+    [Test]
     public async Task MembershipLoss_FenceFromAHeartbeatOfTheReplacedMembership_IsIgnored()
     {
         _metadataManager.SetApiVersion(ApiKey.OffsetFetch, 9, 9);
