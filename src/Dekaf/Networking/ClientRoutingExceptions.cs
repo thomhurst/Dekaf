@@ -24,6 +24,21 @@ internal sealed class ConnectionSetupExhaustedException(int maxRetries)
     : InvalidOperationException($"Failed to create connection after {maxRetries} retries");
 
 /// <summary>
+/// Metadata moved a broker to another endpoint while a connection to its previous endpoint was
+/// still being set up. The finished connection is discarded instead of published; the next
+/// attempt resolves the current endpoint.
+/// </summary>
+internal sealed class BrokerEndpointChangedException(
+    int brokerId,
+    string previousHost,
+    int previousPort,
+    string currentHost,
+    int currentPort)
+    : InvalidOperationException(
+        $"Broker {brokerId} moved from {previousHost}:{previousPort} to {currentHost}:{currentPort} " +
+        "while a connection to the previous endpoint was being set up");
+
+/// <summary>
 /// A metadata refresh failed against every known endpoint. The inner exception is the last
 /// endpoint's failure.
 /// </summary>

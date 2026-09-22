@@ -624,6 +624,100 @@ public sealed class ConnectionPoolTests
     }
 
     [Test]
+    [Timeout(10_000)]
+    public async Task GetConnectionAsync_EndpointChangesDuringSetup_DiscardsConnectionToPreviousEndpoint(
+        CancellationToken cancellationToken)
+    {
+        // RetireBrokerConnections only sees published connections. A setup that started for the
+        // previous endpoint and finishes after the move must not be published under the broker ID.
+        var setupEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseSetup = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var connections = new List<IKafkaConnection>();
+        var pool = new ConnectionPool(
+            clientId: "test-client",
+            connectionOptions: new ConnectionOptions(),
+            connectionsPerBroker: 1,
+            connectionFactory: async (brokerId, host, port, _, factoryToken) =>
+            {
+                var connection = CreateConnectedConnection(brokerId, host, port);
+                connections.Add(connection);
+                if (host == "host-a")
+                {
+                    setupEntered.TrySetResult();
+                    await releaseSetup.Task.WaitAsync(factoryToken);
+                }
+
+                return connection;
+            });
+
+        await using (pool)
+        {
+            pool.RegisterBroker(1, "host-a", 9092);
+            var staleAttempt = pool.GetConnectionAsync(1, cancellationToken).AsTask();
+            await setupEntered.Task.WaitAsync(cancellationToken);
+
+            pool.RegisterBroker(1, "host-b", 9093);
+            releaseSetup.SetResult();
+
+            await Assert.That(async () => await staleAttempt).Throws<BrokerEndpointChangedException>();
+            await connections[0].Received(1).DisposeAsync();
+
+            var current = await pool.GetConnectionAsync(1, cancellationToken);
+            await Assert.That(current.Host).IsEqualTo("host-b");
+            await Assert.That(current.Port).IsEqualTo(9093);
+            await Assert.That(await pool.GetConnectionAsync(1, cancellationToken)).IsSameReferenceAs(current);
+        }
+
+        await Assert.That(connections).Count().IsEqualTo(2);
+    }
+
+    [Test]
+    [Timeout(10_000)]
+    public async Task GetConnectionByIndexAsync_EndpointChangesDuringReplacement_DiscardsConnectionToPreviousEndpoint(
+        CancellationToken cancellationToken)
+    {
+        var setupEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseSetup = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var staleReplacements = 0;
+        var pool = new ConnectionPool(
+            clientId: "test-client",
+            connectionOptions: new ConnectionOptions(),
+            connectionsPerBroker: 2,
+            connectionFactory: async (brokerId, host, port, index, factoryToken) =>
+            {
+                var connection = CreateConnectedConnection(brokerId, host, port);
+                // The second setup for slot 0 on the old endpoint is the replacement under test.
+                if (host == "host-a" && index == 0 && Interlocked.Increment(ref staleReplacements) == 2)
+                {
+                    setupEntered.TrySetResult();
+                    await releaseSetup.Task.WaitAsync(factoryToken);
+                }
+
+                return connection;
+            });
+
+        await using (pool)
+        {
+            pool.RegisterBroker(1, "host-a", 9092);
+            var original = await pool.GetConnectionByIndexAsync(1, 0, cancellationToken);
+            original.IsConnected.Returns(false);
+
+            var staleAttempt = pool.GetConnectionByIndexAsync(1, 0, cancellationToken).AsTask();
+            await setupEntered.Task.WaitAsync(cancellationToken);
+
+            // The move removes the old group; a sibling then creates the new endpoint's group
+            // under the same broker ID before the stale replacement can store into it.
+            pool.RegisterBroker(1, "host-b", 9093);
+            var current = await pool.GetConnectionByIndexAsync(1, 0, cancellationToken);
+            releaseSetup.SetResult();
+
+            await Assert.That(async () => await staleAttempt).Throws<BrokerEndpointChangedException>();
+            await Assert.That(current.Host).IsEqualTo("host-b");
+            await Assert.That(await pool.GetConnectionByIndexAsync(1, 0, cancellationToken)).IsSameReferenceAs(current);
+        }
+    }
+
+    [Test]
     public async Task GetConnectionAsync_EndpointChanged_ReplacesCachedConnectionGroup()
     {
         var pool = new ConnectionPool(

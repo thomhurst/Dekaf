@@ -5576,7 +5576,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// Each connection slot caches a healthy connection for reuse, while the lease bridges
     /// selection to request registration so shared-pool retirement cannot dispose it between them.
     /// </summary>
-    private async ValueTask<KafkaConnectionLease> GetConnectionLeaseAtIndexAsync(
+    /// <summary>
+    /// Leases the connection pinned to <paramref name="connIdx"/>, completing synchronously
+    /// while it is connected. Otherwise waits, under <paramref name="cancellationToken"/>,
+    /// for the slot's pool acquisition, which runs on the sender lifetime token.
+    /// </summary>
+    internal async ValueTask<KafkaConnectionLease> GetConnectionLeaseAtIndexAsync(
         int connIdx,
         CancellationToken cancellationToken)
     {
@@ -5619,7 +5624,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 }
             }
 
-            _pendingConnections[connIdx] = null;
+            // Only release the task this send waited on. An Acks.None send loop may overlap two
+            // sends on slot 0, so a continuation resuming here must not clear a newer
+            // acquisition the loop has started since.
+            _ = Interlocked.CompareExchange(ref _pendingConnections[connIdx], null, pending);
             var connection = await pending.ConfigureAwait(false);
             _pinnedConnections[connIdx] = connection;
             if (KafkaConnectionLease.TryAcquire(connection, out var lease))
@@ -5658,10 +5666,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
     /// <summary>
     /// Observes every pending connection acquisition after the send loop has exited. The
-    /// acquisitions run on the sender lifetime token, so cancelling it in disposal ends them.
+    /// acquisitions run on the sender lifetime token, so cancelling it in disposal ends them;
+    /// one drain timeout bounds the whole wait should a pool ignore that token.
     /// </summary>
     private async ValueTask ObservePendingConnectionsAsync()
     {
+        List<Task<IKafkaConnection>>? pendingTasks = null;
         for (var i = 0; i < _pendingConnections.Length; i++)
         {
             var pending = _pendingConnections[i];
@@ -5669,17 +5679,22 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 continue;
 
             _pendingConnections[i] = null;
-            try
-            {
-                await pending.WaitAsync(_disposalDrainTimeout).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-            {
-            }
-            catch (Exception ex)
-            {
-                LogBatchCleanupStepFailed(ex, _brokerId);
-            }
+            (pendingTasks ??= []).Add(pending);
+        }
+
+        if (pendingTasks is null)
+            return;
+
+        try
+        {
+            await Task.WhenAll(pendingTasks).WaitAsync(_disposalDrainTimeout).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex)
+        {
+            LogBatchCleanupStepFailed(ex, _brokerId);
         }
     }
 

@@ -625,6 +625,8 @@ public sealed partial class ConnectionPool :
                 ThrowIfGroupConnectionDisconnected(connections[i], brokerId);
             }
 
+            ThrowIfBrokerEndpointChanged(brokerId, brokerInfo.Host, brokerInfo.Port);
+
             // Atomically set the connection group
             _connectionGroupsById[brokerId] = connections;
             ResetReconnectBackoff(setupKey, brokerId, brokerInfo.Host, brokerInfo.Port);
@@ -635,7 +637,8 @@ public sealed partial class ConnectionPool :
             success = true;
             return connections[0];
         }
-        catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
+        catch (Exception ex) when (!cancellationToken.IsCancellationRequested
+                                   && ex is not BrokerEndpointChangedException)
         {
             RecordConnectionAttemptFailure(
                 setupKey, brokerId, brokerInfo.Host, brokerInfo.Port, ex.Message);
@@ -760,12 +763,14 @@ public sealed partial class ConnectionPool :
                     var connection = await tasks[i].ConfigureAwait(false);
                     ThrowIfGroupConnectionDisconnected(connection, brokerId);
                 }
+
+                ThrowIfBrokerEndpointChanged(brokerId, brokerInfo.Host, brokerInfo.Port);
             }
             catch (Exception ex)
             {
                 // Close any successfully created connections to avoid leaking TCP handles.
                 await DisposeCompletedTaskConnectionsAsync(tasks).ConfigureAwait(false);
-                if (!cancellationToken.IsCancellationRequested)
+                if (!cancellationToken.IsCancellationRequested && ex is not BrokerEndpointChangedException)
                     RecordConnectionAttemptFailure(
                         setupKey, brokerId, brokerInfo.Host, brokerInfo.Port, ex.Message);
                 throw;
@@ -963,9 +968,18 @@ public sealed partial class ConnectionPool :
                 throw;
             }
 
+            var endpointChanged = false;
+            BrokerInfo currentBroker = default;
             try
             {
-                if (_connectionGroupsById.TryGetValue(brokerId, out var connections) && index < connections.Length)
+                // A broker that moved during this setup had its group removed; a sibling may
+                // already have created the new endpoint's group under the same ID, so the
+                // registration is checked before this socket can land in it.
+                endpointChanged = HasBrokerEndpointChanged(
+                    brokerId, brokerInfo.Host, brokerInfo.Port, out currentBroker);
+                if (!endpointChanged
+                    && _connectionGroupsById.TryGetValue(brokerId, out var connections)
+                    && index < connections.Length)
                 {
                     // Capture old connection for disposal — it still holds Pipe buffers,
                     // StreamPipeWriter memory, and socket resources that leak without disposal.
@@ -985,11 +999,17 @@ public sealed partial class ConnectionPool :
             if (oldConnection is not null)
                 RetireConnection(oldConnection);
 
-            // If the index is now out of bounds (shrink happened concurrently),
-            // dispose the orphaned connection to avoid leaking TCP handles.
+            // If the broker moved or the index is now out of bounds (shrink happened
+            // concurrently), dispose the orphaned connection to avoid leaking TCP handles.
             if (!stored)
             {
                 await connection.DisposeAsync().ConfigureAwait(false);
+                if (endpointChanged)
+                {
+                    throw new BrokerEndpointChangedException(
+                        brokerId, brokerInfo.Host, brokerInfo.Port, currentBroker.Host, currentBroker.Port);
+                }
+
                 throw new KafkaException(
                     $"Connection slot {index} for broker {brokerId} was removed by a concurrent shrink");
             }
@@ -1253,6 +1273,17 @@ public sealed partial class ConnectionPool :
 
         // Publish only after the hard setup deadline has accepted the result. A factory
         // that ignores cancellation may finish late, but that connection is never visible.
+        try
+        {
+            ThrowIfBrokerEndpointChanged(brokerId, host, port);
+        }
+        catch (BrokerEndpointChangedException)
+        {
+            try { await connection.DisposeAsync().ConfigureAwait(false); }
+            catch { /* best-effort cleanup of a connection to a previous endpoint */ }
+            throw;
+        }
+
         _connectionsByEndpoint[endpoint] = connection;
         if (brokerId >= 0)
             _connectionsById[brokerId] = connection;
@@ -2250,6 +2281,27 @@ public sealed partial class ConnectionPool :
     private static bool BrokerEndpointsEqual(BrokerInfo left, BrokerInfo right) =>
         left.Port == right.Port
         && StringComparer.OrdinalIgnoreCase.Equals(left.Host, right.Host);
+
+    /// <summary>
+    /// Guards every publish of a finished setup. <see cref="RetireBrokerConnections"/> only sees
+    /// connections that are already published, so a setup that started before a
+    /// <see cref="RegisterBroker"/> moved the broker and finished after it would otherwise
+    /// publish a socket to the previous endpoint. Callers dispose the connection on throw.
+    /// </summary>
+    private void ThrowIfBrokerEndpointChanged(int brokerId, string host, int port)
+    {
+        if (HasBrokerEndpointChanged(brokerId, host, port, out var current))
+            throw new BrokerEndpointChangedException(brokerId, host, port, current.Host, current.Port);
+    }
+
+    private bool HasBrokerEndpointChanged(int brokerId, string host, int port, out BrokerInfo current)
+    {
+        current = default;
+        if (brokerId < 0 || !_brokers.TryGetValue(brokerId, out current))
+            return false;
+
+        return current.Port != port || !StringComparer.OrdinalIgnoreCase.Equals(current.Host, host);
+    }
 
     private static bool ConnectionMatchesBroker(IKafkaConnection connection, BrokerInfo brokerInfo) =>
         connection.Port == brokerInfo.Port
