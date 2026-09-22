@@ -174,10 +174,14 @@ public sealed class TransactionalProduceFaultTests
         var epochAfterAbort = harness.Broker.CurrentEpoch;
         await harness.CommitOneRecordAsync(partition: 0, cancellationToken);
 
+        // A request the send loop had already pinned when the abort purged its batch can still reach
+        // the wire late, but stamped with the aborted epoch, which the broker fences: the epoch is
+        // bumped with the abort. Only a batch under the new epoch can join the next transaction.
         var sentInNext = harness.Broker.ProducedBatches.Skip(sentBeforeNext).ToArray();
-        await Assert.That(sentInNext.Sum(batch => batch.RecordCount)).IsEqualTo(1);
-        await Assert.That(sentInNext[0].ProducerEpoch).IsEqualTo(epochAfterAbort);
-        await Assert.That(sentInNext[0].BaseSequence).IsEqualTo(0);
+        await Assert.That(sentInNext.All(batch => batch.ProducerEpoch <= epochAfterAbort)).IsTrue();
+        var underNewEpoch = sentInNext.Where(batch => batch.ProducerEpoch == epochAfterAbort).ToArray();
+        await Assert.That(underNewEpoch.Sum(batch => batch.RecordCount)).IsEqualTo(1);
+        await Assert.That(underNewEpoch[0].BaseSequence).IsEqualTo(0);
     }
 
     [Test]
@@ -209,6 +213,41 @@ public sealed class TransactionalProduceFaultTests
         var last = harness.Broker.ProducedBatches[^1];
         await Assert.That(last.ProducerEpoch).IsEqualTo(epochAfterAbort);
         await Assert.That(last.BaseSequence).IsEqualTo(0);
+    }
+
+    [Test]
+    [Timeout(60_000)]
+    public async Task AbortAsync_RacingABatchFailure_IsNotOverwrittenByTheFailure(
+        CancellationToken cancellationToken)
+    {
+        await using var harness = await TransactionalProduceHarness.CreateAsync(
+            transactionVersion: 2,
+            produceError: static (_, _) => ErrorCode.None);
+
+        var aborted = harness.Producer.BeginTransaction();
+        await aborted.ProduceAsync(Message(partition: 0), cancellationToken);
+        var producer = harness.Producer;
+        Task abort;
+        TransactionState stateSeenByFailure;
+
+        // Stand in for a batch-failure callback caught between reading InTransaction and writing
+        // AbortableError: it holds the lock the whole time, so the abort transition must wait.
+        lock (producer._partitionsInTransactionLock)
+        {
+            abort = Task.Run(() => aborted.AbortAsync(cancellationToken).AsTask(), cancellationToken);
+            // Unfixed code would publish AbortingTransaction here, and the write below would erase it.
+            SpinWait.SpinUntil(
+                () => producer._transactionState != TransactionState.InTransaction || abort.IsCompleted,
+                TimeSpan.FromMilliseconds(200));
+            stateSeenByFailure = producer._transactionState;
+            producer._transactionState = TransactionState.AbortableError;
+        }
+
+        await Assert.That(stateSeenByFailure).IsEqualTo(TransactionState.InTransaction);
+        await abort;
+        await aborted.DisposeAsync();
+        await Assert.That(harness.Broker.AbortRequests).IsEqualTo(1);
+        await harness.CommitOneRecordAsync(partition: 0, cancellationToken);
     }
 
     private static ProducerMessage<string, string> Message(int partition) => new()

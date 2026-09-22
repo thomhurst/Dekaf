@@ -5652,6 +5652,32 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         };
     }
 
+    /// <summary>
+    /// Moves the running transaction to <see cref="TransactionState.CommittingTransaction"/> or
+    /// <see cref="TransactionState.AbortingTransaction"/>. Taken under the lock
+    /// <see cref="OnTransactionalBatchFailed"/> holds while it reads and then writes the state, so a
+    /// batch failure lands either before the transition (and is seen by the checks here) or after it
+    /// (and sees the new state); it can never overwrite the transition with a state read earlier.
+    /// </summary>
+    internal void EnterTransactionCompletion(bool commit, string operation)
+    {
+        lock (_partitionsInTransactionLock)
+        {
+            ThrowIfFatalTransactionError(operation);
+
+            if (commit)
+            {
+                // Before the state is overwritten: CommittingTransaction would erase the error.
+                ThrowIfAbortableTransactionError(operation);
+                _transactionState = TransactionState.CommittingTransaction;
+            }
+            else
+            {
+                _transactionState = TransactionState.AbortingTransaction;
+            }
+        }
+    }
+
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static void ThrowNotInitialized()
     {
@@ -7539,10 +7565,7 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
         if (_committed || _aborted)
             throw new InvalidOperationException("Transaction is already completed");
 
-        // Before the state is overwritten below: CommittingTransaction would erase the error.
-        _producer.ThrowIfAbortableTransactionError("Cannot commit transaction");
-
-        _producer._transactionState = TransactionState.CommittingTransaction;
+        _producer.EnterTransactionCompletion(commit: true, "Cannot commit transaction");
 
         try
         {
@@ -7591,7 +7614,7 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
         if (_committed || _aborted)
             throw new InvalidOperationException("Transaction is already completed");
 
-        _producer._transactionState = TransactionState.AbortingTransaction;
+        _producer.EnterTransactionCompletion(commit: false, "Cannot abort transaction");
 
         try
         {

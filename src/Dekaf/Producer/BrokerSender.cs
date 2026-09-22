@@ -2988,6 +2988,106 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     }
 
     /// <summary>
+    /// Stamps the batches of one request with their sequences and registers them with the
+    /// inflight tracker, at send time in the single-threaded send loop. Per batch, not per
+    /// record: two volatile reads, plus the counter increment and tracker registration a batch
+    /// without a sequence or entry needs.
+    /// </summary>
+    internal void AssignSequences(ReadyBatch[] batches, int count)
+    {
+        // The snapshot this loop iteration coalesced under (step 4c), the same for every
+        // request of the wave: the producer ID and epoch come from the same publication,
+        // so a batch is never stamped with a new ID and an old epoch, and a partition
+        // held in step 5 was held against the state its batches are stamped with here.
+        var producerState = _iterationProducerState;
+        var currentEpoch = producerState?.Epoch ?? (short)-1;
+        var currentPid = currentEpoch >= 0 ? producerState!.ProducerId : -1L;
+        var sequenceState = currentEpoch >= 0 ? producerState : null;
+
+        for (var i = 0; i < count; i++)
+        {
+            var batch = batches[i];
+
+            // Failed and cleaned up while this loop held it (a transaction abort purges the
+            // batches it still holds): the resource pin below drops it from the request, so it
+            // must not take a sequence or an inflight entry. Taken from the counter after the
+            // abort reset it, sequence 0 would be gone and the next transaction's first batch
+            // on the partition would be out of order.
+            if (batch.IsCleanedUp)
+                continue;
+
+            var tp = batch.TopicPartition;
+            var recordCount = batch.RecordBatch.Records.Count;
+            // A batch sealed under an older epoch, or under the previous producer ID after
+            // an exhausted-epoch reset (including a batch that tore across the accumulator's
+            // separate ID and epoch writes), must be re-stamped before it goes on the wire.
+            var isStaleEpoch = currentEpoch >= 0
+                && batch.RecordBatch.ProducerEpoch >= 0
+                && (batch.RecordBatch.ProducerEpoch != currentEpoch
+                    || batch.RecordBatch.ProducerId != currentPid);
+
+            if (isStaleEpoch && KeepsPreviousStateStamp(batch, sequenceState!))
+            {
+                // Sent before under the previous state, outcome unknown (lost response,
+                // request timeout, a retriable error the broker may return after it
+                // appended). Its partition has not restarted, so the broker still holds
+                // the previous state's entry and deduplicates this stamp; a fresh stamp
+                // would be accepted as a new batch and append the records twice (Java
+                // keeps a partition on its old epoch while it has in-flight batches).
+                // The hold must be armed again: this request is pending under another
+                // state from now on, and the partition may not restart ahead of it.
+                LogPreviousStateStampKept(_brokerId, tp.Topic, tp.Partition,
+                    batch.RecordBatch.ProducerEpoch, batch.RecordBatch.BaseSequence, currentEpoch);
+                _sequenceRestartHoldArmed = true;
+            }
+            else if (isStaleEpoch)
+            {
+                // Never sent, or definitively rejected (its inflight entry was completed
+                // with the rejection), or its partition already restarted under the
+                // current state so the broker would fence the old stamp: complete old
+                // inflight, assign fresh sequence, update epoch/PID.
+                LogStaleEpochResequencing(_brokerId, tp.Topic, tp.Partition,
+                    batch.RecordBatch.ProducerEpoch, currentEpoch);
+                CompleteInflightEntry(batch);
+                var newSeq = NextSequence(tp, recordCount, sequenceState);
+                batch.RecordBatch.ProducerId = currentPid;
+                batch.RecordBatch.ProducerEpoch = currentEpoch;
+                batch.RecordBatch.BaseSequence = newSeq;
+
+                // Re-register with inflight tracker
+                batch.InflightEntry = _inflightTracker.Register(tp, newSeq, recordCount);
+            }
+            else if (batch.RecordBatch.BaseSequence < 0)
+            {
+                // Fresh batch: assign sequence (epoch/PID are already correct)
+                var newSeq = NextSequence(tp, recordCount, sequenceState);
+                batch.RecordBatch.BaseSequence = newSeq;
+            }
+            else
+            {
+                // Retry batch with correct epoch — keeps its original sequence
+            }
+        }
+
+        // Register fresh batches with inflight tracker at send time (not drain time).
+        // Stale batches were re-registered above. Retry batches with correct epoch
+        // keep their existing inflight entries. Only batches without entries need registration.
+        for (var i = 0; i < count; i++)
+        {
+            var batch = batches[i];
+            if (batch.InflightEntry is null
+                && batch.RecordBatch.BaseSequence >= 0
+                && !batch.IsCleanedUp)
+            {
+                batch.InflightEntry = _inflightTracker.Register(
+                    batch.TopicPartition,
+                    batch.RecordBatch.BaseSequence,
+                    batch.RecordCount);
+            }
+        }
+    }
+
+    /// <summary>
     /// Waits for the producer ID reset, but not past the earliest delivery deadline of a batch
     /// this loop owns (queued or awaiting a response). When the deadline comes first the loop
     /// goes on: it expires what is due, keeps processing responses, and sends what it has under
@@ -4307,87 +4407,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             // Note: transactional producers ARE idempotent and need sequence assignment,
             // but don't use epoch recovery (_getProducerState is null for them).
             if (_isIdempotent) // EnableIdempotence — covers both idempotent and transactional
-            {
-                // The snapshot this loop iteration coalesced under (step 4c), the same for every
-                // request of the wave: the producer ID and epoch come from the same publication,
-                // so a batch is never stamped with a new ID and an old epoch, and a partition
-                // held in step 5 was held against the state its batches are stamped with here.
-                var producerState = _iterationProducerState;
-                var currentEpoch = producerState?.Epoch ?? (short)-1;
-                var currentPid = currentEpoch >= 0 ? producerState!.ProducerId : -1L;
-                var sequenceState = currentEpoch >= 0 ? producerState : null;
-
-                for (var i = 0; i < count; i++)
-                {
-                    var batch = batches[i];
-                    var tp = batch.TopicPartition;
-                    var recordCount = batch.RecordBatch.Records.Count;
-                    // A batch sealed under an older epoch, or under the previous producer ID after
-                    // an exhausted-epoch reset (including a batch that tore across the accumulator's
-                    // separate ID and epoch writes), must be re-stamped before it goes on the wire.
-                    var isStaleEpoch = currentEpoch >= 0
-                        && batch.RecordBatch.ProducerEpoch >= 0
-                        && (batch.RecordBatch.ProducerEpoch != currentEpoch
-                            || batch.RecordBatch.ProducerId != currentPid);
-
-                    if (isStaleEpoch && KeepsPreviousStateStamp(batch, sequenceState!))
-                    {
-                        // Sent before under the previous state, outcome unknown (lost response,
-                        // request timeout, a retriable error the broker may return after it
-                        // appended). Its partition has not restarted, so the broker still holds
-                        // the previous state's entry and deduplicates this stamp; a fresh stamp
-                        // would be accepted as a new batch and append the records twice (Java
-                        // keeps a partition on its old epoch while it has in-flight batches).
-                        // The hold must be armed again: this request is pending under another
-                        // state from now on, and the partition may not restart ahead of it.
-                        LogPreviousStateStampKept(_brokerId, tp.Topic, tp.Partition,
-                            batch.RecordBatch.ProducerEpoch, batch.RecordBatch.BaseSequence, currentEpoch);
-                        _sequenceRestartHoldArmed = true;
-                    }
-                    else if (isStaleEpoch)
-                    {
-                        // Never sent, or definitively rejected (its inflight entry was completed
-                        // with the rejection), or its partition already restarted under the
-                        // current state so the broker would fence the old stamp: complete old
-                        // inflight, assign fresh sequence, update epoch/PID.
-                        LogStaleEpochResequencing(_brokerId, tp.Topic, tp.Partition,
-                            batch.RecordBatch.ProducerEpoch, currentEpoch);
-                        CompleteInflightEntry(batch);
-                        var newSeq = NextSequence(tp, recordCount, sequenceState);
-                        batch.RecordBatch.ProducerId = currentPid;
-                        batch.RecordBatch.ProducerEpoch = currentEpoch;
-                        batch.RecordBatch.BaseSequence = newSeq;
-
-                        // Re-register with inflight tracker
-                        batch.InflightEntry = _inflightTracker.Register(tp, newSeq, recordCount);
-                    }
-                    else if (batch.RecordBatch.BaseSequence < 0)
-                    {
-                        // Fresh batch: assign sequence (epoch/PID are already correct)
-                        var newSeq = NextSequence(tp, recordCount, sequenceState);
-                        batch.RecordBatch.BaseSequence = newSeq;
-                    }
-                    else
-                    {
-                        // Retry batch with correct epoch — keeps its original sequence
-                    }
-                }
-
-                // Register fresh batches with inflight tracker at send time (not drain time).
-                // Stale batches were re-registered above. Retry batches with correct epoch
-                // keep their existing inflight entries. Only batches without entries need registration.
-                for (var i = 0; i < count; i++)
-                {
-                    var batch = batches[i];
-                    if (batch.InflightEntry is null && batch.RecordBatch.BaseSequence >= 0)
-                    {
-                        batch.InflightEntry = _inflightTracker.Register(
-                            batch.TopicPartition,
-                            batch.RecordBatch.BaseSequence,
-                            batch.RecordCount);
-                    }
-                }
-            }
+                AssignSequences(batches, count);
 
             using var connectionLease = await GetConnectionLeaseAtIndexAsync(connectionIndex, cancellationToken)
                 .ConfigureAwait(false);

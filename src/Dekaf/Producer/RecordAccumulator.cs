@@ -9865,6 +9865,12 @@ internal sealed class ReadyBatch
     internal bool IsSendCompleted => Volatile.Read(ref _sendCompleted) != 0;
 
     /// <summary>
+    /// The batch reached its terminal cleanup; <see cref="TryAcquireResourcePin"/> refuses it from
+    /// now on, so it will not be sent.
+    /// </summary>
+    internal bool IsCleanedUp => Volatile.Read(ref _cleanedUp) != 0;
+
+    /// <summary>
     /// Monotonically increasing counter, incremented on each Initialize(). Used to detect
     /// batch object recycling: if a PendingResponse holds a reference to a batch and the
     /// batch's generation doesn't match the expected value, the batch was recycled
