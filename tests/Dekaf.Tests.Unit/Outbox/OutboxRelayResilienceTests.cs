@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics.Metrics;
 using Dekaf.Outbox;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -154,6 +155,83 @@ public sealed class OutboxRelayResilienceTests
             await Assert.That(publisher.RejectedAttempts).IsEqualTo(1);
 
             // The poison row is still retried once its own backoff has passed.
+            publisher.Accept(1);
+            time.Advance(options.ErrorBackoff);
+            await store.WaitForEmptyAsync(SignalTimeout);
+        }
+        finally
+        {
+            await relay.StopAsync(CancellationToken.None).WaitAsync(SignalTimeout);
+        }
+    }
+
+    [Test]
+    public async Task PoisonRowAsTheOnlyWork_CommitsBehindItDoNotRunACyclePerCommit()
+    {
+        // The clock never moves, so every cycle after the first is one a commit started.
+        var metricsName = "poison-commits-" + Guid.NewGuid().ToString("N");
+        var cycles = 0;
+        using var listener = new MeterListener();
+        listener.InstrumentPublished = (instrument, meterListener) =>
+        {
+            if (instrument.Meter.Name == OutboxDiagnostics.MeterName && instrument.Name == "dekaf.outbox.cycle.duration")
+                meterListener.EnableMeasurementEvents(instrument);
+        };
+        listener.SetMeasurementEventCallback<double>((_, _, tags, _) =>
+        {
+            foreach (var tag in tags)
+            {
+                if (Equals(tag.Value, metricsName))
+                    Interlocked.Increment(ref cycles);
+            }
+        });
+        listener.Start();
+
+        var time = new ManualTimeProvider();
+        var store = new RowStore(ownedBuckets: [0, 1]);
+        store.Enqueue(Row(1, bucket: 0));
+        var publisher = new ConcurrentSendPublisher();
+        publisher.Reject(1);
+        var options = new OutboxRelayOptions
+        {
+            BucketCount = 2,
+            PollInterval = TimeSpan.FromMinutes(2),
+            ErrorBackoff = TimeSpan.FromMinutes(1),
+            LeaseRenewInterval = TimeSpan.FromMinutes(5),
+            LeaseDuration = TimeSpan.FromMinutes(10),
+            MaxPublishDuration = TimeSpan.FromSeconds(5),
+            MetricsName = metricsName,
+            RelayId = "test-relay"
+        };
+        using var notifier = new OutboxNotifier(time, options.BucketCount);
+        using var relay = new OutboxRelayService(store, publisher, options,
+            NullLogger<OutboxRelayService>.Instance, time, notifier);
+        await relay.StartAsync(CancellationToken.None);
+        try
+        {
+            await time.WaitForTimerAsync(options.ErrorBackoff);
+            var cyclesBefore = Volatile.Read(ref cycles);
+
+            // Writers keep committing behind the poison row. Its bucket is still backing off,
+            // so each commit brings the relay nothing to do: it goes back to waiting for the
+            // retry instead of running a cycle that skips the bucket again.
+            for (var commit = 0; commit < 20; commit++)
+            {
+                store.Enqueue(Row(100 + commit, bucket: 0));
+                notifier.NotifyCommitted(new HashSet<int> { 0 });
+                await time.WaitForTimerAsync(options.ErrorBackoff);
+            }
+            await Assert.That(Volatile.Read(ref cycles) - cyclesBefore).IsEqualTo(0);
+            await Assert.That(publisher.RejectedAttempts).IsEqualTo(1);
+
+            // A commit to a healthy bucket still ends the wait at once.
+            store.Enqueue(Row(10, bucket: 1));
+            notifier.NotifyCommitted(new HashSet<int> { 1 });
+            await store.WaitForBucketEmptyAsync(1, SignalTimeout);
+            await time.WaitForTimerAsync(options.ErrorBackoff);
+
+            // The poison row is still retried once its own backoff has passed, and the rows
+            // committed behind it follow.
             publisher.Accept(1);
             time.Advance(options.ErrorBackoff);
             await store.WaitForEmptyAsync(SignalTimeout);

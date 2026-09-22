@@ -8,7 +8,9 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 /// <summary>
 /// Drains an identical fixed backlog per invocation through the real cycle, with a
 /// synchronous store/publisher to isolate scheduling CPU and allocations. Full batches
-/// exercise readiness reuse; short batches exercise discovery. No Kafka or database I/O.
+/// exercise readiness reuse; short batches exercise discovery. With <see cref="Poisoned"/>,
+/// one extra bucket holds a head row the publisher always rejects, so the healthy buckets
+/// drain beside a bucket that is backing off. No Kafka or database I/O.
 /// </summary>
 [MemoryDiagnoser]
 public class OutboxDrainBenchmarks
@@ -17,6 +19,8 @@ public class OutboxDrainBenchmarks
     public int Buckets { get; set; }
     [Params(1, 64)]
     public int RowsPerBucket { get; set; }
+    [Params(false, true)]
+    public bool Poisoned { get; set; }
 
     private Store _store = null!;
     private OutboxRelayService _relay = null!;
@@ -25,9 +29,10 @@ public class OutboxDrainBenchmarks
     [GlobalSetup]
     public void Setup()
     {
-        _store = new Store(Buckets);
-        _relay = new OutboxRelayService(_store, new Publisher(),
-            new OutboxRelayOptions { BucketCount = Buckets, BatchSize = 32 },
+        var bucketCount = Poisoned ? Buckets + 1 : Buckets;
+        _store = new Store(bucketCount, poisonBucket: Poisoned ? Buckets : -1);
+        _relay = new OutboxRelayService(_store, new Publisher(poisonBucket: Poisoned ? Buckets : -1),
+            new OutboxRelayOptions { BucketCount = bucketCount, BatchSize = 32 },
             NullLogger<OutboxRelayService>.Instance);
         var cycle = typeof(OutboxRelayService).GetMethod("RunCycleAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
         _cycle = (Func<ValueTask>)typeof(OutboxDrainBenchmarks).GetMethod(nameof(BindCycle), BindingFlags.Static | BindingFlags.NonPublic)!
@@ -59,10 +64,12 @@ public class OutboxDrainBenchmarks
         private readonly int[] _remaining;
         private readonly OutboxMessage[][] _full;
         private readonly OutboxMessage[][] _short;
+        private readonly int _poisonBucket;
         public int Remaining { get; private set; }
 
-        public Store(int buckets)
+        public Store(int buckets, int poisonBucket)
         {
+            _poisonBucket = poisonBucket;
             _buckets = new int[buckets];
             _remaining = new int[buckets];
             _full = new OutboxMessage[buckets][];
@@ -84,6 +91,12 @@ public class OutboxDrainBenchmarks
         {
             Array.Fill(_remaining, rows);
             Remaining = rows * _buckets.Length;
+            if (_poisonBucket >= 0)
+            {
+                // The poison row never leaves the store and is not part of the drained backlog.
+                _remaining[_poisonBucket] = 1;
+                Remaining -= rows;
+            }
         }
         public ValueTask<IReadOnlyList<int>> AcquireBucketLeasesAsync(OutboxLeaseRequest request,
             CancellationToken cancellationToken = default) => new(_buckets);
@@ -102,11 +115,16 @@ public class OutboxDrainBenchmarks
             return ValueTask.CompletedTask;
         }
     }
-    private sealed class Publisher : IOutboxPublisher
+    private sealed class Publisher(int poisonBucket) : IOutboxPublisher
     {
+        private static readonly InvalidOperationException Rejected = new("Simulated MESSAGE_TOO_LARGE.");
+
         public ValueTask InitializeAsync(CancellationToken cancellationToken = default) => ValueTask.CompletedTask;
         public ValueTask<OutboxPublishResult> PublishAsync(IReadOnlyList<OutboxMessage> messages,
-            string messageIdHeaderName, CancellationToken cancellationToken = default) => new(new OutboxPublishResult(messages.Count, null));
+            string messageIdHeaderName, CancellationToken cancellationToken = default)
+            => new(messages[0].Bucket == poisonBucket
+                ? new OutboxPublishResult(0, Rejected)
+                : new OutboxPublishResult(messages.Count, null));
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 }

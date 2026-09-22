@@ -249,6 +249,8 @@ public sealed partial class OutboxRelayService : BackgroundService
                         continue;
                     if (_notifier is null)
                         await Task.Delay(delay, _timeProvider, stoppingToken).ConfigureAwait(false);
+                    else if (cycle.RetryAfter > TimeSpan.Zero && _notifier is OutboxNotifier hints)
+                        await WaitWhileBackingOffAsync(hints, delay, stoppingToken).ConfigureAwait(false);
                     else
                         await WaitForNotificationAsync(_notifier, delay, stoppingToken).ConfigureAwait(false);
                 }
@@ -337,6 +339,60 @@ public sealed partial class OutboxRelayService : BackgroundService
         return floor + TimeSpan.FromTicks((long)((ceilingTicks - floor.Ticks) * _backoffJitter.NextDouble()));
     }
 
+    /// <summary>
+    /// Adds the hinted buckets that are owned and not already ready to the ready list, and
+    /// returns whether any was added.
+    /// </summary>
+    private bool MergeHintedBuckets(int hintCount)
+    {
+        var readyCount = _pendingBucketCount;
+        for (var index = 0; index < readyCount; index++)
+            _readyBuckets![_pendingBuckets[index]] = true;
+        for (var index = 0; index < hintCount; index++)
+        {
+            var bucket = _hintBuckets![index];
+            if ((uint)bucket < (uint)_options.BucketCount && _ownedBucketFlags![bucket] && !_readyBuckets![bucket])
+            {
+                _pendingBuckets[_pendingBucketCount++] = bucket;
+            }
+        }
+        // Hints are already distinct; only the carried readiness needs clearing.
+        for (var index = 0; index < readyCount; index++)
+            _readyBuckets![_pendingBuckets[index]] = false;
+        return _pendingBucketCount > readyCount;
+    }
+
+    /// <summary>
+    /// The idle wait while only buckets backing off from a rejected row are ready. Those
+    /// buckets are already in the ready list, so a commit to one of them brings nothing new:
+    /// the wait resumes for the time left instead of running a cycle that would skip the
+    /// bucket again, which under steady writes behind a poison row would be one cycle per
+    /// commit. A commit to any other bucket, or one that names no bucket, still ends the wait.
+    /// </summary>
+    private async ValueTask WaitWhileBackingOffAsync(OutboxNotifier hints, TimeSpan delay, CancellationToken stoppingToken)
+    {
+        var waitStarted = _timeProvider.GetTimestamp();
+        while (true)
+        {
+            await WaitForNotificationAsync(hints, delay, stoppingToken).ConfigureAwait(false);
+            var remaining = delay - _timeProvider.GetElapsedTime(waitStarted);
+            if (remaining <= TimeSpan.Zero)
+                return;
+
+            var hintCount = hints.DrainHints(_hintBuckets, out var unknown);
+            if (unknown)
+            {
+                _discoveryRequired = true;
+                return;
+            }
+            if (hintCount > 0 && MergeHintedBuckets(hintCount))
+                return;
+
+            delay = remaining;
+            waitStarted = _timeProvider.GetTimestamp();
+        }
+    }
+
     private static int StableSeed(string relayId)
     {
         // FNV-1a: string.GetHashCode differs per process, which would make a run unrepeatable.
@@ -387,22 +443,7 @@ public sealed partial class OutboxRelayService : BackgroundService
                 var hintCount = hints.DrainHints(_hintBuckets, out var unknown);
                 discover |= unknown;
                 if (!discover && hintCount > 0)
-                {
-                    var readyCount = _pendingBucketCount;
-                    for (var index = 0; index < readyCount; index++)
-                        _readyBuckets![_pendingBuckets[index]] = true;
-                    for (var index = 0; index < hintCount; index++)
-                    {
-                        var bucket = _hintBuckets![index];
-                        if ((uint)bucket < (uint)_options.BucketCount && _ownedBucketFlags![bucket] && !_readyBuckets![bucket])
-                        {
-                            _pendingBuckets[_pendingBucketCount++] = bucket;
-                        }
-                    }
-                    // Hints are already distinct; only the carried readiness needs clearing.
-                    for (var index = 0; index < readyCount; index++)
-                        _readyBuckets![_pendingBuckets[index]] = false;
-                }
+                    MergeHintedBuckets(hintCount);
             }
             else
             {
