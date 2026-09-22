@@ -18,7 +18,6 @@ public sealed partial class AdminClient
         // Snapshot caller-owned collections before any await so retries preserve replica order.
         var topics = BuildPartitionExpansionTopics(newPartitions);
 
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
         await CreatePartitionsCoreAsync(topics, timeoutMs, options?.ValidateOnly ?? false, cancellationToken).ConfigureAwait(false);
     }
 

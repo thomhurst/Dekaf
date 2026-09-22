@@ -20,9 +20,9 @@ public sealed partial class AdminClient : IClusterDiscoveryAdminClient
                 "Fenced broker discovery requires broker bootstrap endpoints; controller endpoints describe controllers.");
         }
 
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
         return await WithRetryAsync(async attemptToken =>
         {
+            await EnsureInitializedAsync(attemptToken).ConfigureAwait(false);
             using var lease = endpointType == DescribeClusterEndpointType.Broker
                 ? await LeaseAnyBrokerConnectionAsync(attemptToken).ConfigureAwait(false)
                 : await LeaseControllerAsync(ApiKey.DescribeCluster, attemptToken).ConfigureAwait(false);

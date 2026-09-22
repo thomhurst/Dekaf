@@ -258,10 +258,9 @@ public sealed partial class AdminClient :
         ListClientMetricsResourcesOptions? options = null,
         CancellationToken cancellationToken = default)
     {
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
-
         return await WithRetryAsync<IReadOnlyList<ClientMetricsResourceListing>>(async attemptToken =>
         {
+            await EnsureInitializedAsync(attemptToken).ConfigureAwait(false);
             using var connectionLease = await LeaseAnyBrokerConnectionAsync(attemptToken).ConfigureAwait(false);
             var connection = connectionLease.Connection;
             if (!_metadataManager.HasApiKey(connection, Protocol.ApiKey.ListClientMetricsResources))
@@ -295,14 +294,13 @@ public sealed partial class AdminClient :
         ListConfigResourcesOptions? options = null,
         CancellationToken cancellationToken = default)
     {
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
-
         var resourceTypes = options?.ResourceTypes is { Count: > 0 } types
             ? types.Select(static type => (sbyte)type).ToArray()
             : [];
 
         return await WithRetryAsync<IReadOnlyList<ConfigResourceListing>>(async attemptToken =>
         {
+            await EnsureInitializedAsync(attemptToken).ConfigureAwait(false);
             using var connectionLease = await LeaseAnyBrokerConnectionAsync(attemptToken).ConfigureAwait(false);
             var connection = connectionLease.Connection;
             if (!_metadataManager.HasApiKey(connection, Protocol.ApiKey.ListClientMetricsResources))
@@ -345,8 +343,6 @@ public sealed partial class AdminClient :
         CreateTopicsOptions? options = null,
         CancellationToken cancellationToken = default)
     {
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
-
         var opts = options ?? new CreateTopicsOptions();
 
         // Materialize before retry to avoid re-enumeration of potentially lazy sequences
@@ -378,6 +374,7 @@ public sealed partial class AdminClient :
 
         await WithRetryAsync(async attemptToken =>
         {
+            await EnsureInitializedAsync(attemptToken).ConfigureAwait(false);
             var isRetryAttempt = createMayHaveApplied;
             using var controllerLease = await LeaseControllerAsync(Protocol.ApiKey.CreateTopics, attemptToken).ConfigureAwait(false);
             var controller = controllerLease.Connection;
@@ -533,14 +530,13 @@ public sealed partial class AdminClient :
         DeleteTopicsOptions? options = null,
         CancellationToken cancellationToken = default)
     {
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
-
         var opts = options ?? new DeleteTopicsOptions();
         var names = topicNames.ToList();
         var deleteMayHaveApplied = false;
 
         await WithRetryAsync(async attemptToken =>
         {
+            await EnsureInitializedAsync(attemptToken).ConfigureAwait(false);
             var isRetryAttempt = deleteMayHaveApplied;
             using var controllerLease = await LeaseControllerAsync(Protocol.ApiKey.DeleteTopics, attemptToken).ConfigureAwait(false);
             var controller = controllerLease.Connection;
@@ -614,14 +610,13 @@ public sealed partial class AdminClient :
         if (ids.Count == 0)
             return;
 
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
-
         var opts = options ?? new DeleteTopicsOptions();
         var unresolvedIds = new HashSet<Guid>(ids);
         var ambiguousIds = new HashSet<Guid>();
 
         await WithRetryAsync(async attemptToken =>
         {
+            await EnsureInitializedAsync(attemptToken).ConfigureAwait(false);
             var topics = new DeleteTopicState[unresolvedIds.Count];
             for (int sourceIndex = 0, destinationIndex = 0; sourceIndex < ids.Count; sourceIndex++)
             {
@@ -758,14 +753,13 @@ public sealed partial class AdminClient :
         if (ids.Count == 0)
             return new Dictionary<Guid, TopicDescription>();
 
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
-
         var topics = new MetadataRequestTopic[ids.Count];
         for (var i = 0; i < ids.Count; i++)
             topics[i] = new MetadataRequestTopic { TopicId = ids[i] };
 
         return await WithRetryAsync(async attemptToken =>
         {
+            await EnsureInitializedAsync(attemptToken).ConfigureAwait(false);
             using var connectionLease = await LeaseAnyBrokerConnectionAsync(attemptToken).ConfigureAwait(false);
             var connection = connectionLease.Connection;
             const short minimumTopicIdVersion = 10;
@@ -856,10 +850,9 @@ public sealed partial class AdminClient :
             };
         }
 
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
-
         return await WithRetryAsync(async attemptToken =>
         {
+            await EnsureInitializedAsync(attemptToken).ConfigureAwait(false);
             var brokers = _metadataManager.Metadata.GetBrokers();
             if (brokers.Count == 0)
             {
@@ -953,10 +946,9 @@ public sealed partial class AdminClient :
     public async ValueTask<FeatureMetadata> DescribeFeaturesAsync(
         CancellationToken cancellationToken = default)
     {
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
-
         return await WithRetryAsync(async attemptToken =>
         {
+            await EnsureInitializedAsync(attemptToken).ConfigureAwait(false);
             using var connectionLease = _controllerMetadataManager is null
                 ? await LeaseAnyBrokerConnectionAsync(attemptToken).ConfigureAwait(false)
                 : await LeaseControllerAsync(Protocol.ApiKey.ApiVersions, attemptToken).ConfigureAwait(false);
@@ -1057,10 +1049,10 @@ public sealed partial class AdminClient :
 
         var opts = options ?? new UpdateFeaturesOptions();
         ArgumentOutOfRangeException.ThrowIfNegative(opts.TimeoutMs);
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
 
         return await WithRetryAsync<IReadOnlyDictionary<string, FeatureUpdateResultInfo>>(async attemptToken =>
         {
+            await EnsureInitializedAsync(attemptToken).ConfigureAwait(false);
             using var controllerLease = await LeaseControllerAsync(Protocol.ApiKey.UpdateFeatures, attemptToken).ConfigureAwait(false);
             var controller = controllerLease.Connection;
             var apiVersion = _metadataManager.GetNegotiatedApiVersion(
@@ -1199,12 +1191,11 @@ public sealed partial class AdminClient :
         IEnumerable<string> groupIds,
         CancellationToken cancellationToken = default)
     {
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
-
         var groupIdList = groupIds.ToList();
 
         return await WithRetryAsync<IReadOnlyDictionary<string, GroupDescription>>(async attemptToken =>
         {
+            await EnsureInitializedAsync(attemptToken).ConfigureAwait(false);
             // Find coordinator for each group and batch groups by coordinator.
             var groupsByCoordinator = new Dictionary<int, List<string>>();
             foreach (var groupId in groupIdList)
@@ -1407,19 +1398,29 @@ public sealed partial class AdminClient :
 
     public ValueTask<IReadOnlyList<GroupListing>> ListConsumerGroupsAsync(
         ListConsumerGroupsOptions? options = null,
-        CancellationToken cancellationToken = default) =>
-        ListGroupsCoreAsync(options?.States, ConsumerGroupTypes, ConsumerProtocolTypes, cancellationToken);
+        CancellationToken cancellationToken = default)
+    {
+        if (options is not null)
+            ArgumentOutOfRangeException.ThrowIfNegative(options.TimeoutMs);
+
+        return ListGroupsCoreAsync(
+            options?.States,
+            ConsumerGroupTypes,
+            ConsumerProtocolTypes,
+            cancellationToken,
+            options?.TimeoutMs,
+            nameof(ListConsumerGroupsAsync));
+    }
 
     public async ValueTask<ListTransactionsResult> ListTransactionsAsync(
         ListTransactionsOptions? options = null,
         CancellationToken cancellationToken = default)
     {
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
-
         var opts = options ?? new ListTransactionsOptions();
 
         return await WithRetryAsync(async attemptToken =>
         {
+            await EnsureInitializedAsync(attemptToken).ConfigureAwait(false);
             var brokers = _metadataManager.Metadata.GetBrokers();
             if (brokers.Count == 0)
             {
@@ -1509,8 +1510,6 @@ public sealed partial class AdminClient :
     {
         ArgumentNullException.ThrowIfNull(transactionalIds);
 
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
-
         var transactionalIdList = transactionalIds.ToList();
         if (transactionalIdList.Count == 0)
         {
@@ -1519,6 +1518,7 @@ public sealed partial class AdminClient :
 
         return await WithRetryAsync<IReadOnlyDictionary<string, TransactionDescription>>(async attemptToken =>
         {
+            await EnsureInitializedAsync(attemptToken).ConfigureAwait(false);
             var idsByCoordinator = new Dictionary<int, List<string>>();
             foreach (var transactionalId in transactionalIdList)
             {
@@ -1589,8 +1589,6 @@ public sealed partial class AdminClient :
     {
         ArgumentNullException.ThrowIfNull(partitions);
 
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
-
         var partitionList = partitions.ToList();
         if (partitionList.Count == 0)
         {
@@ -1599,6 +1597,7 @@ public sealed partial class AdminClient :
 
         return await WithRetryAsync<IReadOnlyDictionary<TopicPartition, DescribeProducersResultInfo>>(async attemptToken =>
         {
+            await EnsureInitializedAsync(attemptToken).ConfigureAwait(false);
             var partitionsByLeader = new Dictionary<int, List<DescribeProducersRequestTopic>>();
 
             foreach (var topicPartition in partitionList)
@@ -1692,8 +1691,6 @@ public sealed partial class AdminClient :
     {
         ArgumentNullException.ThrowIfNull(transactionalIds);
 
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
-
         var transactionalIdList = transactionalIds.ToList();
         if (transactionalIdList.Count == 0)
         {
@@ -1704,6 +1701,7 @@ public sealed partial class AdminClient :
 
         return await WithRetryAsync<IReadOnlyDictionary<string, FenceProducersResultInfo>>(async attemptToken =>
         {
+            await EnsureInitializedAsync(attemptToken).ConfigureAwait(false);
             var idsByCoordinator = new Dictionary<int, List<string>>();
             foreach (var transactionalId in transactionalIdList)
             {
@@ -1784,8 +1782,10 @@ public sealed partial class AdminClient :
             ArgumentOutOfRangeException.ThrowIfNegativeOrZero(timeoutMs);
 
         // Validate the public operation against controller-only bootstrap before delegating
-        // to the single-ID producer fencing path used by Kafka's Admin client.
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+        // to the single-ID producer fencing path used by Kafka's Admin client, which
+        // initializes the client under its own API deadline.
+        if (_controllerMetadataManager is not null)
+            EnsureControllerOperationSupported(nameof(ForceTerminateTransactionAsync));
         var results = await FenceProducersAsync(
             [transactionalId],
             options?.TimeoutMs is { } configuredTimeoutMs
@@ -1809,10 +1809,9 @@ public sealed partial class AdminClient :
     {
         ArgumentNullException.ThrowIfNull(transaction);
 
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
-
         return await WithRetryAsync(async attemptToken =>
         {
+            await EnsureInitializedAsync(attemptToken).ConfigureAwait(false);
             var topicPartition = transaction.TopicPartition;
             var leaderNode = _metadataManager.Metadata.GetPartitionLeader(topicPartition.Topic, topicPartition.Partition);
             if (leaderNode is null)
@@ -1881,13 +1880,12 @@ public sealed partial class AdminClient :
         IEnumerable<string> groupIds,
         CancellationToken cancellationToken = default)
     {
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
-
         var groupIdList = groupIds.ToList();
         var deleteMayHaveApplied = false;
 
         await WithRetryAsync(async attemptToken =>
         {
+            await EnsureInitializedAsync(attemptToken).ConfigureAwait(false);
             var isRetryAttempt = deleteMayHaveApplied;
             // Find coordinator for each group and batch by coordinator
             var groupsByCoordinator = new Dictionary<int, List<string>>();
@@ -1982,11 +1980,11 @@ public sealed partial class AdminClient :
             }
         }
 
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
         options ??= new RemoveMembersFromConsumerGroupOptions();
 
         return await WithRetryAsync(async attemptToken =>
         {
+            await EnsureInitializedAsync(attemptToken).ConfigureAwait(false);
             var coordinatorId = await FindGroupCoordinatorAsync(groupId, attemptToken).ConfigureAwait(false);
             using var connectionLease = await _connectionPool.LeaseConnectionAsync(coordinatorId, attemptToken).ConfigureAwait(false);
             var connection = connectionLease.Connection;
@@ -2051,10 +2049,10 @@ public sealed partial class AdminClient :
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(groupId);
         cancellationToken.ThrowIfCancellationRequested();
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
 
         return await WithRetryAsync<IReadOnlyDictionary<TopicPartition, long>>(async attemptToken =>
         {
+            await EnsureInitializedAsync(attemptToken).ConfigureAwait(false);
             // Find group coordinator
             var coordinatorId = await FindGroupCoordinatorAsync(groupId, attemptToken).ConfigureAwait(false);
             using var connectionLease = await _connectionPool.LeaseConnectionAsync(coordinatorId, attemptToken).ConfigureAwait(false);
@@ -2132,8 +2130,6 @@ public sealed partial class AdminClient :
         IEnumerable<TopicPartitionOffset> offsets,
         CancellationToken cancellationToken = default)
     {
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
-
         var topicOffsets = offsets.GroupBy(o => o.Topic).Select(g => new OffsetCommitRequestTopic
         {
             Name = g.Key,
@@ -2148,6 +2144,7 @@ public sealed partial class AdminClient :
 
         await WithRetryAsync(async attemptToken =>
         {
+            await EnsureInitializedAsync(attemptToken).ConfigureAwait(false);
             var coordinatorId = await FindGroupCoordinatorAsync(groupId, attemptToken).ConfigureAwait(false);
             using var connectionLease = await _connectionPool.LeaseConnectionAsync(coordinatorId, attemptToken).ConfigureAwait(false);
             var connection = connectionLease.Connection;
@@ -2219,10 +2216,9 @@ public sealed partial class AdminClient :
         IReadOnlyDictionary<TopicPartition, long> offsets,
         CancellationToken cancellationToken = default)
     {
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
-
         return await WithRetryAsync<IReadOnlyDictionary<TopicPartition, long>>(async attemptToken =>
         {
+            await EnsureInitializedAsync(attemptToken).ConfigureAwait(false);
             // Group offsets by partition leader
             var partitionsByLeader = new Dictionary<int, List<(TopicPartition Tp, long Offset)>>();
 
@@ -2304,8 +2300,6 @@ public sealed partial class AdminClient :
         IReadOnlyDictionary<string, int> newPartitionCounts,
         CancellationToken cancellationToken = default)
     {
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
-
         var topics = newPartitionCounts.Select(kvp => new CreatePartitionsTopic
         {
             Name = kvp.Key,
@@ -2324,6 +2318,7 @@ public sealed partial class AdminClient :
 
         return WithRetryAsync(async attemptToken =>
         {
+            await EnsureInitializedAsync(attemptToken, nameof(CreatePartitionsAsync)).ConfigureAwait(false);
             var isRetryAttempt = createPartitionsMayHaveApplied;
             using var controllerLease = await LeaseControllerAsync(Protocol.ApiKey.CreatePartitions, attemptToken).ConfigureAwait(false);
             var controller = controllerLease.Connection;
@@ -2386,7 +2381,6 @@ public sealed partial class AdminClient :
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(reassignments);
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
 
         var opts = options ?? new AlterPartitionReassignmentsOptions();
         var topics = BuildAlterPartitionReassignmentTopics(reassignments);
@@ -2403,6 +2397,7 @@ public sealed partial class AdminClient :
 
         await WithRetryAsync(async attemptToken =>
         {
+            await EnsureInitializedAsync(attemptToken).ConfigureAwait(false);
             var isRetryAttempt = alterMayHaveApplied;
             using var controllerLease = await LeaseControllerAsync(Protocol.ApiKey.AlterPartitionReassignments, attemptToken).ConfigureAwait(false);
             var controller = controllerLease.Connection;
@@ -2582,12 +2577,14 @@ public sealed partial class AdminClient :
         DescribeUserScramCredentialsOptions? options = null,
         CancellationToken cancellationToken = default)
     {
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+        if (options is not null)
+            ArgumentOutOfRangeException.ThrowIfNegative(options.TimeoutMs);
 
         var usersList = users?.Select(u => new UserName { Name = u }).ToList();
 
         return await WithRetryAsync<IReadOnlyDictionary<string, IReadOnlyList<ScramCredentialInfo>>>(async attemptToken =>
         {
+            await EnsureInitializedAsync(attemptToken).ConfigureAwait(false);
             using var controllerLease = await LeaseControllerAsync(Protocol.ApiKey.DescribeUserScramCredentials, attemptToken).ConfigureAwait(false);
             var controller = controllerLease.Connection;
 
@@ -2636,7 +2633,7 @@ public sealed partial class AdminClient :
             }
 
             return result;
-        }, cancellationToken).ConfigureAwait(false);
+        }, cancellationToken, options?.TimeoutMs).ConfigureAwait(false);
     }
 
     public async ValueTask AlterUserScramCredentialsAsync(
@@ -2644,7 +2641,8 @@ public sealed partial class AdminClient :
         AlterUserScramCredentialsOptions? options = null,
         CancellationToken cancellationToken = default)
     {
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+        if (options is not null)
+            ArgumentOutOfRangeException.ThrowIfNegative(options.TimeoutMs);
 
         // Materialize before retry to avoid re-enumeration of potentially lazy sequences
         var deletions = new List<ScramCredentialDeletion>();
@@ -2701,6 +2699,7 @@ public sealed partial class AdminClient :
 
         await WithRetryAsync(async attemptToken =>
         {
+            await EnsureInitializedAsync(attemptToken).ConfigureAwait(false);
             var isRetryAttempt = alterMayHaveApplied;
             using var controllerLease = await LeaseControllerAsync(Protocol.ApiKey.AlterUserScramCredentials, attemptToken).ConfigureAwait(false);
             var controller = controllerLease.Connection;
@@ -2743,7 +2742,7 @@ public sealed partial class AdminClient :
                         $"AlterUserScramCredentials failed for user '{result.User}': {result.ErrorMessage ?? result.ErrorCode.ToString()}");
                 }
             }
-        }, cancellationToken).ConfigureAwait(false);
+        }, cancellationToken, options?.TimeoutMs).ConfigureAwait(false);
     }
 
     public async ValueTask<IReadOnlyDictionary<ClientQuotaEntity, IReadOnlyDictionary<string, double>>> DescribeClientQuotasAsync(
@@ -2752,12 +2751,14 @@ public sealed partial class AdminClient :
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(filter);
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+        if (options is not null)
+            ArgumentOutOfRangeException.ThrowIfNegative(options.TimeoutMs);
 
         var components = BuildDescribeClientQuotaComponents(filter);
 
         return await WithRetryAsync<IReadOnlyDictionary<ClientQuotaEntity, IReadOnlyDictionary<string, double>>>(async attemptToken =>
         {
+            await EnsureInitializedAsync(attemptToken).ConfigureAwait(false);
             using var connectionLease = await LeaseBrokerOrControllerConnectionAsync(
                 Protocol.ApiKey.DescribeClientQuotas,
                 attemptToken).ConfigureAwait(false);
@@ -2794,7 +2795,7 @@ public sealed partial class AdminClient :
             }
 
             return result;
-        }, cancellationToken).ConfigureAwait(false);
+        }, cancellationToken, options?.TimeoutMs).ConfigureAwait(false);
     }
 
     public async ValueTask AlterClientQuotasAsync(
@@ -2803,7 +2804,8 @@ public sealed partial class AdminClient :
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(alterations);
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+        if (options is not null)
+            ArgumentOutOfRangeException.ThrowIfNegative(options.TimeoutMs);
 
         var opts = options ?? new AlterClientQuotasOptions();
 
@@ -2817,6 +2819,7 @@ public sealed partial class AdminClient :
 
         await WithRetryAsync(async attemptToken =>
         {
+            await EnsureInitializedAsync(attemptToken).ConfigureAwait(false);
             using var connectionLease = await LeaseBrokerOrControllerConnectionAsync(
                 Protocol.ApiKey.AlterClientQuotas,
                 attemptToken).ConfigureAwait(false);
@@ -2848,7 +2851,7 @@ public sealed partial class AdminClient :
                         $"{entry.ErrorMessage ?? entry.ErrorCode.ToString()}");
                 }
             }
-        }, cancellationToken).ConfigureAwait(false);
+        }, cancellationToken, options?.TimeoutMs).ConfigureAwait(false);
     }
 
     private static List<DescribeClientQuotasRequestComponent> BuildDescribeClientQuotaComponents(ClientQuotaFilter filter)
@@ -3052,7 +3055,6 @@ public sealed partial class AdminClient :
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(hmac);
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
 
         var renewPeriodMs = ToKafkaMilliseconds(renewPeriod, nameof(renewPeriod));
 
@@ -3061,6 +3063,7 @@ public sealed partial class AdminClient :
         // at the token's maximum lifetime and the returned expiry is the one in effect.
         return await WithRetryAsync<DateTimeOffset>(async attemptToken =>
         {
+            await EnsureInitializedAsync(attemptToken).ConfigureAwait(false);
             using var controllerLease = await LeaseControllerAsync(Protocol.ApiKey.RenewDelegationToken, attemptToken).ConfigureAwait(false);
             var controller = controllerLease.Connection;
             var request = new RenewDelegationTokenRequest
@@ -3095,7 +3098,6 @@ public sealed partial class AdminClient :
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(hmac);
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
 
         var expiryTimePeriodMs = ToKafkaMilliseconds(expiryTimePeriod, nameof(expiryTimePeriod));
 
@@ -3107,6 +3109,7 @@ public sealed partial class AdminClient :
 
         return await WithRetryAsync<DateTimeOffset>(async attemptToken =>
         {
+            await EnsureInitializedAsync(attemptToken).ConfigureAwait(false);
             var isRetryAttempt = expireMayHaveApplied;
             using var controllerLease = await LeaseControllerAsync(Protocol.ApiKey.ExpireDelegationToken, attemptToken).ConfigureAwait(false);
             var controller = controllerLease.Connection;
@@ -3156,12 +3159,11 @@ public sealed partial class AdminClient :
         IEnumerable<DelegationTokenPrincipal>? owners = null,
         CancellationToken cancellationToken = default)
     {
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
-
         var ownerList = owners?.Select(ToProtocolPrincipal).ToList();
 
         return await WithRetryAsync<IReadOnlyList<DelegationToken>>(async attemptToken =>
         {
+            await EnsureInitializedAsync(attemptToken).ConfigureAwait(false);
             using var controllerLease = await LeaseControllerAsync(Protocol.ApiKey.DescribeDelegationToken, attemptToken).ConfigureAwait(false);
             var controller = controllerLease.Connection;
             var request = new DescribeDelegationTokenRequest
@@ -3359,12 +3361,14 @@ public sealed partial class AdminClient :
         AlterConfigsOptions? options = null,
         CancellationToken cancellationToken = default)
     {
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+        if (options is not null)
+            ArgumentOutOfRangeException.ThrowIfNegative(options.TimeoutMs);
 
         var opts = options ?? new AlterConfigsOptions();
 
         await WithRetryAsync(async attemptToken =>
         {
+            await EnsureInitializedAsync(attemptToken).ConfigureAwait(false);
             using var connectionLease = await LeaseConfigEndpointAsync(
                 configs.Keys,
                 Protocol.ApiKey.AlterConfigs,
@@ -3408,7 +3412,7 @@ public sealed partial class AdminClient :
                         $"{resourceResponse.ErrorMessage ?? resourceResponse.ErrorCode.ToString()}");
                 }
             }
-        }, cancellationToken).ConfigureAwait(false);
+        }, cancellationToken, options?.TimeoutMs).ConfigureAwait(false);
     }
 
     public async ValueTask IncrementalAlterConfigsAsync(
@@ -3416,7 +3420,8 @@ public sealed partial class AdminClient :
         IncrementalAlterConfigsOptions? options = null,
         CancellationToken cancellationToken = default)
     {
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+        if (options is not null)
+            ArgumentOutOfRangeException.ThrowIfNegative(options.TimeoutMs);
 
         var opts = options ?? new IncrementalAlterConfigsOptions();
 
@@ -3425,6 +3430,7 @@ public sealed partial class AdminClient :
         // present and a replayed SUBTRACT finds nothing more to remove.
         await WithRetryAsync(async attemptToken =>
         {
+            await EnsureInitializedAsync(attemptToken).ConfigureAwait(false);
             using var connectionLease = await LeaseConfigEndpointAsync(
                 configs.Keys,
                 Protocol.ApiKey.IncrementalAlterConfigs,
@@ -3469,7 +3475,7 @@ public sealed partial class AdminClient :
                         $"{resourceResponse.ErrorMessage ?? resourceResponse.ErrorCode.ToString()}");
                 }
             }
-        }, cancellationToken).ConfigureAwait(false);
+        }, cancellationToken, options?.TimeoutMs).ConfigureAwait(false);
     }
 
     public async ValueTask CreateAclsAsync(
@@ -3477,7 +3483,8 @@ public sealed partial class AdminClient :
         CreateAclsOptions? options = null,
         CancellationToken cancellationToken = default)
     {
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+        if (options is not null)
+            ArgumentOutOfRangeException.ThrowIfNegative(options.TimeoutMs);
 
         var bindings = aclBindings.ToList();
         if (bindings.Count == 0)
@@ -3496,6 +3503,7 @@ public sealed partial class AdminClient :
 
         await WithRetryAsync(async attemptToken =>
         {
+            await EnsureInitializedAsync(attemptToken).ConfigureAwait(false);
             using var controllerLease = await LeaseControllerAsync(Protocol.ApiKey.CreateAcls, attemptToken).ConfigureAwait(false);
             var controller = controllerLease.Connection;
 
@@ -3526,7 +3534,7 @@ public sealed partial class AdminClient :
                         $"Failed to create ACL for {binding.Pattern.Type}:{binding.Pattern.Name}: {result.ErrorMessage ?? result.ErrorCode.ToString()}");
                 }
             }
-        }, cancellationToken).ConfigureAwait(false);
+        }, cancellationToken, options?.TimeoutMs).ConfigureAwait(false);
     }
 
     public async ValueTask<IReadOnlyList<AclBinding>> DeleteAclsAsync(
@@ -3632,7 +3640,7 @@ public sealed partial class AdminClient :
             }
 
             return deletedBindings;
-        }, cancellationToken, options?.TimeoutMs ?? DefaultApiTimeoutMs).ConfigureAwait(false);
+        }, cancellationToken, options?.TimeoutMs).ConfigureAwait(false);
     }
 
     public async ValueTask<IReadOnlyList<AclBinding>> DescribeAclsAsync(
@@ -3703,7 +3711,7 @@ public sealed partial class AdminClient :
             }
 
             return bindings;
-        }, cancellationToken, options?.TimeoutMs ?? DefaultApiTimeoutMs).ConfigureAwait(false);
+        }, cancellationToken, options?.TimeoutMs).ConfigureAwait(false);
     }
 
     public async ValueTask DeleteConsumerGroupOffsetsAsync(
@@ -3714,8 +3722,8 @@ public sealed partial class AdminClient :
     {
         ArgumentNullException.ThrowIfNull(groupId);
         ArgumentNullException.ThrowIfNull(partitions);
-
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+        if (options is not null)
+            ArgumentOutOfRangeException.ThrowIfNegative(options.TimeoutMs);
 
         // Group partitions by topic — materialize before retry to avoid re-enumeration
         var topicPartitions = partitions
@@ -3733,6 +3741,7 @@ public sealed partial class AdminClient :
 
         await WithRetryAsync(async attemptToken =>
         {
+            await EnsureInitializedAsync(attemptToken).ConfigureAwait(false);
             var isRetryAttempt = deleteMayHaveApplied;
             var coordinatorId = await FindGroupCoordinatorAsync(groupId, attemptToken).ConfigureAwait(false);
             using var connectionLease = await _connectionPool.LeaseConnectionAsync(coordinatorId, attemptToken).ConfigureAwait(false);
@@ -3792,7 +3801,7 @@ public sealed partial class AdminClient :
                     }
                 }
             }
-        }, cancellationToken).ConfigureAwait(false);
+        }, cancellationToken, options?.TimeoutMs).ConfigureAwait(false);
     }
 
     public async ValueTask<IReadOnlyDictionary<TopicPartition, ListOffsetsResultInfo>> ListOffsetsAsync(
@@ -3949,8 +3958,6 @@ public sealed partial class AdminClient :
         ElectLeadersOptions? options = null,
         CancellationToken cancellationToken = default)
     {
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
-
         var opts = options ?? new ElectLeadersOptions();
 
         // Materialize before retry to avoid re-enumeration of potentially lazy sequences
@@ -3973,6 +3980,7 @@ public sealed partial class AdminClient :
 
         return await WithRetryAsync<IReadOnlyDictionary<TopicPartition, ElectLeadersResultInfo>>(async attemptToken =>
         {
+            await EnsureInitializedAsync(attemptToken).ConfigureAwait(false);
             using var controllerLease = await LeaseControllerAsync(Protocol.ApiKey.ElectLeaders, attemptToken).ConfigureAwait(false);
             var controller = controllerLease.Connection;
 
@@ -4027,10 +4035,9 @@ public sealed partial class AdminClient :
     public async ValueTask<MetadataQuorumDescription> DescribeMetadataQuorumAsync(
         CancellationToken cancellationToken = default)
     {
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
-
         return await WithRetryAsync(async attemptToken =>
         {
+            await EnsureInitializedAsync(attemptToken).ConfigureAwait(false);
             using var controllerLease = await LeaseControllerAsync(Protocol.ApiKey.DescribeQuorum, attemptToken).ConfigureAwait(false);
             var controller = controllerLease.Connection;
             var apiVersion = _metadataManager.GetNegotiatedApiVersion(
@@ -4112,8 +4119,6 @@ public sealed partial class AdminClient :
         var opts = options ?? new AddRaftVoterOptions();
         ArgumentOutOfRangeException.ThrowIfNegative(opts.TimeoutMs);
 
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
-
         // A replay after a lost response answers DUPLICATE_VOTER. The leader checks only the
         // voter ID, so after a send that may have applied the voter set is read back and the
         // replay counts as success only when it holds this exact voter (ID and directory).
@@ -4121,6 +4126,7 @@ public sealed partial class AdminClient :
 
         await WithRetryAsync(async attemptToken =>
         {
+            await EnsureInitializedAsync(attemptToken).ConfigureAwait(false);
             var isRetryAttempt = addMayHaveApplied;
             using var controllerLease = await LeaseControllerAsync(Protocol.ApiKey.AddRaftVoter, attemptToken).ConfigureAwait(false);
             var controller = controllerLease.Connection;
@@ -4188,8 +4194,6 @@ public sealed partial class AdminClient :
 
         var opts = options ?? new RemoveRaftVoterOptions();
 
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
-
         // A replay after a lost response answers VOTER_NOT_FOUND. The leader matches the voter
         // ID and directory, so after a send that may have applied that answer means this voter
         // is no longer in the set, which is the requested outcome.
@@ -4197,6 +4201,7 @@ public sealed partial class AdminClient :
 
         await WithRetryAsync(async attemptToken =>
         {
+            await EnsureInitializedAsync(attemptToken).ConfigureAwait(false);
             var isRetryAttempt = removeMayHaveApplied;
             using var controllerLease = await LeaseControllerAsync(Protocol.ApiKey.RemoveRaftVoter, attemptToken).ConfigureAwait(false);
             var controller = controllerLease.Connection;
@@ -4243,8 +4248,6 @@ public sealed partial class AdminClient :
     {
         ArgumentOutOfRangeException.ThrowIfNegative(brokerId);
 
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
-
         // A replay after a lost response answers BROKER_ID_NOT_REGISTERED. After a send that
         // may have applied, that is the requested outcome. A registration removed concurrently
         // by another client is also reported as success.
@@ -4252,6 +4255,7 @@ public sealed partial class AdminClient :
 
         await WithRetryAsync(async attemptToken =>
         {
+            await EnsureInitializedAsync(attemptToken).ConfigureAwait(false);
             var isRetryAttempt = unregisterMayHaveApplied;
             using var controllerLease = await LeaseControllerAsync(Protocol.ApiKey.UnregisterBroker, attemptToken).ConfigureAwait(false);
             var controller = controllerLease.Connection;
@@ -4294,8 +4298,6 @@ public sealed partial class AdminClient :
     {
         ArgumentNullException.ThrowIfNull(brokerIds);
 
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
-
         var brokerIdList = brokerIds.Distinct().ToArray();
         foreach (var brokerId in brokerIdList)
         {
@@ -4313,6 +4315,7 @@ public sealed partial class AdminClient :
 
         return await WithRetryAsync<IReadOnlyDictionary<int, IReadOnlyDictionary<string, LogDirDescription>>>(async attemptToken =>
         {
+            await EnsureInitializedAsync(attemptToken).ConfigureAwait(false);
             // Fan out to all requested brokers in parallel.
             var brokerResults = await Task.WhenAll(brokerIdList.Select(async brokerId =>
             {
@@ -4381,8 +4384,6 @@ public sealed partial class AdminClient :
     {
         ArgumentNullException.ThrowIfNull(replicaAssignments);
 
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
-
         var assignments = new List<ReplicaLogDirAssignment>(replicaAssignments.Count);
         foreach (var (replica, logDir) in replicaAssignments)
         {
@@ -4404,6 +4405,7 @@ public sealed partial class AdminClient :
 
         return await WithRetryAsync<IReadOnlyDictionary<TopicPartitionReplica, AlterReplicaLogDirResultInfo>>(async attemptToken =>
         {
+            await EnsureInitializedAsync(attemptToken).ConfigureAwait(false);
             // Fan out to all target brokers in parallel.
             var brokerResults = await Task.WhenAll(assignmentsByBroker.Select(async brokerAssignments =>
             {
@@ -4461,8 +4463,6 @@ public sealed partial class AdminClient :
     {
         ArgumentNullException.ThrowIfNull(replicas);
 
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
-
         var distinctReplicas = new HashSet<TopicPartitionReplica>();
         foreach (var replica in replicas)
         {
@@ -4478,6 +4478,7 @@ public sealed partial class AdminClient :
         var replicasByBroker = distinctReplicas.GroupBy(static replica => replica.BrokerId).ToArray();
         return await WithRetryAsync<IReadOnlyDictionary<TopicPartitionReplica, DescribeReplicaLogDirResultInfo>>(async attemptToken =>
         {
+            await EnsureInitializedAsync(attemptToken).ConfigureAwait(false);
             var brokerResults = await Task.WhenAll(replicasByBroker.Select(async brokerReplicas =>
             {
                 var brokerId = brokerReplicas.Key;
@@ -4703,12 +4704,11 @@ public sealed partial class AdminClient :
         IEnumerable<string> groupIds,
         CancellationToken cancellationToken = default)
     {
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
-
         var groupIdList = groupIds.ToList();
 
         return await WithRetryAsync<IReadOnlyDictionary<string, StreamsGroupDescription>>(async attemptToken =>
         {
+            await EnsureInitializedAsync(attemptToken).ConfigureAwait(false);
             var coordinatorTasks = groupIdList
                 .Select(async g => (GroupId: g, CoordinatorId: await FindGroupCoordinatorAsync(g, attemptToken).ConfigureAwait(false)));
             var coordinatorResults = await Task.WhenAll(coordinatorTasks).ConfigureAwait(false);
@@ -4895,12 +4895,11 @@ public sealed partial class AdminClient :
         IEnumerable<string> groupIds,
         CancellationToken cancellationToken = default)
     {
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
-
         var groupIdList = groupIds.ToList();
 
         return await WithRetryAsync<IReadOnlyDictionary<string, ShareGroupDescription>>(async attemptToken =>
         {
+            await EnsureInitializedAsync(attemptToken).ConfigureAwait(false);
             // Find coordinators for all groups in parallel
             var coordinatorTasks = groupIdList
                 .Select(async g => (GroupId: g, CoordinatorId: await FindGroupCoordinatorAsync(g, attemptToken).ConfigureAwait(false)));
@@ -5008,8 +5007,6 @@ public sealed partial class AdminClient :
         if (groupIdList.Length == 0)
             return new Dictionary<string, DeleteShareGroupResult>(StringComparer.Ordinal);
 
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
-
         // Both collections intentionally survive retry attempts: terminal results prevent
         // resending completed groups, while ambiguity turns a later not-found response into success.
         var results = new Dictionary<string, DeleteShareGroupResult>(groupIdList.Length, StringComparer.Ordinal);
@@ -5017,6 +5014,7 @@ public sealed partial class AdminClient :
 
         return await WithRetryAsync<IReadOnlyDictionary<string, DeleteShareGroupResult>>(async attemptToken =>
         {
+            await EnsureInitializedAsync(attemptToken).ConfigureAwait(false);
             var groupsByCoordinator = new Dictionary<int, List<string>>();
             foreach (var groupId in groupIdList)
             {
@@ -5143,12 +5141,11 @@ public sealed partial class AdminClient :
         IEnumerable<TopicPartition>? partitions = null,
         CancellationToken cancellationToken = default)
     {
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
-
         var partitionList = partitions?.ToList();
 
         return await WithRetryAsync<IReadOnlyList<ShareGroupOffsetDescription>>(async attemptToken =>
         {
+            await EnsureInitializedAsync(attemptToken).ConfigureAwait(false);
             var coordinatorId = await FindGroupCoordinatorAsync(groupId, attemptToken).ConfigureAwait(false);
             using var connectionLease = await _connectionPool.LeaseConnectionAsync(coordinatorId, attemptToken).ConfigureAwait(false);
             var connection = connectionLease.Connection;
@@ -5229,8 +5226,6 @@ public sealed partial class AdminClient :
         IEnumerable<ShareGroupOffsetAlteration> offsets,
         CancellationToken cancellationToken = default)
     {
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
-
         // Hoisted outside WithRetryAsync intentionally: derived purely from the caller's
         // immutable input, safe to reuse across retries.
         var topicData = offsets
@@ -5248,6 +5243,7 @@ public sealed partial class AdminClient :
 
         await WithRetryAsync(async attemptToken =>
         {
+            await EnsureInitializedAsync(attemptToken).ConfigureAwait(false);
             var coordinatorId = await FindGroupCoordinatorAsync(groupId, attemptToken).ConfigureAwait(false);
             using var connectionLease = await _connectionPool.LeaseConnectionAsync(coordinatorId, attemptToken).ConfigureAwait(false);
             var connection = connectionLease.Connection;
@@ -5301,8 +5297,6 @@ public sealed partial class AdminClient :
         IEnumerable<string> topics,
         CancellationToken cancellationToken = default)
     {
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
-
         var topicData = topics
             .Select(t => new DeleteShareGroupOffsetsRequestTopic { TopicName = t })
             .ToList();
@@ -5310,6 +5304,7 @@ public sealed partial class AdminClient :
 
         await WithRetryAsync(async attemptToken =>
         {
+            await EnsureInitializedAsync(attemptToken).ConfigureAwait(false);
             var isRetryAttempt = deleteMayHaveApplied;
             var coordinatorId = await FindGroupCoordinatorAsync(groupId, attemptToken).ConfigureAwait(false);
             using var connectionLease = await _connectionPool.LeaseConnectionAsync(coordinatorId, attemptToken).ConfigureAwait(false);
@@ -5413,6 +5408,10 @@ public sealed partial class AdminClient :
     /// </summary>
     internal const int DefaultApiTimeoutMs = 60_000;
 
+    // The budget WithRetryAsync applies when the API has no per-call timeout. Tests shorten it;
+    // it is not a public option.
+    internal int DefaultApiTimeoutBudgetMs { get; init; } = DefaultApiTimeoutMs;
+
     // Transport failures (a broker that refuses connections or drops them) are retried until
     // the call's API timeout, not for a fixed number of attempts: a broker killed without a
     // clean shutdown stays in cluster metadata until its session expires, and a count-bounded
@@ -5425,8 +5424,9 @@ public sealed partial class AdminClient :
     // are not a message path: the linked source and closures are per call, not per message.
     //
     // timeoutMs is the call's own TimeoutMs option, or null for an API without one (the budget is
-    // then DefaultApiTimeoutMs); zero is an already-expired deadline. A caller with a per-call
-    // timeout initializes the client inside its operation, so initialization counts against it.
+    // then DefaultApiTimeoutBudgetMs); zero is an already-expired deadline. Every caller initializes the
+    // client inside its operation with the attempt token, so initialization counts against the
+    // same budget, including the default one.
     private async ValueTask WithRetryAsync(
         Func<CancellationToken, ValueTask> operation,
         CancellationToken cancellationToken,
@@ -5458,7 +5458,7 @@ public sealed partial class AdminClient :
                 $"{operationName} timed out after 0 ms.");
         }
 
-        var deadline = CreateRetryDeadline(operationName, timeoutMs ?? DefaultApiTimeoutMs);
+        var deadline = CreateRetryDeadline(operationName, timeoutMs ?? DefaultApiTimeoutBudgetMs);
         var startedAt = System.Diagnostics.Stopwatch.GetTimestamp();
         using var apiTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         apiTimeout.CancelAfter(deadline.Budget);

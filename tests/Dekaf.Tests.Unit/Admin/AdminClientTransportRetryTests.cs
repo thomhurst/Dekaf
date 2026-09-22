@@ -384,6 +384,194 @@ public sealed class AdminClientTransportRetryTests
         await Assert.That(calls).IsEqualTo(FailuresBeyondRetryCount + 1);
     }
 
+    [Test]
+    public async Task DescribeClientQuotasAsync_TransportFailuresPastTimeout_EndsAtPerCallTimeout()
+    {
+        var (admin, connection) = AdminClientIdempotentRetryTests.CreateAdminWithMockConnection(
+            FastRetryOptions(),
+            ApiKey.DescribeClientQuotas);
+        var calls = 0;
+
+        connection.SendAsync<DescribeClientQuotasRequest, DescribeClientQuotasResponse>(
+                Arg.Any<DescribeClientQuotasRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns<ValueTask<DescribeClientQuotasResponse>>(_ =>
+            {
+                Interlocked.Increment(ref calls);
+                throw new SocketException((int)SocketError.ConnectionRefused);
+            });
+
+        // DescribeClientQuotasOptions.TimeoutMs bounds the retries, not the 60 s default.
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        var exception = await Assert.ThrowsAsync<KafkaTimeoutException>(async () =>
+            await admin.DescribeClientQuotasAsync(
+                new ClientQuotaFilter { Components = [] },
+                new DescribeClientQuotasOptions { TimeoutMs = 300 }));
+        stopwatch.Stop();
+
+        await Assert.That(exception!.TimeoutKind).IsEqualTo(TimeoutKind.Api);
+        await Assert.That(exception.InnerException).IsTypeOf<SocketException>();
+        await Assert.That(calls).IsGreaterThan(0);
+        await Assert.That(stopwatch.Elapsed).IsLessThan(TimeSpan.FromSeconds(30));
+    }
+
+    // Admin APIs whose options carry a client-side TimeoutMs that is not sent to the broker.
+    [Test]
+    [Arguments(nameof(IAdminClient.DescribeClientQuotasAsync))]
+    [Arguments(nameof(IAdminClient.AlterClientQuotasAsync))]
+    [Arguments(nameof(IAdminClient.DescribeUserScramCredentialsAsync))]
+    [Arguments(nameof(IAdminClient.AlterUserScramCredentialsAsync))]
+    [Arguments(nameof(IAdminClient.AlterConfigsAsync))]
+    [Arguments(nameof(IAdminClient.IncrementalAlterConfigsAsync))]
+    [Arguments(nameof(IAdminClient.CreateAclsAsync))]
+    [Arguments(nameof(IAdminClient.DeleteConsumerGroupOffsetsAsync))]
+    [Arguments(nameof(IAdminClient.ListConsumerGroupsAsync))]
+    public async Task PerCallTimeout_Zero_ThrowsApiTimeoutWithoutSending(string api)
+    {
+        var (admin, connection) = AdminClientIdempotentRetryTests.CreateAdminWithMockConnection(FastRetryOptions());
+
+        var exception = await Assert.ThrowsAsync<KafkaTimeoutException>(async () =>
+            await InvokeWithTimeoutAsync(admin, api, timeoutMs: 0));
+
+        await Assert.That(exception!.TimeoutKind).IsEqualTo(TimeoutKind.Api);
+        await Assert.That(exception.Message).Contains(api);
+        await Assert.That(SentRequests(connection)).IsEqualTo(0);
+    }
+
+    [Test]
+    [Arguments(nameof(IAdminClient.DescribeClientQuotasAsync))]
+    [Arguments(nameof(IAdminClient.AlterClientQuotasAsync))]
+    [Arguments(nameof(IAdminClient.DescribeUserScramCredentialsAsync))]
+    [Arguments(nameof(IAdminClient.AlterUserScramCredentialsAsync))]
+    [Arguments(nameof(IAdminClient.AlterConfigsAsync))]
+    [Arguments(nameof(IAdminClient.IncrementalAlterConfigsAsync))]
+    [Arguments(nameof(IAdminClient.CreateAclsAsync))]
+    [Arguments(nameof(IAdminClient.DeleteConsumerGroupOffsetsAsync))]
+    [Arguments(nameof(IAdminClient.ListConsumerGroupsAsync))]
+    public async Task PerCallTimeout_Negative_IsRejected(string api)
+    {
+        var (admin, connection) = AdminClientIdempotentRetryTests.CreateAdminWithMockConnection(FastRetryOptions());
+
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(async () =>
+            await InvokeWithTimeoutAsync(admin, api, timeoutMs: -1));
+
+        await Assert.That(SentRequests(connection)).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task DescribeConsumerGroupsAsync_InitializationNeverCompletes_EndsAtDefaultApiTimeout()
+    {
+        // An API without a per-call timeout: the default API timeout starts before
+        // initialization, so a bootstrap broker that accepts nothing cannot extend the call.
+        var pool = Substitute.For<IConnectionPool>();
+        pool.GetConnectionAsync(Arg.Any<string>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(call => WaitForCancellationAsync(call.ArgAt<CancellationToken>(2)));
+        pool.GetConnectionAsync(Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(call => WaitForCancellationAsync(call.ArgAt<CancellationToken>(1)));
+        await using var admin = new AdminClient(
+            FastRetryOptions(),
+            pool,
+            new MetadataManager(pool, ["localhost:9092"]))
+        {
+            DefaultApiTimeoutBudgetMs = 200
+        };
+
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        var exception = await Assert.ThrowsAsync<KafkaTimeoutException>(async () =>
+            await admin.DescribeConsumerGroupsAsync([GroupId]));
+        stopwatch.Stop();
+
+        await Assert.That(exception!.TimeoutKind).IsEqualTo(TimeoutKind.Api);
+        await Assert.That(exception.Message).Contains(nameof(IAdminClient.DescribeConsumerGroupsAsync));
+        await Assert.That(stopwatch.Elapsed).IsLessThan(TimeSpan.FromSeconds(30));
+
+        static async ValueTask<IKafkaConnection> WaitForCancellationAsync(CancellationToken token)
+        {
+            await Task.Delay(Timeout.Infinite, token);
+            throw new System.Diagnostics.UnreachableException();
+        }
+    }
+
+    private static async ValueTask InvokeWithTimeoutAsync(AdminClient admin, string api, int timeoutMs)
+    {
+        switch (api)
+        {
+            case nameof(IAdminClient.DescribeClientQuotasAsync):
+                await admin.DescribeClientQuotasAsync(
+                    new ClientQuotaFilter { Components = [] },
+                    new DescribeClientQuotasOptions { TimeoutMs = timeoutMs });
+                break;
+            case nameof(IAdminClient.AlterClientQuotasAsync):
+                await admin.AlterClientQuotasAsync(
+                    [
+                        new ClientQuotaAlteration
+                        {
+                            Entity = ClientQuotaEntity.ForUser("alice"),
+                            Operations = [ClientQuotaOperation.Set("producer_byte_rate", 1024)]
+                        }
+                    ],
+                    new AlterClientQuotasOptions { TimeoutMs = timeoutMs });
+                break;
+            case nameof(IAdminClient.DescribeUserScramCredentialsAsync):
+                await admin.DescribeUserScramCredentialsAsync(
+                    ["alice"],
+                    new DescribeUserScramCredentialsOptions { TimeoutMs = timeoutMs });
+                break;
+            case nameof(IAdminClient.AlterUserScramCredentialsAsync):
+                await admin.AlterUserScramCredentialsAsync(
+                    [new UserScramCredentialDeletion { User = "alice", Mechanism = ScramMechanism.ScramSha256 }],
+                    new AlterUserScramCredentialsOptions { TimeoutMs = timeoutMs });
+                break;
+            case nameof(IAdminClient.AlterConfigsAsync):
+                await admin.AlterConfigsAsync(
+                    new Dictionary<ConfigResource, IReadOnlyList<ConfigEntry>>
+                    {
+                        [ConfigResource.Topic("orders")] = [new ConfigEntry { Name = "retention.ms", Value = "1000" }]
+                    },
+                    new AlterConfigsOptions { TimeoutMs = timeoutMs });
+                break;
+            case nameof(IAdminClient.IncrementalAlterConfigsAsync):
+                await admin.IncrementalAlterConfigsAsync(
+                    new Dictionary<ConfigResource, IReadOnlyList<ConfigAlter>>
+                    {
+                        [ConfigResource.Topic("orders")] = [new ConfigAlter { Name = "retention.ms", Value = "1000" }]
+                    },
+                    new IncrementalAlterConfigsOptions { TimeoutMs = timeoutMs });
+                break;
+            case nameof(IAdminClient.CreateAclsAsync):
+                await admin.CreateAclsAsync(
+                    [
+                        new AclBinding
+                        {
+                            Pattern = new ResourcePattern { Type = ResourceType.Topic, Name = "orders" },
+                            Entry = new AccessControlEntry
+                            {
+                                Principal = "User:alice",
+                                Operation = AclOperation.Read,
+                                Permission = AclPermissionType.Allow
+                            }
+                        }
+                    ],
+                    new CreateAclsOptions { TimeoutMs = timeoutMs });
+                break;
+            case nameof(IAdminClient.DeleteConsumerGroupOffsetsAsync):
+                await admin.DeleteConsumerGroupOffsetsAsync(
+                    GroupId,
+                    [new TopicPartition("orders", 0)],
+                    new DeleteConsumerGroupOffsetsOptions { TimeoutMs = timeoutMs });
+                break;
+            case nameof(IAdminClient.ListConsumerGroupsAsync):
+                await admin.ListConsumerGroupsAsync(new ListConsumerGroupsOptions { TimeoutMs = timeoutMs });
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(api), api, null);
+        }
+    }
+
+    private static int SentRequests(IKafkaConnection connection) =>
+        connection.ReceivedCalls().Count(static call => call.GetMethodInfo().Name == nameof(IKafkaConnection.SendAsync));
+
     // More consecutive failures than the count-bounded retry (RetryHelper.MaxRetries) allows.
     private const int FailuresBeyondRetryCount = 6;
 
