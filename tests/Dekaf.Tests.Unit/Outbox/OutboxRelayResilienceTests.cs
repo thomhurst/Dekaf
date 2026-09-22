@@ -243,6 +243,56 @@ public sealed class OutboxRelayResilienceTests
     }
 
     [Test]
+    public async Task PoisonRowBucket_LostAndRegained_DoesNotWaitOutTheOldRowsBackoff()
+    {
+        // The backoff outlasts several renewals. While the bucket is away, a peer publishes
+        // the rejected row, so the row this relay backed off for is gone when it comes back.
+        var time = new ManualTimeProvider();
+        var store = new RowStore(ownedBuckets: [0, 1]);
+        store.Enqueue(Row(1, bucket: 0));
+        var publisher = new ConcurrentSendPublisher();
+        publisher.Reject(1);
+        var renewal = TimeSpan.FromMinutes(1);
+        var options = new OutboxRelayOptions
+        {
+            BucketCount = 2,
+            PollInterval = TimeSpan.FromMinutes(2),
+            ErrorBackoff = TimeSpan.FromMinutes(10),
+            LeaseRenewInterval = renewal,
+            LeaseDuration = TimeSpan.FromMinutes(3),
+            MaxPublishDuration = TimeSpan.FromSeconds(5),
+            RelayId = "test-relay"
+        };
+
+        using var relay = CreateRelay(store, publisher, options, time);
+        await relay.StartAsync(CancellationToken.None);
+        try
+        {
+            // The row is rejected, and the relay waits for its next renewal.
+            await time.WaitForTimerAsync(renewal);
+            await Assert.That(publisher.RejectedAttempts).IsEqualTo(1);
+
+            // The bucket moves to a peer, which publishes the rejected row and a new one lands.
+            store.SetOwnedBuckets([1]);
+            time.Advance(renewal);
+            await time.WaitForTimerAsync(renewal);
+            store.Remove(1);
+            store.Enqueue(Row(2, bucket: 0));
+
+            // Back with this relay, the new row goes out at once, long before the old row's
+            // backoff would have ended.
+            store.SetOwnedBuckets([0, 1]);
+            time.Advance(renewal);
+            await store.WaitForBucketEmptyAsync(0, TimeSpan.FromSeconds(10));
+            await Assert.That(store.MarkedIds.ToArray()).IsEquivalentTo(new long[] { 2 });
+        }
+        finally
+        {
+            await relay.StopAsync(CancellationToken.None).WaitAsync(SignalTimeout);
+        }
+    }
+
+    [Test]
     public async Task PoisonRowsInSeveralBuckets_ASlowLaterRejectionDoesNotDelayTheEarlierRetry()
     {
         // Bucket 0's row is rejected at once and bucket 1's only after 40 seconds, so bucket
@@ -588,6 +638,21 @@ public sealed class OutboxRelayResilienceTests
         public ConcurrentQueue<long> MarkedIds { get; } = [];
         public ConcurrentQueue<int> FetchSizes { get; } = [];
 
+        private IReadOnlyList<int>? _owned;
+
+        /// <summary>Replaces the buckets the next lease acquisition returns.</summary>
+        public void SetOwnedBuckets(IReadOnlyList<int> buckets) => Volatile.Write(ref _owned, buckets);
+
+        /// <summary>Removes a row as a peer relay that published it would.</summary>
+        public void Remove(long id)
+        {
+            lock (_lock)
+            {
+                foreach (var list in _rows.Values)
+                    list.RemoveAll(row => row.Id == id);
+            }
+        }
+
         public void Enqueue(params OutboxMessage[] rows)
         {
             lock (_lock)
@@ -623,7 +688,7 @@ public sealed class OutboxRelayResilienceTests
             Interlocked.Increment(ref _leaseCalls);
             if (Clock is not null)
                 LeaseCallTimestamps.Enqueue(Clock.GetTimestamp());
-            return _ownedBuckets;
+            return Volatile.Read(ref _owned) ?? _ownedBuckets;
         }
 
         public async ValueTask<IReadOnlyList<int>> GetBucketsWithPendingAsync(

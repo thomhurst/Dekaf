@@ -821,6 +821,34 @@ public sealed partial class OutboxRelayService : BackgroundService
         return prefix;
     }
 
+    /// <summary>
+    /// A bucket this relay did not hold until now may have been drained by a peer meanwhile,
+    /// so the row it backed off for can be gone. Its retry is due at once: the head row is
+    /// fetched again, and a row that still fails backs off longer, as its failure count
+    /// survives the move. Only buckets with a failing head row are looked up, so a healthy
+    /// relay pays one array read per bucket per renewal.
+    /// </summary>
+    private void EndBackoffOfRegainedBuckets(IReadOnlyList<int> held, IReadOnlyList<int> acquired)
+    {
+        for (var index = 0; index < acquired.Count; index++)
+        {
+            var bucket = acquired[index];
+            if ((uint)bucket >= (uint)_headRowFailures.Length || _headRowFailures[bucket] == 0)
+                continue;
+            var stillHeld = false;
+            for (var heldIndex = 0; heldIndex < held.Count; heldIndex++)
+            {
+                if (held[heldIndex] == bucket)
+                {
+                    stillHeld = true;
+                    break;
+                }
+            }
+            if (!stillHeld)
+                _headRowBackoff[bucket] = TimeSpan.Zero;
+        }
+    }
+
     private void RecordHeadRowFailure(int bucket, OutboxMessage row, Exception error, int unackedCount)
     {
         if (_headRowFailures[bucket] == 0 || _headRowMessageIds[bucket] != row.MessageId)
@@ -867,6 +895,7 @@ public sealed partial class OutboxRelayService : BackgroundService
         if (acquired.Count != _ownedBuckets.Count)
             LogLeasesChanged(_options.RelayId, acquired.Count, _options.BucketCount);
 
+        EndBackoffOfRegainedBuckets(_ownedBuckets, acquired);
         _ownedBuckets = acquired;
         _previousBuckets = acquired;
         if (_ownedBucketFlags is not null)
