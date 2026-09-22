@@ -379,7 +379,13 @@ public enum ProduceErrorKind
     /// <summary>
     /// The produce was failed because the application purged it.
     /// </summary>
-    Purged
+    Purged,
+
+    /// <summary>
+    /// The produce belonged to a transaction that was aborted before its batch was sent, so its
+    /// records were never written. Java's <c>TransactionAbortedException</c>.
+    /// </summary>
+    TransactionAborted
 }
 
 /// <summary>

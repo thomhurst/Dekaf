@@ -664,6 +664,225 @@ public sealed class TransactionTests
         harness.Producer._transactionState = TransactionState.Ready;
     }
 
+    private const string AbortDrainTopic = "orders";
+
+    /// <summary>
+    /// A record still in an open batch when the transaction aborts belongs to the aborted
+    /// transaction. It must fail with <see cref="ProduceErrorKind.TransactionAborted"/> and never be
+    /// sent: left in the accumulator, it kept the aborted epoch's stamp, took the next transaction's
+    /// records into the same batch, and used up the sequence numbers that the new epoch restarts at 0
+    /// (Java <c>abortUndrainedBatches</c>).
+    /// </summary>
+    [Test]
+    [Timeout(30_000)]
+    public async Task AbortAsync_OpenBatch_FailsItsRecordsAndTheNextTransactionStartsAtSequenceZero(
+        CancellationToken cancellationToken)
+    {
+        var sent = new List<CapturedProduceBatch>();
+        var leader = new TestKafkaConnection { BrokerId = 2, Port = 9093 };
+        leader.SendProducePipelinedAfterWriteForRequest = request =>
+        {
+            lock (sent)
+                sent.AddRange(request.Batches);
+            return ValueTask.FromResult(Task.FromResult(CreateProduceSuccessResponse(request)));
+        };
+        await using var harness = BuildAbortDrainHarness(leader);
+        var producer = harness.Producer;
+        var accumulator = producer.RecordAccumulator;
+
+        var transaction = producer.BeginTransaction();
+        // A fire-and-forget record keeps its batch open for the whole linger (an awaited produce
+        // lingers at most 2 ms), so the batch is still open when the transaction aborts.
+        var abortedDelivery = new TaskCompletionSource<Exception?>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        await producer.FireAsync(
+            new ProducerMessage<string, string> { Topic = AbortDrainTopic, Key = "key", Value = "aborted" },
+            (_, error) => abortedDelivery.TrySetResult(error));
+        while (accumulator.UnsealedBatchCount == 0 && !abortedDelivery.Task.IsCompleted)
+            await Task.Delay(5, cancellationToken);
+        await Assert.That(accumulator.UnsealedBatchCount).IsEqualTo(1);
+
+        await transaction.AbortAsync(cancellationToken);
+
+        await using var next = producer.BeginTransaction();
+        var nextProduce = next.ProduceAsync(AbortDrainTopic, "key", "next", cancellationToken);
+        await producer.FlushAsync(cancellationToken);
+        await nextProduce.AsTask().WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+
+        CapturedProduceBatch[] sentBatches;
+        lock (sent)
+            sentBatches = [.. sent];
+        // Producer ID / epoch / base sequence / record count of every batch on the wire: only the
+        // next transaction's record, under the bumped epoch, starting the partition at sequence 0.
+        var wire = string.Join(
+            "; ",
+            sentBatches.Select(batch =>
+                $"{batch.ProducerId}/{batch.ProducerEpoch}/{batch.BaseSequence}/{batch.RecordCount}"));
+        await Assert.That(wire).IsEqualTo("42/6/0/1");
+
+        var error = await abortedDelivery.Task.WaitAsync(TimeSpan.FromSeconds(1), cancellationToken);
+        await Assert.That(error).IsTypeOf<ProduceException>();
+        await Assert.That(((ProduceException)error!).Kind).IsEqualTo(ProduceErrorKind.TransactionAborted);
+    }
+
+    /// <summary>
+    /// A batch already sent when the transaction aborts is part of it. EndTxn(abort) must wait for
+    /// its answer: an abort marker written ahead of the batch would leave the batch's records
+    /// outside the aborted transaction, and under TV2 the sequence reset that follows EndTxn would
+    /// race the batch.
+    /// </summary>
+    [Test]
+    [Timeout(30_000)]
+    public async Task AbortAsync_InFlightBatch_IsAnsweredBeforeEndTxn(CancellationToken cancellationToken)
+    {
+        var heldResponse = new TaskCompletionSource<ProduceResponse>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var produceSent = new TaskCompletionSource<CapturedProduceRequest>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var leader = new TestKafkaConnection { BrokerId = 2, Port = 9093 };
+        leader.SendProducePipelinedAfterWriteForRequest = request =>
+        {
+            produceSent.TrySetResult(request);
+            return ValueTask.FromResult(heldResponse.Task);
+        };
+        await using var harness = BuildAbortDrainHarness(leader);
+        var producer = harness.Producer;
+        var inFlightBatchesAtEndTxn = -1L;
+        harness.BeforeEndTxnResponse = () =>
+            inFlightBatchesAtEndTxn = producer.RecordAccumulator.InFlightBatchCount;
+
+        var transaction = producer.BeginTransaction();
+        // A sole awaited produce is sealed and sent at once.
+        var inFlightProduce = transaction.ProduceAsync(AbortDrainTopic, "key", "in-flight", cancellationToken);
+        var request = await produceSent.Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+
+        var abort = transaction.AbortAsync(cancellationToken).AsTask();
+        // Gives an abort that does not wait for the batch the time to send EndTxn.
+        await Task.Delay(300, cancellationToken);
+        var endTxnRequestsBeforeAnswer = harness.EndTxnRequests;
+        heldResponse.SetResult(CreateProduceSuccessResponse(request));
+        await abort.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+
+        await Assert.That(endTxnRequestsBeforeAnswer).IsEqualTo(0);
+        await Assert.That(harness.EndTxnRequests).IsEqualTo(1);
+        await Assert.That(inFlightBatchesAtEndTxn).IsEqualTo(0L);
+        await Assert.That(inFlightProduce.IsCompletedSuccessfully).IsTrue();
+        await Assert.That(producer._transactionState).IsEqualTo(TransactionState.Ready);
+    }
+
+    /// <summary>
+    /// The wait for in-flight batches shares the abort's max.block.ms budget. When the budget runs
+    /// out first, EndTxn is never sent, so the transaction stays abortable and the caller aborts again.
+    /// </summary>
+    [Test]
+    [Timeout(30_000)]
+    public async Task AbortAsync_InFlightBatchOutlastsTheBudget_TimesOutWithoutSendingEndTxn(
+        CancellationToken cancellationToken)
+    {
+        var heldResponse = new TaskCompletionSource<ProduceResponse>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var produceSent = new TaskCompletionSource<CapturedProduceRequest>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var leader = new TestKafkaConnection { BrokerId = 2, Port = 9093 };
+        leader.SendProducePipelinedAfterWriteForRequest = request =>
+        {
+            produceSent.TrySetResult(request);
+            return ValueTask.FromResult(heldResponse.Task);
+        };
+        await using var harness = BuildAbortDrainHarness(leader, maxBlockMs: 300);
+        var producer = harness.Producer;
+
+        var transaction = producer.BeginTransaction();
+        var inFlightProduce = transaction.ProduceAsync(AbortDrainTopic, "key", "in-flight", cancellationToken);
+        var request = await produceSent.Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+
+        try
+        {
+            await Assert.That(async () => await transaction.AbortAsync(cancellationToken))
+                .Throws<KafkaTimeoutException>();
+            await Assert.That(harness.EndTxnRequests).IsEqualTo(0);
+            await Assert.That(producer._transactionState).IsEqualTo(TransactionState.AbortableError);
+        }
+        finally
+        {
+            heldResponse.TrySetResult(CreateProduceSuccessResponse(request));
+            await inFlightProduce.AsTask().WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+        }
+
+        // Once the batch is answered, aborting again completes the transaction.
+        await transaction.AbortAsync(cancellationToken);
+        await Assert.That(harness.EndTxnRequests).IsEqualTo(1);
+        await Assert.That(producer._transactionState).IsEqualTo(TransactionState.Ready);
+    }
+
+    /// <summary>
+    /// A TV2 producer (42, epoch 5) whose coordinator is broker 1 and whose partition
+    /// <c>orders-0</c> is led by <paramref name="leader"/> (broker 2). A long linger keeps a batch
+    /// open until the test seals it.
+    /// </summary>
+    private static PreparedCompletionHarness BuildAbortDrainHarness(
+        TestKafkaConnection leader,
+        int maxBlockMs = 5_000)
+    {
+        var harness = BuildPreparedCompletionHarness(
+            new PreparedTransactionState(42, 5),
+            currentProducerId: 42,
+            currentProducerEpoch: 5,
+            maxBlockMs: maxBlockMs,
+            brokerCount: 2,
+            brokerConnection: brokerId => brokerId == leader.BrokerId ? leader : null,
+            topics:
+            [
+                new TopicMetadata
+                {
+                    ErrorCode = ErrorCode.None,
+                    Name = AbortDrainTopic,
+                    Partitions =
+                    [
+                        new PartitionMetadata
+                        {
+                            ErrorCode = ErrorCode.None,
+                            PartitionIndex = 0,
+                            LeaderId = leader.BrokerId,
+                            ReplicaNodes = [leader.BrokerId],
+                            IsrNodes = [leader.BrokerId]
+                        }
+                    ]
+                }
+            ],
+            lingerMs: 60_000);
+        // The identity InitTransactionsAsync publishes to the accumulator, which stamps new batches.
+        harness.Producer.RecordAccumulator.ProducerId = 42;
+        harness.Producer.RecordAccumulator.ProducerEpoch = 5;
+        harness.Producer._transactionState = TransactionState.Ready;
+        return harness;
+    }
+
+    private static ProduceResponse CreateProduceSuccessResponse(CapturedProduceRequest request)
+    {
+        var offset = 0L;
+        return new ProduceResponse
+        {
+            TopicCount = 1,
+            Responses =
+            [
+                new ProduceResponseTopicData
+                {
+                    Name = AbortDrainTopic,
+                    PartitionCount = request.Batches.Count,
+                    PartitionResponses = request.Batches
+                        .Select(batch => new ProduceResponsePartitionData
+                        {
+                            Index = batch.Partition,
+                            ErrorCode = ErrorCode.None,
+                            BaseOffset = offset++
+                        })
+                        .ToArray()
+                }
+            ]
+        };
+    }
+
     [Test]
     public async Task InitTransactionsAsync_WithoutTransactionalId_Throws()
     {
@@ -2575,7 +2794,10 @@ public sealed class TransactionTests
         bool endTxnFailsAfterCancellation = false,
         bool findCoordinatorFailsAfterCancellation = false,
         int brokerCount = 1,
-        Func<IReadOnlyList<TopicPartition>, CancellationToken, ValueTask>? addPartitionsToTransaction = null)
+        Func<IReadOnlyList<TopicPartition>, CancellationToken, ValueTask>? addPartitionsToTransaction = null,
+        Func<int, IKafkaConnection?>? brokerConnection = null,
+        TopicMetadata[]? topics = null,
+        int lingerMs = 0)
     {
         var connection = new LeaseTrackingConnection(
             preparedState,
@@ -2636,6 +2858,11 @@ public sealed class TransactionTests
                     return ValueTask.FromException<IKafkaConnection>(connectionFailures.Dequeue());
                 }
 
+                // A broker that serves produce requests (a partition leader) instead of the
+                // transaction coordinator.
+                if (brokerConnection?.Invoke(brokerId) is { } brokerOverride)
+                    return new ValueTask<IKafkaConnection>(brokerOverride);
+
                 return new ValueTask<IKafkaConnection>(connection);
             });
         var brokers = new BrokerMetadata[brokerCount];
@@ -2649,8 +2876,14 @@ public sealed class TransactionTests
         metadataManager.Metadata.Update(new MetadataResponse
         {
             Brokers = brokers,
-            Topics = []
+            Topics = topics ?? []
         });
+        // v12: the last version that names topics rather than identifying them by topic ID, and
+        // the first with implicit (TV2) partition enrollment.
+        metadataManager.SetApiVersion(
+            ApiKey.Produce,
+            ProduceRequest.LowestSupportedVersion,
+            ProduceRequest.ImplicitTransactionPartitionEnrollmentVersion);
         metadataManager.SetApiVersion(
             ApiKey.FindCoordinator,
             FindCoordinatorRequest.LowestSupportedVersion,
@@ -2682,7 +2915,8 @@ public sealed class TransactionTests
                 RetryBackoffMs = retryBackoffMs,
                 RetryBackoffMaxMs = retryBackoffMs,
                 MaxBlockMs = maxBlockMs,
-                CloseTimeoutMs = 100
+                CloseTimeoutMs = 100,
+                LingerMs = lingerMs
             },
             Serializers.String,
             Serializers.String,
