@@ -2683,8 +2683,19 @@ public sealed partial class AdminClient :
             }
         }
 
+        // A deletion replayed after a lost response finds nothing to delete and the broker
+        // answers RESOURCE_NOT_FOUND for that user. Only a user whose alterations include a
+        // deletion is tolerated, and only after a send that may have applied: the broker applies
+        // a user's alterations atomically, so the earlier request applied all of them. A
+        // credential deleted concurrently by another client is also reported as success.
+        HashSet<string>? usersWithDeletions = null;
+        foreach (var deletion in deletions)
+            (usersWithDeletions ??= new HashSet<string>(StringComparer.Ordinal)).Add(deletion.Name);
+        var alterMayHaveApplied = false;
+
         await WithRetryAsync(async () =>
         {
+            var isRetryAttempt = alterMayHaveApplied;
             using var controllerLease = await LeaseControllerAsync(Protocol.ApiKey.AlterUserScramCredentials, cancellationToken).ConfigureAwait(false);
             var controller = controllerLease.Connection;
 
@@ -2700,15 +2711,27 @@ public sealed partial class AdminClient :
                 AlterUserScramCredentialsRequest.LowestSupportedVersion,
                 AlterUserScramCredentialsRequest.HighestSupportedVersion);
 
-            var response = await controller.SendAsync<AlterUserScramCredentialsRequest, AlterUserScramCredentialsResponse>(
-                request,
-                apiVersion,
-                cancellationToken).ConfigureAwait(false);
+            AlterUserScramCredentialsResponse response;
+            try
+            {
+                response = await controller.SendAsync<AlterUserScramCredentialsRequest, AlterUserScramCredentialsResponse>(
+                    request,
+                    apiVersion,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch
+            {
+                alterMayHaveApplied = true;
+                throw;
+            }
 
             // Check for errors
             foreach (var result in response.Results)
             {
-                if (result.ErrorCode != Protocol.ErrorCode.None)
+                if (result.ErrorCode != Protocol.ErrorCode.None &&
+                    !(isRetryAttempt &&
+                      result.ErrorCode == Protocol.ErrorCode.ResourceNotFound &&
+                      usersWithDeletions?.Contains(result.User) == true))
                 {
                     throw new KafkaException(result.ErrorCode,
                         $"AlterUserScramCredentials failed for user '{result.User}': {result.ErrorMessage ?? result.ErrorCode.ToString()}");
@@ -3067,8 +3090,15 @@ public sealed partial class AdminClient :
 
         var expiryTimePeriodMs = ToKafkaMilliseconds(expiryTimePeriod, nameof(expiryTimePeriod));
 
+        // A negative period expires the token immediately and the broker deletes it, so a replay
+        // after a lost response answers DELEGATION_TOKEN_NOT_FOUND. After a send that may have
+        // applied, that answer means the token is gone as requested; it expired no later than
+        // now. A replay with a non-negative period only moves the expiry and needs no handling.
+        var expireMayHaveApplied = false;
+
         return await WithRetryAsync<DateTimeOffset>(async () =>
         {
+            var isRetryAttempt = expireMayHaveApplied;
             using var controllerLease = await LeaseControllerAsync(Protocol.ApiKey.ExpireDelegationToken, cancellationToken).ConfigureAwait(false);
             var controller = controllerLease.Connection;
             var request = new ExpireDelegationTokenRequest
@@ -3083,10 +3113,26 @@ public sealed partial class AdminClient :
                 ExpireDelegationTokenRequest.LowestSupportedVersion,
                 ExpireDelegationTokenRequest.HighestSupportedVersion);
 
-            var response = await controller.SendAsync<ExpireDelegationTokenRequest, ExpireDelegationTokenResponse>(
-                request,
-                apiVersion,
-                cancellationToken).ConfigureAwait(false);
+            ExpireDelegationTokenResponse response;
+            try
+            {
+                response = await controller.SendAsync<ExpireDelegationTokenRequest, ExpireDelegationTokenResponse>(
+                    request,
+                    apiVersion,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch
+            {
+                expireMayHaveApplied = true;
+                throw;
+            }
+
+            if (isRetryAttempt &&
+                expiryTimePeriodMs < 0 &&
+                response.ErrorCode == Protocol.ErrorCode.DelegationTokenNotFound)
+            {
+                return DateTimeOffset.UtcNow;
+            }
 
             if (response.ErrorCode != Protocol.ErrorCode.None)
             {
@@ -3509,10 +3555,26 @@ public sealed partial class AdminClient :
                 DeleteAclsRequest.LowestSupportedVersion,
                 DeleteAclsRequest.HighestSupportedVersion);
 
-            var response = await controller.SendAsync<DeleteAclsRequest, DeleteAclsResponse>(
-                request,
-                apiVersion,
-                cancellationToken).ConfigureAwait(false);
+            DeleteAclsResponse response;
+            try
+            {
+                response = await controller.SendAsync<DeleteAclsRequest, DeleteAclsResponse>(
+                    request,
+                    apiVersion,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (RetryHelper.IsRetriableRequestFailure(exception)
+                && !cancellationToken.IsCancellationRequested)
+            {
+                // The result is the list of deleted bindings, and only the response that did the
+                // deleting carries it: a replay matches nothing and would return an empty list
+                // while the lost request may have deleted bindings. Failures before the send (no
+                // controller, a refused connection) are still retried above.
+                throw new KafkaException((exception as KafkaException)?.ErrorCode ?? Protocol.ErrorCode.NetworkException,
+                    "DeleteAcls outcome is unknown after a request failure; the matching ACLs may have been deleted. " +
+                    "Describe the ACLs before retrying.",
+                    isRetriable: false, exception);
+            }
 
             var deletedBindings = new List<AclBinding>();
 
@@ -4034,8 +4096,14 @@ public sealed partial class AdminClient :
 
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
 
+        // A replay after a lost response answers DUPLICATE_VOTER. The leader checks only the
+        // voter ID, so after a send that may have applied the voter set is read back and the
+        // replay counts as success only when it holds this exact voter (ID and directory).
+        var addMayHaveApplied = false;
+
         await WithRetryAsync(async () =>
         {
+            var isRetryAttempt = addMayHaveApplied;
             using var controllerLease = await LeaseControllerAsync(Protocol.ApiKey.AddRaftVoter, cancellationToken).ConfigureAwait(false);
             var controller = controllerLease.Connection;
             var apiVersion = _metadataManager.GetNegotiatedApiVersion(
@@ -4050,18 +4118,34 @@ public sealed partial class AdminClient :
                     "Broker does not support AddRaftVoter AckWhenCommitted=false (API key 80 v1).");
             }
 
-            var response = await controller.SendAsync<AddRaftVoterRequest, AddRaftVoterResponse>(
-                new AddRaftVoterRequest
-                {
-                    ClusterId = opts.ClusterId,
-                    TimeoutMs = opts.TimeoutMs,
-                    VoterId = voterId,
-                    VoterDirectoryId = voterDirectoryId,
-                    Listeners = listenerData,
-                    AckWhenCommitted = opts.AckWhenCommitted
-                },
-                apiVersion,
-                cancellationToken).ConfigureAwait(false);
+            AddRaftVoterResponse response;
+            try
+            {
+                response = await controller.SendAsync<AddRaftVoterRequest, AddRaftVoterResponse>(
+                    new AddRaftVoterRequest
+                    {
+                        ClusterId = opts.ClusterId,
+                        TimeoutMs = opts.TimeoutMs,
+                        VoterId = voterId,
+                        VoterDirectoryId = voterDirectoryId,
+                        Listeners = listenerData,
+                        AckWhenCommitted = opts.AckWhenCommitted
+                    },
+                    apiVersion,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch
+            {
+                addMayHaveApplied = true;
+                throw;
+            }
+
+            if (isRetryAttempt &&
+                response.ErrorCode == Protocol.ErrorCode.DuplicateVoter &&
+                await QuorumHasVoterAsync(voterId, voterDirectoryId, cancellationToken).ConfigureAwait(false))
+            {
+                return;
+            }
 
             if (response.ErrorCode != Protocol.ErrorCode.None)
             {
@@ -4088,8 +4172,14 @@ public sealed partial class AdminClient :
 
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
 
+        // A replay after a lost response answers VOTER_NOT_FOUND. The leader matches the voter
+        // ID and directory, so after a send that may have applied that answer means this voter
+        // is no longer in the set, which is the requested outcome.
+        var removeMayHaveApplied = false;
+
         await WithRetryAsync(async () =>
         {
+            var isRetryAttempt = removeMayHaveApplied;
             using var controllerLease = await LeaseControllerAsync(Protocol.ApiKey.RemoveRaftVoter, cancellationToken).ConfigureAwait(false);
             var controller = controllerLease.Connection;
             var apiVersion = _metadataManager.GetNegotiatedApiVersion(
@@ -4098,15 +4188,27 @@ public sealed partial class AdminClient :
                 RemoveRaftVoterRequest.LowestSupportedVersion,
                 RemoveRaftVoterRequest.HighestSupportedVersion);
 
-            var response = await controller.SendAsync<RemoveRaftVoterRequest, RemoveRaftVoterResponse>(
-                new RemoveRaftVoterRequest
-                {
-                    ClusterId = opts.ClusterId,
-                    VoterId = voterId,
-                    VoterDirectoryId = voterDirectoryId
-                },
-                apiVersion,
-                cancellationToken).ConfigureAwait(false);
+            RemoveRaftVoterResponse response;
+            try
+            {
+                response = await controller.SendAsync<RemoveRaftVoterRequest, RemoveRaftVoterResponse>(
+                    new RemoveRaftVoterRequest
+                    {
+                        ClusterId = opts.ClusterId,
+                        VoterId = voterId,
+                        VoterDirectoryId = voterDirectoryId
+                    },
+                    apiVersion,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch
+            {
+                removeMayHaveApplied = true;
+                throw;
+            }
+
+            if (isRetryAttempt && response.ErrorCode == Protocol.ErrorCode.VoterNotFound)
+                return;
 
             if (response.ErrorCode != Protocol.ErrorCode.None)
             {
@@ -4125,8 +4227,14 @@ public sealed partial class AdminClient :
 
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
 
+        // A replay after a lost response answers BROKER_ID_NOT_REGISTERED. After a send that
+        // may have applied, that is the requested outcome. A registration removed concurrently
+        // by another client is also reported as success.
+        var unregisterMayHaveApplied = false;
+
         await WithRetryAsync(async () =>
         {
+            var isRetryAttempt = unregisterMayHaveApplied;
             using var controllerLease = await LeaseControllerAsync(Protocol.ApiKey.UnregisterBroker, cancellationToken).ConfigureAwait(false);
             var controller = controllerLease.Connection;
             var apiVersion = _metadataManager.GetNegotiatedApiVersion(
@@ -4135,10 +4243,22 @@ public sealed partial class AdminClient :
                 UnregisterBrokerRequest.LowestSupportedVersion,
                 UnregisterBrokerRequest.HighestSupportedVersion);
 
-            var response = await controller.SendAsync<UnregisterBrokerRequest, UnregisterBrokerResponse>(
-                new UnregisterBrokerRequest { BrokerId = brokerId },
-                apiVersion,
-                cancellationToken).ConfigureAwait(false);
+            UnregisterBrokerResponse response;
+            try
+            {
+                response = await controller.SendAsync<UnregisterBrokerRequest, UnregisterBrokerResponse>(
+                    new UnregisterBrokerRequest { BrokerId = brokerId },
+                    apiVersion,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch
+            {
+                unregisterMayHaveApplied = true;
+                throw;
+            }
+
+            if (isRetryAttempt && response.ErrorCode == Protocol.ErrorCode.BrokerIdNotRegistered)
+                return;
 
             if (response.ErrorCode != Protocol.ErrorCode.None)
             {
@@ -5454,6 +5574,23 @@ public sealed partial class AdminClient :
         }
 
         return await _connectionPool.LeaseConnectionAsync(controllerId, cancellationToken).ConfigureAwait(false);
+    }
+
+    // Only used while resolving an ambiguous AddRaftVoter, never on a message path.
+    private async ValueTask<bool> QuorumHasVoterAsync(int voterId, Guid voterDirectoryId, CancellationToken cancellationToken)
+    {
+        var quorum = await DescribeMetadataQuorumAsync(cancellationToken).ConfigureAwait(false);
+        foreach (var voter in quorum.CurrentVoters)
+        {
+            // DescribeQuorum before v2 carries no directory IDs; the voter ID is all there is.
+            if (voter.ReplicaId == voterId &&
+                (voter.ReplicaDirectoryId is not { } directoryId || directoryId == voterDirectoryId))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static QuorumReplicaState MapQuorumReplicaState(DescribeQuorumReplicaState state) =>

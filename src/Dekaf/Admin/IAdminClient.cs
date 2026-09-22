@@ -346,6 +346,13 @@ public interface IAdminClient : IAsyncDisposable
     /// <param name="options">Optional configuration options.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>The ACL bindings that were deleted.</returns>
+    /// <remarks>
+    /// The request is not replayed once it may have reached the controller. If the connection
+    /// fails or the request times out after sending, this throws a non-retriable
+    /// <see cref="Errors.KafkaException"/> whose inner exception is the failure: the matching ACLs
+    /// may have been deleted, and a replay would match nothing and hide that. Describe the ACLs
+    /// before deciding to retry. Failures before sending are retried.
+    /// </remarks>
     ValueTask<IReadOnlyList<AclBinding>> DeleteAclsAsync(
         IEnumerable<AclBindingFilter> filters,
         DeleteAclsOptions? options = null,
