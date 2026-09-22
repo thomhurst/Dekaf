@@ -350,6 +350,7 @@ public sealed partial class ShareConsumerRenewalTests
             new TopicPartition("topic", 0),
             new TopicPartition("topic", 1));
         fixture.Consumer.Subscribe("topic");
+        EstablishSessions(fixture.Consumer, 1, 2);
         fixture.Consumer.Acknowledge(CreateRecord(partition: 0, offset: 40), AcknowledgeType.Renew);
         fixture.Consumer.Acknowledge(CreateRecord(partition: 1, offset: 41), AcknowledgeType.Accept);
 
@@ -359,11 +360,11 @@ public sealed partial class ShareConsumerRenewalTests
 
         var pending = FlushPendingAcknowledgements(fixture.Consumer);
         await Assert.That(pending.Keys).IsEquivalentTo([new TopicPartition("topic", 0)]);
-        await Assert.That(GetSessionEpoch(fixture.Consumer, 2)).IsEqualTo(1);
+        await Assert.That(GetSessionEpoch(fixture.Consumer, 2)).IsEqualTo(2);
     }
 
     [Test]
-    public async Task Poll_CancelledRetry_RequeuesFailedBrokerAndProcessesSuccessfulBroker()
+    public async Task Poll_TransportFailureWithAcknowledgements_RequeuesFailedBrokerAndProcessesSuccessfulBroker()
     {
         using var cancellation = new CancellationTokenSource();
         var firstConnection = new CapturingConnection(ApiKey.ShareFetch, 2)
@@ -390,16 +391,52 @@ public sealed partial class ShareConsumerRenewalTests
             new TopicPartition("topic", 0),
             new TopicPartition("topic", 1));
         fixture.Consumer.Subscribe("topic");
+        EstablishSessions(fixture.Consumer, 1, 2);
         fixture.Consumer.Acknowledge(CreateRecord(partition: 0, offset: 40), AcknowledgeType.Renew);
+        fixture.Consumer.Acknowledge(CreateRecord(partition: 1, offset: 41), AcknowledgeType.Accept);
+
+        await using var poll = fixture.Consumer.PollAsync(cancellation.Token).GetAsyncEnumerator();
+        await Assert.That(await poll.MoveNextAsync()).IsFalse();
+
+        // A failed request that carried acknowledgements is not retried: its session is gone,
+        // and the request that opens the next one cannot carry them.
+        await Assert.That(firstConnection.ShareFetchRequests).HasSingleItem();
+        await Assert.That(GetSessionEpoch(fixture.Consumer, 1)).IsEqualTo(0);
+        var pending = FlushPendingAcknowledgements(fixture.Consumer);
+        await Assert.That(pending.Keys).IsEquivalentTo([new TopicPartition("topic", 0)]);
+        await Assert.That(GetSessionEpoch(fixture.Consumer, 2)).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task Poll_CancelledRetry_WithoutAcknowledgements_StopsAndProcessesSuccessfulBroker()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var firstConnection = new CapturingConnection(ApiKey.ShareFetch, 2)
+        {
+            ShareFetchException = new KafkaException(
+                ErrorCode.RequestTimedOut,
+                "simulated timeout"),
+            OnSend = cancellation.Cancel
+        };
+        var secondConnection = new CapturingConnection(ApiKey.ShareFetch, 2, brokerId: 2);
+        await using var fixture = CreateFixture(
+            firstConnection,
+            secondConnection: secondConnection);
+        PrepareForPoll(
+            fixture.Consumer,
+            new TopicPartition("topic", 0),
+            new TopicPartition("topic", 1));
+        fixture.Consumer.Subscribe("topic");
+        EstablishSessions(fixture.Consumer, 1, 2);
         fixture.Consumer.Acknowledge(CreateRecord(partition: 1, offset: 41), AcknowledgeType.Accept);
 
         await using var poll = fixture.Consumer.PollAsync(cancellation.Token).GetAsyncEnumerator();
         await Assert.That(async () => await poll.MoveNextAsync())
             .Throws<OperationCanceledException>();
 
-        var pending = FlushPendingAcknowledgements(fixture.Consumer);
-        await Assert.That(pending.Keys).IsEquivalentTo([new TopicPartition("topic", 0)]);
-        await Assert.That(GetSessionEpoch(fixture.Consumer, 2)).IsEqualTo(1);
+        await Assert.That(HasPendingAcknowledgements(fixture.Consumer)).IsFalse();
+        await Assert.That(GetSessionEpoch(fixture.Consumer, 1)).IsEqualTo(0);
+        await Assert.That(GetSessionEpoch(fixture.Consumer, 2)).IsEqualTo(2);
     }
 
     [Test]
@@ -433,6 +470,7 @@ public sealed partial class ShareConsumerRenewalTests
             new TopicPartition("topic", 0),
             new TopicPartition("topic", 1));
         fixture.Consumer.Subscribe("topic");
+        EstablishSessions(fixture.Consumer, 1, 2);
         fixture.Consumer.Acknowledge(CreateRecord(partition: 0, offset: 42), AcknowledgeType.Renew);
         fixture.Consumer.Acknowledge(CreateRecord(partition: 1, offset: 43), AcknowledgeType.Accept);
 
@@ -442,7 +480,7 @@ public sealed partial class ShareConsumerRenewalTests
 
         var pending = FlushPendingAcknowledgements(fixture.Consumer);
         await Assert.That(pending.Keys).IsEquivalentTo([new TopicPartition("topic", 0)]);
-        await Assert.That(GetSessionEpoch(fixture.Consumer, 2)).IsEqualTo(1);
+        await Assert.That(GetSessionEpoch(fixture.Consumer, 2)).IsEqualTo(2);
     }
 
     [Test]
@@ -533,6 +571,7 @@ public sealed partial class ShareConsumerRenewalTests
             new TopicPartition("topic", 0),
             new TopicPartition("topic", 1));
         fixture.Consumer.Subscribe("topic");
+        EstablishSessions(fixture.Consumer, 1);
         fixture.Consumer.Acknowledge(CreateRecord(partition: 0, offset: 40), AcknowledgeType.Accept);
         fixture.Consumer.Acknowledge(CreateRecord(partition: 1, offset: 41), AcknowledgeType.Renew);
 
@@ -796,6 +835,7 @@ public sealed partial class ShareConsumerRenewalTests
             acknowledgementCommitCallback: results => outcomes = results.ToArray());
         PrepareForPoll(fixture.Consumer);
         fixture.Consumer.Subscribe("topic");
+        EstablishSessions(fixture.Consumer, 1);
         if (acknowledgementMode == ShareAcknowledgementMode.Implicit)
             TrackDeliveredRecord(fixture.Consumer, new TopicPartition("topic", 0), 42);
         else
@@ -1599,6 +1639,16 @@ public sealed partial class ShareConsumerRenewalTests
             .GetField("_ackTracker", BindingFlags.Instance | BindingFlags.NonPublic)!
             .GetValue(consumer)!;
         tracker.TrackDeliveredRecords(topicPartition, offset, offset);
+    }
+
+    // Inline acknowledgements need an established share session: the request that opens
+    // one cannot carry them.
+    private static void EstablishSessions(
+        KafkaShareConsumer<string, string> consumer,
+        params int[] brokerIds)
+    {
+        foreach (var brokerId in brokerIds)
+            SetSessionEpoch(consumer, brokerId, epoch: 1);
     }
 
     private static int GetSessionEpoch(

@@ -49,6 +49,7 @@ public sealed partial class ShareConsumerRenewalTests
         }, shutdown.Token);
         PrepareForPoll(fixture.Consumer, new TopicPartition("topic", 0), new TopicPartition("topic", 1));
         fixture.Consumer.Subscribe("topic");
+        EstablishSessions(fixture.Consumer, 1, 2);
         fixture.Consumer.Acknowledge(CreateRecord(0, 42), AcknowledgeType.Release);
         fixture.Consumer.Acknowledge(CreateRecord(1, 43), AcknowledgeType.Accept);
         await using var poll = fixture.Consumer.PollAsync(caller.Token).GetAsyncEnumerator();
@@ -72,8 +73,8 @@ public sealed partial class ShareConsumerRenewalTests
         await Assert.That(callbacks[0].Partition).IsEqualTo(1);
         await Assert.That(callbacks[0].Offsets).IsEquivalentTo(new long[] { 43 });
         await Assert.That(callbacks[0].Error).IsNull();
-        await Assert.That(GetSessionEpoch(fixture.Consumer, 1)).IsEqualTo(0);
-        await Assert.That(GetSessionEpoch(fixture.Consumer, 2)).IsEqualTo(1);
+        await Assert.That(GetSessionEpoch(fixture.Consumer, 1)).IsEqualTo(1);
+        await Assert.That(GetSessionEpoch(fixture.Consumer, 2)).IsEqualTo(2);
         await fixture.Consumer.CommitAsync(shutdown.Token);
         await Assert.That(callbacks.Count).IsEqualTo(2);
         await Assert.That(callbacks[1].Partition).IsEqualTo(0);
@@ -289,6 +290,7 @@ public sealed partial class ShareConsumerRenewalTests
         }, shutdownCancellation.Token);
         PrepareForPoll(fixture.Consumer);
         fixture.Consumer.Subscribe("topic");
+        EstablishSessions(fixture.Consumer, 1);
         fixture.Consumer.Acknowledge(CreateRecord(), AcknowledgeType.Reject);
         await using var poll = fixture.Consumer.PollAsync(pollCancellation.Token).GetAsyncEnumerator();
         var pendingPoll = poll.MoveNextAsync().AsTask();
@@ -305,7 +307,8 @@ public sealed partial class ShareConsumerRenewalTests
 
         await Assert.That(async () => await pendingPoll.WaitAsync(TimeSpan.FromSeconds(10)))
             .Throws<OperationCanceledException>();
-        // Without a response, neither the session epoch nor acknowledgement success is known.
+        // Without a response, neither the session epoch nor acknowledgement success is known,
+        // so the next request opens a new session.
         await Assert.That(GetSessionEpoch(fixture.Consumer, 1)).IsEqualTo(0);
         await Assert.That(callbacks.Count).IsEqualTo(1);
         await Assert.That(callbacks[0]).IsTypeOf<TaskCanceledException>();
