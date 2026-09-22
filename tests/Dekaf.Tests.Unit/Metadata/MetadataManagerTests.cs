@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Net;
 using System.Net.Sockets;
 using System.Reflection;
 using Dekaf.Errors;
@@ -1942,6 +1943,85 @@ public class MetadataManagerTests
         await manager.RefreshMetadataAsync(cancellationToken);
 
         await Assert.That(Volatile.Read(ref misroutedBrokerRequests)).IsEqualTo(requestsAfterRebootstrap);
+    }
+
+    // With a hostname bootstrap server, a rebootstrap connects to the addresses it resolves to.
+    // The refresh endpoint list holds only broker and bootstrap hosts, so the preference must
+    // name the bootstrap server the answering address came from, not the address itself.
+    [Test]
+    [Timeout(30_000)]
+    public async Task RefreshMetadataAsync_AfterRebootstrapThroughAResolvedAddress_LaterRefreshesStartAtTheBootstrapServer(
+        CancellationToken cancellationToken)
+    {
+        const int Initializing = 0, BootstrapUnavailable = 1, BrokerZeroMisrouted = 2;
+        var phase = Initializing;
+        var brokerZeroRequests = 0;
+        MetadataResponse ClusterMetadata() =>
+            CreateMetadataResponse((0, "broker-0", 9092), (1, "broker-1", 9093));
+
+        var bootstrap = CreateRespondingConnection(-1, "kafka.example", 9092, () =>
+            Volatile.Read(ref phase) == BootstrapUnavailable
+                ? throw new SocketException((int)SocketError.ConnectionReset)
+                : ClusterMetadata());
+        var brokerZero = CreateRespondingConnection(0, "broker-0", 9092, () =>
+        {
+            Interlocked.Increment(ref brokerZeroRequests);
+            return Volatile.Read(ref phase) == BrokerZeroMisrouted
+                ? new MetadataResponse { ErrorCode = ErrorCode.RebootstrapRequired, Brokers = [], Topics = [] }
+                : ClusterMetadata();
+        });
+        var brokerOne = CreateRespondingConnection(1, "broker-1", 9093,
+            () => throw new SocketException((int)SocketError.ConnectionRefused));
+        var firstAddress = CreateRespondingConnection(-1, "10.0.0.1", 9092,
+            () => throw new SocketException((int)SocketError.ConnectionRefused));
+        var secondAddress = CreateRespondingConnection(-1, "10.0.0.2", 9092, ClusterMetadata);
+        await using var pool = new ConnectionPool(
+            "metadata-rebootstrap-resolved-address-test",
+            new ConnectionOptions(),
+            connectionsPerBroker: 1,
+            connectionFactory: (_, host, _, _, _) => ValueTask.FromResult(host switch
+            {
+                "kafka.example" => bootstrap,
+                "broker-0" => brokerZero,
+                "broker-1" => brokerOne,
+                "10.0.0.1" => firstAddress,
+                _ => secondAddress
+            }));
+        await using var manager = new MetadataManager(
+            pool,
+            ["kafka.example:9092"],
+            new MetadataOptions
+            {
+                EnableBackgroundRefresh = false,
+                MetadataRecoveryStrategy = MetadataRecoveryStrategy.Rebootstrap,
+                DnsResolver = new ClientDnsEndpointResolver(
+                    new FixedDnsLookup(IPAddress.Parse("10.0.0.1"), IPAddress.Parse("10.0.0.2")))
+            });
+
+        await manager.InitializeAsync(cancellationToken);
+
+        // The bootstrap server drops out for one refresh, so broker 0 answers and becomes preferred.
+        Volatile.Write(ref phase, BootstrapUnavailable);
+        await manager.RefreshMetadataAsync(cancellationToken);
+
+        // Broker 0 now asks for a rebootstrap and refuses it again; the second resolved address
+        // of the bootstrap server completes it.
+        Volatile.Write(ref phase, BrokerZeroMisrouted);
+        await manager.RefreshMetadataAsync(cancellationToken);
+        var requestsAfterRebootstrap = Volatile.Read(ref brokerZeroRequests);
+
+        await manager.RefreshMetadataAsync(cancellationToken);
+
+        await Assert.That(Volatile.Read(ref brokerZeroRequests)).IsEqualTo(requestsAfterRebootstrap);
+    }
+
+    private sealed class FixedDnsLookup(params IPAddress[] addresses) : IDnsLookup
+    {
+        public ValueTask<IPAddress[]> GetHostAddressesAsync(string host, CancellationToken cancellationToken) =>
+            ValueTask.FromResult(addresses);
+
+        public ValueTask<IPHostEntry> GetHostEntryAsync(string host, CancellationToken cancellationToken) =>
+            ValueTask.FromResult(new IPHostEntry { HostName = host, AddressList = addresses });
     }
 
     private static IKafkaConnection CreateRespondingConnection(
