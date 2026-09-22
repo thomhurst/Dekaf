@@ -2,6 +2,7 @@ using System.Buffers;
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Net;
 using System.Net.Security;
 using System.Net.Sockets;
@@ -63,11 +64,20 @@ internal static class ConnectionHelper
     public static void ValidateResponseFrameSize(int frameSize, int maxFrameSize)
     {
         if (frameSize < MinimumResponseFrameSize || frameSize > maxFrameSize)
-        {
-            throw new KafkaException(
-                $"Invalid response frame size {frameSize}. Expected between {MinimumResponseFrameSize} and {maxFrameSize} bytes.");
-        }
+            ThrowInvalidResponseFrameSize(frameSize, maxFrameSize);
     }
+
+    // The stream is out of step (a non-Kafka peer, corruption, or a frame above the local cap),
+    // so the connection is closed. That is a transport failure, as in Java, where an invalid
+    // receive disconnects the channel: the request may succeed on a new connection, and a
+    // code-less exception was not retriable anywhere.
+    [DoesNotReturn]
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void ThrowInvalidResponseFrameSize(int frameSize, int maxFrameSize) =>
+        throw new KafkaException(
+            ErrorCode.NetworkException,
+            $"Invalid response frame size {frameSize}. Expected between {MinimumResponseFrameSize} and {maxFrameSize} bytes.",
+            isRetriable: true);
 }
 
 /// <summary>
