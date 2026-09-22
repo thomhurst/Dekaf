@@ -97,6 +97,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private long _maxPollExpiredAtPollVersion = -1;
     private long _maxPollExpirationVersion;
     private int _maxPollLossNotificationPending;
+    // Partitions a fenced or forgotten membership lost, awaiting OnPartitionsLost. Guarded by
+    // _assignmentStateLock; drained under _rebalanceListenerLock so a rejoin's
+    // OnPartitionsAssigned can never overtake them.
+    private List<TopicPartition>? _pendingLostPartitions;
     // Foreground assignment initialization and fetch waits are application poll activity. Track
     // concurrent callers without allocating a scope object on each poll cycle.
     private int _foregroundPollActivityCount;
@@ -1430,7 +1434,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 return true;
 
             case ErrorCode.UnknownMemberId:
-                ResetMemberState();
+                // The recovery rejoin reports the lost partitions before its assignment.
+                LoseMembership(ErrorCode.UnknownMemberId);
                 return true;
 
             default:
@@ -1456,7 +1461,32 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         ClearAssignment();
     }
 
-    private IReadOnlyList<TopicPartition>? ClearAssignment()
+    /// <summary>
+    /// The coordinator fenced this member or no longer knows it. Like the Java client, every
+    /// partition the member owned is lost: the assignment is cleared (so the consumer drops
+    /// positions and stored offsets and re-fetches committed offsets on reassignment), the
+    /// partitions are queued for <c>OnPartitionsLost</c>, and commits are fenced until the
+    /// consumer has synchronized. Callers hold <see cref="_lock"/> or otherwise own the
+    /// membership transition, and fire <see cref="InvokePendingLostPartitionsAsync"/> after it.
+    /// </summary>
+    private void LoseMembership(ErrorCode errorCode)
+    {
+        if (errorCode == ErrorCode.UnknownMemberId)
+        {
+            _memberId = null;
+            _generationId = -1;
+        }
+        else
+        {
+            // Rejoin with MemberEpoch=0, or -2 for a static member.
+            _generationId = _options.GroupInstanceId is not null ? -2 : 0;
+        }
+
+        _state = CoordinatorState.Unjoined;
+        ClearAssignment(membershipLost: true);
+    }
+
+    private IReadOnlyList<TopicPartition>? ClearAssignment(bool membershipLost = false)
     {
         var revoked = _assignedPartitions.Count != 0 ? _assignedPartitions.ToList() : null;
 
@@ -1470,6 +1500,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             {
                 Interlocked.Increment(ref _assignmentVersion);
                 EnqueueRevokedPartitions(revoked);
+                if (membershipLost)
+                {
+                    (_pendingLostPartitions ??= []).AddRange(revoked);
+                }
             }
         }
 
@@ -2101,12 +2135,14 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
                     LogJoinedGroup(_options.GroupId!, _memberId!, _generationId);
                 }
-                catch (Errors.GroupException ex) when (ex.ErrorCode == ErrorCode.FencedMemberEpoch)
+                catch (Errors.GroupException ex) when (
+                    ex.ErrorCode is ErrorCode.FencedMemberEpoch or ErrorCode.UnknownMemberId)
                 {
-                    // Stale epoch — reset generation so next attempt sends MemberEpoch=0 (or -2 for static members)
+                    // The coordinator fenced or forgot this member (e.g. it expired while the
+                    // heartbeat could not reach it): whatever it owned is lost. The next attempt
+                    // joins fresh with MemberEpoch=0 (or -2 for static members).
                     LogRetriableCoordinatorError(ex.ErrorCode);
-                    _generationId = _options.GroupInstanceId is not null ? -2 : 0;
-                    _state = CoordinatorState.Unjoined;
+                    LoseMembership(ex.ErrorCode.Value);
                 }
                 catch (Errors.GroupException ex) when (ex.ErrorCode == ErrorCode.UnreleasedInstanceId)
                 {
@@ -2115,12 +2151,6 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                     LogRetriableCoordinatorError(ex.ErrorCode);
                     await DelayForJoinRetryAsync(
                         ++retryFailureCount, startedAt, rebalanceTimeout, joinToken).ConfigureAwait(false);
-                }
-                catch (Errors.GroupException ex) when (ex.ErrorCode == ErrorCode.UnknownMemberId)
-                {
-                    // Broker forgot this member (e.g. broker restart after fencing) — full reset and retry
-                    LogRetriableCoordinatorError(ex.ErrorCode);
-                    ResetMemberState();
                 }
                 catch (Errors.GroupException ex) when (IsRetriableCoordinatorError(ex.ErrorCode))
                 {
@@ -2168,6 +2198,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         finally
         {
             _lock.Release();
+
+            // Partitions a rejected rejoin lost are reported even when the join then fails,
+            // and always before the new assignment below.
+            await InvokePendingLostPartitionsAsync().ConfigureAwait(false);
         }
 
         await FireConsumerProtocolRebalanceListenersAsync(heartbeatResult, cancellationToken).ConfigureAwait(false);
@@ -2205,6 +2239,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         // loop re-discovers the coordinator itself and beats on the retry backoff.
         var transientFailureCount = 0;
         var heartbeatCoordinatorId = -1;
+        string? heartbeatMemberId = null;
+        var heartbeatMemberEpoch = -1;
 
         while (!cancellationToken.IsCancellationRequested)
         {
@@ -2244,6 +2280,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                     }
                 }
 
+                heartbeatMemberId = _memberId;
+                heartbeatMemberEpoch = _generationId;
                 await SendConsumerGroupHeartbeatAsync(
                     heartbeatCoordinatorId,
                     isInitial: false,
@@ -2284,19 +2322,12 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                     switch (ge.ErrorCode)
                     {
                         case ErrorCode.FencedMemberEpoch:
-                            // Reset generation so next EnsureActiveGroup sends MemberEpoch=0 (or -2 for static)
-                            _generationId = _options.GroupInstanceId is not null ? -2 : 0;
-                            _state = CoordinatorState.Unjoined;
-                            break;
-
                         case ErrorCode.UnknownMemberId:
-                            var lost = _assignedPartitions.ToList();
-                            if (lost.Count > 0)
-                            {
-                                await InvokePartitionsLostAsync(lost).ConfigureAwait(false);
-                            }
-
-                            ResetMemberState();
+                            await LoseMembershipFromHeartbeatAsync(
+                                ge.ErrorCode.Value,
+                                heartbeatMemberId,
+                                heartbeatMemberEpoch,
+                                cancellationToken).ConfigureAwait(false);
                             break;
 
                         case ErrorCode.UnreleasedInstanceId:
@@ -2437,19 +2468,92 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         await _rebalanceListenerLock.WaitAsync(CancellationToken.None).ConfigureAwait(false);
         try
         {
-            await InvokeRebalanceListenersAsync(
-                "OnPartitionsLost",
-                lost,
-                static (listener, partitions, token) => listener.OnPartitionsLostAsync(partitions, token),
-                static (listener, consumer, partitions, token) =>
-                    listener.OnPartitionsLostAsync(consumer, partitions, token),
-                [],
-                CancellationToken.None).ConfigureAwait(false);
+            await InvokePartitionsLostListenersAsync(lost).ConfigureAwait(false);
         }
         finally
         {
             _rebalanceListenerLock.Release();
         }
+    }
+
+    private ValueTask InvokePartitionsLostListenersAsync(IReadOnlyList<TopicPartition> lost) =>
+        InvokeRebalanceListenersAsync(
+            "OnPartitionsLost",
+            lost,
+            static (listener, partitions, token) => listener.OnPartitionsLostAsync(partitions, token),
+            static (listener, consumer, partitions, token) =>
+                listener.OnPartitionsLostAsync(consumer, partitions, token),
+            [],
+            CancellationToken.None);
+
+    /// <summary>
+    /// Fires <c>OnPartitionsLost</c> for partitions queued by <see cref="LoseMembership"/>.
+    /// The queue is taken under the listener lock, so whichever caller reports them does so
+    /// before any later assignment callback.
+    /// </summary>
+    private async ValueTask InvokePendingLostPartitionsAsync()
+    {
+        if (Volatile.Read(ref _pendingLostPartitions) is null)
+            return;
+
+        await _rebalanceListenerLock.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+        try
+        {
+            List<TopicPartition>? lost;
+            lock (_assignmentStateLock)
+            {
+                lost = _pendingLostPartitions;
+                _pendingLostPartitions = null;
+            }
+
+            if (lost is not null)
+                await InvokePartitionsLostListenersAsync(lost).ConfigureAwait(false);
+        }
+        finally
+        {
+            _rebalanceListenerLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// The heartbeat was answered FENCED_MEMBER_EPOCH or UNKNOWN_MEMBER_ID. Applies the loss
+    /// only to the membership the heartbeat was sent for: a foreground max-poll expiry or a
+    /// rejoin may have replaced it while the response was handled.
+    /// </summary>
+    private async ValueTask LoseMembershipFromHeartbeatAsync(
+        ErrorCode errorCode,
+        string? memberId,
+        int memberEpoch,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _lock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return;
+        }
+        catch (ObjectDisposedException)
+        {
+            return;
+        }
+
+        try
+        {
+            if (_state == CoordinatorState.Stable
+                && _generationId == memberEpoch
+                && ReferenceEquals(_memberId, memberId))
+            {
+                LoseMembership(errorCode);
+            }
+        }
+        finally
+        {
+            _lock.Release();
+        }
+
+        await InvokePendingLostPartitionsAsync().ConfigureAwait(false);
     }
 
     /// <summary>
@@ -2474,6 +2578,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         {
             _lock.Release();
         }
+
+        // A loss recorded just before the leave is still reported.
+        await InvokePendingLostPartitionsAsync().ConfigureAwait(false);
     }
 
     private async ValueTask SendConsumerProtocolLeaveRequestAsync(
