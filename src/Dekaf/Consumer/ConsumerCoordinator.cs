@@ -110,8 +110,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     // OnPartitionsAssigned first. The count lets the stable poll path check it with one read.
     private readonly ConcurrentQueue<PendingRebalanceCallback> _pendingRebalanceCallbacks = new();
     private int _pendingRebalanceCallbackCount;
-    // Advanced under _lock each time a join makes the member Stable and each time a fence ends a
-    // membership. A fence observed by a request sent under an earlier membership must not clear
+    // Advanced under _lock each time a join receives its response, before the new member id and
+    // epoch are written, and each time a fence ends a membership. A fence observed by a request sent under an earlier membership must not clear
     // the assignment of a newer one, and a commit must not send offsets taken under an earlier one.
     private int _membershipVersion;
     // Foreground assignment initialization and fetch waits are application poll activity. Track
@@ -1181,6 +1181,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                     });
                 }
 
+                // Volatile fields, read before the membership check below: a join advances the
+                // version before it writes the new member id and epoch, so a request that picked
+                // up the new identity is rejected there.
                 var request = new OffsetCommitRequest
                 {
                     GroupId = _options.GroupId!,
@@ -1946,6 +1949,12 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 request, version, TelemetryMetricCollector, cancellationToken).ConfigureAwait(false);
         }
 
+        // A join replaces the membership. Advance the version before the response's member id and
+        // epoch are written, so a commit that reads the new identity also sees the change and is
+        // rejected rather than sending offsets taken under the previous assignment.
+        if (!discardIfMembershipChanged)
+            Interlocked.Increment(ref _membershipVersion);
+
         // A steady heartbeat reports a fence without waiting for the locks, so stopping the loop
         // cannot discard it: the loop applies it under the state lock, checked against the
         // membership version this request was sent under.
@@ -2325,6 +2334,11 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         using var joinDeadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var joinToken = joinDeadline.Token;
 
+        // Queued callbacks describe earlier assignments; deliver them while those are still
+        // current, before the join publishes a newer one (a consumer-aware listener's scope is
+        // built from the published assignment).
+        await InvokePendingRebalanceCallbacksAsync(cancellationToken).ConfigureAwait(false);
+
         await _lock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -2397,8 +2411,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                         throw;
                     }
 
+                    // The membership version was advanced before the response was processed.
                     _state = CoordinatorState.Stable;
-                    Interlocked.Increment(ref _membershipVersion);
                     // _membershipFenced stays set until AcknowledgeAssignmentSync: the consumer
                     // has not yet dropped the offsets it stored for the lost partitions.
                     if (Volatile.Read(ref _foregroundPollActivityCount) != 0)

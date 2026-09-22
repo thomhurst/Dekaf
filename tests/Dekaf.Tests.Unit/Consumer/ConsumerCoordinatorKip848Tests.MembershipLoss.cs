@@ -291,7 +291,7 @@ public sealed partial class ConsumerCoordinatorKip848Tests
     }
 
     [Test]
-    public async Task MembershipLoss_RejoinCallbacksCancelledAfterTheJoin_AreDeliveredByTheNextPoll()
+    public async Task MembershipLoss_LostCallbackCancelledBeforeTheRejoin_IsDeliveredBeforeTheAssignment()
     {
         var script = new HeartbeatScript(this);
         var (recording, calls) = CreateRecordingListener();
@@ -311,8 +311,8 @@ public sealed partial class ConsumerCoordinatorKip848Tests
         await using var coordinator = await JoinAsync(script, listener);
         calls.Clear();
 
-        // A fenced member rejoins; the caller cancels while OnPartitionsLost runs, after the
-        // join has made the member Stable with its new assignment.
+        // A fenced member rejoins. The loss is reported before the join publishes anything, and
+        // the caller cancels while OnPartitionsLost runs.
         typeof(ConsumerCoordinator)
             .GetMethod("FenceMembership", BindingFlags.Instance | BindingFlags.NonPublic)!
             .Invoke(coordinator, [false]);
@@ -323,10 +323,10 @@ public sealed partial class ConsumerCoordinatorKip848Tests
         await lostEntered.Task.WaitAsync(timeout.Token);
         caller.Cancel();
         await Assert.That(async () => await join).Throws<OperationCanceledException>();
-        await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Stable);
-        await Assert.That(GetPrivateField<Task?>(coordinator, "_heartbeatTask") is not null).IsTrue();
+        await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Unjoined);
+        await Assert.That(coordinator.Assignment.Count).IsEqualTo(0);
 
-        // The next poll takes the stable path, and delivers the loss and then the assignment.
+        // The next poll reports the loss again, then rejoins and reports the assignment.
         await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, timeout.Token);
 
         await Assert.That(string.Join(" | ", calls)).IsEqualTo("lost:test-topic-0,test-topic-1 | assigned:test-topic-0");
@@ -811,6 +811,139 @@ public sealed partial class ConsumerCoordinatorKip848Tests
         await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.FencedMemberEpoch);
         await Assert.That(exception.IsRetriable).IsFalse();
         await Assert.That(committedEpochs.Count).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task CommitOffsetsAsync_BuiltWhileARejoinWritesTheNewIdentity_IsNotSent()
+    {
+        _metadataManager.SetApiVersion(ApiKey.OffsetCommit, 9, 9);
+        var script = new HeartbeatScript(this);
+        var commitCount = 0;
+        _connection.SendAsync<OffsetCommitRequest, OffsetCommitResponse>(
+                Arg.Any<OffsetCommitRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                Interlocked.Increment(ref commitCount);
+                return ValueTask.FromResult(new OffsetCommitResponse { Topics = [] });
+            });
+
+        // A commit (the auto-commit loop, say) starts under member-1 and is held at its
+        // connection lease. It builds its request while the rejoin is processing its response:
+        // the new member id and epoch are already written, the join has not yet returned.
+        var commitLeaseReached = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseCommitLease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var holdNextLease = 0;
+        _connectionPool.GetConnectionByIndexAsync(Arg.Any<int>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(_ => Interlocked.Exchange(ref holdNextLease, 0) == 1
+                ? HoldLeaseAsync()
+                : ValueTask.FromResult(_connection));
+        Task? commit = null;
+        var commitDuringRejoin = 0;
+        void OnPartitionsRevoking(IReadOnlyList<TopicPartition> revoked)
+        {
+            if (Interlocked.Exchange(ref commitDuringRejoin, 0) != 1)
+                return;
+
+            releaseCommitLease.SetResult();
+            try
+            {
+                commit!.Wait(TimeSpan.FromSeconds(30));
+            }
+            catch (AggregateException)
+            {
+                // Asserted below.
+            }
+        }
+
+        async ValueTask<IKafkaConnection> HoldLeaseAsync()
+        {
+            commitLeaseReached.TrySetResult();
+            await releaseCommitLease.Task;
+            return _connection;
+        }
+
+        SetupFindCoordinator();
+        script.Respond = (_, _) => Joined("member-1", memberEpoch: 5, CreateAssignment(TestTopicId, 0, 1));
+        var coordinator = new ConsumerCoordinator(
+            CreateConsumerProtocolOptions(),
+            _connectionPool,
+            _metadataManager,
+            logger: null,
+            getConnectionCount: null,
+            onPartitionsRevoked: null,
+            onPartitionsRevoking: OnPartitionsRevoking);
+        await using var coordinatorLifetime = coordinator;
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
+        await coordinator.StopHeartbeatAsync();
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        Volatile.Write(ref holdNextLease, 1);
+        commit = coordinator.CommitOffsetsAsync(
+            [new TopicPartitionOffset("test-topic", 0, 10)],
+            CancellationToken.None).AsTask();
+        await commitLeaseReached.Task.WaitAsync(timeout.Token);
+
+        // The coordinator was lost; the member rejoins as member-2 and loses partition 0.
+        coordinator.RequestRejoin();
+        Volatile.Write(ref commitDuringRejoin, 1);
+        script.Respond = (_, _) => Joined("member-2", memberEpoch: 9, CreateAssignment(TestTopicId, 1));
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, timeout.Token);
+
+        await Assert.That(coordinator.MemberId).IsEqualTo("member-2");
+        var failure = await Assert.That(async () => await commit.WaitAsync(timeout.Token)).Throws<GroupException>();
+        await Assert.That(failure!.ErrorCode).IsEqualTo(ErrorCode.FencedMemberEpoch);
+        await Assert.That(Volatile.Read(ref commitCount)).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task MembershipLoss_CallbacksQueuedBeforeARejoin_SeeTheirOwnAssignment()
+    {
+        var script = new HeartbeatScript(this);
+        var calls = new List<string>();
+        ConsumerCoordinator? coordinator = null;
+        var throwNextRevoked = 0;
+        var listener = Substitute.For<IRebalanceListener>();
+        listener.OnPartitionsLostAsync(Arg.Any<IEnumerable<TopicPartition>>(), Arg.Any<CancellationToken>())
+            .Returns(callInfo => Record("lost", callInfo.Arg<IEnumerable<TopicPartition>>()!));
+        listener.OnPartitionsAssignedAsync(Arg.Any<IEnumerable<TopicPartition>>(), Arg.Any<CancellationToken>())
+            .Returns(callInfo => Record("assigned", callInfo.Arg<IEnumerable<TopicPartition>>()!));
+        listener.OnPartitionsRevokedAsync(Arg.Any<IEnumerable<TopicPartition>>(), Arg.Any<CancellationToken>())
+            .Returns(callInfo => Interlocked.Exchange(ref throwNextRevoked, 0) == 1
+                ? ValueTask.FromException(new OperationCanceledException("listener gave up"))
+                : Record("revoked", callInfo.Arg<IEnumerable<TopicPartition>>()!));
+        coordinator = await JoinAsync(script, listener);
+        await using var coordinatorLifetime = coordinator;
+        lock (calls)
+            calls.Clear();
+
+        // A steady heartbeat revokes p1. The listener throws OperationCanceledException without
+        // the heartbeat being stopped, so the revocation stays queued and the loop gives up the
+        // coordinator, leaving the member to rejoin before any poll drains the queue.
+        Volatile.Write(ref throwNextRevoked, 1);
+        script.Respond = (_, _) => Joined("member-1", memberEpoch: 6, CreateAssignment(TestTopicId, 0));
+        await RunHeartbeatLoopUntilItStopsAsync(coordinator);
+        await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Unjoined);
+
+        script.Respond = (_, _) => Joined("member-1", memberEpoch: 7, CreateAssignment(TestTopicId, 1));
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
+
+        // The queued revocation sees the assignment it describes, not the rejoin's newer one.
+        await Assert.That(string.Join(" | ", calls)).IsEqualTo(
+            "revoked:test-topic-1@[test-topic-0] | " +
+            "revoked:test-topic-0@[test-topic-1] | assigned:test-topic-1@[test-topic-1]");
+
+        ValueTask Record(string callback, IEnumerable<TopicPartition> partitions)
+        {
+            static string Names(IEnumerable<TopicPartition> tps) => string.Join(
+                ',',
+                tps.OrderBy(static partition => partition.Partition)
+                    .Select(static partition => $"{partition.Topic}-{partition.Partition}"));
+            lock (calls)
+                calls.Add($"{callback}:{Names(partitions)}@[{Names(coordinator!.Assignment)}]");
+            return ValueTask.CompletedTask;
+        }
     }
 
     [Test]
