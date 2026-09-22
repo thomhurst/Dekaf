@@ -138,7 +138,7 @@ Callback semantics:
 | --- | --- | --- |
 | `OnPartitionsAssignedAsync` | After the group assigns partitions to this consumer. | Initialize partition-scoped state before records are processed. |
 | `OnPartitionsRevokedAsync` | During cooperative rebalance before ownership is transferred. | Commit only offsets for records that have completed processing, then dispose partition-scoped state. |
-| `OnPartitionsLostAsync` | After ownership was lost involuntarily, such as heartbeat timeout or unknown member recovery. | Do not commit offsets for lost partitions unless your application has a separate ownership guarantee. |
+| `OnPartitionsLostAsync` | After ownership was lost involuntarily: the max poll interval expired, or the coordinator fenced the member (fenced member epoch or unknown member, for example after its session expired during a coordinator outage). Fires before the partitions of the next assignment are reported as assigned. | Do not commit offsets for lost partitions unless your application has a separate ownership guarantee. Commits are rejected with `FencedMemberEpoch` until the consumer rejoins the group. |
 | `OnPartitionsStoppedAsync` | During graceful `CloseAsync` or `DisposeAsync`, after heartbeat, leader-refresh, auto-commit, and prefetch tasks stop and before final auto-commit, `LeaveGroup`, assignment cleanup, and resource disposal. | Drain local work if needed, commit completed offsets, then release resources. |
 
 Non-cancellation callback exceptions are logged and suppressed. The callback token
