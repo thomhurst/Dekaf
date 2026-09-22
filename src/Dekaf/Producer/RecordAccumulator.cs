@@ -1290,11 +1290,18 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     // See TransactionalAppendGeneration.
     private int _transactionalAppendGeneration;
 
+    /// <summary>
+    /// Passed in place of a captured <see cref="TransactionalAppendGeneration"/> by a
+    /// non-transactional produce: the append commit point skips the generation check.
+    /// </summary>
+    internal const int NoTransactionalGeneration = int.MinValue;
+
     internal Action? PurgeAppendWaitObservedForTest;
     internal Action? AfterLingerQueueSnapshotForTest;
     internal Action<TopicPartition>? AfterFlushPartitionVisitedForTest;
     internal Action? BeforeCompletedBatchEnqueueForTest;
     internal Action? BeforeCompletedBatchPublishForTest;
+    internal Action? BeforeAppendWorkerAppendForTest;
 
     /// <summary>
     /// True after CloseAsync has been called. Used by the sender loop to know
@@ -2690,7 +2697,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                             op.Topic, op.Partition, op.Timestamp,
                             op.Key, op.Value, op.Headers, op.HeaderCount,
                             op.CompletionSource, op.Callback, op.RecordSize, op.PartitionCount,
-                            drainable.AdmissionReservation);
+                            drainable.AdmissionReservation, op.TransactionalGeneration);
 
                         op.ReleasePendingCountAfterClaim();
                         op.CompleteResult(result);
@@ -3194,8 +3201,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 workItem.CancellationToken.ThrowIfCancellationRequested();
 
                 // Admitted before a transaction abort that has since started: the record belongs
-                // to the aborted transaction and must not join whatever follows it.
-                if (workItem.TransactionalGeneration != Volatile.Read(ref _transactionalAppendGeneration))
+                // to the aborted transaction and must not join whatever follows it. This early
+                // exit only saves the memory reservation; the append commit point validates the
+                // generation again under the partition lock, which is what makes it binding.
+                if (workItem.TransactionalGeneration != NoTransactionalGeneration
+                    && workItem.TransactionalGeneration != Volatile.Read(ref _transactionalAppendGeneration))
                 {
                     CleanupWorkItemResources(in workItem);
                     PooledCompletionSource.TrySetException(
@@ -3204,6 +3214,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     continue;
                 }
 
+                BeforeAppendWorkerAppendForTest?.Invoke();
                 appendStarted = true;
                 var appendTask = AppendAsync(
                     workItem.Topic,
@@ -3216,7 +3227,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     workItem.Completion,
                     null,
                     workItem.CancellationToken,
-                    partitionCount: workItem.PartitionCount);
+                    partitionCount: workItem.PartitionCount,
+                    transactionalGeneration: workItem.TransactionalGeneration);
 
                 if (!await appendTask.ConfigureAwait(false))
                 {
@@ -3301,7 +3313,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         var workerIndex = (int)((uint)partition % (uint)_appendWorkerCount);
         var workItem = new AppendWorkItem(topic, partition, partitionCount, timestamp, key, value,
             headers, headerCount, completion,
-            transactionalGeneration ?? TransactionalAppendGeneration, cancellationToken);
+            transactionalGeneration ?? NoTransactionalGeneration, cancellationToken);
 
         IncrementSlowPathAppendCount(topic, partition);
         if (!_appendWorkerChannels[workerIndex].Writer.TryWrite(workItem))
@@ -3642,7 +3654,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         PooledValueTaskSource<RecordMetadata>? completionSource,
         Action<RecordMetadata, Exception?>? callback,
         CancellationToken cancellationToken,
-        int partitionCount = 0)
+        int partitionCount = 0,
+        int transactionalGeneration = NoTransactionalGeneration)
     {
         if (Volatile.Read(ref _disposed) != 0)
             return new ValueTask<bool>(false);
@@ -3669,12 +3682,13 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         if (TryAdmitAndReserve(pd, topic, partition, recordSize, out var admissionReservation))
             return new ValueTask<bool>(AppendPooledAfterReservationCore(pd, topic, partition, timestamp, key, value,
                 headers, headerCount, completionSource, callback, recordSize, partitionCount,
-                admissionReservation));
+                admissionReservation, transactionalGeneration));
 
         // Cold path: buffer full or broker over budget — enqueue pooled PendingAppend
         // (zero async state machine allocation)
         return AppendSlowPathPooled(topic, partition, timestamp, key, value,
-            headers, headerCount, completionSource, callback, recordSize, cancellationToken, partitionCount);
+            headers, headerCount, completionSource, callback, recordSize, cancellationToken, partitionCount,
+            transactionalGeneration);
     }
 
     private bool AppendPooledAfterReservationCore(
@@ -3690,7 +3704,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         Action<RecordMetadata, Exception?>? callback,
         int recordSize,
         int partitionCount,
-        AdmissionReservation admissionReservation)
+        AdmissionReservation admissionReservation,
+        int transactionalGeneration = NoTransactionalGeneration)
     {
         var topicPartition = new TopicPartition(topic, partition);
         ReadyBatch? sealedBatchToEnqueue = null;
@@ -3738,8 +3753,16 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 {
                     using var guard = new SpinLockGuard(ref pd.Lock);
 
+                    // A queued produce admitted before an abort that has since started (or even
+                    // finished and reopened appends) carries a stale generation and is rejected
+                    // here, at the commit point, not only when the worker dequeued it. The abort
+                    // advances the generation before its purge takes this lock, so the check and
+                    // the commit cannot straddle an abort. Non-transactional appends pass
+                    // NoTransactionalGeneration and skip it.
                     if (Volatile.Read(ref _disposed) != 0
-                        || Volatile.Read(ref _transactionalAppendsClosed) != 0)
+                        || Volatile.Read(ref _transactionalAppendsClosed) != 0
+                        || (transactionalGeneration != NoTransactionalGeneration
+                            && transactionalGeneration != Volatile.Read(ref _transactionalAppendGeneration)))
                     {
                         batchToReturn = rentedBatch;
                         rentedBatch = null;
@@ -3955,7 +3978,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         Action<RecordMetadata, Exception?>? callback,
         int recordSize,
         CancellationToken cancellationToken,
-        int partitionCount = 0)
+        int partitionCount = 0,
+        int transactionalGeneration = NoTransactionalGeneration)
     {
         if (Volatile.Read(ref _disposed) != 0)
         {
@@ -3979,6 +4003,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         op.Initialize(topic, partition, partitionCount, timestamp, key, value, headers, headerCount,
             completionSource, callback, recordSize, startTicks, deadline,
             this, _pendingAppendPool, cancellationToken);
+        op.TransactionalGeneration = transactionalGeneration;
 
         bool wasQueueEmpty = false;
         bool enqueueRejected;

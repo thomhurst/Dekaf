@@ -5812,18 +5812,26 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     /// reopens appends. The generation is read before the state: an abort writes
     /// AbortingTransaction before it advances the generation, so a produce that sees any other
     /// state holds the pre-abort value, and one that sees AbortingTransaction (admitted just before
-    /// the abort began) gets a value that no generation will ever match again. Slow paths only.
+    /// the abort began) gets a value that no generation will ever match again. A non-transactional
+    /// producer gets <see cref="RecordAccumulator.NoTransactionalGeneration"/>, which every check
+    /// skips. Slow paths only.
     /// </summary>
     private int CaptureTransactionalAppendGeneration()
     {
+        if (_options.TransactionalId is null)
+            return RecordAccumulator.NoTransactionalGeneration;
+
         var generation = _accumulator.TransactionalAppendGeneration;
         return _transactionState == TransactionState.AbortingTransaction ? generation - 1 : generation;
     }
 
     private void ThrowIfTransactionAbortedSince(int generation)
     {
-        if (generation != _accumulator.TransactionalAppendGeneration)
+        if (generation != RecordAccumulator.NoTransactionalGeneration
+            && generation != _accumulator.TransactionalAppendGeneration)
+        {
             throw RecordAccumulator.CreateStaleTransactionalAppendException();
+        }
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]

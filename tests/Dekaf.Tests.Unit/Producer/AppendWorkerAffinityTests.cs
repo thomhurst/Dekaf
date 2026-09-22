@@ -165,6 +165,67 @@ public class AppendWorkerAffinityTests
         await producer.DisposeAsync();
     }
 
+    /// <summary>
+    /// The worker passes its early generation check, and then a whole abort (close, purge,
+    /// reopen) runs before it appends. The generation carried into the append is validated again
+    /// at the commit point under the partition lock, so the record is rejected with
+    /// TransactionAborted instead of joining whatever follows the abort.
+    /// </summary>
+    [Test]
+    [Timeout(120_000)]
+    public async Task AppendWorker_AbortBetweenTheWorkerCheckAndTheAppend_RejectsAtTheCommitPoint(
+        CancellationToken cancellationToken)
+    {
+        await using var pool = new ValueTaskSourcePool<RecordMetadata>();
+        await using var producer = (KafkaProducer<string, string>)Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithClientId("append-worker-commit-generation-test")
+            .WithBufferMemory(ulong.MaxValue)
+            .WithBatchSize(1_048_576)
+            .WithLinger(TimeSpan.Zero)
+            .WithCloseTimeout(TimeSpan.FromMilliseconds(100))
+            .Build();
+        await producer.StopSenderLoopsForTestingAsync();
+
+        var accumulator = producer.RecordAccumulator;
+        var abortRan = 0;
+        accumulator.BeforeAppendWorkerAppendForTest = () =>
+        {
+            // A whole abort cycle between the worker's check and its append.
+            if (Interlocked.Exchange(ref abortRan, 1) == 0)
+            {
+                accumulator.CloseTransactionalAppends();
+                accumulator.ReopenTransactionalAppends();
+            }
+        };
+
+        var completion = pool.Rent();
+        var task = completion.Task.AsTask();
+        accumulator.EnqueueAppend(
+            "test-topic",
+            partition: 0,
+            timestamp: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            key: PooledMemory.Null,
+            value: LeakGateHarness.RentPooled(16, seed: 1),
+            headers: null,
+            headerCount: 0,
+            completion: completion,
+            cancellationToken: CancellationToken.None,
+            transactionalGeneration: accumulator.TransactionalAppendGeneration);
+
+        // Before the commit-point check the record was appended and its delivery never completed.
+        var exception = await Assert.That(async () => await task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken))
+            .Throws<Dekaf.Errors.ProduceException>();
+        await Assert.That(exception!.Kind).IsEqualTo(Dekaf.Errors.ProduceErrorKind.TransactionAborted);
+        var deques = GetPartitionDeques(accumulator);
+        var tp = new TopicPartition("test-topic", 0);
+        await Assert.That(HasBatchForPartition(deques, tp)).IsFalse();
+        await Assert.That(accumulator.BufferedBytes).IsEqualTo(0);
+
+        accumulator.BeforeAppendWorkerAppendForTest = null;
+        await producer.DisposeAsync();
+    }
+
     [Test]
     [Timeout(120_000)]
     public async Task DisposeAsync_FaultsBackpressuredAppendQueueAndClearsOwnership(
