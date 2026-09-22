@@ -411,6 +411,15 @@ public sealed class AdminClientTransportFaultTests
         await Assert.That(deleted).IsEmpty();
     }
 
+    [Test]
+    public async Task WithDefaultApiTimeout_BelowOneMillisecond_Throws()
+    {
+        await Assert.That(() => new AdminClientBuilder().WithDefaultApiTimeout(TimeSpan.Zero))
+            .Throws<ArgumentOutOfRangeException>();
+        await Assert.That(() => new AdminClientOptions { DefaultApiTimeoutMs = 0 })
+            .Throws<ArgumentOutOfRangeException>();
+    }
+
     private static ValueTask AddVoterAsync(AdminClient admin) => admin.AddRaftVoterAsync(
         voterId: 2,
         voterDirectoryId: Guid.NewGuid(),
