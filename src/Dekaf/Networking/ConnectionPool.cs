@@ -625,16 +625,16 @@ public sealed partial class ConnectionPool :
                 ThrowIfGroupConnectionDisconnected(connections[i], brokerId);
             }
 
-            ThrowIfBrokerEndpointChanged(brokerId, brokerInfo.Host, brokerInfo.Port);
-
-            // Atomically set the connection group
+            // Atomically set the connection group. From here the pool owns the connections:
+            // a broker that moved meanwhile retires them instead of the finally block.
             _connectionGroupsById[brokerId] = connections;
+            success = true;
+            ThrowIfBrokerMovedAfterPublish(brokerId, brokerInfo.Host, brokerInfo.Port);
+
             ResetReconnectBackoff(setupKey, brokerId, brokerInfo.Host, brokerInfo.Port);
             ResetConnectionSetupTimeout(setupKey);
 
             LogCreatedConnectionGroup(initialCount, brokerId);
-
-            success = true;
             return connections[0];
         }
         catch (Exception ex) when (!cancellationToken.IsCancellationRequested
@@ -763,14 +763,12 @@ public sealed partial class ConnectionPool :
                     var connection = await tasks[i].ConfigureAwait(false);
                     ThrowIfGroupConnectionDisconnected(connection, brokerId);
                 }
-
-                ThrowIfBrokerEndpointChanged(brokerId, brokerInfo.Host, brokerInfo.Port);
             }
             catch (Exception ex)
             {
                 // Close any successfully created connections to avoid leaking TCP handles.
                 await DisposeCompletedTaskConnectionsAsync(tasks).ConfigureAwait(false);
-                if (!cancellationToken.IsCancellationRequested && ex is not BrokerEndpointChangedException)
+                if (!cancellationToken.IsCancellationRequested)
                     RecordConnectionAttemptFailure(
                         setupKey, brokerId, brokerInfo.Host, brokerInfo.Port, ex.Message);
                 throw;
@@ -783,8 +781,10 @@ public sealed partial class ConnectionPool :
             for (var i = 0; i < additionalCount; i++)
                 newGroup[existingCount + i] = tasks[i].Result;
 
-            // Atomically swap the connection group
+            // Atomically swap the connection group; a broker that moved meanwhile retires it.
             _connectionGroupsById[brokerId] = newGroup;
+            ThrowIfBrokerMovedAfterPublish(brokerId, brokerInfo.Host, brokerInfo.Port);
+
             ResetReconnectBackoff(setupKey, brokerId, brokerInfo.Host, brokerInfo.Port);
             ResetConnectionSetupTimeout(setupKey);
 
@@ -970,6 +970,7 @@ public sealed partial class ConnectionPool :
 
             var endpointChanged = false;
             BrokerInfo currentBroker = default;
+            IKafkaConnection[]? storedGroup = null;
             try
             {
                 // A broker that moved during this setup had its group removed; a sibling may
@@ -987,6 +988,7 @@ public sealed partial class ConnectionPool :
                     if (oldConnection is not null)
                         BeginConnectionRetirement(oldConnection);
                     connections[index] = connection;
+                    storedGroup = connections;
                     stored = true;
                 }
             }
@@ -1012,6 +1014,27 @@ public sealed partial class ConnectionPool :
 
                 throw new KafkaException(
                     $"Connection slot {index} for broker {brokerId} was removed by a concurrent shrink");
+            }
+
+            // The move's retirement scan may have run between the check above and the store.
+            // A group still published under the ID is retired here (exact removal, so the scan
+            // and this call may both run); an array the scan already removed is unreachable
+            // for retirement, so the slot written into it is disposed directly. Disposal is
+            // idempotent, which covers a scan that ran after the store and retired it already.
+            if (HasBrokerEndpointChanged(brokerId, brokerInfo.Host, brokerInfo.Port, out currentBroker))
+            {
+                if (_connectionGroupsById.TryGetValue(brokerId, out var publishedGroup)
+                    && ReferenceEquals(publishedGroup, storedGroup))
+                {
+                    RetireBrokerConnections(brokerId, brokerInfo);
+                }
+                else
+                {
+                    await connection.DisposeAsync().ConfigureAwait(false);
+                }
+
+                throw new BrokerEndpointChangedException(
+                    brokerId, brokerInfo.Host, brokerInfo.Port, currentBroker.Host, currentBroker.Port);
             }
 
             var setupKey = new ConnectionSetupKey(brokerId, brokerInfo.Host, brokerInfo.Port);
@@ -1273,21 +1296,11 @@ public sealed partial class ConnectionPool :
 
         // Publish only after the hard setup deadline has accepted the result. A factory
         // that ignores cancellation may finish late, but that connection is never visible.
-        try
-        {
-            ThrowIfBrokerEndpointChanged(brokerId, host, port);
-        }
-        catch (BrokerEndpointChangedException)
-        {
-            try { await connection.DisposeAsync().ConfigureAwait(false); }
-            catch { /* best-effort cleanup of a connection to a previous endpoint */ }
-            throw;
-        }
-
         _connectionsByEndpoint[endpoint] = connection;
         if (brokerId >= 0)
             _connectionsById[brokerId] = connection;
 
+        ThrowIfBrokerMovedAfterPublish(brokerId, host, port);
         return connection;
     }
 
@@ -2283,15 +2296,19 @@ public sealed partial class ConnectionPool :
         && StringComparer.OrdinalIgnoreCase.Equals(left.Host, right.Host);
 
     /// <summary>
-    /// Guards every publish of a finished setup. <see cref="RetireBrokerConnections"/> only sees
-    /// connections that are already published, so a setup that started before a
-    /// <see cref="RegisterBroker"/> moved the broker and finished after it would otherwise
-    /// publish a socket to the previous endpoint. Callers dispose the connection on throw.
+    /// Runs after a finished setup has been published. <see cref="RegisterBroker"/> updates the
+    /// registration and then retires what is published; a publish that lands after that scan
+    /// is found only here. Publishing before reading the registration on this side, and
+    /// updating it before scanning on that side, guarantees that at least one side sees the
+    /// other, and retirement removes exact entries, so both may run for the same connection.
     /// </summary>
-    private void ThrowIfBrokerEndpointChanged(int brokerId, string host, int port)
+    private void ThrowIfBrokerMovedAfterPublish(int brokerId, string host, int port)
     {
-        if (HasBrokerEndpointChanged(brokerId, host, port, out var current))
-            throw new BrokerEndpointChangedException(brokerId, host, port, current.Host, current.Port);
+        if (!HasBrokerEndpointChanged(brokerId, host, port, out var current))
+            return;
+
+        RetireBrokerConnections(brokerId, new BrokerInfo(brokerId, host, port));
+        throw new BrokerEndpointChangedException(brokerId, host, port, current.Host, current.Port);
     }
 
     private bool HasBrokerEndpointChanged(int brokerId, string host, int port, out BrokerInfo current)

@@ -672,6 +672,72 @@ public sealed class ConnectionPoolTests
     }
 
     [Test]
+    [NotInParallel]
+    [Timeout(10_000)]
+    public async Task GetConnectionAsync_SetupPublishesInsideRegistrationWindow_RetiresItself(
+        CancellationToken cancellationToken)
+    {
+        // RegisterBroker updates the registration, then scans what is published. A setup that
+        // publishes between those two steps is invisible to the scan and must retire itself.
+        var setupEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseSetup = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var registrationUpdated = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseRegistration = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var connections = new List<IKafkaConnection>();
+        var pool = new ConnectionPool(
+            clientId: "test-client",
+            connectionOptions: new ConnectionOptions(),
+            connectionsPerBroker: 1,
+            connectionFactory: async (brokerId, host, port, _, factoryToken) =>
+            {
+                var connection = CreateConnectedConnection(brokerId, host, port);
+                connections.Add(connection);
+                if (host == "host-a")
+                {
+                    setupEntered.TrySetResult();
+                    await releaseSetup.Task.WaitAsync(factoryToken);
+                }
+
+                return connection;
+            },
+            brokerEndpointUpdated: () =>
+            {
+                registrationUpdated.TrySetResult();
+                releaseRegistration.Task.GetAwaiter().GetResult();
+            });
+
+        await using (pool)
+        {
+            pool.RegisterBroker(1, "host-a", 9092);
+            var staleAttempt = pool.GetConnectionAsync(1, cancellationToken).AsTask();
+            await setupEntered.Task.WaitAsync(cancellationToken);
+
+            var registration = Task.Run(
+                () => pool.RegisterBroker(1, "host-b", 9093),
+                cancellationToken);
+            try
+            {
+                await registrationUpdated.Task.WaitAsync(cancellationToken);
+                releaseSetup.SetResult();
+
+                await Assert.That(async () => await staleAttempt).Throws<BrokerEndpointChangedException>();
+                await connections[0].Received(1).DisposeAsync();
+            }
+            finally
+            {
+                releaseRegistration.TrySetResult();
+            }
+
+            await registration.WaitAsync(cancellationToken);
+            var current = await pool.GetConnectionAsync(1, cancellationToken);
+            await Assert.That(current.Host).IsEqualTo("host-b");
+            await Assert.That(await pool.GetConnectionAsync(1, cancellationToken)).IsSameReferenceAs(current);
+        }
+
+        await Assert.That(connections).Count().IsEqualTo(2);
+    }
+
+    [Test]
     [Timeout(10_000)]
     public async Task GetConnectionByIndexAsync_EndpointChangesDuringReplacement_DiscardsConnectionToPreviousEndpoint(
         CancellationToken cancellationToken)
