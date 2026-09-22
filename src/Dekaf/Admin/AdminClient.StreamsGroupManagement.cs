@@ -147,7 +147,7 @@ public sealed partial class AdminClient
 
         try
         {
-            return await WithRetryAsync<IReadOnlyDictionary<string, StreamsGroupOffsetsResult>>(async () =>
+            return await WithCountedRetryAsync<IReadOnlyDictionary<string, StreamsGroupOffsetsResult>>(async () =>
             {
                 retryErrors.Clear();
                 Exception? retryFailure = null;
@@ -616,7 +616,7 @@ public sealed partial class AdminClient
 
         try
         {
-            return await WithRetryAsync<IReadOnlyDictionary<TopicPartition, StreamsGroupOffsetOperationResult>>(async () =>
+            return await WithCountedRetryAsync<IReadOnlyDictionary<TopicPartition, StreamsGroupOffsetOperationResult>>(async () =>
             {
                 retryErrors.Clear();
                 int coordinatorId;
@@ -768,7 +768,7 @@ public sealed partial class AdminClient
 
         try
         {
-            return await WithRetryAsync<IReadOnlyDictionary<TopicPartition, StreamsGroupOffsetOperationResult>>(async () =>
+            return await WithCountedRetryAsync<IReadOnlyDictionary<TopicPartition, StreamsGroupOffsetOperationResult>>(async () =>
             {
                 retryErrors.Clear();
                 var pending = partitions.Where(partition => !results.ContainsKey(partition)).ToArray();
@@ -911,7 +911,7 @@ public sealed partial class AdminClient
 
         try
         {
-            return await WithRetryAsync<IReadOnlyDictionary<string, DeleteStreamsGroupResult>>(async () =>
+            return await WithCountedRetryAsync<IReadOnlyDictionary<string, DeleteStreamsGroupResult>>(async () =>
             {
                 retryErrors.Clear();
                 Exception? retryFailure = null;

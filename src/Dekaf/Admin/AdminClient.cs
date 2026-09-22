@@ -45,6 +45,8 @@ public sealed partial class AdminClient :
     private readonly bool _ownsResources;
     private int _telemetryStartAttempted;
     private int _disposed;
+    private Func<bool>? _isDisposed;
+    private Func<Exception, CancellationToken, ValueTask>? _refreshControllerForRetry;
 
     public AdminClient(AdminClientOptions options, ILoggerFactory? loggerFactory = null, MetadataOptions? metadataOptions = null)
     {
@@ -2515,7 +2517,7 @@ public sealed partial class AdminClient :
             }
 
             return result;
-        }, cancellationToken).ConfigureAwait(false);
+        }, cancellationToken, opts.TimeoutMs).ConfigureAwait(false);
     }
 
     private static List<AlterPartitionReassignmentsRequestTopic> BuildAlterPartitionReassignmentTopics(
@@ -3294,7 +3296,7 @@ public sealed partial class AdminClient :
             }
 
             return result;
-        }, cancellationToken).ConfigureAwait(false);
+        }, cancellationToken, opts.TimeoutMs).ConfigureAwait(false);
     }
 
     public async ValueTask AlterConfigsAsync(
@@ -3829,7 +3831,7 @@ public sealed partial class AdminClient :
             }
 
             return (IReadOnlyDictionary<TopicPartition, ListOffsetsResultInfo>)result;
-        }, cancellationToken).ConfigureAwait(false);
+        }, cancellationToken, opts.TimeoutMs).ConfigureAwait(false);
     }
 
     private static ListOffsetsQuery GetListOffsetsQuery(TopicPartitionOffsetSpec spec)
@@ -5267,43 +5269,84 @@ public sealed partial class AdminClient :
         }
     }
 
-    private ValueTask WithRetryAsync(Func<ValueTask> operation, CancellationToken cancellationToken)
-        => _controllerMetadataManager is null
-            ? RetryHelper.WithRetryAsync(
-                operation,
-                _metadataManager,
-                cancellationToken,
-                _options.RetryBackoffMs,
-                _options.RetryBackoffMaxMs)
-            : WithControllerRetryAsync(operation, cancellationToken);
+    /// <summary>
+    /// Retry budget for an admin call without a per-call timeout. Matches Java's
+    /// <c>default.api.timeout.ms</c>.
+    /// </summary>
+    internal const int DefaultApiTimeoutMs = 60_000;
 
-    private ValueTask<T> WithRetryAsync<T>(Func<ValueTask<T>> operation, CancellationToken cancellationToken)
-        => _controllerMetadataManager is null
+    // Transport failures (a broker that refuses connections or drops them) are retried until
+    // the call's API timeout, not for a fixed number of attempts: a broker killed without a
+    // clean shutdown stays in cluster metadata until its session expires, and a count-bounded
+    // retry spends every attempt inside that window and surfaces a raw socket exception. Errors
+    // a broker answered with keep the RetryHelper.MaxRetries bound. Mutations that cannot be
+    // replayed safely detect a lost response inside their operation.
+    private ValueTask WithRetryAsync(
+        Func<ValueTask> operation,
+        CancellationToken cancellationToken,
+        int timeoutMs = 0,
+        [CallerMemberName] string operationName = "")
+    {
+        var deadline = CreateRetryDeadline(operationName, timeoutMs);
+        return _controllerMetadataManager is null
             ? RetryHelper.WithRetryAsync(
                 operation,
                 _metadataManager,
                 cancellationToken,
                 _options.RetryBackoffMs,
-                _options.RetryBackoffMaxMs)
-            : WithControllerRetryAsync(operation, cancellationToken);
+                _options.RetryBackoffMaxMs,
+                deadline: deadline)
+            : WithControllerRetryAsync(operation, deadline, cancellationToken);
+    }
+
+    private ValueTask<T> WithRetryAsync<T>(
+        Func<ValueTask<T>> operation,
+        CancellationToken cancellationToken,
+        int timeoutMs = 0,
+        [CallerMemberName] string operationName = "")
+    {
+        var deadline = CreateRetryDeadline(operationName, timeoutMs);
+        return _controllerMetadataManager is null
+            ? RetryHelper.WithRetryAsync(
+                operation,
+                _metadataManager,
+                cancellationToken,
+                _options.RetryBackoffMs,
+                _options.RetryBackoffMaxMs,
+                deadline: deadline)
+            : WithControllerRetryAsync(operation, deadline, cancellationToken);
+    }
+
+    // For per-group result APIs (Streams group offsets and deletion) that report a group whose
+    // coordinator stays unreachable as that group's error after RetryHelper.MaxRetries, so the
+    // rest of the batch still returns promptly. They are rejected on controller bootstrap.
+    private ValueTask<T> WithCountedRetryAsync<T>(Func<ValueTask<T>> operation, CancellationToken cancellationToken) =>
+        RetryHelper.WithRetryAsync(
+            operation,
+            _metadataManager,
+            cancellationToken,
+            _options.RetryBackoffMs,
+            _options.RetryBackoffMaxMs);
+
+    private RetryDeadline CreateRetryDeadline(string operationName, int timeoutMs) =>
+        new(
+            operationName,
+            TimeSpan.FromMilliseconds(timeoutMs > 0 ? timeoutMs : DefaultApiTimeoutMs),
+            _isDisposed ??= () => Volatile.Read(ref _disposed) != 0);
 
     private async ValueTask WithControllerRetryAsync(
         Func<ValueTask> operation,
+        RetryDeadline deadline,
         CancellationToken cancellationToken)
     {
-        for (var attempt = 0; ; attempt++)
-        {
-            try
+        await WithControllerRetryAsync(
+            async () =>
             {
                 await operation().ConfigureAwait(false);
-                return;
-            }
-            catch (Exception ex) when (RetryHelper.IsRetriableRequestFailure(ex) && attempt < RetryHelper.MaxRetries)
-            {
-                await RefreshControllerForRetryAsync(cancellationToken).ConfigureAwait(false);
-                await DelayForRetryAsync(attempt, cancellationToken).ConfigureAwait(false);
-            }
-        }
+                return true;
+            },
+            deadline,
+            cancellationToken).ConfigureAwait(false);
     }
 
     private static void EnsureControllerOperationSupported(string operation)
@@ -5337,23 +5380,18 @@ public sealed partial class AdminClient :
             $"Admin operation {operation} is not supported when using controller bootstrap endpoints.");
     }
 
-    private async ValueTask<T> WithControllerRetryAsync<T>(
+    private ValueTask<T> WithControllerRetryAsync<T>(
         Func<ValueTask<T>> operation,
-        CancellationToken cancellationToken)
-    {
-        for (var attempt = 0; ; attempt++)
-        {
-            try
-            {
-                return await operation().ConfigureAwait(false);
-            }
-            catch (Exception ex) when (RetryHelper.IsRetriableRequestFailure(ex) && attempt < RetryHelper.MaxRetries)
-            {
-                await RefreshControllerForRetryAsync(cancellationToken).ConfigureAwait(false);
-                await DelayForRetryAsync(attempt, cancellationToken).ConfigureAwait(false);
-            }
-        }
-    }
+        RetryDeadline deadline,
+        CancellationToken cancellationToken) =>
+        RetryHelper.WithRetryUntilDeadlineAsync(
+            operation,
+            _refreshControllerForRetry ??= (_, token) => RefreshControllerForRetryAsync(token),
+            _options.RetryBackoffMs,
+            _options.RetryBackoffMaxMs,
+            RetryHelper.MaxRetries,
+            deadline,
+            cancellationToken);
 
     private async ValueTask RefreshControllerForRetryAsync(CancellationToken cancellationToken)
     {
@@ -5370,15 +5408,6 @@ public sealed partial class AdminClient :
         {
             // Best effort: retain the operation's typed failure if discovery remains unavailable.
         }
-    }
-
-    private ValueTask DelayForRetryAsync(int attempt, CancellationToken cancellationToken)
-    {
-        var delayMs = ExponentialRetryBackoff.CalculateDelayMilliseconds(
-            _options.RetryBackoffMs,
-            _options.RetryBackoffMaxMs,
-            attempt + 1);
-        return new ValueTask(Task.Delay(delayMs, cancellationToken));
     }
 
     private static WriteTxnMarkersResponsePartition FindAbortTransactionPartition(

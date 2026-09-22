@@ -107,7 +107,7 @@ public sealed partial class AdminClient
                     pending = retry!;
                     throw retryFailure;
                 }
-            }, token).ConfigureAwait(false);
+            }, token, timeoutMs, protocol.Operation).ConfigureAwait(false);
         }
         catch (Exception exception) when (IsDetailedMutationFailure(exception))
         {

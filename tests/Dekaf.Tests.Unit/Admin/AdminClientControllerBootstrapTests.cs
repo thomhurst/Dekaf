@@ -461,6 +461,29 @@ public sealed class AdminClientControllerBootstrapTests
     }
 
     [Test]
+    public async Task DescribeMetadataQuorumAsync_TransportFailuresBeyondRetryCount_SucceedsWithinApiTimeout()
+    {
+        await using var context = new ControllerAdminContext();
+        var calls = 0;
+        context.ActiveController.SendAsync<DescribeQuorumRequest, DescribeQuorumResponse>(
+                Arg.Any<DescribeQuorumRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                if (Interlocked.Increment(ref calls) <= 5)
+                    throw new System.Net.Sockets.SocketException((int)System.Net.Sockets.SocketError.ConnectionRefused);
+
+                return ValueTask.FromResult(CreateQuorumResponse(leaderId: 2));
+            });
+
+        var result = await context.Client.DescribeMetadataQuorumAsync();
+
+        await Assert.That(result.LeaderId).IsEqualTo(2);
+        await Assert.That(calls).IsEqualTo(6);
+    }
+
+    [Test]
     public async Task DescribeBrokerLoggerConfig_TargetsRequestedPhysicalController()
     {
         await using var context = new ControllerAdminContext();

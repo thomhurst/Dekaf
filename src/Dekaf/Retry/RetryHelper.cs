@@ -182,7 +182,7 @@ internal static class RetryHelper
     /// When the token ends the wait, the <see cref="OperationCanceledException"/> carries that
     /// failure as its inner exception so the owner of the token can report the cause.
     /// </summary>
-    private static async ValueTask<T> WithRetryUntilDeadlineAsync<T>(
+    private static ValueTask<T> WithRetryUntilDeadlineAsync<T>(
         Func<ValueTask<T>> operation,
         MetadataManager metadataManager,
         int retryBackoffMs,
@@ -190,6 +190,38 @@ internal static class RetryHelper
         Func<CancellationToken, ValueTask>? onRetry,
         int maxRetries,
         Func<KafkaException, bool>? shouldRefreshMetadata,
+        RetryDeadline deadline,
+        CancellationToken cancellationToken) =>
+        WithRetryUntilDeadlineAsync(
+            operation,
+            async (failure, token) =>
+            {
+                if (failure is not KafkaException kafkaException ||
+                    shouldRefreshMetadata?.Invoke(kafkaException) != false)
+                {
+                    await RefreshMetadataForRetryAsync(metadataManager, token).ConfigureAwait(false);
+                }
+
+                if (onRetry is not null)
+                    await onRetry(token).ConfigureAwait(false);
+            },
+            retryBackoffMs,
+            retryBackoffMaxMs,
+            maxRetries,
+            deadline,
+            cancellationToken);
+
+    /// <summary>
+    /// Deadline mode with a caller-supplied recovery step, for callers whose routing is not
+    /// held by a <see cref="MetadataManager"/> (an admin client bootstrapped from controllers).
+    /// <paramref name="recover"/> runs after each retriable failure, before the backoff.
+    /// </summary>
+    internal static async ValueTask<T> WithRetryUntilDeadlineAsync<T>(
+        Func<ValueTask<T>> operation,
+        Func<Exception, CancellationToken, ValueTask> recover,
+        int retryBackoffMs,
+        int retryBackoffMaxMs,
+        int maxRetries,
         RetryDeadline deadline,
         CancellationToken cancellationToken)
     {
@@ -212,7 +244,7 @@ internal static class RetryHelper
                         // through stale metadata fails the same way the request did, and must
                         // consume the budget rather than escape it.
                         recovering = true;
-                        await RecoverAsync(lastFailure!).ConfigureAwait(false);
+                        await recover(lastFailure!, cancellationToken).ConfigureAwait(false);
                         recovering = false;
                         recoveryOwed = false;
                     }
@@ -240,7 +272,7 @@ internal static class RetryHelper
                         // room for it, not after a backoff that may spend the rest of it.
                         try
                         {
-                            await RecoverAsync(ex).ConfigureAwait(false);
+                            await recover(ex, cancellationToken).ConfigureAwait(false);
                             recoveryOwed = false;
                         }
                         catch (Exception recoveryFailure) when (IsRetriableUntilDeadline(recoveryFailure, deadline))
@@ -292,18 +324,6 @@ internal static class RetryHelper
                 deadline.Budget,
                 $"{deadline.Operation} did not complete within {(int)deadline.Budget.TotalMilliseconds}ms: {failure.Message}",
                 failure);
-        }
-
-        async ValueTask RecoverAsync(Exception failure)
-        {
-            if (failure is not KafkaException kafkaException ||
-                shouldRefreshMetadata?.Invoke(kafkaException) != false)
-            {
-                await RefreshMetadataForRetryAsync(metadataManager, cancellationToken).ConfigureAwait(false);
-            }
-
-            if (onRetry is not null)
-                await onRetry(cancellationToken).ConfigureAwait(false);
         }
     }
 
