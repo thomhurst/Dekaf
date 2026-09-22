@@ -5377,9 +5377,14 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     {
         // Serialized with the enrollment-failure transition (and other senders' reports) so a
         // concurrent abortable report cannot overwrite a fatal one.
+        var fatal = TransactionErrorClassifier.ClassifyFailedBatch(errorCode) == TransactionErrorClassification.Fatal;
         lock (_partitionsInTransactionLock)
         {
-            if (producerId != Volatile.Read(ref _producerId) || producerEpoch != _producerEpoch)
+            // An authorization or producer-ID-mapping failure is producer-wide: it makes the
+            // producer fatal even from a batch of an earlier identity. Anything else from such a
+            // batch (a fence of its old epoch, an abortable error) belongs to an ended transaction.
+            if ((producerId != Volatile.Read(ref _producerId) || producerEpoch != _producerEpoch)
+                && (!fatal || TransactionErrorClassifier.IsScopedToProducerEpoch(errorCode)))
             {
                 LogTransactionalBatchFailureFromEarlierEpochIgnored(
                     errorCode, producerId, producerEpoch, _options.TransactionalId);
@@ -5390,7 +5395,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             if (state == TransactionState.FatalError)
                 return true;
 
-            if (TransactionErrorClassifier.ClassifyFailedBatch(errorCode) == TransactionErrorClassification.Fatal)
+            if (fatal)
             {
                 _lastTransactionError = errorCode;
                 _transactionState = TransactionState.FatalError;

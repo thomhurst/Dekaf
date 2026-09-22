@@ -1671,6 +1671,109 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
     }
 
     /// <summary>
+    /// Authorization and producer-ID-mapping failures are producer-wide: even for a batch stamped
+    /// with an identity an abort has since replaced, the caller must be told the producer is fatal
+    /// (only a fence is scoped to the batch's epoch).
+    /// </summary>
+    [Test]
+    [Arguments(ErrorCode.TransactionalIdAuthorizationFailed)]
+    [Arguments(ErrorCode.ClusterAuthorizationFailed)]
+    [Arguments(ErrorCode.InvalidProducerIdMapping)]
+    [Timeout(30_000)]
+    public async Task SendLoop_TransactionalProducerWideFatalErrorForAnEarlierEpoch_StaysFatal(
+        ErrorCode errorCode,
+        CancellationToken cancellationToken)
+    {
+        var exception = await FailTransactionalBatchAsync(
+            errorCode,
+            epochWhenAnswered: 8,
+            reportAccepted: true,
+            cancellationToken);
+
+        await Assert.That(exception).IsTypeOf<FatalTransactionException>();
+        await Assert.That(((TransactionException)exception!).ErrorCode).IsEqualTo(errorCode);
+    }
+
+    /// <summary>
+    /// The sender picked the fatal exception (the stamp was current when the answer arrived), but
+    /// an abort replaced the identity before the failure report, which ignores the batch and
+    /// fails its records with the non-fatal exception. The acknowledgement callback must see that
+    /// same exception, not the fatal one: an interceptor would otherwise close a usable producer.
+    /// </summary>
+    [Test]
+    [Timeout(30_000)]
+    public async Task SendLoop_FailureReportReplacesTheException_AcknowledgementSeesTheDeliveredOne(
+        CancellationToken cancellationToken)
+    {
+        var exception = await FailTransactionalBatchAsync(
+            ErrorCode.ProducerFenced,
+            epochWhenAnswered: 7,
+            reportAccepted: false,
+            cancellationToken);
+
+        await Assert.That(exception).IsTypeOf<AbortableTransactionException>();
+        await Assert.That(((TransactionException)exception!).ErrorCode).IsEqualTo(ErrorCode.ProducerFenced);
+    }
+
+    /// <summary>
+    /// Sends one transactional batch stamped 4242/7, moves the accumulator's identity to
+    /// <paramref name="epochWhenAnswered"/>, answers with <paramref name="errorCode"/> and returns
+    /// the exception the acknowledgement callback saw. The failure observer returns
+    /// <paramref name="reportAccepted"/>.
+    /// </summary>
+    private async Task<Exception?> FailTransactionalBatchAsync(
+        ErrorCode errorCode,
+        short epochWhenAnswered,
+        bool reportAccepted,
+        CancellationToken cancellationToken)
+    {
+        var response = new TaskCompletionSource<ProduceResponse>();
+        var responses = new Queue<TaskCompletionSource<ProduceResponse>>([response]);
+        var sent = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var (pool, _) = CreateMockConnection(responses, () => sent.TrySetResult());
+        cancellationToken = GuardUnscriptedSends(cancellationToken);
+        var options = CreateOptions(
+            retryBackoffMs: 0,
+            retryBackoffMaxMs: 0,
+            transactionalId: "test-transaction");
+        var accumulator = new RecordAccumulator(options);
+        accumulator.ProducerId = 4242;
+        accumulator.ProducerEpoch = 7;
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var acknowledged = new TaskCompletionSource<Exception?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var sender = CreateSender(
+            pool,
+            options,
+            accumulator,
+            (_, _, _, _, exception) => acknowledged.TrySetResult(exception),
+            produceApiVersion: ProduceRequest.ImplicitTransactionPartitionEnrollmentVersion,
+            isTransactional: true,
+            usesTransactionV2: true);
+        accumulator.OnTransactionalBatchFailed = (_, _, _, _) => reportAccepted;
+
+        try
+        {
+            var batch = CreateTestBatch(
+                valueTaskSourcePool, "test-topic", partition: 0, failureObserver: accumulator);
+            batch.RecordBatch.ProducerId = 4242;
+            batch.RecordBatch.ProducerEpoch = 7;
+            sender.Enqueue(batch);
+            await sent.Task.WaitAsync(cancellationToken);
+
+            accumulator.ProducerEpoch = epochWhenAnswered;
+            response.SetResult(CreateErrorResponse("test-topic", partition: 0, errorCode));
+
+            return await acknowledged.Task.WaitAsync(cancellationToken);
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
+    /// <summary>
     /// Any other non-retriable produce error keeps its own exception for the caller, but the
     /// failed records are not part of the transaction, so it must not commit: the producer's
     /// transaction state is told about the failure too.

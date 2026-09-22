@@ -3826,15 +3826,19 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         UnmutePartition(batch.TopicPartition);
                     try { CompleteInflightEntry(batch); }
                     catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
+                    // The acknowledgement sees the exception the records were failed with: the
+                    // failure report can replace a fatal fence of an identity an abort has since
+                    // replaced with the non-fatal one.
+                    Exception deliveredException = failureException;
                     try
                     {
-                        batch.Fail(failureException);
+                        deliveredException = batch.FailAndGetDeliveredException(failureException);
                     }
                     catch (Exception failEx) { LogBatchCleanupStepFailed(failEx, _brokerId); }
                     try
                     {
                         _onAcknowledgement?.Invoke(batch.TopicPartition, -1, DateTimeOffset.UtcNow,
-                            batch.CompletionSourcesCount, failureException);
+                            batch.CompletionSourcesCount, deliveredException);
                     }
                     catch (Exception ackEx) { LogBatchCleanupStepFailed(ackEx, _brokerId); }
                     CleanupBatch(batch);
@@ -6112,18 +6116,20 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // leaking their completion sources and causing producer hangs (deadlocks).
         try { CompleteInflightEntry(batch); }
         catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
+        var deliveredException = ex;
         try
         {
-            if (sendCompletionClaimed)
-                batch.FailAfterSendCompletionClaimed(ex);
-            else
-                batch.Fail(ex);
+            // The acknowledgement sees the exception the records were failed with (the failure
+            // report may replace it).
+            deliveredException = sendCompletionClaimed
+                ? batch.FailAfterSendCompletionClaimedAndGetDeliveredException(ex)
+                : batch.FailAndGetDeliveredException(ex);
         }
         catch (Exception failEx) { LogBatchCleanupStepFailed(failEx, _brokerId); }
         try
         {
             _onAcknowledgement?.Invoke(batch.TopicPartition, -1, DateTimeOffset.UtcNow,
-            batch.CompletionSourcesCount, ex);
+            batch.CompletionSourcesCount, deliveredException);
         }
         catch (Exception ackEx) { LogBatchCleanupStepFailed(ackEx, _brokerId); }
     }
@@ -6141,7 +6147,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             // state ignores the report (KafkaProducer.OnTransactionalBatchFailed). Telling the
             // caller to close the healthy producer would be wrong. An abort that lands after this
             // check is caught when the batch reports its failure (RecordAccumulator.ReportBatchFailure).
-            if (IsStampedWithEarlierProducerIdentity(batch))
+            // Only a fence is scoped to the stamp: an authorization or producer-ID-mapping failure
+            // is producer-wide and stays fatal whatever epoch the batch carries.
+            if (TransactionErrorClassifier.IsScopedToProducerEpoch(errorCode)
+                && IsStampedWithEarlierProducerIdentity(batch))
             {
                 return TransactionErrorClassifier.CreateFailureForEarlierProducerEpoch(
                     errorCode, topic, partition, _options.TransactionalId);

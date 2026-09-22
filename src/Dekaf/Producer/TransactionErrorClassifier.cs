@@ -79,6 +79,16 @@ internal static class TransactionErrorClassifier
             : TransactionErrorClassification.Abortable;
 
     /// <summary>
+    /// A failed-batch error that answers only the producer ID and epoch the batch was stamped with
+    /// (a fence of that epoch, or an epoch the broker rejects). For a batch stamped with an identity
+    /// the producer has since replaced it says nothing about the current producer. Authorization
+    /// and producer-ID-mapping failures are not scoped to the stamp: they are fatal for the
+    /// producer whatever epoch the batch carries. Error paths only.
+    /// </summary>
+    internal static bool IsScopedToProducerEpoch(Protocol.ErrorCode errorCode) =>
+        errorCode is Protocol.ErrorCode.ProducerFenced or Protocol.ErrorCode.InvalidProducerEpoch;
+
+    /// <summary>
     /// The exception a batch fails with when the broker fenced a producer identity an abort has
     /// since replaced: the transaction its records belonged to has already ended and the producer
     /// ignores the report, so the caller must not be told to close it. Error path only.

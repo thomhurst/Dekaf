@@ -10362,7 +10362,25 @@ internal sealed class ReadyBatch
         return true;
     }
 
-    private void CompleteFailure(Exception exception, bool waitForPreSerialization)
+    /// <summary>
+    /// Fails the batch and returns the exception its records were failed with: the failure
+    /// observer (<see cref="RecordAccumulator.ReportBatchFailure"/>) may replace the one passed in.
+    /// Returns <paramref name="exception"/> unchanged when another path completed the batch first.
+    /// Error paths only.
+    /// </summary>
+    internal Exception FailAndGetDeliveredException(Exception exception)
+        => Interlocked.Exchange(ref _sendCompleted, 1) != 0
+            ? exception
+            : CompleteFailure(exception, waitForPreSerialization: true);
+
+    /// <summary>
+    /// <see cref="FailAfterSendCompletionClaimed"/>, returning the exception the records were
+    /// failed with (see <see cref="FailAndGetDeliveredException"/>).
+    /// </summary>
+    internal Exception FailAfterSendCompletionClaimedAndGetDeliveredException(Exception exception)
+        => CompleteFailure(exception, waitForPreSerialization: true);
+
+    private Exception CompleteFailure(Exception exception, bool waitForPreSerialization)
     {
         if (waitForPreSerialization)
             WaitForPreSerializationIfStarted();
@@ -10436,6 +10454,8 @@ internal sealed class ReadyBatch
         {
             Cleanup();
         }
+
+        return exception;
     }
 
     private void CompleteDoneTask(bool succeeded)

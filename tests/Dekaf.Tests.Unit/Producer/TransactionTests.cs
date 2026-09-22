@@ -448,6 +448,26 @@ public sealed class TransactionTests
     }
 
     /// <summary>
+    /// Authorization and producer-ID-mapping failures are producer-wide, not scoped to the batch's
+    /// epoch: a batch of an earlier identity that fails with one still makes the producer fatal.
+    /// </summary>
+    [Test]
+    [Arguments(ErrorCode.TransactionalIdAuthorizationFailed)]
+    [Arguments(ErrorCode.ClusterAuthorizationFailed)]
+    [Arguments(ErrorCode.InvalidProducerIdMapping)]
+    public async Task TransactionalBatchFailure_ProducerWideFatalErrorFromEarlierIdentity_MovesToFatalError(
+        ErrorCode errorCode)
+    {
+        await using var producer = BuildTransactionalProducer(TransactionState.InTransaction);
+
+        var reportTaken = producer.OnTransactionalBatchFailed(42, 4, errorCode);
+
+        await Assert.That(reportTaken).IsTrue();
+        await Assert.That(producer._transactionState).IsEqualTo(TransactionState.FatalError);
+        await Assert.That(producer._lastTransactionError).IsEqualTo(errorCode);
+    }
+
+    /// <summary>
     /// The abortable error that refuses produce and commit carries the first failed batch as its
     /// inner exception; its error code must describe that same failure, even after a later
     /// abortable transition recorded another code.
