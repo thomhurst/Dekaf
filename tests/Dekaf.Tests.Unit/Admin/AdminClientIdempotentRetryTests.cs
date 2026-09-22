@@ -420,6 +420,107 @@ public sealed class AdminClientIdempotentRetryTests
     }
 
     [Test]
+    public async Task DeleteAclsAsync_ConnectionRetiredBeforeWrite_RetriesAndReturnsDeletedBindings()
+    {
+        // A connection retired between lease and send fails before any byte of the frame is
+        // written, so nothing can have been deleted and the request is retried.
+        WriteObservingConnection? observed = null;
+        var (admin, _) = CreateAdminWithConnection(
+            new AdminClientOptions { BootstrapServers = ["localhost:9092"] },
+            connection => observed = new WriteObservingConnection(connection),
+            ApiKey.DeleteAcls);
+        var calls = 0;
+
+        observed!.DeleteAclsHandler = (writeStarted, _) =>
+            {
+                if (Interlocked.Increment(ref calls) == 1)
+                    throw new ObjectDisposedException("KafkaConnection", "Connection has been retired");
+
+                writeStarted();
+                return ValueTask.FromResult(new DeleteAclsResponse
+                {
+                    FilterResults =
+                    [
+                        new DeleteAclsFilterResult
+                        {
+                            ErrorCode = ErrorCode.None,
+                            MatchingAcls =
+                            [
+                                new DeleteAclsMatchingAcl
+                                {
+                                    ErrorCode = ErrorCode.None,
+                                    ResourceType = (sbyte)ResourceType.Topic,
+                                    ResourceName = "orders",
+                                    Principal = "User:alice",
+                                    Host = "*",
+                                    Operation = (sbyte)AclOperation.Read,
+                                    PermissionType = (sbyte)AclPermissionType.Allow
+                                }
+                            ]
+                        }
+                    ]
+                });
+            };
+
+        var deleted = await admin.DeleteAclsAsync([AclBindingFilter.MatchAll()]);
+
+        await Assert.That(deleted.Count).IsEqualTo(1);
+        await Assert.That(deleted[0].Pattern.Name).IsEqualTo("orders");
+        await Assert.That(calls).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task DeleteAclsAsync_ApiTimeoutWhileWaitingToWrite_ThrowsApiTimeout()
+    {
+        // The API timeout ends the wait for the write lock before the frame write starts: nothing
+        // was sent, so the caller gets the API timeout, not the unknown-outcome error.
+        WriteObservingConnection? observed = null;
+        var (admin, _) = CreateAdminWithConnection(
+            new AdminClientOptions { BootstrapServers = ["localhost:9092"] },
+            connection => observed = new WriteObservingConnection(connection),
+            ApiKey.DeleteAcls);
+
+        observed!.DeleteAclsHandler = static (_, token) => WaitForCancellationAsync(token);
+
+        var exception = await Assert.ThrowsAsync<KafkaTimeoutException>(async () =>
+            await admin.DeleteAclsAsync([AclBindingFilter.MatchAll()], new DeleteAclsOptions { TimeoutMs = 200 }));
+
+        await Assert.That(exception!.TimeoutKind).IsEqualTo(TimeoutKind.Api);
+
+        static async ValueTask<DeleteAclsResponse> WaitForCancellationAsync(CancellationToken token)
+        {
+            await Task.Delay(Timeout.Infinite, token);
+            throw new System.Diagnostics.UnreachableException();
+        }
+    }
+
+    [Test]
+    public async Task DeleteAclsAsync_FailureAfterWriteStarts_ThrowsAmbiguousFailureWithoutReplay()
+    {
+        WriteObservingConnection? observed = null;
+        var (admin, _) = CreateAdminWithConnection(
+            new AdminClientOptions { BootstrapServers = ["localhost:9092"] },
+            connection => observed = new WriteObservingConnection(connection),
+            ApiKey.DeleteAcls);
+        var calls = 0;
+        var lostResponse = new IOException("connection reset after the frame was written");
+
+        observed!.DeleteAclsHandler = (writeStarted, _) =>
+            {
+                Interlocked.Increment(ref calls);
+                writeStarted();
+                throw lostResponse;
+            };
+
+        var exception = await Assert.ThrowsAsync<KafkaException>(async () =>
+            await admin.DeleteAclsAsync([AclBindingFilter.MatchAll()]));
+
+        await Assert.That(exception!.IsRetriable).IsFalse();
+        await Assert.That(exception.InnerException).IsSameReferenceAs(lostResponse);
+        await Assert.That(calls).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task DeleteAclsAsync_ApiTimeoutEndsInFlightSend_ThrowsAmbiguousFailure()
     {
         // The controller accepted the deletion and never answered: the API timeout ends the send,
@@ -915,9 +1016,17 @@ public sealed class AdminClientIdempotentRetryTests
 
     internal static (AdminClient Admin, IKafkaConnection Connection) CreateAdminWithMockConnection(
         AdminClientOptions options,
+        params ApiKey[] extraApiKeys) =>
+        CreateAdminWithConnection(options, static connection => connection, extraApiKeys);
+
+    // wrapConnection decorates the configured substitute; the pool hands out the decorator.
+    internal static (AdminClient Admin, IKafkaConnection Connection) CreateAdminWithConnection(
+        AdminClientOptions options,
+        Func<IKafkaConnection, IKafkaConnection> wrapConnection,
         params ApiKey[] extraApiKeys)
     {
         var connection = Substitute.For<IKafkaConnection>();
+        var pooledConnection = wrapConnection(connection);
         connection.BrokerId.Returns(1);
         connection.Host.Returns("localhost");
         connection.Port.Returns(9092);
@@ -925,9 +1034,9 @@ public sealed class AdminClientIdempotentRetryTests
 
         var pool = Substitute.For<IConnectionPool>();
         pool.GetConnectionAsync(Arg.Any<int>(), Arg.Any<CancellationToken>())
-            .Returns(ValueTask.FromResult(connection));
+            .Returns(ValueTask.FromResult(pooledConnection));
         pool.GetConnectionAsync(Arg.Any<string>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
-            .Returns(ValueTask.FromResult(connection));
+            .Returns(ValueTask.FromResult(pooledConnection));
 
         var metadataManager = new MetadataManager(pool, ["localhost:9092"]);
         metadataManager.Metadata.Update(CreateMetadataResponse());
@@ -1018,4 +1127,70 @@ public sealed class AdminClientIdempotentRetryTests
             }
         ]
     };
+
+    // Reports the frame-write start of DeleteAcls sends through DeleteAclsHandler, as
+    // KafkaConnection does, and delegates everything else to the configured substitute.
+    private sealed class WriteObservingConnection(IKafkaConnection inner)
+        : IKafkaConnection, IKafkaRequestWriteObserverConnection
+    {
+        public Func<Action, CancellationToken, ValueTask<DeleteAclsResponse>>? DeleteAclsHandler { get; set; }
+
+        public int BrokerId => inner.BrokerId;
+        public string Host => inner.Host;
+        public int Port => inner.Port;
+        public bool IsConnected => inner.IsConnected;
+
+        public ValueTask<TResponse> SendAsync<TRequest, TResponse>(
+            TRequest request, short apiVersion, CancellationToken cancellationToken = default)
+            where TRequest : IKafkaRequest<TResponse>
+            where TResponse : IKafkaResponse =>
+            inner.SendAsync<TRequest, TResponse>(request, apiVersion, cancellationToken);
+
+        public ValueTask<TResponse> SendWithWriteObservationAsync<TRequest, TResponse>(
+            TRequest request, short apiVersion, Action requestWriteStarted, CancellationToken cancellationToken = default)
+            where TRequest : IKafkaRequest<TResponse>
+            where TResponse : IKafkaResponse
+        {
+            if (request is DeleteAclsRequest && DeleteAclsHandler is { } handler)
+                return (ValueTask<TResponse>)(object)handler(requestWriteStarted, cancellationToken);
+
+            requestWriteStarted();
+            return inner.SendAsync<TRequest, TResponse>(request, apiVersion, cancellationToken);
+        }
+
+        public ValueTask<PipelinedResponse<TResponse>> SendPipelinedWithWriteObservationAfterWriteAsync<TRequest, TResponse>(
+            TRequest request, short apiVersion, Action requestWriteStarted, CancellationToken cancellationToken = default)
+            where TRequest : IKafkaRequest<TResponse>
+            where TResponse : IKafkaResponse =>
+            throw new NotSupportedException();
+
+        public ValueTask SendFireAndForgetAsync<TRequest, TResponse>(
+            TRequest request, short apiVersion, CancellationToken cancellationToken = default)
+            where TRequest : IKafkaRequest<TResponse>
+            where TResponse : IKafkaResponse =>
+            inner.SendFireAndForgetAsync<TRequest, TResponse>(request, apiVersion, cancellationToken);
+
+        public Task<TResponse> SendPipelinedAsync<TRequest, TResponse>(
+            TRequest request, short apiVersion, CancellationToken cancellationToken = default)
+            where TRequest : IKafkaRequest<TResponse>
+            where TResponse : IKafkaResponse =>
+            inner.SendPipelinedAsync<TRequest, TResponse>(request, apiVersion, cancellationToken);
+
+        public ValueTask SendFireAndForgetWithCallerTimeoutAsync<TRequest, TResponse>(
+            TRequest request, short apiVersion, CancellationToken cancellationToken = default)
+            where TRequest : IKafkaRequest<TResponse>
+            where TResponse : IKafkaResponse =>
+            inner.SendFireAndForgetWithCallerTimeoutAsync<TRequest, TResponse>(request, apiVersion, cancellationToken);
+
+        public Task<TResponse> SendPipelinedWithCallerTimeoutAsync<TRequest, TResponse>(
+            TRequest request, short apiVersion, CancellationToken cancellationToken = default)
+            where TRequest : IKafkaRequest<TResponse>
+            where TResponse : IKafkaResponse =>
+            inner.SendPipelinedWithCallerTimeoutAsync<TRequest, TResponse>(request, apiVersion, cancellationToken);
+
+        public ValueTask ConnectAsync(CancellationToken cancellationToken = default) =>
+            inner.ConnectAsync(cancellationToken);
+
+        public ValueTask DisposeAsync() => inner.DisposeAsync();
+    }
 }

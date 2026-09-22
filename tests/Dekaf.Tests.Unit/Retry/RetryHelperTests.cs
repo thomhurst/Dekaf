@@ -237,6 +237,28 @@ public sealed class RetryHelperTests
     }
 
     [Test]
+    public async Task DeadlineMode_BudgetExhaustedByNetworkException_ThrowsTypedTimeoutWithTheCause()
+    {
+        // NETWORK_EXCEPTION is a transport failure reported as a Kafka error. Retried until the
+        // budget, it must end as the API timeout like a socket failure, not escape as itself.
+        await using var metadataManager = CreateUnavailableMetadataManager();
+        var failure = new KafkaException(
+            ErrorCode.NetworkException, "Connection closed by the broker (EOF).", isRetriable: true);
+
+        var exception = await Assert.ThrowsAsync<KafkaTimeoutException>(async () =>
+            await RetryHelper.WithRetryAsync<int>(
+                () => ValueTask.FromException<int>(failure),
+                metadataManager,
+                CancellationToken.None,
+                retryBackoffMs: 5,
+                retryBackoffMaxMs: 5,
+                deadline: new RetryDeadline("TestOperation", TimeSpan.FromMilliseconds(100))));
+
+        await Assert.That(exception!.TimeoutKind).IsEqualTo(TimeoutKind.Api);
+        await Assert.That(exception.InnerException).IsSameReferenceAs(failure);
+    }
+
+    [Test]
     public async Task DeadlineMode_TokenIsTheDeadline_CancellationCarriesTheTransportCause()
     {
         await using var metadataManager = CreateUnavailableMetadataManager();

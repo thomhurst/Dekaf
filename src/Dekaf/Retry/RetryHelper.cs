@@ -286,9 +286,10 @@ internal static class RetryHelper
                 return;
             }
 
-            // A typed Kafka failure stays the final error; only a raw transport failure needs
-            // wrapping.
-            if (failure is KafkaException)
+            // A failure a broker answered with stays the final error. A transport failure, raw or
+            // reported as a Kafka error (NETWORK_EXCEPTION, a lookup that exhausted its attempts
+            // against unreachable brokers), becomes the API timeout it retried until.
+            if (failure is KafkaException && !HasTransportCause(failure))
                 ExceptionDispatchInfo.Capture(failure).Throw();
 
             throw new KafkaTimeoutException(

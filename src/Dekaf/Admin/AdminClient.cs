@@ -3560,6 +3560,10 @@ public sealed partial class AdminClient :
             PermissionType = (sbyte)f.Permission
         }).ToList();
 
+        // Marks when an attempt starts writing its frame. A failure before that point sent
+        // nothing, so it is retried; one after it may have deleted bindings.
+        var writeContext = new KafkaRequestWriteContext(CancellationToken.None);
+
         return await WithRetryAsync<IReadOnlyList<AclBinding>>(async attemptToken =>
         {
             await EnsureInitializedAsync(attemptToken, nameof(DeleteAclsAsync)).ConfigureAwait(false);
@@ -3578,14 +3582,23 @@ public sealed partial class AdminClient :
                 DeleteAclsRequest.HighestSupportedVersion);
 
             DeleteAclsResponse response;
+            var writeObserver = controller as IKafkaRequestWriteObserverConnection;
+            writeContext.Reset();
             try
             {
-                response = await controller.SendAsync<DeleteAclsRequest, DeleteAclsResponse>(
-                    request,
-                    apiVersion,
-                    attemptToken).ConfigureAwait(false);
+                response = writeObserver is not null
+                    ? await writeObserver.SendWithWriteObservationAsync<DeleteAclsRequest, DeleteAclsResponse>(
+                        request,
+                        apiVersion,
+                        writeContext.WriteStartedCallback,
+                        attemptToken).ConfigureAwait(false)
+                    : await controller.SendAsync<DeleteAclsRequest, DeleteAclsResponse>(
+                        request,
+                        apiVersion,
+                        attemptToken).ConfigureAwait(false);
             }
             catch (Exception exception) when (!cancellationToken.IsCancellationRequested
+                && (writeObserver is null || writeContext.WriteStarted)
                 && (RetryHelper.IsRetriableRequestFailure(exception)
                     || exception is OperationCanceledException && attemptToken.IsCancellationRequested))
             {
@@ -3593,8 +3606,10 @@ public sealed partial class AdminClient :
                 // deleting carries it: a replay matches nothing and would return an empty list
                 // while the lost request may have deleted bindings. The API timeout ending a send
                 // still in flight is the same unknown outcome; only the caller's cancellation
-                // surfaces as cancellation. Failures before the send (no controller, a refused
-                // connection) are still retried above.
+                // surfaces as cancellation. Failures before the frame write starts (no controller,
+                // a refused or retired connection, waiting for the write lock) sent nothing and
+                // are retried above. A connection that cannot report the write start is treated
+                // as having started it.
                 throw new KafkaException((exception as KafkaException)?.ErrorCode ?? Protocol.ErrorCode.NetworkException,
                     "DeleteAcls outcome is unknown after a request failure; the matching ACLs may have been deleted. " +
                     "Describe the ACLs before retrying.",
