@@ -64,7 +64,11 @@ internal static class ConnectionHelper
     {
         if (frameSize < MinimumResponseFrameSize || frameSize > maxFrameSize)
         {
+            // The stream is no longer Kafka framing (a corrupted or misaligned stream, or a peer
+            // that is not a broker). Like EOF, this breaks the connection, not the request: the
+            // receive loop retires the connection and a retry on a new one can succeed.
             throw new KafkaException(
+                ErrorCode.NetworkException,
                 $"Invalid response frame size {frameSize}. Expected between {MinimumResponseFrameSize} and {maxFrameSize} bytes.");
         }
     }
