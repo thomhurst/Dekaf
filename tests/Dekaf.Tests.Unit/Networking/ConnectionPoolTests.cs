@@ -1035,6 +1035,76 @@ public sealed class ConnectionPoolTests
     }
 
     [Test]
+    [Timeout(10_000)]
+    public async Task DisposeAsync_DuringConnectionSetup_FailsCallerAndDisposesLateConnection(
+        CancellationToken cancellationToken)
+    {
+        var factoryEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFactory = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var connectionDisposed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var connection = new TestIdleConnection(1, "host-a", 9092) { DisposalStarted = connectionDisposed };
+        var pool = new ConnectionPool(
+            clientId: "test-client",
+            connectionOptions: new ConnectionOptions { ConnectionsMaxIdleMs = -1 },
+            connectionsPerBroker: 1,
+            connectionFactory: async (_, _, _, _, _) =>
+            {
+                factoryEntered.TrySetResult();
+                // Ignores its token, like a slow handshake that only notices cancellation late.
+                await releaseFactory.Task.ConfigureAwait(false);
+                return connection;
+            });
+        pool.RegisterBroker(1, "host-a", 9092);
+
+        // No caller token: only the pool's disposal can end this wait.
+        var caller = pool.GetConnectionAsync(1, CancellationToken.None).AsTask();
+        await factoryEntered.Task.WaitAsync(cancellationToken);
+
+        var disposal = pool.DisposeAsync().AsTask();
+
+        // Disposal fails the waiting caller without waiting for the setup to finish.
+        await Assert.ThrowsAsync<ObjectDisposedException>(async () =>
+            await caller.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken));
+
+        releaseFactory.TrySetResult();
+        await disposal.WaitAsync(cancellationToken);
+        await connectionDisposed.Task.WaitAsync(cancellationToken);
+        await Assert.That(connection.DisposeCount).IsGreaterThanOrEqualTo(1);
+    }
+
+    [Test]
+    [Arguments(1)]
+    [Arguments(2)]
+    [Timeout(10_000)]
+    public async Task DisposeAsync_CompletingWhileSetupPublishes_DisposesPublishedConnection(
+        int connectionsPerBroker,
+        CancellationToken cancellationToken)
+    {
+        var connection = new TestIdleConnection(1, "host-a", 9092);
+        ConnectionPool pool = null!;
+        Task? disposal = null;
+        pool = new ConnectionPool(
+            clientId: "test-client",
+            connectionOptions: new ConnectionOptions { ConnectionsMaxIdleMs = -1 },
+            connectionsPerBroker: connectionsPerBroker,
+            connectionFactory: (_, _, _, index, _) =>
+            {
+                // The pool closes every connection it has published while this setup is
+                // finishing, so the result lands after CloseAllAsync has already run.
+                disposal ??= pool.DisposeAsync().AsTask();
+                return ValueTask.FromResult<IKafkaConnection>(
+                    index == 0 ? connection : new TestIdleConnection(1, "host-a", 9092));
+            });
+        pool.RegisterBroker(1, "host-a", 9092);
+
+        await Assert.ThrowsAsync<ObjectDisposedException>(async () =>
+            await pool.GetConnectionAsync(1, cancellationToken));
+
+        await disposal!.WaitAsync(cancellationToken);
+        await Assert.That(connection.DisposeCount).IsGreaterThanOrEqualTo(1);
+    }
+
+    [Test]
     public async Task RegisterBroker_MultipleBrokers_AllRegistered()
     {
         await using var pool = new ConnectionPool("test-client");
