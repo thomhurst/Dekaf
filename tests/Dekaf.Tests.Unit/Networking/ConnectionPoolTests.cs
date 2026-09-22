@@ -1034,6 +1034,160 @@ public sealed class ConnectionPoolTests
         lease.Dispose();
     }
 
+    // DisposeAsync used to dispose _scaleLock while a scale-up still held it, so the scale-up's
+    // Release threw the semaphore's ObjectDisposedException over its own outcome.
+    [Test]
+    [Timeout(10_000)]
+    public async Task DisposeAsync_WhileScaleUpHoldsScaleLock_ScaleUpFailsAsPoolDisposedAndDisposesItsConnections(
+        CancellationToken cancellationToken)
+    {
+        var created = new System.Collections.Concurrent.ConcurrentBag<TestIdleConnection>();
+        var factoryCalls = 0;
+        var bothFactoriesEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFactory = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var pool = new ConnectionPool(
+            clientId: "test-client",
+            connectionOptions: new ConnectionOptions { ConnectionsMaxIdleMs = -1 },
+            connectionsPerBroker: 1,
+            connectionFactory: async (_, host, port, _, _) =>
+            {
+                if (Interlocked.Increment(ref factoryCalls) == 2)
+                    bothFactoriesEntered.TrySetResult();
+                // Ignores its token, like a handshake that finishes after the pool is gone.
+                await releaseFactory.Task.ConfigureAwait(false);
+                var connection = new TestIdleConnection(1, host, port);
+                created.Add(connection);
+                return connection;
+            });
+        pool.RegisterBroker(1, "host-a", 9092);
+
+        var scaleUp = pool.ScaleConnectionGroupAsync(1, 2, cancellationToken).AsTask();
+        await bothFactoriesEntered.Task.WaitAsync(cancellationToken);
+
+        await pool.DisposeAsync().AsTask().WaitAsync(cancellationToken);
+        releaseFactory.TrySetResult();
+
+        var exception = await Assert.ThrowsAsync<ObjectDisposedException>(async () =>
+            await scaleUp.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken));
+
+        // The pool's disposal, not the semaphore's.
+        await Assert.That(exception!.ObjectName).IsEqualTo(nameof(ConnectionPool));
+
+        // Disposal ends the scale-up without waiting for its factories, so the connections they
+        // return late are disposed as they arrive.
+        using var lateDisposalDeadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        lateDisposalDeadline.CancelAfter(TimeSpan.FromSeconds(5));
+        while (created.Count < 2 || created.Any(static connection => connection.DisposeCount == 0))
+            await Task.Delay(10, lateDisposalDeadline.Token);
+    }
+
+    // A scale-up that published after disposal began, but before CloseAllAsync walked the groups,
+    // used to unpublish the whole extended group while disposing only the connections it had just
+    // created. The existing connections it copied in were then unreachable and never disposed.
+    [Test]
+    [Timeout(10_000)]
+    public async Task DisposeAsync_ScaleUpPublishingBeforeCloseAllWalks_ExistingConnectionsAreStillDisposed(
+        CancellationToken cancellationToken)
+    {
+        using var reaperGate = new ManualResetEventSlim();
+        var reaperHoldsDisposeLock = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var blockNextReaperRead = 0;
+        var existing = new TestIdleConnection(1, "host-a", 9092)
+        {
+            PendingRequestCountProvider = () =>
+            {
+                if (Interlocked.Exchange(ref blockNextReaperRead, 0) == 1)
+                {
+                    reaperHoldsDisposeLock.TrySetResult();
+                    reaperGate.Wait();
+                }
+
+                return 1;
+            }
+        };
+        var added = new TestIdleConnection(1, "host-a", 9092);
+        var scaleUpFactoryEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseScaleUpFactory = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var factoryCalls = 0;
+        var pool = new ConnectionPool(
+            clientId: "test-client",
+            // Long enough that the background reaper never ticks during the test.
+            connectionOptions: new ConnectionOptions { ConnectionsMaxIdleMs = 600_000 },
+            connectionsPerBroker: 1,
+            connectionFactory: async (_, _, _, _, _) =>
+            {
+                if (Interlocked.Increment(ref factoryCalls) == 1)
+                    return existing;
+
+                scaleUpFactoryEntered.TrySetResult();
+                await releaseScaleUpFactory.Task.ConfigureAwait(false);
+                return added;
+            });
+        pool.RegisterBroker(1, "host-a", 9092);
+        await pool.ScaleConnectionGroupAsync(1, 1, cancellationToken);
+
+        // An idle-reap pass holds the dispose lock, so CloseAllAsync cannot walk the groups yet.
+        Volatile.Write(ref blockNextReaperRead, 1);
+        var reap = Task.Run(async () => await pool.ReapIdleConnectionsAsync(), cancellationToken);
+        await reaperHoldsDisposeLock.Task.WaitAsync(cancellationToken);
+
+        var scaleUp = pool.ScaleConnectionGroupAsync(1, 2, cancellationToken).AsTask();
+        await scaleUpFactoryEntered.Task.WaitAsync(cancellationToken);
+        var disposal = pool.DisposeAsync().AsTask();
+
+        // The scale-up publishes [existing, added] and then sees the pool disposed.
+        releaseScaleUpFactory.TrySetResult();
+        await Assert.ThrowsAsync<ObjectDisposedException>(async () =>
+            await scaleUp.WaitAsync(cancellationToken));
+
+        reaperGate.Set();
+        await reap.WaitAsync(cancellationToken);
+        await disposal.WaitAsync(cancellationToken);
+
+        await Assert.That(added.DisposeCount).IsGreaterThanOrEqualTo(1);
+        await Assert.That(existing.DisposeCount).IsGreaterThanOrEqualTo(1);
+    }
+
+    // 1 = single-connection path, 2 = connection-group path.
+    [Test]
+    [Arguments(1)]
+    [Arguments(2)]
+    [Timeout(10_000)]
+    public async Task DisposeAsync_CompletingWhileSetupPublishes_DisposesPublishedConnection(
+        int connectionsPerBroker,
+        CancellationToken cancellationToken)
+    {
+        var connection = new TestIdleConnection(1, "host-a", 9092);
+        var siblings = new System.Collections.Concurrent.ConcurrentBag<TestIdleConnection>();
+        ConnectionPool pool = null!;
+        Task? disposal = null;
+        pool = new ConnectionPool(
+            clientId: "test-client",
+            connectionOptions: new ConnectionOptions { ConnectionsMaxIdleMs = -1 },
+            connectionsPerBroker: connectionsPerBroker,
+            connectionFactory: (_, _, _, index, _) =>
+            {
+                // The pool closes every connection it has published while this setup is
+                // finishing, so the result lands after CloseAllAsync has already run.
+                disposal ??= pool.DisposeAsync().AsTask();
+                if (index == 0)
+                    return ValueTask.FromResult<IKafkaConnection>(connection);
+
+                var sibling = new TestIdleConnection(1, "host-a", 9092);
+                siblings.Add(sibling);
+                return ValueTask.FromResult<IKafkaConnection>(sibling);
+            });
+        pool.RegisterBroker(1, "host-a", 9092);
+
+        await Assert.ThrowsAsync<ObjectDisposedException>(async () =>
+            await pool.GetConnectionAsync(1, cancellationToken));
+
+        await disposal!.WaitAsync(cancellationToken);
+        await Assert.That(connection.DisposeCount).IsGreaterThanOrEqualTo(1);
+        foreach (var sibling in siblings)
+            await Assert.That(sibling.DisposeCount).IsGreaterThanOrEqualTo(1);
+    }
+
     [Test]
     public async Task RegisterBroker_MultipleBrokers_AllRegistered()
     {
@@ -2371,6 +2525,187 @@ public sealed class ConnectionPoolTests
 
         releaseDisposal.TrySetResult();
         await disposeTask.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [Test]
+    public async Task DisposeAsync_CancelsAnUncancellableCallersConnectionSetup()
+    {
+        // Admin and metadata callers pass CancellationToken.None. Disposal must still end their
+        // setup promptly instead of leaving them parked until the setup timeout.
+        var factoryEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var pool = new ConnectionPool(
+            clientId: "test-client",
+            connectionOptions: new ConnectionOptions
+            {
+                ConnectionTimeout = TimeSpan.FromSeconds(30),
+                ConnectionTimeoutMax = TimeSpan.FromSeconds(60),
+                ReconnectBackoff = TimeSpan.Zero,
+                ReconnectBackoffMax = TimeSpan.Zero
+            },
+            connectionsPerBroker: 1,
+            connectionFactory: async (_, _, _, _, cancellationToken) =>
+            {
+                factoryEntered.TrySetResult();
+                await Task.Delay(Timeout.Infinite, cancellationToken);
+                throw new InvalidOperationException("unreachable");
+            },
+            randomDouble: static () => 0.5);
+
+        var connect = pool.GetConnectionAsync("broker-a", 9092, CancellationToken.None).AsTask();
+        await factoryEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        await pool.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5));
+
+        await Assert.That(async () => await connect.WaitAsync(TimeSpan.FromSeconds(5)))
+            .Throws<ObjectDisposedException>();
+    }
+
+    // When the operation deadline and the setup deadline expire together, WaitAsync can fault
+    // before the operation token's cancellation reaches the setup's own linked token; disposing
+    // that token then unregistered it. A factory that honours cancellation ran on forever, and
+    // pool disposal waited for it.
+    [Test]
+    [Timeout(60_000)]
+    public async Task ConnectionSetupTimeout_AbandonedSetupIsCancelled_SoDisposalDoesNotWaitForIt(
+        CancellationToken cancellationToken)
+    {
+        var setupTimeout = TimeSpan.FromMilliseconds(30);
+        var pool = new ConnectionPool(
+            clientId: "test-client",
+            connectionOptions: new ConnectionOptions
+            {
+                ConnectionTimeout = setupTimeout,
+                ConnectionTimeoutMax = setupTimeout,
+                ReconnectBackoff = TimeSpan.Zero,
+                ReconnectBackoffMax = TimeSpan.Zero
+            },
+            connectionsPerBroker: 1,
+            connectionFactory: async (_, _, _, _, ct) =>
+            {
+                await Task.Delay(Timeout.Infinite, ct);
+                throw new InvalidOperationException("unreachable");
+            },
+            randomDouble: static () => 0.5);
+
+        for (var attempt = 0; attempt < 100; attempt++)
+        {
+            try
+            {
+                await pool.GetConnectionAsync("broker-a", 9092, cancellationToken);
+            }
+            catch (KafkaException)
+            {
+                // Setup or operation timeout, both expected.
+            }
+        }
+
+        await pool.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
+    }
+
+    // Group setup (creation, scale-up, slot replacement) must end on pool disposal like the
+    // single-connection path, not leave an uncancellable caller parked until the setup timeout.
+    [Test]
+    [Arguments(GroupSetupPath.Create)]
+    [Arguments(GroupSetupPath.ScaleUp)]
+    [Arguments(GroupSetupPath.ReplaceSlot)]
+    public async Task DisposeAsync_CancelsAnUncancellableCallersConnectionGroupSetup(GroupSetupPath path)
+    {
+        var factoryEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var blockSetups = path != GroupSetupPath.ReplaceSlot;
+        var pool = new ConnectionPool(
+            clientId: "test-client",
+            connectionOptions: new ConnectionOptions
+            {
+                ConnectionTimeout = TimeSpan.FromSeconds(30),
+                ConnectionTimeoutMax = TimeSpan.FromSeconds(60),
+                ReconnectBackoff = TimeSpan.Zero,
+                ReconnectBackoffMax = TimeSpan.Zero
+            },
+            connectionsPerBroker: path == GroupSetupPath.ScaleUp ? 1 : 2,
+            connectionFactory: async (brokerId, host, port, _, cancellationToken) =>
+            {
+                if (!Volatile.Read(ref blockSetups))
+                    return CreateConnectedConnection(brokerId, host, port);
+
+                // A black-holed handshake: the setup only ends when its token is cancelled.
+                factoryEntered.TrySetResult();
+                await Task.Delay(Timeout.Infinite, cancellationToken);
+                throw new InvalidOperationException("unreachable");
+            },
+            randomDouble: static () => 0.5);
+        pool.RegisterBroker(0, "broker-a", 9092);
+
+        Task connect;
+        switch (path)
+        {
+            case GroupSetupPath.Create:
+                connect = pool.GetConnectionAsync(0, CancellationToken.None).AsTask();
+                break;
+            case GroupSetupPath.ScaleUp:
+                connect = pool.ScaleConnectionGroupAsync(0, 2, CancellationToken.None).AsTask();
+                break;
+            default:
+                var stale = await pool.GetConnectionByIndexAsync(0, 1, CancellationToken.None);
+                stale.IsConnected.Returns(false);
+                Volatile.Write(ref blockSetups, true);
+                connect = pool.GetConnectionByIndexAsync(0, 1, CancellationToken.None).AsTask();
+                break;
+        }
+        await factoryEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        await pool.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5));
+
+        await Assert.That(async () => await connect.WaitAsync(TimeSpan.FromSeconds(5)))
+            .Throws<ObjectDisposedException>();
+    }
+
+    public enum GroupSetupPath
+    {
+        Create,
+        ScaleUp,
+        ReplaceSlot
+    }
+
+    [Test]
+    public async Task DisposeAsync_DuringSetup_DisposesTheLateConnectionInsteadOfPublishingIt()
+    {
+        var factoryEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFactory = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var lateConnectionDisposed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var lateConnection = CreateConnectedConnection(-1, "broker-a", 9092);
+        lateConnection.DisposeAsync().Returns(_ =>
+        {
+            lateConnectionDisposed.TrySetResult();
+            return ValueTask.CompletedTask;
+        });
+        var pool = new ConnectionPool(
+            clientId: "test-client",
+            connectionOptions: new ConnectionOptions
+            {
+                ConnectionTimeout = TimeSpan.FromSeconds(30),
+                ConnectionTimeoutMax = TimeSpan.FromSeconds(60),
+                ReconnectBackoff = TimeSpan.Zero,
+                ReconnectBackoffMax = TimeSpan.Zero
+            },
+            connectionsPerBroker: 1,
+            connectionFactory: async (_, _, _, _, _) =>
+            {
+                // A factory that ignores cancellation and finishes after the pool is gone.
+                factoryEntered.TrySetResult();
+                await releaseFactory.Task;
+                return lateConnection;
+            },
+            randomDouble: static () => 0.5);
+
+        var connect = pool.GetConnectionAsync("broker-a", 9092, CancellationToken.None).AsTask();
+        await factoryEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        await pool.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5));
+        releaseFactory.TrySetResult();
+
+        await Assert.That(async () => await connect.WaitAsync(TimeSpan.FromSeconds(5)))
+            .Throws<ObjectDisposedException>();
+        await lateConnectionDisposed.Task.WaitAsync(TimeSpan.FromSeconds(5));
     }
 
     [Test]

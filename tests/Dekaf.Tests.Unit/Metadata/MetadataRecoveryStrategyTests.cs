@@ -831,8 +831,8 @@ public sealed class MetadataRecoveryStrategyTests
         var endpoints = await manager.ResolveBootstrapEndpointsAsync(CancellationToken.None);
 
         await Assert.That(lookup.InvocationCount).IsEqualTo(1);
-        await Assert.That(endpoints).Contains(("192.0.2.10", 9092));
-        await Assert.That(endpoints).Contains(("broker.example", 9092));
+        await Assert.That(endpoints).Contains(("192.0.2.10", 9092, "broker.example"));
+        await Assert.That(endpoints).Contains(("broker.example", 9092, "broker.example"));
     }
 
     #endregion

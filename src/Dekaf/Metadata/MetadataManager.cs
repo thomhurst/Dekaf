@@ -27,6 +27,9 @@ public sealed partial class MetadataManager : IAsyncDisposable
     private List<(int BrokerId, string Host, int Port)>? _cachedEndpoints;
     private int _cachedBrokerHash;
     private readonly object _endpointCacheLock = new();
+    // The endpoint that answered the last successful refresh. Refreshes run under _refreshLock,
+    // so only one writer; the reference is published whole.
+    private volatile RespondingEndpoint? _lastRespondingEndpoint;
 
     private volatile short _metadataApiVersion = -1;
     private readonly ConcurrentDictionary<ApiKey, (short MinVersion, short MaxVersion)> _brokerApiVersions = new();
@@ -1283,8 +1286,18 @@ public sealed partial class MetadataManager : IAsyncDisposable
         // Try each bootstrap server or known broker
         var endpoints = GetEndpointsToTry();
 
-        foreach (var (brokerId, host, port) in endpoints)
+        // The endpoint that answered last goes first. Otherwise a broker that accepts TCP and
+        // then stays silent at the head of the fixed order costs a full connection setup timeout
+        // on every refresh, although another broker is known to answer (Java's least-loaded
+        // node selection avoids the same trap).
+        var preferredIndex = FindLastRespondingEndpointIndex(endpoints);
+        for (var attempt = 0; attempt < endpoints.Count; attempt++)
         {
+            var index = preferredIndex <= 0 ? attempt
+                : attempt == 0 ? preferredIndex
+                : attempt <= preferredIndex ? attempt - 1
+                : attempt;
+            var (brokerId, host, port) = endpoints[index];
             try
             {
                 using var connectionLease = brokerId >= 0
@@ -1369,6 +1382,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
                 LogMetadataRefreshed(response.Brokers.Count, response.Topics.Count);
 
                 NotifyBrokerCountDiscovered(response.Brokers.Count);
+                RecordRespondingEndpoint(host, port);
 
                 // Success - reset the rebootstrap timer
                 ResetAllBrokersUnavailableTimestamp();
@@ -1580,7 +1594,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
         // Try the newly resolved endpoints
         Exception? lastException = null;
-        foreach (var (host, port) in newEndpoints)
+        foreach (var (host, port, bootstrapHost) in newEndpoints)
         {
             try
             {
@@ -1647,6 +1661,22 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
                 NotifyBrokerCountDiscovered(response.Brokers.Count);
 
+                // The endpoint that answered the rebootstrap replaces the one that failed or
+                // asked for it; otherwise the next refresh would try the stale endpoint first.
+                // A resolved address is not in the refresh endpoint list, so record the
+                // bootstrap server it was resolved from, which is.
+                RecordRespondingEndpoint(bootstrapHost, port);
+
+                // Connecting to that bootstrap server resolves it again, and DNS order (or an
+                // address that only accepted TCP) would lead with the address that just failed
+                // the handshake. Make the address that completed the rebootstrap the server's
+                // DNS preference so the next connection to it starts there.
+                if (!string.Equals(host, bootstrapHost, StringComparison.Ordinal)
+                    && IPAddress.TryParse(host, out var respondingAddress))
+                {
+                    _options.DnsResolver.MarkSuccessful(bootstrapHost, port, _options.ClientDnsLookup, respondingAddress);
+                }
+
                 // Success - reset the rebootstrap timer
                 ResetAllBrokersUnavailableTimestamp();
 
@@ -1698,10 +1728,11 @@ public sealed partial class MetadataManager : IAsyncDisposable
     /// <summary>
     /// Re-resolves DNS for the original bootstrap servers to discover new broker IPs.
     /// </summary>
-    internal async ValueTask<List<(string Host, int Port)>> ResolveBootstrapEndpointsAsync(CancellationToken cancellationToken)
+    internal async ValueTask<List<(string Host, int Port, string BootstrapHost)>> ResolveBootstrapEndpointsAsync(
+        CancellationToken cancellationToken)
     {
         var seen = new HashSet<(string Host, int Port)>();
-        var resolved = new List<(string Host, int Port)>();
+        var resolved = new List<(string Host, int Port, string BootstrapHost)>();
 
         foreach (var (host, port) in _bootstrapEndpoints)
         {
@@ -1719,24 +1750,23 @@ public sealed partial class MetadataManager : IAsyncDisposable
                     {
                         var canonicalEndpoint = (endpoints[0].TargetHost, port);
                         if (seen.Add(canonicalEndpoint))
-                            resolved.Add(canonicalEndpoint);
+                            resolved.Add((endpoints[0].TargetHost, port, host));
                     }
                 }
                 else
                 {
                     foreach (var endpoint in endpoints)
                     {
-                        var resolvedEndpoint = (endpoint.Address.ToString(), port);
-                        if (seen.Add(resolvedEndpoint))
-                            resolved.Add(resolvedEndpoint);
+                        var address = endpoint.Address.ToString();
+                        if (seen.Add((address, port)))
+                            resolved.Add((address, port, host));
                     }
                 }
 
                 // Also add the original hostname endpoint (it may resolve differently now)
-                var hostnameEndpoint = (host, port);
-                if (seen.Add(hostnameEndpoint))
+                if (seen.Add((host, port)))
                 {
-                    resolved.Add(hostnameEndpoint);
+                    resolved.Add((host, port, host));
                 }
 
                 LogRebootstrapDnsResolved(host, port, endpoints.Count);
@@ -1745,10 +1775,9 @@ public sealed partial class MetadataManager : IAsyncDisposable
             {
                 LogRebootstrapDnsResolutionFailed(ex, host, port);
                 // Still add the original hostname as a fallback
-                var fallbackEndpoint = (host, port);
-                if (seen.Add(fallbackEndpoint))
+                if (seen.Add((host, port)))
                 {
-                    resolved.Add(fallbackEndpoint);
+                    resolved.Add((host, port, host));
                 }
             }
         }
@@ -1850,6 +1879,31 @@ public sealed partial class MetadataManager : IAsyncDisposable
         _negotiatedVersionCache.Clear();
         _metadataApiVersion = metadataApiVersion;
     }
+
+    private void RecordRespondingEndpoint(string host, int port)
+    {
+        var current = _lastRespondingEndpoint;
+        if (current is null || current.Port != port || !string.Equals(current.Host, host, StringComparison.Ordinal))
+            _lastRespondingEndpoint = new RespondingEndpoint(host, port);
+    }
+
+    private int FindLastRespondingEndpointIndex(IReadOnlyList<(int BrokerId, string Host, int Port)> endpoints)
+    {
+        var preferred = _lastRespondingEndpoint;
+        if (preferred is null)
+            return -1;
+
+        for (var i = 0; i < endpoints.Count; i++)
+        {
+            var (_, host, port) = endpoints[i];
+            if (port == preferred.Port && string.Equals(host, preferred.Host, StringComparison.Ordinal))
+                return i;
+        }
+
+        return -1;
+    }
+
+    private sealed record RespondingEndpoint(string Host, int Port);
 
     internal IReadOnlyList<(int BrokerId, string Host, int Port)> GetEndpointsToTry()
     {
