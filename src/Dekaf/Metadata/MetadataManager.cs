@@ -1667,6 +1667,16 @@ public sealed partial class MetadataManager : IAsyncDisposable
                 // bootstrap server it was resolved from, which is.
                 RecordRespondingEndpoint(bootstrapHost, port);
 
+                // Connecting to that bootstrap server resolves it again, and DNS order (or an
+                // address that only accepted TCP) would lead with the address that just failed
+                // the handshake. Make the address that completed the rebootstrap the server's
+                // DNS preference so the next connection to it starts there.
+                if (!string.Equals(host, bootstrapHost, StringComparison.Ordinal)
+                    && IPAddress.TryParse(host, out var respondingAddress))
+                {
+                    _options.DnsResolver.MarkSuccessful(bootstrapHost, port, _options.ClientDnsLookup, respondingAddress);
+                }
+
                 // Success - reset the rebootstrap timer
                 ResetAllBrokersUnavailableTimestamp();
 
