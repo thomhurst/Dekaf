@@ -1,3 +1,6 @@
+using Dekaf.Errors;
+using Dekaf.Protocol;
+
 namespace Dekaf.Networking;
 
 // Client-side routing failures that clear once metadata catches up or a broker finishes
@@ -22,6 +25,25 @@ internal sealed class UnknownBrokerException(int brokerId)
 /// </summary>
 internal sealed class ConnectionSetupExhaustedException(int maxRetries)
     : InvalidOperationException($"Failed to create connection after {maxRetries} retries");
+
+/// <summary>
+/// Metadata moved a broker to another endpoint while a connection to its previous endpoint was
+/// still being set up. The finished connection is retired instead of served; the next attempt
+/// resolves the current endpoint. New in this file and without callers that match on the
+/// historical base type, so it keeps the library contract: a retriable <see cref="KafkaException"/>
+/// carrying <see cref="ErrorCode.NetworkException"/>, which every transport classifier already
+/// treats as "no broker answered".
+/// </summary>
+internal sealed class BrokerEndpointChangedException(
+    int brokerId,
+    string previousHost,
+    int previousPort,
+    string currentHost,
+    int currentPort)
+    : KafkaException(
+        Protocol.ErrorCode.NetworkException,
+        $"Broker {brokerId} moved from {previousHost}:{previousPort} to {currentHost}:{currentPort} " +
+        "while a connection to the previous endpoint was being set up");
 
 /// <summary>
 /// A metadata refresh failed against every known endpoint. The inner exception is the last

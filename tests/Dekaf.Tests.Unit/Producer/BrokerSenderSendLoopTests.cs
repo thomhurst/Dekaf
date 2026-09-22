@@ -2363,6 +2363,125 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
 
     [Test]
     [Timeout(120_000)]
+    public async Task SendLoop_ConnectionSetupSlowerThanSendBudget_IsNotRestarted(
+        CancellationToken cancellationToken)
+    {
+        // A TCP/TLS/SASL setup slower than the 1.5s send budget used to be cancelled by the
+        // send that gave up waiting, and the retry started another one from scratch: a broker
+        // that needs longer than the budget could never be reached.
+        var responseTcs = new TaskCompletionSource<ProduceResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var responseQueue = new Queue<TaskCompletionSource<ProduceResponse>>();
+        responseQueue.Enqueue(responseTcs);
+        var connection = new TestKafkaConnection();
+        var scripted = RegisterScript(responseQueue);
+        connection.SendProducePipelinedAfterWrite = () => new ValueTask<Task<ProduceResponse>>(scripted.Dequeue());
+        cancellationToken = GuardUnscriptedSends(cancellationToken);
+
+        var setupCompletes = new TaskCompletionSource<IKafkaConnection>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var setupToken = CancellationToken.None;
+        var setupCalls = 0;
+        var pool = Substitute.For<IConnectionPool>();
+        pool.GetConnectionAsync(Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(callInfo =>
+            {
+                Interlocked.Increment(ref setupCalls);
+                setupToken = callInfo.Arg<CancellationToken>();
+                return new ValueTask<IKafkaConnection>(setupCompletes.Task.WaitAsync(setupToken));
+            });
+
+        var options = CreateOptions(retryBackoffMs: 1, retryBackoffMaxMs: 1);
+        var accumulator = new RecordAccumulator(options);
+        var vtPool = new ValueTaskSourcePool<RecordMetadata>();
+        var acknowledged = new TaskCompletionSource<Exception?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, ex) => acknowledged.TrySetResult(ex));
+
+        try
+        {
+            var batch = CreateTestBatch(vtPool, "test-topic", 0);
+            sender.Enqueue(batch);
+
+            // The first send gives up after the send budget and re-enqueues the batch.
+            await WaitUntilAsync(() => batch.RetryFailureCount >= 1, cancellationToken);
+            await Assert.That(Volatile.Read(ref setupCalls)).IsEqualTo(1);
+            await Assert.That(setupToken.IsCancellationRequested).IsFalse();
+            await Assert.That(acknowledged.Task.IsCompleted).IsFalse();
+
+            setupCompletes.SetResult(connection);
+            await WaitUntilAsync(() => Volatile.Read(ref connection.SendPipelinedAfterWriteCalls) == 1, cancellationToken);
+            responseTcs.SetResult(CreateSuccessResponse("test-topic", 0, baseOffset: 42));
+
+            await Assert.That(await acknowledged.Task.WaitAsync(cancellationToken)).IsNull();
+            await Assert.That(Volatile.Read(ref setupCalls)).IsEqualTo(1);
+        }
+        finally
+        {
+            setupCompletes.TrySetCanceled(CancellationToken.None);
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await vtPool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    [Timeout(120_000)]
+    public async Task SendLoop_ConnectionSetupFailsAfterSendGaveUp_ReportsFailureAndRetries(
+        CancellationToken cancellationToken)
+    {
+        var responseTcs = new TaskCompletionSource<ProduceResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var responseQueue = new Queue<TaskCompletionSource<ProduceResponse>>();
+        responseQueue.Enqueue(responseTcs);
+        var connection = new TestKafkaConnection();
+        var scripted = RegisterScript(responseQueue);
+        connection.SendProducePipelinedAfterWrite = () => new ValueTask<Task<ProduceResponse>>(scripted.Dequeue());
+        cancellationToken = GuardUnscriptedSends(cancellationToken);
+
+        var setupFailure = new KafkaException(ErrorCode.RequestTimedOut, "Connection setup timeout after 30000ms to broker 1 (broker-a:9092)");
+        var firstSetup = new TaskCompletionSource<IKafkaConnection>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var setupCalls = 0;
+        var pool = Substitute.For<IConnectionPool>();
+        pool.GetConnectionAsync(Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(callInfo =>
+            {
+                var call = Interlocked.Increment(ref setupCalls);
+                return call == 1
+                    ? new ValueTask<IKafkaConnection>(firstSetup.Task.WaitAsync(callInfo.Arg<CancellationToken>()))
+                    : new ValueTask<IKafkaConnection>(connection);
+            });
+
+        var options = CreateOptions(retryBackoffMs: 1, retryBackoffMaxMs: 1);
+        var accumulator = new RecordAccumulator(options);
+        var vtPool = new ValueTaskSourcePool<RecordMetadata>();
+        var acknowledged = new TaskCompletionSource<Exception?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, ex) => acknowledged.TrySetResult(ex));
+
+        try
+        {
+            var batch = CreateTestBatch(vtPool, "test-topic", 0);
+            sender.Enqueue(batch);
+
+            await WaitUntilAsync(() => batch.RetryFailureCount >= 1, cancellationToken);
+            await Assert.That(Volatile.Read(ref setupCalls)).IsEqualTo(1);
+
+            // The pending setup fails after the first send gave up on it; the send that
+            // picks the failure up reports it and starts a new setup.
+            firstSetup.SetException(setupFailure);
+            await WaitUntilAsync(() => Volatile.Read(ref connection.SendPipelinedAfterWriteCalls) == 1, cancellationToken);
+            responseTcs.SetResult(CreateSuccessResponse("test-topic", 0, baseOffset: 42));
+
+            await Assert.That(await acknowledged.Task.WaitAsync(cancellationToken)).IsNull();
+            await Assert.That(Volatile.Read(ref setupCalls)).IsEqualTo(2);
+        }
+        finally
+        {
+            firstSetup.TrySetCanceled(CancellationToken.None);
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await vtPool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    [Timeout(120_000)]
     public async Task SendLoop_ResponseCompletion_WakesSendLoopAndProcessesBatch(CancellationToken cancellationToken)
     {
         // Verifies that when a response task completes, the response completion callback

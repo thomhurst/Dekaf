@@ -91,11 +91,13 @@ internal static class TransportFailureClassifier
     /// <summary>
     /// Client-side routing failures that clear once metadata catches up or a broker finishes
     /// restarting: an unknown broker ID, connection setup that kept producing closed connections,
-    /// and a metadata refresh that failed against every endpoint.
+    /// a broker that moved while a connection to it was being set up, and a metadata refresh
+    /// that failed against every endpoint.
     /// </summary>
     internal static bool IsClientRoutingFailure(Exception exception) =>
         exception is UnknownBrokerException
             or ConnectionSetupExhaustedException
+            or BrokerEndpointChangedException
             or MetadataRefreshFailedException;
 
     /// <summary>
