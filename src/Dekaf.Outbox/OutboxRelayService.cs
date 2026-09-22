@@ -63,6 +63,10 @@ public sealed partial class OutboxRelayService : BackgroundService
     // speed in the meantime.
     private readonly long[] _headRowFailedAt;
     private readonly TimeSpan[] _headRowBackoff;
+    // Set for a backing-off bucket that an acquisition returned after one that did not. A
+    // peer may have published its failing row meanwhile, so its head is looked at once
+    // before the backoff is waited out.
+    private readonly bool[] _headRowRecheck;
     // Cycles in a row that failed without publishing anything. Drives the error backoff.
     private int _fruitlessCycles;
     // Seeded from the relay id: relays back off out of step with each other, and one relay
@@ -120,6 +124,7 @@ public sealed partial class OutboxRelayService : BackgroundService
         _headRowMessageIds = new Guid[options.BucketCount];
         _headRowFailedAt = new long[options.BucketCount];
         _headRowBackoff = new TimeSpan[options.BucketCount];
+        _headRowRecheck = new bool[options.BucketCount];
         _backoffJitter = new Random(StableSeed(options.RelayId));
         if (notifier is OutboxNotifier)
         {
@@ -489,16 +494,23 @@ public sealed partial class OutboxRelayService : BackgroundService
                 // Keep bucket draining in the cycle state machine. A pending publisher
                 // needs one suspension instead of a second pooled async operation.
                 var bucket = _pendingBuckets[bucketIndex];
+                var recheckHead = false;
+                var headRetryDue = TimeSpan.Zero;
                 if (_headRowFailures[bucket] > 0)
                 {
-                    var retryDue = _headRowBackoff[bucket] - _timeProvider.GetElapsedTime(_headRowFailedAt[bucket], started);
-                    if (retryDue > _timeProvider.GetElapsedTime(started))
+                    headRetryDue = _headRowBackoff[bucket] - _timeProvider.GetElapsedTime(_headRowFailedAt[bucket], started);
+                    if (headRetryDue > _timeProvider.GetElapsedTime(started))
                     {
-                        _pendingBuckets[retainedCount++] = bucket;
-                        backingOff = true;
-                        if (retryDue < retryAfter)
-                            retryAfter = retryDue;
-                        continue;
+                        if (!_headRowRecheck[bucket])
+                        {
+                            _pendingBuckets[retainedCount++] = bucket;
+                            backingOff = true;
+                            if (headRetryDue < retryAfter)
+                                retryAfter = headRetryDue;
+                            continue;
+                        }
+
+                        recheckHead = true;
                     }
                 }
 
@@ -513,10 +525,26 @@ public sealed partial class OutboxRelayService : BackgroundService
                     var headOnly = _headRowFailures[bucket] > 0;
                     var batch = await _store.GetNextBatchAsync(bucket, headOnly ? 1 : _options.BatchSize, cancellationToken)
                         .ConfigureAwait(false);
+                    _headRowRecheck[bucket] = false;
                     if (batch.Count == 0)
                     {
                         _headRowFailures[bucket] = 0;
                         break;
+                    }
+
+                    if (recheckHead)
+                    {
+                        recheckHead = false;
+                        if (batch[0].MessageId == _headRowMessageIds[bucket])
+                        {
+                            // Still the row that failed: nobody published it while the bucket
+                            // was away, so its backoff stands.
+                            _pendingBuckets[retainedCount++] = bucket;
+                            backingOff = true;
+                            if (headRetryDue < retryAfter)
+                                retryAfter = headRetryDue;
+                            break;
+                        }
                     }
 
                     if (!await PreparePublishLeaseAsync(bucket, cancellationToken).ConfigureAwait(false))
@@ -823,12 +851,14 @@ public sealed partial class OutboxRelayService : BackgroundService
 
     /// <summary>
     /// A bucket this relay did not hold until now may have been drained by a peer meanwhile,
-    /// so the row it backed off for can be gone. Its retry is due at once: the head row is
-    /// fetched again, and a row that still fails backs off longer, as its failure count
-    /// survives the move. Only buckets with a failing head row are looked up, so a healthy
+    /// so the row it backed off for can be gone. Its head row is fetched once at the next
+    /// cycle: any other row goes out, and the same row waits out its backoff. An acquisition
+    /// can leave out a bucket nobody else could take (a store keeps a lease whose stored
+    /// expiry is later than this host's clock computes), so being left out never ends the
+    /// backoff by itself. Only buckets with a failing head row are looked up, so a healthy
     /// relay pays one array read per bucket per renewal.
     /// </summary>
-    private void EndBackoffOfRegainedBuckets(IReadOnlyList<int> held, IReadOnlyList<int> acquired)
+    private void RecheckHeadOfRegainedBuckets(IReadOnlyList<int> held, IReadOnlyList<int> acquired)
     {
         for (var index = 0; index < acquired.Count; index++)
         {
@@ -845,7 +875,7 @@ public sealed partial class OutboxRelayService : BackgroundService
                 }
             }
             if (!stillHeld)
-                _headRowBackoff[bucket] = TimeSpan.Zero;
+                _headRowRecheck[bucket] = true;
         }
     }
 
@@ -895,7 +925,7 @@ public sealed partial class OutboxRelayService : BackgroundService
         if (acquired.Count != _ownedBuckets.Count)
             LogLeasesChanged(_options.RelayId, acquired.Count, _options.BucketCount);
 
-        EndBackoffOfRegainedBuckets(_ownedBuckets, acquired);
+        RecheckHeadOfRegainedBuckets(_ownedBuckets, acquired);
         _ownedBuckets = acquired;
         _previousBuckets = acquired;
         if (_ownedBucketFlags is not null)

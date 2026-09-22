@@ -293,6 +293,54 @@ public sealed class OutboxRelayResilienceTests
     }
 
     [Test]
+    public async Task PoisonRowBucket_LeftOutOfOneAcquisition_KeepsTheSameRowsBackoff()
+    {
+        // A store can leave a bucket out of one acquisition while its lease still names this
+        // relay, as the EF Core store does with an expiry stored ahead of a clock set back.
+        // Nobody else could publish the row meanwhile, so it must not be retried early.
+        var time = new ManualTimeProvider();
+        var store = new RowStore(ownedBuckets: [0, 1]);
+        store.Enqueue(Row(1, bucket: 0));
+        var publisher = new ConcurrentSendPublisher();
+        publisher.Reject(1);
+        var renewal = TimeSpan.FromMinutes(1);
+        var options = new OutboxRelayOptions
+        {
+            BucketCount = 2,
+            PollInterval = TimeSpan.FromMinutes(2),
+            ErrorBackoff = TimeSpan.FromMinutes(10),
+            LeaseRenewInterval = renewal,
+            LeaseDuration = TimeSpan.FromMinutes(3),
+            MaxPublishDuration = TimeSpan.FromSeconds(5),
+            RelayId = "test-relay"
+        };
+
+        using var relay = CreateRelay(store, publisher, options, time);
+        await relay.StartAsync(CancellationToken.None);
+        try
+        {
+            await time.WaitForTimerAsync(renewal);
+            await Assert.That(publisher.RejectedAttempts).IsEqualTo(1);
+
+            store.SetOwnedBuckets([1]);
+            time.Advance(renewal);
+            await time.WaitForTimerAsync(renewal);
+
+            // Back in the next acquisition with the same row at its head: the relay looks at
+            // the row once and goes back to waiting out its backoff.
+            store.SetOwnedBuckets([0, 1]);
+            time.Advance(renewal);
+            await time.WaitForTimerAsync(renewal);
+            await Assert.That(publisher.RejectedAttempts).IsEqualTo(1);
+            await Assert.That(store.MarkedIds.IsEmpty).IsTrue();
+        }
+        finally
+        {
+            await relay.StopAsync(CancellationToken.None).WaitAsync(SignalTimeout);
+        }
+    }
+
+    [Test]
     public async Task PoisonRowsInSeveralBuckets_ASlowLaterRejectionDoesNotDelayTheEarlierRetry()
     {
         // Bucket 0's row is rejected at once and bucket 1's only after 40 seconds, so bucket
