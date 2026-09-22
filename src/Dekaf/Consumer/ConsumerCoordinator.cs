@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Net.Sockets;
+using System.Runtime.CompilerServices;
 using Dekaf.Diagnostics;
 using Dekaf.Errors;
 using Dekaf.Metadata;
@@ -105,7 +106,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private int _membershipFenced;
     // Assignments cleared by a fence, waiting for OnPartitionsLost. Drained under
     // _rebalanceListenerLock so a rejoin can never publish OnPartitionsAssigned first.
-    private readonly ConcurrentQueue<IReadOnlyList<TopicPartition>> _pendingPartitionsLost = new();
+    private readonly ConcurrentQueue<PendingPartitionsLost> _pendingPartitionsLost = new();
     // Advanced under _lock each time a join makes the member Stable and each time a fence ends a
     // membership. A fence observed by a request sent under an earlier membership must not clear
     // the assignment of a newer one, and a commit must not send offsets taken under an earlier one.
@@ -970,10 +971,18 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             CancellationToken,
             ValueTask> consumerAwareCallback,
         IEnumerable<TopicPartition> newlyAssigned,
+        PendingPartitionsLost? progress,
         CancellationToken cancellationToken)
     {
+        // With progress, listeners that already completed this notification are skipped and each
+        // one that completes is recorded, so a retry after cancellation resumes at the interrupted
+        // listener. Configured listeners are fixed and the runtime listener is last, so a
+        // listener's position is stable across retries.
+        var completed = progress?.ListenersCompleted ?? 0;
+        var position = 0;
+
         var configuredListener = _rebalanceListener;
-        if (configuredListener is not null)
+        if (configuredListener is not null && position++ >= completed)
         {
             await InvokeRebalanceListenerAsync(
                 callbackName,
@@ -981,10 +990,11 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 configuredListener,
                 callback,
                 cancellationToken).ConfigureAwait(false);
+            progress?.ListenersCompleted = position;
         }
 
         var consumerAwareListener = _consumerAwareRebalanceListener;
-        if (consumerAwareListener is not null)
+        if (consumerAwareListener is not null && position++ >= completed)
         {
             await InvokeConsumerAwareRebalanceListenerAsync(
                 callbackName,
@@ -993,6 +1003,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 consumerAwareCallback,
                 newlyAssigned,
                 cancellationToken).ConfigureAwait(false);
+            progress?.ListenersCompleted = position;
         }
 
         var additionalListeners = _additionalRebalanceListeners;
@@ -1000,17 +1011,21 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         {
             for (var index = 0; index < additionalListeners.Length; index++)
             {
+                if (position++ < completed)
+                    continue;
+
                 await InvokeRebalanceListenerAsync(
                     callbackName,
                     partitions,
                     additionalListeners[index],
                     callback,
                     cancellationToken).ConfigureAwait(false);
+                progress?.ListenersCompleted = position;
             }
         }
 
         var runtimeListener = Volatile.Read(ref _runtimeRebalanceListener);
-        if (runtimeListener is not null)
+        if (runtimeListener is not null && position++ >= completed)
         {
             await InvokeRebalanceListenerAsync(
                 callbackName,
@@ -1018,7 +1033,19 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 runtimeListener,
                 callback,
                 cancellationToken).ConfigureAwait(false);
+            progress?.ListenersCompleted = position;
         }
+    }
+
+    /// <summary>
+    /// An assignment a fence cleared, queued for OnPartitionsLost. Only the drainer holding
+    /// <c>_rebalanceListenerLock</c> reads or advances <see cref="ListenersCompleted"/>.
+    /// </summary>
+    private sealed class PendingPartitionsLost(IReadOnlyList<TopicPartition> partitions)
+    {
+        public IReadOnlyList<TopicPartition> Partitions { get; } = partitions;
+
+        public int ListenersCompleted;
     }
 
     /// <summary>
@@ -1590,7 +1617,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         Interlocked.Increment(ref _membershipVersion);
         var lost = ClearAssignment();
         if (lost is not null)
-            _pendingPartitionsLost.Enqueue(lost);
+            _pendingPartitionsLost.Enqueue(new PendingPartitionsLost(lost));
     }
 
     private IReadOnlyList<TopicPartition>? ClearAssignment()
@@ -1670,6 +1697,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 static (listener, consumer, partitions, token) =>
                     listener.OnPartitionsRevokedAsync(consumer, partitions, token),
                 [],
+                progress: null,
                 cancellationToken).ConfigureAwait(false);
         }
 
@@ -1681,6 +1709,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 static (listener, consumer, partitions, token) =>
                     listener.OnPartitionsAssignedAsync(consumer, partitions, token),
                 result.Assigned,
+                progress: null,
                 cancellationToken).ConfigureAwait(false);
     }
 
@@ -1709,16 +1738,23 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     /// <see cref="_coordinatorId"/> here: a heartbeat loop that fails concurrently invalidates
     /// that field, and leasing broker -1 would surface as an unknown-broker failure.
     /// </param>
+    /// <param name="sentMembershipVersion">
+    /// Steady heartbeat only: receives the membership version the request was built under, so a
+    /// fence the response reports is applied to exactly the membership that sent it.
+    /// </param>
     private async ValueTask<ConsumerHeartbeatResult> SendConsumerGroupHeartbeatAsync(
         int coordinatorId,
         bool isInitial,
         bool discardIfMembershipChanged,
+        StrongBox<int>? sentMembershipVersion,
         CancellationToken cancellationToken)
     {
         var maxPollExpirationVersion = discardIfMembershipChanged
             ? Volatile.Read(ref _maxPollExpirationVersion)
             : 0;
-        var membershipVersion = Volatile.Read(ref _membershipVersion);
+        int membershipVersion;
+        string? memberIdSnapshot;
+        int memberEpochSnapshot;
         ConsumerGroupHeartbeatResponse response;
         int assignmentVersion;
         IReadOnlyList<ConsumerGroupHeartbeatTopicPartitions>? ownedTopicPartitions;
@@ -1729,11 +1765,38 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         {
             var connection = connectionLease.Connection;
 
-            if (discardIfMembershipChanged &&
-                 (_state != CoordinatorState.Stable ||
-                 Volatile.Read(ref _maxPollExpirationVersion) != maxPollExpirationVersion ||
-                 IsCurrentPollGenerationExpired()))
-                return default;
+            if (discardIfMembershipChanged)
+            {
+                // A rejoin can replace the membership while this heartbeat discovers or leases a
+                // connection. Snapshot the member id, epoch and membership version together under
+                // the state lock, where every change to them is made, so the request and any fence
+                // it reports describe the same membership.
+                await _lock.WaitAsync(cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    if (_state != CoordinatorState.Stable ||
+                        Volatile.Read(ref _maxPollExpirationVersion) != maxPollExpirationVersion ||
+                        IsCurrentPollGenerationExpired())
+                        return default;
+
+                    memberIdSnapshot = _memberId;
+                    memberEpochSnapshot = _generationId;
+                    membershipVersion = _membershipVersion;
+                }
+                finally
+                {
+                    _lock.Release();
+                }
+
+                sentMembershipVersion!.Value = membershipVersion;
+            }
+            else
+            {
+                // The join path holds the state lock.
+                memberIdSnapshot = _memberId;
+                memberEpochSnapshot = _generationId;
+                membershipVersion = Volatile.Read(ref _membershipVersion);
+            }
 
             if (!_metadataManager.HasApiKey(connection, ApiKey.ConsumerGroupHeartbeat))
             {
@@ -1754,16 +1817,16 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             // Generate once when _memberId is null; subsequent heartbeats reuse the stored ID.
             // Thread-safety: _memberId is only null on the initial join path (protected by _lock)
             // or after ResetMemberState() which also transitions to Unjoined before any heartbeat loop restart.
-            if (_memberId is null && version >= 1)
-                _memberId = Guid.NewGuid().ToString();
+            if (memberIdSnapshot is null && version >= 1 && !discardIfMembershipChanged)
+                _memberId = memberIdSnapshot = Guid.NewGuid().ToString();
 
-            var memberId = _memberId ?? string.Empty;
+            var memberId = memberIdSnapshot ?? string.Empty;
 
             // MemberEpoch: 0 for initial join, -2 for static rejoin (set by fencing handler),
             // or the current epoch for steady-state heartbeats
             var memberEpoch = isInitial
-                ? (_generationId == -2 && _options.GroupInstanceId is not null ? -2 : 0)
-                : _generationId;
+                ? (memberEpochSnapshot == -2 && _options.GroupInstanceId is not null ? -2 : 0)
+                : memberEpochSnapshot;
 
             // On initial join, send empty array (owns nothing). null means "unchanged" in KIP-848
             // which is invalid when there's no previous state.
@@ -2236,6 +2299,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                             coordinatorId,
                             isInitial: _memberId is null || _generationId <= 0,
                             discardIfMembershipChanged: false,
+                            sentMembershipVersion: null,
                             joinToken).ConfigureAwait(false);
                     }
                     catch (Exception ex) when (
@@ -2375,7 +2439,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         // loop re-discovers the coordinator itself and beats on the retry backoff.
         var transientFailureCount = 0;
         var heartbeatCoordinatorId = -1;
-        var membershipVersion = Volatile.Read(ref _membershipVersion);
+        // The membership version each request is built under; a fence it reports applies only
+        // to that membership. Allocated once per loop.
+        var membershipVersion = new StrongBox<int>(Volatile.Read(ref _membershipVersion));
 
         while (!cancellationToken.IsCancellationRequested)
         {
@@ -2399,7 +2465,6 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 if (_state != CoordinatorState.Stable)
                     break;
 
-                membershipVersion = Volatile.Read(ref _membershipVersion);
                 heartbeatCoordinatorId = _coordinatorId;
                 if (heartbeatCoordinatorId < 0)
                 {
@@ -2420,6 +2485,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                     heartbeatCoordinatorId,
                     isInitial: false,
                     discardIfMembershipChanged: true,
+                    membershipVersion,
                     cancellationToken).ConfigureAwait(false);
                 transientFailureCount = 0;
             }
@@ -2460,7 +2526,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                         case ErrorCode.UnknownMemberId:
                             // The next EnsureActiveGroup rejoins with MemberEpoch=0 (or -2 for static).
                             if (!await TryFenceFromHeartbeatAsync(
-                                    membershipVersion,
+                                    membershipVersion.Value,
                                     forgetMember: ge.ErrorCode == ErrorCode.UnknownMemberId).ConfigureAwait(false))
                                 return;
 
@@ -2625,6 +2691,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
     private ValueTask InvokePartitionsLostCoreAsync(
         IReadOnlyList<TopicPartition> lost,
+        PendingPartitionsLost? progress = null,
         CancellationToken cancellationToken = default) =>
         InvokeRebalanceListenersAsync(
             "OnPartitionsLost",
@@ -2633,6 +2700,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             static (listener, consumer, partitions, token) =>
                 listener.OnPartitionsLostAsync(consumer, partitions, token),
             [],
+            progress,
             cancellationToken);
 
     private async ValueTask InvokePendingPartitionsLostAsync(CancellationToken cancellationToken)
@@ -2652,13 +2720,14 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     }
 
     // Caller holds _rebalanceListenerLock, so it is the only drainer. An entry leaves the queue
-    // only once its callback has completed: a cancelled callback is delivered again before the
-    // next assignment rather than dropped.
+    // only once every listener's callback has completed: a cancelled callback is delivered again
+    // before the next assignment rather than dropped, and listeners that already completed it are
+    // not called a second time.
     private async ValueTask InvokePendingPartitionsLostCoreAsync(CancellationToken cancellationToken)
     {
         while (_pendingPartitionsLost.TryPeek(out var lost))
         {
-            await InvokePartitionsLostCoreAsync(lost, cancellationToken).ConfigureAwait(false);
+            await InvokePartitionsLostCoreAsync(lost.Partitions, lost, cancellationToken).ConfigureAwait(false);
             _pendingPartitionsLost.TryDequeue(out _);
         }
     }

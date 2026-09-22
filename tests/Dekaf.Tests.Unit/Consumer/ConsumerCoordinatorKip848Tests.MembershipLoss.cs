@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Reflection;
 using Dekaf.Consumer;
 using Dekaf.Errors;
+using Dekaf.Networking;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
 using NSubstitute;
@@ -304,6 +305,115 @@ public sealed partial class ConsumerCoordinatorKip848Tests
         await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Stable);
         await Assert.That(coordinator.MemberId).IsEqualTo("member-2");
         await Assert.That(coordinator.Assignment.Count).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task MembershipLoss_FenceForAMembershipThatJoinedWhileTheHeartbeatLeasedItsConnection_IsApplied()
+    {
+        var script = new HeartbeatScript(this);
+        var (listener, calls) = CreateRecordingListener();
+        await using var coordinator = await JoinAsync(script, listener);
+        calls.Clear();
+
+        // The heartbeat loop reaches its connection lease under member-1; the member is fenced
+        // and rejoins as member-2 before the lease completes.
+        var leaseReached = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseLease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var holdNextLease = 1;
+        _connectionPool.GetConnectionByIndexAsync(Arg.Any<int>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(_ => Interlocked.Exchange(ref holdNextLease, 0) == 1
+                ? HoldLeaseAsync()
+                : ValueTask.FromResult(_connection));
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var loopStop = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token);
+        SetPrivateField(coordinator, "_heartbeatIntervalMs", 1);
+        var loop = InvokeConsumerProtocolHeartbeatLoopAsync(coordinator, loopStop.Token);
+        await leaseReached.Task.WaitAsync(timeout.Token);
+
+        typeof(ConsumerCoordinator)
+            .GetMethod("FenceMembership", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(coordinator, [false]);
+        script.Respond = (_, _) => Joined("member-2", memberEpoch: 1, CreateAssignment(TestTopicId, 1));
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, timeout.Token);
+        await Assert.That(coordinator.MemberId).IsEqualTo("member-2");
+
+        // The loop's heartbeat is sent for member-2, and the coordinator fences member-2.
+        script.Respond = (_, _) => Error(ErrorCode.FencedMemberEpoch);
+        releaseLease.SetResult();
+        await loop.WaitAsync(timeout.Token);
+        loopStop.Cancel();
+
+        ConsumerGroupHeartbeatRequest lastRequest;
+        lock (script.Requests)
+            lastRequest = script.Requests[^1];
+        await Assert.That(lastRequest.MemberId).IsEqualTo("member-2");
+        await Assert.That(lastRequest.MemberEpoch).IsEqualTo(1);
+        await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Unjoined);
+        await Assert.That(coordinator.Assignment.Count).IsEqualTo(0);
+        await Assert.That(string.Join(" | ", calls))
+            .IsEqualTo("lost:test-topic-0,test-topic-1 | assigned:test-topic-1 | lost:test-topic-1");
+
+        async ValueTask<IKafkaConnection> HoldLeaseAsync()
+        {
+            leaseReached.TrySetResult();
+            await releaseLease.Task;
+            return _connection;
+        }
+    }
+
+    [Test]
+    public async Task MembershipLoss_LostCallbackRetry_DoesNotRepeatListenersThatCompleted()
+    {
+        var script = new HeartbeatScript(this);
+        var (recording, calls) = CreateRecordingListener();
+        var lostEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var interruptNextLost = 1;
+        var firstLostCount = 0;
+        var first = Substitute.For<IRebalanceListener>();
+        first.OnPartitionsLostAsync(Arg.Any<IEnumerable<TopicPartition>>(), Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                Interlocked.Increment(ref firstLostCount);
+                return ValueTask.CompletedTask;
+            });
+        var second = Substitute.For<IRebalanceListener>();
+        second.OnPartitionsLostAsync(Arg.Any<IEnumerable<TopicPartition>>(), Arg.Any<CancellationToken>())
+            .Returns(callInfo => Interlocked.Exchange(ref interruptNextLost, 0) == 1
+                ? WaitForCancellationAsync(callInfo.Arg<CancellationToken>())
+                : recording.OnPartitionsLostAsync(
+                    callInfo.Arg<IEnumerable<TopicPartition>>()!,
+                    callInfo.Arg<CancellationToken>()));
+        second.OnPartitionsAssignedAsync(Arg.Any<IEnumerable<TopicPartition>>(), Arg.Any<CancellationToken>())
+            .Returns(callInfo => recording.OnPartitionsAssignedAsync(
+                callInfo.Arg<IEnumerable<TopicPartition>>()!,
+                callInfo.Arg<CancellationToken>()));
+        await using var coordinator = await JoinAsync(script, first, additionalRebalanceListeners: [second]);
+        calls.Clear();
+
+        // The first listener completes OnPartitionsLost; the heartbeat stop interrupts the second.
+        script.Respond = (_, _) => Error(ErrorCode.FencedMemberEpoch);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var loopStop = new CancellationTokenSource();
+        SetPrivateField(coordinator, "_heartbeatIntervalMs", 1);
+        var loop = InvokeConsumerProtocolHeartbeatLoopAsync(coordinator, loopStop.Token);
+        await lostEntered.Task.WaitAsync(timeout.Token);
+        loopStop.Cancel();
+        await loop.WaitAsync(timeout.Token);
+        await Assert.That(Volatile.Read(ref firstLostCount)).IsEqualTo(1);
+
+        // The retry before the rejoin assignment resumes at the interrupted listener.
+        script.Respond = (_, _) => Joined("member-1", memberEpoch: 6, CreateAssignment(TestTopicId, 0));
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, timeout.Token);
+
+        await Assert.That(Volatile.Read(ref firstLostCount)).IsEqualTo(1);
+        await Assert.That(string.Join(" | ", calls)).IsEqualTo("lost:test-topic-0,test-topic-1 | assigned:test-topic-0");
+
+        async ValueTask WaitForCancellationAsync(CancellationToken cancellationToken)
+        {
+            lostEntered.TrySetResult();
+            await Task.Delay(Timeout.Infinite, cancellationToken);
+        }
     }
 
     [Test]
@@ -654,12 +764,14 @@ public sealed partial class ConsumerCoordinatorKip848Tests
         IRebalanceListener listener,
         int sessionTimeoutMs = 45000,
         int rebalanceTimeoutMs = 30000,
-        int defaultApiTimeoutMs = 60000)
+        int defaultApiTimeoutMs = 60000,
+        IRebalanceListener[]? additionalRebalanceListeners = null)
     {
         SetupFindCoordinator();
         script.Respond = (_, _) => Joined("member-1", memberEpoch: 5, CreateAssignment(TestTopicId, 0, 1));
         var options = CreateConsumerProtocolOptions(
             rebalanceListener: listener,
+            additionalRebalanceListeners: additionalRebalanceListeners,
             retryBackoffMs: 1,
             retryBackoffMaxMs: 1,
             sessionTimeoutMs: sessionTimeoutMs,

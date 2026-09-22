@@ -245,7 +245,9 @@ public sealed partial class ConsumerCoordinatorKip848Tests : IAsyncDisposable
             BindingFlags.NonPublic | BindingFlags.Instance);
 
         var coordinatorId = GetPrivateField<int>(coordinator, "_coordinatorId");
-        var result = method!.Invoke(coordinator, [coordinatorId, false, true, CancellationToken.None])!;
+        var result = method!.Invoke(
+            coordinator,
+            [coordinatorId, false, true, new System.Runtime.CompilerServices.StrongBox<int>(), CancellationToken.None])!;
         var task = (Task)result.GetType().GetMethod("AsTask")!.Invoke(result, null)!;
         await task;
     }
