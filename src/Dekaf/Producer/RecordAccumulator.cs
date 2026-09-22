@@ -1306,25 +1306,39 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// batch was stamped with, the error code and the exception its records fail with. Invoked
     /// once per failed batch, before any of its records complete, so a caller resumed by the
     /// failure already sees the transaction state it causes (Java
-    /// <c>TransactionManager.handleFailedBatch</c>). Failure paths only.
+    /// <c>TransactionManager.handleFailedBatch</c>). Returns false when the batch carries a producer
+    /// identity the producer has since replaced, so the report was ignored. Failure paths only.
     /// </summary>
-    internal Action<long, short, ErrorCode, Exception>? OnTransactionalBatchFailed { get; set; }
+    internal Func<long, short, ErrorCode, Exception, bool>? OnTransactionalBatchFailed { get; set; }
 
-    /// <summary>Called by <see cref="ReadyBatch"/> as its records fail. See <see cref="OnTransactionalBatchFailed"/>.</summary>
-    internal void ReportBatchFailure(ReadyBatch batch, Exception exception)
+    /// <summary>
+    /// Called by <see cref="ReadyBatch"/> as its records fail, before any completes; returns the
+    /// exception they fail with. See <see cref="OnTransactionalBatchFailed"/>. The sender picks a
+    /// fatal exception for a fence of the current producer identity, but an abort can replace that
+    /// identity before this report, and the observer then ignores the batch. Its answer is taken
+    /// under the same lock as the identity change, so it decides: an ignored batch fails its records
+    /// with the non-fatal exception instead of telling the caller to close a usable producer.
+    /// Failure paths only.
+    /// </summary>
+    internal Exception ReportBatchFailure(ReadyBatch batch, Exception exception)
     {
         if (OnTransactionalBatchFailed is not { } report || batch.RecordBatch is not { } recordBatch)
-            return;
+            return exception;
 
         try
         {
-            report(
-                recordBatch.ProducerId,
-                recordBatch.ProducerEpoch,
-                TransactionErrorClassifier.GetFailedBatchErrorCode(exception),
-                exception);
+            var errorCode = TransactionErrorClassifier.GetFailedBatchErrorCode(exception);
+            if (!report(recordBatch.ProducerId, recordBatch.ProducerEpoch, errorCode, exception)
+                && exception is FatalTransactionException fatal)
+            {
+                var topicPartition = batch.TopicPartition;
+                return TransactionErrorClassifier.CreateFailureForEarlierProducerEpoch(
+                    errorCode, topicPartition.Topic, topicPartition.Partition, fatal.TransactionalId);
+            }
         }
         catch (Exception reportEx) { LogBatchCleanupStepFailed(reportEx); }
+
+        return exception;
     }
 
     // Per-partition sequence numbers for idempotent/transactional producing.
@@ -10355,7 +10369,8 @@ internal sealed class ReadyBatch
 
         // Before any record completes: a caller that observes the failure must already see the
         // transaction state it causes. Failure path only; reports its own errors.
-        _failureObserver?.ReportBatchFailure(this, exception);
+        if (_failureObserver is { } failureObserver)
+            exception = failureObserver.ReportBatchFailure(this, exception);
 
         try
         {

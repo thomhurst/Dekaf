@@ -5372,9 +5372,11 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     /// transaction there is nothing to abort (an abort fails the batches it leaves behind itself).
     /// A batch stamped with an earlier producer ID or epoch belongs to a transaction that already
     /// ended with an abort (which bumps the epoch; a commit flushes every batch first), so it is
-    /// ignored. Error paths only.
+    /// ignored and false is returned: that decision is taken under the lock an abort replaces the
+    /// identity under, so the batch's records use it to avoid telling the caller to close a usable
+    /// producer (<see cref="RecordAccumulator.ReportBatchFailure"/>). Error paths only.
     /// </summary>
-    internal void OnTransactionalBatchFailed(
+    internal bool OnTransactionalBatchFailed(
         long producerId,
         short producerEpoch,
         ErrorCode errorCode,
@@ -5388,27 +5390,28 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             {
                 LogTransactionalBatchFailureFromEarlierEpochIgnored(
                     errorCode, producerId, producerEpoch, _options.TransactionalId);
-                return;
+                return false;
             }
 
             var state = _transactionState;
             if (state == TransactionState.FatalError)
-                return;
+                return true;
 
             if (TransactionErrorClassifier.ClassifyFailedBatch(errorCode) == TransactionErrorClassification.Fatal)
             {
                 _lastTransactionError = errorCode;
                 _transactionState = TransactionState.FatalError;
                 LogTransactionalBatchFailedFatal(errorCode, _options.TransactionalId);
-                return;
+                return true;
             }
 
             if (state is not (TransactionState.InTransaction or TransactionState.CommittingTransaction))
-                return;
+                return true;
 
             _transactionBatchFailure ??= failure;
             MarkTransactionAbortable(errorCode);
             LogTransactionalBatchFailedAbortable(errorCode, _options.TransactionalId);
+            return true;
         }
     }
 

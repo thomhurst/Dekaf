@@ -1503,7 +1503,10 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             isTransactional: true,
             usesTransactionV2: true);
         accumulator.OnTransactionalBatchFailed = (producerId, epoch, code, _) =>
+        {
             reported.TrySetResult((producerId, epoch, code));
+            return true;
+        };
 
         try
         {
@@ -1570,7 +1573,7 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             produceApiVersion: ProduceRequest.ImplicitTransactionPartitionEnrollmentVersion,
             isTransactional: true,
             usesTransactionV2: true);
-        accumulator.OnTransactionalBatchFailed = static (_, _, _, _) => { };
+        accumulator.OnTransactionalBatchFailed = static (_, _, _, _) => false;
 
         try
         {
@@ -1625,7 +1628,11 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             produceApiVersion: ProduceRequest.ImplicitTransactionPartitionEnrollmentVersion,
             isTransactional: true,
             usesTransactionV2: true);
-        accumulator.OnTransactionalBatchFailed = (_, _, code, _) => reported.TrySetResult(code);
+        accumulator.OnTransactionalBatchFailed = (_, _, code, _) =>
+        {
+            reported.TrySetResult(code);
+            return true;
+        };
 
         try
         {
@@ -1678,7 +1685,11 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             produceApiVersion: ProduceRequest.ImplicitTransactionPartitionEnrollmentVersion,
             isTransactional: true,
             usesTransactionV2: true);
-        accumulator.OnTransactionalBatchFailed = (_, _, code, _) => reported.TrySetResult(code);
+        accumulator.OnTransactionalBatchFailed = (_, _, code, _) =>
+        {
+            reported.TrySetResult(code);
+            return true;
+        };
 
         try
         {

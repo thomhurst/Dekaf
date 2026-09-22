@@ -6132,15 +6132,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             // An abort bumped the epoch while this batch was in flight: the fence answers the
             // old stamp of a transaction that has already ended, and the producer's transaction
             // state ignores the report (KafkaProducer.OnTransactionalBatchFailed). Telling the
-            // caller to close the healthy producer would be wrong.
+            // caller to close the healthy producer would be wrong. An abort that lands after this
+            // check is caught when the batch reports its failure (RecordAccumulator.ReportBatchFailure).
             if (IsStampedWithEarlierProducerIdentity(batch))
             {
-                return new AbortableTransactionException(errorCode,
-                    $"Produce to {topic}-{partition} failed: {errorCode} for an earlier producer epoch. " +
-                    "The transaction this record belonged to has already ended; the producer is still usable.")
-                {
-                    TransactionalId = _options.TransactionalId
-                };
+                return TransactionErrorClassifier.CreateFailureForEarlierProducerEpoch(
+                    errorCode, topic, partition, _options.TransactionalId);
             }
 
             return new FatalTransactionException(errorCode,

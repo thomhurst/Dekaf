@@ -190,7 +190,10 @@ public sealed class TransactionalProduceFaultTests
         var completion = sources[0].Task;
         var reports = new List<(long ProducerId, short Epoch, ErrorCode ErrorCode, Exception Failure, bool Completed)>();
         accumulator.OnTransactionalBatchFailed = (producerId, epoch, errorCode, failure) =>
+        {
             reports.Add((producerId, epoch, errorCode, failure, completion.IsCompleted));
+            return true;
+        };
 
         var batch = new ReadyBatch(accumulator);
         batch.Initialize(

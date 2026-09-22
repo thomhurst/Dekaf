@@ -440,10 +440,56 @@ public sealed class TransactionTests
     {
         await using var producer = BuildTransactionalProducer(TransactionState.InTransaction);
 
-        producer.OnTransactionalBatchFailed(batchProducerId, batchEpoch, errorCode);
+        var reportTaken = producer.OnTransactionalBatchFailed(batchProducerId, batchEpoch, errorCode);
 
+        await Assert.That(reportTaken).IsFalse();
         await Assert.That(producer._transactionState).IsEqualTo(TransactionState.InTransaction);
         await Assert.That(producer._lastTransactionError).IsEqualTo(ErrorCode.None);
+    }
+
+    /// <summary>
+    /// The sender picked the fatal exception while the batch's stamp was still current, then an
+    /// abort replaced the producer identity before the batch reported its failure. The producer
+    /// ignores the stale report, and that same decision picks what the records fail with: the
+    /// caller must not be told to close a producer that is still usable.
+    /// </summary>
+    [Test]
+    public async Task TransactionalBatchFailure_FatalPickedBeforeAnAbortReplacedTheIdentity_FailsRecordsAsAbortable()
+    {
+        await using var producer = BuildTransactionalProducer(TransactionState.InTransaction);
+        await using var sourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var sources = System.Buffers.ArrayPool<PooledValueTaskSource<RecordMetadata>>.Shared.Rent(1);
+        sources[0] = sourcePool.Rent();
+        var completion = sources[0].Task;
+        var batch = new ReadyBatch(producer.RecordAccumulator);
+        batch.Initialize(
+            new TopicPartition("test-topic", 0),
+            new RecordBatch
+            {
+                Records = Array.Empty<Dekaf.Protocol.Records.Record>(),
+                ProducerId = 42,
+                ProducerEpoch = 5
+            },
+            sources,
+            completionSourcesCount: 1,
+            recordCount: 1,
+            dataSize: 100);
+        batch.MarkPreSerialized();
+        var fenced = new FatalTransactionException(ErrorCode.ProducerFenced, "fenced")
+        {
+            TransactionalId = "test-txn-id"
+        };
+
+        // The abort completes and installs the bumped epoch after the sender chose the exception.
+        SetInstanceField(producer, "_producerEpoch", (short)6);
+        producer._transactionState = TransactionState.Ready;
+        batch.Fail(fenced);
+
+        var exception = await Assert.That(async () => await completion)
+            .Throws<AbortableTransactionException>();
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.ProducerFenced);
+        await Assert.That(exception.TransactionalId).IsEqualTo("test-txn-id");
+        await Assert.That(producer._transactionState).IsEqualTo(TransactionState.Ready);
     }
 
     /// <summary>

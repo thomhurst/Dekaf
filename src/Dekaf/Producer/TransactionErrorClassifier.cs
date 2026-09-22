@@ -77,4 +77,21 @@ internal static class TransactionErrorClassifier
             or Protocol.ErrorCode.InvalidProducerIdMapping
             ? TransactionErrorClassification.Fatal
             : TransactionErrorClassification.Abortable;
+
+    /// <summary>
+    /// The exception a batch fails with when the broker fenced a producer identity an abort has
+    /// since replaced: the transaction its records belonged to has already ended and the producer
+    /// ignores the report, so the caller must not be told to close it. Error path only.
+    /// </summary>
+    internal static Errors.AbortableTransactionException CreateFailureForEarlierProducerEpoch(
+        Protocol.ErrorCode errorCode,
+        string topic,
+        int partition,
+        string? transactionalId) =>
+        new(errorCode,
+            $"Produce to {topic}-{partition} failed: {errorCode} for an earlier producer epoch. " +
+            "The transaction this record belonged to has already ended; the producer is still usable.")
+        {
+            TransactionalId = transactionalId
+        };
 }
