@@ -13071,6 +13071,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         if (_coordinator is not null)
         {
             await _coordinator.StopHeartbeatAsyncCore(cancellationToken).ConfigureAwait(false);
+
+            // Rebalance callbacks the heartbeat stop interrupted (a fenced member's
+            // OnPartitionsLost, say) are delivered now, whether or not a leave is sent.
+            await _coordinator.InvokePendingRebalanceCallbacksUnlessCancelledAsync(cancellationToken)
+                .ConfigureAwait(false);
         }
 
         // Step 2: Stop leader-refresh tasks before metadata dependencies are disposed

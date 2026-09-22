@@ -246,6 +246,99 @@ public sealed partial class ConsumerCoordinatorKip848Tests
     }
 
     [Test]
+    public async Task MembershipLoss_OffsetFetchUnknownMemberReceivedAsTheCallerCancels_IsStillApplied()
+    {
+        _metadataManager.SetApiVersion(ApiKey.OffsetFetch, 9, 9);
+        var script = new HeartbeatScript(this);
+        var (listener, calls) = CreateRecordingListener();
+        await using var coordinator = await JoinAsync(script, listener);
+        calls.Clear();
+
+        // The coordinator answers UNKNOWN_MEMBER_ID, and the caller cancels before the fence
+        // takes the state lock.
+        using var caller = new CancellationTokenSource();
+        _connection.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
+                Arg.Any<OffsetFetchRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                caller.Cancel();
+                return ValueTask.FromResult(new OffsetFetchResponse
+                {
+                    Groups =
+                    [
+                        new OffsetFetchResponseGroup
+                        {
+                            GroupId = "test-group",
+                            Topics = [],
+                            ErrorCode = ErrorCode.UnknownMemberId
+                        }
+                    ]
+                });
+            });
+
+        await Assert.That(async () => await coordinator.FetchOffsetsAsync(
+                [new TopicPartition("test-topic", 1)],
+                caller.Token))
+            .Throws<OperationCanceledException>();
+
+        await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Unjoined);
+        await Assert.That(coordinator.Assignment.Count).IsEqualTo(0);
+        script.Respond = (_, _) => Joined("member-2", memberEpoch: 1, CreateAssignment(TestTopicId, 1));
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
+        await Assert.That(string.Join(" | ", calls)).IsEqualTo("lost:test-topic-0,test-topic-1 | assigned:test-topic-1");
+    }
+
+    [Test]
+    public async Task MembershipLoss_RejoinCallbacksCancelledAfterTheJoin_AreDeliveredByTheNextPoll()
+    {
+        var script = new HeartbeatScript(this);
+        var (recording, calls) = CreateRecordingListener();
+        var lostEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var interruptNextLost = 1;
+        var listener = Substitute.For<IRebalanceListener>();
+        listener.OnPartitionsLostAsync(Arg.Any<IEnumerable<TopicPartition>>(), Arg.Any<CancellationToken>())
+            .Returns(callInfo => Interlocked.Exchange(ref interruptNextLost, 0) == 1
+                ? WaitForCancellationAsync(callInfo.Arg<CancellationToken>())
+                : recording.OnPartitionsLostAsync(
+                    callInfo.Arg<IEnumerable<TopicPartition>>()!,
+                    callInfo.Arg<CancellationToken>()));
+        listener.OnPartitionsAssignedAsync(Arg.Any<IEnumerable<TopicPartition>>(), Arg.Any<CancellationToken>())
+            .Returns(callInfo => recording.OnPartitionsAssignedAsync(
+                callInfo.Arg<IEnumerable<TopicPartition>>()!,
+                callInfo.Arg<CancellationToken>()));
+        await using var coordinator = await JoinAsync(script, listener);
+        calls.Clear();
+
+        // A fenced member rejoins; the caller cancels while OnPartitionsLost runs, after the
+        // join has made the member Stable with its new assignment.
+        typeof(ConsumerCoordinator)
+            .GetMethod("FenceMembership", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(coordinator, [false]);
+        script.Respond = (_, _) => Joined("member-1", memberEpoch: 6, CreateAssignment(TestTopicId, 0));
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var caller = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token);
+        var join = coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, caller.Token).AsTask();
+        await lostEntered.Task.WaitAsync(timeout.Token);
+        caller.Cancel();
+        await Assert.That(async () => await join).Throws<OperationCanceledException>();
+        await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Stable);
+        await Assert.That(GetPrivateField<Task?>(coordinator, "_heartbeatTask") is not null).IsTrue();
+
+        // The next poll takes the stable path, and delivers the loss and then the assignment.
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, timeout.Token);
+
+        await Assert.That(string.Join(" | ", calls)).IsEqualTo("lost:test-topic-0,test-topic-1 | assigned:test-topic-0");
+
+        async ValueTask WaitForCancellationAsync(CancellationToken cancellationToken)
+        {
+            lostEntered.TrySetResult();
+            await Task.Delay(Timeout.Infinite, cancellationToken);
+        }
+    }
+
+    [Test]
     public async Task MembershipLoss_FenceFromAHeartbeatOfTheReplacedMembership_IsIgnored()
     {
         _metadataManager.SetApiVersion(ApiKey.OffsetFetch, 9, 9);

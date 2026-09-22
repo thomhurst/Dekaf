@@ -176,6 +176,29 @@ public sealed class ConsumerPartitionStopListenerTests
     }
 
     [Test]
+    public async Task CloseAsync_RemainInGroup_ReportsAnUndeliveredLoss()
+    {
+        var listener = new TrackingPartitionStopListener();
+        await using var consumer = CreateGroupConsumer(defaultApiTimeoutMs: 60_000, listener);
+        var coordinator = GetCoordinator(consumer);
+        var partition = new TopicPartition("topic-a", 0);
+
+        // A fenced member whose OnPartitionsLost has not completed (the heartbeat stop
+        // interrupted it) closes without sending a leave.
+        SetField(coordinator, "_assignedPartitions", new HashSet<TopicPartition> { partition });
+        typeof(ConsumerCoordinator)
+            .GetMethod("FenceMembership", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(coordinator, [false]);
+
+        await consumer.CloseAsync(
+            new ConsumerCloseOptions { GroupMembershipOperation = ConsumerGroupMembershipOperation.RemainInGroup },
+            CancellationToken.None);
+
+        await Assert.That(listener.LostPartitions).Count().IsEqualTo(1);
+        await Assert.That(listener.LostPartitions[0]).IsEquivalentTo([partition]);
+    }
+
+    [Test]
     public async Task DisposeAsync_BlockingPartitionStopListener_UsesShorterDefaultApiTimeout()
     {
         var listener = new TrackingPartitionStopListener
@@ -226,13 +249,16 @@ public sealed class ConsumerPartitionStopListenerTests
             Serializers.String);
     }
 
-    private static KafkaConsumer<string, string> CreateGroupConsumer(int defaultApiTimeoutMs)
+    private static KafkaConsumer<string, string> CreateGroupConsumer(
+        int defaultApiTimeoutMs,
+        IRebalanceListener? listener = null)
     {
         return new KafkaConsumer<string, string>(
             new ConsumerOptions
             {
                 BootstrapServers = ["localhost:9092"],
                 GroupId = "group-a",
+                RebalanceListener = listener,
                 OffsetCommitMode = OffsetCommitMode.Manual,
                 QueuedMinMessages = 1,
                 DefaultApiTimeoutMs = defaultApiTimeoutMs
@@ -259,6 +285,7 @@ public sealed class ConsumerPartitionStopListenerTests
     {
         public List<List<TopicPartition>> StoppedPartitions { get; } = [];
         public List<CancellationToken> CancellationTokens { get; } = [];
+        public List<List<TopicPartition>> LostPartitions { get; } = [];
         public Func<IEnumerable<TopicPartition>, CancellationToken, ValueTask>? OnStopped { get; init; }
 
         public ValueTask OnPartitionsAssignedAsync(
@@ -271,7 +298,11 @@ public sealed class ConsumerPartitionStopListenerTests
 
         public ValueTask OnPartitionsLostAsync(
             IEnumerable<TopicPartition> partitions,
-            CancellationToken cancellationToken) => ValueTask.CompletedTask;
+            CancellationToken cancellationToken)
+        {
+            LostPartitions.Add(partitions.ToList());
+            return ValueTask.CompletedTask;
+        }
 
         public ValueTask OnPartitionsStoppedAsync(
             IEnumerable<TopicPartition> partitions,
