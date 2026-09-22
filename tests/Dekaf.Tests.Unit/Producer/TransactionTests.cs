@@ -279,12 +279,13 @@ public sealed class TransactionTests
     }
 
     /// <summary>
-    /// A send loop fences the producer while the abort's EndTxn is answered with an abortable error.
-    /// The abortable transition is refused, and the caller must see the fence: a fatal exception
-    /// carrying ProducerFenced, not an abortable one that overwrites the fatal error code.
+    /// A send loop reports a producer-wide fatal failure while the abort's EndTxn is answered with
+    /// an abortable error. The abortable transition is refused, and the caller must see the fatal
+    /// failure with its own code, not an abortable exception that overwrites it. (A fence of the
+    /// pre-abort identity during the abort is stale instead; see the next tests.)
     /// </summary>
     [Test]
-    public async Task AbortAsync_AbortableEndTxnErrorAfterConcurrentFence_ThrowsFatalWithTheFenceCode()
+    public async Task AbortAsync_AbortableEndTxnErrorAfterConcurrentFatalFailure_ThrowsFatalWithItsCode()
     {
         var preparedState = new PreparedTransactionState(42, 5);
         await using var harness = BuildPreparedCompletionHarness(
@@ -295,14 +296,71 @@ public sealed class TransactionTests
         harness.Producer._transactionState = TransactionState.InTransaction;
         var transaction = new Transaction<string, string>(harness.Producer);
         harness.BeforeEndTxnResponse = () =>
-            harness.Producer.OnTransactionalBatchFailed(42, 5, ErrorCode.ProducerFenced);
+            harness.Producer.OnTransactionalBatchFailed(42, 5, ErrorCode.ClusterAuthorizationFailed);
 
         var exception = await Assert.That(() => transaction.AbortAsync().AsTask())
             .Throws<FatalTransactionException>();
 
-        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.ProducerFenced);
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.ClusterAuthorizationFailed);
         await Assert.That(harness.Producer._transactionState).IsEqualTo(TransactionState.FatalError);
-        await Assert.That(harness.Producer._lastTransactionError).IsEqualTo(ErrorCode.ProducerFenced);
+        await Assert.That(harness.Producer._lastTransactionError).IsEqualTo(ErrorCode.ClusterAuthorizationFailed);
+    }
+
+    /// <summary>
+    /// While an abort replaces the producer identity, the broker bumps the epoch before the producer
+    /// installs the new one (TV2 at EndTxn, TV1 at the follow-up InitProducerId). A produce of the
+    /// aborted transaction fenced under the identity the producer still holds is stale: the abort
+    /// completes and the producer stays usable.
+    /// </summary>
+    [Test]
+    [Arguments((short)3)]
+    [Arguments((short)1)]
+    public async Task AbortAsync_FenceOfThePreAbortIdentityWhileTheAbortReplacesIt_IsIgnored(
+        short transactionFeatureVersion)
+    {
+        var preparedState = new PreparedTransactionState(42, 5);
+        await using var harness = BuildPreparedCompletionHarness(
+            preparedState,
+            currentProducerId: preparedState.ProducerId,
+            currentProducerEpoch: preparedState.ProducerEpoch,
+            transactionFeatureVersion: transactionFeatureVersion,
+            enableTwoPhaseCommit: transactionFeatureVersion >= 3);
+        harness.Producer._transactionState = TransactionState.InTransaction;
+        var transaction = new Transaction<string, string>(harness.Producer);
+        var reportTaken = true;
+        void ReportFence() => reportTaken = harness.Producer.OnTransactionalBatchFailed(42, 5, ErrorCode.ProducerFenced);
+        if (transactionFeatureVersion >= 2)
+            harness.BeforeEndTxnResponse = ReportFence;
+        else
+            harness.BeforeInitProducerIdResponse = ReportFence;
+
+        await transaction.AbortAsync();
+
+        await Assert.That(reportTaken).IsFalse();
+        await Assert.That(harness.Producer._transactionState).IsEqualTo(TransactionState.Ready);
+    }
+
+    /// <summary>
+    /// A producer-wide failure reported by a batch while InitTransactionsAsync waits for
+    /// InitProducerId makes the producer fatal; the successful initialization must not overwrite
+    /// that with Ready.
+    /// </summary>
+    [Test]
+    public async Task InitTransactionsAsync_ProducerWideBatchFailureDuringInitProducerId_KeepsFatalError()
+    {
+        await using var harness = BuildPreparedCompletionHarness(
+            PreparedTransactionState.Empty,
+            currentProducerId: 42,
+            currentProducerEpoch: 5);
+        harness.Producer._transactionState = TransactionState.Ready;
+        harness.BeforeInitProducerIdResponse = () =>
+            harness.Producer.OnTransactionalBatchFailed(42, 5, ErrorCode.ClusterAuthorizationFailed);
+
+        var exception = await Assert.That(() => harness.Producer.InitTransactionsAsync().AsTask())
+            .Throws<FatalTransactionException>();
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.ClusterAuthorizationFailed);
+        await Assert.That(harness.Producer._transactionState).IsEqualTo(TransactionState.FatalError);
     }
 
     /// <summary>
@@ -2730,6 +2788,12 @@ public sealed class TransactionTests
             set => connection.BeforeEndTxnResponse = value;
         }
 
+        /// <summary>Runs while the coordinator answers each InitProducerId, before the answer returns.</summary>
+        public Action? BeforeInitProducerIdResponse
+        {
+            set => connection.BeforeInitProducerIdResponse = value;
+        }
+
         public int ConnectionAttemptsTo(int brokerId)
         {
             lock (connectionAttemptBrokerIds)
@@ -3043,8 +3107,11 @@ public sealed class TransactionTests
             };
         }
 
+        public Action? BeforeInitProducerIdResponse { get; set; }
+
         private InitProducerIdResponse CreateInitProducerIdResponse()
         {
+            BeforeInitProducerIdResponse?.Invoke();
             InitProducerIdRequests++;
             transactionClock?.Advance(initProducerIdAdvanceMs);
             return new InitProducerIdResponse

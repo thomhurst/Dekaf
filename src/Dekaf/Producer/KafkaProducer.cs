@@ -249,6 +249,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     private readonly Func<long>? _transactionTimestampProvider;
     private readonly System.Threading.Lock _epochBumpLock = new();
     internal readonly System.Threading.Lock _partitionsInTransactionLock = new();
+
+    // See SetAbortReplacingProducerIdentity. Written and read under _partitionsInTransactionLock.
+    private bool _abortReplacingProducerIdentity;
     internal readonly HashSet<TopicPartition> _partitionsInTransaction = [];
     private readonly HashSet<TopicPartition> _pendingTransactionPartitions = [];
     private readonly HashSet<TopicPartition> _transactionPartitionsBeingEnrolled = [];
@@ -2893,9 +2896,16 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             await ReinitializeProducerIdAsync(keepPreparedTransaction, retryBudget, cancellationToken)
                 .ConfigureAwait(false);
 
-            _transactionState = _preparedTransactionState.HasTransaction
-                ? TransactionState.PreparedTransaction
-                : TransactionState.Ready;
+            // Under the transition lock like every other state change: a producer-wide failure
+            // reported by a batch while InitProducerId ran (for example ClusterAuthorizationFailed
+            // from an earlier transaction's batch) made the producer fatal and must not be
+            // overwritten by Ready.
+            EnterTransactionState(
+                _preparedTransactionState.HasTransaction
+                    ? TransactionState.PreparedTransaction
+                    : TransactionState.Ready,
+                "Cannot initialize transactions",
+                refuseAbortable: false);
         }
         finally
         {
@@ -3899,26 +3909,48 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     internal async ValueTask AbortTransactionAsync(CancellationToken cancellationToken)
     {
         var retryBudget = CreateTransactionRetryBudget();
-        await EndTransactionAsync(
-                committed: false,
-                _producerId,
-                _producerEpoch,
-                applyResponseProducerState: true,
-                afterRequestWrittenAsync: null,
-                retryBudget,
-                cancellationToken)
-            .ConfigureAwait(false);
-
-        // TV1: broker doesn't return bumped epoch in EndTxn, so fetch it with the
-        // same max.block.ms budget. TV2 already returned the bumped identity.
-        if (!_currentTransactionUsesTV2)
+        SetAbortReplacingProducerIdentity(true);
+        try
         {
-            await ReinitializeProducerIdAfterAbortAsync(
-                    keepPreparedTransaction: false,
+            await EndTransactionAsync(
+                    committed: false,
+                    _producerId,
+                    _producerEpoch,
+                    applyResponseProducerState: true,
+                    afterRequestWrittenAsync: null,
                     retryBudget,
                     cancellationToken)
                 .ConfigureAwait(false);
+
+            // TV1: broker doesn't return bumped epoch in EndTxn, so fetch it with the
+            // same max.block.ms budget. TV2 already returned the bumped identity.
+            if (!_currentTransactionUsesTV2)
+            {
+                await ReinitializeProducerIdAfterAbortAsync(
+                        keepPreparedTransaction: false,
+                        retryBudget,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            }
         }
+        finally
+        {
+            SetAbortReplacingProducerIdentity(false);
+        }
+    }
+
+    /// <summary>
+    /// Marks the window in which an abort replaces the producer identity: the broker bumps the
+    /// epoch (TV2 at EndTxn, TV1 at the follow-up InitProducerId) before the producer installs the
+    /// new pair, so a produce of the aborted transaction can be fenced under the identity the
+    /// producer still holds. <see cref="OnTransactionalBatchFailed"/> treats an epoch-scoped
+    /// rejection of that identity as stale while this is set; a real fence by another instance
+    /// fails the abort's own EndTxn or InitProducerId instead. Abort path only.
+    /// </summary>
+    private void SetAbortReplacingProducerIdentity(bool replacing)
+    {
+        lock (_partitionsInTransactionLock)
+            _abortReplacingProducerIdentity = replacing;
     }
 
     private async ValueTask ReinitializeProducerIdAfterAbortAsync(
@@ -5378,13 +5410,18 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         // Serialized with the enrollment-failure transition (and other senders' reports) so a
         // concurrent abortable report cannot overwrite a fatal one.
         var fatal = TransactionErrorClassifier.ClassifyFailedBatch(errorCode) == TransactionErrorClassification.Fatal;
+        var epochScoped = TransactionErrorClassifier.IsScopedToProducerEpoch(errorCode);
         lock (_partitionsInTransactionLock)
         {
             // An authorization or producer-ID-mapping failure is producer-wide: it makes the
             // producer fatal even from a batch of an earlier identity. Anything else from such a
             // batch (a fence of its old epoch, an abortable error) belongs to an ended transaction.
-            if ((producerId != Volatile.Read(ref _producerId) || producerEpoch != _producerEpoch)
-                && (!fatal || TransactionErrorClassifier.IsScopedToProducerEpoch(errorCode)))
+            // While an abort replaces the identity, the broker may already have bumped the epoch
+            // the producer still holds, so an epoch-scoped rejection of it is stale too.
+            var earlierIdentity = producerId != Volatile.Read(ref _producerId)
+                || producerEpoch != _producerEpoch
+                || (_abortReplacingProducerIdentity && epochScoped);
+            if (earlierIdentity && (!fatal || epochScoped))
             {
                 LogTransactionalBatchFailureFromEarlierEpochIgnored(
                     errorCode, producerId, producerEpoch, _options.TransactionalId);
