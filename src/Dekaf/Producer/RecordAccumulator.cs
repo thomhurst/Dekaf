@@ -1294,6 +1294,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     internal Action? AfterLingerQueueSnapshotForTest;
     internal Action<TopicPartition>? AfterFlushPartitionVisitedForTest;
     internal Action? BeforeCompletedBatchEnqueueForTest;
+    internal Action? BeforeCompletedBatchPublishForTest;
 
     /// <summary>
     /// True after CloseAsync has been called. Used by the sender loop to know
@@ -3732,6 +3733,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 var disposed = false;
                 var messageTooLarge = false;
                 var actualBytesAdded = 0;
+                var releaseRotationAfterPublish = false;
 
                 {
                     using var guard = new SpinLockGuard(ref pd.Lock);
@@ -3828,7 +3830,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                                 else
                                 {
                                     TrackCurrentBatchForLinger(pd, topicPartition, newBatch);
-                                    ClearRotationInProgressUnderLock(pd);
+                                    releaseRotationAfterPublish =
+                                        ClearRotationUnlessPublishPendingUnderLock(pd, batchToPublish);
                                     ownsRotation = false;
                                 }
                                 appendSucceeded = true;
@@ -3838,7 +3841,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                                 pd.CurrentBatch = null;
                                 ClearLingerPartitionTracking(pd);
                                 Interlocked.Decrement(ref _unsealedBatchCount);
-                                ClearRotationInProgressUnderLock(pd);
+                                releaseRotationAfterPublish =
+                                    ClearRotationUnlessPublishPendingUnderLock(pd, batchToPublish);
                                 ownsRotation = false;
                                 batchToReturn = newBatch;
                                 messageTooLarge = true;
@@ -3848,7 +3852,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 }
 
                 if (batchToPublish is not null)
-                    StartPreSerialization(batchToPublish);
+                    PublishEnqueuedBatch(pd, batchToPublish, releaseRotationAfterPublish);
 
                 if (batchToReturn is not null)
                     _batchPool.Return(batchToReturn);
@@ -3886,9 +3890,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     NotifyRecordAppended(topic, partition, actualBytesAdded, partitionCount);
                     if (batchToComplete is not null)
                     {
-                        var readyBatch = CompleteDetachedBatchAndEnqueue(pd, batchToComplete);
-                        if (readyBatch is not null)
-                            StartPreSerialization(readyBatch);
+                        CompleteDetachedBatchAndPublish(pd, batchToComplete);
                     }
 
                     if (drainPendingAfterAppend)
@@ -4229,6 +4231,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 var messageTooLarge = false;
                 var reservedActualBytesAdded = 0;
                 var reservedFirstAwaitedProduceInBatch = false;
+                var releaseRotationAfterPublish = false;
 
                 {
                     using var guard = new SpinLockGuard(ref pd.Lock);
@@ -4308,7 +4311,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                                 pd.CurrentBatch = null;
                                 ClearLingerPartitionTracking(pd);
                                 Interlocked.Decrement(ref _unsealedBatchCount);
-                                ClearRotationInProgressUnderLock(pd);
+                                releaseRotationAfterPublish =
+                                    ClearRotationUnlessPublishPendingUnderLock(pd, batchToPublish);
                                 ownsRotation = false;
                                 batchToReturn = newBatch;
                                 messageTooLarge = true;
@@ -4318,7 +4322,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 }
 
                 if (batchToPublish is not null)
-                    StartPreSerialization(batchToPublish);
+                    PublishEnqueuedBatch(pd, batchToPublish, releaseRotationAfterPublish);
 
                 if (batchToReturn is not null)
                     _batchPool.Return(batchToReturn);
@@ -4404,9 +4408,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                         NotifyRecordAppended(topic, partition, reservedActualBytesAdded, partitionCount);
                         if (batchToComplete is not null)
                         {
-                            var readyBatch = CompleteDetachedBatchAndEnqueue(pd, batchToComplete);
-                            if (readyBatch is not null)
-                                StartPreSerialization(readyBatch);
+                            CompleteDetachedBatchAndPublish(pd, batchToComplete);
                             ownsRotation = false;
                         }
 
@@ -4799,9 +4801,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         NotifyRecordAppended(topic, partition, actualBytesAdded, partitionCount);
         if (batchToComplete is not null)
         {
-            var readyBatch = CompleteDetachedBatchAndEnqueue(pd, batchToComplete);
-            if (readyBatch is not null)
-                StartPreSerialization(readyBatch);
+            CompleteDetachedBatchAndPublish(pd, batchToComplete);
         }
         else if (completionSource is not null)
         {
@@ -4879,9 +4879,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         NotifyRecordAppended(topic, partition, actualBytesAdded, partitionCount);
         if (batchToComplete is not null)
         {
-            var readyBatch = CompleteDetachedBatchAndEnqueue(pd, batchToComplete);
-            if (readyBatch is not null)
-                StartPreSerialization(readyBatch);
+            CompleteDetachedBatchAndPublish(pd, batchToComplete);
         }
         else if (completionSource is not null)
         {
@@ -5215,7 +5213,16 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             && (serializeBatchesPerPartition
                 || currentBatchSize < maximumBatchSize));
 
-    private ReadyBatch? CompleteDetachedBatchAndEnqueue(PartitionDeque pd, PartitionBatch batchToComplete)
+    /// <summary>
+    /// Completes a detached batch, enqueues it and publishes it (<see cref="StartPreSerialization"/>).
+    /// The rotation gate (<see cref="PartitionDeque.RotationInProgress"/>) stays set until the
+    /// publication has finished touching the batch: a purge waits for the gate, so it cannot take
+    /// the enqueued batch, fail it and return it to the pool while this thread still dereferences
+    /// it. The gate is cleared by moving its existing write after the publication (a release
+    /// write outside the lock; no thread sets it while it is set), so the path gains no lock and
+    /// no extra write. Returns false when no batch was published.
+    /// </summary>
+    private bool CompleteDetachedBatchAndPublish(PartitionDeque pd, PartitionBatch batchToComplete)
     {
         ReadyBatch? readyBatch;
         ReadyBatch? rejectedBatch = null;
@@ -5261,8 +5268,15 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     EnqueueCompletedBatchUnderLock(pd, readyBatch);
                 }
             }
-            ClearRotationInProgressUnderLock(pd);
+
+            if (readyBatch is null)
+                ClearRotationInProgressUnderLock(pd);
+            else
+                ClearAdmissionFlushRequestUnderLock(pd);
         }
+
+        if (readyBatch is not null)
+            PublishEnqueuedBatch(pd, readyBatch, releaseRotation: true);
 
         if (rejectedBatch is not null)
             FailCompletedBatchRejectedByDisposal(rejectedBatch);
@@ -5270,7 +5284,45 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         if (bytesToRelease > 0)
             ReleaseMemory(bytesToRelease);
 
-        return readyBatch;
+        return readyBatch is not null;
+    }
+
+    /// <summary>
+    /// Publishes a batch this thread enqueued while holding the rotation gate. With
+    /// <paramref name="releaseRotation"/>, clears the gate only after the publication's last
+    /// touch of the batch (see <see cref="CompleteDetachedBatchAndPublish"/>).
+    /// </summary>
+    private void PublishEnqueuedBatch(PartitionDeque pd, ReadyBatch batch, bool releaseRotation)
+    {
+        try
+        {
+            BeforeCompletedBatchPublishForTest?.Invoke();
+            StartPreSerialization(batch);
+        }
+        finally
+        {
+            if (releaseRotation)
+                Volatile.Write(ref pd.RotationInProgress, false);
+        }
+    }
+
+    /// <summary>
+    /// A rotation owner is done with the gate. When it enqueued a sealed batch under this same
+    /// lock hold and publishes it after the lock, only the admission-flush request is cleared here
+    /// and the gate is released by <see cref="PublishEnqueuedBatch"/>, so a purge cannot fail and
+    /// pool that batch before the publication touches it. Returns true when the release is deferred.
+    /// MUST be called under pd.Lock.
+    /// </summary>
+    private static bool ClearRotationUnlessPublishPendingUnderLock(PartitionDeque pd, ReadyBatch? batchToPublish)
+    {
+        if (batchToPublish is null)
+        {
+            ClearRotationInProgressUnderLock(pd);
+            return false;
+        }
+
+        ClearAdmissionFlushRequestUnderLock(pd);
+        return true;
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
@@ -6063,7 +6115,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         ref long newOldestTicks,
         ref bool sawUnknownDeadline)
     {
-        ReadyBatch? sealedBatch = null;
         PartitionBatch? batchToComplete = null;
         var lingerDeferred = false;
         var spinner = new SpinWait();
@@ -6144,13 +6195,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         if (batchToComplete is null)
             return false;
 
-        sealedBatch = CompleteDetachedBatchAndEnqueue(pd, batchToComplete);
-
-        if (sealedBatch is null)
-            return false;
-
-        StartPreSerialization(sealedBatch);
-        return true;
+        return CompleteDetachedBatchAndPublish(pd, batchToComplete);
     }
 
     private static bool IsAdmissionFlushRequiredUnderLock(PartitionDeque pd)

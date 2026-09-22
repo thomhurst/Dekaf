@@ -870,6 +870,75 @@ public class RecordAccumulatorTests
     }
 
     /// <summary>
+    /// The rotation has enqueued the sealed batch but not yet published it (StartPreSerialization
+    /// still has to touch it). A purge in that gap must wait: failing the batch then would return
+    /// it to the pool while the rotation thread still dereferences it. Before the fix the rotation
+    /// gate was cleared at enqueue, so the purge took, failed and pooled the batch right away.
+    /// </summary>
+    [Test]
+    public async Task Purge_Queue_WaitsUntilTheRotationHasPublishedTheEnqueuedBatch()
+    {
+        var accumulator = new RecordAccumulator(CreateTestOptions());
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
+        var topicPartition = new TopicPartition("test-topic", 0);
+        using var publishReached = new ManualResetEventSlim();
+        using var releasePublish = new ManualResetEventSlim();
+        Task<bool>? appendTask = null;
+
+        accumulator.BeforeCompletedBatchPublishForTest = () =>
+        {
+            publishReached.Set();
+            if (!releasePublish.Wait(TimeSpan.FromSeconds(10)))
+                throw new TimeoutException("Timed out waiting to release the batch publication.");
+        };
+
+        try
+        {
+            var completion = pool.Rent();
+            var completionTask = completion.Task;
+            appendTask = RunOnDedicatedThread(() => accumulator.TryAppendFromSpansWithCompletion(
+                topicPartition.Topic,
+                topicPartition.Partition,
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                ReadOnlySpan<byte>.Empty,
+                keyIsNull: true,
+                "value"u8,
+                valueIsNull: false,
+                headers: null,
+                headerCount: 0,
+                completion));
+            await WaitUntilAsync(() => publishReached.IsSet, TimeSpan.FromSeconds(5));
+
+            var purgeWaitObserved = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            accumulator.PurgeAppendWaitObservedForTest = () => purgeWaitObserved.TrySetResult();
+            var purgeTask = RunOnDedicatedThread(() =>
+                accumulator.Purge(PurgeOptions.Queue, CreatePurgedException()));
+
+            var first = await Task.WhenAny(purgeWaitObserved.Task, purgeTask).WaitAsync(TimeSpan.FromSeconds(5));
+            await Assert.That(first == purgeWaitObserved.Task).IsTrue();
+            await Assert.That(purgeTask.IsCompleted).IsFalse();
+
+            releasePublish.Set();
+
+            await Assert.That(await purgeTask.WaitAsync(TimeSpan.FromSeconds(5))).IsEqualTo(1);
+            await Assert.That(await appendTask.WaitAsync(TimeSpan.FromSeconds(5))).IsTrue();
+            var exception = await Assert.ThrowsAsync<ProduceException>(async () =>
+                await completionTask.AsTask().WaitAsync(TimeSpan.FromSeconds(1)));
+            await Assert.That(exception!.Kind).IsEqualTo(ProduceErrorKind.Purged);
+            await Assert.That(accumulator.InFlightBatchCount).IsEqualTo(0);
+            await Assert.That(accumulator.BufferedBytes).IsEqualTo(0);
+        }
+        finally
+        {
+            releasePublish.Set();
+            if (appendTask is not null)
+                await appendTask.WaitAsync(TimeSpan.FromSeconds(5));
+            await accumulator.DisposeAsync();
+            await pool.DisposeAsync();
+        }
+    }
+
+    /// <summary>
     /// While a transaction abort has the accumulator closed, every append path rejects its record
     /// with <see cref="ProduceErrorKind.TransactionAborted"/> and keeps no memory; reopening
     /// restores appends.
