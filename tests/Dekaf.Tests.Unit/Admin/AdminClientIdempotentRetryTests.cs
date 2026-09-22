@@ -699,6 +699,65 @@ public sealed class AdminClientIdempotentRetryTests
     }
 
     [Test]
+    public async Task ExpireDelegationTokenAsync_FailureBeforeWriteThenTokenNotFound_Throws()
+    {
+        // The first attempt fails before any byte is written (a retired connection), so it cannot
+        // have expired the token. DELEGATION_TOKEN_NOT_FOUND on the retry means the token was never
+        // there, and must not be reported as a successful expiry.
+        WriteObservingConnection? observed = null;
+        var (admin, _) = CreateAdminWithConnection(
+            new AdminClientOptions { BootstrapServers = ["localhost:9092"] },
+            connection => observed = new WriteObservingConnection(connection),
+            ApiKey.ExpireDelegationToken);
+        var calls = 0;
+
+        observed!.ExpireDelegationTokenHandler = (writeStarted, _) =>
+        {
+            if (Interlocked.Increment(ref calls) == 1)
+                throw new ObjectDisposedException("KafkaConnection", "Connection has been retired");
+
+            writeStarted();
+            return ValueTask.FromResult(new ExpireDelegationTokenResponse
+            {
+                ErrorCode = ErrorCode.DelegationTokenNotFound
+            });
+        };
+
+        var exception = await Assert.ThrowsAsync<KafkaException>(async () =>
+            await admin.ExpireDelegationTokenAsync([1, 2, 3]));
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.DelegationTokenNotFound);
+        await Assert.That(calls).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task ExpireDelegationTokenAsync_FailureAfterWriteThenTokenNotFound_TreatedAsSuccess()
+    {
+        WriteObservingConnection? observed = null;
+        var (admin, _) = CreateAdminWithConnection(
+            new AdminClientOptions { BootstrapServers = ["localhost:9092"] },
+            connection => observed = new WriteObservingConnection(connection),
+            ApiKey.ExpireDelegationToken);
+        var calls = 0;
+
+        observed!.ExpireDelegationTokenHandler = (writeStarted, _) =>
+        {
+            writeStarted();
+            if (Interlocked.Increment(ref calls) == 1)
+                throw new IOException("response lost");
+
+            return ValueTask.FromResult(new ExpireDelegationTokenResponse
+            {
+                ErrorCode = ErrorCode.DelegationTokenNotFound
+            });
+        };
+
+        await admin.ExpireDelegationTokenAsync([1, 2, 3]);
+
+        await Assert.That(calls).IsEqualTo(2);
+    }
+
+    [Test]
     public async Task ExpireDelegationTokenAsync_TokenNotFoundWithoutPriorSendFailure_Throws()
     {
         var (admin, connection) = CreateAdminWithMockConnection(ApiKey.ExpireDelegationToken);
@@ -1179,6 +1238,10 @@ public sealed class AdminClientIdempotentRetryTests
     {
         public Func<Action, CancellationToken, ValueTask<DeleteAclsResponse>>? DeleteAclsHandler { get; set; }
 
+        // Also serves plain SendAsync, with a write start nobody observes, so a caller that does
+        // not use the write observation sees the same broker.
+        public Func<Action, CancellationToken, ValueTask<ExpireDelegationTokenResponse>>? ExpireDelegationTokenHandler { get; set; }
+
         public int BrokerId => inner.BrokerId;
         public string Host => inner.Host;
         public int Port => inner.Port;
@@ -1188,7 +1251,9 @@ public sealed class AdminClientIdempotentRetryTests
             TRequest request, short apiVersion, CancellationToken cancellationToken = default)
             where TRequest : IKafkaRequest<TResponse>
             where TResponse : IKafkaResponse =>
-            inner.SendAsync<TRequest, TResponse>(request, apiVersion, cancellationToken);
+            request is ExpireDelegationTokenRequest && ExpireDelegationTokenHandler is { } expire
+                ? (ValueTask<TResponse>)(object)expire(static () => { }, cancellationToken)
+                : inner.SendAsync<TRequest, TResponse>(request, apiVersion, cancellationToken);
 
         public ValueTask<TResponse> SendWithWriteObservationAsync<TRequest, TResponse>(
             TRequest request, short apiVersion, Action requestWriteStarted, CancellationToken cancellationToken = default)
@@ -1197,6 +1262,8 @@ public sealed class AdminClientIdempotentRetryTests
         {
             if (request is DeleteAclsRequest && DeleteAclsHandler is { } handler)
                 return (ValueTask<TResponse>)(object)handler(requestWriteStarted, cancellationToken);
+            if (request is ExpireDelegationTokenRequest && ExpireDelegationTokenHandler is { } expire)
+                return (ValueTask<TResponse>)(object)expire(requestWriteStarted, cancellationToken);
 
             requestWriteStarted();
             return inner.SendAsync<TRequest, TResponse>(request, apiVersion, cancellationToken);

@@ -372,6 +372,7 @@ public sealed partial class AdminClient :
         // client between attempts is also reported as success. Validate-only requests
         // never mutate cluster state, so they never arm the tolerance.
         var createMayHaveApplied = false;
+        var writeContext = new KafkaRequestWriteContext(CancellationToken.None);
 
         await WithRetryAsync(async attemptToken =>
         {
@@ -396,7 +397,9 @@ public sealed partial class AdminClient :
             CreateTopicsResponse response;
             try
             {
-                response = await controller.SendAsync<CreateTopicsRequest, CreateTopicsResponse>(
+                response = await SendObservingWriteAsync<CreateTopicsRequest, CreateTopicsResponse>(
+                    writeContext,
+                    controller,
                     request,
                     apiVersion,
                     attemptToken).ConfigureAwait(false);
@@ -404,7 +407,7 @@ public sealed partial class AdminClient :
             catch
             {
                 if (!opts.ValidateOnly)
-                    createMayHaveApplied = true;
+                    createMayHaveApplied |= writeContext.WriteStarted;
                 throw;
             }
 
@@ -535,6 +538,7 @@ public sealed partial class AdminClient :
         ArgumentOutOfRangeException.ThrowIfNegative(opts.TimeoutMs);
         var names = topicNames.ToList();
         var deleteMayHaveApplied = false;
+        var writeContext = new KafkaRequestWriteContext(CancellationToken.None);
 
         var budgetMs = OperationTimeoutBudget(opts.TimeoutMs) ?? DefaultApiTimeoutBudgetMs;
         var startedAt = System.Diagnostics.Stopwatch.GetTimestamp();
@@ -574,14 +578,16 @@ public sealed partial class AdminClient :
             DeleteTopicsResponse response;
             try
             {
-                response = await controller.SendAsync<DeleteTopicsRequest, DeleteTopicsResponse>(
+                response = await SendObservingWriteAsync<DeleteTopicsRequest, DeleteTopicsResponse>(
+                    writeContext,
+                    controller,
                     request,
                     apiVersion,
                     attemptToken).ConfigureAwait(false);
             }
             catch
             {
-                deleteMayHaveApplied = true;
+                deleteMayHaveApplied |= writeContext.WriteStarted;
                 throw;
             }
 
@@ -618,6 +624,7 @@ public sealed partial class AdminClient :
         ArgumentOutOfRangeException.ThrowIfNegative(opts.TimeoutMs);
         var unresolvedIds = new HashSet<Guid>(ids);
         var ambiguousIds = new HashSet<Guid>();
+        var writeContext = new KafkaRequestWriteContext(CancellationToken.None);
 
         var budgetMs = OperationTimeoutBudget(opts.TimeoutMs) ?? DefaultApiTimeoutBudgetMs;
         var startedAt = System.Diagnostics.Stopwatch.GetTimestamp();
@@ -644,7 +651,9 @@ public sealed partial class AdminClient :
             DeleteTopicsResponse response;
             try
             {
-                response = await controller.SendAsync<DeleteTopicsRequest, DeleteTopicsResponse>(
+                response = await SendObservingWriteAsync<DeleteTopicsRequest, DeleteTopicsResponse>(
+                    writeContext,
+                    controller,
                     new DeleteTopicsRequest
                     {
                         Topics = topics,
@@ -655,7 +664,8 @@ public sealed partial class AdminClient :
             }
             catch
             {
-                ambiguousIds.UnionWith(unresolvedIds);
+                if (writeContext.WriteStarted)
+                    ambiguousIds.UnionWith(unresolvedIds);
                 throw;
             }
 
@@ -1904,6 +1914,7 @@ public sealed partial class AdminClient :
     {
         var groupIdList = groupIds.ToList();
         var deleteMayHaveApplied = false;
+        var writeContext = new KafkaRequestWriteContext(CancellationToken.None);
 
         await WithRetryAsync(async attemptToken =>
         {
@@ -1940,14 +1951,16 @@ public sealed partial class AdminClient :
                 DeleteGroupsResponse response;
                 try
                 {
-                    response = await connection.SendAsync<DeleteGroupsRequest, DeleteGroupsResponse>(
+                    response = await SendObservingWriteAsync<DeleteGroupsRequest, DeleteGroupsResponse>(
+                        writeContext,
+                        connection,
                         request,
                         apiVersion,
                         attemptToken).ConfigureAwait(false);
                 }
                 catch
                 {
-                    deleteMayHaveApplied = true;
+                    deleteMayHaveApplied |= writeContext.WriteStarted;
                     throw;
                 }
 
@@ -2337,6 +2350,7 @@ public sealed partial class AdminClient :
         CancellationToken cancellationToken)
     {
         var createPartitionsMayHaveApplied = false;
+        var writeContext = new KafkaRequestWriteContext(CancellationToken.None);
 
         return WithRetryAsync(async attemptToken =>
         {
@@ -2361,14 +2375,16 @@ public sealed partial class AdminClient :
             CreatePartitionsResponse response;
             try
             {
-                response = await controller.SendAsync<CreatePartitionsRequest, CreatePartitionsResponse>(
+                response = await SendObservingWriteAsync<CreatePartitionsRequest, CreatePartitionsResponse>(
+                    writeContext,
+                    controller,
                     request,
                     apiVersion,
                     attemptToken).ConfigureAwait(false);
             }
             catch
             {
-                createPartitionsMayHaveApplied = !validateOnly;
+                createPartitionsMayHaveApplied |= !validateOnly && writeContext.WriteStarted;
                 throw;
             }
 
@@ -2417,6 +2433,7 @@ public sealed partial class AdminClient :
         // ReassignmentInProgress or NoReassignmentInProgress; those are tolerated only
         // after a previous attempt may have reached the controller.
         var alterMayHaveApplied = false;
+        var writeContext = new KafkaRequestWriteContext(CancellationToken.None);
 
         await WithRetryAsync(async attemptToken =>
         {
@@ -2441,14 +2458,16 @@ public sealed partial class AdminClient :
             AlterPartitionReassignmentsResponse response;
             try
             {
-                response = await controller.SendAsync<AlterPartitionReassignmentsRequest, AlterPartitionReassignmentsResponse>(
+                response = await SendObservingWriteAsync<AlterPartitionReassignmentsRequest, AlterPartitionReassignmentsResponse>(
+                    writeContext,
+                    controller,
                     request,
                     apiVersion,
                     attemptToken).ConfigureAwait(false);
             }
             catch
             {
-                alterMayHaveApplied = true;
+                alterMayHaveApplied |= writeContext.WriteStarted;
                 throw;
             }
 
@@ -2719,6 +2738,7 @@ public sealed partial class AdminClient :
                 deletionOnlyUsers.Remove(upsertion.Name);
         }
         var alterMayHaveApplied = false;
+        var writeContext = new KafkaRequestWriteContext(CancellationToken.None);
 
         await WithRetryAsync(async attemptToken =>
         {
@@ -2742,14 +2762,16 @@ public sealed partial class AdminClient :
             AlterUserScramCredentialsResponse response;
             try
             {
-                response = await controller.SendAsync<AlterUserScramCredentialsRequest, AlterUserScramCredentialsResponse>(
+                response = await SendObservingWriteAsync<AlterUserScramCredentialsRequest, AlterUserScramCredentialsResponse>(
+                    writeContext,
+                    controller,
                     request,
                     apiVersion,
                     attemptToken).ConfigureAwait(false);
             }
             catch
             {
-                alterMayHaveApplied = true;
+                alterMayHaveApplied |= writeContext.WriteStarted;
                 throw;
             }
 
@@ -3129,6 +3151,7 @@ public sealed partial class AdminClient :
         // applied, that answer means the token is gone as requested; it expired no later than
         // now. A replay with a non-negative period only moves the expiry and needs no handling.
         var expireMayHaveApplied = false;
+        var writeContext = new KafkaRequestWriteContext(CancellationToken.None);
 
         return await WithRetryAsync<DateTimeOffset>(async attemptToken =>
         {
@@ -3151,14 +3174,16 @@ public sealed partial class AdminClient :
             ExpireDelegationTokenResponse response;
             try
             {
-                response = await controller.SendAsync<ExpireDelegationTokenRequest, ExpireDelegationTokenResponse>(
+                response = await SendObservingWriteAsync<ExpireDelegationTokenRequest, ExpireDelegationTokenResponse>(
+                    writeContext,
+                    controller,
                     request,
                     apiVersion,
                     attemptToken).ConfigureAwait(false);
             }
             catch
             {
-                expireMayHaveApplied = true;
+                expireMayHaveApplied |= writeContext.WriteStarted;
                 throw;
             }
 
@@ -3605,23 +3630,17 @@ public sealed partial class AdminClient :
                 DeleteAclsRequest.HighestSupportedVersion);
 
             DeleteAclsResponse response;
-            var writeObserver = controller as IKafkaRequestWriteObserverConnection;
-            writeContext.Reset();
             try
             {
-                response = writeObserver is not null
-                    ? await writeObserver.SendWithWriteObservationAsync<DeleteAclsRequest, DeleteAclsResponse>(
-                        request,
-                        apiVersion,
-                        writeContext.WriteStartedCallback,
-                        attemptToken).ConfigureAwait(false)
-                    : await controller.SendAsync<DeleteAclsRequest, DeleteAclsResponse>(
-                        request,
-                        apiVersion,
-                        attemptToken).ConfigureAwait(false);
+                response = await SendObservingWriteAsync<DeleteAclsRequest, DeleteAclsResponse>(
+                    writeContext,
+                    controller,
+                    request,
+                    apiVersion,
+                    attemptToken).ConfigureAwait(false);
             }
             catch (Exception exception) when (!cancellationToken.IsCancellationRequested
-                && (writeObserver is null || writeContext.WriteStarted)
+                && writeContext.WriteStarted
                 && (RetryHelper.IsRetriableRequestFailure(exception)
                     || exception is OperationCanceledException && attemptToken.IsCancellationRequested))
             {
@@ -3776,6 +3795,7 @@ public sealed partial class AdminClient :
             })
             .ToList();
         var deleteMayHaveApplied = false;
+        var writeContext = new KafkaRequestWriteContext(CancellationToken.None);
 
         await WithRetryAsync(async attemptToken =>
         {
@@ -3800,14 +3820,16 @@ public sealed partial class AdminClient :
             OffsetDeleteResponse response;
             try
             {
-                response = await connection.SendAsync<OffsetDeleteRequest, OffsetDeleteResponse>(
+                response = await SendObservingWriteAsync<OffsetDeleteRequest, OffsetDeleteResponse>(
+                    writeContext,
+                    connection,
                     request,
                     apiVersion,
                     attemptToken).ConfigureAwait(false);
             }
             catch
             {
-                deleteMayHaveApplied = true;
+                deleteMayHaveApplied |= writeContext.WriteStarted;
                 throw;
             }
 
@@ -4162,6 +4184,7 @@ public sealed partial class AdminClient :
         // voter ID, so after a send that may have applied the voter set is read back and the
         // replay counts as success only when it holds this exact voter (ID and directory).
         var addMayHaveApplied = false;
+        var writeContext = new KafkaRequestWriteContext(CancellationToken.None);
 
         await WithRetryAsync(async attemptToken =>
         {
@@ -4184,7 +4207,9 @@ public sealed partial class AdminClient :
             AddRaftVoterResponse response;
             try
             {
-                response = await controller.SendAsync<AddRaftVoterRequest, AddRaftVoterResponse>(
+                response = await SendObservingWriteAsync<AddRaftVoterRequest, AddRaftVoterResponse>(
+                    writeContext,
+                    controller,
                     new AddRaftVoterRequest
                     {
                         ClusterId = opts.ClusterId,
@@ -4199,7 +4224,7 @@ public sealed partial class AdminClient :
             }
             catch
             {
-                addMayHaveApplied = true;
+                addMayHaveApplied |= writeContext.WriteStarted;
                 throw;
             }
 
@@ -4237,6 +4262,7 @@ public sealed partial class AdminClient :
         // ID and directory, so after a send that may have applied that answer means this voter
         // is no longer in the set, which is the requested outcome.
         var removeMayHaveApplied = false;
+        var writeContext = new KafkaRequestWriteContext(CancellationToken.None);
 
         await WithRetryAsync(async attemptToken =>
         {
@@ -4253,7 +4279,9 @@ public sealed partial class AdminClient :
             RemoveRaftVoterResponse response;
             try
             {
-                response = await controller.SendAsync<RemoveRaftVoterRequest, RemoveRaftVoterResponse>(
+                response = await SendObservingWriteAsync<RemoveRaftVoterRequest, RemoveRaftVoterResponse>(
+                    writeContext,
+                    controller,
                     new RemoveRaftVoterRequest
                     {
                         ClusterId = opts.ClusterId,
@@ -4265,7 +4293,7 @@ public sealed partial class AdminClient :
             }
             catch
             {
-                removeMayHaveApplied = true;
+                removeMayHaveApplied |= writeContext.WriteStarted;
                 throw;
             }
 
@@ -4291,6 +4319,7 @@ public sealed partial class AdminClient :
         // may have applied, that is the requested outcome. A registration removed concurrently
         // by another client is also reported as success.
         var unregisterMayHaveApplied = false;
+        var writeContext = new KafkaRequestWriteContext(CancellationToken.None);
 
         await WithRetryAsync(async attemptToken =>
         {
@@ -4307,14 +4336,16 @@ public sealed partial class AdminClient :
             UnregisterBrokerResponse response;
             try
             {
-                response = await controller.SendAsync<UnregisterBrokerRequest, UnregisterBrokerResponse>(
+                response = await SendObservingWriteAsync<UnregisterBrokerRequest, UnregisterBrokerResponse>(
+                    writeContext,
+                    controller,
                     new UnregisterBrokerRequest { BrokerId = brokerId },
                     apiVersion,
                     attemptToken).ConfigureAwait(false);
             }
             catch
             {
-                unregisterMayHaveApplied = true;
+                unregisterMayHaveApplied |= writeContext.WriteStarted;
                 throw;
             }
 
@@ -5340,6 +5371,7 @@ public sealed partial class AdminClient :
             .Select(t => new DeleteShareGroupOffsetsRequestTopic { TopicName = t })
             .ToList();
         var deleteMayHaveApplied = false;
+        var writeContext = new KafkaRequestWriteContext(CancellationToken.None);
 
         await WithRetryAsync(async attemptToken =>
         {
@@ -5364,14 +5396,16 @@ public sealed partial class AdminClient :
             DeleteShareGroupOffsetsResponse response;
             try
             {
-                response = await connection.SendAsync<DeleteShareGroupOffsetsRequest, DeleteShareGroupOffsetsResponse>(
+                response = await SendObservingWriteAsync<DeleteShareGroupOffsetsRequest, DeleteShareGroupOffsetsResponse>(
+                    writeContext,
+                    connection,
                     request,
                     apiVersion,
                     attemptToken).ConfigureAwait(false);
             }
             catch
             {
-                deleteMayHaveApplied = true;
+                deleteMayHaveApplied |= writeContext.WriteStarted;
                 throw;
             }
 
@@ -5455,6 +5489,30 @@ public sealed partial class AdminClient :
     // value bounds the whole call, retries included, as Java's AdminClient does: once the broker
     // would have given up, retrying longer cannot help. Zero keeps its broker meaning (start the
     // operation, do not wait for it to complete), so the call keeps the default budget.
+    // Sends a mutation whose replay handling depends on whether a failed attempt could have reached
+    // the broker. writeContext.WriteStarted is set once the frame write starts. A failure before
+    // that point (a retired or disconnected connection, the wait for the write lock) sent nothing.
+    // A connection that cannot report the write start is treated as having started it.
+    private static ValueTask<TResponse> SendObservingWriteAsync<TRequest, TResponse>(
+        KafkaRequestWriteContext writeContext,
+        IKafkaConnection connection,
+        TRequest request,
+        short apiVersion,
+        CancellationToken cancellationToken)
+        where TRequest : Protocol.IKafkaRequest<TResponse>
+        where TResponse : Protocol.IKafkaResponse
+    {
+        writeContext.Reset();
+        if (connection is IKafkaRequestWriteObserverConnection observer)
+        {
+            return observer.SendWithWriteObservationAsync<TRequest, TResponse>(
+                request, apiVersion, writeContext.WriteStartedCallback, cancellationToken);
+        }
+
+        writeContext.MarkWriteStarted();
+        return connection.SendAsync<TRequest, TResponse>(request, apiVersion, cancellationToken);
+    }
+
     private static int? OperationTimeoutBudget(int operationTimeoutMs) =>
         operationTimeoutMs > 0 ? operationTimeoutMs : null;
 
