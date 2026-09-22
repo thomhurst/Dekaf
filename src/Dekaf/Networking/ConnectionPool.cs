@@ -631,6 +631,7 @@ public sealed partial class ConnectionPool :
             if (!_connectionGroupsById.TryAdd(brokerId, connections))
                 throw CreateGroupPublishLostException(brokerId, brokerInfo.Host, brokerInfo.Port);
             success = true;
+            await ThrowIfDisposedAfterGroupPublishAsync(brokerId, connections, tasks).ConfigureAwait(false);
             ThrowIfBrokerMovedAfterPublish(brokerId, brokerInfo.Host, brokerInfo.Port);
 
             ResetReconnectBackoff(setupKey, brokerId, brokerInfo.Host, brokerInfo.Port);
@@ -640,7 +641,7 @@ public sealed partial class ConnectionPool :
             return connections[0];
         }
         catch (Exception ex) when (!cancellationToken.IsCancellationRequested
-                                   && ex is not BrokerEndpointChangedException)
+                                   && ex is not (BrokerEndpointChangedException or ObjectDisposedException))
         {
             RecordConnectionAttemptFailure(
                 setupKey, brokerId, brokerInfo.Host, brokerInfo.Port, ex.Message);
@@ -668,6 +669,26 @@ public sealed partial class ConnectionPool :
                 catch { /* best-effort cleanup */ }
             }
         }
+    }
+
+    /// <summary>
+    /// Runs right after a group publish. <see cref="DisposeAsync"/> sets <c>_disposed</c> before
+    /// <see cref="CloseAllAsync"/> walks the published groups, so a publish that still reads zero
+    /// here is closed by that walk, and one that reads the flag may have landed after it: the
+    /// group is unpublished (exact removal) and the connections this setup created are disposed.
+    /// Slots published before this setup belonged to a group the walk already saw.
+    /// </summary>
+    private async ValueTask ThrowIfDisposedAfterGroupPublishAsync(
+        int brokerId,
+        IKafkaConnection[] publishedGroup,
+        Task<IKafkaConnection>[] createdSetups)
+    {
+        if (Volatile.Read(ref _disposed) == 0)
+            return;
+
+        TryRemoveExact(_connectionGroupsById, brokerId, publishedGroup);
+        await DisposeCompletedTaskConnectionsAsync(createdSetups).ConfigureAwait(false);
+        throw new ObjectDisposedException(nameof(ConnectionPool));
     }
 
     private static async ValueTask WaitForConnectionGroupSetupAsync(
@@ -795,6 +816,7 @@ public sealed partial class ConnectionPool :
                 throw CreateGroupPublishLostException(brokerId, brokerInfo.Host, brokerInfo.Port);
             }
 
+            await ThrowIfDisposedAfterGroupPublishAsync(brokerId, newGroup, tasks).ConfigureAwait(false);
             ThrowIfBrokerMovedAfterPublish(brokerId, brokerInfo.Host, brokerInfo.Port);
 
             ResetReconnectBackoff(setupKey, brokerId, brokerInfo.Host, brokerInfo.Port);
@@ -1028,6 +1050,14 @@ public sealed partial class ConnectionPool :
                     $"Connection slot {index} for broker {brokerId} was removed by a concurrent shrink");
             }
 
+            if (Volatile.Read(ref _disposed) != 0)
+            {
+                // Read after the store: CloseAllAsync may have walked this group before the slot
+                // was written, so the replacement is disposed here. Disposal is idempotent.
+                await connection.DisposeAsync().ConfigureAwait(false);
+                throw new ObjectDisposedException(nameof(ConnectionPool));
+            }
+
             // The move's retirement scan may have run between the check above and the store.
             // A group still published under the ID is retired here (exact removal, so the scan
             // and this call may both run); an array the scan already removed is unreachable
@@ -1179,11 +1209,9 @@ public sealed partial class ConnectionPool :
         using var timeoutCts = new CancellationTokenSource(timeout);
         // Pool disposal ends the setup as if the caller had cancelled it. Admin and metadata
         // callers pass CancellationToken.None and would otherwise stay parked in a setup the
-        // disposed pool no longer tracks.
-        using var callerCts = CreateDisposalLinkedTokenSource(cancellationToken);
-        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(
-            callerCts.Token,
-            timeoutCts.Token);
+        // disposed pool no longer tracks. Setup attempts treat disposal as caller cancellation
+        // (IsSetupCallerGone), so they neither record a failure nor make disposal wait for them.
+        using var linkedCts = CreateSetupTokenSource(cancellationToken, timeoutCts.Token);
         try
         {
             return await GetOrCreateConnectionCoreAsync(
@@ -1191,30 +1219,43 @@ public sealed partial class ConnectionPool :
                     host,
                     port,
                     linkedCts.Token,
-                    callerCts.Token)
+                    cancellationToken)
                 .ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !callerCts.IsCancellationRequested)
-        {
-            throw CreateConnectionOperationTimeoutException(timeout, brokerId, host, port);
         }
         catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested && Volatile.Read(ref _disposed) != 0)
         {
             throw new ObjectDisposedException(nameof(ConnectionPool), ex);
         }
+        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        {
+            throw CreateConnectionOperationTimeoutException(timeout, brokerId, host, port);
+        }
     }
 
-    private CancellationTokenSource CreateDisposalLinkedTokenSource(CancellationToken cancellationToken)
+    private CancellationTokenSource CreateSetupTokenSource(
+        CancellationToken cancellationToken,
+        CancellationToken timeoutToken)
     {
         try
         {
-            return CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _disposeCts.Token);
+            return CancellationTokenSource.CreateLinkedTokenSource(
+                cancellationToken,
+                timeoutToken,
+                _disposeCts.Token);
         }
         catch (ObjectDisposedException)
         {
+            // DisposeAsync finished (and disposed _disposeCts) after the caller's _disposed check.
             throw new ObjectDisposedException(nameof(ConnectionPool));
         }
     }
+
+    /// <summary>
+    /// True when nobody waits for the setup any more: the caller cancelled, or the pool was
+    /// disposed (which cancels single-connection setups through their linked token).
+    /// </summary>
+    private bool IsSetupCallerGone(CancellationToken callerCancellationToken) =>
+        callerCancellationToken.IsCancellationRequested || Volatile.Read(ref _disposed) != 0;
 
     private async ValueTask<IKafkaConnection> GetOrCreateConnectionCoreAsync(
         int brokerId,
@@ -1300,20 +1341,7 @@ public sealed partial class ConnectionPool :
         }
         finally
         {
-            ReleaseCreationLock(creationLock);
-        }
-    }
-
-    private static void ReleaseCreationLock(SemaphoreSlim creationLock)
-    {
-        try
-        {
             creationLock.Release();
-        }
-        catch (ObjectDisposedException)
-        {
-            // CloseAllAsync disposed the lock while this setup held it. The pool is gone, and
-            // the setup's own outcome is what the caller must see.
         }
     }
 
@@ -1466,7 +1494,7 @@ public sealed partial class ConnectionPool :
                 RecordConnectionAttemptFailure(setupKey, brokerId, host, port, exception.Message);
             throw exception;
         }
-        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !callerCancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !IsSetupCallerGone(callerCancellationToken))
         {
             ObserveLateConnectionSetup(connectionTask);
             var exception = CreateConnectionSetupTimeoutException(timeout, brokerId, host, port);
@@ -1474,14 +1502,14 @@ public sealed partial class ConnectionPool :
                 RecordConnectionAttemptFailure(setupKey, brokerId, host, port, exception.Message);
             throw exception;
         }
-        catch (OperationCanceledException ex) when (operationCancellationToken.IsCancellationRequested && !callerCancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException ex) when (operationCancellationToken.IsCancellationRequested && !IsSetupCallerGone(callerCancellationToken))
         {
             ObserveLateConnectionSetup(connectionTask);
             if (recordFailure)
                 RecordConnectionAttemptFailure(setupKey, brokerId, host, port, ex.Message);
             throw;
         }
-        catch (OperationCanceledException) when (callerCancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException) when (IsSetupCallerGone(callerCancellationToken))
         {
             // A caller-scoped factory may ignore cancellation indefinitely. Observe and
             // clean up any eventual result without making pool disposal depend on it.
@@ -2575,8 +2603,8 @@ public sealed partial class ConnectionPool :
                 PreserveSuccessfulRequest(endpointConnection, endpointRuntimeState);
                 endpointRuntimeState.RecordStateChange();
             }
-            if (_connectionCreationLocks.TryRemove(endpoint, out var creationSem))
-                creationSem.Dispose();
+            // Not disposed: a concurrent setup may still hold it (see CloseAllAsync).
+            _connectionCreationLocks.TryRemove(endpoint, out _);
             await connection.DisposeAsync().ConfigureAwait(false);
             LogRemovedConnection(brokerId);
         }
@@ -2596,7 +2624,7 @@ public sealed partial class ConnectionPool :
             for (var i = 0; i < group.Length; i++)
             {
                 // Intentionally not disposed: a concurrent ReplaceConnectionInGroupAsync
-                // may be holding or waiting on it. Will be disposed during DisposeAsync.
+                // may be holding or waiting on it (see CloseAllAsync).
                 _connectionReplacementLocks.TryRemove((brokerId, i), out _);
             }
 
@@ -2692,13 +2720,11 @@ public sealed partial class ConnectionPool :
 
             foreach (var state in _reconnectBackoffs.Values) state.MarkRemoved();
 
-            if (Volatile.Read(ref _disposed) != 0)
-            {
-                // _disposed is set — no new callers can arrive, safe to dispose semaphores
-                foreach (var sem in _connectionCreationLocks.Values) sem.Dispose();
-                foreach (var sem in _connectionReplacementLocks.Values) sem.Dispose();
-                foreach (var sem in _groupCreationLocks.Values) sem.Dispose();
-            }
+            // The setup locks are dropped, not disposed: a setup already in flight still holds its
+            // lock and releases it on the way out, and disposing it underneath would turn that
+            // release into an ObjectDisposedException over the setup's own outcome. A
+            // SemaphoreSlim only owns a wait handle when AvailableWaitHandle was read, which the
+            // pool never does.
             _connectionsByEndpoint.Clear();
             _connectionsById.Clear();
             _connectionGroupsById.Clear();

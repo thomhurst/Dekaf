@@ -1034,6 +1034,46 @@ public sealed class ConnectionPoolTests
         lease.Dispose();
     }
 
+    // 1 = single-connection path, 2 = connection-group path.
+    [Test]
+    [Arguments(1)]
+    [Arguments(2)]
+    [Timeout(10_000)]
+    public async Task DisposeAsync_CompletingWhileSetupPublishes_DisposesPublishedConnection(
+        int connectionsPerBroker,
+        CancellationToken cancellationToken)
+    {
+        var connection = new TestIdleConnection(1, "host-a", 9092);
+        var siblings = new System.Collections.Concurrent.ConcurrentBag<TestIdleConnection>();
+        ConnectionPool pool = null!;
+        Task? disposal = null;
+        pool = new ConnectionPool(
+            clientId: "test-client",
+            connectionOptions: new ConnectionOptions { ConnectionsMaxIdleMs = -1 },
+            connectionsPerBroker: connectionsPerBroker,
+            connectionFactory: (_, _, _, index, _) =>
+            {
+                // The pool closes every connection it has published while this setup is
+                // finishing, so the result lands after CloseAllAsync has already run.
+                disposal ??= pool.DisposeAsync().AsTask();
+                if (index == 0)
+                    return ValueTask.FromResult<IKafkaConnection>(connection);
+
+                var sibling = new TestIdleConnection(1, "host-a", 9092);
+                siblings.Add(sibling);
+                return ValueTask.FromResult<IKafkaConnection>(sibling);
+            });
+        pool.RegisterBroker(1, "host-a", 9092);
+
+        await Assert.ThrowsAsync<ObjectDisposedException>(async () =>
+            await pool.GetConnectionAsync(1, cancellationToken));
+
+        await disposal!.WaitAsync(cancellationToken);
+        await Assert.That(connection.DisposeCount).IsGreaterThanOrEqualTo(1);
+        foreach (var sibling in siblings)
+            await Assert.That(sibling.DisposeCount).IsGreaterThanOrEqualTo(1);
+    }
+
     [Test]
     public async Task RegisterBroker_MultipleBrokers_AllRegistered()
     {

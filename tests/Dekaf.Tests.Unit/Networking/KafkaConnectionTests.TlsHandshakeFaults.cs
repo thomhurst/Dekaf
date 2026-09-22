@@ -52,6 +52,62 @@ public sealed partial class KafkaConnectionTests
             .IsTrue();
     }
 
+    // A plaintext listener behind a TLS client is a cluster-wide configuration error, so it
+    // surfaces as the fatal TLS handshake failure instead of retrying until a deadline.
+    [Test]
+    [Timeout(15_000)]
+    public async Task ConnectAsync_TlsPeerAnswersClientHelloWithPlaintext_FailsAsTlsHandshakeError(
+        CancellationToken cancellationToken)
+    {
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        var server = AnswerClientHelloWithPlaintextAsync(listener, cancellationToken);
+        await using var connection = new KafkaConnection(
+            IPAddress.Loopback.ToString(),
+            port,
+            options: new ConnectionOptions
+            {
+                UseTls = true,
+                ConnectionTimeout = TimeSpan.FromSeconds(10)
+            });
+
+        var exception = await Assert.ThrowsAsync<Exception>(
+            async () => await connection.ConnectAsync(cancellationToken));
+        await server;
+
+        await Assert.That(exception).IsTypeOf<Dekaf.Errors.AuthenticationException>();
+        await Assert.That(TransportFailureClassifier.IsRetriable(
+                exception!, TransportRetryPolicy.Request, ownerDisposed: false))
+            .IsFalse();
+        await Assert.That(connection.IsConnected).IsFalse();
+    }
+
+    /// <summary>
+    /// Reads the whole ClientHello record, answers it with an HTTP response, then closes.
+    /// Draining the record first means the close sends FIN rather than RST.
+    /// </summary>
+    private static async Task AnswerClientHelloWithPlaintextAsync(
+        TcpListener listener,
+        CancellationToken cancellationToken)
+    {
+        using var client = await listener.AcceptTcpClientAsync(cancellationToken);
+        var stream = client.GetStream();
+
+        var header = new byte[5];
+        await stream.ReadExactlyAsync(header, cancellationToken);
+        if (header[0] != 0x16)
+            throw new InvalidOperationException($"Expected a TLS handshake record, got content type {header[0]}.");
+
+        var body = new byte[System.Buffers.Binary.BinaryPrimitives.ReadUInt16BigEndian(header.AsSpan(3))];
+        await stream.ReadExactlyAsync(body, cancellationToken);
+
+        await stream.WriteAsync(
+            System.Text.Encoding.ASCII.GetBytes("HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n"),
+            cancellationToken);
+        client.Client.Shutdown(SocketShutdown.Send);
+    }
+
     private static async Task CutTlsHandshakeAsync(
         TcpListener listener,
         TlsHandshakeFault fault,
