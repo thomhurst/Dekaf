@@ -3082,9 +3082,10 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             return;
         }
 
-        _transactionState = classification == TransactionErrorClassification.Fatal
-            ? TransactionState.FatalError
-            : TransactionState.AbortableError;
+        if (classification == TransactionErrorClassification.Fatal)
+            _transactionState = TransactionState.FatalError;
+        else
+            MarkTransactionAbortable(errorCode);
 
         throw CreateTransactionException(errorCode, classification, $"{operation} failed: {errorCode}");
     }
@@ -3860,8 +3861,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             }
             catch (OperationCanceledException)
             {
-                _lastTransactionError = ErrorCode.RequestTimedOut;
-                _transactionState = TransactionState.AbortableError;
+                MarkTransactionAbortable(ErrorCode.RequestTimedOut);
 
                 if (cancellationToken.IsCancellationRequested || !timeoutCts.IsCancellationRequested)
                     throw;
@@ -4167,10 +4167,14 @@ public sealed partial class KafkaProducer<TKey, TValue> :
 
     private void PreserveEndTransactionTimeoutState(bool requestInFlight)
     {
+        if (!requestInFlight)
+        {
+            MarkTransactionAbortable(ErrorCode.RequestTimedOut);
+            return;
+        }
+
         _lastTransactionError = ErrorCode.RequestTimedOut;
-        _transactionState = requestInFlight
-            ? TransactionState.FatalError
-            : TransactionState.AbortableError;
+        _transactionState = TransactionState.FatalError;
     }
 
     internal ValueTask SendOffsetsToTransactionInternalAsync(
@@ -5336,6 +5340,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         if (_transactionState != TransactionState.AbortableError)
             MarkTransactionAbortable(GetEnrollmentFailureErrorCode(enrollmentError));
 
+        // A send loop may have fenced the producer since the first check; fatal wins.
+        ThrowIfFatalTransactionError(operation);
+
         throw new AbortableTransactionException(
             $"{operation}: partition enrollment failed ({_lastTransactionError}), so the affected records are not " +
             "part of the transaction and it must be aborted.",
@@ -5396,10 +5403,25 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         }
     }
 
-    private void MarkTransactionAbortable(ErrorCode errorCode)
+    /// <summary>
+    /// Moves the transaction to AbortableError unless the producer is already fatal. A send loop
+    /// can report a fenced batch (<see cref="OnTransactionalBatchFailed"/>) while the caller's thread
+    /// makes the transaction abortable, so the check and the write share
+    /// <see cref="_partitionsInTransactionLock"/> with that report: an abortable transition never
+    /// downgrades FatalError, which would let the caller abort and reuse a fenced producer. Returns
+    /// false when the producer is fatal. Error paths only.
+    /// </summary>
+    internal bool MarkTransactionAbortable(ErrorCode errorCode)
     {
-        _lastTransactionError = errorCode;
-        _transactionState = TransactionState.AbortableError;
+        lock (_partitionsInTransactionLock)
+        {
+            if (_transactionState == TransactionState.FatalError)
+                return false;
+
+            _lastTransactionError = errorCode;
+            _transactionState = TransactionState.AbortableError;
+            return true;
+        }
     }
 
     /// <summary>

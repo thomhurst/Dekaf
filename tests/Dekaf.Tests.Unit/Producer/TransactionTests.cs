@@ -258,6 +258,27 @@ public sealed class TransactionTests
     }
 
     /// <summary>
+    /// A send loop can fence the producer while the caller's thread makes the transaction
+    /// abortable (a partition-enrollment error found by the pre-commit flush check, a flush
+    /// timeout, an abortable control-plane response). The abortable transition must not
+    /// downgrade FatalError: the caller could then abort and reuse a fenced producer.
+    /// </summary>
+    [Test]
+    public async Task MarkTransactionAbortable_AfterConcurrentFatalBatch_KeepsFatalError()
+    {
+        await using var producer = BuildTransactionalProducer(TransactionState.InTransaction);
+        producer.OnTransactionalBatchFailed(42, 5, ErrorCode.ProducerFenced);
+
+        var marked = producer.MarkTransactionAbortable(ErrorCode.NetworkException);
+
+        await Assert.That(marked).IsFalse();
+        await Assert.That(producer._transactionState).IsEqualTo(TransactionState.FatalError);
+        await Assert.That(producer._lastTransactionError).IsEqualTo(ErrorCode.ProducerFenced);
+        await Assert.That(() => producer.ThrowIfTransactionFailedDuringFlush("Cannot commit transaction"))
+            .Throws<FatalTransactionException>();
+    }
+
+    /// <summary>
     /// The flush that precedes EndTxn(commit) runs in CommittingTransaction: a batch failed during
     /// it must stop the commit instead of committing the transaction without its records.
     /// </summary>

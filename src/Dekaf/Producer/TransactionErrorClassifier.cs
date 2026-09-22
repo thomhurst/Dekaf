@@ -50,15 +50,6 @@ internal static class TransactionErrorClassifier
     }
 
     /// <summary>
-    /// Classifies a produce batch of a transactional producer that failed terminally (Java
-    /// <c>TransactionManager.maybeTransitionToErrorState</c>). A fence or an authorization failure
-    /// leaves the producer unusable; every other failure means records the caller produced are not
-    /// in the transaction, so it can only be aborted. Never <see cref="TransactionErrorClassification.Retriable"/>:
-    /// the batch has already failed. <c>InvalidProducerEpoch</c> is abortable here, as in Java
-    /// (KIP-588): on a produce it can also mean the coordinator timed the transaction out and bumped
-    /// the epoch, and the abort's EndTxn reports a real fence.
-    /// </summary>
-    /// <summary>
     /// The error code a failed batch reports to the transaction: the delivery timeout as
     /// <c>RequestTimedOut</c>, a Kafka error as its code, anything else (a local failure such as
     /// compression or disposal) as <c>UnknownServerError</c>, which is abortable.
@@ -70,6 +61,15 @@ internal static class TransactionErrorClassifier
         _ => Protocol.ErrorCode.UnknownServerError
     };
 
+    /// <summary>
+    /// Classifies a produce batch of a transactional producer that failed terminally (Java
+    /// <c>TransactionManager.maybeTransitionToErrorState</c>). A fence or an authorization failure
+    /// leaves the producer unusable; every other failure means records the caller produced are not
+    /// in the transaction, so it can only be aborted. Never <see cref="TransactionErrorClassification.Retriable"/>:
+    /// the batch has already failed. <c>InvalidProducerEpoch</c> is abortable here, as in Java
+    /// (KIP-588): on a produce it can also mean the coordinator timed the transaction out and bumped
+    /// the epoch, and the abort's EndTxn reports a real fence.
+    /// </summary>
     internal static TransactionErrorClassification ClassifyFailedBatch(Protocol.ErrorCode errorCode) =>
         errorCode is Protocol.ErrorCode.ProducerFenced
             or Protocol.ErrorCode.TransactionalIdAuthorizationFailed
