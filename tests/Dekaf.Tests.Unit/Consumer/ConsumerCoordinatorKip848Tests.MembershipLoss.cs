@@ -222,6 +222,148 @@ public sealed partial class ConsumerCoordinatorKip848Tests
         await Assert.That(coordinator.Assignment.Count).IsEqualTo(0);
     }
 
+    [Test]
+    public async Task MembershipLoss_OffsetFetchUnknownMember_FiresLostBeforeTheRejoinAssignment()
+    {
+        _metadataManager.SetApiVersion(ApiKey.OffsetFetch, 9, 9);
+        var script = new HeartbeatScript(this);
+        var (listener, calls) = CreateRecordingListener();
+        await using var coordinator = await JoinAsync(script, listener);
+        calls.Clear();
+        script.Reset();
+        script.Respond = (_, _) => Joined("member-2", memberEpoch: 1, CreateAssignment(TestTopicId, 1));
+        SetupOffsetFetch(firstErrorCode: ErrorCode.UnknownMemberId);
+
+        await coordinator.FetchOffsetsAsync([new TopicPartition("test-topic", 1)], CancellationToken.None);
+
+        await Assert.That(string.Join(" | ", calls)).IsEqualTo("lost:test-topic-0,test-topic-1 | assigned:test-topic-1");
+        await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Stable);
+        await Assert.That(coordinator.MemberId).IsEqualTo("member-2");
+        await Assert.That(coordinator.Assignment.Count).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task MembershipLoss_FenceFromAHeartbeatOfTheReplacedMembership_IsIgnored()
+    {
+        _metadataManager.SetApiVersion(ApiKey.OffsetFetch, 9, 9);
+        var script = new HeartbeatScript(this);
+        var (listener, calls) = CreateRecordingListener();
+        await using var coordinator = await JoinAsync(script, listener);
+        calls.Clear();
+        script.Reset();
+
+        // The old membership's heartbeat stays in flight while an offset fetch finds the member
+        // unknown and rejoins it; that heartbeat's fence then answers for a membership that is gone.
+        var staleHeartbeatSent = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var staleHeartbeatResponse = new TaskCompletionSource<ConsumerGroupHeartbeatResponse>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var nextStaleLoopHeartbeat = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        script.Respond = (count, _) =>
+        {
+            switch (count)
+            {
+                case 1:
+                    staleHeartbeatSent.TrySetResult();
+                    return new ValueTask<ConsumerGroupHeartbeatResponse>(staleHeartbeatResponse.Task);
+                case 2:
+                    return Joined("member-2", memberEpoch: 1, CreateAssignment(TestTopicId, 1));
+                default:
+                    // The stale loop survived its discarded response and beat again.
+                    nextStaleLoopHeartbeat.TrySetResult();
+                    return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
+                    {
+                        ErrorCode = ErrorCode.None,
+                        MemberId = "member-2",
+                        MemberEpoch = 1,
+                        HeartbeatIntervalMs = 60_000
+                    });
+            }
+        };
+        SetupOffsetFetch(firstErrorCode: ErrorCode.UnknownMemberId);
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var staleLoopStop = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token);
+        SetPrivateField(coordinator, "_heartbeatIntervalMs", 1);
+        var staleLoop = InvokeConsumerProtocolHeartbeatLoopAsync(coordinator, staleLoopStop.Token);
+        await staleHeartbeatSent.Task.WaitAsync(timeout.Token);
+
+        await coordinator.FetchOffsetsAsync([new TopicPartition("test-topic", 1)], timeout.Token);
+        await Assert.That(coordinator.MemberId).IsEqualTo("member-2");
+
+        // The rejoined membership's own loop is parked on the 60 s interval; only the stale loop
+        // beats again at 1 ms, and only after it has handled the fenced response.
+        SetPrivateField(coordinator, "_heartbeatIntervalMs", 1);
+        staleHeartbeatResponse.SetResult(await Error(ErrorCode.FencedMemberEpoch));
+        await Task.WhenAny(nextStaleLoopHeartbeat.Task, staleLoop).WaitAsync(timeout.Token);
+        staleLoopStop.Cancel();
+        await staleLoop.WaitAsync(timeout.Token);
+
+        await Assert.That(string.Join(" | ", calls)).IsEqualTo("lost:test-topic-0,test-topic-1 | assigned:test-topic-1");
+        await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Stable);
+        await Assert.That(coordinator.MemberId).IsEqualTo("member-2");
+        await Assert.That(coordinator.Assignment.Count).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task MembershipLoss_StoppingTheHeartbeat_CancelsAPendingLostCallback()
+    {
+        var script = new HeartbeatScript(this);
+        var lostEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var lostCancelled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var listener = Substitute.For<IRebalanceListener>();
+        listener.OnPartitionsLostAsync(Arg.Any<IEnumerable<TopicPartition>>(), Arg.Any<CancellationToken>())
+            .Returns(callInfo => WaitForCancellationAsync(callInfo.Arg<CancellationToken>()));
+        await using var coordinator = await JoinAsync(script, listener);
+
+        script.Respond = (_, _) => Error(ErrorCode.FencedMemberEpoch);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var loopStop = new CancellationTokenSource();
+        SetPrivateField(coordinator, "_heartbeatIntervalMs", 1);
+        var loop = InvokeConsumerProtocolHeartbeatLoopAsync(coordinator, loopStop.Token);
+        await lostEntered.Task.WaitAsync(timeout.Token);
+
+        loopStop.Cancel();
+
+        await lostCancelled.Task.WaitAsync(timeout.Token);
+        await loop.WaitAsync(timeout.Token);
+        await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Unjoined);
+
+        async ValueTask WaitForCancellationAsync(CancellationToken cancellationToken)
+        {
+            lostEntered.TrySetResult();
+            try
+            {
+                await Task.Delay(Timeout.Infinite, cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                lostCancelled.TrySetResult();
+                throw;
+            }
+        }
+    }
+
+    private void SetupOffsetFetch(ErrorCode firstErrorCode)
+    {
+        var requestCount = 0;
+        _connection.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
+                Arg.Any<OffsetFetchRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ => ValueTask.FromResult(new OffsetFetchResponse
+            {
+                Groups =
+                [
+                    new OffsetFetchResponseGroup
+                    {
+                        GroupId = "test-group",
+                        Topics = [],
+                        ErrorCode = Interlocked.Increment(ref requestCount) == 1 ? firstErrorCode : ErrorCode.None
+                    }
+                ]
+            }));
+    }
+
     private async Task<ConsumerCoordinator> JoinAsync(
         HeartbeatScript script,
         IRebalanceListener listener,
