@@ -346,6 +346,153 @@ public sealed partial class ConsumerCoordinatorKip848Tests
     }
 
     [Test]
+    public async Task MembershipLoss_LostCallbackInterruptedByHeartbeatStop_IsReportedBeforeTheRejoinAssignment()
+    {
+        var script = new HeartbeatScript(this);
+        var (recording, calls) = CreateRecordingListener();
+        var lostEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var interruptNextLost = 1;
+        var listener = Substitute.For<IRebalanceListener>();
+        listener.OnPartitionsLostAsync(Arg.Any<IEnumerable<TopicPartition>>(), Arg.Any<CancellationToken>())
+            .Returns(callInfo => Interlocked.Exchange(ref interruptNextLost, 0) == 1
+                ? WaitForCancellationAsync(callInfo.Arg<CancellationToken>())
+                : recording.OnPartitionsLostAsync(
+                    callInfo.Arg<IEnumerable<TopicPartition>>()!,
+                    callInfo.Arg<CancellationToken>()));
+        listener.OnPartitionsAssignedAsync(Arg.Any<IEnumerable<TopicPartition>>(), Arg.Any<CancellationToken>())
+            .Returns(callInfo => recording.OnPartitionsAssignedAsync(
+                callInfo.Arg<IEnumerable<TopicPartition>>()!,
+                callInfo.Arg<CancellationToken>()));
+        await using var coordinator = await JoinAsync(script, listener);
+        calls.Clear();
+
+        script.Respond = (_, _) => Error(ErrorCode.FencedMemberEpoch);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var loopStop = new CancellationTokenSource();
+        SetPrivateField(coordinator, "_heartbeatIntervalMs", 1);
+        var loop = InvokeConsumerProtocolHeartbeatLoopAsync(coordinator, loopStop.Token);
+        await lostEntered.Task.WaitAsync(timeout.Token);
+        loopStop.Cancel();
+        await loop.WaitAsync(timeout.Token);
+
+        // The interrupted callback never completed: the loss is still reported, before the
+        // rejoin's assignment.
+        script.Respond = (_, _) => Joined("member-1", memberEpoch: 6, CreateAssignment(TestTopicId, 0));
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, timeout.Token);
+
+        await Assert.That(string.Join(" | ", calls)).IsEqualTo("lost:test-topic-0,test-topic-1 | assigned:test-topic-0");
+
+        async ValueTask WaitForCancellationAsync(CancellationToken cancellationToken)
+        {
+            lostEntered.TrySetResult();
+            await Task.Delay(Timeout.Infinite, cancellationToken);
+        }
+    }
+
+    [Test]
+    public async Task MembershipLoss_FenceReceivedWhileTheHeartbeatStops_IsStillApplied()
+    {
+        _metadataManager.SetApiVersion(ApiKey.OffsetCommit, 9, 9);
+        var script = new HeartbeatScript(this);
+        var (listener, calls) = CreateRecordingListener();
+        await using var coordinator = await JoinAsync(script, listener);
+        calls.Clear();
+        var commitCount = 0;
+        _connection.SendAsync<OffsetCommitRequest, OffsetCommitResponse>(
+                Arg.Any<OffsetCommitRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                Interlocked.Increment(ref commitCount);
+                return ValueTask.FromResult(new OffsetCommitResponse { Topics = [] });
+            });
+
+        // The fence arrives while another operation holds the state lock, and the heartbeat is
+        // stopped before the loop can take it.
+        var coordinatorLock = GetPrivateField<SemaphoreSlim>(coordinator, "_lock");
+        var fenceReceived = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        script.Respond = (_, _) =>
+        {
+            coordinatorLock.Wait();
+            fenceReceived.TrySetResult();
+            return Error(ErrorCode.FencedMemberEpoch);
+        };
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var loopStop = new CancellationTokenSource();
+        SetPrivateField(coordinator, "_heartbeatIntervalMs", 1);
+        var loop = InvokeConsumerProtocolHeartbeatLoopAsync(coordinator, loopStop.Token);
+        await fenceReceived.Task.WaitAsync(timeout.Token);
+        loopStop.Cancel();
+        coordinatorLock.Release();
+        await loop.WaitAsync(timeout.Token);
+
+        await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Unjoined);
+        await Assert.That(coordinator.Assignment.Count).IsEqualTo(0);
+        var fenced = await Assert.That(async () => await coordinator.CommitOffsetsAsync(
+                [new TopicPartitionOffset("test-topic", 0, 10)],
+                retryUntilApiTimeout: true,
+                timeout.Token))
+            .Throws<GroupException>();
+        await Assert.That(fenced!.ErrorCode).IsEqualTo(ErrorCode.FencedMemberEpoch);
+        await Assert.That(Volatile.Read(ref commitCount)).IsEqualTo(0);
+
+        script.Respond = (_, _) => Joined("member-1", memberEpoch: 6, CreateAssignment(TestTopicId, 0));
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, timeout.Token);
+        await Assert.That(string.Join(" | ", calls)).IsEqualTo("lost:test-topic-0,test-topic-1 | assigned:test-topic-0");
+    }
+
+    [Test]
+    public async Task CommitOffsetsAsync_StartedBeforeAFenceAndRejoin_IsNotSentUnderTheNewMembership()
+    {
+        _metadataManager.SetApiVersion(ApiKey.OffsetCommit, 9, 9);
+        var script = new HeartbeatScript(this);
+        var (listener, _) = CreateRecordingListener();
+        await using var coordinator = await JoinAsync(script, listener);
+        var committedEpochs = new List<int>();
+        _connection.SendAsync<OffsetCommitRequest, OffsetCommitResponse>(
+                Arg.Any<OffsetCommitRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(callInfo =>
+            {
+                lock (committedEpochs)
+                    committedEpochs.Add(callInfo.Arg<OffsetCommitRequest>()!.GenerationIdOrMemberEpoch);
+                return ValueTask.FromResult(new OffsetCommitResponse { Topics = [] });
+            });
+
+        // The commit has its offsets but waits for the commit lock while the member is fenced,
+        // rejoins and resynchronizes its assignment.
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var commitLock = GetPrivateField<SemaphoreSlim>(coordinator, "_commitLock");
+        await commitLock.WaitAsync(timeout.Token);
+        Task commit;
+        try
+        {
+            commit = coordinator.CommitOffsetsAsync(
+                [new TopicPartitionOffset("test-topic", 0, 10)],
+                retryUntilApiTimeout: true,
+                timeout.Token).AsTask();
+
+            script.Respond = (_, _) => Error(ErrorCode.FencedMemberEpoch);
+            await RunHeartbeatLoopUntilItStopsAsync(coordinator);
+            script.Respond = (_, _) => Joined("member-1", memberEpoch: 6, CreateAssignment(TestTopicId, 1));
+            await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, timeout.Token);
+            await SynchronizeAssignmentAsync(coordinator);
+        }
+        finally
+        {
+            commitLock.Release();
+        }
+
+        // Its offsets were taken under the lost membership; epoch 6 must not carry them.
+        var exception = await Assert.That(async () => await commit).Throws<GroupException>();
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.FencedMemberEpoch);
+        await Assert.That(exception.IsRetriable).IsFalse();
+        await Assert.That(committedEpochs.Count).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task CommitOffsetsAsync_AfterHeartbeatFence_FailsFastUntilAssignmentIsResynchronized()
     {
         _metadataManager.SetApiVersion(ApiKey.OffsetCommit, 9, 9);
@@ -453,7 +600,9 @@ public sealed partial class ConsumerCoordinatorKip848Tests
     }
 
     [Test]
-    public async Task MembershipLoss_LeaveWithAnUnreportedLoss_ReportsThePartitionsLost()
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task MembershipLoss_LeaveWithAnUnreportedLoss_ReportsThePartitionsLost(bool forgetMember)
     {
         var script = new HeartbeatScript(this);
         var (listener, calls) = CreateRecordingListener();
@@ -461,10 +610,10 @@ public sealed partial class ConsumerCoordinatorKip848Tests
         calls.Clear();
 
         // A fence whose OnPartitionsLost has not run yet (for example the heartbeat stop
-        // interrupted it before it took the queue), followed by a leave.
+        // interrupted it), followed by a leave. An unknown member has no leave to send.
         typeof(ConsumerCoordinator)
             .GetMethod("FenceMembership", BindingFlags.Instance | BindingFlags.NonPublic)!
-            .Invoke(coordinator, [false]);
+            .Invoke(coordinator, [forgetMember]);
         await Assert.That(calls.Count).IsEqualTo(0);
 
         script.Respond = (_, _) => ValueTask.FromResult(new ConsumerGroupHeartbeatResponse

@@ -106,8 +106,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     // Assignments cleared by a fence, waiting for OnPartitionsLost. Drained under
     // _rebalanceListenerLock so a rejoin can never publish OnPartitionsAssigned first.
     private readonly ConcurrentQueue<IReadOnlyList<TopicPartition>> _pendingPartitionsLost = new();
-    // Advanced under _lock each time a join makes the member Stable. A fence observed by a
-    // request sent under an earlier membership must not clear the assignment of a newer one.
+    // Advanced under _lock each time a join makes the member Stable and each time a fence ends a
+    // membership. A fence observed by a request sent under an earlier membership must not clear
+    // the assignment of a newer one, and a commit must not send offsets taken under an earlier one.
     private int _membershipVersion;
     // Foreground assignment initialization and fetch waits are application poll activity. Track
     // concurrent callers without allocating a scope object on each poll cycle.
@@ -306,6 +307,25 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         throw new GroupException(
             ErrorCode.FencedMemberEpoch,
             $"Offset commit rejected because maximum poll interval of {_options.MaxPollIntervalMs}ms was exceeded")
+        {
+            GroupId = _options.GroupId
+        };
+    }
+
+    /// <summary>
+    /// Rejects a commit whose offsets were taken under a membership that a fence or rejoin has
+    /// since replaced. Its request would otherwise carry the new member id and epoch, and a
+    /// fence lifted by the rejoin's assignment sync no longer stops it.
+    /// </summary>
+    private void ThrowIfMembershipChangedSince(int membershipVersion)
+    {
+        if (Volatile.Read(ref _membershipVersion) == membershipVersion)
+            return;
+
+        throw new GroupException(
+            ErrorCode.FencedMemberEpoch,
+            "Offset commit rejected because the group membership changed while the commit was in progress; its " +
+            "offsets may belong to partitions this member no longer owns; poll before committing again")
         {
             GroupId = _options.GroupId
         };
@@ -1025,6 +1045,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         if (string.IsNullOrEmpty(_options.GroupId))
             return;
 
+        // Read before the fence flag: FenceMembership sets the flag before it advances the
+        // version, so a commit that passes the check below under a membership that is being
+        // fenced still sees the version change before it sends.
+        var membershipVersion = Volatile.Read(ref _membershipVersion);
         ThrowIfMaxPollIntervalExpired();
 
         LogCommitOffsetsStarted(_options.GroupId!);
@@ -1120,6 +1144,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 };
 
                 ThrowIfMaxPollIntervalExpired();
+                ThrowIfMembershipChangedSince(membershipVersion);
                 var response = await connection.SendWithClientTelemetryAsync<OffsetCommitRequest, OffsetCommitResponse>(
                     request, offsetCommitVersion, TelemetryMetricCollector, cancellationToken).ConfigureAwait(false);
 
@@ -1293,8 +1318,24 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                         });
                     }
 
-                    // Captured with the member id and epoch the request carries.
-                    var membershipVersion = Volatile.Read(ref _membershipVersion);
+                    // A fence or rejoin changes the member id, epoch and membership version
+                    // together under the state lock; snapshot them the same way, so a fence this
+                    // request reports is applied to the membership it was sent under.
+                    string? memberId;
+                    int memberEpoch;
+                    int membershipVersion;
+                    await _lock.WaitAsync(operationToken).ConfigureAwait(false);
+                    try
+                    {
+                        memberId = _memberId;
+                        memberEpoch = _generationId;
+                        membershipVersion = _membershipVersion;
+                    }
+                    finally
+                    {
+                        _lock.Release();
+                    }
+
                     var request = new OffsetFetchRequest
                     {
                         GroupId = _options.GroupId!,
@@ -1304,8 +1345,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                             new OffsetFetchRequestGroup
                         {
                             GroupId = _options.GroupId!,
-                            MemberId = _memberId,
-                            MemberEpoch = _generationId,
+                            MemberId = memberId,
+                            MemberEpoch = memberEpoch,
                             Topics = topicPartitions
                         }
                         ]
@@ -1544,7 +1585,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         }
 
         _state = CoordinatorState.Unjoined;
+        // Flag first, then version: see CommitOffsetsAsync.
         Volatile.Write(ref _membershipFenced, 1);
+        Interlocked.Increment(ref _membershipVersion);
         var lost = ClearAssignment();
         if (lost is not null)
             _pendingPartitionsLost.Enqueue(lost);
@@ -1757,6 +1800,15 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
             response = await connection.SendWithClientTelemetryAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
                 request, version, TelemetryMetricCollector, cancellationToken).ConfigureAwait(false);
+        }
+
+        // A steady heartbeat reports a fence without waiting for the locks, so stopping the loop
+        // cannot discard it: the loop applies it under the state lock, checked against the
+        // membership version this request was sent under.
+        if (discardIfMembershipChanged &&
+            response.ErrorCode is ErrorCode.FencedMemberEpoch or ErrorCode.UnknownMemberId)
+        {
+            HandleConsumerGroupHeartbeatError(response, subscribedTopicRegex);
         }
 
         var assignmentProcessing = BeginAssignmentProcessing(response.Assignment);
@@ -2375,8 +2427,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             {
                 break;
             }
-            catch (Exception) when (cancellationToken.IsCancellationRequested)
+            catch (Exception ex) when (cancellationToken.IsCancellationRequested && !IsMembershipFence(ex))
             {
+                // A fence the coordinator already returned is still applied below.
                 break;
             }
             catch (Exception ex)
@@ -2408,8 +2461,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                             // The next EnsureActiveGroup rejoins with MemberEpoch=0 (or -2 for static).
                             if (!await TryFenceFromHeartbeatAsync(
                                     membershipVersion,
-                                    forgetMember: ge.ErrorCode == ErrorCode.UnknownMemberId,
-                                    cancellationToken).ConfigureAwait(false))
+                                    forgetMember: ge.ErrorCode == ErrorCode.UnknownMemberId).ConfigureAwait(false))
                                 return;
 
                             try
@@ -2599,11 +2651,16 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         }
     }
 
-    // Caller holds _rebalanceListenerLock.
+    // Caller holds _rebalanceListenerLock, so it is the only drainer. An entry leaves the queue
+    // only once its callback has completed: a cancelled callback is delivered again before the
+    // next assignment rather than dropped.
     private async ValueTask InvokePendingPartitionsLostCoreAsync(CancellationToken cancellationToken)
     {
-        while (_pendingPartitionsLost.TryDequeue(out var lost))
+        while (_pendingPartitionsLost.TryPeek(out var lost))
+        {
             await InvokePartitionsLostCoreAsync(lost, cancellationToken).ConfigureAwait(false);
+            _pendingPartitionsLost.TryDequeue(out _);
+        }
     }
 
     /// <summary>
@@ -2634,23 +2691,21 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             FenceMembership(forgetMember);
     }
 
+    private static bool IsMembershipFence(Exception exception) =>
+        exception is GroupException { ErrorCode: ErrorCode.FencedMemberEpoch or ErrorCode.UnknownMemberId };
+
     /// <summary>
     /// Applies a fence the heartbeat loop observed, under the state lock so it cannot interleave
-    /// with a foreground join or max-poll expiry. Returns false when the loop is being stopped;
-    /// its owner then decides the member's fate.
+    /// with a foreground join or max-poll expiry. The coordinator has already answered, so a
+    /// heartbeat stop does not discard it: the member stays fenced, its commits rejected and its
+    /// partitions queued as lost, whatever the stop's owner does next. Nothing that holds the
+    /// state lock waits for the heartbeat loop. Returns false only when the coordinator is disposed.
     /// </summary>
-    private async ValueTask<bool> TryFenceFromHeartbeatAsync(
-        int membershipVersion,
-        bool forgetMember,
-        CancellationToken cancellationToken)
+    private async ValueTask<bool> TryFenceFromHeartbeatAsync(int membershipVersion, bool forgetMember)
     {
         try
         {
-            await _lock.WaitAsync(cancellationToken).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException)
-        {
-            return false;
+            await _lock.WaitAsync(CancellationToken.None).ConfigureAwait(false);
         }
         catch (ObjectDisposedException)
         {
@@ -2762,16 +2817,16 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         if (Volatile.Read(ref _disposed) != 0)
             return;
 
-        if (operation == ConsumerGroupMembershipOperation.RemainInGroup)
+        // Only leave if we're part of a group and the coordinator is known. A fence can have
+        // taken the member id; its partitions are still reported lost.
+        if (operation == ConsumerGroupMembershipOperation.RemainInGroup
+            || string.IsNullOrEmpty(_options.GroupId)
+            || string.IsNullOrEmpty(_memberId)
+            || _coordinatorId < 0)
+        {
+            await InvokePendingPartitionsLostUnlessCancelledAsync(cancellationToken).ConfigureAwait(false);
             return;
-
-        // Only leave if we're part of a group
-        if (string.IsNullOrEmpty(_options.GroupId) || string.IsNullOrEmpty(_memberId))
-            return;
-
-        // If coordinator is unknown, we can't send LeaveGroup
-        if (_coordinatorId < 0)
-            return;
+        }
 
         await LeaveGroupConsumerProtocolAsync(operation, cancellationToken).ConfigureAwait(false);
     }
