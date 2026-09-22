@@ -5717,7 +5717,8 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     /// <summary>
     /// The error that refuses an operation of an abortable transaction. When a failed batch made it
     /// abortable, that batch's failure is the inner exception, so the caller sees which records
-    /// were lost and why.
+    /// were lost and why, and the error code is that failure's (a later abortable transition may
+    /// have recorded another code in <see cref="_lastTransactionError"/>).
     /// </summary>
     private AbortableTransactionException CreateAbortableTransactionError(string operation)
     {
@@ -5728,7 +5729,8 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             {
                 TransactionalId = _options.TransactionalId
             }
-            : new AbortableTransactionException(_lastTransactionError, message, batchFailure)
+            : new AbortableTransactionException(
+                TransactionErrorClassifier.GetFailedBatchErrorCode(batchFailure), message, batchFailure)
             {
                 TransactionalId = _options.TransactionalId
             };

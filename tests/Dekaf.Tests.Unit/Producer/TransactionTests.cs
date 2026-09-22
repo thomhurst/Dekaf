@@ -448,6 +448,27 @@ public sealed class TransactionTests
     }
 
     /// <summary>
+    /// The abortable error that refuses produce and commit carries the first failed batch as its
+    /// inner exception; its error code must describe that same failure, even after a later
+    /// abortable transition recorded another code.
+    /// </summary>
+    [Test]
+    public async Task AbortableTransactionError_AfterALaterAbortableTransition_KeepsTheRetainedFailuresCode()
+    {
+        await using var producer = BuildTransactionalProducer(TransactionState.InTransaction);
+        var transaction = new Transaction<string, string>(producer);
+        var tooLarge = new ProduceException(ErrorCode.MessageTooLarge, "Produce failed: MessageTooLarge");
+
+        producer.OnTransactionalBatchFailed(42, 5, ErrorCode.MessageTooLarge, tooLarge);
+        producer.MarkTransactionAbortable(ErrorCode.RequestTimedOut);
+
+        var exception = await Assert.That(() => transaction.CommitAsync().AsTask())
+            .Throws<AbortableTransactionException>();
+        await Assert.That(exception!.InnerException).IsSameReferenceAs(tooLarge);
+        await Assert.That(exception.ErrorCode).IsEqualTo(ErrorCode.MessageTooLarge);
+    }
+
+    /// <summary>
     /// The sender picked the fatal exception while the batch's stamp was still current, then an
     /// abort replaced the producer identity before the batch reported its failure. The producer
     /// ignores the stale report, and that same decision picks what the records fail with: the
