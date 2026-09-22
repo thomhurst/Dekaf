@@ -2374,6 +2374,81 @@ public sealed class ConnectionPoolTests
     }
 
     [Test]
+    public async Task DisposeAsync_CancelsAnUncancellableCallersConnectionSetup()
+    {
+        // Admin and metadata callers pass CancellationToken.None. Disposal must still end their
+        // setup promptly instead of leaving them parked until the setup timeout.
+        var factoryEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var pool = new ConnectionPool(
+            clientId: "test-client",
+            connectionOptions: new ConnectionOptions
+            {
+                ConnectionTimeout = TimeSpan.FromSeconds(30),
+                ConnectionTimeoutMax = TimeSpan.FromSeconds(60),
+                ReconnectBackoff = TimeSpan.Zero,
+                ReconnectBackoffMax = TimeSpan.Zero
+            },
+            connectionsPerBroker: 1,
+            connectionFactory: async (_, _, _, _, cancellationToken) =>
+            {
+                factoryEntered.TrySetResult();
+                await Task.Delay(Timeout.Infinite, cancellationToken);
+                throw new InvalidOperationException("unreachable");
+            },
+            randomDouble: static () => 0.5);
+
+        var connect = pool.GetConnectionAsync("broker-a", 9092, CancellationToken.None).AsTask();
+        await factoryEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        await pool.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5));
+
+        await Assert.That(async () => await connect.WaitAsync(TimeSpan.FromSeconds(5)))
+            .Throws<ObjectDisposedException>();
+    }
+
+    [Test]
+    public async Task DisposeAsync_DuringSetup_DisposesTheLateConnectionInsteadOfPublishingIt()
+    {
+        var factoryEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFactory = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var lateConnectionDisposed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var lateConnection = CreateConnectedConnection(-1, "broker-a", 9092);
+        lateConnection.DisposeAsync().Returns(_ =>
+        {
+            lateConnectionDisposed.TrySetResult();
+            return ValueTask.CompletedTask;
+        });
+        var pool = new ConnectionPool(
+            clientId: "test-client",
+            connectionOptions: new ConnectionOptions
+            {
+                ConnectionTimeout = TimeSpan.FromSeconds(30),
+                ConnectionTimeoutMax = TimeSpan.FromSeconds(60),
+                ReconnectBackoff = TimeSpan.Zero,
+                ReconnectBackoffMax = TimeSpan.Zero
+            },
+            connectionsPerBroker: 1,
+            connectionFactory: async (_, _, _, _, _) =>
+            {
+                // A factory that ignores cancellation and finishes after the pool is gone.
+                factoryEntered.TrySetResult();
+                await releaseFactory.Task;
+                return lateConnection;
+            },
+            randomDouble: static () => 0.5);
+
+        var connect = pool.GetConnectionAsync("broker-a", 9092, CancellationToken.None).AsTask();
+        await factoryEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        await pool.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5));
+        releaseFactory.TrySetResult();
+
+        await Assert.That(async () => await connect.WaitAsync(TimeSpan.FromSeconds(5)))
+            .Throws<ObjectDisposedException>();
+        await lateConnectionDisposed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [Test]
     public async Task ConnectionSetupTimeout_SuccessResetsFailureProgression()
     {
         var attempts = 0;

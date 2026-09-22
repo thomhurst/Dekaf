@@ -1177,8 +1177,12 @@ public sealed partial class ConnectionPool :
     {
         var timeout = _connectionOptions.ConnectionTimeoutMax;
         using var timeoutCts = new CancellationTokenSource(timeout);
+        // Pool disposal ends the setup as if the caller had cancelled it. Admin and metadata
+        // callers pass CancellationToken.None and would otherwise stay parked in a setup the
+        // disposed pool no longer tracks.
+        using var callerCts = CreateDisposalLinkedTokenSource(cancellationToken);
         using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(
-            cancellationToken,
+            callerCts.Token,
             timeoutCts.Token);
         try
         {
@@ -1187,12 +1191,28 @@ public sealed partial class ConnectionPool :
                     host,
                     port,
                     linkedCts.Token,
-                    cancellationToken)
+                    callerCts.Token)
                 .ConfigureAwait(false);
         }
-        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !callerCts.IsCancellationRequested)
         {
             throw CreateConnectionOperationTimeoutException(timeout, brokerId, host, port);
+        }
+        catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested && Volatile.Read(ref _disposed) != 0)
+        {
+            throw new ObjectDisposedException(nameof(ConnectionPool), ex);
+        }
+    }
+
+    private CancellationTokenSource CreateDisposalLinkedTokenSource(CancellationToken cancellationToken)
+    {
+        try
+        {
+            return CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _disposeCts.Token);
+        }
+        catch (ObjectDisposedException)
+        {
+            throw new ObjectDisposedException(nameof(ConnectionPool));
         }
     }
 
@@ -1280,7 +1300,20 @@ public sealed partial class ConnectionPool :
         }
         finally
         {
+            ReleaseCreationLock(creationLock);
+        }
+    }
+
+    private static void ReleaseCreationLock(SemaphoreSlim creationLock)
+    {
+        try
+        {
             creationLock.Release();
+        }
+        catch (ObjectDisposedException)
+        {
+            // CloseAllAsync disposed the lock while this setup held it. The pool is gone, and
+            // the setup's own outcome is what the caller must see.
         }
     }
 
@@ -1317,6 +1350,18 @@ public sealed partial class ConnectionPool :
         _connectionsByEndpoint[endpoint] = connection;
         if (brokerId >= 0)
             PublishConnectionById(brokerId, connection);
+
+        if (Volatile.Read(ref _disposed) != 0)
+        {
+            // CloseAllAsync's snapshot may have run before this publish landed. Publishing
+            // before reading the flag guarantees that one side sees the other.
+            TryRemoveExact(_connectionsByEndpoint, endpoint, connection);
+            if (brokerId >= 0)
+                TryRemoveExact(_connectionsById, brokerId, connection);
+            try { await connection.DisposeAsync().ConfigureAwait(false); }
+            catch { /* best-effort cleanup of a connection the disposed pool never handed out */ }
+            throw new ObjectDisposedException(nameof(ConnectionPool));
+        }
 
         if (HasBrokerEndpointChanged(brokerId, host, port, out var current))
         {
