@@ -5929,6 +5929,8 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         Activity? activity,
         SerializerPreparationLease preparationLease)
     {
+        // An abort that starts while the metadata fetch is pending must reject this record.
+        var transactionalGeneration = CaptureTransactionalAppendGeneration();
         try
         {
             using var timeoutCts = new CancellationTokenSource(_options.MaxBlockMs);
@@ -5952,6 +5954,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             }
 
             UpdateCachedTopicInfo(message.Topic, topicInfo);
+            ThrowIfTransactionAbortedSince(transactionalGeneration);
 
             var appendResult = await (_keyPreparer is null && _valuePreparer is null
                 ? SerializeAndAppendFromSpansAsync(
@@ -6022,6 +6025,8 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         Action<RecordMetadata, Exception?> deliveryHandler,
         SerializerPreparationLease preparationLease)
     {
+        // An abort that starts while the metadata fetch is pending must reject this record.
+        var transactionalGeneration = CaptureTransactionalAppendGeneration();
         try
         {
             using var timeoutCts = new CancellationTokenSource(_options.MaxBlockMs);
@@ -6043,6 +6048,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             }
 
             UpdateCachedTopicInfo(message.Topic, topicInfo);
+            ThrowIfTransactionAbortedSince(transactionalGeneration);
 
             var appendResult = await (_keyPreparer is null && _valuePreparer is null
                 ? SerializeAndAppendFromSpansAsync(
@@ -6971,6 +6977,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         Action<RecordMetadata, Exception?>? deliveryHandler,
         ValueTask<SerializerPreparationLease> preparation)
     {
+        // An abort that starts while serializer preparation, the metadata fetch or an async
+        // serializer is pending must reject this record (see CaptureTransactionalAppendGeneration).
+        var transactionalGeneration = CaptureTransactionalAppendGeneration();
         using var activityScope = activity;
         var cache = GetOrCreateCache();
         var serializationHeaders = PrepareAsyncSerializationHeaders(
@@ -7048,6 +7057,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                             in valuePreparationAdmission);
                 }
 
+                ThrowIfTransactionAbortedSince(transactionalGeneration);
                 var appendResult = await AppendSerializedToAccumulatorAsync(
                     message.Topic, key, keyIsNull, value, valueIsNull,
                     serializationHeaders, message.Partition, message.Timestamp,

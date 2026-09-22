@@ -366,6 +366,63 @@ public sealed class TransactionalProduceFaultTests
         await Assert.That(sentAfterRelease[0].BaseSequence).IsEqualTo(0);
     }
 
+    /// <summary>
+    /// The fire-and-forget form of the test above: a FireAsync admitted before the abort that is
+    /// still awaiting its async serializer when the abort ends must not append after the abort
+    /// reopens appends. With a delivery handler the handler receives
+    /// <see cref="ProduceErrorKind.TransactionAborted"/>; either way the record is never sent.
+    /// </summary>
+    [Test]
+    [Arguments((short)1, false)]
+    [Arguments((short)1, true)]
+    [Arguments((short)2, false)]
+    [Arguments((short)2, true)]
+    [Timeout(60_000)]
+    public async Task AbortAsync_FireStillSerializingWhenTheAbortEnds_IsNeverSent(
+        short transactionVersion,
+        bool withDeliveryHandler,
+        CancellationToken cancellationToken)
+    {
+        var serializer = new HeldAsyncStringSerializer(heldValue: "admitted-before-abort");
+        await using var harness = await TransactionalProduceHarness.CreateAsync(
+            transactionVersion,
+            produceError: static (_, _) => ErrorCode.None,
+            asyncValueSerializer: serializer);
+
+        var aborted = harness.Producer.BeginTransaction();
+        var message = new ProducerMessage<string, string>
+        {
+            Topic = Topic,
+            Key = "key",
+            Value = "admitted-before-abort",
+            Partition = 0
+        };
+        var delivery = new TaskCompletionSource<Exception?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var stale = (withDeliveryHandler
+            ? harness.Producer.FireAsync(message, (_, error) => delivery.TrySetResult(error))
+            : harness.Producer.FireAsync(message)).AsTask();
+        await serializer.Entered.WaitAsync(cancellationToken);
+
+        await aborted.AbortAsync(cancellationToken);
+        await aborted.DisposeAsync();
+        var sentBeforeRelease = harness.Broker.ProducedBatches.Count;
+
+        serializer.Release();
+        await stale.WaitAsync(cancellationToken);
+        if (withDeliveryHandler)
+        {
+            var error = await delivery.Task.WaitAsync(cancellationToken);
+            await Assert.That(error).IsTypeOf<ProduceException>();
+            await Assert.That(((ProduceException)error!).Kind).IsEqualTo(ProduceErrorKind.TransactionAborted);
+        }
+
+        await harness.CommitOneRecordAsync(partition: 0, cancellationToken);
+        var sentAfterRelease = harness.Broker.ProducedBatches.Skip(sentBeforeRelease).ToArray();
+        await Assert.That(sentAfterRelease.Length).IsEqualTo(1);
+        await Assert.That(sentAfterRelease[0].RecordCount).IsEqualTo(1);
+        await Assert.That(sentAfterRelease[0].BaseSequence).IsEqualTo(0);
+    }
+
     /// <summary>A UTF-8 string serializer that holds one value until released.</summary>
     private sealed class HeldAsyncStringSerializer(string heldValue) : IAsyncSerializer<string>
     {
