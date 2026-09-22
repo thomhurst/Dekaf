@@ -37,6 +37,50 @@ public sealed class AdminClientIdempotentRetryTests
     }
 
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task DeleteTopicsAsync_RefreshAfterDeleteNeverAnswers_CompletesWithinTimeout(bool byId)
+    {
+        // The delete succeeded; the refresh that follows only updates the cached listing. A broker
+        // that stops answering must neither push the call past TimeoutMs nor fail it.
+        var (admin, connection) = CreateAdminWithMockConnection(ApiKey.DeleteTopics);
+        var topicId = Guid.NewGuid();
+
+        connection.SendAsync<DeleteTopicsRequest, DeleteTopicsResponse>(
+                Arg.Any<DeleteTopicsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(new DeleteTopicsResponse
+            {
+                Responses =
+                [
+                    new DeleteTopicsResponseTopic { Name = TopicName, TopicId = topicId, ErrorCode = ErrorCode.None }
+                ]
+            }));
+        connection.SendAsync<MetadataRequest, MetadataResponse>(
+                Arg.Any<MetadataRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call => WaitForCancellationAsync(call.ArgAt<CancellationToken>(2)));
+
+        var options = new DeleteTopicsOptions { TimeoutMs = 300 };
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        var delete = byId
+            ? ((ITopicIdAdminClient)admin).DeleteTopicsAsync([topicId], options).AsTask()
+            : admin.DeleteTopicsAsync([TopicName], options).AsTask();
+        await delete.WaitAsync(TimeSpan.FromSeconds(20));
+        stopwatch.Stop();
+
+        await Assert.That(stopwatch.Elapsed).IsLessThan(TimeSpan.FromSeconds(10));
+
+        static async ValueTask<MetadataResponse> WaitForCancellationAsync(CancellationToken token)
+        {
+            await Task.Delay(Timeout.Infinite, token);
+            throw new System.Diagnostics.UnreachableException();
+        }
+    }
+
+    [Test]
     public async Task DeleteTopicsAsync_UnknownTopicWithoutPriorSendFailure_Throws()
     {
         var (admin, connection) = CreateAdminWithMockConnection(ApiKey.DeleteTopics);

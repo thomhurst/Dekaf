@@ -536,6 +536,8 @@ public sealed partial class AdminClient :
         var names = topicNames.ToList();
         var deleteMayHaveApplied = false;
 
+        var budgetMs = OperationTimeoutBudget(opts.TimeoutMs) ?? DefaultApiTimeoutBudgetMs;
+        var startedAt = System.Diagnostics.Stopwatch.GetTimestamp();
         await WithRetryAsync(async attemptToken =>
         {
             await EnsureInitializedAsync(attemptToken).ConfigureAwait(false);
@@ -593,10 +595,10 @@ public sealed partial class AdminClient :
                         $"Failed to delete topic '{topic.Name}': {topic.ErrorMessage ?? topic.ErrorCode.ToString()}");
                 }
             }
-        }, cancellationToken, OperationTimeoutBudget(opts.TimeoutMs)).ConfigureAwait(false);
+        }, cancellationToken, budgetMs).ConfigureAwait(false);
 
         // Refresh metadata so deleted topics are no longer visible in ListTopicsAsync
-        await _metadataManager.RefreshMetadataAsync(cancellationToken).ConfigureAwait(false);
+        await RefreshMetadataAfterMutationAsync(startedAt, budgetMs, cancellationToken).ConfigureAwait(false);
     }
 
     /// <inheritdoc />
@@ -617,6 +619,8 @@ public sealed partial class AdminClient :
         var unresolvedIds = new HashSet<Guid>(ids);
         var ambiguousIds = new HashSet<Guid>();
 
+        var budgetMs = OperationTimeoutBudget(opts.TimeoutMs) ?? DefaultApiTimeoutBudgetMs;
+        var startedAt = System.Diagnostics.Stopwatch.GetTimestamp();
         await WithRetryAsync(async attemptToken =>
         {
             await EnsureInitializedAsync(attemptToken).ConfigureAwait(false);
@@ -686,9 +690,9 @@ public sealed partial class AdminClient :
 
             if (failure is not null)
                 throw failure;
-        }, cancellationToken, OperationTimeoutBudget(opts.TimeoutMs)).ConfigureAwait(false);
+        }, cancellationToken, budgetMs).ConfigureAwait(false);
 
-        await _metadataManager.RefreshMetadataAsync(cancellationToken).ConfigureAwait(false);
+        await RefreshMetadataAfterMutationAsync(startedAt, budgetMs, cancellationToken).ConfigureAwait(false);
     }
 
     public async ValueTask<IReadOnlyList<TopicListing>> ListTopicsAsync(
@@ -5453,6 +5457,32 @@ public sealed partial class AdminClient :
     // operation, do not wait for it to complete), so the call keeps the default budget.
     private static int? OperationTimeoutBudget(int operationTimeoutMs) =>
         operationTimeoutMs > 0 ? operationTimeoutMs : null;
+
+    // After a mutation that already succeeded, a metadata refresh only updates the cached view
+    // (deleted topics leave ListTopicsAsync); the mutation's result does not depend on it. It runs
+    // best-effort within what is left of the call's budget, so an unreachable broker can neither
+    // push the call past its timeout nor turn a completed mutation into a failure. The caller's
+    // own cancellation still surfaces.
+    private async ValueTask RefreshMetadataAfterMutationAsync(
+        long startedAt,
+        int budgetMs,
+        CancellationToken cancellationToken)
+    {
+        var remaining = TimeSpan.FromMilliseconds(budgetMs) - System.Diagnostics.Stopwatch.GetElapsedTime(startedAt);
+        if (remaining <= TimeSpan.Zero)
+            return;
+
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        budget.CancelAfter(remaining);
+        try
+        {
+            await _metadataManager.RefreshMetadataAsync(budget.Token).ConfigureAwait(false);
+        }
+        catch (Exception) when (!cancellationToken.IsCancellationRequested)
+        {
+            // The next metadata refresh catches up; the mutation itself has completed.
+        }
+    }
 
     // Transport failures (a broker that refuses connections or drops them) are retried until
     // the call's API timeout, not for a fixed number of attempts: a broker killed without a
