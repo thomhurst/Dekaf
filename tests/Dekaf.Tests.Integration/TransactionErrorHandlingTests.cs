@@ -11,9 +11,11 @@ namespace Dekaf.Tests.Integration;
 /// fenced producer surfaces a <see cref="FatalTransactionException"/> and becomes unusable.
 /// </summary>
 /// <remarks>
-/// The abortable path is covered deterministically at the unit level (state-machine transitions
-/// in <c>TransactionTests</c> and classification in <c>TransactionErrorClassifierTests</c>);
-/// there is no reliable, non-flaky way to force a broker into returning an abortable error here.
+/// The fence reaches a producer on two paths: the transaction coordinator (EndTxn, covered by the
+/// first test, whose produce completes before the fence) and the partition leader (a produce after
+/// the fence, covered by the second). The abortable path is covered deterministically at the unit
+/// level (state-machine transitions in <c>TransactionTests</c>, produce-response handling in
+/// <c>BrokerSenderSendLoopTests</c> and classification in <c>TransactionErrorClassifierTests</c>).
 /// </remarks>
 [Category("Transaction")]
 public class TransactionErrorHandlingTests(KafkaTestContainer kafka) : TransactionalKafkaIntegrationTest(kafka)
@@ -114,6 +116,73 @@ public class TransactionErrorHandlingTests(KafkaTestContainer kafka) : Transacti
 
         var unexpected = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(5), cts.Token);
         await Assert.That(unexpected).IsNull();
+    }
+
+    /// <summary>
+    /// A fenced producer's next produce reaches the partition leader, which rejects the old epoch.
+    /// That rejection must fail the produce promptly with a transaction error (not a delivery
+    /// timeout after retrying the same stamp), stop the commit, and the abort that follows must
+    /// report the fence.
+    /// </summary>
+    [Test]
+    public async Task Transaction_FencedProducerProduces_FailsPromptlyAndCommitIsRefused()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync();
+        var txnId = $"txn-fence-produce-{Guid.NewGuid():N}";
+
+        await using var producer1 = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithTransactionalId(txnId)
+            .WithAcks(Acks.All)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        await producer1.InitTransactionsAsync();
+
+        await using var txn1 = producer1.BeginTransaction();
+
+        // Enroll the partition and put producer1's current epoch on it before the fence.
+        await txn1.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = topic,
+            Partition = 0,
+            Key = "before-fence",
+            Value = "before-fence"
+        }, CancellationToken.None);
+
+        await using var producer2 = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithTransactionalId(txnId)
+            .WithAcks(Acks.All)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        await producer2.InitTransactionsAsync();
+
+        // The default delivery timeout is two minutes; the old behaviour retried the fenced
+        // stamp for that long. A prompt failure answers well inside this bound.
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        var produceException = await Assert.That(() => txn1.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = topic,
+            Partition = 0,
+            Key = "after-fence",
+            Value = "after-fence"
+        }).AsTask()).Throws<KafkaException>();
+        stopwatch.Stop();
+
+        // The broker answers a fenced epoch with ProducerFenced or InvalidProducerEpoch (both
+        // surface as transaction exceptions), or, under transaction verification, with another
+        // non-retriable code; none of them may turn into a delivery timeout.
+        await Assert.That(produceException).IsNotTypeOf<KafkaTimeoutException>();
+        await Assert.That(stopwatch.Elapsed).IsLessThan(TimeSpan.FromSeconds(30));
+
+        await Assert.That(() => txn1.CommitAsync().AsTask()).Throws<TransactionException>();
+
+        // ProducerFenced on the produce is fatal at once; InvalidProducerEpoch is abortable
+        // (Java parity) and the abort's EndTxn then reports the fence. Either way the producer
+        // ends fenced.
+        await AssertFencedAsync(() => txn1.AbortAsync().AsTask(), txnId);
     }
 
     private static async Task AssertFencedAsync(Func<Task> action, string transactionalId)

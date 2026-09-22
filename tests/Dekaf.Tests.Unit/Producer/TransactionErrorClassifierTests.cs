@@ -80,4 +80,26 @@ public sealed class TransactionErrorClassifierTests
         var result = TransactionErrorClassifier.Classify(ErrorCode.UnknownServerError, tv2: false);
         await Assert.That(result).IsEqualTo(TransactionErrorClassification.Abortable);
     }
+
+    [Test]
+    [Arguments(ErrorCode.ProducerFenced, true)]
+    [Arguments(ErrorCode.TransactionalIdAuthorizationFailed, true)]
+    [Arguments(ErrorCode.ClusterAuthorizationFailed, true)]
+    [Arguments(ErrorCode.InvalidProducerIdMapping, true)]
+    [Arguments(ErrorCode.InvalidProducerEpoch, false)]
+    [Arguments(ErrorCode.OutOfOrderSequenceNumber, false)]
+    [Arguments(ErrorCode.UnknownProducerId, false)]
+    [Arguments(ErrorCode.MessageTooLarge, false)]
+    [Arguments(ErrorCode.RequestTimedOut, false)]
+    [Arguments(ErrorCode.NotLeaderOrFollower, false)]
+    public async Task ClassifyFailedBatch_FenceAndAuthorizationAreFatal_EverythingElseAbortable(
+        ErrorCode errorCode,
+        bool fatal)
+    {
+        var result = TransactionErrorClassifier.ClassifyFailedBatch(errorCode);
+
+        await Assert.That(result).IsEqualTo(fatal
+            ? TransactionErrorClassification.Fatal
+            : TransactionErrorClassification.Abortable);
+    }
 }

@@ -93,6 +93,9 @@ internal readonly record struct TransactionPartitionEnrollmentResult(
 /// the flag is cleared via <c>Interlocked.CompareExchange</c> (CAS from stale epoch back to -1):
 /// a flag that stayed set would park every coalesced wave and livelock the sender. If a new
 /// epoch error arrives concurrently, the CAS fails and the flag remains set for the next iteration.
+/// Transactional producers have no epoch bump here: the sender fails such a batch at once and
+/// reports it, as it does every terminally failed batch, to the producer's transaction state
+/// (fatal for a fence, abortable otherwise), which the caller's abort resolves.
 /// </para>
 /// <para>
 /// Memory ordering for <see cref="_epochBumpRequestedForEpoch"/>: All accesses use
@@ -167,6 +170,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     // producer ID/epoch as one snapshot so stale-batch re-stamping never pairs the ID of one
     // producer session with the epoch of another.
     private readonly Func<short, CancellationToken, ValueTask<ProducerIdAndEpoch>>? _bumpEpoch;
+
+    // Transactional producers only (null otherwise): reports a batch that failed terminally to the
+    // producer's transaction state machine with the producer ID and epoch the batch was stamped
+    // with, so a fenced producer turns fatal and a failed batch makes its transaction abortable
+    // (Java TransactionManager.handleFailedBatch). Invoked on error branches only.
+    private readonly Action<long, short, ErrorCode>? _onTransactionalBatchFailed;
     private readonly Func<ProducerIdAndEpoch>? _getProducerState;
     private readonly ILogger _logger;
     private readonly Action<int>? _onBrokerThrottle;
@@ -1047,7 +1056,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         Action? onWaveCoalesceStarted = null,
         Action? onIdleWaitStarted = null,
         Action<TopicPartition>? onSequenceRestartHeld = null,
-        Channel<SendLoopEvent>? eventChannel = null)
+        Channel<SendLoopEvent>? eventChannel = null,
+        Action<long, short, ErrorCode>? onTransactionalBatchFailed = null)
     {
         _unackedBudget = unackedBudget;
         _brokerId = brokerId;
@@ -1075,6 +1085,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         _onWaveCoalesceStarted = onWaveCoalesceStarted;
         _onIdleWaitStarted = onIdleWaitStarted;
         _onSequenceRestartHeld = onSequenceRestartHeld;
+        _onTransactionalBatchFailed = onTransactionalBatchFailed;
         _disposalDrainTimeout = disposalDrainTimeout ?? DisposalDrainTimeout;
 
         _eventChannel = eventChannel ??
@@ -3770,13 +3781,23 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         UnmutePartition(splitTopicPartition);
                     }
 
-                    if (partitionResponse.ErrorCode.IsRetriable()
+                    // A transactional producer has no epoch-bump recovery, so resending the same
+                    // stamp after a fence or a sequence error can only be rejected again until the
+                    // delivery timeout. Fail the batch now with the transaction's own error.
+                    var transactionalStampRejected = _onTransactionalBatchFailed is not null
+                        && partitionResponse.ErrorCode is ErrorCode.ProducerFenced
+                            or ErrorCode.InvalidProducerEpoch
+                            or ErrorCode.OutOfOrderSequenceNumber
+                            or ErrorCode.UnknownProducerId;
+
+                    if (!transactionalStampRejected
+                        && (partitionResponse.ErrorCode.IsRetriable()
                         || (partitionResponse.ErrorCode == ErrorCode.ConcurrentTransactions
                             && _isTransactional()
                             && _usesTransactionV2())
                         || partitionResponse.ErrorCode == ErrorCode.OutOfOrderSequenceNumber
                         || partitionResponse.ErrorCode == ErrorCode.InvalidProducerEpoch
-                        || partitionResponse.ErrorCode == ErrorCode.UnknownProducerId)
+                        || partitionResponse.ErrorCode == ErrorCode.UnknownProducerId))
                     {
                         LogRetriableError(partitionResponse.ErrorCode, expectedTopic, expectedPartition,
                             batch.RecordBatch.BaseSequence, batch.RecordBatch.Records.Count,
@@ -3789,7 +3810,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         continue;
                     }
 
-                    KafkaException failureException = partitionResponse.ErrorCode == ErrorCode.MessageTooLarge
+                    KafkaException failureException = transactionalStampRejected
+                        ? CreateTransactionalStampRejectedException(
+                            partitionResponse.ErrorCode, expectedTopic, expectedPartition)
+                        : partitionResponse.ErrorCode == ErrorCode.MessageTooLarge
                         ? new ProduceException(partitionResponse.ErrorCode,
                             $"Produce failed: {partitionResponse.ErrorCode}")
                         {
@@ -3798,6 +3822,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         }
                         : KafkaException.FromErrorCode(partitionResponse.ErrorCode,
                             $"Produce failed: {partitionResponse.ErrorCode}");
+                    // Before the batch completes: a caller resumed by the failure must find the
+                    // transaction already fatal or abortable when it commits.
+                    ReportTransactionalBatchFailure(batch, partitionResponse.ErrorCode);
                     if (_muteOnSend)
                         UnmutePartition(batch.TopicPartition);
                     try { CompleteInflightEntry(batch); }
@@ -4145,7 +4172,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             && batch.InflightEntry is not null
             && _inflightTracker is not null)
         {
-            // Transactional producer — no epoch bump
+            // No epoch recovery and no transaction to report to (a transactional producer's
+            // sender fails these batches in ProcessCompletedResponses instead).
             LogOosnTransactionalReenqueue(batch.TopicPartition.Topic, batch.TopicPartition.Partition,
                 batch.RecordBatch.BaseSequence);
 
@@ -6094,6 +6122,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private void FailBatch(ReadyBatch batch, Exception ex, bool sendCompletionClaimed)
     {
         batch.AppendDiag('F');
+        if (_onTransactionalBatchFailed is not null)
+            ReportTransactionalBatchFailure(batch, GetTransactionalBatchFailureErrorCode(ex));
         // Every operation is wrapped in try/catch to guarantee we reach CleanupBatch.
         // If CompleteInflightEntry throws, batch.Fail must still run to resolve completion sources.
         // If batch.Fail throws, CleanupBatch must still run to release memory and return the batch.
@@ -6115,6 +6145,51 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             batch.CompletionSourcesCount, ex);
         }
         catch (Exception ackEx) { LogBatchCleanupStepFailed(ackEx, _brokerId); }
+    }
+
+    /// <summary>
+    /// Tells a transactional producer that a batch failed terminally, with the producer ID and
+    /// epoch the batch was stamped with so the producer can ignore a batch left over from a
+    /// transaction it already aborted. Error branches only; a no-op for other producers.
+    /// </summary>
+    private void ReportTransactionalBatchFailure(ReadyBatch batch, ErrorCode errorCode)
+    {
+        if (_onTransactionalBatchFailed is null || batch.RecordBatch is not { } recordBatch)
+            return;
+
+        try
+        {
+            _onTransactionalBatchFailed(recordBatch.ProducerId, recordBatch.ProducerEpoch, errorCode);
+        }
+        catch (Exception reportEx) { LogBatchCleanupStepFailed(reportEx, _brokerId); }
+    }
+
+    private static ErrorCode GetTransactionalBatchFailureErrorCode(Exception exception) => exception switch
+    {
+        KafkaTimeoutException => ErrorCode.RequestTimedOut,
+        KafkaException { ErrorCode: { } errorCode } => errorCode,
+        _ => ErrorCode.UnknownServerError
+    };
+
+    private TransactionException CreateTransactionalStampRejectedException(
+        ErrorCode errorCode,
+        string topic,
+        int partition)
+    {
+        if (TransactionErrorClassifier.ClassifyFailedBatch(errorCode) == TransactionErrorClassification.Fatal)
+        {
+            return new FatalTransactionException(errorCode,
+                $"Produce to {topic}-{partition} failed: {errorCode}. The producer has been fenced and must be closed.")
+            {
+                TransactionalId = _options.TransactionalId
+            };
+        }
+
+        return new AbortableTransactionException(errorCode,
+            $"Produce to {topic}-{partition} failed: {errorCode}. The transaction must be aborted.")
+        {
+            TransactionalId = _options.TransactionalId
+        };
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

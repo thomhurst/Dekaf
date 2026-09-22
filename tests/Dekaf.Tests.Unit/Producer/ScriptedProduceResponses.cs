@@ -275,7 +275,8 @@ public abstract class ScriptedProduceResponseFixture
         Func<short, CancellationToken, ValueTask<ProducerIdAndEpoch>>? bumpEpoch = null,
         Func<ProducerIdAndEpoch>? getProducerState = null,
         Action<TopicPartition>? onSequenceRestartHeld = null,
-        Microsoft.Extensions.Logging.ILogger? logger = null) =>
+        Microsoft.Extensions.Logging.ILogger? logger = null,
+        Action<long, short, ErrorCode>? onTransactionalBatchFailed = null) =>
         new(
             brokerId: 1, pool,
             metadataManager ?? new MetadataManager(pool, options.BootstrapServers),
@@ -301,5 +302,6 @@ public abstract class ScriptedProduceResponseFixture
             onWaveCoalesceStarted: onWaveCoalesceStarted,
             onIdleWaitStarted: onIdleWaitStarted,
             onSequenceRestartHeld: onSequenceRestartHeld,
-            eventChannel: eventChannel);
+            eventChannel: eventChannel,
+            onTransactionalBatchFailed: onTransactionalBatchFailed);
 }

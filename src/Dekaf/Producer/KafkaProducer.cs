@@ -4986,7 +4986,10 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 ? _telemetryMetricCollector.RecordBrokerThrottle
                 : null,
             unackedBudget: _accumulator.GetBrokerUnackedBudget(brokerId),
-            usesTransactionV2: () => _currentTransactionUsesTV2)
+            usesTransactionV2: () => _currentTransactionUsesTV2,
+            onTransactionalBatchFailed: _options.TransactionalId is not null
+                ? OnTransactionalBatchFailed
+                : null)
         {
             TelemetryMetricCollector = _telemetryMetricCollector
         };
@@ -5334,6 +5337,50 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         {
             TransactionalId = _options.TransactionalId
         };
+    }
+
+    /// <summary>
+    /// A BrokerSender failed a batch of this transactional producer terminally (Java
+    /// <c>TransactionManager.handleFailedBatch</c>). A fence or an authorization failure makes the
+    /// producer fatal. Any other failure means records are missing from the open transaction, so it
+    /// becomes abortable and produce, prepare and commit refuse until the caller aborts; this also
+    /// covers the flush that runs in <see cref="TransactionState.CommittingTransaction"/> before
+    /// EndTxn. Outside an open transaction there is nothing to abort. A batch stamped with an
+    /// earlier producer ID or epoch belongs to a transaction that already ended with an abort
+    /// (which bumps the epoch; a commit flushes every batch first), so it is ignored.
+    /// Runs on a send loop, on error paths only.
+    /// </summary>
+    internal void OnTransactionalBatchFailed(long producerId, short producerEpoch, ErrorCode errorCode)
+    {
+        // Serialized with the enrollment-failure transition (and other senders' reports) so a
+        // concurrent abortable report cannot overwrite a fatal one.
+        lock (_partitionsInTransactionLock)
+        {
+            if (producerId != Volatile.Read(ref _producerId) || producerEpoch != _producerEpoch)
+            {
+                LogTransactionalBatchFailureFromEarlierEpochIgnored(
+                    errorCode, producerId, producerEpoch, _options.TransactionalId);
+                return;
+            }
+
+            var state = _transactionState;
+            if (state == TransactionState.FatalError)
+                return;
+
+            if (TransactionErrorClassifier.ClassifyFailedBatch(errorCode) == TransactionErrorClassification.Fatal)
+            {
+                _lastTransactionError = errorCode;
+                _transactionState = TransactionState.FatalError;
+                LogTransactionalBatchFailedFatal(errorCode, _options.TransactionalId);
+                return;
+            }
+
+            if (state is not (TransactionState.InTransaction or TransactionState.CommittingTransaction))
+                return;
+
+            MarkTransactionAbortable(errorCode);
+            LogTransactionalBatchFailedAbortable(errorCode, _options.TransactionalId);
+        }
     }
 
     private void MarkTransactionAbortable(ErrorCode errorCode)
@@ -7265,6 +7312,16 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     [LoggerMessage(Level = LogLevel.Debug, Message = "Best-effort metadata refresh between TxnOffsetCommit retries failed for transactional id {TransactionalId}; retrying the commit with the cached metadata")]
     private partial void LogTransactionMetadataRefreshFailed(Exception exception, string? transactionalId);
 
+    [LoggerMessage(Level = LogLevel.Error, Message = "Transactional producer {TransactionalId} moved to FatalError: a produce batch failed with {ErrorCode}")]
+    private partial void LogTransactionalBatchFailedFatal(ErrorCode errorCode, string? transactionalId);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Transaction {TransactionalId} moved to AbortableError: a produce batch failed with {ErrorCode}, so its records are not part of the transaction")]
+    private partial void LogTransactionalBatchFailedAbortable(ErrorCode errorCode, string? transactionalId);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Ignoring failed batch ({ErrorCode}) of transactional producer {TransactionalId} stamped with producer ID {ProducerId} epoch {ProducerEpoch}: it belongs to an earlier, aborted transaction")]
+    private partial void LogTransactionalBatchFailureFromEarlierEpochIgnored(
+        ErrorCode errorCode, long producerId, short producerEpoch, string? transactionalId);
+
     [LoggerMessage(Level = LogLevel.Warning, Message = "Transaction {TransactionalId} moved to AbortableError: partition enrollment failed permanently and the affected records were not added to the transaction")]
     private partial void LogTransactionPartitionEnrollmentAbandoned(Exception exception, string? transactionalId);
 
@@ -7524,7 +7581,10 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
         }
         finally
         {
-            FinalizeTransactionState();
+            // A completed abort resolves every abortable error of this transaction, including a
+            // failed batch reported by a send loop while the abort was starting. A failed abort
+            // keeps the error so the caller must abort again.
+            _producer.FinalizeCompletedTransactionState(preserveAbortableError: !_aborted);
         }
     }
 
