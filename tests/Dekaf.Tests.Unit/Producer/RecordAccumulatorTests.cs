@@ -3820,7 +3820,10 @@ public class RecordAccumulatorTests
             var completionTask = sources[0].Task;
             var reports = new List<(long ProducerId, short Epoch, ErrorCode ErrorCode, bool Completed)>();
             accumulator.OnTransactionalBatchFailed = (producerId, epoch, errorCode, _) =>
+            {
                 reports.Add((producerId, epoch, errorCode, completionTask.IsCompleted));
+                return true;
+            };
 
             // As rented from the accumulator's pool: it reports its failure to the accumulator.
             var batch = new ReadyBatch(accumulator);
@@ -3869,7 +3872,11 @@ public class RecordAccumulatorTests
             sources[0] = pool.Rent();
             var completionTask = sources[0].Task;
             var reports = 0;
-            accumulator.OnTransactionalBatchFailed = (_, _, _, _) => reports++;
+            accumulator.OnTransactionalBatchFailed = (_, _, _, _) =>
+            {
+                reports++;
+                return true;
+            };
 
             var batch = new ReadyBatch(accumulator);
             batch.Initialize(

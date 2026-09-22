@@ -1478,7 +1478,10 @@ public class RecordAccumulatorReadyTests
         var completionTask = completion.Task;
         var reports = new ConcurrentQueue<(long ProducerId, short Epoch, ErrorCode ErrorCode, bool Completed)>();
         accumulator.OnTransactionalBatchFailed = (producerId, epoch, errorCode, _) =>
+        {
             reports.Enqueue((producerId, epoch, errorCode, completionTask.IsCompleted));
+            return true;
+        };
 
         var appended = await accumulator.AppendAsync(
             topic,
@@ -1541,7 +1544,10 @@ public class RecordAccumulatorReadyTests
         var completionTask = completion.Task;
         var reports = new ConcurrentQueue<(long ProducerId, short Epoch, ErrorCode ErrorCode, bool Completed)>();
         accumulator.OnTransactionalBatchFailed = (producerId, epoch, errorCode, _) =>
+        {
             reports.Enqueue((producerId, epoch, errorCode, completionTask.IsCompleted));
+            return true;
+        };
 
         var appended = await accumulator.AppendAsync(
             topic,
