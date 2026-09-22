@@ -710,6 +710,202 @@ public class MetadataManagerTests
     }
 
     [Test]
+    [Timeout(10_000)]
+    public async Task GetTopicMetadataAsync_TransportFailuresThenRecovery_ReturnsTheTopic(
+        CancellationToken cancellationToken)
+    {
+        // Only the timeout side of the retry was covered: a cluster that comes back inside the
+        // caller's budget must hand the topic to the waiting produce.
+        var attempts = 0;
+        var pool = Substitute.For<IConnectionPool>();
+        var connection = CreateTopicMetadataConnection("orders");
+        pool.GetConnectionAsync("localhost", 9092, Arg.Any<CancellationToken>())
+            .Returns(_ => Interlocked.Increment(ref attempts) <= 3
+                ? ValueTask.FromException<IKafkaConnection>(new SocketException((int)SocketError.ConnectionRefused))
+                : new ValueTask<IKafkaConnection>(connection));
+        await using var manager = new MetadataManager(
+            pool,
+            ["localhost:9092"],
+            new MetadataOptions
+            {
+                EnableBackgroundRefresh = false,
+                RetryBackoffMs = 1,
+                RetryBackoffMaxMs = 2
+            });
+
+        var topic = await manager.GetTopicMetadataAsync("orders", cancellationToken);
+
+        await Assert.That(topic).IsNotNull();
+        await Assert.That(topic!.PartitionCount).IsEqualTo(1);
+        await Assert.That(attempts).IsEqualTo(4);
+    }
+
+    [Test]
+    [Timeout(20_000)]
+    public async Task GetTopicMetadataAsync_ConcurrentWaitersDuringOutage_ShareOneFetch(
+        CancellationToken cancellationToken)
+    {
+        // 50 producers hit an uncached topic while no broker is reachable. They used to queue on
+        // the refresh lock and run 50 back-to-back endpoint sweeps, each with its own Warning;
+        // a waiter whose budget ended while still queued had no cause to report.
+        const int waiters = 50;
+        var attempts = 0;
+        var pool = Substitute.For<IConnectionPool>();
+        pool.GetConnectionAsync("localhost", 9092, Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                Interlocked.Increment(ref attempts);
+                return RefuseAfterRoundTripAsync();
+            });
+
+        // A refused connection still costs a round trip.
+        static async ValueTask<IKafkaConnection> RefuseAfterRoundTripAsync()
+        {
+            await Task.Delay(10, CancellationToken.None).ConfigureAwait(false);
+            throw new SocketException((int)SocketError.ConnectionRefused);
+        }
+
+        var logger = new CapturingLogger<MetadataManager>();
+        await using var manager = new MetadataManager(
+            pool,
+            ["localhost:9092"],
+            new MetadataOptions
+            {
+                EnableBackgroundRefresh = false,
+                RetryBackoffMs = 20,
+                RetryBackoffMaxMs = 20
+            },
+            logger);
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        budget.CancelAfter(TimeSpan.FromMilliseconds(600));
+
+        var waits = new Task<Exception?>[waiters];
+        for (var i = 0; i < waiters; i++)
+        {
+            waits[i] = Task.Run(async () =>
+            {
+                try
+                {
+                    await manager.GetTopicMetadataAsync("orders", budget.Token).ConfigureAwait(false);
+                    return (Exception?)null;
+                }
+                catch (Exception ex)
+                {
+                    return ex;
+                }
+            }, CancellationToken.None);
+        }
+
+        var failures = await Task.WhenAll(waits);
+
+        foreach (var failure in failures)
+        {
+            await Assert.That(failure).IsTypeOf<OperationCanceledException>();
+            await Assert.That(failure!.InnerException).IsTypeOf<SocketException>();
+        }
+
+        // One fetch at ~30 ms per attempt for 600 ms; fifty independent loops would run hundreds.
+        await Assert.That(Volatile.Read(ref attempts)).IsLessThanOrEqualTo(40);
+        var topicWarnings = logger.Entries.Count(entry =>
+            entry.Level == LogLevel.Warning &&
+            entry.Message.Contains("orders", StringComparison.Ordinal));
+        await Assert.That(topicWarnings).IsEqualTo(1);
+    }
+
+    [Test]
+    [Timeout(10_000)]
+    public async Task GetTopicMetadataAsync_LastWaiterLeaves_StopsTheSharedFetch(CancellationToken cancellationToken)
+    {
+        // The shared fetch must not keep probing an unreachable cluster after everyone who
+        // wanted the topic gave up.
+        var attempts = 0;
+        var pool = Substitute.For<IConnectionPool>();
+        pool.GetConnectionAsync("localhost", 9092, Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                Interlocked.Increment(ref attempts);
+                return ValueTask.FromException<IKafkaConnection>(
+                    new SocketException((int)SocketError.ConnectionRefused));
+            });
+        await using var manager = new MetadataManager(
+            pool,
+            ["localhost:9092"],
+            new MetadataOptions
+            {
+                EnableBackgroundRefresh = false,
+                RetryBackoffMs = 5,
+                RetryBackoffMaxMs = 5
+            });
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        budget.CancelAfter(TimeSpan.FromMilliseconds(150));
+
+        await Assert.That(() => manager.GetTopicMetadataAsync("orders", budget.Token).AsTask())
+            .Throws<OperationCanceledException>();
+
+        // Let an in-flight attempt unwind, then the count must stop moving.
+        await Task.Delay(100, cancellationToken);
+        var settled = Volatile.Read(ref attempts);
+        await Task.Delay(200, cancellationToken);
+        await Assert.That(Volatile.Read(ref attempts)).IsEqualTo(settled);
+
+        // A later caller starts a fresh fetch rather than joining the cancelled one.
+        using var secondBudget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        secondBudget.CancelAfter(TimeSpan.FromMilliseconds(100));
+        var second = await Assert.That(() => manager.GetTopicMetadataAsync("orders", secondBudget.Token).AsTask())
+            .Throws<OperationCanceledException>();
+        await Assert.That(second!.InnerException).IsTypeOf<SocketException>();
+        await Assert.That(Volatile.Read(ref attempts)).IsGreaterThan(settled);
+    }
+
+    private static IKafkaConnection CreateTopicMetadataConnection(string topicName)
+    {
+        var connection = Substitute.For<IKafkaConnection>();
+        connection.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
+                Arg.Any<ApiVersionsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new ValueTask<ApiVersionsResponse>(new ApiVersionsResponse
+            {
+                ErrorCode = ErrorCode.None,
+                ApiKeys =
+                [
+                    new ApiVersion(
+                        ApiKey.Metadata,
+                        MetadataRequest.LowestSupportedVersion,
+                        MetadataRequest.HighestSupportedVersion)
+                ]
+            }));
+        connection.SendAsync<MetadataRequest, MetadataResponse>(
+                Arg.Any<MetadataRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ => new ValueTask<MetadataResponse>(new MetadataResponse
+            {
+                Brokers = [new BrokerMetadata { NodeId = 1, Host = "localhost", Port = 9092 }],
+                Topics =
+                [
+                    new TopicMetadata
+                    {
+                        Name = topicName,
+                        ErrorCode = ErrorCode.None,
+                        Partitions =
+                        [
+                            new PartitionMetadata
+                            {
+                                PartitionIndex = 0,
+                                LeaderId = 1,
+                                ErrorCode = ErrorCode.None,
+                                ReplicaNodes = [1],
+                                IsrNodes = [1]
+                            }
+                        ]
+                    }
+                ]
+            }));
+        return connection;
+    }
+
+    [Test]
     public async Task InitializeAsync_DefaultRetries_TimeBounded_ThrowsKafkaTimeoutException()
     {
         var pool = CreateFailingConnectionPool();

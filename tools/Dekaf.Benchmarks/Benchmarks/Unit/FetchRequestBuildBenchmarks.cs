@@ -17,6 +17,7 @@ public class FetchRequestBuildBenchmarks
     private const int PartitionCount = 100;
 
     private readonly ConcurrentDictionary<TopicPartition, long> _fetchPositions = new();
+    private readonly ConcurrentDictionary<TopicPartition, int> _lastConsumedLeaderEpochs = new();
     private readonly Dictionary<string, List<(FetchRequestPartition Partition, TopicPartition TopicPartition)>>
         _templates = [];
     private readonly Dictionary<string, List<(FetchRequestPartition Partition, TopicPartition TopicPartition)>>
@@ -47,6 +48,7 @@ public class FetchRequestBuildBenchmarks
         {
             var topicPartition = new TopicPartition(topic, partition);
             _fetchPositions[topicPartition] = partition;
+            _lastConsumedLeaderEpochs[topicPartition] = 5;
             partitions.Add((
                 new FetchRequestPartition
                 {
@@ -64,6 +66,27 @@ public class FetchRequestBuildBenchmarks
     public int BuildCachedFetchRequest()
     {
         var topics = KafkaConsumer<string, string>.BuildFetchResult(_templates, _fetchPositions);
+        try
+        {
+            return topics[0].Partitions.Count;
+        }
+        finally
+        {
+            ConsumerFetchPools.ReturnFetchRequestTopics(topics);
+        }
+    }
+
+    /// <summary>
+    /// The shape the consumer sends: every partition carries the epoch it validates against.
+    /// Uses only parameters that exist on both sides of a gate comparison.
+    /// </summary>
+    [Benchmark(OperationsPerInvoke = PartitionCount)]
+    public int BuildCachedFetchRequestWithLeaderEpochs()
+    {
+        var topics = KafkaConsumer<string, string>.BuildFetchResult(
+            _templates,
+            _fetchPositions,
+            lastConsumedLeaderEpochs: _lastConsumedLeaderEpochs);
         try
         {
             return topics[0].Partitions.Count;

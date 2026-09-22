@@ -1,5 +1,6 @@
 using Dekaf.Consumer;
 using Dekaf.Producer;
+using Microsoft.Extensions.Logging;
 
 namespace Dekaf.Tests.Integration;
 
@@ -119,6 +120,151 @@ public sealed class ConsumerLeaderFailoverIntegrationTests(RackAwareKafkaContain
             scenarioCancellation.Cancel();
             if (stoppedBrokerId is { } brokerId)
                 await kafka.StartBrokerAsync(brokerId, CancellationToken.None).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// The prefetch position runs ahead of the consumed one. A leader change that falls between
+    /// the two must not be reported as log truncation: the next fetch has to be validated
+    /// against the epoch of the last FETCHED batch, not of the last consumed record.
+    /// </summary>
+    [Test]
+    [Timeout(180_000)]
+    [Arguments(AutoOffsetReset.Earliest)]
+    [Arguments(AutoOffsetReset.None)]
+    public async Task Consumer_LaggingItsPrefetchAcrossLeaderChange_DoesNotReportLogTruncation(
+        AutoOffsetReset autoOffsetReset,
+        CancellationToken cancellationToken)
+    {
+        const int beforeLeaderChange = 25;
+        const int afterLeaderChange = 75;
+        const int total = beforeLeaderChange + afterLeaderChange + 1;
+
+        var topic = await kafka.CreateReplicatedTopicAsync().ConfigureAwait(false);
+        var partition = new TopicPartition(topic, 0);
+        int? stoppedBrokerId = null;
+        using var scenarioCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        using var logs = new CapturingLoggerProvider();
+        using var loggerFactory = LoggerFactory.Create(builder =>
+        {
+            builder.SetMinimumLevel(LogLevel.Warning);
+            builder.AddProvider(logs);
+        });
+
+        await ProduceRangeAsync(topic, start: 0, count: beforeLeaderChange, scenarioCancellation.Token).ConfigureAwait(false);
+
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithClientId($"leader-failover-lagging-consumer-{Guid.NewGuid():N}")
+            .WithAutoOffsetReset(autoOffsetReset)
+            .WithLoggerFactory(loggerFactory)
+            .BuildAsync(scenarioCancellation.Token)
+            .ConfigureAwait(false);
+        // An explicit start offset keeps the None policy from needing a reset to begin with.
+        consumer.IncrementalAssign([new TopicPartitionOffset(topic, 0, 0)]);
+
+        var consumed = new List<ConsumeResult<string, string>>(total);
+        try
+        {
+            // A slow application: everything written under the first leader epoch is processed,
+            // then nothing is polled while the background prefetch keeps running. Reading the
+            // position (as lag monitoring does) publishes the consumed offset and its epoch.
+            await ConsumeUntilAsync(consumer, consumed, beforeLeaderChange, scenarioCancellation.Token)
+                .ConfigureAwait(false);
+            if (consumer.GetPosition(partition) != beforeLeaderChange)
+                throw new InvalidOperationException($"Expected position {beforeLeaderChange} before the leader change.");
+
+            stoppedBrokerId = await kafka.GetPartitionLeaderIdAsync(topic, scenarioCancellation.Token)
+                .ConfigureAwait(false);
+            await kafka.StopBrokerAsync(stoppedBrokerId.Value, scenarioCancellation.Token).ConfigureAwait(false);
+            _ = await kafka.WaitForPartitionLeaderChangeAsync(
+                    topic,
+                    stoppedBrokerId.Value,
+                    scenarioCancellation.Token)
+                .ConfigureAwait(false);
+
+            await ProduceRangeAsync(topic, beforeLeaderChange, afterLeaderChange, scenarioCancellation.Token)
+                .ConfigureAwait(false);
+
+            // The prefetch has fetched past the epoch boundary once it has seen these records,
+            // and the fetch that returns the marker below was sent from that position, while the
+            // consumed position is still the last offset of the first epoch. The waits are
+            // bounded: a consumer that reports a divergence parks its prefetch until the
+            // application polls, and the assertions below describe that better than a timeout.
+            await WaitForCachedHighWatermarkAsync(
+                    consumer, partition, beforeLeaderChange + afterLeaderChange, scenarioCancellation.Token)
+                .ConfigureAwait(false);
+            await ProduceRangeAsync(topic, total - 1, count: 1, scenarioCancellation.Token).ConfigureAwait(false);
+            await WaitForCachedHighWatermarkAsync(consumer, partition, total, scenarioCancellation.Token)
+                .ConfigureAwait(false);
+
+            await kafka.StartBrokerAsync(stoppedBrokerId.Value, scenarioCancellation.Token).ConfigureAwait(false);
+            await kafka.WaitForInSyncReplicasAsync(topic, 3, scenarioCancellation.Token).ConfigureAwait(false);
+            stoppedBrokerId = null;
+
+            // With AutoOffsetReset.None a reported divergence surfaces here as LogTruncationException.
+            await ConsumeUntilAsync(consumer, consumed, total, scenarioCancellation.Token).ConfigureAwait(false);
+        }
+        finally
+        {
+            scenarioCancellation.Cancel();
+            if (stoppedBrokerId is { } brokerId)
+                await kafka.StartBrokerAsync(brokerId, CancellationToken.None).ConfigureAwait(false);
+        }
+
+        for (var index = 0; index < total; index++)
+        {
+            if (consumed[index].Offset != index || consumed[index].Value != index.ToString())
+            {
+                throw new InvalidOperationException(
+                    $"Expected offset and value {index} at index {index}. " +
+                    $"Actual offsets: [{string.Join(", ", consumed.Select(static item => item.Offset))}]");
+            }
+        }
+
+        var truncationReports = logs.Entries
+            .Where(static entry => entry.Message.Contains("Log truncation detected", StringComparison.Ordinal))
+            .Select(static entry => entry.Message)
+            .ToArray();
+        if (truncationReports.Length != 0)
+        {
+            throw new InvalidOperationException(
+                "Nothing was truncated, but the consumer reported: " + string.Join(" | ", truncationReports));
+        }
+    }
+
+    private static async Task ConsumeUntilAsync(
+        IKafkaConsumer<string, string> consumer,
+        List<ConsumeResult<string, string>> consumed,
+        int count,
+        CancellationToken cancellationToken)
+    {
+        while (consumed.Count < count)
+        {
+            var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(5), cancellationToken)
+                .ConfigureAwait(false);
+            if (result is not null)
+                consumed.Add(result.Value);
+        }
+    }
+
+    private static async Task WaitForCachedHighWatermarkAsync(
+        IKafkaConsumer<string, string> consumer,
+        TopicPartition partition,
+        long highWatermark,
+        CancellationToken cancellationToken)
+    {
+        // The cache is written by fetch responses only, so it reports how far the background
+        // prefetch has seen without polling the consumer.
+        using var bound = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        bound.CancelAfter(TimeSpan.FromSeconds(20));
+        try
+        {
+            while (consumer.GetWatermarkOffsets(partition) is not { } watermarks || watermarks.High < highWatermark)
+                await Task.Delay(50, bound.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
         }
     }
 

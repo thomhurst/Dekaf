@@ -217,6 +217,179 @@ public class EfCoreOutboxStoreTests
     }
 
     [Test]
+    public async Task Release_RepeatsUntilAPassFreesNothing_SoAStragglingClaimDoesNotOutliveIt()
+    {
+        var straggler = new StragglingStatement();
+        using var db = new SqliteOutboxDatabase(straggler);
+        var store = db.CreateStore();
+        await store.AcquireBucketLeasesAsync(Request("relay-a"));
+        await using (var context = db.CreateContext())
+        {
+            // The claim of the round the stop cancelled, run by the server after the release
+            // freed the lease it names: a provider that breaks the connection on a slow
+            // cancellation leaves such a statement behind.
+            var leases = context.Model.FindEntityType(typeof(OutboxLease))!.GetTableName()!;
+            var expiryTicks = (db.Time.GetUtcNow() + TimeSpan.FromSeconds(30)).UtcTicks;
+            straggler.Arm(
+                leases,
+                $"UPDATE \"{leases}\" SET \"Owner\" = 'relay-a', \"ExpiresAtUtc\" = {expiryTicks} WHERE \"Bucket\" = 0");
+        }
+
+        await store.ReleaseBucketLeasesAsync(Request("relay-a"), AllBuckets);
+
+        await Assert.That(straggler.Landed).IsTrue();
+        await using (var context = db.CreateContext())
+            await Assert.That(await context.Set<OutboxLease>().CountAsync(lease => lease.Owner == "relay-a")).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task Release_RetiresTheHeartbeatOnEveryPass_SoAStragglingFirstHeartbeatDoesNotOutliveIt()
+    {
+        var straggler = new StragglingStatement();
+        using var db = new SqliteOutboxDatabase(straggler);
+        var store = db.CreateStore();
+        await store.AcquireBucketLeasesAsync(Request("relay-a"));
+        await using (var context = db.CreateContext())
+        {
+            // The first heartbeat insert of the round the stop cancelled, run by the server
+            // after the release deleted the row: left alone it keeps a relay that is gone in
+            // every peer's fair share for a whole LeaseDuration.
+            var relays = context.Model.FindEntityType(typeof(OutboxRelayInstance))!.GetTableName()!;
+            straggler.Arm(
+                context.Model.FindEntityType(typeof(OutboxLease))!.GetTableName()!,
+                $"INSERT INTO \"{relays}\" (\"RelayId\", \"LastSeenUtc\") VALUES ('relay-a', {db.Time.GetUtcNow().UtcTicks})");
+        }
+
+        await store.ReleaseBucketLeasesAsync(Request("relay-a"), AllBuckets);
+
+        await Assert.That(straggler.Landed).IsTrue();
+        await using (var context = db.CreateContext())
+            await Assert.That(await context.Set<OutboxRelayInstance>().CountAsync()).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task ClockSetBack_DoesNotShortenALease_AndDoesNotReportItOwned()
+    {
+        using var db = new SqliteOutboxDatabase();
+        var store = db.CreateStore();
+        await store.AcquireBucketLeasesAsync(Request("relay-a"));
+        var written = await LeaseExpiriesAsync(db);
+
+        // The host's clock is corrected backwards by more than a renew interval.
+        db.Time.Advance(TimeSpan.FromSeconds(-25));
+        var owned = await store.AcquireBucketLeasesAsync(Request("relay-a"));
+
+        // The relay trusts what it is told for a whole lease duration from now. The expiry
+        // left in place cannot promise that on a peer's clock, so nothing is reported, and
+        // nothing is shortened either: peers may have planned around the later expiry.
+        await Assert.That(owned).IsEmpty();
+        await Assert.That(await LeaseExpiriesAsync(db)).IsEquivalentTo(written);
+
+        db.Time.Advance(TimeSpan.FromSeconds(25));
+        await Assert.That(await store.AcquireBucketLeasesAsync(Request("relay-a"))).IsEquivalentTo(AllBuckets);
+    }
+
+    [Test]
+    public async Task ClockSetBack_ClaimsNoFreeBucket()
+    {
+        using var db = new SqliteOutboxDatabase();
+        var store = db.CreateStore();
+        await store.AcquireBucketLeasesAsync(Request("relay-a"));
+        await using (var context = db.CreateContext())
+        {
+            await context.Set<OutboxLease>().Where(lease => lease.Bucket >= 2)
+                .ExecuteUpdateAsync(setters => setters.SetProperty(lease => lease.Owner, (string?)null));
+        }
+
+        // Behind its own heartbeat, the expiry this host computes is too early: a peer could
+        // take a bucket claimed now while this relay still counted a whole lease duration.
+        db.Time.Advance(TimeSpan.FromSeconds(-25));
+        var owned = await store.AcquireBucketLeasesAsync(Request("relay-a"));
+
+        await Assert.That(owned).IsEmpty();
+        await using (var context = db.CreateContext())
+            await Assert.That(await context.Set<OutboxLease>().CountAsync(lease => lease.Owner == null)).IsEqualTo(2);
+
+        db.Time.Advance(TimeSpan.FromSeconds(25));
+        await Assert.That(await store.AcquireBucketLeasesAsync(Request("relay-a"))).IsEquivalentTo(AllBuckets);
+    }
+
+    [Test]
+    public async Task ClockSetBack_RenewalDoesNotShortenALease_AndReportsTheBucketsLost()
+    {
+        using var db = new SqliteOutboxDatabase();
+        var store = db.CreateStore();
+        await store.AcquireBucketLeasesAsync(Request("relay-a"));
+        var written = await LeaseExpiriesAsync(db);
+
+        db.Time.Advance(TimeSpan.FromSeconds(-25));
+        var renewed = await store.RenewBucketLeasesAsync(Request("relay-a"), AllBuckets);
+
+        // The relay reacquires instead of publishing under a lease it believes is longer
+        // than the one its peers read.
+        await Assert.That(renewed).IsFalse();
+        await Assert.That(await LeaseExpiriesAsync(db)).IsEquivalentTo(written);
+    }
+
+    [Test]
+    public async Task Heartbeat_OnlyMovesForward()
+    {
+        using var db = new SqliteOutboxDatabase();
+        var store = db.CreateStore();
+        await store.AcquireBucketLeasesAsync(Request("relay-a"));
+        var recorded = db.Time.GetUtcNow();
+
+        // A statement of an earlier round that the server runs late carries an earlier time.
+        db.Time.Advance(TimeSpan.FromSeconds(-25));
+        await store.AcquireBucketLeasesAsync(Request("relay-a"));
+
+        await using var context = db.CreateContext();
+        var heartbeat = await context.Set<OutboxRelayInstance>().SingleAsync();
+        await Assert.That(heartbeat.LastSeenUtc).IsEqualTo(recorded);
+    }
+
+    private static async Task<List<DateTimeOffset>> LeaseExpiriesAsync(SqliteOutboxDatabase db)
+    {
+        await using var context = db.CreateContext();
+        return await context.Set<OutboxLease>().OrderBy(lease => lease.Bucket)
+            .Select(lease => lease.ExpiresAtUtc).ToListAsync();
+    }
+
+    /// <summary>Runs a claim for a released lease right after the release's first lease statement.</summary>
+    /// <summary>Runs one statement right after the first UPDATE of <c>table</c>: the release's first pass.</summary>
+    private sealed class StragglingStatement : DbCommandInterceptor
+    {
+        private string? _statement;
+        private string? _table;
+        private int _landed;
+
+        public bool Landed => Volatile.Read(ref _landed) != 0;
+
+        public void Arm(string table, string statement)
+        {
+            _table = table;
+            Volatile.Write(ref _statement, statement);
+        }
+
+        public override async ValueTask<int> NonQueryExecutedAsync(
+            System.Data.Common.DbCommand command, CommandExecutedEventData eventData, int result,
+            CancellationToken cancellationToken = default)
+        {
+            if (Volatile.Read(ref _statement) is { } statement
+                && command.CommandText.Contains("UPDATE", StringComparison.Ordinal)
+                && command.CommandText.Contains(_table!, StringComparison.Ordinal)
+                && Interlocked.Exchange(ref _landed, 1) == 0)
+            {
+                using var straggler = command.Connection!.CreateCommand();
+                straggler.CommandText = statement;
+                await straggler.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            return result;
+        }
+    }
+
+    [Test]
     public async Task OwnershipAcquisition_MatchesLegacyAcquisition()
     {
         using var db = new SqliteOutboxDatabase();
@@ -304,6 +477,73 @@ public class EfCoreOutboxStoreTests
 
         var overlap = rebalanced.Intersect(claimed).ToArray();
         await Assert.That(overlap).IsEmpty();
+    }
+
+    [Test]
+    public async Task JoinerIntoAFleetWithMoreRelaysThanBuckets_TakesNothing_WhateverItsId()
+    {
+        using var db = new SqliteOutboxDatabase();
+        var store = db.CreateStore();
+        string[] incumbents = ["relay-m", "relay-n"];
+        for (var round = 0; round < 3; round++)
+        {
+            foreach (var relay in incumbents)
+                await store.AcquireBucketLeasesAsync(Request(relay, bucketCount: 2));
+            db.Time.Advance(TimeSpan.FromSeconds(10));
+        }
+
+        // "relay-a" sorts first. Ranked by id alone it would be given a bucket, and
+        // "relay-n" would hand over one that it is publishing.
+        for (var round = 0; round < 3; round++)
+        {
+            await Assert.That(await store.AcquireBucketLeasesAsync(Request("relay-a", bucketCount: 2))).IsEmpty();
+            foreach (var relay in incumbents)
+                await Assert.That((await store.AcquireBucketLeasesAsync(Request(relay, bucketCount: 2))).Count).IsEqualTo(1);
+            db.Time.Advance(TimeSpan.FromSeconds(10));
+        }
+    }
+
+    [Test]
+    public async Task DistantStandby_RefreshesItsHeartbeatEveryOtherRound_AndStillTakesOver()
+    {
+        using var db = new SqliteOutboxDatabase();
+        // One store per relay, as in separate pods: the standby rests inside its own store.
+        var owner = db.CreateStore();
+        var next = db.CreateStore();
+        var distant = db.CreateStore();
+
+        async Task RoundAsync()
+        {
+            await owner.AcquireBucketLeasesAsync(Request("relay-a", bucketCount: 1));
+            await next.AcquireBucketLeasesAsync(Request("relay-b", bucketCount: 1));
+            await distant.AcquireBucketLeasesAsync(Request("relay-c", bucketCount: 1));
+            db.Time.Advance(TimeSpan.FromSeconds(10));
+        }
+
+        // "relay-b" is the one standby the bucket needs next in line; "relay-c" is behind it.
+        await RoundAsync();
+        var full = await HeartbeatAsync(db, "relay-c");
+        await RoundAsync();
+        await Assert.That(await HeartbeatAsync(db, "relay-c")).IsEqualTo(full);
+        await RoundAsync();
+        await Assert.That(await HeartbeatAsync(db, "relay-c")).IsEqualTo(full + TimeSpan.FromSeconds(20));
+        await Assert.That(await HeartbeatAsync(db, "relay-b")).IsEqualTo(full + TimeSpan.FromSeconds(20));
+
+        // Everybody ahead of it is gone: it moves up and takes the bucket once the lease lapses.
+        IReadOnlyList<int> owned = [];
+        for (var round = 0; round < 6 && owned.Count == 0; round++)
+        {
+            db.Time.Advance(TimeSpan.FromSeconds(10));
+            owned = await distant.AcquireBucketLeasesAsync(Request("relay-c", bucketCount: 1));
+        }
+
+        await Assert.That(owned.Count).IsEqualTo(1);
+    }
+
+    private static async Task<DateTimeOffset> HeartbeatAsync(SqliteOutboxDatabase db, string relayId)
+    {
+        await using var context = db.CreateContext();
+        return (await context.Set<OutboxRelayInstance>().AsNoTracking().SingleAsync(r => r.RelayId == relayId)).LastSeenUtc;
     }
 
     [Test]

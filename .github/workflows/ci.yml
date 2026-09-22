@@ -661,7 +661,7 @@ jobs:
     name: NativeAOT Smoke
     needs: changes
     if: needs.changes.outputs.code == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     timeout-minutes: 20
 
     steps:
@@ -682,7 +682,7 @@ jobs:
 
       - name: Verify NativeAOT prerequisites
         run: |
-          clang-18 --version
+          clang --version
           test -f /usr/include/zlib.h
 
       - name: Publish and run core smoke test
@@ -694,7 +694,6 @@ jobs:
             --self-contained true \
             --output artifacts/aot/core \
             -p:PublishAot=true \
-            -p:CppCompilerAndLinker=clang-18 \
             -p:ContinuousIntegrationBuild=true \
             -p:TreatWarningsAsErrors=true
           ./artifacts/aot/core/Dekaf.Tests.Aot
@@ -708,7 +707,6 @@ jobs:
             --self-contained true \
             --output artifacts/aot/dependency-injection \
             -p:PublishAot=true \
-            -p:CppCompilerAndLinker=clang-18 \
             -p:ContinuousIntegrationBuild=true \
             -p:TreatWarningsAsErrors=true
           ./artifacts/aot/dependency-injection/Dekaf.Tests.Aot.DependencyInjection
@@ -717,7 +715,7 @@ jobs:
     name: NativeAOT Integration Publish
     needs: changes
     if: needs.changes.outputs.code == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     timeout-minutes: 20
 
     steps:
@@ -738,7 +736,7 @@ jobs:
 
       - name: Verify NativeAOT prerequisites
         run: |
-          clang-18 --version
+          clang --version
           test -f /usr/include/zlib.h
 
       - name: Publish NativeAOT integration executable
@@ -750,7 +748,6 @@ jobs:
             --self-contained true \
             --output artifacts/aot/integration \
             -p:PublishAot=true \
-            -p:CppCompilerAndLinker=clang-18 \
             -p:ContinuousIntegrationBuild=true \
             -p:TreatWarningsAsErrors=true
 

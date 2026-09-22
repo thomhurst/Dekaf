@@ -302,6 +302,260 @@ public sealed class ConsumerCoordinatorFailoverIntegrationTests(RackAwareKafkaCo
         }
     }
 
+    /// <summary>
+    /// An application commits right after its group coordinator is SIGKILLed. Cluster metadata
+    /// keeps naming the dead broker for several seconds, so every coordinator lookup on a healthy
+    /// broker returns a coordinator that refuses connections. The commit must retry through that
+    /// window for its API timeout instead of failing after three quick attempts with a raw
+    /// <see cref="System.Net.Sockets.SocketException"/>.
+    /// </summary>
+    [Test]
+    [Timeout(240_000)]
+    public async Task CoordinatorCrash_CommitAsyncInsideStaleMetadataWindow_Succeeds(
+        CancellationToken cancellationToken)
+    {
+        var groupId = $"coordinator-crash-commit-{Guid.NewGuid():N}";
+        var (topic, expectedCoordinatorId) = await CreateScenarioAsync(groupId, cancellationToken)
+            .ConfigureAwait(false);
+        int? crashedBrokerId = null;
+
+        await using var consumer = await CreateConsumerAsync(groupId, listener: null, cancellationToken)
+            .ConfigureAwait(false);
+        consumer.Subscribe(topic);
+
+        try
+        {
+            await ProduceRangeAsync(topic, startPerPartition: 0, MessagesPerPartition, cancellationToken)
+                .ConfigureAwait(false);
+            var nextOffsets = new Dictionary<int, long>();
+            using (var drain = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
+            {
+                drain.CancelAfter(ConvergenceTimeout);
+                var consumed = 0;
+                while (consumed < MessageCount)
+                {
+                    var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(2), drain.Token)
+                        .ConfigureAwait(false);
+                    if (result is not { } record)
+                        continue;
+
+                    nextOffsets[record.Partition] = record.Offset + 1;
+                    consumed++;
+                }
+            }
+
+            crashedBrokerId = await kafka.GetGroupCoordinatorIdAsync(groupId, cancellationToken)
+                .ConfigureAwait(false);
+            AssertExpectedCoordinator(crashedBrokerId.Value, expectedCoordinatorId);
+            await kafka.KillBrokerAsync(crashedBrokerId.Value, cancellationToken).ConfigureAwait(false);
+
+            // No wait for the coordinator to move: the commit starts inside the window.
+            await consumer.CommitAsync(
+                    nextOffsets.Select(pair => new TopicPartitionOffset(topic, pair.Key, pair.Value)).ToArray(),
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            await AssertCommittedOffsetsAsync(topic, groupId, cancellationToken).ConfigureAwait(false);
+
+            // Reads ride out the same window: the committed offset comes back through the consumer.
+            var committed = await consumer.GetCommittedOffsetAsync(new TopicPartition(topic, 0), cancellationToken)
+                .ConfigureAwait(false);
+            if (committed != MessagesPerPartition)
+            {
+                throw new InvalidOperationException(
+                    $"Committed offset read back through the consumer: expected {MessagesPerPartition}, actual {committed}.");
+            }
+
+            await kafka.StartBrokerAsync(crashedBrokerId.Value, cancellationToken).ConfigureAwait(false);
+            crashedBrokerId = null;
+        }
+        finally
+        {
+            if (crashedBrokerId is { } brokerId)
+                await kafka.StartBrokerAsync(brokerId, CancellationToken.None).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// A second member joins right after the coordinator is SIGKILLed. Unlike the surviving
+    /// member, whose assignment is unchanged, the new member must initialize positions from the
+    /// group's committed offsets (OffsetFetch) once it is assigned partitions. It must start at
+    /// those offsets, neither failing its poll nor replaying committed records.
+    /// </summary>
+    [Test]
+    [Timeout(240_000)]
+    public async Task CoordinatorCrash_SecondConsumerJoinsAndInitializesPositions(
+        CancellationToken cancellationToken)
+    {
+        const int committedPerPartition = 5;
+        var groupId = $"coordinator-crash-second-member-{Guid.NewGuid():N}";
+        var (topic, expectedCoordinatorId) = await CreateScenarioAsync(groupId, cancellationToken)
+            .ConfigureAwait(false);
+        int? crashedBrokerId = null;
+        using var scenarioCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var firstRecords = new ConcurrentDictionary<(int Partition, long Offset), int>();
+        var secondRecords = new ConcurrentDictionary<(int Partition, long Offset), int>();
+        var firstListener = new AssignmentListener();
+        var secondListener = new AssignmentListener();
+        var consumeTasks = new List<Task>();
+
+        await using var first = await CreateConsumerAsync(groupId, firstListener, cancellationToken)
+            .ConfigureAwait(false);
+        await using var second = await CreateConsumerAsync(groupId, secondListener, cancellationToken)
+            .ConfigureAwait(false);
+        first.Subscribe(topic);
+        consumeTasks.Add(ConsumeAndCommitAsync(first, firstRecords, scenarioCancellation.Token));
+
+        try
+        {
+            await ProduceRangeAsync(topic, startPerPartition: 0, committedPerPartition, cancellationToken)
+                .ConfigureAwait(false);
+            await WaitForProgressOrFailureAsync(
+                    firstRecords,
+                    expectedCount: PartitionCount * committedPerPartition,
+                    consumeTasks,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            crashedBrokerId = await kafka.GetGroupCoordinatorIdAsync(groupId, cancellationToken)
+                .ConfigureAwait(false);
+            AssertExpectedCoordinator(crashedBrokerId.Value, expectedCoordinatorId);
+            await kafka.KillBrokerAsync(crashedBrokerId.Value, cancellationToken).ConfigureAwait(false);
+
+            // Joins inside the stale-metadata window, then fetches the committed offsets for
+            // whatever the moved coordinator assigns it.
+            second.Subscribe(topic);
+            consumeTasks.Add(ConsumeAndCommitAsync(second, secondRecords, scenarioCancellation.Token));
+
+            _ = await kafka.WaitForGroupCoordinatorChangeAsync(groupId, crashedBrokerId.Value, cancellationToken)
+                .ConfigureAwait(false);
+            // Produce only once the group has split, so the second member owns partitions that
+            // still have records to deliver.
+            await WaitForStableAssignmentAsync(firstListener, secondListener, consumeTasks, cancellationToken)
+                .ConfigureAwait(false);
+            await ProduceRangeAsync(
+                    topic,
+                    startPerPartition: committedPerPartition,
+                    countPerPartition: MessagesPerPartition - committedPerPartition,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            var drainStarted = System.Diagnostics.Stopwatch.GetTimestamp();
+            while (firstRecords.Keys.Concat(secondRecords.Keys).Distinct().Count() < MessageCount)
+            {
+                foreach (var task in consumeTasks)
+                {
+                    if (task.IsFaulted)
+                        await task.ConfigureAwait(false);
+                }
+
+                if (System.Diagnostics.Stopwatch.GetElapsedTime(drainStarted) > ConvergenceTimeout + ConvergenceTimeout)
+                {
+                    throw new InvalidOperationException(
+                        $"Group did not drain: first={firstRecords.Count}, second={secondRecords.Count}.");
+                }
+
+                await Task.Delay(TimeSpan.FromMilliseconds(100), cancellationToken).ConfigureAwait(false);
+            }
+
+            // The second member never saw the group before. A record below the offsets the first
+            // member committed before the crash can reach it only through a failed OffsetFetch
+            // falling back to auto.offset.reset=earliest.
+            var replayed = secondRecords.Keys.Where(static key => key.Offset < committedPerPartition).ToArray();
+            if (replayed.Length > 0)
+            {
+                throw new InvalidOperationException(
+                    "Second member replayed committed records: " +
+                    string.Join(", ", replayed.Select(static key => $"{key.Partition}@{key.Offset}")));
+            }
+
+            if (secondRecords.IsEmpty)
+                throw new InvalidOperationException("Second member never consumed from an assigned partition.");
+
+            await kafka.StartBrokerAsync(crashedBrokerId.Value, cancellationToken).ConfigureAwait(false);
+            crashedBrokerId = null;
+        }
+        finally
+        {
+            scenarioCancellation.Cancel();
+            await ObserveCancellationAsync(consumeTasks).ConfigureAwait(false);
+            if (crashedBrokerId is { } brokerId)
+                await kafka.StartBrokerAsync(brokerId, CancellationToken.None).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// A consumer with no committed offset starts right after its partition's leader is
+    /// SIGKILLed. Position initialization resolves auto.offset.reset through ListOffsets on the
+    /// leader, which cluster metadata keeps naming for several seconds. The poll must retry
+    /// through that window instead of surfacing a raw transport failure, and must then deliver
+    /// every record from the new leader.
+    /// </summary>
+    [Test]
+    [Timeout(240_000)]
+    public async Task LeaderCrash_NoCommittedOffset_PositionInitRetries(CancellationToken cancellationToken)
+    {
+        const int recordCount = 10;
+        var groupId = $"leader-crash-position-init-{Guid.NewGuid():N}";
+        var topic = await kafka.CreateReplicatedTopicAsync().ConfigureAwait(false);
+        int? crashedBrokerId = null;
+
+        await using (var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithAcks(Acks.All)
+            .WithIdempotence(true)
+            .BuildAsync(cancellationToken)
+            .ConfigureAwait(false))
+        {
+            for (var i = 0; i < recordCount; i++)
+            {
+                await producer.ProduceAsync(new ProducerMessage<string, string>
+                {
+                    Topic = topic,
+                    Partition = 0,
+                    Key = i.ToString(),
+                    Value = i.ToString()
+                }, cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        // Built before the crash so the consumer's metadata still names the dead leader.
+        await using var consumer = await CreateConsumerAsync(groupId, listener: null, cancellationToken)
+            .ConfigureAwait(false);
+
+        try
+        {
+            crashedBrokerId = await kafka.GetPartitionLeaderIdAsync(topic, cancellationToken).ConfigureAwait(false);
+            await kafka.KillBrokerAsync(crashedBrokerId.Value, cancellationToken).ConfigureAwait(false);
+
+            consumer.Subscribe(topic);
+            var offsets = new List<long>();
+            using var drain = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            drain.CancelAfter(ConvergenceTimeout + ConvergenceTimeout);
+            while (offsets.Count < recordCount)
+            {
+                var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(2), drain.Token)
+                    .ConfigureAwait(false);
+                if (result is { } record)
+                    offsets.Add(record.Offset);
+            }
+
+            if (!offsets.SequenceEqual(Enumerable.Range(0, recordCount).Select(static offset => (long)offset)))
+            {
+                throw new InvalidOperationException(
+                    $"Expected offsets 0..{recordCount - 1} in order, actual {string.Join(",", offsets)}.");
+            }
+
+            await kafka.StartBrokerAsync(crashedBrokerId.Value, cancellationToken).ConfigureAwait(false);
+            crashedBrokerId = null;
+        }
+        finally
+        {
+            if (crashedBrokerId is { } brokerId)
+                await kafka.StartBrokerAsync(brokerId, CancellationToken.None).ConfigureAwait(false);
+        }
+    }
+
     [Test]
     [Timeout(240_000)]
     [SkipWhenNativeAot("Confluent.Kafka native delegate binding requires runtime reflection.")]
@@ -834,7 +1088,9 @@ public sealed class ConsumerCoordinatorFailoverIntegrationTests(RackAwareKafkaCo
             cancellationToken);
 
     /// <summary>
-    /// Waits until the two members between them own every partition exactly once. The
+    /// Waits until the two members between them own every partition exactly once, each owning
+    /// at least one. One member owning every partition is the state before the other has
+    /// joined, not a settled split, so it must not end the wait. The
     /// assignment snapshots are taken from the consumers themselves where the client exposes
     /// them, so a missed rebalance callback cannot leave the wait chasing a stale set.
     /// </summary>
@@ -864,7 +1120,9 @@ public sealed class ConsumerCoordinatorFailoverIntegrationTests(RackAwareKafkaCo
             {
                 var firstAssignment = first();
                 var secondAssignment = second();
-                return firstAssignment.Count + secondAssignment.Count == PartitionCount
+                return firstAssignment.Count > 0
+                       && secondAssignment.Count > 0
+                       && firstAssignment.Count + secondAssignment.Count == PartitionCount
                        && !firstAssignment.Overlaps(secondAssignment);
             },
             () => $"assignment never settled on {PartitionCount} distinct partitions " +

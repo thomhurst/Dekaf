@@ -16,6 +16,9 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 [SimpleJob(RunStrategy.Throughput, launchCount: 1, warmupCount: 3, iterationCount: 3)]
 public class InflightTrackingBenchmarks
 {
+    // A 64th of the sequence space per call: a partition wraps at least every seventh invocation.
+    private const int SequenceWrapStride = int.MaxValue / 64;
+
     private PartitionInflightTracker _tracker = null!;
     private RecordAccumulator _accumulator = null!;
     private TopicPartition[] _partitions = null!;
@@ -106,6 +109,25 @@ public class InflightTrackingBenchmarks
             var tp = _partitions[i % PartitionCount];
             _accumulator.GetAndIncrementSequence(tp, 100, _producerState, out _);
         }
+    }
+
+    /// <summary>
+    /// The same assignment with batches so large that the counter passes the end of the sequence
+    /// space (int.MaxValue, after which the next sequence is 0) every few calls. The wrap is part
+    /// of the same branch-free expression as the increment, so cost and allocation must match
+    /// <see cref="GetAndIncrementSequence_CurrentProducerState"/>.
+    /// </summary>
+    [Benchmark(OperationsPerInvoke = 100)]
+    public int GetAndIncrementSequence_AcrossSequenceWrap()
+    {
+        var last = 0;
+        for (var i = 0; i < 100; i++)
+        {
+            var tp = _partitions[i % PartitionCount];
+            last = _accumulator.GetAndIncrementSequence(tp, SequenceWrapStride, _producerState, out _);
+        }
+
+        return last;
     }
 
     /// <summary>

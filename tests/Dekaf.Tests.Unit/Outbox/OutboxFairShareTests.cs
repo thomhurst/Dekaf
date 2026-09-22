@@ -57,10 +57,154 @@ public sealed class OutboxFairShareTests
     }
 
     [Test]
+    public async Task HeldCounts_MoreRelaysThanBuckets_ShareGoesToTheHolders_NotToTheLowestIds()
+    {
+        var held = new Dictionary<string, int> { ["x"] = 1, ["y"] = 1 };
+
+        await Assert.That(OutboxFairShare.Compute(2, ["a", "b", "x", "y"], "a", held)).IsEqualTo(0);
+        await Assert.That(OutboxFairShare.Compute(2, ["a", "b", "x", "y"], "x", held)).IsEqualTo(1);
+        await Assert.That(OutboxFairShare.Compute(2, ["a", "b", "x", "y"], "y", held)).IsEqualTo(1);
+        // Ranges still follow id order, over the relays that have a share.
+        await Assert.That(string.Join(',', OutboxFairShare.Assign(2, ["a", "b", "x", "y"], "x", held))).IsEqualTo("0");
+        await Assert.That(string.Join(',', OutboxFairShare.Assign(2, ["a", "b", "x", "y"], "y", held))).IsEqualTo("1");
+        await Assert.That(OutboxFairShare.Assign(2, ["a", "b", "x", "y"], "a", held)).IsEmpty();
+    }
+
+    [Test]
+    public async Task HeldCounts_FreeBucket_GoesToTheFirstRelayThatHoldsNothing()
+    {
+        var held = new Dictionary<string, int> { ["y"] = 1 };
+
+        await Assert.That(OutboxFairShare.Compute(2, ["a", "b", "y"], "a", held)).IsEqualTo(1);
+        await Assert.That(OutboxFairShare.Compute(2, ["a", "b", "y"], "b", held)).IsEqualTo(0);
+        await Assert.That(OutboxFairShare.Compute(2, ["a", "b", "y"], "y", held)).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task HeldCounts_RemainderStaysWithTheRelaysThatHoldIt()
+    {
+        // Floor two, remainder two: "c" and "d" already hold three, so "a" and "b" get two.
+        var held = new Dictionary<string, int> { ["a"] = 2, ["b"] = 0, ["c"] = 3, ["d"] = 5 };
+        List<string> relays = ["a", "b", "c", "d"];
+
+        await Assert.That(OutboxFairShare.Compute(10, [.. relays], "a", held)).IsEqualTo(2);
+        await Assert.That(OutboxFairShare.Compute(10, [.. relays], "b", held)).IsEqualTo(2);
+        await Assert.That(OutboxFairShare.Compute(10, [.. relays], "c", held)).IsEqualTo(3);
+        await Assert.That(OutboxFairShare.Compute(10, [.. relays], "d", held)).IsEqualTo(3);
+    }
+
+    [Test]
+    public async Task HeldCounts_NoneHeld_IsTheMembershipOnlySplit()
+    {
+        var none = new Dictionary<string, int>();
+        foreach (var relay in new[] { "a", "b", "c" })
+        {
+            await Assert.That(OutboxFairShare.Compute(8, ["c", "a", "b"], relay, none))
+                .IsEqualTo(OutboxFairShare.Compute(8, ["c", "a", "b"], relay));
+            await Assert.That(string.Join(',', OutboxFairShare.Assign(8, ["c", "a", "b"], relay, none)))
+                .IsEqualTo(string.Join(',', OutboxFairShare.Assign(8, ["c", "a", "b"], relay)));
+        }
+    }
+
+    [Test]
+    public async Task ComputeAll_MatchesTheShareAndTheRangeOfEveryRelay()
+    {
+        var random = new Random(3377);
+        for (var iteration = 0; iteration < 500; iteration++)
+        {
+            var bucketCount = random.Next(1, 40);
+            var relays = Enumerable.Range(0, random.Next(1, 12)).Select(index => $"relay-{index:D2}")
+                .OrderBy(_ => random.Next()).ToList();
+            var held = relays.Where(_ => random.Next(2) == 0).ToDictionary(relay => relay, _ => random.Next(0, 6));
+
+            List<string> sorted = [.. relays];
+            var shares = OutboxFairShare.ComputeAll(bucketCount, sorted, held);
+
+            await Assert.That(sorted.SequenceEqual(relays.Order(StringComparer.Ordinal))).IsTrue();
+            var start = 0;
+            for (var rank = 0; rank < sorted.Count; rank++)
+            {
+                await Assert.That(shares[rank]).IsEqualTo(OutboxFairShare.Compute(bucketCount, [.. relays], sorted[rank], held));
+                await Assert.That(string.Join(',', OutboxFairShare.Assign(bucketCount, [.. relays], sorted[rank], held)))
+                    .IsEqualTo(string.Join(',', Enumerable.Range(start, shares[rank])));
+                start += shares[rank];
+            }
+
+            await Assert.That(start).IsEqualTo(bucketCount);
+        }
+    }
+
+    [Test]
+    public async Task StandbyRank_CountsTheRelaysWithoutAShare_InIdOrder()
+    {
+        var held = new Dictionary<string, int> { ["m"] = 1, ["n"] = 1 };
+        List<string> relays = ["a", "m", "b", "n", "c"];
+
+        await Assert.That(OutboxFairShare.StandbyRank(2, [.. relays], "m", held)).IsEqualTo(-1);
+        await Assert.That(OutboxFairShare.StandbyRank(2, [.. relays], "a", held)).IsEqualTo(0);
+        await Assert.That(OutboxFairShare.StandbyRank(2, [.. relays], "b", held)).IsEqualTo(1);
+        await Assert.That(OutboxFairShare.StandbyRank(2, [.. relays], "c", held)).IsEqualTo(2);
+        // Enough buckets for everybody: nobody waits.
+        await Assert.That(OutboxFairShare.StandbyRank(8, [.. relays], "c", held)).IsEqualTo(-1);
+    }
+
+    [Test]
+    public async Task HeldCounts_SharesStayPut_WhilePeersMoveTowardsThem()
+    {
+        // Relays plan from reads taken at different moments of one rebalance. If a peer's
+        // release or claim changed anybody's share, their plans would stop being disjoint.
+        var random = new Random(20260921);
+        for (var iteration = 0; iteration < 2_000; iteration++)
+        {
+            var bucketCount = random.Next(1, 40);
+            var relays = Enumerable.Range(0, random.Next(1, 12)).Select(index => $"relay-{index:D2}").ToList();
+            var held = relays.ToDictionary(relay => relay, _ => 0);
+            var free = bucketCount;
+            while (free > 0 && random.Next(8) != 0)
+            {
+                var taken = random.Next(1, free + 1);
+                held[relays[random.Next(relays.Count)]] += taken;
+                free -= taken;
+            }
+
+            var shares = relays.ToDictionary(
+                relay => relay, relay => OutboxFairShare.Compute(bucketCount, [.. relays], relay, held));
+            await Assert.That(shares.Values.Sum()).IsEqualTo(bucketCount);
+            await Assert.That(shares.Values.Max() - shares.Values.Min()).IsLessThanOrEqualTo(1);
+
+            while (true)
+            {
+                var movable = relays
+                    .Where(relay => held[relay] > shares[relay] || (held[relay] < shares[relay] && free > 0)).ToList();
+                if (movable.Count == 0)
+                    break;
+
+                var mover = movable[random.Next(movable.Count)];
+                var step = held[mover] > shares[mover] ? -1 : 1;
+                held[mover] += step;
+                free -= step;
+
+                foreach (var relay in relays)
+                {
+                    await Assert.That(OutboxFairShare.Compute(bucketCount, [.. relays], relay, held))
+                        .IsEqualTo(shares[relay]);
+                }
+            }
+        }
+    }
+
+    [Test]
     public async Task Assign_InvalidArguments_Throw()
     {
         await Assert.That(() => OutboxFairShare.Assign(0, ["a"], "a")).Throws<ArgumentOutOfRangeException>();
         await Assert.That(() => OutboxFairShare.Assign(1, null!, "a")).Throws<ArgumentNullException>();
         await Assert.That(() => OutboxFairShare.Assign(1, ["a"], "")).Throws<ArgumentException>();
+        await Assert.That(() => OutboxFairShare.Assign(1, ["a"], "a", null!)).Throws<ArgumentNullException>();
+        await Assert.That(() => OutboxFairShare.Compute(1, ["a"], "a", null!)).Throws<ArgumentNullException>();
+        await Assert.That(() => OutboxFairShare.StandbyRank(1, ["a"], "a", null!)).Throws<ArgumentNullException>();
+        await Assert.That(() => OutboxFairShare.ComputeAll(1, ["a"], null!)).Throws<ArgumentNullException>();
+        await Assert.That(() => OutboxFairShare.ComputeAll(1, null!, new Dictionary<string, int>())).Throws<ArgumentNullException>();
+        await Assert.That(() => OutboxFairShare.ComputeAll(0, ["a"], new Dictionary<string, int>())).Throws<ArgumentOutOfRangeException>();
+        await Assert.That(() => OutboxFairShare.ComputeAll(1, [], new Dictionary<string, int>())).Throws<ArgumentException>();
     }
 }

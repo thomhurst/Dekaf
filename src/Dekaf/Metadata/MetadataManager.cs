@@ -47,6 +47,40 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
     private readonly ConcurrentDictionary<string, Lazy<Task<TopicInfo?>>> _pendingTopicFetches = new();
 
+    // Async counterpart of _pendingTopicFetches: every GetTopicMetadataAsync caller waiting on the
+    // same uncached topic shares one fetch. Unlike the sync path the fetch is reference counted,
+    // so it stops when its last waiter gives up instead of probing an unreachable cluster or a
+    // topic that does not exist until disposal.
+    private readonly object _sharedTopicFetchLock = new();
+    private readonly Dictionary<string, SharedTopicFetch> _sharedTopicFetches = new(StringComparer.Ordinal);
+
+    private sealed class SharedTopicFetch(CancellationTokenSource cancellation)
+    {
+        private Exception? _lastFailure;
+
+        public CancellationTokenSource Cancellation { get; } = cancellation;
+
+        public TaskCompletionSource<TopicInfo?> Completion { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        // Guarded by _sharedTopicFetchLock.
+        public int Waiters;
+
+        // Guarded by _sharedTopicFetchLock. Dispose must not run while Cancel does, and the
+        // fetch can finish while its last waiter is still inside Cancel. These hand the source
+        // to whichever of the two is done last; see DisposeWhenUnused.
+        public bool Abandoned;
+        public bool CancelReturned;
+        public bool Finished;
+
+        /// <summary>The failure the fetch is currently retrying, for a waiter whose budget ends first.</summary>
+        public Exception? LastFailure
+        {
+            get => Volatile.Read(ref _lastFailure);
+            set => Volatile.Write(ref _lastFailure, value);
+        }
+    }
+
     private const int BootstrapWarningAttempt = 6;
 
     // Rebootstrap recovery state
@@ -693,10 +727,156 @@ public sealed partial class MetadataManager : IAsyncDisposable
         }
 
         // Slow path: need to refresh metadata
-        return await GetTopicMetadataSlowAsync(
-            topicName,
-            allowAutoTopicCreation: true,
-            cancellationToken).ConfigureAwait(false);
+        return await GetSharedTopicMetadataAsync(topicName, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Cache-miss path of <see cref="GetTopicMetadataAsync"/>: joins the fetch already running for
+    /// <paramref name="topicName"/> or starts one. N producers hitting an uncached topic during an
+    /// outage would otherwise queue on the refresh lock and run N back-to-back endpoint sweeps,
+    /// each with its own Warning, and a caller whose budget ended while it was still queued had
+    /// no failure to report. The fetch runs under its own token and stops when its last waiter
+    /// leaves; each waiter is bounded by its own <paramref name="cancellationToken"/>.
+    /// </summary>
+    private async ValueTask<TopicInfo?> GetSharedTopicMetadataAsync(
+        string topicName,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (Volatile.Read(ref _disposed) != 0)
+            throw new ObjectDisposedException(nameof(MetadataManager));
+
+        SharedTopicFetch? fetch;
+        var started = false;
+        lock (_sharedTopicFetchLock)
+        {
+            if (!_sharedTopicFetches.TryGetValue(topicName, out fetch))
+            {
+                fetch = new SharedTopicFetch(CancellationTokenSource.CreateLinkedTokenSource(_disposalCts.Token));
+                _sharedTopicFetches[topicName] = fetch;
+                started = true;
+            }
+
+            fetch.Waiters++;
+        }
+
+        // Started outside the lock: the fetch runs synchronously up to its first real await.
+        if (started)
+            _ = RunSharedTopicFetchAsync(topicName, fetch);
+
+        try
+        {
+            return await fetch.Completion.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException ex) when (
+            cancellationToken.IsCancellationRequested
+            && ex.InnerException is null
+            && fetch.LastFailure is { } lastRefreshFailure)
+        {
+            // The caller's budget expired while the cluster was still unreachable; report the
+            // last transport failure as the cause (see GetTopicMetadataAsync).
+            throw new OperationCanceledException(
+                $"Metadata for topic '{topicName}' was still unavailable when the wait was cancelled.",
+                lastRefreshFailure,
+                cancellationToken);
+        }
+        finally
+        {
+            var abandoned = false;
+            lock (_sharedTopicFetchLock)
+            {
+                // The last waiter to leave an unfinished fetch ends it, and unpublishes it in the
+                // same step so a caller arriving next starts a fresh one instead of joining a
+                // cancelled fetch.
+                if (--fetch.Waiters == 0 && !fetch.Completion.Task.IsCompleted)
+                {
+                    RemoveSharedTopicFetch(topicName, fetch);
+                    fetch.Abandoned = true;
+                    abandoned = true;
+                }
+            }
+
+            if (abandoned)
+            {
+                // Outside the lock: cancellation can run the fetch's continuation inline.
+                try
+                {
+                    fetch.Cancellation.Cancel();
+                }
+                finally
+                {
+                    DisposeWhenUnused(fetch, cancelReturned: true);
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Disposes the fetch's cancellation source once the fetch has finished and no waiter is
+    /// inside <see cref="CancellationTokenSource.Cancel()"/>. The fetch and the waiter that
+    /// abandoned it each report here once; the second report disposes. A fetch nobody
+    /// abandoned is disposed by its own report.
+    /// </summary>
+    private void DisposeWhenUnused(SharedTopicFetch fetch, bool cancelReturned)
+    {
+        bool dispose;
+        lock (_sharedTopicFetchLock)
+        {
+            if (cancelReturned)
+                fetch.CancelReturned = true;
+            else
+                fetch.Finished = true;
+
+            dispose = fetch.Finished && (!fetch.Abandoned || fetch.CancelReturned);
+        }
+
+        if (dispose)
+            fetch.Cancellation.Dispose();
+    }
+
+    private async Task RunSharedTopicFetchAsync(string topicName, SharedTopicFetch fetch)
+    {
+        try
+        {
+            var topic = await GetTopicMetadataSlowAsync(
+                topicName,
+                allowAutoTopicCreation: true,
+                fetch,
+                fetch.Cancellation.Token).ConfigureAwait(false);
+            fetch.Completion.TrySetResult(topic);
+        }
+        catch (OperationCanceledException) when (Volatile.Read(ref _disposed) != 0)
+        {
+            fetch.Completion.TrySetException(new ObjectDisposedException(nameof(MetadataManager)));
+            _ = fetch.Completion.Task.Exception;
+        }
+        catch (OperationCanceledException)
+        {
+            // Only the last waiter leaving cancels the fetch; nobody is left to observe this.
+            fetch.Completion.TrySetCanceled();
+        }
+        catch (Exception ex)
+        {
+            fetch.Completion.TrySetException(ex);
+            // A last waiter can leave just as the fetch faults; keep the fault observed.
+            _ = fetch.Completion.Task.Exception;
+        }
+        finally
+        {
+            lock (_sharedTopicFetchLock)
+            {
+                RemoveSharedTopicFetch(topicName, fetch);
+            }
+
+            DisposeWhenUnused(fetch, cancelReturned: false);
+        }
+    }
+
+    // Caller holds _sharedTopicFetchLock.
+    private void RemoveSharedTopicFetch(string topicName, SharedTopicFetch fetch)
+    {
+        if (_sharedTopicFetches.TryGetValue(topicName, out var current) && ReferenceEquals(current, fetch))
+            _sharedTopicFetches.Remove(topicName);
     }
 
     /// <summary>
@@ -712,6 +892,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
         return GetTopicMetadataSlowAsync(
             topicName,
             allowAutoTopicCreation: false,
+            sharedFetch: null,
             cancellationToken);
     }
 
@@ -742,6 +923,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
                 () => self.GetTopicMetadataSlowAsync(
                     t,
                     allowAutoTopicCreation: true,
+                    sharedFetch: null,
                     self._disposalCts.Token).AsTask()),
             this);
 
@@ -798,9 +980,15 @@ public sealed partial class MetadataManager : IAsyncDisposable
     /// waitOnMetadata behavior: loop until metadata is available or timeout expires,
     /// rather than giving up after a fixed number of attempts.
     /// </remarks>
+    /// <param name="sharedFetch">
+    /// Set when this runs as the fetch shared by <see cref="GetSharedTopicMetadataAsync"/> waiters:
+    /// the failure being retried is published there, because those waiters, not this method's
+    /// token, own the budgets that report it.
+    /// </param>
     private async ValueTask<TopicInfo?> GetTopicMetadataSlowAsync(
         string topicName,
         bool allowAutoTopicCreation,
+        SharedTopicFetch? sharedFetch,
         CancellationToken cancellationToken)
     {
         TopicInfo? topic = null;
@@ -846,6 +1034,8 @@ public sealed partial class MetadataManager : IAsyncDisposable
                     // "Failed to refresh metadata from any broker" wraps the last endpoint's
                     // transport failure; that failure is the cause worth reporting to the caller.
                     lastRefreshFailure = ex is InvalidOperationException { InnerException: { } cause } ? cause : ex;
+                    if (sharedFetch is not null)
+                        sharedFetch.LastFailure = lastRefreshFailure;
                     await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
                     continue;
                 }
@@ -1042,9 +1232,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
                 if (bootstrapResolutionFailureMode == BootstrapResolutionFailureMode.PublicException)
                     throw CreateBootstrapResolutionException(ex.UnresolvedBootstrapServers, ex);
 
-                throw new InvalidOperationException(
-                    "Failed to refresh metadata from any broker",
-                    ex.InnerException ?? ex);
+                throw new MetadataRefreshFailedException(ex.InnerException ?? ex);
             }
         }
         finally
@@ -1157,14 +1345,18 @@ public sealed partial class MetadataManager : IAsyncDisposable
                 else
                     ObserveClusterCapabilities(response.ClusterId, connection);
 
+                // Publish the routes before the snapshot can expose these brokers (see
+                // TryUpdatePartitionLeader): a reader that picks a broker from the new snapshot
+                // would otherwise find the connection pool still considers it unknown. The
+                // accepted fallback snapshot must remain usable for routing even when its
+                // cluster identity and diagnostic broker set are not trusted.
+                foreach (var broker in response.Brokers)
+                    RegisterBroker(broker.NodeId, broker.Host, broker.Port);
+
                 // Topic-specific requests merge into the existing snapshot to preserve
                 // metadata for other topics. Full-cluster requests replace the snapshot.
                 // This matches the Java client's incremental metadata update behavior.
                 _metadata.Update(response, mergeTopics: topics is not null);
-                // The accepted fallback snapshot must remain usable for routing even when its
-                // cluster identity and diagnostic broker set are not trusted.
-                foreach (var broker in response.Brokers)
-                    RegisterBroker(broker.NodeId, broker.Host, broker.Port);
 
                 if (response.ErrorCode != ErrorCode.RebootstrapRequired)
                 {
@@ -1231,7 +1423,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
         if (retryRequestedRebootstrap)
             RequestMetadataRebootstrap();
 
-        throw new InvalidOperationException("Failed to refresh metadata from any broker", lastException);
+        throw new MetadataRefreshFailedException(lastException);
     }
 
     private async ValueTask RefreshMetadataWithinBootstrapDeadlineAsync(
@@ -1441,13 +1633,14 @@ public sealed partial class MetadataManager : IAsyncDisposable
                 else
                     ObserveClusterCapabilities(response.ClusterId, connection);
 
-                _metadata.Update(response, mergeTopics: topics is not null);
-                UpdateMetadataClusterId(response.ClusterId);
-
+                // Routes first, then the snapshot that names these brokers (see RefreshMetadataInternalAsync).
                 foreach (var broker in response.Brokers)
                 {
                     RegisterBroker(broker.NodeId, broker.Host, broker.Port);
                 }
+
+                _metadata.Update(response, mergeTopics: topics is not null);
+                UpdateMetadataClusterId(response.ClusterId);
                 PublishBrokerStatusSnapshot(response.Brokers);
 
                 LogRebootstrapSuccessful(response.Brokers.Count, host, port);

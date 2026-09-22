@@ -59,4 +59,14 @@
               GrpcServices="None" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Include="../../src/Dekaf/bin/$(Configuration)/netstandard2.0/Dekaf.dll"
+          Link="compatibility/netstandard2.0/Dekaf.dll" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <Target Name="BuildNetStandardCompatibilityFixture" BeforeTargets="GetCopyToOutputDirectoryItems">
+    <MSBuild Projects="../../src/Dekaf/Dekaf.csproj" Targets="Build"
+             RemoveProperties="ArtifactsPath;OutDir;OutputPath;PublishDir"
+             Properties="Configuration=$(Configuration);TargetFramework=netstandard2.0" />
+  </Target>
 </Project>

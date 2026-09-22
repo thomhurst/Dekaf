@@ -25,6 +25,9 @@ internal sealed class FaultInjectionKafkaEnvironment : IAsyncDisposable
     private const string ClusterId = "MkU3OEVBNTcwNTJENDM2Qg";
     private const int ToxiproxyControlPlaneMaxAttempts = 3;
     private static readonly TimeSpan ToxiproxyControlPlaneRetryDelay = TimeSpan.FromMilliseconds(250);
+    // A removal that timed out is usually still flushing on the proxy; give it time to finish
+    // before checking whether the toxic is gone.
+    private static readonly TimeSpan ToxicRemovalRetryDelay = TimeSpan.FromSeconds(5);
 
     private readonly INetwork _network;
     private readonly ToxiproxyContainer _toxiproxyContainer;
@@ -461,13 +464,42 @@ internal sealed class FaultInjectionKafkaEnvironment : IAsyncDisposable
 
     private async Task ResetProxiesAsync()
     {
-        await ExecuteToxiproxyControlPlaneAsync(
-            "reset proxies",
-            _toxiproxyClient.ResetAsync,
-            CancellationToken.None).ConfigureAwait(false);
+        // One request per toxic rather than the global reset, last added first. Removing a toxic
+        // flushes what it buffered into the next toxic of the chain, so removing the latency
+        // toxic while the bandwidth toxic behind it still trickles 128 KB/s outlasts Toxiproxy's
+        // handler timeout: the answer is its HTML timeout page. The global reset removes in
+        // chain order and hit that three attempts in a row with three proxies. Taking the
+        // bandwidth toxic out first lets the rest flush at once. A removal that timed out but
+        // still completed is recognised on the retry by the toxic being gone.
         foreach (var proxy in _proxies)
         {
-            proxy.Enabled = true;
+            IEnumerable<ToxicBase> toxics = [];
+            await ExecuteToxiproxyControlPlaneAsync(
+                $"list toxics of proxy '{proxy.Name}'",
+                async () => toxics = await proxy.GetAllToxicsAsync().ConfigureAwait(false),
+                CancellationToken.None).ConfigureAwait(false);
+
+            foreach (var toxic in toxics.Reverse())
+            {
+                var toxicName = toxic.Name;
+                await ExecuteToxiproxyControlPlaneAsync(
+                    $"remove toxic '{toxicName}' from proxy '{proxy.Name}'",
+                    () => proxy.RemoveToxicAsync(toxicName),
+                    CancellationToken.None,
+                    ToxicRemovalRetryDelay,
+                    async () =>
+                        !await IsToxicAppliedAsync(proxy, toxicName, CancellationToken.None).ConfigureAwait(false))
+                    .ConfigureAwait(false);
+            }
+
+            if (!proxy.Enabled)
+            {
+                proxy.Enabled = true;
+                await ExecuteToxiproxyControlPlaneAsync(
+                    $"set proxy '{proxy.Name}' enabled=True",
+                    proxy.UpdateAsync,
+                    CancellationToken.None).ConfigureAwait(false);
+            }
         }
     }
 

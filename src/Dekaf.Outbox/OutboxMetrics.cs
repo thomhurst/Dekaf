@@ -12,6 +12,8 @@ internal static class OutboxMetrics
         "dekaf.outbox.publish.acknowledged", "{message}", "Acknowledged contiguous-prefix messages, including retries.");
     internal static readonly Counter<long> Failures = OutboxDiagnostics.Meter.CreateCounter<long>(
         "dekaf.outbox.publish.failures", "{attempt}", "Failed batch publish attempts, excluding cooperative shutdown.");
+    internal static readonly Counter<long> HeadRowRetries = OutboxDiagnostics.Meter.CreateCounter<long>(
+        "dekaf.outbox.publish.head_row_retries", "{attempt}", "Publish attempts limited to a bucket's head row because that row failed before.");
     internal static readonly Counter<long> LeaseExpirations = OutboxDiagnostics.Meter.CreateCounter<long>(
         "dekaf.outbox.lease.expirations", "{event}", "Observed expirations of an owned lease set.");
     internal static readonly Histogram<double> PublishDuration = OutboxDiagnostics.Meter.CreateHistogram<double>(

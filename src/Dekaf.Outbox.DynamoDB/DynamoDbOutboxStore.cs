@@ -52,9 +52,27 @@ public sealed partial class DynamoDbOutboxStore : IOutboxStore, IOutboxLeaseRene
     private readonly DynamoDbOutboxSchema _schema;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger _logger;
-    // Last sequence number returned per bucket. The relay serializes fetches, so no lock.
+    // Last sequence number deleted per bucket. The relay serializes fetches and marks, so no lock.
     private readonly long[] _lastSequence;
     private int _acquisitionRound;
+    // Latest timestamp any heartbeat of this store was sent with; see StoppedTimestamp.
+    private long _lastHeartbeatSent;
+    // The round that found the relay a distant standby; null otherwise. Only the relay's
+    // acquisitions touch it, and the relay serializes those.
+    private DistantStandby? _distantStandby;
+
+    /// <param name="relayId">Named, so a store that serves a second relay id does not answer
+    /// it from the first one's place in the queue.</param>
+    /// <param name="since">When the round ran, in UTC ticks.</param>
+    private sealed class DistantStandby(string relayId, long since)
+    {
+        public string RelayId { get; } = relayId;
+
+        public long Since { get; } = since;
+
+        /// <summary>The latest acquisition, answered or not, in UTC ticks.</summary>
+        public long LastCall { get; set; } = since;
+    }
 
     /// <summary>
     /// Creates the store. The caller owns <paramref name="client"/>.
@@ -93,10 +111,17 @@ public sealed partial class DynamoDbOutboxStore : IOutboxStore, IOutboxLeaseRene
         // One timestamp for the whole round: a heartbeat and the leases written with it then
         // lapse on the same tick, so a dead relay's share and buckets free up together.
         var now = _timeProvider.GetUtcNow().UtcTicks;
+        if (IsRestingStandby(request, now))
+            return [];
+
+        // A round that fails proves nothing about the queue, so the next one runs in full.
+        var wasDistantStandby = _distantStandby?.RelayId == request.RelayId;
+        _distantStandby = null;
         var expiry = now + request.LeaseDuration.Ticks;
 
         // Before the read, so peers see this relay as early as possible.
-        await RecordHeartbeatAsync(request.RelayId, now, cancellationToken).ConfigureAwait(false);
+        var heartbeatRecorded = await RecordHeartbeatAsync(request.RelayId, now, cancellationToken)
+            .ConfigureAwait(false);
 
         var coordination = await ReadCoordinationAsync(request, now, cancellationToken).ConfigureAwait(false);
         var plan = DynamoDbLeasePlanner.Plan(
@@ -107,23 +132,73 @@ public sealed partial class DynamoDbOutboxStore : IOutboxStore, IOutboxLeaseRene
         long SeenExpiry(int bucket) => coordination.SeenExpiry[bucket];
 
         // Renew first: these leases are the ones being published and the closest to expiry.
-        var kept = await WriteLeasesAsync(plan.Keep, KeepLeaseRequest, SeenExpiry, write, cancellationToken)
+        var keep = LeasesThatMoveForward(plan.Keep, coordination.SeenExpiry, expiry, request.RelayId);
+        var kept = await WriteLeasesAsync(keep, KeepLeaseRequest, SeenExpiry, write, cancellationToken)
             .ConfigureAwait(false);
-        Collect(plan.Keep, kept, owned, request.RelayId, claimed: false);
+        Collect(keep, kept, owned, request.RelayId, claimed: false);
 
         await WriteLeasesAsync(plan.Release, ReleaseLeaseRequest, SeenExpiry, write, cancellationToken)
             .ConfigureAwait(false);
 
-        var claimed = await WriteLeasesAsync(plan.Claim, ClaimLeaseRequest, SeenExpiry, write, cancellationToken)
-            .ConfigureAwait(false);
-        Collect(plan.Claim, claimed, owned, request.RelayId, claimed: true);
+        // A refused heartbeat means this host's clock is behind a timestamp already written for
+        // its relay id, so the expiry of this round is too early. A kept lease is guarded by the expiry it
+        // already stores (see LeasesThatMoveForward); a claim has none to compare with, and a
+        // peer could take the bucket the moment it lapses on the peer's clock, while this relay
+        // still counts a whole lease duration. Claim nothing until the clock has caught up.
+        if (heartbeatRecorded)
+        {
+            var claimed = await WriteLeasesAsync(plan.Claim, ClaimLeaseRequest, SeenExpiry, write, cancellationToken)
+                .ConfigureAwait(false);
+            Collect(plan.Claim, claimed, owned, request.RelayId, claimed: true);
+        }
+        else if (plan.Claim.Count > 0)
+        {
+            LogClaimsSkipped(request.RelayId, plan.Claim.Count);
+        }
 
         // Pruning is housekeeping, not correctness; run it occasionally instead of per round.
         if (++_acquisitionRound % HeartbeatPruneFactor == 0)
             await PruneHeartbeatsAsync(coordination.StaleRelayIds, now, request, cancellationToken).ConfigureAwait(false);
 
+        // Not after a refused heartbeat: peers may not count this relay at all, so what it
+        // read about its place in the queue is not what they plan with.
+        if (heartbeatRecorded && plan.StandbyRank >= request.BucketCount)
+        {
+            _distantStandby = new DistantStandby(request.RelayId, now);
+            if (!wasDistantStandby)
+                LogDistantStandby(request.RelayId, plan.StandbyRank);
+        }
+
         owned.Sort();
         return owned;
+    }
+
+    /// <summary>
+    /// Whether this acquisition can be answered without a request. With more relays than
+    /// buckets most relays own nothing, and each of their rounds costs a heartbeat write and a
+    /// coordination read that change nothing. The standbys next in line keep the relay's
+    /// cadence, one per bucket, so that they take over what frees up as promptly as before,
+    /// even if every owner stops at once. A relay behind them is only there to be counted:
+    /// it refreshes its heartbeat often enough to stay active, and finds out that it has moved
+    /// up when it does.
+    /// </summary>
+    private bool IsRestingStandby(OutboxLeaseRequest request, long now)
+    {
+        if (_distantStandby is not { } standby || standby.RelayId != request.RelayId)
+            return false;
+
+        var rested = now - standby.Since;
+        var sinceLastCall = now - standby.LastCall;
+        standby.LastCall = now;
+
+        // The relay calls at its own cadence, which the store is not told, so the time since
+        // the last call stands in for the time until the next one. The heartbeat is refreshed
+        // by the last call that comes within three quarters of the lease duration for which
+        // peers count it: every other round with the default timings, and every round with a
+        // renew interval too long to skip one. A clock that was set back says nothing about
+        // the age of the heartbeat.
+        return rested >= 0 && sinceLastCall >= 0
+            && rested + sinceLastCall < request.LeaseDuration.Ticks / 4 * 3;
     }
 
     /// <inheritdoc />
@@ -175,9 +250,23 @@ public sealed partial class DynamoDbOutboxStore : IOutboxStore, IOutboxLeaseRene
         // hands back whatever a straggler took, until a read comes back clean.
         for (var attempt = 0; attempt < MaxReleaseAttempts; attempt++)
         {
+            var now = _timeProvider.GetUtcNow().UtcTicks;
+
+            // Peers stop dividing the buckets by a relay count that still includes this one.
+            // The record is stamped rather than deleted, because a heartbeat only moves its
+            // timestamp forward and a deleted record leaves nothing to refuse the heartbeat of
+            // the cancelled round. Written even when the relay has no record yet, so a first
+            // heartbeat still on its way is refused too.
+            // Before the leases, not after: a release that a throttled write or the shutdown
+            // deadline cuts short then leaves leases that expire, which costs what no release
+            // costs. The other order leaves freed buckets next to a live heartbeat, and peers
+            // keep those reserved for a relay that is gone until the heartbeat ages out.
+            if (attempt == 0)
+                await WriteRelayRecordAsync(request.RelayId, StoppedTimestamp(now), stopped: true, cancellationToken)
+                    .ConfigureAwait(false);
+
             // Released by owner, not by previousBuckets: the read also finds leases that an
             // acquisition claimed before it failed, and stale lease items beyond the bucket count.
-            var now = _timeProvider.GetUtcNow().UtcTicks;
             var owned = new List<int>();
             var seenExpiry = new Dictionary<int, long>();
             await foreach (var item in QueryCoordinationAsync(DynamoDbOutboxSchema.LeaseSortKeyPrefix, cancellationToken)
@@ -197,15 +286,6 @@ public sealed partial class DynamoDbOutboxStore : IOutboxStore, IOutboxLeaseRene
             await WriteLeasesAsync(
                 owned, ReleaseLeaseRequest, bucket => seenExpiry[bucket], new LeaseWrite(request.RelayId, now, now),
                 cancellationToken).ConfigureAwait(false);
-
-            // Peers stop dividing the buckets by a relay count that still includes this one.
-            // The record is stamped rather than deleted, because a heartbeat only moves its
-            // timestamp forward and a deleted record leaves nothing to refuse the heartbeat of
-            // the cancelled round. Written even when the relay has no record yet, so a first
-            // heartbeat still on its way is refused too.
-            if (attempt == 0)
-                await WriteRelayRecordAsync(request.RelayId, now, stopped: true, cancellationToken)
-                    .ConfigureAwait(false);
         }
 
         // Only reached while a straggler keeps taking buckets back. Whatever it holds now is
@@ -258,8 +338,6 @@ public sealed partial class DynamoDbOutboxStore : IOutboxStore, IOutboxLeaseRene
         if (await HasLateArrivalAsync(bucket, messages, cancellationToken).ConfigureAwait(false))
             messages = await QueryBatchAsync(bucket, maxCount, cancellationToken).ConfigureAwait(false);
 
-        if (messages.Count > 0 && bucket < _lastSequence.Length)
-            _lastSequence[bucket] = messages[^1].Id;
         return messages;
     }
 
@@ -315,10 +393,13 @@ public sealed partial class DynamoDbOutboxStore : IOutboxStore, IOutboxLeaseRene
     /// </remarks>
     private async Task<bool> HasLateArrivalAsync(int bucket, List<OutboxMessage> messages, CancellationToken cancellationToken)
     {
-        // The end of the previous batch is known only while this store keeps reading the
-        // bucket. After a start or a handover it is not, and everything below the head is
-        // the gap: one probe per bucket for the life of the store. A stale value from an
-        // earlier ownership is merely a wider gap.
+        // The baseline is the last message this store deleted, not the last it returned: a
+        // batch that was returned but not marked is read again, and a transaction can commit
+        // into one of its gaps during that second read just as it can during the first.
+        // The baseline is known only while this store keeps publishing the bucket. After a
+        // start or a handover it is not, and everything below the head is the gap: one probe
+        // per fetch until the first batch is marked. A stale value from an earlier ownership
+        // is merely a wider gap.
         var expected = bucket < _lastSequence.Length && _lastSequence[bucket] > 0 ? _lastSequence[bucket] + 1 : 1;
         var probes = 0;
         foreach (var message in messages)
@@ -384,6 +465,10 @@ public sealed partial class DynamoDbOutboxStore : IOutboxStore, IOutboxLeaseRene
             }
 
             await DeleteBatchAsync(deletes, cancellationToken).ConfigureAwait(false);
+
+            // Per chunk: what a failed later chunk leaves behind is read again from here.
+            if ((uint)bucket < (uint)_lastSequence.Length)
+                _lastSequence[bucket] = Math.Max(_lastSequence[bucket], publishedMessages[offset + count - 1].Id);
         }
     }
 

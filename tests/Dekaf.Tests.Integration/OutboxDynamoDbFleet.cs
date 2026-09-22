@@ -8,8 +8,9 @@ namespace Dekaf.Tests.Integration;
 
 /// <summary>
 /// Several relay instances competing for one outbox table, each with its own store, as
-/// separate pods would have. One manual clock stands in for their synchronized host clocks,
-/// so lease expiry is deterministic. Refused conditional writes are counted at the AWS SDK,
+/// separate pods would have. One manual clock is the true time, so lease expiry is
+/// deterministic; every relay reads it through its own host clock, which is synchronized
+/// unless a scenario sets it off. Refused conditional writes are counted at the AWS SDK,
 /// where an application's telemetry would see them.
 /// </summary>
 internal sealed class OutboxDynamoDbFleet : IDisposable
@@ -18,20 +19,38 @@ internal sealed class OutboxDynamoDbFleet : IDisposable
     public static readonly TimeSpan RenewInterval = TimeSpan.FromSeconds(10);
 
     private readonly AmazonDynamoDBClient _client;
+    // What the relays' stores talk to: a client of its own, so a scenario can step in.
+    private readonly AmazonDynamoDBClient _storeClient;
     private readonly Dictionary<string, DynamoDbOutboxStore> _stores = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, HostClock> _hostClocks = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Holding> _holdings = new(StringComparer.Ordinal);
     private int _refusedWrites;
 
-    private OutboxDynamoDbFleet(AmazonDynamoDBClient client, DynamoDbOutboxOptions options)
+    private OutboxDynamoDbFleet(
+        DynamoDbLocalContainer dynamoDb, AmazonDynamoDBClient client, DynamoDbOutboxOptions options)
     {
         _client = client;
+        _storeClient = dynamoDb.CreateClient(async request =>
+        {
+            if (BeforeStoreCall is { } beforeStoreCall)
+                await beforeStoreCall(request);
+            return OutboxDynamoDbFault.None;
+        });
         Options = options;
         _client.ExceptionEvent += OnException;
+        _storeClient.ExceptionEvent += OnException;
     }
 
     public DynamoDbOutboxOptions Options { get; }
 
+    /// <summary>The true time. A relay's lease is valid on it, whatever its host clock says.</summary>
     public ManualClock Clock { get; } = new();
+
+    /// <summary>
+    /// Runs before every request a store sends. A scenario uses it to land a write between
+    /// two requests of one store call.
+    /// </summary>
+    public Func<AmazonWebServiceRequest, Task>? BeforeStoreCall { get; set; }
 
     public IAmazonDynamoDB Client => _client;
 
@@ -41,7 +60,8 @@ internal sealed class OutboxDynamoDbFleet : IDisposable
     public static async Task<OutboxDynamoDbFleet> CreateAsync(DynamoDbLocalContainer dynamoDb, int bucketCount = 8)
     {
         var client = dynamoDb.CreateClient();
-        return new OutboxDynamoDbFleet(client, await DynamoDbLocalContainer.CreateTableAsync(client, bucketCount));
+        return new OutboxDynamoDbFleet(
+            dynamoDb, client, await DynamoDbLocalContainer.CreateTableAsync(client, bucketCount));
     }
 
     public OutboxLeaseRequest Request(string relayId) => new()
@@ -54,9 +74,63 @@ internal sealed class OutboxDynamoDbFleet : IDisposable
     public DynamoDbOutboxStore Store(string relayId)
     {
         if (!_stores.TryGetValue(relayId, out var store))
-            _stores[relayId] = store = new DynamoDbOutboxStore(_client, Options, Clock);
+            _stores[relayId] = store = new DynamoDbOutboxStore(_storeClient, Options, HostClockOf(relayId));
         return store;
     }
+
+    /// <summary>
+    /// Sets a relay's host clock off from the true time: positive runs ahead. It stays with
+    /// the host, so a relay that crashes and restarts there keeps it.
+    /// </summary>
+    public void SetClockOffset(string relayId, TimeSpan offset) => HostClockOf(relayId).Offset = offset;
+
+    private HostClock HostClockOf(string relayId)
+    {
+        if (!_hostClocks.TryGetValue(relayId, out var clock))
+            _hostClocks[relayId] = clock = new HostClock(Clock);
+        return clock;
+    }
+
+    /// <summary>The expiry of every lease in the table, by bucket.</summary>
+    public async Task<Dictionary<int, DateTimeOffset>> ReadLeaseExpiriesAsync()
+    {
+        var expiries = new Dictionary<int, DateTimeOffset>();
+        foreach (var item in await ReadLeasesAsync())
+        {
+            if (item.TryGetValue("ExpiresAtUtc", out var expiry))
+            {
+                expiries[BucketOf(item)] = new DateTimeOffset(
+                    long.Parse(expiry.N, System.Globalization.CultureInfo.InvariantCulture), TimeSpan.Zero);
+            }
+        }
+
+        return expiries;
+    }
+
+    /// <summary>The buckets whose lease names the relay, expired or not.</summary>
+    public async Task<IReadOnlyList<int>> ReadNamedAsync(string relayId) =>
+        [.. (await ReadLeasesAsync())
+            .Where(item => item.TryGetValue("Owner", out var owner) && owner.S == relayId)
+            .Select(BucketOf).Order()];
+
+    private async Task<List<Dictionary<string, AttributeValue>>> ReadLeasesAsync()
+    {
+        var response = await _client.QueryAsync(new QueryRequest
+        {
+            TableName = Options.TableName,
+            KeyConditionExpression = "PK = :pk AND begins_with(SK, :lease)",
+            ExpressionAttributeValues = new Dictionary<string, AttributeValue>
+            {
+                [":pk"] = new() { S = "OUTBOX#COORDINATION" },
+                [":lease"] = new() { S = "LEASE#" }
+            },
+            ConsistentRead = true
+        });
+        return response.Items ?? [];
+    }
+
+    private static int BucketOf(Dictionary<string, AttributeValue> lease) =>
+        int.Parse(lease["SK"].S.AsSpan("LEASE#".Length), System.Globalization.CultureInfo.InvariantCulture);
 
     /// <summary>One acquisition round of one relay, as the relay service runs it.</summary>
     public async Task<IReadOnlyList<int>> AcquireAsync(string relayId)
@@ -175,6 +249,70 @@ internal sealed class OutboxDynamoDbFleet : IDisposable
         }
     }
 
+    /// <summary>
+    /// The claim of a round that a stopping host cancelled, reaching DynamoDB later, in the
+    /// store's own shape. No condition can refuse it once the release has freed the lease.
+    /// </summary>
+    /// <returns>Whether DynamoDB applied it.</returns>
+    public Task<bool> LandStragglingClaimAsync(string relayId, int bucket, DateTimeOffset roundStartedAt) =>
+        LandStragglingLeaseWriteAsync(bucket, new UpdateItemRequest
+        {
+            UpdateExpression = "SET #owner = :me, #expires = :expiry",
+            ConditionExpression = "attribute_not_exists(#owner) OR attribute_not_exists(#expires) OR #expires <= :now",
+            ExpressionAttributeValues = new Dictionary<string, AttributeValue>
+            {
+                [":me"] = new() { S = relayId },
+                [":now"] = Ticks(roundStartedAt),
+                [":expiry"] = Ticks(roundStartedAt + LeaseDuration)
+            }
+        });
+
+    /// <summary>
+    /// The renewal of a lease the cancelled round had read with <paramref name="seenExpiry"/>,
+    /// reaching DynamoDB later. The expiry it read is what fences it.
+    /// </summary>
+    /// <returns>Whether DynamoDB applied it.</returns>
+    public Task<bool> LandStragglingKeepAsync(
+        string relayId, int bucket, DateTimeOffset seenExpiry, DateTimeOffset roundStartedAt) =>
+        LandStragglingLeaseWriteAsync(bucket, new UpdateItemRequest
+        {
+            UpdateExpression = "SET #expires = :expiry",
+            ConditionExpression = "#owner = :me AND #expires = :seen AND #expires <= :expiry",
+            ExpressionAttributeValues = new Dictionary<string, AttributeValue>
+            {
+                [":me"] = new() { S = relayId },
+                [":seen"] = Ticks(seenExpiry),
+                [":expiry"] = Ticks(roundStartedAt + LeaseDuration)
+            }
+        });
+
+    private async Task<bool> LandStragglingLeaseWriteAsync(int bucket, UpdateItemRequest write)
+    {
+        write.TableName = Options.TableName;
+        write.Key = new Dictionary<string, AttributeValue>
+        {
+            ["PK"] = new() { S = "OUTBOX#COORDINATION" },
+            ["SK"] = new() { S = $"LEASE#{bucket:D10}" }
+        };
+        write.ExpressionAttributeNames = new Dictionary<string, string>
+        {
+            ["#owner"] = "Owner",
+            ["#expires"] = "ExpiresAtUtc"
+        };
+        try
+        {
+            await _client.UpdateItemAsync(write);
+            return true;
+        }
+        catch (ConditionalCheckFailedException)
+        {
+            return false;
+        }
+    }
+
+    private static AttributeValue Ticks(DateTimeOffset time) =>
+        new() { N = time.UtcTicks.ToString(System.Globalization.CultureInfo.InvariantCulture) };
+
     /// <summary>A crash: the relay stops without a word. Its leases and heartbeat stay behind.</summary>
     public void Forget(string relayId)
     {
@@ -221,7 +359,9 @@ internal sealed class OutboxDynamoDbFleet : IDisposable
     public void Dispose()
     {
         _client.ExceptionEvent -= OnException;
+        _storeClient.ExceptionEvent -= OnException;
         _client.Dispose();
+        _storeClient.Dispose();
     }
 
     private void OnException(object sender, ExceptionEventArgs args)
@@ -231,6 +371,20 @@ internal sealed class OutboxDynamoDbFleet : IDisposable
     }
 
     private sealed record Holding(IReadOnlyList<int> Buckets, DateTimeOffset ValidUntil);
+
+    /// <summary>One host's view of the true time.</summary>
+    private sealed class HostClock(ManualClock trueTime) : TimeProvider
+    {
+        private long _offsetTicks;
+
+        public TimeSpan Offset
+        {
+            get => TimeSpan.FromTicks(Volatile.Read(ref _offsetTicks));
+            set => Volatile.Write(ref _offsetTicks, value.Ticks);
+        }
+
+        public override DateTimeOffset GetUtcNow() => trueTime.GetUtcNow() + Offset;
+    }
 
     internal sealed class ManualClock : TimeProvider
     {

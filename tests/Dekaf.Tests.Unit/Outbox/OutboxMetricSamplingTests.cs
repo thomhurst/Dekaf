@@ -22,7 +22,8 @@ public partial class OutboxMetricTests
             }
         };
         var publisher = new MetricPublisher { Initialization = queryEntered.Task };
-        using var relay = Relay(store, publisher, "blocked-sample");
+        // The publisher waits for the query here, so the query cannot wait for a lease.
+        using var relay = Relay(store, publisher, "blocked-sample", sampleOnEveryRelay: true);
         await relay.StartAsync(timeout.Token);
         try
         {

@@ -36,14 +36,18 @@ public sealed class OutboxLeaseOwnershipTests
     public async Task PreviousBuckets_SurviveLeaseStateReset()
     {
         var time = new ManualTimeProvider();
-        var store = new OwnershipStore { FailFirstPendingProbe = true };
+        var store = new OwnershipStore { FailingAcquisition = 2 };
         using var relay = CreateRelay(store, new GatedPublisher(), time);
         await relay.StartAsync(CancellationToken.None);
         try
         {
             await Assert.That(await NextAcquisitionAsync(store)).IsEmpty();
-            // The failed probe drops local ownership; the store still holds the leases, so
-            // the hint must still steer the retry onto them.
+            await time.WaitForTimerAsync(RenewInterval);
+            time.Advance(RenewInterval);
+            await Assert.That(string.Join(',', await NextAcquisitionAsync(store))).IsEqualTo("1,3");
+
+            // The failed acquisition drops local ownership; the store may still hold the
+            // leases, so the hint must still steer the retry onto them.
             await time.WaitForTimerAsync(TimeSpan.FromSeconds(1));
             time.Advance(TimeSpan.FromSeconds(1));
 
@@ -53,6 +57,90 @@ public sealed class OutboxLeaseOwnershipTests
         {
             await relay.StopAsync(CancellationToken.None);
         }
+    }
+
+    [Test]
+    public async Task FailedPendingProbe_KeepsTheLeases_InsteadOfReacquiring()
+    {
+        var time = new ManualTimeProvider();
+        var store = new OwnershipStore { FailFirstPendingProbe = true };
+        using var relay = CreateRelay(store, new GatedPublisher(), time);
+        await relay.StartAsync(CancellationToken.None);
+        try
+        {
+            await NextAcquisitionAsync(store);
+            await time.WaitForTimerAsync(TimeSpan.FromSeconds(1));
+            time.Advance(TimeSpan.FromSeconds(1));
+            await store.SecondProbe.Task.WaitAsync(SignalTimeout);
+
+            // A read that failed wrote no lease. Reacquiring after it would add a heartbeat,
+            // a coordination read and a write per bucket to every retry against a failing store.
+            await Assert.That(store.AcquisitionCount).IsEqualTo(1);
+        }
+        finally
+        {
+            await relay.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Test]
+    public async Task GracefulStop_MarksTheRowsKafkaAcknowledgedBeforeTheStop_ThenReleases()
+    {
+        var time = new ManualTimeProvider();
+        var events = new ConcurrentQueue<string>();
+        var store = new OwnershipStore { HasPending = true, Events = events, BatchSize = 5 };
+        var publisher = new GatedPublisher { Events = events, AckedCount = 3 };
+        using var relay = CreateRelay(store, publisher, time);
+        await relay.StartAsync(CancellationToken.None);
+        await publisher.Entered.Task.WaitAsync(SignalTimeout);
+
+        var stop = relay.StopAsync(CancellationToken.None);
+        publisher.Gate.SetResult();
+        await stop.WaitAsync(SignalTimeout);
+
+        // The release hands the bucket to a peer on its next round. Rows left unmarked here
+        // are rows that peer publishes a second time, on every rolling deployment.
+        await Assert.That(string.Join(',', events)).IsEqualTo("publish-returned,marked:1;2;3,released");
+    }
+
+    [Test]
+    public async Task StopPastTheShutdownDeadline_LeavesAcknowledgedRowsForTheNextOwner()
+    {
+        var time = new ManualTimeProvider();
+        var events = new ConcurrentQueue<string>();
+        var store = new OwnershipStore { HasPending = true, Events = events, BatchSize = 5 };
+        var publisher = new GatedPublisher { Events = events, AckedCount = 3 };
+        using var relay = CreateRelay(store, publisher, time);
+        await relay.StartAsync(CancellationToken.None);
+        await publisher.Entered.Task.WaitAsync(SignalTimeout);
+
+        // No deadline is left to bound a store write, so none is started.
+        await relay.StopAsync(new CancellationToken(canceled: true));
+        publisher.Gate.SetResult();
+        await relay.ExecuteTask!.WaitAsync(SignalTimeout);
+
+        await Assert.That(string.Join(',', events)).IsEqualTo("publish-returned");
+    }
+
+    [Test]
+    public async Task StopAsync_AlreadyCancelledToken_SkipsReleaseQuietly()
+    {
+        var time = new ManualTimeProvider();
+        var store = new OwnershipStore();
+        using var relay = CreateRelay(store, new GatedPublisher(), time);
+        await relay.StartAsync(CancellationToken.None);
+        await NextAcquisitionAsync(store);
+        await time.WaitForTimerAsync(RenewInterval);
+
+        // The idle loop ends at once, so only the spent deadline stands between the stop and
+        // a release whose every request would fail with it.
+        await relay.StopAsync(new CancellationToken(canceled: true));
+        await relay.ExecuteTask!.WaitAsync(SignalTimeout);
+        await Assert.That(store.ReleaseCount).IsEqualTo(0);
+
+        // A later stop with time left still hands the leases back.
+        await relay.StopAsync(CancellationToken.None);
+        await Assert.That(store.ReleaseCount).IsEqualTo(1);
     }
 
     [Test]
@@ -71,7 +159,8 @@ public sealed class OutboxLeaseOwnershipTests
         publisher.Gate.SetResult();
         await stop.WaitAsync(SignalTimeout);
 
-        await Assert.That(string.Join(',', events)).IsEqualTo("publish-returned,released");
+        // The acknowledged row is marked in between: see GracefulStop_MarksTheRows...
+        await Assert.That(string.Join(',', events)).IsEqualTo("publish-returned,marked:1,released");
         await Assert.That(string.Join(',', store.Released!)).IsEqualTo("1,3");
         await Assert.That(store.ReleaseRequest!.RelayId).IsEqualTo("relay-a");
     }
@@ -189,6 +278,8 @@ public sealed class OutboxLeaseOwnershipTests
         internal ConcurrentQueue<string>? Events { get; init; }
         internal bool BlockInitialization { get; init; }
         internal Action? OnPublish { get; init; }
+        /// <summary>Rows acknowledged per publish; the whole batch when null.</summary>
+        internal int? AckedCount { get; init; }
 
         public async ValueTask InitializeAsync(CancellationToken cancellationToken = default)
         {
@@ -205,7 +296,7 @@ public sealed class OutboxLeaseOwnershipTests
             OnPublish?.Invoke();
             await Gate.Task;
             Events?.Enqueue("publish-returned");
-            return new OutboxPublishResult(messages.Count, null);
+            return new OutboxPublishResult(AckedCount ?? messages.Count, null);
         }
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
@@ -214,14 +305,18 @@ public sealed class OutboxLeaseOwnershipTests
     private sealed class OwnershipStore : IOutboxStore, IOutboxLeaseRenewalStore, IOutboxLeaseOwnershipStore
     {
         private static readonly IReadOnlyList<int> Buckets = [1, 3];
-        private readonly OutboxMessage[] _batch = [new()
-        { Id = 1, MessageId = Guid.NewGuid(), Bucket = 1, Topic = "topic", CreatedAtUtc = DateTimeOffset.UnixEpoch }];
         private int _legacyAcquisitionCount;
+        private int _acquisitionCount;
         private int _releaseCount;
         private int _pendingProbeCount;
 
         internal bool HasPending { get; init; }
+        internal int BatchSize { get; init; } = 1;
         internal bool FailFirstPendingProbe { get; init; }
+        /// <summary>The one-based acquisition that throws after recording its hint.</summary>
+        internal int FailingAcquisition { get; init; }
+        internal int AcquisitionCount => Volatile.Read(ref _acquisitionCount);
+        internal TaskCompletionSource SecondProbe { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         internal bool ReleaseThrows { get; init; }
         internal bool ReleaseNeverCompletes { get; init; }
         internal TaskCompletionSource ReleaseEntered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -243,7 +338,9 @@ public sealed class OutboxLeaseOwnershipTests
             IReadOnlyList<int> previousBuckets, CancellationToken cancellationToken = default)
         {
             Acquisitions.Writer.TryWrite(previousBuckets);
-            return ValueTask.FromResult(Buckets);
+            return Interlocked.Increment(ref _acquisitionCount) == FailingAcquisition
+                ? ValueTask.FromException<IReadOnlyList<int>>(new InvalidOperationException("acquisition failed"))
+                : ValueTask.FromResult(Buckets);
         }
 
         public ValueTask ReleaseBucketLeasesAsync(OutboxLeaseRequest request, IReadOnlyList<int> previousBuckets,
@@ -267,15 +364,35 @@ public sealed class OutboxLeaseOwnershipTests
         public ValueTask<IReadOnlyList<int>> GetBucketsWithPendingAsync(IReadOnlyList<int> buckets,
             CancellationToken cancellationToken = default)
         {
-            if (FailFirstPendingProbe && Interlocked.Increment(ref _pendingProbeCount) == 1)
+            var probe = Interlocked.Increment(ref _pendingProbeCount);
+            if (probe == 2)
+                SecondProbe.TrySetResult();
+            if (FailFirstPendingProbe && probe == 1)
                 return ValueTask.FromException<IReadOnlyList<int>>(new InvalidOperationException("probe failed"));
             return ValueTask.FromResult<IReadOnlyList<int>>(HasPending ? [1] : []);
         }
 
         public ValueTask<IReadOnlyList<OutboxMessage>> GetNextBatchAsync(int bucket, int maxCount,
-            CancellationToken cancellationToken = default) => ValueTask.FromResult<IReadOnlyList<OutboxMessage>>(_batch);
+            CancellationToken cancellationToken = default)
+        {
+            var batch = new OutboxMessage[Math.Min(BatchSize, maxCount)];
+            for (var index = 0; index < batch.Length; index++)
+            {
+                batch[index] = new OutboxMessage
+                {
+                    Id = index + 1, MessageId = Guid.NewGuid(), Bucket = 1, Topic = "topic",
+                    CreatedAtUtc = DateTimeOffset.UnixEpoch
+                };
+            }
+
+            return ValueTask.FromResult<IReadOnlyList<OutboxMessage>>(batch);
+        }
 
         public ValueTask MarkPublishedAsync(int bucket, IReadOnlyList<OutboxMessage> publishedMessages,
-            CancellationToken cancellationToken = default) => ValueTask.CompletedTask;
+            CancellationToken cancellationToken = default)
+        {
+            Events?.Enqueue($"marked:{string.Join(';', publishedMessages.Select(message => message.Id))}");
+            return ValueTask.CompletedTask;
+        }
     }
 }

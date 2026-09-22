@@ -34,7 +34,7 @@ public sealed class ShareConsumerConnectionOwnershipTests
             BindingFlags.Instance | BindingFlags.NonPublic)!;
         var heartbeat = (ValueTask<bool>)method.Invoke(
             coordinator,
-            [CancellationToken.None])!;
+            [1, CancellationToken.None])!;
 
         await Assert.ThrowsAsync<IOException>(async () => await heartbeat);
 
@@ -69,7 +69,7 @@ public sealed class ShareConsumerConnectionOwnershipTests
             BindingFlags.Instance | BindingFlags.NonPublic)!;
         var heartbeat = (ValueTask<bool>)method.Invoke(
             coordinator,
-            [CancellationToken.None])!;
+            [1, CancellationToken.None])!;
 
         await Assert.ThrowsAsync<BrokerVersionException>(async () => await heartbeat);
 

@@ -221,6 +221,153 @@ public class BuildFetchResultTests
     }
 
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task BuildFetchResult_PrefetchAheadOfConsumedPosition_SendsTheFetchedEpoch(bool rotated)
+    {
+        // The consumed position is still in epoch 8; the prefetch reached offset 42 in epoch 9.
+        var (templateDict, tp0) = CreateSinglePartitionTemplate();
+        var fetchPositions = new ConcurrentDictionary<TopicPartition, long> { [tp0] = 42 };
+        var lastConsumedLeaderEpochs = new ConcurrentDictionary<TopicPartition, int> { [tp0] = 8 };
+        var lastFetchedLeaderEpochs = new ConcurrentDictionary<TopicPartition, FetchedLeaderEpoch>
+        {
+            [tp0] = new(42, 9)
+        };
+
+        var partition = BuildSinglePartition(
+            templateDict, fetchPositions, lastConsumedLeaderEpochs, lastFetchedLeaderEpochs, rotated);
+
+        await Assert.That(partition.FetchOffset).IsEqualTo(42);
+        await Assert.That(partition.LastFetchedEpoch).IsEqualTo(9);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task BuildFetchResult_FetchedEpochOfAnotherOffset_ValidatesNothing(bool rotated)
+    {
+        // The recorded epoch belongs to offset 42 but the fetch position moved on (a concurrent
+        // advance or reposition): neither it nor the older consumed epoch describes offset 50.
+        var (templateDict, tp0) = CreateSinglePartitionTemplate();
+        var fetchPositions = new ConcurrentDictionary<TopicPartition, long> { [tp0] = 50 };
+        var lastConsumedLeaderEpochs = new ConcurrentDictionary<TopicPartition, int> { [tp0] = 8 };
+        var lastFetchedLeaderEpochs = new ConcurrentDictionary<TopicPartition, FetchedLeaderEpoch>
+        {
+            [tp0] = new(42, 9)
+        };
+
+        var partition = BuildSinglePartition(
+            templateDict, fetchPositions, lastConsumedLeaderEpochs, lastFetchedLeaderEpochs, rotated);
+
+        await Assert.That(partition.LastFetchedEpoch).IsEqualTo(-1);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task BuildFetchResult_NoFetchedEpochRecorded_SendsTheConsumedEpoch(bool rotated)
+    {
+        // After a seek or reset the fetch position is the consumed position.
+        var (templateDict, tp0) = CreateSinglePartitionTemplate();
+        var fetchPositions = new ConcurrentDictionary<TopicPartition, long> { [tp0] = 42 };
+        var lastConsumedLeaderEpochs = new ConcurrentDictionary<TopicPartition, int> { [tp0] = 8 };
+        var lastFetchedLeaderEpochs = new ConcurrentDictionary<TopicPartition, FetchedLeaderEpoch>();
+
+        var partition = BuildSinglePartition(
+            templateDict, fetchPositions, lastConsumedLeaderEpochs, lastFetchedLeaderEpochs, rotated);
+
+        await Assert.That(partition.LastFetchedEpoch).IsEqualTo(8);
+    }
+
+    [Test]
+    public async Task BuildFetchResult_UnknownFetchedEpochAndLargeOffset_RoundTrips()
+    {
+        // An unknown epoch (-1) is sent as recorded instead of falling back to the consumed one,
+        // and an offset beyond 32 bits still finds its own epoch.
+        var (templateDict, tp0) = CreateSinglePartitionTemplate();
+        var offset = (5L << 32) + 7;
+        var fetchPositions = new ConcurrentDictionary<TopicPartition, long> { [tp0] = offset };
+        var lastConsumedLeaderEpochs = new ConcurrentDictionary<TopicPartition, int> { [tp0] = 3 };
+        var lastFetchedLeaderEpochs = new ConcurrentDictionary<TopicPartition, FetchedLeaderEpoch>
+        {
+            [tp0] = new(offset, -1)
+        };
+
+        var unknown = BuildSinglePartition(
+            templateDict, fetchPositions, lastConsumedLeaderEpochs, lastFetchedLeaderEpochs, rotated: false);
+        await Assert.That(unknown.LastFetchedEpoch).IsEqualTo(-1);
+
+        lastFetchedLeaderEpochs[tp0].Record(offset, int.MaxValue);
+        var largest = BuildSinglePartition(
+            templateDict, fetchPositions, lastConsumedLeaderEpochs, lastFetchedLeaderEpochs, rotated: false);
+        await Assert.That(largest.LastFetchedEpoch).IsEqualTo(int.MaxValue);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task BuildFetchResult_FetchedEpochOfOffsetThatDiffersAbove32Bits_ValidatesNothing(bool rotated)
+    {
+        // Offsets 2^32 apart share their low half. An epoch recorded for one must not be sent
+        // for the other: the broker would report a divergence that never happened.
+        var (templateDict, tp0) = CreateSinglePartitionTemplate();
+        var fetchPositions = new ConcurrentDictionary<TopicPartition, long> { [tp0] = (1L << 32) + 42 };
+        var lastConsumedLeaderEpochs = new ConcurrentDictionary<TopicPartition, int> { [tp0] = 8 };
+        var lastFetchedLeaderEpochs = new ConcurrentDictionary<TopicPartition, FetchedLeaderEpoch>
+        {
+            [tp0] = new(42, 9)
+        };
+
+        var partition = BuildSinglePartition(
+            templateDict, fetchPositions, lastConsumedLeaderEpochs, lastFetchedLeaderEpochs, rotated);
+
+        await Assert.That(partition.LastFetchedEpoch).IsEqualTo(-1);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task BuildFetchResult_FetchedEpochCleared_SendsTheConsumedEpoch(bool rotated)
+    {
+        // A seek or reset clears the record in place; the consumed epoch applies again.
+        var (templateDict, tp0) = CreateSinglePartitionTemplate();
+        var fetchPositions = new ConcurrentDictionary<TopicPartition, long> { [tp0] = 42 };
+        var lastConsumedLeaderEpochs = new ConcurrentDictionary<TopicPartition, int> { [tp0] = 8 };
+        var fetched = new FetchedLeaderEpoch(42, 9);
+        fetched.Clear();
+        var lastFetchedLeaderEpochs = new ConcurrentDictionary<TopicPartition, FetchedLeaderEpoch> { [tp0] = fetched };
+
+        var partition = BuildSinglePartition(
+            templateDict, fetchPositions, lastConsumedLeaderEpochs, lastFetchedLeaderEpochs, rotated);
+
+        await Assert.That(partition.LastFetchedEpoch).IsEqualTo(8);
+    }
+
+    private static FetchRequestPartition BuildSinglePartition(
+        Dictionary<string, List<(FetchRequestPartition, TopicPartition)>> templateDict,
+        ConcurrentDictionary<TopicPartition, long> fetchPositions,
+        ConcurrentDictionary<TopicPartition, int> lastConsumedLeaderEpochs,
+        ConcurrentDictionary<TopicPartition, FetchedLeaderEpoch> lastFetchedLeaderEpochs,
+        bool rotated)
+    {
+        var result = rotated
+            ? KafkaConsumer<string, string>.BuildRotatedFetchResult(
+                templateDict,
+                fetchPositions,
+                ["topic-a"],
+                topicRotation: 0,
+                partitionRotation: 0,
+                lastConsumedLeaderEpochs: lastConsumedLeaderEpochs,
+                lastFetchedLeaderEpochs: lastFetchedLeaderEpochs)
+            : KafkaConsumer<string, string>.BuildFetchResult(
+                templateDict,
+                fetchPositions,
+                lastConsumedLeaderEpochs: lastConsumedLeaderEpochs,
+                lastFetchedLeaderEpochs: lastFetchedLeaderEpochs);
+        return result[0].Partitions[0];
+    }
+
+    [Test]
     public async Task BuildFetchResult_WithClusterMetadata_TopicNotInMetadata_ReturnsEmptyGuid()
     {
         var (templateDict, tp0) = CreateSinglePartitionTemplate("unknown-topic");
