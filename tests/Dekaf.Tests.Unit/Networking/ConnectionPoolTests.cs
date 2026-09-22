@@ -1077,6 +1077,73 @@ public sealed class ConnectionPoolTests
             await Assert.That(connection.DisposeCount).IsGreaterThanOrEqualTo(1);
     }
 
+    // A scale-up that published after disposal began, but before CloseAllAsync walked the groups,
+    // used to unpublish the whole extended group while disposing only the connections it had just
+    // created. The existing connections it copied in were then unreachable and never disposed.
+    [Test]
+    [Timeout(10_000)]
+    public async Task DisposeAsync_ScaleUpPublishingBeforeCloseAllWalks_ExistingConnectionsAreStillDisposed(
+        CancellationToken cancellationToken)
+    {
+        using var reaperGate = new ManualResetEventSlim();
+        var reaperHoldsDisposeLock = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var blockNextReaperRead = 0;
+        var existing = new TestIdleConnection(1, "host-a", 9092)
+        {
+            PendingRequestCountProvider = () =>
+            {
+                if (Interlocked.Exchange(ref blockNextReaperRead, 0) == 1)
+                {
+                    reaperHoldsDisposeLock.TrySetResult();
+                    reaperGate.Wait();
+                }
+
+                return 1;
+            }
+        };
+        var added = new TestIdleConnection(1, "host-a", 9092);
+        var scaleUpFactoryEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseScaleUpFactory = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var factoryCalls = 0;
+        var pool = new ConnectionPool(
+            clientId: "test-client",
+            // Long enough that the background reaper never ticks during the test.
+            connectionOptions: new ConnectionOptions { ConnectionsMaxIdleMs = 600_000 },
+            connectionsPerBroker: 1,
+            connectionFactory: async (_, _, _, _, _) =>
+            {
+                if (Interlocked.Increment(ref factoryCalls) == 1)
+                    return existing;
+
+                scaleUpFactoryEntered.TrySetResult();
+                await releaseScaleUpFactory.Task.ConfigureAwait(false);
+                return added;
+            });
+        pool.RegisterBroker(1, "host-a", 9092);
+        await pool.ScaleConnectionGroupAsync(1, 1, cancellationToken);
+
+        // An idle-reap pass holds the dispose lock, so CloseAllAsync cannot walk the groups yet.
+        Volatile.Write(ref blockNextReaperRead, 1);
+        var reap = Task.Run(async () => await pool.ReapIdleConnectionsAsync(), cancellationToken);
+        await reaperHoldsDisposeLock.Task.WaitAsync(cancellationToken);
+
+        var scaleUp = pool.ScaleConnectionGroupAsync(1, 2, cancellationToken).AsTask();
+        await scaleUpFactoryEntered.Task.WaitAsync(cancellationToken);
+        var disposal = pool.DisposeAsync().AsTask();
+
+        // The scale-up publishes [existing, added] and then sees the pool disposed.
+        releaseScaleUpFactory.TrySetResult();
+        await Assert.ThrowsAsync<ObjectDisposedException>(async () =>
+            await scaleUp.WaitAsync(cancellationToken));
+
+        reaperGate.Set();
+        await reap.WaitAsync(cancellationToken);
+        await disposal.WaitAsync(cancellationToken);
+
+        await Assert.That(added.DisposeCount).IsGreaterThanOrEqualTo(1);
+        await Assert.That(existing.DisposeCount).IsGreaterThanOrEqualTo(1);
+    }
+
     // 1 = single-connection path, 2 = connection-group path.
     [Test]
     [Arguments(1)]

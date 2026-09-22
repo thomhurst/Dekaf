@@ -631,7 +631,7 @@ public sealed partial class ConnectionPool :
             if (!_connectionGroupsById.TryAdd(brokerId, connections))
                 throw CreateGroupPublishLostException(brokerId, brokerInfo.Host, brokerInfo.Port);
             success = true;
-            await ThrowIfDisposedAfterGroupPublishAsync(brokerId, connections, tasks).ConfigureAwait(false);
+            await ThrowIfDisposedAfterGroupPublishAsync(brokerId, connections, previousGroup: null, tasks).ConfigureAwait(false);
             ThrowIfBrokerMovedAfterPublish(brokerId, brokerInfo.Host, brokerInfo.Port);
 
             ResetReconnectBackoff(setupKey, brokerId, brokerInfo.Host, brokerInfo.Port);
@@ -675,18 +675,24 @@ public sealed partial class ConnectionPool :
     /// Runs right after a group publish. <see cref="DisposeAsync"/> sets <c>_disposed</c> before
     /// <see cref="CloseAllAsync"/> walks the published groups, so a publish that still reads zero
     /// here is closed by that walk, and one that reads the flag may have landed after it: the
-    /// group is unpublished (exact removal) and the connections this setup created are disposed.
-    /// Slots published before this setup belonged to a group the walk already saw.
+    /// connections this setup created are disposed, and the group it replaced is put back (or,
+    /// for a new group, the group is removed). Restoring rather than removing keeps the slots a
+    /// scale-up copied from <paramref name="previousGroup"/> reachable for a walk that has not run
+    /// yet; a walk that already ran saw one of the two arrays, and both hold those slots.
     /// </summary>
     private async ValueTask ThrowIfDisposedAfterGroupPublishAsync(
         int brokerId,
         IKafkaConnection[] publishedGroup,
+        IKafkaConnection[]? previousGroup,
         Task<IKafkaConnection>[] createdSetups)
     {
         if (Volatile.Read(ref _disposed) == 0)
             return;
 
-        TryRemoveExact(_connectionGroupsById, brokerId, publishedGroup);
+        if (previousGroup is null)
+            TryRemoveExact(_connectionGroupsById, brokerId, publishedGroup);
+        else
+            _connectionGroupsById.TryUpdate(brokerId, previousGroup, publishedGroup);
         await DisposeCompletedTaskConnectionsAsync(createdSetups).ConfigureAwait(false);
         throw new ObjectDisposedException(nameof(ConnectionPool));
     }
@@ -816,7 +822,7 @@ public sealed partial class ConnectionPool :
                 throw CreateGroupPublishLostException(brokerId, brokerInfo.Host, brokerInfo.Port);
             }
 
-            await ThrowIfDisposedAfterGroupPublishAsync(brokerId, newGroup, tasks).ConfigureAwait(false);
+            await ThrowIfDisposedAfterGroupPublishAsync(brokerId, newGroup, currentGroup, tasks).ConfigureAwait(false);
             ThrowIfBrokerMovedAfterPublish(brokerId, brokerInfo.Host, brokerInfo.Port);
 
             ResetReconnectBackoff(setupKey, brokerId, brokerInfo.Host, brokerInfo.Port);
