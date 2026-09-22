@@ -721,6 +721,56 @@ public sealed class ConnectionPoolTests
 
     [Test]
     [Timeout(10_000)]
+    public async Task GetConnectionAsync_BrokerMovesWhileWaitingForCreationLock_DoesNotServeCachedPreviousEndpoint(
+        CancellationToken cancellationToken)
+    {
+        // A by-ID call resolves its endpoint before the creation lock wait. A bootstrap socket
+        // for that endpoint may still be cached after the broker moved; the call must retry
+        // against the current registration instead of publishing the old socket under the ID.
+        var setupEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseSetup = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var hostACalls = 0;
+        var pool = new ConnectionPool(
+            clientId: "test-client",
+            connectionOptions: new ConnectionOptions(),
+            connectionsPerBroker: 1,
+            connectionFactory: async (brokerId, host, port, _, factoryToken) =>
+            {
+                if (host == "host-a" && Interlocked.Increment(ref hostACalls) == 2)
+                {
+                    setupEntered.TrySetResult();
+                    await releaseSetup.Task.WaitAsync(factoryToken);
+                }
+
+                return CreateConnectedConnection(brokerId, host, port);
+            });
+
+        await using (pool)
+        {
+            pool.RegisterBroker(1, "host-a", 9092);
+            var bootstrap = await pool.GetConnectionAsync("host-a", 9092, cancellationToken);
+            bootstrap.IsConnected.Returns(false);
+
+            // The bootstrap re-creation holds the host-a creation lock while the by-ID call
+            // resolves host-a and queues behind it.
+            var bootstrapRecreate = pool.GetConnectionAsync("host-a", 9092, cancellationToken).AsTask();
+            await setupEntered.Task.WaitAsync(cancellationToken);
+            var staleAttempt = pool.GetConnectionAsync(1, cancellationToken).AsTask();
+
+            pool.RegisterBroker(1, "host-b", 9093);
+            releaseSetup.SetResult();
+            var recreated = await bootstrapRecreate;
+
+            await Assert.That(async () => await staleAttempt).Throws<BrokerEndpointChangedException>();
+            var current = await pool.GetConnectionAsync(1, cancellationToken);
+            await Assert.That(current.Host).IsEqualTo("host-b");
+            await Assert.That(await pool.GetConnectionAsync("host-a", 9092, cancellationToken)).IsSameReferenceAs(recreated);
+            await recreated.DidNotReceive().DisposeAsync();
+        }
+    }
+
+    [Test]
+    [Timeout(10_000)]
     public async Task GetConnectionByIndexAsync_StaleGroupSetupFinishesAfterMove_RetiresItselfAndSiblingCreatesNewGroup(
         CancellationToken cancellationToken)
     {

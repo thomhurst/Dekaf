@@ -1221,12 +1221,14 @@ public sealed partial class ConnectionPool :
             for (var attempt = 0; attempt < MaxRetries; attempt++)
             {
                 // Re-check after acquiring lock: another caller may have already created the connection.
-                // The endpoint was resolved from the current registration, so the hit also repairs
-                // the ID entry when a stale setup's retirement removed itself from it.
+                // The endpoint was resolved before the lock wait; a broker that moved meanwhile
+                // must not be served its previous endpoint (a bootstrap socket may still be cached
+                // there), so the caller retries against the current registration instead.
                 if (_connectionsByEndpoint.TryGetValue(endpoint, out var existing) && existing.IsConnected)
                 {
-                    if (brokerId >= 0)
-                        PublishConnectionById(brokerId, existing);
+                    if (HasBrokerEndpointChanged(brokerId, host, port, out var current))
+                        throw new BrokerEndpointChangedException(brokerId, host, port, current.Host, current.Port);
+
                     return existing;
                 }
 
