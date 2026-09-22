@@ -1949,10 +1949,11 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 request, version, TelemetryMetricCollector, cancellationToken).ConfigureAwait(false);
         }
 
-        // A join replaces the membership. Advance the version before the response's member id and
-        // epoch are written, so a commit that reads the new identity also sees the change and is
-        // rejected rather than sending offsets taken under the previous assignment.
-        if (!discardIfMembershipChanged)
+        // A successful join replaces the membership. Advance the version before the response's
+        // member id and epoch are written, so a commit that reads the new identity also sees the
+        // change and is rejected rather than sending offsets taken under the previous assignment.
+        // A join error leaves the membership as it was, and commits under it stay valid.
+        if (!discardIfMembershipChanged && response.ErrorCode == ErrorCode.None)
             Interlocked.Increment(ref _membershipVersion);
 
         // A steady heartbeat reports a fence without waiting for the locks, so stopping the loop
@@ -3078,6 +3079,16 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         LogCoordinatorDisposing();
 
         await StopHeartbeatAsync().ConfigureAwait(false);
+
+        // Rebalance callbacks the heartbeat stop interrupted (a fenced member's OnPartitionsLost,
+        // say) are delivered before the locks go away. Entries leave the queue only once
+        // delivered, so after a consumer close has drained there is nothing to repeat. Bounded
+        // by the API timeout so a listener that never returns cannot hang disposal.
+        if (Volatile.Read(ref _pendingRebalanceCallbackCount) != 0)
+        {
+            using var drainTimeout = new CancellationTokenSource(_options.DefaultApiTimeoutMs);
+            await InvokePendingRebalanceCallbacksUnlessCancelledAsync(drainTimeout.Token).ConfigureAwait(false);
+        }
 
         _lock.Dispose();
         _commitLock.Dispose();

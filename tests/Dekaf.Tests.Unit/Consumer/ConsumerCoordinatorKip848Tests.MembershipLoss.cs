@@ -898,6 +898,110 @@ public sealed partial class ConsumerCoordinatorKip848Tests
     }
 
     [Test]
+    public async Task CommitOffsetsAsync_DuringARejoinThatFailsWithARetriableError_IsStillSent()
+    {
+        _metadataManager.SetApiVersion(ApiKey.OffsetCommit, 9, 9);
+        var script = new HeartbeatScript(this);
+        var (listener, _) = CreateRecordingListener();
+        await using var coordinator = await JoinAsync(script, listener);
+        var commitCount = 0;
+        _connection.SendAsync<OffsetCommitRequest, OffsetCommitResponse>(
+                Arg.Any<OffsetCommitRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                Interlocked.Increment(ref commitCount);
+                return ValueTask.FromResult(new OffsetCommitResponse { Topics = [] });
+            });
+
+        // A commit under member-1 is held at its connection lease while the coordinator is lost.
+        var commitLeaseReached = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseCommitLease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var holdNextLease = 1;
+        _connectionPool.GetConnectionByIndexAsync(Arg.Any<int>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(_ => Interlocked.Exchange(ref holdNextLease, 0) == 1
+                ? HoldLeaseAsync()
+                : ValueTask.FromResult(_connection));
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var commit = coordinator.CommitOffsetsAsync(
+            [new TopicPartitionOffset("test-topic", 0, 10)],
+            CancellationToken.None).AsTask();
+        await commitLeaseReached.Task.WaitAsync(timeout.Token);
+
+        // The rejoin's first attempt fails with a retriable error, which changes nothing about
+        // the membership. The commit completes during the retry, then the rejoin succeeds.
+        coordinator.RequestRejoin();
+        script.Reset();
+        script.Respond = (count, _) =>
+        {
+            if (count == 1)
+                return Error(ErrorCode.CoordinatorNotAvailable);
+
+            releaseCommitLease.TrySetResult();
+            try
+            {
+                commit.Wait(TimeSpan.FromSeconds(30));
+            }
+            catch (AggregateException)
+            {
+                // Asserted below.
+            }
+
+            return Joined("member-1", memberEpoch: 5, CreateAssignment(TestTopicId, 0, 1));
+        };
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, timeout.Token);
+
+        await Assert.That(async () => await commit.WaitAsync(timeout.Token)).ThrowsNothing();
+        await Assert.That(Volatile.Read(ref commitCount)).IsEqualTo(1);
+
+        async ValueTask<IKafkaConnection> HoldLeaseAsync()
+        {
+            commitLeaseReached.TrySetResult();
+            await releaseCommitLease.Task;
+            return _connection;
+        }
+    }
+
+    [Test]
+    public async Task MembershipLoss_LostCallbackInterruptedByDisposal_IsDeliveredBeforeTheLocksAreDisposed()
+    {
+        var script = new HeartbeatScript(this);
+        var (recording, calls) = CreateRecordingListener();
+        var lostEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var interruptNextLost = 1;
+        var listener = Substitute.For<IRebalanceListener>();
+        listener.OnPartitionsLostAsync(Arg.Any<IEnumerable<TopicPartition>>(), Arg.Any<CancellationToken>())
+            .Returns(callInfo => Interlocked.Exchange(ref interruptNextLost, 0) == 1
+                ? WaitForCancellationAsync(callInfo.Arg<CancellationToken>())
+                : recording.OnPartitionsLostAsync(
+                    callInfo.Arg<IEnumerable<TopicPartition>>()!,
+                    callInfo.Arg<CancellationToken>()));
+        var coordinator = await JoinAsync(script, listener);
+        calls.Clear();
+
+        // The coordinator's own heartbeat is fenced, and disposal stops it while
+        // OnPartitionsLost runs.
+        script.Respond = (_, _) => Error(ErrorCode.FencedMemberEpoch);
+        SetPrivateField(coordinator, "_heartbeatIntervalMs", 1);
+        await (ValueTask)typeof(ConsumerCoordinator)
+            .GetMethod("StartConsumerProtocolHeartbeatAsync", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(coordinator, null)!;
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await lostEntered.Task.WaitAsync(timeout.Token);
+
+        await coordinator.DisposeAsync().AsTask().WaitAsync(timeout.Token);
+
+        await Assert.That(string.Join(" | ", calls)).IsEqualTo("lost:test-topic-0,test-topic-1");
+
+        async ValueTask WaitForCancellationAsync(CancellationToken cancellationToken)
+        {
+            lostEntered.TrySetResult();
+            await Task.Delay(Timeout.Infinite, cancellationToken);
+        }
+    }
+
+    [Test]
     public async Task MembershipLoss_CallbacksQueuedBeforeARejoin_SeeTheirOwnAssignment()
     {
         var script = new HeartbeatScript(this);
