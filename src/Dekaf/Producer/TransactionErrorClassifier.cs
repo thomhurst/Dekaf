@@ -58,6 +58,18 @@ internal static class TransactionErrorClassifier
     /// (KIP-588): on a produce it can also mean the coordinator timed the transaction out and bumped
     /// the epoch, and the abort's EndTxn reports a real fence.
     /// </summary>
+    /// <summary>
+    /// The error code a failed batch reports to the transaction: the delivery timeout as
+    /// <c>RequestTimedOut</c>, a Kafka error as its code, anything else (a local failure such as
+    /// compression or disposal) as <c>UnknownServerError</c>, which is abortable.
+    /// </summary>
+    internal static Protocol.ErrorCode GetFailedBatchErrorCode(Exception exception) => exception switch
+    {
+        Errors.KafkaTimeoutException => Protocol.ErrorCode.RequestTimedOut,
+        Errors.KafkaException { ErrorCode: { } errorCode } => errorCode,
+        _ => Protocol.ErrorCode.UnknownServerError
+    };
+
     internal static TransactionErrorClassification ClassifyFailedBatch(Protocol.ErrorCode errorCode) =>
         errorCode is Protocol.ErrorCode.ProducerFenced
             or Protocol.ErrorCode.TransactionalIdAuthorizationFailed

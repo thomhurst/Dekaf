@@ -1299,6 +1299,34 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private bool _isTransactional;
     internal bool IsTransactional { get => Volatile.Read(ref _isTransactional); set => Volatile.Write(ref _isTransactional, value); }
 
+    /// <summary>
+    /// Transactional producers only (null otherwise): told about every batch of this accumulator
+    /// that fails, on whichever path fails it (a produce error, the delivery timeout, a reroute
+    /// with no leader, a local rejection, a purge or disposal), with the producer ID and epoch the
+    /// batch was stamped with, the error code and the exception its records fail with. Invoked
+    /// once per failed batch, before any of its records complete, so a caller resumed by the
+    /// failure already sees the transaction state it causes (Java
+    /// <c>TransactionManager.handleFailedBatch</c>). Failure paths only.
+    /// </summary>
+    internal Action<long, short, ErrorCode, Exception>? OnTransactionalBatchFailed { get; set; }
+
+    /// <summary>Called by <see cref="ReadyBatch"/> as its records fail. See <see cref="OnTransactionalBatchFailed"/>.</summary>
+    internal void ReportBatchFailure(ReadyBatch batch, Exception exception)
+    {
+        if (OnTransactionalBatchFailed is not { } report || batch.RecordBatch is not { } recordBatch)
+            return;
+
+        try
+        {
+            report(
+                recordBatch.ProducerId,
+                recordBatch.ProducerEpoch,
+                TransactionErrorClassifier.GetFailedBatchErrorCode(exception),
+                exception);
+        }
+        catch (Exception reportEx) { LogBatchCleanupStepFailed(reportEx); }
+    }
+
     // Per-partition sequence numbers for idempotent/transactional producing.
     // The broker requires monotonically increasing BaseSequence per partition.
     // Uses a mutable reference type so GetOrAdd returns the counter on the fast path
@@ -2857,7 +2885,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 options.BatchSize);
         // ReadyBatch lifecycle spans seal→send→response→cleanup (longer than PartitionBatch),
         // so its pool needs to be larger to avoid exhaustion under sustained throughput.
-        _readyBatchPool = new ReadyBatchPool(maxPoolSize: poolSize * ReadyBatchPoolSizeRatio);
+        _readyBatchPool = new ReadyBatchPool(maxPoolSize: poolSize * ReadyBatchPoolSizeRatio, failureObserver: this);
         _batchPool = new PartitionBatchPool(options, _compressionRatioEstimator, maxPoolSize: poolSize);
         _batchPool.SetReadyBatchPool(_readyBatchPool); // Wire up pools
         _maxBufferMemory = (long)options.BufferMemory;
@@ -9166,7 +9194,9 @@ public readonly record struct RecordAppendResult(
 /// Pool for ReadyBatch objects to eliminate per-batch class allocations.
 /// Extends <see cref="ObjectPool{T}"/> for pre-warm support and miss tracking.
 /// </summary>
-internal sealed class ReadyBatchPool(int maxPoolSize = BatchArena.DefaultPoolSize * 2)
+internal sealed class ReadyBatchPool(
+    int maxPoolSize = BatchArena.DefaultPoolSize * 2,
+    RecordAccumulator? failureObserver = null)
     : ObjectPool<ReadyBatch>(maxPoolSize)
 {
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -9184,7 +9214,7 @@ internal sealed class ReadyBatchPool(int maxPoolSize = BatchArena.DefaultPoolSiz
         ProducerDebugCounters.RecordReadyBatchReturned();
     }
 
-    protected override ReadyBatch Create() => new();
+    protected override ReadyBatch Create() => failureObserver is null ? new() : new(failureObserver);
     protected override void Reset(ReadyBatch item) => item.Reset();
 }
 
@@ -9947,6 +9977,18 @@ internal sealed class ReadyBatch
     }
 
     /// <summary>
+    /// Creates a pooled batch that reports its failures to the accumulator that owns it (see
+    /// <see cref="RecordAccumulator.OnTransactionalBatchFailed"/>). The owner is fixed for the
+    /// object's lifetime, so reuse writes nothing on the append or send path.
+    /// </summary>
+    internal ReadyBatch(RecordAccumulator failureObserver)
+    {
+        _failureObserver = failureObserver;
+    }
+
+    private readonly RecordAccumulator? _failureObserver;
+
+    /// <summary>
     /// Initializes the batch with data. Must be called after Rent() from pool.
     /// </summary>
     public void Initialize(
@@ -10310,6 +10352,10 @@ internal sealed class ReadyBatch
     {
         if (waitForPreSerialization)
             WaitForPreSerializationIfStarted();
+
+        // Before any record completes: a caller that observes the failure must already see the
+        // transaction state it causes. Failure path only; reports its own errors.
+        _failureObserver?.ReportBatchFailure(this, exception);
 
         try
         {

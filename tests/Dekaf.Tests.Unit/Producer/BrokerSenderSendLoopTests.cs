@@ -1501,13 +1501,14 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             (_, _, _, _, exception) => acknowledged.TrySetResult((exception, reported.Task.IsCompleted)),
             produceApiVersion: ProduceRequest.ImplicitTransactionPartitionEnrollmentVersion,
             isTransactional: true,
-            usesTransactionV2: true,
-            onTransactionalBatchFailed: (producerId, epoch, code) =>
-                reported.TrySetResult((producerId, epoch, code)));
+            usesTransactionV2: true);
+        accumulator.OnTransactionalBatchFailed = (producerId, epoch, code, _) =>
+            reported.TrySetResult((producerId, epoch, code));
 
         try
         {
-            var batch = CreateTestBatch(valueTaskSourcePool, "test-topic", partition: 0);
+            var batch = CreateTestBatch(
+                valueTaskSourcePool, "test-topic", partition: 0, failureObserver: accumulator);
             batch.RecordBatch.ProducerId = 4242;
             batch.RecordBatch.ProducerEpoch = 7;
             sender.Enqueue(batch);
@@ -1563,12 +1564,13 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             (_, _, _, _, exception) => acknowledged.TrySetResult(exception),
             produceApiVersion: ProduceRequest.ImplicitTransactionPartitionEnrollmentVersion,
             isTransactional: true,
-            usesTransactionV2: true,
-            onTransactionalBatchFailed: (_, _, code) => reported.TrySetResult(code));
+            usesTransactionV2: true);
+        accumulator.OnTransactionalBatchFailed = (_, _, code, _) => reported.TrySetResult(code);
 
         try
         {
-            sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", partition: 0));
+            sender.Enqueue(CreateTestBatch(
+                valueTaskSourcePool, "test-topic", partition: 0, failureObserver: accumulator));
             await sent.Task.WaitAsync(cancellationToken);
             response.SetResult(CreateErrorResponse("test-topic", partition: 0, ErrorCode.MessageTooLarge));
 
@@ -1615,12 +1617,13 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             (_, _, _, _, exception) => acknowledged.TrySetResult(exception),
             produceApiVersion: ProduceRequest.ImplicitTransactionPartitionEnrollmentVersion,
             isTransactional: true,
-            usesTransactionV2: true,
-            onTransactionalBatchFailed: (_, _, code) => reported.TrySetResult(code));
+            usesTransactionV2: true);
+        accumulator.OnTransactionalBatchFailed = (_, _, code, _) => reported.TrySetResult(code);
 
         try
         {
-            sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", partition: 0));
+            sender.Enqueue(CreateTestBatch(
+                valueTaskSourcePool, "test-topic", partition: 0, failureObserver: accumulator));
             await sent.Task.WaitAsync(cancellationToken);
             // Answer only after the batch's delivery deadline has passed, with a retriable error:
             // the retry path finds the deadline spent and fails the batch.

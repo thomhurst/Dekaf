@@ -254,6 +254,11 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     private readonly HashSet<TopicPartition> _transactionPartitionsBeingEnrolled = [];
     private readonly HashSet<Action<Exception?>> _partitionEnrollmentWaiters = [];
     private readonly Dictionary<TopicPartition, Exception> _partitionEnrollmentErrors = [];
+    // The failure of the first batch that made the current transaction abortable, reported as the
+    // InnerException of the AbortableTransactionException that refuses produce, commit and
+    // SendOffsets. Written under _partitionsInTransactionLock; cleared when the state returns to
+    // Ready.
+    private Exception? _transactionBatchFailure;
     private bool _partitionEnrollmentActive;
     private long _partitionEnrollmentGeneration;
     private readonly Func<IReadOnlyList<TopicPartition>, CancellationToken, ValueTask> _addPartitionsToTransaction;
@@ -739,6 +744,8 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             batchCompletionCallback,
             recordAppendedCallback,
             ResolveLeaderIdForUnackedBudget);
+        if (options.TransactionalId is not null)
+            _accumulator.OnTransactionalBatchFailed = OnTransactionalBatchFailed;
         _uniformStickyPartitioner?.SetPartitionQueueByteProvider(_accumulator.GetPartitionQueueBytes);
         _uniformStickyPartitioner?.SetRackLocalPartitionsProvider(
             _metadataManager.Metadata.GetPartitionsForRack);
@@ -2830,6 +2837,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         _transactionState = TransactionState.InTransaction;
         _preparedTransactionState = PreparedTransactionState.Empty;
         _lastTransactionError = ErrorCode.None;
+        Volatile.Write(ref _transactionBatchFailure, null);
         NotifyPartitionEnrollmentResetWaiters(ResetPartitionEnrollmentState());
 
         return new Transaction<TKey, TValue>(this);
@@ -3032,6 +3040,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             || preserveAbortableError && _transactionState == TransactionState.AbortableError;
         if (!preserveError)
         {
+            Volatile.Write(ref _transactionBatchFailure, null);
             _transactionState = TransactionState.Ready;
         }
     }
@@ -4986,10 +4995,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 ? _telemetryMetricCollector.RecordBrokerThrottle
                 : null,
             unackedBudget: _accumulator.GetBrokerUnackedBudget(brokerId),
-            usesTransactionV2: () => _currentTransactionUsesTV2,
-            onTransactionalBatchFailed: _options.TransactionalId is not null
-                ? OnTransactionalBatchFailed
-                : null)
+            usesTransactionV2: () => _currentTransactionUsesTV2)
         {
             TelemetryMetricCollector = _telemetryMetricCollector
         };
@@ -5340,17 +5346,23 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     }
 
     /// <summary>
-    /// A BrokerSender failed a batch of this transactional producer terminally (Java
-    /// <c>TransactionManager.handleFailedBatch</c>). A fence or an authorization failure makes the
-    /// producer fatal. Any other failure means records are missing from the open transaction, so it
-    /// becomes abortable and produce, prepare and commit refuse until the caller aborts; this also
-    /// covers the flush that runs in <see cref="TransactionState.CommittingTransaction"/> before
-    /// EndTxn. Outside an open transaction there is nothing to abort. A batch stamped with an
-    /// earlier producer ID or epoch belongs to a transaction that already ended with an abort
-    /// (which bumps the epoch; a commit flushes every batch first), so it is ignored.
-    /// Runs on a send loop, on error paths only.
+    /// A batch of this transactional producer failed, on any path (Java
+    /// <c>TransactionManager.handleFailedBatch</c>); the accumulator's batch-failure observer
+    /// reports it before the batch's records complete. A fence or an authorization failure makes
+    /// the producer fatal. Any other failure means records are missing from the open transaction,
+    /// so it becomes abortable and produce, prepare, commit and SendOffsets refuse until the caller
+    /// aborts; this also covers the flush that runs in
+    /// <see cref="TransactionState.CommittingTransaction"/> before EndTxn. Outside an open
+    /// transaction there is nothing to abort (an abort fails the batches it leaves behind itself).
+    /// A batch stamped with an earlier producer ID or epoch belongs to a transaction that already
+    /// ended with an abort (which bumps the epoch; a commit flushes every batch first), so it is
+    /// ignored. Error paths only.
     /// </summary>
-    internal void OnTransactionalBatchFailed(long producerId, short producerEpoch, ErrorCode errorCode)
+    internal void OnTransactionalBatchFailed(
+        long producerId,
+        short producerEpoch,
+        ErrorCode errorCode,
+        Exception? failure = null)
     {
         // Serialized with the enrollment-failure transition (and other senders' reports) so a
         // concurrent abortable report cannot overwrite a fatal one.
@@ -5378,6 +5390,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             if (state is not (TransactionState.InTransaction or TransactionState.CommittingTransaction))
                 return;
 
+            _transactionBatchFailure ??= failure;
             MarkTransactionAbortable(errorCode);
             LogTransactionalBatchFailedAbortable(errorCode, _options.TransactionalId);
         }
@@ -5565,13 +5578,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     {
         var txnState = _transactionState;
         if (txnState == TransactionState.AbortableError)
-        {
-            throw new AbortableTransactionException(_lastTransactionError,
-                "Cannot produce: the current transaction has an abortable error and must be aborted.")
-            {
-                TransactionalId = _options.TransactionalId
-            };
-        }
+            throw CreateAbortableTransactionError("Cannot produce");
 
         if (txnState == TransactionState.FatalError)
         {
@@ -5615,11 +5622,27 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         if (_transactionState != TransactionState.AbortableError)
             return;
 
-        throw new AbortableTransactionException(_lastTransactionError,
-            $"{operation}: the current transaction has an abortable error and must be aborted.")
-        {
-            TransactionalId = _options.TransactionalId
-        };
+        throw CreateAbortableTransactionError(operation);
+    }
+
+    /// <summary>
+    /// The error that refuses an operation of an abortable transaction. When a failed batch made it
+    /// abortable, that batch's failure is the inner exception, so the caller sees which records
+    /// were lost and why.
+    /// </summary>
+    private AbortableTransactionException CreateAbortableTransactionError(string operation)
+    {
+        var message = $"{operation}: the current transaction has an abortable error and must be aborted.";
+        var batchFailure = Volatile.Read(ref _transactionBatchFailure);
+        return batchFailure is null
+            ? new AbortableTransactionException(_lastTransactionError, message)
+            {
+                TransactionalId = _options.TransactionalId
+            }
+            : new AbortableTransactionException(_lastTransactionError, message, batchFailure)
+            {
+                TransactionalId = _options.TransactionalId
+            };
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
@@ -7468,6 +7491,14 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
 
     private void ThrowIfCannotProduce() => ThrowIfTransactionUnusable("Cannot produce");
 
+    private void ThrowIfCannotSendOffsets()
+    {
+        const string operation = "Cannot send offsets to transaction";
+        ThrowIfTransactionUnusable(operation);
+        // Offsets sent into an abortable transaction would be lost with it; Java refuses too.
+        _producer.ThrowIfAbortableTransactionError(operation);
+    }
+
     private void ThrowIfTransactionUnusable(string operation)
     {
         ThrowIfProducerDisposed();
@@ -7593,7 +7624,7 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
         string consumerGroupId,
         CancellationToken cancellationToken = default)
     {
-        ThrowIfTransactionUnusable("Cannot send offsets to transaction");
+        ThrowIfCannotSendOffsets();
 
         await _producer.SendOffsetsToTransactionInternalAsync(offsets, consumerGroupId, cancellationToken)
             .ConfigureAwait(false);
@@ -7604,7 +7635,7 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
         ConsumerGroupMetadata consumerGroupMetadata,
         CancellationToken cancellationToken = default)
     {
-        ThrowIfTransactionUnusable("Cannot send offsets to transaction");
+        ThrowIfCannotSendOffsets();
         ArgumentNullException.ThrowIfNull(consumerGroupMetadata);
 
         await _producer.SendOffsetsToTransactionInternalAsync(

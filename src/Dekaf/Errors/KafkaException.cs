@@ -479,6 +479,11 @@ public class TransactionException : KafkaException
     {
     }
 
+    internal TransactionException(ErrorCode errorCode, string message, Exception innerException)
+        : base(errorCode, message, innerException)
+    {
+    }
+
     /// <summary>
     /// The transactional ID.
     /// </summary>
@@ -505,6 +510,11 @@ public sealed class AbortableTransactionException : TransactionException
     }
 
     public AbortableTransactionException(ErrorCode errorCode, string message) : base(errorCode, message)
+    {
+    }
+
+    internal AbortableTransactionException(ErrorCode errorCode, string message, Exception innerException)
+        : base(errorCode, message, innerException)
     {
     }
 }
