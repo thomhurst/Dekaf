@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Reflection;
 using Dekaf.Consumer;
 using Dekaf.Errors;
 using Dekaf.Protocol;
@@ -135,6 +136,7 @@ public sealed partial class ConsumerCoordinatorKip848Tests
 
         script.Respond = (_, _) => Joined("member-1", memberEpoch: 6, CreateAssignment(TestTopicId, 0));
         await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
+        await SynchronizeAssignmentAsync(coordinator);
 
         await coordinator.CommitOffsetsAsync(
             [new TopicPartitionOffset("test-topic", 0, 10)],
@@ -343,6 +345,140 @@ public sealed partial class ConsumerCoordinatorKip848Tests
         }
     }
 
+    [Test]
+    public async Task CommitOffsetsAsync_AfterHeartbeatFence_FailsFastUntilAssignmentIsResynchronized()
+    {
+        _metadataManager.SetApiVersion(ApiKey.OffsetCommit, 9, 9);
+        var script = new HeartbeatScript(this);
+        var (listener, _) = CreateRecordingListener();
+        await using var coordinator = await JoinAsync(script, listener);
+        var committedEpochs = new List<int>();
+        _connection.SendAsync<OffsetCommitRequest, OffsetCommitResponse>(
+                Arg.Any<OffsetCommitRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(callInfo =>
+            {
+                lock (committedEpochs)
+                    committedEpochs.Add(callInfo.Arg<OffsetCommitRequest>()!.GenerationIdOrMemberEpoch);
+                return ValueTask.FromResult(new OffsetCommitResponse { Topics = [] });
+            });
+
+        script.Respond = (_, _) => Error(ErrorCode.FencedMemberEpoch);
+        await RunHeartbeatLoopUntilItStopsAsync(coordinator);
+
+        // Offsets consumed under the lost membership must not be committed: another member may
+        // own the partition and have committed past them.
+        var fenced = await Assert.That(async () => await coordinator.CommitOffsetsAsync(
+                [new TopicPartitionOffset("test-topic", 0, 10)],
+                retryUntilApiTimeout: true,
+                CancellationToken.None))
+            .Throws<GroupException>();
+        await Assert.That(fenced!.ErrorCode).IsEqualTo(ErrorCode.FencedMemberEpoch);
+        await Assert.That(fenced.IsRetriable).IsFalse();
+
+        // Rejoining alone does not lift the fence: until the consumer synchronizes the
+        // assignment it still holds the offsets it stored for the lost partitions, and a commit
+        // under the new epoch would send them.
+        script.Respond = (_, _) => Joined("member-1", memberEpoch: 6, CreateAssignment(TestTopicId, 1));
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
+        var stillFenced = await Assert.That(async () => await coordinator.CommitOffsetsAsync(
+                [new TopicPartitionOffset("test-topic", 0, 10)],
+                retryUntilApiTimeout: true,
+                CancellationToken.None))
+            .Throws<GroupException>();
+        await Assert.That(stillFenced!.ErrorCode).IsEqualTo(ErrorCode.FencedMemberEpoch);
+
+        var sync = await coordinator.GetAssignmentSnapshotAndDrainRevocationsAsync(CancellationToken.None);
+        await Assert.That(sync.Revocations).IsNotNull();
+        coordinator.AcknowledgeAssignmentSync(sync.Version);
+
+        await coordinator.CommitOffsetsAsync(
+            [new TopicPartitionOffset("test-topic", 1, 10)],
+            retryUntilApiTimeout: true,
+            CancellationToken.None);
+        await Assert.That(committedEpochs).IsEquivalentTo([6]);
+    }
+
+    [Test]
+    public async Task CommitOffsetsAsync_StaleMemberEpochAfterHeartbeatStopped_FailsFastWithoutRetrying()
+    {
+        // The heartbeat loop gave up after a session timeout without transport, so no refreshed
+        // epoch will ever arrive. Waiting for one and retrying until the API timeout only delays
+        // a failure the application has to handle by polling to rejoin.
+        _metadataManager.SetApiVersion(ApiKey.OffsetCommit, 9, 9);
+        var script = new HeartbeatScript(this);
+        var (listener, _) = CreateRecordingListener();
+        await using var coordinator = await JoinThenLoseCoordinatorAsync(
+            script,
+            listener,
+            defaultApiTimeoutMs: 5_000);
+        var commitRequestCount = 0;
+        _connection.SendAsync<OffsetCommitRequest, OffsetCommitResponse>(
+                Arg.Any<OffsetCommitRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                Interlocked.Increment(ref commitRequestCount);
+                return ValueTask.FromResult(new OffsetCommitResponse
+                {
+                    Topics =
+                    [
+                        new OffsetCommitResponseTopic
+                        {
+                            Name = "test-topic",
+                            Partitions =
+                            [
+                                new OffsetCommitResponsePartition
+                                {
+                                    PartitionIndex = 0,
+                                    ErrorCode = ErrorCode.StaleMemberEpoch
+                                }
+                            ]
+                        }
+                    ]
+                });
+            });
+
+        var exception = await Assert.That(async () => await coordinator.CommitOffsetsAsync(
+                [new TopicPartitionOffset("test-topic", 0, 10)],
+                retryUntilApiTimeout: true,
+                CancellationToken.None))
+            .Throws<GroupException>();
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.StaleMemberEpoch);
+        await Assert.That(exception.IsRetriable).IsFalse();
+        await Assert.That(Volatile.Read(ref commitRequestCount)).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task MembershipLoss_LeaveWithAnUnreportedLoss_ReportsThePartitionsLost()
+    {
+        var script = new HeartbeatScript(this);
+        var (listener, calls) = CreateRecordingListener();
+        await using var coordinator = await JoinAsync(script, listener);
+        calls.Clear();
+
+        // A fence whose OnPartitionsLost has not run yet (for example the heartbeat stop
+        // interrupted it before it took the queue), followed by a leave.
+        typeof(ConsumerCoordinator)
+            .GetMethod("FenceMembership", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(coordinator, [false]);
+        await Assert.That(calls.Count).IsEqualTo(0);
+
+        script.Respond = (_, _) => ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
+        {
+            ErrorCode = ErrorCode.None,
+            MemberId = "member-1",
+            MemberEpoch = -1,
+            HeartbeatIntervalMs = 60_000
+        });
+        await coordinator.LeaveGroupAsync(cancellationToken: CancellationToken.None);
+
+        await Assert.That(string.Join(" | ", calls)).IsEqualTo("lost:test-topic-0,test-topic-1");
+    }
+
     private void SetupOffsetFetch(ErrorCode firstErrorCode)
     {
         var requestCount = 0;
@@ -368,7 +504,8 @@ public sealed partial class ConsumerCoordinatorKip848Tests
         HeartbeatScript script,
         IRebalanceListener listener,
         int sessionTimeoutMs = 45000,
-        int rebalanceTimeoutMs = 30000)
+        int rebalanceTimeoutMs = 30000,
+        int defaultApiTimeoutMs = 60000)
     {
         SetupFindCoordinator();
         script.Respond = (_, _) => Joined("member-1", memberEpoch: 5, CreateAssignment(TestTopicId, 0, 1));
@@ -377,7 +514,8 @@ public sealed partial class ConsumerCoordinatorKip848Tests
             retryBackoffMs: 1,
             retryBackoffMaxMs: 1,
             sessionTimeoutMs: sessionTimeoutMs,
-            rebalanceTimeoutMs: rebalanceTimeoutMs);
+            rebalanceTimeoutMs: rebalanceTimeoutMs,
+            defaultApiTimeoutMs: defaultApiTimeoutMs);
         var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
         await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
         await coordinator.StopHeartbeatAsync();
@@ -392,9 +530,15 @@ public sealed partial class ConsumerCoordinatorKip848Tests
     private async Task<ConsumerCoordinator> JoinThenLoseCoordinatorAsync(
         HeartbeatScript script,
         IRebalanceListener listener,
-        int rebalanceTimeoutMs = 30000)
+        int rebalanceTimeoutMs = 30000,
+        int defaultApiTimeoutMs = 60000)
     {
-        var coordinator = await JoinAsync(script, listener, sessionTimeoutMs: 100, rebalanceTimeoutMs: rebalanceTimeoutMs);
+        var coordinator = await JoinAsync(
+            script,
+            listener,
+            sessionTimeoutMs: 100,
+            rebalanceTimeoutMs: rebalanceTimeoutMs,
+            defaultApiTimeoutMs: defaultApiTimeoutMs);
         script.Respond = (_, _) =>
             ValueTask.FromException<ConsumerGroupHeartbeatResponse>(new IOException("coordinator connection closed"));
         await RunHeartbeatLoopUntilItStopsAsync(coordinator);
@@ -403,6 +547,12 @@ public sealed partial class ConsumerCoordinatorKip848Tests
         await Assert.That(coordinator.Assignment.Count).IsEqualTo(2);
         script.Reset();
         return coordinator;
+    }
+
+    private static async Task SynchronizeAssignmentAsync(ConsumerCoordinator coordinator)
+    {
+        var sync = await coordinator.GetAssignmentSnapshotAndDrainRevocationsAsync(CancellationToken.None);
+        coordinator.AcknowledgeAssignmentSync(sync.Version);
     }
 
     private static async Task RunHeartbeatLoopUntilItStopsAsync(ConsumerCoordinator coordinator)

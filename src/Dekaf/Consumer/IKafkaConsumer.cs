@@ -158,6 +158,15 @@ public interface IKafkaConsumer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     /// The consumer was built without a group ID. Configure one with
     /// <see cref="ConsumerBuilder{TKey,TValue}.WithGroupId"/> before committing offsets.
     /// </exception>
+    /// <exception cref="GroupException">
+    /// The consumer is not an active member of its group, so the coordinator would reject or
+    /// mis-attribute the commit. <see cref="KafkaException.IsRetriable"/> is <see langword="false"/>.
+    /// <see cref="KafkaException.ErrorCode"/> is <c>FencedMemberEpoch</c> after the group fenced or
+    /// forgot the member (its partitions were reported through <c>OnPartitionsLost</c>) or after the
+    /// maximum poll interval elapsed, and <c>StaleMemberEpoch</c> when the coordinator rejected the
+    /// member epoch while the member was rejoining. Poll to rejoin the group; offsets consumed
+    /// under the lost membership are discarded and not committed.
+    /// </exception>
     ValueTask CommitAsync(CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -169,6 +178,15 @@ public interface IKafkaConsumer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     /// <exception cref="InvalidOperationException">
     /// The consumer was built without a group ID. Configure one with
     /// <see cref="ConsumerBuilder{TKey,TValue}.WithGroupId"/> before committing offsets.
+    /// </exception>
+    /// <exception cref="GroupException">
+    /// The consumer is not an active member of its group, so the coordinator would reject or
+    /// mis-attribute the commit. <see cref="KafkaException.IsRetriable"/> is <see langword="false"/>.
+    /// <see cref="KafkaException.ErrorCode"/> is <c>FencedMemberEpoch</c> after the group fenced or
+    /// forgot the member (its partitions were reported through <c>OnPartitionsLost</c>) or after the
+    /// maximum poll interval elapsed, and <c>StaleMemberEpoch</c> when the coordinator rejected the
+    /// member epoch while the member was rejoining. Poll to rejoin the group; offsets consumed
+    /// under the lost membership are discarded and not committed.
     /// </exception>
     ValueTask CommitAsync(IEnumerable<TopicPartitionOffset> offsets, CancellationToken cancellationToken = default);
 
