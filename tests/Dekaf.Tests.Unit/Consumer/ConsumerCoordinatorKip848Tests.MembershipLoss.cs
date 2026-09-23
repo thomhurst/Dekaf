@@ -751,6 +751,55 @@ public sealed partial class ConsumerCoordinatorKip848Tests
     }
 
     [Test]
+    public async Task MembershipLoss_FenceDuringTheStablePollDrain_RejoinsInsteadOfCarryingOn()
+    {
+        var script = new HeartbeatScript(this);
+        var (recording, calls) = CreateRecordingListener();
+        ConsumerCoordinator? coordinator = null;
+        var fenceDuringCallback = 1;
+        var listener = Substitute.For<IRebalanceListener>();
+        listener.OnPartitionsLostAsync(Arg.Any<IEnumerable<TopicPartition>>(), Arg.Any<CancellationToken>())
+            .Returns(callInfo =>
+            {
+                // While the poll delivers a queued loss, the coordinator fences the member.
+                if (Interlocked.Exchange(ref fenceDuringCallback, 0) == 1)
+                {
+                    var coordinatorLock = GetPrivateField<SemaphoreSlim>(coordinator!, "_lock");
+                    coordinatorLock.Wait();
+                    try
+                    {
+                        typeof(ConsumerCoordinator)
+                            .GetMethod("FenceMembership", BindingFlags.Instance | BindingFlags.NonPublic)!
+                            .Invoke(coordinator, [false]);
+                    }
+                    finally
+                    {
+                        coordinatorLock.Release();
+                    }
+                }
+
+                return recording.OnPartitionsLostAsync(
+                    callInfo.Arg<IEnumerable<TopicPartition>>()!,
+                    callInfo.Arg<CancellationToken>());
+            });
+        listener.OnPartitionsAssignedAsync(Arg.Any<IEnumerable<TopicPartition>>(), Arg.Any<CancellationToken>())
+            .Returns(callInfo => recording.OnPartitionsAssignedAsync(
+                callInfo.Arg<IEnumerable<TopicPartition>>()!,
+                callInfo.Arg<CancellationToken>()));
+        coordinator = await JoinAsync(script, listener);
+        await using var coordinatorLifetime = coordinator;
+        calls.Clear();
+        QueueLoss(coordinator, new TopicPartition("other-topic", 0));
+
+        script.Respond = (_, _) => Joined("member-1", memberEpoch: 6, CreateAssignment(TestTopicId, 1));
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
+
+        await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Stable);
+        await Assert.That(string.Join(" | ", calls)).IsEqualTo(
+            "lost:other-topic-0 | lost:test-topic-0,test-topic-1 | assigned:test-topic-1");
+    }
+
+    [Test]
     public async Task MembershipLoss_OffsetFetchUnknownMemberReceivedAsTheCallerCancels_IsStillApplied()
     {
         _metadataManager.SetApiVersion(ApiKey.OffsetFetch, 9, 9);

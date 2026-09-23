@@ -117,6 +117,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     // one volatile read; it leaves an assignment change its publisher is still delivering alone,
     // so steady-heartbeat callbacks do not suppress buffered polls.
     private int _pendingRebalanceCallbackCount;
+    // Makes counting and enqueueing an entry one step for anyone who sees the count but not yet
+    // the entry: publishers count and enqueue under it, and such a reader takes it to wait for the
+    // publisher to finish. Never held while anything else is acquired.
+    private readonly object _pendingPublishLock = new();
     // The drain the current async flow is running in. A listener that re-enters the coordinator
     // (a poll or join from inside its callback) must not wait for the drain it is running in: its
     // own entry stays queued until it returns. The scope is deactivated when the drain ends, so a
@@ -598,7 +602,18 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             // Callbacks cancellation deferred after the member became Stable: no rejoin will
             // retry them, so the next poll delivers them before returning.
             if (Volatile.Read(ref _pendingRebalanceCallbackCount) != 0)
+            {
                 await InvokePendingRebalanceCallbacksAsync(cancellationToken).ConfigureAwait(false);
+
+                // A fence or expiry that queued one of those callbacks ended the membership: fall
+                // through to recovery instead of carrying on as a member.
+                if (_state != CoordinatorState.Stable)
+                {
+                    await EnsureActiveGroupConsumerProtocolAsync(topics, subscribedTopicRegex, cancellationToken)
+                        .ConfigureAwait(false);
+                    return;
+                }
+            }
 
             if (SubscriptionMatches(topics, subscribedTopicRegex))
                 return;
@@ -1112,15 +1127,35 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private void EnqueuePendingRebalanceCallback(PendingRebalanceCallback callback, bool reserved = false)
     {
         // Count first: the stable poll path reads only the count, so it must never see zero
-        // while an unowned entry is queued. A drainer that sees the count before the entry finds
-        // the queue empty and simply returns; the entry is drained by the next check.
-        if (!reserved)
+        // while an unowned entry is queued. Both happen under the publish lock, so a reader that
+        // sees the count but not yet the entry waits for it (HasQueuedRebalanceCallbacks).
+        lock (_pendingPublishLock)
         {
-            Interlocked.Increment(ref _pendingRebalanceCallbackCount);
-            callback.PollVisibility = 1;
-        }
+            if (!reserved)
+            {
+                Interlocked.Increment(ref _pendingRebalanceCallbackCount);
+                callback.PollVisibility = 1;
+            }
 
-        _pendingRebalanceCallbacks.Enqueue(callback);
+            _pendingRebalanceCallbacks.Enqueue(callback);
+        }
+    }
+
+    /// <summary>
+    /// Whether any rebalance callback is queued. A counted entry whose publisher has not finished
+    /// enqueueing it is waited for, so a count the stable poll path saw is never mistaken for an
+    /// empty queue.
+    /// </summary>
+    private bool HasQueuedRebalanceCallbacks()
+    {
+        if (!_pendingRebalanceCallbacks.IsEmpty)
+            return true;
+
+        if (Volatile.Read(ref _pendingRebalanceCallbackCount) == 0)
+            return false;
+
+        lock (_pendingPublishLock)
+            return !_pendingRebalanceCallbacks.IsEmpty;
     }
 
     /// <summary>
@@ -2053,7 +2088,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 // Queued callbacks describe earlier assignments; deliver them while those are
                 // still current, before this response publishes a newer one. Cancellation here
                 // drops the response as the lock wait does, and the entries stay queued.
-                if (!_pendingRebalanceCallbacks.IsEmpty)
+                if (HasQueuedRebalanceCallbacks())
                     await InvokePendingRebalanceCallbacksCoreAsync(cancellationToken).ConfigureAwait(false);
 
                 await _lock.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -2881,7 +2916,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
     private async ValueTask InvokePendingRebalanceCallbacksAsync(CancellationToken cancellationToken)
     {
-        if (_pendingRebalanceCallbacks.IsEmpty ||
+        if (!HasQueuedRebalanceCallbacks() ||
             s_drainScope.Value is { IsActive: true } scope && ReferenceEquals(scope.Coordinator, this))
             return;
 
@@ -2902,7 +2937,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     // not called a second time.
     private async ValueTask InvokePendingRebalanceCallbacksCoreAsync(CancellationToken cancellationToken)
     {
-        if (_pendingRebalanceCallbacks.IsEmpty)
+        if (!HasQueuedRebalanceCallbacks())
             return;
 
         // The value reverts when this async method returns; tasks a listener starts inherit it,
@@ -3002,7 +3037,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     /// </summary>
     internal async ValueTask InvokePendingRebalanceCallbacksUnlessCancelledAsync(CancellationToken cancellationToken)
     {
-        if (_pendingRebalanceCallbacks.IsEmpty)
+        if (!HasQueuedRebalanceCallbacks())
             return;
 
         // The wait is bounded by the token even when a listener ignores it (close, disposal, a
@@ -3235,7 +3270,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         // say) are delivered before the locks go away. Entries leave the queue only once
         // delivered, so after a consumer close has drained there is nothing to repeat. Bounded
         // by the API timeout so a listener that never returns cannot hang disposal.
-        if (!_pendingRebalanceCallbacks.IsEmpty)
+        if (HasQueuedRebalanceCallbacks())
         {
             using var drainTimeout = new CancellationTokenSource(_options.DefaultApiTimeoutMs);
             try
