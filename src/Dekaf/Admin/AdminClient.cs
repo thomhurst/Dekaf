@@ -1820,12 +1820,20 @@ public sealed partial class AdminClient :
             ArgumentOutOfRangeException.ThrowIfNegative(options.TimeoutMs);
         var transactionTimeoutMs = options?.TimeoutMs ?? _options.RequestTimeoutMs;
 
+        // Kept across attempts. Each InitProducerId bumps the producer epoch, so an ID whose fence
+        // a coordinator already answered is not looked up or sent again: a second bump could fence
+        // a producer that restarted after the first fence.
+        var result = new Dictionary<string, FenceProducersResultInfo>(StringComparer.Ordinal);
+
         return await WithRetryAsync<IReadOnlyDictionary<string, FenceProducersResultInfo>>(async attemptToken =>
         {
             await EnsureInitializedAsync(attemptToken).ConfigureAwait(false);
             var idsByCoordinator = new Dictionary<int, List<string>>();
             foreach (var transactionalId in transactionalIdList)
             {
+                if (result.ContainsKey(transactionalId))
+                    continue;
+
                 var coordinatorId = await FindTransactionCoordinatorAsync(transactionalId, attemptToken).ConfigureAwait(false);
                 if (!idsByCoordinator.TryGetValue(coordinatorId, out var ids))
                 {
@@ -1835,8 +1843,6 @@ public sealed partial class AdminClient :
 
                 ids.Add(transactionalId);
             }
-
-            var result = new Dictionary<string, FenceProducersResultInfo>(StringComparer.Ordinal);
 
             foreach (var (coordinatorId, ids) in idsByCoordinator)
             {
