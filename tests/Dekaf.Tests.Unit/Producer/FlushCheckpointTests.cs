@@ -586,6 +586,146 @@ public sealed class FlushCheckpointTests
     }
 
     [Test]
+    public async Task FlushAsync_FastPath_CoversBatchDetachedButNotYetInFlight()
+    {
+        // A sealing thread has detached the open batch (no longer counted as unsealed) and not
+        // yet enqueued it (not yet counted in flight). The fast path must still see it; before
+        // the fix it returned while the record stayed undelivered.
+        const string topic = "flush-checkpoint-rotating";
+        var accumulator = new RecordAccumulator(CreateOptions());
+        AccumulatorTestHelpers.KeepBatchesOpenDespiteAppLimitedBypass(accumulator);
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
+        using var releaseEnqueue = new ManualResetEventSlim(false);
+        var enqueueReached = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        accumulator.BeforeCompletedBatchEnqueueForTest = () =>
+        {
+            accumulator.BeforeCompletedBatchEnqueueForTest = null;
+            enqueueReached.TrySetResult();
+            releaseEnqueue.Wait(Bound);
+        };
+        Task? sealTask = null;
+        ReadyBatch? batch = null;
+
+        try
+        {
+            var completion = pool.Rent();
+            var beforeFlush = completion.Task;
+            await Assert.That(accumulator.TryAppendWithCompletion(
+                topic,
+                partition: 0,
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                PooledMemory.Null,
+                PooledMemory.Null,
+                headers: null,
+                headerCount: 0,
+                completion)).IsTrue();
+
+            sealTask = Task.Factory.StartNew(
+                () => AccumulatorTestHelpers.SealAllAsync(accumulator).AsTask().GetAwaiter().GetResult(),
+                CancellationToken.None,
+                TaskCreationOptions.LongRunning,
+                TaskScheduler.Default);
+            await enqueueReached.Task.WaitAsync(Bound);
+
+            await Assert.That(accumulator.UnsealedBatchCount).IsEqualTo(0);
+            await Assert.That(accumulator.InFlightBatchCount).IsEqualTo(0);
+            await Assert.That(accumulator.RotatingPartitionCountForTest).IsEqualTo(1);
+
+            var flushTask = accumulator.FlushAsync(CancellationToken.None).AsTask();
+            await Assert.That(flushTask.IsCompleted).IsFalse()
+                .Because("the detached batch holds a record appended before the flush started");
+
+            releaseEnqueue.Set();
+            await sealTask.WaitAsync(Bound);
+            await Assert.That(accumulator.RotatingPartitionCountForTest).IsEqualTo(0);
+
+            batch = await DrainAsync(accumulator, new TopicPartition(topic, 0));
+            await Assert.That(flushTask.IsCompleted).IsFalse();
+            CompleteAndReturn(accumulator, batch, baseOffset: 0);
+            batch = null;
+
+            await flushTask.WaitAsync(Bound);
+            await Assert.That((await beforeFlush).Offset).IsEqualTo(0);
+        }
+        finally
+        {
+            releaseEnqueue.Set();
+            accumulator.BeforeCompletedBatchEnqueueForTest = null;
+            if (sealTask is not null)
+                await sealTask.WaitAsync(Bound);
+            if (batch is not null)
+                CompleteAndReturn(accumulator, batch, baseOffset: 0);
+
+            await accumulator.DisposeAsync();
+            await pool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task FlushAsync_Canceled_RetiresItsCheckpointRegistration()
+    {
+        // A flush canceled while waiting must not leave its checkpoint registered: a later
+        // flush with a higher checkpoint could not register its own and would be woken early.
+        const string topic = "flush-checkpoint-canceled";
+        var accumulator = new RecordAccumulator(CreateOptions());
+        AccumulatorTestHelpers.KeepBatchesOpenDespiteAppLimitedBypass(accumulator);
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
+        using var cts = new CancellationTokenSource();
+        var checkpointCaptured = new TaskCompletionSource<long>(TaskCreationOptions.RunContinuationsAsynchronously);
+        accumulator.AfterFlushCheckpointCapturedForTest = checkpoint => checkpointCaptured.TrySetResult(checkpoint);
+        ReadyBatch? firstBatch = null;
+        ReadyBatch? secondBatch = null;
+
+        try
+        {
+            await Assert.That(await AccumulatorTestHelpers.AppendNullRecordAsync(
+                accumulator, topic, partition: 0, partitionCount: 2)).IsTrue();
+
+            var canceledFlush = accumulator.FlushAsync(cts.Token).AsTask();
+            var firstCheckpoint = await checkpointCaptured.Task.WaitAsync(Bound);
+            accumulator.AfterFlushCheckpointCapturedForTest = null;
+            await TestWait.UntilAsync(() => accumulator.FlushCheckpointWakeSequenceForTest == firstCheckpoint, Bound);
+
+            await cts.CancelAsync();
+            await Assert.That(async () => await canceledFlush.WaitAsync(Bound)).Throws<OperationCanceledException>();
+            await Assert.That(accumulator.FlushCheckpointWakeSequenceForTest).IsEqualTo(long.MaxValue)
+                .Because("the canceled flush retires its registration");
+
+            // A newer batch enters the pipeline while the first flush's batch is still in
+            // flight, so a later flush waits at a higher checkpoint and can now register it.
+            firstBatch = await DrainAsync(accumulator, new TopicPartition(topic, 0));
+            await Assert.That(await AccumulatorTestHelpers.AppendNullRecordAsync(
+                accumulator, topic, partition: 1, partitionCount: 2)).IsTrue();
+            await AccumulatorTestHelpers.SealAllAsync(accumulator);
+            secondBatch = await DrainAsync(accumulator, new TopicPartition(topic, 1));
+            var laterCheckpoint = accumulator.CaptureFlushCheckpointForTest();
+            await Assert.That(laterCheckpoint).IsGreaterThan(firstCheckpoint);
+
+            var laterFlush = accumulator.FlushAsync(CancellationToken.None).AsTask();
+            await TestWait.UntilAsync(() => accumulator.FlushCheckpointWakeSequenceForTest == laterCheckpoint, Bound);
+
+            CompleteAndReturn(accumulator, firstBatch, baseOffset: 0);
+            firstBatch = null;
+            await Assert.That(laterFlush.IsCompleted).IsFalse();
+
+            CompleteAndReturn(accumulator, secondBatch, baseOffset: 1);
+            secondBatch = null;
+            await laterFlush.WaitAsync(Bound);
+        }
+        finally
+        {
+            accumulator.AfterFlushCheckpointCapturedForTest = null;
+            if (firstBatch is not null)
+                CompleteAndReturn(accumulator, firstBatch, baseOffset: 0);
+            if (secondBatch is not null)
+                CompleteAndReturn(accumulator, secondBatch, baseOffset: 1);
+
+            await accumulator.DisposeAsync();
+            await pool.DisposeAsync();
+        }
+    }
+
+    [Test]
     public async Task FlushAsync_WaitingOnBlockedAppendWorker_CompletesWhenDisposed()
     {
         // A flush waiting for an append worker stops waiting when the accumulator is disposed,

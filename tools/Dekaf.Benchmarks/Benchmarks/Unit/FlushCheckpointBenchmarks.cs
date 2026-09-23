@@ -6,8 +6,9 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 
 /// <summary>
 /// Covers the per-batch pipeline bookkeeping that the FlushAsync checkpoint (#3386) extends:
-/// every sealed batch takes an entry sequence when it joins the in-flight list, and every exit
-/// reports whether the list head moved past a waiting flush's checkpoint.
+/// every sealed batch counts its rotation while it moves from the open slot to the in-flight
+/// list (so the flush fast path cannot miss it), takes an entry sequence when it joins that
+/// list, and every exit reports whether the list head moved past a waiting flush's checkpoint.
 /// </summary>
 /// <remarks>
 /// <para>

@@ -1175,6 +1175,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     // Replaces O(n) enumeration of _partitionDeques in HasUnsealedBatches().
     // Incremented when pd.CurrentBatch is set to a new batch, decremented when set to null.
     private int _unsealedBatchCount;
+
+    // Partitions whose rotation gate is set: a batch detached from the append path that has
+    // not yet entered the in-flight list (or been dropped). Incremented before the detach
+    // decrements _unsealedBatchCount and decremented after the batch is counted in flight, so
+    // the flush fast path cannot miss a batch in that handover. Changes once per rotation.
+    private int _rotatingPartitionCount;
     // TCS for async waiting - created on-demand, completed when counter reaches 0
     // Using TCS instead of ManualResetEventSlim avoids polling and ThreadPool starvation
     // Not volatile - use Volatile.Read/Interlocked for thread-safe access
@@ -3971,7 +3977,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     finally
                     {
                         if (releaseRotationAfterFail)
-                            Volatile.Write(ref pd.RotationInProgress, false);
+                            ReleaseRotationGate(pd);
                     }
                 }
 
@@ -4464,7 +4470,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     finally
                     {
                         if (releaseRotationAfterFail)
-                            Volatile.Write(ref pd.RotationInProgress, false);
+                            ReleaseRotationGate(pd);
                     }
                 }
 
@@ -5121,7 +5127,14 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     {
         pd.CurrentBatch = null;
         ClearLingerPartitionTracking(pd);
-        pd.RotationInProgress = true;
+        // Count the gate before uncounting the open batch, so the flush fast path always sees
+        // the batch through one of the two counters until it is counted in flight. An owner
+        // that detaches again while it still holds the gate is already counted.
+        if (!pd.RotationInProgress)
+        {
+            pd.RotationInProgress = true;
+            Interlocked.Increment(ref _rotatingPartitionCount);
+        }
         Interlocked.Decrement(ref _unsealedBatchCount);
         return currentBatch;
     }
@@ -5456,7 +5469,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         finally
         {
             if (releaseRotation)
-                Volatile.Write(ref pd.RotationInProgress, false);
+                ReleaseRotationGate(pd);
         }
     }
 
@@ -5467,7 +5480,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// pool that batch before the publication touches it. Returns true when the release is deferred.
     /// MUST be called under pd.Lock.
     /// </summary>
-    private static bool ClearRotationUnlessPublishPendingUnderLock(PartitionDeque pd, ReadyBatch? batchToPublish)
+    private bool ClearRotationUnlessPublishPendingUnderLock(PartitionDeque pd, ReadyBatch? batchToPublish)
     {
         if (batchToPublish is null)
         {
@@ -5514,10 +5527,25 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// <summary>
     /// Clears a stuck rotation gate if completion fails before the normal install/enqueue phase.
     /// </summary>
-    private static void ClearRotationInProgressUnderLock(PartitionDeque pd)
+    private void ClearRotationInProgressUnderLock(PartitionDeque pd)
     {
         ClearAdmissionFlushRequestUnderLock(pd);
-        pd.RotationInProgress = false;
+        ReleaseRotationGate(pd);
+    }
+
+    /// <summary>
+    /// Clears the rotation gate and uncounts it from <see cref="_rotatingPartitionCount"/>.
+    /// Only the gate's owner calls this (under pd.Lock or, after publication, outside it):
+    /// nothing sets the gate while it is set, so the read-then-clear cannot lose a set. Once
+    /// per rotation, not per record.
+    /// </summary>
+    private void ReleaseRotationGate(PartitionDeque pd)
+    {
+        if (!pd.RotationInProgress)
+            return;
+
+        Volatile.Write(ref pd.RotationInProgress, false);
+        Interlocked.Decrement(ref _rotatingPartitionCount);
     }
 
     private static void ClearAdmissionFlushRequestUnderLock(PartitionDeque pd)
@@ -5530,7 +5558,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         budget?.ReleaseAdmissionFlushClaim(claim);
     }
 
-    private static void ClearRotationInProgress(PartitionDeque pd)
+    private void ClearRotationInProgress(PartitionDeque pd)
     {
         using var guard = new SpinLockGuard(ref pd.Lock);
         ClearRotationInProgressUnderLock(pd);
@@ -7811,13 +7839,17 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         // Check cancellation upfront - must throw immediately if already cancelled
         cancellationToken.ThrowIfCancellationRequested();
 
-        // Fast path: no append-worker backlog, no unsealed batches and no in-flight batches -
-        // avoid async overhead entirely. Read the worker backlog first: a worker can append a
-        // handed-off record into a new open batch between the two reads, and reading the
-        // batch state second still sees that batch.
+        // Fast path: no append-worker backlog, no unsealed batches, no batch being rotated into
+        // the pipeline and no in-flight batches - avoid async overhead entirely. The reads
+        // follow a record's path (handoff, open batch, rotation, in flight) and each stage is
+        // counted before the previous one is uncounted, so a record moving on between two
+        // reads is still seen by the later one.
         var hasAppendWorkerBacklog = HasAppendWorkerBacklog();
         AfterFlushAppendWorkerBacklogCheckedForTest?.Invoke();
-        if (!hasAppendWorkerBacklog && !HasUnsealedBatches() && Volatile.Read(ref _inFlightBatchCount) == 0)
+        if (!hasAppendWorkerBacklog
+            && !HasUnsealedBatches()
+            && Volatile.Read(ref _rotatingPartitionCount) == 0
+            && Volatile.Read(ref _inFlightBatchCount) == 0)
         {
             return default;
         }
@@ -7879,6 +7911,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
     internal long CaptureFlushCheckpointForTest() => CaptureFlushCheckpoint();
 
+    internal long FlushCheckpointWakeSequenceForTest => Volatile.Read(ref _flushCheckpointWakeSequence);
+
+    internal int RotatingPartitionCountForTest => Volatile.Read(ref _rotatingPartitionCount);
+
     /// <summary>
     /// True once every batch whose entry sequence is at or below <paramref name="checkpoint"/>
     /// has left the in-flight list. The list is sorted by entry sequence, so this reads only
@@ -7923,17 +7959,34 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             // registration was visible did not signal.
             if (IsFlushCheckpointReached(checkpoint))
             {
-                // Retire a registration that is still ours, or it would wake a later flush with
-                // a higher checkpoint on the next head move. Signalling (not resetting) keeps
-                // it safe for another waiter registered at the same checkpoint: it wakes and
-                // re-registers.
-                if (Volatile.Read(ref _flushCheckpointWakeSequence) == checkpoint)
-                    SignalFlushCheckpointWaiters();
+                RetireFlushCheckpointWake(checkpoint);
                 return;
             }
 
-            await tcs.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await tcs.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                // A canceled flush leaves too; its checkpoint must not keep a later flush's
+                // higher checkpoint from registering.
+                RetireFlushCheckpointWake(checkpoint);
+                throw;
+            }
         }
+    }
+
+    /// <summary>
+    /// Retires a checkpoint registration that is still this waiter's when it stops waiting, or
+    /// it would wake a later flush with a higher checkpoint on the next head move. Signalling
+    /// (not resetting) keeps it safe for another waiter registered at the same checkpoint: it
+    /// wakes and re-registers. Once per flush exit, not per batch.
+    /// </summary>
+    private void RetireFlushCheckpointWake(long checkpoint)
+    {
+        if (Volatile.Read(ref _flushCheckpointWakeSequence) == checkpoint)
+            SignalFlushCheckpointWaiters();
     }
 
     private void RegisterFlushCheckpointWake(long checkpoint)
