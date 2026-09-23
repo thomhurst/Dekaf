@@ -5542,7 +5542,9 @@ public sealed partial class AdminClient :
     // Sends a mutation whose replay handling depends on whether a failed attempt could have reached
     // the broker. writeContext.WriteStarted is set once the frame write starts. A failure before
     // that point (a retired or disconnected connection, the wait for the write lock) sent nothing.
-    // A connection that cannot report the write start is treated as having started it.
+    // A connection that cannot report the write start is treated as having started it. The context
+    // is reset on every send, so one context per call serves all its batches and attempts; read
+    // WriteStarted only in the catch around this send.
     private static ValueTask<TResponse> SendObservingWriteAsync<TRequest, TResponse>(
         KafkaRequestWriteContext writeContext,
         IKafkaConnection connection,

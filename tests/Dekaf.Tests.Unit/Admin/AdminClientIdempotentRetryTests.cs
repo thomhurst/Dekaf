@@ -973,6 +973,74 @@ public sealed class AdminClientIdempotentRetryTests
     }
 
     [Test]
+    public async Task DeleteConsumerGroupsAsync_LaterBatchFailsBeforeWrite_ItsGroupNotFoundIsNotAccepted()
+    {
+        // group-a's batch starts writing and succeeds; group-b's batch then fails before its own
+        // write. The write start of group-a's batch must not carry over to group-b: group-b's
+        // request never reached a coordinator, so GROUP_ID_NOT_FOUND on the retry is a failure.
+        WriteObservingConnection? observed = null;
+        var (admin, connection) = CreateAdminWithConnection(
+            new AdminClientOptions { BootstrapServers = ["localhost:9092"] },
+            inner => observed = new WriteObservingConnection(inner),
+            ApiKey.DeleteGroups);
+        SetupCoordinatorPerGroup(connection);
+        var groupBAttempts = 0;
+
+        observed!.DeleteGroupsHandler = (request, writeStarted, _) =>
+        {
+            if (request.GroupsNames.Contains("group-b"))
+            {
+                if (Interlocked.Increment(ref groupBAttempts) == 1)
+                    throw new ObjectDisposedException("KafkaConnection", "Connection has been retired");
+
+                writeStarted();
+                return ValueTask.FromResult(new DeleteGroupsResponse
+                {
+                    Results = [new DeleteGroupsResponseResult { GroupId = "group-b", ErrorCode = ErrorCode.GroupIdNotFound }]
+                });
+            }
+
+            writeStarted();
+            return ValueTask.FromResult(new DeleteGroupsResponse
+            {
+                Results = [new DeleteGroupsResponseResult { GroupId = "group-a", ErrorCode = ErrorCode.None }]
+            });
+        };
+
+        var exception = await Assert.ThrowsAsync<GroupException>(async () =>
+            await admin.DeleteConsumerGroupsAsync(["group-a", "group-b"]));
+
+        await Assert.That(exception!.GroupId).IsEqualTo("group-b");
+        await Assert.That(exception.ErrorCode).IsEqualTo(ErrorCode.GroupIdNotFound);
+        await Assert.That(groupBAttempts).IsEqualTo(2);
+    }
+
+    // group-a is coordinated by node 1 and every other group by node 2.
+    private static void SetupCoordinatorPerGroup(IKafkaConnection connection) =>
+        connection.SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
+                Arg.Any<FindCoordinatorRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                var key = call.ArgAt<FindCoordinatorRequest>(0).Key!;
+                return ValueTask.FromResult(new FindCoordinatorResponse
+                {
+                    Coordinators =
+                    [
+                        new Coordinator
+                        {
+                            Key = key,
+                            NodeId = key == "group-a" ? 1 : 2,
+                            Host = "localhost",
+                            Port = 9092,
+                            ErrorCode = ErrorCode.None
+                        }
+                    ]
+                });
+            });
+
+    [Test]
     public async Task RemoveRaftVoterAsync_VoterNotFoundWithoutPriorSendFailure_Throws()
     {
         var (admin, connection) = CreateAdminWithMockConnection(ApiKey.RemoveRaftVoter);
