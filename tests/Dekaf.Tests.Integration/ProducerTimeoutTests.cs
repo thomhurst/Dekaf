@@ -254,28 +254,39 @@ public sealed class ProducerTimeoutTests(KafkaTestContainer kafka) : KafkaIntegr
                 pollIntervalMs: 10,
                 description: "concurrent production to start");
 
-            var beforeFlush = new Task<RecordMetadata>[messagesBeforeFlush];
+            // Delivery handlers run on the sender before a batch leaves the pipeline, so they
+            // show what the flush waited for. ProduceAsync tasks are not used here: with tracing
+            // or metrics listeners attached (as in this test host) they complete in a queued
+            // continuation that can run after the flush's own continuation.
+            var delivered = 0;
+            var failed = 0;
             for (var i = 0; i < messagesBeforeFlush; i++)
             {
-                beforeFlush[i] = producer.ProduceAsync(new ProducerMessage<string, string>
+                // Awaiting FireAsync returns once the record is appended (or handed off under
+                // backpressure), so the record precedes the flush.
+                await producer.FireAsync(new ProducerMessage<string, string>
                 {
                     Topic = topic,
                     Partition = i % partitionCount,
                     Key = $"before-flush-{i}",
                     Value = "before-flush"
-                }, CancellationToken.None).AsTask();
+                }, (metadata, error) =>
+                {
+                    if (error is null && metadata.Offset >= 0)
+                        Interlocked.Increment(ref delivered);
+                    else
+                        Interlocked.Increment(ref failed);
+                });
             }
 
             await producer.FlushWithTimeoutAsync();
 
+            var deliveredAtFlushReturn = Volatile.Read(ref delivered);
             await Assert.That(concurrentProducer.IsCompleted).IsFalse()
                 .Because("production continued for the whole flush");
-            foreach (var task in beforeFlush)
-            {
-                await Assert.That(task.IsCompletedSuccessfully).IsTrue()
-                    .Because("every record produced before the flush started is delivered when it returns");
-                await Assert.That((await task).Offset).IsGreaterThanOrEqualTo(0);
-            }
+            await Assert.That(Volatile.Read(ref failed)).IsEqualTo(0);
+            await Assert.That(deliveredAtFlushReturn).IsEqualTo(messagesBeforeFlush)
+                .Because("every record produced before the flush started is delivered when it returns");
         }
         finally
         {
