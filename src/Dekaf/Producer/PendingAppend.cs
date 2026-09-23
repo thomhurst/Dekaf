@@ -311,14 +311,21 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
 
     private void OnCancellation()
     {
-        // Disposing the registration does not wait for a callback already running, so bind this
-        // callback to the rental it observed before reading any per-rental field.
+        // The registration's state is the reusable instance, so a callback registered for an
+        // earlier rental can run after this instance was re-rented. Bind the callback to the rental
+        // it observed, then act only if that rental's own token is cancelled. Initialize publishes
+        // _cancellationToken before the generation, so the token read here is at least as new as
+        // the observed generation; a newer token only means the CAS below fails.
         var generation = Volatile.Read(ref _state);
         if ((generation & 1) != 0)
             return;
 
+        var cancellationToken = _cancellationToken;
+        if (!cancellationToken.IsCancellationRequested)
+            return;
+
         var accumulator = _accumulator;
-        if (TryFail(new OperationCanceledException(_cancellationToken), generation))
+        if (TryFail(new OperationCanceledException(cancellationToken), generation))
             accumulator?.DrainPendingAppendsIfHead(this);
     }
 

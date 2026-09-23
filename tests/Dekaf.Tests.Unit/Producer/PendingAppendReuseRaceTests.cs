@@ -1,3 +1,4 @@
+using System.Reflection;
 using Dekaf.Producer;
 
 namespace Dekaf.Tests.Unit.Producer;
@@ -172,7 +173,41 @@ public class PendingAppendReuseRaceTests
         await Assert.That(new ValueTask<bool>(reused, reused.Version).GetAwaiter().GetResult()).IsTrue();
     }
 
-    private static PendingAppend Rent(RecordAccumulator accumulator, PendingAppendPool pool, int partition)
+    [Test]
+    public async Task PendingAppend_StaleCancellationCallback_DoesNotCancelRentalWithLiveToken()
+    {
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            ClientId = "test-producer",
+            BufferMemory = BufferMemory,
+            LingerMs = 60_000
+        };
+        await using var accumulator = new RecordAccumulator(options);
+        var pool = new PendingAppendPool(1);
+        using var cancellation = new CancellationTokenSource();
+        var operation = Rent(accumulator, pool, partition: 0, cancellation.Token);
+        var generation = operation.Generation;
+
+        // A callback registered for an earlier rental of this instance runs now. The current
+        // rental's token is not cancelled, so the callback must leave it pending.
+        var onCancellation = typeof(PendingAppend).GetMethod(
+            "OnCancellation", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        onCancellation.Invoke(operation, null);
+        await Assert.That(operation.IsPending(generation)).IsTrue();
+
+        // The rental's own token still cancels it.
+        cancellation.Cancel();
+        await Assert.That(operation.IsPending(generation)).IsFalse();
+        await Assert.That(async () => await new ValueTask<bool>(operation, operation.Version))
+            .Throws<OperationCanceledException>();
+    }
+
+    private static PendingAppend Rent(
+        RecordAccumulator accumulator,
+        PendingAppendPool pool,
+        int partition,
+        CancellationToken cancellationToken = default)
     {
         var now = Dekaf.MonotonicClock.GetMilliseconds();
         var operation = pool.Rent();
@@ -192,7 +227,7 @@ public class PendingAppendReuseRaceTests
             deadlineTickCount: now + 30_000,
             accumulator: accumulator,
             pool: pool,
-            cancellationToken: CancellationToken.None);
+            cancellationToken: cancellationToken);
         return operation;
     }
 }

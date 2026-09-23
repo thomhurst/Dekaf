@@ -2714,7 +2714,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     madeProgress = _drainablePendingAppends.Count > 0;
                 }
 
-                if (madeProgress)
+                if (s_perRecordTestHooks && madeProgress)
                     AfterPendingAppendDrainReservationForTest?.Invoke();
 
                 foreach (var drainable in _drainablePendingAppends)
