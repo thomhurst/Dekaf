@@ -364,67 +364,96 @@ public sealed partial class AdminClient :
             }).ToList()
         }).ToList();
 
-        // Tracks whether a previous attempt may have applied the create on the broker.
-        // A retriable failure after the broker accepted the create (e.g. a response
-        // timeout, or waiting for leader election) makes the retry hit TopicAlreadyExists
-        // for a topic this call created — treat that as success instead of failing the
-        // whole operation. This is a heuristic: a topic created concurrently by another
-        // client between attempts is also reported as success. Validate-only requests
-        // never mutate cluster state, so they never arm the tolerance.
-        var createMayHaveApplied = false;
+        // Tracked per topic. A topic whose create may have reached the controller (its request's
+        // write started, or the controller answered REQUEST_TIMED_OUT for it) turns a later
+        // TopicAlreadyExists for that topic into success; a sibling's answer is never
+        // reinterpreted. This is a heuristic: a topic created concurrently by another client
+        // between attempts is also reported as success. Validate-only requests never mutate
+        // cluster state, so they never arm the tolerance.
+        var pending = topicData;
+        var ambiguousTopics = new HashSet<string>(StringComparer.Ordinal);
+        var createdTopicNames = new List<string>(topicData.Count);
         var writeContext = new KafkaRequestWriteContext(CancellationToken.None);
 
         await WithRetryAsync(async attemptToken =>
         {
             await EnsureInitializedAsync(attemptToken).ConfigureAwait(false);
-            var isRetryAttempt = createMayHaveApplied;
-            using var controllerLease = await LeaseControllerAsync(Protocol.ApiKey.CreateTopics, attemptToken).ConfigureAwait(false);
-            var controller = controllerLease.Connection;
-
-            var request = new CreateTopicsRequest
+            if (pending.Count > 0)
             {
-                Topics = topicData,
-                TimeoutMs = opts.TimeoutMs,
-                ValidateOnly = opts.ValidateOnly
-            };
+                using var controllerLease = await LeaseControllerAsync(Protocol.ApiKey.CreateTopics, attemptToken).ConfigureAwait(false);
+                var controller = controllerLease.Connection;
 
-            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
-                controller,
-                Protocol.ApiKey.CreateTopics,
-                CreateTopicsRequest.LowestSupportedVersion,
-                CreateTopicsRequest.HighestSupportedVersion);
-
-            CreateTopicsResponse response;
-            try
-            {
-                response = await SendObservingWriteAsync<CreateTopicsRequest, CreateTopicsResponse>(
-                    writeContext,
-                    controller,
-                    request,
-                    apiVersion,
-                    attemptToken).ConfigureAwait(false);
-            }
-            catch
-            {
-                if (!opts.ValidateOnly)
-                    createMayHaveApplied |= writeContext.WriteStarted;
-                throw;
-            }
-
-            // Check for errors
-            var createdTopicNames = new List<string>(response.Topics.Count);
-            foreach (var topic in response.Topics)
-            {
-                if (topic.ErrorCode != Protocol.ErrorCode.None &&
-                    !(isRetryAttempt && topic.ErrorCode == Protocol.ErrorCode.TopicAlreadyExists))
+                var request = new CreateTopicsRequest
                 {
-                    if (!opts.ValidateOnly && MayHaveAppliedDespiteError(topic.ErrorCode))
-                        createMayHaveApplied = true;
-                    throw new KafkaException(topic.ErrorCode,
-                        $"Failed to create topic '{topic.Name}': {topic.ErrorMessage ?? topic.ErrorCode.ToString()}");
+                    Topics = pending,
+                    TimeoutMs = opts.TimeoutMs,
+                    ValidateOnly = opts.ValidateOnly
+                };
+
+                var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                    controller,
+                    Protocol.ApiKey.CreateTopics,
+                    CreateTopicsRequest.LowestSupportedVersion,
+                    CreateTopicsRequest.HighestSupportedVersion);
+
+                CreateTopicsResponse response;
+                try
+                {
+                    response = await SendObservingWriteAsync<CreateTopicsRequest, CreateTopicsResponse>(
+                        writeContext,
+                        controller,
+                        request,
+                        apiVersion,
+                        attemptToken).ConfigureAwait(false);
+                }
+                catch
+                {
+                    if (!opts.ValidateOnly && writeContext.WriteStarted)
+                    {
+                        foreach (var topic in pending)
+                            ambiguousTopics.Add(topic.Name);
+                    }
+                    throw;
                 }
 
-                createdTopicNames.Add(topic.Name);
+                // Settle every topic's answer before retrying: a definitive error fails the call
+                // now, and only topics with a retriable answer are sent again.
+                KafkaException? definitiveFailure = null;
+                KafkaException? retryFailure = null;
+                HashSet<string>? retryTopics = null;
+                foreach (var topic in response.Topics)
+                {
+                    if (topic.ErrorCode == Protocol.ErrorCode.None ||
+                        (topic.ErrorCode == Protocol.ErrorCode.TopicAlreadyExists && ambiguousTopics.Contains(topic.Name)))
+                    {
+                        createdTopicNames.Add(topic.Name);
+                        continue;
+                    }
+
+                    var failure = new KafkaException(topic.ErrorCode,
+                        $"Failed to create topic '{topic.Name}': {topic.ErrorMessage ?? topic.ErrorCode.ToString()}");
+                    if (!topic.ErrorCode.IsRetriable())
+                    {
+                        definitiveFailure ??= failure;
+                        continue;
+                    }
+
+                    if (!opts.ValidateOnly && MayHaveAppliedDespiteError(topic.ErrorCode))
+                        ambiguousTopics.Add(topic.Name);
+                    (retryTopics ??= new HashSet<string>(StringComparer.Ordinal)).Add(topic.Name);
+                    retryFailure ??= failure;
+                }
+
+                if (definitiveFailure is not null)
+                    throw definitiveFailure;
+
+                if (retryFailure is not null)
+                {
+                    pending = pending.Where(topic => retryTopics!.Contains(topic.Name)).ToList();
+                    throw retryFailure;
+                }
+
+                pending = [];
             }
 
             // Wait until metadata shows all created topics with partition leaders assigned.
@@ -433,10 +462,7 @@ public sealed partial class AdminClient :
             // Poll until every partition has a leader, matching the retry pattern in
             // MetadataManager.GetTopicMetadataSlowAsync.
             if (!opts.ValidateOnly)
-            {
-                createMayHaveApplied = true;
                 await WaitForTopicLeadersAsync(createdTopicNames, attemptToken).ConfigureAwait(false);
-            }
         }, cancellationToken, OperationTimeoutBudget(opts.TimeoutMs)).ConfigureAwait(false);
     }
 
@@ -539,7 +565,10 @@ public sealed partial class AdminClient :
         var opts = options ?? new DeleteTopicsOptions();
         ArgumentOutOfRangeException.ThrowIfNegative(opts.TimeoutMs);
         var names = topicNames.ToList();
-        var deleteMayHaveApplied = false;
+        // Tracked per topic, as for CreateTopics: only a topic whose delete may have reached the
+        // controller turns a later UNKNOWN_TOPIC_OR_PARTITION for that topic into success.
+        var pending = names;
+        var ambiguousTopics = new HashSet<string>(StringComparer.Ordinal);
         var writeContext = new KafkaRequestWriteContext(CancellationToken.None);
 
         var budgetMs = OperationTimeoutBudget(opts.TimeoutMs) ?? DefaultApiTimeoutBudgetMs;
@@ -547,7 +576,9 @@ public sealed partial class AdminClient :
         await WithRetryAsync(async attemptToken =>
         {
             await EnsureInitializedAsync(attemptToken).ConfigureAwait(false);
-            var isRetryAttempt = deleteMayHaveApplied;
+            if (pending.Count == 0)
+                return;
+
             using var controllerLease = await LeaseControllerAsync(Protocol.ApiKey.DeleteTopics, attemptToken).ConfigureAwait(false);
             var controller = controllerLease.Connection;
 
@@ -563,7 +594,7 @@ public sealed partial class AdminClient :
                 // v6+: Use Topics array with name/id
                 request = new DeleteTopicsRequest
                 {
-                    Topics = names.Select(n => new DeleteTopicState { Name = n }).ToList(),
+                    Topics = pending.Select(n => new DeleteTopicState { Name = n }).ToList(),
                     TimeoutMs = opts.TimeoutMs
                 };
             }
@@ -572,7 +603,7 @@ public sealed partial class AdminClient :
                 // v0-v5: Use TopicNames array
                 request = new DeleteTopicsRequest
                 {
-                    TopicNames = names,
+                    TopicNames = pending,
                     TimeoutMs = opts.TimeoutMs
                 };
             }
@@ -589,22 +620,48 @@ public sealed partial class AdminClient :
             }
             catch
             {
-                deleteMayHaveApplied |= writeContext.WriteStarted;
+                if (writeContext.WriteStarted)
+                    ambiguousTopics.UnionWith(pending);
                 throw;
             }
 
-            // Check for errors
+            // Settle every topic's answer before retrying: a definitive error fails the call now,
+            // and only topics with a retriable answer are sent again.
+            KafkaException? definitiveFailure = null;
+            KafkaException? retryFailure = null;
+            HashSet<string>? retryTopics = null;
             foreach (var topic in response.Responses)
             {
-                if (topic.ErrorCode != Protocol.ErrorCode.None &&
-                    !(isRetryAttempt && topic.ErrorCode == Protocol.ErrorCode.UnknownTopicOrPartition))
+                if (topic.ErrorCode == Protocol.ErrorCode.None ||
+                    (topic.ErrorCode == Protocol.ErrorCode.UnknownTopicOrPartition && ambiguousTopics.Contains(topic.Name)))
                 {
-                    if (MayHaveAppliedDespiteError(topic.ErrorCode))
-                        deleteMayHaveApplied = true;
-                    throw new KafkaException(topic.ErrorCode,
-                        $"Failed to delete topic '{topic.Name}': {topic.ErrorMessage ?? topic.ErrorCode.ToString()}");
+                    continue;
                 }
+
+                var failure = new KafkaException(topic.ErrorCode,
+                    $"Failed to delete topic '{topic.Name}': {topic.ErrorMessage ?? topic.ErrorCode.ToString()}");
+                if (!topic.ErrorCode.IsRetriable())
+                {
+                    definitiveFailure ??= failure;
+                    continue;
+                }
+
+                if (MayHaveAppliedDespiteError(topic.ErrorCode))
+                    ambiguousTopics.Add(topic.Name);
+                (retryTopics ??= new HashSet<string>(StringComparer.Ordinal)).Add(topic.Name);
+                retryFailure ??= failure;
             }
+
+            if (definitiveFailure is not null)
+                throw definitiveFailure;
+
+            if (retryFailure is not null)
+            {
+                pending = pending.Where(retryTopics!.Contains).ToList();
+                throw retryFailure;
+            }
+
+            pending = [];
         }, cancellationToken, budgetMs).ConfigureAwait(false);
 
         // Refresh metadata so deleted topics are no longer visible in ListTopicsAsync
@@ -1998,8 +2055,10 @@ public sealed partial class AdminClient :
                 }
 
                 // Record every confirmed deletion in the batch before reporting a failure, so a
-                // retry resends only the groups still outstanding.
+                // retry resends only the groups still outstanding. A definitive error fails the
+                // call now instead of waiting behind a sibling's retry.
                 Errors.GroupException? failure = null;
+                Errors.GroupException? definitiveFailure = null;
                 foreach (var groupResult in response.Results)
                 {
                     if (groupResult.ErrorCode == Protocol.ErrorCode.None ||
@@ -2012,13 +2071,19 @@ public sealed partial class AdminClient :
 
                     if (MayHaveAppliedDespiteError(groupResult.ErrorCode))
                         ambiguousGroups.Add(groupResult.GroupId);
-                    failure ??= new Errors.GroupException(groupResult.ErrorCode,
+                    var groupFailure = new Errors.GroupException(groupResult.ErrorCode,
                         $"DeleteConsumerGroups failed for group '{groupResult.GroupId}': {groupResult.ErrorCode}")
                     {
                         GroupId = groupResult.GroupId
                     };
+                    if (groupResult.ErrorCode.IsRetriable())
+                        failure ??= groupFailure;
+                    else
+                        definitiveFailure ??= groupFailure;
                 }
 
+                if (definitiveFailure is not null)
+                    throw definitiveFailure;
                 if (failure is not null)
                     throw failure;
             }
@@ -2394,13 +2459,17 @@ public sealed partial class AdminClient :
         bool validateOnly,
         CancellationToken cancellationToken)
     {
-        var createPartitionsMayHaveApplied = false;
+        // Tracked per topic: only a topic whose expansion may have reached the controller has a
+        // later INVALID_PARTITIONS checked against metadata as a possible success.
+        var ambiguousTopics = new HashSet<string>(StringComparer.Ordinal);
         var writeContext = new KafkaRequestWriteContext(CancellationToken.None);
 
         return WithRetryAsync(async attemptToken =>
         {
             await EnsureInitializedAsync(attemptToken, nameof(CreatePartitionsAsync)).ConfigureAwait(false);
-            var isRetryAttempt = createPartitionsMayHaveApplied;
+            if (topics.Count == 0)
+                return;
+
             using var controllerLease = await LeaseControllerAsync(Protocol.ApiKey.CreatePartitions, attemptToken).ConfigureAwait(false);
             var controller = controllerLease.Connection;
 
@@ -2429,35 +2498,58 @@ public sealed partial class AdminClient :
             }
             catch
             {
-                createPartitionsMayHaveApplied |= !validateOnly && writeContext.WriteStarted;
+                if (!validateOnly && writeContext.WriteStarted)
+                {
+                    foreach (var topic in topics)
+                        ambiguousTopics.Add(topic.Name);
+                }
                 throw;
             }
 
+            // Settle every topic's answer before retrying: a definitive error fails the call now,
+            // and only topics with a retriable answer are sent again. A sibling can already have
+            // succeeded even when its result appears after a failure.
+            KafkaException? definitiveFailure = null;
+            KafkaException? retryFailure = null;
+            HashSet<string>? retryTopics = null;
             foreach (var topicResult in response.Results)
             {
-                if (topicResult.ErrorCode != Protocol.ErrorCode.None)
+                if (topicResult.ErrorCode == Protocol.ErrorCode.None)
+                    continue;
+
+                if (topicResult.ErrorCode == Protocol.ErrorCode.InvalidPartitions &&
+                    ambiguousTopics.Contains(topicResult.Name) &&
+                    await TopicMatchesPartitionExpansionAsync(
+                        GetRequestedPartitionExpansion(topics, topicResult.Name),
+                        attemptToken).ConfigureAwait(false))
                 {
-                    if (isRetryAttempt &&
-                        topicResult.ErrorCode == Protocol.ErrorCode.InvalidPartitions &&
-                        await TopicMatchesPartitionExpansionAsync(
-                            GetRequestedPartitionExpansion(topics, topicResult.Name),
-                            attemptToken).ConfigureAwait(false))
-                    {
-                        // Retain metadata-confirmed success if a later sibling forces another retry.
-                        topics = ExcludeConfirmedPartitionExpansions(topics, response.Results, topicResult.Name);
-                        continue;
-                    }
-
-                    if (!validateOnly && MayHaveAppliedDespiteError(topicResult.ErrorCode))
-                        createPartitionsMayHaveApplied = true;
-
-                    // A sibling topic can already have succeeded, even when this result appears first.
-                    // Preserve every confirmed success before retrying the remaining request.
-                    topics = ExcludeConfirmedPartitionExpansions(topics, response.Results);
-                    throw new KafkaException(topicResult.ErrorCode,
-                        $"CreatePartitions failed for topic '{topicResult.Name}': {topicResult.ErrorMessage ?? topicResult.ErrorCode.ToString()}");
+                    continue;
                 }
+
+                var failure = new KafkaException(topicResult.ErrorCode,
+                    $"CreatePartitions failed for topic '{topicResult.Name}': {topicResult.ErrorMessage ?? topicResult.ErrorCode.ToString()}");
+                if (!topicResult.ErrorCode.IsRetriable())
+                {
+                    definitiveFailure ??= failure;
+                    continue;
+                }
+
+                if (!validateOnly && MayHaveAppliedDespiteError(topicResult.ErrorCode))
+                    ambiguousTopics.Add(topicResult.Name);
+                (retryTopics ??= new HashSet<string>(StringComparer.Ordinal)).Add(topicResult.Name);
+                retryFailure ??= failure;
             }
+
+            if (definitiveFailure is not null)
+                throw definitiveFailure;
+
+            if (retryFailure is not null)
+            {
+                topics = topics.Where(topic => retryTopics!.Contains(topic.Name)).ToList();
+                throw retryFailure;
+            }
+
+            topics = [];
         }, cancellationToken, OperationTimeoutBudget(timeoutMs), nameof(CreatePartitionsAsync));
     }
 
@@ -2478,15 +2570,17 @@ public sealed partial class AdminClient :
 
         // Materialize before retry so an ambiguous retriable failure resends the exact
         // same target/cancel operations. Some already-applied retries surface as
-        // ReassignmentInProgress or NoReassignmentInProgress; those are tolerated only
-        // after a previous attempt may have reached the controller.
-        var alterMayHaveApplied = false;
+        // ReassignmentInProgress or NoReassignmentInProgress; those are tolerated only for a
+        // partition whose change may have reached the controller. Tracked per partition.
+        var ambiguousPartitions = new HashSet<TopicPartition>();
         var writeContext = new KafkaRequestWriteContext(CancellationToken.None);
 
         await WithRetryAsync(async attemptToken =>
         {
             await EnsureInitializedAsync(attemptToken).ConfigureAwait(false);
-            var isRetryAttempt = alterMayHaveApplied;
+            if (topics.Count == 0)
+                return;
+
             using var controllerLease = await LeaseControllerAsync(Protocol.ApiKey.AlterPartitionReassignments, attemptToken).ConfigureAwait(false);
             var controller = controllerLease.Connection;
 
@@ -2515,41 +2609,118 @@ public sealed partial class AdminClient :
             }
             catch
             {
-                alterMayHaveApplied |= writeContext.WriteStarted;
+                if (writeContext.WriteStarted)
+                    AddReassignmentPartitions(ambiguousPartitions, topics);
                 throw;
             }
 
             if (response.ErrorCode != Protocol.ErrorCode.None)
             {
-                if (IsToleratedReassignmentRetry(isRetryAttempt, response.ErrorCode))
+                // A request-level answer covers every partition sent.
+                if (IsToleratedReassignmentRetry(response.ErrorCode) &&
+                    ContainsAllReassignmentPartitions(ambiguousPartitions, topics))
                 {
                     return;
                 }
 
                 if (MayHaveAppliedDespiteError(response.ErrorCode))
-                    alterMayHaveApplied = true;
+                    AddReassignmentPartitions(ambiguousPartitions, topics);
                 throw new KafkaException(response.ErrorCode,
                     $"AlterPartitionReassignments failed: {response.ErrorMessage ?? response.ErrorCode.ToString()}");
             }
 
+            // Settle every partition's answer before retrying: a definitive error fails the call
+            // now, and only partitions with a retriable answer are sent again.
+            KafkaException? definitiveFailure = null;
+            KafkaException? retryFailure = null;
+            HashSet<TopicPartition>? retryPartitions = null;
             foreach (var topic in response.Responses)
             {
                 foreach (var partition in topic.Partitions)
                 {
+                    var topicPartition = new TopicPartition(topic.Name, partition.PartitionIndex);
                     if (partition.ErrorCode == Protocol.ErrorCode.None ||
-                        IsToleratedReassignmentRetry(isRetryAttempt, partition.ErrorCode))
+                        (IsToleratedReassignmentRetry(partition.ErrorCode) && ambiguousPartitions.Contains(topicPartition)))
                     {
                         continue;
                     }
 
-                    if (MayHaveAppliedDespiteError(partition.ErrorCode))
-                        alterMayHaveApplied = true;
-                    throw new KafkaException(partition.ErrorCode,
+                    var failure = new KafkaException(partition.ErrorCode,
                         $"AlterPartitionReassignments failed for {topic.Name}-{partition.PartitionIndex}: " +
                         $"{partition.ErrorMessage ?? partition.ErrorCode.ToString()}");
+                    if (!partition.ErrorCode.IsRetriable())
+                    {
+                        definitiveFailure ??= failure;
+                        continue;
+                    }
+
+                    if (MayHaveAppliedDespiteError(partition.ErrorCode))
+                        ambiguousPartitions.Add(topicPartition);
+                    (retryPartitions ??= []).Add(topicPartition);
+                    retryFailure ??= failure;
                 }
             }
+
+            if (definitiveFailure is not null)
+                throw definitiveFailure;
+
+            if (retryFailure is not null)
+            {
+                topics = KeepReassignmentPartitions(topics, retryPartitions!);
+                throw retryFailure;
+            }
+
+            topics = [];
         }, cancellationToken, OperationTimeoutBudget(opts.TimeoutMs)).ConfigureAwait(false);
+    }
+
+    private static void AddReassignmentPartitions(
+        HashSet<TopicPartition> partitions,
+        IReadOnlyList<AlterPartitionReassignmentsRequestTopic> topics)
+    {
+        foreach (var topic in topics)
+        {
+            foreach (var partition in topic.Partitions)
+                partitions.Add(new TopicPartition(topic.Name, partition.PartitionIndex));
+        }
+    }
+
+    private static bool ContainsAllReassignmentPartitions(
+        HashSet<TopicPartition> partitions,
+        IReadOnlyList<AlterPartitionReassignmentsRequestTopic> topics)
+    {
+        foreach (var topic in topics)
+        {
+            foreach (var partition in topic.Partitions)
+            {
+                if (!partitions.Contains(new TopicPartition(topic.Name, partition.PartitionIndex)))
+                    return false;
+            }
+        }
+
+        return true;
+    }
+
+    // Only allocates on a partial failure, outside the successful admin request path.
+    private static List<AlterPartitionReassignmentsRequestTopic> KeepReassignmentPartitions(
+        IReadOnlyList<AlterPartitionReassignmentsRequestTopic> topics,
+        HashSet<TopicPartition> keep)
+    {
+        var remaining = new List<AlterPartitionReassignmentsRequestTopic>(topics.Count);
+        foreach (var topic in topics)
+        {
+            var partitions = new List<AlterPartitionReassignmentsRequestPartition>(topic.Partitions.Count);
+            foreach (var partition in topic.Partitions)
+            {
+                if (keep.Contains(new TopicPartition(topic.Name, partition.PartitionIndex)))
+                    partitions.Add(partition);
+            }
+
+            if (partitions.Count > 0)
+                remaining.Add(new AlterPartitionReassignmentsRequestTopic { Name = topic.Name, Partitions = partitions });
+        }
+
+        return remaining;
     }
 
     public async ValueTask<IReadOnlyDictionary<TopicPartition, PartitionReassignment>> ListPartitionReassignmentsAsync(
@@ -2661,10 +2832,8 @@ public sealed partial class AdminClient :
         }
     }
 
-    private static bool IsToleratedReassignmentRetry(bool isRetryAttempt, Protocol.ErrorCode errorCode) =>
-        isRetryAttempt &&
-        (errorCode == Protocol.ErrorCode.ReassignmentInProgress ||
-         errorCode == Protocol.ErrorCode.NoReassignmentInProgress);
+    private static bool IsToleratedReassignmentRetry(Protocol.ErrorCode errorCode) =>
+        errorCode is Protocol.ErrorCode.ReassignmentInProgress or Protocol.ErrorCode.NoReassignmentInProgress;
 
     public async ValueTask<IReadOnlyDictionary<string, IReadOnlyList<ScramCredentialInfo>>> DescribeUserScramCredentialsAsync(
         IEnumerable<string>? users = null,
@@ -2789,20 +2958,30 @@ public sealed partial class AdminClient :
             foreach (var upsertion in upsertions)
                 deletionOnlyUsers.Remove(upsertion.Name);
         }
-        var alterMayHaveApplied = false;
+        // Tracked per user: only a user whose alterations may have reached the controller turns a
+        // later RESOURCE_NOT_FOUND into success. Users settled by an earlier answer are not sent
+        // again.
+        var pendingUsers = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var deletion in deletions)
+            pendingUsers.Add(deletion.Name);
+        foreach (var upsertion in upsertions)
+            pendingUsers.Add(upsertion.Name);
+        var ambiguousUsers = new HashSet<string>(StringComparer.Ordinal);
         var writeContext = new KafkaRequestWriteContext(CancellationToken.None);
 
         await WithRetryAsync(async attemptToken =>
         {
             await EnsureInitializedAsync(attemptToken).ConfigureAwait(false);
-            var isRetryAttempt = alterMayHaveApplied;
+            if (pendingUsers.Count == 0)
+                return;
+
             using var controllerLease = await LeaseControllerAsync(Protocol.ApiKey.AlterUserScramCredentials, attemptToken).ConfigureAwait(false);
             var controller = controllerLease.Connection;
 
             var request = new AlterUserScramCredentialsRequest
             {
-                Deletions = deletions,
-                Upsertions = upsertions
+                Deletions = deletions.Where(deletion => pendingUsers.Contains(deletion.Name)).ToList(),
+                Upsertions = upsertions.Where(upsertion => pendingUsers.Contains(upsertion.Name)).ToList()
             };
 
             var apiVersion = _metadataManager.GetNegotiatedApiVersion(
@@ -2823,24 +3002,46 @@ public sealed partial class AdminClient :
             }
             catch
             {
-                alterMayHaveApplied |= writeContext.WriteStarted;
+                if (writeContext.WriteStarted)
+                    ambiguousUsers.UnionWith(pendingUsers);
                 throw;
             }
 
-            // Check for errors
+            // Settle every user's answer before retrying: a definitive error fails the call now,
+            // and only users with a retriable answer are sent again.
+            KafkaException? definitiveFailure = null;
+            KafkaException? retryFailure = null;
             foreach (var result in response.Results)
             {
-                if (result.ErrorCode != Protocol.ErrorCode.None &&
-                    !(isRetryAttempt &&
-                      result.ErrorCode == Protocol.ErrorCode.ResourceNotFound &&
-                      deletionOnlyUsers?.Contains(result.User) == true))
+                if (result.ErrorCode == Protocol.ErrorCode.None ||
+                    (result.ErrorCode == Protocol.ErrorCode.ResourceNotFound &&
+                     ambiguousUsers.Contains(result.User) &&
+                     deletionOnlyUsers?.Contains(result.User) == true))
                 {
-                    if (MayHaveAppliedDespiteError(result.ErrorCode))
-                        alterMayHaveApplied = true;
-                    throw new KafkaException(result.ErrorCode,
-                        $"AlterUserScramCredentials failed for user '{result.User}': {result.ErrorMessage ?? result.ErrorCode.ToString()}");
+                    pendingUsers.Remove(result.User);
+                    continue;
                 }
+
+                var failure = new KafkaException(result.ErrorCode,
+                    $"AlterUserScramCredentials failed for user '{result.User}': {result.ErrorMessage ?? result.ErrorCode.ToString()}");
+                if (!result.ErrorCode.IsRetriable())
+                {
+                    definitiveFailure ??= failure;
+                    continue;
+                }
+
+                if (MayHaveAppliedDespiteError(result.ErrorCode))
+                    ambiguousUsers.Add(result.User);
+                retryFailure ??= failure;
             }
+
+            if (definitiveFailure is not null)
+                throw definitiveFailure;
+
+            if (retryFailure is not null)
+                throw retryFailure;
+
+            pendingUsers.Clear();
         }, cancellationToken, timeoutMs).ConfigureAwait(false);
     }
 

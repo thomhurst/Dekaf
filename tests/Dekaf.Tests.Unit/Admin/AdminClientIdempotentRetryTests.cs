@@ -1175,6 +1175,173 @@ public sealed class AdminClientIdempotentRetryTests
         await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.BrokerIdNotRegistered);
     }
 
+    // Mixed batches: one item times out, its sibling gets a definitive answer in the same
+    // response. The sibling's answer is final; the timeout must not make it look applied.
+    private static AdminClientOptions MixedBatchOptions() => new()
+    {
+        BootstrapServers = ["localhost:9092"],
+        RetryBackoffMs = 1,
+        RetryBackoffMaxMs = 5
+    };
+
+    [Test]
+    public async Task CreateTopicsAsync_SiblingTimesOut_DefinitiveTopicAlreadyExistsStillFails()
+    {
+        var (admin, connection) = CreateAdminWithMockConnection(MixedBatchOptions(), ApiKey.CreateTopics);
+        var calls = 0;
+        connection.SendAsync<CreateTopicsRequest, CreateTopicsResponse>(
+                Arg.Any<CreateTopicsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                var first = Interlocked.Increment(ref calls) == 1;
+                return ValueTask.FromResult(new CreateTopicsResponse
+                {
+                    Topics =
+                    [
+                        new CreateTopicsResponseTopic
+                        {
+                            Name = TopicName,
+                            ErrorCode = first ? ErrorCode.RequestTimedOut : ErrorCode.TopicAlreadyExists
+                        },
+                        new CreateTopicsResponseTopic { Name = "existing-topic", ErrorCode = ErrorCode.TopicAlreadyExists }
+                    ]
+                });
+            });
+
+        var exception = await Assert.ThrowsAsync<KafkaException>(async () =>
+            await admin.CreateTopicsAsync([new NewTopic { Name = TopicName }, new NewTopic { Name = "existing-topic" }]));
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.TopicAlreadyExists);
+        await Assert.That(exception.Message).Contains("existing-topic");
+        await Assert.That(calls).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task DeleteTopicsAsync_SiblingTimesOut_DefinitiveUnknownTopicStillFails()
+    {
+        var (admin, connection) = CreateAdminWithMockConnection(MixedBatchOptions(), ApiKey.DeleteTopics);
+        var calls = 0;
+        connection.SendAsync<DeleteTopicsRequest, DeleteTopicsResponse>(
+                Arg.Any<DeleteTopicsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                var first = Interlocked.Increment(ref calls) == 1;
+                return ValueTask.FromResult(new DeleteTopicsResponse
+                {
+                    Responses =
+                    [
+                        new DeleteTopicsResponseTopic
+                        {
+                            Name = TopicName,
+                            ErrorCode = first ? ErrorCode.RequestTimedOut : ErrorCode.UnknownTopicOrPartition
+                        },
+                        new DeleteTopicsResponseTopic { Name = "missing-topic", ErrorCode = ErrorCode.UnknownTopicOrPartition }
+                    ]
+                });
+            });
+
+        // UNKNOWN_TOPIC_OR_PARTITION is retriable, so the missing topic is retried within the
+        // usual bound, but only the timed-out topic's own ambiguity is ever tolerated.
+        var exception = await Assert.ThrowsAsync<KafkaException>(async () =>
+            await admin.DeleteTopicsAsync([TopicName, "missing-topic"]));
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.UnknownTopicOrPartition);
+        await Assert.That(exception.Message).Contains("missing-topic");
+    }
+
+    [Test]
+    public async Task AlterUserScramCredentialsAsync_SiblingTimesOut_DefinitiveResourceNotFoundStillFails()
+    {
+        var (admin, connection) = CreateAdminWithMockConnection(MixedBatchOptions(), ApiKey.AlterUserScramCredentials);
+        var calls = 0;
+        connection.SendAsync<AlterUserScramCredentialsRequest, AlterUserScramCredentialsResponse>(
+                Arg.Any<AlterUserScramCredentialsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                var first = Interlocked.Increment(ref calls) == 1;
+                return ValueTask.FromResult(new AlterUserScramCredentialsResponse
+                {
+                    Results =
+                    [
+                        new AlterUserScramCredentialsResult
+                        {
+                            User = "alice",
+                            ErrorCode = first ? ErrorCode.RequestTimedOut : ErrorCode.ResourceNotFound
+                        },
+                        new AlterUserScramCredentialsResult { User = "bob", ErrorCode = ErrorCode.ResourceNotFound }
+                    ]
+                });
+            });
+
+        var exception = await Assert.ThrowsAsync<KafkaException>(async () =>
+            await admin.AlterUserScramCredentialsAsync(
+            [
+                new UserScramCredentialDeletion { User = "alice", Mechanism = ScramMechanism.ScramSha256 },
+                new UserScramCredentialDeletion { User = "bob", Mechanism = ScramMechanism.ScramSha256 }
+            ]));
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.ResourceNotFound);
+        await Assert.That(exception.Message).Contains("bob");
+        await Assert.That(calls).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task CreateTopicsAsync_TimedOutTopicAlreadyExistsOnRetry_OnlyItIsResent()
+    {
+        // The confirmed sibling is not resent; the timed-out topic's own TopicAlreadyExists on
+        // the retry counts as success.
+        var (admin, connection) = CreateAdminWithMockConnection(MixedBatchOptions(), ApiKey.CreateTopics);
+        var metadata = CreateMetadataResponse();
+        connection.SendAsync<MetadataRequest, MetadataResponse>(
+                Arg.Any<MetadataRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(new MetadataResponse
+            {
+                Brokers = metadata.Brokers,
+                ClusterId = metadata.ClusterId,
+                ControllerId = metadata.ControllerId,
+                Topics =
+                [
+                    .. metadata.Topics,
+                    new TopicMetadata { Name = "other-topic", ErrorCode = ErrorCode.None, Partitions = metadata.Topics[0].Partitions }
+                ]
+            }));
+        var requests = new List<string[]>();
+        connection.SendAsync<CreateTopicsRequest, CreateTopicsResponse>(
+                Arg.Any<CreateTopicsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                var names = call.ArgAt<CreateTopicsRequest>(0).Topics.Select(static topic => topic.Name).ToArray();
+                lock (requests)
+                    requests.Add(names);
+                var first = requests.Count == 1;
+                return ValueTask.FromResult(new CreateTopicsResponse
+                {
+                    Topics = names.Select(name => new CreateTopicsResponseTopic
+                    {
+                        Name = name,
+                        ErrorCode = name == TopicName
+                            ? first ? ErrorCode.RequestTimedOut : ErrorCode.TopicAlreadyExists
+                            : ErrorCode.None
+                    }).ToList()
+                });
+            });
+
+        await admin.CreateTopicsAsync([new NewTopic { Name = TopicName }, new NewTopic { Name = "other-topic" }]);
+
+        await Assert.That(requests.Count).IsEqualTo(2);
+        await Assert.That(requests[1]).IsEquivalentTo(new[] { TopicName });
+    }
+
     [Test]
     public async Task AlterUserScramCredentialsAsync_DeletionNotFoundOnRetry_TreatedAsSuccess()
     {
