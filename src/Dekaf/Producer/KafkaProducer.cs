@@ -2972,6 +2972,13 @@ public sealed partial class KafkaProducer<TKey, TValue> :
 
         lock (_partitionsInTransactionLock)
         {
+            // Every transaction gets a generation of its own, advanced before the state becomes
+            // InTransaction. A produce reads the generation before its state check, so a value
+            // it read before this point (while Ready, or during an abort, which advances it too)
+            // can never equal this transaction's: it is rejected at the append commit point
+            // even if its state check runs after this transaction began.
+            _accumulator.AdvanceTransactionalAppendGeneration();
+
             // A send loop may have fenced the producer since the checks above.
             EnterTransactionState(TransactionState.InTransaction, "Cannot begin transaction", refuseAbortable: false);
             _lastTransactionError = ErrorCode.None;

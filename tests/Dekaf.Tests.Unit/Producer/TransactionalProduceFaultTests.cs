@@ -633,6 +633,55 @@ public sealed class TransactionalProduceFaultTests
         }
     }
 
+    /// <summary>
+    /// A produce whose admission read the generation during an abort (after the abort advanced
+    /// it) and whose state check then ran only after the next transaction began carries that
+    /// value into the next transaction. BeginTransaction gives every transaction a generation of
+    /// its own, so a value read during the abort can never match it: the record is rejected at
+    /// the append commit point instead of joining the next transaction.
+    /// </summary>
+    [Test]
+    [Timeout(60_000)]
+    public async Task ProduceAsync_AdmittedDuringAnAbort_IsRejectedInTheNextTransaction(
+        CancellationToken cancellationToken)
+    {
+        await using var harness = await TransactionalProduceHarness.CreateAsync(
+            transactionVersion: 2,
+            produceError: static (_, _) => ErrorCode.None);
+        var accumulator = harness.Producer.RecordAccumulator;
+
+        var aborted = harness.Producer.BeginTransaction();
+        await aborted.AbortAsync(cancellationToken);
+        await aborted.DisposeAsync();
+        // What an admission read during the abort sees: the abort has advanced the generation
+        // and nothing has changed it since.
+        var readDuringAbort = accumulator.TransactionalAppendGeneration;
+
+        await using var next = harness.Producer.BeginTransaction();
+        var sentBefore = harness.Broker.ProducedBatches.Count;
+
+        // The produce's state check runs now, in the next transaction, with the generation it
+        // read during the abort.
+        var produce = typeof(KafkaProducer<string, string>)
+            .GetMethods(BindingFlags.Instance | BindingFlags.NonPublic)
+            .Single(m => m.Name == "ProduceAsync"
+                && m.GetParameters() is { Length: 4 } p
+                && p[0].ParameterType == typeof(ProducerMessage<string, string>)
+                && p[2].ParameterType == typeof(int));
+        var mode = Enum.Parse(produce.GetParameters()[1].ParameterType, "Async");
+        var result = (ValueTask<RecordMetadata>)produce.Invoke(
+            harness.Producer, [Message(partition: 0), mode, readDuringAbort, cancellationToken])!;
+
+        var exception = await Assert.That(async () => await result).Throws<ProduceException>();
+        await Assert.That(exception!.Kind).IsEqualTo(ProduceErrorKind.TransactionAborted);
+
+        await next.ProduceAsync(Message(partition: 0), cancellationToken);
+        await next.CommitAsync(cancellationToken);
+        var sent = harness.Broker.ProducedBatches.Skip(sentBefore).ToArray();
+        await Assert.That(sent.Length).IsEqualTo(1);
+        await Assert.That(sent[0].RecordCount).IsEqualTo(1);
+    }
+
     private sealed class ImmediateRetryPolicy : Dekaf.Retry.IRetryPolicy
     {
         public TimeSpan? GetNextDelay(int attemptNumber, Exception exception) =>

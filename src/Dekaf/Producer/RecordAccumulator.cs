@@ -1303,6 +1303,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     internal Action? BeforeCompletedBatchPublishForTest;
     internal Action? BeforeAppendWorkerAppendForTest;
     internal Action? AfterTwoPhaseRotationCompletedForTest;
+    internal Action? PurgePendingAppendsGuardHeldForTest;
 
     /// <summary>
     /// True after CloseAsync has been called. Used by the sender loop to know
@@ -7338,6 +7339,14 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         Interlocked.Exchange(ref _transactionalAppendsClosed, 1);
     }
 
+    /// <summary>
+    /// Gives a new transaction its own generation (called by BeginTransaction before the state
+    /// becomes InTransaction), so a generation read before the transaction began, including
+    /// one read during the previous transaction's abort, is stale for it. Once per transaction.
+    /// </summary>
+    internal void AdvanceTransactionalAppendGeneration() =>
+        Interlocked.Increment(ref _transactionalAppendGeneration);
+
     /// <summary>Ends <see cref="CloseTransactionalAppends"/>.</summary>
     internal void ReopenTransactionalAppends() => Volatile.Write(ref _transactionalAppendsClosed, 0);
 
@@ -7498,6 +7507,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         while (Interlocked.CompareExchange(ref _draining, 1, 0) != 0)
             spinWait.SpinOnce();
 
+        // An append that queues while this purge holds the drain guard publishes a drain request
+        // and leaves (DrainPendingAppends lost the guard to us). Honor that request after the
+        // guard is released, as a drain owner does, or the append waits for an unrelated memory
+        // release or max.block.ms. The drain runs outside this scan, so it is never a
+        // self-request (#2207); it commits or rejects the append at its commit point.
+        var drainRequestVersion = Volatile.Read(ref _pendingAppendDrainRequestVersion);
         var failedCount = 0;
         try
         {
@@ -7506,10 +7521,18 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 if (op.TryFail(exception))
                     failedCount++;
             }
+
+            PurgePendingAppendsGuardHeldForTest?.Invoke();
         }
         finally
         {
             Volatile.Write(ref _draining, 0);
+        }
+
+        if (Volatile.Read(ref _pendingAppendDrainRequestVersion) != drainRequestVersion
+            && !_pendingAppends.IsEmpty)
+        {
+            DrainPendingAppends();
         }
 
         return failedCount;

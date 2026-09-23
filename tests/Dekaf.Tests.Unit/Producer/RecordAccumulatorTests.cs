@@ -939,6 +939,62 @@ public class RecordAccumulatorTests
     }
 
     /// <summary>
+    /// A purge fails the queued pending appends while it holds the drain guard. An append that
+    /// queues after the purge emptied the queue but before it released the guard loses its drain
+    /// request to the purge; the purge must honor that request once it releases the guard, or the
+    /// append waits for an unrelated memory release or max.block.ms even though memory is free.
+    /// </summary>
+    [Test]
+    [Timeout(60_000)]
+    public async Task Purge_AppendQueuedWhilePurgeHoldsTheDrainGuard_IsDrainedWhenThePurgeReturns(
+        CancellationToken cancellationToken)
+    {
+        const int BufferMemory = 64 * 1024;
+        var accumulator = new RecordAccumulator(new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            ClientId = "test-producer",
+            BufferMemory = BufferMemory,
+            BatchSize = 1000,
+            LingerMs = 10,
+            MaxBlockMs = 60_000
+        });
+        Task<bool>? pendingAppend = null;
+        try
+        {
+            // Exhaust buffer memory so the next append queues as a pending append.
+            await Assert.That(accumulator.TryReserveMemory(BufferMemory)).IsTrue();
+
+            accumulator.PurgePendingAppendsGuardHeldForTest = () =>
+            {
+                accumulator.PurgePendingAppendsGuardHeldForTest = null;
+                pendingAppend = accumulator.AppendAsync(
+                    "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    PooledMemory.Null, PooledMemory.Null, null, 0, null, null, CancellationToken.None).AsTask();
+                // Memory becomes free without anyone draining the queue.
+                typeof(RecordAccumulator)
+                    .GetMethod("ReleaseMemoryWithoutDrain", BindingFlags.Instance | BindingFlags.NonPublic)!
+                    .Invoke(accumulator, [BufferMemory]);
+            };
+
+            accumulator.Purge(PurgeOptions.Queue, CreatePurgedException());
+
+            await Assert.That(pendingAppend is not null).IsTrue();
+            await Assert.That(await pendingAppend!.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken)).IsTrue();
+            await Assert.That(accumulator.PendingAppendCountForTest).IsEqualTo(0);
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+            if (pendingAppend is not null)
+            {
+                try { await pendingAppend.WaitAsync(TimeSpan.FromSeconds(5), CancellationToken.None); }
+                catch (Exception) { }
+            }
+        }
+    }
+
+    /// <summary>
     /// With compression on, completing a detached batch creates its pre-serialization task, which
     /// only publication starts. An abort that closes appends after a two-phase rotation completed
     /// the batch but before it was re-enqueued makes the appender fail that batch unpublished:
