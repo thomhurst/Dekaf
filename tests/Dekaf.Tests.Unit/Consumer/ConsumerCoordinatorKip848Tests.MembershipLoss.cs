@@ -1043,6 +1043,42 @@ public sealed partial class ConsumerCoordinatorKip848Tests
     }
 
     [Test]
+    public async Task Close_JoinBlockedInAListenerPastTheCloseWait_StartsNoHeartbeatAfterClose()
+    {
+        var script = new HeartbeatScript(this);
+        var assignedEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseAssigned = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var listener = Substitute.For<IRebalanceListener>();
+        listener.OnPartitionsAssignedAsync(Arg.Any<IEnumerable<TopicPartition>>(), Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                // Ignores cancellation: it returns only when the test lets it.
+                assignedEntered.TrySetResult();
+                return new ValueTask(releaseAssigned.Task);
+            });
+        SetupFindCoordinator();
+        script.Respond = (_, _) => Joined("member-1", memberEpoch: 5, CreateAssignment(TestTopicId, 0, 1));
+        await using var coordinator = new ConsumerCoordinator(
+            CreateConsumerProtocolOptions(rebalanceListener: listener),
+            _connectionPool,
+            _metadataManager);
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var join = coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, timeout.Token).AsTask();
+        await assignedEntered.Task.WaitAsync(timeout.Token);
+
+        // Close gives up waiting for the join and stops the heartbeat; then the listener returns
+        // and the join completes as a member.
+        coordinator.BeginClose();
+        await coordinator.StopHeartbeatAsync();
+        releaseAssigned.SetResult();
+        await join.WaitAsync(timeout.Token);
+
+        var heartbeatTask = GetPrivateField<Task?>(coordinator, "_heartbeatTask");
+        await Assert.That(heartbeatTask is null).IsTrue();
+    }
+
+    [Test]
     public async Task MembershipLoss_OffsetFetchUnknownMemberReceivedAsTheCallerCancels_IsStillApplied()
     {
         _metadataManager.SetApiVersion(ApiKey.OffsetFetch, 9, 9);

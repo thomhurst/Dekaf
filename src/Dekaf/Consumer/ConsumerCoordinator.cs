@@ -968,6 +968,14 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
         lock (_heartbeatGuard)
         {
+            // Once close or disposal has begun no heartbeat starts, whichever path asks: a join
+            // that was already in flight (a listener that ignored cancellation kept it past close's
+            // wait) completes as a member but is never kept alive. The stop in close or disposal
+            // takes this lock after setting the flag, so a heartbeat installed just before is
+            // stopped there.
+            if (Volatile.Read(ref _closing) != 0 || Volatile.Read(ref _disposed) != 0)
+                return;
+
             oldCts = _heartbeatCts;
             oldTask = _heartbeatTask;
 
@@ -3427,6 +3435,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         // A drain still running (its listener ignored the token) starts no further callback.
         // The listener lock it holds is never disposed.
         Volatile.Write(ref _callbackDeliveryClosed, 1);
+
+        // Backstop: nothing starts a heartbeat once _disposed is set, but stop any that did.
+        await StopHeartbeatAsync().ConfigureAwait(false);
 
         // Revocation commits that will now never run must not hold up an assignment sync.
         foreach (var pending in _pendingRebalanceCallbacks)
