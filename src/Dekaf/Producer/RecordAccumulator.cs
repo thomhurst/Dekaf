@@ -1180,6 +1180,13 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private SpinLock _inFlightBatchLock = new(enableThreadOwnerTracking: false);
     private ReadyBatch? _inFlightBatchHead;
     private ReadyBatch? _inFlightBatchTail;
+    // Entry sequence of the newest batch linked into the in-flight list. Written only under
+    // _inFlightBatchLock; FlushAsync captures it as its checkpoint (#3386).
+    private long _inFlightEntrySequence;
+    // Smallest checkpoint a waiting flush is registered for, or long.MaxValue when none.
+    // A batch exit that moves the list head past it wakes the flush waiters, so a flush
+    // completes at its checkpoint instead of waiting for global quiescence.
+    private long _flushCheckpointWakeSequence = long.MaxValue;
     private readonly object _deliveryDiagnosticsLock = new();
     private readonly List<ProducerConnectionScaleDiagnostic> _connectionScaleEvents = [];
     private readonly List<ProducerBrokerBudgetDiagnostic> _brokerBudgetSamples = [];
@@ -1299,6 +1306,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     internal Action? PurgeAppendWaitObservedForTest;
     internal Action? AfterLingerQueueSnapshotForTest;
     internal Action<TopicPartition>? AfterFlushPartitionVisitedForTest;
+    internal Action<long>? AfterFlushCheckpointCapturedForTest;
     internal Action? BeforeCompletedBatchEnqueueForTest;
     internal Action? BeforeCompletedBatchPublishForTest;
     internal Action? BeforeAppendWorkerAppendForTest;
@@ -2430,7 +2438,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                         pd,
                         child.TopicPartition.Topic,
                         child.TopicPartition.Partition));
-                OnBatchEntersPipeline(pd, child);
+                OnBatchEntersPipeline(pd, child, replaces: source);
                 if (reenqueue)
                 {
                     if (ProducerId >= 0)
@@ -6351,7 +6359,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// Tracks a batch entering the pipeline: increments counter and adds to reference-tracking dictionary.
     /// Called when a batch is completed and enqueued to a partition deque.
     /// </summary>
-    private void OnBatchEntersPipeline(PartitionDeque pd, ReadyBatch batch)
+    /// <param name="replaces">
+    /// A KIP-126 split source that <paramref name="batch"/> replaces. The child takes the
+    /// source's place in the in-flight entry order, so a flush checkpoint that covered the
+    /// source keeps waiting for the child.
+    /// </param>
+    private void OnBatchEntersPipeline(PartitionDeque pd, ReadyBatch batch, ReadyBatch? replaces = null)
     {
         if (_unackedBudgetEnabled)
             ChargeUnackedBudget(batch);
@@ -6376,7 +6389,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         batch.DeliveryAccountingArmed = 1;
         Interlocked.Increment(ref _undeliveredBatchCount);
         Interlocked.Increment(ref _inFlightBatchCount);
-        InFlightBatchListAdd(batch);
+        InFlightBatchListAdd(batch, replaces);
     }
 
     /// <summary>
@@ -6408,7 +6421,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         // InFlightBatchListRemove acts as a natural atomic guard: only the first thread to
         // remove the batch proceeds with the decrement. This prevents double-decrement from
         // concurrent cleanup paths (e.g., DisposeAsync racing with SendLoopAsync's finally block).
-        if (!InFlightBatchListRemove(batch))
+        if (!InFlightBatchListRemove(batch, out var newHeadEntrySequence))
             return false;
 
         // Fallback for paths that never reached the sender's pre-CompleteSend call
@@ -6449,6 +6462,13 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             // work is done.
             if (Volatile.Read(ref _closed) != 0)
                 SignalWakeup();
+        }
+        else if (newHeadEntrySequence > Volatile.Read(ref _flushCheckpointWakeSequence))
+        {
+            // One field read per batch exit. A waiting flush registers the oldest checkpoint
+            // it needs; wake it once this exit moved the in-flight list head past that
+            // checkpoint, even while newer batches keep the count above zero (#3386).
+            SignalFlushCheckpointWaiters();
         }
 
         return true;
@@ -6883,7 +6903,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// Adds a batch to the in-flight tracking list (intrusive doubly-linked list).
     /// Zero-allocation: uses embedded prev/next pointers in ReadyBatch.
     /// </summary>
-    private void InFlightBatchListAdd(ReadyBatch batch)
+    private void InFlightBatchListAdd(ReadyBatch batch, ReadyBatch? replaces)
     {
         var lockTaken = false;
         try
@@ -6891,6 +6911,27 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             _inFlightBatchLock.Enter(ref lockTaken);
 
             batch.InFlightLinked = true;
+
+            if (replaces is { InFlightLinked: true })
+            {
+                // Split child: link directly after its source with the source's entry
+                // sequence, keeping the list sorted by entry sequence.
+                batch.InFlightEntrySequence = replaces.InFlightEntrySequence;
+                batch.InFlightPrev = replaces;
+                batch.InFlightNext = replaces.InFlightNext;
+
+                if (replaces.InFlightNext is not null)
+                    replaces.InFlightNext.InFlightPrev = batch;
+                else
+                    _inFlightBatchTail = batch;
+
+                replaces.InFlightNext = batch;
+                return;
+            }
+
+            var entrySequence = _inFlightEntrySequence + 1;
+            Volatile.Write(ref _inFlightEntrySequence, entrySequence);
+            batch.InFlightEntrySequence = entrySequence;
             batch.InFlightPrev = _inFlightBatchTail;
             batch.InFlightNext = null;
 
@@ -6911,9 +6952,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// Removes a batch from the in-flight tracking list.
     /// Returns true if the batch was successfully removed (first caller wins).
     /// Returns false if the batch was already removed by another thread.
+    /// <paramref name="newHeadEntrySequence"/> is the entry sequence of the new list head when
+    /// the batch was the head (long.MaxValue when the list is now empty), otherwise long.MinValue.
     /// </summary>
-    private bool InFlightBatchListRemove(ReadyBatch batch)
+    private bool InFlightBatchListRemove(ReadyBatch batch, out long newHeadEntrySequence)
     {
+        newHeadEntrySequence = long.MinValue;
         var lockTaken = false;
         try
         {
@@ -6925,9 +6969,14 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             batch.InFlightLinked = false;
 
             if (batch.InFlightPrev is not null)
+            {
                 batch.InFlightPrev.InFlightNext = batch.InFlightNext;
+            }
             else
+            {
                 _inFlightBatchHead = batch.InFlightNext;
+                newHeadEntrySequence = batch.InFlightNext?.InFlightEntrySequence ?? long.MaxValue;
+            }
 
             if (batch.InFlightNext is not null)
                 batch.InFlightNext.InFlightPrev = batch.InFlightPrev;
@@ -7723,7 +7772,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// <remarks>
     /// Optimized to avoid async state machine allocation when there are no batches to flush.
     /// Respects caller's cancellation token - if no timeout is provided, will wait indefinitely.
-    /// Uses O(1) counter-based tracking instead of dictionary for zero-allocation.
+    /// Waits for a checkpoint, not for global quiescence: it completes once every batch that
+    /// entered the pipeline up to the end of its seal has left it, even while concurrent
+    /// producers keep adding newer batches (#3386). Each check reads only the in-flight list head.
     /// </remarks>
     public ValueTask FlushAsync(CancellationToken cancellationToken)
     {
@@ -7749,22 +7800,98 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         // A final partial batch must not enter the sender behind older sealed batches that
         // are still queued or carried over. Under a deep admission budget, publishing the
         // partial batch into that active pipeline can let it overtake one or more full
-        // same-partition batches during the flush boundary. Drain the existing pipeline
-        // first, then seal the current batches into a fresh ordered wave.
+        // same-partition batches during the flush boundary. Drain the batches already in
+        // the pipeline first, then seal the current batches into a fresh ordered wave.
+        //
+        // Both waits stop at a checkpoint, not at global quiescence (#3386): batches that
+        // concurrent producers seal after the checkpoint do not hold this flush open.
         if (inFlightCount > 0)
-            await WaitForAllBatchesCompleteAsync(cancellationToken).ConfigureAwait(false);
+            await WaitForFlushCheckpointAsync(CaptureFlushCheckpoint(), cancellationToken).ConfigureAwait(false);
 
         await SealBatchesAsync(sealAll: true, cancellationToken).ConfigureAwait(false);
 
-        // Wait for all in-flight batches to complete using counter-based tracking
-        // O(1) operation instead of dictionary enumeration and Task.WhenAll
-        // Note: Lock is released before waiting — linger timer can resume for new batches
-        if (Volatile.Read(ref _inFlightBatchCount) > 0)
-        {
-            await WaitForAllBatchesCompleteAsync(cancellationToken).ConfigureAwait(false);
-        }
+        // Every record appended before this flush started is now in a batch that has entered
+        // the in-flight list (the seal waited out rotations and appends in progress), so the
+        // newest entry sequence covers them. Lock is released before waiting — the linger
+        // timer can resume for new batches.
+        var checkpoint = CaptureFlushCheckpoint();
+        AfterFlushCheckpointCapturedForTest?.Invoke(checkpoint);
+        await WaitForFlushCheckpointAsync(checkpoint, cancellationToken).ConfigureAwait(false);
 
         LogFlushCompleted();
+    }
+
+    /// <summary>
+    /// Returns the entry sequence of the newest batch in the in-flight list. Every batch that
+    /// entered the pipeline before this call has an entry sequence at or below it.
+    /// </summary>
+    private long CaptureFlushCheckpoint() => Volatile.Read(ref _inFlightEntrySequence);
+
+    /// <summary>
+    /// True once every batch whose entry sequence is at or below <paramref name="checkpoint"/>
+    /// has left the in-flight list. The list is sorted by entry sequence, so this reads only
+    /// its head.
+    /// </summary>
+    internal bool IsFlushCheckpointReached(long checkpoint)
+    {
+        var lockTaken = false;
+        try
+        {
+            _inFlightBatchLock.Enter(ref lockTaken);
+            var head = _inFlightBatchHead;
+            return head is null || head.InFlightEntrySequence > checkpoint;
+        }
+        finally
+        {
+            if (lockTaken) _inFlightBatchLock.Exit();
+        }
+    }
+
+    /// <summary>
+    /// Waits until every batch that entered the pipeline at or before
+    /// <paramref name="checkpoint"/> has left it, ignoring batches that enter later.
+    /// </summary>
+    private async ValueTask WaitForFlushCheckpointAsync(long checkpoint, CancellationToken cancellationToken)
+    {
+        while (!IsFlushCheckpointReached(checkpoint))
+        {
+            // Take the TCS before registering the checkpoint. SignalFlushCheckpointWaiters
+            // clears the registration before completing the current TCS, so a registration it
+            // clears always belongs to a waiter holding the TCS it then completes.
+            var tcs = Volatile.Read(ref _flushTcs);
+            if (tcs == null)
+            {
+                var newTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                tcs = Interlocked.CompareExchange(ref _flushTcs, newTcs, null) ?? newTcs;
+            }
+
+            RegisterFlushCheckpointWake(checkpoint);
+
+            // Double-check after registering: an exit that moved the head before the
+            // registration was visible did not signal.
+            if (IsFlushCheckpointReached(checkpoint))
+                return;
+
+            await tcs.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private void RegisterFlushCheckpointWake(long checkpoint)
+    {
+        var current = Volatile.Read(ref _flushCheckpointWakeSequence);
+        while (checkpoint < current)
+        {
+            var observed = Interlocked.CompareExchange(ref _flushCheckpointWakeSequence, checkpoint, current);
+            if (observed == current)
+                return;
+            current = observed;
+        }
+    }
+
+    private void SignalFlushCheckpointWaiters()
+    {
+        Interlocked.Exchange(ref _flushCheckpointWakeSequence, long.MaxValue);
+        Interlocked.Exchange(ref _flushTcs, null)?.TrySetResult(true);
     }
 
     /// <summary>
@@ -9798,6 +9925,12 @@ internal sealed class ReadyBatch
     // Read and written only while holding RecordAccumulator._inFlightBatchLock.
     // Guards against double-remove races.
     internal bool InFlightLinked;
+    // Position of this batch in the in-flight list's entry order, assigned when it is
+    // linked. The list stays sorted by this value, so FlushAsync's checkpoint is reached
+    // once the list head is newer than the checkpoint (#3386). Split children inherit
+    // their source's value so a flush that covered the source also covers them.
+    // Read and written only while holding RecordAccumulator._inFlightBatchLock.
+    internal long InFlightEntrySequence;
 
     private int _pipelineGeneration;
 

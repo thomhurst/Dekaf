@@ -1401,7 +1401,10 @@ public sealed class TransactionTests
             maxBlockMs: 1000);
         harness.Producer._transactionState = TransactionState.InTransaction;
         var accumulator = GetInstanceField<RecordAccumulator>(harness.Producer, "_accumulator");
+        // A flush waits for the batches at its checkpoint (#3386), so fake one tracked in-flight batch.
         SetInstanceField(accumulator, "_inFlightBatchCount", 1L);
+        SetInstanceField(accumulator, "_inFlightEntrySequence", 1L);
+        SetInstanceField<ReadyBatch?>(accumulator, "_inFlightBatchHead", new ReadyBatch { InFlightEntrySequence = 1 });
         await using var transaction = new Transaction<string, string>(harness.Producer);
         var stopwatch = Stopwatch.StartNew();
 
@@ -1419,6 +1422,7 @@ public sealed class TransactionTests
         finally
         {
             SetInstanceField(accumulator, "_inFlightBatchCount", 0L);
+            SetInstanceField<ReadyBatch?>(accumulator, "_inFlightBatchHead", null);
             GetInstanceField<TaskCompletionSource<bool>?>(accumulator, "_flushTcs")?.TrySetResult(true);
         }
     }

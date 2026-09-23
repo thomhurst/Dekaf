@@ -283,6 +283,51 @@ public sealed class Kip126BatchSplittingTests
     }
 
     [Test]
+    public async Task SplitAndReenqueue_ChildStaysCoveredByFlushCheckpointOfSource()
+    {
+        const string topic = "kip-126-flush-checkpoint";
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            BatchSize = 1000,
+            BufferMemory = 1024 * 1024,
+            CompressionType = CompressionType.None,
+            LingerMs = 60_000
+        };
+        var accumulator = new RecordAccumulator(options, new CompressionCodecRegistry());
+        var metadataManager = AccumulatorTestHelpers.CreateMetadataManager(topic, partitionCount: 1);
+        try
+        {
+            for (var i = 0; i < 4; i++)
+                await Assert.That(await AccumulatorTestHelpers.AppendNullRecordAsync(accumulator, topic)).IsTrue();
+
+            // The flush seals the source, so its checkpoint covers the source (#3386).
+            var checkpointCaptured = new TaskCompletionSource<long>(TaskCreationOptions.RunContinuationsAsynchronously);
+            accumulator.AfterFlushCheckpointCapturedForTest = checkpoint => checkpointCaptured.TrySetResult(checkpoint);
+            var flushTask = accumulator.FlushAsync(CancellationToken.None).AsTask();
+            var flushCheckpoint = await checkpointCaptured.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+            var source = await DrainOneAsync(accumulator, metadataManager);
+            await Assert.That(accumulator.SplitAndReenqueue(source, source.Generation)).IsTrue();
+
+            // The source has left the pipeline; its replacement must still hold the flush.
+            await Assert.That(accumulator.IsFlushCheckpointReached(flushCheckpoint)).IsFalse();
+            await Assert.That(flushTask.IsCompleted).IsFalse();
+
+            var child = await DrainOneAsync(accumulator, metadataManager);
+            CompleteAndReturn(accumulator, child, baseOffset: 0);
+            await flushTask.WaitAsync(TimeSpan.FromSeconds(10));
+            await Assert.That(accumulator.IsFlushCheckpointReached(flushCheckpoint)).IsTrue();
+        }
+        finally
+        {
+            accumulator.AfterFlushCheckpointCapturedForTest = null;
+            await accumulator.DisposeAsync();
+            await metadataManager.DisposeAsync();
+        }
+    }
+
+    [Test]
     [Arguments(BufferMemoryAllocationStrategy.Full)]
     [Arguments(BufferMemoryAllocationStrategy.Incremental)]
     public async Task SplitAndReenqueue_PreservesOrderSequencesAndDeliveryOwnership(

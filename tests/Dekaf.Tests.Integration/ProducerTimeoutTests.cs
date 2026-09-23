@@ -211,6 +211,80 @@ public sealed class ProducerTimeoutTests(KafkaTestContainer kafka) : KafkaIntegr
     }
 
     [Test]
+    public async Task FlushAsync_UnderContinuousConcurrentProduction_CompletesAtCheckpoint()
+    {
+        // #3386: FlushAsync waits for the records appended before it started, not for a quiet
+        // moment. Another task keeps producing to several partitions for the whole flush.
+        const int partitionCount = 3;
+        const int messagesBeforeFlush = 60;
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: partitionCount);
+
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("test-flush-checkpoint-concurrent")
+            .WithLinger(TimeSpan.FromMilliseconds(5))
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        using var stopProducing = new CancellationTokenSource();
+        var concurrentProduced = 0L;
+        var concurrentProducer = Task.Run(async () =>
+        {
+            var i = 0;
+            while (!stopProducing.IsCancellationRequested)
+            {
+                await producer.FireAsync(new ProducerMessage<string, string>
+                {
+                    Topic = topic,
+                    Partition = i % partitionCount,
+                    Key = $"concurrent-{i}",
+                    Value = "concurrent"
+                });
+                Interlocked.Increment(ref concurrentProduced);
+                i++;
+            }
+        });
+
+        try
+        {
+            // Production is under way before the flush starts.
+            await TestWait.WaitForConditionAsync(
+                () => Interlocked.Read(ref concurrentProduced) > 1_000,
+                TimeSpan.FromSeconds(30),
+                pollIntervalMs: 10,
+                description: "concurrent production to start");
+
+            var beforeFlush = new Task<RecordMetadata>[messagesBeforeFlush];
+            for (var i = 0; i < messagesBeforeFlush; i++)
+            {
+                beforeFlush[i] = producer.ProduceAsync(new ProducerMessage<string, string>
+                {
+                    Topic = topic,
+                    Partition = i % partitionCount,
+                    Key = $"before-flush-{i}",
+                    Value = "before-flush"
+                }, CancellationToken.None).AsTask();
+            }
+
+            await producer.FlushWithTimeoutAsync();
+
+            await Assert.That(concurrentProducer.IsCompleted).IsFalse()
+                .Because("production continued for the whole flush");
+            foreach (var task in beforeFlush)
+            {
+                await Assert.That(task.IsCompletedSuccessfully).IsTrue()
+                    .Because("every record produced before the flush started is delivered when it returns");
+                await Assert.That((await task).Offset).IsGreaterThanOrEqualTo(0);
+            }
+        }
+        finally
+        {
+            stopProducing.Cancel();
+            await concurrentProducer;
+        }
+    }
+
+    [Test]
     public async Task FlushAsync_WithCancellation_StopsWaiting()
     {
         // Arrange - Send messages with a long linger, then cancel the flush.
