@@ -1081,6 +1081,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
         public bool RevokedDelivered;
 
+        // Set when the internal revocation commit starts, so it runs exactly once whichever
+        // drain delivers this entry.
+        public bool RevocationCommitStarted;
+
         // 0: reserved, its publisher delivers it; 1: unowned, counted in
         // _pendingRebalanceCallbackCount; 2: dequeued. Transitions are interlocked, so an entry is
         // counted at most once and uncounted only if counted. The count always goes up before an
@@ -1798,7 +1802,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         }
         finally
         {
-            CompleteRevocationCommit(result);
+            // The revocation commit's completion belongs to the entry: whichever drain delivers
+            // it runs the commit and completes it, so assignment sync waits for it.
             ReleaseReservedRebalanceCallbacks();
             if (rebalanceListenerLockHeld)
                 _rebalanceListenerLock.Release();
@@ -1855,9 +1860,6 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
     internal Telemetry.ClientTelemetryMetricCollector? TelemetryMetricCollector { get; init; }
     private Telemetry.StandardClientTelemetryMetrics? StandardTelemetryMetrics => TelemetryMetricCollector?.StandardMetrics;
-
-    private static void CompleteRevocationCommit(ConsumerHeartbeatResult result)
-        => result.RevocationCommitCompletion?.TrySetResult(true);
 
     private void EnsureServerSideRegexSupported(IKafkaConnection connection, string? subscribedTopicRegex)
     {
@@ -2089,7 +2091,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         }
         finally
         {
-            CompleteRevocationCommit(result);
+            // The revocation commit's completion belongs to the entry: whichever drain delivers
+            // it runs the commit and completes it, so assignment sync waits for it.
             ReleaseReservedRebalanceCallbacks();
             if (rebalanceListenerLockHeld)
                 _rebalanceListenerLock.Release();
@@ -2917,10 +2920,14 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 {
                     if (deferred.Revoked is { Count: > 0 } revoked)
                     {
-                        // The revocation commit runs only on the delivery that publishing awaits;
-                        // once that delivery ends, cancelled or not, its window is over.
-                        if (deferred.RevocationCommitCompletion is { Task.IsCompleted: false } commitCompletion)
+                        // The internal revocation commit runs once, on whichever delivery reaches
+                        // this entry first, before the public callback. Assignment sync waits for
+                        // its completion, so the revoked partitions' stored offsets are still
+                        // there to commit even when an earlier callback's cancellation delayed it.
+                        if (deferred.RevocationCommitCompletion is { } commitCompletion &&
+                            !pending.RevocationCommitStarted)
                         {
+                            pending.RevocationCommitStarted = true;
                             try
                             {
                                 if (_onPartitionsRevokedAsync is not null)
@@ -3206,6 +3213,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         // A drain still running (its listener ignored the token) starts no further callback.
         // The listener lock it holds is never disposed.
         Volatile.Write(ref _callbackDeliveryClosed, 1);
+
+        // Revocation commits that will now never run must not hold up an assignment sync.
+        foreach (var pending in _pendingRebalanceCallbacks)
+            pending.Deferred.RevocationCommitCompletion?.TrySetResult(true);
 
         _lock.Dispose();
         _commitLock.Dispose();

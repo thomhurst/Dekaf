@@ -514,6 +514,91 @@ public sealed partial class ConsumerCoordinatorKip848Tests
     }
 
     [Test]
+    public async Task RevocationCommit_QueuedBehindAnInterruptedCallback_RunsOnTheNextDelivery()
+    {
+        var script = new HeartbeatScript(this);
+        var (recording, calls) = CreateRecordingListener();
+        var lostEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var interruptNextLost = 1;
+        var listener = Substitute.For<IRebalanceListener>();
+        listener.OnPartitionsLostAsync(Arg.Any<IEnumerable<TopicPartition>>(), Arg.Any<CancellationToken>())
+            .Returns(callInfo => Interlocked.Exchange(ref interruptNextLost, 0) == 1
+                ? WaitForCancellationAsync(callInfo.Arg<CancellationToken>())
+                : recording.OnPartitionsLostAsync(
+                    callInfo.Arg<IEnumerable<TopicPartition>>()!,
+                    callInfo.Arg<CancellationToken>()));
+        listener.OnPartitionsRevokedAsync(Arg.Any<IEnumerable<TopicPartition>>(), Arg.Any<CancellationToken>())
+            .Returns(callInfo => recording.OnPartitionsRevokedAsync(
+                callInfo.Arg<IEnumerable<TopicPartition>>()!,
+                callInfo.Arg<CancellationToken>()));
+        var revocationCommits = new List<string>();
+        SetupFindCoordinator();
+        script.Respond = (_, _) => Joined("member-1", memberEpoch: 5, CreateAssignment(TestTopicId, 0, 1));
+        await using var coordinator = new ConsumerCoordinator(
+            CreateConsumerProtocolOptions(rebalanceListener: listener),
+            _connectionPool,
+            _metadataManager,
+            logger: null,
+            getConnectionCount: null,
+            onPartitionsRevoked: null,
+            onPartitionsRevoking: null,
+            onPartitionsRevokedAsync: (revoked, _) =>
+            {
+                lock (revocationCommits)
+                    revocationCommits.Add(string.Join(',', revoked.Select(static tp => $"{tp.Topic}-{tp.Partition}")));
+                return ValueTask.CompletedTask;
+            });
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
+        await coordinator.StopHeartbeatAsync();
+        calls.Clear();
+
+        // A rejoin revokes p1. While it is being processed, an earlier notification is queued
+        // ahead of it, and the caller cancels while that earlier callback runs, before the
+        // revocation is reached.
+        coordinator.RequestRejoin();
+        var queuedEarlier = 0;
+        script.Respond = (_, _) =>
+        {
+            if (Interlocked.Exchange(ref queuedEarlier, 1) == 0)
+                QueueLoss(coordinator, new TopicPartition("other-topic", 0));
+            return Joined("member-1", memberEpoch: 6, CreateAssignment(TestTopicId, 0));
+        };
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var caller = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token);
+        var join = coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, caller.Token).AsTask();
+        await lostEntered.Task.WaitAsync(timeout.Token);
+        caller.Cancel();
+        await Assert.That(async () => await join).Throws<OperationCanceledException>();
+        await Assert.That(revocationCommits).IsEmpty();
+
+        // The next delivery runs the revocation commit before the public callback, exactly once.
+        await coordinator.InvokePendingRebalanceCallbacksUnlessCancelledAsync(timeout.Token);
+        await coordinator.InvokePendingRebalanceCallbacksUnlessCancelledAsync(timeout.Token);
+
+        await Assert.That(string.Join(" | ", revocationCommits)).IsEqualTo("test-topic-1");
+        await Assert.That(string.Join(" | ", calls)).IsEqualTo("lost:other-topic-0 | revoked:test-topic-1");
+
+        async ValueTask WaitForCancellationAsync(CancellationToken cancellationToken)
+        {
+            lostEntered.TrySetResult();
+            await Task.Delay(Timeout.Infinite, cancellationToken);
+        }
+
+        static void QueueLoss(ConsumerCoordinator coordinator, TopicPartition partition)
+        {
+            var entryType = typeof(ConsumerCoordinator).GetNestedType(
+                "PendingRebalanceCallback",
+                BindingFlags.NonPublic)!;
+            var entry = Activator.CreateInstance(entryType, nonPublic: true)!;
+            entryType.GetProperty("Lost")!.SetValue(entry, new List<TopicPartition> { partition });
+            entryType.GetProperty("Assignment")!.SetValue(entry, new HashSet<TopicPartition>());
+            typeof(ConsumerCoordinator)
+                .GetMethod("EnqueuePendingRebalanceCallback", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .Invoke(coordinator, [entry, false]);
+        }
+    }
+
+    [Test]
     public async Task MembershipLoss_OffsetFetchUnknownMemberReceivedAsTheCallerCancels_IsStillApplied()
     {
         _metadataManager.SetApiVersion(ApiKey.OffsetFetch, 9, 9);
