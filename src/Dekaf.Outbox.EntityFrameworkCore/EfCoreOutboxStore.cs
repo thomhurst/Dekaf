@@ -207,13 +207,17 @@ public sealed class EfCoreOutboxStore<TContext> : IOutboxStore, IOutboxLeaseRene
         // Nor for a stopped relay: the owner guard cannot refuse a claim, because the lease it
         // takes has no owner, so a claim of the round a stop cancelled, run by the server after
         // the release, would hand a bucket to a relay that is gone. The tombstone refuses it.
+        // Nor after a later heartbeat of the same id: a process restarted under it clears the
+        // stopped mark, and a claim of the round the stop cancelled would then pass. Rounds of
+        // one relay run one at a time, so a later heartbeat means this round was abandoned.
         var deficit = fairShare - keepCount;
         if (deficit > 0 && free.Count > 0 && heartbeatRecorded)
         {
             var candidates = free.GetRange(0, Math.Min(deficit, free.Count)).ToArray();
             await leases
                 .Where(l => candidates.Contains(l.Bucket) && (l.Owner == null || l.ExpiresAtUtc <= now)
-                    && !context.Set<OutboxRelayInstance>().Any(r => r.RelayId == request.RelayId && r.StoppedAtUtc != null))
+                    && context.Set<OutboxRelayInstance>().Any(r => r.RelayId == request.RelayId
+                        && r.StoppedAtUtc == null && r.LastSeenUtc <= now))
                 .ExecuteUpdateAsync(setters => setters
                     .SetProperty(l => l.Owner, request.RelayId)
                     .SetProperty(l => l.ExpiresAtUtc, expiry), cancellationToken).ConfigureAwait(false);

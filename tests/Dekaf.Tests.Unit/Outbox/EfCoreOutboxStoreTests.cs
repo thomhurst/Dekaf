@@ -322,6 +322,38 @@ public class EfCoreOutboxStoreTests
     }
 
     [Test]
+    public async Task Release_StragglingClaimOfTheCancelledRound_IsRefusedAfterARestartUnderTheSameId()
+    {
+        var gate = new GatedStatement();
+        using var db = new SqliteOutboxDatabase(gate);
+        var store = db.CreateStore();
+
+        gate.Arm(IsClaim);
+        var cancelledRound = store.AcquireBucketLeasesAsync(Request("relay-a")).AsTask();
+        await gate.Held;
+        await store.ReleaseBucketLeasesAsync(Request("relay-a"), []);
+
+        // A process restarted under the same id heartbeats, which clears the stopped mark.
+        // Written directly so that the restart itself claims nothing the straggler could lose to.
+        db.Time.Advance(TimeSpan.FromSeconds(1));
+        var restartedAt = db.Time.GetUtcNow();
+        await using (var context = db.CreateContext())
+        {
+            await context.Set<OutboxRelayInstance>().Where(r => r.RelayId == "relay-a")
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(r => r.LastSeenUtc, restartedAt)
+                    .SetProperty(r => r.StoppedAtUtc, (DateTimeOffset?)null));
+        }
+
+        gate.Open();
+
+        await Assert.That(await cancelledRound).IsEmpty();
+        await Assert.That(gate.Affected).IsEqualTo(0);
+        await using (var context = db.CreateContext())
+            await Assert.That(await context.Set<OutboxLease>().CountAsync(lease => lease.Owner != null)).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task StoppedRelay_RestartedUnderTheSameId_IsCountedAndClaimsAgain()
     {
         using var db = new SqliteOutboxDatabase();
