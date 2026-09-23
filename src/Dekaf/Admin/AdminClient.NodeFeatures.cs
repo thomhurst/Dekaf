@@ -28,10 +28,12 @@ public sealed partial class AdminClient
             if (options.NodeId is not { } nodeId)
                 return await DescribeFeaturesCoreAsync(Timeout.Infinite, operationToken).ConfigureAwait(false);
 
-            await EnsureInitializedAsync(operationToken, nameof(DescribeFeaturesAsync)).ConfigureAwait(false);
             return await WithRetryAsync(async attemptToken =>
             {
                 attemptToken.ThrowIfCancellationRequested();
+                // Inside the retried operation: controller discovery on a fresh client can be
+                // refused transiently, and that is retried like the request itself.
+                await EnsureInitializedAsync(attemptToken, nameof(DescribeFeaturesAsync)).ConfigureAwait(false);
                 using var lease = await LeaseFeatureNodeAsync(nodeId, attemptToken).ConfigureAwait(false);
                 var request = CreateFeatureRequest(lease.Connection, nodeId, out var apiVersion);
                 var response = await lease.Connection.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(

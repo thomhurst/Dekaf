@@ -1013,7 +1013,13 @@ public sealed partial class AdminClient :
 
     public async ValueTask<ClusterDescription> DescribeClusterAsync(CancellationToken cancellationToken = default)
     {
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+        // The answer comes from the discovered metadata, so initialization is the only request.
+        // It is retried under the default API budget: controller discovery on a fresh client can
+        // be refused transiently, and broker bootstrap retries inside its own initialization.
+        await WithRetryAsync(
+                attemptToken => EnsureInitializedAsync(attemptToken, nameof(DescribeClusterAsync)),
+                cancellationToken)
+            .ConfigureAwait(false);
 
         if (_controllerMetadataManager is { } controllerMetadataManager)
         {
