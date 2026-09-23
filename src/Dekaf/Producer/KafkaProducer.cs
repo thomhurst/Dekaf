@@ -842,7 +842,8 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     public ValueTask<RecordMetadata> ProduceAsync(
         ProducerMessage<TKey, TValue> message,
         CancellationToken cancellationToken = default)
-        => ProduceAsync(message, ProduceContinuationMode.Async, cancellationToken);
+        => ProduceAsync(
+            message, ProduceContinuationMode.Async, ReadAdmissionTransactionalGeneration(), cancellationToken);
 
     /// <summary>Continuation policy shared by every transactional produce overload.</summary>
     private ProduceContinuationMode TransactionContinuationMode
@@ -885,12 +886,6 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             transactionalGeneration,
             cancellationToken);
 
-    // Read before ProduceAsyncCore's state check (see ReadAdmissionTransactionalGeneration).
-    private ValueTask<RecordMetadata> ProduceAsync(
-        ProducerMessage<TKey, TValue> message,
-        ProduceContinuationMode continuationMode,
-        CancellationToken cancellationToken)
-        => ProduceAsync(message, continuationMode, ReadAdmissionTransactionalGeneration(), cancellationToken);
 
     private ValueTask<RecordMetadata> ProduceAsync(
         ProducerMessage<TKey, TValue> message,
@@ -1179,19 +1174,6 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         }
     }
 
-    // Read before ProduceAsyncCore's state check (see ReadAdmissionTransactionalGeneration).
-    private ValueTask<RecordMetadata> ProduceAsync(
-        string topic,
-        TKey? key,
-        TValue value,
-        Headers? headers,
-        int? partition,
-        DateTimeOffset? timestamp,
-        ProduceContinuationMode continuationMode,
-        CancellationToken cancellationToken)
-        => ProduceAsync(
-            topic, key, value, headers, partition, timestamp, continuationMode,
-            ReadAdmissionTransactionalGeneration(), cancellationToken);
 
     private ValueTask<RecordMetadata> ProduceAsync(
         string topic,
@@ -1757,8 +1739,15 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         ThrowIfNotInitialized();
         // Read before serialization: the append commit point rejects the record if a transaction
         // abort starts while serializers or interceptors run (non-transactional: a constant).
-        var transactionalGeneration = CaptureTransactionalAppendGeneration();
+        return FireMessageAsync(message, CaptureTransactionalAppendGeneration());
+    }
 
+    /// <summary>
+    /// FireAsync for a message with the generation its public entry point read at admission;
+    /// the componentwise overload's interceptor fallback forwards its own instead of reading again.
+    /// </summary>
+    private ValueTask FireMessageAsync(ProducerMessage<TKey, TValue> message, int transactionalGeneration)
+    {
         // Apply OnSend interceptors before serialization
         message = ApplyOnSendInterceptors(message);
 
@@ -1895,7 +1884,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         // When interceptors are configured, fall back to ProducerMessage overload
         // so interceptors can inspect/modify the message before serialization.
         if (_interceptors is not null)
-            return FireAsync(new ProducerMessage<TKey, TValue> { Topic = topic, Key = key, Value = value });
+            return FireMessageAsync(
+                new ProducerMessage<TKey, TValue> { Topic = topic, Key = key, Value = value },
+                transactionalGeneration);
 
         var preparationLease = default(SerializerPreparationLease);
         if (_keyPreparer is not null || _valuePreparer is not null)
@@ -2070,6 +2061,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         ProducerMessage<TKey, TValue> message,
         TopicInfo topicInfo,
         PooledValueTaskSource<RecordMetadata> completion,
+        int transactionalGeneration,
         CancellationToken cancellationToken)
         => TryProduceSyncCore(
             message.Topic,
@@ -2081,7 +2073,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             topicInfo,
             completion,
             default,
-            ReadAdmissionTransactionalGeneration(),
+            transactionalGeneration,
             cancellationToken);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -2645,7 +2637,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         TValue value,
         CancellationToken cancellationToken = default)
     {
-        return ProduceAsync(topic, key, value, headers: null, partition: null, timestamp: null, ProduceContinuationMode.Async, cancellationToken);
+        return ProduceAsync(
+            topic, key, value, headers: null, partition: null, timestamp: null, ProduceContinuationMode.Async,
+            ReadAdmissionTransactionalGeneration(), cancellationToken);
     }
 
     ValueTask<RecordMetadata> IProducerFastPath<TKey, TValue>.ProduceAsync(
@@ -2656,7 +2650,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         int? partition,
         DateTimeOffset? timestamp,
         CancellationToken cancellationToken)
-        => ProduceAsync(topic, key, value, headers, partition, timestamp, ProduceContinuationMode.Async, cancellationToken);
+        => ProduceAsync(
+            topic, key, value, headers, partition, timestamp, ProduceContinuationMode.Async,
+            ReadAdmissionTransactionalGeneration(), cancellationToken);
 
     /// <inheritdoc />
     public async Task<RecordMetadata[]> ProduceAllAsync(
@@ -2664,6 +2660,10 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(messages);
+
+        // Read once for the whole call, before any record's state check: every record of this call
+        // carries it to the append commit point.
+        var transactionalGeneration = ReadAdmissionTransactionalGeneration();
 
         // Convert to list to get count and allow multiple enumeration
         var messageList = messages as IList<ProducerMessage<TKey, TValue>> ?? messages.ToList();
@@ -2684,7 +2684,8 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             {
                 // InlineWhenDirect: safe because the sole direct continuation is the bounded
                 // harvest; instrumented/retry paths upgrade to Async — see ProduceAllCompletion remarks.
-                completion.Register(i, ProduceAsync(messageList[i], ProduceContinuationMode.InlineWhenDirect, cancellationToken));
+                completion.Register(i, ProduceAsync(
+                    messageList[i], ProduceContinuationMode.InlineWhenDirect, transactionalGeneration, cancellationToken));
             }
             catch (Exception ex)
             {
@@ -2709,6 +2710,10 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         ArgumentNullException.ThrowIfNull(topic);
         ArgumentNullException.ThrowIfNull(messages);
 
+        // Read once for the whole call, before any record's state check: every record of this call
+        // carries it to the append commit point.
+        var transactionalGeneration = ReadAdmissionTransactionalGeneration();
+
         // Convert to list to get count and allow multiple enumeration
         var messageList = messages as IList<(TKey? Key, TValue Value)> ?? messages.ToList();
         if (messageList.Count == 0)
@@ -2726,7 +2731,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             {
                 // InlineWhenDirect: safe because the sole direct continuation is the bounded
                 // harvest; instrumented/retry paths upgrade to Async — see ProduceAllCompletion remarks.
-                completion.Register(i, ProduceAsync(topic, key, value, headers: null, partition: null, timestamp: null, ProduceContinuationMode.InlineWhenDirect, cancellationToken));
+                completion.Register(i, ProduceAsync(
+                    topic, key, value, headers: null, partition: null, timestamp: null,
+                    ProduceContinuationMode.InlineWhenDirect, transactionalGeneration, cancellationToken));
             }
             catch (Exception ex)
             {
@@ -2749,6 +2756,10 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         ArgumentNullException.ThrowIfNull(topic);
         ArgumentNullException.ThrowIfNull(messages);
 
+        // Read once for the whole call, before any record's state check: every record of this call
+        // carries it to the append commit point.
+        var transactionalGeneration = ReadAdmissionTransactionalGeneration();
+
         if (messages is IList<TopicProducerMessage<TKey, TValue>> messageList)
         {
             var messageCount = messageList.Count;
@@ -2770,6 +2781,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                         message.Partition,
                         message.Timestamp,
                         ProduceContinuationMode.InlineWhenDirect,
+                        transactionalGeneration,
                         cancellationToken));
                 }
                 catch (Exception ex)
@@ -2822,6 +2834,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                             message.Partition,
                             message.Timestamp,
                             ProduceContinuationMode.InlineWhenDirect,
+                            transactionalGeneration,
                             cancellationToken));
                     }
                     catch (Exception ex)

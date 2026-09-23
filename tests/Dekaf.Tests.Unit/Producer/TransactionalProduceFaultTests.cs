@@ -576,6 +576,63 @@ public sealed class TransactionalProduceFaultTests
         await Assert.That(harness.Broker.ProducedBatches.Count).IsEqualTo(0);
     }
 
+    /// <summary>
+    /// The componentwise FireAsync falls back to the message-based path when interceptors are
+    /// configured. The fallback must forward the generation the componentwise entry point read,
+    /// not read it again: here the abort's generation change lands during the interceptor, after
+    /// the componentwise admission, and the record must be rejected at the append commit point.
+    /// </summary>
+    [Test]
+    [Timeout(60_000)]
+    public async Task FireAsync_ComponentwiseWithInterceptors_KeepsTheAdmissionGeneration(
+        CancellationToken cancellationToken)
+    {
+        RecordAccumulator? accumulator = null;
+        var interceptor = new CallbackInterceptor(() =>
+        {
+            accumulator!.CloseTransactionalAppends();
+            accumulator.ReopenTransactionalAppends();
+        });
+        await using var harness = await TransactionalProduceHarness.CreateAsync(
+            transactionVersion: 2,
+            produceError: static (_, _) => ErrorCode.None,
+            interceptors: [interceptor]);
+        accumulator = harness.Producer.RecordAccumulator;
+
+        await using var transaction = harness.Producer.BeginTransaction();
+        try
+        {
+            // Fire-and-forget: the rejection is logged, not thrown.
+            await harness.Producer.FireAsync(Topic, "key", "value");
+        }
+        catch (ProduceException)
+        {
+        }
+
+        await harness.Producer.FlushAsync(cancellationToken);
+        await Assert.That(interceptor.Calls).IsEqualTo(1);
+        await Assert.That(accumulator.BufferedBytes).IsEqualTo(0);
+        await Assert.That(harness.Broker.ProducedBatches.Count).IsEqualTo(0);
+    }
+
+    private sealed class CallbackInterceptor(Action onSend) : IProducerInterceptor<string, string>
+    {
+        private int _calls;
+
+        public int Calls => Volatile.Read(ref _calls);
+
+        public ProducerMessage<string, string> OnSend(ProducerMessage<string, string> message)
+        {
+            if (Interlocked.Increment(ref _calls) == 1)
+                onSend();
+            return message;
+        }
+
+        public void OnAcknowledgement(RecordMetadata metadata, Exception? exception)
+        {
+        }
+    }
+
     private sealed class ImmediateRetryPolicy : Dekaf.Retry.IRetryPolicy
     {
         public TimeSpan? GetNextDelay(int attemptNumber, Exception exception) =>
@@ -725,7 +782,8 @@ public sealed class TransactionalProduceFaultTests
             int lingerMs = 0,
             IAsyncSerializer<string>? asyncValueSerializer = null,
             ISerializer<string>? valueSerializer = null,
-            Dekaf.Retry.IRetryPolicy? retryPolicy = null)
+            Dekaf.Retry.IRetryPolicy? retryPolicy = null,
+            IReadOnlyList<object>? interceptors = null)
         {
             var broker = new ScriptedTransactionalBroker(produceError, bumpsEpochAtEndTxn: transactionVersion >= 2);
             var pool = new ConnectionPool(
@@ -791,7 +849,8 @@ public sealed class TransactionalProduceFaultTests
                     RetryBackoffMaxMs = 10,
                     MaxBlockMs = 10_000,
                     CloseTimeoutMs = 1_000,
-                    RetryPolicy = retryPolicy
+                    RetryPolicy = retryPolicy,
+                    Interceptors = interceptors
                 },
                 Serializers.String,
                 valueSerializer ?? Serializers.String,

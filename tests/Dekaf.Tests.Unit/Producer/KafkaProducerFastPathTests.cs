@@ -1303,12 +1303,17 @@ public class KafkaProducerFastPathTests
             "TryProduceSyncCore",
             BindingFlags.NonPublic | BindingFlags.Instance,
             binder: null,
-            [typeof(ProducerMessage<string, string>), typeof(TopicInfo), typeof(PooledValueTaskSource<RecordMetadata>), typeof(CancellationToken)],
+            [
+                typeof(ProducerMessage<string, string>), typeof(TopicInfo), typeof(PooledValueTaskSource<RecordMetadata>),
+                typeof(int), typeof(CancellationToken)
+            ],
             modifiers: null);
 
         try
         {
-            method!.Invoke(producer, [message, topicInfo, completion, CancellationToken.None]);
+            method!.Invoke(
+                producer,
+                [message, topicInfo, completion, RecordAccumulator.NoTransactionalGeneration, CancellationToken.None]);
         }
         catch (TargetInvocationException ex) when (ex.InnerException is not null)
         {
