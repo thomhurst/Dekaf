@@ -1313,13 +1313,15 @@ public sealed partial class AdminClient
             !cancellationToken.IsCancellationRequested &&
             timeoutSource.IsCancellationRequested)
         {
+            // A retry loop reports the deadline ending its wait as a cancellation that carries the
+            // last failure it saw; that failure is the cause, as in the retry wrapper's timeouts.
             var configuredTimeout = TimeSpan.FromMilliseconds(timeoutMs);
             throw new KafkaTimeoutException(
                 TimeoutKind.Api,
                 configuredTimeout,
                 configuredTimeout,
                 $"{operationName} timed out after {timeoutMs} ms.",
-                exception);
+                exception.InnerException ?? exception);
         }
     }
 }

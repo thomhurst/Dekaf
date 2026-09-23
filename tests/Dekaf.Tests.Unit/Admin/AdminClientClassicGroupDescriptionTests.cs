@@ -531,10 +531,17 @@ public sealed class AdminClientClassicGroupDescriptionTests
             .Returns(ValueTask.FromException<IKafkaConnection>(new IOException("connection failed")));
 
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
-        await Assert.ThrowsAsync<KafkaTimeoutException>(
+        var exception = await Assert.ThrowsAsync<KafkaTimeoutException>(
             () => admin.DescribeClassicGroupsAsync(["group"], new DescribeClassicGroupsOptions { TimeoutMs = 300 }).AsTask());
         stopwatch.Stop();
         await Assert.That(stopwatch.Elapsed).IsLessThan(TimeSpan.FromSeconds(10));
+        // The timeout carries the last initialization failure, not the cancellation around it.
+        await Assert.That(exception!.InnerException).IsNotAssignableTo<OperationCanceledException>();
+        await Assert.That(exception.InnerException).IsNotNull();
+        var cause = exception.InnerException;
+        while (cause is not null and not IOException)
+            cause = cause.InnerException;
+        await Assert.That(cause).IsTypeOf<IOException>();
         await connection.DidNotReceive().SendAsync<DescribeGroupsRequest, DescribeGroupsResponse>(
             Arg.Any<DescribeGroupsRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>());
     }

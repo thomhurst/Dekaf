@@ -146,7 +146,7 @@ public sealed partial class AdminClient : IShareGroupOffsetQueryAdminClient
         catch (Exception exception) when (cancellationToken.IsCancellationRequested &&
             (exception is KafkaException || RetryHelper.IsRetriableRequestFailure(exception)))
         {
-            throw new OperationCanceledException(cancellationToken);
+            throw CancellationWithCause(exception, cancellationToken);
         }
         catch (Exception exception) when (IsShareOffsetQueryFailure(exception, cancellationToken))
         {

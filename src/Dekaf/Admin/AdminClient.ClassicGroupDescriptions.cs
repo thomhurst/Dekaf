@@ -50,7 +50,7 @@ public sealed partial class AdminClient : IClassicGroupDescriptionAdminClient
             (exception is KafkaException or InvalidOperationException { InnerException: KafkaException } ||
              RetryHelper.IsRetriableRequestFailure(exception)))
         {
-            throw new OperationCanceledException(cancellationToken);
+            throw CancellationWithCause(exception, cancellationToken);
         }
         var results = new Dictionary<string, ClassicGroupDescriptionResult>(groupIds.Length, StringComparer.Ordinal);
         var retryErrors = new Dictionary<string, ClassicGroupDescriptionResult>(StringComparer.Ordinal);
@@ -165,7 +165,7 @@ public sealed partial class AdminClient : IClassicGroupDescriptionAdminClient
             (exception is KafkaException or InvalidOperationException { InnerException: KafkaException } ||
                 RetryHelper.IsRetriableRequestFailure(exception)))
         {
-            throw new OperationCanceledException(cancellationToken);
+            throw CancellationWithCause(exception, cancellationToken);
         }
         catch (Exception exception) when (RetryHelper.IsRetriableRequestFailure(exception) &&
             !cancellationToken.IsCancellationRequested)

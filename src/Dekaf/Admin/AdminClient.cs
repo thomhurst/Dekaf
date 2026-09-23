@@ -5872,24 +5872,42 @@ public sealed partial class AdminClient :
     // loop into per-group results. Their initialization runs before that loop, so a transport-level
     // failure (for example a bootstrap broker refusing the connection) is retried here until the
     // deadline token ends the call, like a coordinator-lookup failure inside the loop. Any other
-    // initialization failure surfaces as it is.
+    // initialization failure surfaces as it is. It is not RetryHelper's loop because that loop
+    // also retries client routing failures, which here can wrap a non-transport fault that must
+    // surface. When the deadline ends the wait, the cancellation carries the last transport
+    // failure as its inner exception, as RetryHelper's does.
     private async ValueTask InitializeUntilDeadlineAsync(string operation, CancellationToken deadlineToken)
     {
-        for (var attempt = 1; ; attempt++)
+        Exception? lastFailure = null;
+        try
         {
-            try
+            for (var attempt = 1; ; attempt++)
             {
-                await EnsureInitializedAsync(deadlineToken, operation).ConfigureAwait(false);
-                return;
+                try
+                {
+                    await EnsureInitializedAsync(deadlineToken, operation).ConfigureAwait(false);
+                    return;
+                }
+                catch (Exception exception) when (!deadlineToken.IsCancellationRequested && HasSocketLevelCause(exception))
+                {
+                    lastFailure = exception;
+                    var delayMs = ExponentialRetryBackoff.CalculateDelayMilliseconds(
+                        _options.RetryBackoffMs,
+                        _options.RetryBackoffMaxMs,
+                        attempt);
+                    await Task.Delay(delayMs, deadlineToken).ConfigureAwait(false);
+                }
             }
-            catch (Exception exception) when (!deadlineToken.IsCancellationRequested && HasSocketLevelCause(exception))
-            {
-                var delayMs = ExponentialRetryBackoff.CalculateDelayMilliseconds(
-                    _options.RetryBackoffMs,
-                    _options.RetryBackoffMaxMs,
-                    attempt);
-                await Task.Delay(delayMs, deadlineToken).ConfigureAwait(false);
-            }
+        }
+        catch (OperationCanceledException ex) when (
+            lastFailure is not null
+            && ex.InnerException is null
+            && deadlineToken.IsCancellationRequested)
+        {
+            throw new OperationCanceledException(
+                $"{operation} initialization was still failing when the wait was cancelled: {lastFailure.Message}",
+                lastFailure,
+                deadlineToken);
         }
 
         static bool HasSocketLevelCause(Exception exception)
@@ -5902,6 +5920,17 @@ public sealed partial class AdminClient :
 
             return false;
         }
+    }
+
+    // Reports a failure that arrived with, or because of, the deadline token as cancellation while
+    // keeping its cause. A retry loop's cancellation already carries its last failure, which is
+    // kept, so the timeout the deadline owner raises names the failure rather than the wait.
+    private static OperationCanceledException CancellationWithCause(Exception failure, CancellationToken token)
+    {
+        var cause = failure is OperationCanceledException canceled ? canceled.InnerException : failure;
+        return cause is null
+            ? new OperationCanceledException(token)
+            : new OperationCanceledException(cause.Message, cause, token);
     }
 
     private async ValueTask StartTelemetryOnceAsync(CancellationToken cancellationToken)

@@ -57,7 +57,7 @@ public sealed partial class AdminClient : IConsumerGroupOffsetQueryAdminClient
             {
                 // Cancellation may race the final retriable broker response. Preserve the
                 // caller's deadline/cancellation outcome instead of leaking that response.
-                throw new OperationCanceledException(cancellationToken);
+                throw CancellationWithCause(exception, cancellationToken);
             }
             cancellationToken.ThrowIfCancellationRequested();
             Dictionary<string, IReadOnlyList<TopicPartition>?>? unstable = null;
