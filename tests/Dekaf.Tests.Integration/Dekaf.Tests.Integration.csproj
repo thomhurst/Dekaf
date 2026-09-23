@@ -41,6 +41,7 @@
   <ItemGroup Condition="'$(PublishAot)' == 'true'">
     <Compile Remove="OutboxRelayIntegrationTests.cs" />
     <Compile Remove="OutboxRelationalMetricsTests.cs" />
+    <Compile Remove="OutboxRelationalLeaseTests.cs" />
     <Compile Remove="OutboxDynamoDb*.cs" />
     <Compile Remove="DynamoDbLocalContainer.cs" />
     <Compile Remove="SchemaRegistrySubjectCompatibilityTests.cs" />
