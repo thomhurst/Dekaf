@@ -5055,8 +5055,8 @@ public sealed partial class KafkaProducer<TKey, TValue> :
 
                 // 5. Exit after close when all work is done.
                 // Closed is set at the start of CloseAsync, but FlushAsync (called within
-                // CloseAsync) waits for _inFlightBatchCount == 0. We must keep the sender
-                // alive until FlushAsync completes by checking in-flight batches too.
+                // CloseAsync) waits for its in-flight batches to leave the pipeline. We must
+                // keep the sender alive until FlushAsync completes by checking in-flight batches too.
                 if (_accumulator.Closed && readyNodes.Count == 0 && !_accumulator.HasPendingWork())
                     break;
 
@@ -7516,7 +7516,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             _senderCts.Cancel();
 
             // Force-fail all in-flight batches IMMEDIATELY after cancelling senders.
-            // This unblocks any FlushAsync waiter (which polls _inFlightBatchCount)
+            // This unblocks any FlushAsync waiter (which waits for in-flight batches to exit)
             // and lets the sender loop's HasPendingWork() return false promptly,
             // so _senderTask exits without waiting for broker responses that will
             // never arrive. Previously this was done only after BrokerSender disposal,

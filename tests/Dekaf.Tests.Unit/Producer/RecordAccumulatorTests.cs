@@ -3835,7 +3835,7 @@ public class RecordAccumulatorTests
         var pd = Activator.CreateInstance(pdType, batch.TopicPartition, accumulator)!;
         var method = typeof(RecordAccumulator).GetMethod("OnBatchEntersPipeline",
             System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-        method!.Invoke(accumulator, [pd, batch]);
+        method!.Invoke(accumulator, [pd, batch, null]);
     }
 
     [Test]

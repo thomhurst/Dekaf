@@ -211,6 +211,91 @@ public sealed class ProducerTimeoutTests(KafkaTestContainer kafka) : KafkaIntegr
     }
 
     [Test]
+    public async Task FlushAsync_UnderContinuousConcurrentProduction_CompletesAtCheckpoint()
+    {
+        // #3386: FlushAsync waits for the records appended before it started, not for a quiet
+        // moment. Another task keeps producing to several partitions for the whole flush.
+        const int partitionCount = 3;
+        const int messagesBeforeFlush = 60;
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: partitionCount);
+
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("test-flush-checkpoint-concurrent")
+            .WithLinger(TimeSpan.FromMilliseconds(5))
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        using var stopProducing = new CancellationTokenSource();
+        var concurrentProduced = 0L;
+        var concurrentProducer = Task.Run(async () =>
+        {
+            var i = 0;
+            while (!stopProducing.IsCancellationRequested)
+            {
+                await producer.FireAsync(new ProducerMessage<string, string>
+                {
+                    Topic = topic,
+                    Partition = i % partitionCount,
+                    Key = $"concurrent-{i}",
+                    Value = "concurrent"
+                });
+                Interlocked.Increment(ref concurrentProduced);
+                i++;
+            }
+        });
+
+        try
+        {
+            // Production is under way before the flush starts.
+            await TestWait.WaitForConditionAsync(
+                () => Interlocked.Read(ref concurrentProduced) > 1_000,
+                TimeSpan.FromSeconds(30),
+                pollIntervalMs: 10,
+                description: "concurrent production to start");
+
+            // Delivery handlers run on the sender before a batch leaves the pipeline, so they
+            // show what the flush waited for. ProduceAsync tasks are not used here: with tracing
+            // or metrics listeners attached (as in this test host) they complete in a queued
+            // continuation that can run after the flush's own continuation.
+            var delivered = 0;
+            var failed = 0;
+            for (var i = 0; i < messagesBeforeFlush; i++)
+            {
+                // Awaiting FireAsync returns once the record is appended (or handed off under
+                // backpressure), so the record precedes the flush.
+                await producer.FireAsync(new ProducerMessage<string, string>
+                {
+                    Topic = topic,
+                    Partition = i % partitionCount,
+                    Key = $"before-flush-{i}",
+                    Value = "before-flush"
+                }, (metadata, error) =>
+                {
+                    if (error is null && metadata.Offset >= 0)
+                        Interlocked.Increment(ref delivered);
+                    else
+                        Interlocked.Increment(ref failed);
+                });
+            }
+
+            await producer.FlushWithTimeoutAsync();
+
+            var deliveredAtFlushReturn = Volatile.Read(ref delivered);
+            await Assert.That(concurrentProducer.IsCompleted).IsFalse()
+                .Because("production continued for the whole flush");
+            await Assert.That(Volatile.Read(ref failed)).IsEqualTo(0);
+            await Assert.That(deliveredAtFlushReturn).IsEqualTo(messagesBeforeFlush)
+                .Because("every record produced before the flush started is delivered when it returns");
+        }
+        finally
+        {
+            stopProducing.Cancel();
+            await concurrentProducer;
+        }
+    }
+
+    [Test]
     public async Task FlushAsync_WithCancellation_StopsWaiting()
     {
         // Arrange - Send messages with a long linger, then cancel the flush.
