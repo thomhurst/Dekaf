@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using Dekaf.Consumer;
 using Dekaf.Errors;
@@ -22,8 +23,12 @@ public sealed class ProducerMinInSyncReplicasIntegrationTests(RackAwareKafkaCont
         CancellationToken cancellationToken)
     {
         var topic = await kafka.CreateReplicatedTopicAsync(minInSyncReplicas: 3).ConfigureAwait(false);
+        await WarmUpReplicationAsync(topic, cancellationToken).ConfigureAwait(false);
         var stoppedBrokers = new List<int>(1);
-        using var logs = new CapturingLoggerProvider();
+        var logClock = Stopwatch.StartNew();
+        var timeline = new ConcurrentQueue<string>();
+        using var logs = new CapturingLoggerProvider(entry => timeline.Enqueue(
+            $"{logClock.ElapsedMilliseconds,6} ms {entry.LogLevel} {entry.CategoryName}: {entry.Message}"));
         using var loggerFactory = CreateLoggerFactory(logs);
 
         await using var producer = await CreateProducerAsync(
@@ -36,18 +41,35 @@ public sealed class ProducerMinInSyncReplicasIntegrationTests(RackAwareKafkaCont
 
         try
         {
-            var initial = await ProduceAsync(producer, topic, 0, cancellationToken).ConfigureAwait(false);
+            // Runs on the 4 s budget, but only after the warm-up above: it sets up the producer id
+            // and the leader connection so the timed produce below measures the ISR outage alone.
+            RecordMetadata initial;
+            try
+            {
+                initial = await ProduceAsync(producer, topic, 1, cancellationToken).ConfigureAwait(false);
+            }
+            catch (KafkaException initialFailure)
+            {
+                // The cluster is healthy here, so a failure is unexpected: keep the client's
+                // debug log with the failure instead of losing it.
+                throw new InvalidOperationException(
+                    "Initial produce failed before any broker was stopped. Producer log:" +
+                    Environment.NewLine +
+                    string.Join(Environment.NewLine, timeline),
+                    initialFailure);
+            }
+
             await StopFollowerAsync(topic, stoppedBrokers, cancellationToken).ConfigureAwait(false);
 
             ((IProducerDiagnostics)producer).ResetProduceRequestDiagnostics();
             var stopwatch = Stopwatch.StartNew();
             var exception = await Assert.ThrowsAsync<KafkaTimeoutException>(async () =>
-                await ProduceAsync(producer, topic, 1, cancellationToken).ConfigureAwait(false));
+                await ProduceAsync(producer, topic, 2, cancellationToken).ConfigureAwait(false));
             stopwatch.Stop();
 
             var diagnostics = ((IProducerDiagnostics)producer).GetDeliveryDiagnosticsSnapshot();
             var replicaError = GetReplicaError(logs);
-            await Assert.That(initial.Offset).IsEqualTo(0);
+            await Assert.That(initial.Offset).IsEqualTo(1);
             await Assert.That(exception!.TimeoutKind).IsEqualTo(TimeoutKind.Delivery);
             await Assert.That(exception.Configured).IsEqualTo(TimeSpan.FromSeconds(4));
             await Assert.That(stopwatch.Elapsed).IsLessThan(TimeSpan.FromSeconds(20));
@@ -153,19 +175,46 @@ public sealed class ProducerMinInSyncReplicasIntegrationTests(RackAwareKafkaCont
         }
     }
 
+    /// <summary>
+    /// Writes offset 0 with acks=all and a generous delivery timeout, so both followers are
+    /// replicating the new partition before a test starts timing a short delivery budget.
+    /// </summary>
+    /// <remarks>
+    /// A new partition lists every replica in its ISR from the start, whether or not the followers
+    /// have started fetching it. With min.insync.replicas=3 the first acks=all produce therefore
+    /// waits for both followers to pick the partition up. That takes about 450 ms on an idle
+    /// machine (one follower fetch wait) and longer on a loaded runner or after a broker restart
+    /// in an earlier test. With the 2 s request timeout, two slow attempts use up a 4 s delivery
+    /// budget before the test has stopped any broker.
+    /// </remarks>
+    private async Task WarmUpReplicationAsync(string topic, CancellationToken cancellationToken)
+    {
+        await using var producer = await CreateProducerAsync(
+                Acks.All,
+                enableIdempotence: true,
+                deliveryTimeout: TimeSpan.FromSeconds(60),
+                cancellationToken,
+                requestTimeout: TimeSpan.FromSeconds(30))
+            .ConfigureAwait(false);
+        var warmUp = await ProduceAsync(producer, topic, 0, cancellationToken).ConfigureAwait(false);
+        if (warmUp.Offset != 0)
+            throw new InvalidOperationException($"Warm-up record landed at offset {warmUp.Offset}.");
+    }
+
     private async ValueTask<IKafkaProducer<string, string>> CreateProducerAsync(
         Acks acks,
         bool enableIdempotence,
         TimeSpan deliveryTimeout,
         CancellationToken cancellationToken,
-        ILoggerFactory? loggerFactory = null)
+        ILoggerFactory? loggerFactory = null,
+        TimeSpan? requestTimeout = null)
     {
         return await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId($"min-isr-producer-{Guid.NewGuid():N}")
             .WithAcks(acks)
             .WithIdempotence(enableIdempotence)
-            .WithRequestTimeout(TimeSpan.FromSeconds(2))
+            .WithRequestTimeout(requestTimeout ?? TimeSpan.FromSeconds(2))
             .WithDeliveryTimeout(deliveryTimeout)
             .WithReconnectBackoff(TimeSpan.FromMilliseconds(50))
             .WithReconnectBackoffMax(TimeSpan.FromMilliseconds(250))
