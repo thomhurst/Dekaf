@@ -3028,7 +3028,8 @@ public sealed class ConsumerAssignmentFastPathTests
     {
         var method = typeof(KafkaConsumer<string, string>).GetMethod(
             "QueueCoordinatorRevokedPartitionsForFetchClear",
-            BindingFlags.NonPublic | BindingFlags.Instance)
+            BindingFlags.NonPublic | BindingFlags.Instance,
+            [typeof(IReadOnlyList<TopicPartition>)])
             ?? throw new InvalidOperationException("QueueCoordinatorRevokedPartitionsForFetchClear method not found.");
 
         method.Invoke(consumer, [partitions]);
@@ -3043,7 +3044,7 @@ public sealed class ConsumerAssignmentFastPathTests
             BindingFlags.NonPublic | BindingFlags.Instance)
             ?? throw new InvalidOperationException("RemovePartitionState method not found.");
 
-        method.Invoke(consumer, [partitions]);
+        method.Invoke(consumer, [partitions, null]);
     }
 
     private static void PublishAssignmentSnapshot(KafkaConsumer<string, string> consumer)

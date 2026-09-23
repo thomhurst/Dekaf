@@ -422,6 +422,7 @@ public sealed class ConsumerDirtyCommitTests
         var p0 = new TopicPartition("topic-a", 0);
         KafkaConsumer<string, string>? consumer = null;
         using var firstSync = new CancellationTokenSource();
+        var revocationsTrackedDuringStaleCallback = -1;
 
         // The first OnPartitionsAssigned is cancelled after the member is fenced, so it stays
         // queued and is delivered again, after the loss was published, when the consumer rejoins.
@@ -447,6 +448,7 @@ public sealed class ConsumerDirtyCommitTests
                         firstSync.Token.ThrowIfCancellationRequested();
                         break;
                     case 2:
+                        revocationsTrackedDuringStaleCallback = GetCoordinator(consumer!).RevocationSequenceCountForTest;
                         callInfo.Arg<IRebalanceConsumer>()!.Seek(new TopicPartitionOffset("topic-a", 0, 99));
                         break;
                 }
@@ -468,6 +470,10 @@ public sealed class ConsumerDirtyCommitTests
         // fetching starts at the committed offset: the seek belonged to the ownership the fence
         // ended.
         await Assert.That(Volatile.Read(ref assignedCalls)).IsEqualTo(3);
+        // The revocation is remembered while the callback that predates it is queued, and
+        // forgotten once nothing queued can reference it, so the history stays bounded.
+        await Assert.That(revocationsTrackedDuringStaleCallback).IsEqualTo(1);
+        await Assert.That(GetCoordinator(consumer).RevocationSequenceCountForTest).IsEqualTo(0);
         await listener.Received(1).OnPartitionsLostAsync(
             Arg.Any<IRebalanceConsumer>(),
             Arg.Any<IEnumerable<TopicPartition>>(),
@@ -478,6 +484,73 @@ public sealed class ConsumerDirtyCommitTests
         var position = (long)fetchPositions.GetType().GetProperty("Item")!.GetValue(fetchPositions, [p0])!;
         await Assert.That(position).IsEqualTo(5);
     }
+
+    [Test]
+    public async Task AssignmentSync_ReassignedSeekRevokedDuringCleanup_IsNotRestored()
+    {
+        var p0 = new TopicPartition("topic-a", 0);
+
+        // The fenced committed-offset fetch makes the member rejoin, and the rejoin's
+        // OnPartitionsAssigned seeks p0 again, so the next pass sees p0 revoked and reassigned
+        // with a pending seek.
+        var assignedCalls = 0;
+        var listener = Substitute.For<IConsumerAwareRebalanceListener>();
+        listener.OnPartitionsAssignedAsync(
+                Arg.Any<IRebalanceConsumer>(),
+                Arg.Any<IEnumerable<TopicPartition>>(),
+                Arg.Any<CancellationToken>())
+            .Returns(callInfo =>
+            {
+                if (Interlocked.Increment(ref assignedCalls) == 2)
+                    callInfo.Arg<IRebalanceConsumer>()!.Seek(new TopicPartitionOffset("topic-a", 0, 42));
+                return ValueTask.CompletedTask;
+            });
+        var consumer = CreateSingleTopicGroupConsumer(listener, fenceFirstOffsetFetch: true);
+        await using var _ = consumer;
+        var ensureAssignment = typeof(KafkaConsumer<string, string>)
+            .GetMethod("EnsureAssignmentAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        var notifyRevoking = typeof(ConsumerCoordinator)
+            .GetMethod("NotifyRevoking", BindingFlags.NonPublic | BindingFlags.Instance)!;
+
+        // While that pass cleans up the revoked partition, a heartbeat publishes another
+        // revocation of p0, whose hook drops the pending seek: that ownership has ended too.
+        var pendingSeeks = (System.Collections.ICollection)typeof(KafkaConsumer<string, string>)
+            .GetField("_pendingRebalanceSeeks", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .GetValue(consumer)!;
+        var revoked = 0;
+        Action<object> revokeDuringCleanup = instance =>
+        {
+            if (ReferenceEquals(instance, consumer)
+                && pendingSeeks.Count != 0
+                && Interlocked.Exchange(ref revoked, 1) == 0)
+            {
+                notifyRevoking.Invoke(GetCoordinator(consumer), [new List<TopicPartition> { p0 }]);
+            }
+        };
+        KafkaConsumer<string, string>.BeforeRevokedPartitionStateCleanupForTest += revokeDuringCleanup;
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            await (ValueTask)ensureAssignment.Invoke(consumer, [timeout.Token])!;
+        }
+        finally
+        {
+            KafkaConsumer<string, string>.BeforeRevokedPartitionStateCleanupForTest -= revokeDuringCleanup;
+        }
+
+        // The cleanup must not put the dropped seek back: fetching starts at the committed offset.
+        await Assert.That(Volatile.Read(ref revoked)).IsEqualTo(1);
+        var fetchPositions = typeof(KafkaConsumer<string, string>)
+            .GetField("_fetchPositions", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .GetValue(consumer)!;
+        var position = (long)fetchPositions.GetType().GetProperty("Item")!.GetValue(fetchPositions, [p0])!;
+        await Assert.That(position).IsEqualTo(5);
+    }
+
+    private static ConsumerCoordinator GetCoordinator(KafkaConsumer<string, string> consumer) =>
+        (ConsumerCoordinator)typeof(KafkaConsumer<string, string>)
+            .GetField("_coordinator", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .GetValue(consumer)!;
 
     private static KafkaConsumer<string, string> CreateSingleTopicGroupConsumer(
         IConsumerAwareRebalanceListener listener,

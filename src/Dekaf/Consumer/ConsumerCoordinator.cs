@@ -51,8 +51,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private readonly ConcurrentQueue<TopicPartition> _revokedPartitionsSinceLastSync = new();
     // Advances on every published revocation or loss. Each partition keeps the sequence of its
     // latest revocation, and each queued rebalance notification the sequence when it was
-    // published, so a callback delivered after its partitions were revoked is recognizably stale.
-    // Updated once per revocation, never per message.
+    // queued, so a callback delivered after its partitions were revoked is recognizably stale.
+    // Entries no queued notification predates are pruned (PruneRevocationSequences). Updated once
+    // per revocation, never per message.
     private long _revocationSequence;
     private readonly ConcurrentDictionary<TopicPartition, long> _partitionRevocationSequences = new();
     private Task _pendingRevocationCommit = Task.CompletedTask;
@@ -1198,9 +1199,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         // stable snapshot.
         public required HashSet<TopicPartition> Assignment { get; init; }
 
-        // _revocationSequence when this notification arose. Captured after its own revocations
-        // were recorded, so only later revocations or losses make its seeks stale.
-        public required long RevocationSequence { get; init; }
+        // _revocationSequence when this notification was queued, after its own revocations were
+        // recorded, so only later revocations or losses make its seeks stale. Set under
+        // _pendingPublishLock, which also orders it against PruneRevocationSequences.
+        public long RevocationSequence;
 
         public bool RevokedDelivered;
 
@@ -1238,6 +1240,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         // sees the count but not yet the entry waits for it (HasQueuedRebalanceCallbacks).
         lock (_pendingPublishLock)
         {
+            callback.RevocationSequence = Volatile.Read(ref _revocationSequence);
             if (!reserved)
             {
                 Interlocked.Increment(ref _pendingRebalanceCallbackCount);
@@ -1944,8 +1947,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             EnqueuePendingRebalanceCallback(new PendingRebalanceCallback
             {
                 Lost = lost,
-                Assignment = _assignedPartitions,
-                RevocationSequence = Volatile.Read(ref _revocationSequence)
+                Assignment = _assignedPartitions
             });
     }
 
@@ -2014,8 +2016,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 new PendingRebalanceCallback
                 {
                     Deferred = result,
-                    Assignment = published,
-                    RevocationSequence = Volatile.Read(ref _revocationSequence)
+                    Assignment = published
                 },
                 reserved: true);
         }
@@ -2619,8 +2620,38 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 sequence);
         }
 
+        PruneRevocationSequences();
         _onPartitionsRevoking?.Invoke(revoked);
     }
+
+    /// <summary>
+    /// Forgets every partition revocation that no queued notification predates. Only a queued
+    /// notification's callback scope consults the history, and a notification queued later
+    /// captures a sequence at least the current one, so the history stays bounded by the
+    /// partitions revoked while callbacks are pending. Runs per revocation and per delivered
+    /// notification, never per message; the queue holds a handful of entries.
+    /// </summary>
+    private void PruneRevocationSequences()
+    {
+        if (_partitionRevocationSequences.IsEmpty)
+            return;
+
+        lock (_pendingPublishLock)
+        {
+            var threshold = Volatile.Read(ref _revocationSequence);
+            foreach (var pending in _pendingRebalanceCallbacks)
+                threshold = Math.Min(threshold, pending.RevocationSequence);
+
+            foreach (var entry in _partitionRevocationSequences)
+            {
+                // Conditional on the value, so a revocation recorded concurrently is kept.
+                if (entry.Value <= threshold)
+                    ((ICollection<KeyValuePair<TopicPartition, long>>)_partitionRevocationSequences).Remove(entry);
+            }
+        }
+    }
+
+    internal int RevocationSequenceCountForTest => _partitionRevocationSequences.Count;
 
     /// <summary>
     /// True when <paramref name="partition"/> was revoked or lost after a rebalance notification
@@ -3107,8 +3138,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 EnqueuePendingRebalanceCallback(new PendingRebalanceCallback
                 {
                     Lost = lost,
-                    Assignment = _assignedPartitions,
-                    RevocationSequence = Volatile.Read(ref _revocationSequence)
+                    Assignment = _assignedPartitions
                 });
             }
 
@@ -3254,6 +3284,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 _pendingRebalanceCallbacks.TryDequeue(out _);
                 if (Interlocked.Exchange(ref pending.PollVisibility, 2) == 1)
                     Interlocked.Decrement(ref _pendingRebalanceCallbackCount);
+
+                // Its scope is invalidated, so revocations only it could predate are forgotten.
+                PruneRevocationSequences();
             }
         }
         finally
