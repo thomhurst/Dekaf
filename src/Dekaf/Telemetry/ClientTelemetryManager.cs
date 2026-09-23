@@ -278,7 +278,8 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
         int pushIntervalMs,
         CancellationToken cancellationToken)
     {
-        var requiredTicks = (Math.Max(1, pushIntervalMs) + 1L) * Stopwatch.Frequency / 1000;
+        // Round up so the tick threshold never falls short of the millisecond threshold.
+        var requiredTicks = ((Math.Max(1, pushIntervalMs) + 1L) * Stopwatch.Frequency + 999) / 1000;
         while (true)
         {
             var remainingTicks = requiredTicks - (Stopwatch.GetTimestamp() - lastPushTimestamp);

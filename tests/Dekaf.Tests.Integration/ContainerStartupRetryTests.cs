@@ -92,11 +92,22 @@ public sealed class ContainerStartupRetryTests
     [Arguments("{\"message\":\"Get \\\"https://mcr.microsoft.com/v2/\\\": context deadline exceeded\"}")]
     [Arguments("Get \"https://registry-1.docker.io/v2/\": net/http: request canceled while waiting for connection (Client.Timeout exceeded while awaiting headers)")]
     [Arguments("Get \"https://registry-1.docker.io/v2/\": net/http: TLS handshake timeout")]
+    [Arguments("Get \"https://registry-1.docker.io/v2/\": dial tcp 1.2.3.4:443: i/o timeout")]
     public async Task IsRegistryUnavailable_RegistryTimeout_ReturnsTrue(string message)
     {
         var exception = new DockerApiException(HttpStatusCode.InternalServerError, message);
 
         await Assert.That(ContainerStartupRetry.IsRegistryUnavailable(exception)).IsTrue();
+    }
+
+    [Test]
+    [Arguments("Get \"https://registry-1.docker.io/v2/\": x509: certificate signed by unknown authority")]
+    [Arguments("dial unix /var/run/docker.sock: context deadline exceeded")]
+    public async Task IsRegistryUnavailable_ServerErrorWithoutRegistryTimeout_ReturnsFalse(string message)
+    {
+        var exception = new DockerApiException(HttpStatusCode.InternalServerError, message);
+
+        await Assert.That(ContainerStartupRetry.IsRegistryUnavailable(exception)).IsFalse();
     }
 
     [Test]
