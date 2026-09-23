@@ -418,6 +418,99 @@ public sealed partial class ConsumerCoordinatorKip848Tests
     }
 
     [Test]
+    public async Task CommitOffsetsAsync_OffsetsSnapshottedBeforeAFenceRejoinAndSync_AreNotSent()
+    {
+        _metadataManager.SetApiVersion(ApiKey.OffsetCommit, 9, 9);
+        var script = new HeartbeatScript(this);
+        var (listener, _) = CreateRecordingListener();
+        await using var coordinator = await JoinAsync(script, listener);
+        var commitCount = 0;
+        _connection.SendAsync<OffsetCommitRequest, OffsetCommitResponse>(
+                Arg.Any<OffsetCommitRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                Interlocked.Increment(ref commitCount);
+                return ValueTask.FromResult(new OffsetCommitResponse { Topics = [] });
+            });
+
+        // The consumer reads the membership version and snapshots its stored offsets; before
+        // the commit starts, the member is fenced, rejoins and synchronizes its assignment, which
+        // lifts the commit fence.
+        var membershipVersion = coordinator.MembershipVersion;
+        typeof(ConsumerCoordinator)
+            .GetMethod("FenceMembership", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(coordinator, [false]);
+        script.Respond = (_, _) => Joined("member-1", memberEpoch: 6, CreateAssignment(TestTopicId, 1));
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
+        await coordinator.StopHeartbeatAsync();
+        await SynchronizeAssignmentAsync(coordinator);
+
+        var fenced = await Assert.That(async () => await coordinator.CommitOffsetsAsync(
+                [new TopicPartitionOffset("test-topic", 0, 10)],
+                retryUntilApiTimeout: false,
+                membershipVersion,
+                CancellationToken.None))
+            .Throws<GroupException>();
+        await Assert.That(fenced!.ErrorCode).IsEqualTo(ErrorCode.FencedMemberEpoch);
+        await Assert.That(Volatile.Read(ref commitCount)).IsEqualTo(0);
+
+        // A commit that reads the version after the sync is sent.
+        await coordinator.CommitOffsetsAsync(
+            [new TopicPartitionOffset("test-topic", 1, 10)],
+            retryUntilApiTimeout: false,
+            coordinator.MembershipVersion,
+            CancellationToken.None);
+        await Assert.That(Volatile.Read(ref commitCount)).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task MembershipLoss_DrainAbandonedAtDisposal_StartsNoFurtherCallback()
+    {
+        var script = new HeartbeatScript(this);
+        var releaseFirst = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var firstStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var first = Substitute.For<IRebalanceListener>();
+        first.OnPartitionsLostAsync(Arg.Any<IEnumerable<TopicPartition>>(), Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                firstStarted.TrySetResult();
+                return new ValueTask(releaseFirst.Task);
+            });
+        var secondCalls = 0;
+        var second = Substitute.For<IRebalanceListener>();
+        second.OnPartitionsLostAsync(Arg.Any<IEnumerable<TopicPartition>>(), Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                Interlocked.Increment(ref secondCalls);
+                return ValueTask.CompletedTask;
+            });
+        var coordinator = await JoinAsync(
+            script,
+            first,
+            defaultApiTimeoutMs: 200,
+            additionalRebalanceListeners: [second]);
+        var listenerLock = GetPrivateField<SemaphoreSlim>(coordinator, "_rebalanceListenerLock");
+        typeof(ConsumerCoordinator)
+            .GetMethod("FenceMembership", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(coordinator, [false]);
+
+        // Disposal gives up on the first listener, which ignores cancellation, after its API
+        // timeout. That listener then returns.
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var dispose = coordinator.DisposeAsync().AsTask();
+        await firstStarted.Task.WaitAsync(timeout.Token);
+        await dispose.WaitAsync(timeout.Token);
+        releaseFirst.SetResult();
+
+        // The abandoned drain releases the listener lock without calling the second listener.
+        await listenerLock.WaitAsync(timeout.Token);
+        listenerLock.Release();
+        await Assert.That(Volatile.Read(ref secondCalls)).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task MembershipLoss_OffsetFetchUnknownMemberReceivedAsTheCallerCancels_IsStillApplied()
     {
         _metadataManager.SetApiVersion(ApiKey.OffsetFetch, 9, 9);

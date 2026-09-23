@@ -7345,6 +7345,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         TopicPartitionOffset[]? offsetsArray = null;
         int offsetCount;
 
+        // Read before the snapshot: offsets taken under a membership that a fence and rejoin
+        // replace before the send are rejected rather than sent under the new member's identity.
+        var membershipVersion = _coordinator.MembershipVersion;
+
         {
             // Commit only offsets that changed since the last successful commit.
             // Snapshot the concurrent dictionary to avoid race conditions during enumeration
@@ -7374,7 +7378,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 // Create array segment to pass only the used portion
                 var offsets = new ArraySegment<TopicPartitionOffset>(offsetsArray, 0, offsetCount);
 
-                await _coordinator.CommitOffsetsAsync(offsets, retryUntilApiTimeout, cancellationToken)
+                await _coordinator.CommitOffsetsAsync(offsets, retryUntilApiTimeout, membershipVersion, cancellationToken)
                     .ConfigureAwait(false);
 
                 // Update committed offsets tracking

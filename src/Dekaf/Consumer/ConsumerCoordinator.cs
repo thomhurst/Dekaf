@@ -84,6 +84,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private long _lastSuccessfulHeartbeatTimestamp;
     private string? _lastHeartbeatFailure;
     private int _disposed;
+    // Set when disposal has finished with rebalance callbacks. A drain that outlives it (a
+    // listener that ignored the teardown token) invokes no further callbacks.
+    private int _callbackDeliveryClosed;
     private readonly Func<int> _getCoordinationConnectionIndex;
     // Where the next coordinator lookup starts. It rests on the last broker that answered, so a
     // broker that refuses or black-holes connections is not tried first by every lookup.
@@ -929,6 +932,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         Func<IRebalanceListener, IEnumerable<TopicPartition>, CancellationToken, ValueTask> callback,
         CancellationToken cancellationToken)
     {
+        ThrowIfCallbackDeliveryStopped(cancellationToken);
         try
         {
             LogRebalanceListenerCall(callbackName, partitions.Count);
@@ -954,6 +958,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         HashSet<TopicPartition> assignment,
         CancellationToken cancellationToken)
     {
+        ThrowIfCallbackDeliveryStopped(cancellationToken);
         IRebalanceConsumerScope? consumerScope = null;
         try
         {
@@ -1086,6 +1091,19 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         public int ListenersCompleted;
     }
 
+    /// <summary>
+    /// Checked before every listener call and every queued entry. Once the delivery's token is
+    /// cancelled, or disposal has finished with callbacks, no further callback starts: the
+    /// undelivered entries stay queued. A callback already running is not interrupted.
+    /// </summary>
+    private void ThrowIfCallbackDeliveryStopped(CancellationToken cancellationToken)
+    {
+        if (Volatile.Read(ref _callbackDeliveryClosed) != 0)
+            throw new OperationCanceledException("The consumer coordinator has been disposed.");
+
+        cancellationToken.ThrowIfCancellationRequested();
+    }
+
     private void EnqueuePendingRebalanceCallback(PendingRebalanceCallback callback, bool reserved = false)
     {
         // Count first: the stable poll path reads only the count, so it must never see zero
@@ -1139,19 +1157,37 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     /// short count-bounded retry: they swallow the failure, and must not hold the commit lock or
     /// delay a shutdown for the length of an outage.
     /// </param>
+    internal ValueTask CommitOffsetsAsync(
+        IEnumerable<TopicPartitionOffset> offsets,
+        bool retryUntilApiTimeout,
+        CancellationToken cancellationToken)
+        => CommitOffsetsAsync(offsets, retryUntilApiTimeout, MembershipVersion, cancellationToken);
+
+    /// <summary>
+    /// The current membership version. A caller that snapshots offsets reads it first and passes
+    /// it to <see cref="CommitOffsetsAsync(IEnumerable{TopicPartitionOffset}, bool, int, CancellationToken)"/>,
+    /// so offsets taken under a membership that has since been replaced are never sent.
+    /// </summary>
+    internal int MembershipVersion => Volatile.Read(ref _membershipVersion);
+
+    /// <param name="membershipVersion">
+    /// The membership version read before the offsets were taken. The commit is rejected if the
+    /// membership changes after that, up to the send.
+    /// </param>
     internal async ValueTask CommitOffsetsAsync(
         IEnumerable<TopicPartitionOffset> offsets,
         bool retryUntilApiTimeout,
+        int membershipVersion,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrEmpty(_options.GroupId))
             return;
 
-        // Read before the fence flag: FenceMembership sets the flag before it advances the
-        // version, so a commit that passes the check below under a membership that is being
-        // fenced still sees the version change before it sends.
-        var membershipVersion = Volatile.Read(ref _membershipVersion);
+        // The version was read before the fence flag: FenceMembership sets the flag before it
+        // advances the version, so a commit that passes the check below under a membership that
+        // is being fenced still sees the version change before it sends.
         ThrowIfMaxPollIntervalExpired();
+        ThrowIfMembershipChangedSince(membershipVersion);
 
         LogCommitOffsetsStarted(_options.GroupId!);
         // Lock is intentionally held across retries to protect the shared _commitTopicGroups dictionary,
@@ -2870,6 +2906,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         s_drainingCoordinator.Value = this;
         while (_pendingRebalanceCallbacks.TryPeek(out var pending))
         {
+            ThrowIfCallbackDeliveryStopped(cancellationToken);
             if (pending.Lost is { } lost)
             {
                 await InvokePartitionsLostCoreAsync(lost, pending, cancellationToken).ConfigureAwait(false);
@@ -2928,16 +2965,27 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         if (_pendingRebalanceCallbacks.IsEmpty)
             return;
 
+        // The wait is bounded by the token even when a listener ignores it (close, disposal, a
+        // failed join or a leave must not hang on one). An abandoned drain keeps its entry queued
+        // and the listener lock until the running callback returns, then stops: its token is
+        // cancelled. Its outcome is still observed.
+        var drain = InvokePendingRebalanceCallbacksAsync(cancellationToken).AsTask();
         try
         {
-            // The wait is bounded by the token even when a listener ignores it (close, disposal,
-            // a failed join or a leave must not hang on one). An abandoned callback keeps its
-            // entry queued and the listener lock until it returns.
-            await InvokePendingRebalanceCallbacksAsync(cancellationToken).AsTask()
-                .WaitAsync(cancellationToken).ConfigureAwait(false);
+            await drain.WaitAsync(cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
+            if (!drain.IsCompleted)
+            {
+                _ = drain.ContinueWith(
+                    static (task, state) =>
+                        ((ConsumerCoordinator)state!).LogAbandonedRebalanceCallbacksFailed(task.Exception!),
+                    this,
+                    CancellationToken.None,
+                    TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default);
+            }
         }
     }
 
@@ -3156,6 +3204,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             }
         }
 
+        // A drain still running (its listener ignored the token) starts no further callback.
+        // The listener lock it holds is never disposed.
+        Volatile.Write(ref _callbackDeliveryClosed, 1);
+
         _lock.Dispose();
         _commitLock.Dispose();
         _fetchLock.Dispose();
@@ -3184,6 +3236,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Found coordinator {NodeId} for group {GroupId}")]
     private partial void LogFoundCoordinator(int nodeId, string groupId);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Rebalance callbacks abandoned at a timeout failed after the wait ended")]
+    private partial void LogAbandonedRebalanceCallbacksFailed(Exception exception);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Heartbeat failed")]
     private partial void LogHeartbeatFailed(Exception exception);
