@@ -1534,8 +1534,20 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     /// <summary>
     /// Fetches committed offsets for the group.
     /// </summary>
-    public async ValueTask<IReadOnlyDictionary<TopicPartition, TopicPartitionOffset>> FetchOffsetsAsync(
+    public ValueTask<IReadOnlyDictionary<TopicPartition, TopicPartitionOffset>> FetchOffsetsAsync(
         IEnumerable<TopicPartition> partitions,
+        CancellationToken cancellationToken)
+        => FetchOffsetsAsync(partitions, rejoinOnMembershipLoss: true, cancellationToken);
+
+    /// <summary>
+    /// Fetches committed offsets for the group. With <paramref name="rejoinOnMembershipLoss"/>
+    /// false, a fetch that finds the member has left the group throws
+    /// <see cref="GroupRejoinRequiredException"/> instead of rejoining: the caller holds a lock
+    /// a rebalance callback may need, so it rejoins itself once that lock is released.
+    /// </summary>
+    internal async ValueTask<IReadOnlyDictionary<TopicPartition, TopicPartitionOffset>> FetchOffsetsAsync(
+        IEnumerable<TopicPartition> partitions,
+        bool rejoinOnMembershipLoss,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrEmpty(_options.GroupId))
@@ -1778,7 +1790,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                         _fetchLock.Release();
                     }
 
-                    await RecoverOffsetFetchAsync(retryToken).ConfigureAwait(false);
+                    await RecoverOffsetFetchAsync(rejoinOnMembershipLoss, retryToken).ConfigureAwait(false);
                     await _fetchLock.WaitAsync(retryToken).ConfigureAwait(false);
                     fetchLockHeld = true;
                 },
@@ -1809,11 +1821,15 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         }
     }
 
-    private async ValueTask RecoverOffsetFetchAsync(CancellationToken cancellationToken)
+    private async ValueTask RecoverOffsetFetchAsync(bool rejoinOnMembershipLoss, CancellationToken cancellationToken)
     {
         var subscribedTopics = _subscribedTopics;
         if (_state == CoordinatorState.Unjoined && subscribedTopics is not null)
         {
+            // A rejoin delivers rebalance callbacks; the caller cannot run them where it is.
+            if (!rejoinOnMembershipLoss)
+                throw new GroupRejoinRequiredException(_options.GroupId);
+
             await EnsureActiveGroupAsync(
                 subscribedTopics,
                 _subscribedTopicRegex,

@@ -9503,8 +9503,24 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // concurrently. Without synchronization, concurrent access to non-thread-safe
         // _assignment HashSet causes NullReferenceException during enumeration.
         // Readers use the volatile _assignmentSnapshot instead of acquiring this lock.
+        var rejoinRequired = false;
         while (true)
         {
+            // Position initialization found the member had left the group. Rejoin here, outside
+            // the assignment lock: the rejoin delivers rebalance callbacks, and a callback's seek
+            // takes that lock.
+            if (rejoinRequired && coordinator is not null)
+            {
+                rejoinRequired = false;
+                subscriptionSnapshot = _subscriptionSnapshot;
+                topicPattern = _topicPattern;
+                if (subscriptionSnapshot.Count != 0 || topicPattern is not null)
+                {
+                    await coordinator.EnsureActiveGroupAsync(subscriptionSnapshot, topicPattern, cancellationToken)
+                        .ConfigureAwait(false);
+                }
+            }
+
             // A new assignment is synchronized only after its OnPartitionsAssigned has run, so a
             // seek the callback stages is applied before fetching starts. Waited for before the
             // assignment lock: the callback's seek takes that lock.
@@ -9615,6 +9631,23 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     if (removedPartitions is { Count: > 0 })
                         LogPartitionsRemoved(removedPartitions.Count);
 
+                    // A seek staged for a partition that was revoked and then assigned again
+                    // came from the new assignment's OnPartitionsAssigned: publishing the
+                    // revocation already dropped any seek staged before it. Keep it through the
+                    // cleanup below so position initialization applies it.
+                    List<TopicPartitionOffset>? reassignedSeeks = null;
+                    if (coordinatorRevocations is not null)
+                    {
+                        foreach (var partition in coordinatorRevocations)
+                        {
+                            if (coordinatorAssignment.Contains(partition)
+                                && _pendingRebalanceSeeks.TryGetValue(partition, out var seek))
+                            {
+                                (reassignedSeeks ??= []).Add(seek);
+                            }
+                        }
+                    }
+
                     // Invalidate in-flight fetches before publishing an ABA reassignment or
                     // reinitializing its position. The consume loop owns the actual buffer drain.
                     if (removedPartitions is not null)
@@ -9637,6 +9670,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         if (removedPartitions is not null && RemovePartitionState(removedPartitions))
                             PublishPausedSnapshot();
                     }
+
+                    if (reassignedSeeks is not null)
+                    {
+                        foreach (var seek in reassignedSeeks)
+                            _pendingRebalanceSeeks[new TopicPartition(seek.Topic, seek.Partition)] = seek;
+                    }
+
                     InvalidatePartitionCache();
                     InvalidateFetchRequestCache();
 
@@ -9646,16 +9686,27 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     // Initialize positions for new partitions
                     if (newPartitions is { Count: > 0 })
                     {
-                        await InitializePositionsAsync(
-                                newPartitions,
-                                newlyExpandedPartitions,
-                                coordinatorAssignmentVersion,
-                                cancellationToken)
-                            .ConfigureAwait(false);
+                        try
+                        {
+                            await InitializePositionsAsync(
+                                    newPartitions,
+                                    newlyExpandedPartitions,
+                                    coordinatorAssignmentVersion,
+                                    cancellationToken)
+                                .ConfigureAwait(false);
+                        }
+                        catch (GroupRejoinRequiredException)
+                        {
+                            // The committed-offset fetch was fenced. Its recovery would rejoin
+                            // and run rebalance callbacks under this lock, so release the lock
+                            // and rejoin at the top of the loop instead.
+                            rejoinRequired = true;
+                            continue;
+                        }
                     }
 
-                    // OffsetFetch recovery can rejoin the group. If that produced a new assignment,
-                    // synchronize the latest snapshot before publishing this pass as current.
+                    // A heartbeat can publish a newer assignment while positions initialize.
+                    // Synchronize the latest snapshot before publishing this pass as current.
                     if (coordinator.AssignmentVersion != coordinatorAssignmentVersion)
                         continue;
 
@@ -9753,7 +9804,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         try
         {
             // Fetch committed offsets for all partitions
-            var committedOffsets = await coordinator.FetchOffsetsAsync(partitions, cancellationToken)
+            // Runs under the assignment lock, so a fenced fetch must not rejoin (and run rebalance
+            // callbacks) here; EnsureAssignmentAsync rejoins once the lock is released.
+            var committedOffsets = await coordinator.FetchOffsetsAsync(
+                    partitions,
+                    rejoinOnMembershipLoss: false,
+                    cancellationToken)
                 .ConfigureAwait(false);
 
             foreach (var partition in partitions)
