@@ -9505,6 +9505,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // Readers use the volatile _assignmentSnapshot instead of acquiring this lock.
         while (true)
         {
+            // A new assignment is synchronized only after its OnPartitionsAssigned has run, so a
+            // seek the callback stages is applied before fetching starts. Waited for before the
+            // assignment lock: the callback's seek takes that lock.
+            if (coordinator is not null)
+                await coordinator.WaitForAssignmentCallbacksAsync(cancellationToken).ConfigureAwait(false);
+
             await SemaphoreHelper.AcquireOrThrowDisposedAsync(_assignmentLock, nameof(KafkaConsumer<TKey, TValue>), cancellationToken).ConfigureAwait(false);
             (ConsumerCoordinator Coordinator, HashSet<TopicPartition> Partitions)? unacknowledgedCoordinatorRevocations = null;
             try
@@ -9512,6 +9518,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 coordinator = _coordinator;
                 if ((!_subscription.IsEmpty || topicPattern is not null) && coordinator is not null)
                 {
+                    // A newer assignment was published after the wait above: wait for its
+                    // callbacks too before taking the snapshot.
+                    if (coordinator.HasPendingAssignmentCallbacks())
+                        continue;
+
                     BeforeCoordinatorAssignmentSnapshotForTest?.Invoke();
                     var (
                         coordinatorAssignment,

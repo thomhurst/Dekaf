@@ -189,8 +189,180 @@ public sealed class ConsumerDirtyCommitTests
             yield return new TopicPartitionOffset("topic-a", 0, 42);
             var version = typeof(ConsumerCoordinator)
                 .GetField("_membershipVersion", BindingFlags.NonPublic | BindingFlags.Instance)!;
-            version.SetValue(coordinator, (int)version.GetValue(coordinator)! + 1);
+            // A completed membership change (a fence and rejoin) moves the even version on by 2.
+            version.SetValue(coordinator, (int)version.GetValue(coordinator)! + 2);
             yield return new TopicPartitionOffset("topic-a", 1, 43);
+        }
+    }
+
+    [Test]
+    public async Task AssignmentSync_WaitsForOnPartitionsAssigned_SoItsSeekIsWhereFetchingStarts()
+    {
+        var topicId = Guid.Parse("00000000-0000-0000-0000-00000000000a");
+        var p0 = new TopicPartition("topic-a", 0);
+        var p1 = new TopicPartition("topic-a", 1);
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+        connectionPool.GetConnectionByIndexAsync(Arg.Any<int>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(connection));
+        connection.SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
+                Arg.Any<FindCoordinatorRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(new FindCoordinatorResponse
+            {
+                Coordinators =
+                [
+                    new Coordinator { Key = "group-a", NodeId = 0, Host = "localhost", Port = 9092, ErrorCode = ErrorCode.None }
+                ]
+            }));
+
+        // The join assigns p0; the next (steady) heartbeat adds p1.
+        var heartbeats = 0;
+        connection.SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
+                Arg.Any<ConsumerGroupHeartbeatRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ => ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
+            {
+                ErrorCode = ErrorCode.None,
+                MemberId = "member-1",
+                MemberEpoch = 1 + Interlocked.Increment(ref heartbeats),
+                HeartbeatIntervalMs = 60_000,
+                Assignment = new ConsumerGroupHeartbeatAssignment
+                {
+                    AssignedTopicPartitions =
+                    [
+                        new ConsumerGroupHeartbeatTopicPartitions
+                        {
+                            TopicId = topicId,
+                            Partitions = Volatile.Read(ref heartbeats) == 1 ? [0] : [0, 1]
+                        }
+                    ],
+                    PendingTopicPartitions = []
+                }
+            }));
+
+        // Committed offset 5 everywhere.
+        connection.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
+                Arg.Any<OffsetFetchRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(callInfo => ValueTask.FromResult(new OffsetFetchResponse
+            {
+                Topics = callInfo.Arg<OffsetFetchRequest>()!.Topics!
+                    .Select(static topic => new OffsetFetchResponseTopic
+                    {
+                        Name = topic.Name,
+                        Partitions = topic.PartitionIndexes!
+                            .Select(static index => new OffsetFetchResponsePartition
+                            {
+                                PartitionIndex = index,
+                                CommittedOffset = 5,
+                                ErrorCode = ErrorCode.None
+                            })
+                            .ToList()
+                    })
+                    .ToList()
+            }));
+
+        var metadataManager = new MetadataManager(connectionPool, ["localhost:9092"]);
+        metadataManager.Metadata.Update(new MetadataResponse
+        {
+            Brokers = [new BrokerMetadata { NodeId = 0, Host = "localhost", Port = 9092 }],
+            Topics =
+            [
+                new TopicMetadata
+                {
+                    Name = "topic-a",
+                    TopicId = topicId,
+                    ErrorCode = ErrorCode.None,
+                    Partitions =
+                    [
+                        new PartitionMetadata { PartitionIndex = 0, LeaderId = 0, ErrorCode = ErrorCode.None, ReplicaNodes = [0], IsrNodes = [0] },
+                        new PartitionMetadata { PartitionIndex = 1, LeaderId = 0, ErrorCode = ErrorCode.None, ReplicaNodes = [0], IsrNodes = [0] }
+                    ]
+                }
+            ]
+        });
+        metadataManager.SetApiVersion(ApiKey.FindCoordinator, 4, 5);
+        metadataManager.SetApiVersion(ApiKey.ConsumerGroupHeartbeat, 0, 0);
+        metadataManager.SetApiVersion(ApiKey.OffsetFetch, 7, 7);
+
+        // OnPartitionsAssigned for p1 seeks it to 42, but only once the test lets it.
+        var assignedP1Entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseAssignedP1 = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        KafkaConsumer<string, string>? consumer = null;
+        var syncedBeforeCallbackReturned = false;
+        var listener = Substitute.For<IConsumerAwareRebalanceListener>();
+        listener.OnPartitionsAssignedAsync(
+                Arg.Any<IRebalanceConsumer>(),
+                Arg.Any<IEnumerable<TopicPartition>>(),
+                Arg.Any<CancellationToken>())
+            .Returns(callInfo => callInfo.Arg<IEnumerable<TopicPartition>>()!.Contains(p1)
+                ? SeekAfterReleaseAsync(callInfo.Arg<IRebalanceConsumer>()!)
+                : ValueTask.CompletedTask);
+        consumer = new KafkaConsumer<string, string>(
+            new ConsumerOptions
+            {
+                BootstrapServers = ["localhost:9092"],
+                GroupId = "group-a",
+                OffsetCommitMode = OffsetCommitMode.Manual,
+                ConsumerAwareRebalanceListener = listener
+            },
+            Serializers.String,
+            Serializers.String,
+            connectionPool,
+            metadataManager);
+        await using var consumerLifetime = consumer;
+        consumer.Subscribe("topic-a");
+        var coordinator = (ConsumerCoordinator)typeof(KafkaConsumer<string, string>)
+            .GetField("_coordinator", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .GetValue(consumer)!;
+        var ensureAssignment = typeof(KafkaConsumer<string, string>)
+            .GetMethod("EnsureAssignmentAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await (ValueTask)ensureAssignment.Invoke(consumer, [timeout.Token])!;
+        await coordinator.StopHeartbeatAsync();
+
+        // The steady heartbeat publishes [p0, p1] and runs OnPartitionsAssigned for p1 on the
+        // heartbeat's thread, while the prefetch loop synchronizes the assignment.
+        var sendHeartbeat = typeof(ConsumerCoordinator)
+            .GetMethod("SendConsumerGroupHeartbeatAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        var coordinatorId = (int)typeof(ConsumerCoordinator)
+            .GetField("_coordinatorId", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .GetValue(coordinator)!;
+        var heartbeat = Task.Run(async () =>
+        {
+            var pending = sendHeartbeat.Invoke(
+                coordinator,
+                [coordinatorId, false, true, new System.Runtime.CompilerServices.StrongBox<int>(), CancellationToken.None])!;
+            await (Task)pending.GetType().GetMethod("AsTask")!.Invoke(pending, null)!;
+        });
+        await assignedP1Entered.Task.WaitAsync(timeout.Token);
+        var prefetchSync = Task.Run(async () =>
+            await (ValueTask)ensureAssignment.Invoke(consumer, [timeout.Token])!);
+
+        // Without the fix the sync completes at once, before the callback has run.
+        await Task.WhenAny(prefetchSync, Task.Delay(TimeSpan.FromMilliseconds(500)));
+        releaseAssignedP1.SetResult();
+        await heartbeat.WaitAsync(timeout.Token);
+        await prefetchSync.WaitAsync(timeout.Token);
+
+        // The sync waited for the callback, and fetching for p1 starts at the listener's seek.
+        await Assert.That(syncedBeforeCallbackReturned).IsFalse();
+        var fetchPositions = typeof(KafkaConsumer<string, string>)
+            .GetField("_fetchPositions", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .GetValue(consumer)!;
+        var position = (long)fetchPositions.GetType().GetProperty("Item")!.GetValue(fetchPositions, [p1])!;
+        await Assert.That(position).IsEqualTo(42);
+
+        async ValueTask SeekAfterReleaseAsync(IRebalanceConsumer rebalanceConsumer)
+        {
+            assignedP1Entered.TrySetResult();
+            await releaseAssignedP1.Task;
+            syncedBeforeCallbackReturned = consumer!.Assignment.Contains(p1);
+            rebalanceConsumer.Seek(new TopicPartitionOffset("topic-a", 1, 42));
         }
     }
 

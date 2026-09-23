@@ -49,6 +49,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         IRebalanceConsumerScope>? _createRebalanceConsumerScope;
     private readonly ConcurrentQueue<TopicPartition> _revokedPartitionsSinceLastSync = new();
     private Task _pendingRevocationCommit = Task.CompletedTask;
+    // Completes once the callbacks of the latest published assignment change with newly assigned
+    // partitions have been delivered. The consumer does not synchronize that assignment before
+    // then, so an OnPartitionsAssigned that seeks is applied before fetching starts.
+    private Task _pendingAssignmentCallbacks = Task.CompletedTask;
     // Assignment publication and revocation history form one snapshot. Rebalance callbacks
     // run only after this lock is released so user code cannot extend its critical section.
     private readonly Lock _assignmentStateLock = new();
@@ -623,6 +627,26 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     /// Forces the coordinator to rejoin the group on the next
     /// <see cref="EnsureActiveGroupAsync(StringSet, CancellationToken)"/> call by transitioning to <see cref="CoordinatorState.Unjoined"/>.
     /// </summary>
+    /// <summary>
+    /// True while the latest published assignment's OnPartitionsAssigned has not been delivered.
+    /// A listener's own flow (a poll from inside its callback) is never held back by it.
+    /// </summary>
+    internal bool HasPendingAssignmentCallbacks() =>
+        !Volatile.Read(ref _pendingAssignmentCallbacks).IsCompleted && !IsInsideOwnRebalanceCallback();
+
+    /// <summary>
+    /// Waits until the latest published assignment's callbacks have been delivered, so the
+    /// consumer synchronizes the assignment only after OnPartitionsAssigned (and any seek it
+    /// staged) has run. Completes at once in the steady state and inside a listener's callback.
+    /// </summary>
+    internal ValueTask WaitForAssignmentCallbacksAsync(CancellationToken cancellationToken)
+    {
+        var pending = Volatile.Read(ref _pendingAssignmentCallbacks);
+        return pending.IsCompleted || IsInsideOwnRebalanceCallback()
+            ? default
+            : new ValueTask(pending.WaitAsync(cancellationToken));
+    }
+
     internal void RequestRejoin()
     {
         _state = CoordinatorState.Unjoined;
@@ -1842,7 +1866,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         bool AssignmentChanged,
         IReadOnlyList<TopicPartition>? Revoked,
         IReadOnlyList<TopicPartition>? Assigned,
-        TaskCompletionSource<bool>? RevocationCommitCompletion = null);
+        TaskCompletionSource<bool>? RevocationCommitCompletion = null,
+        TaskCompletionSource<bool>? AssignmentCallbacksCompletion = null);
 
     /// <summary>
     /// Resets member identity and assignment to the pre-join state.
@@ -2491,6 +2516,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 TaskCreationOptions.RunContinuationsAsynchronously);
         }
 
+        var assignmentCallbacksCompletion = assigned is { Count: > 0 }
+            ? new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously)
+            : null;
+
         NotifyRevoking(revoked);
 
         var classificationChanged = false;
@@ -2516,6 +2545,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                     EnqueueRevokedPartitions(revoked);
                 if (revocationCommitCompletion is not null)
                     _pendingRevocationCommit = revocationCommitCompletion.Task;
+                if (assignmentCallbacksCompletion is not null)
+                    _pendingAssignmentCallbacks = assignmentCallbacksCompletion.Task;
             }
         }
 
@@ -2525,7 +2556,12 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         if (changed)
             LogConsumerProtocolAssignmentUpdate(assigned?.Count ?? 0, revoked?.Count ?? 0);
 
-        var result = new ConsumerHeartbeatResult(changed, revoked, assigned, revocationCommitCompletion);
+        var result = new ConsumerHeartbeatResult(
+            changed,
+            revoked,
+            assigned,
+            revocationCommitCompletion,
+            assignmentCallbacksCompletion);
         if (changed)
             ReserveRebalanceCallbacks(result, newAssignment);
 
@@ -3153,6 +3189,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                     }
                 }
 
+                // Delivered: the consumer may now synchronize this assignment.
+                pending.Deferred.AssignmentCallbacksCompletion?.TrySetResult(true);
+
                 // Count down only after the entry has left the queue.
                 _pendingRebalanceCallbacks.TryDequeue(out _);
                 if (Interlocked.Exchange(ref pending.PollVisibility, 2) == 1)
@@ -3441,7 +3480,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
         // Revocation commits that will now never run must not hold up an assignment sync.
         foreach (var pending in _pendingRebalanceCallbacks)
+        {
             pending.Deferred.RevocationCommitCompletion?.TrySetResult(true);
+            pending.Deferred.AssignmentCallbacksCompletion?.TrySetResult(true);
+        }
 
         _lock.Dispose();
         _commitLock.Dispose();
