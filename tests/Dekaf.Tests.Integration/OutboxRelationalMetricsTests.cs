@@ -2,6 +2,7 @@ using System.Data.Common;
 using Dekaf.Outbox;
 using Dekaf.Outbox.EntityFrameworkCore;
 using DotNet.Testcontainers.Builders;
+using DotNet.Testcontainers.Containers;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
@@ -16,14 +17,23 @@ public sealed class OutboxRelationalMetricsTests
     public async Task SqlServer_CombinesCountAndOldestInOneCommand_ForEmptyAndNonemptyTables()
     {
         var password = $"Dekaf-{Guid.NewGuid():N}!";
-        await using var database = new ContainerBuilder("mcr.microsoft.com/mssql/server:2022-latest")
-            .WithEnvironment("ACCEPT_EULA", "Y")
-            .WithEnvironment("MSSQL_SA_PASSWORD", password)
-            .WithPortBinding(1433, true)
-            .WithWaitStrategy(Wait.ForUnixContainer().UntilMessageIsLogged("SQL Server is now ready for client connections"))
-            .Build();
+        IContainer? attempt = null;
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(5));
-        await database.StartAsync(timeout.Token);
+        await ContainerStartupRetry.RunAsync(
+            () =>
+            {
+                attempt = new ContainerBuilder("mcr.microsoft.com/mssql/server:2022-latest")
+                    .WithEnvironment("ACCEPT_EULA", "Y")
+                    .WithEnvironment("MSSQL_SA_PASSWORD", password)
+                    .WithPortBinding(1433, true)
+                    .WithWaitStrategy(Wait.ForUnixContainer().UntilMessageIsLogged("SQL Server is now ready for client connections"))
+                    .Build();
+                return attempt.StartAsync(timeout.Token);
+            },
+            // A failed attempt is disposed here, including the last one before RunAsync rethrows.
+            () => attempt!.DisposeAsync(),
+            ContainerStartupRetry.IsKnownTransient);
+        await using var database = attempt!;
         var connection = new SqlConnectionStringBuilder
         {
             DataSource = $"{database.Hostname},{database.GetMappedPublicPort(1433)}",

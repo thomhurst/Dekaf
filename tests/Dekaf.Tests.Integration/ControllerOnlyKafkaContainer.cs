@@ -9,12 +9,25 @@ namespace Dekaf.Tests.Integration;
 
 public sealed class ControllerOnlyKafkaContainer : IAsyncInitializer, IAsyncDisposable
 {
-    private readonly int _hostPort = GetFreeTcpPort();
+    private int _hostPort;
     private IContainer? _container;
 
     public string BootstrapControllers => $"127.0.0.1:{_hostPort}";
 
-    public async Task InitializeAsync()
+    // The controller advertises its host port, so the port is chosen before Docker binds it and
+    // another container can take it in between. Each attempt probes a fresh port.
+    public Task InitializeAsync() =>
+        ContainerStartupRetry.RunAsync(
+            async () =>
+            {
+                _hostPort = GetFreeTcpPort();
+                _container = CreateContainer();
+                await _container.StartAsync().ConfigureAwait(false);
+            },
+            DisposeAsync,
+            ContainerStartupRetry.IsKnownTransient);
+
+    private IContainer CreateContainer()
     {
         // Kafka 4.0's Docker launcher rejects KAFKA_ADVERTISED_LISTENERS on controllers.
         // Configure Kafka directly so discovery returns the endpoint reachable from the host.
@@ -29,7 +42,7 @@ public sealed class ControllerOnlyKafkaContainer : IAsyncInitializer, IAsyncDisp
             log.dirs=/tmp/controller-logs
             """;
 
-        _container = new ContainerBuilder($"apache/kafka:{KafkaContainerDefault.ImageTag}")
+        return new ContainerBuilder($"apache/kafka:{KafkaContainerDefault.ImageTag}")
             .WithName($"dekaf-controller-only-{Guid.NewGuid():N}")
             .WithPortBinding(_hostPort, _hostPort)
             .WithEnvironment("KAFKA_HEAP_OPTS", "-Xmx384m -Xms384m")
@@ -39,14 +52,13 @@ public sealed class ControllerOnlyKafkaContainer : IAsyncInitializer, IAsyncDisp
             .WithWaitStrategy(Wait.ForUnixContainer()
                 .UntilInternalTcpPortIsAvailable(_hostPort))
             .Build();
-
-        await _container.StartAsync().ConfigureAwait(false);
     }
 
     public async ValueTask DisposeAsync()
     {
         if (_container is not null)
             await _container.DisposeAsync().ConfigureAwait(false);
+        _container = null;
     }
 
     private static int GetFreeTcpPort()

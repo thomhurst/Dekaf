@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Dekaf.Compression;
 using Dekaf.Metadata;
 using Dekaf.Networking;
@@ -225,6 +226,7 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
     {
         try
         {
+            var lastPushTimestamp = Stopwatch.GetTimestamp();
             while (!cancellationToken.IsCancellationRequested && Volatile.Read(ref _disabled) == 0)
             {
                 var subscription = Volatile.Read(ref _subscription);
@@ -233,14 +235,14 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
                     return;
                 }
 
-                await Task.Delay(
-                    TimeSpan.FromMilliseconds(Math.Max(1, subscription.PushIntervalMs)),
-                    cancellationToken).ConfigureAwait(false);
+                await WaitForPushIntervalAsync(lastPushTimestamp, subscription.PushIntervalMs, cancellationToken)
+                    .ConfigureAwait(false);
 
                 var errorCode = await PushTelemetryAsync(
                     subscription,
                     terminating: false,
                     cancellationToken).ConfigureAwait(false);
+                lastPushTimestamp = Stopwatch.GetTimestamp();
 
                 if (errorCode == ErrorCode.UnknownSubscriptionId)
                 {
@@ -263,6 +265,29 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
         catch (Exception ex)
         {
             LogTelemetryLoopFailed(ex);
+        }
+    }
+
+    // The broker throttles a push that arrives before the push interval has elapsed on its
+    // millisecond clock since the previous accepted push, and the deltas collected for that push
+    // are lost. Task.Delay can complete up to a timer tick early, so the wait is checked against
+    // the high-resolution clock and ends one millisecond past the interval to absorb the broker's
+    // millisecond truncation.
+    internal static async Task WaitForPushIntervalAsync(
+        long lastPushTimestamp,
+        int pushIntervalMs,
+        CancellationToken cancellationToken)
+    {
+        // Round up so the tick threshold never falls short of the millisecond threshold.
+        var requiredTicks = ((Math.Max(1, pushIntervalMs) + 1L) * Stopwatch.Frequency + 999) / 1000;
+        while (true)
+        {
+            var remainingTicks = requiredTicks - (Stopwatch.GetTimestamp() - lastPushTimestamp);
+            if (remainingTicks <= 0)
+                return;
+
+            var remainingMs = Math.Min(Math.Ceiling(remainingTicks * 1000d / Stopwatch.Frequency), int.MaxValue);
+            await Task.Delay(TimeSpan.FromMilliseconds(remainingMs), cancellationToken).ConfigureAwait(false);
         }
     }
 
