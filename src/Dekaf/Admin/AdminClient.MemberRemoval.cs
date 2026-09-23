@@ -56,7 +56,7 @@ public sealed partial class AdminClient : IConsumerGroupMemberRemovalAdminClient
         string groupId, ConsumerGroupMemberIdentity[] members, ConsumerGroupMemberRemovalOptions options,
         CancellationToken cancellationToken, CancellationToken callerToken)
     {
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+        await InitializeUntilDeadlineAsync(nameof(RemoveMembersFromConsumerGroupAsync), cancellationToken).ConfigureAwait(false);
         if (options.RemoveAll)
         {
             // Snapshot once outside mutation retries. Concurrent joins are not added to the request.

@@ -44,7 +44,7 @@ public sealed partial class AdminClient : IClassicGroupDescriptionAdminClient
     {
         try
         {
-            await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+            await InitializeUntilDeadlineAsync(nameof(DescribeClassicGroupsAsync), cancellationToken).ConfigureAwait(false);
         }
         catch (Exception exception) when (cancellationToken.IsCancellationRequested &&
             (exception is KafkaException or InvalidOperationException { InnerException: KafkaException } ||

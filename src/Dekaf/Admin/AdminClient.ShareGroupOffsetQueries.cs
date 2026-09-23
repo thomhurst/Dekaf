@@ -64,7 +64,7 @@ public sealed partial class AdminClient : IShareGroupOffsetQueryAdminClient
         if (requestGroups.Count == 0)
             return results;
 
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+        await InitializeUntilDeadlineAsync(nameof(ListShareGroupOffsetsAsync), cancellationToken).ConfigureAwait(false);
         var failures = new Dictionary<string, ShareGroupOffsetsResult>(StringComparer.Ordinal);
         try
         {
