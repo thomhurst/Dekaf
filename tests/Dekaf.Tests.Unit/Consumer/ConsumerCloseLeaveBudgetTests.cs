@@ -1,5 +1,9 @@
+using System.Buffers;
+using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Net;
+using System.Net.Sockets;
 using System.Reflection;
 using Dekaf.Consumer;
 using Dekaf.Metadata;
@@ -7,6 +11,7 @@ using Dekaf.Networking;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
 using Dekaf.Serialization;
+using Microsoft.Extensions.Logging;
 using NSubstitute;
 
 namespace Dekaf.Tests.Unit.Consumer;
@@ -148,6 +153,81 @@ public sealed class ConsumerCloseLeaveBudgetTests
         await Assert.That(harness.LeaveEpochs).IsEmpty();
     }
 
+    [Test]
+    [Timeout(30_000)]
+    public async Task CloseAsync_CancelledAfterTheLeaveWasWritten_StopsWaitingForTheResponse(
+        CancellationToken cancellationToken)
+    {
+        // A real connection, so the leave takes the path where close's token only bounds the
+        // wait for the response once the frame is written.
+        await using var broker = await LoopbackCoordinator.StartAsync(cancellationToken);
+        using var closeCancellation = new CancellationTokenSource();
+        var logs = new CapturingLoggerFactory();
+        var harness = new Harness(defaultApiTimeoutMs: 60_000)
+        {
+            Connection = broker.Connection,
+            LoggerFactory = logs
+        };
+        await using var consumer = harness.CreateConsumer();
+        Harness.JoinGroup(consumer);
+
+        var close = consumer.CloseAsync(closeCancellation.Token).AsTask();
+
+        // The coordinator received the whole leave and never answers it.
+        var leave = await broker.ReadRequestAsync(cancellationToken);
+        await Assert.That(leave).IsEqualTo(ApiKey.ConsumerGroupHeartbeat);
+        var stopwatch = Stopwatch.StartNew();
+        await closeCancellation.CancelAsync();
+
+        await Assert.That(async () => await close).Throws<OperationCanceledException>();
+        stopwatch.Stop();
+
+        // Close stopped waiting for the response instead of holding on for the leave's 5 s
+        // grace, and reported the leave as sent rather than failed.
+        await Assert.That(stopwatch.Elapsed).IsLessThan(TimeSpan.FromSeconds(5));
+        await Assert.That(logs.Contains("stopped waiting for its response")).IsTrue();
+        await Assert.That(logs.Contains("Failed to send LeaveGroup request")).IsFalse();
+        await Assert.That(broker.PendingRequestCount).IsEqualTo(0);
+    }
+
+    [Test]
+    [Timeout(30_000)]
+    public async Task CloseAsync_CancelledWhileTheLeaveIsBeingWritten_WaitsForTheWriteWithinTheGrace(
+        CancellationToken cancellationToken)
+    {
+        await using var broker = await LoopbackCoordinator.StartAsync(cancellationToken);
+        var stalledWrite = broker.StallNextWrite();
+        using var closeCancellation = new CancellationTokenSource();
+        var logs = new CapturingLoggerFactory();
+        var harness = new Harness(defaultApiTimeoutMs: 60_000)
+        {
+            Connection = broker.Connection,
+            LoggerFactory = logs
+        };
+        await using var consumer = harness.CreateConsumer();
+        Harness.JoinGroup(consumer);
+
+        var close = consumer.CloseAsync(closeCancellation.Token).AsTask();
+
+        // The leave's frame write has started and is held in the socket write when close's
+        // deadline passes.
+        await stalledWrite.Entered.WaitAsync(cancellationToken);
+        await closeCancellation.CancelAsync();
+
+        // The write keeps the leave's own token (with its grace), so close is still waiting on it
+        // rather than abandoning the frame.
+        await Assert.That(close.IsCompleted).IsFalse();
+
+        stalledWrite.Release();
+        var leave = await broker.ReadRequestAsync(cancellationToken);
+        await Assert.That(leave).IsEqualTo(ApiKey.ConsumerGroupHeartbeat);
+
+        await Assert.That(async () => await close).Throws<OperationCanceledException>();
+        await Assert.That(logs.Contains("stopped waiting for its response")).IsTrue();
+        await Assert.That(logs.Contains("Failed to send LeaveGroup request")).IsFalse();
+        await Assert.That(broker.PendingRequestCount).IsEqualTo(0);
+    }
+
     private static ConsumeResult<string, string> CreateConsumeResult(long offset) =>
         new(
             topic: Topic,
@@ -194,6 +274,11 @@ public sealed class ConsumerCloseLeaveBudgetTests
         /// <summary>Runs whenever the consumer gets a connection to the coordinator.</summary>
         public Action? OnGetConnection { get; init; }
 
+        /// <summary>The coordinator connection; a substitute when not set.</summary>
+        public IKafkaConnection? Connection { get; init; }
+
+        public ILoggerFactory? LoggerFactory { get; init; }
+
         public int OffsetCommits => Volatile.Read(ref _offsetCommits);
 
         public int CompletedOffsetCommits => Volatile.Read(ref _completedOffsetCommits);
@@ -201,7 +286,7 @@ public sealed class ConsumerCloseLeaveBudgetTests
         public KafkaConsumer<string, string> CreateConsumer()
         {
             var connectionPool = Substitute.For<IConnectionPool>();
-            var connection = Substitute.For<IKafkaConnection>();
+            var connection = Connection ?? Substitute.For<IKafkaConnection>();
             connectionPool.GetConnectionByIndexAsync(Arg.Any<int>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
                 .Returns(_ =>
                 {
@@ -209,48 +294,52 @@ public sealed class ConsumerCloseLeaveBudgetTests
                     return ValueTask.FromResult(connection);
                 });
 
-            connection.SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
-                    Arg.Any<FindCoordinatorRequest>(),
-                    Arg.Any<short>(),
-                    Arg.Any<CancellationToken>())
-                .Returns(ValueTask.FromResult(new FindCoordinatorResponse
-                {
-                    Coordinators =
-                    [
-                        new Coordinator { Key = "group-a", NodeId = 0, Host = "localhost", Port = 9092, ErrorCode = ErrorCode.None }
-                    ]
-                }));
-
-            connection.SendAsync<OffsetCommitRequest, OffsetCommitResponse>(
-                    Arg.Any<OffsetCommitRequest>(),
-                    Arg.Any<short>(),
-                    Arg.Any<CancellationToken>())
-                .Returns(call =>
-                {
-                    Interlocked.Increment(ref _offsetCommits);
-                    return CompleteCommitAsync(call.Arg<OffsetCommitRequest>(), call.Arg<CancellationToken>());
-                });
-
-            // Only the leave sends a heartbeat here: the member joined through JoinGroup, so no
-            // heartbeat loop runs.
-            connection.SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
-                    Arg.Any<ConsumerGroupHeartbeatRequest>(),
-                    Arg.Any<short>(),
-                    Arg.Any<CancellationToken>())
-                .Returns(call =>
-                {
-                    // A cancelled request never reaches the wire.
-                    if (call.Arg<CancellationToken>().IsCancellationRequested)
-                        return ValueTask.FromCanceled<ConsumerGroupHeartbeatResponse>(call.Arg<CancellationToken>());
-                    LeaveEpochs.Enqueue(call.Arg<ConsumerGroupHeartbeatRequest>().MemberEpoch);
-                    return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
+            // A real connection answers for itself.
+            if (Connection is null)
+            {
+                connection.SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
+                        Arg.Any<FindCoordinatorRequest>(),
+                        Arg.Any<short>(),
+                        Arg.Any<CancellationToken>())
+                    .Returns(ValueTask.FromResult(new FindCoordinatorResponse
                     {
-                        ErrorCode = ErrorCode.None,
-                        MemberId = "member-1",
-                        MemberEpoch = -1,
-                        HeartbeatIntervalMs = 60_000
+                        Coordinators =
+                        [
+                            new Coordinator { Key = "group-a", NodeId = 0, Host = "localhost", Port = 9092, ErrorCode = ErrorCode.None }
+                        ]
+                    }));
+
+                connection.SendAsync<OffsetCommitRequest, OffsetCommitResponse>(
+                        Arg.Any<OffsetCommitRequest>(),
+                        Arg.Any<short>(),
+                        Arg.Any<CancellationToken>())
+                    .Returns(call =>
+                    {
+                        Interlocked.Increment(ref _offsetCommits);
+                        return CompleteCommitAsync(call.Arg<OffsetCommitRequest>(), call.Arg<CancellationToken>());
                     });
-                });
+
+                // Only the leave sends a heartbeat here: the member joined through JoinGroup, so no
+                // heartbeat loop runs.
+                connection.SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
+                        Arg.Any<ConsumerGroupHeartbeatRequest>(),
+                        Arg.Any<short>(),
+                        Arg.Any<CancellationToken>())
+                    .Returns(call =>
+                    {
+                        // A cancelled request never reaches the wire.
+                        if (call.Arg<CancellationToken>().IsCancellationRequested)
+                            return ValueTask.FromCanceled<ConsumerGroupHeartbeatResponse>(call.Arg<CancellationToken>());
+                        LeaveEpochs.Enqueue(call.Arg<ConsumerGroupHeartbeatRequest>().MemberEpoch);
+                        return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
+                        {
+                            ErrorCode = ErrorCode.None,
+                            MemberId = "member-1",
+                            MemberEpoch = -1,
+                            HeartbeatIntervalMs = 60_000
+                        });
+                    });
+            }
 
             var metadataManager = new MetadataManager(connectionPool, ["localhost:9092"]);
             metadataManager.Metadata.Update(new MetadataResponse
@@ -279,7 +368,8 @@ public sealed class ConsumerCloseLeaveBudgetTests
                 Serializers.String,
                 Serializers.String,
                 connectionPool,
-                metadataManager);
+                metadataManager,
+                LoggerFactory);
         }
 
         /// <summary>Makes the coordinator a joined member of coordinator 0, so close sends a leave.</summary>
@@ -312,6 +402,232 @@ public sealed class ConsumerCloseLeaveBudgetTests
                 : await OnOffsetCommit(request, cancellationToken);
             Interlocked.Increment(ref _completedOffsetCommits);
             return response;
+        }
+    }
+
+    /// <summary>
+    /// A coordinator on a loopback socket: it completes the connection handshake, then only reads
+    /// requests and never answers them.
+    /// </summary>
+    private sealed class LoopbackCoordinator : IAsyncDisposable
+    {
+        private readonly TcpListener _listener;
+        private readonly TcpClient _client;
+
+        private LoopbackCoordinator(TcpListener listener, TcpClient client, KafkaConnection connection)
+        {
+            _listener = listener;
+            _client = client;
+            Connection = connection;
+        }
+
+        public KafkaConnection Connection { get; }
+
+        public int PendingRequestCount => (int)typeof(KafkaConnection)
+            .GetField("_pendingRequestCount", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .GetValue(Connection)!;
+
+        public static async Task<LoopbackCoordinator> StartAsync(CancellationToken cancellationToken)
+        {
+            var listener = new TcpListener(IPAddress.Loopback, 0);
+            listener.Start();
+            KafkaConnection? connection = null;
+            try
+            {
+                var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+                var accept = AcceptAndCompleteHandshakeAsync(listener, cancellationToken);
+                connection = new KafkaConnection(0, IPAddress.Loopback.ToString(), port);
+                await connection.ConnectAsync(cancellationToken);
+                return new LoopbackCoordinator(listener, await accept, connection);
+            }
+            catch
+            {
+                if (connection is not null)
+                    await connection.DisposeAsync();
+                listener.Stop();
+                throw;
+            }
+        }
+
+        /// <summary>Holds the connection's next frame write once it has started.</summary>
+        public StalledWrite StallNextWrite()
+        {
+            var field = typeof(KafkaConnection).GetField("_stream", BindingFlags.NonPublic | BindingFlags.Instance)!;
+            var stream = new StallingWriteStream((Stream)field.GetValue(Connection)!);
+            field.SetValue(Connection, stream);
+            return stream.Stall;
+        }
+
+        /// <summary>Reads one whole request frame and returns its API key.</summary>
+        public async Task<ApiKey> ReadRequestAsync(CancellationToken cancellationToken)
+        {
+            var frame = await ReadFrameAsync(_client.GetStream(), cancellationToken);
+            return (ApiKey)BinaryPrimitives.ReadInt16BigEndian(frame);
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            await Connection.DisposeAsync();
+            _client.Dispose();
+            _listener.Stop();
+        }
+
+        private static async Task<TcpClient> AcceptAndCompleteHandshakeAsync(
+            TcpListener listener,
+            CancellationToken cancellationToken)
+        {
+            var client = await listener.AcceptTcpClientAsync(cancellationToken);
+            try
+            {
+                var stream = client.GetStream();
+                var request = await ReadFrameAsync(stream, cancellationToken);
+                if ((ApiKey)BinaryPrimitives.ReadInt16BigEndian(request) != ApiKey.ApiVersions)
+                    throw new InvalidOperationException("Expected the ApiVersions handshake");
+                await stream.WriteAsync(
+                    BuildApiVersionsResponseFrame(BinaryPrimitives.ReadInt32BigEndian(request.AsSpan(4))),
+                    cancellationToken);
+                return client;
+            }
+            catch
+            {
+                client.Dispose();
+                throw;
+            }
+        }
+
+        private static async Task<byte[]> ReadFrameAsync(NetworkStream stream, CancellationToken cancellationToken)
+        {
+            var lengthBuffer = new byte[4];
+            await stream.ReadExactlyAsync(lengthBuffer, cancellationToken);
+            var frame = new byte[BinaryPrimitives.ReadInt32BigEndian(lengthBuffer)];
+            await stream.ReadExactlyAsync(frame, cancellationToken);
+            return frame;
+        }
+
+        // ApiVersions v3 response advertising ApiVersions v0-3 and ConsumerGroupHeartbeat v0.
+        private static byte[] BuildApiVersionsResponseFrame(int correlationId)
+        {
+            var body = new ArrayBufferWriter<byte>();
+            var writer = new KafkaProtocolWriter(body);
+            writer.WriteInt16(0);
+            writer.WriteUnsignedVarInt(3);
+            writer.WriteInt16((short)ApiKey.ApiVersions);
+            writer.WriteInt16(0);
+            writer.WriteInt16(3);
+            writer.WriteEmptyTaggedFields();
+            writer.WriteInt16((short)ApiKey.ConsumerGroupHeartbeat);
+            writer.WriteInt16(0);
+            writer.WriteInt16(0);
+            writer.WriteEmptyTaggedFields();
+            writer.WriteInt32(0);
+            writer.WriteEmptyTaggedFields();
+
+            var frame = new byte[8 + body.WrittenCount];
+            BinaryPrimitives.WriteInt32BigEndian(frame, frame.Length - 4);
+            BinaryPrimitives.WriteInt32BigEndian(frame.AsSpan(4), correlationId);
+            body.WrittenSpan.CopyTo(frame.AsSpan(8));
+            return frame;
+        }
+    }
+
+    private sealed class StalledWrite
+    {
+        private readonly TaskCompletionSource _entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _released = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _claimed;
+
+        public Task Entered => _entered.Task;
+
+        public void Release() => _released.TrySetResult();
+
+        /// <summary>The gate the first write waits on; null for every later write.</summary>
+        public Task? Claim()
+        {
+            if (Interlocked.Exchange(ref _claimed, 1) != 0)
+                return null;
+            _entered.TrySetResult();
+            return _released.Task;
+        }
+    }
+
+    /// <summary>Passes writes through to the socket stream, holding the first one until released.</summary>
+    private sealed class StallingWriteStream(Stream inner) : Stream
+    {
+        public StalledWrite Stall { get; } = new();
+
+        public override bool CanRead => inner.CanRead;
+        public override bool CanSeek => false;
+        public override bool CanWrite => inner.CanWrite;
+        public override long Length => throw new NotSupportedException();
+
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public override async ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            if (Stall.Claim() is { } gate)
+                await gate.WaitAsync(cancellationToken);
+            await inner.WriteAsync(buffer, cancellationToken);
+        }
+
+        public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken) =>
+            WriteAsync(buffer.AsMemory(offset, count), cancellationToken).AsTask();
+
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+        public override int Read(byte[] buffer, int offset, int count) => inner.Read(buffer, offset, count);
+
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default) =>
+            inner.ReadAsync(buffer, cancellationToken);
+
+        public override void Flush() => inner.Flush();
+
+        public override Task FlushAsync(CancellationToken cancellationToken) => inner.FlushAsync(cancellationToken);
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+                inner.Dispose();
+            base.Dispose(disposing);
+        }
+    }
+
+    private sealed class CapturingLoggerFactory : ILoggerFactory
+    {
+        private readonly ConcurrentQueue<string> _messages = new();
+
+        public bool Contains(string text)
+        {
+            foreach (var message in _messages)
+            {
+                if (message.Contains(text, StringComparison.Ordinal))
+                    return true;
+            }
+
+            return false;
+        }
+
+        public ILogger CreateLogger(string categoryName) => new Logger(_messages);
+
+        public void AddProvider(ILoggerProvider provider) { }
+
+        public void Dispose() { }
+
+        private sealed class Logger(ConcurrentQueue<string> messages) : ILogger
+        {
+            public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+            public bool IsEnabled(LogLevel logLevel) => true;
+
+            public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+                Func<TState, Exception?, string> formatter) => messages.Enqueue(formatter(state, exception));
         }
     }
 }
