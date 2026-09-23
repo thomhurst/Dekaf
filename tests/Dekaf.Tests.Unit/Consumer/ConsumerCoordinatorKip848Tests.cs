@@ -2638,7 +2638,7 @@ public sealed partial class ConsumerCoordinatorKip848Tests : IAsyncDisposable
             onPartitionsRevoked: null,
             onPartitionsRevoking: null,
             onPartitionsRevokedAsync: null,
-            createRebalanceConsumerScope: (current, added) =>
+            createRebalanceConsumerScope: (current, added, _) =>
             {
                 callbackAssignment = current.ToArray();
                 newlyAssigned = added.ToArray();
@@ -2683,7 +2683,7 @@ public sealed partial class ConsumerCoordinatorKip848Tests : IAsyncDisposable
             onPartitionsRevoked: null,
             onPartitionsRevoking: null,
             onPartitionsRevokedAsync: null,
-            createRebalanceConsumerScope: (current, added) =>
+            createRebalanceConsumerScope: (current, added, _) =>
                 scope = new RebalanceConsumerScope<byte[], byte[]>(consumer, current, added));
 
         await coordinator.EnsureActiveGroupAsync(
@@ -2743,7 +2743,7 @@ public sealed partial class ConsumerCoordinatorKip848Tests : IAsyncDisposable
             onPartitionsRevoked: null,
             onPartitionsRevoking: null,
             onPartitionsRevokedAsync: null,
-            createRebalanceConsumerScope: (current, added) =>
+            createRebalanceConsumerScope: (current, added, _) =>
                 new RebalanceConsumerScope<byte[], byte[]>(consumer, current, added));
 
         await coordinator.EnsureActiveGroupAsync(
@@ -2784,7 +2784,7 @@ public sealed partial class ConsumerCoordinatorKip848Tests : IAsyncDisposable
             onPartitionsRevoked: null,
             onPartitionsRevoking: null,
             onPartitionsRevokedAsync: null,
-            createRebalanceConsumerScope: (current, added) =>
+            createRebalanceConsumerScope: (current, added, _) =>
                 new RebalanceConsumerScope<byte[], byte[]>(consumer, current, added));
 
         await Assert.ThrowsAsync<OperationCanceledException>(async () =>

@@ -369,8 +369,121 @@ public sealed class ConsumerDirtyCommitTests
     [Test]
     public async Task AssignmentSync_OffsetFetchFenced_RejoinCallbackSeeksWithoutDeadlock()
     {
-        var topicId = Guid.Parse("00000000-0000-0000-0000-00000000000b");
         var p0 = new TopicPartition("topic-a", 0);
+
+        // The rejoin's OnPartitionsAssigned seeks p0, which takes the consumer's assignment lock.
+        var assignedCalls = 0;
+        var listener = Substitute.For<IConsumerAwareRebalanceListener>();
+        listener.OnPartitionsAssignedAsync(
+                Arg.Any<IRebalanceConsumer>(),
+                Arg.Any<IEnumerable<TopicPartition>>(),
+                Arg.Any<CancellationToken>())
+            .Returns(callInfo =>
+            {
+                if (Interlocked.Increment(ref assignedCalls) == 2)
+                    callInfo.Arg<IRebalanceConsumer>()!.Seek(new TopicPartitionOffset("topic-a", 0, 42));
+                return ValueTask.CompletedTask;
+            });
+        var consumer = CreateSingleTopicGroupConsumer(listener, fenceFirstOffsetFetch: true);
+        var ensureAssignment = typeof(KafkaConsumer<string, string>)
+            .GetMethod("EnsureAssignmentAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
+
+        // Without the fix, the fetch's recovery rejoins while the sync holds the assignment lock,
+        // and the callback's seek waits on that lock for good.
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var sync = Task.Run(async () => await (ValueTask)ensureAssignment.Invoke(consumer, [timeout.Token])!);
+        try
+        {
+            await sync.WaitAsync(TimeSpan.FromSeconds(10));
+
+            // The loss is reported, and fetching starts at the rejoin callback's seek.
+            await Assert.That(Volatile.Read(ref assignedCalls)).IsEqualTo(2);
+            await listener.Received(1).OnPartitionsLostAsync(
+                Arg.Any<IRebalanceConsumer>(),
+                Arg.Any<IEnumerable<TopicPartition>>(),
+                Arg.Any<CancellationToken>());
+            var fetchPositions = typeof(KafkaConsumer<string, string>)
+                .GetField("_fetchPositions", BindingFlags.NonPublic | BindingFlags.Instance)!
+                .GetValue(consumer)!;
+            var position = (long)fetchPositions.GetType().GetProperty("Item")!.GetValue(fetchPositions, [p0])!;
+            await Assert.That(position).IsEqualTo(42);
+        }
+        finally
+        {
+            // A deadlocked consumer never releases the lock its disposal takes.
+            if (sync.IsCompleted)
+                await consumer.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task AssignmentSync_SeekFromCallbackDeferredPastFence_IsNotAppliedToRejoinAssignment()
+    {
+        var p0 = new TopicPartition("topic-a", 0);
+        KafkaConsumer<string, string>? consumer = null;
+        using var firstSync = new CancellationTokenSource();
+
+        // The first OnPartitionsAssigned is cancelled after the member is fenced, so it stays
+        // queued and is delivered again, after the loss was published, when the consumer rejoins.
+        // That stale delivery seeks p0. The rejoin assigns p0 again and its callback does not seek.
+        var assignedCalls = 0;
+        var listener = Substitute.For<IConsumerAwareRebalanceListener>();
+        listener.OnPartitionsAssignedAsync(
+                Arg.Any<IRebalanceConsumer>(),
+                Arg.Any<IEnumerable<TopicPartition>>(),
+                Arg.Any<CancellationToken>())
+            .Returns(callInfo =>
+            {
+                switch (Interlocked.Increment(ref assignedCalls))
+                {
+                    case 1:
+                        var coordinator = typeof(KafkaConsumer<string, string>)
+                            .GetField("_coordinator", BindingFlags.NonPublic | BindingFlags.Instance)!
+                            .GetValue(consumer)!;
+                        typeof(ConsumerCoordinator)
+                            .GetMethod("FenceMembership", BindingFlags.NonPublic | BindingFlags.Instance)!
+                            .Invoke(coordinator, [true]);
+                        firstSync.Cancel();
+                        firstSync.Token.ThrowIfCancellationRequested();
+                        break;
+                    case 2:
+                        callInfo.Arg<IRebalanceConsumer>()!.Seek(new TopicPartitionOffset("topic-a", 0, 99));
+                        break;
+                }
+
+                return ValueTask.CompletedTask;
+            });
+        consumer = CreateSingleTopicGroupConsumer(listener, fenceFirstOffsetFetch: false);
+        await using var _ = consumer;
+        var ensureAssignment = typeof(KafkaConsumer<string, string>)
+            .GetMethod("EnsureAssignmentAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
+
+        await Assert.That(async () => await (ValueTask)ensureAssignment.Invoke(consumer, [firstSync.Token])!)
+            .Throws<OperationCanceledException>();
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await (ValueTask)ensureAssignment.Invoke(consumer, [timeout.Token])!;
+
+        // The deferred callback, the loss and the rejoin's callback are all delivered, and
+        // fetching starts at the committed offset: the seek belonged to the ownership the fence
+        // ended.
+        await Assert.That(Volatile.Read(ref assignedCalls)).IsEqualTo(3);
+        await listener.Received(1).OnPartitionsLostAsync(
+            Arg.Any<IRebalanceConsumer>(),
+            Arg.Any<IEnumerable<TopicPartition>>(),
+            Arg.Any<CancellationToken>());
+        var fetchPositions = typeof(KafkaConsumer<string, string>)
+            .GetField("_fetchPositions", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .GetValue(consumer)!;
+        var position = (long)fetchPositions.GetType().GetProperty("Item")!.GetValue(fetchPositions, [p0])!;
+        await Assert.That(position).IsEqualTo(5);
+    }
+
+    private static KafkaConsumer<string, string> CreateSingleTopicGroupConsumer(
+        IConsumerAwareRebalanceListener listener,
+        bool fenceFirstOffsetFetch)
+    {
+        var topicId = Guid.Parse("00000000-0000-0000-0000-00000000000b");
         var connectionPool = Substitute.For<IConnectionPool>();
         var connection = Substitute.For<IKafkaConnection>();
         connectionPool.GetConnectionByIndexAsync(Arg.Any<int>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
@@ -409,8 +522,8 @@ public sealed class ConsumerDirtyCommitTests
                 }
             }));
 
-        // The first committed-offset fetch finds the member unknown, which fences it; later
-        // fetches return committed offset 5.
+        // With fenceFirstOffsetFetch, the first committed-offset fetch finds the member unknown,
+        // which fences it; every other fetch returns committed offset 5.
         var offsetFetches = 0;
         connection.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
                 Arg.Any<OffsetFetchRequest>(),
@@ -419,7 +532,7 @@ public sealed class ConsumerDirtyCommitTests
             .Returns(callInfo =>
             {
                 var group = callInfo.Arg<OffsetFetchRequest>()!.Groups![0];
-                var fenced = Interlocked.Increment(ref offsetFetches) == 1;
+                var fenced = Interlocked.Increment(ref offsetFetches) == 1 && fenceFirstOffsetFetch;
                 return ValueTask.FromResult(new OffsetFetchResponse
                 {
                     Groups =
@@ -471,19 +584,6 @@ public sealed class ConsumerDirtyCommitTests
         metadataManager.SetApiVersion(ApiKey.ConsumerGroupHeartbeat, 0, 0);
         metadataManager.SetApiVersion(ApiKey.OffsetFetch, 9, 9);
 
-        // The rejoin's OnPartitionsAssigned seeks p0, which takes the consumer's assignment lock.
-        var assignedCalls = 0;
-        var listener = Substitute.For<IConsumerAwareRebalanceListener>();
-        listener.OnPartitionsAssignedAsync(
-                Arg.Any<IRebalanceConsumer>(),
-                Arg.Any<IEnumerable<TopicPartition>>(),
-                Arg.Any<CancellationToken>())
-            .Returns(callInfo =>
-            {
-                if (Interlocked.Increment(ref assignedCalls) == 2)
-                    callInfo.Arg<IRebalanceConsumer>()!.Seek(new TopicPartitionOffset("topic-a", 0, 42));
-                return ValueTask.CompletedTask;
-            });
         var consumer = new KafkaConsumer<string, string>(
             new ConsumerOptions
             {
@@ -497,35 +597,7 @@ public sealed class ConsumerDirtyCommitTests
             connectionPool,
             metadataManager);
         consumer.Subscribe("topic-a");
-        var ensureAssignment = typeof(KafkaConsumer<string, string>)
-            .GetMethod("EnsureAssignmentAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
-
-        // Without the fix, the fetch's recovery rejoins while the sync holds the assignment lock,
-        // and the callback's seek waits on that lock for good.
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        var sync = Task.Run(async () => await (ValueTask)ensureAssignment.Invoke(consumer, [timeout.Token])!);
-        try
-        {
-            await sync.WaitAsync(TimeSpan.FromSeconds(10));
-
-            // The loss is reported, and fetching starts at the rejoin callback's seek.
-            await Assert.That(Volatile.Read(ref assignedCalls)).IsEqualTo(2);
-            await listener.Received(1).OnPartitionsLostAsync(
-                Arg.Any<IRebalanceConsumer>(),
-                Arg.Any<IEnumerable<TopicPartition>>(),
-                Arg.Any<CancellationToken>());
-            var fetchPositions = typeof(KafkaConsumer<string, string>)
-                .GetField("_fetchPositions", BindingFlags.NonPublic | BindingFlags.Instance)!
-                .GetValue(consumer)!;
-            var position = (long)fetchPositions.GetType().GetProperty("Item")!.GetValue(fetchPositions, [p0])!;
-            await Assert.That(position).IsEqualTo(42);
-        }
-        finally
-        {
-            // A deadlocked consumer never releases the lock its disposal takes.
-            if (sync.IsCompleted)
-                await consumer.DisposeAsync();
-        }
+        return consumer;
     }
 
     [Test]

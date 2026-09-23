@@ -46,8 +46,15 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private readonly Func<
         IEnumerable<TopicPartition>,
         IEnumerable<TopicPartition>,
+        long,
         IRebalanceConsumerScope>? _createRebalanceConsumerScope;
     private readonly ConcurrentQueue<TopicPartition> _revokedPartitionsSinceLastSync = new();
+    // Advances on every published revocation or loss. Each partition keeps the sequence of its
+    // latest revocation, and each queued rebalance notification the sequence when it was
+    // published, so a callback delivered after its partitions were revoked is recognizably stale.
+    // Updated once per revocation, never per message.
+    private long _revocationSequence;
+    private readonly ConcurrentDictionary<TopicPartition, long> _partitionRevocationSequences = new();
     private Task _pendingRevocationCommit = Task.CompletedTask;
     // Completes once the callbacks of the latest published assignment change with newly assigned
     // partitions have been delivered. The consumer does not synchronize that assignment before
@@ -186,7 +193,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         Action<IReadOnlyList<TopicPartition>>? onPartitionsRevoked,
         Action<IReadOnlyList<TopicPartition>>? onPartitionsRevoking,
         Func<IReadOnlyList<TopicPartition>, CancellationToken, ValueTask>? onPartitionsRevokedAsync = null,
-        Func<IEnumerable<TopicPartition>, IEnumerable<TopicPartition>, IRebalanceConsumerScope>?
+        Func<IEnumerable<TopicPartition>, IEnumerable<TopicPartition>, long, IRebalanceConsumerScope>?
             createRebalanceConsumerScope = null)
     {
         _options = options;
@@ -1063,6 +1070,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             ValueTask> consumerAwareCallback,
         IEnumerable<TopicPartition> newlyAssigned,
         HashSet<TopicPartition> assignment,
+        long revocationSequence,
         CancellationToken cancellationToken)
     {
         ThrowIfCallbackDeliveryStopped(cancellationToken);
@@ -1072,7 +1080,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             LogRebalanceListenerCall(callbackName, partitions.Count);
             consumerScope = _createRebalanceConsumerScope!(
                 assignment,
-                newlyAssigned);
+                newlyAssigned,
+                revocationSequence);
             await consumerAwareCallback(
                 listener,
                 consumerScope,
@@ -1134,6 +1143,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 // A queued callback's scope shows the assignment it was queued under, not one
                 // published since.
                 progress?.Assignment ?? _assignedPartitions,
+                // Likewise the revocations it predates: a seek it stages for a partition revoked
+                // since then is discarded.
+                progress?.RevocationSequence ?? Volatile.Read(ref _revocationSequence),
                 cancellationToken).ConfigureAwait(false);
             progress?.ListenersCompleted = position;
         }
@@ -1185,6 +1197,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         // listener's scope. Assignment sets are replaced, never mutated, so the reference is a
         // stable snapshot.
         public required HashSet<TopicPartition> Assignment { get; init; }
+
+        // _revocationSequence when this notification arose. Captured after its own revocations
+        // were recorded, so only later revocations or losses make its seeks stale.
+        public required long RevocationSequence { get; init; }
 
         public bool RevokedDelivered;
 
@@ -1928,7 +1944,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             EnqueuePendingRebalanceCallback(new PendingRebalanceCallback
             {
                 Lost = lost,
-                Assignment = _assignedPartitions
+                Assignment = _assignedPartitions,
+                RevocationSequence = Volatile.Read(ref _revocationSequence)
             });
     }
 
@@ -1997,7 +2014,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 new PendingRebalanceCallback
                 {
                     Deferred = result,
-                    Assignment = published
+                    Assignment = published,
+                    RevocationSequence = Volatile.Read(ref _revocationSequence)
                 },
                 reserved: true);
         }
@@ -2586,9 +2604,32 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
     private void NotifyRevoking(IReadOnlyList<TopicPartition>? revoked)
     {
-        if (revoked is not null)
-            _onPartitionsRevoking?.Invoke(revoked);
+        if (revoked is null)
+            return;
+
+        // Recorded before the owner drops its pending seeks, so a callback that predates this
+        // revocation can never stage a seek the owner keeps (see WasRevokedSince).
+        var sequence = Interlocked.Increment(ref _revocationSequence);
+        for (var i = 0; i < revoked.Count; i++)
+        {
+            _partitionRevocationSequences.AddOrUpdate(
+                revoked[i],
+                static (_, sequence) => sequence,
+                static (_, current, sequence) => Math.Max(current, sequence),
+                sequence);
+        }
+
+        _onPartitionsRevoking?.Invoke(revoked);
     }
+
+    /// <summary>
+    /// True when <paramref name="partition"/> was revoked or lost after a rebalance notification
+    /// captured <paramref name="revocationSequence"/>. A seek that notification's callback stages
+    /// for the partition belongs to ownership that has already ended.
+    /// </summary>
+    internal bool WasRevokedSince(TopicPartition partition, long revocationSequence) =>
+        _partitionRevocationSequences.TryGetValue(partition, out var revokedAt)
+        && revokedAt > revocationSequence;
 
     /// <summary>
     /// KIP-848 entry point: ensures the consumer has joined the group using the ConsumerGroupHeartbeat API.
@@ -3066,7 +3107,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 EnqueuePendingRebalanceCallback(new PendingRebalanceCallback
                 {
                     Lost = lost,
-                    Assignment = _assignedPartitions
+                    Assignment = _assignedPartitions,
+                    RevocationSequence = Volatile.Read(ref _revocationSequence)
                 });
             }
 

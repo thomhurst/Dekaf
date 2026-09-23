@@ -2030,12 +2030,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 onPartitionsRevoked: null,
                 onPartitionsRevoking: QueueCoordinatorRevokedPartitionsForFetchClear,
                 onPartitionsRevokedAsync: CommitRevokedOffsetsAsync,
-                createRebalanceConsumerScope: (assignment, newlyAssigned) =>
+                // One scope and seek delegate per rebalance callback, never per message.
+                createRebalanceConsumerScope: (assignment, newlyAssigned, revocationSequence) =>
                     new RebalanceConsumerScope<TKey, TValue>(
                         this,
                         assignment,
                         newlyAssigned,
-                        StageRebalanceSeek,
+                        offset => StageRebalanceSeek(offset, revocationSequence),
                         GetRebalancePosition))
             {
                 TelemetryMetricCollector = _telemetryMetricCollector,
@@ -7663,7 +7664,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             ? pending.Offset
             : GetPosition(partition);
 
-    internal void StageRebalanceSeek(TopicPartitionOffset offset)
+    /// <param name="offset">The seek an OnPartitionsAssigned callback requested.</param>
+    /// <param name="revocationSequence">
+    /// The coordinator's revocation sequence when the callback's notification was published. A seek
+    /// for a partition revoked or lost since then is discarded: that ownership has ended, and a
+    /// later assignment of the partition must not start at it.
+    /// </param>
+    internal void StageRebalanceSeek(TopicPartitionOffset offset, long revocationSequence = long.MaxValue)
     {
         var partition = new TopicPartition(offset.Topic, offset.Partition);
         SemaphoreHelper.AcquireOrThrowDisposed(
@@ -7671,7 +7678,16 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             nameof(KafkaConsumer<TKey, TValue>));
         try
         {
-            _pendingRebalanceSeeks[partition] = offset;
+            // The revocation hook drops pending seeks under this lock after the coordinator
+            // records the revocation, so checking and staging under it cannot keep a stale seek.
+            lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
+            {
+                if (_coordinator?.WasRevokedSince(partition, revocationSequence) == true)
+                    return;
+
+                _pendingRebalanceSeeks[partition] = offset;
+            }
+
             if (_coordinator is { } coordinator
                 && _assignmentSnapshot.Contains(partition)
                 && IsCoordinatorAssignmentSyncCurrent(coordinator, out _))
@@ -9633,8 +9649,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
                     // A seek staged for a partition that was revoked and then assigned again
                     // came from the new assignment's OnPartitionsAssigned: publishing the
-                    // revocation already dropped any seek staged before it. Keep it through the
-                    // cleanup below so position initialization applies it.
+                    // revocation dropped any seek staged before it, and StageRebalanceSeek
+                    // discards one from a callback that predates the revocation. Keep it through
+                    // the cleanup below so position initialization applies it.
                     List<TopicPartitionOffset>? reassignedSeeks = null;
                     if (coordinatorRevocations is not null)
                     {
