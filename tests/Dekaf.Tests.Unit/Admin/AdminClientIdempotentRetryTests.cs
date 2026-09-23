@@ -68,10 +68,12 @@ public sealed class AdminClientIdempotentRetryTests
         var delete = byId
             ? ((ITopicIdAdminClient)admin).DeleteTopicsAsync([topicId], options).AsTask()
             : admin.DeleteTopicsAsync([TopicName], options).AsTask();
-        await delete.WaitAsync(TimeSpan.FromSeconds(20));
+        // 300 ms budget plus a scheduling allowance for loaded CI runners; the unbounded refresh
+        // this guards against never completes, and the 60 s default budget would blow past it.
+        await delete.WaitAsync(TimeSpan.FromSeconds(10));
         stopwatch.Stop();
 
-        await Assert.That(stopwatch.Elapsed).IsLessThan(TimeSpan.FromSeconds(10));
+        await Assert.That(stopwatch.Elapsed).IsLessThan(TimeSpan.FromSeconds(3));
 
         static async ValueTask<MetadataResponse> WaitForCancellationAsync(CancellationToken token)
         {
