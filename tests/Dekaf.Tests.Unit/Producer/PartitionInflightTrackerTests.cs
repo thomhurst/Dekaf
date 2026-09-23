@@ -468,6 +468,30 @@ public sealed class PartitionInflightTrackerTests
     }
 
     [Test]
+    public async Task PruneWithCutoff_RegisterHoldingPrunedState_RetriesOntoVisibleState()
+    {
+        var tracker = new PartitionInflightTracker(enablePruning: false);
+
+        var idle = tracker.Register(Tp0, baseSequence: 0, recordCount: 10);
+        // A Register whose GetOrAdd resolved this state before the pruner removed it.
+        var resolvedBeforePrune = idle.State!;
+        tracker.Complete(idle);
+        tracker.PruneWithCutoff(long.MaxValue);
+
+        var raced = new InflightEntry();
+        raced.Initialize(Tp0, baseSequence: 10, recordCount: 5);
+        await Assert.That(PartitionInflightTracker.TryAppend(resolvedBeforePrune, raced)).IsFalse();
+        await Assert.That(resolvedBeforePrune.Count).IsEqualTo(0);
+
+        // The retried registration lands on the state dictionary lookups see.
+        var entry = tracker.Register(Tp0, baseSequence: 10, recordCount: 5);
+        await Assert.That(entry.State).IsNotSameReferenceAs(resolvedBeforePrune);
+        await Assert.That(tracker.GetInflightCount(Tp0)).IsEqualTo(1);
+        await Assert.That(tracker.HasInflightBefore(Tp0, baseSequence: 15)).IsTrue();
+        await Assert.That(tracker.AnyInflightPartition(static (tp, _) => tp == Tp0, 0)).IsTrue();
+    }
+
+    [Test]
     public async Task Complete_MultipleEntries_WorksWithStoredState()
     {
         var tracker = new PartitionInflightTracker(enablePruning: false);

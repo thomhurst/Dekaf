@@ -122,6 +122,14 @@ internal sealed class PartitionState
     /// Zero means the partition is active (has in-flight entries).
     /// </summary>
     public long LastIdleTicks;
+
+    /// <summary>
+    /// Set under <see cref="Lock"/> once the pruner has removed this state from the tracker's
+    /// dictionary. A registration that resolved the state before the removal sees it under the
+    /// same lock and retries against a fresh state, so no in-flight entry ever lives on a state
+    /// that dictionary lookups (FailAll, GetInflightCount, the sequence-restart queries) cannot see.
+    /// </summary>
+    public bool Removed;
 }
 
 /// <summary>
@@ -227,14 +235,34 @@ internal sealed class PartitionInflightTracker : IDisposable
         var entry = _pool.Rent();
         entry.Initialize(topicPartition, baseSequence, recordCount);
 
-        var state = _partitions.GetOrAdd(topicPartition, static _ => new PartitionState());
-        entry.State = state;
+        // A state the pruner removed between GetOrAdd and the lock is refused; the retry
+        // resolves (or creates) the state now in the dictionary. Pruning only removes states idle
+        // for the full TTL, so the loop body runs a second time only in that race.
+        while (!TryAppend(_partitions.GetOrAdd(topicPartition, static _ => new PartitionState()), entry))
+        {
+        }
 
+        return entry;
+    }
+
+    /// <summary>
+    /// Appends <paramref name="entry"/> to <paramref name="state"/>'s list unless the pruner has
+    /// already removed the state from the dictionary. Internal for deterministic race tests.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static bool TryAppend(PartitionState state, InflightEntry entry)
+    {
         var lockTaken = false;
         try
         {
             state.Lock.Enter(ref lockTaken);
 
+            if (state.Removed)
+            {
+                return false;
+            }
+
+            entry.State = state;
             entry.InList = true;
 
             // Clear idle timestamp — partition is now active
@@ -255,13 +283,12 @@ internal sealed class PartitionInflightTracker : IDisposable
             }
 
             state.Count++;
+            return true;
         }
         finally
         {
             if (lockTaken) state.Lock.Exit();
         }
-
-        return entry;
     }
 
     /// <summary>
@@ -573,13 +600,11 @@ internal sealed class PartitionInflightTracker : IDisposable
             }
 
             // Double-check under lock: a concurrent Register may have reactivated this partition.
-            // TryRemove is inside the lock to close the window where Register's GetOrAdd
-            // returns the existing state, then blocks on the SpinLock while the pruner removes it.
-            // A narrow race remains: Register's GetOrAdd can resolve *before* the pruner acquires
-            // the lock, causing the entry to reference a state that gets removed from the dict.
-            // This is benign — Complete/WaitForPredecessor/IsHeadOfLine use stored entry.State
-            // and work correctly; only FailAll (which targets Count>0 partitions the pruner
-            // won't touch) and GetInflightCount would miss the orphaned state.
+            // TryRemove and the Removed flag are set inside the lock, so a Register whose
+            // GetOrAdd resolved this state before the removal sees Removed under the same lock
+            // and retries against the dictionary's current state: an active entry never lives
+            // on a state that dictionary lookups (FailAll, GetInflightCount, HasInflightBefore,
+            // AnyInflightPartition) cannot see.
             var lockTaken = false;
             try
             {
@@ -597,7 +622,10 @@ internal sealed class PartitionInflightTracker : IDisposable
                     continue;
                 }
 
-                _partitions.TryRemove(kvp);
+                if (_partitions.TryRemove(kvp))
+                {
+                    state.Removed = true;
+                }
             }
             finally
             {
