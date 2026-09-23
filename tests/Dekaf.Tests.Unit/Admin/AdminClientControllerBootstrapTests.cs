@@ -64,6 +64,40 @@ public sealed class AdminClientControllerBootstrapTests
     }
 
     [Test]
+    [Arguments(true)]
+    [Arguments(false)]
+    public async Task FirstDiscoveryRefused_IsRetriedInsideTheCall(bool describeFeaturesForNode)
+    {
+        // A fresh client whose first controller discovery is refused at the transport. The
+        // discovery is part of the retried operation, so the call recovers instead of failing.
+        await using var context = new ControllerAdminContext(
+            CreateDiscoveryResponse(activeControllerId: 2),
+            firstDiscoveryFailure: new System.Net.Sockets.SocketException(
+                (int)System.Net.Sockets.SocketError.ConnectionRefused));
+        context.ActiveController.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
+                Arg.Any<ApiVersionsRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(new ApiVersionsResponse
+            {
+                ErrorCode = ErrorCode.None,
+                ApiKeys = [new ApiVersion(ApiKey.ApiVersions, 0, 5)],
+                FinalizedFeaturesEpoch = 7
+            }));
+
+        if (describeFeaturesForNode)
+        {
+            var features = await context.Client.DescribeFeaturesAsync(new DescribeFeaturesOptions { NodeId = 2 });
+            await Assert.That(features.FinalizedFeaturesEpoch).IsEqualTo(7L);
+        }
+        else
+        {
+            var cluster = await context.Client.DescribeClusterAsync();
+            await Assert.That(cluster.ControllerId).IsEqualTo(2);
+        }
+
+        await Assert.That(context.DiscoveryRequests).IsGreaterThanOrEqualTo(2);
+    }
+
+    [Test]
     public async Task DescribeFeaturesAsync_UnknownController_DoesNotQueryActiveController()
     {
         await using var context = new ControllerAdminContext();
@@ -461,6 +495,29 @@ public sealed class AdminClientControllerBootstrapTests
     }
 
     [Test]
+    public async Task DescribeMetadataQuorumAsync_TransportFailuresBeyondRetryCount_SucceedsWithinApiTimeout()
+    {
+        await using var context = new ControllerAdminContext();
+        var calls = 0;
+        context.ActiveController.SendAsync<DescribeQuorumRequest, DescribeQuorumResponse>(
+                Arg.Any<DescribeQuorumRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                if (Interlocked.Increment(ref calls) <= 5)
+                    throw new System.Net.Sockets.SocketException((int)System.Net.Sockets.SocketError.ConnectionRefused);
+
+                return ValueTask.FromResult(CreateQuorumResponse(leaderId: 2));
+            });
+
+        var result = await context.Client.DescribeMetadataQuorumAsync();
+
+        await Assert.That(result.LeaderId).IsEqualTo(2);
+        await Assert.That(calls).IsEqualTo(6);
+    }
+
+    [Test]
     public async Task DescribeBrokerLoggerConfig_TargetsRequestedPhysicalController()
     {
         await using var context = new ControllerAdminContext();
@@ -583,7 +640,8 @@ public sealed class AdminClientControllerBootstrapTests
         internal ControllerAdminContext(
             DescribeClusterResponse? discoveryResponse = null,
             TimeSpan? refreshInterval = null,
-            int initTimeoutMs = 60_000)
+            int initTimeoutMs = 60_000,
+            Exception? firstDiscoveryFailure = null)
         {
             BootstrapController = CreateConnection("seed", 9093);
             ActiveController = CreateConnection("controller-2", 19094);
@@ -602,6 +660,8 @@ public sealed class AdminClientControllerBootstrapTests
                     });
                 });
 
+            if (firstDiscoveryFailure is not null)
+                _discoveryOutcomes.Enqueue(firstDiscoveryFailure);
             _discoveryOutcomes.Enqueue(discoveryResponse ?? CreateDiscoveryResponse(activeControllerId: 2));
             ConfigureDiscovery(BootstrapController);
             ConfigureDiscovery(ActiveController);

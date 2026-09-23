@@ -377,6 +377,78 @@ public sealed class ConsumerCoordinatorFailoverIntegrationTests(RackAwareKafkaCo
     }
 
     /// <summary>
+    /// Admin reads issued right after a group coordinator is SIGKILLed. Cluster metadata keeps
+    /// naming the dead broker for several seconds, so the coordinator lookup and the describe
+    /// request fail at the transport. They must retry for the API timeout instead of three quick
+    /// attempts ending in a raw <see cref="System.Net.Sockets.SocketException"/>.
+    /// </summary>
+    [Test]
+    [Timeout(240_000)]
+    public async Task CoordinatorCrash_AdminReadsInsideStaleMetadataWindow_Succeed(
+        CancellationToken cancellationToken)
+    {
+        var groupId = $"coordinator-crash-admin-{Guid.NewGuid():N}";
+        var (topic, expectedCoordinatorId) = await CreateScenarioAsync(groupId, cancellationToken)
+            .ConfigureAwait(false);
+        int? crashedBrokerId = null;
+
+        await using var consumer = await CreateConsumerAsync(groupId, listener: null, cancellationToken)
+            .ConfigureAwait(false);
+        consumer.Subscribe(topic);
+        // Built and used before the crash, so its metadata and connections name the coordinator.
+        await using var admin = kafka.CreateAdminClient();
+
+        try
+        {
+            await ProduceRangeAsync(topic, startPerPartition: 0, MessagesPerPartition, cancellationToken)
+                .ConfigureAwait(false);
+            var nextOffsets = new Dictionary<int, long>();
+            using (var drain = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
+            {
+                drain.CancelAfter(ConvergenceTimeout);
+                var consumed = 0;
+                while (consumed < MessageCount)
+                {
+                    var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(2), drain.Token)
+                        .ConfigureAwait(false);
+                    if (result is not { } record)
+                        continue;
+
+                    nextOffsets[record.Partition] = record.Offset + 1;
+                    consumed++;
+                }
+            }
+
+            await consumer.CommitAsync(
+                    nextOffsets.Select(pair => new TopicPartitionOffset(topic, pair.Key, pair.Value)).ToArray(),
+                    cancellationToken)
+                .ConfigureAwait(false);
+            _ = await admin.DescribeConsumerGroupsAsync([groupId], cancellationToken).ConfigureAwait(false);
+
+            crashedBrokerId = await kafka.GetGroupCoordinatorIdAsync(groupId, cancellationToken)
+                .ConfigureAwait(false);
+            AssertExpectedCoordinator(crashedBrokerId.Value, expectedCoordinatorId);
+            await kafka.KillBrokerAsync(crashedBrokerId.Value, cancellationToken).ConfigureAwait(false);
+
+            // No wait for the coordinator to move: the reads start inside the window.
+            var groups = await admin.DescribeConsumerGroupsAsync([groupId], cancellationToken)
+                .ConfigureAwait(false);
+            if (!groups.ContainsKey(groupId))
+                throw new InvalidOperationException($"DescribeConsumerGroups did not return group {groupId}.");
+
+            await AssertCommittedOffsetsAfterFailoverAsync(topic, groupId, cancellationToken).ConfigureAwait(false);
+
+            await kafka.StartBrokerAsync(crashedBrokerId.Value, cancellationToken).ConfigureAwait(false);
+            crashedBrokerId = null;
+        }
+        finally
+        {
+            if (crashedBrokerId is { } brokerId)
+                await kafka.StartBrokerAsync(brokerId, CancellationToken.None).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
     /// A second member joins right after the coordinator is SIGKILLed. Unlike the surviving
     /// member, whose assignment is unchanged, the new member must initialize positions from the
     /// group's committed offsets (OffsetFetch) once it is assigned partitions. It must start at
@@ -1220,6 +1292,61 @@ public sealed class ConsumerCoordinatorFailoverIntegrationTests(RackAwareKafkaCo
                 if (!records.ContainsKey((partition, offset)))
                     throw new InvalidOperationException($"Record {partition}:{offset} was never delivered.");
             }
+        }
+    }
+
+    /// <summary>
+    /// Asserts the committed offsets right after the group coordinator failed over. The commit
+    /// was acknowledged (the synchronous CommitAsync completed) before the crash, so its record
+    /// is in the new coordinator's log. The new group coordinator serves a non-stable OffsetFetch
+    /// as a read at its last committed offset (the partition's high watermark). Just after it
+    /// takes over, that high watermark can still be below the commit record until the remaining
+    /// follower fetches, so the broker answers successfully without those offsets. Offsets that
+    /// are missing are therefore read again within a bound. An offset with a wrong value, or any
+    /// error the admin client raises, still fails immediately.
+    /// </summary>
+    private async Task AssertCommittedOffsetsAfterFailoverAsync(
+        string topic,
+        string groupId,
+        CancellationToken cancellationToken)
+    {
+        await using var admin = kafka.CreateAdminClient();
+        var visibility = System.Diagnostics.Stopwatch.StartNew();
+        for (var read = 1; ; read++)
+        {
+            var committed = await admin.ListConsumerGroupOffsetsAsync(groupId, cancellationToken)
+                .ConfigureAwait(false);
+            var missing = false;
+            for (var partition = 0; partition < PartitionCount; partition++)
+            {
+                var topicPartition = new TopicPartition(topic, partition);
+                if (!committed.TryGetValue(topicPartition, out var offset))
+                {
+                    missing = true;
+                    continue;
+                }
+
+                if (offset != MessagesPerPartition)
+                {
+                    throw new InvalidOperationException(
+                        $"Committed offset for {topicPartition} expected {MessagesPerPartition}, actual {offset}.");
+                }
+            }
+
+            if (!missing)
+            {
+                if (read > 1)
+                    Console.WriteLine($"Committed offsets became visible on read {read}, {visibility.Elapsed.TotalMilliseconds:F0} ms after the first.");
+                return;
+            }
+
+            if (visibility.Elapsed > TimeSpan.FromSeconds(30))
+            {
+                throw new InvalidOperationException(
+                    $"Committed offsets for group {groupId} were still missing 30 s after the coordinator failed over.");
+            }
+
+            await Task.Delay(TimeSpan.FromMilliseconds(250), cancellationToken).ConfigureAwait(false);
         }
     }
 

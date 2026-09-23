@@ -573,6 +573,22 @@ public sealed class AdminClientDetailedConsumerGroupMutationTests
         connection.SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(Arg.Any<FindCoordinatorRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
             .Returns(call => ValueTask.FromResult(Coordinator(call.Arg<FindCoordinatorRequest>(), call.Arg<FindCoordinatorRequest>().Key == "good" ? 1 : 2)));
 
+    [Test]
+    public async Task DeleteGroups_DeadlineAfterDiscoveryFailures_TimeoutCarriesTheTransportFailure()
+    {
+        // Coordinator discovery keeps failing at the transport until the mutation's deadline.
+        // The timeout must carry that failure itself, not the retry loop's cancellation around it.
+        var (admin, connection) = CreateAdmin();
+        await using var client = admin;
+        connection.SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(Arg.Any<FindCoordinatorRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
+            .Returns<ValueTask<FindCoordinatorResponse>>(_ => throw new System.Net.Sockets.SocketException((int)System.Net.Sockets.SocketError.ConnectionRefused));
+        var results = await admin.DeleteConsumerGroupsDetailedAsync(["group-a"], new() { TimeoutMs = 300 }).AsTask().WaitAsync(TimeSpan.FromSeconds(10));
+        var result = results["group-a"];
+        await Assert.That(result.Outcome).IsEqualTo(AdminMutationOutcome.NotAttempted);
+        await Assert.That(result.Exception).IsTypeOf<KafkaTimeoutException>();
+        await Assert.That(result.Exception!.InnerException).IsTypeOf<System.Net.Sockets.SocketException>();
+    }
+
     private static (AdminClient Admin, IKafkaConnection Connection) CreateAdmin(short offsetCommitVersion = 8,
         Action<MetadataManager>? configure = null, Action<IConnectionPool>? configurePool = null)
     {

@@ -21,13 +21,15 @@ public sealed partial class AdminClient : IGroupListingAdminClient
         IReadOnlyList<string>? states,
         IReadOnlyList<string>? types,
         IReadOnlyList<string>? protocols,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int? timeoutMs = null,
+        [CallerMemberName] string operationName = "")
     {
         ValidateGroupFilters(states, types, protocols);
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
 
-        return await WithRetryAsync<IReadOnlyList<GroupListing>>(async () =>
+        return await WithRetryAsync<IReadOnlyList<GroupListing>>(async attemptToken =>
         {
+            await EnsureInitializedAsync(attemptToken, operationName).ConfigureAwait(false);
             var brokers = _metadataManager.Metadata.GetBrokers();
             if (brokers.Count == 0)
                 throw new InvalidOperationException("No brokers available");
@@ -35,7 +37,7 @@ public sealed partial class AdminClient : IGroupListingAdminClient
             // Listing is an administrative operation. Fan out once per broker, not per group.
             var pending = new Task<ListGroupsResponse>[brokers.Count];
             for (var i = 0; i < brokers.Count; i++)
-                pending[i] = ListBrokerGroupsAsync(brokers[i].NodeId, states, types, cancellationToken);
+                pending[i] = ListBrokerGroupsAsync(brokers[i].NodeId, states, types, attemptToken);
             var responses = await Task.WhenAll(pending).ConfigureAwait(false);
 
             var capacity = 0;
@@ -73,7 +75,7 @@ public sealed partial class AdminClient : IGroupListingAdminClient
                 }
             }
             return result;
-        }, cancellationToken).ConfigureAwait(false);
+        }, cancellationToken, timeoutMs, operationName).ConfigureAwait(false);
     }
 
     private async Task<ListGroupsResponse> ListBrokerGroupsAsync(int brokerId,

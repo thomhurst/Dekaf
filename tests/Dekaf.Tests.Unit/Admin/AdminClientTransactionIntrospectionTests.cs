@@ -484,6 +484,199 @@ public sealed class AdminClientTransactionIntrospectionTests
     }
 
     [Test]
+    public async Task FenceProducersAsync_LaterCoordinatorTransportFailure_DoesNotFenceConfirmedIdAgain()
+    {
+        // tx-a's fence is confirmed by coordinator 1; tx-b's coordinator then fails at the
+        // transport. The retry must not send InitProducerId for tx-a again: every call bumps the
+        // epoch and could fence a producer that restarted after the first fence.
+        var (admin, connections) = CreateAdminWithMockConnections();
+
+        connections[1].SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
+                Arg.Any<FindCoordinatorRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(callInfo =>
+            {
+                var request = callInfo.Arg<FindCoordinatorRequest>()!;
+                var coordinatorId = request.Key == "tx-b" ? 2 : 1;
+                return ValueTask.FromResult(new FindCoordinatorResponse
+                {
+                    Coordinators =
+                    [
+                        new Coordinator
+                        {
+                            Key = request.Key,
+                            NodeId = coordinatorId,
+                            Host = $"broker-{coordinatorId}",
+                            Port = 9090 + coordinatorId,
+                            ErrorCode = ErrorCode.None
+                        }
+                    ]
+                });
+            });
+
+        connections[1].SendAsync<InitProducerIdRequest, InitProducerIdResponse>(
+                Arg.Any<InitProducerIdRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(new InitProducerIdResponse
+            {
+                ErrorCode = ErrorCode.None,
+                ProducerId = 101,
+                ProducerEpoch = 3
+            }));
+
+        var txBAttempts = 0;
+        connections[2].SendAsync<InitProducerIdRequest, InitProducerIdResponse>(
+                Arg.Any<InitProducerIdRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ => Interlocked.Increment(ref txBAttempts) == 1
+                ? ValueTask.FromException<InitProducerIdResponse>(new IOException("coordinator 2 connection reset"))
+                : ValueTask.FromResult(new InitProducerIdResponse
+                {
+                    ErrorCode = ErrorCode.None,
+                    ProducerId = 202,
+                    ProducerEpoch = 4
+                }));
+
+        var result = await admin.FenceProducersAsync(["tx-a", "tx-b"]);
+
+        // The mocked connection cannot report the write start, so tx-b's lost response is an
+        // unknown outcome that is reported, not sent again.
+        await Assert.That(result["tx-a"].ProducerEpoch).IsEqualTo((short)3);
+        await Assert.That(result["tx-b"].ErrorCode).IsEqualTo(ErrorCode.NetworkException);
+        await Assert.That(result["tx-b"].ProducerEpoch).IsEqualTo((short)-1);
+        await Assert.That(txBAttempts).IsEqualTo(1);
+        await connections[1].Received(1).SendAsync<InitProducerIdRequest, InitProducerIdResponse>(
+            Arg.Any<InitProducerIdRequest>(),
+            Arg.Any<short>(),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task FenceProducersAsync_RequestTimedOut_ReportsUnknownOutcomeWithoutReplay()
+    {
+        // REQUEST_TIMED_OUT means the coordinator stopped waiting, not that it dropped the fence.
+        // A replay would bump the epoch again, so the ID's outcome is reported as unknown.
+        var (admin, connections) = CreateAdminWithMockConnections();
+        SetupTransactionCoordinatorLookup(connections[1], coordinatorId: 1);
+        var attempts = 0;
+        connections[1].SendAsync<InitProducerIdRequest, InitProducerIdResponse>(
+                Arg.Any<InitProducerIdRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                Interlocked.Increment(ref attempts);
+                return ValueTask.FromResult(new InitProducerIdResponse
+                {
+                    ErrorCode = ErrorCode.RequestTimedOut,
+                    ProducerId = -1,
+                    ProducerEpoch = -1
+                });
+            });
+
+        var result = await admin.FenceProducersAsync(["tx-a"]);
+
+        await Assert.That(result["tx-a"].ErrorCode).IsEqualTo(ErrorCode.RequestTimedOut);
+        await Assert.That(attempts).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task FenceProducersAsync_LostResponse_ReportsUnknownOutcomeWithoutReplay()
+    {
+        var (admin, connections) = CreateAdminWithMockConnections();
+        SetupTransactionCoordinatorLookup(connections[1], coordinatorId: 1);
+        var attempts = 0;
+        connections[1].SendAsync<InitProducerIdRequest, InitProducerIdResponse>(
+                Arg.Any<InitProducerIdRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                Interlocked.Increment(ref attempts);
+                return ValueTask.FromException<InitProducerIdResponse>(new IOException("response lost"));
+            });
+
+        var result = await admin.FenceProducersAsync(["tx-a"]);
+
+        await Assert.That(result["tx-a"].ErrorCode).IsEqualTo(ErrorCode.NetworkException);
+        await Assert.That(result["tx-a"].ProducerId).IsEqualTo(-1L);
+        await Assert.That(attempts).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task FenceProducersAsync_DeadlineAfterSomeResults_ReturnsPerIdOutcomes()
+    {
+        // tx-a is fenced by coordinator 1. Coordinator 2 never answers tx-b, so the deadline ends
+        // the call before tx-c is sent. Throwing would discard tx-a's fence, and a caller
+        // retrying the whole call would fence it again; the per-ID results are returned instead.
+        var (admin, connections) = CreateAdminWithMockConnections();
+
+        connections[1].SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
+                Arg.Any<FindCoordinatorRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(callInfo =>
+            {
+                var request = callInfo.Arg<FindCoordinatorRequest>()!;
+                var coordinatorId = request.Key == "tx-a" ? 1 : 2;
+                return ValueTask.FromResult(new FindCoordinatorResponse
+                {
+                    Coordinators =
+                    [
+                        new Coordinator
+                        {
+                            Key = request.Key,
+                            NodeId = coordinatorId,
+                            Host = $"broker-{coordinatorId}",
+                            Port = 9090 + coordinatorId,
+                            ErrorCode = ErrorCode.None
+                        }
+                    ]
+                });
+            });
+
+        connections[1].SendAsync<InitProducerIdRequest, InitProducerIdResponse>(
+                Arg.Any<InitProducerIdRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(new InitProducerIdResponse
+            {
+                ErrorCode = ErrorCode.None,
+                ProducerId = 101,
+                ProducerEpoch = 3
+            }));
+
+        connections[2].SendAsync<InitProducerIdRequest, InitProducerIdResponse>(
+                Arg.Any<InitProducerIdRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call => new ValueTask<InitProducerIdResponse>(WaitForCancellationAsync(call.ArgAt<CancellationToken>(2))));
+
+        var result = await admin.FenceProducersAsync(
+            ["tx-a", "tx-b", "tx-c"],
+            new FenceProducersOptions { TimeoutMs = 300 });
+
+        await Assert.That(result["tx-a"].ErrorCode).IsEqualTo(ErrorCode.None);
+        await Assert.That(result["tx-a"].ProducerEpoch).IsEqualTo((short)3);
+        await Assert.That(result["tx-b"].ErrorCode).IsEqualTo(ErrorCode.RequestTimedOut);
+        await Assert.That(result["tx-b"].ProducerEpoch).IsEqualTo((short)-1);
+        await Assert.That(result["tx-c"].ErrorCode).IsEqualTo(ErrorCode.OperationNotAttempted);
+        await connections[2].Received(1).SendAsync<InitProducerIdRequest, InitProducerIdResponse>(
+            Arg.Any<InitProducerIdRequest>(),
+            Arg.Any<short>(),
+            Arg.Any<CancellationToken>());
+
+        static async Task<InitProducerIdResponse> WaitForCancellationAsync(CancellationToken token)
+        {
+            await Task.Delay(Timeout.InfiniteTimeSpan, token);
+            throw new InvalidOperationException("Cancellation did not end the blocked fence.");
+        }
+    }
+
+    [Test]
     public async Task FenceProducersAsync_ConcurrentTransactions_Retries()
     {
         var (admin, connections) = CreateAdminWithMockConnections();

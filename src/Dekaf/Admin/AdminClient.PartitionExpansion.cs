@@ -18,7 +18,6 @@ public sealed partial class AdminClient
         // Snapshot caller-owned collections before any await so retries preserve replica order.
         var topics = BuildPartitionExpansionTopics(newPartitions);
 
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
         await CreatePartitionsCoreAsync(topics, timeoutMs, options?.ValidateOnly ?? false, cancellationToken).ConfigureAwait(false);
     }
 
@@ -90,31 +89,5 @@ public sealed partial class AdminClient
                 return topics[index];
         }
         throw new InvalidOperationException($"Unexpected CreatePartitions response topic '{name}'.");
-    }
-
-    private static IReadOnlyList<CreatePartitionsTopic> ExcludeConfirmedPartitionExpansions(
-        IReadOnlyList<CreatePartitionsTopic> topics,
-        IReadOnlyList<CreatePartitionsResponseResult> results,
-        string? metadataConfirmedTopic = null)
-    {
-        // Only allocate on a partial failure, outside the successful admin request path.
-        HashSet<string>? confirmed = null;
-        if (metadataConfirmedTopic is not null)
-            (confirmed = new(StringComparer.Ordinal)).Add(metadataConfirmedTopic);
-        foreach (var result in results)
-        {
-            if (result.ErrorCode == Protocol.ErrorCode.None)
-                (confirmed ??= new(StringComparer.Ordinal)).Add(result.Name);
-        }
-        if (confirmed is null)
-            return topics;
-
-        var remaining = new List<CreatePartitionsTopic>(topics.Count);
-        foreach (var topic in topics)
-        {
-            if (!confirmed.Contains(topic.Name))
-                remaining.Add(topic);
-        }
-        return remaining;
     }
 }

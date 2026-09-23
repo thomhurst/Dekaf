@@ -26,18 +26,20 @@ public sealed partial class AdminClient
         try
         {
             if (options.NodeId is not { } nodeId)
-                return await DescribeFeaturesAsync(operationToken).ConfigureAwait(false);
+                return await DescribeFeaturesCoreAsync(Timeout.Infinite, operationToken).ConfigureAwait(false);
 
-            await EnsureInitializedAsync(operationToken, nameof(DescribeFeaturesAsync)).ConfigureAwait(false);
-            return await WithRetryAsync(async () =>
+            return await WithRetryAsync(async attemptToken =>
             {
-                operationToken.ThrowIfCancellationRequested();
-                using var lease = await LeaseFeatureNodeAsync(nodeId, operationToken).ConfigureAwait(false);
+                attemptToken.ThrowIfCancellationRequested();
+                // Inside the retried operation: controller discovery on a fresh client can be
+                // refused transiently, and that is retried like the request itself.
+                await EnsureInitializedAsync(attemptToken, nameof(DescribeFeaturesAsync)).ConfigureAwait(false);
+                using var lease = await LeaseFeatureNodeAsync(nodeId, attemptToken).ConfigureAwait(false);
                 var request = CreateFeatureRequest(lease.Connection, nodeId, out var apiVersion);
                 var response = await lease.Connection.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
-                    request, apiVersion, operationToken).ConfigureAwait(false);
+                    request, apiVersion, attemptToken).ConfigureAwait(false);
                 return MapFeatureResponse(response);
-            }, operationToken).ConfigureAwait(false);
+            }, operationToken, Timeout.Infinite, nameof(DescribeFeaturesAsync)).ConfigureAwait(false);
         }
         catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested && timeout.IsCancellationRequested)
         {
@@ -45,6 +47,11 @@ public sealed partial class AdminClient
                 ? $"DescribeFeatures timed out for node {nodeId} after {timeoutMs} ms."
                 : $"DescribeFeatures timed out (default) after {timeoutMs} ms.";
             throw new TimeoutException(message, ex);
+        }
+        catch (OperationCanceledException ex) when (
+            cancellationToken.IsCancellationRequested && ex.CancellationToken != cancellationToken)
+        {
+            throw CallerCancellation(ex, cancellationToken);
         }
     }
 

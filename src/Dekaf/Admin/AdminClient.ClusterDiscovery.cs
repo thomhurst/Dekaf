@@ -20,12 +20,12 @@ public sealed partial class AdminClient : IClusterDiscoveryAdminClient
                 "Fenced broker discovery requires broker bootstrap endpoints; controller endpoints describe controllers.");
         }
 
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
-        return await WithRetryAsync(async () =>
+        return await WithRetryAsync(async attemptToken =>
         {
+            await EnsureInitializedAsync(attemptToken).ConfigureAwait(false);
             using var lease = endpointType == DescribeClusterEndpointType.Broker
-                ? await LeaseAnyBrokerConnectionAsync(cancellationToken).ConfigureAwait(false)
-                : await LeaseControllerAsync(ApiKey.DescribeCluster, cancellationToken).ConfigureAwait(false);
+                ? await LeaseAnyBrokerConnectionAsync(attemptToken).ConfigureAwait(false)
+                : await LeaseControllerAsync(ApiKey.DescribeCluster, attemptToken).ConfigureAwait(false);
             var connection = lease.Connection;
             var minimumVersion = endpointType == DescribeClusterEndpointType.Controller ? (short)1 : (short)0;
             if (options.IncludeFencedBrokers)
@@ -37,7 +37,7 @@ public sealed partial class AdminClient : IClusterDiscoveryAdminClient
                 {
                     EndpointType = endpointType,
                     IncludeFencedBrokers = options.IncludeFencedBrokers
-                }, version, cancellationToken).ConfigureAwait(false);
+                }, version, attemptToken).ConfigureAwait(false);
             if (response.ErrorCode != ErrorCode.None)
                 throw KafkaException.FromErrorCode(response.ErrorCode, response.ErrorMessage ?? "DescribeCluster failed.");
             if (response.EndpointType != endpointType)

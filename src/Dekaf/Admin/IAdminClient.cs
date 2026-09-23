@@ -125,6 +125,16 @@ public interface IAdminClient : IAsyncDisposable
     /// <summary>
     /// Fences active producers for transactional IDs by initializing new producer epochs.
     /// </summary>
+    /// <remarks>
+    /// Each fence bumps the producer epoch, so a fence that may have reached the coordinator is
+    /// never sent again. When its response is lost, or the coordinator answers
+    /// <c>REQUEST_TIMED_OUT</c>, that ID's result carries the error code with no producer ID or
+    /// epoch: the fence may or may not have applied. If the call's timeout expires after at least
+    /// one ID has a result, the results are returned instead of a timeout: an ID whose fence was in
+    /// flight reports <c>REQUEST_TIMED_OUT</c> (outcome unknown), and an ID never sent reports
+    /// <c>OPERATION_NOT_ATTEMPTED</c> (not fenced). Retry only the IDs that need it. If no ID has
+    /// a result yet, the call throws <see cref="Errors.KafkaTimeoutException"/>.
+    /// </remarks>
     ValueTask<IReadOnlyDictionary<string, FenceProducersResultInfo>> FenceProducersAsync(
         IEnumerable<string> transactionalIds,
         FenceProducersOptions? options = null,
@@ -146,6 +156,12 @@ public interface IAdminClient : IAsyncDisposable
     /// <summary>
     /// Removes static members, identified by group.instance.id, from a consumer group.
     /// </summary>
+    /// <remarks>
+    /// A removal that may have reached the coordinator is never sent again, because a replay could
+    /// evict a replacement that joined with the same group.instance.id. If its response is lost or
+    /// ambiguous, the call throws a non-retriable <see cref="Errors.KafkaException"/>; inspect the
+    /// group's membership before retrying.
+    /// </remarks>
     ValueTask<RemoveMembersFromConsumerGroupResult> RemoveMembersFromConsumerGroupAsync(
         string groupId,
         IEnumerable<ConsumerGroupMemberToRemove> members,
@@ -346,6 +362,13 @@ public interface IAdminClient : IAsyncDisposable
     /// <param name="options">Optional configuration options.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>The ACL bindings that were deleted.</returns>
+    /// <remarks>
+    /// The request is not replayed once it may have reached the controller. If the connection
+    /// fails or the request times out after sending, this throws a non-retriable
+    /// <see cref="Errors.KafkaException"/> whose inner exception is the failure: the matching ACLs
+    /// may have been deleted, and a replay would match nothing and hide that. Describe the ACLs
+    /// before deciding to retry. Failures before sending are retried.
+    /// </remarks>
     ValueTask<IReadOnlyList<AclBinding>> DeleteAclsAsync(
         IEnumerable<AclBindingFilter> filters,
         DeleteAclsOptions? options = null,

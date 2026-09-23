@@ -64,11 +64,11 @@ public sealed partial class AdminClient : IShareGroupOffsetQueryAdminClient
         if (requestGroups.Count == 0)
             return results;
 
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+        await InitializeUntilDeadlineAsync(nameof(ListShareGroupOffsetsAsync), cancellationToken).ConfigureAwait(false);
         var failures = new Dictionary<string, ShareGroupOffsetsResult>(StringComparer.Ordinal);
         try
         {
-            await WithRetryAsync(async () =>
+            await WithRetryAsync(async attemptToken =>
             {
                 Exception? retryFailure = null;
                 var byCoordinator = new Dictionary<int, List<DescribeShareGroupOffsetsRequestGroup>>();
@@ -78,12 +78,12 @@ public sealed partial class AdminClient : IShareGroupOffsetQueryAdminClient
                         continue;
                     try
                     {
-                        var coordinator = await FindGroupCoordinatorAsync(groupId, cancellationToken).ConfigureAwait(false);
+                        var coordinator = await FindGroupCoordinatorAsync(groupId, attemptToken).ConfigureAwait(false);
                         if (!byCoordinator.TryGetValue(coordinator, out var groups))
                             byCoordinator.Add(coordinator, groups = []);
                         groups.Add(request);
                     }
-                    catch (Exception exception) when (IsShareOffsetQueryFailure(exception, cancellationToken))
+                    catch (Exception exception) when (IsShareOffsetQueryFailure(exception, attemptToken))
                     {
                         CaptureFailure(groupId, exception);
                     }
@@ -92,13 +92,13 @@ public sealed partial class AdminClient : IShareGroupOffsetQueryAdminClient
                 {
                     try
                     {
-                        using var lease = await _connectionPool.LeaseConnectionAsync(coordinator, cancellationToken).ConfigureAwait(false);
+                        using var lease = await _connectionPool.LeaseConnectionAsync(coordinator, attemptToken).ConfigureAwait(false);
                         // Both supported versions batch groups and allow null selection. Version 0 omits lag.
                         var version = _metadataManager.GetNegotiatedApiVersion(lease.Connection, ApiKey.DescribeShareGroupOffsets,
                             DescribeShareGroupOffsetsRequest.LowestSupportedVersion, DescribeShareGroupOffsetsRequest.HighestSupportedVersion);
                         var response = await lease.Connection.SendAsync<DescribeShareGroupOffsetsRequest, DescribeShareGroupOffsetsResponse>(
-                            new() { Groups = groups }, version, cancellationToken).ConfigureAwait(false);
-                        cancellationToken.ThrowIfCancellationRequested();
+                            new() { Groups = groups }, version, attemptToken).ConfigureAwait(false);
+                        attemptToken.ThrowIfCancellationRequested();
                         var responseGroups = new Dictionary<string, DescribeShareGroupOffsetsResponseGroup?>(StringComparer.Ordinal);
                         foreach (var group in response.Groups)
                             if (!responseGroups.TryAdd(group.GroupId, group))
@@ -120,7 +120,7 @@ public sealed partial class AdminClient : IShareGroupOffsetQueryAdminClient
                                 results[request.GroupId] = MapShareGroupOffsets(found, requests[request.GroupId], version);
                         }
                     }
-                    catch (Exception exception) when (IsShareOffsetQueryFailure(exception, cancellationToken))
+                    catch (Exception exception) when (IsShareOffsetQueryFailure(exception, attemptToken))
                     {
                         foreach (var request in groups)
                             if (!results.ContainsKey(request.GroupId))
@@ -141,12 +141,12 @@ public sealed partial class AdminClient : IShareGroupOffsetQueryAdminClient
                     else
                         results[groupId] = error;
                 }
-            }, cancellationToken).ConfigureAwait(false);
+            }, cancellationToken, Timeout.Infinite, nameof(ListShareGroupOffsetsAsync)).ConfigureAwait(false);
         }
         catch (Exception exception) when (cancellationToken.IsCancellationRequested &&
             (exception is KafkaException || RetryHelper.IsRetriableRequestFailure(exception)))
         {
-            throw new OperationCanceledException(cancellationToken);
+            throw CancellationWithCause(exception, cancellationToken);
         }
         catch (Exception exception) when (IsShareOffsetQueryFailure(exception, cancellationToken))
         {

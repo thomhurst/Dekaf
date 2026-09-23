@@ -473,14 +473,11 @@ public sealed class AdminClientClassicGroupDescriptionTests
     }
 
     [Test]
-    [Arguments(false)]
-    [Arguments(true)]
-    public async Task InitializationFailure_PreservesUncanceledFault(bool transport)
+    public async Task InitializationFailure_PreservesUncanceledFault()
     {
         var (admin, connection, pool) = CreateAdmin(initializeMetadata: false);
         await using var disposal = admin;
-        Exception failure = transport ? new IOException("connection failed")
-            : new GroupException(ErrorCode.GroupAuthorizationFailed, "denied");
+        Exception failure = new GroupException(ErrorCode.GroupAuthorizationFailed, "denied");
         pool.GetConnectionAsync(Arg.Any<string>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
             .Returns(ValueTask.FromException<IKafkaConnection>(failure));
 
@@ -489,6 +486,86 @@ public sealed class AdminClientClassicGroupDescriptionTests
         await Assert.That(exception!.InnerException).IsSameReferenceAs(failure);
         await connection.DidNotReceive().SendAsync<DescribeGroupsRequest, DescribeGroupsResponse>(
             Arg.Any<DescribeGroupsRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task InitializationTransportFailure_IsRetriedUntilItSucceeds()
+    {
+        // A fresh client whose bootstrap broker refuses the first connections. Initialization is
+        // retried within the call's deadline, like a coordinator lookup, instead of failing at once.
+        var (admin, connection, pool) = CreateAdmin(initializeMetadata: false);
+        await using var disposal = admin;
+        var refusals = 0;
+        pool.GetConnectionAsync(Arg.Any<string>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(_ => Interlocked.Increment(ref refusals) <= 2
+                ? ValueTask.FromException<IKafkaConnection>(new IOException("connection refused"))
+                : new ValueTask<IKafkaConnection>(connection));
+        connection.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(Arg.Any<ApiVersionsRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
+            .Returns(new ValueTask<ApiVersionsResponse>(new ApiVersionsResponse
+            {
+                ErrorCode = ErrorCode.None,
+                ApiKeys =
+                [
+                    new ApiVersion(ApiKey.Metadata, 9, 13),
+                    new ApiVersion(ApiKey.FindCoordinator, 4, 4),
+                    new ApiVersion(ApiKey.DescribeGroups, 5, 5)
+                ]
+            }));
+        Respond(connection, new DescribeGroupsResponseGroup
+        {
+            GroupId = "group", GroupState = "Empty", ProtocolType = "consumer", Members = []
+        });
+
+        var results = await admin.DescribeClassicGroupsAsync(["group"]);
+
+        await Assert.That(results["group"].Description).IsNotNull();
+        await Assert.That(refusals).IsGreaterThan(2);
+    }
+
+    [Test]
+    public async Task InitializationTransportFailure_EndsAtTheDeadline()
+    {
+        var (admin, connection, pool) = CreateAdmin(initializeMetadata: false);
+        await using var disposal = admin;
+        pool.GetConnectionAsync(Arg.Any<string>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromException<IKafkaConnection>(new IOException("connection failed")));
+
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        var exception = await Assert.ThrowsAsync<KafkaTimeoutException>(
+            () => admin.DescribeClassicGroupsAsync(["group"], new DescribeClassicGroupsOptions { TimeoutMs = 300 }).AsTask());
+        stopwatch.Stop();
+        await Assert.That(stopwatch.Elapsed).IsLessThan(TimeSpan.FromSeconds(10));
+        // The timeout carries the last initialization failure, not the cancellation around it.
+        await Assert.That(exception!.InnerException).IsNotAssignableTo<OperationCanceledException>();
+        await Assert.That(exception.InnerException).IsNotNull();
+        var cause = exception.InnerException;
+        while (cause is not null and not IOException)
+            cause = cause.InnerException;
+        await Assert.That(cause).IsTypeOf<IOException>();
+        await connection.DidNotReceive().SendAsync<DescribeGroupsRequest, DescribeGroupsResponse>(
+            Arg.Any<DescribeGroupsRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task CallerCancelsInFlightDescribe_ReportsCallersToken()
+    {
+        // The describe runs under a deadline token linked to the caller's. The caller's
+        // cancellation must be reported with the caller's own token.
+        var (admin, connection, _) = CreateAdmin();
+        await using var disposal = admin;
+        using var cancellation = new CancellationTokenSource();
+        connection.SendAsync<DescribeGroupsRequest, DescribeGroupsResponse>(Arg.Any<DescribeGroupsRequest>(),
+                Arg.Any<short>(), Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                cancellation.Cancel();
+                return ValueTask.FromCanceled<DescribeGroupsResponse>(call.ArgAt<CancellationToken>(2));
+            });
+
+        var exception = await Assert.ThrowsAsync<OperationCanceledException>(
+            () => admin.DescribeClassicGroupsAsync(["group"], cancellationToken: cancellation.Token).AsTask());
+
+        await Assert.That(exception!.CancellationToken == cancellation.Token).IsTrue();
     }
 
     [Test]

@@ -147,7 +147,7 @@ public sealed partial class AdminClient
 
         try
         {
-            return await WithRetryAsync<IReadOnlyDictionary<string, StreamsGroupOffsetsResult>>(async () =>
+            return await WithCountedRetryAsync<IReadOnlyDictionary<string, StreamsGroupOffsetsResult>>(async () =>
             {
                 retryErrors.Clear();
                 Exception? retryFailure = null;
@@ -616,7 +616,7 @@ public sealed partial class AdminClient
 
         try
         {
-            return await WithRetryAsync<IReadOnlyDictionary<TopicPartition, StreamsGroupOffsetOperationResult>>(async () =>
+            return await WithCountedRetryAsync<IReadOnlyDictionary<TopicPartition, StreamsGroupOffsetOperationResult>>(async () =>
             {
                 retryErrors.Clear();
                 int coordinatorId;
@@ -765,10 +765,11 @@ public sealed partial class AdminClient
         var results = new Dictionary<TopicPartition, StreamsGroupOffsetOperationResult>(partitions.Count);
         var retryErrors = new Dictionary<TopicPartition, Protocol.ErrorCode>(partitions.Count);
         var ambiguousPartitions = new HashSet<TopicPartition>();
+        var writeContext = new KafkaRequestWriteContext(CancellationToken.None);
 
         try
         {
-            return await WithRetryAsync<IReadOnlyDictionary<TopicPartition, StreamsGroupOffsetOperationResult>>(async () =>
+            return await WithCountedRetryAsync<IReadOnlyDictionary<TopicPartition, StreamsGroupOffsetOperationResult>>(async () =>
             {
                 retryErrors.Clear();
                 var pending = partitions.Where(partition => !results.ContainsKey(partition)).ToArray();
@@ -795,7 +796,9 @@ public sealed partial class AdminClient
                 OffsetDeleteResponse response;
                 try
                 {
-                    response = await connection.SendAsync<OffsetDeleteRequest, OffsetDeleteResponse>(
+                    response = await SendObservingWriteAsync<OffsetDeleteRequest, OffsetDeleteResponse>(
+                        writeContext,
+                        connection,
                         new OffsetDeleteRequest
                         {
                             GroupId = groupId,
@@ -808,7 +811,8 @@ public sealed partial class AdminClient
                     RetryHelper.IsRetriableRequestFailure(exception) &&
                     !cancellationToken.IsCancellationRequested)
                 {
-                    ambiguousPartitions.UnionWith(pending);
+                    if (writeContext.WriteStarted)
+                        ambiguousPartitions.UnionWith(pending);
                     var errorCode = GetRetryErrorCode(exception);
                     foreach (var topicPartition in pending)
                         retryErrors[topicPartition] = errorCode;
@@ -818,7 +822,7 @@ public sealed partial class AdminClient
                 var groupError = response.ErrorCode;
                 if (groupError.IsRetriable() || groupError.RequiresMetadataRefresh())
                 {
-                    if (groupError == Protocol.ErrorCode.RequestTimedOut)
+                    if (MayHaveAppliedDespiteError(groupError))
                         ambiguousPartitions.UnionWith(pending);
 
                     foreach (var topicPartition in pending)
@@ -858,7 +862,7 @@ public sealed partial class AdminClient
 
                             if (partition.ErrorCode.IsRetriable() || partition.ErrorCode.RequiresMetadataRefresh())
                             {
-                                if (partition.ErrorCode == Protocol.ErrorCode.RequestTimedOut)
+                                if (MayHaveAppliedDespiteError(partition.ErrorCode))
                                     ambiguousPartitions.Add(topicPartition);
                                 retryErrors[topicPartition] = partition.ErrorCode;
                                 retryFailure ??= new Errors.GroupException(
@@ -907,11 +911,12 @@ public sealed partial class AdminClient
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
         var results = new Dictionary<string, DeleteStreamsGroupResult>(groupIds.Count, StringComparer.Ordinal);
         var ambiguousGroups = new HashSet<string>(StringComparer.Ordinal);
+        var writeContext = new KafkaRequestWriteContext(CancellationToken.None);
         var retryErrors = new Dictionary<string, Protocol.ErrorCode>(groupIds.Count, StringComparer.Ordinal);
 
         try
         {
-            return await WithRetryAsync<IReadOnlyDictionary<string, DeleteStreamsGroupResult>>(async () =>
+            return await WithCountedRetryAsync<IReadOnlyDictionary<string, DeleteStreamsGroupResult>>(async () =>
             {
                 retryErrors.Clear();
                 Exception? retryFailure = null;
@@ -955,7 +960,9 @@ public sealed partial class AdminClient
 
                 foreach (var (coordinatorId, coordinatorGroups) in groupsByCoordinator)
                 {
-                    var requestMayHaveBeenSent = false;
+                    // Set once the frame write starts. A failure before it sent nothing, so the
+                    // batch's GROUP_ID_NOT_FOUND on a retry would not mean it was deleted.
+                    writeContext.Reset();
                     try
                     {
                         using var connectionLease = await _connectionPool.LeaseConnectionAsync(
@@ -968,8 +975,9 @@ public sealed partial class AdminClient
                             DeleteGroupsRequest.LowestSupportedVersion,
                             DeleteGroupsRequest.HighestSupportedVersion);
 
-                        requestMayHaveBeenSent = true;
-                        var response = await connection.SendAsync<DeleteGroupsRequest, DeleteGroupsResponse>(
+                        var response = await SendObservingWriteAsync<DeleteGroupsRequest, DeleteGroupsResponse>(
+                            writeContext,
+                            connection,
                             new DeleteGroupsRequest { GroupsNames = coordinatorGroups },
                             apiVersion,
                             cancellationToken).ConfigureAwait(false);
@@ -983,7 +991,7 @@ public sealed partial class AdminClient
                             var errorCode = groupResult.ErrorCode;
                             if (errorCode.IsRetriable() || errorCode.RequiresMetadataRefresh())
                             {
-                                if (errorCode == Protocol.ErrorCode.RequestTimedOut)
+                                if (MayHaveAppliedDespiteError(errorCode))
                                     ambiguousGroups.Add(groupResult.GroupId);
 
                                 retryErrors[groupResult.GroupId] = errorCode;
@@ -1010,7 +1018,7 @@ public sealed partial class AdminClient
                         RetryHelper.IsRetriableRequestFailure(exception) &&
                         !cancellationToken.IsCancellationRequested)
                     {
-                        if (requestMayHaveBeenSent)
+                        if (writeContext.WriteStarted)
                             ambiguousGroups.UnionWith(coordinatorGroups);
                         var errorCode = GetRetryErrorCode(exception);
                         foreach (var groupId in coordinatorGroups)
@@ -1305,13 +1313,20 @@ public sealed partial class AdminClient
             !cancellationToken.IsCancellationRequested &&
             timeoutSource.IsCancellationRequested)
         {
+            // A retry loop reports the deadline ending its wait as a cancellation that carries the
+            // last failure it saw; that failure is the cause, as in the retry wrapper's timeouts.
             var configuredTimeout = TimeSpan.FromMilliseconds(timeoutMs);
             throw new KafkaTimeoutException(
                 TimeoutKind.Api,
                 configuredTimeout,
                 configuredTimeout,
                 $"{operationName} timed out after {timeoutMs} ms.",
-                exception);
+                exception.InnerException ?? exception);
+        }
+        catch (OperationCanceledException ex) when (
+            cancellationToken.IsCancellationRequested && ex.CancellationToken != cancellationToken)
+        {
+            throw CallerCancellation(ex, cancellationToken);
         }
     }
 }

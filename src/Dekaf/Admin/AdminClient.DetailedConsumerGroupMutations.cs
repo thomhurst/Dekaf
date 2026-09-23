@@ -41,7 +41,9 @@ public sealed partial class AdminClient : IDetailedConsumerGroupMutationAdminCli
         }
         try
         {
-            await WithRetryAsync(async () =>
+            // token already carries this call's deadline, so the retry loop runs without a budget or
+            // timer of its own (Timeout.Infinite).
+            await WithRetryAsync(async _ =>
             {
                 token.ThrowIfCancellationRequested();
                 await EnsureInitializedAsync(token, operation).ConfigureAwait(false);
@@ -125,7 +127,7 @@ public sealed partial class AdminClient : IDetailedConsumerGroupMutationAdminCli
                     }
                 }
                 if (retryFailure is not null) throw retryFailure;
-            }, token).ConfigureAwait(false);
+            }, token, Timeout.Infinite, operation).ConfigureAwait(false);
         }
         catch (Exception exception) when (IsDetailedMutationFailure(exception) || exception is InvalidOperationException or MalformedProtocolDataException)
         {

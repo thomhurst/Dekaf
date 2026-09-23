@@ -35,7 +35,9 @@ public sealed partial class AdminClient
         var pending = items;
         try
         {
-            await WithRetryAsync(async () =>
+            // token already carries this call's deadline, so the retry loop runs without a budget or
+            // timer of its own (Timeout.Infinite).
+            await WithRetryAsync(async _ =>
             {
                 token.ThrowIfCancellationRequested();
                 await EnsureInitializedAsync(token, protocol.Operation).ConfigureAwait(false);
@@ -107,7 +109,7 @@ public sealed partial class AdminClient
                     pending = retry!;
                     throw retryFailure;
                 }
-            }, token).ConfigureAwait(false);
+            }, token, Timeout.Infinite, protocol.Operation).ConfigureAwait(false);
         }
         catch (Exception exception) when (IsDetailedMutationFailure(exception))
         {
@@ -158,10 +160,19 @@ public sealed partial class AdminClient
     {
         if (deadline.IsCancellationRequested && !callerToken.IsCancellationRequested)
         {
+            // The retry loop runs on this deadline's token and reports the deadline ending its
+            // wait as a cancellation that carries the last failure it saw. That failure is the
+            // cause, as in a timeout the retry wrapper raises for a budget it owns.
+            var cause = exception is OperationCanceledException { InnerException: { } lastFailure }
+                ? lastFailure
+                : exception;
             var timeout = TimeSpan.FromMilliseconds(timeoutMs);
-            return new KafkaTimeoutException(TimeoutKind.Api, timeout, timeout, $"{operation} timed out after {timeoutMs} ms.", exception);
+            return new KafkaTimeoutException(TimeoutKind.Api, timeout, timeout, $"{operation} timed out after {timeoutMs} ms.", cause);
         }
-        return exception;
+        // The caller's own cancellation is recorded with the caller's token.
+        return exception is OperationCanceledException canceled && callerToken.IsCancellationRequested
+            ? CallerCancellation(canceled, callerToken)
+            : exception;
     }
 
     private static Dictionary<TKey, AdminMutationResult> MapMutationResults<TResponse, TKey>(

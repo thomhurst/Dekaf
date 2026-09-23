@@ -42,6 +42,29 @@ public sealed class AdminClientListOffsetsTests
     }
 
     [Test]
+    public async Task ListOffsetsAsync_ZeroTimeout_StillSendsTheRequest()
+    {
+        // TimeoutMs is also the broker-side timeout carried in the request, where zero has its own
+        // meaning. The call keeps the default budget and sends it, as it did before retries were
+        // bounded by the API timeout.
+        await using var fixture = CreateFixture(broker1Version: 6);
+
+        var result = await fixture.Admin.ListOffsetsAsync(
+            [
+                new TopicPartitionOffsetSpec
+                {
+                    TopicPartition = new TopicPartition("orders", 0),
+                    Spec = OffsetSpec.Latest
+                }
+            ],
+            new ListOffsetsOptions { TimeoutMs = 0 });
+
+        var sent = fixture.Connections[1].ListOffsetsRequests.Single();
+        await Assert.That(sent.Request.TimeoutMs).IsEqualTo(0);
+        await Assert.That(result[new TopicPartition("orders", 0)].Offset).IsEqualTo(100);
+    }
+
+    [Test]
     public async Task ListOffsetsAsync_TimestampSpec_PreservesTimestamp()
     {
         await using var fixture = CreateFixture(broker1Version: 6);

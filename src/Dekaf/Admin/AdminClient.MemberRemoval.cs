@@ -16,7 +16,7 @@ public sealed partial class AdminClient : IConsumerGroupMemberRemovalAdminClient
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfMemberRemovalDeadlineExpired(options);
         return ExecuteWithTimeoutAsync(
-            token => RemoveGroupMembersCoreAsync(groupId, members, options, token),
+            token => RemoveGroupMembersCoreAsync(groupId, members, options, token, cancellationToken),
             options.TimeoutMs, nameof(RemoveMembersFromConsumerGroupAsync), cancellationToken);
     }
 
@@ -54,13 +54,13 @@ public sealed partial class AdminClient : IConsumerGroupMemberRemovalAdminClient
 
     private async ValueTask<RemoveMembersFromConsumerGroupResult> RemoveGroupMembersCoreAsync(
         string groupId, ConsumerGroupMemberIdentity[] members, ConsumerGroupMemberRemovalOptions options,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, CancellationToken callerToken)
     {
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+        await InitializeUntilDeadlineAsync(nameof(RemoveMembersFromConsumerGroupAsync), cancellationToken).ConfigureAwait(false);
         if (options.RemoveAll)
         {
             // Snapshot once outside mutation retries. Concurrent joins are not added to the request.
-            var groups = await DescribeConsumerGroupsAsync([groupId], cancellationToken).ConfigureAwait(false);
+            var groups = await DescribeConsumerGroupsCoreAsync([groupId], Timeout.Infinite, cancellationToken).ConfigureAwait(false);
             // Classic DescribeGroups before v6 represents a missing group as Dead with no error.
             if (!groups.TryGetValue(groupId, out var group) || string.Equals(group.State, "Dead", StringComparison.OrdinalIgnoreCase))
                 throw MemberRemovalError(groupId, ErrorCode.GroupIdNotFound);
@@ -82,10 +82,11 @@ public sealed partial class AdminClient : IConsumerGroupMemberRemovalAdminClient
         if (members.Length == 0)
             return new RemoveMembersFromConsumerGroupResult { GroupId = groupId, Members = [] };
 
-        return await WithRetryAsync(async () =>
+        var writeContext = new KafkaRequestWriteContext(CancellationToken.None);
+        return await WithRetryAsync(async attemptToken =>
         {
-            var coordinatorId = await FindGroupCoordinatorAsync(groupId, cancellationToken).ConfigureAwait(false);
-            using var lease = await _connectionPool.LeaseConnectionAsync(coordinatorId, cancellationToken).ConfigureAwait(false);
+            var coordinatorId = await FindGroupCoordinatorAsync(groupId, attemptToken).ConfigureAwait(false);
+            using var lease = await _connectionPool.LeaseConnectionAsync(coordinatorId, attemptToken).ConfigureAwait(false);
             var connection = lease.Connection;
             var version = _metadataManager.GetNegotiatedApiVersion(connection, ApiKey.LeaveGroup,
                 LeaveGroupRequest.LowestSupportedVersion, LeaveGroupRequest.HighestSupportedVersion);
@@ -102,19 +103,33 @@ public sealed partial class AdminClient : IConsumerGroupMemberRemovalAdminClient
             LeaveGroupResponse response;
             try
             {
-                response = await connection.SendAsync<LeaveGroupRequest, LeaveGroupResponse>(
-                    new LeaveGroupRequest { GroupId = groupId, Members = requestMembers }, version, cancellationToken).ConfigureAwait(false);
+                response = await SendObservingWriteAsync<LeaveGroupRequest, LeaveGroupResponse>(
+                    writeContext, connection,
+                    new LeaveGroupRequest { GroupId = groupId, Members = requestMembers }, version, attemptToken).ConfigureAwait(false);
             }
-            catch (Exception exception) when (RetryHelper.IsRetriableRequestFailure(exception)
-                && !cancellationToken.IsCancellationRequested)
+            catch (Exception exception) when (writeContext.WriteStarted
+                && !callerToken.IsCancellationRequested
+                && (RetryHelper.IsRetriableRequestFailure(exception) || exception is OperationCanceledException))
             {
                 // A lost response cannot prove which members were removed. Replaying a
                 // static selector could also evict a replacement that joined meanwhile.
+                // The call's deadline ending a send already being written is the same unknown
+                // outcome; only the caller's own cancellation surfaces as cancellation. A failure
+                // before the frame write starts sent nothing and is retried.
                 throw new KafkaException((exception as KafkaException)?.ErrorCode ?? ErrorCode.NetworkException,
                     "LeaveGroup outcome is unknown after a request failure. Inspect group membership before retrying removal.",
                     isRetriable: false, exception);
             }
-            cancellationToken.ThrowIfCancellationRequested();
+            // A response is authoritative: it is processed even when the deadline expired
+            // meanwhile, because the removal it reports has already happened.
+            if (MayHaveAppliedDespiteError(response.ErrorCode))
+            {
+                // The coordinator stopped waiting for the removal to commit, not that it dropped
+                // it: the same unknown outcome as a response lost after the write.
+                throw new KafkaException(response.ErrorCode,
+                    "LeaveGroup outcome is unknown after an ambiguous answer. Inspect group membership before retrying removal.",
+                    isRetriable: false, MemberRemovalError(groupId, response.ErrorCode));
+            }
             if (response.ErrorCode != ErrorCode.None)
                 throw MemberRemovalError(groupId, response.ErrorCode);
 
@@ -139,7 +154,7 @@ public sealed partial class AdminClient : IConsumerGroupMemberRemovalAdminClient
                 };
             }
             return new RemoveMembersFromConsumerGroupResult { GroupId = groupId, Members = results };
-        }, cancellationToken).ConfigureAwait(false);
+        }, cancellationToken, Timeout.Infinite, nameof(RemoveMembersFromConsumerGroupAsync)).ConfigureAwait(false);
     }
 
     private static GroupException MemberRemovalError(string groupId, ErrorCode errorCode) =>

@@ -237,6 +237,28 @@ public sealed class RetryHelperTests
     }
 
     [Test]
+    public async Task DeadlineMode_BudgetExhaustedByNetworkException_ThrowsTypedTimeoutWithTheCause()
+    {
+        // NETWORK_EXCEPTION is a transport failure reported as a Kafka error. Retried until the
+        // budget, it must end as the API timeout like a socket failure, not escape as itself.
+        await using var metadataManager = CreateUnavailableMetadataManager();
+        var failure = new KafkaException(
+            ErrorCode.NetworkException, "Connection closed by the broker (EOF).", isRetriable: true);
+
+        var exception = await Assert.ThrowsAsync<KafkaTimeoutException>(async () =>
+            await RetryHelper.WithRetryAsync<int>(
+                () => ValueTask.FromException<int>(failure),
+                metadataManager,
+                CancellationToken.None,
+                retryBackoffMs: 5,
+                retryBackoffMaxMs: 5,
+                deadline: new RetryDeadline("TestOperation", TimeSpan.FromMilliseconds(100))));
+
+        await Assert.That(exception!.TimeoutKind).IsEqualTo(TimeoutKind.Api);
+        await Assert.That(exception.InnerException).IsSameReferenceAs(failure);
+    }
+
+    [Test]
     public async Task DeadlineMode_TokenIsTheDeadline_CancellationCarriesTheTransportCause()
     {
         await using var metadataManager = CreateUnavailableMetadataManager();
@@ -440,6 +462,58 @@ public sealed class RetryHelperTests
                 deadline: new RetryDeadline("TestOperation", TimeSpan.FromSeconds(30))));
 
         await Assert.That(attempts).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task DeadlineMode_SuccessfulCall_AllocatesNothing()
+    {
+        // Consumer commits and offset fetches run in deadline mode on every call, so the success
+        // path must not build the recovery closure (or any other delegate) up front.
+        await using var metadataManager = CreateUnavailableMetadataManager();
+
+        var allocated = MeasureDeadlineSuccessPath(metadataManager);
+
+        await Assert.That(allocated).IsEqualTo(0);
+    }
+
+    private static long MeasureDeadlineSuccessPath(MetadataManager metadataManager)
+    {
+        Func<ValueTask> voidOperation = static () => ValueTask.CompletedTask;
+        Func<ValueTask<int>> resultOperation = static () => ValueTask.FromResult(42);
+        Func<CancellationToken, ValueTask> onRetry = static _ => ValueTask.CompletedTask;
+        Func<KafkaException, bool> shouldRefreshMetadata = static _ => true;
+        var deadline = new RetryDeadline("TestOperation", TimeSpan.FromSeconds(30));
+
+        RunOnce();
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var i = 0; i < 100; i++)
+            RunOnce();
+        return GC.GetAllocatedBytesForCurrentThread() - before;
+
+        void RunOnce()
+        {
+            var voidCall = RetryHelper.WithRetryAsync(
+                voidOperation,
+                metadataManager,
+                CancellationToken.None,
+                onRetry: onRetry,
+                shouldRefreshMetadata: shouldRefreshMetadata,
+                deadline: deadline);
+            if (!voidCall.IsCompletedSuccessfully)
+                throw new InvalidOperationException("The void deadline call did not complete synchronously.");
+            voidCall.GetAwaiter().GetResult();
+
+            var resultCall = RetryHelper.WithRetryAsync(
+                resultOperation,
+                metadataManager,
+                CancellationToken.None,
+                onRetry: onRetry,
+                shouldRefreshMetadata: shouldRefreshMetadata,
+                deadline: deadline);
+            if (!resultCall.IsCompletedSuccessfully)
+                throw new InvalidOperationException("The result deadline call did not complete synchronously.");
+            _ = resultCall.GetAwaiter().GetResult();
+        }
     }
 
     private static MetadataManager CreateUnavailableMetadataManager()
