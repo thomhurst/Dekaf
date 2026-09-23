@@ -1306,6 +1306,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     internal Action? PurgePendingAppendsGuardHeldForTest;
     internal Action? BeforeFailUnpublishedCompletedBatchForTest;
     internal Action? AfterReservedAppendEncodedForTest;
+    /// <summary>Runs on the drain owner after its scan reserved for at least one queued append
+    /// and released the queue lock, before any claim (#3389).</summary>
+    internal Action? AfterPendingAppendDrainReservationForTest;
 
     /// <summary>
     /// AppContext switch that enables test hooks placed on per-record paths (for example
@@ -1580,10 +1583,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     // Pooled slow path: replaces async state machine allocation with a pooled IValueTaskSource<bool>.
     // When TryReserveMemory fails, PendingAppend instances are enqueued here and drained by ReleaseMemory.
     private readonly PendingAppendPool _pendingAppendPool;
-    private readonly ConcurrentQueue<PendingAppend> _pendingAppends = new();
+    private readonly ConcurrentQueue<QueuedPendingAppend> _pendingAppends = new();
     private readonly object _pendingAppendQueueLock = new();
     private readonly HashSet<TopicPartition> _blockedPendingPartitions = [];
-    private readonly List<PendingAppend> _pendingAppendScan = [];
+    private readonly List<QueuedPendingAppend> _pendingAppendScan = [];
     private readonly List<DrainablePendingAppend> _drainablePendingAppends = [];
     private int _draining; // CAS guard for DrainPendingAppends
     private long _pendingAppendDrainRequestVersion;
@@ -1610,8 +1613,24 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         internal bool HasAdmissionSlot => Deque is not null;
     }
 
+    /// <summary>
+    /// A queued slow-path append and the <see cref="PendingAppend.Generation"/> it was enqueued
+    /// for. A failed operation stays in the queue until the next scan while its pooled instance
+    /// can already be serving a later rental, so the generation tells a stale entry apart from
+    /// the live one (#3389).
+    /// </summary>
+    internal readonly record struct QueuedPendingAppend(PendingAppend Operation, int Generation);
+
+    /// <summary>
+    /// An operation the drain reserved for under the queue lock and claims afterwards.
+    /// <paramref name="Generation"/> and <paramref name="ReservedBytes"/> are captured at
+    /// reservation so a rental that completed and was reused before the claim is neither claimed
+    /// nor refunded with the new rental's size (#3389).
+    /// </summary>
     private readonly record struct DrainablePendingAppend(
         PendingAppend Operation,
+        int Generation,
+        int ReservedBytes,
         PartitionDeque Deque,
         AdmissionReservation AdmissionReservation);
 
@@ -2642,22 +2661,26 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                         _pendingAppendScan.Add(candidate);
 
                     var memoryExhausted = false;
-                    foreach (var candidate in _pendingAppendScan)
+                    foreach (var entry in _pendingAppendScan)
                     {
                         // Timeout/cancel/dispose already released this operation's FIFO count.
-                        if (candidate.IsCompleted)
+                        // A generation mismatch is a stale entry for an earlier rental of a pooled
+                        // instance; the live rental has its own entry further back in the queue.
+                        var candidate = entry.Operation;
+                        if (!candidate.IsPending(entry.Generation))
                             continue;
 
+                        var recordSize = candidate.RecordSize;
                         var topicPartition = new TopicPartition(candidate.Topic, candidate.Partition);
                         if (memoryExhausted)
                         {
-                            _pendingAppends.Enqueue(candidate);
+                            _pendingAppends.Enqueue(entry);
                             continue;
                         }
 
                         if (_blockedPendingPartitions.Contains(topicPartition))
                         {
-                            _pendingAppends.Enqueue(candidate);
+                            _pendingAppends.Enqueue(entry);
                             continue;
                         }
 
@@ -2666,12 +2689,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                                 candidateDeque,
                                 candidate.Topic,
                                 candidate.Partition,
-                                candidate.RecordSize,
+                                recordSize,
                                 enforceFifo: false,
                                 out var admissionReservation,
                                 out var brokerBlocked))
                         {
-                            _pendingAppends.Enqueue(candidate);
+                            _pendingAppends.Enqueue(entry);
                             if (brokerBlocked)
                                 _blockedPendingPartitions.Add(topicPartition);
                             else
@@ -2681,6 +2704,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
                         _drainablePendingAppends.Add(new DrainablePendingAppend(
                             candidate,
+                            entry.Generation,
+                            recordSize,
                             candidateDeque,
                             admissionReservation));
                     }
@@ -2689,17 +2714,23 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     madeProgress = _drainablePendingAppends.Count > 0;
                 }
 
+                if (madeProgress)
+                    AfterPendingAppendDrainReservationForTest?.Invoke();
+
                 foreach (var drainable in _drainablePendingAppends)
                 {
                     var op = drainable.Operation;
                     // Claim the operation with CAS BEFORE touching resources.
                     // This prevents timeout/cancel from cleaning up key/value/headers
-                    // while AppendPooledAfterReservationCore is using them.
-                    if (!op.TryClaim())
+                    // while AppendPooledAfterReservationCore is using them. The claim names the
+                    // rental reserved for: once it completes, the pooled instance can be re-rented
+                    // for another partition and record size before this point (#3389).
+                    if (!op.TryClaim(drainable.Generation))
                     {
                         // Timeout/cancel won the race and already cleaned up resources.
-                        // Release both reservations made above.
-                        ReleaseMemoryWithoutDrain(op.RecordSize);
+                        // Release both reservations made above, using the reserved size: the
+                        // instance may already describe a later rental.
+                        ReleaseMemoryWithoutDrain(drainable.ReservedBytes);
                         ReleaseAdmissionReservation(drainable.AdmissionReservation);
                         continue;
                     }
@@ -2712,7 +2743,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                             drainable.Deque,
                             op.Topic, op.Partition, op.Timestamp,
                             op.Key, op.Value, op.Headers, op.HeaderCount,
-                            op.CompletionSource, op.Callback, op.RecordSize, op.PartitionCount,
+                            op.CompletionSource, op.Callback, drainable.ReservedBytes, op.PartitionCount,
                             drainable.AdmissionReservation, op.TransactionalGeneration);
 
                         op.ReleasePendingCountAfterClaim();
@@ -2777,7 +2808,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         lock (_pendingAppendQueueLock)
         {
             if (!_pendingAppends.TryPeek(out var head)
-                || !ReferenceEquals(head, completed))
+                || !ReferenceEquals(head.Operation, completed))
             {
                 return;
             }
@@ -4031,6 +4062,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             completionSource, callback, recordSize, startTicks, deadline,
             this, _pendingAppendPool, cancellationToken);
         op.TransactionalGeneration = transactionalGeneration;
+        // Captured before enqueue: nobody can return this rental to the pool until the caller
+        // receives the ValueTask below, so the generation still names it here.
+        var generation = op.Generation;
 
         bool wasQueueEmpty = false;
         bool enqueueRejected;
@@ -4040,7 +4074,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             if (!enqueueRejected)
             {
                 wasQueueEmpty = _pendingAppends.IsEmpty;
-                _pendingAppends.Enqueue(op);
+                _pendingAppends.Enqueue(new QueuedPendingAppend(op, generation));
             }
         }
 
@@ -5715,6 +5749,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     internal long BufferPressureEvents => Volatile.Read(ref _bufferPressureEvents);
 
     internal int PendingAppendCountForTest => _pendingAppends.Count;
+
+    internal PendingAppend? PeekPendingAppendForTest() =>
+        _pendingAppends.TryPeek(out var head) ? head.Operation : null;
 
     internal long PendingAppendDrainEntryCountForTest =>
         Volatile.Read(ref _pendingAppendDrainEntryCount);
@@ -7573,9 +7610,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         var failedCount = 0;
         try
         {
-            while (_pendingAppends.TryDequeue(out var op))
+            while (_pendingAppends.TryDequeue(out var entry))
             {
-                if (op.TryFail(exception))
+                if (entry.Operation.TryFail(exception, entry.Generation))
                     failedCount++;
             }
 
@@ -7863,8 +7900,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
             // TryFail disposes cancellation registrations. Complete outside the queue lock:
             // an in-flight cancellation callback may be waiting to inspect this queue.
-            foreach (var op in _pendingAppendScan)
-                op.TryFail(new ObjectDisposedException(nameof(RecordAccumulator)));
+            foreach (var entry in _pendingAppendScan)
+                entry.Operation.TryFail(new ObjectDisposedException(nameof(RecordAccumulator)), entry.Generation);
         }
         finally
         {

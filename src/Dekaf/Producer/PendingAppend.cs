@@ -17,14 +17,20 @@ namespace Dekaf.Producer;
 /// append parameters, enqueues it, and returns <c>new ValueTask&lt;bool&gt;(op, op.Version)</c>.
 /// </para>
 /// <para>
-/// Completion is driven by one of four sources (CAS on <c>_completed</c> ensures exactly one wins):
+/// Completion is driven by one of four sources (CAS on <c>_state</c> ensures exactly one wins):
 /// <list type="bullet">
 ///   <item><see cref="TryClaim"/> — called by <see cref="RecordAccumulator.DrainPendingAppends"/>
 ///   when buffer space is freed.</item>
 ///   <item>Timeout — <see cref="_timer"/> fires when max.block.ms deadline expires.</item>
 ///   <item>Cancellation — <see cref="CancellationToken.Register(Action{object}, object)"/> callback.</item>
-///   <item>Disposal — <see cref="TryFail"/> called during <see cref="RecordAccumulator.DisposeAsync"/>.</item>
+///   <item>Disposal — <see cref="TryFail(Exception, int)"/> called during <see cref="RecordAccumulator.DisposeAsync"/>.</item>
 /// </list>
+/// </para>
+/// <para>
+/// <c>_state</c> doubles as the incarnation token: it is even while a rental is pending and odd
+/// once that rental completes (or the instance is idle in the pool). Each
+/// <see cref="Initialize"/> advances it to the next even value, so a reference captured for an
+/// earlier rental can never claim or fail a later one (#3389).
 /// </para>
 /// <para>
 /// The <see cref="Timer"/> is allocated once in the constructor and reused via <c>Change()</c>
@@ -34,7 +40,10 @@ namespace Dekaf.Producer;
 internal sealed class PendingAppend : IValueTaskSource<bool>
 {
     private ManualResetValueTaskSourceCore<bool> _core;
-    private int _completed = 1; // 0 = pending, 1 = completed or idle (CAS guard)
+    // Even = pending incarnation (the value is that rental's Generation); odd = completed or idle.
+    // Completion CASes generation -> generation + 1, so each incarnation completes exactly once.
+    private int _state = 1;
+    private int _generation;
 
     // Append parameters — stored on Initialize, consumed by drain
     private string _topic = null!;
@@ -69,7 +78,20 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
     /// <summary>
     /// Whether this operation has been completed (drain, timeout, cancel, or dispose).
     /// </summary>
-    public bool IsCompleted => Volatile.Read(ref _completed) != 0;
+    public bool IsCompleted => (Volatile.Read(ref _state) & 1) != 0;
+
+    /// <summary>
+    /// The incarnation token of the current rental, assigned by <see cref="Initialize"/>.
+    /// Queue entries and drain reservations capture it so they only ever act on the rental
+    /// they were created for.
+    /// </summary>
+    internal int Generation => _generation;
+
+    /// <summary>
+    /// Whether the rental identified by <paramref name="generation"/> is still pending. False once
+    /// it completed, and for every later rental of this pooled instance.
+    /// </summary>
+    internal bool IsPending(int generation) => Volatile.Read(ref _state) == generation;
 
     // Expose stored parameters for DrainPendingAppends
     internal string Topic => _topic;
@@ -147,7 +169,12 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
         _pool = pool;
         accumulator.IncrementSlowPathAppendCount(topic, partition);
         Volatile.Write(ref _pendingCounted, 1);
-        Volatile.Write(ref _completed, 0);
+
+        // Idle state is odd; the next even value names this rental. Parameters above are
+        // published by this release write, so a reader that observes the generation sees them.
+        var generation = unchecked(_state + 1);
+        _generation = generation;
+        Volatile.Write(ref _state, generation);
 
         // Arm timeout timer. Compute remaining ms from deadline.
         var remainingMs = deadlineTickCount - Dekaf.MonotonicClock.GetMilliseconds();
@@ -178,10 +205,14 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
     /// <see cref="RecordAccumulator.AppendPooledAfterReservationCore"/> to prevent timeout/cancel
     /// from cleaning up resources while the drain is using them.
     /// </summary>
-    /// <returns>True if this call won the race; false if timeout/cancel/dispose already completed it.</returns>
-    public bool TryClaim()
+    /// <param name="generation">The <see cref="Generation"/> observed when the drain reserved for
+    /// this operation. A later rental of the same pooled instance has a different generation and is
+    /// never claimed through a stale reference.</param>
+    /// <returns>True if this call won the race; false if timeout/cancel/dispose already completed that
+    /// rental (the instance may since have been reused).</returns>
+    public bool TryClaim(int generation)
     {
-        if (Interlocked.CompareExchange(ref _completed, 1, 0) != 0)
+        if (!TryComplete(generation))
             return false;
 
         DisarmTimerAndCancellation();
@@ -215,9 +246,15 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
     /// </summary>
     /// <param name="exception">The exception to complete with.</param>
     /// <returns>True if this call won the completion race; false if drain already claimed it.</returns>
-    public bool TryFail(Exception exception)
+    public bool TryFail(Exception exception) => TryFail(exception, Volatile.Read(ref _state));
+
+    /// <summary>
+    /// Fails the rental identified by <paramref name="generation"/>. Used by queue sweeps, whose
+    /// entries may outlive the rental they were enqueued for.
+    /// </summary>
+    internal bool TryFail(Exception exception, int generation)
     {
-        if (Interlocked.CompareExchange(ref _completed, 1, 0) != 0)
+        if (!TryComplete(generation))
             return false;
 
         ReleasePendingCount();
@@ -242,7 +279,7 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
     private void OnTimeout()
     {
         // Timer.Change(Infinite) can leave an already-queued callback from a previous rental.
-        if (Volatile.Read(ref _completed) != 0)
+        if (IsCompleted)
             return;
 
         var now = Dekaf.MonotonicClock.GetMilliseconds();
@@ -299,6 +336,15 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
         _core.Reset();
         _pool.Return(this);
     }
+
+    /// <summary>
+    /// Completes the rental named by <paramref name="generation"/> if it is still pending. Odd
+    /// values (completed or idle) never match a pending state, so they always fail.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool TryComplete(int generation) =>
+        (generation & 1) == 0
+        && Interlocked.CompareExchange(ref _state, unchecked(generation + 1), generation) == generation;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void ReleasePendingCount()
