@@ -82,9 +82,16 @@ public class PendingAppendDrainCycleBenchmarks
                 throw new InvalidOperationException("Drain did not serve the queued append.");
         }
 
-        // Recycle sealed batches without releasing their memory: it becomes the fill that
-        // keeps the next invocation on the backpressure path.
+        // Retire sealed batches through the sender's ack sequence (delivery mark, CompleteSend,
+        // pipeline exit) so the pooled ReadyBatch leaves the in-flight list before reuse, but
+        // keep their memory reserved: it becomes the fill that keeps the next invocation on
+        // the backpressure path.
         while (_accumulator.TryDrainBatch(Partition, out var batch))
+        {
+            _accumulator.MarkBatchDeliveryComplete(batch);
+            batch.CompleteSend(0, DateTimeOffset.UnixEpoch);
+            _accumulator.OnBatchExitsPipeline(batch);
             _accumulator.ReturnReadyBatch(batch);
+        }
     }
 }
