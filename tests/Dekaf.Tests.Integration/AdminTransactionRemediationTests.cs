@@ -111,6 +111,70 @@ public sealed class AdminTransactionRemediationTests(KafkaTestContainer kafka) :
     }
 
     [Test]
+    public async Task AbortTransactionAsync_ReplayedAfterSuccess_StillSucceeds()
+    {
+        // A replay after a lost response sends the same WriteTxnMarkers abort again. The broker
+        // must answer it as it answered the first, or the retry would report a false failure.
+        var topic = await KafkaContainer.CreateTestTopicAsync();
+        var topicPartition = new TopicPartition(topic, 0);
+        var hungTxnId = $"admin-abort-replay-{Guid.NewGuid():N}";
+
+        await using var hungProducer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithTransactionalId(hungTxnId)
+            .WithAcks(Acks.All)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        await hungProducer.InitTransactionsAsync();
+        var hungTransaction = hungProducer.BeginTransaction();
+
+        try
+        {
+            await hungTransaction.ProduceAsync(new ProducerMessage<string, string>
+            {
+                Topic = topic,
+                Partition = 0,
+                Key = "aborted-key",
+                Value = "aborted-value"
+            }, CancellationToken.None);
+
+            await using var admin = KafkaContainer.CreateAdminClient();
+            var producerState = await admin.DescribeProducersAsync([topicPartition]);
+            var activeProducer = producerState[topicPartition].ActiveProducers
+                .Single(producer => producer.CurrentTransactionStartOffset >= 0);
+            var spec = new AbortTransactionSpec
+            {
+                TopicPartition = topicPartition,
+                ProducerId = activeProducer.ProducerId,
+                ProducerEpoch = checked((short)activeProducer.ProducerEpoch),
+                CoordinatorEpoch = activeProducer.CoordinatorEpoch
+            };
+
+            var first = await admin.AbortTransactionAsync(spec);
+            var replay = await admin.AbortTransactionAsync(spec);
+
+            await Assert.That(first.ErrorCode).IsEqualTo(ErrorCode.None);
+            await Assert.That(replay.ErrorCode).IsEqualTo(ErrorCode.None);
+        }
+        finally
+        {
+            try
+            {
+                await hungTransaction.DisposeAsync();
+            }
+            catch (TransactionException)
+            {
+                // The transaction was aborted underneath the producer.
+            }
+            catch (KafkaException)
+            {
+                // The transaction was aborted underneath the producer.
+            }
+        }
+    }
+
+    [Test]
     public async Task AbortTransactionAsync_WritesAbortMarkerForOpenTransaction()
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
