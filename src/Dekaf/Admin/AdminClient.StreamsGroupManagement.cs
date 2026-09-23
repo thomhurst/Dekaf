@@ -765,6 +765,7 @@ public sealed partial class AdminClient
         var results = new Dictionary<TopicPartition, StreamsGroupOffsetOperationResult>(partitions.Count);
         var retryErrors = new Dictionary<TopicPartition, Protocol.ErrorCode>(partitions.Count);
         var ambiguousPartitions = new HashSet<TopicPartition>();
+        var writeContext = new KafkaRequestWriteContext(CancellationToken.None);
 
         try
         {
@@ -795,7 +796,9 @@ public sealed partial class AdminClient
                 OffsetDeleteResponse response;
                 try
                 {
-                    response = await connection.SendAsync<OffsetDeleteRequest, OffsetDeleteResponse>(
+                    response = await SendObservingWriteAsync<OffsetDeleteRequest, OffsetDeleteResponse>(
+                        writeContext,
+                        connection,
                         new OffsetDeleteRequest
                         {
                             GroupId = groupId,
@@ -808,7 +811,8 @@ public sealed partial class AdminClient
                     RetryHelper.IsRetriableRequestFailure(exception) &&
                     !cancellationToken.IsCancellationRequested)
                 {
-                    ambiguousPartitions.UnionWith(pending);
+                    if (writeContext.WriteStarted)
+                        ambiguousPartitions.UnionWith(pending);
                     var errorCode = GetRetryErrorCode(exception);
                     foreach (var topicPartition in pending)
                         retryErrors[topicPartition] = errorCode;
@@ -818,7 +822,7 @@ public sealed partial class AdminClient
                 var groupError = response.ErrorCode;
                 if (groupError.IsRetriable() || groupError.RequiresMetadataRefresh())
                 {
-                    if (groupError == Protocol.ErrorCode.RequestTimedOut)
+                    if (MayHaveAppliedDespiteError(groupError))
                         ambiguousPartitions.UnionWith(pending);
 
                     foreach (var topicPartition in pending)
@@ -858,7 +862,7 @@ public sealed partial class AdminClient
 
                             if (partition.ErrorCode.IsRetriable() || partition.ErrorCode.RequiresMetadataRefresh())
                             {
-                                if (partition.ErrorCode == Protocol.ErrorCode.RequestTimedOut)
+                                if (MayHaveAppliedDespiteError(partition.ErrorCode))
                                     ambiguousPartitions.Add(topicPartition);
                                 retryErrors[topicPartition] = partition.ErrorCode;
                                 retryFailure ??= new Errors.GroupException(
@@ -987,7 +991,7 @@ public sealed partial class AdminClient
                             var errorCode = groupResult.ErrorCode;
                             if (errorCode.IsRetriable() || errorCode.RequiresMetadataRefresh())
                             {
-                                if (errorCode == Protocol.ErrorCode.RequestTimedOut)
+                                if (MayHaveAppliedDespiteError(errorCode))
                                     ambiguousGroups.Add(groupResult.GroupId);
 
                                 retryErrors[groupResult.GroupId] = errorCode;

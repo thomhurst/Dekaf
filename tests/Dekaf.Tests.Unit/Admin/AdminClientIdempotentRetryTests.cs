@@ -823,6 +823,84 @@ public sealed class AdminClientIdempotentRetryTests
     }
 
     [Test]
+    public async Task AddRaftVoterAsync_RequestTimedOutThenDuplicateVoter_WhenQuorumShowsVoter_TreatedAsSuccess()
+    {
+        // REQUEST_TIMED_OUT means the controller stopped waiting, not that it dropped the change:
+        // the voter can still be added. The replay's DUPLICATE_VOTER is then verified against the
+        // quorum like a replay after a lost response.
+        var (admin, connection) = CreateAdminWithMockConnection(ApiKey.AddRaftVoter, ApiKey.DescribeQuorum);
+        var directoryId = Guid.NewGuid();
+        SetupQuorumVoters(connection, (VoterId, directoryId));
+        var calls = 0;
+        connection.SendAsync<AddRaftVoterRequest, AddRaftVoterResponse>(
+                Arg.Any<AddRaftVoterRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ => ValueTask.FromResult(new AddRaftVoterResponse
+            {
+                ErrorCode = Interlocked.Increment(ref calls) == 1 ? ErrorCode.RequestTimedOut : ErrorCode.DuplicateVoter
+            }));
+
+        await admin.AddRaftVoterAsync(VoterId, directoryId, [VoterEndpoint]);
+
+        await Assert.That(calls).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task DeleteTopicsAsync_RequestTimedOutThenUnknownTopic_TreatedAsSuccess()
+    {
+        var (admin, connection) = CreateAdminWithMockConnection(ApiKey.DeleteTopics);
+        var calls = 0;
+        connection.SendAsync<DeleteTopicsRequest, DeleteTopicsResponse>(
+                Arg.Any<DeleteTopicsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ => ValueTask.FromResult(new DeleteTopicsResponse
+            {
+                Responses =
+                [
+                    new DeleteTopicsResponseTopic
+                    {
+                        Name = TopicName,
+                        ErrorCode = Interlocked.Increment(ref calls) == 1 ? ErrorCode.RequestTimedOut : ErrorCode.UnknownTopicOrPartition
+                    }
+                ]
+            }));
+
+        await admin.DeleteTopicsAsync([TopicName]);
+
+        await Assert.That(calls).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task DeleteTopicsAsync_NonAmbiguousRetriableErrorThenUnknownTopic_Throws()
+    {
+        // LEADER_NOT_AVAILABLE rejects the request before it is applied, so the replay's
+        // UNKNOWN_TOPIC_OR_PARTITION is a real answer.
+        var (admin, connection) = CreateAdminWithMockConnection(ApiKey.DeleteTopics);
+        var calls = 0;
+        connection.SendAsync<DeleteTopicsRequest, DeleteTopicsResponse>(
+                Arg.Any<DeleteTopicsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ => ValueTask.FromResult(new DeleteTopicsResponse
+            {
+                Responses =
+                [
+                    new DeleteTopicsResponseTopic
+                    {
+                        Name = TopicName,
+                        ErrorCode = Interlocked.Increment(ref calls) == 1 ? ErrorCode.LeaderNotAvailable : ErrorCode.UnknownTopicOrPartition
+                    }
+                ]
+            }));
+
+        var exception = await Assert.ThrowsAsync<KafkaException>(async () => await admin.DeleteTopicsAsync([TopicName]));
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.UnknownTopicOrPartition);
+    }
+
+    [Test]
     public async Task AddRaftVoterAsync_DuplicateVoterOnRetry_WhenQuorumShowsOtherDirectory_Throws()
     {
         var (admin, connection) = CreateAdminWithMockConnection(ApiKey.AddRaftVoter, ApiKey.DescribeQuorum);

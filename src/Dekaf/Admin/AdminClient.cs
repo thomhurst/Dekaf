@@ -418,6 +418,8 @@ public sealed partial class AdminClient :
                 if (topic.ErrorCode != Protocol.ErrorCode.None &&
                     !(isRetryAttempt && topic.ErrorCode == Protocol.ErrorCode.TopicAlreadyExists))
                 {
+                    if (!opts.ValidateOnly && MayHaveAppliedDespiteError(topic.ErrorCode))
+                        createMayHaveApplied = true;
                     throw new KafkaException(topic.ErrorCode,
                         $"Failed to create topic '{topic.Name}': {topic.ErrorMessage ?? topic.ErrorCode.ToString()}");
                 }
@@ -597,6 +599,8 @@ public sealed partial class AdminClient :
                 if (topic.ErrorCode != Protocol.ErrorCode.None &&
                     !(isRetryAttempt && topic.ErrorCode == Protocol.ErrorCode.UnknownTopicOrPartition))
                 {
+                    if (MayHaveAppliedDespiteError(topic.ErrorCode))
+                        deleteMayHaveApplied = true;
                     throw new KafkaException(topic.ErrorCode,
                         $"Failed to delete topic '{topic.Name}': {topic.ErrorMessage ?? topic.ErrorCode.ToString()}");
                 }
@@ -687,8 +691,8 @@ public sealed partial class AdminClient :
                 }
 
                 var isRetriable = topic.ErrorCode.IsRetriable();
-                if (topic.ErrorCode is Protocol.ErrorCode.RequestTimedOut
-                    or Protocol.ErrorCode.NetworkException)
+                if (MayHaveAppliedDespiteError(topic.ErrorCode)
+                    || topic.ErrorCode == Protocol.ErrorCode.NetworkException)
                     ambiguousIds.Add(identifier);
 
                 if (failure is null || (failure.IsRetriable && !isRetriable))
@@ -2006,6 +2010,8 @@ public sealed partial class AdminClient :
                         continue;
                     }
 
+                    if (MayHaveAppliedDespiteError(groupResult.ErrorCode))
+                        ambiguousGroups.Add(groupResult.GroupId);
                     failure ??= new Errors.GroupException(groupResult.ErrorCode,
                         $"DeleteConsumerGroups failed for group '{groupResult.GroupId}': {groupResult.ErrorCode}")
                     {
@@ -2442,6 +2448,9 @@ public sealed partial class AdminClient :
                         continue;
                     }
 
+                    if (!validateOnly && MayHaveAppliedDespiteError(topicResult.ErrorCode))
+                        createPartitionsMayHaveApplied = true;
+
                     // A sibling topic can already have succeeded, even when this result appears first.
                     // Preserve every confirmed success before retrying the remaining request.
                     topics = ExcludeConfirmedPartitionExpansions(topics, response.Results);
@@ -2517,6 +2526,8 @@ public sealed partial class AdminClient :
                     return;
                 }
 
+                if (MayHaveAppliedDespiteError(response.ErrorCode))
+                    alterMayHaveApplied = true;
                 throw new KafkaException(response.ErrorCode,
                     $"AlterPartitionReassignments failed: {response.ErrorMessage ?? response.ErrorCode.ToString()}");
             }
@@ -2531,6 +2542,8 @@ public sealed partial class AdminClient :
                         continue;
                     }
 
+                    if (MayHaveAppliedDespiteError(partition.ErrorCode))
+                        alterMayHaveApplied = true;
                     throw new KafkaException(partition.ErrorCode,
                         $"AlterPartitionReassignments failed for {topic.Name}-{partition.PartitionIndex}: " +
                         $"{partition.ErrorMessage ?? partition.ErrorCode.ToString()}");
@@ -2822,6 +2835,8 @@ public sealed partial class AdminClient :
                       result.ErrorCode == Protocol.ErrorCode.ResourceNotFound &&
                       deletionOnlyUsers?.Contains(result.User) == true))
                 {
+                    if (MayHaveAppliedDespiteError(result.ErrorCode))
+                        alterMayHaveApplied = true;
                     throw new KafkaException(result.ErrorCode,
                         $"AlterUserScramCredentials failed for user '{result.User}': {result.ErrorMessage ?? result.ErrorCode.ToString()}");
                 }
@@ -3235,6 +3250,8 @@ public sealed partial class AdminClient :
 
             if (response.ErrorCode != Protocol.ErrorCode.None)
             {
+                if (MayHaveAppliedDespiteError(response.ErrorCode))
+                    expireMayHaveApplied = true;
                 throw KafkaException.FromErrorCode(response.ErrorCode, $"ExpireDelegationToken failed: {response.ErrorCode}");
             }
 
@@ -3878,6 +3895,8 @@ public sealed partial class AdminClient :
                 if (isRetryAttempt && response.ErrorCode == Protocol.ErrorCode.GroupIdNotFound)
                     return;
 
+                if (MayHaveAppliedDespiteError(response.ErrorCode))
+                    deleteMayHaveApplied = true;
                 throw new Errors.GroupException(response.ErrorCode,
                     $"DeleteConsumerGroupOffsets failed for group '{groupId}': {response.ErrorCode}")
                 {
@@ -3892,6 +3911,8 @@ public sealed partial class AdminClient :
                 {
                     if (partition.ErrorCode != Protocol.ErrorCode.None)
                     {
+                        if (MayHaveAppliedDespiteError(partition.ErrorCode))
+                            deleteMayHaveApplied = true;
                         throw new Errors.GroupException(partition.ErrorCode,
                             $"DeleteConsumerGroupOffsets failed for {topic.Name}-{partition.PartitionIndex}: {partition.ErrorCode}")
                         {
@@ -4283,6 +4304,8 @@ public sealed partial class AdminClient :
 
             if (response.ErrorCode != Protocol.ErrorCode.None)
             {
+                if (MayHaveAppliedDespiteError(response.ErrorCode))
+                    addMayHaveApplied = true;
                 throw KafkaException.FromErrorCode(
                     response.ErrorCode,
                     response.ErrorMessage ?? $"AddRaftVoter failed: {response.ErrorCode}");
@@ -4352,6 +4375,8 @@ public sealed partial class AdminClient :
 
             if (response.ErrorCode != Protocol.ErrorCode.None)
             {
+                if (MayHaveAppliedDespiteError(response.ErrorCode))
+                    removeMayHaveApplied = true;
                 throw KafkaException.FromErrorCode(
                     response.ErrorCode,
                     response.ErrorMessage ?? $"RemoveRaftVoter failed: {response.ErrorCode}");
@@ -4404,6 +4429,8 @@ public sealed partial class AdminClient :
 
             if (response.ErrorCode != Protocol.ErrorCode.None)
             {
+                if (MayHaveAppliedDespiteError(response.ErrorCode))
+                    unregisterMayHaveApplied = true;
                 throw KafkaException.FromErrorCode(
                     response.ErrorCode,
                     response.ErrorMessage ?? $"UnregisterBroker failed: {response.ErrorCode}");
@@ -5131,6 +5158,7 @@ public sealed partial class AdminClient :
         // resending completed groups, while ambiguity turns a later not-found response into success.
         var results = new Dictionary<string, DeleteShareGroupResult>(groupIdList.Length, StringComparer.Ordinal);
         var ambiguousGroups = new HashSet<string>(StringComparer.Ordinal);
+        var shareWriteContext = new KafkaRequestWriteContext(CancellationToken.None);
 
         return await WithRetryAsync<IReadOnlyDictionary<string, DeleteShareGroupResult>>(async attemptToken =>
         {
@@ -5185,7 +5213,9 @@ public sealed partial class AdminClient :
                 DeleteGroupsResponse response;
                 try
                 {
-                    response = await connection.SendAsync<DeleteGroupsRequest, DeleteGroupsResponse>(
+                    response = await SendObservingWriteAsync<DeleteGroupsRequest, DeleteGroupsResponse>(
+                        shareWriteContext,
+                        connection,
                         new DeleteGroupsRequest { GroupsNames = coordinatorGroups },
                         apiVersion,
                         attemptToken).ConfigureAwait(false);
@@ -5194,7 +5224,8 @@ public sealed partial class AdminClient :
                     RetryHelper.IsRetriableRequestFailure(exception) &&
                     !attemptToken.IsCancellationRequested)
                 {
-                    ambiguousGroups.UnionWith(coordinatorGroups);
+                    if (shareWriteContext.WriteStarted)
+                        ambiguousGroups.UnionWith(coordinatorGroups);
                     retryFailure ??= exception;
                     continue;
                 }
@@ -5210,6 +5241,8 @@ public sealed partial class AdminClient :
                     var errorCode = groupResult.ErrorCode;
                     if (errorCode.IsRetriable() || errorCode.RequiresMetadataRefresh())
                     {
+                        if (MayHaveAppliedDespiteError(errorCode))
+                            ambiguousGroups.Add(groupResult.GroupId);
                         retryFailure ??= new Errors.GroupException(
                             errorCode,
                             $"DeleteShareGroups failed for group '{groupResult.GroupId}': {errorCode}")
@@ -5464,6 +5497,8 @@ public sealed partial class AdminClient :
                 if (isRetryAttempt && response.ErrorCode == Protocol.ErrorCode.GroupIdNotFound)
                     return;
 
+                if (MayHaveAppliedDespiteError(response.ErrorCode))
+                    deleteMayHaveApplied = true;
                 throw new Errors.GroupException(response.ErrorCode,
                     $"DeleteShareGroupOffsets failed for group '{groupId}': {response.ErrorCode}")
                 {
@@ -5475,6 +5510,8 @@ public sealed partial class AdminClient :
             {
                 if (topic.ErrorCode != Protocol.ErrorCode.None)
                 {
+                    if (MayHaveAppliedDespiteError(topic.ErrorCode))
+                        deleteMayHaveApplied = true;
                     throw new Errors.GroupException(topic.ErrorCode,
                         $"DeleteShareGroupOffsets failed for group '{groupId}', topic '{topic.TopicName}': {topic.ErrorCode}")
                     {
@@ -5564,6 +5601,14 @@ public sealed partial class AdminClient :
         writeContext.MarkWriteStarted();
         return connection.SendAsync<TRequest, TResponse>(request, apiVersion, cancellationToken);
     }
+
+    // An error response after which the broker may still apply the request: REQUEST_TIMED_OUT means
+    // it stopped waiting for the change to commit, not that it dropped the change. A replay after
+    // that answer is as ambiguous as one after a lost response, so the same replay tolerance
+    // applies. NOT_CONTROLLER and NOT_COORDINATOR reject the request before it is processed and
+    // stay unambiguous, as the existing replay contract (#1411) and its tests define.
+    private static bool MayHaveAppliedDespiteError(Protocol.ErrorCode errorCode) =>
+        errorCode == Protocol.ErrorCode.RequestTimedOut;
 
     private static int? OperationTimeoutBudget(int operationTimeoutMs) =>
         operationTimeoutMs > 0 ? operationTimeoutMs : null;
