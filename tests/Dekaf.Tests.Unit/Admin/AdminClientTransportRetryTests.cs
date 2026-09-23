@@ -270,6 +270,34 @@ public sealed class AdminClientTransportRetryTests
     }
 
     [Test]
+    public async Task DescribeConfigsAsync_CallerCancelsInFlightRequest_ReportsCallersToken()
+    {
+        // The send observes a token linked to the API timeout. The caller's cancellation must
+        // still be reported with the caller's own token, so token-specific catch filters work.
+        var (admin, connection) = AdminClientIdempotentRetryTests.CreateAdminWithMockConnection(
+            FastRetryOptions(),
+            ApiKey.DescribeConfigs);
+        using var cancellation = new CancellationTokenSource();
+        connection.SendAsync<DescribeConfigsRequest, DescribeConfigsResponse>(
+                Arg.Any<DescribeConfigsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                cancellation.Cancel();
+                return ValueTask.FromCanceled<DescribeConfigsResponse>(call.ArgAt<CancellationToken>(2));
+            });
+
+        var exception = await Assert.ThrowsAsync<OperationCanceledException>(async () =>
+            await admin.DescribeConfigsAsync(
+                [ConfigResource.Topic("orders")],
+                new DescribeConfigsOptions { TimeoutMs = 30_000 },
+                cancellation.Token));
+
+        await Assert.That(exception!.CancellationToken == cancellation.Token).IsTrue();
+    }
+
+    [Test]
     public async Task DescribeAclsAsync_CallerCancelsInFlightRequest_ThrowsCancellation()
     {
         var (admin, connection) = AdminClientIdempotentRetryTests.CreateAdminWithMockConnection(

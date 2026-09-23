@@ -6173,11 +6173,27 @@ public sealed partial class AdminClient :
                     $"{operationName} did not complete within {budgetMs}ms: no response was received.",
                     ex);
         }
+        catch (OperationCanceledException ex) when (
+            cancellationToken.IsCancellationRequested && ex.CancellationToken != cancellationToken)
+        {
+            throw CallerCancellation(ex, cancellationToken);
+        }
         finally
         {
             apiTimeout.Dispose();
         }
     }
+
+    // The caller's own cancellation reports the caller's token, whichever linked deadline token
+    // the wait observed, so filters such as `when (ex.CancellationToken == token)` keep working.
+    // The failure the cancellation carries (a retry loop's last failure) is kept. Used only on the
+    // cancellation path of every admin wrapper that links a deadline to the caller's token.
+    internal static OperationCanceledException CallerCancellation(
+        OperationCanceledException canceled,
+        CancellationToken callerToken) =>
+        canceled.CancellationToken == callerToken
+            ? canceled
+            : new OperationCanceledException(canceled.Message, canceled.InnerException, callerToken);
 
     // Recovery between attempts: rediscover the controller on controller bootstrap, otherwise
     // refresh cluster metadata so the next attempt routes to the current broker.

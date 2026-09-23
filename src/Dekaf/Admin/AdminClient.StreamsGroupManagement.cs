@@ -1323,5 +1323,10 @@ public sealed partial class AdminClient
                 $"{operationName} timed out after {timeoutMs} ms.",
                 exception.InnerException ?? exception);
         }
+        catch (OperationCanceledException ex) when (
+            cancellationToken.IsCancellationRequested && ex.CancellationToken != cancellationToken)
+        {
+            throw CallerCancellation(ex, cancellationToken);
+        }
     }
 }

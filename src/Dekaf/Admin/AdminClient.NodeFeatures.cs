@@ -48,6 +48,11 @@ public sealed partial class AdminClient
                 : $"DescribeFeatures timed out (default) after {timeoutMs} ms.";
             throw new TimeoutException(message, ex);
         }
+        catch (OperationCanceledException ex) when (
+            cancellationToken.IsCancellationRequested && ex.CancellationToken != cancellationToken)
+        {
+            throw CallerCancellation(ex, cancellationToken);
+        }
     }
 
     private ValueTask<KafkaConnectionLease> LeaseFeatureNodeAsync(int nodeId, CancellationToken cancellationToken)

@@ -169,7 +169,10 @@ public sealed partial class AdminClient
             var timeout = TimeSpan.FromMilliseconds(timeoutMs);
             return new KafkaTimeoutException(TimeoutKind.Api, timeout, timeout, $"{operation} timed out after {timeoutMs} ms.", cause);
         }
-        return exception;
+        // The caller's own cancellation is recorded with the caller's token.
+        return exception is OperationCanceledException canceled && callerToken.IsCancellationRequested
+            ? CallerCancellation(canceled, callerToken)
+            : exception;
     }
 
     private static Dictionary<TKey, AdminMutationResult> MapMutationResults<TResponse, TKey>(

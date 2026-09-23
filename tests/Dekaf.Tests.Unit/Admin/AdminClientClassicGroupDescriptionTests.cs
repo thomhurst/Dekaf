@@ -547,6 +547,28 @@ public sealed class AdminClientClassicGroupDescriptionTests
     }
 
     [Test]
+    public async Task CallerCancelsInFlightDescribe_ReportsCallersToken()
+    {
+        // The describe runs under a deadline token linked to the caller's. The caller's
+        // cancellation must be reported with the caller's own token.
+        var (admin, connection, _) = CreateAdmin();
+        await using var disposal = admin;
+        using var cancellation = new CancellationTokenSource();
+        connection.SendAsync<DescribeGroupsRequest, DescribeGroupsResponse>(Arg.Any<DescribeGroupsRequest>(),
+                Arg.Any<short>(), Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                cancellation.Cancel();
+                return ValueTask.FromCanceled<DescribeGroupsResponse>(call.ArgAt<CancellationToken>(2));
+            });
+
+        var exception = await Assert.ThrowsAsync<OperationCanceledException>(
+            () => admin.DescribeClassicGroupsAsync(["group"], cancellationToken: cancellation.Token).AsTask());
+
+        await Assert.That(exception!.CancellationToken == cancellation.Token).IsTrue();
+    }
+
+    [Test]
     public async Task InitializationInvariantFaultAfterCancellation_IsNotReclassified()
     {
         var (admin, _, pool) = CreateAdmin(initializeMetadata: false);
