@@ -3023,34 +3023,42 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     }
 
     /// <summary>
-    /// Assigns the next base sequence for a batch under <paramref name="state"/>, restarting the
-    /// partition at 0 first when it has not produced under that state yet (Java's
-    /// <c>maybeUpdateProducerIdAndEpoch</c>). Step 5 only lets a partition through to here once
-    /// nothing it sent under the previous state is pending, so the restart cannot overtake an
-    /// old-state batch that is still on the wire.
-    /// <para/>
-    /// <paramref name="state"/> comes back as the state the sequence belongs to. It differs from
-    /// the one passed only when this loop's snapshot is out of date and another loop already
-    /// restarted the partition under the current state: the batch, coalesced before the bump and
-    /// registered only now, was never on the wire, and follows that restart under the current
-    /// state instead of carrying the old epoch with a sequence of the new one (#3385).
+    /// Assigns <paramref name="batch"/> the next base sequence of its partition and registers it
+    /// in the shared inflight tracker in one step (<see cref="RecordAccumulator.RegisterWithNextSequence"/>),
+    /// restarting the partition at 0 first when it has not produced under
+    /// <paramref name="sequenceState"/> yet (Java's <c>maybeUpdateProducerIdAndEpoch</c>) and no
+    /// batch of any send loop that the broker may still receive comes before this one. Step 5
+    /// already holds such a partition; the check here is the authoritative one, made under the
+    /// lock every loop registers under, so it also covers a batch another loop registered after
+    /// this loop's step 5 (#3385). Stamps the batch with the state its sequence belongs to: the
+    /// one passed, unless the counter still belongs to another state (the restart must wait, or
+    /// this loop's snapshot is out of date). Then the hold is armed again, so the partition is
+    /// held until that state's batches are answered and it can restart. Steady state: the
+    /// registration the batch needs anyway, with the sequence claimed inside its lock.
     /// </summary>
-    private int NextSequence(TopicPartition topicPartition, int recordCount, ref ProducerIdAndEpoch? state)
+    private void RegisterWithNextSequence(ReadyBatch batch, ProducerIdAndEpoch? sequenceState)
     {
-        var requestedState = state;
-        var sequence = _accumulator.GetAndIncrementSequence(
-            topicPartition, recordCount, requestedState, out var restarted, out state);
-        if (restarted)
+        var topicPartition = batch.TopicPartition;
+        var recordBatch = batch.RecordBatch;
+        var stampState = sequenceState;
+        var entry = _accumulator.RegisterWithNextSequence(
+            _inflightTracker, topicPartition, recordBatch.Records.Count, recordBatch.BaseSequence,
+            ref stampState, out var restarted);
+        batch.InflightEntry = entry;
+        recordBatch.BaseSequence = entry.BaseSequence;
+
+        if (ReferenceEquals(stampState, sequenceState))
         {
-            LogSequenceRestarted(_brokerId, topicPartition.Topic, topicPartition.Partition, state!.ProducerId, state.Epoch);
-        }
-        else if (!ReferenceEquals(state, requestedState))
-        {
-            LogStampFollowsRestartUnderNewerState(_brokerId, topicPartition.Topic, topicPartition.Partition,
-                requestedState!.Epoch, state!.ProducerId, state.Epoch);
+            if (restarted)
+                LogSequenceRestarted(_brokerId, topicPartition.Topic, topicPartition.Partition, stampState!.ProducerId, stampState.Epoch);
+            return;
         }
 
-        return sequence;
+        recordBatch.ProducerId = stampState!.ProducerId;
+        recordBatch.ProducerEpoch = stampState.Epoch;
+        _sequenceRestartHoldArmed = true;
+        LogStampFollowsSequenceState(_brokerId, topicPartition.Topic, topicPartition.Partition,
+            sequenceState!.Epoch, stampState.ProducerId, stampState.Epoch);
     }
 
     /// <summary>
@@ -4436,7 +4444,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 {
                     var batch = batches[i];
                     var tp = batch.TopicPartition;
-                    var recordCount = batch.RecordBatch.Records.Count;
                     // A batch sealed under an older epoch, or under the previous producer ID after
                     // an exhausted-epoch reset (including a batch that tore across the accumulator's
                     // separate ID and epoch writes), must be re-stamped before it goes on the wire.
@@ -4468,28 +4475,15 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         LogStaleEpochResequencing(_brokerId, tp.Topic, tp.Partition,
                             batch.RecordBatch.ProducerEpoch, currentEpoch);
                         CompleteInflightEntry(batch);
-                        var stampState = sequenceState;
-                        var newSeq = NextSequence(tp, recordCount, ref stampState);
-                        batch.RecordBatch.ProducerId = stampState!.ProducerId;
-                        batch.RecordBatch.ProducerEpoch = stampState.Epoch;
-                        batch.RecordBatch.BaseSequence = newSeq;
-
-                        // Re-register with inflight tracker
-                        batch.InflightEntry = _inflightTracker.Register(tp, newSeq, recordCount);
+                        batch.RecordBatch.ProducerId = currentPid;
+                        batch.RecordBatch.ProducerEpoch = currentEpoch;
+                        RegisterWithNextSequence(batch, sequenceState);
                     }
                     else if (batch.RecordBatch.BaseSequence < 0)
                     {
-                        // Fresh batch: assign sequence (epoch/PID are already correct, unless
-                        // another loop restarted the partition under a newer state meanwhile)
-                        var stampState = sequenceState;
-                        var newSeq = NextSequence(tp, recordCount, ref stampState);
-                        if (!ReferenceEquals(stampState, sequenceState))
-                        {
-                            batch.RecordBatch.ProducerId = stampState!.ProducerId;
-                            batch.RecordBatch.ProducerEpoch = stampState.Epoch;
-                        }
-
-                        batch.RecordBatch.BaseSequence = newSeq;
+                        // Fresh batch: assign sequence and register (epoch/PID are already
+                        // correct, unless the partition's sequences belong to another state)
+                        RegisterWithNextSequence(batch, sequenceState);
                     }
                     else
                     {
@@ -4497,9 +4491,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     }
                 }
 
-                // Register fresh batches with inflight tracker at send time (not drain time).
-                // Stale batches were re-registered above. Retry batches with correct epoch
-                // keep their existing inflight entries. Only batches without entries need registration.
+                // Fresh and re-stamped batches were registered above with their sequences. Retry
+                // batches with correct epoch keep their existing inflight entries. Only retries
+                // that lost theirs need registration.
                 for (var i = 0; i < count; i++)
                 {
                     var batch = batches[i];
@@ -7314,8 +7308,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     [LoggerMessage(Level = LogLevel.Debug, Message = "BrokerSender[{BrokerId}] restarting sequences of {Topic}-{Partition} at 0 under producer {ProducerId} epoch {Epoch}")]
     private partial void LogSequenceRestarted(int brokerId, string topic, int partition, long producerId, short epoch);
 
-    [LoggerMessage(Level = LogLevel.Debug, Message = "BrokerSender[{BrokerId}] stamping {Topic}-{Partition} under producer {ProducerId} epoch {Epoch} instead of epoch {SnapshotEpoch}: another send loop already restarted the partition under the newer state")]
-    private partial void LogStampFollowsRestartUnderNewerState(int brokerId, string topic, int partition, short snapshotEpoch, long producerId, short epoch);
+    [LoggerMessage(Level = LogLevel.Debug, Message = "BrokerSender[{BrokerId}] stamping {Topic}-{Partition} under producer {ProducerId} epoch {Epoch} instead of epoch {SnapshotEpoch}: the partition's sequences belong to that state until its restart")]
+    private partial void LogStampFollowsSequenceState(int brokerId, string topic, int partition, short snapshotEpoch, long producerId, short epoch);
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "BrokerSender[{BrokerId}] holding {Topic}-{Partition}: its sequences must restart under epoch {Epoch} once its batches under the previous epoch are answered")]
     private partial void LogSequenceRestartHeld(int brokerId, string topic, int partition, short epoch);

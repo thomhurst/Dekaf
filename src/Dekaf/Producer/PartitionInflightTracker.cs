@@ -11,7 +11,7 @@ namespace Dekaf.Producer;
 internal sealed class InflightEntry
 {
     public TopicPartition TopicPartition { get; private set; }
-    public int BaseSequence { get; private set; }
+    public int BaseSequence { get; internal set; }
     public int RecordCount { get; private set; }
 
     /// <summary>
@@ -133,6 +133,26 @@ internal sealed class PartitionState
 }
 
 /// <summary>
+/// Supplies the base sequence of a batch being registered, called under the partition's lock
+/// before the entry is linked (see <see cref="PartitionInflightTracker.Register{TClaim}"/>).
+/// </summary>
+internal interface IInflightSequenceClaim
+{
+    /// <summary>
+    /// Returns the base sequence for the entry being registered. <paramref name="partition"/>'s
+    /// lock is held; its list holds every other in-flight entry of the partition.
+    /// </summary>
+    int Claim(PartitionState partition);
+}
+
+/// <summary>A base sequence the caller assigned before registering.</summary>
+internal readonly struct FixedSequence(int baseSequence) : IInflightSequenceClaim
+{
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public int Claim(PartitionState partition) => baseSequence;
+}
+
+/// <summary>
 /// Reservoir-backed pool for InflightEntry objects.
 /// Uses manual Rent/Return because entries remain owned across asynchronous send completion.
 /// Default size 1024: with MaxInFlightRequestsPerConnection=5 and coalesced batches
@@ -230,15 +250,31 @@ internal sealed class PartitionInflightTracker : IDisposable
     /// Registers a batch as in-flight. Rents an entry from the pool and appends to partition's tail.
     /// Called from the single-threaded drain loop, so registration order matches sequence order.
     /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public InflightEntry Register(TopicPartition topicPartition, int baseSequence, int recordCount)
     {
-        var entry = _pool.Rent();
-        entry.Initialize(topicPartition, baseSequence, recordCount);
+        var claim = new FixedSequence(baseSequence);
+        return Register(topicPartition, recordCount, ref claim);
+    }
 
-        // A state the pruner removed between GetOrAdd and the lock is refused; the retry
-        // resolves (or creates) the state now in the dictionary. Pruning only removes states idle
-        // for the full TTL, so the loop body runs a second time only in that race.
-        while (!TryAppend(_partitions.GetOrAdd(topicPartition, static _ => new PartitionState()), entry))
+    /// <summary>
+    /// Registers a batch whose base sequence <paramref name="claim"/> takes under the partition's
+    /// lock, so the sequence is claimed and the entry becomes visible to every other send loop in
+    /// one step: a loop deciding under the same lock whether the partition may restart its
+    /// sequences sees every sequence already handed out that the broker could still receive
+    /// (#3385). Same cost as <see cref="Register(TopicPartition, int, int)"/>; the claim is a
+    /// struct, so the call is specialized and nothing is boxed.
+    /// </summary>
+    public InflightEntry Register<TClaim>(TopicPartition topicPartition, int recordCount, ref TClaim claim)
+        where TClaim : struct, IInflightSequenceClaim
+    {
+        var entry = _pool.Rent();
+        entry.Initialize(topicPartition, -1, recordCount);
+
+        // A state the pruner removed between GetOrAdd and the lock is refused before anything is
+        // claimed; the retry resolves (or creates) the state now in the dictionary. Pruning only
+        // removes states idle for the full TTL, so the loop body runs a second time only in that race.
+        while (!TryAppend(_partitions.GetOrAdd(topicPartition, static _ => new PartitionState()), entry, ref claim))
         {
         }
 
@@ -249,8 +285,15 @@ internal sealed class PartitionInflightTracker : IDisposable
     /// Appends <paramref name="entry"/> to <paramref name="state"/>'s list unless the pruner has
     /// already removed the state from the dictionary. Internal for deterministic race tests.
     /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static bool TryAppend(PartitionState state, InflightEntry entry)
+    {
+        var claim = new FixedSequence(entry.BaseSequence);
+        return TryAppend(state, entry, ref claim);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static bool TryAppend<TClaim>(PartitionState state, InflightEntry entry, ref TClaim claim)
+        where TClaim : struct, IInflightSequenceClaim
     {
         var lockTaken = false;
         try
@@ -262,6 +305,7 @@ internal sealed class PartitionInflightTracker : IDisposable
                 return false;
             }
 
+            entry.BaseSequence = claim.Claim(state);
             entry.State = state;
             entry.InList = true;
 
@@ -507,18 +551,27 @@ internal sealed class PartitionInflightTracker : IDisposable
         try
         {
             state.Lock.Enter(ref lockTaken);
-            for (var entry = state.Head; entry is not null; entry = entry.Next)
-            {
-                if (baseSequence < 0 || !RecordAccumulator.IsSequenceAtOrAfter(entry.BaseSequence, baseSequence))
-                    return true;
-            }
-
-            return false;
+            return HasInflightBeforeLocked(state, baseSequence);
         }
         finally
         {
             if (lockTaken) state.Lock.Exit();
         }
+    }
+
+    /// <summary>
+    /// <see cref="HasInflightBefore"/> for a caller that already holds <paramref name="state"/>'s
+    /// lock (an <see cref="IInflightSequenceClaim"/>).
+    /// </summary>
+    internal static bool HasInflightBeforeLocked(PartitionState state, int baseSequence)
+    {
+        for (var entry = state.Head; entry is not null; entry = entry.Next)
+        {
+            if (baseSequence < 0 || !RecordAccumulator.IsSequenceAtOrAfter(entry.BaseSequence, baseSequence))
+                return true;
+        }
+
+        return false;
     }
 
     /// <summary>
