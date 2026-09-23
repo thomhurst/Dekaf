@@ -89,6 +89,17 @@ public sealed class ContainerStartupRetryTests
     }
 
     [Test]
+    [Arguments("{\"message\":\"Get \\\"https://mcr.microsoft.com/v2/\\\": context deadline exceeded\"}")]
+    [Arguments("Get \"https://registry-1.docker.io/v2/\": net/http: request canceled while waiting for connection (Client.Timeout exceeded while awaiting headers)")]
+    [Arguments("Get \"https://registry-1.docker.io/v2/\": net/http: TLS handshake timeout")]
+    public async Task IsRegistryUnavailable_RegistryTimeout_ReturnsTrue(string message)
+    {
+        var exception = new DockerApiException(HttpStatusCode.InternalServerError, message);
+
+        await Assert.That(ContainerStartupRetry.IsRegistryUnavailable(exception)).IsTrue();
+    }
+
+    [Test]
     [Arguments(HttpStatusCode.NotFound)]
     [Arguments(HttpStatusCode.InternalServerError)]
     public async Task IsRegistryUnavailable_NonTransientFailure_ReturnsFalse(

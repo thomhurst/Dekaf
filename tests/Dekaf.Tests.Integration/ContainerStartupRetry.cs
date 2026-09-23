@@ -66,12 +66,24 @@ internal static class ContainerStartupRetry
                 return false;
 
             var statusCode = (int)dockerException.StatusCode;
-            return statusCode is >= 500 and <= 599 &&
-                   candidate.Message.Contains("/manifests/", StringComparison.OrdinalIgnoreCase) &&
-                   candidate.Message.Contains(
-                       "received unexpected HTTP status",
-                       StringComparison.OrdinalIgnoreCase);
+            if (statusCode is < 500 or > 599)
+                return false;
+
+            var message = candidate.Message;
+            return (message.Contains("/manifests/", StringComparison.OrdinalIgnoreCase) &&
+                    message.Contains("received unexpected HTTP status", StringComparison.OrdinalIgnoreCase)) ||
+                   (message.Contains("/v2/", StringComparison.OrdinalIgnoreCase) &&
+                    RegistryTimeouts.Any(timeout => message.Contains(timeout, StringComparison.OrdinalIgnoreCase)));
         });
+
+    // Docker daemon wording when the registry does not answer in time (Go net/http errors).
+    private static readonly string[] RegistryTimeouts =
+    [
+        "context deadline exceeded",
+        "Client.Timeout exceeded",
+        "TLS handshake timeout",
+        "i/o timeout"
+    ];
 
     private static TimeSpan GetRetryDelay(int failedAttempt) => failedAttempt switch
     {

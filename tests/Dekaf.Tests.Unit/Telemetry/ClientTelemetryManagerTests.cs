@@ -33,6 +33,32 @@ public sealed partial class ClientTelemetryManagerTests
     }
 
     [Test]
+    public async Task WaitForPushInterval_NeverEndsBeforeTheIntervalPlusTheBrokerClockMargin()
+    {
+        // The broker throttles, and drops the deltas of, a push that arrives before its interval
+        // has elapsed. Task.Delay alone can complete about a millisecond early on Linux.
+        const int pushIntervalMs = 20;
+        var waits = Enumerable.Range(0, 8).Select(async _ =>
+        {
+            var shortest = TimeSpan.MaxValue;
+            for (var index = 0; index < 10; index++)
+            {
+                var started = Stopwatch.GetTimestamp();
+                await ClientTelemetryManager.WaitForPushIntervalAsync(started, pushIntervalMs, CancellationToken.None);
+                var elapsed = TimeSpan.FromSeconds((Stopwatch.GetTimestamp() - started) / (double)Stopwatch.Frequency);
+                if (elapsed < shortest)
+                    shortest = elapsed;
+            }
+
+            return shortest;
+        }).ToArray();
+
+        var shortestWaits = await Task.WhenAll(waits);
+
+        await Assert.That(shortestWaits.Min()).IsGreaterThanOrEqualTo(TimeSpan.FromMilliseconds(pushIntervalMs + 1));
+    }
+
+    [Test]
     public async Task BackgroundLoop_PushesTelemetryOnBrokerInterval()
     {
         await using var context = new TelemetryTestContext();
