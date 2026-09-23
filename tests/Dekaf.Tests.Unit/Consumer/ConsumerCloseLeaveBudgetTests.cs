@@ -131,6 +131,62 @@ public sealed class ConsumerCloseLeaveBudgetTests
     }
 
     [Test]
+    [Timeout(30_000)]
+    public async Task CloseAsync_CancelledWhileDeliveringAQueuedCallback_StillSendsLeave(
+        CancellationToken cancellationToken)
+    {
+        // A lost callback is queued when close starts, and its listener runs until its token is
+        // cancelled. Close is cancelled while step 2 delivers it.
+        using var closeCancellation = new CancellationTokenSource();
+        var harness = new Harness(defaultApiTimeoutMs: 60_000);
+        await using var consumer = harness.CreateConsumer();
+        Harness.JoinGroup(consumer);
+        var coordinator = Harness.KnowCoordinator(consumer);
+        var listener = new BlockingLostListener();
+        using var registration = coordinator.RegisterRuntimeRebalanceListener(listener);
+        Harness.QueueLostCallback(coordinator, new TopicPartition(Topic, 0));
+
+        var stopwatch = Stopwatch.StartNew();
+        var close = consumer.CloseAsync(closeCancellation.Token).AsTask();
+        await listener.FirstCallStarted.WaitAsync(cancellationToken);
+        await closeCancellation.CancelAsync();
+
+        await Assert.That(async () => await close).Throws<OperationCanceledException>();
+        stopwatch.Stop();
+
+        // The leave went out straight away instead of the callback being delivered again under
+        // the leave's grace, using it up and leaving no time to send the leave.
+        await Assert.That(harness.LeaveEpochs.ToArray()).IsEquivalentTo([-1]);
+        await Assert.That(listener.Calls).IsEqualTo(1);
+        await Assert.That(stopwatch.Elapsed).IsLessThan(TimeSpan.FromSeconds(4));
+    }
+
+    [Test]
+    [Timeout(30_000)]
+    public async Task CloseAsync_CancelledWhileWaitingForLeaderRefresh_StillSendsLeave(
+        CancellationToken cancellationToken)
+    {
+        using var closeCancellation = new CancellationTokenSource();
+        var harness = new Harness(defaultApiTimeoutMs: 60_000);
+        await using var consumer = harness.CreateConsumer();
+        Harness.JoinGroup(consumer);
+        // A leader refresh that never finishes, so close waits in step 3.
+        var refresh = new TaskCompletionSource();
+        var refreshTasks = (ConcurrentDictionary<string, Task>)typeof(KafkaConsumer<string, string>)
+            .GetField("_pendingLeaderRefreshTasks", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .GetValue(consumer)!;
+        refreshTasks[Topic] = refresh.Task;
+
+        var close = consumer.CloseAsync(closeCancellation.Token).AsTask();
+        await Task.Delay(200, cancellationToken);
+        await closeCancellation.CancelAsync();
+
+        await Assert.That(async () => await close).Throws<OperationCanceledException>();
+        await Assert.That(harness.LeaveEpochs.ToArray()).IsEquivalentTo([-1]);
+        refresh.TrySetResult();
+    }
+
+    [Test]
     public async Task CloseAsync_MemberThatNeverJoined_CommitIsNotShortenedForALeave()
     {
         // A group consumer with manual assignment has no membership, so no leave is sent and the
@@ -393,6 +449,18 @@ public sealed class ConsumerCloseLeaveBudgetTests
             return coordinator;
         }
 
+        /// <summary>Queues an OnPartitionsLost notification, as a fence the heartbeat saw would.</summary>
+        public static void QueueLostCallback(ConsumerCoordinator coordinator, TopicPartition partition)
+        {
+            var pendingType = typeof(ConsumerCoordinator).GetNestedType("PendingRebalanceCallback", BindingFlags.NonPublic)!;
+            var pending = Activator.CreateInstance(pendingType, nonPublic: true)!;
+            pendingType.GetProperty("Lost")!.SetValue(pending, new[] { partition });
+            pendingType.GetProperty("Assignment")!.SetValue(pending, new HashSet<TopicPartition> { partition });
+            typeof(ConsumerCoordinator)
+                .GetMethod("EnqueuePendingRebalanceCallback", BindingFlags.NonPublic | BindingFlags.Instance)!
+                .Invoke(coordinator, [pending, false]);
+        }
+
         private async ValueTask<OffsetCommitResponse> CompleteCommitAsync(
             OffsetCommitRequest request,
             CancellationToken cancellationToken)
@@ -596,6 +664,30 @@ public sealed class ConsumerCloseLeaveBudgetTests
             if (disposing)
                 inner.Dispose();
             base.Dispose(disposing);
+        }
+    }
+
+    /// <summary>An OnPartitionsLost that runs until its token is cancelled.</summary>
+    private sealed class BlockingLostListener : IRebalanceListener
+    {
+        private readonly TaskCompletionSource _firstCallStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _calls;
+
+        public Task FirstCallStarted => _firstCallStarted.Task;
+
+        public int Calls => Volatile.Read(ref _calls);
+
+        public ValueTask OnPartitionsAssignedAsync(IEnumerable<TopicPartition> partitions, CancellationToken cancellationToken) =>
+            ValueTask.CompletedTask;
+
+        public ValueTask OnPartitionsRevokedAsync(IEnumerable<TopicPartition> partitions, CancellationToken cancellationToken) =>
+            ValueTask.CompletedTask;
+
+        public async ValueTask OnPartitionsLostAsync(IEnumerable<TopicPartition> partitions, CancellationToken cancellationToken)
+        {
+            Interlocked.Increment(ref _calls);
+            _firstCallStarted.TrySetResult();
+            await Task.Delay(Timeout.Infinite, cancellationToken);
         }
     }
 

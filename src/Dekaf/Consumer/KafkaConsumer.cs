@@ -13223,10 +13223,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // Step 7: Send LeaveGroup request to coordinator. Once the request is on the wire the
         // coordinator acts on it whether or not the response is awaited, so close's token only
         // stops the wait for the response. Getting the request onto the wire (stopping the
-        // heartbeat, delivering queued callbacks, leasing the connection, writing) is not cut
-        // short by it: whenever close is cancelled (by the caller, or by its budget running out),
-        // before or during the leave, that part gets leaveReserveMs more, rather than the leave
-        // being dropped and the member holding its partitions until the session timeout.
+        // heartbeat, leasing the connection, writing) is not cut short by it: whenever close is
+        // cancelled (by the caller, or by its budget running out), before or during the leave,
+        // that part gets leaveReserveMs more, rather than the leave being dropped and the member
+        // holding its partitions until the session timeout. The earlier steps catch their own
+        // cancellation, so a cancelled close always reaches this step. Rebalance callbacks still
+        // queued are delivered only until close is cancelled; after that the leave goes first and
+        // disposal delivers them.
         if (leavesGroup)
         {
             using var leaveTimeout = new CancellationTokenSource();

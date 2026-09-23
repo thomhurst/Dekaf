@@ -3310,9 +3310,15 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         // Callbacks queued for the membership that is leaving (an assignment whose
         // OnPartitionsAssigned cancellation deferred, a loss) are delivered while it is still
         // current, in order, as they would have been without the cancellation. The heartbeat is
-        // stopped first so it cannot publish a newer assignment behind them.
+        // stopped first so it cannot publish a newer assignment behind them. A close's leave
+        // (responseCancellationToken set) delivers callbacks only until close is cancelled: after
+        // that, what is left of cancellationToken is the grace for getting the leave onto the
+        // wire, and a callback delivered again would use it up. They stay queued for disposal.
+        var callbackCancellationToken = responseCancellationToken.CanBeCanceled
+            ? responseCancellationToken
+            : cancellationToken;
         await StopHeartbeatAsyncCore(cancellationToken).ConfigureAwait(false);
-        await InvokePendingRebalanceCallbacksUnlessCancelledAsync(cancellationToken).ConfigureAwait(false);
+        await InvokePendingRebalanceCallbacksUnlessCancelledAsync(callbackCancellationToken).ConfigureAwait(false);
 
         await SendConsumerProtocolLeaveRequestAsync(operation, cancellationToken, responseCancellationToken)
             .ConfigureAwait(false);
@@ -3328,7 +3334,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         }
 
         // A fence recorded while leaving is still reported.
-        await InvokePendingRebalanceCallbacksUnlessCancelledAsync(cancellationToken).ConfigureAwait(false);
+        await InvokePendingRebalanceCallbacksUnlessCancelledAsync(callbackCancellationToken).ConfigureAwait(false);
     }
 
     private async ValueTask SendConsumerProtocolLeaveRequestAsync(
