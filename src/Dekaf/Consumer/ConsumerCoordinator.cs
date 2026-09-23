@@ -46,8 +46,16 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private readonly Func<
         IEnumerable<TopicPartition>,
         IEnumerable<TopicPartition>,
+        long,
         IRebalanceConsumerScope>? _createRebalanceConsumerScope;
     private readonly ConcurrentQueue<TopicPartition> _revokedPartitionsSinceLastSync = new();
+    // Advances on every published revocation or loss. Each partition keeps the sequence of its
+    // latest revocation, and each queued rebalance notification the sequence when it was
+    // queued, so a callback delivered after its partitions were revoked is recognizably stale.
+    // Entries no queued notification predates are pruned (PruneRevocationSequences). Updated once
+    // per revocation, never per message.
+    private long _revocationSequence;
+    private readonly ConcurrentDictionary<TopicPartition, long> _partitionRevocationSequences = new();
     private Task _pendingRevocationCommit = Task.CompletedTask;
     // Completes once the callbacks of the latest published assignment change with newly assigned
     // partitions have been delivered. The consumer does not synchronize that assignment before
@@ -186,7 +194,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         Action<IReadOnlyList<TopicPartition>>? onPartitionsRevoked,
         Action<IReadOnlyList<TopicPartition>>? onPartitionsRevoking,
         Func<IReadOnlyList<TopicPartition>, CancellationToken, ValueTask>? onPartitionsRevokedAsync = null,
-        Func<IEnumerable<TopicPartition>, IEnumerable<TopicPartition>, IRebalanceConsumerScope>?
+        Func<IEnumerable<TopicPartition>, IEnumerable<TopicPartition>, long, IRebalanceConsumerScope>?
             createRebalanceConsumerScope = null)
     {
         _options = options;
@@ -1063,6 +1071,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             ValueTask> consumerAwareCallback,
         IEnumerable<TopicPartition> newlyAssigned,
         HashSet<TopicPartition> assignment,
+        long revocationSequence,
         CancellationToken cancellationToken)
     {
         ThrowIfCallbackDeliveryStopped(cancellationToken);
@@ -1072,7 +1081,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             LogRebalanceListenerCall(callbackName, partitions.Count);
             consumerScope = _createRebalanceConsumerScope!(
                 assignment,
-                newlyAssigned);
+                newlyAssigned,
+                revocationSequence);
             await consumerAwareCallback(
                 listener,
                 consumerScope,
@@ -1134,6 +1144,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 // A queued callback's scope shows the assignment it was queued under, not one
                 // published since.
                 progress?.Assignment ?? _assignedPartitions,
+                // Likewise the revocations it predates: a seek it stages for a partition revoked
+                // since then is discarded.
+                progress?.RevocationSequence ?? Volatile.Read(ref _revocationSequence),
                 cancellationToken).ConfigureAwait(false);
             progress?.ListenersCompleted = position;
         }
@@ -1186,6 +1199,11 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         // stable snapshot.
         public required HashSet<TopicPartition> Assignment { get; init; }
 
+        // _revocationSequence when this notification was queued, after its own revocations were
+        // recorded, so only later revocations or losses make its seeks stale. Set under
+        // _pendingPublishLock, which also orders it against PruneRevocationSequences.
+        public long RevocationSequence;
+
         public bool RevokedDelivered;
 
         // Set when the internal revocation commit starts, so it runs once whichever drain
@@ -1222,6 +1240,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         // sees the count but not yet the entry waits for it (HasQueuedRebalanceCallbacks).
         lock (_pendingPublishLock)
         {
+            callback.RevocationSequence = Volatile.Read(ref _revocationSequence);
             if (!reserved)
             {
                 Interlocked.Increment(ref _pendingRebalanceCallbackCount);
@@ -1534,8 +1553,20 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     /// <summary>
     /// Fetches committed offsets for the group.
     /// </summary>
-    public async ValueTask<IReadOnlyDictionary<TopicPartition, TopicPartitionOffset>> FetchOffsetsAsync(
+    public ValueTask<IReadOnlyDictionary<TopicPartition, TopicPartitionOffset>> FetchOffsetsAsync(
         IEnumerable<TopicPartition> partitions,
+        CancellationToken cancellationToken)
+        => FetchOffsetsAsync(partitions, rejoinOnMembershipLoss: true, cancellationToken);
+
+    /// <summary>
+    /// Fetches committed offsets for the group. With <paramref name="rejoinOnMembershipLoss"/>
+    /// false, a fetch that finds the member has left the group throws
+    /// <see cref="GroupRejoinRequiredException"/> instead of rejoining: the caller holds a lock
+    /// a rebalance callback may need, so it rejoins itself once that lock is released.
+    /// </summary>
+    internal async ValueTask<IReadOnlyDictionary<TopicPartition, TopicPartitionOffset>> FetchOffsetsAsync(
+        IEnumerable<TopicPartition> partitions,
+        bool rejoinOnMembershipLoss,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrEmpty(_options.GroupId))
@@ -1778,7 +1809,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                         _fetchLock.Release();
                     }
 
-                    await RecoverOffsetFetchAsync(retryToken).ConfigureAwait(false);
+                    await RecoverOffsetFetchAsync(rejoinOnMembershipLoss, retryToken).ConfigureAwait(false);
                     await _fetchLock.WaitAsync(retryToken).ConfigureAwait(false);
                     fetchLockHeld = true;
                 },
@@ -1809,11 +1840,15 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         }
     }
 
-    private async ValueTask RecoverOffsetFetchAsync(CancellationToken cancellationToken)
+    private async ValueTask RecoverOffsetFetchAsync(bool rejoinOnMembershipLoss, CancellationToken cancellationToken)
     {
         var subscribedTopics = _subscribedTopics;
         if (_state == CoordinatorState.Unjoined && subscribedTopics is not null)
         {
+            // A rejoin delivers rebalance callbacks; the caller cannot run them where it is.
+            if (!rejoinOnMembershipLoss)
+                throw new GroupRejoinRequiredException(_options.GroupId);
+
             await EnsureActiveGroupAsync(
                 subscribedTopics,
                 _subscribedTopicRegex,
@@ -2570,9 +2605,62 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
     private void NotifyRevoking(IReadOnlyList<TopicPartition>? revoked)
     {
-        if (revoked is not null)
-            _onPartitionsRevoking?.Invoke(revoked);
+        if (revoked is null)
+            return;
+
+        // Recorded before the owner drops its pending seeks, so a callback that predates this
+        // revocation can never stage a seek the owner keeps (see WasRevokedSince).
+        var sequence = Interlocked.Increment(ref _revocationSequence);
+        for (var i = 0; i < revoked.Count; i++)
+        {
+            _partitionRevocationSequences.AddOrUpdate(
+                revoked[i],
+                static (_, sequence) => sequence,
+                static (_, current, sequence) => Math.Max(current, sequence),
+                sequence);
+        }
+
+        PruneRevocationSequences();
+        _onPartitionsRevoking?.Invoke(revoked);
     }
+
+    /// <summary>
+    /// Forgets every partition revocation that no queued notification predates. Only a queued
+    /// notification's callback scope consults the history, and a notification queued later
+    /// captures a sequence at least the current one, so the history stays bounded by the
+    /// partitions revoked while callbacks are pending. Runs per revocation and per delivered
+    /// notification, never per message; the queue holds a handful of entries.
+    /// </summary>
+    private void PruneRevocationSequences()
+    {
+        if (_partitionRevocationSequences.IsEmpty)
+            return;
+
+        lock (_pendingPublishLock)
+        {
+            var threshold = Volatile.Read(ref _revocationSequence);
+            foreach (var pending in _pendingRebalanceCallbacks)
+                threshold = Math.Min(threshold, pending.RevocationSequence);
+
+            foreach (var entry in _partitionRevocationSequences)
+            {
+                // Conditional on the value, so a revocation recorded concurrently is kept.
+                if (entry.Value <= threshold)
+                    ((ICollection<KeyValuePair<TopicPartition, long>>)_partitionRevocationSequences).Remove(entry);
+            }
+        }
+    }
+
+    internal int RevocationSequenceCountForTest => _partitionRevocationSequences.Count;
+
+    /// <summary>
+    /// True when <paramref name="partition"/> was revoked or lost after a rebalance notification
+    /// captured <paramref name="revocationSequence"/>. A seek that notification's callback stages
+    /// for the partition belongs to ownership that has already ended.
+    /// </summary>
+    internal bool WasRevokedSince(TopicPartition partition, long revocationSequence) =>
+        _partitionRevocationSequences.TryGetValue(partition, out var revokedAt)
+        && revokedAt > revocationSequence;
 
     /// <summary>
     /// KIP-848 entry point: ensures the consumer has joined the group using the ConsumerGroupHeartbeat API.
@@ -3196,6 +3284,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 _pendingRebalanceCallbacks.TryDequeue(out _);
                 if (Interlocked.Exchange(ref pending.PollVisibility, 2) == 1)
                     Interlocked.Decrement(ref _pendingRebalanceCallbackCount);
+
+                // Its scope is invalidated, so revocations only it could predate are forgotten.
+                PruneRevocationSequences();
             }
         }
         finally

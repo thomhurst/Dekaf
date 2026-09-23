@@ -1614,6 +1614,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private int _lastCoordinatorAssignmentVersion = -1;
     // Deterministic test seam for assignment/revocation snapshot races.
     internal Action? BeforeCoordinatorAssignmentSnapshotForTest { get; set; }
+    // Deterministic test seam: runs in assignment sync after the partitions assigned again are
+    // identified and before revoked-partition state is cleaned up. It receives the consumer, so
+    // a static keeps the instance layout unchanged and parallel tests can filter by it.
+    internal static Action<object>? BeforeRevokedPartitionStateCleanupForTest;
     // Thread-local storage keeps the production consumer's instance layout unchanged.
     [ThreadStatic]
     internal static Action? BeforeOffsetResetCommitForTest;
@@ -2030,12 +2034,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 onPartitionsRevoked: null,
                 onPartitionsRevoking: QueueCoordinatorRevokedPartitionsForFetchClear,
                 onPartitionsRevokedAsync: CommitRevokedOffsetsAsync,
-                createRebalanceConsumerScope: (assignment, newlyAssigned) =>
+                // One scope and seek delegate per rebalance callback, never per message.
+                createRebalanceConsumerScope: (assignment, newlyAssigned, revocationSequence) =>
                     new RebalanceConsumerScope<TKey, TValue>(
                         this,
                         assignment,
                         newlyAssigned,
-                        StageRebalanceSeek,
+                        offset => StageRebalanceSeek(offset, revocationSequence),
                         GetRebalancePosition))
             {
                 TelemetryMetricCollector = _telemetryMetricCollector,
@@ -7663,7 +7668,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             ? pending.Offset
             : GetPosition(partition);
 
-    internal void StageRebalanceSeek(TopicPartitionOffset offset)
+    /// <param name="offset">The seek an OnPartitionsAssigned callback requested.</param>
+    /// <param name="revocationSequence">
+    /// The coordinator's revocation sequence when the callback's notification was published. A seek
+    /// for a partition revoked or lost since then is discarded: that ownership has ended, and a
+    /// later assignment of the partition must not start at it.
+    /// </param>
+    internal void StageRebalanceSeek(TopicPartitionOffset offset, long revocationSequence = long.MaxValue)
     {
         var partition = new TopicPartition(offset.Topic, offset.Partition);
         SemaphoreHelper.AcquireOrThrowDisposed(
@@ -7671,7 +7682,16 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             nameof(KafkaConsumer<TKey, TValue>));
         try
         {
-            _pendingRebalanceSeeks[partition] = offset;
+            // The revocation hook drops pending seeks under this lock after the coordinator
+            // records the revocation, so checking and staging under it cannot keep a stale seek.
+            lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
+            {
+                if (_coordinator?.WasRevokedSince(partition, revocationSequence) == true)
+                    return;
+
+                _pendingRebalanceSeeks[partition] = offset;
+            }
+
             if (_coordinator is { } coordinator
                 && _assignmentSnapshot.Contains(partition)
                 && IsCoordinatorAssignmentSyncCurrent(coordinator, out _))
@@ -7787,7 +7807,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     /// Removes per-partition tracking state for the given partitions.
     /// Returns true if any partition was in the paused set.
     /// </summary>
-    private bool RemovePartitionState(IEnumerable<TopicPartition> partitions)
+    private bool RemovePartitionState(
+        IEnumerable<TopicPartition> partitions,
+        HashSet<TopicPartition>? retainSeeks = null)
     {
         var hadPaused = false;
         foreach (var partition in partitions)
@@ -7796,7 +7818,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             _positions.TryRemove(partition, out _);
             ClearStoredOffset(partition);
             _fetchPositions.TryRemove(partition, out _);
-            _pendingRebalanceSeeks.TryRemove(partition, out _);
+            if (retainSeeks is null || !retainSeeks.Contains(partition))
+                _pendingRebalanceSeeks.TryRemove(partition, out _);
             _minimumFetchBufferEpochsByPartition.TryRemove(partition, out _);
             _lastConsumedLeaderEpochs.TryRemove(partition, out _);
             _lastFetchedLeaderEpochs.TryRemove(partition, out _);
@@ -8248,7 +8271,17 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
     }
 
-    private void QueueCoordinatorRevokedPartitionsForFetchClear(IReadOnlyList<TopicPartition> partitions)
+    private void QueueCoordinatorRevokedPartitionsForFetchClear(IReadOnlyList<TopicPartition> partitions) =>
+        QueueCoordinatorRevokedPartitionsForFetchClear(partitions, retainSeeks: null);
+
+    /// <param name="partitions">The partitions whose fetches and buffered records are invalidated.</param>
+    /// <param name="retainSeeks">
+    /// Partitions whose pending rebalance seek is kept: assignment sync passes the partitions
+    /// assigned again after a revocation, whose seek came from the new assignment's callback.
+    /// </param>
+    private void QueueCoordinatorRevokedPartitionsForFetchClear(
+        IReadOnlyList<TopicPartition> partitions,
+        HashSet<TopicPartition>? retainSeeks)
     {
         Volatile.Read(ref _activeSnapshot)?.InvalidateConsumerState();
 
@@ -8258,7 +8291,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             {
                 // Coordinator revocation supersedes any correction from the old assignment.
                 // Keep the revocation marker so the consume loop still drains stale buffers.
-                _pendingRebalanceSeeks.TryRemove(partition, out _);
+                if (retainSeeks is null || !retainSeeks.Contains(partition))
+                    _pendingRebalanceSeeks.TryRemove(partition, out _);
                 _pendingDivergingEpochResets.TryRemove(partition, out _);
                 SetPendingFetchClearMarkerLocked(
                     partition,
@@ -9503,8 +9537,24 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // concurrently. Without synchronization, concurrent access to non-thread-safe
         // _assignment HashSet causes NullReferenceException during enumeration.
         // Readers use the volatile _assignmentSnapshot instead of acquiring this lock.
+        var rejoinRequired = false;
         while (true)
         {
+            // Position initialization found the member had left the group. Rejoin here, outside
+            // the assignment lock: the rejoin delivers rebalance callbacks, and a callback's seek
+            // takes that lock.
+            if (rejoinRequired && coordinator is not null)
+            {
+                rejoinRequired = false;
+                subscriptionSnapshot = _subscriptionSnapshot;
+                topicPattern = _topicPattern;
+                if (subscriptionSnapshot.Count != 0 || topicPattern is not null)
+                {
+                    await coordinator.EnsureActiveGroupAsync(subscriptionSnapshot, topicPattern, cancellationToken)
+                        .ConfigureAwait(false);
+                }
+            }
+
             // A new assignment is synchronized only after its OnPartitionsAssigned has run, so a
             // seek the callback stages is applied before fetching starts. Waited for before the
             // assignment lock: the callback's seek takes that lock.
@@ -9615,12 +9665,30 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     if (removedPartitions is { Count: > 0 })
                         LogPartitionsRemoved(removedPartitions.Count);
 
+                    // A seek staged for a partition that was revoked and then assigned again
+                    // came from the new assignment's OnPartitionsAssigned: publishing the
+                    // revocation dropped any seek staged before it, and StageRebalanceSeek
+                    // discards one from a callback that predates the revocation. The cleanup below
+                    // leaves it in place so position initialization applies it. It is never
+                    // removed and put back, so a revocation published meanwhile drops it for good.
+                    HashSet<TopicPartition>? reassignedPartitions = null;
+                    if (coordinatorRevocations is not null)
+                    {
+                        foreach (var partition in coordinatorRevocations)
+                        {
+                            if (coordinatorAssignment.Contains(partition))
+                                (reassignedPartitions ??= []).Add(partition);
+                        }
+                    }
+
+                    BeforeRevokedPartitionStateCleanupForTest?.Invoke(this);
+
                     // Invalidate in-flight fetches before publishing an ABA reassignment or
                     // reinitializing its position. The consume loop owns the actual buffer drain.
                     if (removedPartitions is not null)
-                        QueueCoordinatorRevokedPartitionsForFetchClear(removedPartitions);
+                        QueueCoordinatorRevokedPartitionsForFetchClear(removedPartitions, reassignedPartitions);
                     if (reclassifiedPartitions is not null)
-                        QueueCoordinatorRevokedPartitionsForFetchClear(reclassifiedPartitions);
+                        QueueCoordinatorRevokedPartitionsForFetchClear(reclassifiedPartitions, reassignedPartitions);
 
                     // Update assignment from coordinator
                     _assignment.Clear();
@@ -9634,9 +9702,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
                         // Clean up state for removed partitions while lag-query cache publication
                         // is excluded from the assignment transition.
-                        if (removedPartitions is not null && RemovePartitionState(removedPartitions))
+                        if (removedPartitions is not null
+                            && RemovePartitionState(removedPartitions, reassignedPartitions))
                             PublishPausedSnapshot();
                     }
+
                     InvalidatePartitionCache();
                     InvalidateFetchRequestCache();
 
@@ -9646,16 +9716,27 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     // Initialize positions for new partitions
                     if (newPartitions is { Count: > 0 })
                     {
-                        await InitializePositionsAsync(
-                                newPartitions,
-                                newlyExpandedPartitions,
-                                coordinatorAssignmentVersion,
-                                cancellationToken)
-                            .ConfigureAwait(false);
+                        try
+                        {
+                            await InitializePositionsAsync(
+                                    newPartitions,
+                                    newlyExpandedPartitions,
+                                    coordinatorAssignmentVersion,
+                                    cancellationToken)
+                                .ConfigureAwait(false);
+                        }
+                        catch (GroupRejoinRequiredException)
+                        {
+                            // The committed-offset fetch was fenced. Its recovery would rejoin
+                            // and run rebalance callbacks under this lock, so release the lock
+                            // and rejoin at the top of the loop instead.
+                            rejoinRequired = true;
+                            continue;
+                        }
                     }
 
-                    // OffsetFetch recovery can rejoin the group. If that produced a new assignment,
-                    // synchronize the latest snapshot before publishing this pass as current.
+                    // A heartbeat can publish a newer assignment while positions initialize.
+                    // Synchronize the latest snapshot before publishing this pass as current.
                     if (coordinator.AssignmentVersion != coordinatorAssignmentVersion)
                         continue;
 
@@ -9753,7 +9834,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         try
         {
             // Fetch committed offsets for all partitions
-            var committedOffsets = await coordinator.FetchOffsetsAsync(partitions, cancellationToken)
+            // Runs under the assignment lock, so a fenced fetch must not rejoin (and run rebalance
+            // callbacks) here; EnsureAssignmentAsync rejoins once the lock is released.
+            var committedOffsets = await coordinator.FetchOffsetsAsync(
+                    partitions,
+                    rejoinOnMembershipLoss: false,
+                    cancellationToken)
                 .ConfigureAwait(false);
 
             foreach (var partition in partitions)

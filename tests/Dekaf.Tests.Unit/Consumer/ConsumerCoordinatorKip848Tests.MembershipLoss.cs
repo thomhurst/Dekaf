@@ -1869,7 +1869,7 @@ public sealed partial class ConsumerCoordinatorKip848Tests
             onPartitionsRevoked: null,
             onPartitionsRevoking: null,
             onPartitionsRevokedAsync: null,
-            createRebalanceConsumerScope: (current, added) =>
+            createRebalanceConsumerScope: (current, added, _) =>
             {
                 scopeAssignment = current.ToArray();
                 return new RebalanceConsumerScope<byte[], byte[]>(consumer, current, added);
@@ -1933,7 +1933,7 @@ public sealed partial class ConsumerCoordinatorKip848Tests
             onPartitionsRevoked: null,
             onPartitionsRevoking: null,
             onPartitionsRevokedAsync: null,
-            createRebalanceConsumerScope: (current, added) =>
+            createRebalanceConsumerScope: (current, added, _) =>
             {
                 scopeAssignment = current.ToArray();
                 return new RebalanceConsumerScope<byte[], byte[]>(consumer, current, added);
