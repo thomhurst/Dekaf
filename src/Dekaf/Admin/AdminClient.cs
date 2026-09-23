@@ -5602,8 +5602,8 @@ public sealed partial class AdminClient :
     // replayed safely detect a lost response inside their operation.
     //
     // The operation receives a token that also ends at the API timeout, so an attempt the broker
-    // accepted but never answers cannot overrun the budget by up to RequestTimeoutMs. Admin calls
-    // are not a message path: the linked source and closures are per call, not per message.
+    // accepted but never answers cannot overrun the budget by up to RequestTimeoutMs. The linked
+    // source and its timer are per call, and only for a call that owns its deadline.
     //
     // timeoutMs is the call's own TimeoutMs option, or null for an API without one (the budget is
     // then DefaultApiTimeoutBudgetMs); zero is an already-expired deadline. Timeout.Infinite is for an
@@ -5616,21 +5616,38 @@ public sealed partial class AdminClient :
         CancellationToken cancellationToken,
         int? timeoutMs = null,
         [CallerMemberName] string operationName = "") =>
-        await WithRetryAsync<bool>(
-            async attemptToken =>
+        await WithRetryCoreAsync<bool, Func<CancellationToken, ValueTask>>(
+            static async (voidOperation, attemptToken) =>
             {
-                await operation(attemptToken).ConfigureAwait(false);
+                await voidOperation(attemptToken).ConfigureAwait(false);
                 return true;
             },
-            cancellationToken,
+            operation,
             timeoutMs,
-            operationName).ConfigureAwait(false);
+            operationName,
+            cancellationToken).ConfigureAwait(false);
 
-    private async ValueTask<T> WithRetryAsync<T>(
+    private ValueTask<T> WithRetryAsync<T>(
         Func<CancellationToken, ValueTask<T>> operation,
         CancellationToken cancellationToken,
         int? timeoutMs = null,
-        [CallerMemberName] string operationName = "")
+        [CallerMemberName] string operationName = "") =>
+        WithRetryCoreAsync<T, Func<CancellationToken, ValueTask<T>>>(
+            static (resultOperation, attemptToken) => resultOperation(attemptToken),
+            operation,
+            timeoutMs,
+            operationName,
+            cancellationToken);
+
+    // The operation reaches the retry loop through a struct and static callbacks, so a call adds
+    // no closure of its own. With Timeout.Infinite the caller's token is the deadline and no
+    // linked source or timer is created at all.
+    private async ValueTask<T> WithRetryCoreAsync<T, TOperation>(
+        Func<TOperation, CancellationToken, ValueTask<T>> invoke,
+        TOperation operation,
+        int? timeoutMs,
+        string operationName,
+        CancellationToken cancellationToken)
     {
         if (timeoutMs == 0)
         {
@@ -5642,41 +5659,38 @@ public sealed partial class AdminClient :
                 $"{operationName} timed out after 0 ms.");
         }
 
-        var deadline = CreateRetryDeadline(operationName, timeoutMs ?? DefaultApiTimeoutBudgetMs);
+        var budgetMs = timeoutMs ?? DefaultApiTimeoutBudgetMs;
+        var deadline = CreateRetryDeadline(operationName, budgetMs);
         var startedAt = System.Diagnostics.Stopwatch.GetTimestamp();
-        using var apiTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        apiTimeout.CancelAfter(deadline.Budget);
-        var attemptToken = apiTimeout.Token;
+        CancellationTokenSource? apiTimeout = null;
+        var attemptToken = cancellationToken;
+        if (budgetMs != Timeout.Infinite)
+        {
+            apiTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            apiTimeout.CancelAfter(budgetMs);
+            attemptToken = apiTimeout.Token;
+        }
 
         try
         {
-            return _controllerMetadataManager is null
-                ? await RetryHelper.WithRetryAsync(
-                    () => operation(attemptToken),
-                    _metadataManager,
-                    attemptToken,
-                    _options.RetryBackoffMs,
-                    _options.RetryBackoffMaxMs,
-                    deadline: deadline).ConfigureAwait(false)
-                : await RetryHelper.WithRetryUntilDeadlineAsync(
-                    static state => state.Operation(state.AttemptToken),
-                    static (_, state, token) => state.Admin.RefreshControllerForRetryAsync(token),
-                    (Admin: this, Operation: operation, AttemptToken: attemptToken),
-                    _options.RetryBackoffMs,
-                    _options.RetryBackoffMaxMs,
-                    RetryHelper.MaxRetries,
-                    deadline,
-                    attemptToken).ConfigureAwait(false);
+            return await RetryHelper.WithRetryUntilDeadlineAsync(
+                static state => state.Invoke(state.Operation, state.AttemptToken),
+                static (_, state, token) => state.Admin.RecoverForRetryAsync(token),
+                new RetryAttemptState<T, TOperation>(this, invoke, operation, attemptToken),
+                _options.RetryBackoffMs,
+                _options.RetryBackoffMaxMs,
+                RetryHelper.MaxRetries,
+                deadline,
+                attemptToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException ex) when (
-            apiTimeout.IsCancellationRequested
+            apiTimeout is { IsCancellationRequested: true }
             && !cancellationToken.IsCancellationRequested)
         {
             // The API timeout ended an attempt still in flight, a recovery or a backoff. The
             // retry loop attaches the last failure it saw as the inner exception; with none, the
             // broker accepted the request and never answered.
             var elapsed = System.Diagnostics.Stopwatch.GetElapsedTime(startedAt);
-            var budgetMs = (int)deadline.Budget.TotalMilliseconds;
             throw ex.InnerException is { } lastFailure
                 ? new Errors.KafkaTimeoutException(
                     Errors.TimeoutKind.Api,
@@ -5691,6 +5705,32 @@ public sealed partial class AdminClient :
                     $"{operationName} did not complete within {budgetMs}ms: no response was received.",
                     ex);
         }
+        finally
+        {
+            apiTimeout?.Dispose();
+        }
+    }
+
+    // Recovery between attempts: rediscover the controller on controller bootstrap, otherwise
+    // refresh cluster metadata so the next attempt routes to the current broker.
+    private ValueTask RecoverForRetryAsync(CancellationToken cancellationToken) =>
+        _controllerMetadataManager is null
+            ? RetryHelper.RefreshMetadataForRetryAsync(_metadataManager, cancellationToken)
+            : RefreshControllerForRetryAsync(cancellationToken);
+
+    private readonly struct RetryAttemptState<T, TOperation>(
+        AdminClient admin,
+        Func<TOperation, CancellationToken, ValueTask<T>> invoke,
+        TOperation operation,
+        CancellationToken attemptToken)
+    {
+        public AdminClient Admin { get; } = admin;
+
+        public Func<TOperation, CancellationToken, ValueTask<T>> Invoke { get; } = invoke;
+
+        public TOperation Operation { get; } = operation;
+
+        public CancellationToken AttemptToken { get; } = attemptToken;
     }
 
     // For per-group result APIs (Streams group offsets and deletion) that report a group whose

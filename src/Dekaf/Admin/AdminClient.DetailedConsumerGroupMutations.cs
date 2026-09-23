@@ -41,8 +41,8 @@ public sealed partial class AdminClient : IDetailedConsumerGroupMutationAdminCli
         }
         try
         {
-            // token already carries this call's deadline. The attempt token adds a second API timer, and
-            // an attempt that timer ended first would not be reported as a timeout.
+            // token already carries this call's deadline, so the retry loop runs without a budget or
+            // timer of its own (Timeout.Infinite).
             await WithRetryAsync(async _ =>
             {
                 token.ThrowIfCancellationRequested();
