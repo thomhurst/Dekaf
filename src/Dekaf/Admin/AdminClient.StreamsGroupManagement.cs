@@ -907,6 +907,7 @@ public sealed partial class AdminClient
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
         var results = new Dictionary<string, DeleteStreamsGroupResult>(groupIds.Count, StringComparer.Ordinal);
         var ambiguousGroups = new HashSet<string>(StringComparer.Ordinal);
+        var writeContext = new KafkaRequestWriteContext(CancellationToken.None);
         var retryErrors = new Dictionary<string, Protocol.ErrorCode>(groupIds.Count, StringComparer.Ordinal);
 
         try
@@ -955,7 +956,9 @@ public sealed partial class AdminClient
 
                 foreach (var (coordinatorId, coordinatorGroups) in groupsByCoordinator)
                 {
-                    var requestMayHaveBeenSent = false;
+                    // Set once the frame write starts. A failure before it sent nothing, so the
+                    // batch's GROUP_ID_NOT_FOUND on a retry would not mean it was deleted.
+                    writeContext.Reset();
                     try
                     {
                         using var connectionLease = await _connectionPool.LeaseConnectionAsync(
@@ -968,8 +971,9 @@ public sealed partial class AdminClient
                             DeleteGroupsRequest.LowestSupportedVersion,
                             DeleteGroupsRequest.HighestSupportedVersion);
 
-                        requestMayHaveBeenSent = true;
-                        var response = await connection.SendAsync<DeleteGroupsRequest, DeleteGroupsResponse>(
+                        var response = await SendObservingWriteAsync<DeleteGroupsRequest, DeleteGroupsResponse>(
+                            writeContext,
+                            connection,
                             new DeleteGroupsRequest { GroupsNames = coordinatorGroups },
                             apiVersion,
                             cancellationToken).ConfigureAwait(false);
@@ -1010,7 +1014,7 @@ public sealed partial class AdminClient
                         RetryHelper.IsRetriableRequestFailure(exception) &&
                         !cancellationToken.IsCancellationRequested)
                     {
-                        if (requestMayHaveBeenSent)
+                        if (writeContext.WriteStarted)
                             ambiguousGroups.UnionWith(coordinatorGroups);
                         var errorCode = GetRetryErrorCode(exception);
                         foreach (var groupId in coordinatorGroups)

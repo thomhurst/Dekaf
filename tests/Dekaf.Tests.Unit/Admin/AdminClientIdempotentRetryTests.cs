@@ -857,7 +857,8 @@ public sealed class AdminClientIdempotentRetryTests
     [Test]
     public async Task RemoveRaftVoterAsync_VoterNotFoundOnRetry_TreatedAsSuccess()
     {
-        var (admin, connection) = CreateAdminWithMockConnection(ApiKey.RemoveRaftVoter);
+        var (admin, connection) = CreateAdminWithMockConnection(ApiKey.RemoveRaftVoter, ApiKey.DescribeQuorum);
+        SetupQuorumVoters(connection, (1, Guid.NewGuid()));
         var calls = 0;
 
         connection.SendAsync<RemoveRaftVoterRequest, RemoveRaftVoterResponse>(
@@ -875,6 +876,100 @@ public sealed class AdminClientIdempotentRetryTests
         await admin.RemoveRaftVoterAsync(VoterId, Guid.NewGuid());
 
         await Assert.That(calls).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task RemoveRaftVoterAsync_VoterNotFoundOnRetry_WhenQuorumStillHasVoterId_Throws()
+    {
+        // The lost first response may itself have been VOTER_NOT_FOUND (a stale directory ID).
+        // While the quorum still holds this voter ID, the replay's answer is not a removal.
+        var (admin, connection) = CreateAdminWithMockConnection(ApiKey.RemoveRaftVoter, ApiKey.DescribeQuorum);
+        SetupQuorumVoters(connection, (VoterId, Guid.NewGuid()));
+        var calls = 0;
+
+        connection.SendAsync<RemoveRaftVoterRequest, RemoveRaftVoterResponse>(
+                Arg.Any<RemoveRaftVoterRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns<ValueTask<RemoveRaftVoterResponse>>(_ =>
+            {
+                if (Interlocked.Increment(ref calls) == 1)
+                    throw new IOException("response lost");
+
+                return ValueTask.FromResult(new RemoveRaftVoterResponse { ErrorCode = ErrorCode.VoterNotFound });
+            });
+
+        var exception = await Assert.ThrowsAsync<KafkaException>(async () =>
+            await admin.RemoveRaftVoterAsync(VoterId, Guid.NewGuid()));
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.VoterNotFound);
+        await Assert.That(calls).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task DeleteConsumerGroupsAsync_LaterCoordinatorFailsBeforeWrite_DoesNotResendDeletedGroups()
+    {
+        // group-a lives on coordinator 1 and is deleted; group-b's coordinator fails before the
+        // frame write. The retry must not resend group-a, whose GROUP_ID_NOT_FOUND would then be
+        // reported as a failure although the call deleted it.
+        WriteObservingConnection? observed = null;
+        var (admin, connection) = CreateAdminWithConnection(
+            new AdminClientOptions { BootstrapServers = ["localhost:9092"] },
+            inner => observed = new WriteObservingConnection(inner),
+            ApiKey.DeleteGroups);
+        connection.SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
+                Arg.Any<FindCoordinatorRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                var key = call.ArgAt<FindCoordinatorRequest>(0).Key!;
+                return ValueTask.FromResult(new FindCoordinatorResponse
+                {
+                    Coordinators =
+                    [
+                        new Coordinator
+                        {
+                            Key = key,
+                            NodeId = key == "group-a" ? 1 : 2,
+                            Host = "localhost",
+                            Port = 9092,
+                            ErrorCode = ErrorCode.None
+                        }
+                    ]
+                });
+            });
+        var deleted = new HashSet<string>(StringComparer.Ordinal);
+        var sent = new List<string>();
+        var groupBFailures = 0;
+
+        observed!.DeleteGroupsHandler = (request, writeStarted, _) =>
+        {
+            lock (sent)
+            {
+                sent.AddRange(request.GroupsNames);
+                if (request.GroupsNames.Contains("group-b") && groupBFailures++ == 0)
+                    throw new ObjectDisposedException("KafkaConnection", "Connection has been retired");
+
+                writeStarted();
+                var results = new List<DeleteGroupsResponseResult>();
+                foreach (var group in request.GroupsNames)
+                {
+                    results.Add(new DeleteGroupsResponseResult
+                    {
+                        GroupId = group,
+                        ErrorCode = deleted.Add(group) ? ErrorCode.None : ErrorCode.GroupIdNotFound
+                    });
+                }
+
+                return ValueTask.FromResult(new DeleteGroupsResponse { Results = results });
+            }
+        };
+
+        await admin.DeleteConsumerGroupsAsync(["group-a", "group-b"]);
+
+        await Assert.That(sent.Count(static group => group == "group-a")).IsEqualTo(1);
+        await Assert.That(deleted).Contains("group-b");
     }
 
     [Test]
@@ -1274,6 +1369,8 @@ public sealed class AdminClientIdempotentRetryTests
         // not use the write observation sees the same broker.
         public Func<Action, CancellationToken, ValueTask<ExpireDelegationTokenResponse>>? ExpireDelegationTokenHandler { get; set; }
 
+        public Func<DeleteGroupsRequest, Action, CancellationToken, ValueTask<DeleteGroupsResponse>>? DeleteGroupsHandler { get; set; }
+
         public int BrokerId => inner.BrokerId;
         public string Host => inner.Host;
         public int Port => inner.Port;
@@ -1285,7 +1382,9 @@ public sealed class AdminClientIdempotentRetryTests
             where TResponse : IKafkaResponse =>
             request is ExpireDelegationTokenRequest && ExpireDelegationTokenHandler is { } expire
                 ? (ValueTask<TResponse>)(object)expire(static () => { }, cancellationToken)
-                : inner.SendAsync<TRequest, TResponse>(request, apiVersion, cancellationToken);
+                : request is DeleteGroupsRequest deleteGroups && DeleteGroupsHandler is { } deleteGroupsHandler
+                    ? (ValueTask<TResponse>)(object)deleteGroupsHandler(deleteGroups, static () => { }, cancellationToken)
+                    : inner.SendAsync<TRequest, TResponse>(request, apiVersion, cancellationToken);
 
         public ValueTask<TResponse> SendWithWriteObservationAsync<TRequest, TResponse>(
             TRequest request, short apiVersion, Action requestWriteStarted, CancellationToken cancellationToken = default)
@@ -1296,6 +1395,8 @@ public sealed class AdminClientIdempotentRetryTests
                 return (ValueTask<TResponse>)(object)handler(requestWriteStarted, cancellationToken);
             if (request is ExpireDelegationTokenRequest && ExpireDelegationTokenHandler is { } expire)
                 return (ValueTask<TResponse>)(object)expire(requestWriteStarted, cancellationToken);
+            if (request is DeleteGroupsRequest deleteGroups && DeleteGroupsHandler is { } deleteGroupsHandler)
+                return (ValueTask<TResponse>)(object)deleteGroupsHandler(deleteGroups, requestWriteStarted, cancellationToken);
 
             requestWriteStarted();
             return inner.SendAsync<TRequest, TResponse>(request, apiVersion, cancellationToken);

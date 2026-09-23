@@ -1935,17 +1935,23 @@ public sealed partial class AdminClient :
         CancellationToken cancellationToken = default)
     {
         var groupIdList = groupIds.ToList();
-        var deleteMayHaveApplied = false;
+        // Tracked per group because the groups span coordinators: a batch confirmed by one
+        // coordinator is not resent when a later batch fails, and GROUP_ID_NOT_FOUND counts as
+        // deleted only for groups whose batch may have reached its coordinator.
+        var deletedGroups = new HashSet<string>(StringComparer.Ordinal);
+        var ambiguousGroups = new HashSet<string>(StringComparer.Ordinal);
         var writeContext = new KafkaRequestWriteContext(CancellationToken.None);
 
         await WithRetryAsync(async attemptToken =>
         {
             await EnsureInitializedAsync(attemptToken).ConfigureAwait(false);
-            var isRetryAttempt = deleteMayHaveApplied;
             // Find coordinator for each group and batch by coordinator
             var groupsByCoordinator = new Dictionary<int, List<string>>();
             foreach (var groupId in groupIdList)
             {
+                if (deletedGroups.Contains(groupId))
+                    continue;
+
                 var coordinatorId = await FindGroupCoordinatorAsync(groupId, attemptToken).ConfigureAwait(false);
                 if (!groupsByCoordinator.TryGetValue(coordinatorId, out var groups))
                 {
@@ -1982,22 +1988,33 @@ public sealed partial class AdminClient :
                 }
                 catch
                 {
-                    deleteMayHaveApplied |= writeContext.WriteStarted;
+                    if (writeContext.WriteStarted)
+                        ambiguousGroups.UnionWith(groups);
                     throw;
                 }
 
+                // Record every confirmed deletion in the batch before reporting a failure, so a
+                // retry resends only the groups still outstanding.
+                Errors.GroupException? failure = null;
                 foreach (var groupResult in response.Results)
                 {
-                    if (groupResult.ErrorCode != Protocol.ErrorCode.None &&
-                        !(isRetryAttempt && groupResult.ErrorCode == Protocol.ErrorCode.GroupIdNotFound))
+                    if (groupResult.ErrorCode == Protocol.ErrorCode.None ||
+                        (groupResult.ErrorCode == Protocol.ErrorCode.GroupIdNotFound &&
+                         ambiguousGroups.Contains(groupResult.GroupId)))
                     {
-                        throw new Errors.GroupException(groupResult.ErrorCode,
-                            $"DeleteConsumerGroups failed for group '{groupResult.GroupId}': {groupResult.ErrorCode}")
-                        {
-                            GroupId = groupResult.GroupId
-                        };
+                        deletedGroups.Add(groupResult.GroupId);
+                        continue;
                     }
+
+                    failure ??= new Errors.GroupException(groupResult.ErrorCode,
+                        $"DeleteConsumerGroups failed for group '{groupResult.GroupId}': {groupResult.ErrorCode}")
+                    {
+                        GroupId = groupResult.GroupId
+                    };
                 }
+
+                if (failure is not null)
+                    throw failure;
             }
         }, cancellationToken).ConfigureAwait(false);
     }
@@ -4287,9 +4304,9 @@ public sealed partial class AdminClient :
 
         var opts = options ?? new RemoveRaftVoterOptions();
 
-        // A replay after a lost response answers VOTER_NOT_FOUND. The leader matches the voter
-        // ID and directory, so after a send that may have applied that answer means this voter
-        // is no longer in the set, which is the requested outcome.
+        // A replay after a lost response answers VOTER_NOT_FOUND. The lost response may itself have
+        // been that rejection (a stale directory ID), so after a send that may have applied, the
+        // answer counts as success only when the quorum no longer holds this voter ID.
         var removeMayHaveApplied = false;
         var writeContext = new KafkaRequestWriteContext(CancellationToken.None);
 
@@ -4326,8 +4343,12 @@ public sealed partial class AdminClient :
                 throw;
             }
 
-            if (isRetryAttempt && response.ErrorCode == Protocol.ErrorCode.VoterNotFound)
+            if (isRetryAttempt &&
+                response.ErrorCode == Protocol.ErrorCode.VoterNotFound &&
+                !await QuorumHasVoterAsync(voterId, voterDirectoryId: null, attemptToken).ConfigureAwait(false))
+            {
                 return;
+            }
 
             if (response.ErrorCode != Protocol.ErrorCode.None)
             {
@@ -5781,16 +5802,19 @@ public sealed partial class AdminClient :
         return await _connectionPool.LeaseConnectionAsync(controllerId, cancellationToken).ConfigureAwait(false);
     }
 
-    // Only used while resolving an ambiguous AddRaftVoter, never on a message path.
-    private async ValueTask<bool> QuorumHasVoterAsync(int voterId, Guid voterDirectoryId, CancellationToken cancellationToken)
+    // Only used while resolving an ambiguous AddRaftVoter or RemoveRaftVoter, never on a message
+    // path. A null directory ID matches any voter with this ID.
+    private async ValueTask<bool> QuorumHasVoterAsync(int voterId, Guid? voterDirectoryId, CancellationToken cancellationToken)
     {
-        // Runs inside AddRaftVoter's attempt, whose token already carries the call's deadline.
+        // Runs inside the mutation's attempt, whose token already carries the call's deadline.
         var quorum = await DescribeMetadataQuorumCoreAsync(Timeout.Infinite, cancellationToken).ConfigureAwait(false);
         foreach (var voter in quorum.CurrentVoters)
         {
             // DescribeQuorum before v2 carries no directory IDs; the voter ID is all there is.
             if (voter.ReplicaId == voterId &&
-                (voter.ReplicaDirectoryId is not { } directoryId || directoryId == voterDirectoryId))
+                (voterDirectoryId is not { } expected ||
+                 voter.ReplicaDirectoryId is not { } directoryId ||
+                 directoryId == expected))
             {
                 return true;
             }
