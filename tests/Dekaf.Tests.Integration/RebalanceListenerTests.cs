@@ -155,6 +155,102 @@ public class RebalanceListenerTests(KafkaTestContainer kafka) : KafkaIntegration
         await consumer.CommitAsync(deadline.Token);
     }
 
+    [Test]
+    public async Task MemberRemovedDuringAssignment_RejoinCallbackSeekIsApplied()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync();
+        var groupId = $"test-group-{Guid.NewGuid():N}";
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(90));
+
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+        for (var i = 0; i < 5; i++)
+        {
+            await producer.ProduceAsync(
+                new ProducerMessage<string, string> { Topic = topic, Key = "key", Value = $"value-{i}" },
+                deadline.Token);
+        }
+
+        await using var admin = new AdminClientBuilder()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .Build();
+        var listener = new RemoveThenSeekListener(admin, groupId, new TopicPartitionOffset(topic, 0, 3));
+
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithGroupId(groupId)
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithRebalanceListener(listener)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+        consumer.Subscribe(topic);
+
+        // The first assignment's callback removes the member, so the committed-offset fetch that
+        // initializes its position is fenced (UNKNOWN_MEMBER_ID). The consumer rejoins, reports the
+        // loss, and the rejoin's callback seeks, which takes the assignment lock. A real broker may
+        // deliver the rejoin assignment on a later heartbeat, so the lock-order deadlock itself is
+        // pinned by the unit test; this covers the broker protocol, callback order and position.
+        var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(60), deadline.Token);
+
+        await Assert.That(result).IsNotNull();
+        await Assert.That(listener.Lost).IsTrue();
+        await Assert.That(listener.AssignedCalls).IsGreaterThanOrEqualTo(2);
+        await Assert.That(result!.Value.Offset).IsEqualTo(3);
+        await Assert.That(result.Value.Value).IsEqualTo("value-3");
+    }
+
+    private sealed class RemoveThenSeekListener(
+        IAdminClient admin,
+        string groupId,
+        TopicPartitionOffset seek) : IConsumerAwareRebalanceListener
+    {
+        private int _assignedCalls;
+        private int _lost;
+
+        public int AssignedCalls => Volatile.Read(ref _assignedCalls);
+        public bool Lost => Volatile.Read(ref _lost) != 0;
+
+        public async ValueTask OnPartitionsAssignedAsync(
+            IRebalanceConsumer consumer,
+            IEnumerable<TopicPartition> partitions,
+            CancellationToken cancellationToken)
+        {
+            if (!partitions.Any())
+                return;
+            if (Interlocked.Increment(ref _assignedCalls) == 1)
+            {
+                var removal = await admin.RemoveMembersFromConsumerGroupAsync(groupId, new ConsumerGroupMemberRemovalOptions
+                {
+                    Members = [new ConsumerGroupMemberIdentity { MemberId = consumer.MemberId! }],
+                    Reason = "fenced position initialization integration test"
+                }, cancellationToken);
+                if (!removal.Succeeded)
+                    throw new InvalidOperationException("Member removal failed.");
+                return;
+            }
+
+            if (Lost)
+                consumer.Seek(seek);
+        }
+
+        public ValueTask OnPartitionsRevokedAsync(
+            IRebalanceConsumer consumer,
+            IEnumerable<TopicPartition> partitions,
+            CancellationToken cancellationToken) => ValueTask.CompletedTask;
+
+        public ValueTask OnPartitionsLostAsync(
+            IRebalanceConsumer consumer,
+            IEnumerable<TopicPartition> partitions,
+            CancellationToken cancellationToken)
+        {
+            Volatile.Write(ref _lost, 1);
+            return ValueTask.CompletedTask;
+        }
+    }
+
     private sealed class SequenceRebalanceListener : IRebalanceListener
     {
         private readonly TaskCompletionSource _reassignedAfterLoss =
