@@ -341,6 +341,31 @@ public sealed class TransactionTests
     }
 
     /// <summary>
+    /// The abort window suppresses only fences of the identity being replaced. Once the abort has
+    /// installed the new identity (the window is still open until the abort returns), a fence of a
+    /// batch stamped with the new identity is a real fence by another instance and is fatal.
+    /// </summary>
+    [Test]
+    public async Task AbortWindow_FenceOfTheNewlyInstalledIdentity_IsFatal()
+    {
+        await using var producer = BuildTransactionalProducer(TransactionState.AbortingTransaction);
+        const BindingFlags Flags = BindingFlags.Instance | BindingFlags.NonPublic;
+        typeof(KafkaProducer<string, string>).GetMethod("SetAbortReplacingProducerIdentity", Flags)!
+            .Invoke(producer, [true]);
+        typeof(KafkaProducer<string, string>).GetMethod("ApplyTransactionalProducerIdentity", Flags)!
+            .Invoke(producer, [42L, (short)6]);
+
+        var replacedIdentityReportTaken = producer.OnTransactionalBatchFailed(42, 5, ErrorCode.ProducerFenced);
+        await Assert.That(replacedIdentityReportTaken).IsFalse();
+        await Assert.That(producer._transactionState).IsEqualTo(TransactionState.AbortingTransaction);
+
+        var newIdentityReportTaken = producer.OnTransactionalBatchFailed(42, 6, ErrorCode.ProducerFenced);
+        await Assert.That(newIdentityReportTaken).IsTrue();
+        await Assert.That(producer._transactionState).IsEqualTo(TransactionState.FatalError);
+        await Assert.That(producer._lastTransactionError).IsEqualTo(ErrorCode.ProducerFenced);
+    }
+
+    /// <summary>
     /// A producer-wide failure reported by a batch while InitTransactionsAsync waits for
     /// InitProducerId makes the producer fatal; the successful initialization must not overwrite
     /// that with Ready.

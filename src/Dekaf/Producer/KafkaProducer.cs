@@ -250,8 +250,10 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     private readonly System.Threading.Lock _epochBumpLock = new();
     internal readonly System.Threading.Lock _partitionsInTransactionLock = new();
 
-    // See SetAbortReplacingProducerIdentity. Written and read under _partitionsInTransactionLock.
-    private bool _abortReplacingProducerIdentity;
+    // The identity an abort is replacing (see SetAbortReplacingProducerIdentity); -1 when no abort
+    // is replacing one. Written and read under _partitionsInTransactionLock.
+    private long _abortReplacedProducerId = -1;
+    private short _abortReplacedProducerEpoch = -1;
     internal readonly HashSet<TopicPartition> _partitionsInTransaction = [];
     private readonly HashSet<TopicPartition> _pendingTransactionPartitions = [];
     private readonly HashSet<TopicPartition> _transactionPartitionsBeingEnrolled = [];
@@ -3943,14 +3945,20 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     /// Marks the window in which an abort replaces the producer identity: the broker bumps the
     /// epoch (TV2 at EndTxn, TV1 at the follow-up InitProducerId) before the producer installs the
     /// new pair, so a produce of the aborted transaction can be fenced under the identity the
-    /// producer still holds. <see cref="OnTransactionalBatchFailed"/> treats an epoch-scoped
-    /// rejection of that identity as stale while this is set; a real fence by another instance
-    /// fails the abort's own EndTxn or InitProducerId instead. Abort path only.
+    /// producer still holds. The identity being replaced is captured here, and
+    /// <see cref="OnTransactionalBatchFailed"/> treats an epoch-scoped rejection of a batch stamped
+    /// with exactly that identity as stale while it is set. A batch stamped with the identity the
+    /// abort installs is judged normally, so a real fence of it stays fatal; a real fence by
+    /// another instance during the abort fails the abort's own EndTxn or InitProducerId, which
+    /// makes the producer fatal. Abort path only.
     /// </summary>
     private void SetAbortReplacingProducerIdentity(bool replacing)
     {
         lock (_partitionsInTransactionLock)
-            _abortReplacingProducerIdentity = replacing;
+        {
+            _abortReplacedProducerId = replacing ? Volatile.Read(ref _producerId) : -1;
+            _abortReplacedProducerEpoch = replacing ? _producerEpoch : (short)-1;
+        }
     }
 
     private async ValueTask ReinitializeProducerIdAfterAbortAsync(
@@ -5417,10 +5425,14 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             // producer fatal even from a batch of an earlier identity. Anything else from such a
             // batch (a fence of its old epoch, an abortable error) belongs to an ended transaction.
             // While an abort replaces the identity, the broker may already have bumped the epoch
-            // the producer still holds, so an epoch-scoped rejection of it is stale too.
+            // the producer still holds, so an epoch-scoped rejection of a batch stamped with the
+            // identity being replaced is stale too.
+            var stampIsBeingReplaced = _abortReplacedProducerId >= 0
+                && producerId == _abortReplacedProducerId
+                && producerEpoch == _abortReplacedProducerEpoch;
             var earlierIdentity = producerId != Volatile.Read(ref _producerId)
                 || producerEpoch != _producerEpoch
-                || (_abortReplacingProducerIdentity && epochScoped);
+                || (stampIsBeingReplaced && epochScoped);
             if (earlierIdentity && (!fatal || epochScoped))
             {
                 LogTransactionalBatchFailureFromEarlierEpochIgnored(
