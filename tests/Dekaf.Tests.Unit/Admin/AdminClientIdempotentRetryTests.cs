@@ -987,6 +987,26 @@ public sealed class AdminClientIdempotentRetryTests
     }
 
     [Test]
+    public async Task AddRaftVoterAsync_DuplicateVoterOnRetry_WhenQuorumShowsOtherEndpoints_Throws()
+    {
+        // The quorum holds this voter ID and directory, but with other listener endpoints: the
+        // requested endpoints were never installed, so the replay's DUPLICATE_VOTER is an error.
+        var (admin, connection) = CreateAdminWithMockConnection(ApiKey.AddRaftVoter, ApiKey.DescribeQuorum);
+        var directoryId = Guid.NewGuid();
+        var calls = SetupAddRaftVoterLostResponse(connection);
+        SetupQuorumVoters(
+            connection,
+            new RaftVoterEndpoint { Name = "CONTROLLER", Host = "old-controller-3", Port = 9093 },
+            (VoterId, directoryId));
+
+        var exception = await Assert.ThrowsAsync<KafkaException>(async () =>
+            await admin.AddRaftVoterAsync(VoterId, directoryId, [VoterEndpoint]));
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.DuplicateVoter);
+        await Assert.That(calls()).IsEqualTo(2);
+    }
+
+    [Test]
     public async Task AddRaftVoterAsync_DuplicateVoterOnRetry_WhenQuorumShowsOtherDirectory_Throws()
     {
         var (admin, connection) = CreateAdminWithMockConnection(ApiKey.AddRaftVoter, ApiKey.DescribeQuorum);
@@ -1559,7 +1579,14 @@ public sealed class AdminClientIdempotentRetryTests
         return () => Volatile.Read(ref calls);
     }
 
-    private static void SetupQuorumVoters(IKafkaConnection connection, params (int Id, Guid DirectoryId)[] voters)
+    private static void SetupQuorumVoters(IKafkaConnection connection, params (int Id, Guid DirectoryId)[] voters) =>
+        SetupQuorumVoters(connection, VoterEndpoint, voters);
+
+    // Each voter advertises the given endpoint, as DescribeQuorum v2 reports it.
+    private static void SetupQuorumVoters(
+        IKafkaConnection connection,
+        RaftVoterEndpoint advertised,
+        params (int Id, Guid DirectoryId)[] voters)
     {
         connection.SendAsync<DescribeQuorumRequest, DescribeQuorumResponse>(
                 Arg.Any<DescribeQuorumRequest>(),
@@ -1594,7 +1621,21 @@ public sealed class AdminClientIdempotentRetryTests
                         ]
                     }
                 ],
-                Nodes = []
+                Nodes = voters
+                    .Select(voter => new DescribeQuorumResponseNode
+                    {
+                        NodeId = voter.Id,
+                        Listeners =
+                        [
+                            new RaftVoterEndpointData
+                            {
+                                Name = advertised.Name,
+                                Host = advertised.Host,
+                                Port = (ushort)advertised.Port
+                            }
+                        ]
+                    })
+                    .ToList()
             }));
     }
 

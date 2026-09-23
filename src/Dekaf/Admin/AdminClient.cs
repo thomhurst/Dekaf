@@ -4621,7 +4621,7 @@ public sealed partial class AdminClient :
 
             if (isRetryAttempt &&
                 response.ErrorCode == Protocol.ErrorCode.DuplicateVoter &&
-                await QuorumHasVoterAsync(voterId, voterDirectoryId, attemptToken).ConfigureAwait(false))
+                await QuorumHasVoterAsync(voterId, voterDirectoryId, attemptToken, listenerData).ConfigureAwait(false))
             {
                 return;
             }
@@ -6329,21 +6329,79 @@ public sealed partial class AdminClient :
     }
 
     // Only used while resolving an ambiguous AddRaftVoter or RemoveRaftVoter, never on a message
-    // path. A null directory ID matches any voter with this ID.
-    private async ValueTask<bool> QuorumHasVoterAsync(int voterId, Guid? voterDirectoryId, CancellationToken cancellationToken)
+    // path. A null directory ID matches any voter with this ID. With expected listeners (an
+    // AddRaftVoter replay), the voter must also advertise exactly those endpoints, in any order:
+    // a voter with the same ID and directory but other endpoints means the requested endpoints
+    // were never installed. DescribeQuorum before v2 reports neither directories nor endpoints,
+    // so such a replay cannot be confirmed and the broker's error surfaces instead.
+    private async ValueTask<bool> QuorumHasVoterAsync(
+        int voterId,
+        Guid? voterDirectoryId,
+        CancellationToken cancellationToken,
+        IReadOnlyList<RaftVoterEndpointData>? expectedListeners = null)
     {
         // Runs inside the mutation's attempt, whose token already carries the call's deadline.
         var quorum = await DescribeMetadataQuorumCoreAsync(Timeout.Infinite, cancellationToken).ConfigureAwait(false);
         foreach (var voter in quorum.CurrentVoters)
         {
-            // DescribeQuorum before v2 carries no directory IDs; the voter ID is all there is.
-            if (voter.ReplicaId == voterId &&
-                (voterDirectoryId is not { } expected ||
-                 voter.ReplicaDirectoryId is not { } directoryId ||
-                 directoryId == expected))
+            if (voter.ReplicaId != voterId)
+                continue;
+
+            if (expectedListeners is null)
+            {
+                // DescribeQuorum before v2 carries no directory IDs; the voter ID is all there is.
+                if (voterDirectoryId is not { } expected ||
+                    voter.ReplicaDirectoryId is not { } directoryId ||
+                    directoryId == expected)
+                {
+                    return true;
+                }
+
+                continue;
+            }
+
+            if (voter.ReplicaDirectoryId == voterDirectoryId &&
+                QuorumNodeHasListeners(quorum.Nodes, voterId, expectedListeners))
             {
                 return true;
             }
+        }
+
+        return false;
+    }
+
+    private static bool QuorumNodeHasListeners(
+        IReadOnlyList<QuorumNode> nodes,
+        int nodeId,
+        IReadOnlyList<RaftVoterEndpointData> expected)
+    {
+        foreach (var node in nodes)
+        {
+            if (node.NodeId != nodeId)
+                continue;
+
+            if (node.Listeners.Count != expected.Count)
+                return false;
+
+            foreach (var listener in expected)
+            {
+                var found = false;
+                foreach (var advertised in node.Listeners)
+                {
+                    if (string.Equals(advertised.Name, listener.Name, StringComparison.Ordinal) &&
+                        string.Equals(advertised.Host, listener.Host, StringComparison.OrdinalIgnoreCase) &&
+                        advertised.Port == listener.Port)
+                    {
+                        found = true;
+                        break;
+                    }
+                }
+
+                if (!found)
+                    return false;
+            }
+
+            return true;
         }
 
         return false;
