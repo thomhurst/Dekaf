@@ -848,10 +848,19 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     private ProduceContinuationMode TransactionContinuationMode
         => _options.InlineTransactionCompletions ? ProduceContinuationMode.Inline : ProduceContinuationMode.Async;
 
+    /// <summary>
+    /// The transactional append generation a new <see cref="Transaction{TKey, TValue}"/> handle is
+    /// bound to. Only an abort advances it, and an abort ends the handle's transaction, so every
+    /// produce through the handle carries this value to the append commit point and is rejected
+    /// once that transaction has started aborting, however the produce raced the abort.
+    /// </summary>
+    internal int TransactionHandleGeneration => _accumulator.TransactionalAppendGeneration;
+
     internal ValueTask<RecordMetadata> ProduceTransactionAsync(
         ProducerMessage<TKey, TValue> message,
+        int transactionalGeneration,
         CancellationToken cancellationToken)
-        => ProduceAsync(message, TransactionContinuationMode, cancellationToken);
+        => ProduceAsync(message, TransactionContinuationMode, transactionalGeneration, cancellationToken);
 
     /// <summary>
     /// Componentwise transactional produce: routes through the message-free fast path so the
@@ -863,6 +872,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         string topic,
         TKey? key,
         TValue value,
+        int transactionalGeneration,
         CancellationToken cancellationToken)
         => ProduceAsync(
             topic,
@@ -872,11 +882,20 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             partition: null,
             timestamp: null,
             TransactionContinuationMode,
+            transactionalGeneration,
             cancellationToken);
+
+    // Read before ProduceAsyncCore's state check (see ReadAdmissionTransactionalGeneration).
+    private ValueTask<RecordMetadata> ProduceAsync(
+        ProducerMessage<TKey, TValue> message,
+        ProduceContinuationMode continuationMode,
+        CancellationToken cancellationToken)
+        => ProduceAsync(message, continuationMode, ReadAdmissionTransactionalGeneration(), cancellationToken);
 
     private ValueTask<RecordMetadata> ProduceAsync(
         ProducerMessage<TKey, TValue> message,
         ProduceContinuationMode continuationMode,
+        int transactionalGeneration,
         CancellationToken cancellationToken)
     {
         // The retry wrapper's continuation runs retry-policy code (classification, delay
@@ -887,11 +906,10 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         {
             if (continuationMode == ProduceContinuationMode.InlineWhenDirect)
                 continuationMode = ProduceContinuationMode.Async;
-            return ProduceAsyncWithRetry(message, continuationMode, cancellationToken);
+            return ProduceAsyncWithRetry(message, continuationMode, transactionalGeneration, cancellationToken);
         }
 
-        // Read before ProduceAsyncCore's state check (see ReadAdmissionTransactionalGeneration).
-        return ProduceAsyncCore(message, continuationMode, ReadAdmissionTransactionalGeneration(), cancellationToken);
+        return ProduceAsyncCore(message, continuationMode, transactionalGeneration, cancellationToken);
     }
 
     /// <param name="transactionalGeneration">
@@ -1161,6 +1179,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         }
     }
 
+    // Read before ProduceAsyncCore's state check (see ReadAdmissionTransactionalGeneration).
     private ValueTask<RecordMetadata> ProduceAsync(
         string topic,
         TKey? key,
@@ -1169,6 +1188,20 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         int? partition,
         DateTimeOffset? timestamp,
         ProduceContinuationMode continuationMode,
+        CancellationToken cancellationToken)
+        => ProduceAsync(
+            topic, key, value, headers, partition, timestamp, continuationMode,
+            ReadAdmissionTransactionalGeneration(), cancellationToken);
+
+    private ValueTask<RecordMetadata> ProduceAsync(
+        string topic,
+        TKey? key,
+        TValue value,
+        Headers? headers,
+        int? partition,
+        DateTimeOffset? timestamp,
+        ProduceContinuationMode continuationMode,
+        int transactionalGeneration,
         CancellationToken cancellationToken)
     {
         if (_retryPolicy is not null
@@ -1184,10 +1217,11 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 Headers = headers,
                 Partition = partition,
                 Timestamp = timestamp
-            }, continuationMode, cancellationToken);
+            }, continuationMode, transactionalGeneration, cancellationToken);
         }
 
-        return ProduceAsyncCore(topic, key, value, headers, partition, timestamp, continuationMode, cancellationToken);
+        return ProduceAsyncCore(
+            topic, key, value, headers, partition, timestamp, continuationMode, transactionalGeneration, cancellationToken);
     }
 
     private ValueTask<RecordMetadata> ProduceAsyncCore(
@@ -1198,9 +1232,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         int? partition,
         DateTimeOffset? timestamp,
         ProduceContinuationMode continuationMode,
+        int transactionalGeneration,
         CancellationToken cancellationToken)
     {
-        var transactionalGeneration = ReadAdmissionTransactionalGeneration();
         ThrowIfProduceCannotStart();
 
         // Check cancellation upfront before any work
@@ -1379,12 +1413,13 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     private async ValueTask<RecordMetadata> ProduceAsyncWithRetry(
         ProducerMessage<TKey, TValue> message,
         ProduceContinuationMode continuationMode,
+        int transactionalGeneration,
         CancellationToken cancellationToken)
     {
-        // Captured once, before ProduceAsyncCore's state check admits the first attempt, and
-        // passed to every attempt: a retry after an abort started would otherwise be admitted
-        // again in the next transaction's state and read that transaction's generation.
-        var transactionalGeneration = CaptureTransactionalAppendGeneration();
+        // transactionalGeneration was read once, before ProduceAsyncCore's state check admits the
+        // first attempt (or bound to the transaction handle), and is passed to every attempt: a
+        // retry after an abort started would otherwise be admitted again in the next
+        // transaction's state and read that transaction's generation.
         var attempt = 0;
         while (true)
         {
@@ -7815,12 +7850,19 @@ public sealed partial class KafkaProducer<TKey, TValue> :
 internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
 {
     private readonly KafkaProducer<TKey, TValue> _producer;
+
+    // The transactional append generation this handle's transaction runs in, read when the
+    // handle is created (BeginTransaction). Every produce through the handle carries it to the
+    // append commit point, so a produce that passes this handle's checks while an abort starts is
+    // rejected there instead of reading the post-abort generation at the producer's admission.
+    private readonly int _transactionalGeneration;
     private bool _committed;
     private bool _aborted;
 
     public Transaction(KafkaProducer<TKey, TValue> producer)
     {
         _producer = producer;
+        _transactionalGeneration = producer.TransactionHandleGeneration;
     }
 
     private void ThrowIfProducerDisposed()
@@ -7839,7 +7881,7 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
 
             // Partition registration with AddPartitionsToTxn is handled automatically
             // by BrokerSender before the ProduceRequest is sent to the broker.
-            return _producer.ProduceTransactionAsync(message, cancellationToken);
+            return _producer.ProduceTransactionAsync(message, _transactionalGeneration, cancellationToken);
         }
         catch (OperationCanceledException exception)
         {
@@ -7864,7 +7906,7 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
             // Componentwise fast path: no ProducerMessage allocation per message (issue #2471).
             // Partition registration with AddPartitionsToTxn is handled automatically
             // by BrokerSender before the ProduceRequest is sent to the broker.
-            return _producer.ProduceTransactionAsync(topic, key, value, cancellationToken);
+            return _producer.ProduceTransactionAsync(topic, key, value, _transactionalGeneration, cancellationToken);
         }
         catch (OperationCanceledException exception)
         {

@@ -538,6 +538,44 @@ public sealed class TransactionalProduceFaultTests
         await Assert.That(harness.Broker.ProducedBatches.Count).IsEqualTo(0);
     }
 
+    /// <summary>
+    /// A transaction handle is bound to the generation it was created in. A produce through the
+    /// handle that passes the handle's own checks while an abort starts (here the abort's
+    /// generation change lands between those checks and the producer's admission) carries the
+    /// handle's generation and is rejected at the append commit point; reading the generation at
+    /// the producer's admission would pick up the post-abort value and let the record through.
+    /// </summary>
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    [Timeout(60_000)]
+    public async Task TransactionHandleProduce_AfterTheHandlesGenerationWasAborted_IsRejected(
+        bool componentwise,
+        CancellationToken cancellationToken)
+    {
+        await using var harness = await TransactionalProduceHarness.CreateAsync(
+            transactionVersion: 2,
+            produceError: static (_, _) => ErrorCode.None);
+
+        await using var transaction = harness.Producer.BeginTransaction();
+        var accumulator = harness.Producer.RecordAccumulator;
+        // An abort's generation change after the handle was created; the transaction state is
+        // left as it was, as it is for a produce that already passed the handle's checks.
+        accumulator.CloseTransactionalAppends();
+        accumulator.ReopenTransactionalAppends();
+
+        var exception = await Assert.That(async () =>
+            {
+                if (componentwise)
+                    await transaction.ProduceAsync(Topic, "key", "value", cancellationToken);
+                else
+                    await transaction.ProduceAsync(Message(partition: 0), cancellationToken);
+            })
+            .Throws<ProduceException>();
+        await Assert.That(exception!.Kind).IsEqualTo(ProduceErrorKind.TransactionAborted);
+        await Assert.That(harness.Broker.ProducedBatches.Count).IsEqualTo(0);
+    }
+
     private sealed class ImmediateRetryPolicy : Dekaf.Retry.IRetryPolicy
     {
         public TimeSpan? GetNextDelay(int attemptNumber, Exception exception) =>
