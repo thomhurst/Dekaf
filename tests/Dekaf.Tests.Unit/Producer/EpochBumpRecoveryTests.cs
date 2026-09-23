@@ -584,6 +584,39 @@ public sealed class EpochBumpRecoveryTests
         await accumulator.DisposeAsync();
     }
 
+    [Test]
+    public async Task GetAndIncrementSequence_OutdatedSnapshot_StampsUnderTheStateThePartitionRestartedUnder()
+    {
+        var options = new ProducerOptions { BootstrapServers = ["localhost:9092"] };
+        var accumulator = new RecordAccumulator(options);
+        var previous = new ProducerIdAndEpoch(100, 1);
+        var current = new ProducerIdAndEpoch(100, 2);
+        var untouchedPartition = new TopicPartition("test-topic", 1);
+        accumulator.PublishProducerState(previous);
+        accumulator.GetAndIncrementSequence(Tp0, 10, previous, out _);
+        accumulator.GetAndIncrementSequence(untouchedPartition, 10, previous, out _);
+        accumulator.PublishProducerState(current);
+
+        // Another send loop restarts Tp0 under the current state.
+        await Assert.That(accumulator.GetAndIncrementSequence(Tp0, 3, current, out var restarted, out var restartState)).IsEqualTo(0);
+        await Assert.That(restarted).IsTrue();
+        await Assert.That(restartState).IsSameReferenceAs(current);
+
+        // A loop still holding the previous snapshot gets the current state's next sequence, and
+        // the state it belongs to, instead of a current-state sequence under the previous epoch.
+        await Assert.That(accumulator.GetAndIncrementSequence(Tp0, 2, previous, out restarted, out var stampState)).IsEqualTo(3);
+        await Assert.That(restarted).IsFalse();
+        await Assert.That(stampState).IsSameReferenceAs(current);
+
+        // A partition not restarted yet keeps the snapshot's stamp and counter: an outdated
+        // snapshot never restarts it.
+        await Assert.That(accumulator.GetAndIncrementSequence(untouchedPartition, 2, previous, out restarted, out stampState)).IsEqualTo(10);
+        await Assert.That(restarted).IsFalse();
+        await Assert.That(stampState).IsSameReferenceAs(previous);
+
+        await accumulator.DisposeAsync();
+    }
+
     #endregion
 
     #region PartitionInflightTracker.IsHeadOfLine Tests

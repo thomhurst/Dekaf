@@ -1460,13 +1460,35 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// epoch; without the wrap its base sequence went negative, which the broker rejects and
     /// the send loop reads as "not assigned yet".
     /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal int GetAndIncrementSequence(
         TopicPartition topicPartition, int recordCount, ProducerIdAndEpoch? state, out bool restarted)
+        => GetAndIncrementSequence(topicPartition, recordCount, state, out restarted, out _);
+
+    /// <summary>
+    /// <see cref="GetAndIncrementSequence(TopicPartition, int, ProducerIdAndEpoch?, out bool)"/>,
+    /// also reporting in <paramref name="stampState"/> the producer state the returned sequence
+    /// belongs to, which the batch must be stamped with. That is <paramref name="state"/>, except
+    /// when the caller's snapshot is out of date and another send loop has already restarted the
+    /// partition under the current state (a leader move during a bump, #3385): the counter then
+    /// hands out sequences of the current state, and stamping them with the caller's older
+    /// epoch would put a sequence of one epoch under another on the wire. The caller's batch
+    /// was never appended (it has no sequence of the previous state in flight), so it simply
+    /// follows the restarted partition under the current state. Same fast path as the overload.
+    /// </summary>
+    internal int GetAndIncrementSequence(
+        TopicPartition topicPartition,
+        int recordCount,
+        ProducerIdAndEpoch? state,
+        out bool restarted,
+        out ProducerIdAndEpoch? stampState)
     {
         var sequence = _sequenceNumbers.GetOrAdd(topicPartition, static _ => new PartitionSequence());
-        restarted = state is not null
-            && !ReferenceEquals(Volatile.Read(ref sequence.ResetState), state)
-            && TryRestartSequence(sequence, state);
+        stampState = state;
+        if (state is not null && !ReferenceEquals(Volatile.Read(ref sequence.ResetState), state))
+            return GetAndIncrementSequenceUnderOtherState(sequence, recordCount, ref stampState, out restarted);
+
+        restarted = false;
         return unchecked(Interlocked.Add(ref sequence.Next, recordCount) - recordCount) & int.MaxValue;
     }
 
@@ -1495,19 +1517,37 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         => _sequenceNumbers.TryGetValue(topicPartition, out var sequence)
             && !ReferenceEquals(Volatile.Read(ref sequence.ResetState), state);
 
-    private bool TryRestartSequence(PartitionSequence sequence, ProducerIdAndEpoch state)
+    /// <summary>
+    /// The partition was last restarted under a state other than <paramref name="state"/>.
+    /// Restarts it when <paramref name="state"/> is current. A caller that read the producer state
+    /// before another send loop advanced it must not zero sequences that may already be in flight
+    /// under the newer state; when that loop already restarted the partition under the current
+    /// state, the sequence is one of the current state and <paramref name="state"/> becomes it.
+    /// The increment happens under the lock, so no restart comes between the decision and the
+    /// sequence. Runs once per partition per state, and for callers holding an outdated snapshot.
+    /// </summary>
+    private int GetAndIncrementSequenceUnderOtherState(
+        PartitionSequence sequence, int recordCount, ref ProducerIdAndEpoch? state, out bool restarted)
     {
         lock (_sequenceRestartLock)
         {
-            // Already restarted under this state, or the caller read the producer state before
-            // another send loop advanced it and must not zero sequences that may already be in
-            // flight under the newer state.
-            if (ReferenceEquals(sequence.ResetState, state) || !ReferenceEquals(state, _currentProducerState))
-                return false;
+            var resetState = sequence.ResetState;
+            restarted = false;
+            if (ReferenceEquals(state, _currentProducerState))
+            {
+                if (!ReferenceEquals(resetState, state))
+                {
+                    Interlocked.Exchange(ref sequence.Next, 0);
+                    Volatile.Write(ref sequence.ResetState, state);
+                    restarted = true;
+                }
+            }
+            else if (resetState is not null && ReferenceEquals(resetState, _currentProducerState))
+            {
+                state = resetState;
+            }
 
-            Interlocked.Exchange(ref sequence.Next, 0);
-            Volatile.Write(ref sequence.ResetState, state);
-            return true;
+            return unchecked(Interlocked.Add(ref sequence.Next, recordCount) - recordCount) & int.MaxValue;
         }
     }
 

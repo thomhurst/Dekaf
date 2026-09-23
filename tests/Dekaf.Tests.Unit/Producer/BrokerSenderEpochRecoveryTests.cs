@@ -660,6 +660,62 @@ public sealed class BrokerSenderEpochRecoveryTests : ScriptedProduceResponseFixt
     }
 
     [Test]
+    public async Task BatchStampedUnderOutdatedSnapshot_AfterAnotherLoopRestartedItsPartition_FollowsTheRestartUnderTheNewEpoch(CancellationToken cancellationToken)
+    {
+        // A send loop reads its producer state snapshot once per iteration. When the epoch is
+        // bumped after that read, and another loop (the partition's new leader after a move)
+        // restarts the partition at sequence 0 under the new epoch before this loop registers the
+        // batch it coalesced, this loop still stamps under the old snapshot. It used to take the
+        // next sequence of the new epoch's counter with the old epoch: a sequence of one epoch
+        // under another. The batch was never on the wire, so it follows the restart instead.
+        // The snapshot is pinned here to make that window deterministic.
+        var responses = Enumerable.Range(0, 1).Select(_ => NewResponseSource()).ToArray();
+        var (pool, connection) = CreateMockConnection(new Queue<TaskCompletionSource<ProduceResponse>>(responses));
+        connection.CaptureProduceRequests = true;
+        cancellationToken = GuardUnscriptedSends(cancellationToken);
+        var options = CreateOptions();
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var snapshot = new ProducerIdAndEpoch(1234, 5);
+        accumulator.PublishProducerState(snapshot);
+        var sender = CreateSender(
+            pool, options, accumulator, (_, _, _, _, _) => { },
+            getProducerState: () => snapshot);
+
+        try
+        {
+            // Partition 1 produced 4 records under epoch 5, all answered.
+            accumulator.GetAndIncrementSequence(Partition1, 4, snapshot, out _);
+
+            // The bump to epoch 6, and the other loop's restart of partition 1: (epoch 6, 0..2).
+            var bumped = new ProducerIdAndEpoch(1234, 6);
+            accumulator.PublishProducerState(bumped);
+            await Assert.That(accumulator.GetAndIncrementSequence(Partition1, 3, bumped, out var restarted)).IsEqualTo(0);
+            await Assert.That(restarted).IsTrue();
+
+            // This loop's batch, sealed under epoch 5, goes out as (epoch 6, sequence 3), not (epoch 5, 3).
+            var (batch, delivery) = CreateTrackedBatch(valueTaskSourcePool, Partition1, producerId: 1234, producerEpoch: 5, recordCount: 2);
+            sender.Enqueue(batch);
+            await WaitForSendsAsync(connection, 1, cancellationToken);
+            await Assert.That(StampsOf(connection, request: 0)).IsEquivalentTo([(1, 2, 1234L, (short)6, 3)]);
+
+            responses[0].SetResult(CreateSuccessResponse(Topic, 1, baseOffset: 7));
+            await Assert.That((await delivery.WaitAsync(cancellationToken)).Offset).IsEqualTo(7L);
+            await Assert.That(accumulator.GetAndIncrementSequence(Partition1, 1, bumped, out _)).IsEqualTo(5);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            Assert.Fail($"A wait was cancelled before the send loop got there. Requests written so far:{Environment.NewLine}{DescribeRequests(connection)}");
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
+    [Test]
     public async Task UnaffectedPartition_WithRequestPendingUnderOldProducerId_IsHeldUntilItIsAnswered(CancellationToken cancellationToken)
     {
         // The producer ID reset is the same transition as a bump: a partition with a request still
