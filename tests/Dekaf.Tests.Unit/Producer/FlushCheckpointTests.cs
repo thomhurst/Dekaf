@@ -409,6 +409,166 @@ public sealed class FlushCheckpointTests
         }
     }
 
+    [Test]
+    public async Task FlushCheckpoint_CoversBatchAsSoonAsItIsCountedInFlight()
+    {
+        // FlushAsync decides to drain the pipeline from the in-flight count, then captures its
+        // checkpoint. A batch the count already includes must be covered by that checkpoint;
+        // before the fix the count was incremented before the batch got its entry sequence.
+        const string topic = "flush-checkpoint-counted";
+        var accumulator = new RecordAccumulator(CreateOptions());
+        AccumulatorTestHelpers.KeepBatchesOpenDespiteAppLimitedBypass(accumulator);
+        var countSeen = -1L;
+        var checkpointReached = true;
+        accumulator.AfterBatchCountedInFlightForTest = () =>
+        {
+            countSeen = accumulator.InFlightBatchCount;
+            checkpointReached = accumulator.IsFlushCheckpointReached(accumulator.CaptureFlushCheckpointForTest());
+        };
+        ReadyBatch? batch = null;
+
+        try
+        {
+            await Assert.That(await AccumulatorTestHelpers.AppendNullRecordAsync(
+                accumulator, topic, partition: 0, partitionCount: 1)).IsTrue();
+            await AccumulatorTestHelpers.SealAllAsync(accumulator);
+            accumulator.AfterBatchCountedInFlightForTest = null;
+
+            await Assert.That(countSeen).IsEqualTo(1);
+            await Assert.That(checkpointReached).IsFalse()
+                .Because("a checkpoint captured once the batch is counted must wait for it");
+
+            batch = await DrainAsync(accumulator, new TopicPartition(topic, 0));
+        }
+        finally
+        {
+            accumulator.AfterBatchCountedInFlightForTest = null;
+            if (batch is not null)
+                CompleteAndReturn(accumulator, batch, baseOffset: 0);
+
+            await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task FlushAsync_WaitsForHandoffQueuedBeforeAppendWorkerTasksArePublished()
+    {
+        // The first EnqueueAppend sets the started flag before it publishes the worker tasks.
+        // Another producer can queue a record in that window and return; a flush that starts
+        // then must still wait for the record.
+        const string topic = "flush-checkpoint-handoff-startup";
+        var accumulator = new RecordAccumulator(CreateOptions());
+        AccumulatorTestHelpers.KeepBatchesOpenDespiteAppLimitedBypass(accumulator);
+        using var workerCts = new CancellationTokenSource();
+        accumulator.StartAppendWorkers(workerCts.Token);
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
+        var starter = pool.Rent();
+        var starterTask = starter.Task;
+        var concurrent = pool.Rent();
+        var concurrentTask = concurrent.Task;
+        Task? flushTask = null;
+        var flushCompletedBeforePublish = true;
+        accumulator.BeforeAppendWorkerTasksPublishedForTest = () =>
+        {
+            accumulator.BeforeAppendWorkerTasksPublishedForTest = null;
+            EnqueueNullRecord(accumulator, topic, partition: 0, concurrent);
+            flushTask = accumulator.FlushAsync(CancellationToken.None).AsTask();
+            flushCompletedBeforePublish = flushTask.IsCompleted;
+        };
+        var nextOffset = 0L;
+
+        try
+        {
+            EnqueueNullRecord(accumulator, topic, partition: 0, starter);
+
+            await Assert.That(flushTask).IsNotNull();
+            await Assert.That(flushCompletedBeforePublish).IsFalse()
+                .Because("the flush started after the concurrent record was queued");
+
+            // Deliver what the flush seals until it completes. Its completion is asynchronous,
+            // so wait for either instead of expecting another batch after each delivery.
+            var topicPartition = new TopicPartition(topic, 0);
+            while (!flushTask!.IsCompleted)
+            {
+                ReadyBatch? batch = null;
+                await TestWait.UntilAsync(
+                    () => flushTask.IsCompleted || accumulator.TryDrainBatch(topicPartition, out batch), Bound);
+                if (batch is null)
+                    continue;
+
+                var recordCount = batch.RecordCount;
+                CompleteAndReturn(accumulator, batch, nextOffset);
+                nextOffset += recordCount;
+            }
+
+            await flushTask.WaitAsync(Bound);
+            await Assert.That(concurrentTask.IsCompletedSuccessfully).IsTrue()
+                .Because("the flush covers the record queued before it started");
+            _ = await concurrentTask;
+
+            if (!starterTask.IsCompleted)
+            {
+                await TestWait.UntilAsync(() => accumulator.UnsealedBatchCount > 0, Bound);
+                await AccumulatorTestHelpers.SealAllAsync(accumulator);
+                var last = await DrainAsync(accumulator, new TopicPartition(topic, 0));
+                CompleteAndReturn(accumulator, last, nextOffset);
+            }
+
+            _ = await starterTask;
+        }
+        finally
+        {
+            accumulator.BeforeAppendWorkerTasksPublishedForTest = null;
+            await accumulator.DisposeAsync();
+            await pool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task FlushAsync_WaitingOnBlockedAppendWorker_CompletesWhenDisposed()
+    {
+        // A flush waiting for an append worker stops waiting when the accumulator is disposed,
+        // even while the worker stays blocked; disposal fails what the worker still holds.
+        const string topic = "flush-checkpoint-handoff-dispose";
+        var accumulator = new RecordAccumulator(CreateOptions());
+        AccumulatorTestHelpers.KeepBatchesOpenDespiteAppLimitedBypass(accumulator);
+        using var workerCts = new CancellationTokenSource();
+        accumulator.StartAppendWorkers(workerCts.Token);
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
+        using var releaseWorker = new ManualResetEventSlim(false);
+        var workerEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        accumulator.BeforeAppendWorkerAppendForTest = () =>
+        {
+            workerEntered.TrySetResult();
+            // Blocks longer than Bound so the flush cannot finish by outwaiting the worker.
+            releaseWorker.Wait(Bound * 3);
+        };
+        Task? disposeTask = null;
+
+        try
+        {
+            var completion = pool.Rent();
+            EnqueueNullRecord(accumulator, topic, partition: 0, completion);
+            await workerEntered.Task.WaitAsync(Bound);
+
+            var flushTask = accumulator.FlushAsync(CancellationToken.None).AsTask();
+            await Assert.That(flushTask.IsCompleted).IsFalse();
+
+            // DisposeAsync itself waits (bounded) for the blocked worker, so it is not awaited
+            // until the worker is released below.
+            disposeTask = accumulator.DisposeAsync().AsTask();
+
+            await flushTask.WaitAsync(Bound);
+        }
+        finally
+        {
+            releaseWorker.Set();
+            accumulator.BeforeAppendWorkerAppendForTest = null;
+            await (disposeTask ?? accumulator.DisposeAsync().AsTask());
+            await pool.DisposeAsync();
+        }
+    }
+
     private static ProducerOptions CreateOptions() => new()
     {
         BootstrapServers = ["localhost:9092"],

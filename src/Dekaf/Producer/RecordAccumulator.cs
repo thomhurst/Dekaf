@@ -1320,6 +1320,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     internal Action? BeforeCompletedBatchEnqueueForTest;
     internal Action? BeforeCompletedBatchPublishForTest;
     internal Action? BeforeAppendWorkerAppendForTest;
+    internal Action? AfterBatchCountedInFlightForTest;
+    internal Action? BeforeAppendWorkerTasksPublishedForTest;
     internal Action? AfterTwoPhaseRotationCompletedForTest;
     internal Action? PurgePendingAppendsGuardHeldForTest;
     internal Action? BeforeFailUnpublishedCompletedBatchForTest;
@@ -3235,6 +3237,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         if (Interlocked.CompareExchange(ref _appendWorkersStarted, 1, 0) != 0)
             return;
+
+        // Other producers can already queue items here, before the tasks below are published.
+        BeforeAppendWorkerTasksPublishedForTest?.Invoke();
 
         // Build the array locally, then publish atomically so DisposeAsync
         // never observes a partially-populated array with null Task entries.
@@ -6394,10 +6399,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         AddPartitionQueueBytes(pd, batch.DataSize);
 
-        // Counter first, list second. If a batch races between the counter increment
-        // and the list add, the sweep will miss it in the snapshot — but that's acceptable
-        // because the sweep is defense-in-depth at 3× delivery timeout and the batch will
-        // be caught on the next sweep interval.
         if (_options.EnableDeliveryDiagnostics)
         {
             batch.EnableDeliveryDiagnostics();
@@ -6405,8 +6406,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         }
         batch.DeliveryAccountingArmed = 1;
         Interlocked.Increment(ref _undeliveredBatchCount);
-        Interlocked.Increment(ref _inFlightBatchCount);
+        // Links the batch and counts it in _inFlightBatchCount in one critical section.
         InFlightBatchListAdd(batch, replaces);
+        AfterBatchCountedInFlightForTest?.Invoke();
     }
 
     /// <summary>
@@ -6918,9 +6920,16 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     }
 
     /// <summary>
-    /// Adds a batch to the in-flight tracking list (intrusive doubly-linked list).
-    /// Zero-allocation: uses embedded prev/next pointers in ReadyBatch.
+    /// Adds a batch to the in-flight tracking list (intrusive doubly-linked list) and counts
+    /// it in <see cref="_inFlightBatchCount"/>. Zero-allocation: uses embedded prev/next
+    /// pointers in ReadyBatch.
     /// </summary>
+    /// <remarks>
+    /// The count is incremented after the entry sequence is written and before the lock is
+    /// released, so a reader that sees the count include this batch also sees a checkpoint
+    /// (<see cref="CaptureFlushCheckpoint"/>) that covers it (#3386), and no exit can remove
+    /// the batch before it is counted.
+    /// </remarks>
     private void InFlightBatchListAdd(ReadyBatch batch, ReadyBatch? replaces)
     {
         var lockTaken = false;
@@ -6944,6 +6953,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     _inFlightBatchTail = batch;
 
                 replaces.InFlightNext = batch;
+                Interlocked.Increment(ref _inFlightBatchCount);
                 return;
             }
 
@@ -6959,6 +6969,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 _inFlightBatchHead = batch;
 
             _inFlightBatchTail = batch;
+            Interlocked.Increment(ref _inFlightBatchCount);
         }
         finally
         {
@@ -7860,6 +7871,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// </summary>
     private long CaptureFlushCheckpoint() => Volatile.Read(ref _inFlightEntrySequence);
 
+    internal long CaptureFlushCheckpointForTest() => CaptureFlushCheckpoint();
+
     /// <summary>
     /// True once every batch whose entry sequence is at or below <paramref name="checkpoint"/>
     /// has left the in-flight list. The list is sorted by entry sequence, so this reads only
@@ -7927,7 +7940,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// </summary>
     private bool HasAppendWorkerBacklog()
     {
-        if (_appendWorkerTasks is null)
+        // Not _appendWorkerTasks: EnqueueAppend can queue an item after the start flag is set
+        // and before the task array is published.
+        if (Volatile.Read(ref _appendWorkersStarted) == 0)
             return false;
 
         for (var i = 0; i < _appendWorkerCount; i++)
@@ -7946,7 +7961,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private AppendWorkerTargets CaptureAppendWorkerTargets()
     {
         var targets = default(AppendWorkerTargets);
-        if (_appendWorkerTasks is null)
+        if (Volatile.Read(ref _appendWorkersStarted) == 0)
             return targets;
 
         for (var i = 0; i < _appendWorkerCount; i++)
@@ -7972,41 +7987,37 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// <summary>
     /// Waits until each append worker has processed (appended, failed or cancelled) every item
     /// queued when the flush started (<paramref name="targets"/>). Items queued afterwards do
-    /// not hold the flush open, so continuous backpressured production cannot stall it.
+    /// not hold the flush open, so continuous backpressured production cannot stall it. Every
+    /// worker's progress is re-checked on each wake, so the workers are waited for together.
+    /// Returns once the accumulator is disposed: disposal fails the items still queued.
     /// </summary>
     private async ValueTask WaitForAppendWorkerCheckpointAsync(AppendWorkerTargets targets, CancellationToken cancellationToken)
     {
-        for (var i = 0; i < _appendWorkerCount; i++)
+        // Announce the waiter before checking: MarkAppendWorkItemProcessed increments its
+        // sequence before reading this count, so one side always sees the other.
+        Interlocked.Increment(ref _appendWorkerFlushWaiters);
+        try
         {
-            var slot = i * AppendWorkerSequenceStride;
-            var target = targets[i];
-            if (Volatile.Read(ref _appendWorkerProcessedSequences[slot]) >= target)
-                continue;
-
-            // Announce the waiter before re-checking: MarkAppendWorkItemProcessed increments
-            // its sequence before reading this count, so one side always sees the other.
-            Interlocked.Increment(ref _appendWorkerFlushWaiters);
-            try
+            while (true)
             {
-                while (Volatile.Read(ref _disposed) == 0)
+                var tcs = Volatile.Read(ref _flushTcs);
+                if (tcs == null)
                 {
-                    var tcs = Volatile.Read(ref _flushTcs);
-                    if (tcs == null)
-                    {
-                        var newTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-                        tcs = Interlocked.CompareExchange(ref _flushTcs, newTcs, null) ?? newTcs;
-                    }
-
-                    if (Volatile.Read(ref _appendWorkerProcessedSequences[slot]) >= target)
-                        break;
-
-                    await tcs.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+                    var newTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                    tcs = Interlocked.CompareExchange(ref _flushTcs, newTcs, null) ?? newTcs;
                 }
+
+                // Check after taking the TCS: MarkAppendWorkItemProcessed and DisposeAsync
+                // update their state before completing the current TCS.
+                if (Volatile.Read(ref _disposed) != 0 || !HasAppendWorkerBacklog(in targets))
+                    return;
+
+                await tcs.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
             }
-            finally
-            {
-                Interlocked.Decrement(ref _appendWorkerFlushWaiters);
-            }
+        }
+        finally
+        {
+            Interlocked.Decrement(ref _appendWorkerFlushWaiters);
         }
     }
 
@@ -8150,6 +8161,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
             return;
+
+        // Wake a flush waiting on the append workers: it stops waiting once disposed, since a
+        // worker can stay blocked until the drain below fails its queued items.
+        Interlocked.Exchange(ref _flushTcs, null)?.TrySetResult(true);
 
         var inFlightBatches = Volatile.Read(ref _inFlightBatchCount);
         LogDisposeStarted(_partitionDeques.Count, inFlightBatches);
