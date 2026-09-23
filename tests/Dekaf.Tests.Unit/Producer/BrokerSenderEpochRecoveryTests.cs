@@ -847,6 +847,91 @@ public sealed class BrokerSenderEpochRecoveryTests : ScriptedProduceResponseFixt
     }
 
     [Test]
+    public async Task RestartHeldForAnotherLoopsBatch_WithUnrelatedRequestPending_IsSentAsSoonAsThatBatchIsAnswered(CancellationToken cancellationToken)
+    {
+        // The batch holding this loop's restart belongs to another send loop, so its answer is
+        // not one of this loop's responses. With an unrelated request of this loop pending, the
+        // loop used to wait for that response or the request timeout (30 s here) before looking
+        // again. The shared tracker now wakes it when the other loop's batch completes.
+        var partition0Sent = NewResponseSource();
+        var partition0Pending = NewResponseSource();
+        var partition1Restarted = NewResponseSource();
+        var (pool, connection) = CreateMockConnection(new Queue<TaskCompletionSource<ProduceResponse>>(
+            [partition0Sent, partition0Pending, partition1Restarted]));
+        connection.CaptureProduceRequests = true;
+        cancellationToken = GuardUnscriptedSends(cancellationToken);
+        var options = CreateOptions(maxInFlightRequestsPerConnection: 3);
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var previous = new ProducerIdAndEpoch(1234, 5);
+        var current = new ProducerIdAndEpoch(1234, 6);
+        accumulator.PublishProducerState(previous);
+        accumulator.GetAndIncrementSequence(Partition1, 4, previous, out _);
+        accumulator.PublishProducerState(current);
+        using var inflightTracker = new PartitionInflightTracker(enablePruning: false);
+        var held = new TaskCompletionSource<TopicPartition>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var sender = CreateSender(
+            pool, options, accumulator, (_, _, _, _, _) => { },
+            getProducerState: () => current,
+            onSequenceRestartHeld: topicPartition => held.TrySetResult(topicPartition),
+            inflightTracker: inflightTracker);
+
+        try
+        {
+            // An iteration under epoch 6 with nothing older in flight disarms the hold.
+            var (batch0, delivery0) = CreateTrackedBatch(valueTaskSourcePool, Partition0, producerId: 1234, producerEpoch: 6);
+            sender.Enqueue(batch0);
+            await WaitForSendsAsync(connection, 1, cancellationToken);
+            partition0Sent.SetResult(CreateSuccessResponse(Topic, 0, baseOffset: 0));
+            await delivery0.WaitAsync(cancellationToken);
+
+            // An unrelated request of this loop stays pending throughout.
+            var (batch0Pending, delivery0Pending) = CreateTrackedBatch(valueTaskSourcePool, Partition0, producerId: 1234, producerEpoch: 6);
+            sender.Enqueue(batch0Pending);
+            await WaitForSendsAsync(connection, 2, cancellationToken);
+
+            // The other loop's epoch 5 batch, then this loop's next batch of the partition: held.
+            var otherLoopEntry = inflightTracker.Register(
+                Partition1, accumulator.GetAndIncrementSequence(Partition1, 2, previous, out _), recordCount: 2);
+            var (batch1, delivery1) = CreateTrackedBatch(valueTaskSourcePool, Partition1, producerId: 1234, producerEpoch: 6, recordCount: 3);
+            sender.Enqueue(batch1);
+            await Assert.That(await held.Task.WaitAsync(cancellationToken)).IsEqualTo(Partition1);
+            await Assert.That(connection.CapturedProduceRequestCount).IsEqualTo(2);
+
+            // Answered on the other loop: the held batch goes out well before the request timeout.
+            inflightTracker.Complete(otherLoopEntry);
+            using (var prompt = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
+            {
+                prompt.CancelAfter(TimeSpan.FromSeconds(5));
+                try
+                {
+                    await WaitForSendsAsync(connection, 3, prompt.Token);
+                }
+                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                {
+                    Assert.Fail($"The held batch was not sent within 5 s of the other loop's batch being answered. Requests written so far:{Environment.NewLine}{DescribeRequests(connection)}");
+                }
+            }
+
+            await Assert.That(StampsOf(connection, request: 2)).IsEquivalentTo([(1, 3, 1234L, (short)6, 0)]);
+            partition1Restarted.SetResult(CreateSuccessResponse(Topic, 1, baseOffset: 6));
+            await delivery1.WaitAsync(cancellationToken);
+            partition0Pending.SetResult(CreateSuccessResponse(Topic, 0, baseOffset: 1));
+            await delivery0Pending.WaitAsync(cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            Assert.Fail($"A wait was cancelled before the send loop got there. Requests written so far:{Environment.NewLine}{DescribeRequests(connection)}");
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
+    [Test]
     public async Task UnaffectedPartition_WithRequestPendingUnderOldProducerId_IsHeldUntilItIsAnswered(CancellationToken cancellationToken)
     {
         // The producer ID reset is the same transition as a bump: a partition with a request still

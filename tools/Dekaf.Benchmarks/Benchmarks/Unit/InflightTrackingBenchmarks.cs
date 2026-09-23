@@ -131,30 +131,6 @@ public class InflightTrackingBenchmarks
     }
 
     /// <summary>
-    /// The send loop's per-batch call shape for an idempotent producer with epoch recovery: the
-    /// sequence is claimed inside the inflight tracker's partition lock and the entry registered
-    /// in the same step (RecordAccumulator.RegisterWithNextSequence), then completed as the
-    /// response would. Steady state: every partition already restarted under the published state.
-    /// Expected: zero allocation and the cost of <see cref="RegisterAndComplete"/> plus
-    /// <see cref="GetAndIncrementSequence_CurrentProducerState"/>, with no extra atomic or lock.
-    /// </summary>
-    [Benchmark(OperationsPerInvoke = 100)]
-    public int RegisterWithNextSequenceAndComplete_CurrentProducerState()
-    {
-        var last = 0;
-        for (var i = 0; i < 100; i++)
-        {
-            var tp = _partitions[i % PartitionCount];
-            var state = (ProducerIdAndEpoch?)_producerState;
-            var entry = _accumulator.RegisterWithNextSequence(_tracker, tp, 100, -1, ref state, out _)!;
-            last = entry.BaseSequence;
-            _tracker.Complete(entry);
-        }
-
-        return last;
-    }
-
-    /// <summary>
     /// Register only (no Complete) — simulates pool exhaustion scenario.
     /// When entries aren't returned fast enough (e.g., GC pause delays response processing),
     /// the pool runs empty and must allocate new entries.

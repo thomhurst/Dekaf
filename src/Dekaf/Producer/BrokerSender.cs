@@ -831,6 +831,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     // the previous leader's loop, where _partitionsPendingUnderPreviousState cannot see it.
     private bool _previousStateBatchInflight;
 
+    // Registered with the shared tracker while this loop may hold a restart for another loop's
+    // batch, whose answer would not otherwise wake this loop: the loop may be waiting on an
+    // unrelated local response or a delivery deadline. Wakes the same signal responses do.
+    private readonly Action _inflightCompletionWake;
+    private bool _inflightCompletionWakeRegistered;
+
     // Partitions whose oldest retry went back to carry-over in this coalescing pass (backoff, or
     // held for a sequence restart), with the time before which that retry will not be sent (0 when
     // something other than backoff blocks it). A later retry of the same partition must not pass
@@ -1149,6 +1155,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             _anyResponseCompleted.Signal();
         };
         _senderRetryReadyCallback = _anyResponseCompleted.Signal;
+        _inflightCompletionWake = _anyResponseCompleted.Signal;
         _cts = new CancellationTokenSource();
         _retainedConnectionGroupPool = connectionPool as ConnectionPool;
         try
@@ -2379,6 +2386,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         }
         finally
         {
+            UnregisterInflightCompletionWake();
             EmitPartitionLimitedDiagnostic(Dekaf.MonotonicClock.GetMilliseconds());
 
             var redeliver = crashed
@@ -3125,6 +3133,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         LogSequenceRestartHeld(_brokerId, topicPartition.Topic, topicPartition.Partition, _iterationProducerState!.Epoch);
         _onSequenceRestartHeld?.Invoke(topicPartition);
         carryOver.AddFirst(new BatchReference(batch, generation));
+
+        // The batch that refused the claim belongs to another loop and may be answered before
+        // this loop registers for tracker completions. Go around once more: the next iteration
+        // registers, then checks the tracker, and holds the batch or sends it.
+        RegisterInflightCompletionWake();
+        _anyResponseCompleted.Signal();
     }
 
     /// <summary>
@@ -3242,14 +3256,38 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             CollectPartitionsPendingUnderOtherState(state, _partitionsPendingUnderPreviousState);
             retryKeepsPreviousStamp = CollectPartitionsQueuedUnderOtherState(
                 state, carryOver, _partitionsPendingUnderPreviousState);
+
+            // Registered before the check, so an entry answered after it still wakes this loop.
+            RegisterInflightCompletionWake();
             _previousStateBatchInflight = _inflightTracker.AnyInflightPartition(
                 static (topicPartition, arg) => arg.Accumulator.HasStaleSequenceState(topicPartition, arg.State),
                 (Accumulator: _accumulator, State: state));
         }
 
+        if (!_previousStateBatchInflight)
+            UnregisterInflightCompletionWake();
+
         _sequenceRestartHoldArmed = retryKeepsPreviousStamp
             || _partitionsPendingUnderPreviousState.Count > 0
             || _previousStateBatchInflight;
+    }
+
+    private void RegisterInflightCompletionWake()
+    {
+        if (_inflightCompletionWakeRegistered)
+            return;
+
+        _inflightTracker.AddCompletionWaiter(_inflightCompletionWake);
+        _inflightCompletionWakeRegistered = true;
+    }
+
+    private void UnregisterInflightCompletionWake()
+    {
+        if (!_inflightCompletionWakeRegistered)
+            return;
+
+        _inflightTracker.RemoveCompletionWaiter(_inflightCompletionWake);
+        _inflightCompletionWakeRegistered = false;
     }
 
     /// <summary>

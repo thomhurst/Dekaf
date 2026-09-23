@@ -492,6 +492,27 @@ public sealed class PartitionInflightTrackerTests
     }
 
     [Test]
+    public async Task CompletionWaiter_IsWokenByCompleteAndFailAll_UntilRemoved()
+    {
+        var tracker = new PartitionInflightTracker(enablePruning: false);
+        var wakes = 0;
+        Action wake = () => wakes++;
+
+        tracker.AddCompletionWaiter(wake);
+        tracker.AddCompletionWaiter(wake); // idempotent: still woken once per completion
+        tracker.Complete(tracker.Register(Tp0, baseSequence: 0, recordCount: 10));
+        await Assert.That(wakes).IsEqualTo(1);
+
+        tracker.Register(Tp1, baseSequence: 0, recordCount: 10);
+        tracker.FailAll(Tp1, new InvalidOperationException("test"));
+        await Assert.That(wakes).IsEqualTo(2);
+
+        tracker.RemoveCompletionWaiter(wake);
+        tracker.Complete(tracker.Register(Tp0, baseSequence: 10, recordCount: 10));
+        await Assert.That(wakes).IsEqualTo(2);
+    }
+
+    [Test]
     public async Task Complete_MultipleEntries_WorksWithStoredState()
     {
         var tracker = new PartitionInflightTracker(enablePruning: false);

@@ -238,6 +238,14 @@ internal sealed class PartitionInflightTracker : IDisposable
     private readonly InflightEntryPool _pool;
     private readonly Timer? _pruneTimer;
 
+    /// <summary>
+    /// Wake-ups of send loops holding a sequence restart for another loop's batch
+    /// (<see cref="AddCompletionWaiter"/>). Empty outside that recovery window, so
+    /// <see cref="Complete"/> and <see cref="FailAll"/> pay one reference read and a length check.
+    /// Replaced copy-on-write, never mutated in place.
+    /// </summary>
+    private Action[] _completionWaiters = [];
+
     public PartitionInflightTracker(InflightEntryPool? pool = null, bool enablePruning = true)
     {
         _pool = pool ?? new InflightEntryPool();
@@ -425,6 +433,83 @@ internal sealed class PartitionInflightTracker : IDisposable
         entry.SignalComplete();
 
         _pool.Return(entry);
+        WakeCompletionWaiters();
+    }
+
+    /// <summary>
+    /// Asks <see cref="Complete"/> and <see cref="FailAll"/> to invoke <paramref name="wake"/>
+    /// whenever an entry leaves the tracker. A send loop holds a partition's sequence restart
+    /// while an older batch of the partition is in flight, and that batch may belong to another
+    /// send loop (#3385), whose response does not reach the holding loop's own wake-ups. The
+    /// holder registers before it checks the tracker, so an entry answered after the check
+    /// still wakes it. Idempotent; recovery only, so the copy-on-write allocation is per hold.
+    /// </summary>
+    internal void AddCompletionWaiter(Action wake)
+    {
+        while (true)
+        {
+            var current = Volatile.Read(ref _completionWaiters);
+            if (IndexOfWaiter(current, wake) >= 0)
+                return;
+
+            var updated = new Action[current.Length + 1];
+            current.CopyTo(updated, 0);
+            updated[^1] = wake;
+            if (ReferenceEquals(Interlocked.CompareExchange(ref _completionWaiters, updated, current), current))
+                return;
+        }
+    }
+
+    /// <summary>Stops invoking <paramref name="wake"/>; see <see cref="AddCompletionWaiter"/>.</summary>
+    internal void RemoveCompletionWaiter(Action wake)
+    {
+        while (true)
+        {
+            var current = Volatile.Read(ref _completionWaiters);
+            var index = IndexOfWaiter(current, wake);
+            if (index < 0)
+                return;
+
+            Action[] updated;
+            if (current.Length == 1)
+            {
+                updated = [];
+            }
+            else
+            {
+                updated = new Action[current.Length - 1];
+                Array.Copy(current, 0, updated, 0, index);
+                Array.Copy(current, index + 1, updated, index, current.Length - index - 1);
+            }
+
+            if (ReferenceEquals(Interlocked.CompareExchange(ref _completionWaiters, updated, current), current))
+                return;
+        }
+    }
+
+    private static int IndexOfWaiter(Action[] waiters, Action wake)
+    {
+        for (var i = 0; i < waiters.Length; i++)
+        {
+            if (ReferenceEquals(waiters[i], wake))
+                return i;
+        }
+
+        return -1;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void WakeCompletionWaiters()
+    {
+        var waiters = Volatile.Read(ref _completionWaiters);
+        if (waiters.Length != 0)
+            WakeCompletionWaitersSlow(waiters);
+    }
+
+    private static void WakeCompletionWaitersSlow(Action[] waiters)
+    {
+        foreach (var wake in waiters)
+            wake();
     }
 
     /// <summary>
@@ -530,6 +615,8 @@ internal sealed class PartitionInflightTracker : IDisposable
             entry.SignalFailed(exception);
             _pool.Return(entry);
         }
+
+        WakeCompletionWaiters();
     }
 
     /// <summary>
