@@ -18,6 +18,26 @@ namespace Dekaf.Tests.Unit.Producer;
 /// </summary>
 public class RecordAccumulatorTests
 {
+    /// <summary>
+    /// Options whose delivery timeout (100 ms, so the orphan sweep's deadline is 300 ms) lets a
+    /// batch created <see cref="SweepExpiredCreatedTimestamp"/> ago count as expired. A batch
+    /// "created an hour ago" does not work on every host: Stopwatch timestamps on Linux count
+    /// from boot, so on a CI runner booted less than an hour ago that timestamp is negative, and
+    /// <c>ReadyBatch.Initialize</c> treats a non-positive creation timestamp as "now".
+    /// </summary>
+    private static ProducerOptions CreateSweepTestOptions() => new()
+    {
+        BootstrapServers = new[] { "localhost:9092" },
+        ClientId = "test-producer",
+        BufferMemory = ulong.MaxValue,
+        BatchSize = 1000,
+        LingerMs = 10,
+        DeliveryTimeoutMs = 100
+    };
+
+    /// <summary>One second ago: past the sweep deadline of <see cref="CreateSweepTestOptions"/>.</summary>
+    private static long SweepExpiredCreatedTimestamp() => Stopwatch.GetTimestamp() - Stopwatch.Frequency;
+
     private static ProducerOptions CreateTestOptions(
         CompressionType compressionType = CompressionType.None)
     {
@@ -4102,7 +4122,7 @@ public class RecordAccumulatorTests
     {
         // An orphaned batch fell out of every BrokerSender structure, so only the sweep can tell
         // the transaction that its records are gone.
-        var accumulator = new RecordAccumulator(CreateTestOptions());
+        var accumulator = new RecordAccumulator(CreateSweepTestOptions());
         var pool = new ValueTaskSourcePool<RecordMetadata>();
 
         try
@@ -4132,8 +4152,8 @@ public class RecordAccumulatorTests
                 completionSourcesCount: 1,
                 recordCount: 1,
                 dataSize: 100,
-                // Created an hour ago: well past the sweep's 3x delivery timeout.
-                createdStopwatchTimestamp: Stopwatch.GetTimestamp() - Stopwatch.Frequency * 3_600);
+                // Well past the sweep's 3x delivery timeout (see CreateSweepTestOptions).
+                createdStopwatchTimestamp: SweepExpiredCreatedTimestamp());
             InvokeOnBatchEntersPipeline(accumulator, batch);
 
             await Assert.That(accumulator.SweepExpiredInFlightBatches()).IsEqualTo(1);
@@ -4155,7 +4175,7 @@ public class RecordAccumulatorTests
         // The response handler won CompleteSend but has not cleaned the batch up yet when the
         // sweep removes it from the pipeline: the produce succeeded, so the transaction must not
         // hear of a failure.
-        var accumulator = new RecordAccumulator(CreateTestOptions());
+        var accumulator = new RecordAccumulator(CreateSweepTestOptions());
         var pool = new ValueTaskSourcePool<RecordMetadata>();
 
         try
@@ -4184,11 +4204,12 @@ public class RecordAccumulatorTests
                 completionSourcesCount: 1,
                 recordCount: 1,
                 dataSize: 100,
-                createdStopwatchTimestamp: Stopwatch.GetTimestamp() - Stopwatch.Frequency * 3_600);
+                createdStopwatchTimestamp: SweepExpiredCreatedTimestamp());
             InvokeOnBatchEntersPipeline(accumulator, batch);
             batch.CompleteSend(baseOffset: 7, DateTimeOffset.UtcNow);
 
-            accumulator.SweepExpiredInFlightBatches();
+            // The sweep does take the batch out of the pipeline; its failure is what must not report.
+            await Assert.That(accumulator.SweepExpiredInFlightBatches()).IsEqualTo(1);
 
             await Assert.That(reports).IsEqualTo(0);
             var metadata = await completionTask;
