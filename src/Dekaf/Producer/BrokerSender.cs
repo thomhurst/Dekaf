@@ -3408,7 +3408,16 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             return false;
 
         var state = _iterationProducerState!;
-        if (!_accumulator.HasStaleSequenceState(topicPartition, state) || KeepsPreviousStateStamp(batch, state))
+        if (!_accumulator.HasStaleSequenceState(topicPartition, state))
+        {
+            // Restarted, possibly by a rejected head ahead of its unanswered successors. They are
+            // re-stamped behind the restart, so a batch that would claim a sequence (never sent,
+            // or re-stamped from an earlier state) must not claim one ahead of them.
+            return ClaimsSequence(batch, state)
+                && _inflightTracker.IsRestartFencedBefore(topicPartition, batch.RecordBatch.BaseSequence);
+        }
+
+        if (KeepsPreviousStateStamp(batch, state))
             return false;
 
         // Only a batch ahead of this one in the partition holds it: a batch that was sent and then
@@ -3416,6 +3425,19 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // unanswered successors, exactly as for this loop's own queued retries.
         return pendingHere
             || _inflightTracker.HasInflightBefore(topicPartition, batch.RecordBatch.BaseSequence);
+    }
+
+    /// <summary>
+    /// True for a batch that takes a new sequence at send time: one never sent, or one stamped
+    /// under a state other than <paramref name="state"/> (re-stamped). A retry that keeps its
+    /// current-state sequence claims nothing.
+    /// </summary>
+    private static bool ClaimsSequence(ReadyBatch batch, ProducerIdAndEpoch state)
+    {
+        var recordBatch = batch.RecordBatch;
+        return recordBatch.BaseSequence < 0
+            || recordBatch.ProducerEpoch != state.Epoch
+            || recordBatch.ProducerId != state.ProducerId;
     }
 
     private void HoldForSequenceRestart(

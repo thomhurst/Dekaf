@@ -492,6 +492,34 @@ public sealed class PartitionInflightTrackerTests
     }
 
     [Test]
+    public async Task RestartFence_CoversOnlyEntriesInFlightAtTheRestart_AndLiftsWhenTheyLeave()
+    {
+        var tracker = new PartitionInflightTracker(enablePruning: false);
+        var successor = tracker.Register(Tp0, baseSequence: 5, recordCount: 5);
+        var state = successor.State!;
+        PartitionInflightTracker.FenceRestartLocked(state);
+        // Registered after the restart (sequence 0 of the new state): not part of the fence.
+        var restartHead = tracker.Register(Tp0, baseSequence: 0, recordCount: 5);
+
+        await Assert.That(successor.PrecedesRestart).IsTrue();
+        await Assert.That(restartHead.PrecedesRestart).IsFalse();
+        await Assert.That(tracker.IsRestartFencedBefore(Tp0, baseSequence: -1)).IsTrue();
+        await Assert.That(tracker.IsRestartFencedBefore(Tp0, baseSequence: 5)).IsFalse();
+        await Assert.That(tracker.IsRestartFencedBefore(Tp0, baseSequence: 10)).IsTrue();
+        await Assert.That(tracker.AnyInflightPartition(static (_, _) => false, 0)).IsTrue();
+
+        tracker.Complete(successor);
+        await Assert.That(tracker.IsRestartFencedBefore(Tp0, baseSequence: -1)).IsFalse();
+        await Assert.That(state.RestartFenced).IsFalse();
+        await Assert.That(tracker.AnyInflightPartition(static (_, _) => false, 0)).IsFalse();
+
+        // An empty list fences nothing.
+        tracker.Complete(restartHead);
+        PartitionInflightTracker.FenceRestartLocked(state);
+        await Assert.That(state.RestartFenced).IsFalse();
+    }
+
+    [Test]
     public async Task CompletionWaiter_IsWokenByCompleteAndFailAll_UntilRemoved()
     {
         var tracker = new PartitionInflightTracker(enablePruning: false);

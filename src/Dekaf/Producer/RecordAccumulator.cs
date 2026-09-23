@@ -1481,6 +1481,13 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// loop, so the two travel on different connections and the new leader could receive the
     /// later sequence first and reject it as out of order.
     /// <para/>
+    /// A batch that was sent and definitively rejected restarts the partition ahead of its
+    /// unanswered successors, which the broker cannot have appended after it. They are re-stamped
+    /// behind the restart, so the restart fences the partition
+    /// (<see cref="PartitionInflightTracker.FenceRestartLocked"/>): until each has been re-stamped
+    /// or answered, a batch never sent is refused like a restart that must wait, and a re-stamped
+    /// successor only claims once no earlier successor is still in flight.
+    /// <para/>
     /// A caller whose snapshot is out of date, however many states ago, never restarts a partition:
     /// the counter keeps handing out sequences of the state it was last restarted under, and
     /// <paramref name="state"/> comes back as that state, which the batch must be stamped with (a
@@ -1489,7 +1496,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// <para/>
     /// Steady state (the counter already belongs to <paramref name="state"/>): one dictionary
     /// lookup, one reference compare and one atomic add, moved inside the lock registration
-    /// already takes; nothing extra per batch.
+    /// already takes, plus one read of the partition's fence flag.
     /// </summary>
     internal InflightEntry? RegisterWithNextSequence(
         PartitionInflightTracker tracker,
@@ -1528,6 +1535,14 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public bool TryClaim(PartitionState partition, out int baseSequence)
         {
+            // The partition restarted ahead of batches of an earlier state still in flight: they
+            // are re-stamped behind the restart, so nothing may claim a sequence ahead of them.
+            if (partition.RestartFenced && PartitionInflightTracker.IsRestartFencedLocked(partition, previousBaseSequence))
+            {
+                baseSequence = SequenceRestartPending;
+                return false;
+            }
+
             baseSequence = accumulator.ClaimSequence(
                 sequence, recordCount, previousBaseSequence, partition, ref State, out Restarted);
             return baseSequence != SequenceRestartPending;
@@ -1619,6 +1634,13 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             Interlocked.Exchange(ref sequence.Next, 0);
             Volatile.Write(ref sequence.ResetState, state);
             restarted = true;
+
+            // Whatever is still in flight comes after this batch (a rejected head restarting the
+            // partition ahead of its unanswered successors). Those successors are rejected and
+            // re-stamped behind it, so the partition is fenced until they have been: a fresh
+            // batch claiming the next sequence first would reorder them (#3385).
+            if (inflight is not null)
+                PartitionInflightTracker.FenceRestartLocked(inflight);
         }
         else if (resetState is not null)
         {

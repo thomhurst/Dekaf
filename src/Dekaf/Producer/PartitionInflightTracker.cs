@@ -28,6 +28,13 @@ internal sealed class InflightEntry
     internal bool InList;
 
     /// <summary>
+    /// Set under the partition lock when the partition restarted its sequences under a new
+    /// producer state while this entry, a batch of an earlier state, was still in flight (see
+    /// <see cref="PartitionState.RestartFenced"/>). Cleared when the entry returns to the pool.
+    /// </summary>
+    internal bool PrecedesRestart;
+
+    /// <summary>
     /// Checks and clears the InList flag under the partition lock.
     /// Returns true if this call performed the removal (was in list), false if already removed.
     /// Must be called while holding the partition SpinLock.
@@ -94,6 +101,7 @@ internal sealed class InflightEntry
         Previous = null;
         Next = null;
         InList = false;
+        PrecedesRestart = false;
         _completionSignal = null;
     }
 }
@@ -130,6 +138,17 @@ internal sealed class PartitionState
     /// that dictionary lookups (FailAll, GetInflightCount, the sequence-restart queries) cannot see.
     /// </summary>
     public bool Removed;
+
+    /// <summary>
+    /// Set under <see cref="Lock"/> when the partition restarted its sequences at 0 under a new
+    /// producer state ahead of batches of an earlier state that were still in flight (a rejected
+    /// head restarts it ahead of its unanswered successors); those entries are marked
+    /// <see cref="InflightEntry.PrecedesRestart"/>. The successors are re-stamped behind the
+    /// restart, so until they have been, no batch may claim a sequence ahead of them (#3385).
+    /// Lifted lazily, by the next check that finds no marked entry left. False outside that
+    /// recovery window, so the claim path pays one field read.
+    /// </summary>
+    public bool RestartFenced;
 }
 
 /// <summary>
@@ -686,15 +705,88 @@ internal sealed class PartitionInflightTracker : IDisposable
     }
 
     /// <summary>
-    /// True when any partition with an in-flight batch satisfies <paramref name="predicate"/>.
-    /// Enumerates every tracked partition: sequence-restart recovery only, never steady state.
+    /// Marks every entry in <paramref name="state"/>'s list as a batch that precedes the
+    /// partition's sequence restart, and fences the partition until they are resolved (see
+    /// <see cref="PartitionState.RestartFenced"/>). Called under the lock by the claim that
+    /// restarts the partition, before its own entry is linked. Recovery only.
+    /// </summary>
+    internal static void FenceRestartLocked(PartitionState state)
+    {
+        if (state.Head is null)
+            return;
+
+        for (var entry = state.Head; entry is not null; entry = entry.Next)
+            entry.PrecedesRestart = true;
+
+        Volatile.Write(ref state.RestartFenced, true);
+    }
+
+    /// <summary>
+    /// True when a batch that preceded the partition's sequence restart is still in flight ahead
+    /// of a batch about to claim a sequence: any such batch for one never sent (negative
+    /// <paramref name="baseSequence"/>), or one with an earlier sequence of the same earlier state
+    /// for a successor being re-stamped, so successors are re-stamped in their original order.
+    /// Lifts the fence once no marked entry is left. The caller holds <paramref name="state"/>'s
+    /// lock. Recovery only.
+    /// </summary>
+    internal static bool IsRestartFencedLocked(PartitionState state, int baseSequence)
+    {
+        var anyMarked = false;
+        for (var entry = state.Head; entry is not null; entry = entry.Next)
+        {
+            if (!entry.PrecedesRestart)
+                continue;
+
+            if (baseSequence < 0 || !RecordAccumulator.IsSequenceAtOrAfter(entry.BaseSequence, baseSequence))
+                return true;
+
+            anyMarked = true;
+        }
+
+        if (!anyMarked)
+            Volatile.Write(ref state.RestartFenced, false);
+
+        return false;
+    }
+
+    /// <summary>
+    /// <see cref="IsRestartFencedLocked"/> for a partition by key, taking its lock only while the
+    /// fence is up.
+    /// </summary>
+    public bool IsRestartFencedBefore(TopicPartition topicPartition, int baseSequence)
+        => _partitions.TryGetValue(topicPartition, out var state) && IsRestartFenced(state, baseSequence);
+
+    private static bool IsRestartFenced(PartitionState state, int baseSequence)
+    {
+        if (!Volatile.Read(ref state.RestartFenced))
+            return false;
+
+        var lockTaken = false;
+        try
+        {
+            state.Lock.Enter(ref lockTaken);
+            return IsRestartFencedLocked(state, baseSequence);
+        }
+        finally
+        {
+            if (lockTaken) state.Lock.Exit();
+        }
+    }
+
+    /// <summary>
+    /// True when any partition with an in-flight batch satisfies <paramref name="predicate"/> or
+    /// is fenced behind batches that preceded its sequence restart
+    /// (<see cref="PartitionState.RestartFenced"/>). Enumerates every tracked partition:
+    /// sequence-restart recovery only, never steady state.
     /// </summary>
     public bool AnyInflightPartition<TArg>(Func<TopicPartition, TArg, bool> predicate, TArg arg)
     {
         foreach (var kvp in _partitions)
         {
             // Count is written under the partition lock; the lock release publishes it.
-            if (Volatile.Read(ref kvp.Value.Count) > 0 && predicate(kvp.Key, arg))
+            var state = kvp.Value;
+            if (Volatile.Read(ref state.Count) > 0
+                && (IsRestartFenced(state, baseSequence: -1) || predicate(kvp.Key, arg)))
                 return true;
         }
 

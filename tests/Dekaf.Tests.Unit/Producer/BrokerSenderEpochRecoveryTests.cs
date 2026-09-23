@@ -847,6 +847,84 @@ public sealed class BrokerSenderEpochRecoveryTests : ScriptedProduceResponseFixt
     }
 
     [Test]
+    public async Task RejectedHeadRestartedAheadOfAnotherLoopsSuccessor_FreshBatchWaitsUntilTheSuccessorIsRestamped(CancellationToken cancellationToken)
+    {
+        // Partition 1's batch A (epoch 5, sequences 0-3) was definitively rejected; its successor
+        // B (epoch 5, sequence 4) is still in flight on another send loop. A's retry restarts the
+        // partition ahead of B: (epoch 6, sequence 0). The partition's sequences then belonged to
+        // epoch 6, so a fresh batch C used to claim (epoch 6, sequence 4) straight away, and B,
+        // rejected and rerouted here, was re-stamped behind it: A, C, B. C must wait until B has
+        // been re-stamped: A, B, C.
+        var partition1Restarted = NewResponseSource();
+        var successorRestamped = NewResponseSource();
+        var partition1Fresh = NewResponseSource();
+        var (pool, connection) = CreateMockConnection(new Queue<TaskCompletionSource<ProduceResponse>>(
+            [partition1Restarted, successorRestamped, partition1Fresh]));
+        connection.CaptureProduceRequests = true;
+        cancellationToken = GuardUnscriptedSends(cancellationToken);
+        var options = CreateOptions(maxInFlightRequestsPerConnection: 3);
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var previous = new ProducerIdAndEpoch(1234, 5);
+        var current = new ProducerIdAndEpoch(1234, 6);
+        accumulator.PublishProducerState(previous);
+        using var inflightTracker = new PartitionInflightTracker(enablePruning: false);
+        await Assert.That(accumulator.GetAndIncrementSequence(Partition1, 4, previous, out _)).IsEqualTo(0);
+        var successorEntry = inflightTracker.Register(
+            Partition1, accumulator.GetAndIncrementSequence(Partition1, 2, previous, out _), recordCount: 2);
+        accumulator.PublishProducerState(current);
+        var held = new TaskCompletionSource<TopicPartition>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var sender = CreateSender(
+            pool, options, accumulator, (_, _, _, _, _) => { },
+            getProducerState: () => current,
+            onSequenceRestartHeld: topicPartition => held.TrySetResult(topicPartition),
+            inflightTracker: inflightTracker);
+
+        try
+        {
+            // A's retry: sent before, definitively rejected (no inflight entry left).
+            var (batchA, deliveryA) = CreateTrackedBatch(valueTaskSourcePool, Partition1, producerId: 1234, producerEpoch: 5, recordCount: 4);
+            batchA.RecordBatch.BaseSequence = 0;
+            sender.Enqueue(batchA);
+            await WaitForSendsAsync(connection, 1, cancellationToken);
+            await Assert.That(StampsOf(connection, request: 0)).IsEquivalentTo([(1, 4, 1234L, (short)6, 0)]);
+            partition1Restarted.SetResult(CreateSuccessResponse(Topic, 1, baseOffset: 0));
+            await deliveryA.WaitAsync(cancellationToken);
+
+            // C waits: B is still in flight on the other loop.
+            var (batchC, deliveryC) = CreateTrackedBatch(valueTaskSourcePool, Partition1, producerId: 1234, producerEpoch: 6, recordCount: 3);
+            sender.Enqueue(batchC);
+            await Assert.That(await held.Task.WaitAsync(cancellationToken)).IsEqualTo(Partition1);
+            await Assert.That(connection.CapturedProduceRequestCount).IsEqualTo(1);
+
+            // B is rejected and rerouted here: re-stamped right behind A, then C follows it.
+            var (batchB, deliveryB) = CreateTrackedBatch(valueTaskSourcePool, Partition1, producerId: 1234, producerEpoch: 5, recordCount: 2);
+            batchB.RecordBatch.BaseSequence = successorEntry.BaseSequence;
+            batchB.InflightEntry = successorEntry;
+            sender.Enqueue(batchB);
+            await WaitForSendsAsync(connection, 3, cancellationToken);
+            await Assert.That(StampsOf(connection, request: 1)).IsEquivalentTo([(1, 2, 1234L, (short)6, 4)]);
+            await Assert.That(StampsOf(connection, request: 2)).IsEquivalentTo([(1, 3, 1234L, (short)6, 6)]);
+
+            successorRestamped.SetResult(CreateSuccessResponse(Topic, 1, baseOffset: 4));
+            partition1Fresh.SetResult(CreateSuccessResponse(Topic, 1, baseOffset: 6));
+            await deliveryB.WaitAsync(cancellationToken);
+            await deliveryC.WaitAsync(cancellationToken);
+            await Assert.That(inflightTracker.IsRestartFencedBefore(Partition1, -1)).IsFalse();
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            Assert.Fail($"A wait was cancelled before the send loop got there. Requests written so far:{Environment.NewLine}{DescribeRequests(connection)}");
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
+    [Test]
     public async Task RestartHeldForAnotherLoopsBatch_WithUnrelatedRequestPending_IsSentAsSoonAsThatBatchIsAnswered(CancellationToken cancellationToken)
     {
         // The batch holding this loop's restart belongs to another send loop, so its answer is
