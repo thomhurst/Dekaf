@@ -3318,7 +3318,24 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         await SendConsumerProtocolLeaveRequestAsync(operation, cancellationToken, responseCancellationToken)
             .ConfigureAwait(false);
 
-        await _lock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        // The request is on the wire (or could not be sent), so the rest is local cleanup and no
+        // longer gets the grace in cancellationToken: a foreground rejoin can hold the lock
+        // across its network retries, and a close's leave stops waiting for it once close is
+        // cancelled. Disposal then discards the member state. A free lock is still taken after
+        // close was cancelled, so the usual case still resets the state.
+        if (!_lock.Wait(0))
+        {
+            try
+            {
+                await _lock.WaitAsync(callbackCancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (responseCancellationToken.CanBeCanceled &&
+                                                     callbackCancellationToken.IsCancellationRequested)
+            {
+                return;
+            }
+        }
+
         try
         {
             ResetMemberState();
@@ -3426,7 +3443,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     /// <param name="cancellationToken">Bounds the whole leave, including getting the request onto the wire.</param>
     /// <param name="responseCancellationToken">
     /// When cancellable, also stops the wait for the response once the request has been written
-    /// (the coordinator acts on a written leave whether or not its answer is awaited).
+    /// (the coordinator acts on a written leave whether or not its answer is awaited), and bounds
+    /// delivering queued rebalance callbacks and the local state cleanup after the send.
     /// </param>
     internal async ValueTask LeaveGroupAsync(
         ConsumerGroupMembershipOperation operation,

@@ -231,6 +231,56 @@ public sealed class ConsumerCloseLeaveBudgetTests
     }
 
     [Test]
+    [Timeout(30_000)]
+    public async Task CloseAsync_CancelledAfterTheLeaveWasSent_DoesNotWaitOutTheGraceForTheCoordinatorLock(
+        CancellationToken cancellationToken)
+    {
+        // Once the leave is on the wire, a foreground rejoin takes the coordinator lock (as
+        // EnsureActiveGroup holds it across its network retries) and close is cancelled.
+        using var closeCancellation = new CancellationTokenSource();
+        SemaphoreSlim? coordinatorLock = null;
+        var lockTaken = 0;
+        var logs = new CapturingLoggerFactory();
+        var harness = new Harness(defaultApiTimeoutMs: 60_000)
+        {
+            LoggerFactory = logs,
+            OnLeaveSent = () =>
+            {
+                if (coordinatorLock!.Wait(0))
+                    Volatile.Write(ref lockTaken, 1);
+                closeCancellation.Cancel();
+            }
+        };
+        await using var consumer = harness.CreateConsumer();
+        Harness.JoinGroup(consumer);
+        var coordinator = Harness.KnowCoordinator(consumer);
+        coordinatorLock = (SemaphoreSlim)typeof(ConsumerCoordinator)
+            .GetField("_lock", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .GetValue(coordinator)!;
+
+        var stopwatch = Stopwatch.StartNew();
+        try
+        {
+            await Assert.That(async () => await consumer.CloseAsync(closeCancellation.Token))
+                .Throws<OperationCanceledException>();
+            stopwatch.Stop();
+        }
+        finally
+        {
+            if (Volatile.Read(ref lockTaken) == 1)
+                coordinatorLock.Release();
+        }
+
+        await Assert.That(Volatile.Read(ref lockTaken)).IsEqualTo(1);
+        await Assert.That(harness.LeaveEpochs.ToArray()).IsEquivalentTo([-1]);
+        // The leave's 5 s grace is for getting the request onto the wire. The state cleanup
+        // after it stops waiting for the lock when close is cancelled, and the sent leave is not
+        // reported as failed.
+        await Assert.That(stopwatch.Elapsed).IsLessThan(TimeSpan.FromSeconds(4));
+        await Assert.That(logs.Contains("Failed to leave group during close")).IsFalse();
+    }
+
+    [Test]
     public async Task CloseAsync_MemberThatNeverJoined_CommitIsNotShortenedForALeave()
     {
         // A group consumer with manual assignment has no membership, so no leave is sent and the
@@ -370,6 +420,9 @@ public sealed class ConsumerCloseLeaveBudgetTests
         /// <summary>Runs whenever the consumer gets a connection to the coordinator.</summary>
         public Action? OnGetConnection { get; init; }
 
+        /// <summary>Runs once the substitute coordinator has received the leave.</summary>
+        public Action? OnLeaveSent { get; init; }
+
         /// <summary>The coordinator connection; a substitute when not set.</summary>
         public IKafkaConnection? Connection { get; init; }
 
@@ -427,6 +480,7 @@ public sealed class ConsumerCloseLeaveBudgetTests
                         if (call.Arg<CancellationToken>().IsCancellationRequested)
                             return ValueTask.FromCanceled<ConsumerGroupHeartbeatResponse>(call.Arg<CancellationToken>());
                         LeaveEpochs.Enqueue(call.Arg<ConsumerGroupHeartbeatRequest>().MemberEpoch);
+                        OnLeaveSent?.Invoke();
                         return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
                         {
                             ErrorCode = ErrorCode.None,
