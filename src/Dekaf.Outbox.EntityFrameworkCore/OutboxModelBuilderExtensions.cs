@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 namespace Dekaf.Outbox.EntityFrameworkCore;
 
@@ -71,6 +72,11 @@ public static class OutboxModelBuilderExtensions
             entity.Property(r => r.LastSeenUtc).HasConversion(
                 v => v.UtcTicks,
                 v => new DateTimeOffset(v, TimeSpan.Zero));
+            // Nullable: existing databases add the column without rewriting a row. The
+            // converter handles non-null values; null stays null.
+            entity.Property(r => r.StoppedAtUtc).HasConversion(new ValueConverter<DateTimeOffset, long>(
+                v => v.UtcTicks,
+                v => new DateTimeOffset(v, TimeSpan.Zero)));
         });
 
         return modelBuilder;

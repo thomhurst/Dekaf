@@ -44,6 +44,8 @@ public sealed class EfCoreOutboxStore<TContext> : IOutboxStore, IOutboxLeaseRene
     private readonly TimeProvider _timeProvider;
     private volatile bool _leasesSeeded;
     private int _renewalRound;
+    // Latest timestamp (UTC ticks) any heartbeat of this store was sent with; see StoppedTimestamp.
+    private long _lastHeartbeatSent;
     // The round that found the relay a distant standby; null otherwise. Only the relay's
     // acquisitions touch it, and the relay serializes those.
     private DistantStandby? _distantStandby;
@@ -116,9 +118,12 @@ public sealed class EfCoreOutboxStore<TContext> : IOutboxStore, IOutboxLeaseRene
         await ThrowIfRowsOutsideBucketRangeAsync(context, request.BucketCount, cancellationToken)
             .ConfigureAwait(false);
 
+        // A relay that released its buckets is gone from that moment, whatever its timestamp
+        // says: its row only stays behind to refuse the statements of the round its stop
+        // cancelled.
         var activeCutoff = now - request.LeaseDuration;
         var activeRelayIds = await context.Set<OutboxRelayInstance>()
-            .Where(r => r.LastSeenUtc >= activeCutoff)
+            .Where(r => r.LastSeenUtc >= activeCutoff && r.StoppedAtUtc == null)
             .Select(r => r.RelayId)
             .ToListAsync(cancellationToken).ConfigureAwait(false);
 
@@ -199,12 +204,20 @@ public sealed class EfCoreOutboxStore<TContext> : IOutboxStore, IOutboxLeaseRene
         // guarded by the expiry it already stores; a claim has none to compare with, and a peer
         // could take the bucket the moment it lapses on the peer's clock, while this relay
         // still counts a whole lease duration.
+        // Nor for a stopped relay: the owner guard cannot refuse a claim, because the lease it
+        // takes has no owner, so a claim of the round a stop cancelled, run by the server after
+        // the release, would hand a bucket to a relay that is gone. The tombstone refuses it.
+        // Nor after a later heartbeat of the same id: a process restarted under it clears the
+        // stopped mark, and a claim of the round the stop cancelled would then pass. Rounds of
+        // one relay run one at a time, so a later heartbeat means this round was abandoned.
         var deficit = fairShare - keepCount;
         if (deficit > 0 && free.Count > 0 && heartbeatRecorded)
         {
             var candidates = free.GetRange(0, Math.Min(deficit, free.Count)).ToArray();
             await leases
-                .Where(l => candidates.Contains(l.Bucket) && (l.Owner == null || l.ExpiresAtUtc <= now))
+                .Where(l => candidates.Contains(l.Bucket) && (l.Owner == null || l.ExpiresAtUtc <= now)
+                    && context.Set<OutboxRelayInstance>().Any(r => r.RelayId == request.RelayId
+                        && r.StoppedAtUtc == null && r.LastSeenUtc <= now))
                 .ExecuteUpdateAsync(setters => setters
                     .SetProperty(l => l.Owner, request.RelayId)
                     .SetProperty(l => l.ExpiresAtUtc, expiry), cancellationToken).ConfigureAwait(false);
@@ -344,20 +357,25 @@ public sealed class EfCoreOutboxStore<TContext> : IOutboxStore, IOutboxLeaseRene
         // A stop cancels the acquisition round it interrupts. Providers wait for the server
         // to confirm a cancelled statement, so normally nothing of that round is left to
         // run; one that breaks the connection instead can leave a statement that lands after
-        // the first pass and names a relay that is gone: a claim, whose owner guard cannot
-        // refuse it because a released lease has no owner, or the first heartbeat insert. So
-        // the release repeats until a pass finds nothing. A healthy release is two passes.
+        // the release and names a relay that is gone: a heartbeat, or a claim, whose owner
+        // guard cannot refuse it because a released lease has no owner.
+        // Peers stop dividing the buckets by a relay count that still includes this one. The
+        // row is stamped as stopped rather than deleted: a heartbeat only moves its timestamp
+        // forward, and a claim is refused for a stopped relay, while a deleted row leaves
+        // nothing for either to lose to. Written even when the relay has no row yet, so that a
+        // first heartbeat insert still on its way is refused too.
+        // Before the leases, not after: a release cut short by the shutdown deadline then
+        // leaves leases that expire, which costs what no release costs. The other order leaves
+        // freed buckets next to a live heartbeat, and peers keep the fair share of a relay that
+        // is gone unclaimed until the heartbeat ages out.
+        await RecordStoppedAsync(context, request.RelayId, StoppedTimestamp(now), cancellationToken)
+            .ConfigureAwait(false);
+
+        // A claim that passed its guard just before the stamp can still commit after the
+        // first pass, so the release repeats until a pass finds nothing. A healthy release is
+        // two passes.
         for (var attempt = 0; attempt < MaxReleaseAttempts; attempt++)
         {
-            // Peers stop dividing the buckets by a relay count that still includes this one.
-            // Before the leases, not after: a release cut short by the shutdown deadline then
-            // leaves leases that expire, which costs what no release costs. The other order
-            // leaves freed buckets next to a live heartbeat, and peers keep the fair share of a
-            // relay that is gone unclaimed until the heartbeat ages out.
-            var retired = await context.Set<OutboxRelayInstance>()
-                .Where(r => r.RelayId == request.RelayId)
-                .ExecuteDeleteAsync(cancellationToken).ConfigureAwait(false);
-
             // Scoped to the owner, not to previousBuckets: one statement also frees leases that
             // an acquisition claimed before it failed, and the guard leaves a peer's takeover alone.
             var released = await context.Set<OutboxLease>()
@@ -365,8 +383,55 @@ public sealed class EfCoreOutboxStore<TContext> : IOutboxStore, IOutboxLeaseRene
                 .ExecuteUpdateAsync(setters => setters
                     .SetProperty(l => l.Owner, (string?)null)
                     .SetProperty(l => l.ExpiresAtUtc, now), cancellationToken).ConfigureAwait(false);
-            if (retired == 0 && released == 0)
+            if (released == 0)
                 return;
+        }
+    }
+
+    /// <summary>
+    /// The timestamp of the stopped row: later than every heartbeat this store sent, so none
+    /// of them can replace it. The clock alone does not promise that. A stop in the tick of the
+    /// round it cancels, or after the host's clock was set back, would stamp a time that a
+    /// heartbeat still on its way satisfies, and that heartbeat would bring back a row without
+    /// the stopped mark: peers would count a relay that is gone.
+    /// </summary>
+    private DateTimeOffset StoppedTimestamp(DateTimeOffset now) =>
+        new(Math.Max(now.UtcTicks, Volatile.Read(ref _lastHeartbeatSent) + 1), TimeSpan.Zero);
+
+    /// <summary>
+    /// Stamps this relay's row as stopped, inserting it when there is none. Unconditional:
+    /// nothing it could lose to is newer.
+    /// </summary>
+    private static async Task RecordStoppedAsync(
+        TContext context, string relayId, DateTimeOffset stoppedAt, CancellationToken cancellationToken)
+    {
+        for (var attempt = 0; ; attempt++)
+        {
+            var stamped = await context.Set<OutboxRelayInstance>()
+                .Where(r => r.RelayId == relayId)
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(r => r.LastSeenUtc, stoppedAt)
+                    .SetProperty(r => r.StoppedAtUtc, stoppedAt), cancellationToken).ConfigureAwait(false);
+            if (stamped > 0)
+                return;
+
+            context.Set<OutboxRelayInstance>().Add(new OutboxRelayInstance
+            {
+                RelayId = relayId,
+                LastSeenUtc = stoppedAt,
+                StoppedAtUtc = stoppedAt
+            });
+            try
+            {
+                await context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+                return;
+            }
+            catch (DbUpdateException) when (attempt == 0)
+            {
+                // Usually a first heartbeat insert that landed in between: stamp that row. A
+                // genuine failure fails the stamp again and surfaces on the second attempt.
+                context.ChangeTracker.Clear();
+            }
         }
     }
 
@@ -409,12 +474,17 @@ public sealed class EfCoreOutboxStore<TContext> : IOutboxStore, IOutboxLeaseRene
     private async Task<bool> RecordHeartbeatAsync(
         TContext context, OutboxLeaseRequest request, DateTimeOffset now, CancellationToken cancellationToken)
     {
+        RaiseLastHeartbeatSent(now.UtcTicks);
+
         // The timestamp only moves forward: a statement from an earlier round that runs late
-        // must not make a live relay look older, or dead, to its peers.
+        // must not make a live relay look older, or dead, to its peers, nor bring back a relay
+        // whose release stamped a later time. A heartbeat that passes clears the stopped mark,
+        // so a relay started again under the same id is counted again.
         var updated = await context.Set<OutboxRelayInstance>()
             .Where(r => r.RelayId == request.RelayId && r.LastSeenUtc <= now)
             .ExecuteUpdateAsync(setters => setters
-                .SetProperty(r => r.LastSeenUtc, now), cancellationToken).ConfigureAwait(false);
+                .SetProperty(r => r.LastSeenUtc, now)
+                .SetProperty(r => r.StoppedAtUtc, (DateTimeOffset?)null), cancellationToken).ConfigureAwait(false);
 
         // No row, or a row that already carries a later timestamp, which stays as it is.
         var recorded = updated > 0;
@@ -446,15 +516,31 @@ public sealed class EfCoreOutboxStore<TContext> : IOutboxStore, IOutboxLeaseRene
         }
 
         // Pruning is housekeeping, not correctness; run it occasionally instead of per round.
+        // A stopped row is only there to refuse the statements of the round its stop
+        // cancelled, which are long gone once it could no longer count as active anyway.
         if (++_renewalRound % HeartbeatPruneFactor == 0)
         {
             var pruneCutoff = now - (request.LeaseDuration * HeartbeatPruneFactor);
+            var stoppedCutoff = now - request.LeaseDuration;
             await context.Set<OutboxRelayInstance>()
-                .Where(r => r.LastSeenUtc < pruneCutoff)
+                .Where(r => r.LastSeenUtc < pruneCutoff || (r.StoppedAtUtc != null && r.LastSeenUtc < stoppedCutoff))
                 .ExecuteDeleteAsync(cancellationToken).ConfigureAwait(false);
         }
 
         return recorded;
+    }
+
+    // Acquisition and renewal can run on different threads.
+    private void RaiseLastHeartbeatSent(long now)
+    {
+        var seen = Volatile.Read(ref _lastHeartbeatSent);
+        while (now > seen)
+        {
+            var current = Interlocked.CompareExchange(ref _lastHeartbeatSent, now, seen);
+            if (current == seen)
+                return;
+            seen = current;
+        }
     }
 
     private async Task EnsureLeasesSeededAsync(

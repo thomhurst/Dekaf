@@ -92,8 +92,21 @@ Index: **`(Bucket, Id)`** — the relay's only read path (oldest rows per bucket
 |---|---|---|
 | `RelayId` | string(128) | Primary key. |
 | `LastSeenUtc` | 64-bit integer | Required. UTC ticks, same rationale as above. |
+| `StoppedAtUtc` | 64-bit integer | Nullable. UTC ticks. Set when the relay stopped gracefully; null while it runs. |
 
-The two ticks columns read as raw `long`s in ad-hoc queries; convert with `new DateTimeOffset(ticks, TimeSpan.Zero)` when inspecting during an incident.
+The ticks columns read as raw `long`s in ad-hoc queries; convert with `new DateTimeOffset(ticks, TimeSpan.Zero)` when inspecting during an incident.
+
+A relay that stops gracefully keeps its row and stamps `StoppedAtUtc` instead of deleting the row. Peers stop counting it at once. The row stays behind so that a statement from the round the stop cancelled cannot bring the relay back: a late heartbeat carries an earlier time than the stamp and is refused, and a late claim is refused for a stopped relay. A relay restarted under the same `RelayId` clears the stamp with its first heartbeat. Relays delete a stopped row one `LeaseDuration` after the stop, and a crashed relay's row after ten.
+
+### Upgrading from a version without `StoppedAtUtc`
+
+Earlier versions mapped `dekaf_outbox_relays` without the `StoppedAtUtc` column, and the relay queries it on every round, so **add the column before you deploy the new version**. It is nullable, so adding it does not rewrite existing rows:
+
+- With EF Core migrations, run `dotnet ef migrations add AddDekafOutboxRelayStoppedAt` after upgrading the package, and apply the migration.
+- With hand-written DDL, add a nullable 64-bit integer column, for example `ALTER TABLE dekaf_outbox_relays ADD StoppedAtUtc BIGINT NULL` (SQL Server) or `ALTER TABLE dekaf_outbox_relays ADD COLUMN "StoppedAtUtc" bigint NULL` (PostgreSQL). Use your custom table name and schema if you set them.
+- `EnsureCreated()` does not change an existing database. Add the column by hand.
+
+A rolling deployment that mixes old and new relays keeps working once the column exists. Older relays still delete their row on stop, and still count a stopped new relay until its row is older than `LeaseDuration`, so while they run a stop hands buckets over more slowly, as before this change.
 
 ### Custom Table Names and Schema
 

@@ -19,7 +19,9 @@ public sealed class OutboxLease
 /// <summary>
 /// Heartbeat row recording a live relay instance. Relays use the count of recent heartbeats
 /// to compute their fair share of buckets, releasing excess leases so new instances pick
-/// them up. Managed entirely by <see cref="EfCoreOutboxStore{TContext}"/>.
+/// them up. A relay that stops gracefully leaves its row behind as a tombstone, stamped with
+/// <see cref="StoppedAtUtc"/>, so that a statement from the round its stop cancelled cannot
+/// bring it back. Managed entirely by <see cref="EfCoreOutboxStore{TContext}"/>.
 /// </summary>
 public sealed class OutboxRelayInstance
 {
@@ -28,4 +30,10 @@ public sealed class OutboxRelayInstance
 
     /// <summary>Last heartbeat time.</summary>
     public DateTimeOffset LastSeenUtc { get; set; }
+
+    /// <summary>
+    /// When the relay released its buckets on a graceful stop; null while it runs. Peers do
+    /// not count a stopped relay, and a later heartbeat under the same relay id clears it.
+    /// </summary>
+    public DateTimeOffset? StoppedAtUtc { get; set; }
 }

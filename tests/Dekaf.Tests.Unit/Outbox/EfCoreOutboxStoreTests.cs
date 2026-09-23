@@ -208,8 +208,9 @@ public class EfCoreOutboxStoreTests
         // Checked before any other store call: renewal and acquisition rewrite the heartbeat.
         await using (var context = db.CreateContext())
         {
-            var heartbeats = await context.Set<OutboxRelayInstance>().Select(relay => relay.RelayId).ToListAsync();
-            await Assert.That(string.Join(',', heartbeats)).IsEqualTo("relay-b");
+            var running = await context.Set<OutboxRelayInstance>().Where(relay => relay.StoppedAtUtc == null)
+                .Select(relay => relay.RelayId).ToListAsync();
+            await Assert.That(string.Join(',', running)).IsEqualTo("relay-b");
         }
 
         await Assert.That(await store.RenewBucketLeasesAsync(Request("relay-b"), takenOver)).IsTrue();
@@ -243,28 +244,232 @@ public class EfCoreOutboxStoreTests
     }
 
     [Test]
-    public async Task Release_RetiresTheHeartbeatOnEveryPass_SoAStragglingFirstHeartbeatDoesNotOutliveIt()
+    public async Task Release_StampsTheRelayStopped_AndPeersStopCountingItAtOnce()
     {
-        var straggler = new StragglingStatement();
-        using var db = new SqliteOutboxDatabase(straggler);
+        using var db = new SqliteOutboxDatabase();
         var store = db.CreateStore();
         await store.AcquireBucketLeasesAsync(Request("relay-a"));
-        await using (var context = db.CreateContext())
-        {
-            // The first heartbeat insert of the round the stop cancelled, run by the server
-            // after the release deleted the row: left alone it keeps a relay that is gone in
-            // every peer's fair share for a whole LeaseDuration.
-            var relays = context.Model.FindEntityType(typeof(OutboxRelayInstance))!.GetTableName()!;
-            straggler.Arm(
-                context.Model.FindEntityType(typeof(OutboxLease))!.GetTableName()!,
-                $"INSERT INTO \"{relays}\" (\"RelayId\", \"LastSeenUtc\") VALUES ('relay-a', {db.Time.GetUtcNow().UtcTicks})");
-        }
 
         await store.ReleaseBucketLeasesAsync(Request("relay-a"), AllBuckets);
 
-        await Assert.That(straggler.Landed).IsTrue();
+        // Stamped one tick past the heartbeat sent in the same tick, so that heartbeat, run
+        // late, is refused.
+        var stopped = await RelayAsync(db, "relay-a");
+        await Assert.That(stopped.StoppedAtUtc).IsEqualTo(db.Time.GetUtcNow().AddTicks(1));
+        await Assert.That(stopped.LastSeenUtc).IsEqualTo(stopped.StoppedAtUtc!.Value);
+        await Assert.That(await store.AcquireBucketLeasesAsync(Request("relay-b"))).IsEquivalentTo(AllBuckets);
+    }
+
+    [Test]
+    public async Task Release_StragglingClaimOfTheCancelledRound_IsRefusedByTheStoppedMark()
+    {
+        var gate = new GatedStatement();
+        using var db = new SqliteOutboxDatabase(gate);
+        var store = db.CreateStore();
+
+        // The first round's claim is held back until after the release, as the server runs a
+        // statement that a provider which breaks the connection on cancellation left behind.
+        gate.Arm(IsClaim);
+        var cancelledRound = store.AcquireBucketLeasesAsync(Request("relay-a")).AsTask();
+        await gate.Held;
+        await store.ReleaseBucketLeasesAsync(Request("relay-a"), []);
+        gate.Open();
+
+        await Assert.That(await cancelledRound).IsEmpty();
+        await Assert.That(gate.Affected).IsEqualTo(0);
+        await AssertStoppedAndHandedOverAsync(db, store);
+    }
+
+    [Test]
+    public async Task Release_StragglingHeartbeatOfTheCancelledRound_DoesNotBringTheRelayBack()
+    {
+        var gate = new GatedStatement();
+        using var db = new SqliteOutboxDatabase(gate);
+        var store = db.CreateStore();
+        await store.AcquireBucketLeasesAsync(Request("relay-a"));
+
+        // Same tick as the release: only the stamp's extra tick refuses the heartbeat.
+        gate.Arm(command => command.CommandText.StartsWith("UPDATE", StringComparison.Ordinal)
+            && command.CommandText.Contains(RelaysTable, StringComparison.Ordinal));
+        var cancelledRound = store.AcquireBucketLeasesAsync(Request("relay-a")).AsTask();
+        await gate.Held;
+        await store.ReleaseBucketLeasesAsync(Request("relay-a"), AllBuckets);
+        gate.Open();
+
+        await Assert.That(await cancelledRound).IsEmpty();
+        await Assert.That(gate.Affected).IsEqualTo(0);
+        await AssertStoppedAndHandedOverAsync(db, store);
+    }
+
+    [Test]
+    public async Task Release_StragglingFirstHeartbeatInsert_DoesNotBringTheRelayBack()
+    {
+        var gate = new GatedStatement();
+        using var db = new SqliteOutboxDatabase(gate);
+        var store = db.CreateStore();
+
+        // The relay's very first round, stopped before its heartbeat row existed: the release
+        // inserts the stopped row, and the late insert loses to it.
+        gate.Arm(command => command.CommandText.Contains("INSERT", StringComparison.Ordinal)
+            && command.CommandText.Contains(RelaysTable, StringComparison.Ordinal));
+        var cancelledRound = store.AcquireBucketLeasesAsync(Request("relay-a")).AsTask();
+        await gate.Held;
+        await store.ReleaseBucketLeasesAsync(Request("relay-a"), []);
+        gate.Open();
+
+        await Assert.That(await cancelledRound).IsEmpty();
+        await AssertStoppedAndHandedOverAsync(db, store);
+    }
+
+    [Test]
+    public async Task Release_StragglingClaimOfTheCancelledRound_IsRefusedAfterARestartUnderTheSameId()
+    {
+        var gate = new GatedStatement();
+        using var db = new SqliteOutboxDatabase(gate);
+        var store = db.CreateStore();
+
+        gate.Arm(IsClaim);
+        var cancelledRound = store.AcquireBucketLeasesAsync(Request("relay-a")).AsTask();
+        await gate.Held;
+        await store.ReleaseBucketLeasesAsync(Request("relay-a"), []);
+
+        // A process restarted under the same id heartbeats, which clears the stopped mark.
+        // Written directly so that the restart itself claims nothing the straggler could lose to.
+        db.Time.Advance(TimeSpan.FromSeconds(1));
+        var restartedAt = db.Time.GetUtcNow();
         await using (var context = db.CreateContext())
-            await Assert.That(await context.Set<OutboxRelayInstance>().CountAsync()).IsEqualTo(0);
+        {
+            await context.Set<OutboxRelayInstance>().Where(r => r.RelayId == "relay-a")
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(r => r.LastSeenUtc, restartedAt)
+                    .SetProperty(r => r.StoppedAtUtc, (DateTimeOffset?)null));
+        }
+
+        gate.Open();
+
+        await Assert.That(await cancelledRound).IsEmpty();
+        await Assert.That(gate.Affected).IsEqualTo(0);
+        await using (var context = db.CreateContext())
+            await Assert.That(await context.Set<OutboxLease>().CountAsync(lease => lease.Owner != null)).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task StoppedRelay_RestartedUnderTheSameId_IsCountedAndClaimsAgain()
+    {
+        using var db = new SqliteOutboxDatabase();
+        await db.CreateStore().AcquireBucketLeasesAsync(Request("relay-a"));
+        await db.CreateStore().ReleaseBucketLeasesAsync(Request("relay-a"), AllBuckets);
+
+        // A new process under the same id: the stopped mark refuses stragglers, not a restart.
+        db.Time.Advance(TimeSpan.FromSeconds(1));
+        var restarted = db.CreateStore();
+
+        await Assert.That(await restarted.AcquireBucketLeasesAsync(Request("relay-a"))).IsEquivalentTo(AllBuckets);
+        await Assert.That((await RelayAsync(db, "relay-a")).StoppedAtUtc).IsNull();
+    }
+
+    [Test]
+    public async Task StoppedRelay_IsPrunedOnceItCouldNoLongerCountAsActive()
+    {
+        using var db = new SqliteOutboxDatabase();
+        var store = db.CreateStore();
+        await store.AcquireBucketLeasesAsync(Request("relay-a"));
+        await store.ReleaseBucketLeasesAsync(Request("relay-a"), AllBuckets);
+        await store.AcquireBucketLeasesAsync(Request("relay-b"));
+
+        // Pruning runs every tenth heartbeat of a store; a dead relay's row would stay for ten
+        // lease durations, a stopped one only for one.
+        for (var round = 0; round < 10; round++)
+        {
+            db.Time.Advance(TimeSpan.FromSeconds(4));
+            await store.AcquireBucketLeasesAsync(Request("relay-b"));
+        }
+
+        await using var context = db.CreateContext();
+        var relays = await context.Set<OutboxRelayInstance>().Select(relay => relay.RelayId).ToListAsync();
+        await Assert.That(string.Join(',', relays)).IsEqualTo("relay-b");
+    }
+
+    private const string RelaysTable = "\"dekaf_outbox_relays\"";
+
+    private static bool IsClaim(System.Data.Common.DbCommand command) =>
+        command.CommandText.StartsWith("UPDATE", StringComparison.Ordinal)
+        && command.CommandText.Contains("\"dekaf_outbox_leases\"", StringComparison.Ordinal)
+        && command.CommandText.Contains("\"Owner\" IS NULL", StringComparison.Ordinal);
+
+    private static async Task<OutboxRelayInstance> RelayAsync(SqliteOutboxDatabase db, string relayId)
+    {
+        await using var context = db.CreateContext();
+        return await context.Set<OutboxRelayInstance>().AsNoTracking().SingleAsync(r => r.RelayId == relayId);
+    }
+
+    /// <summary>
+    /// The relay is still stopped after its straggler ran, owns nothing, and a peer takes the
+    /// whole table on its next acquisition without waiting for anything to expire.
+    /// </summary>
+    private static async Task AssertStoppedAndHandedOverAsync(
+        SqliteOutboxDatabase db, EfCoreOutboxStore<OutboxTestContext> store)
+    {
+        await Assert.That((await RelayAsync(db, "relay-a")).StoppedAtUtc).IsNotNull();
+        await using (var context = db.CreateContext())
+            await Assert.That(await context.Set<OutboxLease>().CountAsync(lease => lease.Owner == "relay-a")).IsEqualTo(0);
+        await Assert.That(await store.AcquireBucketLeasesAsync(Request("relay-b"))).IsEquivalentTo(AllBuckets);
+    }
+
+    /// <summary>
+    /// Holds back the first command that matches until <see cref="Open"/>, as the server runs
+    /// a statement late that a cancelled round left behind.
+    /// </summary>
+    private sealed class GatedStatement : DbCommandInterceptor
+    {
+        private readonly TaskCompletionSource _held = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _open = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private Func<System.Data.Common.DbCommand, bool>? _match;
+        private System.Data.Common.DbCommand? _gated;
+
+        public Task Held => _held.Task;
+
+        public int? Affected { get; private set; }
+
+        public void Arm(Func<System.Data.Common.DbCommand, bool> match) => Volatile.Write(ref _match, match);
+
+        public void Open() => _open.TrySetResult();
+
+        public override async ValueTask<InterceptionResult<int>> NonQueryExecutingAsync(
+            System.Data.Common.DbCommand command, CommandEventData eventData, InterceptionResult<int> result,
+            CancellationToken cancellationToken = default)
+        {
+            await HoldAsync(command);
+            return result;
+        }
+
+        public override async ValueTask<InterceptionResult<System.Data.Common.DbDataReader>> ReaderExecutingAsync(
+            System.Data.Common.DbCommand command, CommandEventData eventData,
+            InterceptionResult<System.Data.Common.DbDataReader> result, CancellationToken cancellationToken = default)
+        {
+            await HoldAsync(command);
+            return result;
+        }
+
+        public override ValueTask<int> NonQueryExecutedAsync(
+            System.Data.Common.DbCommand command, CommandExecutedEventData eventData, int result,
+            CancellationToken cancellationToken = default)
+        {
+            if (ReferenceEquals(command, _gated))
+                Affected = result;
+            return new(result);
+        }
+
+        private async Task HoldAsync(System.Data.Common.DbCommand command)
+        {
+            if (Volatile.Read(ref _match) is { } match && match(command)
+                && Interlocked.CompareExchange(ref _match, null, match) == match)
+            {
+                _gated = command;
+                _held.TrySetResult();
+                await _open.Task;
+            }
+        }
     }
 
     [Test]
